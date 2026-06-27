@@ -535,7 +535,7 @@ fn main(console: Console, net: Net):
         // Link in the bundled std (http + its deps), then run on a thread.
         let parsed = crate::parser::parse_module(&src).expect("parse");
         let linked =
-            crate::linker::link(vec![("main".to_string(), parsed)], "main").expect("link");
+            crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
         let allow = vec![addr.clone()];
         let server = std::thread::spawn(move || run_module(linked, ".", allow));
 
@@ -608,7 +608,7 @@ fn main(console: Console, net: Net):
         );
         let parsed = crate::parser::parse_module(&src).expect("parse");
         let linked =
-            crate::linker::link(vec![("main".to_string(), parsed)], "main").expect("link");
+            crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
         let out = run_module(linked, ".", vec![addr.clone()]).expect("run");
         assert_eq!(out, vec!["200", "hello!!", "true"]);
         let req = srv.join().unwrap();
@@ -635,7 +635,7 @@ fn main(console: Console, net: Net):
         );
         let parsed = crate::parser::parse_module(&src).expect("parse");
         let linked =
-            crate::linker::link(vec![("main".to_string(), parsed)], "main").expect("link");
+            crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
         let allow = vec![addr.clone()];
         let server = std::thread::spawn(move || run_module(linked, ".", allow));
 
@@ -682,7 +682,7 @@ fn main(console: Console, net: Net):
         );
         let parsed = crate::parser::parse_module(&src).expect("parse");
         let linked =
-            crate::linker::link(vec![("main".to_string(), parsed)], "main").expect("link");
+            crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
         let allow = vec![addr.clone()];
         let server = std::thread::spawn(move || run_module(linked, ".", allow));
 
@@ -732,7 +732,7 @@ fn main(console: Console, net: Net):
         );
         let parsed = crate::parser::parse_module(&src).expect("parse");
         let linked =
-            crate::linker::link(vec![("main".to_string(), parsed)], "main").expect("link");
+            crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
         let allow = vec![addr.clone()];
         let server = std::thread::spawn(move || run_module(linked, ".", allow));
 
@@ -775,7 +775,7 @@ fn main(console: Console, net: Net):
         );
         let parsed = crate::parser::parse_module(&src).expect("parse");
         let linked =
-            crate::linker::link(vec![("main".to_string(), parsed)], "main").expect("link");
+            crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
         let allow = vec![addr.clone()];
         let server = std::thread::spawn(move || run_module(linked, ".", allow));
 
@@ -826,7 +826,7 @@ fn main(console: Console, net: Net):
         );
         let parsed = crate::parser::parse_module(&src).expect("parse");
         let linked =
-            crate::linker::link(vec![("main".to_string(), parsed)], "main").expect("link");
+            crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
         let allow = vec![addr.clone()];
         let server = std::thread::spawn(move || run_module(linked, ".", allow));
 
@@ -876,7 +876,7 @@ fn main(console: Console, net: Net):
         );
         let parsed = crate::parser::parse_module(&src).expect("parse");
         let linked =
-            crate::linker::link(vec![("main".to_string(), parsed)], "main").expect("link");
+            crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
         let allow = vec![addr.clone()];
         let server = std::thread::spawn(move || run_module(linked, ".", allow));
 
@@ -925,7 +925,7 @@ fn main(console: Console, net: Net):
         );
         let parsed = crate::parser::parse_module(&src).expect("parse");
         let linked =
-            crate::linker::link(vec![("main".to_string(), parsed)], "main").expect("link");
+            crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
         let allow = vec![addr.clone()];
         let server = std::thread::spawn(move || run_module(linked, ".", allow));
 
@@ -969,7 +969,7 @@ fn main(console: Console, net: Net):
         );
         let parsed = crate::parser::parse_module(&src).expect("parse");
         let linked =
-            crate::linker::link(vec![("main".to_string(), parsed)], "main").expect("link");
+            crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
         let allow = vec![addr.clone()];
         let server = std::thread::spawn(move || run_module(linked, ".", allow));
 
@@ -1023,7 +1023,7 @@ fn main(console: Console, net: Net, root: Dir):
         );
         let parsed = crate::parser::parse_module(&src).expect("parse");
         let linked =
-            crate::linker::link(vec![("main".to_string(), parsed)], "main").expect("link");
+            crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
         let allow = vec![addr.clone()];
         let server = std::thread::spawn(move || run_module(linked, ".", allow));
 
@@ -1062,7 +1062,7 @@ fn main(console: Console, net: Net):
     server.serve_n(net, "127.0.0.1:0", app, 0)
 "#;
         let parsed = crate::parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".to_string(), parsed)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
         // Type-check the linked program: `connect` needs a Net the handler lacks.
         assert!(crate::typeck::check(&linked).is_err());
     }
@@ -1118,7 +1118,7 @@ import evil
 fn main(console: Console):
     print(console, evil.steal("data"))
 "#;
-        let linked = crate::linker::link(
+        let linked = crate::pipeline::link(
             vec![
                 ("evil".into(), parse_module(evil).unwrap()),
                 ("app".into(), parse_module(app).unwrap()),
@@ -1354,7 +1354,7 @@ fn main(console: Console):
         let src = "import testing\nfn helper(n: Int) -> Int:\n    n + 1\nfn main(console: Console):\n    testing.assert_int_eq(helper(1), 5)\n";
         let parsed = crate::parser::parse_module(src).expect("parse");
         let linked =
-            crate::linker::link(vec![("main".to_string(), parsed)], "main").expect("link");
+            crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
         let e = run_module(linked, ".", vec![]).unwrap_err();
         assert!(e.message.contains("`main`, line 5"), "got: {}", e.message);
         assert!(!e.message.contains("testing."), "should not name the stdlib frame: {}", e.message);

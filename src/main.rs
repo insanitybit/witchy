@@ -29,6 +29,7 @@ pub use witchy::grants;
 pub use witchy::interpreter;
 pub use witchy::lexer;
 pub use witchy::linker;
+pub use witchy::pipeline;
 mod lsp;
 pub use witchy::native;
 pub use witchy::net;
@@ -197,7 +198,7 @@ fn run_embedded_pm(raw: Vec<String>) -> ! {
             }
             modules.push((name, module));
         }
-        linker::link(modules, "pm").map_err(|e| e.to_string())
+        pipeline::link(modules, "pm").map_err(|e| e.to_string())
     })();
     let module = match link_result {
         Ok(m) => m,
@@ -627,7 +628,7 @@ fn main() -> wasmtime::Result<()> {
                 }
                 modules.push((name, module));
             }
-            linker::link(modules, "coven").map_err(|e| e.to_string())
+            pipeline::link(modules, "coven").map_err(|e| e.to_string())
         })();
         let module = match link_result {
             Ok(m) => m,
@@ -1384,7 +1385,7 @@ fn link_file_with_deps(
         modules.push((name, module));
     }
 
-    let linked = linker::link(modules, &entry_stem).map_err(|e| e.to_string())?;
+    let linked = pipeline::link(modules, &entry_stem).map_err(|e| e.to_string())?;
     Ok((linked, entry_stem))
 }
 
@@ -2609,7 +2610,7 @@ fn run_compiled_program(rt: &mut Runtime, title: &str, sources: &[(&str, &str)],
                 .map_err(|e| e.to_string())
         })
         .collect();
-    let linked = match mods.and_then(|m| linker::link(m, entry).map_err(|e| e.to_string())) {
+    let linked = match mods.and_then(|m| pipeline::link(m, entry).map_err(|e| e.to_string())) {
         Ok(m) => m,
         Err(e) => {
             println!("{e}");

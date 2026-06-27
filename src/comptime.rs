@@ -144,7 +144,7 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
             import_lines: Vec::new(),
             item_lines: Vec::new(),
         };
-        let linked = crate::linker::link(vec![("comptime".into(), prog)], "comptime")
+        let linked = crate::pipeline::link(vec![("comptime".into(), prog)], "comptime")
             .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
         crate::typeck::check(&linked)
             .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
@@ -183,5 +183,19 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Run both compile-time expansion passes for one module, in order: `comptime:`
+/// blocks first, then `tag"…"` tagged literals. This is the expander callback
+/// the linker invokes per module — the linker stays agnostic of how compile-time
+/// code is evaluated (RFC-0018 dependency inversion), so it never names
+/// `comptime`/`tagged`; the wiring lives here and in `crate::pipeline`.
+pub fn expand_compile_time(
+    name: &str,
+    module: &mut Module,
+    siblings: &[(String, Module)],
+) -> Result<(), String> {
+    expand(name, module)?;
+    crate::tagged::expand(name, module, siblings)
 }
 

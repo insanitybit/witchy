@@ -14,7 +14,7 @@
     /// it on the interpreter — the path that resolves `import crypto`.
     fn link_run(src: &str) -> Vec<String> {
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         interpreter::run_module(linked, ".", Vec::new()).expect("run")
     }
@@ -42,13 +42,13 @@
                 modules.push((name, parsed));
             }
         }
-        crate::linker::link(modules, "main").expect("link")
+        crate::pipeline::link(modules, "main").expect("link")
     }
 
     /// Link a single source as the entry module `t`, for performance-mode tests.
     fn link_mode(src: &str) -> ast::Module {
         let module = parser::parse_module(src).expect("parse");
-        crate::linker::link(vec![("t".into(), module)], "t").expect("link")
+        crate::pipeline::link(vec![("t".into(), module)], "t").expect("link")
     }
 
     /// Every shipped example's entry module: `examples/<name>/src/<name>.witchy`
@@ -106,7 +106,7 @@
             crate::linker::STD_MODULES.iter().map(|m| format!("import {m}\n")).collect();
         let entry_src = format!("{imports}\npub fn perfcheck() -> Int:\n    0\n");
         let entry = parser::parse_module(&entry_src).expect("parse synthetic std-import entry");
-        let linked = crate::linker::link(vec![("perfcheck".into(), entry)], "perfcheck")
+        let linked = crate::pipeline::link(vec![("perfcheck".into(), entry)], "perfcheck")
             .expect("link all std modules");
         // The whole stdlib is cliff-free: every "build a sub-list, then collect it into a
         // result list" shape (`out = push(out, move cur); cur = []`) transfers ownership with
@@ -139,13 +139,13 @@
             .expect("parse plain helper");
 
         // opt main + opt helper links.
-        crate::linker::link(
+        crate::pipeline::link(
             vec![("main".into(), opt_main.clone()), ("helper".into(), opt_helper)],
             "main",
         ).expect("opt importing opt links");
 
         // opt main + NON-opt helper is rejected, naming both modules.
-        let err = crate::linker::link(
+        let err = crate::pipeline::link(
             vec![("main".into(), opt_main), ("helper".into(), plain_helper)],
             "main",
         ).map(|_| ()).expect_err("opt importing non-opt must fail");
@@ -158,7 +158,7 @@
         let opt_std = parser::parse_module(
             "mode opt\nimport list\n\nfn main(console: Console):\n    print(console, __render(list.length([1, 2, 3])))\n",
         ).expect("parse opt+std");
-        crate::linker::link(vec![("main".into(), opt_std)], "main").expect("opt importing std is exempt");
+        crate::pipeline::link(vec![("main".into(), opt_std)], "main").expect("opt importing std is exempt");
     }
 
     /// In a `mode opt` file, an ownership-relevant parameter (a heap buffer) must
@@ -232,7 +232,7 @@
             "import crypto\nfn main(console: Console):\n    print(console, crypto.sha256(\"abc\"))\n",
         )
         .expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
             .expect("compile")
@@ -464,7 +464,7 @@
     fn capability_is_sealed_across_modules() {
         // RFC-0002: `capability Conn from Net` is a SEALED brand — it may be
         // constructed or destructured only in its declaring module (`redis`).
-        use crate::linker::link;
+        use crate::pipeline::link;
         use crate::parser::parse_module;
         let lib = "capability Conn from Net[Connect, Tcp]\npub fn open(net: Net[Connect, Tcp]) -> Conn:\n    Conn(net)\npub fn ping(c: Conn) -> Int:\n    match c:\n        Conn(net) -> 1\n";
         let mods = |app: &str| {
@@ -931,7 +931,7 @@ fn main(console: Console):
         };
         let wasm = |src: &str| -> Vec<String> {
             let module = parser::parse_module(src).expect("parse");
-            let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+            let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
             typeck::check(&linked).expect("typecheck");
             let bytes = codegen::compile_module_binary(&linked)
                 .expect("compile")
@@ -1069,7 +1069,7 @@ fn main(console: Console):
         // A derive now routes to a user generator `derive_<name>`; with none in
         // scope it's a loud error at comptime (the generated call can't resolve).
         let bad = "type T derive(Serialize):\n    n: Int\n\nfn main(console: Console):\n    print(console, \"x\")\n";
-        let res = crate::linker::link(
+        let res = crate::pipeline::link(
             vec![("main".to_string(), parser::parse_module(bad).expect("parse"))],
             "main",
         );
@@ -1103,7 +1103,7 @@ fn main(console: Console):
         // Emitted garbage is a loud error carrying the emitted source.
         let bad = "comptime:\n    emit(\"fn (((\")\n\nfn main(console: Console):\n    print(console, \"x\")\n";
         let module = parser::parse_module(bad).expect("parse");
-        let err = crate::linker::link(vec![("main".into(), module)], "main")
+        let err = crate::pipeline::link(vec![("main".into(), module)], "main")
             .expect_err("bad emission must be loud");
         assert!(err.to_string().contains("does not parse"), "got: {err}");
     }
@@ -1121,7 +1121,7 @@ fn main(console: Console):
             "import sibling\nimport json\nimport result\n\ntype Foo derive(Deserialize):\n    x: Int\n\nfn main(console: Console):\n    print(console, \"${helper()}\")\n",
         )
         .expect("parse main");
-        let linked = crate::linker::link(
+        let linked = crate::pipeline::link(
             vec![("sibling".into(), sibling), ("main".into(), main)],
             "main",
         )
@@ -1436,7 +1436,7 @@ fn main(console: Console):
         let missing = "import show\n\ntype Blob:\n    n: Int\n\nfn main(console: Console):\n    say(console, Blob(1))\n";
         let module = parser::parse_module(missing).expect("parse");
         let linked =
-            crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+            crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         let err = typeck::check(&linked).expect_err("missing impl must be rejected");
         assert!(
             err.to_string().contains("`Blob` does not implement `Show`"),
@@ -1566,7 +1566,7 @@ fn main(console: Console):
         );
         let want = vec!["200 hello".to_string()];
         let module = parser::parse_module(&src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         assert_eq!(
             interpreter::run_module(linked.clone(), ".", vec![addr.clone()]).expect("interp"),
@@ -1617,7 +1617,7 @@ fn main(console: Console):
         );
         let want = vec!["err".to_string()];
         let module = parser::parse_module(&src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         assert_eq!(
             interpreter::run_module(linked.clone(), ".", vec![addr.clone()]).expect("interp"),
@@ -1654,7 +1654,7 @@ fn main(console: Console):
     fn crypto_signing_round_trips_in_witchy() {
         let src = "import crypto\nfn main(console: Console, signer: Secret):\n    let msg = \"sign me\"\n    let sig = crypto.sign(signer, msg)\n    print(console, if crypto.ed25519_verify(crypto.public_key(signer), msg, sig): \"verified\" else: \"FAILED\")\n";
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let out = interpreter::run_module_signed(linked, ".", Vec::new(), Vec::new(), Some([7u8; 32]))
             .expect("run");
@@ -1662,7 +1662,7 @@ fn main(console: Console):
 
         // A `Secret` parameter without a host-granted key is refused.
         let m2 = parser::parse_module("fn main(console: Console, s: Secret):\n    print(console, \"x\")\n").expect("parse");
-        let l2 = crate::linker::link(vec![("main".into(), m2)], "main").expect("link");
+        let l2 = crate::pipeline::link(vec![("main".into(), m2)], "main").expect("link");
         assert!(interpreter::run_module_signed(l2, ".", Vec::new(), Vec::new(), None).is_err());
 
         // The signing authority surfaces in the capability footprint.
@@ -2187,7 +2187,7 @@ fn yn(b: Bool) -> String:
     fn region_rejects_outer_pointer_assign_and_yield() {
         let leak = "fn main(console: Console):\n    var leak = [1]\n    let x = region:\n        leak = list.push(leak, 2)\n        7\n    print(console, __render(x))\n";
         let module = parser::parse_module(leak).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         let err = typeck::check(&linked).expect_err("outer pointer assign must be rejected");
         assert!(err.to_string().contains("inside `region:`"), "{err}");
     }
@@ -2671,7 +2671,7 @@ fn yn(b: Bool) -> String:
         use crate::runtime::{Capabilities, Runtime};
         let src = "import crypto\nfn main(console: Console, signer: Secret):\n    let msg = \"sign me\"\n    let sig = crypto.sign(signer, msg)\n    print(console, crypto.public_key(signer))\n    print(console, sig)\n    print(console, if crypto.ed25519_verify(crypto.public_key(signer), msg, sig): \"verified\" else: \"FAILED\")\n";
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let seed = [7u8; 32];
         let interp_out =
@@ -2717,7 +2717,7 @@ fn yn(b: Bool) -> String:
         use crate::runtime::{Capabilities, Runtime};
         let src = "import secretstore\nimport crypto\nfn main(console: Console, secrets: SecretStore):\n    let key = secrets.require(\"signing\")\n    print(console, crypto.public_key(key))\n    print(console, crypto.sign(key, \"msg\"))\n    print(console, crypto.reveal(key))\n    match secrets.get(\"signing\"):\n        Some(k) -> print(console, \"got signing\")\n        None -> print(console, \"no signing\")\n    match secrets.get(\"absent\"):\n        Some(k) -> print(console, \"unexpected\")\n        None -> print(console, \"absent none\")\n";
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let seed = [7u8; 32];
         let interp_out =
@@ -2778,7 +2778,7 @@ fn yn(b: Bool) -> String:
                 let context = format!("{}: ```witchy block #{}", file.display(), idx + 1);
                 let module = parser::parse_module(&snippet)
                     .unwrap_or_else(|e| panic!("{context} fails to parse: {e:?}\n---\n{snippet}"));
-                let linked = crate::linker::link(vec![("main".into(), module)], "main")
+                let linked = crate::pipeline::link(vec![("main".into(), module)], "main")
                     .unwrap_or_else(|e| panic!("{context} fails to link: {e}\n---\n{snippet}"));
                 typeck::check(&linked)
                     .unwrap_or_else(|e| panic!("{context} fails to type-check: {e}\n---\n{snippet}"));
@@ -2900,7 +2900,7 @@ fn yn(b: Bool) -> String:
         let env_src = "import option\n\nfn main(console: Console, env: Env):\n    match get_env(env, \"WITCHY_E2E_ENV_VAR\"):\n        Some(v) -> print(console, \"got: \" + v)\n        None -> print(console, \"unset\")\n    match get_env(env, \"WITCHY_E2E_DEFINITELY_UNSET\"):\n        Some(v) -> print(console, \"got: \" + v)\n        None -> print(console, \"unset\")\n";
         let want = vec!["got: from the host".to_string(), "unset".to_string()];
         let module = parser::parse_module(env_src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
             .expect("compile")
@@ -3484,7 +3484,7 @@ fn yn(b: Bool) -> String:
         ];
         for src in srcs {
             let module = parser::parse_module(src).expect("parse");
-            let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+            let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
             let bytes = codegen::compile_module_binary(&linked)
                 .expect("compile")
                 .expect("the binary path lowers this program");
@@ -3570,7 +3570,7 @@ fn yn(b: Bool) -> String:
         let link = || {
             let app_m = parser::parse_module(app).expect("parse app");
             let widget_m = parser::parse_module(widget).expect("parse widget");
-            crate::linker::link(
+            crate::pipeline::link(
                 vec![("main".into(), app_m), ("widget".into(), widget_m)],
                 "main",
             )
@@ -3676,7 +3676,7 @@ fn yn(b: Bool) -> String:
         assert_eq!(wasm_run(resolved), vec!["false"], "backends agree");
         let unresolvable = "import result\n\nfn wrap(x: a) -> Result(a, String):\n    Ok(x)\n\nfn main(console: Console):\n    print(console, __render(wrap([]) == wrap([])))\n";
         let rm = parser::parse_module(unresolvable).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), rm)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), rm)], "main").expect("link");
         assert!(
             codegen::compile_module_binary(&linked).is_err(),
             "an unresolvable generic payload must stay a loud codegen error"
@@ -3860,7 +3860,7 @@ fn yn(b: Bool) -> String:
         // `import encoding` is a native module: link to register its signatures,
         // then run each backend on the linked module.
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
             .expect("compile")
@@ -4300,7 +4300,7 @@ fn yes(b: Bool) -> String:
         let run = |args: Vec<String>| -> Vec<String> {
             let src = "import string\nfn main(console: Console, args: List(String)):\n    print(console, string.join(args, \",\"))\n";
             let module = parser::parse_module(src).expect("parse");
-            let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+            let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
             typeck::check(&linked).expect("typecheck");
             interpreter::run_module_args(linked, ".", Vec::new(), args).expect("run")
         };
@@ -6515,7 +6515,7 @@ fn main(console: Console):
         // Free-function UFCS is gone — one cut, loud error.
         let ufcs = "fn inc(x: Int) -> Int:\n    x + 1\n\nfn main(console: Console):\n    print(console, \"${5.inc()}\")\n";
         let module = parser::parse_module(ufcs).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         let err = typeck::check(&linked).expect_err("free-fn UFCS must be rejected");
         assert!(
             err.to_string().contains("methods come from `impl` blocks"),
@@ -7129,7 +7129,7 @@ fn main(console: Console):
         let src = "fn main(console: Console):\n    for x in [10, 20, 30]:\n        print(console, __render(x))\n    let f = fn(n: Int): n + 1\n    print(console, __render(f(5)))\n";
         let want = vec!["10".to_string(), "20".to_string(), "30".to_string(), "6".to_string()];
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typeck");
         // Takes the binary path (closures lower) AND emits all loop iterations —
         // a mis-scoped capture would drop the loop to a single pass.
@@ -7168,7 +7168,7 @@ fn main(console: Console):
         let src = "fn build(n: Int) -> List(Int):\n    var xs: List(Int) = []\n    for i in 0..n:\n        xs = list.push(xs, i)\n    xs\n\nfn main(console: Console):\n    let ys = build(500)\n    print(console, __render(list.at(ys, 499)))\n";
         let want = vec!["499".to_string()];
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typeck");
         let bytes = codegen::compile_module_binary(&linked)
             .expect("compile")
@@ -7187,7 +7187,7 @@ fn main(console: Console):
         let src = "fn build(n: Int) -> List(Int):\n    var xs: List(Int) = []\n    for i in 0..n:\n        xs = list.push(xs, i)\n    xs\n\nfn main(console: Console):\n    let ys = build(3)\n    print(console, __render(list.at(ys, 0)))\n    print(console, __render(list.at(ys, 1)))\n    print(console, __render(list.at(ys, 2)))\n";
         let want = vec!["0".to_string(), "1".to_string(), "2".to_string()];
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typeck");
         assert_eq!(link_run(src), want, "interpreter oracle");
         assert_eq!(run_on_wasm(src), want, "legacy WAT path");
@@ -7208,7 +7208,7 @@ fn main(console: Console):
         let src = "fn build(n: Int) -> Dict(String, Int):\n    var d = dict.new()\n    for i in 0..n:\n        d = dict.insert(d, \"k\" + __render(i), i)\n    d\n\nfn main(console: Console):\n    let m = build(500)\n    print(console, __render(dict.get_or(m, \"k499\", 0 - 1)))\n    print(console, __render(dict.size(m)))\n";
         let want = vec!["499".to_string(), "500".to_string()];
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typeck");
         assert_eq!(link_run(src), want, "interpreter oracle");
         let bytes = codegen::compile_module_binary(&linked)
@@ -7228,7 +7228,7 @@ fn main(console: Console):
         let src = "fn build(n: Int) -> String:\n    var s = \"\"\n    var i = 0\n    while i < n:\n        s = s + \"x\"\n        i = i + 1\n    s\n\nfn main(console: Console):\n    let r = build(500)\n    print(console, \"${string.length(r)}\")\n";
         let want = vec!["500".to_string()];
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typeck");
         assert_eq!(link_run(src), want, "interpreter oracle");
         let bytes = codegen::compile_module_binary(&linked)
@@ -7249,7 +7249,7 @@ fn main(console: Console):
         let src = "fn build(n: Int) -> Dict(String, Int):\n    var d = dict.new()\n    var i = 0\n    while i < n:\n        d = dict.update(d, \"k\" + __render(i % 10), 0, fn(c: Int): c + 1)\n        i = i + 1\n    d\n\nfn main(console: Console):\n    let d = build(500)\n    print(console, \"${dict.get_or(d, \"k0\", 0 - 1)}\")\n    print(console, \"${dict.size(d)}\")\n";
         let want = vec!["50".to_string(), "10".to_string()];
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typeck");
         assert_eq!(link_run(src), want, "interpreter oracle");
         let bytes = codegen::compile_module_binary(&linked)
@@ -7270,7 +7270,7 @@ fn main(console: Console):
         let src = "type Point:\n    x: Int\n    y: Int\n\ntype Line:\n    from: Point\n    to: Point\n\nfn main(console: Console):\n    let l = Line(Point(1, 2), Point(3, 4))\n    let p2 = Point(x: 100, ..(l).from)\n    print(console, \"${(p2).x}\")\n    print(console, \"${(p2).y}\")\n";
         let want = vec!["100".to_string(), "2".to_string()];
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typeck");
         let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
@@ -7290,7 +7290,7 @@ fn main(console: Console):
         let src = "fn clamp(var n: Int):\n    if (n > 10):\n        n = 10\n        return\n    n = n + 1\n\nfn main(console: Console):\n    var a = 5\n    clamp(a)\n    print(console, \"${a}\")\n    var b = 50\n    clamp(b)\n    print(console, \"${b}\")\n";
         let want = vec!["6".to_string(), "10".to_string()];
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typeck");
         let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
@@ -7309,7 +7309,7 @@ fn main(console: Console):
         let src = "fn main(console: Console):\n    let xs = [true, false]\n    let ys = [list.at(xs, 0)]\n    if list.at(ys, 0):\n        print(console, \"t\")\n    else:\n        print(console, \"f\")\n";
         let want = vec!["t".to_string()];
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typeck");
         let m = codegen::assemble_wir_module(&linked)
             .expect("assemble")
@@ -7346,7 +7346,7 @@ fn main(console: Console):
         ];
         for src in progs {
             let module = parser::parse_module(src).expect("parse");
-            let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+            let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
             typeck::check(&linked).expect("typecheck");
             let m = codegen::assemble_wir_module(&linked)
                 .expect("assemble")
@@ -7736,7 +7736,7 @@ fn main(console: Console):
         let mut lowered_any = false;
         for (src, want) in cases {
             let module = parser::parse_module(src).expect("parse");
-            let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+            let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
             typeck::check(&linked).expect("typecheck");
             let bytes = codegen::compile_module_binary(&linked)
                 .expect("compile_module_binary")
@@ -7765,7 +7765,7 @@ fn main(console: Console):
         let src = "import encoding\nfn main(console: Console):\n    print(console, encoding.hex_encode(\"Hi\"))\n    print(console, encoding.base64_encode(\"Hi\"))\n";
         let want = vec!["4869".to_string(), "SGk=".to_string()];
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
@@ -7796,7 +7796,7 @@ fn main(console: Console):
             "false".to_string(),
         ];
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
@@ -7815,7 +7815,7 @@ fn main(console: Console):
         let src = "fn main(console: Console):\n    let d = dict.from_pairs([(\"a\", 1), (\"b\", 2), (\"c\", 3)])\n    print(console, \"${d}\")\n";
         let want = vec!["{a: 1, b: 2, c: 3}".to_string()];
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
@@ -7835,7 +7835,7 @@ fn main(console: Console):
         let src = "fn main(console: Console):\n    var d = dict.new()\n    d = dict.update(d, \"a\", 0, fn(c: Int): c + 1)\n    d = dict.update(d, \"a\", 0, fn(c: Int): c + 1)\n    d = dict.update(d, \"a\", 0, fn(c: Int): c + 1)\n    d = dict.update(d, \"b\", 0, fn(c: Int): c + 1)\n    print(console, \"${d}\")\n    print(console, \"${dict.get_or(d, \"a\", -1)}\")\n";
         let want = vec!["{a: 3, b: 1}".to_string(), "3".to_string()];
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
@@ -7854,7 +7854,7 @@ fn main(console: Console):
         let src = "type Tree:\n    Leaf(Int)\n    Node(Tree, Tree)\n\nfn main(console: Console):\n    let a = Node(Node(Leaf(1), Leaf(2)), Leaf(3))\n    let b = Node(Node(Leaf(1), Leaf(2)), Leaf(3))\n    let c = Node(Node(Leaf(1), Leaf(9)), Leaf(3))\n    print(console, \"${a == b}\")\n    print(console, \"${a == c}\")\n";
         let want = vec!["true".to_string(), "false".to_string()];
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
@@ -7874,7 +7874,7 @@ fn main(console: Console):
         let src = "fn grow(own xs: List(Int), n: Int) -> List(Int):\n    xs = list.push(xs, n)\n    xs\n\nfn main(console: Console):\n    var xs = []\n    for i in 1..6:\n        xs = grow(move xs, i)\n    print(console, \"${xs}\")\n";
         let want = vec!["[1, 2, 3, 4, 5]".to_string()];
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
@@ -7894,7 +7894,7 @@ fn main(console: Console):
         let src = "fn main(console: Console):\n    let build = fn(n: Int):\n        var acc = [0]\n        var t = 0\n        while t < n:\n            acc = list.push(acc, t)\n            t = t + 1\n        list.length(acc)\n    print(console, \"${build(5)}\")\n";
         let want = vec!["6".to_string()];
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
@@ -7912,7 +7912,7 @@ fn main(console: Console):
     fn wir_regex_match_spans_binary_path() {
         let src = "import regex\nfn main(console: Console):\n    print(console, \"${regex.matches(\"[0-9]+\", \"order 1234\")}\")\n    print(console, \"${regex.find_all(\"[0-9]+\", \"a1 b22 c333\")}\")\n    print(console, regex.replace_all(\"[0-9]+\", \"a1b22\", \"N\"))\n";
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
@@ -7931,7 +7931,7 @@ fn main(console: Console):
     fn wir_crypto_digests_host_import_binary_path() {
         let src = "import crypto\nfn main(console: Console):\n    print(console, crypto.sha256(\"abc\"))\n    print(console, crypto.sha512(\"abc\"))\n    print(console, crypto.sha3_256(\"abc\"))\n    print(console, crypto.hmac_sha256(\"abcdef\", \"msg\"))\n";
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
@@ -7952,7 +7952,7 @@ fn main(console: Console):
     fn wir_crypto_rune_hash_host_import_binary_path() {
         let src = "import crypto\nfn main(console: Console):\n    print(console, crypto.rune_hash([\"a.witchy\", \"b.witchy\"], [\"fn one\", \"fn two\"]))\n";
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
@@ -7973,7 +7973,7 @@ fn main(console: Console):
         let sig = "304402203260029f4c6beb2e78afdd906c057c63f8828e2b03820de7053d97254577fb8c02204478b9b75f8fd7a1ce4298f0d119e12926dafda116ae4c197b0048dc117bc9de";
         let src = format!("import crypto\nfn main(console: Console):\n    print(console, if crypto.ecdsa_p256_verify(\"{pk}\", \"webauthn-es256-test-message\", \"{sig}\"): \"ok\" else: \"bad\")\n    print(console, if crypto.ecdsa_p256_verify(\"{pk}\", \"tampered\", \"{sig}\"): \"ok\" else: \"bad\")\n");
         let module = parser::parse_module(&src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
@@ -7992,7 +7992,7 @@ fn main(console: Console):
         use crate::runtime::{Capabilities, Runtime};
         let src = "import crypto\nfn main(console: Console, signer: Secret):\n    print(console, crypto.public_key(signer))\n    print(console, crypto.sign(signer, \"hello\"))\n";
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
@@ -8016,7 +8016,7 @@ fn main(console: Console):
         use crate::runtime::{Capabilities, Runtime};
         let src = "import crypto\nfn main(console: Console, signer: Secret):\n    let pk = crypto.public_key(signer)\n    let sig = crypto.sign(signer, \"hello\")\n    print(console, \"${crypto.ed25519_verify(pk, \"hello\", sig)}\")\n    print(console, \"${crypto.ed25519_verify(pk, \"tampered\", sig)}\")\n";
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
@@ -8044,7 +8044,7 @@ fn main(console: Console):
         std::fs::write(root.join("greeting.txt"), "hello from disk").expect("write file");
         let src = "fn main(console: Console, dir: Dir[Read]):\n    print(console, read(dir, \"greeting.txt\"))\n";
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
@@ -8076,7 +8076,7 @@ fn main(console: Console):
         std::fs::write(root.join("two.txt"), "2").expect("write");
         let src = "fn main(console: Console, dir: Dir[Read]):\n    print(console, __render(list.length(list(dir))))\n";
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
@@ -8104,7 +8104,7 @@ fn main(console: Console):
         use crate::runtime::{Capabilities, Runtime};
         let src = "fn main(console: Console, env: Env):\n    match get_env(env, \"WITCHY_UNSET_XYZZY_VAR\"):\n        Some(v) -> print(console, v)\n        None -> print(console, \"unset\")\n    match get_env(env, \"PATH\"):\n        Some(v) -> print(console, \"has\")\n        None -> print(console, \"no-path\")\n";
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
@@ -8129,7 +8129,7 @@ fn main(console: Console):
         use crate::runtime::{Capabilities, Runtime};
         let src = "fn main(console: Console) -> Int:\n    print(console, \"hi\")\n    42\n";
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
@@ -8152,7 +8152,7 @@ fn main(console: Console):
             .iter()
             .map(|(n, s)| ((*n).to_string(), parser::parse_module(s).expect("parse")))
             .collect();
-        let linked = crate::linker::link(mods, entry).expect("link");
+        let linked = crate::pipeline::link(mods, entry).expect("link");
         assert!(typeck::check(&linked).is_ok(), "{:?}", typeck::check(&linked));
         let bytes = codegen::compile_module_binary(&linked)
             .expect("compile")
@@ -8601,7 +8601,7 @@ fn main(console: Console):
     /// Link + run a single-`main` source on the interpreter with a `Net` allowlist grant.
     fn link_run_net(src: &str, net_allow: &[&str]) -> Vec<String> {
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         interpreter::run_module(linked, ".", net_allow.iter().map(|s| s.to_string()).collect())
             .expect("run")
@@ -8635,7 +8635,7 @@ fn main(console: Console):
     fn sealed_capability_fields_are_opaque() {
         let leak = "capability Vault:\n    net: Net[Connect, Tcp]\n    label: String\npub fn open(net: Net[Connect, Tcp]) -> Vault:\n    Vault(net, \"x\")\nfn main(console: Console, net: Net):\n    let v = open(net)\n    let raw = v.net\n    print(console, \"leaked\")\n";
         let module = parser::parse_module(leak).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         let err = typeck::check(&linked).expect_err("`.field` on a sealed cap must be rejected");
         assert!(err.message.contains("sealed capability"), "got: {}", err.message);
     }
@@ -8956,7 +8956,7 @@ fn main(console: Console):
             .iter()
             .map(|(n, s)| ((*n).to_string(), parser::parse_module(s).expect("parse")))
             .collect();
-        let linked = crate::linker::link(mods, entry).expect("link");
+        let linked = crate::pipeline::link(mods, entry).expect("link");
         assert!(typeck::check(&linked).is_ok(), "{:?}", typeck::check(&linked));
         let bytes = codegen::compile_module_binary(&linked)
             .expect("compile")
@@ -10818,7 +10818,7 @@ fn main(console: Console):
     fn main_int_return_is_the_process_exit_code() {
         let run = |src: &str| {
             let m = parser::parse_module(src).expect("parse");
-            let l = crate::linker::link(vec![("main".into(), m)], "main").expect("link");
+            let l = crate::pipeline::link(vec![("main".into(), m)], "main").expect("link");
             interpreter::run_module_exit(l, ".", Vec::new(), Vec::new(), None).expect("run")
         };
         let (out, code) = run("fn main() -> Int:\n    7\n");
@@ -10835,7 +10835,7 @@ fn main(console: Console):
         std::fs::create_dir_all(&tmp).unwrap();
         let run = |src: &str| {
             let mods = vec![("main".to_string(), parser::parse_module(src).expect("parse"))];
-            let linked = crate::linker::link(mods, "main").expect("link");
+            let linked = crate::pipeline::link(mods, "main").expect("link");
             interpreter::run_module(linked, &tmp, Vec::new())
         };
         // Write then read back, within the confined Dir.
@@ -10860,7 +10860,7 @@ fn main(console: Console):
         std::fs::write(tmp.join("store/alpha"), "a").unwrap();
         let run = |src: &str| {
             let mods = vec![("main".to_string(), parser::parse_module(src).expect("parse"))];
-            let linked = crate::linker::link(mods, "main").expect("link");
+            let linked = crate::pipeline::link(mods, "main").expect("link");
             interpreter::run_module(linked, &tmp, Vec::new())
         };
         // `list` enumerates a subdir's entries in sorted (deterministic) order.
@@ -10897,7 +10897,7 @@ fn main(console: Console):
             )
             .expect("parse"),
         )];
-        let linked = crate::linker::link(mods, "main").expect("link");
+        let linked = crate::pipeline::link(mods, "main").expect("link");
         assert!(interpreter::run_module(linked, &base, Vec::new()).is_err());
         // The symlink target outside the subtree is untouched.
         assert_eq!(std::fs::read_to_string(base.join("secret.txt")).unwrap(), "ORIGINAL");
@@ -10957,7 +10957,7 @@ fn main(console: Console):
         std::fs::write(tmp.join("in.txt"), "narrowed").unwrap();
         let src = "fn main(console: Console, root: Dir):\n    let r = root as Dir[Read]\n    print(console, read(r, \"in.txt\"))\n";
         let mods = vec![("main".to_string(), parser::parse_module(src).expect("parse"))];
-        let linked = crate::linker::link(mods, "main").expect("link");
+        let linked = crate::pipeline::link(mods, "main").expect("link");
         let out = interpreter::run_module(linked, &tmp, Vec::new()).expect("run");
         assert_eq!(out, vec!["narrowed"]);
         let _ = std::fs::remove_dir_all(&tmp);
@@ -13246,7 +13246,7 @@ fn main(console: Console):
     print(console, __render(list.sum(xs)))
 "#;
         let mods = vec![("main".to_string(), parser::parse_module(client).expect("parse"))];
-        let linked = crate::linker::link(mods, "main").expect("link");
+        let linked = crate::pipeline::link(mods, "main").expect("link");
         // Reachable functions are present and the unused ones are dropped: the
         // binary path's `assemble_wir_module` runs the same `reachable_functions`
         // DCE, so inspect the assembled WIR func names directly.
@@ -13331,7 +13331,7 @@ fn main(console: Console, net: Net):
 "#
         );
         let mods = vec![("main".to_string(), parser::parse_module(&program).expect("parse"))];
-        let linked = crate::linker::link(mods, "main").expect("link");
+        let linked = crate::pipeline::link(mods, "main").expect("link");
         let out = interpreter::run_module(
             linked,
             std::path::Path::new("."),
@@ -13415,7 +13415,7 @@ async fn main(console: Console):
     print(console, "${d}")
 "#;
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
@@ -13451,7 +13451,7 @@ async fn main(console: Console):
     consumer(console, rx).await
 "#;
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
@@ -13488,7 +13488,7 @@ async fn main(console: Console):
     consumer(console, rx).await
 "#;
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
@@ -13524,7 +13524,7 @@ async fn main(console: Console):
     chan.consume(orx, fn(v): task.done(print(console, "got ${v}"))).await
 "#;
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
@@ -13567,7 +13567,7 @@ async fn main(console: Console):
     task.join(lh).await
 "#;
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
@@ -13604,7 +13604,7 @@ async fn main(console: Console):
     print(console, "drained")
 "#;
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
@@ -13638,7 +13638,7 @@ async fn main(console: Console):
     consumer(console, rx).await
 "#;
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
@@ -13684,7 +13684,7 @@ async fn main(console: Console):
     collector(console, arx, brx).await
 "#;
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
@@ -13715,7 +13715,7 @@ fn main(console: Console):
     print(console, "winner ${idx} ${val}")
 "#;
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
@@ -13765,7 +13765,7 @@ fn main(console: Console):
     print(console, "done ${results}")
 "#;
         let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
@@ -13950,7 +13950,7 @@ fn main(console: Console):
 
         let bad = "import cmp\n\nfn main(console: Console):\n    print(console, \"${cmp.sort([3.0, 1.0, 2.0])}\")\n";
         let module = parser::parse_module(bad).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         let err = typeck::check(&linked).expect_err("Float is not Ord — cmp.sort must reject it").message;
         assert!(err.contains("Ord"), "error should mention Ord: {err}");
     }
@@ -13968,7 +13968,7 @@ fn main(console: Console):
         // Omitting the supertrait impl is a loud check error.
         let bad = "trait Base:\n    fn base(self) -> Int\n\ntrait Derived: Base:\n    fn derived(self) -> Int\n\ntype W:\n    W(Int)\n\nimpl Derived for W:\n    fn derived(self) -> Int:\n        match self:\n            W(n) -> n\n\nfn main(console: Console):\n    print(console, \"x\")\n";
         let module = parser::parse_module(bad).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         let err = typeck::check(&linked).expect_err("missing supertrait impl must be rejected").message;
         assert!(err.contains("Base"), "error should name the missing supertrait: {err}");
     }
@@ -14263,7 +14263,7 @@ fn main(console: Console, net: Net):
 "#
         );
         let mods = vec![("main".to_string(), parser::parse_module(&program).expect("parse"))];
-        let linked = crate::linker::link(mods, "main").expect("link");
+        let linked = crate::pipeline::link(mods, "main").expect("link");
         let out = interpreter::run_module(
             linked,
             std::path::Path::new("."),
@@ -14310,7 +14310,7 @@ fn main(console: Console, net: Net):
 "#
         );
         let mods = vec![("main".to_string(), parser::parse_module(&program).expect("parse"))];
-        let linked = crate::linker::link(mods, "main").expect("link");
+        let linked = crate::pipeline::link(mods, "main").expect("link");
         let out = interpreter::run_module(
             linked,
             std::path::Path::new("."),
@@ -14373,7 +14373,7 @@ fn main(console: Console, net: Net):
 "#
         );
         let mods = vec![("main".to_string(), parser::parse_module(&program).expect("parse"))];
-        let linked = crate::linker::link(mods, "main").expect("link");
+        let linked = crate::pipeline::link(mods, "main").expect("link");
         let out = interpreter::run_module(
             linked,
             std::path::Path::new("."),
@@ -14420,7 +14420,7 @@ fn main(console: Console, net: Net):
 "#
         );
         let mods = vec![("main".to_string(), parser::parse_module(&program).expect("parse"))];
-        let linked = crate::linker::link(mods, "main").expect("link");
+        let linked = crate::pipeline::link(mods, "main").expect("link");
         let out = interpreter::run_module(
             linked,
             std::path::Path::new("."),
@@ -15047,7 +15047,7 @@ pub fn serve(console: Console, net: Net) -> Int:
         let entry = parser::parse_module(src).expect("parse entry");
         let glamour = parser::parse_module(GLAMOUR_SRC).expect("parse glamour");
         let modules = vec![("main".to_string(), entry), ("glamour".to_string(), glamour)];
-        let linked = crate::linker::link(modules, "main").expect("link glamour consumer");
+        let linked = crate::pipeline::link(modules, "main").expect("link glamour consumer");
         typeck::check(&linked).expect("typecheck");
         let interp = interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp run");
         let bytes = codegen::compile_module_binary(&linked)
@@ -15233,7 +15233,7 @@ pub fn serve(console: Console, net: Net) -> Int:
         let entry = parser::parse_module(src).expect("parse entry");
         let glamour = parser::parse_module(GLAMOUR_SRC).expect("parse glamour");
         let modules = vec![("main".to_string(), entry), ("glamour".to_string(), glamour)];
-        let err = crate::linker::link(modules, "main")
+        let err = crate::pipeline::link(modules, "main")
             .expect_err("a tag-name hole must be a compile error");
         assert!(
             err.to_string().contains("a tag NAME may not be a"),
@@ -15258,7 +15258,7 @@ pub fn serve(console: Console, net: Net) -> Int:
         let entry = parser::parse_module(src).expect("parse entry");
         let glamour = parser::parse_module(GLAMOUR_SRC).expect("parse glamour");
         let modules = vec![("main".to_string(), entry), ("glamour".to_string(), glamour)];
-        let linked = crate::linker::link(modules, "main").expect("link (expansion succeeds)");
+        let linked = crate::pipeline::link(modules, "main").expect("link (expansion succeeds)");
         let err = typeck::check(&linked)
             .expect_err("an Int in text position must be a type error (text holes need String)");
         let msg = err.to_string();

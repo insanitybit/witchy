@@ -2820,7 +2820,7 @@ pub fn run_program(sources: &[(&str, &str)], entry: &str) -> Result<Vec<String>,
         })?;
         modules.push((name.to_string(), m));
     }
-    let linked = crate::linker::link(modules, entry)
+    let linked = crate::pipeline::link(modules, entry)
         .map_err(|e| RuntimeError { message: e.message })?;
     run_module(linked, ".", Vec::new())
 }

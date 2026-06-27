@@ -37,6 +37,7 @@ pub mod linker;
 pub mod native;
 pub mod net;
 pub mod optimize;
+pub mod pipeline;
 pub mod records;
 pub mod reflect;
 pub mod tagged;
@@ -72,7 +73,7 @@ pub fn resolve_std_only(src: &str) -> Result<ast::Module, String> {
             modules.push((name, parsed));
         }
     }
-    linker::link(modules, "main").map_err(|e| e.to_string())
+    pipeline::link(modules, "main").map_err(|e| e.to_string())
 }
 
 /// Compile a witchy program to a WebAssembly **binary** the browser's own engine

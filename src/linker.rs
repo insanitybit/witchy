@@ -316,9 +316,21 @@ pub fn std_source(name: &str) -> Option<&'static str> {
     }
 }
 
+/// The per-module compile-time expansion pass the linker invokes (`comptime:`
+/// blocks + `tag"…"` literals). Injected as a callback so the linker stays
+/// agnostic of how compile-time code is evaluated (RFC-0018): it never names
+/// `comptime`/`tagged`. `crate::comptime::expand_compile_time` is the production
+/// implementation; `crate::pipeline::link` wires it in.
+pub type ComptimeExpander = fn(&str, &mut Module, &[(String, Module)]) -> Result<(), String>;
+
 /// Link `modules` (each a name + parsed module) into one flat module, with
-/// `entry` the module holding `main`.
-pub fn link(mut modules: Vec<(String, Module)>, entry: &str) -> Result<Module, LinkError> {
+/// `entry` the module holding `main`. `expand` runs each module's compile-time
+/// passes (see [`ComptimeExpander`]).
+pub fn link(
+    mut modules: Vec<(String, Module)>,
+    entry: &str,
+    expand: ComptimeExpander,
+) -> Result<Module, LinkError> {
     // Lower `gen fn`/`yield` to ordinary functions over `std/iter` first — this
     // adds `import iter`/`import option` to any generator module, so the std
     // pull-in below resolves them.
@@ -344,37 +356,27 @@ pub fn link(mut modules: Vec<(String, Module)>, entry: &str) -> Result<Module, L
         .collect::<Result<_, _>>()
         .map_err(|message| LinkError { message })?;
 
-    // `comptime:` blocks expand here — every module's blocks run (zero
-    // capabilities, print = the emit channel) and the items their output
-    // parses to are appended, BEFORE name resolution and type checking see
-    // the module. Additive only.
+    // Compile-time expansion happens here, per module, BEFORE name resolution
+    // and type checking see it. `expand` runs `comptime:` blocks (zero
+    // capabilities, print = the emit channel) and then `tag"…${e}…"` tagged
+    // literals; both append/splice items so the expanded AST is identical on
+    // both backends (RFC-0006). Additive only. Tagged expansion needs the OTHER
+    // modules so an IMPORTED tag resolves, so each call gets a snapshot of the
+    // rest of the link set (those already expanded this pass, plus the raw later
+    // ones). To run a tag, the expander `link`s a pruned comptime program — which
+    // re-enters this pass; the reachable-set prune keeps that finite. The linker
+    // invokes `expand` as an injected callback and never names comptime/tagged
+    // itself (RFC-0018).
     {
         let names: Vec<String> = modules.iter().map(|(n, _)| n.clone()).collect();
         for (i, name) in names.iter().enumerate() {
-            crate::comptime::expand(name, &mut modules[i].1)
-                .map_err(|message| LinkError { message })?;
-            // `tag"…${e}…"` tagged literals expand right after comptime, per
-            // module: each tag runs at compile time and its returned source is
-            // parsed and SPLICED over the literal — so both backends compile the
-            // same expanded AST (RFC-0006). Additive only. The tag-expansion
-            // context needs the OTHER modules so an IMPORTED tag resolves, so we
-            // hand it a snapshot of the rest of the link set (those already
-            // expanded for this pass, plus the raw later ones). To RUN a tag,
-            // `tagged::expand` builds a comptime program from only the items
-            // REACHABLE from the tag function and `link`s it — which re-enters
-            // this pass. The reachable-set prune is what keeps that finite: a
-            // CONSUMER module IS tag-bearing (it writes `tag"…"` in a function),
-            // but its tag-bearing functions are unreachable from the tag, so the
-            // comptime program carries no tagged literals and the recursion
-            // terminates.
             let siblings: Vec<(String, Module)> = modules
                 .iter()
                 .enumerate()
                 .filter(|(j, _)| *j != i)
                 .map(|(_, m)| m.clone())
                 .collect();
-            crate::tagged::expand(name, &mut modules[i].1, &siblings)
-                .map_err(|message| LinkError { message })?;
+            expand(name, &mut modules[i].1, &siblings).map_err(|message| LinkError { message })?;
         }
     }
 

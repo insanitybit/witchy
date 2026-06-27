@@ -408,7 +408,7 @@ fn expand_one(
         import_lines: Vec::new(),
         item_lines: Vec::new(),
     };
-    let linked = crate::linker::link(vec![("comptime".into(), prog)], "comptime")
+    let linked = crate::pipeline::link(vec![("comptime".into(), prog)], "comptime")
         .map_err(|e| format!("{}: {e}", where_()))?;
     crate::typeck::check(&linked).map_err(|e| format!("{}: {e}", where_()))?;
     let lines = crate::interpreter::run_module_budgeted(

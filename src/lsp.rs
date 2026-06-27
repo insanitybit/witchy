@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use lsp_server::{Connection, Message, Notification};
 use serde_json::{Value, json};
 
-use crate::{ast, linker, parser, typeck};
+use crate::{ast, parser, typeck};
 
 type LspResult = Result<(), Box<dyn Error + Sync + Send>>;
 
@@ -323,7 +323,7 @@ fn compute_diagnostics(uri: &str, text: &str) -> Vec<Value> {
         }
     }
 
-    let linked = match linker::link(modules, &entry) {
+    let linked = match crate::pipeline::link(modules, &entry) {
         Ok(m) => m,
         Err(e) => return vec![line_diag(0, text, &e.to_string())],
     };
