@@ -1,0 +1,14 @@
+[package]
+name = "witchy-interp"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "witchy compiler — the reference interpreter (parity oracle) + compile-time evaluation"
+
+# Wasm-safe: the tree-walker is the playground's run path. No external crates and
+# no native gate — the tests are plain #[cfg(test)] units.
+[dependencies]
+witchy-caps = { path = "../witchy-caps" }
+witchy-runtime = { path = "../witchy-runtime" }
+witchy-syntax = { path = "../witchy-syntax" }
+witchy-types = { path = "../witchy-types" }

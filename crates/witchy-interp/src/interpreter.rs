@@ -25,12 +25,12 @@ use std::fmt;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 
-use crate::net::Stream;
+use witchy_runtime::net::Stream;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use crate::ast::*;
-use crate::parser::parse_module;
+use witchy_syntax::ast::*;
+use witchy_syntax::parser::parse_module;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -120,7 +120,7 @@ impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Int(n) => write!(f, "{n}"),
-            Value::Float(x) => write!(f, "{}", crate::fmt::render_float(*x)),
+            Value::Float(x) => write!(f, "{}", witchy_syntax::fmt::render_float(*x)),
             Value::Str(s) => write!(f, "{s}"),
             Value::Bool(b) => write!(f, "{b}"),
             Value::Nil => write!(f, "Nil"),
@@ -227,7 +227,7 @@ fn err<T, E: From<RuntimeError>>(message: impl Into<String>) -> Result<T, E> {
 fn net_narrow_to(allow: &[String], patterns: &str) -> Result<Value, RuntimeError> {
     let mut narrowed = Vec::new();
     for p in patterns.split('\n') {
-        if !crate::capabilities::net_allows(allow, p) {
+        if !witchy_caps::capabilities::net_allows(allow, p) {
             return Err(RuntimeError {
                 message: format!("`{p}` is not in this Net capability"),
             });
@@ -615,7 +615,7 @@ impl Interpreter {
                     }
                 }
                 // Desugared to functions by `traits::lower` before this point;
-                // constants are inlined by `crate::consts`.
+                // constants are inlined by `witchy_syntax::consts`.
                 Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } | Item::Comptime(_) => {}
             }
         }
@@ -658,7 +658,7 @@ impl Interpreter {
             Some(Type::Named(n, _)) if n == "SecretStore" => Ok(Value::SecretStore(self.secrets.clone())),
             other => {
                 let found = match other {
-                    Some(t) => format!("`{}`", crate::format::type_str(t)),
+                    Some(t) => format!("`{}`", witchy_syntax::format::type_str(t)),
                     None => "no type annotation".to_string(),
                 };
                 err(format!(
@@ -694,7 +694,7 @@ impl Interpreter {
             }
             other => {
                 let found = match other {
-                    Some(t) => format!("`{}`", crate::format::type_str(t)),
+                    Some(t) => format!("`{}`", witchy_syntax::format::type_str(t)),
                     None => "no type annotation".to_string(),
                 };
                 err(format!(
@@ -955,7 +955,7 @@ impl Interpreter {
         // Native stdlib modules (crypto, …): pure, stateless functions reached by
         // their qualified name (`crypto.sha256`). Dispatched through the registry
         // so adding one needs no change here — see `src/native.rs`.
-        if let Some(f) = crate::native::lookup(name) {
+        if let Some(f) = witchy_runtime::native::lookup(name) {
             // `native` speaks `NativeValue` (it doesn't depend on the interpreter);
             // bridge our `Value` across the call.
             let nargs = args
@@ -1581,12 +1581,12 @@ impl Interpreter {
             // Connect only to an address the Net capability permits.
             "connect" => match args {
                 [Value::Net(allow), Value::Str(addr)] => {
-                    let (tls, host_port) = crate::net::parse_scheme(addr);
-                    let targets = match crate::capabilities::resolve_admitted(allow, host_port) {
+                    let (tls, host_port) = witchy_runtime::net::parse_scheme(addr);
+                    let targets = match witchy_caps::capabilities::resolve_admitted(allow, host_port) {
                         Ok(t) => t,
                         Err(e) => return err(format!("connect: {e}")),
                     };
-                    match crate::net::dial(&targets, tls, host_port) {
+                    match witchy_runtime::net::dial(&targets, tls, host_port) {
                         Ok(stream) => {
                             let id = self.sockets.len();
                             self.sockets.push(BufReader::new(stream));
@@ -1599,12 +1599,12 @@ impl Interpreter {
             },
             "try_connect" => match args {
                 [Value::Net(allow), Value::Str(addr)] => {
-                    let (tls, host_port) = crate::net::parse_scheme(addr);
-                    let targets = match crate::capabilities::resolve_admitted(allow, host_port) {
+                    let (tls, host_port) = witchy_runtime::net::parse_scheme(addr);
+                    let targets = match witchy_caps::capabilities::resolve_admitted(allow, host_port) {
                         Ok(t) => t,
                         Err(e) => return err(format!("try_connect: {e}")),
                     };
-                    let v = match crate::net::dial(&targets, tls, host_port) {
+                    let v = match witchy_runtime::net::dial(&targets, tls, host_port) {
                         Ok(stream) => {
                             let id = self.sockets.len();
                             self.sockets.push(BufReader::new(stream));
@@ -1702,7 +1702,7 @@ impl Interpreter {
             // server side of the network capability. Returns a `Listener`.
             "listen" => match args {
                 [Value::Net(allow), Value::Str(addr)] => {
-                    if !crate::capabilities::net_allows(allow, addr) {
+                    if !witchy_caps::capabilities::net_allows(allow, addr) {
                         return err(format!("listen: `{addr}` is not permitted by this Net capability"));
                     }
                     match TcpListener::bind(addr) {
@@ -1992,12 +1992,12 @@ impl Interpreter {
             Expr::Bool(b) => Ok(Value::Bool(*b)),
             // A range lowers to a list-building block; evaluate that.
             Expr::Range { lo, hi, inclusive } => {
-                let d = crate::parser::desugar_range((**lo).clone(), (**hi).clone(), *inclusive);
+                let d = witchy_syntax::parser::desugar_range((**lo).clone(), (**hi).clone(), *inclusive);
                 self.eval(&d, env)
             }
             // A subscript lowers to an `list.at(base, index)` call; evaluate that.
             Expr::Index { base, index } => {
-                let d = crate::parser::desugar_index((**base).clone(), (**index).clone());
+                let d = witchy_syntax::parser::desugar_index((**base).clone(), (**index).clone());
                 self.eval(&d, env)
             }
             // Trait lowering resolves every method call; one that reaches
@@ -2006,14 +2006,14 @@ impl Interpreter {
                 "cannot resolve the method call `.{method}(…)` — methods come from \
                  `impl` blocks; a plain function is called as `{method}(value, …)`"
             )),
-            // Named-field record construction is lowered by `crate::records`
+            // Named-field record construction is lowered by `witchy_syntax::records`
             // before evaluation.
             Expr::Record { .. } => {
-                unreachable!("Expr::Record is lowered by crate::records before the interpreter")
+                unreachable!("Expr::Record is lowered by witchy_syntax::records before the interpreter")
             }
             // `while let` lowers to a `while true` over a match; evaluate that.
             Expr::WhileLet { pattern, scrutinee, body } => {
-                let d = crate::parser::desugar_while_let(
+                let d = witchy_syntax::parser::desugar_while_let(
                     pattern.clone(),
                     (**scrutinee).clone(),
                     body.clone(),
@@ -2458,8 +2458,8 @@ fn compare(l: &Value, r: &Value) -> Result<std::cmp::Ordering, RuntimeError> {
 // the single native-dispatch site. Native functions are typed (their `.witchy`
 // stubs), so they only ever receive the five shapes `NativeValue` carries; any
 // other `Value` is a caller bug surfaced as a runtime error.
-fn value_to_native(v: &Value) -> Result<crate::value::NativeValue, RuntimeError> {
-    use crate::value::NativeValue as N;
+fn value_to_native(v: &Value) -> Result<witchy_runtime::value::NativeValue, RuntimeError> {
+    use witchy_runtime::value::NativeValue as N;
     Ok(match v {
         Value::Int(i) => N::Int(*i),
         Value::Str(s) => N::Str(s.clone()),
@@ -2476,8 +2476,8 @@ fn value_to_native(v: &Value) -> Result<crate::value::NativeValue, RuntimeError>
     })
 }
 
-fn native_to_value(v: crate::value::NativeValue) -> Value {
-    use crate::value::NativeValue as N;
+fn native_to_value(v: witchy_runtime::value::NativeValue) -> Value {
+    use witchy_runtime::value::NativeValue as N;
     match v {
         N::Int(i) => Value::Int(i),
         N::Str(s) => Value::Str(s),
@@ -2487,16 +2487,16 @@ fn native_to_value(v: crate::value::NativeValue) -> Value {
     }
 }
 
-// The `Dir` confinement lives in `crate::confine` — the single implementation the
+// The `Dir` confinement lives in `witchy_runtime::confine` — the single implementation the
 // compiled sandbox shares (see that module). These thin wrappers adapt its
 // `ConfineError` to the interpreter's `RuntimeError` so the eval call sites are
 // unchanged.
 pub(crate) fn resolve(base: &Path, rel: &str) -> Result<PathBuf, RuntimeError> {
-    crate::confine::resolve(base, rel).map_err(|e| RuntimeError { message: e.0 })
+    witchy_runtime::confine::resolve(base, rel).map_err(|e| RuntimeError { message: e.0 })
 }
 
 pub(crate) fn resolve_write(base: &Path, rel: &str) -> Result<PathBuf, RuntimeError> {
-    crate::confine::resolve_write(base, rel).map_err(|e| RuntimeError { message: e.0 })
+    witchy_runtime::confine::resolve_write(base, rel).map_err(|e| RuntimeError { message: e.0 })
 }
 
 pub fn run(src: &str) -> Result<Vec<String>, RuntimeError> {
@@ -2539,8 +2539,8 @@ pub fn run_module_budgeted(
     root: impl AsRef<Path>,
     step_limit: u64,
 ) -> Result<Vec<String>, RuntimeError> {
-    let module = crate::records::lower(module).map_err(|message| RuntimeError { message })?;
-    let module = crate::traits::lower(module);
+    let module = witchy_syntax::records::lower(module).map_err(|message| RuntimeError { message })?;
+    let module = witchy_types::traits::lower(module);
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || {
         run_module_inner_limited(module, root, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, step_limit)
@@ -2555,8 +2555,8 @@ pub fn run_module_files(
     root: impl AsRef<Path>,
     file_grants: Vec<PathBuf>,
 ) -> Result<Vec<String>, RuntimeError> {
-    let module = crate::records::lower(module).map_err(|message| RuntimeError { message })?;
-    let module = crate::traits::lower(module);
+    let module = witchy_syntax::records::lower(module).map_err(|message| RuntimeError { message })?;
+    let module = witchy_types::traits::lower(module);
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || {
         run_module_inner_limited(module, root, Vec::new(), file_grants, Vec::new(), Vec::new(), None, DEFAULT_STEP_LIMIT)
@@ -2601,8 +2601,8 @@ pub fn run_module_exit(
     // Lower named-field record construction, then traits/impls — so the
     // interpreter only ever sees plain constructors and functions. (Both are
     // no-ops once the linker has done them, for the linked CLI path.)
-    let module = crate::records::lower(module).map_err(|message| RuntimeError { message })?;
-    let module = crate::traits::lower(module);
+    let module = witchy_syntax::records::lower(module).map_err(|message| RuntimeError { message })?;
+    let module = witchy_types::traits::lower(module);
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || run_module_inner(module, root, Vec::new(), net_allow, args, signing_key))
 }
@@ -2618,8 +2618,8 @@ pub fn run_module_exit_dirs(
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
 ) -> Result<(Vec<String>, i32), RuntimeError> {
-    let module = crate::records::lower(module).map_err(|message| RuntimeError { message })?;
-    let module = crate::traits::lower(module);
+    let module = witchy_syntax::records::lower(module).map_err(|message| RuntimeError { message })?;
+    let module = witchy_types::traits::lower(module);
     let mut roots = roots;
     let root = if roots.is_empty() { PathBuf::from(".") } else { roots.remove(0) };
     run_on_deep_stack(move || run_module_inner(module, root, roots, net_allow, args, signing_key))
@@ -2788,7 +2788,7 @@ pub fn run_build_step(module: Module, grants: BuildGrants) -> Result<Vec<String>
         .map_err(|e| RuntimeError { message: format!("build: cannot create output dir: {e}") })?;
     // Find the entrypoint before moving the module in — `build_entrypoint` is
     // robust to the linker's `mod.build` qualification.
-    let Some(build) = crate::build_entry::build_entrypoint(&module).cloned() else {
+    let Some(build) = witchy_syntax::build_entry::build_entrypoint(&module).cloned() else {
         return Ok(Vec::new());
     };
     let mut interp = Interpreter::new(module);

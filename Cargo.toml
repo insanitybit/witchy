@@ -12,7 +12,7 @@ categories = ["compilers", "development-tools"]
 # crates/. The root `witchy` package is itself a workspace member (the binary +
 # the not-yet-extracted stages); extracted crates are listed here.
 [workspace]
-members = ["crates/witchy-caps", "crates/witchy-lower", "crates/witchy-runtime", "crates/witchy-syntax", "crates/witchy-types", "crates/witchy-wir"]
+members = ["crates/witchy-caps", "crates/witchy-interp", "crates/witchy-lower", "crates/witchy-runtime", "crates/witchy-syntax", "crates/witchy-types", "crates/witchy-wir"]
 
 [lib]
 name = "witchy"
@@ -36,6 +36,7 @@ native = ["dep:wasmtime", "dep:lsp-server", "dep:serde_json", "dep:serde", "dep:
 # Stage-aligned crates extracted from the monolith (RFC-0018). Re-exported from
 # lib.rs so existing `crate::{ast,lexer,parser,wir,…}::…` paths keep resolving.
 witchy-caps = { path = "crates/witchy-caps" }
+witchy-interp = { path = "crates/witchy-interp" }
 witchy-lower = { path = "crates/witchy-lower" }
 witchy-runtime = { path = "crates/witchy-runtime" }
 witchy-syntax = { path = "crates/witchy-syntax" }

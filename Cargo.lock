@@ -2552,6 +2552,7 @@ dependencies = [
  "wasmtime",
  "webpki-roots 0.26.11",
  "witchy-caps",
+ "witchy-interp",
  "witchy-lower",
  "witchy-runtime",
  "witchy-syntax",
@@ -2566,6 +2567,16 @@ dependencies = [
  "serde",
  "toml 1.1.2+spec-1.1.0",
  "witchy-syntax",
+]
+
+[[package]]
+name = "witchy-interp"
+version = "0.1.0"
+dependencies = [
+ "witchy-caps",
+ "witchy-runtime",
+ "witchy-syntax",
+ "witchy-types",
 ]
 
 [[package]]

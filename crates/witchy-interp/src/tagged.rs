@@ -36,7 +36,7 @@
 //! `comptime`/`derive`. `Expr::TaggedLit` is therefore UNREACHABLE after this
 //! pass; typeck, the interpreter, and both codegen backends panic on it.
 
-use crate::ast::{
+use witchy_syntax::ast::{
     Block, Expr, Function, Item, MatchArm, Module, Param, Pattern, Stmt, Type,
 };
 use std::collections::{HashMap, HashSet};
@@ -89,7 +89,7 @@ pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) ->
     seen.insert(name.to_string());
     let mut frontier: Vec<String> = module.imports.clone();
     while let Some(imp) = frontier.pop() {
-        if crate::linker::STD_MODULES.contains(&imp.as_str()) {
+        if witchy_syntax::linker::STD_MODULES.contains(&imp.as_str()) {
             if !std_imports.contains(&imp) {
                 std_imports.push(imp);
             }
@@ -410,7 +410,7 @@ fn expand_one(
     };
     let linked = crate::pipeline::link(vec![("comptime".into(), prog)], "comptime")
         .map_err(|e| format!("{}: {e}", where_()))?;
-    crate::typeck::check(&linked).map_err(|e| format!("{}: {e}", where_()))?;
+    witchy_types::typeck::check(&linked).map_err(|e| format!("{}: {e}", where_()))?;
     let lines = crate::interpreter::run_module_budgeted(
         linked,
         ".",
@@ -466,7 +466,7 @@ fn parse_splice_expr(src: &str, qualifiers: &[String]) -> Result<Expr, String> {
     wrapped.push_str("fn __tagsplice():\n    ");
     wrapped.push_str(&src.replace('\n', "\n    "));
     wrapped.push('\n');
-    let parsed = crate::parser::parse_module(&wrapped)
+    let parsed = witchy_syntax::parser::parse_module(&wrapped)
         .map_err(|e| format!("does not parse as an expression: {e}"))?;
     let Some(Item::Function(f)) =
         parsed.items.into_iter().find(|it| matches!(it, Item::Function(f) if f.name == "__tagsplice"))
@@ -672,7 +672,7 @@ fn substitute_holes_block(
 /// path, parameter/local binders) are simply ignored.
 fn reachable_from_tag(items: &[Item], root: &str) -> HashSet<String> {
     let mut fns: HashMap<&str, &Function> = HashMap::new();
-    let mut types: HashMap<&str, &crate::ast::TypeDef> = HashMap::new();
+    let mut types: HashMap<&str, &witchy_syntax::ast::TypeDef> = HashMap::new();
     let mut ctor_owner: HashMap<&str, &str> = HashMap::new();
     for item in items {
         match item {
@@ -731,7 +731,7 @@ fn reachable_from_tag(items: &[Item], root: &str) -> HashSet<String> {
 fn push_ref(
     name: &str,
     fns: &HashMap<&str, &Function>,
-    types: &HashMap<&str, &crate::ast::TypeDef>,
+    types: &HashMap<&str, &witchy_syntax::ast::TypeDef>,
     ctor_owner: &HashMap<&str, &str>,
     keep: &mut HashSet<String>,
     work: &mut Vec<String>,

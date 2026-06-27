@@ -15,7 +15,7 @@
 //! hard-isolation upgrade is mechanical because the channel is already
 //! "printed source in, items out".
 
-use crate::ast::{Block, Expr, Function, Item, Module, Param, Stmt, Type};
+use witchy_syntax::ast::{Block, Expr, Function, Item, Module, Param, Stmt, Type};
 
 /// Expand every `comptime:` block in `module` (consuming the items), running
 /// each and appending the items its output parses to. `name` is the module's
@@ -48,7 +48,7 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
         .items
         .iter()
         .filter_map(|it| match it {
-            Item::Type(t) => Some(crate::reflect::type_info_expr(t)),
+            Item::Type(t) => Some(witchy_syntax::reflect::type_info_expr(t)),
             _ => None,
         })
         .collect();
@@ -61,22 +61,22 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
         // statement).
         body.stmts.insert(
             0,
-            crate::ast::Stmt::Let {
+            witchy_syntax::ast::Stmt::Let {
                 ty: None,
                 name: "emit".into(),
                 mutable: false,
-                value: crate::ast::Expr::Lambda {
+                value: witchy_syntax::ast::Expr::Lambda {
                     params: vec![Param {
                         name: "line".into(),
                         ty: Some(Type::Named("String".into(), Vec::new())),
                         convention: Default::default(),
                     }],
                     body: Block {
-                        stmts: vec![crate::ast::Stmt::Expr(crate::ast::Expr::Call {
+                        stmts: vec![witchy_syntax::ast::Stmt::Expr(witchy_syntax::ast::Expr::Call {
                             name: "print".into(),
                             args: vec![
-                                crate::ast::Expr::Var("console".into()),
-                                crate::ast::Expr::Var("line".into()),
+                                witchy_syntax::ast::Expr::Var("console".into()),
+                                witchy_syntax::ast::Expr::Var("line".into()),
                             ],
                         })],
                         lines: vec![0],
@@ -118,7 +118,7 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
         let mut prog_imports: Vec<String> = module
             .imports
             .iter()
-            .filter(|i| crate::linker::STD_MODULES.contains(&i.as_str()))
+            .filter(|i| witchy_syntax::linker::STD_MODULES.contains(&i.as_str()))
             .cloned()
             .collect();
         if !prog_imports.iter().any(|i| i == "meta") {
@@ -146,7 +146,7 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
         };
         let linked = crate::pipeline::link(vec![("comptime".into(), prog)], "comptime")
             .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
-        crate::typeck::check(&linked)
+        witchy_types::typeck::check(&linked)
             .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
         let lines = crate::interpreter::run_module_budgeted(
             linked,
@@ -155,7 +155,7 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
         )
             .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
         let src = lines.join("\n");
-        let emitted = crate::parser::parse_module(&src).map_err(|e| {
+        let emitted = witchy_syntax::parser::parse_module(&src).map_err(|e| {
             format!(
                 "module `{name}`: comptime block emitted source that does not \
                  parse: {e}\n--- emitted ---\n{src}"

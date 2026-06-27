@@ -21,7 +21,7 @@ fn main(console: Console):
         std::fs::create_dir_all(&src_root).unwrap();
         std::fs::write(src_root.join("api.proto"), "service Foo").unwrap();
 
-        let module = crate::parser::parse_module(
+        let module = witchy_syntax::parser::parse_module(
             "fn build(out: BuildOut, schema: BuildRead):\n    write_out(out, \"api.witchy\", \"// generated from: \" + read_build(schema, \"api.proto\"))\n",
         )
         .expect("parse");
@@ -42,7 +42,7 @@ fn main(console: Console):
         let dir = std::env::temp_dir().join(format!("witchy_build_esc_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         // BuildRead demanded but not granted ⇒ refused before running.
-        let m = crate::parser::parse_module(
+        let m = witchy_syntax::parser::parse_module(
             "fn build(out: BuildOut, schema: BuildRead):\n    write_out(out, \"x\", read_build(schema, \"a\"))\n",
         )
         .unwrap();
@@ -50,7 +50,7 @@ fn main(console: Console):
         let err = run_build_step(m, g).expect_err("ungranted BuildRead must be refused");
         assert!(err.message.contains("no read grant"), "{}", err.message);
         // A confined BuildOut cannot write outside its sandbox.
-        let m2 = crate::parser::parse_module(
+        let m2 = witchy_syntax::parser::parse_module(
             "fn build(out: BuildOut):\n    write_out(out, \"../escape.txt\", \"nope\")\n",
         )
         .unwrap();
@@ -67,7 +67,7 @@ fn main(console: Console):
         // and a consumer imports and calls it.
         let dir = std::env::temp_dir().join(format!("witchy_build_e2e_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let build_mod = crate::parser::parse_module(
+        let build_mod = witchy_syntax::parser::parse_module(
             "fn build(out: BuildOut):\n    let nl = \"\\n\"\n    write_out(out, \"greet.witchy\", \"pub fn greeting() -> String:\" + nl + \"    \\\"hi from generated code\\\"\" + nl)\n",
         )
         .expect("parse build module");
@@ -97,7 +97,7 @@ fn main(console: Console):
         std::fs::write(a.join("from_a.txt"), "ALPHA").unwrap();
         std::fs::write(b.join("from_b.txt"), "BETA").unwrap();
 
-        let module = crate::parser::parse_module(
+        let module = witchy_syntax::parser::parse_module(
             "fn build(out: BuildOut, src: BuildRead):\n    write_out(out, \"g.txt\", read_build(src, \"from_a.txt\") + \"/\" + read_build(src, \"from_b.txt\"))\n",
         )
         .unwrap();
@@ -110,7 +110,7 @@ fn main(console: Console):
         assert_eq!(std::fs::read_to_string(dir.join("out/g.txt")).unwrap(), "ALPHA/BETA");
 
         // A file in neither root is refused.
-        let m2 = crate::parser::parse_module(
+        let m2 = witchy_syntax::parser::parse_module(
             "fn build(out: BuildOut, src: BuildRead):\n    write_out(out, \"g.txt\", read_build(src, \"nope.txt\"))\n",
         )
         .unwrap();
@@ -129,7 +129,7 @@ fn main(console: Console):
         let _ = std::fs::remove_dir_all(&dir);
         unsafe { std::env::set_var("WITCHY_BUILD_ALLOWED", "yes") };
         unsafe { std::env::set_var("WITCHY_BUILD_SECRET", "leak?") };
-        let granted = crate::parser::parse_module(
+        let granted = witchy_syntax::parser::parse_module(
             "import option\nfn build(out: BuildOut, env: BuildEnv):\n    let v = match get_build_env(env, \"WITCHY_BUILD_ALLOWED\"):\n        Some(x) -> x\n        None -> \"unset\"\n    write_out(out, \"g.txt\", v)\n",
         )
         .unwrap();
@@ -142,7 +142,7 @@ fn main(console: Console):
         assert_eq!(std::fs::read_to_string(dir.join("out/g.txt")).unwrap(), "yes");
 
         // The same grant cannot read a key it didn't name.
-        let denied = crate::parser::parse_module(
+        let denied = witchy_syntax::parser::parse_module(
             "import option\nfn build(out: BuildOut, env: BuildEnv):\n    let v = match get_build_env(env, \"WITCHY_BUILD_SECRET\"):\n        Some(x) -> x\n        None -> \"unset\"\n    write_out(out, \"g.txt\", v)\n",
         )
         .unwrap();
@@ -177,7 +177,7 @@ fn main(console: Console):
 
         let dir = std::env::temp_dir().join(format!("witchy_build_net_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let module = crate::parser::parse_module(
+        let module = witchy_syntax::parser::parse_module(
             &format!(
                 "fn build(out: BuildOut, dl: BuildNet):\n    write_out(out, \"got.txt\", fetch_build(dl, \"{addr}\", \"/schema\"))\n"
             ),
@@ -193,7 +193,7 @@ fn main(console: Console):
         server.join().unwrap();
 
         // A host NOT on the allow-list is refused — even one that exists.
-        let m2 = crate::parser::parse_module(
+        let m2 = witchy_syntax::parser::parse_module(
             &format!(
                 "fn build(out: BuildOut, dl: BuildNet):\n    write_out(out, \"x\", fetch_build(dl, \"{addr}\", \"/\"))\n"
             ),
@@ -215,7 +215,7 @@ fn main(console: Console):
         // deterministic. The grant allow-lists `cat`; anything else is refused.
         let dir = std::env::temp_dir().join(format!("witchy_build_exec_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let module = crate::parser::parse_module(
+        let module = witchy_syntax::parser::parse_module(
             "fn build(out: BuildOut, cc: BuildExec):\n    write_out(out, \"x.txt\", run_tool(cc, \"cat\", \"piped-input\"))\n",
         )
         .unwrap();
@@ -229,7 +229,7 @@ fn main(console: Console):
         assert_eq!(std::fs::read_to_string(dir.join("out/x.txt")).unwrap(), "piped-input");
 
         // A tool NOT on the allow-list is refused before it runs.
-        let m2 = crate::parser::parse_module(
+        let m2 = witchy_syntax::parser::parse_module(
             "fn build(out: BuildOut, cc: BuildExec):\n    write_out(out, \"x.txt\", run_tool(cc, \"rm\", \"-rf /\"))\n",
         )
         .unwrap();
@@ -533,7 +533,7 @@ fn main(console: Console, net: Net):
 "#
         );
         // Link in the bundled std (http + its deps), then run on a thread.
-        let parsed = crate::parser::parse_module(&src).expect("parse");
+        let parsed = witchy_syntax::parser::parse_module(&src).expect("parse");
         let linked =
             crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
         let allow = vec![addr.clone()];
@@ -606,7 +606,7 @@ fn main(console: Console, net: Net):
         Err(e) -> print(console, "err: " + e)
 "#
         );
-        let parsed = crate::parser::parse_module(&src).expect("parse");
+        let parsed = witchy_syntax::parser::parse_module(&src).expect("parse");
         let linked =
             crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
         let out = run_module(linked, ".", vec![addr.clone()]).expect("run");
@@ -633,7 +633,7 @@ fn main(console: Console, net: Net):
     server.serve_n(net, "{addr}", app, 4)
 "#
         );
-        let parsed = crate::parser::parse_module(&src).expect("parse");
+        let parsed = witchy_syntax::parser::parse_module(&src).expect("parse");
         let linked =
             crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
         let allow = vec![addr.clone()];
@@ -680,7 +680,7 @@ fn main(console: Console, net: Net):
     server.serve_n(net, "{addr}", app, 3)
 "#
         );
-        let parsed = crate::parser::parse_module(&src).expect("parse");
+        let parsed = witchy_syntax::parser::parse_module(&src).expect("parse");
         let linked =
             crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
         let allow = vec![addr.clone()];
@@ -730,7 +730,7 @@ fn main(console: Console, net: Net):
     server.serve_n(net, "{addr}", app, 2)
 "#
         );
-        let parsed = crate::parser::parse_module(&src).expect("parse");
+        let parsed = witchy_syntax::parser::parse_module(&src).expect("parse");
         let linked =
             crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
         let allow = vec![addr.clone()];
@@ -773,7 +773,7 @@ fn main(console: Console, net: Net):
     server.serve_n(net, "{addr}", app, 2)
 "#
         );
-        let parsed = crate::parser::parse_module(&src).expect("parse");
+        let parsed = witchy_syntax::parser::parse_module(&src).expect("parse");
         let linked =
             crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
         let allow = vec![addr.clone()];
@@ -824,7 +824,7 @@ fn main(console: Console, net: Net):
     server.serve_n(net, "{addr}", app, 3)
 "#
         );
-        let parsed = crate::parser::parse_module(&src).expect("parse");
+        let parsed = witchy_syntax::parser::parse_module(&src).expect("parse");
         let linked =
             crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
         let allow = vec![addr.clone()];
@@ -874,7 +874,7 @@ fn main(console: Console, net: Net):
     server.serve_n(net, "{addr}", app, 1)
 "#
         );
-        let parsed = crate::parser::parse_module(&src).expect("parse");
+        let parsed = witchy_syntax::parser::parse_module(&src).expect("parse");
         let linked =
             crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
         let allow = vec![addr.clone()];
@@ -923,7 +923,7 @@ fn main(console: Console, net: Net):
     server.serve_n(net, "{addr}", app, 1)
 "#
         );
-        let parsed = crate::parser::parse_module(&src).expect("parse");
+        let parsed = witchy_syntax::parser::parse_module(&src).expect("parse");
         let linked =
             crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
         let allow = vec![addr.clone()];
@@ -967,7 +967,7 @@ fn main(console: Console, net: Net):
     server.serve_n(net, "{addr}", app, 1)
 "#
         );
-        let parsed = crate::parser::parse_module(&src).expect("parse");
+        let parsed = witchy_syntax::parser::parse_module(&src).expect("parse");
         let linked =
             crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
         let allow = vec![addr.clone()];
@@ -1021,11 +1021,11 @@ fn main(console: Console, net: Net, root: Dir):
     server.serve_n(net, "{addr}", app, 2)
 "#
         );
-        let parsed = crate::parser::parse_module(&src).expect("parse");
+        let parsed = witchy_syntax::parser::parse_module(&src).expect("parse");
         let linked =
             crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
         let allow = vec![addr.clone()];
-        let server = std::thread::spawn(move || run_module(linked, ".", allow));
+        let server = std::thread::spawn(move || run_module(linked, concat!(env!("CARGO_MANIFEST_DIR"), "/../.."), allow));
 
         let request = |raw: &str| -> String {
             for _ in 0..100 {
@@ -1061,10 +1061,10 @@ fn main(console: Console, net: Net):
     let app = server.router().get("/", evil)
     server.serve_n(net, "127.0.0.1:0", app, 0)
 "#;
-        let parsed = crate::parser::parse_module(src).expect("parse");
+        let parsed = witchy_syntax::parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
         // Type-check the linked program: `connect` needs a Net the handler lacks.
-        assert!(crate::typeck::check(&linked).is_err());
+        assert!(witchy_types::typeck::check(&linked).is_err());
     }
 
     #[test]
@@ -1126,7 +1126,7 @@ fn main(console: Console):
             "app",
         )
         .unwrap();
-        assert!(crate::typeck::check(&linked).is_err());
+        assert!(witchy_types::typeck::check(&linked).is_err());
     }
 
     #[test]
@@ -1352,7 +1352,7 @@ fn main(console: Console):
         // call STATEMENT's line even when an argument is a nested call that moves
         // the line cursor (`helper(1)` here is on line 3, the assertion on line 5).
         let src = "import testing\nfn helper(n: Int) -> Int:\n    n + 1\nfn main(console: Console):\n    testing.assert_int_eq(helper(1), 5)\n";
-        let parsed = crate::parser::parse_module(src).expect("parse");
+        let parsed = witchy_syntax::parser::parse_module(src).expect("parse");
         let linked =
             crate::pipeline::link(vec![("main".to_string(), parsed)], "main").expect("link");
         let e = run_module(linked, ".", vec![]).unwrap_err();
