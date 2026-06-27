@@ -2788,7 +2788,7 @@ pub fn run_build_step(module: Module, grants: BuildGrants) -> Result<Vec<String>
         .map_err(|e| RuntimeError { message: format!("build: cannot create output dir: {e}") })?;
     // Find the entrypoint before moving the module in — `build_entrypoint` is
     // robust to the linker's `mod.build` qualification.
-    let Some(build) = crate::typeck::build_entrypoint(&module).cloned() else {
+    let Some(build) = crate::build_entry::build_entrypoint(&module).cloned() else {
         return Ok(Vec::new());
     };
     let mut interp = Interpreter::new(module);

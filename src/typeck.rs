@@ -17,6 +17,7 @@ use std::fmt;
 use crate::ast::{
     self, Block, Convention, Expr, Function, Item, MatchArm, Module, Pattern, Stmt, UnOp,
 };
+use crate::build_entry::{build_entrypoint, is_build_capability_type};
 
 /// The operations a `Dir` capability permits. Decomposing the capability by
 /// right makes the footprint distinguish read-only from writing code, and an op
@@ -462,14 +463,6 @@ pub(crate) fn is_capability_type(t: &ast::Type) -> bool {
         if matches!(n.as_str(), "Console" | "Clock" | "Env" | "Dir" | "File" | "Net" | "Exec" | "Secret" | "SecretStore"))
 }
 
-/// Whether `t` is a *build-time* capability — the parallel set granted only to a
-/// rune's `build` entrypoint, never to `main`. Kept distinct from the runtime
-/// capabilities on purpose: the two axes are granted and gated separately.
-pub(crate) fn is_build_capability_type(t: &ast::Type) -> bool {
-    matches!(t, ast::Type::Named(n, _)
-        if matches!(n.as_str(), "BuildOut" | "BuildRead" | "BuildEnv" | "BuildNet" | "BuildExec"))
-}
-
 /// Whether `t` is `List(String)` — the command-line-arguments parameter `main`
 /// may declare.
 pub(crate) fn is_args_type(t: &ast::Type) -> bool {
@@ -561,23 +554,6 @@ pub fn build_entrypoint_src(src: &str) -> bool {
     crate::parser::parse_module(src)
         .map(|m| build_entrypoint(&m).is_some())
         .unwrap_or(false)
-}
-
-/// The rune's build entrypoint, if any: a top-level `fn build` whose first
-/// parameter is a `BuildOut`. Returns `None` for a `build` function that isn't
-/// shaped like an entrypoint (so it's just an ordinary function).
-pub(crate) fn build_entrypoint(module: &Module) -> Option<&Function> {
-    module.items.iter().find_map(|it| match it {
-        // The linker qualifies non-`main` functions as `mod.name`, so match on the
-        // unqualified tail.
-        Item::Function(f)
-            if f.name.rsplit('.').next() == Some("build")
-                && matches!(f.params.first(), Some(p) if matches!(&p.ty, Some(t) if is_build_capability_type(t))) =>
-        {
-            Some(f)
-        }
-        _ => None,
-    })
 }
 
 /// Collect the type-parameter names (lowercase, argument-less) appearing in a

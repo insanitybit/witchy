@@ -17,7 +17,7 @@ pub mod aliases;
 // RFC-0018: lexer/parser/ast + AST analyses live in the `witchy-syntax` crate;
 // re-export so the rest of the compiler keeps using
 // `crate::{ast,lexer,parser,lambda_scan}::…` unchanged.
-pub use witchy_syntax::{ast, lambda_scan, lexer, parser};
+pub use witchy_syntax::{ast, build_entry, lambda_scan, lexer, parser};
 pub mod capabilities;
 pub mod codegen;
 pub mod confine;

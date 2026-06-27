@@ -557,7 +557,7 @@ pub fn analyze(module: &Module) -> Footprint {
     // computed identically over its signature (§4.1). Build caps can only appear
     // there (the signature checks enforce it), so this never overlaps `total`.
     let mut build = CapSet::new();
-    if let Some(b) = crate::typeck::build_entrypoint(module) {
+    if let Some(b) = crate::build_entry::build_entrypoint(module) {
         for ty in b.params.iter().filter_map(|p| p.ty.as_ref()) {
             build_caps_in(ty, &mut build);
         }
