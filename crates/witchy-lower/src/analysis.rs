@@ -28,7 +28,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{BinOp, Block, Convention, Expr, Item, Module, Stmt, Type, UnOp};
+use witchy_syntax::ast::{BinOp, Block, Convention, Expr, Item, Module, Stmt, Type, UnOp};
 
 /// Why an accumulation site reverts to the copying path — surfaced as a
 /// check-time note and an LSP hint. Only emitted when the cost repeats (the
@@ -237,7 +237,7 @@ impl Summaries {
     /// cycles with no source stay clean (`let`-style read recursion).
     pub fn of_module(module: &Module) -> Self {
         let mut fns: HashMap<String, FnInfo> = HashMap::new();
-        let mut bodies: HashMap<String, &crate::ast::Function> = HashMap::new();
+        let mut bodies: HashMap<String, &witchy_syntax::ast::Function> = HashMap::new();
         for item in &module.items {
             if let Item::Function(f) = item {
                 fns.insert(

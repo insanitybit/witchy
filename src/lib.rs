@@ -12,7 +12,9 @@
 // readability of the nested capability/pattern checks).
 #![allow(clippy::collapsible_if, clippy::collapsible_match, clippy::items_after_test_module)]
 
-pub mod analysis;
+// RFC-0018: AST→WIR lowering (codegen) + its uniqueness analysis live in the
+// `witchy-lower` crate.
+pub use witchy_lower::{analysis, codegen};
 // RFC-0018: the front-end + AST-level base layer lives in the `witchy-syntax`
 // crate; re-export so the rest of the compiler keeps using
 // `crate::{ast,lexer,parser,aliases,consts,fmt,…}::…` paths unchanged.
@@ -24,7 +26,6 @@ pub use witchy_syntax::{
 pub use witchy_caps::capabilities;
 #[cfg(test)]
 mod capabilities_tests;
-pub mod codegen;
 pub mod confine;
 pub mod comptime;
 /// RFC-0013 capability grant documents (TOML); native-only — re-exported from

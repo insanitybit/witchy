@@ -1,5 +1,5 @@
     use super::*;
-    use crate::parser::parse_module;
+    use witchy_syntax::parser::parse_module;
     use std::sync::{Arc, Mutex};
     use wasmtime::{Caller, Engine, Linker, Module as WtModule, Store};
 

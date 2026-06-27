@@ -1,7 +1,7 @@
 //! WebAssembly code generation for witchy.
 //!
-//! Lowers the type-checked AST to WIR — the structured IR in `crate::wir` — which
-//! `crate::wir_encode` then encodes to a wasm binary. The entry points are
+//! Lowers the type-checked AST to WIR — the structured IR in `witchy_wir::wir` — which
+//! `witchy_wir::wir_encode` then encodes to a wasm binary. The entry points are
 //! `compile_module_binary` (AST → wasm bytes) and `assemble_wir_module`
 //! (AST → `WirModule`).
 //!
@@ -16,11 +16,11 @@
 //! instantiate.
 
 use crate::analysis::{self, is_self_assign_shape, self_concat_pieces, self_insert_args, self_push_elem, self_set_at, self_update_args, self_update_at};
-use crate::lambda_scan::{collect_pattern_vars, scan_lambda};
+use witchy_syntax::lambda_scan::{collect_pattern_vars, scan_lambda};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use crate::ast::{
+use witchy_syntax::ast::{
     BinOp, Block, Convention, Expr, Function, Item, MatchArm, Module, Param, Pattern,
     Stmt, Type, UnOp,
 };
@@ -329,14 +329,14 @@ struct Codegen {
     /// body into `wir_funcs` (one `WirFunc` per function whose whole body lowered
     /// to WIR). `compile_module_binary` assembles those + the static prelude into
     /// a binary via `wir_encode`.
-    captured_seq: Option<crate::wir::WirSeq>,
+    captured_seq: Option<witchy_wir::wir::WirSeq>,
     /// A HARD rejection raised mid-lowering (e.g. a closure that assigns a
     /// captured variable — by-value capture can't write back). Lowering bails to
     /// `None` like any unsupported construct, but `compile_function` turns this
     /// into an `Err` so the program is rejected with a diagnostic, not silently
     /// reported as "unsupported".
     reject_reason: Option<CodegenError>,
-    wir_funcs: HashMap<String, crate::wir::WirFunc>,
+    wir_funcs: HashMap<String, witchy_wir::wir::WirFunc>,
     /// Set by `compile_module_binary` to arm WIR capture for the function being
     /// lowered. Left `false` for any scope that doesn't collect WIR, where
     /// `lower_expr`'s call arm stays inert and pays no capture/clone overhead.
@@ -422,7 +422,7 @@ struct Codegen {
     /// Phase 0 (rfcs/language-evolution.md): typeck's resolved types for the
     /// EXACT module instance being compiled — the authoritative fallback
     /// wherever the local tracking maps come up empty.
-    type_table: crate::typeck::TypeTable,
+    type_table: witchy_types::typeck::TypeTable,
     /// Whether the `$list_push_cap` helper is needed.
     uses_list_push_cap: bool,
     /// Whether the `$str_append_cap` helper is needed.
@@ -659,7 +659,7 @@ struct Codegen {
     /// helpers compare i64/f64 slots inline with no calls, so a program with such
     /// a `==` lowers without the eq-helper bail. Str/nested-compound fields still
     /// defer to WAT (their slot compare would need $str_eq / a nested eq call).
-    eq_wir_helpers: std::collections::BTreeMap<String, crate::wir::WirFunc>,
+    eq_wir_helpers: std::collections::BTreeMap<String, witchy_wir::wir::WirFunc>,
     /// Names of eq helpers currently being built — a cycle guard so a recursive
     /// type's structural eq bails to WAT instead of looping in codegen.
     eq_building: std::collections::HashSet<String>,
@@ -667,18 +667,18 @@ struct Codegen {
     /// renderers), keyed identically (`ts_{id}`), for the binary path. Includes
     /// tuples/lists with Int/Bool/String fields (built via `$concat` +
     /// `$int_to_string`); Float/Record fields and enums defer to WAT.
-    ts_wir_helpers: std::collections::BTreeMap<String, crate::wir::WirFunc>,
+    ts_wir_helpers: std::collections::BTreeMap<String, witchy_wir::wir::WirFunc>,
     /// Cycle guard for `ensure_ts_wir_helper`, mirroring `eq_building`.
     ts_building: std::collections::HashSet<String>,
     /// WIR-native twin of `rcopy_helpers` (per-shape `region:` copy-out deep-copy),
     /// keyed identically (`rcopy_{id}`), for the binary path.
-    rcopy_wir_helpers: std::collections::BTreeMap<String, crate::wir::WirFunc>,
+    rcopy_wir_helpers: std::collections::BTreeMap<String, witchy_wir::wir::WirFunc>,
     /// Cycle guard for `ensure_rcopy_wir_helper`, mirroring `eq_building`.
     rcopy_building: std::collections::HashSet<String>,
     /// Lifted lambda bodies for the binary path, in table-index order — the WIR
     /// twin of `lambdas`. Each is a `WirFunc $__lamw{i}`; the closure object
     /// stores `i` as its code index and `CallIndirect` uses it as the table slot.
-    lambda_wir_funcs: Vec<crate::wir::WirFunc>,
+    lambda_wir_funcs: Vec<witchy_wir::wir::WirFunc>,
     /// Maps a lambda's content hash to its index in `lambda_wir_funcs`, so the
     /// many lowering passes register each lambda exactly once (idempotent).
     lambda_wir_index: std::collections::HashMap<u64, usize>,
@@ -774,7 +774,7 @@ impl Codegen {
             cur_fn_own_param: None,
             cur_fn_has_type_vars: false,
             cur_fn_name: String::new(),
-            type_table: crate::typeck::TypeTable::default(),
+            type_table: witchy_types::typeck::TypeTable::default(),
             uses_list_push_cap: false,
             uses_str_append_cap: false,
             uses_dict_insert_cap: false,
@@ -987,7 +987,7 @@ impl Codegen {
             ValType::Other => self
                 .type_table
                 .type_of(e)
-                .and_then(crate::typeck::ty_to_ast)
+                .and_then(witchy_types::typeck::ty_to_ast)
                 .map(|t| ty_to_valtype(&t))
                 .unwrap_or(ValType::Other),
             vt => vt,
@@ -1093,8 +1093,8 @@ impl Codegen {
             // whose return shape codegen can't infer locally) fall back to typeck's
             // annotation, which knows the binding's record type.
             Expr::Var(v) => self.local_records.get(v).cloned().or_else(|| {
-                match self.type_table.type_of(e).and_then(crate::typeck::ty_to_ast) {
-                    Some(crate::ast::Type::Named(n, _)) if self.record_fields.contains_key(&n) => Some(n),
+                match self.type_table.type_of(e).and_then(witchy_types::typeck::ty_to_ast) {
+                    Some(witchy_syntax::ast::Type::Named(n, _)) if self.record_fields.contains_key(&n) => Some(n),
                     _ => None,
                 }
             }),
@@ -2001,9 +2001,9 @@ impl Codegen {
         &self,
         f: &Function,
         ret_kind: Kind,
-        body: crate::wir::WirSeq,
-    ) -> crate::wir::WirFunc {
-        use crate::wir::{WirFunc, WirLocal, WirTy};
+        body: witchy_wir::wir::WirSeq,
+    ) -> witchy_wir::wir::WirFunc {
+        use witchy_wir::wir::{WirFunc, WirLocal, WirTy};
         // `.kind()` is all the encoder reads: `Bool` => i32, `Int` => i64.
         let i32t = || WirTy::Bool;
         let i64t = || WirTy::Int;
@@ -2065,7 +2065,7 @@ impl Codegen {
         for name in &self.cur_fn_var_params {
             let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
             ret.push(Self::wir_ty_for_kind(k));
-            body.push(crate::wir::WirNode::Push(crate::wir::WirExpr::GetLocal(name.clone())));
+            body.push(witchy_wir::wir::WirNode::Push(witchy_wir::wir::WirExpr::GetLocal(name.clone())));
         }
         // own-ABI: append the returned buffer's ownership token (one i32 result).
         // It is `$p__cap` when the function returns its own buffer AND that buffer
@@ -2081,11 +2081,11 @@ impl Codegen {
                 _ => false,
             };
             let cap = if returns_own && self.inplace_push.contains(&p) {
-                crate::wir::WirExpr::GetLocal(format!("{p}__cap"))
+                witchy_wir::wir::WirExpr::GetLocal(format!("{p}__cap"))
             } else {
-                crate::wir::WirExpr::ConstI32(0)
+                witchy_wir::wir::WirExpr::ConstI32(0)
             };
-            body.push(crate::wir::WirNode::Push(cap));
+            body.push(witchy_wir::wir::WirNode::Push(cap));
         }
         WirFunc {
             name: f.name.clone(),
@@ -2173,7 +2173,7 @@ impl Codegen {
     /// the enclosing block then bails, the whole tree rolls back so a later attempt
     /// re-consumes from a clean slate (no double-count). Commit (no restore) happens
     /// only on `Some` — the whole block lowered.
-    fn lower_block(&mut self, block: &Block) -> Option<crate::wir::WirSeq> {
+    fn lower_block(&mut self, block: &Block) -> Option<witchy_wir::wir::WirSeq> {
         let snap = self.facts_stack.last().map(|(_, k, s)| (*k, *s));
         let result = self.lower_block_inner(block);
         if result.is_none() {
@@ -2185,8 +2185,8 @@ impl Codegen {
         result
     }
 
-    fn lower_block_inner(&mut self, block: &Block) -> Option<crate::wir::WirSeq> {
-        use crate::wir::{WirExpr as W, WirNode as N};
+    fn lower_block_inner(&mut self, block: &Block) -> Option<witchy_wir::wir::WirSeq> {
+        use witchy_wir::wir::{WirExpr as W, WirNode as N};
         // In-place accumulators lower to the cap ABI (`$list_push_cap` via
         // CallStoreMulti) only in a WIR-collecting scope (`collect_wir`); otherwise
         // this bails. Facts consumption is deferred to `compile_function` on capture
@@ -2207,7 +2207,7 @@ impl Codegen {
         }
         let mut inplace_sites = 0usize;
         let last = block.stmts.len().saturating_sub(1);
-        let mut seq: crate::wir::WirSeq = Vec::with_capacity(block.stmts.len() + 1);
+        let mut seq: witchy_wir::wir::WirSeq = Vec::with_capacity(block.stmts.len() + 1);
         let mut tail_is_value = false;
         for (i, stmt) in block.stmts.iter().enumerate() {
             match stmt {
@@ -2286,8 +2286,8 @@ impl Codegen {
                     for (i, name) in names.iter().enumerate() {
                         let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
                         let addr = W::Binary {
-                            op: crate::wir::BinOp::Add,
-                            kind: crate::wir::Kind::I32,
+                            op: witchy_wir::wir::BinOp::Add,
+                            kind: witchy_wir::wir::Kind::I32,
                             lhs: Box::new(W::GetLocal(TUPLE_TMP.to_string())),
                             rhs: Box::new(W::ConstI32((4 + 8 * i) as i32)),
                         };
@@ -2296,7 +2296,7 @@ impl Codegen {
                             value: W::FromSlot(
                                 Box::new(W::Load {
                                     ptr: Box::new(addr),
-                                    kind: crate::wir::Kind::I64,
+                                    kind: witchy_wir::wir::Kind::I64,
                                     offset: 0,
                                 }),
                                 Self::wir_kind(k),
@@ -2385,7 +2385,7 @@ impl Codegen {
                         } else {
                             W::GetLocal(format!("{name}__cap"))
                         };
-                        use crate::wir::BinOp;
+                        use witchy_wir::wir::BinOp;
                         let e = self.lower_expr(elem)?;
                         self.uses_list_push_cap = true;
                         // Stash length (i32) + value (i64 slot), then APPEND in place
@@ -2395,7 +2395,7 @@ impl Codegen {
                         // the helper CALL on the hot path is RFC-0016 R2 static elision.
                         seq.push(N::SetLocal {
                             local: "__witchy_set_idx".into(),
-                            value: W::Load { ptr: Box::new(W::GetLocal(name.clone())), kind: crate::wir::Kind::I32, offset: 0 },
+                            value: W::Load { ptr: Box::new(W::GetLocal(name.clone())), kind: witchy_wir::wir::Kind::I32, offset: 0 },
                         });
                         seq.push(N::SetLocal {
                             local: "__witchy_set_val".into(),
@@ -2403,7 +2403,7 @@ impl Codegen {
                         });
                         let sl = || W::GetLocal("__witchy_set_idx".to_string());
                         let sv = || W::GetLocal("__witchy_set_val".to_string());
-                        let bin = |op, l, r| W::Binary { op, kind: crate::wir::Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+                        let bin = |op, l, r| W::Binary { op, kind: witchy_wir::wir::Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
                         let slot_ptr = bin(
                             BinOp::Add,
                             bin(BinOp::Add, W::GetLocal(name.clone()), W::ConstI32(4)),
@@ -2412,8 +2412,8 @@ impl Codegen {
                         seq.push(N::If {
                             cond: bin(BinOp::Gt, cap.clone(), sl()),
                             then_: vec![
-                                N::Store { ptr: slot_ptr, value: sv(), kind: crate::wir::Kind::I64, offset: 0 },
-                                N::Store { ptr: W::GetLocal(name.clone()), value: bin(BinOp::Add, sl(), W::ConstI32(1)), kind: crate::wir::Kind::I32, offset: 0 },
+                                N::Store { ptr: slot_ptr, value: sv(), kind: witchy_wir::wir::Kind::I64, offset: 0 },
+                                N::Store { ptr: W::GetLocal(name.clone()), value: bin(BinOp::Add, sl(), W::ConstI32(1)), kind: witchy_wir::wir::Kind::I32, offset: 0 },
                             ],
                             els: vec![N::CallStoreMulti {
                                 func: "list_push_cap".to_string(),
@@ -2450,7 +2450,7 @@ impl Codegen {
                         } else {
                             W::GetLocal(format!("{name}__cap"))
                         };
-                        use crate::wir::BinOp;
+                        use witchy_wir::wir::BinOp;
                         let iw = self.lower_expr(iexpr)?;
                         let vw = self.lower_expr(vexpr)?;
                         // Stash index (i32) + value (i64 slot) into scratch locals,
@@ -2468,8 +2468,8 @@ impl Codegen {
                         });
                         let si = || W::GetLocal("__witchy_set_idx".to_string());
                         let sv = || W::GetLocal("__witchy_set_val".to_string());
-                        let bin = |op, l, r| W::Binary { op, kind: crate::wir::Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-                        let len = W::Load { ptr: Box::new(W::GetLocal(name.clone())), kind: crate::wir::Kind::I32, offset: 0 };
+                        let bin = |op, l, r| W::Binary { op, kind: witchy_wir::wir::Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+                        let len = W::Load { ptr: Box::new(W::GetLocal(name.clone())), kind: witchy_wir::wir::Kind::I32, offset: 0 };
                         let cond = bin(
                             BinOp::And,
                             bin(BinOp::And, bin(BinOp::Ge, si(), W::ConstI32(0)), bin(BinOp::Lt, si(), len)),
@@ -2482,7 +2482,7 @@ impl Codegen {
                         );
                         seq.push(N::If {
                             cond,
-                            then_: vec![N::Store { ptr: slot_ptr, value: sv(), kind: crate::wir::Kind::I64, offset: 0 }],
+                            then_: vec![N::Store { ptr: slot_ptr, value: sv(), kind: witchy_wir::wir::Kind::I64, offset: 0 }],
                             els: vec![N::CallStoreMulti {
                                 func: "list_set_cap".to_string(),
                                 args: vec![W::GetLocal(name.clone()), si(), sv(), cap],
@@ -2727,21 +2727,21 @@ impl Codegen {
     }
 
     /// Map codegen's `Kind` to the WIR `Kind` (the same three cases).
-    fn wir_kind(k: Kind) -> crate::wir::Kind {
+    fn wir_kind(k: Kind) -> witchy_wir::wir::Kind {
         match k {
-            Kind::I32 => crate::wir::Kind::I32,
-            Kind::I64 => crate::wir::Kind::I64,
-            Kind::F64 => crate::wir::Kind::F64,
+            Kind::I32 => witchy_wir::wir::Kind::I32,
+            Kind::I64 => witchy_wir::wir::Kind::I64,
+            Kind::F64 => witchy_wir::wir::Kind::F64,
         }
     }
 
     /// A `WirTy` whose `.kind()` is `k` — used for a control node's `result`
     /// block-type, where only the wasm kind matters (`i64`/`f64`/`i32`).
-    fn wir_ty_for_kind(k: Kind) -> crate::wir::WirTy {
+    fn wir_ty_for_kind(k: Kind) -> witchy_wir::wir::WirTy {
         match k {
-            Kind::I64 => crate::wir::WirTy::Int,
-            Kind::F64 => crate::wir::WirTy::Float,
-            Kind::I32 => crate::wir::WirTy::Bool,
+            Kind::I64 => witchy_wir::wir::WirTy::Int,
+            Kind::F64 => witchy_wir::wir::WirTy::Float,
+            Kind::I32 => witchy_wir::wir::WirTy::Bool,
         }
     }
 
@@ -2749,8 +2749,8 @@ impl Codegen {
     /// `$mkN` allocator call: push the i32 `header` (length, `0`, or ctor tag),
     /// then each element in the universal i64 slot, then `call $mkN`. `None` if any
     /// element isn't lowerable.
-    fn lower_aggregate(&mut self, header: i32, items: &[Expr]) -> Option<crate::wir::WirExpr> {
-        use crate::wir::WirExpr as W;
+    fn lower_aggregate(&mut self, header: i32, items: &[Expr]) -> Option<witchy_wir::wir::WirExpr> {
+        use witchy_wir::wir::WirExpr as W;
         let n = items.len();
         self.mk_arities.insert(n);
         let mut args = Vec::with_capacity(n + 1);
@@ -2769,13 +2769,13 @@ impl Codegen {
     /// (tuple/list/ctor/string/…), which keep their bespoke legacy emission.
     fn lower_pattern(
         &mut self,
-        value: &crate::wir::WirExpr,
+        value: &witchy_wir::wir::WirExpr,
         pat: &Pattern,
-    ) -> Option<(crate::wir::WirExpr, crate::wir::WirSeq)> {
-        use crate::wir::{WirExpr as W, WirNode as N};
+    ) -> Option<(witchy_wir::wir::WirExpr, witchy_wir::wir::WirSeq)> {
+        use witchy_wir::wir::{WirExpr as W, WirNode as N};
         let eq_i64 = |v: i64| W::Binary {
-            op: crate::wir::BinOp::Eq,
-            kind: crate::wir::Kind::I64,
+            op: witchy_wir::wir::BinOp::Eq,
+            kind: witchy_wir::wir::Kind::I64,
             lhs: Box::new(value.clone()),
             rhs: Box::new(W::ConstI64(v)),
         };
@@ -2797,18 +2797,18 @@ impl Codegen {
             // element-pattern conditions; element `i` is the i64 slot at `ptr+4+8*i`
             // (ptr = value wrapped to i32). Recurses into sub-patterns.
             Pattern::Tuple(pats) => {
-                let ptr = W::FromSlot(Box::new(value.clone()), crate::wir::Kind::I32);
+                let ptr = W::FromSlot(Box::new(value.clone()), witchy_wir::wir::Kind::I32);
                 let mut elem_conds: Vec<W> = Vec::new();
-                let mut binds: crate::wir::WirSeq = Vec::new();
+                let mut binds: witchy_wir::wir::WirSeq = Vec::new();
                 for (i, sub) in pats.iter().enumerate() {
                     let elem_value = W::Load {
                         ptr: Box::new(W::Binary {
-                            op: crate::wir::BinOp::Add,
-                            kind: crate::wir::Kind::I32,
+                            op: witchy_wir::wir::BinOp::Add,
+                            kind: witchy_wir::wir::Kind::I32,
                             lhs: Box::new(ptr.clone()),
                             rhs: Box::new(W::ConstI32((4 + 8 * i) as i32)),
                         }),
-                        kind: crate::wir::Kind::I64,
+                        kind: witchy_wir::wir::Kind::I64,
                         offset: 0,
                     };
                     let (sc, sb) = self.lower_pattern(&elem_value, sub)?;
@@ -2830,26 +2830,26 @@ impl Codegen {
             // element (the i64 slot at `ptr+4+8*i`). `..name` binds the tail as a
             // freshly-allocated list via `$list_drop`.
             Pattern::List { elems, rest } => {
-                let ptr = W::FromSlot(Box::new(value.clone()), crate::wir::Kind::I32);
+                let ptr = W::FromSlot(Box::new(value.clone()), witchy_wir::wir::Kind::I32);
                 let n = elems.len() as i32;
-                let len_op = if rest.is_some() { crate::wir::BinOp::Ge } else { crate::wir::BinOp::Eq };
+                let len_op = if rest.is_some() { witchy_wir::wir::BinOp::Ge } else { witchy_wir::wir::BinOp::Eq };
                 let len_check = W::Binary {
                     op: len_op,
-                    kind: crate::wir::Kind::I32,
-                    lhs: Box::new(W::Load { ptr: Box::new(ptr.clone()), kind: crate::wir::Kind::I32, offset: 0 }),
+                    kind: witchy_wir::wir::Kind::I32,
+                    lhs: Box::new(W::Load { ptr: Box::new(ptr.clone()), kind: witchy_wir::wir::Kind::I32, offset: 0 }),
                     rhs: Box::new(W::ConstI32(n)),
                 };
                 let mut elem_conds: Vec<W> = Vec::new();
-                let mut binds: crate::wir::WirSeq = Vec::new();
+                let mut binds: witchy_wir::wir::WirSeq = Vec::new();
                 for (i, sub) in elems.iter().enumerate() {
                     let elem_value = W::Load {
                         ptr: Box::new(W::Binary {
-                            op: crate::wir::BinOp::Add,
-                            kind: crate::wir::Kind::I32,
+                            op: witchy_wir::wir::BinOp::Add,
+                            kind: witchy_wir::wir::Kind::I32,
                             lhs: Box::new(ptr.clone()),
                             rhs: Box::new(W::ConstI32((4 + 8 * i) as i32)),
                         }),
-                        kind: crate::wir::Kind::I64,
+                        kind: witchy_wir::wir::Kind::I64,
                         offset: 0,
                     };
                     let (sc, sb) = self.lower_pattern(&elem_value, sub)?;
@@ -2872,7 +2872,7 @@ impl Codegen {
                         cond: len_check,
                         then_: vec![N::Push(wir_and_chain(&elem_conds))],
                         els: vec![N::Push(W::ConstI32(0))],
-                        result: Some(crate::wir::WirTy::Bool),
+                        result: Some(witchy_wir::wir::WirTy::Bool),
                     }))
                 };
                 (cond, binds)
@@ -2888,7 +2888,7 @@ impl Codegen {
                 (
                     W::Call {
                         func: "str_eq".into(),
-                        args: vec![W::FromSlot(Box::new(value.clone()), crate::wir::Kind::I32), W::StrPtr(off)],
+                        args: vec![W::FromSlot(Box::new(value.clone()), witchy_wir::wir::Kind::I32), W::StrPtr(off)],
                     },
                     vec![],
                 )
@@ -2904,18 +2904,18 @@ impl Codegen {
                 if nfields != args.len() {
                     return None;
                 }
-                let ptr = W::FromSlot(Box::new(value.clone()), crate::wir::Kind::I32);
+                let ptr = W::FromSlot(Box::new(value.clone()), witchy_wir::wir::Kind::I32);
                 let mut field_conds: Vec<W> = Vec::new();
-                let mut binds: crate::wir::WirSeq = Vec::new();
+                let mut binds: witchy_wir::wir::WirSeq = Vec::new();
                 for (i, sub) in args.iter().enumerate() {
                     let field_value = W::Load {
                         ptr: Box::new(W::Binary {
-                            op: crate::wir::BinOp::Add,
-                            kind: crate::wir::Kind::I32,
+                            op: witchy_wir::wir::BinOp::Add,
+                            kind: witchy_wir::wir::Kind::I32,
                             lhs: Box::new(ptr.clone()),
                             rhs: Box::new(W::ConstI32((4 + 8 * i) as i32)),
                         }),
-                        kind: crate::wir::Kind::I64,
+                        kind: witchy_wir::wir::Kind::I64,
                         offset: 0,
                     };
                     let (sc, sb) = self.lower_pattern(&field_value, sub)?;
@@ -2925,9 +2925,9 @@ impl Codegen {
                     binds.extend(sb);
                 }
                 let tag_eq = W::Binary {
-                    op: crate::wir::BinOp::Eq,
-                    kind: crate::wir::Kind::I32,
-                    lhs: Box::new(W::Load { ptr: Box::new(ptr), kind: crate::wir::Kind::I32, offset: 0 }),
+                    op: witchy_wir::wir::BinOp::Eq,
+                    kind: witchy_wir::wir::Kind::I32,
+                    lhs: Box::new(W::Load { ptr: Box::new(ptr), kind: witchy_wir::wir::Kind::I32, offset: 0 }),
                     rhs: Box::new(W::ConstI32(tag as i32)),
                 };
                 let cond = if field_conds.is_empty() {
@@ -2939,7 +2939,7 @@ impl Codegen {
                         cond: tag_eq,
                         then_: vec![N::Push(wir_and_chain(&field_conds))],
                         els: vec![N::Push(W::ConstI32(0))],
-                        result: Some(crate::wir::WirTy::Bool),
+                        result: Some(witchy_wir::wir::WirTy::Bool),
                     }))
                 };
                 (cond, binds)
@@ -2952,8 +2952,8 @@ impl Codegen {
     /// value-`block $d` holding per-arm `block $a` (test → `br_if` skip; binds;
     /// guard; body+convert; `br $d`), then `unreachable`. `next_label` is restored
     /// on a bail.
-    fn lower_match(&mut self, scrutinee: &Expr, arms: &[MatchArm]) -> Option<crate::wir::WirExpr> {
-        use crate::wir::{WirExpr as W, WirNode as N};
+    fn lower_match(&mut self, scrutinee: &Expr, arms: &[MatchArm]) -> Option<witchy_wir::wir::WirExpr> {
+        use witchy_wir::wir::{WirExpr as W, WirNode as N};
         let scrut_kind = self.kind_of(scrutinee);
         let result_kind = arms.iter().fold(Kind::I32, |acc, a| {
             let k = self.kind_of(&a.body);
@@ -2971,11 +2971,11 @@ impl Codegen {
         self.next_label += 1;
         let value = W::GetLocal(MATCH_TMP.to_string());
         let not = |c: W| W::Unary {
-            op: crate::wir::UnOp::Not,
-            kind: crate::wir::Kind::I32,
+            op: witchy_wir::wir::UnOp::Not,
+            kind: witchy_wir::wir::Kind::I32,
             arg: Box::new(c),
         };
-        let mut arm_blocks: crate::wir::WirSeq = Vec::with_capacity(arms.len() + 1);
+        let mut arm_blocks: witchy_wir::wir::WirSeq = Vec::with_capacity(arms.len() + 1);
         for (i, arm) in arms.iter().enumerate() {
             let a_label = format!("a{id}_{i}");
             let (cond, binds) = match self.lower_pattern(&value, &arm.pattern) {
@@ -2985,7 +2985,7 @@ impl Codegen {
                     return None;
                 }
             };
-            let mut arm_body: crate::wir::WirSeq = Vec::new();
+            let mut arm_body: witchy_wir::wir::WirSeq = Vec::new();
             arm_body.push(N::Br { target: a_label.clone(), cond: Some(not(cond)) });
             arm_body.extend(binds);
             if let Some(guard) = &arm.guard {
@@ -3029,7 +3029,7 @@ impl Codegen {
     /// any argument isn't lowerable. ONLY sound from `lower_expr`'s call arm, after
     /// builtins/natives/closures have been excluded, and only for functions WITHOUT
     /// an own-ABI token or `var` writeback.
-    fn try_lower_user_call(&mut self, name: &str, args: &[Expr]) -> Option<crate::wir::WirExpr> {
+    fn try_lower_user_call(&mut self, name: &str, args: &[Expr]) -> Option<witchy_wir::wir::WirExpr> {
         let param_kinds: Vec<Kind> = self
             .fn_params
             .get(name)
@@ -3044,7 +3044,7 @@ impl Codegen {
                 None => w,
             });
         }
-        Some(crate::wir::WirExpr::Call { func: name.to_string(), args: args_w })
+        Some(witchy_wir::wir::WirExpr::Call { func: name.to_string(), args: args_w })
     }
 
     /// Lower an `var` user call. The callee returns `(declared, var_1, …)`;
@@ -3053,8 +3053,8 @@ impl Codegen {
     /// locals (written back). We then push the scratch — the call's value. Each
     /// var arg must be a non-global local `Var` (CallStoreMulti uses `local.set`);
     /// otherwise we defer to WAT (`None`).
-    fn lower_var_call(&mut self, name: &str, args: &[Expr]) -> Option<crate::wir::WirExpr> {
-        use crate::wir::{WirExpr as W, WirNode as N};
+    fn lower_var_call(&mut self, name: &str, args: &[Expr]) -> Option<witchy_wir::wir::WirExpr> {
+        use witchy_wir::wir::{WirExpr as W, WirNode as N};
         let convs = self.fn_conventions.get(name).cloned()?;
         let param_kinds: Vec<Kind> = self
             .fn_params
@@ -3094,13 +3094,13 @@ impl Codegen {
     /// match). Used when a branch block's kind must be promoted to a common kind
     /// shared with its sibling branches.
     fn convert_block_tail(
-        mut seq: crate::wir::WirSeq,
+        mut seq: witchy_wir::wir::WirSeq,
         from: Kind,
         to: Kind,
-    ) -> crate::wir::WirSeq {
+    ) -> witchy_wir::wir::WirSeq {
         if from != to {
-            if let Some(crate::wir::WirNode::Push(v)) = seq.pop() {
-                seq.push(crate::wir::WirNode::Push(Self::wir_convert(v, from, to)));
+            if let Some(witchy_wir::wir::WirNode::Push(v)) = seq.pop() {
+                seq.push(witchy_wir::wir::WirNode::Push(Self::wir_convert(v, from, to)));
             }
         }
         seq
@@ -3108,11 +3108,11 @@ impl Codegen {
 
     /// The WIR analogue of `kind_convert`: wrap `arg` in a `Convert` node when the
     /// kinds differ (else return it unchanged).
-    fn wir_convert(arg: crate::wir::WirExpr, from: Kind, to: Kind) -> crate::wir::WirExpr {
+    fn wir_convert(arg: witchy_wir::wir::WirExpr, from: Kind, to: Kind) -> witchy_wir::wir::WirExpr {
         if from == to {
             arg
         } else {
-            crate::wir::WirExpr::Convert {
+            witchy_wir::wir::WirExpr::Convert {
                 from: Self::wir_kind(from),
                 to: Self::wir_kind(to),
                 arg: Box::new(arg),
@@ -3149,9 +3149,9 @@ impl Codegen {
     /// for any arm — or sub-expression — not yet lowered. A `None` propagates up and
     /// the program is rejected as reaching an unsupported construct; the supported
     /// set is the authoritative codegen for those expression shapes.
-    fn lower_expr(&mut self, e: &Expr) -> Option<crate::wir::WirExpr> {
-        use crate::wir::WirExpr as W;
-        use crate::wir::WirNode as N;
+    fn lower_expr(&mut self, e: &Expr) -> Option<witchy_wir::wir::WirExpr> {
+        use witchy_wir::wir::WirExpr as W;
+        use witchy_wir::wir::WirNode as N;
         Some(match e {
             // Expanded away by `crate::tagged` during linking, before codegen.
             Expr::TaggedLit { tag, .. } => {
@@ -3184,18 +3184,18 @@ impl Codegen {
                 // value-neutral on WASM (value semantics): lower the operand.
                 UnOp::Move | UnOp::Await => return self.lower_expr(expr),
                 UnOp::Not => W::Unary {
-                    op: crate::wir::UnOp::Not,
-                    kind: crate::wir::Kind::I32,
+                    op: witchy_wir::wir::UnOp::Not,
+                    kind: witchy_wir::wir::Kind::I32,
                     arg: Box::new(self.lower_expr(expr)?),
                 },
                 UnOp::Neg => {
                     let kind = Self::wir_kind(self.kind_of(expr));
-                    W::Unary { op: crate::wir::UnOp::Neg, kind, arg: Box::new(self.lower_expr(expr)?) }
+                    W::Unary { op: witchy_wir::wir::UnOp::Neg, kind, arg: Box::new(self.lower_expr(expr)?) }
                 }
                 UnOp::BitNot => {
                     let kind = Self::wir_kind(self.kind_of(expr));
                     W::Unary {
-                        op: crate::wir::UnOp::BitNot,
+                        op: witchy_wir::wir::UnOp::BitNot,
                         kind,
                         arg: Box::new(self.lower_expr(expr)?),
                     }
@@ -3292,8 +3292,8 @@ impl Codegen {
                 self.uses_region = true;
                 let helper = rcopy_helper.expect("guarded pointer shape");
                 let i32sub = |l: W, r: W| W::Binary {
-                    op: crate::wir::BinOp::Sub,
-                    kind: crate::wir::Kind::I32,
+                    op: witchy_wir::wir::BinOp::Sub,
+                    kind: witchy_wir::wir::Kind::I32,
                     lhs: Box::new(l),
                     rhs: Box::new(r),
                 };
@@ -3321,8 +3321,8 @@ impl Codegen {
                 seq.push(N::SetGlobal {
                     global: "heap".to_string(),
                     value: W::Binary {
-                        op: crate::wir::BinOp::Add,
-                        kind: crate::wir::Kind::I32,
+                        op: witchy_wir::wir::BinOp::Add,
+                        kind: witchy_wir::wir::Kind::I32,
                         lhs: Box::new(W::GetLocal(wm)),
                         rhs: Box::new(copied_len()),
                     },
@@ -3366,7 +3366,7 @@ impl Codegen {
                 let call = W::CallIndirect {
                     type_arity: n,
                     args: ci_args,
-                    index: Box::new(W::Load { ptr: Box::new(W::GetLocal(tmp.clone())), kind: crate::wir::Kind::I32, offset: 0 }),
+                    index: Box::new(W::Load { ptr: Box::new(W::GetLocal(tmp.clone())), kind: witchy_wir::wir::Kind::I32, offset: 0 }),
                 };
                 let result = W::FromSlot(Box::new(call), Self::wir_kind(recover_kind));
                 return Some(W::Seq(vec![
@@ -3407,7 +3407,7 @@ impl Codegen {
                         cond,
                         then_,
                         els: vec![N::Push(W::ConstI32(0))],
-                        result: Some(crate::wir::WirTy::Bool),
+                        result: Some(witchy_wir::wir::WirTy::Bool),
                     }))
                 }
             },
@@ -3444,8 +3444,8 @@ impl Codegen {
                     }
                 };
                 let not_cond = W::Unary {
-                    op: crate::wir::UnOp::Not,
-                    kind: crate::wir::Kind::I32,
+                    op: witchy_wir::wir::UnOp::Not,
+                    kind: witchy_wir::wir::Kind::I32,
                     arg: Box::new(cond_w),
                 };
                 let mut loop_body = vec![
@@ -3457,7 +3457,7 @@ impl Codegen {
                     loop_body.push(reset.clone());
                 }
                 loop_body.push(N::Br { target: format!("wl{id}"), cond: None });
-                let mut outer: crate::wir::WirSeq = Vec::new();
+                let mut outer: witchy_wir::wir::WirSeq = Vec::new();
                 if let Some((capture, _)) = &wm {
                     outer.push(capture.clone());
                 }
@@ -3512,15 +3512,15 @@ impl Codegen {
                         return None;
                     }
                 };
-                let i64k = crate::wir::Kind::I64;
+                let i64k = witchy_wir::wir::Kind::I64;
                 let cmp = |op, l: &str, r: &str| W::Binary {
                     op,
                     kind: i64k,
                     lhs: Box::new(W::GetLocal(l.to_string())),
                     rhs: Box::new(W::GetLocal(r.to_string())),
                 };
-                let exit_op = if *inclusive { crate::wir::BinOp::Gt } else { crate::wir::BinOp::Ge };
-                let mut loop_body: crate::wir::WirSeq = vec![
+                let exit_op = if *inclusive { witchy_wir::wir::BinOp::Gt } else { witchy_wir::wir::BinOp::Ge };
+                let mut loop_body: witchy_wir::wir::WirSeq = vec![
                     N::Br { target: format!("fe{id}"), cond: Some(cmp(exit_op, &ctr, &end)) },
                     N::SetLocal { local: var.clone(), value: W::GetLocal(ctr.clone()) },
                     N::Block {
@@ -3536,20 +3536,20 @@ impl Codegen {
                 if *inclusive {
                     loop_body.push(N::Br {
                         target: format!("fe{id}"),
-                        cond: Some(cmp(crate::wir::BinOp::Eq, &ctr, &end)),
+                        cond: Some(cmp(witchy_wir::wir::BinOp::Eq, &ctr, &end)),
                     });
                 }
                 loop_body.push(N::SetLocal {
                     local: ctr.clone(),
                     value: W::Binary {
-                        op: crate::wir::BinOp::Add,
+                        op: witchy_wir::wir::BinOp::Add,
                         kind: i64k,
                         lhs: Box::new(W::GetLocal(ctr.clone())),
                         rhs: Box::new(W::ConstI64(1)),
                     },
                 });
                 loop_body.push(N::Br { target: format!("fl{id}"), cond: None });
-                let mut outer: crate::wir::WirSeq = vec![
+                let mut outer: witchy_wir::wir::WirSeq = vec![
                     N::SetLocal { local: ctr, value: lo_w },
                     N::SetLocal { local: end, value: hi_w },
                 ];
@@ -3600,13 +3600,13 @@ impl Codegen {
                         return None;
                     }
                 };
-                let i32 = crate::wir::Kind::I32;
-                let add = crate::wir::BinOp::Add;
+                let i32 = witchy_wir::wir::Kind::I32;
+                let add = witchy_wir::wir::BinOp::Add;
                 // idx >= list.len  ->  br_if $fe
                 let exit = N::Br {
                     target: format!("fe{id}"),
                     cond: Some(W::Binary {
-                        op: crate::wir::BinOp::Ge,
+                        op: witchy_wir::wir::BinOp::Ge,
                         kind: i32,
                         lhs: Box::new(W::GetLocal(idx_l.clone())),
                         rhs: Box::new(W::Load {
@@ -3627,7 +3627,7 @@ impl Codegen {
                         rhs: Box::new(W::ConstI32(4)),
                     }),
                     rhs: Box::new(W::Binary {
-                        op: crate::wir::BinOp::Mul,
+                        op: witchy_wir::wir::BinOp::Mul,
                         kind: i32,
                         lhs: Box::new(W::GetLocal(idx_l.clone())),
                         rhs: Box::new(W::ConstI32(8)),
@@ -3638,7 +3638,7 @@ impl Codegen {
                     value: W::FromSlot(
                         Box::new(W::Load {
                             ptr: Box::new(elem_addr),
-                            kind: crate::wir::Kind::I64,
+                            kind: witchy_wir::wir::Kind::I64,
                             offset: 0,
                         }),
                         Self::wir_kind(elem_kind),
@@ -3658,14 +3658,14 @@ impl Codegen {
                         rhs: Box::new(W::ConstI32(1)),
                     },
                 };
-                let mut loop_body: crate::wir::WirSeq = vec![exit, bind, body_block];
+                let mut loop_body: witchy_wir::wir::WirSeq = vec![exit, bind, body_block];
                 // reclaim per-iteration arena garbage before advancing the index.
                 if let Some((_, reset)) = &wm {
                     loop_body.push(reset.clone());
                 }
                 loop_body.push(advance);
                 loop_body.push(N::Br { target: format!("fl{id}"), cond: None });
-                let mut outer: crate::wir::WirSeq = vec![
+                let mut outer: witchy_wir::wir::WirSeq = vec![
                     N::SetLocal { local: list_l, value: iter_w },
                     N::SetLocal { local: idx_l, value: W::ConstI32(0) },
                 ];
@@ -3703,13 +3703,13 @@ impl Codegen {
                 // A Var base is referenced directly; any other expression is
                 // evaluated ONCE into the `$TUPLE_TMP` scratch (base-first, as the
                 // interpreter does) so each un-updated field reads the same value.
-                let (prelude, base_ptr): (Option<crate::wir::WirNode>, W) =
+                let (prelude, base_ptr): (Option<witchy_wir::wir::WirNode>, W) =
                     if let Expr::Var(v) = base.as_ref() {
                         (None, W::GetLocal(v.clone()))
                     } else {
                         let bw = self.lower_expr(base)?;
                         (
-                            Some(crate::wir::WirNode::SetLocal { local: TUPLE_TMP.into(), value: bw }),
+                            Some(witchy_wir::wir::WirNode::SetLocal { local: TUPLE_TMP.into(), value: bw }),
                             W::GetLocal(TUPLE_TMP.into()),
                         )
                     };
@@ -3723,19 +3723,19 @@ impl Codegen {
                     } else {
                         args.push(W::Load {
                             ptr: Box::new(W::Binary {
-                                op: crate::wir::BinOp::Add,
-                                kind: crate::wir::Kind::I32,
+                                op: witchy_wir::wir::BinOp::Add,
+                                kind: witchy_wir::wir::Kind::I32,
                                 lhs: Box::new(base_ptr.clone()),
                                 rhs: Box::new(W::ConstI32((4 + 8 * i) as i32)),
                             }),
-                            kind: crate::wir::Kind::I64,
+                            kind: witchy_wir::wir::Kind::I64,
                             offset: 0,
                         });
                     }
                 }
                 let call = W::Call { func: format!("mk{nfields}"), args };
                 return Some(match prelude {
-                    Some(p) => W::Seq(vec![p, crate::wir::WirNode::Push(call)]),
+                    Some(p) => W::Seq(vec![p, witchy_wir::wir::WirNode::Push(call)]),
                     None => call,
                 });
             }
@@ -3751,28 +3751,28 @@ impl Codegen {
                     // tag (Option); "" / [] / None all have a zero first word, so
                     // "truthy" is a single `load i32` — no per-type branching.
                     if *op == BinOp::Or && self.val_type_of(lhs) != ValType::Bool {
-                        use crate::wir::WirNode as N;
+                        use witchy_wir::wir::WirNode as N;
                         // Option is truthy when present: `Some` is the tag-0 (success)
                         // variant and `None` is non-zero — the inverse of String/List,
                         // whose first word is a length that is zero only when empty. So
                         // the Option predicate is `header == 0`, the rest `header != 0`.
                         let is_option = matches!(lhs.as_ref(), Expr::Ctor { name, .. } if name == "None" || name == "Some")
                             || matches!(
-                                self.type_table.type_of(lhs).and_then(crate::typeck::ty_to_ast),
-                                Some(crate::ast::Type::Named(ref n, _)) if n == "Option"
+                                self.type_table.type_of(lhs).and_then(witchy_types::typeck::ty_to_ast),
+                                Some(witchy_syntax::ast::Type::Named(ref n, _)) if n == "Option"
                             );
                         let tmp = TRY_TMP.to_string();
                         let lhs_w = self.lower_expr(lhs)?;
                         let rhs_w = self.lower_expr(rhs)?;
                         let header = W::Load {
                             ptr: Box::new(W::GetLocal(tmp.clone())),
-                            kind: crate::wir::Kind::I32,
+                            kind: witchy_wir::wir::Kind::I32,
                             offset: 0,
                         };
                         let cond = if is_option {
                             W::Unary {
-                                op: crate::wir::UnOp::Not,
-                                kind: crate::wir::Kind::I32,
+                                op: witchy_wir::wir::UnOp::Not,
+                                kind: witchy_wir::wir::Kind::I32,
                                 arg: Box::new(header),
                             }
                         } else {
@@ -3784,26 +3784,26 @@ impl Codegen {
                                 cond,
                                 then_: vec![N::Push(W::GetLocal(tmp.clone()))],
                                 els: vec![N::Push(rhs_w)],
-                                result: Some(crate::wir::WirTy::Bool),
+                                result: Some(witchy_wir::wir::WirTy::Bool),
                             },
                         ]));
                     }
                     let cond = self.lower_expr(lhs)?;
                     let other = self.lower_expr(rhs)?;
                     let (then_, els) = if matches!(op, BinOp::And) {
-                        (vec![crate::wir::WirNode::Push(other)], vec![
-                            crate::wir::WirNode::Push(W::ConstI32(0)),
+                        (vec![witchy_wir::wir::WirNode::Push(other)], vec![
+                            witchy_wir::wir::WirNode::Push(W::ConstI32(0)),
                         ])
                     } else {
-                        (vec![crate::wir::WirNode::Push(W::ConstI32(1))], vec![
-                            crate::wir::WirNode::Push(other),
+                        (vec![witchy_wir::wir::WirNode::Push(W::ConstI32(1))], vec![
+                            witchy_wir::wir::WirNode::Push(other),
                         ])
                     };
-                    return Some(W::Control(Box::new(crate::wir::WirNode::If {
+                    return Some(W::Control(Box::new(witchy_wir::wir::WirNode::If {
                         cond,
                         then_,
                         els,
-                        result: Some(crate::wir::WirTy::Bool),
+                        result: Some(witchy_wir::wir::WirTy::Bool),
                     })));
                 }
                 // String concatenation (`+` flipped to `Concat`) lowers to
@@ -3829,8 +3829,8 @@ impl Codegen {
                     return Some(match op {
                         BinOp::Eq => eq,
                         _ => W::Unary {
-                            op: crate::wir::UnOp::Not,
-                            kind: crate::wir::Kind::I32,
+                            op: witchy_wir::wir::UnOp::Not,
+                            kind: witchy_wir::wir::Kind::I32,
                             arg: Box::new(eq),
                         },
                     });
@@ -3848,14 +3848,14 @@ impl Codegen {
                     let b = self.lower_expr(rhs)?;
                     let cmp = W::Call { func: "str_cmp".to_string(), args: vec![a, b] };
                     let wop = match op {
-                        BinOp::Lt => crate::wir::BinOp::Lt,
-                        BinOp::LtEq => crate::wir::BinOp::Le,
-                        BinOp::Gt => crate::wir::BinOp::Gt,
-                        _ => crate::wir::BinOp::Ge,
+                        BinOp::Lt => witchy_wir::wir::BinOp::Lt,
+                        BinOp::LtEq => witchy_wir::wir::BinOp::Le,
+                        BinOp::Gt => witchy_wir::wir::BinOp::Gt,
+                        _ => witchy_wir::wir::BinOp::Ge,
                     };
                     return Some(W::Binary {
                         op: wop,
-                        kind: crate::wir::Kind::I32,
+                        kind: witchy_wir::wir::Kind::I32,
                         lhs: Box::new(cmp),
                         rhs: Box::new(W::ConstI32(0)),
                     });
@@ -3887,7 +3887,7 @@ impl Codegen {
                             let eq = W::Call { func: h, args: vec![a, b] };
                             return Some(match op {
                                 BinOp::Eq => eq,
-                                _ => W::Unary { op: crate::wir::UnOp::Not, kind: crate::wir::Kind::I32, arg: Box::new(eq) },
+                                _ => W::Unary { op: witchy_wir::wir::UnOp::Not, kind: witchy_wir::wir::Kind::I32, arg: Box::new(eq) },
                             });
                         }
                     }
@@ -3928,7 +3928,7 @@ impl Codegen {
                         cond: a,
                         then_,
                         els,
-                        result: Some(crate::wir::WirTy::Bool),
+                        result: Some(witchy_wir::wir::WirTy::Bool),
                     })));
                 }
                 // Common-kind promotion (f64 > i64 > i32), exactly as the legacy
@@ -3954,16 +3954,16 @@ impl Codegen {
                     {
                         return None;
                     }
-                    BinOp::Add => crate::wir::BinOp::Add,
-                    BinOp::Sub => crate::wir::BinOp::Sub,
-                    BinOp::Mul => crate::wir::BinOp::Mul,
-                    BinOp::Div => crate::wir::BinOp::Div,
-                    BinOp::Mod => crate::wir::BinOp::Rem,
-                    BinOp::BitAnd => crate::wir::BinOp::And,
-                    BinOp::BitOr => crate::wir::BinOp::Or,
-                    BinOp::BitXor => crate::wir::BinOp::Xor,
-                    BinOp::Shl => crate::wir::BinOp::Shl,
-                    BinOp::Shr => crate::wir::BinOp::Shr,
+                    BinOp::Add => witchy_wir::wir::BinOp::Add,
+                    BinOp::Sub => witchy_wir::wir::BinOp::Sub,
+                    BinOp::Mul => witchy_wir::wir::BinOp::Mul,
+                    BinOp::Div => witchy_wir::wir::BinOp::Div,
+                    BinOp::Mod => witchy_wir::wir::BinOp::Rem,
+                    BinOp::BitAnd => witchy_wir::wir::BinOp::And,
+                    BinOp::BitOr => witchy_wir::wir::BinOp::Or,
+                    BinOp::BitXor => witchy_wir::wir::BinOp::Xor,
+                    BinOp::Shl => witchy_wir::wir::BinOp::Shl,
+                    BinOp::Shr => witchy_wir::wir::BinOp::Shr,
                     BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => {
                         // String compares ($str_eq/$str_cmp), the structural eq
                         // helper for compounds, the loud rejects (dict ==, compound
@@ -3983,12 +3983,12 @@ impl Codegen {
                             return None;
                         }
                         match op {
-                            BinOp::Eq => crate::wir::BinOp::Eq,
-                            BinOp::NotEq => crate::wir::BinOp::Ne,
-                            BinOp::Lt => crate::wir::BinOp::Lt,
-                            BinOp::LtEq => crate::wir::BinOp::Le,
-                            BinOp::Gt => crate::wir::BinOp::Gt,
-                            BinOp::GtEq => crate::wir::BinOp::Ge,
+                            BinOp::Eq => witchy_wir::wir::BinOp::Eq,
+                            BinOp::NotEq => witchy_wir::wir::BinOp::Ne,
+                            BinOp::Lt => witchy_wir::wir::BinOp::Lt,
+                            BinOp::LtEq => witchy_wir::wir::BinOp::Le,
+                            BinOp::Gt => witchy_wir::wir::BinOp::Gt,
+                            BinOp::GtEq => witchy_wir::wir::BinOp::Ge,
                             _ => unreachable!(),
                         }
                     }
@@ -4013,15 +4013,15 @@ impl Codegen {
                     (4 + 8 * idx, name_kind(names[idx].1.as_deref()))
                 };
                 let addr = W::Binary {
-                    op: crate::wir::BinOp::Add,
-                    kind: crate::wir::Kind::I32,
+                    op: witchy_wir::wir::BinOp::Add,
+                    kind: witchy_wir::wir::Kind::I32,
                     lhs: Box::new(self.lower_expr(base)?),
                     rhs: Box::new(W::ConstI32(offset as i32)),
                 };
                 W::FromSlot(
                     Box::new(W::Load {
                         ptr: Box::new(addr),
-                        kind: crate::wir::Kind::I64,
+                        kind: witchy_wir::wir::Kind::I64,
                         offset: 0,
                     }),
                     Self::wir_kind(kind),
@@ -4031,29 +4031,29 @@ impl Codegen {
             // success payload (tag 0, at `tmp+4`) or early-`return` the whole
             // Err/None. The `var` epilogue variant stays in legacy.
             Expr::Try(inner) => {
-                use crate::wir::WirNode as N;
+                use witchy_wir::wir::WirNode as N;
                 let payload_kind =
                     self.match_payload_valtype(inner).map(valtype_kind).unwrap_or(Kind::I32);
                 let inner_w = self.lower_expr(inner)?;
                 let tmp = TRY_TMP.to_string();
                 let cond = W::Unary {
-                    op: crate::wir::UnOp::Not,
-                    kind: crate::wir::Kind::I32,
+                    op: witchy_wir::wir::UnOp::Not,
+                    kind: witchy_wir::wir::Kind::I32,
                     arg: Box::new(W::Load {
                         ptr: Box::new(W::GetLocal(tmp.clone())),
-                        kind: crate::wir::Kind::I32,
+                        kind: witchy_wir::wir::Kind::I32,
                         offset: 0,
                     }),
                 };
                 let payload = W::FromSlot(
                     Box::new(W::Load {
                         ptr: Box::new(W::Binary {
-                            op: crate::wir::BinOp::Add,
-                            kind: crate::wir::Kind::I32,
+                            op: witchy_wir::wir::BinOp::Add,
+                            kind: witchy_wir::wir::Kind::I32,
                             lhs: Box::new(W::GetLocal(tmp.clone())),
                             rhs: Box::new(W::ConstI32(4)),
                         }),
-                        kind: crate::wir::Kind::I64,
+                        kind: witchy_wir::wir::Kind::I64,
                         offset: 0,
                     }),
                     Self::wir_kind(payload_kind),
@@ -4077,7 +4077,7 @@ impl Codegen {
                         // `build_lambda_wir_func`. A plain function returns the
                         // pointer directly.
                         let ret_val = if self.cur_fn_ret_slot {
-                            W::ToSlot(Box::new(W::GetLocal(tmp.clone())), crate::wir::Kind::I32)
+                            W::ToSlot(Box::new(W::GetLocal(tmp.clone())), witchy_wir::wir::Kind::I32)
                         } else {
                             W::GetLocal(tmp.clone())
                         };
@@ -4141,7 +4141,7 @@ impl Codegen {
                         args: ci_args,
                         index: Box::new(W::Load {
                             ptr: Box::new(W::GetLocal(name.to_string())),
-                            kind: crate::wir::Kind::I32,
+                            kind: witchy_wir::wir::Kind::I32,
                             offset: 0,
                         }),
                     };
@@ -4182,8 +4182,8 @@ impl Codegen {
     /// `lambda_wir_funcs` once (idempotent by content hash). `None` (the program is
     /// then rejected as unsupported) when the lambda assigns a captured var or its
     /// body doesn't fully lower.
-    fn lower_lambda(&mut self, params: &[Param], body: &Block) -> Option<crate::wir::WirExpr> {
-        use crate::wir::WirExpr as W;
+    fn lower_lambda(&mut self, params: &[Param], body: &Block) -> Option<witchy_wir::wir::WirExpr> {
+        use witchy_wir::wir::WirExpr as W;
         // Only a WIR-collecting scope lowers lambdas; otherwise bail so the
         // construct is reported unsupported.
         if !self.collect_wir {
@@ -4274,8 +4274,8 @@ impl Codegen {
         params: &[Param],
         body: &Block,
         cap_info: &[CaptureInfo],
-    ) -> Option<crate::wir::WirFunc> {
-        use crate::wir::{WirExpr as W, WirFunc, WirLocal, WirNode as N, WirTy};
+    ) -> Option<witchy_wir::wir::WirFunc> {
+        use witchy_wir::wir::{WirExpr as W, WirFunc, WirLocal, WirNode as N, WirTy};
         let index = self.lambda_wir_funcs.len();
         let saved = self.swap_out_scope();
         self.cur_fn_var = false;
@@ -4394,7 +4394,7 @@ impl Codegen {
                 }
                 // Prologue: recover each value param from its i64 slot, then each
                 // capture from the env record (slot j at offset 4 + 8*j).
-                let mut nodes: crate::wir::WirSeq = Vec::new();
+                let mut nodes: witchy_wir::wir::WirSeq = Vec::new();
                 for p in params {
                     let k = self.locals.get(&p.name).copied().unwrap_or(Kind::I32);
                     nodes.push(N::SetLocal {
@@ -4405,14 +4405,14 @@ impl Codegen {
                 for (j, (name, _, _, kind)) in cap_info.iter().enumerate() {
                     let off = (4 + 8 * j) as i32;
                     let addr = W::Binary {
-                        op: crate::wir::BinOp::Add,
-                        kind: crate::wir::Kind::I32,
+                        op: witchy_wir::wir::BinOp::Add,
+                        kind: witchy_wir::wir::Kind::I32,
                         lhs: Box::new(W::GetLocal(ENV_PARAM.into())),
                         rhs: Box::new(W::ConstI32(off)),
                     };
                     nodes.push(N::SetLocal {
                         local: name.clone(),
-                        value: W::FromSlot(Box::new(W::Load { ptr: Box::new(addr), kind: crate::wir::Kind::I64, offset: 0 }), Self::wir_kind(*kind)),
+                        value: W::FromSlot(Box::new(W::Load { ptr: Box::new(addr), kind: witchy_wir::wir::Kind::I64, offset: 0 }), Self::wir_kind(*kind)),
                     });
                 }
                 // Body, with the tail value stored into the i64 result slot.
@@ -4518,20 +4518,20 @@ impl Codegen {
     /// the pool is exhausted (then the loop simply lowers without the reset, which
     /// is still correct — just less memory-efficient). Bumps `wm_level`; the
     /// caller decrements it once the body is lowered.
-    fn loop_watermark_wir(&mut self, body: &Block) -> Option<(crate::wir::WirNode, crate::wir::WirNode)> {
+    fn loop_watermark_wir(&mut self, body: &Block) -> Option<(witchy_wir::wir::WirNode, witchy_wir::wir::WirNode)> {
         if force_copy_mode() || self.wm_level >= WM_POOL || !self.loop_arena_resettable(body) {
             return None;
         }
         let wm = format!("__witchy_wm_{}", self.wm_level);
         self.wm_level += 1;
         self.uses_wm = true;
-        let capture = crate::wir::WirNode::SetLocal {
+        let capture = witchy_wir::wir::WirNode::SetLocal {
             local: wm.clone(),
-            value: crate::wir::WirExpr::GetGlobal("heap".into()),
+            value: witchy_wir::wir::WirExpr::GetGlobal("heap".into()),
         };
-        let reset = crate::wir::WirNode::SetGlobal {
+        let reset = witchy_wir::wir::WirNode::SetGlobal {
             global: "heap".into(),
-            value: crate::wir::WirExpr::GetLocal(wm),
+            value: witchy_wir::wir::WirExpr::GetLocal(wm),
         };
         Some((capture, reset))
     }
@@ -4828,7 +4828,7 @@ impl Codegen {
     /// the fallback that makes `${collect(...)}`, ADT-payload bindings, and
     /// every other "the local maps lost it" case render and compare.
     fn table_shape_of(&self, e: &Expr) -> Option<EqShape> {
-        let t = crate::typeck::ty_to_ast(self.type_table.type_of(e)?)?;
+        let t = witchy_types::typeck::ty_to_ast(self.type_table.type_of(e)?)?;
         self.eq_shape_of_type(&t)
     }
 
@@ -4973,10 +4973,10 @@ impl Codegen {
     fn slot_cmp_wir(
         &mut self,
         shape: &EqShape,
-        aa: crate::wir::WirExpr,
-        bb: crate::wir::WirExpr,
-    ) -> Option<crate::wir::WirExpr> {
-        use crate::wir::{BinOp, Kind, WirExpr as W};
+        aa: witchy_wir::wir::WirExpr,
+        bb: witchy_wir::wir::WirExpr,
+    ) -> Option<witchy_wir::wir::WirExpr> {
+        use witchy_wir::wir::{BinOp, Kind, WirExpr as W};
         let load = |p: W| W::Load { ptr: Box::new(p), kind: Kind::I64, offset: 0 };
         let load_i32 = |p: W| W::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
         Some(match shape {
@@ -5019,15 +5019,15 @@ impl Codegen {
         // Reserve the name with a placeholder BEFORE building, so a recursive
         // ADT's self-referential field compares via a `call $eq_…` back to this
         // helper (tying the knot) instead of looping forever in codegen.
-        self.eq_wir_helpers.insert(name.clone(), crate::wir::WirFunc {
+        self.eq_wir_helpers.insert(name.clone(), witchy_wir::wir::WirFunc {
             name: name.clone(),
             params: vec![
-                crate::wir::WirLocal { name: "a".into(), ty: crate::wir::WirTy::Bool },
-                crate::wir::WirLocal { name: "b".into(), ty: crate::wir::WirTy::Bool },
+                witchy_wir::wir::WirLocal { name: "a".into(), ty: witchy_wir::wir::WirTy::Bool },
+                witchy_wir::wir::WirLocal { name: "b".into(), ty: witchy_wir::wir::WirTy::Bool },
             ],
-            ret: vec![crate::wir::WirTy::Bool],
+            ret: vec![witchy_wir::wir::WirTy::Bool],
             locals: vec![],
-            body: vec![crate::wir::WirNode::Push(crate::wir::WirExpr::ConstI32(1))],
+            body: vec![witchy_wir::wir::WirNode::Push(witchy_wir::wir::WirExpr::ConstI32(1))],
             raw_body: None,
         });
         let built = self.build_eq_wir_body(shape);
@@ -5036,13 +5036,13 @@ impl Codegen {
             self.eq_wir_helpers.remove(&name);
             return None;
         };
-        let func = crate::wir::WirFunc {
+        let func = witchy_wir::wir::WirFunc {
             name: name.clone(),
             params: vec![
-                crate::wir::WirLocal { name: "a".into(), ty: crate::wir::WirTy::Bool },
-                crate::wir::WirLocal { name: "b".into(), ty: crate::wir::WirTy::Bool },
+                witchy_wir::wir::WirLocal { name: "a".into(), ty: witchy_wir::wir::WirTy::Bool },
+                witchy_wir::wir::WirLocal { name: "b".into(), ty: witchy_wir::wir::WirTy::Bool },
             ],
-            ret: vec![crate::wir::WirTy::Bool],
+            ret: vec![witchy_wir::wir::WirTy::Bool],
             locals,
             body,
             raw_body: None,
@@ -5057,9 +5057,9 @@ impl Codegen {
     fn slot_rcopy_wir(
         &mut self,
         shape: &EqShape,
-        src: crate::wir::WirExpr,
-    ) -> Option<crate::wir::WirExpr> {
-        use crate::wir::{Kind as WK, WirExpr as W};
+        src: witchy_wir::wir::WirExpr,
+    ) -> Option<witchy_wir::wir::WirExpr> {
+        use witchy_wir::wir::{Kind as WK, WirExpr as W};
         let load = W::Load { ptr: Box::new(src), kind: WK::I64, offset: 0 };
         Some(match shape {
             EqShape::Int | EqShape::Bool | EqShape::Float => load,
@@ -5095,10 +5095,10 @@ impl Codegen {
         let built = self.build_rcopy_wir_body(shape);
         self.rcopy_building.remove(&name);
         let (body, locals) = built?;
-        let func = crate::wir::WirFunc {
+        let func = witchy_wir::wir::WirFunc {
             name: name.clone(),
-            params: vec![crate::wir::WirLocal { name: "p".into(), ty: crate::wir::WirTy::Str }],
-            ret: vec![crate::wir::WirTy::Bool],
+            params: vec![witchy_wir::wir::WirLocal { name: "p".into(), ty: witchy_wir::wir::WirTy::Str }],
+            ret: vec![witchy_wir::wir::WirTy::Bool],
             locals,
             body,
             raw_body: None,
@@ -5114,8 +5114,8 @@ impl Codegen {
     fn build_rcopy_wir_body(
         &mut self,
         shape: &EqShape,
-    ) -> Option<(crate::wir::WirSeq, Vec<crate::wir::WirLocal>)> {
-        use crate::wir::{BinOp, Kind as WK, WirExpr as W, WirLocal, WirNode as N, WirTy};
+    ) -> Option<(witchy_wir::wir::WirSeq, Vec<witchy_wir::wir::WirLocal>)> {
+        use witchy_wir::wir::{BinOp, Kind as WK, WirExpr as W, WirLocal, WirNode as N, WirTy};
         let getl = |n: &str| W::GetLocal(n.into());
         let getg = |n: &str| W::GetGlobal(n.into());
         let i32c = W::ConstI32;
@@ -5224,8 +5224,8 @@ impl Codegen {
     /// Build the `(body, locals)` of a structural-eq helper for `shape`. `None`
     /// for shapes/fields not yet handled (Adt, Dict, or a non-buildable nested
     /// field). Recurses through `slot_cmp_wir` for compound fields.
-    fn build_eq_wir_body(&mut self, shape: &EqShape) -> Option<(crate::wir::WirSeq, Vec<crate::wir::WirLocal>)> {
-        use crate::wir::{BinOp, Kind, UnOp, WirExpr as W, WirLocal, WirNode as N, WirTy};
+    fn build_eq_wir_body(&mut self, shape: &EqShape) -> Option<(witchy_wir::wir::WirSeq, Vec<witchy_wir::wir::WirLocal>)> {
+        use witchy_wir::wir::{BinOp, Kind, UnOp, WirExpr as W, WirLocal, WirNode as N, WirTy};
         let getl = |n: &str| W::GetLocal(n.into());
         let i32c = W::ConstI32;
         let add = |l: W, r: W| W::Binary { op: BinOp::Add, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
@@ -5236,9 +5236,9 @@ impl Codegen {
 
         // Build the per-field checks for a flat record/tuple/variant whose field
         // shapes are `fields`, reading slots at `base+4+8*i`. None if any non-scalar.
-        let (body, locals): (crate::wir::WirSeq, Vec<WirLocal>) = match shape {
+        let (body, locals): (witchy_wir::wir::WirSeq, Vec<WirLocal>) = match shape {
             EqShape::Tuple(fields) => {
-                let mut b: crate::wir::WirSeq = Vec::new();
+                let mut b: witchy_wir::wir::WirSeq = Vec::new();
                 for (i, f) in fields.iter().enumerate() {
                     let off = i32c((4 + 8 * i) as i32);
                     let cmp = self.slot_cmp_wir(f, add(getl("a"), off.clone()), add(getl("b"), off))?;
@@ -5249,7 +5249,7 @@ impl Codegen {
             }
             EqShape::Record(tyname) => {
                 let fields = self.record_field_types.get(tyname).cloned()?;
-                let mut b: crate::wir::WirSeq = Vec::new();
+                let mut b: witchy_wir::wir::WirSeq = Vec::new();
                 for (i, fty) in fields.iter().enumerate() {
                     let fshape = self.eq_shape_of_type(fty)?;
                     let off = i32c((4 + 8 * i) as i32);
@@ -5267,7 +5267,7 @@ impl Codegen {
                     )
                 };
                 let cmp = self.slot_cmp_wir(elem, idx_off("a"), idx_off("b"))?;
-                let b: crate::wir::WirSeq = vec![
+                let b: witchy_wir::wir::WirSeq = vec![
                     // lengths differ → not equal
                     N::If {
                         cond: W::Binary { op: BinOp::Ne, kind: Kind::I32, lhs: Box::new(load_i32(getl("a"))), rhs: Box::new(load_i32(getl("b"))) },
@@ -5349,7 +5349,7 @@ impl Codegen {
                 };
                 let kcmp = self.slot_cmp_wir(k, entry("a", 4), entry("b", 4))?;
                 let vcmp = self.slot_cmp_wir(v, entry("a", 12), entry("b", 12))?;
-                let b: crate::wir::WirSeq = vec![
+                let b: witchy_wir::wir::WirSeq = vec![
                     // counts differ → not equal
                     N::If {
                         cond: W::Binary { op: BinOp::Ne, kind: Kind::I32, lhs: Box::new(load_i32(getl("a"))), rhs: Box::new(load_i32(getl("b"))) },
@@ -5391,8 +5391,8 @@ impl Codegen {
     fn build_variant_eq_wir(
         &mut self,
         all: &[Vec<EqShape>],
-    ) -> Option<(crate::wir::WirSeq, Vec<crate::wir::WirLocal>)> {
-        use crate::wir::{BinOp, Kind, UnOp, WirExpr as W, WirLocal, WirNode as N, WirTy};
+    ) -> Option<(witchy_wir::wir::WirSeq, Vec<witchy_wir::wir::WirLocal>)> {
+        use witchy_wir::wir::{BinOp, Kind, UnOp, WirExpr as W, WirLocal, WirNode as N, WirTy};
         let getl = |n: &str| W::GetLocal(n.into());
         let i32c = W::ConstI32;
         let add = |l: W, r: W| W::Binary { op: BinOp::Add, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
@@ -5400,7 +5400,7 @@ impl Codegen {
         let not = |e: W| W::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(e) };
         let eqi = |l: W, r: W| W::Binary { op: BinOp::Eq, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
         let nei = |l: W, r: W| W::Binary { op: BinOp::Ne, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-        let mut b: crate::wir::WirSeq = Vec::new();
+        let mut b: witchy_wir::wir::WirSeq = Vec::new();
         b.push(N::If {
             cond: nei(load_i32(getl("a")), load_i32(getl("b"))),
             then_: vec![N::Return(Some(i32c(0)))],
@@ -5412,7 +5412,7 @@ impl Codegen {
             if fields.is_empty() {
                 continue;
             }
-            let mut checks: crate::wir::WirSeq = Vec::new();
+            let mut checks: witchy_wir::wir::WirSeq = Vec::new();
             for (i, fshape) in fields.iter().enumerate() {
                 let off = i32c((4 + 8 * i) as i32);
                 let cmp = self.slot_cmp_wir(fshape, add(getl("a"), off.clone()), add(getl("b"), off))?;
@@ -5434,8 +5434,8 @@ impl Codegen {
     /// at `addr`. Int → `$int_to_string`, Bool → an interned "true"/"false"
     /// value-if, Str → the pointer, compound → that shape's `$ts` helper. `None`
     /// for Float (needs the `$float_to_str` host import) or an unbuildable nested.
-    fn slot_render_wir(&mut self, shape: &EqShape, addr: crate::wir::WirExpr) -> Option<crate::wir::WirExpr> {
-        use crate::wir::{Kind, WirExpr as W, WirNode as N, WirTy};
+    fn slot_render_wir(&mut self, shape: &EqShape, addr: witchy_wir::wir::WirExpr) -> Option<witchy_wir::wir::WirExpr> {
+        use witchy_wir::wir::{Kind, WirExpr as W, WirNode as N, WirTy};
         let load_i64 = |p: W| W::Load { ptr: Box::new(p), kind: Kind::I64, offset: 0 };
         let load_i32 = |p: W| W::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
         Some(match shape {
@@ -5482,12 +5482,12 @@ impl Codegen {
         // through the `contains_key` check above — the recursion becomes a
         // `call $ts_…` to this helper rather than an infinite inline expansion.
         let empty = self.intern("");
-        self.ts_wir_helpers.insert(name.clone(), crate::wir::WirFunc {
+        self.ts_wir_helpers.insert(name.clone(), witchy_wir::wir::WirFunc {
             name: name.clone(),
-            params: vec![crate::wir::WirLocal { name: "p".into(), ty: crate::wir::WirTy::Bool }],
-            ret: vec![crate::wir::WirTy::Str],
+            params: vec![witchy_wir::wir::WirLocal { name: "p".into(), ty: witchy_wir::wir::WirTy::Bool }],
+            ret: vec![witchy_wir::wir::WirTy::Str],
             locals: vec![],
-            body: vec![crate::wir::WirNode::Push(crate::wir::WirExpr::StrPtr(empty))],
+            body: vec![witchy_wir::wir::WirNode::Push(witchy_wir::wir::WirExpr::StrPtr(empty))],
             raw_body: None,
         });
         let built = self.build_ts_wir_body(shape);
@@ -5498,10 +5498,10 @@ impl Codegen {
             self.ts_wir_helpers.remove(&name);
             return None;
         };
-        let func = crate::wir::WirFunc {
+        let func = witchy_wir::wir::WirFunc {
             name: name.clone(),
-            params: vec![crate::wir::WirLocal { name: "p".into(), ty: crate::wir::WirTy::Bool }],
-            ret: vec![crate::wir::WirTy::Str],
+            params: vec![witchy_wir::wir::WirLocal { name: "p".into(), ty: witchy_wir::wir::WirTy::Bool }],
+            ret: vec![witchy_wir::wir::WirTy::Str],
             locals,
             body,
             raw_body: None,
@@ -5512,8 +5512,8 @@ impl Codegen {
 
     /// Build the `(body, locals)` of a `$ts` renderer: a tuple `(f0, f1)` or a
     /// list `[e0, e1]`, accumulating with `$concat`. `None` for Record/Adt/etc.
-    fn build_ts_wir_body(&mut self, shape: &EqShape) -> Option<(crate::wir::WirSeq, Vec<crate::wir::WirLocal>)> {
-        use crate::wir::{BinOp, Kind, WirExpr as W, WirLocal, WirNode as N, WirTy};
+    fn build_ts_wir_body(&mut self, shape: &EqShape) -> Option<(witchy_wir::wir::WirSeq, Vec<witchy_wir::wir::WirLocal>)> {
+        use witchy_wir::wir::{BinOp, Kind, WirExpr as W, WirLocal, WirNode as N, WirTy};
         let getl = |n: &str| W::GetLocal(n.into());
         let i32c = W::ConstI32;
         let add = |l: W, r: W| W::Binary { op: BinOp::Add, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
@@ -5523,7 +5523,7 @@ impl Codegen {
         match shape {
             EqShape::Tuple(fields) => {
                 let (open, close, comma) = (self.intern("("), self.intern(")"), self.intern(", "));
-                let mut body: crate::wir::WirSeq = vec![setl("acc", W::StrPtr(open))];
+                let mut body: witchy_wir::wir::WirSeq = vec![setl("acc", W::StrPtr(open))];
                 for (i, f) in fields.iter().enumerate() {
                     let render = self.slot_render_wir(f, add(getl("p"), i32c((4 + 8 * i) as i32)))?;
                     if i > 0 {
@@ -5540,7 +5540,7 @@ impl Codegen {
                     elem,
                     add(add(getl("p"), i32c(4)), W::Binary { op: BinOp::Mul, kind: Kind::I32, lhs: Box::new(getl("i")), rhs: Box::new(i32c(8)) }),
                 )?;
-                let body: crate::wir::WirSeq = vec![
+                let body: witchy_wir::wir::WirSeq = vec![
                     setl("n", W::Load { ptr: Box::new(getl("p")), kind: Kind::I32, offset: 0 }),
                     setl("acc", W::StrPtr(open)),
                     setl("i", i32c(0)),
@@ -5573,7 +5573,7 @@ impl Codegen {
                 let fields = self.record_field_types.get(tyname).cloned()?;
                 let header = self.intern(&format!("{tyname}("));
                 let (close, comma) = (self.intern(")"), self.intern(", "));
-                let mut body: crate::wir::WirSeq = vec![setl("acc", W::StrPtr(header))];
+                let mut body: witchy_wir::wir::WirSeq = vec![setl("acc", W::StrPtr(header))];
                 for (i, fty) in fields.iter().enumerate() {
                     let fshape = self.eq_shape_of_type(fty)?;
                     let render = self.slot_render_wir(&fshape, add(getl("p"), i32c((4 + 8 * i) as i32)))?;
@@ -5619,7 +5619,7 @@ impl Codegen {
                 };
                 let krender = self.slot_render_wir(k, stride(4))?;
                 let vrender = self.slot_render_wir(v, stride(12))?;
-                let body: crate::wir::WirSeq = vec![
+                let body: witchy_wir::wir::WirSeq = vec![
                     setl("n", W::Load { ptr: Box::new(getl("p")), kind: Kind::I32, offset: 0 }),
                     setl("acc", W::StrPtr(open)),
                     setl("i", i32c(0)),
@@ -5686,8 +5686,8 @@ impl Codegen {
         &mut self,
         ctor_names: &[String],
         all: &[Vec<EqShape>],
-    ) -> Option<(crate::wir::WirSeq, Vec<crate::wir::WirLocal>)> {
-        use crate::wir::{BinOp, Kind, WirExpr as W, WirLocal, WirNode as N, WirTy};
+    ) -> Option<(witchy_wir::wir::WirSeq, Vec<witchy_wir::wir::WirLocal>)> {
+        use witchy_wir::wir::{BinOp, Kind, WirExpr as W, WirLocal, WirNode as N, WirTy};
         let getl = |n: &str| W::GetLocal(n.into());
         let i32c = W::ConstI32;
         let add = |l: W, r: W| W::Binary { op: BinOp::Add, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
@@ -5697,7 +5697,7 @@ impl Codegen {
         let load_i32 = |p: W| W::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
         self.uses_concat = true;
         let (open, close, comma) = (self.intern("("), self.intern(")"), self.intern(", "));
-        let mut b: crate::wir::WirSeq = vec![setl("t", load_i32(getl("p")))];
+        let mut b: witchy_wir::wir::WirSeq = vec![setl("t", load_i32(getl("p")))];
         for (tag, fields) in all.iter().enumerate() {
             let label = self.intern(ctor_names.get(tag).map(|s| s.as_str()).unwrap_or("?"));
             if fields.is_empty() {
@@ -5709,7 +5709,7 @@ impl Codegen {
                 });
                 continue;
             }
-            let mut arm: crate::wir::WirSeq = vec![
+            let mut arm: witchy_wir::wir::WirSeq = vec![
                 setl("acc", W::StrPtr(label)),
                 setl("acc", concat(getl("acc"), W::StrPtr(open))),
             ];
@@ -5737,7 +5737,7 @@ impl Codegen {
     }
 
     /// Lower a list of argument expressions, threading `None` if any isn't lowerable.
-    fn lower_args(&mut self, args: &[&Expr]) -> Option<Vec<crate::wir::WirExpr>> {
+    fn lower_args(&mut self, args: &[&Expr]) -> Option<Vec<witchy_wir::wir::WirExpr>> {
         let mut v = Vec::with_capacity(args.len());
         for a in args {
             v.push(self.lower_expr(a)?);
@@ -5749,9 +5749,9 @@ impl Codegen {
     /// `$helper` is a guest module function; the actual host import is `_host`-
     /// suffixed and called from inside the helper). The `uses_*` side-effect flags
     /// are set exactly as the legacy arms do. Returns `None` for unconverted arms.
-    fn lower_call(&mut self, name: &str, args: &[Expr]) -> Option<crate::wir::WirExpr> {
-        use crate::wir::WirExpr as W;
-        use crate::wir::WirNode as N;
+    fn lower_call(&mut self, name: &str, args: &[Expr]) -> Option<witchy_wir::wir::WirExpr> {
+        use witchy_wir::wir::WirExpr as W;
+        use witchy_wir::wir::WirNode as N;
         let call = |func: &str, a: Vec<W>| W::Call { func: func.to_string(), args: a };
         // A direct host-import call (a `_host` import is the authority surface).
         let host = |import: &str, a: Vec<W>| W::CallHost { import: import.to_string(), args: a };
@@ -5834,8 +5834,8 @@ impl Codegen {
                 let lookup = call("secretstore_lookup", vec![self.lower_expr(&args[1])?]);
                 let handle = || W::GetLocal(SECRET_TMP.to_string());
                 let cond = W::Binary {
-                    op: crate::wir::BinOp::Ge,
-                    kind: crate::wir::Kind::I32,
+                    op: witchy_wir::wir::BinOp::Ge,
+                    kind: witchy_wir::wir::Kind::I32,
                     lhs: Box::new(handle()),
                     rhs: Box::new(W::ConstI32(0)),
                 };
@@ -5843,14 +5843,14 @@ impl Codegen {
                 self.mk_arities.insert(0);
                 let some = W::Call {
                     func: "mk1".into(),
-                    args: vec![W::ConstI32(0), W::ToSlot(Box::new(handle()), crate::wir::Kind::I32)],
+                    args: vec![W::ConstI32(0), W::ToSlot(Box::new(handle()), witchy_wir::wir::Kind::I32)],
                 };
                 let none = W::Call { func: "mk0".into(), args: vec![W::ConstI32(1)] };
                 let choose = W::Control(Box::new(N::If {
                     cond,
                     then_: vec![N::Push(some)],
                     els: vec![N::Push(none)],
-                    result: Some(crate::wir::WirTy::Str),
+                    result: Some(witchy_wir::wir::WirTy::Str),
                 }));
                 W::Seq(vec![
                     N::SetLocal { local: SECRET_TMP.to_string(), value: lookup },
@@ -5916,7 +5916,7 @@ impl Codegen {
             ("list.length", 1) | ("string.length", 1) if self.collect_wir => {
                 let arg = self.lower_expr(&args[0])?;
                 Self::wir_convert(
-                    W::Load { ptr: Box::new(arg), kind: crate::wir::Kind::I32, offset: 0 },
+                    W::Load { ptr: Box::new(arg), kind: witchy_wir::wir::Kind::I32, offset: 0 },
                     Kind::I32,
                     Kind::I64,
                 )
@@ -5940,15 +5940,15 @@ impl Codegen {
             ("math.to_float", 1) if self.collect_wir => {
                 let ak = self.kind_of(&args[0]);
                 let arg = Self::wir_convert(self.lower_expr(&args[0])?, ak, Kind::I64);
-                W::Unary { op: crate::wir::UnOp::ToFloat, kind: crate::wir::Kind::F64, arg: Box::new(arg) }
+                W::Unary { op: witchy_wir::wir::UnOp::ToFloat, kind: witchy_wir::wir::Kind::F64, arg: Box::new(arg) }
             }
             ("math.to_int", 1) if self.collect_wir => {
                 let arg = self.lower_expr(&args[0])?;
-                W::Unary { op: crate::wir::UnOp::ToInt, kind: crate::wir::Kind::I64, arg: Box::new(arg) }
+                W::Unary { op: witchy_wir::wir::UnOp::ToInt, kind: witchy_wir::wir::Kind::I64, arg: Box::new(arg) }
             }
             ("math.sqrt", 1) if self.collect_wir => {
                 let arg = self.lower_expr(&args[0])?;
-                W::Unary { op: crate::wir::UnOp::Sqrt, kind: crate::wir::Kind::F64, arg: Box::new(arg) }
+                W::Unary { op: witchy_wir::wir::UnOp::Sqrt, kind: witchy_wir::wir::Kind::F64, arg: Box::new(arg) }
             }
             // `__render` to a String for the scalar shapes: Str passes through,
             // Int → `$int_to_string`, Bool → an interned "true"/"false" value-if.
@@ -5966,11 +5966,11 @@ impl Codegen {
                     let t = self.intern("true");
                     let f = self.intern("false");
                     let arg = self.lower_expr(&args[0])?;
-                    W::Control(Box::new(crate::wir::WirNode::If {
+                    W::Control(Box::new(witchy_wir::wir::WirNode::If {
                         cond: arg,
-                        then_: vec![crate::wir::WirNode::Push(W::StrPtr(t))],
-                        els: vec![crate::wir::WirNode::Push(W::StrPtr(f))],
-                        result: Some(crate::wir::WirTy::Str),
+                        then_: vec![witchy_wir::wir::WirNode::Push(W::StrPtr(t))],
+                        els: vec![witchy_wir::wir::WirNode::Push(W::StrPtr(f))],
+                        result: Some(witchy_wir::wir::WirTy::Str),
                     }))
                 }
                 // A scalar Float renders via the `$float_to_str` host-import wrapper
@@ -6055,9 +6055,9 @@ impl Codegen {
             ("fail", 1) => {
                 let msg = self.lower_expr(&args[0])?;
                 W::Seq(vec![
-                    crate::wir::WirNode::Drop(msg),
-                    crate::wir::WirNode::Unreachable,
-                    crate::wir::WirNode::Push(W::ConstI32(0)),
+                    witchy_wir::wir::WirNode::Drop(msg),
+                    witchy_wir::wir::WirNode::Unreachable,
+                    witchy_wir::wir::WirNode::Push(W::ConstI32(0)),
                 ])
             }
             ("get_env", 2) => {
@@ -6069,11 +6069,11 @@ impl Codegen {
             ("print", 2) => {
                 self.uses_print = true;
                 W::Seq(vec![
-                    crate::wir::WirNode::Do(W::Call {
+                    witchy_wir::wir::WirNode::Do(W::Call {
                         func: "print_str".to_string(),
                         args: self.lower_args(&[&args[1]])?,
                     }),
-                    crate::wir::WirNode::Push(W::ConstI32(0)),
+                    witchy_wir::wir::WirNode::Push(W::ConstI32(0)),
                 ])
             }
             // Duration <-> Int(ms) is a runtime no-op (both i64) — value-neutral.
@@ -6083,8 +6083,8 @@ impl Codegen {
                 self.uses_find_byte = true;
                 let inner = self.lower_args(&[&args[0], &args[1]])?;
                 W::Binary {
-                    op: crate::wir::BinOp::Ne,
-                    kind: crate::wir::Kind::I32,
+                    op: witchy_wir::wir::BinOp::Ne,
+                    kind: witchy_wir::wir::Kind::I32,
                     lhs: Box::new(W::Call { func: "find_byte".to_string(), args: inner }),
                     rhs: Box::new(W::ConstI32(-1)),
                 }
@@ -6096,7 +6096,7 @@ impl Codegen {
                 let inner = self.lower_args(&[&args[0], &args[1]])?;
                 W::ToSlot(
                     Box::new(W::Call { func: "str_index_of".to_string(), args: inner }),
-                    crate::wir::Kind::I32,
+                    witchy_wir::wir::Kind::I32,
                 )
             }
             // --- guest-helper calls: `{args} call $helper` ---
@@ -6240,8 +6240,8 @@ impl Codegen {
                 };
                 let handle = || W::GetLocal(SECRET_TMP.to_string());
                 let cond = W::Binary {
-                    op: crate::wir::BinOp::Ge,
-                    kind: crate::wir::Kind::I32,
+                    op: witchy_wir::wir::BinOp::Ge,
+                    kind: witchy_wir::wir::Kind::I32,
                     lhs: Box::new(handle()),
                     rhs: Box::new(W::ConstI32(0)),
                 };
@@ -6249,14 +6249,14 @@ impl Codegen {
                 self.mk_arities.insert(0);
                 let some = W::Call {
                     func: "mk1".into(),
-                    args: vec![W::ConstI32(0), W::ToSlot(Box::new(handle()), crate::wir::Kind::I32)],
+                    args: vec![W::ConstI32(0), W::ToSlot(Box::new(handle()), witchy_wir::wir::Kind::I32)],
                 };
                 let none = W::Call { func: "mk0".into(), args: vec![W::ConstI32(1)] };
                 let choose = W::Control(Box::new(N::If {
                     cond,
                     then_: vec![N::Push(some)],
                     els: vec![N::Push(none)],
-                    result: Some(crate::wir::WirTy::Str),
+                    result: Some(witchy_wir::wir::WirTy::Str),
                 }));
                 W::Seq(vec![
                     N::SetLocal { local: SECRET_TMP.to_string(), value: dial },
@@ -6351,10 +6351,10 @@ impl Codegen {
             ("dict.size", 1) => W::ToSlot(
                 Box::new(W::Load {
                     ptr: Box::new(self.lower_expr(&args[0])?),
-                    kind: crate::wir::Kind::I32,
+                    kind: witchy_wir::wir::Kind::I32,
                     offset: 0,
                 }),
-                crate::wir::Kind::I32,
+                witchy_wir::wir::Kind::I32,
             ),
             // --- dict family: a key-mode i32 side-operand + slot conversions ---
             ("dict.insert", 3) => {
@@ -6517,7 +6517,7 @@ fn list_elem_type_var(ret: &Option<Type>) -> Option<String> {
 }
 
 /// The index of the first parameter typed `List(tv)` for the given type-var `tv`.
-fn list_param_of_var(params: &[crate::ast::Param], tv: &str) -> Option<usize> {
+fn list_param_of_var(params: &[witchy_syntax::ast::Param], tv: &str) -> Option<usize> {
     params.iter().position(|p| {
         matches!(&p.ty, Some(Type::Named(n, targs))
             if n == "List" && targs.len() == 1 && bare_type_var(&targs[0]).as_deref() == Some(tv))
@@ -6526,7 +6526,7 @@ fn list_param_of_var(params: &[crate::ast::Param], tv: &str) -> Option<usize> {
 
 /// The index of the first parameter typed `fn(..) -> tv` (a function returning
 /// the given type-var `tv`).
-fn fn_param_returning_var(params: &[crate::ast::Param], tv: &str) -> Option<usize> {
+fn fn_param_returning_var(params: &[witchy_syntax::ast::Param], tv: &str) -> Option<usize> {
     params.iter().position(|p| {
         matches!(&p.ty, Some(Type::Fn(_, ret)) if bare_type_var(ret).as_deref() == Some(tv))
     })
@@ -6970,7 +6970,7 @@ pub fn compile_module_binary(
     let Some(mut wir_module) = assemble_wir_module(module)? else {
         return Ok(None);
     };
-    crate::wir_opt::optimize(&mut wir_module);
+    witchy_wir::wir_opt::optimize(&mut wir_module);
     // Robustness net: if any reached `Call` names a func that didn't make it into
     // the module — an unregistered guest helper like `$string_from_code`, which
     // `assemble`'s prelude/wir-helper resolution doesn't account for — bail with
@@ -6995,7 +6995,7 @@ pub fn compile_module_binary(
             return Ok(None);
         }
     }
-    let bytes = crate::wir_encode::encode(&wir_module);
+    let bytes = witchy_wir::wir_encode::encode(&wir_module);
     // Validate before committing; a malformed assembly returns `Ok(None)`.
     if let Err(e) = wasmparser::validate(&bytes) {
         if std::env::var_os("WIRDIAG").is_some() {
@@ -7014,20 +7014,20 @@ pub fn compile_module_binary(
 /// optimized vs. unoptimized encoding (the slot-elimination differential).
 pub fn assemble_wir_module(
     module: &Module,
-) -> Result<Option<crate::wir::WirModule>, CodegenError> {
-    use crate::wir::{
+) -> Result<Option<witchy_wir::wir::WirModule>, CodegenError> {
+    use witchy_wir::wir::{
         DataSegment, GlobalInit, Kind as WK, WirExpr, WirFunc, WirGlobal, WirImport, WirModule,
         WirNode, WirTable,
     };
-    use crate::wir_prelude::WasmTy;
+    use witchy_wir::wir_prelude::WasmTy;
     // Front-end, identical to `compile_module_with`.
-    let recs = crate::records::lower(module.clone()).map_err(|message| CodegenError { message })?;
-    let mut lowered = crate::traits::lower_for_wasm(recs);
-    crate::parser::lower_sugar_module(&mut lowered);
+    let recs = witchy_syntax::records::lower(module.clone()).map_err(|message| CodegenError { message })?;
+    let mut lowered = witchy_types::traits::lower_for_wasm(recs);
+    witchy_syntax::parser::lower_sugar_module(&mut lowered);
     alpha_rename_module(&mut lowered);
     let mut cg = Codegen::new();
     cg.collect_wir = true;
-    cg.type_table = crate::typeck::annotate(&lowered);
+    cg.type_table = witchy_types::typeck::annotate(&lowered);
     // `e ? "msg"` desugar (`__try_ctx`) is type-directed: an `Option` operand lowers
     // via `option.ok_or`, a `Result` via `result.map_err`. Rewrite it here — after
     // annotation (so the operand's type is known) and before the string-`+` flip +
@@ -7035,7 +7035,7 @@ pub fn assemble_wir_module(
     // nodes get typed). Re-annotate so the freshly minted calls/lambda are in the
     // type table.
     if rewrite_try_ctx_module(&mut lowered, &cg.type_table) {
-        cg.type_table = crate::typeck::annotate(&lowered);
+        cg.type_table = witchy_types::typeck::annotate(&lowered);
     }
     flip_string_add_module(&mut lowered, &cg.type_table);
     let module = &lowered;
@@ -7050,7 +7050,7 @@ pub fn assemble_wir_module(
         .iter()
         .filter_map(|it| match it {
             Item::Function(f)
-                if reachable.contains(&f.name) && !crate::typeck::intrinsic(&f.name) =>
+                if reachable.contains(&f.name) && !witchy_types::typeck::intrinsic(&f.name) =>
             {
                 Some(f.name.clone())
             }
@@ -7076,7 +7076,7 @@ pub fn assemble_wir_module(
                 main_returns_int = matches!(&f.ret, Some(Type::Named(n, _)) if n == "Int");
                 main_returns_float = matches!(&f.ret, Some(Type::Named(n, _)) if n == "Float");
                 for p in &f.params {
-                    let is_args = matches!(&p.ty, Some(t) if crate::typeck::is_args_type(t));
+                    let is_args = matches!(&p.ty, Some(t) if witchy_types::typeck::is_args_type(t));
                     if is_args {
                         cg.uses_args = true;
                     }
@@ -7087,7 +7087,7 @@ pub fn assemble_wir_module(
                         .push(matches!(&p.ty, Some(Type::Named(n, _)) if n == "File"));
                 }
             }
-            if reachable.contains(&f.name) && !crate::typeck::intrinsic(&f.name) {
+            if reachable.contains(&f.name) && !witchy_types::typeck::intrinsic(&f.name) {
                 // Compiled for its side effects: stashes a `WirFunc` in
                 // `cg.wir_funcs` iff the whole body lowered, and sets the
                 // `uses_*` import-gating flags.
@@ -7140,7 +7140,7 @@ pub fn assemble_wir_module(
         }
         return Ok(None);
     }
-    let prelude = crate::wir_prelude::prelude();
+    let prelude = witchy_wir::wir_prelude::prelude();
 
     let wasmty_kind = |t: WasmTy| -> WK {
         match t {
@@ -7208,7 +7208,7 @@ pub fn assemble_wir_module(
             called.insert("ensure".to_string());
         }
         // Resolve every reached helper through the registry (transitively).
-        let mut resolved: std::collections::BTreeMap<String, crate::wir::WirHelperSpec> =
+        let mut resolved: std::collections::BTreeMap<String, witchy_wir::wir::WirHelperSpec> =
             std::collections::BTreeMap::new();
         let mut all_registered = true;
         // A called name is a prelude helper to pull in if the static prelude
@@ -7216,14 +7216,14 @@ pub fn assemble_wir_module(
         // migrated to WIR that have no static-prelude body (e.g. crypto_sha512).
         let mut queue: Vec<String> = called
             .iter()
-            .filter(|n| helper_names.contains(n.as_str()) || crate::wir::wir_helper(n).is_some())
+            .filter(|n| helper_names.contains(n.as_str()) || witchy_wir::wir::wir_helper(n).is_some())
             .cloned()
             .collect();
         while let Some(h) = queue.pop() {
             if resolved.contains_key(&h) {
                 continue;
             }
-            match crate::wir::wir_helper(&h) {
+            match witchy_wir::wir::wir_helper(&h) {
                 Some(spec) => {
                     for d in spec.helper_deps {
                         queue.push((*d).to_string());
@@ -7358,14 +7358,14 @@ pub fn assemble_wir_module(
                 // __galloc(len) -> ptr : ensure(len); p = heap; heap = heap + len; p
                 pruned_funcs.push(WirFunc {
                     name: "__galloc".into(),
-                    params: vec![crate::wir::WirLocal {
+                    params: vec![witchy_wir::wir::WirLocal {
                         name: "len".into(),
-                        ty: crate::wir::WirTy::Bool, // i32
+                        ty: witchy_wir::wir::WirTy::Bool, // i32
                     }],
-                    ret: vec![crate::wir::WirTy::Bool], // i32 pointer
-                    locals: vec![crate::wir::WirLocal {
+                    ret: vec![witchy_wir::wir::WirTy::Bool], // i32 pointer
+                    locals: vec![witchy_wir::wir::WirLocal {
                         name: "p".into(),
-                        ty: crate::wir::WirTy::Bool,
+                        ty: witchy_wir::wir::WirTy::Bool,
                     }],
                     body: vec![
                         WirNode::Do(WirExpr::Call {
@@ -7379,7 +7379,7 @@ pub fn assemble_wir_module(
                         WirNode::SetGlobal {
                             global: "heap".into(),
                             value: WirExpr::Binary {
-                                op: crate::wir::BinOp::Add,
+                                op: witchy_wir::wir::BinOp::Add,
                                 kind: WK::I32,
                                 lhs: Box::new(WirExpr::GetGlobal("heap".into())),
                                 rhs: Box::new(WirExpr::GetLocal("len".into())),
@@ -7397,10 +7397,10 @@ pub fn assemble_wir_module(
                     pruned_funcs.push(WirFunc {
                         name: string_export_name(name),
                         params: vec![
-                            crate::wir::WirLocal { name: "in_ptr".into(), ty: crate::wir::WirTy::Bool },
-                            crate::wir::WirLocal { name: "in_len".into(), ty: crate::wir::WirTy::Bool },
+                            witchy_wir::wir::WirLocal { name: "in_ptr".into(), ty: witchy_wir::wir::WirTy::Bool },
+                            witchy_wir::wir::WirLocal { name: "in_len".into(), ty: witchy_wir::wir::WirTy::Bool },
                         ],
-                        ret: vec![crate::wir::WirTy::Bool], // i32 result String pointer
+                        ret: vec![witchy_wir::wir::WirTy::Bool], // i32 result String pointer
                         locals: vec![],
                         body: vec![WirNode::Push(WirExpr::Call {
                             func: name.clone(),
@@ -7514,8 +7514,8 @@ pub fn assemble_wir_module(
 /// Collect every function name a `WirSeq` calls directly (`Call{func}`),
 /// recursively. Used by `assemble_wir_module` to find which prelude helpers a
 /// program reaches.
-fn collect_called_funcs(seq: &crate::wir::WirSeq, out: &mut std::collections::HashSet<String>) {
-    use crate::wir::{WirExpr as E, WirNode as N};
+fn collect_called_funcs(seq: &witchy_wir::wir::WirSeq, out: &mut std::collections::HashSet<String>) {
+    use witchy_wir::wir::{WirExpr as E, WirNode as N};
     fn expr(e: &E, out: &mut std::collections::HashSet<String>) {
         match e {
             E::Call { func, args } => {
@@ -7596,8 +7596,8 @@ fn collect_called_funcs(seq: &crate::wir::WirSeq, out: &mut std::collections::Ha
 /// calls in USER code (e.g. `dir.subdir`, `now`, `recv_*`) — which the pruned
 /// path can't account for, so such programs return `Ok(None)`. (Helper
 /// host calls are accounted for via the registry's `import_deps` instead.)
-fn collect_called_host_imports(seq: &crate::wir::WirSeq, out: &mut std::collections::HashSet<String>) {
-    use crate::wir::{WirExpr as E, WirNode as N};
+fn collect_called_host_imports(seq: &witchy_wir::wir::WirSeq, out: &mut std::collections::HashSet<String>) {
+    use witchy_wir::wir::{WirExpr as E, WirNode as N};
     fn expr(e: &E, out: &mut std::collections::HashSet<String>) {
         match e {
             E::CallHost { import, args } => {
@@ -7699,15 +7699,15 @@ pub fn compile_build_module(module: &Module) -> Result<Vec<u8>, CodegenError> {
 
 /// A short-circuit AND of i32 conditions, built as nested value-`if`s
 /// (`c0 ? (c1 ? … : 0) : 0`).
-fn wir_and_chain(conds: &[crate::wir::WirExpr]) -> crate::wir::WirExpr {
-    use crate::wir::{WirExpr as W, WirNode as N};
+fn wir_and_chain(conds: &[witchy_wir::wir::WirExpr]) -> witchy_wir::wir::WirExpr {
+    use witchy_wir::wir::{WirExpr as W, WirNode as N};
     match conds.split_first() {
         None => W::ConstI32(1),
         Some((first, rest)) => W::Control(Box::new(N::If {
             cond: first.clone(),
             then_: vec![N::Push(wir_and_chain(rest))],
             els: vec![N::Push(W::ConstI32(0))],
-            result: Some(crate::wir::WirTy::Bool),
+            result: Some(witchy_wir::wir::WirTy::Bool),
         })),
     }
 }
@@ -8050,8 +8050,8 @@ impl Renamer {
 /// ownership analysis (whose accumulator shapes match `Concat`). Detection is
 /// the type table plus string literals; anything it misses still compiles
 /// correctly through the val-type net in the `Add` arm, just unoptimized.
-fn flip_string_add_module(m: &mut Module, table: &crate::typeck::TypeTable) {
-    fn stringy(e: &Expr, table: &crate::typeck::TypeTable) -> bool {
+fn flip_string_add_module(m: &mut Module, table: &witchy_types::typeck::TypeTable) {
+    fn stringy(e: &Expr, table: &witchy_types::typeck::TypeTable) -> bool {
         // A `Concat` is always a String — recognize it structurally so a nested
         // chain whose intermediate levels lack a literal operand (and whose other
         // operand the type table didn't resolve, e.g. a build-time `read_build`)
@@ -8059,11 +8059,11 @@ fn flip_string_add_module(m: &mut Module, table: &crate::typeck::TypeTable) {
         matches!(e, Expr::Str(_))
             || matches!(e, Expr::Binary { op: BinOp::Concat, .. })
             || matches!(
-                table.type_of(e).and_then(crate::typeck::ty_to_ast),
+                table.type_of(e).and_then(witchy_types::typeck::ty_to_ast),
                 Some(Type::Named(n, _)) if n == "String"
             )
     }
-    fn walk_expr(e: &mut Expr, table: &crate::typeck::TypeTable) {
+    fn walk_expr(e: &mut Expr, table: &witchy_types::typeck::TypeTable) {
         match e {
             Expr::Binary { op, lhs, rhs } => {
                 walk_expr(lhs, table);
@@ -8150,7 +8150,7 @@ fn flip_string_add_module(m: &mut Module, table: &crate::typeck::TypeTable) {
             | Expr::Bool(_) | Expr::Var(_) | Expr::TaggedLit { .. } => {}
         }
     }
-    fn walk_block(b: &mut Block, table: &crate::typeck::TypeTable) {
+    fn walk_block(b: &mut Block, table: &witchy_types::typeck::TypeTable) {
         for st in &mut b.stmts {
             match st {
                 Stmt::Let { value, .. }
@@ -8198,7 +8198,7 @@ fn alpha_rename_module(m: &mut Module) {
 /// The `+` stays `Add`; the later `flip_string_add_module` turns it into `Concat`.
 /// Returns true if any node was rewritten (so the caller re-annotates, since
 /// moved/new nodes change the address-keyed `TypeTable`).
-fn rewrite_try_ctx_module(m: &mut Module, table: &crate::typeck::TypeTable) -> bool {
+fn rewrite_try_ctx_module(m: &mut Module, table: &witchy_types::typeck::TypeTable) -> bool {
     fn replacement(is_option: bool, operand: Expr, msg: Expr) -> Expr {
         if is_option {
             return Expr::Call { name: "option.ok_or".into(), args: vec![operand, msg] };
@@ -8231,7 +8231,7 @@ fn rewrite_try_ctx_module(m: &mut Module, table: &crate::typeck::TypeTable) -> b
             ],
         }
     }
-    fn walk_expr(e: &mut Expr, table: &crate::typeck::TypeTable, changed: &mut bool) {
+    fn walk_expr(e: &mut Expr, table: &witchy_types::typeck::TypeTable, changed: &mut bool) {
         match e {
             Expr::List(xs) | Expr::Tuple(xs) | Expr::Ctor { args: xs, .. }
             | Expr::Call { args: xs, .. } => {
@@ -8320,7 +8320,7 @@ fn rewrite_try_ctx_module(m: &mut Module, table: &crate::typeck::TypeTable) -> b
         if is_try {
             let is_option = if let Expr::Call { args, .. } = &*e {
                 matches!(
-                    table.type_of(&args[0]).and_then(crate::typeck::ty_to_ast),
+                    table.type_of(&args[0]).and_then(witchy_types::typeck::ty_to_ast),
                     Some(Type::Named(n, _)) if n == "Option"
                 )
             } else {
@@ -8335,7 +8335,7 @@ fn rewrite_try_ctx_module(m: &mut Module, table: &crate::typeck::TypeTable) -> b
             }
         }
     }
-    fn walk_block(b: &mut Block, table: &crate::typeck::TypeTable, changed: &mut bool) {
+    fn walk_block(b: &mut Block, table: &witchy_types::typeck::TypeTable, changed: &mut bool) {
         for st in &mut b.stmts {
             match st {
                 Stmt::Let { value, .. }
