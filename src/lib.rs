@@ -18,7 +18,10 @@ pub mod aliases;
 // re-export so the rest of the compiler keeps using
 // `crate::{ast,lexer,parser,lambda_scan}::…` unchanged.
 pub use witchy_syntax::{ast, build_entry, lambda_scan, lexer, parser};
-pub mod capabilities;
+// RFC-0018: footprint analysis + grant docs live in the `witchy-caps` crate.
+pub use witchy_caps::capabilities;
+#[cfg(test)]
+mod capabilities_tests;
 pub mod codegen;
 pub mod confine;
 pub mod async_lower;
@@ -29,9 +32,10 @@ pub mod doc;
 pub mod fmt;
 pub mod format;
 pub mod generators;
-/// RFC-0013 capability grant documents (TOML); native-only (uses `serde`/`toml`).
+/// RFC-0013 capability grant documents (TOML); native-only — re-exported from
+/// the `witchy-caps` crate.
 #[cfg(feature = "native")]
-pub mod grants;
+pub use witchy_caps::grants;
 pub mod interpreter;
 pub mod linker;
 pub mod native;

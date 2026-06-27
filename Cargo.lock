@@ -2551,8 +2551,18 @@ dependencies = [
  "wasmparser 0.251.0",
  "wasmtime",
  "webpki-roots 0.26.11",
+ "witchy-caps",
  "witchy-syntax",
  "witchy-wir",
+]
+
+[[package]]
+name = "witchy-caps"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "toml 1.1.2+spec-1.1.0",
+ "witchy-syntax",
 ]
 
 [[package]]

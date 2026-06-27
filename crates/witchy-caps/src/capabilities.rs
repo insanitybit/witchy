@@ -18,7 +18,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use crate::ast::{Item, Module, Type};
+use witchy_syntax::ast::{Item, Module, Type};
 
 /// The host capabilities the runtime grants at an entry point.
 pub const HOST_CAPABILITIES: &[&str] =
@@ -182,10 +182,10 @@ pub fn net_allows(allow: &[String], target: &str) -> bool {
 /// capabilities with no resources — there is no "empty" `Secret` to hand over.
 /// Returns `None` when every parameter is grantable. Shared by the run paths so
 /// the interpreter and the compiled backend can never drift on this.
-pub fn unmintable_main_cap(main_params: &[crate::ast::Param], has_signing_key: bool) -> Option<String> {
+pub fn unmintable_main_cap(main_params: &[witchy_syntax::ast::Param], has_signing_key: bool) -> Option<String> {
     let binds_secret = main_params
         .iter()
-        .any(|p| matches!(&p.ty, Some(crate::ast::Type::Named(n, _)) if n == "Secret"));
+        .any(|p| matches!(&p.ty, Some(witchy_syntax::ast::Type::Named(n, _)) if n == "Secret"));
     if binds_secret && !has_signing_key {
         return Some(
             "`main` requires a `Secret`, but the host granted none \
@@ -557,7 +557,7 @@ pub fn analyze(module: &Module) -> Footprint {
     // computed identically over its signature (§4.1). Build caps can only appear
     // there (the signature checks enforce it), so this never overlaps `total`.
     let mut build = CapSet::new();
-    if let Some(b) = crate::build_entry::build_entrypoint(module) {
+    if let Some(b) = witchy_syntax::build_entry::build_entrypoint(module) {
         for ty in b.params.iter().filter_map(|p| p.ty.as_ref()) {
             build_caps_in(ty, &mut build);
         }
@@ -589,7 +589,3 @@ pub fn run_grant(module: &Module) -> CapSet {
         .map(|e| e.capabilities)
         .unwrap_or_default()
 }
-
-#[cfg(test)]
-#[path = "capabilities_tests.rs"]
-mod tests;

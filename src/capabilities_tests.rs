@@ -1,5 +1,6 @@
-    use super::*;
+    use crate::capabilities::*;
     use crate::parser::parse_module;
+    use std::collections::BTreeSet;
 
     fn footprint(src: &str) -> Footprint {
         analyze(&parse_module(src).expect("parse"))
