@@ -10,3 +10,14 @@ bench/bin/
 # coven local registry store + Ed25519 signing keys — never commit
 coven-store/
 *.seed
+
+# security evaluation: vulnerability reports + PoCs — never commit
+security-eval/
+
+# vendored zizmor binary cache (scripts/zizmor.sh)
+scripts/.zizmor/
+
+# scratch experiments + regenerable build output (dist bundles, incl. the
+# coven-web app.js + WebAuthn cred/challenge state — never commit)
+scratch/
+dist/
