@@ -1,13 +1,27 @@
 ---
 rfc: 0018
 title: Compiler architecture — a workspace of stage-aligned crates
-status: proposed
+status: implemented
 created: 2026-06-27
 superseded-by:
 tracking:
 ---
 
 # RFC-0018: Compiler architecture — a workspace of stage-aligned crates
+
+> **Implemented.** The workspace is the seven library crates `witchy-syntax`,
+> `witchy-types`, `witchy-wir`, `witchy-lower`, `witchy-runtime`, `witchy-interp`,
+> and `witchy-caps` under `crates/`, plus the `witchy` binary package (the CLI +
+> the wasm-playground cdylib + the LSP/PM/idp tooling). The two-part migration
+> went as planned: the SCC was broken by four surgical helper-relocations plus the
+> linker→comptime/tagged callback inversion, then the crates were extracted
+> bottom-up. Leaf placement (left open below) resolved as: the AST-level base
+> passes (`aliases`/`consts`/`fmt`/`async_lower`/`generators`/`optimize`/`reflect`/
+> `format`/`derive`/`records`/`doc`/`linker`) fold into `witchy-syntax`;
+> `value`/`net`/`native`/`confine` (wasm-safe) + the native-gated wasmtime sandbox
+> into `witchy-runtime`; `codegen`+`analysis` into `witchy-lower`. The residual
+> `traits↔typeck` and `interpreter↔comptime↔tagged↔pipeline` cycles live inside a
+> single crate each, which is fine. `idp` (OIDC/JWT) stayed binary-only.
 
 ## Summary
 
