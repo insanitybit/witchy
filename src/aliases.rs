@@ -309,6 +309,48 @@ fn resolve_in_expr(e: &mut Expr, map: &HashMap<String, Type>) {
     }
 }
 
+/// Map a bare builtin name that has since moved to a module-qualified stdlib
+/// path (e.g. `push` -> `list.push`). Returns `None` for names that were never
+/// moved. The type checker uses this to suggest the new spelling; the formatter
+/// uses it to rewrite legacy calls to their canonical form.
+pub fn moved_builtin(bare: &str) -> Option<&'static str> {
+    Some(match bare {
+        "push" => "list.push",
+        "at" => "list.at",
+        "length" => "list.length",
+        "concat" => "list.concat",
+        "dict_new" => "dict.new",
+        "insert" => "dict.insert",
+        "get_or" => "dict.get_or",
+        "has" => "dict.has",
+        "remove" => "dict.remove",
+        "update" => "dict.update",
+        "keys" => "dict.keys",
+        "values" => "dict.values",
+        "pairs" => "dict.pairs",
+        "size" => "dict.size",
+        "split" => "string.split",
+        "trim" => "string.trim",
+        "contains" => "string.contains",
+        "starts_with" => "string.starts_with",
+        "ends_with" => "string.ends_with",
+        "replace" => "string.replace",
+        "index_of" => "string.index_of",
+        "substring" => "string.substring",
+        "string_length" => "string.length",
+        "char_count" => "string.char_count",
+        "string_chars" => "string.chars",
+        "to_chars" => "string.chars",
+        "to_upper" => "string.to_upper",
+        "to_lower" => "string.to_lower",
+        "string_to_int" => "string.to_int",
+        "int_to_float" => "math.to_float",
+        "float_to_int" => "math.to_int",
+        "sqrt" => "math.sqrt",
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

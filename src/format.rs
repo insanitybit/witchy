@@ -971,7 +971,7 @@ fn expr(e: &Expr) -> String {
             let name = if local_fn(name) {
                 name
             } else {
-                crate::typeck::moved_builtin(name).unwrap_or(name)
+                crate::aliases::moved_builtin(name).unwrap_or(name)
             };
             format!("{name}({})", comma(args))
         }
@@ -1213,7 +1213,7 @@ fn call_head(e: &Expr) -> Option<String> {
         Expr::Call { name, .. } => Some(if local_fn(name) {
             name.clone()
         } else {
-            crate::typeck::moved_builtin(name).unwrap_or(name).to_string()
+            crate::aliases::moved_builtin(name).unwrap_or(name).to_string()
         }),
         Expr::MethodCall { receiver, method, .. } => {
             Some(format!("{}.{method}", operand(receiver, POSTFIX_PREC, false)))
@@ -1576,7 +1576,7 @@ fn canon_expr(e: &mut Expr) {
     match e {
         Expr::Call { name, args } => {
             if !name.contains('.') && !local_fn(name) {
-                if let Some(q) = crate::typeck::moved_builtin(name) {
+                if let Some(q) = crate::aliases::moved_builtin(name) {
                     *name = q.to_string();
                 }
             }

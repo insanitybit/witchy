@@ -1951,7 +1951,7 @@ impl Checker {
                     }
                     // A retired global builtin: name the module-qualified
                     // spelling that replaced it (the one-cut migration).
-                    if let Some(moved) = moved_builtin(name) {
+                    if let Some(moved) = crate::aliases::moved_builtin(name) {
                         return terr(format!(
                             "`{name}` moved to `{moved}` — pure data operations are \
                              module-qualified now (no import needed; the core modules \
@@ -3018,45 +3018,6 @@ pub fn intrinsic(name: &str) -> bool {
     )
 }
 
-/// The retired global builtins and the module-qualified spellings that
-/// replaced them (rfcs/language-evolution.md Phase 2 — one cut, no aliases).
-pub fn moved_builtin(bare: &str) -> Option<&'static str> {
-    Some(match bare {
-        "push" => "list.push",
-        "at" => "list.at",
-        "length" => "list.length",
-        "concat" => "list.concat",
-        "dict_new" => "dict.new",
-        "insert" => "dict.insert",
-        "get_or" => "dict.get_or",
-        "has" => "dict.has",
-        "remove" => "dict.remove",
-        "update" => "dict.update",
-        "keys" => "dict.keys",
-        "values" => "dict.values",
-        "pairs" => "dict.pairs",
-        "size" => "dict.size",
-        "split" => "string.split",
-        "trim" => "string.trim",
-        "contains" => "string.contains",
-        "starts_with" => "string.starts_with",
-        "ends_with" => "string.ends_with",
-        "replace" => "string.replace",
-        "index_of" => "string.index_of",
-        "substring" => "string.substring",
-        "string_length" => "string.length",
-        "char_count" => "string.char_count",
-        "string_chars" => "string.chars",
-        "to_chars" => "string.chars",
-        "to_upper" => "string.to_upper",
-        "to_lower" => "string.to_lower",
-        "string_to_int" => "string.to_int",
-        "int_to_float" => "math.to_float",
-        "float_to_int" => "math.to_int",
-        "sqrt" => "math.sqrt",
-        _ => return None,
-    })
-}
 
 /// Convenience: parse then type-check.
 pub fn check_str(src: &str) -> Result<(), String> {
