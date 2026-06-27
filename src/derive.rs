@@ -122,7 +122,7 @@ fn derive_via_comptime(generator: &str, t: &TypeDef) -> Item {
         name: "emit".into(),
         args: vec![Expr::Call {
             name: generator.into(),
-            args: vec![crate::comptime::type_info_expr(t)],
+            args: vec![crate::reflect::type_info_expr(t)],
         }],
     };
     Item::Comptime(Block {

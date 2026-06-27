@@ -38,6 +38,7 @@ pub mod native;
 pub mod net;
 pub mod optimize;
 pub mod records;
+pub mod reflect;
 pub mod tagged;
 pub mod traits;
 pub mod typeck;
