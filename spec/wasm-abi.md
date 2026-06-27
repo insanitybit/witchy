@@ -7,8 +7,9 @@ verified: 0783c22
 witchyc-compiled modules reach the outside world through a single WASM import
 module named `"witchy"`. Each import is a host function the runtime must supply;
 **a granted host function is a capability** (or a piece of pure infrastructure).
-This is the handshake between the compiler (`src/codegen.rs` emits the imports)
-and a host that satisfies them (`src/runtime.rs` is the wasmtime host;
+This is the handshake between the compiler
+(`crates/witchy-lower/src/codegen.rs` emits the imports) and a host that
+satisfies them (`crates/witchy-runtime/src/runtime.rs` is the wasmtime host;
 `web/witchy-runtime/witchy-runtime.mjs` is the JavaScript pure-compute host).
 
 This document is that import surface as a **stable public contract**. A host —
