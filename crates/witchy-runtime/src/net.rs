@@ -9,6 +9,7 @@
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
 /// A connected byte stream behind a socket handle. Plain `TcpStream` and TLS
@@ -26,8 +27,12 @@ impl Stream for TcpStream {
     }
 }
 
+// TLS (the `tls:` scheme) is native-only — rustls/aws-lc build C and have no
+// wasm32 support, and the browser playground has no raw sockets anyway.
+#[cfg(not(target_arch = "wasm32"))]
 type TlsStream = rustls::StreamOwned<rustls::ClientConnection, TcpStream>;
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Stream for TlsStream {
     fn shutdown(&mut self) {
         self.conn.send_close_notify();
@@ -48,6 +53,7 @@ pub fn parse_scheme(addr: &str) -> (bool, &str) {
 }
 
 /// The SNI / certificate name for a `host:port` (the host, without the port).
+#[cfg(not(target_arch = "wasm32"))]
 fn server_name(host_port: &str) -> &str {
     host_port.rsplit_once(':').map(|(h, _)| h).unwrap_or(host_port)
 }
@@ -64,18 +70,28 @@ pub fn dial(
     if !tls {
         return Ok(Box::new(tcp));
     }
-    use std::io::{Error, ErrorKind};
-    let sni = server_name(host_port).to_string();
-    let name = rustls::pki_types::ServerName::try_from(sni)
-        .map_err(|_| Error::new(ErrorKind::InvalidInput, format!("`{host_port}` is not a valid TLS server name")))?;
-    let conn = rustls::ClientConnection::new(client_config(), name)
-        .map_err(|e| Error::other(format!("TLS setup failed: {e}")))?;
-    Ok(Box::new(rustls::StreamOwned::new(conn, tcp)))
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::io::{Error, ErrorKind};
+        let sni = server_name(host_port).to_string();
+        let name = rustls::pki_types::ServerName::try_from(sni)
+            .map_err(|_| Error::new(ErrorKind::InvalidInput, format!("`{host_port}` is not a valid TLS server name")))?;
+        let conn = rustls::ClientConnection::new(client_config(), name)
+            .map_err(|e| Error::other(format!("TLS setup failed: {e}")))?;
+        Ok(Box::new(rustls::StreamOwned::new(conn, tcp)))
+    }
+    // The browser has no raw TLS; `tls:` is a native-only scheme.
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (host_port, tcp);
+        Err(std::io::Error::other("TLS (`tls:`) is unavailable in the wasm build"))
+    }
 }
 
 /// A client config trusting the Mozilla CA roots plus any extra PEM roots named by
 /// `WITCHY_TLS_EXTRA_ROOTS` (a custom/corporate CA, or the hermetic test's self-signed
 /// cert). Built per dial — correctness over the micro-cost; the handshake dominates.
+#[cfg(not(target_arch = "wasm32"))]
 fn client_config() -> Arc<rustls::ClientConfig> {
     let mut roots = rustls::RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
