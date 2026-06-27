@@ -325,7 +325,7 @@ struct Codegen {
     uses_print_int: bool,
     uses_concat: bool,
     uses_int_to_string: bool,
-    /// WIR migration (M3 sink-flip). `compile_function` moves a fully-lowered
+    /// The WIR sink. `compile_function` moves a fully-lowered
     /// body into `wir_funcs` (one `WirFunc` per function whose whole body lowered
     /// to WIR). `compile_module_binary` assembles those + the static prelude into
     /// a binary via `wir_encode`.
@@ -1961,7 +1961,7 @@ impl Codegen {
             return Err(e);
         }
         let block_kind = self.block_kind(renamed);
-        // M3: if the whole body lowered to WIR and the function uses neither the
+        // If the whole body lowered to WIR and the function uses neither the
         // var move-out ABI nor the own-cap ABI (the binary sink models neither
         // yet), keep a `WirFunc` so `compile_module_binary` can encode it.
         if let Some(seq) = self.captured_seq.take() {
@@ -5745,7 +5745,7 @@ impl Codegen {
         Some(v)
     }
 
-    /// M1: lower the simple builtin/native `Call` arms to a `WirExpr::Call` (each
+    /// Lower the simple builtin/native `Call` arms to a `WirExpr::Call` (each
     /// `$helper` is a guest module function; the actual host import is `_host`-
     /// suffixed and called from inside the helper). The `uses_*` side-effect flags
     /// are set exactly as the legacy arms do. Returns `None` for unconverted arms.

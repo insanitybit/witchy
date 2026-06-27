@@ -260,7 +260,7 @@ pub struct Runtime {
 
 impl Runtime {
     /// A runtime whose VMs can be preempted by the scheduler advancing the
-    /// engine epoch (M4). Epoch interruption makes the JIT insert a check at
+    /// engine epoch. Epoch interruption makes the JIT insert a check at
     /// every loop backedge and call, so for run-to-completion single-program
     /// execution prefer [`Runtime::batch`], which omits that per-iteration cost.
     pub fn new() -> Result<Self> {
@@ -283,8 +283,8 @@ impl Runtime {
         // compilation cache below, so generated code quality is free on every
         // run after the first.
         config.cranelift_opt_level(wasmtime::OptLevel::Speed);
-        // Epoch-based interruption lets the scheduler preempt a runaway VM
-        // (exercised in M4). It is only worth its per-backedge cost when a
+        // Epoch-based interruption lets the scheduler preempt a runaway VM.
+        // It is only worth its per-backedge cost when a
         // scheduler will actually advance the epoch.
         if preempt {
             config.epoch_interruption(true);
@@ -346,7 +346,7 @@ impl Runtime {
         let mut store = Store::new(&self.engine, state);
         store.limiter(|s| &mut s.limits);
         // Deadline of 1 epoch; we never advance the engine epoch during a
-        // normal run, so this is never tripped. M4 advances it to preempt.
+        // normal run, so this is never tripped. The scheduler advances it to preempt.
         // Only meaningful when the engine has epoch interruption enabled.
         if self.preempt {
             store.set_epoch_deadline(1);

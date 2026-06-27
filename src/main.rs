@@ -1046,7 +1046,7 @@ fn main() -> wasmtime::Result<()> {
 
     let mut rt = Runtime::new()?;
 
-    println!("== M2: capability gating ==");
+    println!("== capability gating ==");
 
     // Granted the `print` capability — works.
     let mut greeter = rt.spawn(GREETER, Capabilities { print: true, ..Default::default() }, 4)?;
@@ -1059,7 +1059,7 @@ fn main() -> wasmtime::Result<()> {
         Err(e) => println!("DENIED (as designed): {e}"),
     }
 
-    println!("\n== M3: containment ==");
+    println!("\n== containment ==");
 
     // Memory budget: the greedy VM wants 4 pages but is capped at 1.
     match rt.spawn(GREEDY, Capabilities::none(), 1) {

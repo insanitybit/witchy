@@ -199,47 +199,15 @@ Future polish (not blockers): embed a per-target `cwasm` + a slim runtime-only
 launcher; embed the source footprint as a custom section so `witchy caps app.wasm`
 reads it directly rather than re-deriving from imports.
 
-## Sequencing & status
+## The compiler's shape
 
-```
-B (slim) ✅ DONE ──► C (distribution) ✅ DONE      A (binary emission) — DEFERRED
-   confine/fmt/value      emit-wasm · run .wasm        does NOT reduce the
-   native ↛ interpreter   (consumer's witchy)          backend/mode count
-```
-
-- **B ✅** — `confine.rs`/`fmt.rs`/`value.rs` extracted; `native` no longer depends
-  on `interpreter`; B-4 measured & deferred (the evaluator is a comptime
-  compile-time dependency, not strippable). All parity-green.
-- **C ✅** — `emit-wasm` and running a precompiled `.wasm` (authority from its
-  imports), tested. The distribution artifact is a wasm **binary** emitted directly
-  via `wir_encode`, run by the consumer's trusted `witchy`.
-
-### Direction change: minimize "ways", and A is deferred
-
-The owner's call (mid-build): **minimize how many backends/modes the compiler has**;
-do what's *fastest* to the simple end state. That reframes — and ultimately
-**cancels** — A.
-
-The `wat` crate has since been removed entirely: codegen lowers the checked AST
-to a structured IR (`WirModule`) and `src/wir_encode.rs` emits the wasm **binary**
-directly via `wasm-encoder` — there is no WAT-text assembly in the run path, and
-`wat` is no longer a direct dependency (it survives only transitively under
-wasmtime).
-
-What a parallel IR backend *did* add was a **third way the compiler emits code**,
-which is the opposite of the goal — so it was removed:
-
-- **Removed** `src/wasm_ir.rs` and `src/codegen_ir.rs` (the parallel IR codegen
-  experiment). `wasm-encoder` was kept and is now the one binary emitter.
-- **Removed** the `WITCHY_INTERP` run-fallback mode — `witchy run` is the compiled
-  backend, full stop; the interpreter is only the oracle + comptime evaluator.
-- **Deferred:** removing the `witchy demo` showcase (~200 lines of the original
-  language spike + its helpers). It's a pre-existing minor command,
-  not new proliferation — a low-value, mechanical cleanup left for a focused pass.
-
-End state of "fewer ways": **one front-end, one compiled backend (AST → WIR →
-wasm binary via `wasm-encoder`), one interpreter used only as the parity oracle
-+ comptime evaluator.**
+There is one front-end, one compiled backend, and one interpreter. Codegen lowers
+the checked AST to a structured IR (`WirModule`) and `wir_encode` emits the wasm
+binary directly via `wasm-encoder`; there is no WAT-text assembly in the run path.
+The interpreter is not a second run path — it is the parity oracle and the
+`comptime` / build-step evaluator. A distribution artifact is that binary, run by
+the consumer's trusted `witchy` through the same sandbox as `witchy sandbox`, so a
+"binary" is `witchy sandbox` frozen, not a weaker security model.
 
 ## Out of scope (separate, additive future work)
 
