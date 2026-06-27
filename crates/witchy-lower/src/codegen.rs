@@ -7208,7 +7208,7 @@ pub fn assemble_wir_module(
             called.insert("ensure".to_string());
         }
         // Resolve every reached helper through the registry (transitively).
-        let mut resolved: std::collections::BTreeMap<String, witchy_wir::wir::WirHelperSpec> =
+        let mut resolved: std::collections::BTreeMap<String, witchy_wir::wir_helpers::WirHelperSpec> =
             std::collections::BTreeMap::new();
         let mut all_registered = true;
         // A called name is a prelude helper to pull in if the static prelude
@@ -7216,14 +7216,14 @@ pub fn assemble_wir_module(
         // migrated to WIR that have no static-prelude body (e.g. crypto_sha512).
         let mut queue: Vec<String> = called
             .iter()
-            .filter(|n| helper_names.contains(n.as_str()) || witchy_wir::wir::wir_helper(n).is_some())
+            .filter(|n| helper_names.contains(n.as_str()) || witchy_wir::wir_helpers::wir_helper(n).is_some())
             .cloned()
             .collect();
         while let Some(h) = queue.pop() {
             if resolved.contains_key(&h) {
                 continue;
             }
-            match witchy_wir::wir::wir_helper(&h) {
+            match witchy_wir::wir_helpers::wir_helper(&h) {
                 Some(spec) => {
                     for d in spec.helper_deps {
                         queue.push((*d).to_string());

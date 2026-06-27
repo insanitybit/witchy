@@ -42,7 +42,7 @@ pub use witchy_interp::{comptime, interpreter, pipeline, tagged};
 pub use witchy_types::{traits, typeck};
 // RFC-0018: the WIR group lives in the `witchy-wir` crate; re-export it so the
 // rest of the compiler keeps using `crate::wir::…` paths unchanged.
-pub use witchy_wir::{wir, wir_encode, wir_opt, wir_prelude};
+pub use witchy_wir::{wir, wir_encode, wir_helpers, wir_opt, wir_prelude};
 
 /// Resolve a single-source program against the BUNDLED standard library only
 /// (no filesystem — the browser has none): parse the entry, then breadth-first

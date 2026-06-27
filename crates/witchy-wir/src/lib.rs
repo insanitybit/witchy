@@ -15,5 +15,6 @@
 
 pub mod wir;
 pub mod wir_encode;
+pub mod wir_helpers;
 pub mod wir_opt;
 pub mod wir_prelude;

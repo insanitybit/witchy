@@ -222,7 +222,7 @@
     /// the migrated multi-value helper + CallStoreMulti end-to-end.
     #[test]
     fn list_push_cap_in_place() {
-        use crate::wir::{ensure_helper, list_push_cap_helper};
+        use crate::wir_helpers::{ensure_helper, list_push_cap_helper};
         use WirExpr::*;
         let conv = |e: WirExpr| Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) };
         let pi = |e: WirExpr| WirNode::Do(CallHost { import: "print_int".into(), args: vec![e] });
@@ -346,7 +346,7 @@
     /// reads the produced `[len][ascii]` string. Both paths agree.
     #[test]
     fn int_to_string_helper_renders() {
-        use crate::wir::{ensure_helper, int_to_string_helper, print_str_helper};
+        use crate::wir_helpers::{ensure_helper, int_to_string_helper, print_str_helper};
         // run(): print_str(int_to_string(N)) for a few N.
         let mut body = Vec::new();
         for n in [0i64, 7, 4096, -123] {
@@ -386,7 +386,7 @@
     /// pages. Runs identically through the encoder and the WAT path.
     #[test]
     fn ensure_helper_grows_memory() {
-        use crate::wir::ensure_helper;
+        use crate::wir_helpers::ensure_helper;
         let run = WirFunc {
             name: "run".into(),
             params: vec![],
@@ -436,7 +436,7 @@
     /// mis-encoded `br` traps instead of spinning.
     #[test]
     fn find_byte_finds_substrings() {
-        use crate::wir::find_byte_helper;
+        use crate::wir_helpers::find_byte_helper;
         let mk_str = |s: &str| {
             let mut b = (s.len() as u32).to_le_bytes().to_vec();
             b.extend_from_slice(s.as_bytes());
@@ -485,7 +485,7 @@
 
     #[test]
     fn starts_with_matches_prefixes() {
-        use crate::wir::starts_with_helper;
+        use crate::wir_helpers::starts_with_helper;
         let mk_str = |s: &str| {
             let mut b = (s.len() as u32).to_le_bytes().to_vec();
             b.extend_from_slice(s.as_bytes());
@@ -534,7 +534,7 @@
 
     #[test]
     fn ends_with_matches_suffixes() {
-        use crate::wir::ends_with_helper;
+        use crate::wir_helpers::ends_with_helper;
         let mk_str = |s: &str| {
             let mut b = (s.len() as u32).to_le_bytes().to_vec();
             b.extend_from_slice(s.as_bytes());
@@ -583,7 +583,7 @@
 
     #[test]
     fn str_index_of_returns_char_index() {
-        use crate::wir::{byte_to_char_helper, find_byte_helper, str_index_of_helper};
+        use crate::wir_helpers::{byte_to_char_helper, find_byte_helper, str_index_of_helper};
         let mk_str = |s: &str| {
             let mut b = (s.len() as u32).to_le_bytes().to_vec();
             b.extend_from_slice(s.as_bytes());
@@ -635,7 +635,7 @@
 
     #[test]
     fn substr_copies_a_byte_slice() {
-        use crate::wir::{ensure_helper, substr_helper};
+        use crate::wir_helpers::{ensure_helper, substr_helper};
         let mk_str = |s: &str| {
             let mut b = (s.len() as u32).to_le_bytes().to_vec();
             b.extend_from_slice(s.as_bytes());
@@ -695,7 +695,7 @@
 
     #[test]
     fn str_substring_slices_by_char_index() {
-        use crate::wir::{char_to_byte_helper, ensure_helper, str_substring_helper, substr_helper};
+        use crate::wir_helpers::{char_to_byte_helper, ensure_helper, str_substring_helper, substr_helper};
         let mk_str = |s: &str| {
             let mut b = (s.len() as u32).to_le_bytes().to_vec();
             b.extend_from_slice(s.as_bytes());
@@ -765,7 +765,7 @@
 
     #[test]
     fn trim_strips_surrounding_whitespace() {
-        use crate::wir::{ensure_helper, is_ws_helper, substr_helper, trim_helper};
+        use crate::wir_helpers::{ensure_helper, is_ws_helper, substr_helper, trim_helper};
         let mk_str = |s: &str| {
             let mut b = (s.len() as u32).to_le_bytes().to_vec();
             b.extend_from_slice(s.as_bytes());
@@ -829,7 +829,7 @@
 
     #[test]
     fn list_push_appends_elements() {
-        use crate::wir::{ensure_helper, list_push_helper};
+        use crate::wir_helpers::{ensure_helper, list_push_helper};
         // An empty list is a bare i32 length header of 0.
         let data = vec![DataSegment { offset: 200, bytes: 0u32.to_le_bytes().to_vec() }];
         let push = |list: WirExpr, x: i64| WirExpr::Call {
@@ -884,7 +884,7 @@
 
     #[test]
     fn split_breaks_on_separator() {
-        use crate::wir::{ensure_helper, list_push_helper, split_helper, substr_helper};
+        use crate::wir_helpers::{ensure_helper, list_push_helper, split_helper, substr_helper};
         let mk_str = |s: &str| {
             let mut b = (s.len() as u32).to_le_bytes().to_vec();
             b.extend_from_slice(s.as_bytes());
@@ -949,7 +949,7 @@
 
     #[test]
     fn str_chars_splits_into_characters() {
-        use crate::wir::{
+        use crate::wir_helpers::{
             byte_to_char_helper, char_to_byte_helper, ensure_helper, list_push_helper,
             str_chars_helper, str_substring_helper, substr_helper,
         };
@@ -1020,7 +1020,7 @@
 
     #[test]
     fn list_concat_joins_two_lists() {
-        use crate::wir::{ensure_helper, list_concat_helper};
+        use crate::wir_helpers::{ensure_helper, list_concat_helper};
         // A list is an i32 length header followed by 8-byte (i64) element slots.
         let mk_list = |xs: &[i64]| {
             let mut b = (xs.len() as u32).to_le_bytes().to_vec();
@@ -1084,7 +1084,7 @@
 
     #[test]
     fn ascii_case_changes_letter_case() {
-        use crate::wir::{ascii_case_helper, ensure_helper};
+        use crate::wir_helpers::{ascii_case_helper, ensure_helper};
         let mk_str = |s: &str| {
             let mut b = (s.len() as u32).to_le_bytes().to_vec();
             b.extend_from_slice(s.as_bytes());
@@ -1143,7 +1143,7 @@
 
     #[test]
     fn str_to_int_parses_signed_decimals() {
-        use crate::wir::{is_ws_helper, str_to_int_helper};
+        use crate::wir_helpers::{is_ws_helper, str_to_int_helper};
         let mk_str = |s: &str| {
             let mut b = (s.len() as u32).to_le_bytes().to_vec();
             b.extend_from_slice(s.as_bytes());
@@ -1186,7 +1186,7 @@
 
     #[test]
     fn dict_insert_get_has_int_keys() {
-        use crate::wir::{
+        use crate::wir_helpers::{
             dict_find_helper, dict_get_or_helper, dict_has_helper, dict_hash_helper,
             dict_insert_helper, dict_new_helper, ensure_helper, key_eq_helper, str_eq_helper,
         };
@@ -1271,7 +1271,7 @@
 
     #[test]
     fn dict_keys_values_remove_int_keys() {
-        use crate::wir::{
+        use crate::wir_helpers::{
             dict_find_helper, dict_get_or_helper, dict_hash_helper, dict_insert_helper,
             dict_new_helper, dict_project_helper, dict_remove_helper, ensure_helper, key_eq_helper,
             str_eq_helper,
@@ -1350,7 +1350,7 @@
 
     #[test]
     fn replace_rewrites_matches() {
-        use crate::wir::{ensure_helper, match_at_helper, replace_helper};
+        use crate::wir_helpers::{ensure_helper, match_at_helper, replace_helper};
         let mk_str = |s: &str| {
             let mut b = (s.len() as u32).to_le_bytes().to_vec();
             b.extend_from_slice(s.as_bytes());

@@ -43,6 +43,7 @@ pub use witchy::typeck;
 pub use witchy::value;
 pub use witchy::wir;
 pub use witchy::wir_encode;
+pub use witchy::wir_helpers;
 pub use witchy::wir_opt;
 #[cfg(feature = "native")]
 pub use witchy::wir_prelude;
