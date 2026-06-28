@@ -2167,14 +2167,26 @@ fn http_get(addr: &str, path: &str) -> (u16, String) {
 /// GET a path and return the WHOLE raw HTTP response (status line + headers + body), so
 /// a test can read a redirect's `Location` header.
 fn http_get_raw(addr: &str, path: &str) -> String {
+    http_get_raw_cookie(addr, path, "")
+}
+
+/// Like [`http_get_raw`] but also sends a `Cookie:` header — the test's cookie jar for the
+/// OAuth nonce that binds `/login` to `/callback` (SEC-007).
+fn http_get_raw_cookie(addr: &str, path: &str, cookie: &str) -> String {
     use std::io::{Read, Write};
     let mut s = std::net::TcpStream::connect(addr).unwrap();
     s.set_read_timeout(Some(std::time::Duration::from_secs(8))).unwrap();
-    s.write_all(format!("GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").as_bytes())
+    let cookie_hdr = if cookie.is_empty() { String::new() } else { format!("Cookie: {cookie}\r\n") };
+    s.write_all(format!("GET {path} HTTP/1.1\r\nHost: x\r\n{cookie_hdr}Connection: close\r\n\r\n").as_bytes())
         .unwrap();
     let mut buf = String::new();
     let _ = s.read_to_string(&mut buf);
     buf
+}
+
+/// The `name=value` of a Set-Cookie header (dropping the attributes after the first `;`).
+fn cookie_pair(set_cookie: &str) -> String {
+    set_cookie.split(';').next().unwrap_or("").trim().to_string()
 }
 
 /// The value of a response header (case-insensitive), or None.
@@ -2308,7 +2320,8 @@ fn coven_web_github_login_completes_a_session() {
     }
     assert!(up, "coven-web never started on {web_addr}");
 
-    // /login → 303 to the mock authorize URL; capture the signed anti-CSRF state.
+    // /login → 303 to the mock authorize URL; capture the signed anti-CSRF state AND the
+    // per-login nonce cookie that binds this flow to the browser (SEC-007).
     let login = http_get_raw(&web_addr, "/auth/github/login");
     let location = header_value(&login, "location").expect("login redirect has a Location");
     assert!(
@@ -2316,10 +2329,19 @@ fn coven_web_github_login_completes_a_session() {
         "login must redirect to the GitHub authorize URL: {location}"
     );
     let state = query_param(&location, "state").expect("authorize URL carries state");
+    let cookie = cookie_pair(&header_value(&login, "set-cookie").expect("login sets an oauth_nonce cookie"));
 
-    // /callback with the code + that exact state → coven-web exchanges the code, reads the
-    // user, mints a session, and redirects to the SPA with the bearer in the fragment.
-    let callback = http_get_raw(&web_addr, &format!("/auth/github/callback?code=thecode&state={state}"));
+    // SEC-007: the callback WITHOUT the matching nonce cookie must be refused (a replayed
+    // state from another session can't complete the login). A refusal is a 403, not a redirect.
+    let no_cookie = http_get_raw(&web_addr, &format!("/auth/github/callback?code=thecode&state={state}"));
+    assert!(
+        header_value(&no_cookie, "location").is_none(),
+        "callback without the nonce cookie must be refused, got: {no_cookie}"
+    );
+
+    // /callback WITH the cookie → coven-web exchanges the code, reads the user, mints a
+    // session, and redirects to the SPA with the bearer in the fragment.
+    let callback = http_get_raw_cookie(&web_addr, &format!("/auth/github/callback?code=thecode&state={state}"), &cookie);
     let cb_loc = header_value(&callback, "location").expect("callback redirects with a session");
 
     let _ = child.kill();
@@ -2399,21 +2421,25 @@ fn coven_web_google_login_verifies_id_token_and_completes_a_session() {
         b64url(&strip(&n_int)),
         b64url(&strip(&e_int))
     );
-    let signed = format!(
-        "{}.{}",
-        b64url(br#"{"alg":"RS256","kid":"g1","typ":"JWT"}"#),
-        b64url(br#"{"iss":"https://accounts.google.com","aud":"gClientID","email":"alice@example.com","email_verified":true,"sub":"1","exp":2000000000,"nbf":0}"#)
-    );
-    let mut sig = vec![0u8; idk.public_modulus_len()];
-    idk.sign(
-        &aws_lc_rs::signature::RSA_PKCS1_SHA256,
-        &aws_lc_rs::rand::SystemRandom::new(),
-        signed.as_bytes(),
-        &mut sig,
-    )
-    .expect("sign id_token");
-    let id_token = format!("{signed}.{}", b64url(&sig));
-    let token_json = format!(r#"{{"id_token":"{id_token}","token_type":"bearer"}}"#);
+    // The id_token is signed per-login so it can echo the OIDC `nonce` coven-web sends
+    // (SEC-008); the mock serves whatever the test puts in `token_slot` after capturing it.
+    let header_b64 = b64url(br#"{"alg":"RS256","kid":"g1","typ":"JWT"}"#);
+    let sign_id_token = |nonce: &str| -> String {
+        let payload = format!(
+            r#"{{"iss":"https://accounts.google.com","aud":"gClientID","email":"alice@example.com","email_verified":true,"sub":"1","exp":2000000000,"nbf":0,"nonce":"{nonce}"}}"#
+        );
+        let signed = format!("{header_b64}.{}", b64url(payload.as_bytes()));
+        let mut sig = vec![0u8; idk.public_modulus_len()];
+        idk.sign(
+            &aws_lc_rs::signature::RSA_PKCS1_SHA256,
+            &aws_lc_rs::rand::SystemRandom::new(),
+            signed.as_bytes(),
+            &mut sig,
+        )
+        .expect("sign id_token");
+        format!(r#"{{"id_token":"{signed}.{}","token_type":"bearer"}}"#, b64url(&sig))
+    };
+    let token_slot = Arc::new(std::sync::Mutex::new(String::new()));
 
     // Mock-Google TLS server: POST /token -> the id_token; GET /certs -> the JWKS.
     let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("cert");
@@ -2433,6 +2459,7 @@ fn coven_web_google_login_verifies_id_token_and_completes_a_session() {
     std::fs::write(&cert_path, ck.cert.pem()).unwrap();
 
     let sc = tls_config.clone();
+    let token_slot_mock = Arc::clone(&token_slot);
     let g = std::thread::spawn(move || {
         for _ in 0..2 {
             let (tcp, _) = g_listener.accept().unwrap();
@@ -2447,7 +2474,7 @@ fn coven_web_google_login_verifies_id_token_and_completes_a_session() {
                 }
             }
             let body = if String::from_utf8_lossy(&head).starts_with("POST /token") {
-                token_json.clone()
+                token_slot_mock.lock().unwrap().clone()
             } else {
                 jwks.clone()
             };
@@ -2514,8 +2541,12 @@ fn coven_web_google_login_verifies_id_token_and_completes_a_session() {
     let login = http_get_raw(&web_addr, "/auth/google/login");
     let location = header_value(&login, "location").expect("login redirect has a Location");
     let state = query_param(&location, "state").expect("authorize URL carries state");
+    let cookie = cookie_pair(&header_value(&login, "set-cookie").expect("login sets an oauth_nonce cookie"));
+    // SEC-008: the authorize URL carries the OIDC nonce; the mock's id_token must echo it.
+    let nonce = query_param(&location, "nonce").expect("the Google authorize URL carries the OIDC nonce");
+    *token_slot.lock().unwrap() = sign_id_token(&nonce);
 
-    let callback = http_get_raw(&web_addr, &format!("/auth/google/callback?code=thecode&state={state}"));
+    let callback = http_get_raw_cookie(&web_addr, &format!("/auth/google/callback?code=thecode&state={state}"), &cookie);
     let cb_loc = header_value(&callback, "location")
         .unwrap_or_else(|| panic!("callback did not redirect; raw response:\n{callback}"));
 

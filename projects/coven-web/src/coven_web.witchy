@@ -350,29 +350,61 @@ fn state_ttl_ms() -> Int:
 
 // A signed, expiring OAuth `state` — the same HMAC-over-the-Secret shape as a session
 // token. GitHub echoes it back to `/callback`, where the signature proves we issued it.
-fn sign_state(key: Secret, clock: Clock) -> String:
-    let exp = now(clock) + state_ttl_ms()
-    "${exp}" + "." + crypto.sign(key, "oauth-state:" + "${exp}")
+// SEC-007: a per-login nonce ties the OAuth flow to the browser that started it. It is
+// unpredictable (an HMAC under the server Secret), set in a cookie at `/login`, and woven
+// into the `state`; `/callback` accepts only a state whose nonce equals the cookie's, so
+// a state minted for one session can't be replayed into another (login CSRF / fixation).
+fn login_nonce(key: Secret, clock: Clock) -> String:
+    crypto.sign(key, "oauth-nonce:" + "${now(clock)}")
 
-fn valid_state(key: Secret, clock: Clock, state: String) -> Bool:
-    if !string.contains(state, "."):
+fn nonce_cookie(nonce: String) -> String:
+    "oauth_nonce=" + nonce + "; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=600"
+
+// Pull a cookie's value out of a `Cookie:` header ("k=v; k2=v2"); "" if absent.
+fn cookie_value(cookies: String, name: String) -> String:
+    var out = ""
+    for part in string.split(cookies, ";"):
+        let kv = string.trim(part)
+        if string.starts_with(kv, name + "="):
+            out = string.substring(kv, string.length(name) + 1, string.length(kv))
+    out
+
+fn cookie_nonce(req: Request) -> String:
+    match server.request_header(req, "cookie"):
+        Some(c) -> cookie_value(c, "oauth_nonce")
+        None -> ""
+
+// A signed, expiring OAuth `state` carrying the per-login nonce. The signature proves we
+// issued it; the nonce binds it to the issuing session's cookie.
+fn sign_state(key: Secret, clock: Clock, nonce: String) -> String:
+    let exp = now(clock) + state_ttl_ms()
+    "${exp}" + "." + nonce + "." + crypto.sign(key, "oauth-state:" + "${exp}" + ":" + nonce)
+
+fn valid_state(key: Secret, clock: Clock, state: String, expected_nonce: String) -> Bool:
+    let parts = string.split(state, ".")
+    if list.length(parts) != 3:
         false
     else:
-        let (exp_s, sig) = string.split_once(state, ".")
-        // SEC-024: guard `to_int` against the attacker-supplied state half (see valid_session).
-        ascii.all_digits(exp_s) && ct_eq(sig, crypto.sign(key, "oauth-state:" + exp_s)) && string.to_int(exp_s) > now(clock)
+        let exp_s = list.at(parts, 0)
+        let nonce = list.at(parts, 1)
+        let sig = list.at(parts, 2)
+        // SEC-024: guard `to_int` against the attacker-supplied expiry half (see valid_session).
+        // SEC-007: the nonce must be non-empty AND equal the issuing session's cookie.
+        ascii.all_digits(exp_s) && ct_eq(sig, crypto.sign(key, "oauth-state:" + exp_s + ":" + nonce)) && string.to_int(exp_s) > now(clock) && nonce != "" && ct_eq(nonce, expected_nonce)
 
 fn h_github_login(key: Secret, clock: Clock, gh_base: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
     fn(req: Request):
-        let state = sign_state(key, clock)
-        server.redirect(oauth.authorize_url(gh_base + "/login/oauth/authorize", client_id, redirect_uri, "read:user", state))
+        let nonce = login_nonce(key, clock)
+        let state = sign_state(key, clock, nonce)
+        let url = oauth.authorize_url(gh_base + "/login/oauth/authorize", client_id, redirect_uri, "read:user", state)
+        server.with_header(server.redirect(url), "set-cookie", nonce_cookie(nonce))
 
 fn h_github_callback(net: Net, key: Secret, clock: Clock, secrets: SecretStore, gh_base: String, gh_api: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
     fn(req: Request):
-        github_callback(net, key, clock, secrets, gh_base, gh_api, client_id, redirect_uri, server.query(req, "code"), server.query(req, "state"))
+        github_callback(net, key, clock, secrets, gh_base, gh_api, client_id, redirect_uri, server.query(req, "code"), server.query(req, "state"), cookie_nonce(req))
 
-fn github_callback(net: Net, key: Secret, clock: Clock, secrets: SecretStore, gh_base: String, gh_api: String, client_id: String, redirect_uri: String, code: String, state: String) -> Response:
-    if code == "" || !valid_state(key, clock, state):
+fn github_callback(net: Net, key: Secret, clock: Clock, secrets: SecretStore, gh_base: String, gh_api: String, client_id: String, redirect_uri: String, code: String, state: String, expected_nonce: String) -> Response:
+    if code == "" || !valid_state(key, clock, state, expected_nonce):
         server.json(403, "{\"error\":\"invalid OAuth state or missing code\"}")
     else:
         match secretstore.get(secrets, "github_client_secret"):
@@ -396,15 +428,19 @@ fn github_finish(net: Net, key: Secret, clock: Clock, gh_api: String, token: Str
 
 fn h_google_login(key: Secret, clock: Clock, authorize_url: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
     fn(req: Request):
-        let state = sign_state(key, clock)
-        server.redirect(oauth.authorize_url(authorize_url, client_id, redirect_uri, "openid email", state))
+        let nonce = login_nonce(key, clock)
+        let state = sign_state(key, clock, nonce)
+        // SEC-008: also send the nonce as the OIDC `nonce` request param; Google echoes it
+        // into the id_token's `nonce` claim, which we verify (anti-replay).
+        let url = oauth.authorize_url(authorize_url, client_id, redirect_uri, "openid email", state) + "&nonce=" + nonce
+        server.with_header(server.redirect(url), "set-cookie", nonce_cookie(nonce))
 
 fn h_google_callback(net: Net, key: Secret, clock: Clock, secrets: SecretStore, token_url: String, jwks_url: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
     fn(req: Request):
-        google_callback(net, key, clock, secrets, token_url, jwks_url, client_id, redirect_uri, server.query(req, "code"), server.query(req, "state"))
+        google_callback(net, key, clock, secrets, token_url, jwks_url, client_id, redirect_uri, server.query(req, "code"), server.query(req, "state"), cookie_nonce(req))
 
-fn google_callback(net: Net, key: Secret, clock: Clock, secrets: SecretStore, token_url: String, jwks_url: String, client_id: String, redirect_uri: String, code: String, state: String) -> Response:
-    if code == "" || !valid_state(key, clock, state):
+fn google_callback(net: Net, key: Secret, clock: Clock, secrets: SecretStore, token_url: String, jwks_url: String, client_id: String, redirect_uri: String, code: String, state: String, expected_nonce: String) -> Response:
+    if code == "" || !valid_state(key, clock, state, expected_nonce):
         server.json(403, "{\"error\":\"invalid OAuth state or missing code\"}")
     else:
         match secretstore.get(secrets, "google_client_secret"):
@@ -412,15 +448,15 @@ fn google_callback(net: Net, key: Secret, clock: Clock, secrets: SecretStore, to
             Some(sec) ->
                 match oauth.exchange_code_id_token(net, token_url, client_id, crypto.reveal(sec), code, redirect_uri):
                     Err(_) -> server.json(502, json.encode(JsonObject([("error", JsonString("token exchange failed"))])))
-                    Ok(id_token) -> google_verify(net, key, clock, jwks_url, client_id, id_token)
+                    Ok(id_token) -> google_verify(net, key, clock, jwks_url, client_id, id_token, expected_nonce)
 
-fn google_verify(net: Net, key: Secret, clock: Clock, jwks_url: String, client_id: String, id_token: String) -> Response:
+fn google_verify(net: Net, key: Secret, clock: Clock, jwks_url: String, client_id: String, id_token: String, expected_nonce: String) -> Response:
     match http.get_url(net, jwks_url):
         Err(_) -> server.json(502, json.encode(JsonObject([("error", JsonString("JWKS fetch failed"))])))
         Ok(resp) ->
             match json.decode(http.body(resp)):
                 Err(_) -> server.json(502, json.encode(JsonObject([("error", JsonString("JWKS is not JSON"))])))
-                Ok(jwks) -> google_finish(key, clock, jwks, client_id, id_token)
+                Ok(jwks) -> google_finish(key, clock, jwks, client_id, id_token, expected_nonce)
 
 // Google may send `email_verified` as a JSON boolean or the string "true".
 fn email_is_verified(claims: Json) -> Bool:
@@ -428,14 +464,18 @@ fn email_is_verified(claims: Json) -> Bool:
         Some(b) -> b
         None -> wa_field(claims, "email_verified") == "true"
 
-fn google_finish(key: Secret, clock: Clock, jwks: Json, client_id: String, id_token: String) -> Response:
+fn google_finish(key: Secret, clock: Clock, jwks: Json, client_id: String, id_token: String, expected_nonce: String) -> Response:
     match select_and_verify(clock, jwks, client_id, id_token):
         Err(_) -> server.json(403, json.encode(JsonObject([("error", JsonString("id_token rejected"))])))
         Ok(claims) ->
-            // SEC-008: admit only a VERIFIED Google email — otherwise an account asserting
-            // an unverified email equal to a maintainer's would be let in as that maintainer.
+            // SEC-008: the id_token's `nonce` must equal the one we sent (bound to this
+            // session's cookie) — an anti-replay check distinct from the `email_verified`
+            // gate below, which admits only a VERIFIED Google email so an account asserting
+            // an unverified email equal to a maintainer's can't be let in as that maintainer.
             let email = wa_field(claims, "email")
-            if email != "" && email_is_verified(claims):
+            if expected_nonce == "" || !ct_eq(wa_field(claims, "nonce"), expected_nonce):
+                server.json(403, json.encode(JsonObject([("error", JsonString("id_token nonce mismatch"))])))
+            else if email != "" && email_is_verified(claims):
                 session_redirect(key, clock, email)
             else:
                 server.json(403, json.encode(JsonObject([("error", JsonString("Google account email is not verified"))])))
