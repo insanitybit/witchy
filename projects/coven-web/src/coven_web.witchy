@@ -260,9 +260,14 @@ fn wa_do_promote(store: Dir, net: Net, upstream: String, origin: String, rp_id: 
 fn session_ttl_ms() -> Int:
     1800000
 
-fn issue_session(key: Secret, clock: Clock) -> (String, Int):
+// SEC-019: the session bearer is bound to the authenticated subject. The MAC covers
+// `exp:sub`, and `sub` (hex-encoded so it carries no `.` delimiter) travels in the token,
+// so a token minted for one identity cannot be presented as another, and a holder's
+// identity is recoverable (`valid_session` returns it) for per-subject authorization.
+fn issue_session(key: Secret, clock: Clock, sub: String) -> (String, Int):
     let exp = now(clock) + session_ttl_ms()
-    let tok = "${exp}" + "." + crypto.sign(key, "session:" + "${exp}")
+    let sub_hex = encoding.hex_encode(sub)
+    let tok = "${exp}" + "." + sub_hex + "." + crypto.sign(key, "session:" + "${exp}" + ":" + sub)
     (tok, exp)
 
 // SEC-010: constant-time string compare for MAC/token verification — iterate ALL
@@ -282,15 +287,23 @@ fn ct_eq(a: String, b: String) -> Bool:
             i = i + 1
         same
 
-fn valid_session(key: Secret, clock: Clock, token: String) -> Bool:
-    if !string.contains(token, "."):
-        false
+// Verify a bearer and, on success, return its bound subject (SEC-019). A token is
+// `exp.hex(sub).sig`; recompute the MAC over `exp:sub` and check expiry.
+fn valid_session(key: Secret, clock: Clock, token: String) -> Option(String):
+    let parts = string.split(token, ".")
+    if list.length(parts) != 3:
+        None
     else:
-        let (exp_s, sig) = string.split_once(token, ".")
+        let exp_s = list.at(parts, 0)
+        let sub = encoding.hex_decode(list.at(parts, 1))
+        let sig = list.at(parts, 2)
         // SEC-024: guard `to_int` (it traps on non-numeric input) before parsing the
-        // attacker-supplied expiry half — an `Authorization: Bearer abc.x` would
+        // attacker-supplied expiry half — an `Authorization: Bearer abc.x.y` would
         // otherwise abort the server VM. `&&` short-circuits, so a bad token is just invalid.
-        ascii.all_digits(exp_s) && ct_eq(sig, crypto.sign(key, "session:" + exp_s)) && string.to_int(exp_s) > now(clock)
+        if ascii.all_digits(exp_s) && ct_eq(sig, crypto.sign(key, "session:" + exp_s + ":" + sub)) && string.to_int(exp_s) > now(clock):
+            Some(sub)
+        else:
+            None
 
 fn bearer_of(req: Request) -> Option(String):
     match server.request_header(req, "authorization"):
@@ -302,7 +315,9 @@ fn require_session(key: Secret, clock: Clock) -> fn(fn(Request) -> Response) -> 
     fn(inner: fn(Request) -> Response):
         fn(req: Request):
             match bearer_of(req):
-                Some(tok) -> if valid_session(key, clock, tok): inner(req) else: server.json(403, "{\"error\":\"invalid or expired session — sign in again\"}")
+                Some(tok) -> match valid_session(key, clock, tok):
+                    Some(_sub) -> inner(req)
+                    None -> server.json(403, "{\"error\":\"invalid or expired session — sign in again\"}")
                 None -> server.json(401, "{\"error\":\"sign in with a passkey to manage releases\"}")
 
 fn h_wa_login(store: Dir, key: Secret, clock: Clock, origin: String, rp_id: String) -> fn(Request) -> Response:
@@ -321,7 +336,7 @@ fn wa_do_login(store: Dir, key: Secret, clock: Clock, origin: String, rp_id: Str
             Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("sign-in failed: " + reason))])))
             Ok(_) ->
                 write(store, "_wa_challenge.json", "{}")
-                let (tok, exp) = issue_session(key, clock)
+                let (tok, exp) = issue_session(key, clock, "passkey")
                 server.json(200, json.encode(JsonObject([("token", JsonString(tok)), ("expires", JsonString("${exp}"))])))
 
 // ---- "Log in with GitHub" (OAuth2) ------------------------------------------
@@ -436,7 +451,7 @@ fn select_and_verify(clock: Clock, jwks: Json, client_id: String, id_token: Stri
 // Mint a bearer session for `who` and hand it to the SPA in the URL fragment (kept out of
 // logs/Referer) — the shared tail of every social-login callback.
 fn session_redirect(key: Secret, clock: Clock, who: String) -> Response:
-    let (sess, _exp) = issue_session(key, clock)
+    let (sess, _exp) = issue_session(key, clock, who)
     server.redirect("/#token=" + url.encode(sess) + "&login=" + url.encode(who))
 
 fn split_host_port(hp: String) -> (String, Int):
