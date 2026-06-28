@@ -114,7 +114,7 @@ call (`x = grow(move x)` pipelines are O(n) end to end). Dicts carry a
 hidden open-addressing hash index for O(1) lookups. The interpreter applies
 the same in-place self-assign optimization (values are fully owned there).
 Accumulation that falls back to copying inside a loop is flagged at check
-time (`witchy check` notes + LSP hints); `WITCHY_NO_INPLACE=1` compiles the
+time (`witchy check` notes + LSP hints); `WITCHY_OPT=-inplace` compiles the
 copying paths for differential verification, and the exported
 `__witchy_reowns` counter lets tests assert copy counts. Measured: string
 workloads run 4–5.7× faster than Go, lists/dicts/compute at parity — see

@@ -1,7 +1,7 @@
 ---
 rfc: 0016
 title: Reference-counted memory — RC floor, arena/region/in-place as elision
-status: proposed
+status: planned
 created: 2026-06-26
 superseded-by:
 tracking:

@@ -264,3 +264,15 @@ scope as the lifetime bound.
   like the existing in-place machinery (enforced by the forced-copy differential
   mode).
 - Pick one memory identity (arena/linear *or* reuse-counting/FBIP), not both.
+
+---
+
+> 2026-06-28: the PROPOSED follow-ons in this doc are now written up as
+> single-decision RFCs. The "unified escape/fact analysis framework" is
+> [RFC-0024](0024-unified-facts-lattice.md); the tier-3 `unique` surface
+> qualifier is [RFC-0026](0026-unique-qualifier.md); the tier-1/2 representation
+> work (unboxed layouts + SROA) is [RFC-0027](0027-packed-layouts-sroa.md). A new
+> knob not anticipated here — `frozen`, the deep-immutability dual of uniqueness
+> that removes the value-boundary copy for read-only shared data — is
+> [RFC-0025](0025-frozen-deep-immutability.md). RFC-0024 is the substrate the
+> other three consume.

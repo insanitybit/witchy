@@ -19,13 +19,19 @@ are not "WASM is slow"; they are specific and addressable:
 | Startup / cold runs | Cranelift cache exists | **Yes, decisively** — AOT-serialized modules instantiate in microseconds; Go/C# pay process + runtime init |
 | Allocation-heavy (lists, strings) | **traps OOM** (copy-per-push under a bump arena, O(n²) bytes) | **Yes** — capacity-growth + ownership-driven in-place mutation beats GC throughput; this is Phase 1 |
 | Long-running request loops | arena grows until the cap | **Yes** — arena reset points are *faster* than any GC (free bulk reclaim, no pauses) |
-| Long-lived, pointer-chasing mutable heaps | arena never reclaims | **Hard** — this is what Go's GC is genuinely good at. Out of scope until everything above lands; mitigations in Phase 4 |
+| Long-lived, evicting/mutating heaps (caches, indexes, long-lived owned state) | arena alone never reclaims | **In scope via RC** — reference counting ([RFC-0016](../rfcs/0016-reference-counted-memory.md), planned) is the tier-0 reclamation floor that frees escaping/evicted values; witchy has no shared-mutable pointer graphs to chase, so there is no pointer-cycle tail to concede. See [RFC-0029](../rfcs/0029-performance-tier-contract.md) |
 
-The honest summary: witchy should not chase Go by building a GC. Its value
-semantics + ownership conventions + region-scoped arenas are an *Erlang-shaped*
-memory story that, done properly, beats GC languages on throughput for the
-request/message-scoped workloads witchy targets — and loses (by design) on
-workloads witchy is not for.
+The honest summary: witchy should not chase Go by building a *tracing GC*. Its
+value semantics + ownership conventions + region-scoped arenas, with reference
+counting as the reclamation floor ([RFC-0016](../rfcs/0016-reference-counted-memory.md)),
+are an *Erlang-shaped* memory story that beats GC languages on throughput while
+also serving the long-lived, evicting state — caches, indexes, servers holding
+state — that the general-purpose targets (Go, Python, Ruby, Swift) take for
+granted. Two properties make this work without a collector: value semantics
+admits no reference cycles, so RC is complete with no tracer; and graphs are
+expressed with index-arena handles rather than shared pointers, so even cyclic
+*structure* is just integers reclaimed with its arena. The two-tier contract
+over this model is [RFC-0029](../rfcs/0029-performance-tier-contract.md).
 
 ## Phase 0 — Measure first
 
@@ -93,7 +99,7 @@ and activate when a dotnet toolchain is present.
 
 ## Phase 2 — Codegen quality
 
-1. **Binaryen post-pass** — landed as an opt-in (`WITCHY_WASM_OPT=1`,
+1. **Binaryen post-pass** — landed as an opt-in (`WITCHY_OPT=wasm-opt`,
    shell-out, degrades to a no-op without the binary) and then MEASURED:
    at 64M ops the optimized module is no faster (Cranelift Speed already
    emits ~0.6 ns/op for our loop shapes) and the ~50 ms invocation cost
