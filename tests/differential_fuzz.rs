@@ -42,18 +42,58 @@ fn alnum(r: &mut Rng) -> String {
 }
 
 fn gen_int(r: &mut Rng, depth: u32) -> String {
-    if depth == 0 || r.below(3) == 0 {
-        // Spread magnitudes: small signed, mid, and full-range i64 (renders near page edges).
+    if depth == 0 {
+        // Leaves: literals only, spread across the i64 range (renders near page edges).
         match r.below(4) {
             0 => format!("({})", r.below(200) as i64 - 100),
             1 => format!("{}", r.next() % 1_000_000),
             2 => format!("({})", r.next() as i64),
             _ => format!("({})", i64::from_le_bytes(r.next().to_le_bytes())),
         }
-    } else {
-        let op = ["+", "-", "*"][r.below(3) as usize];
+    } else if r.below(6) < 5 {
+        // `/` and `%` included — a zero divisor traps identically on both backends.
+        let op = ["+", "-", "*", "/", "%"][r.below(5) as usize];
         format!("({} {} {})", gen_int(r, depth - 1), op, gen_int(r, depth - 1))
+    } else {
+        // `list.at` exercises indexed reads (out-of-range just traps on BOTH backends =
+        // agreement, so it's free coverage of the bounds path). depth-1 bounds recursion.
+        format!("list.at({}, {})", gen_intlist(r, depth - 1), gen_int(r, depth - 1))
     }
+}
+
+fn gen_float(r: &mut Rng, depth: u32) -> String {
+    if depth == 0 || r.below(3) == 0 {
+        match r.below(4) {
+            0 => format!("{}.{}", r.below(1000), r.below(1000)),
+            1 => "0.0".to_string(),
+            2 => format!("math.to_float({})", gen_int(r, 0)),
+            _ => format!("(0.0 - {}.{})", r.below(100), r.below(100)),
+        }
+    } else {
+        let op = ["+", "-", "*", "/"][r.below(4) as usize];
+        format!("({} {} {})", gen_float(r, depth - 1), op, gen_float(r, depth - 1))
+    }
+}
+
+fn gen_bool(r: &mut Rng, depth: u32) -> String {
+    match r.below(if depth == 0 { 3 } else { 5 }) {
+        0 => format!("({} {} {})", gen_int(r, 1), ["<", "<=", "==", "!=", ">", ">="][r.below(6) as usize], gen_int(r, 1)),
+        1 => format!("({} == {})", gen_str(r, 1), gen_str(r, 1)),
+        2 => format!("string.contains({}, {})", gen_str(r, 1), gen_str(r, 1)),
+        3 => format!("({} && {})", gen_bool(r, depth - 1), gen_bool(r, depth - 1)),
+        _ => format!("(!{})", gen_bool(r, depth - 1)),
+    }
+}
+
+/// `Some(int)` — exercises constructor/option value layout + __render. (Bare `None` can't
+/// infer its type in `__render`, so we stick to `Some`, which is the heap-relevant case.)
+fn gen_option(r: &mut Rng) -> String {
+    format!("Some({})", gen_int(r, 1))
+}
+
+/// `if bool: int else: int` — exercises the conditional-expression lowering.
+fn gen_cond_int(r: &mut Rng, depth: u32) -> String {
+    format!("(if {}: {} else: {})", gen_bool(r, 1), gen_int(r, depth), gen_int(r, depth))
 }
 
 fn gen_str(r: &mut Rng, depth: u32) -> String {
@@ -69,7 +109,10 @@ fn gen_str(r: &mut Rng, depth: u32) -> String {
 }
 
 fn gen_intlist(r: &mut Rng, depth: u32) -> String {
-    let n = r.below(5);
+    // Always >= 1 element: an empty `[]` has an ambiguous element type, which the structural
+    // renderer can't build (a known interpreter-only limit) — that's a generator miss, not a
+    // codegen bug, so avoid it and keep the programs compiling.
+    let n = 1 + r.below(4);
     let elems: Vec<String> = (0..n).map(|_| gen_int(r, depth.min(2))).collect();
     format!("[{}]", elems.join(", "))
 }
@@ -77,16 +120,20 @@ fn gen_intlist(r: &mut Rng, depth: u32) -> String {
 /// One random program: a `main` that prints many heap-exercising expressions.
 fn gen_program(seed: u64, statements: usize) -> String {
     let mut r = Rng(seed);
-    let mut body = String::from("import string\nimport list\n\nfn main(console: Console):\n");
+    let mut body = String::from("import string\nimport list\nimport math\n\nfn main(console: Console):\n");
     for _ in 0..statements {
-        let kind = r.below(5);
+        let kind = r.below(9);
         let depth = 1 + r.below(3) as u32;
         let line = match kind {
             0 => format!("    print(console, __render({}))\n", gen_int(&mut r, depth)),
             1 => format!("    print(console, {})\n", gen_str(&mut r, depth)),
             2 => format!("    print(console, __render({}))\n", gen_intlist(&mut r, 2)),
             3 => format!("    print(console, \"${{string.length({})}}\")\n", gen_str(&mut r, 2)),
-            _ => format!("    print(console, \"${{list.length({})}}\")\n", gen_intlist(&mut r, 2)),
+            4 => format!("    print(console, \"${{list.length({})}}\")\n", gen_intlist(&mut r, 2)),
+            5 => format!("    print(console, __render({}))\n", gen_float(&mut r, depth)),
+            6 => format!("    print(console, __render({}))\n", gen_bool(&mut r, depth)),
+            7 => format!("    print(console, __render({}))\n", gen_option(&mut r)),
+            _ => format!("    print(console, __render({}))\n", gen_cond_int(&mut r, depth)),
         };
         body.push_str(&line);
     }
