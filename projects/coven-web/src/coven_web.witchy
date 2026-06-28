@@ -12,6 +12,7 @@
 import server
 import http
 import string
+import ascii
 import list
 import json
 import crypto
@@ -246,7 +247,10 @@ fn valid_session(key: Secret, clock: Clock, token: String) -> Bool:
         false
     else:
         let (exp_s, sig) = string.split_once(token, ".")
-        sig == crypto.sign(key, "session:" + exp_s) && string.to_int(exp_s) > now(clock)
+        // SEC-024: guard `to_int` (it traps on non-numeric input) before parsing the
+        // attacker-supplied expiry half — an `Authorization: Bearer abc.x` would
+        // otherwise abort the server VM. `&&` short-circuits, so a bad token is just invalid.
+        ascii.all_digits(exp_s) && sig == crypto.sign(key, "session:" + exp_s) && string.to_int(exp_s) > now(clock)
 
 fn bearer_of(req: Request) -> Option(String):
     match server.request_header(req, "authorization"):
@@ -300,7 +304,8 @@ fn valid_state(key: Secret, clock: Clock, state: String) -> Bool:
         false
     else:
         let (exp_s, sig) = string.split_once(state, ".")
-        sig == crypto.sign(key, "oauth-state:" + exp_s) && string.to_int(exp_s) > now(clock)
+        // SEC-024: guard `to_int` against the attacker-supplied state half (see valid_session).
+        ascii.all_digits(exp_s) && sig == crypto.sign(key, "oauth-state:" + exp_s) && string.to_int(exp_s) > now(clock)
 
 fn h_github_login(key: Secret, clock: Clock, gh_base: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
     fn(req: Request):
