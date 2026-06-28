@@ -150,7 +150,7 @@ pub fn decode(s: String) -> Result(Json, String):
     // j + 1)` instead would be O(j) per char (UTF-8 character indexing walks from the start),
     // i.e. O(n^2) overall — which made decoding even a modest document take hundreds of ms.
     let cs = string.chars(s)
-    let r = parse_value(cs, skip_ws(cs, 0))?
+    let r = parse_value(cs, skip_ws(cs, 0), 0)?
     let (v, rest) = r
     let end = skip_ws(cs, rest)
     if end < list.length(cs):
@@ -181,15 +181,21 @@ fn skip_ws(cs: List(String), i: Int) -> Int:
     j
 
 // Parse the value at `i` (whitespace already skipped).
-fn parse_value(cs: List(String), i: Int) -> Result((Json, Int), String):
-    if i >= list.length(cs):
+fn parse_value(cs: List(String), i: Int, depth: Int) -> Result((Json, Int), String):
+    if depth > 256:
+        // SEC-031: bound recursion. A deeply-nested document would otherwise exhaust the
+        // call stack and TRAP the VM — an unauthenticated DoS via any `json.decode` of
+        // untrusted input (HTTP bodies, registry records). 256 is far beyond any real
+        // document and well below the stack limit.
+        Err("JSON nesting too deep (max 256)")
+    else if i >= list.length(cs):
         Err("unexpected end of input")
     else:
         let c = list.at(cs, i)
         if c == "{":
-            parse_object(cs, i)
+            parse_object(cs, i, depth)
         else if c == "[":
-            parse_array(cs, i)
+            parse_array(cs, i, depth)
         else if c == "\"":
             parse_string(cs, i)
         else if c == "t":
@@ -388,14 +394,14 @@ fn scan_unicode(cs: List(String), j: Int, n: Int) -> Result((String, Int), Strin
     else:
         Ok((string.from_code(cp), j + 6))
 
-fn parse_array(cs: List(String), i: Int) -> Result((Json, Int), String):
+fn parse_array(cs: List(String), i: Int, depth: Int) -> Result((Json, Int), String):
     let n = list.length(cs)
     var items = []
     var j = skip_ws(cs, i + 1)
     if j < n && list.at(cs, j) == "]":
         return Ok((JsonArray(items), j + 1))
     while true:
-        let r = parse_value(cs, skip_ws(cs, j))?
+        let r = parse_value(cs, skip_ws(cs, j), depth + 1)?
         let (v, k) = r
         items = list.push(items, v)
         let m = skip_ws(cs, k)
@@ -410,7 +416,7 @@ fn parse_array(cs: List(String), i: Int) -> Result((Json, Int), String):
             return Err("expected , or ] in array")
     Err("unreachable")
 
-fn parse_object(cs: List(String), i: Int) -> Result((Json, Int), String):
+fn parse_object(cs: List(String), i: Int, depth: Int) -> Result((Json, Int), String):
     let n = list.length(cs)
     var pairs = []
     var j = skip_ws(cs, i + 1)
@@ -425,7 +431,7 @@ fn parse_object(cs: List(String), i: Int) -> Result((Json, Int), String):
         let colon = skip_ws(cs, k1)
         if colon >= n || list.at(cs, colon) != ":":
             return Err("expected : in object")
-        let vr = parse_value(cs, skip_ws(cs, colon + 1))?
+        let vr = parse_value(cs, skip_ws(cs, colon + 1), depth + 1)?
         let (v, k2) = vr
         pairs = list.push(pairs, (key, v))
         let m = skip_ws(cs, k2)
