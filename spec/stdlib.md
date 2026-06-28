@@ -580,9 +580,9 @@ The first / second component of a pair — handy for the tuples `iter.zip` and `
 
 std/future — cooperative single-threaded futures via CPS over closures.
 
-A `Future(a)` is a thunk that, when polled, either completes (`Done`) or hands back the rest of the work (`More`). This is the substrate the `async`/`await` surface lowers onto: an `await` becomes an `and_then`, and the awaited value's live state is the captured values of the continuation closure. Those captures are owned values, never internal references — so, unlike Rust, there is nothing self-referential and no `Pin`. Pure structure (closures + sum types), so it runs byte-identically on both backends.
+A `Future(a)` is a thunk that, when polled, either completes (`Done`) or hands back the rest of the work (`More`). It is a standalone building block for racing and joining independent computations (`select`, `join_all`) — NOT what the `async`/`await` surface lowers onto (that targets `std/task`, which points here for `select`). A future's live state is the captured values of its continuation closure — owned values, never internal references, so unlike Rust there is nothing self-referential and no `Pin`. Pure structure (closures + sum types), so it runs byte-identically on both backends.
 
-`More` is the cooperative yield point: an executor drives a future by polling it one step at a time, so several futures can interleave at their await points.
+`More` is the cooperative yield point: an executor drives a future by polling it one step at a time, so several futures can interleave at their `pending` points.
 
 #### `type Poll`
 
