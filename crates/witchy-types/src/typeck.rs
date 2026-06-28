@@ -544,18 +544,6 @@ fn check_build_signature(module: &Module) -> Result<(), TypeError> {
     Ok(())
 }
 
-/// Whether `src` parses to a module shipping a build entrypoint — how the
-/// package manager decides a dependency's `build` module is a build *step* (run
-/// separately, confined) rather than library API (linked into the consumer).
-/// (The PM is bin-only — it lives in the `witchy` binary, which consumes this
-/// from the `witchy` library — so the lib target itself sees no caller.)
-#[allow(dead_code)]
-pub fn build_entrypoint_src(src: &str) -> bool {
-    witchy_syntax::parser::parse_module(src)
-        .map(|m| build_entrypoint(&m).is_some())
-        .unwrap_or(false)
-}
-
 /// Collect the type-parameter names (lowercase, argument-less) appearing in a
 /// type expression, in order of first appearance. Used to infer the parameters
 /// of a generic ADT from its variant field types.
@@ -2718,10 +2706,6 @@ pub struct TypeTable {
 impl TypeTable {
     pub fn type_of(&self, e: &Expr) -> Option<&Ty> {
         self.types.get(&(e as *const Expr as usize))
-    }
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.types.is_empty()
     }
 }
 
