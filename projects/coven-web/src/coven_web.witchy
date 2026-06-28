@@ -186,16 +186,23 @@ fn decode_or_empty(s: String) -> Json:
 
 fn h_wa_register(store: Dir) -> fn(Request) -> Response:
     fn(req: Request):
-        match server.json_body(req):
-            Err(_e) -> server.bad_request("{\"error\":\"bad body\"}")
-            Ok(doc) ->
-                let cred = wa_field(doc, "credentialId")
-                let pk = wa_field(doc, "publicKey")
-                if cred == "" || pk == "":
-                    server.bad_request("{\"error\":\"missing credentialId or publicKey\"}")
-                else:
-                    write(store, "_wa_cred.json", json.encode(JsonObject([("credentialId", JsonString(cred)), ("publicKey", JsonString(pk))])))
-                    server.json(200, "{\"ok\":true}")
+        // SEC-001: registration is UNAUTHENTICATED, so it may only BOOTSTRAP the first
+        // passkey — never overwrite an existing one. Otherwise an anonymous attacker could
+        // replace the maintainer's credential and then sign in as them. Rotating a passkey
+        // requires removing `_wa_cred.json` out-of-band (operator action).
+        if exists(store, "_wa_cred.json"):
+            server.json(403, "{\"error\":\"a passkey is already registered; rotation requires removing the credential out-of-band\"}")
+        else:
+            match server.json_body(req):
+                Err(_e) -> server.bad_request("{\"error\":\"bad body\"}")
+                Ok(doc) ->
+                    let cred = wa_field(doc, "credentialId")
+                    let pk = wa_field(doc, "publicKey")
+                    if cred == "" || pk == "":
+                        server.bad_request("{\"error\":\"missing credentialId or publicKey\"}")
+                    else:
+                        write(store, "_wa_cred.json", json.encode(JsonObject([("credentialId", JsonString(cred)), ("publicKey", JsonString(pk))])))
+                        server.json(200, "{\"ok\":true}")
 
 fn h_wa_challenge(store: Dir, key: Secret, clock: Clock) -> fn(Request) -> Response:
     fn(req: Request):
