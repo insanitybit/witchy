@@ -1276,14 +1276,10 @@ fn host_net_restrict(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) -> 
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
     let allow = net_allow(&caller, h)?;
-    let patterns: Vec<String> = addr.split('\n').map(String::from).collect();
-    for p in &patterns {
-        if !witchy_caps::capabilities::net_allows(&allow, p) {
-            bail!("restrict: `{p}` is not in this Net capability");
-        }
-    }
+    let narrowed = witchy_caps::capabilities::net_only(&allow, &addr)
+        .map_err(|p| Error::msg(format!("restrict: `{p}` is not in this Net capability")))?;
     let nets = &mut caller.data_mut().nets;
-    nets.push(patterns);
+    nets.push(narrowed);
     Ok((nets.len() - 1) as i32)
 }
 

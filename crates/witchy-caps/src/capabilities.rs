@@ -173,6 +173,29 @@ pub fn net_allows(allow: &[String], target: &str) -> bool {
     allow.iter().filter(|p| !p.starts_with('!')).any(|p| address_admits(p, target))
 }
 
+/// Narrow `allow` to the `\n`-joined `patterns` of a `NetPolicy` (`net.only` /
+/// `restrict`). Each new pattern must already be admitted by the current set
+/// (refinement only shrinks); on a pattern that isn't, returns it as the `Err`.
+///
+/// Crucially, the parent's `!`-DENY entries are CARRIED FORWARD into the narrowed
+/// set. `only(P)` is the intersection `current ∩ P`, and `current = allows \ denies`,
+/// so a `deny` already in effect must survive a later `only` — otherwise
+/// `net.deny(X).only(superset-of-X)` would silently re-admit `X`, breaking RFC-0011's
+/// "refinement can only ever shrink the set". Shared by BOTH backends so the
+/// narrowing is one implementation (no parity drift), the same discipline as
+/// `net_allows`/`address_admits`.
+pub fn net_only(allow: &[String], patterns: &str) -> Result<Vec<String>, String> {
+    let mut narrowed = Vec::new();
+    for p in patterns.split('\n') {
+        if !net_allows(allow, p) {
+            return Err(p.to_string());
+        }
+        narrowed.push(p.to_string());
+    }
+    narrowed.extend(allow.iter().filter(|e| e.starts_with('!')).cloned());
+    Ok(narrowed)
+}
+
 /// The error a backend MUST raise when `main` binds a host capability the host
 /// cannot actually mint, so BOTH backends refuse identically and the spec's
 /// "the root grant is always concrete — the host hands `main` a real capability or
@@ -588,4 +611,46 @@ pub fn run_grant(module: &Module) -> CapSet {
         .find(|e| e.name == "main")
         .map(|e| e.capabilities)
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod net_only_tests {
+    use super::{net_allows, net_only};
+
+    // RFC-0011 monotonicity: a `deny` in effect must survive a later `only`, even an
+    // `only` of the enclosing block. Regression for the `only`-drops-`deny` re-widening.
+    #[test]
+    fn only_of_enclosing_block_preserves_a_prior_deny() {
+        let granted = vec!["127.0.0.0/8:*".to_string()];
+        let denied = {
+            let mut a = granted.clone();
+            a.push("!127.0.0.1:1".to_string());
+            a
+        };
+        // Sanity: the deny is honored before any `only`.
+        assert!(!net_allows(&denied, "127.0.0.1:1"));
+        // `only(127.0.0.0/8:*)` must NOT re-admit the denied host.
+        let narrowed = net_only(&denied, "127.0.0.0/8:*").expect("block is admitted");
+        assert!(
+            !net_allows(&narrowed, "127.0.0.1:1"),
+            "`only` re-widened a denied address: {narrowed:?}"
+        );
+        // A non-denied host in the block stays reachable.
+        assert!(net_allows(&narrowed, "127.0.0.2:80"));
+    }
+
+    #[test]
+    fn only_rejects_a_pattern_outside_the_current_set() {
+        let granted = vec!["10.0.0.5:6379".to_string()];
+        // Can't widen a single host to the whole block.
+        assert_eq!(net_only(&granted, "10.0.0.0/8:*"), Err("10.0.0.0/8:*".to_string()));
+    }
+
+    #[test]
+    fn only_narrows_to_an_admitted_host() {
+        let granted = vec!["10.0.0.0/8:*".to_string()];
+        let narrowed = net_only(&granted, "10.0.0.5:6379").expect("host is in the block");
+        assert!(net_allows(&narrowed, "10.0.0.5:6379"));
+        assert!(!net_allows(&narrowed, "10.0.0.6:6379"));
+    }
 }

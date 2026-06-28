@@ -225,16 +225,12 @@ fn err<T, E: From<RuntimeError>>(message: impl Into<String>) -> Result<T, E> {
 /// `confine.union`). Each pattern must already be admitted by the current allowlist
 /// (monotone — refinement only shrinks). Returns the narrowed `Net`.
 fn net_narrow_to(allow: &[String], patterns: &str) -> Result<Value, RuntimeError> {
-    let mut narrowed = Vec::new();
-    for p in patterns.split('\n') {
-        if !witchy_caps::capabilities::net_allows(allow, p) {
-            return Err(RuntimeError {
-                message: format!("`{p}` is not in this Net capability"),
-            });
-        }
-        narrowed.push(p.to_string());
+    match witchy_caps::capabilities::net_only(allow, patterns) {
+        Ok(narrowed) => Ok(Value::Net(narrowed)),
+        Err(p) => Err(RuntimeError {
+            message: format!("`{p}` is not in this Net capability"),
+        }),
     }
-    Ok(Value::Net(narrowed))
 }
 
 /// Prefix a runtime error with where it occurred — the executing function (after
