@@ -751,12 +751,18 @@ fn cmd_yank(console: Console, net: Net, env: Env, args: List(String)) -> Int:
     else:
         let addr = coven_addr(env, arg(args, 3))
         let (host, port) = hostport(addr)
-        let resp = http.post(net, host, port, "/coven/yank", yank_body(name, version))
+        let resp = http.post(net, host, port, "/coven/yank", yank_body(name, version, id_token_from_env(env)))
         print(console, "yank: ${http.status(resp)}")
         if http.status(resp) >= 200 && http.status(resp) < 300: 0 else: 1
 
-fn yank_body(name: String, version: String) -> String:
-    json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version))]))
+// SEC-018: carry the trusted-publishing token (COVEN_ID_TOKEN) so a trusted registry can
+// authorize the yank as an existing maintainer, mirroring promote.
+fn yank_body(name: String, version: String, id_token: Option(String)) -> String:
+    let base = [("name", JsonString(name)), ("version", JsonString(version))]
+    let fields = match id_token:
+        Some(tok) -> list.push(base, ("id_token", JsonString(tok)))
+        None -> base
+    json.encode(JsonObject(fields))
 
 // list <name> [host:port] — every version of a rune the registry knows, with its
 // lifecycle state (staged / released / yanked). The registry comes from the

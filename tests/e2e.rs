@@ -480,6 +480,33 @@ fn trusted_publishing_binds_repo_and_rejects_others() {
     assert!(out.status.success() && stdout(&out).contains("promote: 200"), "human promote: {}", stdout(&out));
 }
 
+/// SEC-018: on a trusted registry, `yank` requires an EXISTING maintainer of the
+/// namespace — it is not an unauthenticated operation. A non-maintainer token is
+/// refused 403; the maintainer (the human who promoted, bound TOFU) may yank.
+#[test]
+fn trusted_yank_requires_a_maintainer() {
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "yauth");
+    let lib = fe.lib("acme/y", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
+
+    let ci = server.ci_token("acme-y-repo", "release.yml");
+    let out = fe.pm(&lib, &["publish", "."], Some(&ci));
+    assert!(out.status.success() && stdout(&out).contains("publish: 200"), "publish: {}", stdout(&out));
+    let alice = server.human_token("alice");
+    let out = fe.pm(&lib, &["promote", "acme/y", "1.0.0"], Some(&alice));
+    assert!(out.status.success() && stdout(&out).contains("promote: 200"), "promote: {}", stdout(&out));
+
+    // A non-maintainer token cannot yank.
+    let mallory = server.human_token("mallory");
+    let out = fe.pm(&lib, &["yank", "acme/y", "1.0.0"], Some(&mallory));
+    assert!(!out.status.success(), "a non-maintainer must not yank");
+    assert!(stdout(&out).contains("yank: 403"), "non-maintainer yank: {}", stdout(&out));
+
+    // The maintainer (alice) may yank.
+    let out = fe.pm(&lib, &["yank", "acme/y", "1.0.0"], Some(&alice));
+    assert!(out.status.success() && stdout(&out).contains("yank: 200"), "maintainer yank: {}", stdout(&out));
+}
+
 /// Trusted publishing against a ROTATING-key issuer: the registry trusts a JWKS document
 /// (not a single pinned key) and selects the verifying key by each token's `kid` — exactly
 /// what verifying a real GitHub Actions OIDC token requires, since GitHub rotates its

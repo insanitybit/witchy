@@ -26,10 +26,12 @@ type PromoteRequest:
     promoted_by: String
     id_token: Option(String)
 
-// A yank: just the decoded name + version (re-signs the existing record as yanked).
+// A yank: name + version, plus the trusted-publishing token (SEC-018) — yank is a
+// maintainer action, so a trusted registry requires the same identity token as promote.
 type YankRequest:
     name: String
     version: String
+    id_token: Option(String)
 
 // --- server side: parse an untrusted request body into its envelope --------------
 pub fn publish_of(doc: Json) -> PublishRequest:
@@ -39,7 +41,7 @@ pub fn promote_of(doc: Json) -> PromoteRequest:
     PromoteRequest(coven_validate.unwire(coven_json.str(doc, "name")), coven_json.str(doc, "version"), coven_json.str(doc, "second_factor"), coven_json.str(doc, "promoted_by"), json.get_string(doc, "id_token"))
 
 pub fn yank_of(doc: Json) -> YankRequest:
-    YankRequest(coven_validate.unwire(coven_json.str(doc, "name")), coven_json.str(doc, "version"))
+    YankRequest(coven_validate.unwire(coven_json.str(doc, "name")), coven_json.str(doc, "version"), json.get_string(doc, "id_token"))
 
 // The wire source is {"source":{"files":[[path,text],...]}} (matches SourceDto).
 fn source_files(doc: Json) -> List((String, String)):

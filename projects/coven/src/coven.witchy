@@ -277,6 +277,9 @@ impl Coven:
     fn do_yank(self, doc: Json) -> Result(Response, CovenError):
         let req = coven_proto.yank_of(doc)
         let rec = self.load_record(req.name, req.version)?
+        // SEC-018: yank is a destructive maintainer action, so a trusted registry requires
+        // an existing maintainer of the namespace — not just any client.
+        let _yanker = self.authorized_yanker(req.name, req.id_token, now(self.clock) / 1000)?
         let signed = coven_record.sign_record(self.key, req.name, req.version, Yanked, rec.hash, rec.runtime_footprint, rec.uploaded_by, coven_record.str_or_empty(rec.promoted_by), coven_record.str_or_empty(rec.second_factor), coven_record.str_or_empty(rec.provenance), rec.released_at)
         coven_store.write_record(self.store, req.name, req.version, signed)
         self.rebuild_metadata()
@@ -352,6 +355,21 @@ impl Coven:
             Ok(coven_json.str(claims, "sub"))
         else:
             Err(CovenError(403, "`" + coven_json.str(claims, "sub") + "` is not a maintainer of namespace `" + ns + "`"))
+
+    fn authorized_yanker(self, name: String, id_token: Option(String), now: Int) -> Result(String, CovenError):
+        // SEC-018: yank requires an EXISTING maintainer of the namespace. Unlike promote it
+        // never bootstraps maintainership (you must not be able to become a maintainer by
+        // yanking). Anonymous mode (no trusted issuers) stays open for local registries.
+        if list.length(self.issuers) == 0:
+            Ok("anonymous")
+        else:
+            let claims = verified_claims(self.issuers, id_token, now, "yanking on a trusted registry requires a short-lived identity token")?
+            let ns = coven_trust.namespace_of(name)
+            let mfile = "_policy/" + ns + "/maintainers.json"
+            require(exists(self.store, mfile), 403, "namespace `" + ns + "` has no registered maintainers; nothing may be yanked")?
+            let id = coven_json.str(claims, "iss") + "|" + coven_json.str(claims, "sub")
+            require(coven_footprint.member(coven_trust.string_array(read(self.store, mfile)), id), 403, "`" + coven_json.str(claims, "sub") + "` is not a maintainer of namespace `" + ns + "`")?
+            Ok(coven_json.str(claims, "sub"))
 
     fn load_record(self, name: String, version: String) -> Result(Record, CovenError):
         // The stored record as a typed `Record` — 404 if absent, 500 if corrupt.
