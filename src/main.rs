@@ -1352,7 +1352,7 @@ fn execute_file_exit(
     // share one runtime, so dev == deploy by construction. The interpreter is only
     // the differential oracle (`witchy parity`) and the comptime evaluator — never
     // a user-program run path.
-    run_linked_compiled(&linked, Vec::new(), Vec::new(), net_allow, args, signing_key, named_secrets)
+    run_linked_compiled(&linked, Vec::new(), Vec::new(), net_allow, args, signing_key, named_secrets, false)
         .map(|(lines, code)| (lines, code.unwrap_or(0)))
 }
 
@@ -1587,7 +1587,10 @@ fn emit_wat_file(path: &str) -> Result<String, String> {
 /// Dir / Net / Secret each granted (at `dir_root` / `net_allow`) iff the footprint
 /// shows the program uses it. `Dir`/`Net` rights narrow which host ops are linked.
 /// This is the shared core of `witchy run` (dev, root at cwd) and `witchy sandbox`
-/// (strict, announced grant) — one runtime for both, so dev == deploy.
+/// (strict, announced grant) — one runtime for both, so dev == deploy. `strict_dir`
+/// is the one host-policy difference: sandbox requires an explicit `--dir` (deny by
+/// omission) while dev `run` defaults a `Dir` to the cwd.
+#[allow(clippy::too_many_arguments)]
 fn run_linked_compiled(
     linked: &ast::Module,
     dir_roots: Vec<std::path::PathBuf>,
@@ -1596,6 +1599,7 @@ fn run_linked_compiled(
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<(String, Vec<u8>)>,
+    strict_dir: bool,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     use crate::runtime::{Capabilities, Runtime};
     // The grant is what `main` RECEIVES — authority originates only there (witchy
@@ -1635,6 +1639,15 @@ fn run_linked_compiled(
     if let Some(rights) = grant.get("Dir") {
         let mut roots = dir_roots;
         if roots.is_empty() {
+            // Deny by omission: an announced/strict run (`witchy sandbox`, `--grants`)
+            // for untrusted code must NOT silently hand over the whole cwd — require an
+            // explicit `--dir`, exactly as a `File`-binding `main` requires `--file`.
+            // Only the dev `run` path keeps the cwd convenience (not a security boundary).
+            if strict_dir {
+                return Err(
+                    "this program's `main` requires a `Dir`, but no subtree was granted (use `--dir <root>`)".to_string(),
+                );
+            }
             roots.push(std::path::PathBuf::from("."));
         }
         caps.dir_root = Some(roots.remove(0));
@@ -1750,7 +1763,7 @@ fn run_file_sandboxed(
         "sandboxing `{path}` \u{2014} granted exactly: {}",
         capabilities::show_caps(&grant)
     );
-    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, args, signing_key, named_secrets)
+    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, args, signing_key, named_secrets, true)
 }
 
 /// Resolve a `[secrets]` entry's `from = "env:VAR"` to the secret bytes the host
@@ -1837,7 +1850,7 @@ fn run_file_grants(
     );
     // Secrets reach the program by name through the `SecretStore` (`require`/`get`);
     // the bare `Secret` handle (`--signing-key`) is not granted via documents here.
-    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, args, None, named_secrets)
+    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, args, None, named_secrets, true)
 }
 
 /// The `witchy.*` host functions a compiled module imports — its authority

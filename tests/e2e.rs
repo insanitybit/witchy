@@ -3595,3 +3595,38 @@ fn grant_document_run_binds_by_name_and_cross_checks() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// SEC-009 regression: `witchy sandbox` for a `Dir`-binding `main` must FAIL CLOSED
+/// when no `--dir` is granted (deny by omission) rather than silently defaulting to
+/// the cwd — exactly as a `File`-binding `main` requires `--file`. An explicit
+/// `--dir` still runs. (The dev `witchy <file>` path keeps its cwd convenience and is
+/// not a security boundary, so it is intentionally not covered here.)
+#[test]
+fn sandbox_dir_requires_explicit_grant() {
+    let dir = unique("dirgrant");
+    let prog = dir.join("prog.witchy");
+    std::fs::write(
+        &prog,
+        "fn main(console: Console, dir: Dir):\n    let ok = exists(dir, \"prog.witchy\")\n    print(console, \"${ok}\")\n",
+    )
+    .unwrap();
+
+    // No --dir: deny by omission — aborts with a clear error, nonzero exit.
+    let out = Command::new(BIN).args(["sandbox", prog.to_str().unwrap()]).output().unwrap();
+    assert!(!out.status.success(), "a Dir-binding main with no --dir must abort");
+    assert!(
+        stderr(&out).contains("no subtree was granted") || stdout(&out).contains("no subtree was granted"),
+        "expected a deny-by-omission error: out={} err={}",
+        stdout(&out),
+        stderr(&out)
+    );
+
+    // An explicit --dir runs.
+    let out = Command::new(BIN)
+        .args(["sandbox", "--dir", dir.to_str().unwrap(), prog.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "explicit --dir run failed: {}\n{}", stderr(&out), stdout(&out));
+    assert!(stdout(&out).contains("true"), "got: {}", stdout(&out));
+    let _ = std::fs::remove_dir_all(&dir);
+}
