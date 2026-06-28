@@ -2317,6 +2317,15 @@ impl Checker {
                 // would type-check but crash at runtime, so reject it here.
                 match self.resolve(&lt) {
                     Ty::Int | Ty::Float | Ty::String | Ty::Duration => Ok(Ty::Bool),
+                    // A `Ty::Var` operand is an unbounded generic type parameter
+                    // (it renders as `?`): `<` on it needs an `Ord` bound to
+                    // dispatch through the trait, so point at that instead of a
+                    // bare "found `?`".
+                    other @ Ty::Var(_) => terr(format!(
+                        "ordering comparison on `{other}` — if this is a generic type \
+                         parameter, bound it with `where T: Ord` so `<` dispatches through \
+                         the Ord trait"
+                    )),
                     other => terr(format!(
                         "ordering comparison requires Int, Float, String, or Duration, found `{other}`"
                     )),

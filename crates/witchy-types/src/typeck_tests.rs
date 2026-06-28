@@ -165,6 +165,15 @@
     }
 
     #[test]
+    fn unbounded_generic_ordering_suggests_ord_bound() {
+        // `<` on an unbounded type parameter resolves to a type var (renders `?`);
+        // the error should suggest the `where T: Ord` bound, not a bare "found `?`".
+        let err = check_str("fn smallest(xs: List(a)) -> a:\n    var m = list.at(xs, 0)\n    for x in xs:\n        if x < m:\n            m = x\n    m\nfn main(console: Console):\n    print(console, \"${smallest([3, 1, 2])}\")\n")
+            .expect_err("unbounded generic comparison");
+        assert!(err.contains("where T: Ord"), "{err}");
+    }
+
+    #[test]
     fn accepts_a_well_typed_program() {
         let src = r#"
 fn double(n: Int) -> Int:
