@@ -1195,7 +1195,7 @@ impl Interpreter {
                 }
                 _ => err("get_or expects a Dict, a key, and a default value"),
             },
-            "dict.has" => match args {
+            "dict.contains_key" => match args {
                 [Value::Dict(entries), k] => {
                     Ok(Some(Value::Bool(entries.iter().any(|(ek, _)| ek == k))))
                 }
@@ -1232,7 +1232,7 @@ impl Interpreter {
                 ))),
                 _ => err("pairs expects a Dict"),
             },
-            "dict.size" => match args {
+            "dict.length" => match args {
                 [Value::Dict(entries)] => Ok(Some(Value::Int(entries.len() as i64))),
                 _ => err("size expects a Dict"),
             },

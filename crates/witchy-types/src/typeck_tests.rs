@@ -383,7 +383,7 @@ fn tally(words: List(String)) -> Int:
     var d = dict.new()
     for w in words:
         d = dict.insert(d, w, (dict.get_or(d, w, 0) + 1))
-    dict.size(d)
+    dict.length(d)
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }

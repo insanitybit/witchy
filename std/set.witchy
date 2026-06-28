@@ -46,7 +46,7 @@ pub fn contains(s: Set(a), x: a) -> Bool where a: Eq:
     cmp.member(items, x)
 
 // The number of distinct members.
-pub fn size(s: Set(a)) -> Int:
+pub fn length(s: Set(a)) -> Int:
     list.length(s.items)
 
 // Whether the set has no members.

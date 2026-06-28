@@ -1091,7 +1091,7 @@ impl Checker {
                 let f = Ty::Fn(vec![v.clone()], Box::new(v.clone()));
                 Some((vec![d.clone(), k, v, f], d))
             }
-            "dict.has" => {
+            "dict.contains_key" => {
                 let k = self.fresh();
                 let v = self.fresh();
                 let d = Ty::Named("Dict".into(), vec![k.clone(), v]);
@@ -1121,7 +1121,7 @@ impl Checker {
                 let d = Ty::Named("Dict".into(), vec![k.clone(), v.clone()]);
                 Some((vec![d], Ty::List(Box::new(Ty::Tuple(vec![k, v])))))
             }
-            "dict.size" => {
+            "dict.length" => {
                 let k = self.fresh();
                 let v = self.fresh();
                 Some((vec![Ty::Named("Dict".into(), vec![k, v])], Ty::Int))
@@ -2968,8 +2968,8 @@ pub fn intrinsic(name: &str) -> bool {
     matches!(
         name,
         "list.push" | "list.at" | "list.length" | "list.concat"
-            | "dict.new" | "dict.insert" | "dict.get_or" | "dict.has" | "dict.remove"
-            | "dict.update" | "dict.keys" | "dict.values" | "dict.pairs" | "dict.size"
+            | "dict.new" | "dict.insert" | "dict.get_or" | "dict.contains_key" | "dict.remove"
+            | "dict.update" | "dict.keys" | "dict.values" | "dict.pairs" | "dict.length"
             | "string.split" | "string.trim" | "string.contains" | "string.starts_with"
             | "string.ends_with" | "string.replace" | "string.index_of" | "string.substring"
             | "string.length" | "string.char_count" | "string.chars" | "string.to_upper"

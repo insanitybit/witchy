@@ -893,7 +893,7 @@ impl Codegen {
             Expr::Call { name, .. } => match name.as_str() {
                 "math.to_float" => Kind::F64,
                 "math.to_int" | "string.length" | "string.char_count" | "string.index_of"
-                | "list.length" | "dict.size" | "string.to_int" | "int_to_duration"
+                | "list.length" | "dict.length" | "string.to_int" | "int_to_duration"
                 | "duration_to_int" | "now" => Kind::I64,
                 "list.at" => self.elem_kind_of_list_arg(e),
                 "__render" | "int_to_string" | "print" => Kind::I32,
@@ -1051,12 +1051,12 @@ impl Codegen {
                 | "compiler.diff" | "compiler.doc" | "regex.match_spans" | "recv_line" | "recv_all"
                 | "crypto.sha512" | "crypto.sha3_256" | "crypto.hmac_sha256"
                 | "recv_bytes" => ValType::Str,
-                "string.starts_with" | "string.ends_with" | "string.contains" | "dict.has"
+                "string.starts_with" | "string.ends_with" | "string.contains" | "dict.contains_key"
                 | "exists" | "is_dir" | "crypto.ed25519_verify"
                 | "crypto.ecdsa_p256_verify" | "crypto.ecdsa_p256_verify_hex"
                 | "crypto.rsa_pkcs1_sha256_verify" => ValType::Bool,
                 "string.length" | "string.char_count" | "string.index_of" | "list.length"
-                | "dict.size" | "math.to_int" | "string.to_int" | "int_to_duration"
+                | "dict.length" | "math.to_int" | "string.to_int" | "int_to_duration"
                 | "duration_to_int" | "now" => ValType::Int,
                 "math.to_float" | "math.sqrt" => ValType::Float,
                 other => self.fn_ret_valtype.get(other).copied().unwrap_or(ValType::Other),
@@ -6347,8 +6347,8 @@ impl Codegen {
                     Self::wir_convert(self.lower_expr(&args[1])?, nk, Kind::I64),
                 ])
             }
-            // `dict.size(d)` -> Int: the i32 count at the header, sign-extended.
-            ("dict.size", 1) => W::ToSlot(
+            // `dict.length(d)` -> Int: the i32 count at the header, sign-extended.
+            ("dict.length", 1) => W::ToSlot(
                 Box::new(W::Load {
                     ptr: Box::new(self.lower_expr(&args[0])?),
                     kind: witchy_wir::wir::Kind::I32,
@@ -6384,7 +6384,7 @@ impl Codegen {
                 ];
                 W::FromSlot(Box::new(call("dict_get_or", inner)), Self::wir_kind(dk))
             }
-            ("dict.has", 2) => {
+            ("dict.contains_key", 2) => {
                 self.uses_dict = true;
                 self.uses_str_eq = true;
                 let mode = self.dict_key_mode_wir(&args[1])?;

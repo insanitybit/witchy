@@ -15,7 +15,7 @@ fn main(console: Console):
     let start = find(maze, "S", width)
     let goal = find(maze, "E", width)
     let prev = solve(maze, start, goal, width)
-    if dict.has(prev, goal):
+    if dict.contains_key(prev, goal):
         render_path(console, maze, prev, start, goal, width)
     else:
         print(console, "no path from S to E")
@@ -33,7 +33,7 @@ fn solve(maze: List(String), start: Int, goal: Int, width: Int) -> Dict(Int, Int
             found = true
         else:
             for step in steps(maze, pos, width):
-                if !dict.has(prev, step):
+                if !dict.contains_key(prev, step):
                     prev = dict.insert(prev, step, pos)
                     queue = list.push(queue, step)
     prev
@@ -90,7 +90,7 @@ fn render_path(console: Console, maze: List(String), prev: Dict(Int, Int), start
         var c = 0
         while c < width:
             let here = r * width + c
-            line = line + glyph(string.substring(row, c, c + 1), dict.has(route, here))
+            line = line + glyph(string.substring(row, c, c + 1), dict.contains_key(route, here))
             c = c + 1
         print(console, line)
         r = r + 1

@@ -395,7 +395,7 @@
         assert_eq!(interpreter::run(strs).expect("interp str"), ["h", "5"]);
         assert_eq!(run_linked_on_wasm(&[("main", strs)], "main"), ["h", "5"], "wasm str");
 
-        let dict = "fn lookup(let d: Dict(String, Int)) -> Int:\n    dict.get_or(d, \"a\", -1)\nfn main(c: Console):\n    var m = dict.new()\n    m = dict.insert(m, \"a\", 42)\n    print(c, __render(lookup(m)))\n    print(c, __render(dict.size(m)))\n";
+        let dict = "fn lookup(let d: Dict(String, Int)) -> Int:\n    dict.get_or(d, \"a\", -1)\nfn main(c: Console):\n    var m = dict.new()\n    m = dict.insert(m, \"a\", 42)\n    print(c, __render(lookup(m)))\n    print(c, __render(dict.length(m)))\n";
         assert_eq!(interpreter::run(dict).expect("interp dict"), ["42", "1"]);
         assert_eq!(run_linked_on_wasm(&[("main", dict)], "main"), ["42", "1"], "wasm dict");
     }
@@ -1387,7 +1387,7 @@ fn main(console: Console):
     /// pointer-compare and return None.
     #[test]
     fn runtime_built_dict_keys_compare_by_content() {
-        let src = "import dict\nimport string\n\nfn main(console: Console):\n    var d = dict.new()\n    d = dict.insert(d, string.trim(\"  host  \"), \"localhost\")\n    let parts = string.split(\"port=8080\", \"=\")\n    d = dict.insert(d, list.at(parts, 0), list.at(parts, 1))\n    d = dict.insert(d, \"lit\" + \"eral\", \"joined\")\n    match dict.get(d, \"host\"):\n        Some(v) -> print(console, \"host=\" + v)\n        None -> print(console, \"host MISSING\")\n    match dict.get(d, \"port\"):\n        Some(v) -> print(console, \"port=\" + v)\n        None -> print(console, \"port MISSING\")\n    print(console, \"${dict.has(d, \"literal\")}\")\n    print(console, \"${dict.size(d)}\")\n";
+        let src = "import dict\nimport string\n\nfn main(console: Console):\n    var d = dict.new()\n    d = dict.insert(d, string.trim(\"  host  \"), \"localhost\")\n    let parts = string.split(\"port=8080\", \"=\")\n    d = dict.insert(d, list.at(parts, 0), list.at(parts, 1))\n    d = dict.insert(d, \"lit\" + \"eral\", \"joined\")\n    match dict.get(d, \"host\"):\n        Some(v) -> print(console, \"host=\" + v)\n        None -> print(console, \"host MISSING\")\n    match dict.get(d, \"port\"):\n        Some(v) -> print(console, \"port=\" + v)\n        None -> print(console, \"port MISSING\")\n    print(console, \"${dict.contains_key(d, \"literal\")}\")\n    print(console, \"${dict.length(d)}\")\n";
         let want: Vec<String> = ["host=localhost", "port=8080", "true", "3"]
             .iter()
             .map(|s| s.to_string())
@@ -2197,7 +2197,7 @@ fn yn(b: Bool) -> String:
     /// growth), and a missing-key probe all agree with the interpreter.
     #[test]
     fn dict_hash_index_agrees_on_both_backends() {
-        let src = "fn main(console: Console):\n    var d = dict.new()\n    for i in 0..3000:\n        d = dict.insert(d, \"k\" + __render(i), i * 2)\n    print(console, __render(dict.size(d)))\n    print(console, __render(dict.get_or(d, \"k2999\", 0 - 1)))\n    print(console, __render(dict.get_or(d, \"absent\", 0 - 1)))\n    print(console, __render(dict.has(d, \"k1500\")))\n    d = dict.remove(d, \"k0\")\n    print(console, __render(dict.size(d)))\n    d = dict.insert(d, \"again\", 7)\n    print(console, __render(dict.get_or(d, \"again\", 0 - 1)))\n";
+        let src = "fn main(console: Console):\n    var d = dict.new()\n    for i in 0..3000:\n        d = dict.insert(d, \"k\" + __render(i), i * 2)\n    print(console, __render(dict.length(d)))\n    print(console, __render(dict.get_or(d, \"k2999\", 0 - 1)))\n    print(console, __render(dict.get_or(d, \"absent\", 0 - 1)))\n    print(console, __render(dict.contains_key(d, \"k1500\")))\n    d = dict.remove(d, \"k0\")\n    print(console, __render(dict.length(d)))\n    d = dict.insert(d, \"again\", 7)\n    print(console, __render(dict.get_or(d, \"again\", 0 - 1)))\n";
         let want: Vec<String> = ["3000", "5998", "-1", "true", "2999", "7"]
             .iter()
             .map(|s| s.to_string())
@@ -2255,7 +2255,7 @@ fn yn(b: Bool) -> String:
     /// copying insert, so the alias still sees the original.
     #[test]
     fn inplace_dict_insert_is_fast_and_alias_safe() {
-        let src = "fn main(console: Console):\n    var d = dict.new()\n    for i in 0..2000:\n        d = dict.insert(d, i, i * 2)\n    print(console, __render(dict.size(d)))\n    print(console, __render(dict.get_or(d, 1999, 0 - 1)))\n    var e = dict.new()\n    let alias = e\n    e = dict.insert(e, 1, 10)\n    print(console, __render(dict.size(alias)))\n    print(console, __render(dict.size(e)))\n";
+        let src = "fn main(console: Console):\n    var d = dict.new()\n    for i in 0..2000:\n        d = dict.insert(d, i, i * 2)\n    print(console, __render(dict.length(d)))\n    print(console, __render(dict.get_or(d, 1999, 0 - 1)))\n    var e = dict.new()\n    let alias = e\n    e = dict.insert(e, 1, 10)\n    print(console, __render(dict.length(alias)))\n    print(console, __render(dict.length(e)))\n";
         let want: Vec<String> =
             ["2000", "3998", "0", "1"].iter().map(|s| s.to_string()).collect();
         assert_eq!(link_run(src), want.clone(), "interpreter");
@@ -2308,7 +2308,7 @@ fn yn(b: Bool) -> String:
     /// semantics hold.
     #[test]
     fn inplace_dict_upsert_is_fast_and_alias_safe() {
-        let src = "fn main(console: Console):\n    var d = dict.new()\n    for i in 0..10000:\n        d = dict.insert(d, i, i)\n    print(console, __render(dict.size(d)))\n    var counts = dict.new()\n    for i in 0..30000:\n        counts = dict.update(counts, i % 3, 0, fn(n: Int): n + 1)\n    print(console, __render(dict.get_or(counts, 0, 0)))\n    var small = dict.new()\n    small = dict.insert(small, 1, 10)\n    let alias = small\n    small = dict.insert(small, 2, 20)\n    print(console, __render(dict.size(alias)))\n    print(console, __render(dict.size(small)))\n";
+        let src = "fn main(console: Console):\n    var d = dict.new()\n    for i in 0..10000:\n        d = dict.insert(d, i, i)\n    print(console, __render(dict.length(d)))\n    var counts = dict.new()\n    for i in 0..30000:\n        counts = dict.update(counts, i % 3, 0, fn(n: Int): n + 1)\n    print(console, __render(dict.get_or(counts, 0, 0)))\n    var small = dict.new()\n    small = dict.insert(small, 1, 10)\n    let alias = small\n    small = dict.insert(small, 2, 20)\n    print(console, __render(dict.length(alias)))\n    print(console, __render(dict.length(small)))\n";
         let want: Vec<String> = ["10000", "10000", "1", "2"]
             .iter()
             .map(|s| s.to_string())
@@ -2648,7 +2648,7 @@ fn yn(b: Bool) -> String:
     /// Float-key gap.)
     #[test]
     fn dict_float_keys_agree_on_both_backends() {
-        let src = "fn main(console: Console):\n    let d = dict.insert(dict.insert(dict.insert(dict.new(), 1.5, \"a\"), 2.5, \"b\"), 1.5, \"c\")\n    print(console, dict.get_or(d, 1.5, \"?\"))\n    print(console, dict.get_or(d, 2.5, \"?\"))\n    print(console, dict.get_or(d, 9.9, \"?\"))\n    print(console, __render(dict.size(d)))\n    let e = dict.remove(d, 1.5)\n    print(console, dict.get_or(e, 1.5, \"gone\"))\n    print(console, __render(dict.size(e)))\n";
+        let src = "fn main(console: Console):\n    let d = dict.insert(dict.insert(dict.insert(dict.new(), 1.5, \"a\"), 2.5, \"b\"), 1.5, \"c\")\n    print(console, dict.get_or(d, 1.5, \"?\"))\n    print(console, dict.get_or(d, 2.5, \"?\"))\n    print(console, dict.get_or(d, 9.9, \"?\"))\n    print(console, __render(dict.length(d)))\n    let e = dict.remove(d, 1.5)\n    print(console, dict.get_or(e, 1.5, \"gone\"))\n    print(console, __render(dict.length(e)))\n";
         let want = vec![
             "c".to_string(),
             "b".to_string(),
@@ -3798,7 +3798,7 @@ fn yn(b: Bool) -> String:
     /// conversion.)
     #[test]
     fn to_string_of_builtin_call_results_agrees() {
-        let src = "fn main(console: Console):\n    let d = dict.insert(dict.insert(dict.new(), \"a\", 1), \"b\", 2)\n    print(console, __render(dict.has(d, \"a\")))\n    print(console, __render(dict.has(d, \"z\")))\n    print(console, __render(dict.size(d)))\n    print(console, __render(string.contains(\"hello\", \"ell\")))\n";
+        let src = "fn main(console: Console):\n    let d = dict.insert(dict.insert(dict.new(), \"a\", 1), \"b\", 2)\n    print(console, __render(dict.contains_key(d, \"a\")))\n    print(console, __render(dict.contains_key(d, \"z\")))\n    print(console, __render(dict.length(d)))\n    print(console, __render(string.contains(\"hello\", \"ell\")))\n";
         let want = vec![
             "true".to_string(),
             "false".to_string(),
@@ -3877,7 +3877,7 @@ fn yn(b: Bool) -> String:
     /// interpreter-only dict-upsert gap.)
     #[test]
     fn dict_update_upsert_agrees_on_both_backends() {
-        let src = "fn main(console: Console):\n    let d = dict.insert(dict.insert(dict.new(), \"a\", 1), \"b\", 2)\n    let d2 = dict.update(d, \"a\", 0, fn(x: Int): x + 10)\n    let d3 = dict.update(d2, \"c\", 100, fn(x: Int): x + 1)\n    print(console, __render(dict.get_or(d3, \"a\", -1)))\n    print(console, __render(dict.get_or(d3, \"b\", -1)))\n    print(console, __render(dict.get_or(d3, \"c\", -1)))\n    print(console, __render(dict.size(d3)))\n    let counts = dict.update(dict.update(dict.new(), \"hit\", 0, fn(n: Int): n + 1), \"hit\", 0, fn(n: Int): n + 1)\n    print(console, __render(dict.get_or(counts, \"hit\", -1)))\n";
+        let src = "fn main(console: Console):\n    let d = dict.insert(dict.insert(dict.new(), \"a\", 1), \"b\", 2)\n    let d2 = dict.update(d, \"a\", 0, fn(x: Int): x + 10)\n    let d3 = dict.update(d2, \"c\", 100, fn(x: Int): x + 1)\n    print(console, __render(dict.get_or(d3, \"a\", -1)))\n    print(console, __render(dict.get_or(d3, \"b\", -1)))\n    print(console, __render(dict.get_or(d3, \"c\", -1)))\n    print(console, __render(dict.length(d3)))\n    let counts = dict.update(dict.update(dict.new(), \"hit\", 0, fn(n: Int): n + 1), \"hit\", 0, fn(n: Int): n + 1)\n    print(console, __render(dict.get_or(counts, \"hit\", -1)))\n";
         let want = vec![
             "11".to_string(),
             "2".to_string(),
@@ -4162,7 +4162,7 @@ import string
 
 fn main(console: Console):
     let d = dict.from_pairs([("a", 1), ("b", 2), ("c", 3)])
-    print(console, __render(dict.size(d)))
+    print(console, __render(dict.length(d)))
     print(console, oi(dict.get(d, "b")))
     print(console, oi(dict.get(d, "z")))
     let m = dict.merge(d, dict.from_pairs([("b", 20), ("d", 4)]))
@@ -4170,7 +4170,7 @@ fn main(console: Console):
     let tens = dict.map_values(d, fn(v: Int): v * 10)
     print(console, oi(dict.get(tens, "c")))
     let evens = dict.filter(d, fn(k: String, v: Int): v % 2 == 0)
-    print(console, __render(dict.size(evens)))
+    print(console, __render(dict.length(evens)))
     print(console, bs(dict.is_empty(dict.new())))
 
 fn oi(o: Option(Int)) -> String:
@@ -4392,7 +4392,7 @@ fn main(console: Console):
     d = dict.insert(d, "a", 1)
     d = dict.insert(d, "b", 2)
     d = dict.insert(d, "a", 9)
-    print(console, __render((dict.get_or(d, "a", 0) + dict.size(d))))
+    print(console, __render((dict.get_or(d, "a", 0) + dict.length(d))))
 "#,
             ),
             (
@@ -4998,7 +4998,7 @@ fn main(console: Console):
     print(console, __render(set.is_subset(set.from_list([build("y")]), a)))
     print(console, __render(set.is_subset(set.from_list([build("z")]), a)))
     let ids = set.union(set.from_list([Id(1), Id(2), Id(1)]), set.from_list([Id(2), Id(3)]))
-    print(console, __render(set.size(ids)))
+    print(console, __render(set.length(ids)))
 "#;
         let sources = [
             ("set", crate::bundled_module("set").unwrap()),
@@ -5020,7 +5020,7 @@ fn main(console: Console):
     /// (`set.from_list(iter.collect(...))`) — identical on both backends.
     #[test]
     fn std_set_type_iteration_and_collect_agree() {
-        let client = "import set\nimport iter\n\nfn main(console: Console):\n    let s = set.from_list([3, 1, 2, 3, 1])\n    print(console, __render(set.size(s)))\n    print(console, __render(set.contains(s, 2)))\n    var total = 0\n    for x in s:\n        total = (total + x)\n    print(console, __render(total))\n    let r = set.remove(s, 2)\n    print(console, set.show(r))\n    let cs: Set(Int) = iter.collect(iter.range(1, 4))\n    print(console, set.show(cs))\n";
+        let client = "import set\nimport iter\n\nfn main(console: Console):\n    let s = set.from_list([3, 1, 2, 3, 1])\n    print(console, __render(set.length(s)))\n    print(console, __render(set.contains(s, 2)))\n    var total = 0\n    for x in s:\n        total = (total + x)\n    print(console, __render(total))\n    let r = set.remove(s, 2)\n    print(console, set.show(r))\n    let cs: Set(Int) = iter.collect(iter.range(1, 4))\n    print(console, set.show(cs))\n";
         let sources = [
             ("cmp", crate::bundled_module("cmp").unwrap()),
             ("option", crate::bundled_module("option").unwrap()),
@@ -5625,9 +5625,9 @@ fn main(console: Console):
     let b = JsonObject([("x", JsonInt(2)), ("y", JsonInt(3))])
     print(console, json.encode(json.merge(a, b)))
     print(console, json.encode(json.merge(a, JsonInt(9))))
-    print(console, if json.has_key(a, "x"): "T" else: "F")
-    print(console, if json.has_key(a, "z"): "T" else: "F")
-    print(console, if json.has_key(JsonInt(5), "x"): "T" else: "F")
+    print(console, if json.contains_key(a, "x"): "T" else: "F")
+    print(console, if json.contains_key(a, "z"): "T" else: "F")
+    print(console, if json.contains_key(JsonInt(5), "x"): "T" else: "F")
 "#;
         let sources = [("json", crate::bundled_module("json").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -7206,7 +7206,7 @@ fn main(console: Console):
     /// per insert) — the timing-free proof the copy-per-insert path was avoided.
     #[test]
     fn wir_inplace_dict_insert_is_o1_reowns() {
-        let src = "fn build(n: Int) -> Dict(String, Int):\n    var d = dict.new()\n    for i in 0..n:\n        d = dict.insert(d, \"k\" + __render(i), i)\n    d\n\nfn main(console: Console):\n    let m = build(500)\n    print(console, __render(dict.get_or(m, \"k499\", 0 - 1)))\n    print(console, __render(dict.size(m)))\n";
+        let src = "fn build(n: Int) -> Dict(String, Int):\n    var d = dict.new()\n    for i in 0..n:\n        d = dict.insert(d, \"k\" + __render(i), i)\n    d\n\nfn main(console: Console):\n    let m = build(500)\n    print(console, __render(dict.get_or(m, \"k499\", 0 - 1)))\n    print(console, __render(dict.length(m)))\n";
         let want = vec!["499".to_string(), "500".to_string()];
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
@@ -7247,7 +7247,7 @@ fn main(console: Console):
     /// `$__witchy_reowns` stays O(1).
     #[test]
     fn wir_inplace_dict_update_is_o1_reowns() {
-        let src = "fn build(n: Int) -> Dict(String, Int):\n    var d = dict.new()\n    var i = 0\n    while i < n:\n        d = dict.update(d, \"k\" + __render(i % 10), 0, fn(c: Int): c + 1)\n        i = i + 1\n    d\n\nfn main(console: Console):\n    let d = build(500)\n    print(console, \"${dict.get_or(d, \"k0\", 0 - 1)}\")\n    print(console, \"${dict.size(d)}\")\n";
+        let src = "fn build(n: Int) -> Dict(String, Int):\n    var d = dict.new()\n    var i = 0\n    while i < n:\n        d = dict.update(d, \"k\" + __render(i % 10), 0, fn(c: Int): c + 1)\n        i = i + 1\n    d\n\nfn main(console: Console):\n    let d = build(500)\n    print(console, \"${dict.get_or(d, \"k0\", 0 - 1)}\")\n    print(console, \"${dict.length(d)}\")\n";
         let want = vec!["50".to_string(), "10".to_string()];
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
@@ -7579,14 +7579,14 @@ fn main(console: Console):
             // dict with String keys ($dict_new/insert/get_or/has/size →
             // $dict_find + $key_eq's $str_eq path) on the binary path.
             (
-                "fn main(console: Console):\n    let d = dict.insert(dict.insert(dict.new(), \"a\", 1), \"b\", 2)\n    print(console, __render(dict.get_or(d, \"a\", 0)))\n    print(console, __render(dict.get_or(d, \"z\", 99)))\n    print(console, __render(dict.has(d, \"b\")))\n    print(console, __render(dict.has(d, \"z\")))\n    print(console, __render(dict.size(d)))\n",
+                "fn main(console: Console):\n    let d = dict.insert(dict.insert(dict.new(), \"a\", 1), \"b\", 2)\n    print(console, __render(dict.get_or(d, \"a\", 0)))\n    print(console, __render(dict.get_or(d, \"z\", 99)))\n    print(console, __render(dict.contains_key(d, \"b\")))\n    print(console, __render(dict.contains_key(d, \"z\")))\n    print(console, __render(dict.length(d)))\n",
                 vec!["1".to_string(), "99".to_string(), "true".to_string(), "false".to_string(), "2".to_string()],
             ),
             // dict iteration + remove ($dict_keys/values/pairs/remove). Asserts
             // order-independent facts (lengths, post-remove membership) so it's
             // robust to entry ordering.
             (
-                "fn main(console: Console):\n    let d = dict.insert(dict.insert(dict.new(), \"a\", 1), \"b\", 2)\n    print(console, __render(list.length(dict.keys(d))))\n    print(console, __render(list.length(dict.values(d))))\n    print(console, __render(list.length(dict.pairs(d))))\n    let d2 = dict.remove(d, \"a\")\n    print(console, __render(dict.size(d2)))\n    print(console, __render(dict.has(d2, \"a\")))\n    print(console, __render(dict.has(d2, \"b\")))\n",
+                "fn main(console: Console):\n    let d = dict.insert(dict.insert(dict.new(), \"a\", 1), \"b\", 2)\n    print(console, __render(list.length(dict.keys(d))))\n    print(console, __render(list.length(dict.values(d))))\n    print(console, __render(list.length(dict.pairs(d))))\n    let d2 = dict.remove(d, \"a\")\n    print(console, __render(dict.length(d2)))\n    print(console, __render(dict.contains_key(d2, \"a\")))\n    print(console, __render(dict.contains_key(d2, \"b\")))\n",
                 vec!["2".to_string(), "2".to_string(), "2".to_string(), "1".to_string(), "false".to_string(), "true".to_string()],
             ),
             // a capturing closure: the lambda closes over `k` (an Int local),
@@ -9412,9 +9412,9 @@ fn main(console: Console):
     print(console, __render(dict.get_or(d, "a", 0)))
     print(console, __render(dict.get_or(d, "b", 0)))
     print(console, __render(dict.get_or(d, "z", (0 - 1))))
-    print(console, __render(dict.size(d)))
-    print(console, __render(if dict.has(d, "b"): 1 else: 0))
-    print(console, __render(if dict.has(d, "q"): 1 else: 0))
+    print(console, __render(dict.length(d)))
+    print(console, __render(if dict.contains_key(d, "b"): 1 else: 0))
+    print(console, __render(if dict.contains_key(d, "q"): 1 else: 0))
 "#;
         assert_eq!(run_on_wasm(src), vec!["10", "2", "-1", "2", "1", "0"]);
     }
@@ -9453,7 +9453,7 @@ fn main(console: Console):
 fn main(console: Console):
     var d = dict.new()
     d = dict.insert(d, [1, 2], 5)
-    print(console, __render(dict.size(d)))
+    print(console, __render(dict.length(d)))
 "#;
         let module = parser::parse_module(src).expect("parse");
         let err = codegen::compile_module_binary(&module)
@@ -9579,18 +9579,18 @@ fn main(console: Console):
     d = dict.insert(d, "b", 2)
     d = dict.insert(d, "c", 3)
     let d2 = dict.remove(d, "b")
-    print(console, __render(dict.size(d2)))
-    print(console, __render(if dict.has(d2, "b"): 1 else: 0))
+    print(console, __render(dict.length(d2)))
+    print(console, __render(if dict.contains_key(d2, "b"): 1 else: 0))
     print(console, __render(dict.get_or(d2, "a", 0)))
     print(console, __render(dict.get_or(d2, "c", 0)))
     let d3 = dict.remove(d, "missing")
-    print(console, __render(dict.size(d3)))
-    print(console, __render(dict.size(d)))
+    print(console, __render(dict.length(d3)))
+    print(console, __render(dict.length(d)))
     var nums = dict.new()
     nums = dict.insert(nums, 10, 100)
     nums = dict.insert(nums, 20, 200)
     let nums2 = dict.remove(nums, 10)
-    print(console, __render(dict.size(nums2)))
+    print(console, __render(dict.length(nums2)))
     print(console, __render(dict.get_or(nums2, 20, 0)))
 "#;
         assert_eq!(interp(src), run_on_wasm(src));
@@ -11512,7 +11512,7 @@ fn main(console: Console):
     d = dict.insert(d, 1, 111)
     print(console, __render(dict.get_or(d, 1, 0)))
     print(console, __render(dict.get_or(d, 2, 0)))
-    print(console, __render(dict.size(d)))
+    print(console, __render(dict.length(d)))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "replace/int-key dict diverged");
     }
@@ -11534,9 +11534,9 @@ fn main(console: Console):
     d = dict.insert(d, "k", 1)
     d = dict.insert(d, "k", 2)
     print(console, __render(dict.get_or(d, "k", 0)))
-    print(console, __render(dict.size(d)))
+    print(console, __render(dict.length(d)))
     d = dict.remove(d, "missing")
-    print(console, __render(dict.size(d)))
+    print(console, __render(dict.length(d)))
     print(console, __render(dict.get_or(d, "absent", 99)))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "int/dict edges diverged");

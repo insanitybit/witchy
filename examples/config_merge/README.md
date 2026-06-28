@@ -6,7 +6,7 @@ ones, while keys it never mentions are preserved. Every function is pure, so it
 prints identically interpreted and compiled to WASM.
 
 **Shows:** `json.merge` (a shallow per-key override), `json.encode_pretty` and
-`json.has_key` from the std `json` module, `Json` values, and the `Console`
+`json.contains_key` from the std `json` module, `Json` values, and the `Console`
 capability.
 
 ## Run

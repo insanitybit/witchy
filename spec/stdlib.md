@@ -338,7 +338,7 @@ Parse with the first row as a header: each remaining row becomes a Dict keyed by
 
 dict — the associative map.
 
-The core operations are native primitives (intercepted by both backends; the bodies are self-recursive placeholders giving the type checker their signatures): `dict.new`, `dict.insert`, `dict.get_or`, `dict.update`, `dict.has`, `dict.remove`, `dict.keys`, `dict.values`, `dict.pairs`, `dict.size`. The rest is the compositional layer — a lookup returning `Option`, constructors from pairs, and the map/filter/merge transforms.
+The core operations are native primitives (intercepted by both backends; the bodies are self-recursive placeholders giving the type checker their signatures): `dict.new`, `dict.insert`, `dict.get_or`, `dict.update`, `dict.contains_key`, `dict.remove`, `dict.keys`, `dict.values`, `dict.pairs`, `dict.length`. The rest is the compositional layer — a lookup returning `Option`, constructors from pairs, and the map/filter/merge transforms.
 
 #### `fn new() -> Dict(k, v)`
 
@@ -356,7 +356,7 @@ The value for `key`, or `default` when absent.
 
 Single-lookup upsert: apply `f` to the current value (or `default` when `key` is absent) and store the result under `key`.
 
-#### `fn has(d: Dict(k, v), key: k) -> Bool`
+#### `fn contains_key(d: Dict(k, v), key: k) -> Bool`
 
 Whether `key` is present.
 
@@ -376,7 +376,7 @@ The values, in insertion order.
 
 The (key, value) pairs, in insertion order.
 
-#### `fn size(d: Dict(k, v)) -> Int`
+#### `fn length(d: Dict(k, v)) -> Int`
 
 The number of entries.
 
@@ -893,7 +893,7 @@ Parse a complete JSON document, or return an error message. The whole input must
 
 Look up a key in a JSON object.
 
-#### `fn has_key(j: Json, key: String) -> Bool`
+#### `fn contains_key(j: Json, key: String) -> Bool`
 
 Whether a JSON object has `key` (false for non-objects).
 
@@ -1951,7 +1951,7 @@ A set of the distinct values in `xs` (duplicates collapse).
 
 Whether `x` is a member of `s`.
 
-#### `fn size(s: Set(a)) -> Int`
+#### `fn length(s: Set(a)) -> Int`
 
 The number of distinct members.
 

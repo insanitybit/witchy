@@ -3,8 +3,8 @@
 // The core operations are native primitives (intercepted by both backends;
 // the bodies are self-recursive placeholders giving the type checker their
 // signatures): `dict.new`, `dict.insert`, `dict.get_or`, `dict.update`,
-// `dict.has`, `dict.remove`, `dict.keys`, `dict.values`, `dict.pairs`,
-// `dict.size`. The rest is the compositional layer — a lookup returning
+// `dict.contains_key`, `dict.remove`, `dict.keys`, `dict.values`, `dict.pairs`,
+// `dict.length`. The rest is the compositional layer — a lookup returning
 // `Option`, constructors from pairs, and the map/filter/merge transforms.
 
 // --- native primitives ---
@@ -28,8 +28,8 @@ pub fn update(d: Dict(k, v), key: k, default: v, f: fn(v) -> v) -> Dict(k, v):
     dict.update(d, key, default, f)
 
 // Whether `key` is present.
-pub fn has(d: Dict(k, v), key: k) -> Bool:
-    dict.has(d, key)
+pub fn contains_key(d: Dict(k, v), key: k) -> Bool:
+    dict.contains_key(d, key)
 
 // A new dict with `key` (and its value) removed; unchanged when absent.
 pub fn remove(d: Dict(k, v), key: k) -> Dict(k, v):
@@ -48,8 +48,8 @@ pub fn pairs(d: Dict(k, v)) -> List((k, v)):
     dict.pairs(d)
 
 // The number of entries.
-pub fn size(d: Dict(k, v)) -> Int:
-    dict.size(d)
+pub fn length(d: Dict(k, v)) -> Int:
+    dict.length(d)
 
 // --- the compositional layer ---
 
@@ -63,7 +63,7 @@ pub fn get(d: Dict(k, v), key: k) -> Option(v):
     found
 
 pub fn is_empty(d: Dict(k, v)) -> Bool:
-    dict.size(d) == 0
+    dict.length(d) == 0
 
 // Build a Dict from (key, value) pairs; a later pair overrides an earlier one.
 pub fn from_pairs(entries: List((k, v))) -> Dict(k, v):

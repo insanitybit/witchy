@@ -459,12 +459,12 @@ fn find_key(pairs: List((String, Json)), key: String) -> Option(Json):
     None
 
 // Whether a JSON object has `key` (false for non-objects).
-pub fn has_key(j: Json, key: String) -> Bool:
+pub fn contains_key(j: Json, key: String) -> Bool:
     match j:
-        JsonObject(pairs) -> pairs_has_key(pairs, key)
+        JsonObject(pairs) -> pairs_contains_key(pairs, key)
         _ -> false
 
-fn pairs_has_key(pairs: List((String, Json)), key: String) -> Bool:
+fn pairs_contains_key(pairs: List((String, Json)), key: String) -> Bool:
     for p in pairs:
         let (k, _v) = p
         if k == key:
@@ -487,7 +487,7 @@ fn merge_pairs(pa: List((String, Json)), pb: List((String, Json))) -> List((Stri
     var out = []
     for p in pa:
         let (k, _v) = p
-        if !pairs_has_key(pb, k):
+        if !pairs_contains_key(pb, k):
             out = list.push(out, p)
     for q in pb:
         out = list.push(out, q)

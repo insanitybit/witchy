@@ -18,4 +18,4 @@ fn main(console: Console):
     // `base`'s own `debug` is preserved because the overlay doesn't mention it.
     let merged = json.merge(base(), production())
     print(console, json.encode_pretty(merged))
-    print(console, if json.has_key(merged, "workers"): "has workers" else: "no workers")
+    print(console, if json.contains_key(merged, "workers"): "has workers" else: "no workers")

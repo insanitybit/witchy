@@ -1117,11 +1117,11 @@ fn builtin_arg_liveness(name: &str, argc: usize) -> Option<Vec<bool>> {
     match (name, argc) {
         // Collections: content reads and part-alias reads.
         ("list.length", 1)
-        | ("dict.size", 1)
+        | ("dict.length", 1)
         | ("string.length", 1)
         | ("string.char_count", 1)
         | ("list.at", 2)
-        | ("dict.has", 2)
+        | ("dict.contains_key", 2)
         | ("string.contains", 2)
         | ("string.index_of", 2)
         | ("dict.keys", 1)

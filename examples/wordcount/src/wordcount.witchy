@@ -13,4 +13,4 @@ fn main(console: Console):
     print(console, "${dict.get_or(counts, "the", 0)}")
     print(console, "${dict.get_or(counts, "cat", 0)}")
     print(console, "${dict.get_or(counts, "missing", 0)}")
-    print(console, "${dict.size(counts)}")
+    print(console, "${dict.length(counts)}")

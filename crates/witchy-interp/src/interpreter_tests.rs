@@ -1419,9 +1419,9 @@ fn main(console: Console):
     print(console, __render(dict.get_or(c, "x", 0)))
     print(console, __render(dict.get_or(c, "y", 0)))
     print(console, __render(dict.get_or(c, "z", 0)))
-    print(console, __render(dict.size(c)))
+    print(console, __render(dict.length(c)))
     print(console, __render(dict.get_or(a, "x", 0)))
-    print(console, __render(dict.has(c, "y")))
+    print(console, __render(dict.contains_key(c, "y")))
     print(console, __render(list.length(dict.keys(c))))
 "#;
         assert_eq!(
