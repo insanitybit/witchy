@@ -3896,7 +3896,10 @@ fn yn(b: Bool) -> String:
     /// `to_string` gap.)
     #[test]
     fn float_to_string_agrees_on_both_backends() {
-        let src = "fn main(console: Console):\n    print(console, __render(3.5))\n    print(console, __render(2.0))\n    print(console, __render(0.0 - 1.0 / 3.0))\n    print(console, __render(0.1 + 0.2))\n    print(console, __render(1000000.0))\n    print(console, __render(0.0))\n";
+        // Ordinary floats plus the IEEE special values whose rendering is most
+        // likely to diverge between a Rust f64 and the compiled backend: the
+        // infinities, NaN, and negative zero must format identically on both.
+        let src = "fn main(console: Console):\n    print(console, __render(3.5))\n    print(console, __render(2.0))\n    print(console, __render(0.0 - 1.0 / 3.0))\n    print(console, __render(0.1 + 0.2))\n    print(console, __render(1000000.0))\n    print(console, __render(0.0))\n    print(console, __render(10.0 / 0.0))\n    print(console, __render((0.0 - 10.0) / 0.0))\n    print(console, __render(0.0 / 0.0))\n    print(console, __render((0.0 - 1.0) * 0.0))\n";
         let want = vec![
             "3.5".to_string(),
             "2.0".to_string(),
@@ -3904,6 +3907,10 @@ fn yn(b: Bool) -> String:
             "0.30000000000000004".to_string(),
             "1000000.0".to_string(),
             "0.0".to_string(),
+            "inf".to_string(),
+            "-inf".to_string(),
+            "NaN".to_string(),
+            "-0.0".to_string(),
         ];
         assert_eq!(interp(src), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
