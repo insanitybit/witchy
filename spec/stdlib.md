@@ -230,6 +230,16 @@ A typed `Net` address policy — one allowlist pattern (`host:port`, with `:*` /
 
 - `NetPolicy { pattern: String }`
 
+#### `type DirPolicy`
+
+A typed `Dir` ENTRY policy (RFC-0011): which entries the Dir may read/write/open. `dir.only(confine.ext(".txt"))` confines a `Dir` so it can only touch `.txt` files (enforced at read/write/open on both backends, the filesystem analog of `net.only`). Refinement only ever shrinks the set.
+
+- `DirPolicy { pattern: String }`
+
+#### `fn ext(suffix: String) -> DirPolicy`
+
+A Dir entry policy admitting only files whose name ends with `suffix` (include the dot, e.g. `".txt"`). Compose with `dir.only` to confine a `Dir`'s reach.
+
 #### `fn tcp(host: String, port: Int) -> NetPolicy`
 
 A plaintext TCP endpoint: `<host>:<port>`.
@@ -249,6 +259,10 @@ An IPv4 CIDR block, any port: `<a.b.c.d/bits>:*`.
 #### `fn union(a: NetPolicy, b: NetPolicy) -> NetPolicy`
 
 The UNION of two policies — `net.only(union(a, b))` admits either (e.g. an OAuth host plus an API host: `union(tcp("github.com", 443), tcp("api.github.com", 443))`). The patterns are carried together (newline-joined internally) and the host narrows to the whole set at once.
+
+#### `fn private() -> NetPolicy`
+
+The non-public IP ranges — loopback, RFC-1918, link-local (incl. the `169.254.169.254` cloud-metadata IP), CGNAT, "this host", and the IPv6 equivalents. `net.deny(confine.private())` confines a `Net` so it can never dial an internal address: the CIDR forms are matched against the RESOLVED IP, so a hostname that rebinds to an internal address is refused at connect time (the one-line SSRF / DNS-rebinding defense, RFC-0020).
 
 ## `convert`
 
@@ -347,6 +361,10 @@ An empty Dict.
 #### `fn insert(d: Dict(k, v), key: k, val: v) -> Dict(k, v)`
 
 A new dict with `key` set to `val` (replacing any existing entry). Insertion order of first appearance is preserved.
+
+#### `fn set_at(d: Dict(k, v), key: k, val: v) -> Dict(k, v)`
+
+Set `key` to `val` — the `insert` upsert under the name the `d[key] = val` sugar desugars to (RFC-0022), uniform with `list.set_at`.
 
 #### `fn get_or(d: Dict(k, v), key: k, default: v) -> v`
 
@@ -1045,6 +1063,10 @@ A new list with `x` appended (lists are values; the original is unchanged).
 
 A new list that is `xs` followed by `ys`.
 
+#### `fn join(parts: List(String), sep: String) -> String`
+
+Concatenate the strings in `parts`, inserting `sep` between adjacent elements: `["a", "b", "c"].join("-")` is `"a-b-c"`, and `[].join(sep)` is `""`.
+
 #### `fn range(n: Int) -> List(Int)`
 
 #### `fn range_between(lo: Int, hi: Int) -> List(Int)`
@@ -1547,6 +1569,26 @@ The base name without its extension (".bashrc" -> ".bashrc"; "a.b.c" -> "a.b").
 #### `fn normalize(p: String) -> String`
 
 Collapse `.` and `..` segments and redundant slashes. A relative path that backs out past its start keeps the leading `..`s; an absolute one cannot escape its root. An empty result is "." (relative) or "/" (absolute).
+
+## `rand`
+
+The witchy randomness library. Every draw comes from the `Rand` capability's source: the OS CSPRNG host-side (`getrandom` on the compiled backend), or — when `WITCHY_RAND_SEED` is set — a shared deterministic sequence both backends agree on, so randomness-using programs stay parity-stable and reproducible for tests.
+
+#### `fn u64(rand: Rand) -> Int`
+
+A fresh 64-bit draw spanning the full `Int` range (it may be negative). The primitive both other helpers build on.
+
+#### `fn below(rand: Rand, n: Int) -> Int`
+
+A non-negative integer in `[0, n)` (and `0` when `n <= 0`). Clears the sign bit, then takes the remainder; the modulo bias is negligible for ordinary small ranges. For cryptographic uniformity draw bytes with `hex` instead.
+
+#### `fn bool(rand: Rand) -> Bool`
+
+A fair coin.
+
+#### `fn hex(rand: Rand, nbytes: Int) -> String`
+
+`nbytes` random bytes rendered as lowercase hex (2 chars per byte) — the form a WebAuthn challenge, a CSRF nonce, or a session/token id wants. Draws full 64-bit words and truncates to the requested length.
 
 ## `random`
 
@@ -2054,8 +2096,6 @@ Strip leading and trailing ASCII whitespace.
 #### `fn to_int(s: String) -> Int`
 
 Parse a decimal integer; junk, overflow, or an empty string ABORTS the program (a runtime error, not an `Err`) on every backend. For the total version that returns `Option(Int)`, see `parse_int`.
-
-#### `fn join(parts: List(String), sep: String) -> String`
 
 #### `fn repeat(s: String, n: Int) -> String`
 
