@@ -265,6 +265,23 @@ fn issue_session(key: Secret, clock: Clock) -> (String, Int):
     let tok = "${exp}" + "." + crypto.sign(key, "session:" + "${exp}")
     (tok, exp)
 
+// SEC-010: constant-time string compare for MAC/token verification — iterate ALL
+// characters with no early exit, so the time does not reveal WHERE a mismatch is and
+// an attacker cannot recover a valid session/state signature byte-by-byte by timing.
+fn ct_eq(a: String, b: String) -> Bool:
+    if string.length(a) != string.length(b):
+        false
+    else:
+        let ca = string.chars(a)
+        let cb = string.chars(b)
+        var same = true
+        var i = 0
+        while i < list.length(ca):
+            if list.at(ca, i) != list.at(cb, i):
+                same = false
+            i = i + 1
+        same
+
 fn valid_session(key: Secret, clock: Clock, token: String) -> Bool:
     if !string.contains(token, "."):
         false
@@ -273,7 +290,7 @@ fn valid_session(key: Secret, clock: Clock, token: String) -> Bool:
         // SEC-024: guard `to_int` (it traps on non-numeric input) before parsing the
         // attacker-supplied expiry half — an `Authorization: Bearer abc.x` would
         // otherwise abort the server VM. `&&` short-circuits, so a bad token is just invalid.
-        ascii.all_digits(exp_s) && sig == crypto.sign(key, "session:" + exp_s) && string.to_int(exp_s) > now(clock)
+        ascii.all_digits(exp_s) && ct_eq(sig, crypto.sign(key, "session:" + exp_s)) && string.to_int(exp_s) > now(clock)
 
 fn bearer_of(req: Request) -> Option(String):
     match server.request_header(req, "authorization"):
@@ -328,7 +345,7 @@ fn valid_state(key: Secret, clock: Clock, state: String) -> Bool:
     else:
         let (exp_s, sig) = string.split_once(state, ".")
         // SEC-024: guard `to_int` against the attacker-supplied state half (see valid_session).
-        ascii.all_digits(exp_s) && sig == crypto.sign(key, "oauth-state:" + exp_s) && string.to_int(exp_s) > now(clock)
+        ascii.all_digits(exp_s) && ct_eq(sig, crypto.sign(key, "oauth-state:" + exp_s)) && string.to_int(exp_s) > now(clock)
 
 fn h_github_login(key: Secret, clock: Clock, gh_base: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
     fn(req: Request):
