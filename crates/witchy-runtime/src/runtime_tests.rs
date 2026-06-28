@@ -100,3 +100,42 @@
             "a bogus huge list count must fail closed, not allocate/abort"
         );
     }
+
+    // RFC-0023 checked heap: a `heap_register(start,end)` poisons the trailing
+    // redzone; the post-run sweep proves it survived. A clean object passes; a write
+    // past the object end into the redzone — in-bounds for the linear memory, so
+    // invisible to wasmtime — is caught.
+    const HEAP_OK: &str = r#"
+        (module
+          (import "witchy" "heap_register" (func $reg (param i32 i32)))
+          (memory (export "memory") 1)
+          (func (export "run")
+            (call $reg (i32.const 16) (i32.const 32))))
+    "#;
+
+    const HEAP_OVERRUN: &str = r#"
+        (module
+          (import "witchy" "heap_register" (func $reg (param i32 i32)))
+          (memory (export "memory") 1)
+          (func (export "run")
+            (call $reg (i32.const 16) (i32.const 32))
+            (i32.store (i32.const 32) (i32.const 0))))
+    "#;
+
+    #[test]
+    fn heap_check_clean_redzone_passes() {
+        let mut rt = Runtime::new().unwrap();
+        let mut vm = rt.spawn(HEAP_OK, Capabilities::none(), 4).unwrap();
+        vm.run().expect("an untouched redzone must pass the sweep");
+    }
+
+    #[test]
+    fn heap_check_overrun_redzone_traps() {
+        let mut rt = Runtime::new().unwrap();
+        let mut vm = rt.spawn(HEAP_OVERRUN, Capabilities::none(), 4).unwrap();
+        let err = vm.run().map(|_| ()).unwrap_err();
+        assert!(
+            err.to_string().contains("HEAP CHECK"),
+            "an overrun into the redzone must trap the sweep, got: {err}"
+        );
+    }

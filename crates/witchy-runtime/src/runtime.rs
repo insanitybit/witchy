@@ -168,6 +168,14 @@ impl Capabilities {
 /// Host-side state owned by a spawned VM's `Store`: its capability grant, output
 /// buffer, and the host-side `Dir`/`Net`/build handle tables. One state type
 /// means one set of capability host functions.
+/// (RFC-0023, opt-in checked heap) Bytes of poisoned redzone the host writes
+/// immediately after every *checked* allocation. A write that runs past an object's
+/// end lands in this zone; the post-run sweep then proves it was never touched. Such
+/// an overrun is in-bounds for the linear memory, so wasmtime cannot see it — this is
+/// the missing intra-heap check.
+pub(crate) const HEAP_REDZONE: usize = 8;
+const HEAP_POISON: u8 = 0xDB;
+
 pub struct VmState {
     id: VmId,
     caps: Capabilities,
@@ -201,6 +209,11 @@ pub struct VmState {
     /// (`BuildRead`) — host-side, so a guest holds only an opaque handle.
     build_out: Option<std::path::PathBuf>,
     build_read_roots: Vec<std::path::PathBuf>,
+    /// (RFC-0023) Checked-heap shadow. Each `heap_register(start,end)` the guest's
+    /// checked allocators emit records an object's `[start,end)`; the host poisons
+    /// `[end, end+HEAP_REDZONE)` and the post-run sweep traps if any poison byte was
+    /// overwritten. Empty — and the sweep a no-op — unless the checked codegen ran.
+    pub(crate) heap_objects: Vec<(u32, u32)>,
 }
 
 /// A spawned VM plus the entrypoint we can drive.
@@ -216,9 +229,41 @@ impl Vm {
             .instance
             .get_typed_func::<(), ()>(&mut self.store, "run")?;
         run.call(&mut self.store, ())?;
+        self.heap_sweep()?;
         if std::env::var_os("WITCHY_REGION_STATS").is_some_and(|v| v == "1") {
             if let Some(bytes) = self.region_copy_bytes() {
                 eprintln!("region copy-out: {bytes} byte(s)");
+            }
+        }
+        Ok(())
+    }
+
+    /// (RFC-0023) After the run, prove every checked allocation's trailing redzone is
+    /// intact. A flipped poison byte means a write ran past the object's end — an
+    /// out-of-object overrun that is in-bounds for the linear memory, so wasmtime never
+    /// saw it. A no-op (and free) when nothing was registered, i.e. on uninstrumented
+    /// builds. Drains the shadow so a reused VM starts clean.
+    fn heap_sweep(&mut self) -> Result<()> {
+        let objs = std::mem::take(&mut self.store.data_mut().heap_objects);
+        if objs.is_empty() {
+            return Ok(());
+        }
+        let Some(mem) = self.instance.get_memory(&mut self.store, "memory") else {
+            return Ok(());
+        };
+        let data = mem.data(&self.store);
+        for (start, end) in objs {
+            let rz_start = end as usize;
+            let rz_end = rz_start + HEAP_REDZONE;
+            if rz_end > data.len() {
+                continue;
+            }
+            if let Some(i) = data[rz_start..rz_end].iter().position(|&b| b != HEAP_POISON) {
+                return Err(Error::msg(format!(
+                    "HEAP CHECK: object [{start:#x},{end:#x}) redzone byte {i} was \
+                     overwritten — a write ran past the object end (a wrong field offset \
+                     or a missing ensure())"
+                )));
             }
         }
         Ok(())
@@ -341,6 +386,7 @@ impl Runtime {
             listeners: Vec::new(),
             build_out: caps.build_out.clone(),
             build_read_roots: caps.build_read_roots.clone(),
+            heap_objects: Vec::new(),
         };
 
         let mut store = Store::new(&self.engine, state);
@@ -391,6 +437,11 @@ pub(crate) fn link_capability_imports(
     linker: &mut Linker<VmState>,
     caps: &Capabilities,
 ) -> Result<()> {
+    // (RFC-0023) The checked-heap shadow import is not a capability — it grants no
+    // authority (it only poisons/records a redzone), so it is always defined and only
+    // the checked codegen ever emits a call to it.
+    linker.func_wrap("witchy", "heap_register", host_heap_register)?;
+
     // --- capability wiring: only granted host functions are defined ---
     if caps.print {
         linker.func_wrap("witchy", "print", host_print)?;
@@ -1636,6 +1687,26 @@ fn read_wstr_list(data: &[u8], ptr: i32) -> Result<Vec<String>> {
         out.push(read_wstr(data, elem as i32)?);
     }
     Ok(out)
+}
+
+/// (RFC-0023) Record a checked allocation and poison its trailing redzone. The guest's
+/// checked allocators call this right after writing an object spanning `[start,end)`;
+/// the host fills `[end, end+HEAP_REDZONE)` with `HEAP_POISON` and remembers the object
+/// so [`Vm::heap_sweep`] can later prove the redzone was never overwritten. Out-of-range
+/// arguments are ignored — this is a debug oracle, never an authority boundary.
+fn host_heap_register(mut caller: Caller<'_, VmState>, start: i32, end: i32) -> Result<()> {
+    if start < 0 || end < start {
+        return Ok(());
+    }
+    let mem = memory_of(&mut caller)?;
+    let rz_start = end as usize;
+    let rz_end = rz_start + HEAP_REDZONE;
+    let data = mem.data_mut(&mut caller);
+    if rz_end <= data.len() {
+        data[rz_start..rz_end].fill(HEAP_POISON);
+    }
+    caller.data_mut().heap_objects.push((start as u32, end as u32));
+    Ok(())
 }
 
 fn memory_of(caller: &mut Caller<'_, VmState>) -> Result<Memory> {
