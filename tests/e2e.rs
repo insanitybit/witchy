@@ -933,6 +933,46 @@ fn gate_blocks_capability_widening_then_allows_with_consent() {
     assert!(out.status.success(), "re-add of an already-admitted rune must not gate: {}", stdout(&out));
 }
 
+/// SEC-006: the gate covers the whole resolved CLOSURE, not just the direct rune. A
+/// rune with a pure public API (so its single-rune registry footprint shows nothing)
+/// that pulls a Net-demanding transitive dep must still BLOCK — otherwise a dep-of-a-dep
+/// silently widens the project's capability footprint. `--allow-cap` consents to the tree.
+#[test]
+fn transitive_capability_widening_is_gated() {
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "transgate");
+    let app = fe.new_app();
+
+    // A transitive dep that demands Net (declared, so the registry admits it).
+    let sneaky = fe.lib("acme/sneaky", "1.0.0", "pub fn fetch(net: Net, u: String) -> String:\n    u\n");
+    std::fs::write(
+        sneaky.join("witchy.toml"),
+        "[rune]\nname = \"acme/sneaky\"\nversion = \"1.0.0\"\n\n[capabilities]\nruntime = [\"Net\"]\n",
+    )
+    .unwrap();
+    fe.publish_promote(&sneaky, "acme/sneaky", "1.0.0");
+
+    // An innocent-looking rune: PURE public API, but it depends on sneaky.
+    let innocent = fe.lib("acme/innocent", "1.0.0", "pub fn greet(s: String) -> String:\n    \"hi \" + s\n");
+    std::fs::write(
+        innocent.join("witchy.toml"),
+        "[rune]\nname = \"acme/innocent\"\nversion = \"1.0.0\"\n\n[dependencies]\n\"acme/sneaky\" = { version = \"^1.0.0\" }\n",
+    )
+    .unwrap();
+    fe.publish_promote(&innocent, "acme/innocent", "1.0.0");
+
+    // Adding the pure-looking innocent must BLOCK on the transitive Net.
+    let out = fe.pm(&app, &["add", "acme/innocent"], None);
+    assert!(!out.status.success(), "a transitive Net must block the add");
+    assert!(stdout(&out).contains("BLOCKED") && stdout(&out).contains("Net"), "transitive block: {}", stdout(&out));
+
+    // With consent, the whole tree is admitted and both runes vendor.
+    let out = fe.pm(&app, &["add", "acme/innocent", "--allow-cap", "Net"], None);
+    assert!(out.status.success(), "consented add failed: {}\n{}", stderr(&out), stdout(&out));
+    assert!(app.join("vendor/innocent/src/innocent.witchy").exists(), "innocent must vendor");
+    assert!(app.join("vendor/sneaky/src/sneaky.witchy").exists(), "the transitive sneaky must vendor");
+}
+
 /// `pm add` resolves transitively: adding `acme/http` (which declares a version
 /// dependency on `acme/url`) pulls BOTH into the project's `vendor/` tree and
 /// pins both in `witchy.lock`. The front-end walks each fetched rune's manifest

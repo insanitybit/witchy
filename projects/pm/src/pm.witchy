@@ -1498,11 +1498,11 @@ fn cmd_add_pkg(console: Console, net: Net, root: Dir, env: Env, clock: Clock, ar
         add_pkg_gated(console, net, root, host, port, name, req, cooldown_now(env, clock, args), allowed_caps(args))
 
 // A direct `add` is the consumer's deliberate choice to take on a dependency, so
-// it is gated: if the rune introduces a capability the project does not already
-// admit (its own declared caps ∪ what the lock already records ∪ the caps the
-// consumer consented to with `--allow-cap`), the add is BLOCKED. The transitive
-// closure a consented direct add pulls in is NOT re-gated — consenting to a rune
-// is consenting to its declared dependency tree (which the registry footprinted).
+// it is gated: if the rune — OR ANY rune in its resolved dependency closure (SEC-006) —
+// introduces a capability the project does not already admit (its own declared caps ∪
+// what the lock already records ∪ the caps the consumer consented to with `--allow-cap`),
+// the add is BLOCKED. A registry record's footprint is single-rune, so the direct gate
+// alone would miss a transitive dep's capabilities; we re-gate the whole vendored closure.
 fn add_pkg_gated(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, req: String, cooldown: (Int, Int, Bool), allowed: List(String)) -> Int:
     match resolve_version(net, host, port, name, req, cooldown):
         Err(msg) ->
@@ -1521,7 +1521,17 @@ fn add_pkg_gated(console: Console, net: Net, root: Dir, host: String, port: Int,
                 if code != 0:
                     code
                 else:
-                    pin_lock(console, net, root, host, port, name)
+                    // SEC-006: re-gate on the FULL vendored closure now on disk — a
+                    // transitive dep can carry a capability the direct rune's footprint
+                    // never showed. Blocked here, the files stay vendored but unpinned;
+                    // re-running with `--allow-cap` consents and completes the add.
+                    let closure_widened = rights.uncovered(baseline, vendored_closure_footprint(root))
+                    if list.length(closure_widened) > 0:
+                        print(console, "BLOCKED: a dependency of `" + name + "` would widen your project's capability footprint: " + list.join(closure_widened, ", "))
+                        print(console, "  re-run with --allow-cap " + list.join(closure_widened, " --allow-cap ") + " to consent to the whole dependency tree")
+                        2
+                    else:
+                        pin_lock(console, net, root, host, port, name)
 
 // The capability authority the project already admits: its own declared runtime
 // caps (from witchy.toml, if any) plus every capability the lockfile already
@@ -1983,6 +1993,19 @@ fn rune_footprint(root: Dir, dir: String) -> List(String):
     match first_witchy(list(src)):
         Some(file) -> footprint_total(compiler.footprint(read(src, file)))
         None -> []
+
+// SEC-006: the union footprint of EVERY vendored rune — the full resolved closure. A
+// registry record's footprint is single-rune, so a direct add's gate never sees a
+// transitive dep's capabilities; summing the on-disk closure does.
+fn vendored_closure_footprint(root: Dir) -> List(String):
+    var out = []
+    if exists(root, "vendor"):
+        for entry in list(subtree(root, "vendor")):
+            let rune_dir = join_path("vendor", entry)
+            if exists(root, join_path(rune_dir, "coven.json")):
+                for cap in rune_footprint(root, rune_dir):
+                    out = add_unique(out, cap)
+    out
 
 fn first_witchy(let files: List(String)) -> Option(String):
     var found = None
