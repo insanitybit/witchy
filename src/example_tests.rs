@@ -6020,6 +6020,47 @@ fn main(console: Console):
     }
 
     #[test]
+    fn convert_from_into_backends_agree() {
+        // std/convert's From/Into: implementing `From` gives `.from(x)` on the
+        // target type, and the blanket `impl Into for a where b: From(a)` derives
+        // `.into()`. Both resolve and run identically on both backends — the
+        // blanket trait impl + From->Into derivation was otherwise untested.
+        let client = r#"
+import convert
+
+type Celsius:
+    Celsius(Int)
+
+type Fahrenheit:
+    Fahrenheit(Int)
+
+impl From(Celsius) for Fahrenheit:
+    fn from(value: Celsius) -> Fahrenheit:
+        match value:
+            Celsius(deg) -> Fahrenheit(deg * 9 / 5 + 32)
+
+fn degf(f: Fahrenheit) -> Int:
+    match f:
+        Fahrenheit(d) -> d
+
+fn main(console: Console):
+    print(console, __render(degf(Fahrenheit.from(Celsius(100)))))
+    let f: Fahrenheit = Celsius(0).into()
+    print(console, __render(degf(f)))
+    let body: Fahrenheit = Celsius(37).into()
+    print(console, __render(degf(body)))
+"#;
+        let sources = [
+            ("convert", crate::bundled_module("convert").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "convert From/Into diverged");
+        assert_eq!(compiled, vec!["212", "32", "98"]);
+    }
+
+    #[test]
     fn duration_parse_backends_agree() {
         // parse is the inverse of human, returning a Duration (ms): unit-tagged
         // (incl. ms/hr) or bare-ms input, None on junk/dangling, and
