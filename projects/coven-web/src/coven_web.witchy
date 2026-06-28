@@ -150,12 +150,28 @@ fn h_proxy(net: Net, upstream: String, base: String) -> fn(Request) -> Response:
     fn(req: Request):
         match req:
             Request(_m, _p, _pa, q, _h, _b) ->
-                let qs = encode_query(q)
-                let path = if qs == "": base else: base + "?" + qs
-                let (host, port) = split_host_port(upstream)
-                match http.try_get(net, host, port, path):
-                    Ok(resp) -> server.json(http.status(resp), http.body(resp))
-                    Err(_e) -> server.json(502, "{\"error\":\"coven registry unreachable\"}")
+                if query_has_control(q):
+                    // SEC-021: query values are forwarded verbatim into the upstream HTTP
+                    // request line; a CR/LF would inject headers / smuggle a request. Rune
+                    // names/versions never contain control characters, so refuse them.
+                    server.bad_request("{\"error\":\"invalid query\"}")
+                else:
+                    let qs = encode_query(q)
+                    let path = if qs == "": base else: base + "?" + qs
+                    let (host, port) = split_host_port(upstream)
+                    match http.try_get(net, host, port, path):
+                        Ok(resp) -> server.json(http.status(resp), http.body(resp))
+                        Err(_e) -> server.json(502, "{\"error\":\"coven registry unreachable\"}")
+
+// SEC-021: true if any query key/value contains a CR or LF — the bytes that would
+// break out of the forwarded request line into header/request smuggling upstream.
+fn query_has_control(pairs: List((String, String))) -> Bool:
+    var bad = false
+    for pair in pairs:
+        let (k, v) = pair
+        if string.contains(k, "\n") || string.contains(k, "\r") || string.contains(v, "\n") || string.contains(v, "\r"):
+            bad = true
+    bad
 
 // POST proxy for the write endpoints. The whole request is in the body, so no
 // query forwarding is needed. (Like h_proxy, this captures Net deliberately.)
