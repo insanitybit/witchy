@@ -1619,7 +1619,11 @@ fn read_wstr(data: &[u8], ptr: i32) -> Result<String> {
 fn read_wstr_list(data: &[u8], ptr: i32) -> Result<Vec<String>> {
     let len_bytes = slice(data, ptr, 4)?;
     let len = i32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]]);
-    let mut out = Vec::with_capacity(len.max(0) as usize);
+    // SEC: `len` is read from guest memory, so a crafted module can claim a huge count.
+    // Do NOT pre-reserve from it — `Vec::with_capacity(len)` would try to allocate ~51GB and
+    // ABORT the host process. Cap the hint at the most 8-byte slots that could fit in memory
+    // (the loop below still fails closed on the first out-of-bounds slot read).
+    let mut out = Vec::with_capacity((len.max(0) as usize).min(data.len() / 8));
     for i in 0..len {
         let slot = slice(data, ptr + 4 + 8 * i, 8)?;
         let elem = i64::from_le_bytes([
