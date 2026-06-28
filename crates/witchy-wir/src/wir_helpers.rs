@@ -131,7 +131,7 @@ pub fn heap_reclaim_helper() -> WirFunc {
 pub const HEAP_REDZONE: usize = 8;
 
 /// (RFC-0023) Whether the opt-in checked heap is selected for this compile. Read from
-/// the environment like the other codegen toggles (`WITCHY_WASM_OPT`, `WIRDIAG`), so a
+/// the environment like the other codegen toggles (`WITCHY_OPT`, `WIRDIAG`), so a
 /// single `WITCHY_HEAP_CHECK=1` makes both the codegen instrument allocations and the
 /// runtime sweep their redzones.
 pub fn heap_check_enabled() -> bool {

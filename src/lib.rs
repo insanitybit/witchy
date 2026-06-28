@@ -20,7 +20,7 @@ pub use witchy_lower::{analysis, codegen};
 // `crate::{ast,lexer,parser,aliases,consts,fmt,…}::…` paths unchanged.
 pub use witchy_syntax::{
     aliases, ast, async_lower, build_entry, consts, derive, doc, fmt, format, generators,
-    lambda_scan, lexer, linker, optimize, parser, records, reflect,
+    lambda_scan, lexer, linker, opt, optimize, parser, records, reflect,
 };
 // RFC-0018: footprint analysis + grant docs live in the `witchy-caps` crate.
 pub use witchy_caps::capabilities;

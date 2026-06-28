@@ -23,6 +23,7 @@ pub mod generators;
 pub mod lambda_scan;
 pub mod lexer;
 pub mod linker;
+pub mod opt;
 pub mod optimize;
 pub mod parser;
 pub mod records;

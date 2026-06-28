@@ -1682,12 +1682,12 @@ fn host_crypto_reveal_len(mut caller: Caller<'_, VmState>, key: i32) -> Result<i
 /// Read a witchy string value (a `[i32 len][bytes...]` header) at `ptr`.
 /// Run Binaryen's `wasm-opt -O2` over a module before Cranelift sees it — a
 /// mature optimizer (inlining, GVN, const-prop, local coalescing) over our
-/// deliberately naive emitter. OPT-IN via `WITCHY_WASM_OPT=1` (it costs
+/// deliberately naive emitter. OPT-IN via `WITCHY_OPT=wasm-opt` (it costs
 /// tens of milliseconds per module, which the test suite's hundreds of tiny
 /// modules should not pay), and it degrades to the input untouched when the
 /// binary is missing or fails — never a hard dependency.
 pub fn optimize_module(input: &[u8]) -> Vec<u8> {
-    if std::env::var_os("WITCHY_WASM_OPT").is_none_or(|v| v != "1") {
+    if !witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::WasmOpt) {
         return input.to_vec();
     }
     // A private, randomly named, owner-only directory per invocation — never

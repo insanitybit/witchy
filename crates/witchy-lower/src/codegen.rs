@@ -6560,29 +6560,33 @@ fn type_has_var(t: &Type) -> bool {
     }
 }
 
-/// `WITCHY_NO_INPLACE=1` compiles with the in-place machinery (linear update
-/// and loop watermark resets) OFF — the copying paths ARE the semantics, so
-/// diffing outputs against an optimized build is a soundness check on the
-/// uniqueness analysis.
+/// In-place machinery (linear update and loop watermark resets) is gated on the
+/// `inplace` optimization of the single `WITCHY_OPT` lever (RFC-0030). With it
+/// off — `WITCHY_OPT=-inplace` or `WITCHY_OPT=none` — the copying paths ARE the
+/// semantics, so diffing outputs against an optimized build is a soundness check
+/// on the uniqueness analysis.
 fn force_copy_mode() -> bool {
-    FORCE_COPY_OVERRIDE.with(|c| c.get())
-        .unwrap_or_else(|| std::env::var_os("WITCHY_NO_INPLACE").is_some_and(|v| v == "1"))
+    !witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::InPlace)
 }
 
-thread_local! {
-    static FORCE_COPY_OVERRIDE: std::cell::Cell<Option<bool>> =
-        const { std::cell::Cell::new(None) };
-}
-
-/// Thread-local override of `WITCHY_NO_INPLACE` so in-process differential
-/// tests can compile both ways without racing the process environment.
+/// Thread-local override of the forced-copy setting so in-process differential
+/// tests can compile both ways without racing the process environment. Delegates
+/// to the `WITCHY_OPT` lever: `Some(true)` drops `inplace` from the production
+/// default, `Some(false)` restores it, `None` falls back to the environment.
 ///
 /// Always compiled (not `#[cfg(test)]`): the `witchy` binary's own tests reach
 /// it cross-crate through the `witchy` library, where a `cfg(test)` item would
 /// not exist. Inert in production — with no caller the override stays `None`.
 #[doc(hidden)]
 pub fn set_force_copy_for_tests(v: Option<bool>) {
-    FORCE_COPY_OVERRIDE.with(|c| c.set(v));
+    use witchy_syntax::opt::{Opt, OptSet};
+    witchy_syntax::opt::set_for_tests(v.map(|force_copy| {
+        if force_copy {
+            OptSet::default_set().without(Opt::InPlace)
+        } else {
+            OptSet::default_set()
+        }
+    }));
 }
 
 

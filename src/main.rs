@@ -29,6 +29,7 @@ pub use witchy::grants;
 pub use witchy::interpreter;
 pub use witchy::lexer;
 pub use witchy::linker;
+pub use witchy::opt;
 pub use witchy::pipeline;
 mod lsp;
 pub use witchy::native;
