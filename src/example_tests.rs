@@ -12140,6 +12140,25 @@ fn main(console: Console):
         assert_eq!(run_on_wasm(src), vec!["5", "5", "4", "5", "0"]);
     }
 
+    #[test]
+    fn substring_is_char_indexed_across_multibyte_on_both_backends() {
+        // substring indexes by CHARACTER, not byte: slicing across a 2-byte (é)
+        // or 4-byte (emoji) boundary must compute the same char->byte offsets on
+        // both backends, while length (bytes) vs char_count tracks UTF-8 widths.
+        let src = r#"
+import string
+fn main(console: Console):
+    print(console, string.substring("café", 0, 3))
+    print(console, string.substring("café", 3, 4))
+    print(console, __render(string.length("a😀b")))
+    print(console, __render(string.char_count("a😀b")))
+    print(console, string.substring("a😀b", 1, 2))
+    print(console, string.substring("a😀b", 0, 2))
+"#;
+        assert_eq!(interp(src), run_on_wasm(src), "multibyte substring diverged");
+        assert_eq!(run_on_wasm(src), vec!["caf", "é", "6", "3", "😀", "a😀"]);
+    }
+
     // reverse flips character order using char_count + char-based substring, so
     // it's correct for multi-byte UTF-8 ("café" -> "éfac"), not just ASCII.
     // Char-based take/drop: clamp at the ends and count by Unicode scalar, so
