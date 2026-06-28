@@ -160,13 +160,22 @@ pub struct Claims {
 /// each base64url) — the shape a real OIDC provider / CI system emits. The standard claims
 /// and the provider claims (`extra`) are FLATTENED to the payload's top level, matching a
 /// GitHub Actions token, so the verifier reads `repository` directly.
-pub fn mint(issuer_key: &RegistryKey, claims: Claims, kid: Option<&str>) -> IdpResult<String> {
+pub fn mint(issuer_key: &RegistryKey, mut claims: Claims, kid: Option<&str>) -> IdpResult<String> {
     // The `kid` header names which JWKS key signed the token — a rotating provider sets
     // it so a verifier can select the matching key. Static issuers omit it.
     let header = match kid {
         Some(k) => b64url(format!(r#"{{"alg":"RS256","typ":"JWT","kid":"{k}"}}"#).as_bytes()),
         None => b64url(br#"{"alg":"RS256","typ":"JWT"}"#),
     };
+    // A unique token id (`jti`) so the registry can enforce single-use — a replayed publish
+    // token is refused. A real GitHub Actions OIDC token always carries one; ours does too.
+    // (Left untouched if a caller set it explicitly, e.g. a determinism-sensitive test.)
+    claims.extra.entry("jti".into()).or_insert_with(|| {
+        let bytes: [u8; 16] = aws_lc_rs::rand::generate(&aws_lc_rs::rand::SystemRandom::new())
+            .map(|r| r.expose())
+            .unwrap_or([0u8; 16]);
+        hex_encode(&bytes)
+    });
     let payload = b64url(payload_json(&claims).as_bytes());
     let signing_input = format!("{header}.{payload}");
     let sig = issuer_key.sign(signing_input.as_bytes())?;

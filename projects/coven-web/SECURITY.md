@@ -66,6 +66,38 @@ Publisher-shaped content (package source, publisher-derived record strings) is u
 `textContent`/`createElement` path — no sanitizer, no sandbox. Isolation is reserved for foreign
 *code*, which is the only input that obeys neither the capability nor the no-sink discipline.
 
+## Supply-chain isolation: publishing vs. promotion (the CI-compromise boundary)
+
+The registry's release pipeline is deliberately **two operations on two trust levels**, and the
+separation is a load-bearing security invariant — not an ergonomic accident:
+
+- **Publish** (`POST /coven/publish`) is a *machine* action. CI authenticates with a short-lived
+  OIDC identity token (trusted publishing), and the namespace's org must match the token's
+  repository (SEC-023). A successful publish produces a **`Staged`** version and nothing else — a
+  staged version is never resolved by `pm` and never served to consumers.
+- **Promote** (`POST /coven/promote`) is a *human* action from a **distinct system**. It is
+  authorized by a fresh, single-use **WebAuthn 2FA assertion** (a passkey challenge drawn from the
+  `Rand` CSPRNG, SEC-011) — explicitly **not** a CI/OIDC token — plus **separation of duties**: the
+  promoter identity must differ from the publisher. Only promotion flips `Staged → Released`.
+
+**Why this matters:** it bounds the blast radius of a *total CI compromise*. A stolen OIDC token, a
+malicious workflow, or a poisoned build dependency can publish a malicious version — but it **cannot
+release it**. Making a version consumable requires a human, at a different system, presenting a
+passkey. So the worst a compromised pipeline achieves is a staged artifact awaiting human review,
+not a package your users will resolve. This is strictly stronger than registries where a publish
+token alone makes a version live.
+
+This also reframes the "publish token isn't bound to a specific `name@version`" concern (SEC-022):
+because publish only stages and the OIDC token's claims are fixed by the CI provider (no per-artifact
+claim is possible — the same constraint npm/PyPI trusted publishing live with), the binding that
+matters is the namespace↔repo-org check (SEC-023) plus the human promote gate above, backed by the
+signed provenance attestation on each record. The residual — a replayed publish token staging a
+*different* version in the same namespace during its short TTL — is contained by the promote gate and
+further narrowed by single-use enforcement on the token's `jti`.
+
+**Do not collapse this boundary.** Accepting a CI token for promote, dropping the second factor, or
+relaxing separation of duties would each let a CI compromise release packages directly.
+
 ## Accepted residual risk
 
 A compromised in-sandbox renderer could still side-channel-exfiltrate the *non-sensitive rendering

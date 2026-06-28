@@ -245,6 +245,21 @@ impl Coven:
 
     fn route_promote(self) -> fn(Request) -> Response:
         // POST /coven/promote : second-factor release (separation of duties).
+        //
+        // SECURITY INVARIANT — promotion is an isolated HUMAN operation, by design.
+        // Publishing (POST /coven/publish) is a machine/CI action authorized by an OIDC
+        // identity token; it can only ever produce a `Staged` version — never a released,
+        // consumable one (`promote_checked` rejects any non-`Staged` state). Releasing a
+        // version is a SEPARATE step that requires (a) a human-presented second factor —
+        // a fresh, single-use WebAuthn 2FA assertion, NOT a replayable CI token — and
+        // (b) separation of duties: the promoter identity must differ from the publisher.
+        //
+        // The consequence is the whole point: a FULL CI compromise (stolen OIDC token,
+        // malicious workflow, supply-chain attack on the build) can publish a poisoned
+        // version, but it CANNOT promote it to a released package consumers resolve. That
+        // gate is a human at a distinct system with a passkey. Do not "streamline" promote
+        // to accept a CI token, drop the second factor, or relax separation of duties —
+        // each of those collapses the isolation boundary that contains a CI compromise.
         guard(fn(req: Request) -> Result(Response, CovenError): self.do_promote(body(req)?))
 
     fn do_promote(self, doc: Json) -> Result(Response, CovenError):
@@ -314,7 +329,27 @@ impl Coven:
         else:
             let claims = verified_claims(self.issuers, req.id_token, now, "publishing to a trusted registry requires a short-lived identity token (long-lived API tokens are not accepted)")?
             let sub = self.authorize_publish(name, claims)?
+            // SEC-022: a publish token is single-use. Consuming the `jti` only after the
+            // namespace policy passes means a rejected publish doesn't burn the token, but a
+            // REPLAY of an accepted one is refused — shrinking the staging-replay window the
+            // (intentionally human-gated, see route_promote) promote step already contains.
+            let _used = self.consume_jti(claims)?
             Ok((sub, Some(claims)))
+
+    // SEC-022: mark a token's `jti` consumed so it cannot publish twice (replay defense).
+    // The marker is keyed by sha256(jti) so an issuer-chosen id can never escape `_policy/`
+    // via path traversal. A token with no `jti` (a non-GitHub issuer, or a legacy token) is
+    // not single-use-checked — the namespace↔repo-org binding still gates it.
+    fn consume_jti(self, claims: Json) -> Result(String, CovenError):
+        let jti = coven_trust.claim(claims, "jti")
+        if string.is_empty(jti):
+            Ok("")
+        else:
+            let marker = "_policy/_jti/" + crypto.sha256(jti)
+            require(!exists(self.store, marker), 403, "identity token already used — single-use replay refused")?
+            fs.ensure_dir(self.store, "_policy/_jti")
+            write(self.store, marker, "1")
+            Ok(jti)
 
     fn authorize_publish(self, name: String, claims: Json) -> Result(String, CovenError):
         let ns = coven_trust.namespace_of(name)

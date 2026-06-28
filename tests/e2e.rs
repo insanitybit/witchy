@@ -470,14 +470,36 @@ fn trusted_publishing_binds_repo_and_rejects_others() {
     assert!(!out.status.success(), "publish from wrong workflow must be refused");
     assert!(stdout(&out).contains("publish: 403"), "wrong-workflow: {}", stdout(&out));
 
-    // The legitimate CI identity may publish the new version.
-    let out = fe.pm(&lib, &["publish", "."], Some(&good));
+    // The legitimate CI identity may publish the new version — with a FRESH token, as a
+    // real workflow mints one per run (the publish token is single-use, SEC-022).
+    let good2 = server.ci_token("acme-secure-repo", "release.yml");
+    let out = fe.pm(&lib, &["publish", "."], Some(&good2));
     assert!(out.status.success() && stdout(&out).contains("publish: 200"), "legit re-publish: {}", stdout(&out));
 
     // A distinct human promotes it to released.
     let alice = server.human_token("alice");
     let out = fe.pm(&lib, &["promote", "acme/secure", "1.1.0"], Some(&alice));
     assert!(out.status.success() && stdout(&out).contains("promote: 200"), "human promote: {}", stdout(&out));
+}
+
+/// SEC-022: a trusted-publishing token is single-use — its `jti` is consumed on a
+/// successful publish, so a replayed (e.g. stolen/leaked) token cannot publish again. A
+/// real workflow mints a fresh token per run, so this never bites legitimate CI.
+#[test]
+fn trusted_publish_token_is_single_use() {
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "singleuse");
+    let lib = fe.lib("acme/once", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
+
+    let ci = server.ci_token("acme-once-repo", "release.yml");
+    let out = fe.pm(&lib, &["publish", "."], Some(&ci));
+    assert!(out.status.success() && stdout(&out).contains("publish: 200"), "first publish: {}", stdout(&out));
+
+    // Replaying the SAME token for a new version is refused (single-use).
+    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/once\"\nversion = \"1.1.0\"\n").unwrap();
+    let out = fe.pm(&lib, &["publish", "."], Some(&ci));
+    assert!(!out.status.success(), "a replayed publish token must be refused");
+    assert!(stdout(&out).contains("publish: 403"), "replayed token: {}", stdout(&out));
 }
 
 /// SEC-023: the first trusted publish to a namespace must come from a repository whose
@@ -882,7 +904,8 @@ fn promote_requires_distinct_identity() {
     // is the bound maintainer, so the CI is refused as not-a-maintainer (403) —
     // machines stage, humans release.
     std::fs::write(dir.join("witchy.toml"), "[rune]\nname = \"acme/lib\"\nversion = \"1.1.0\"\n").unwrap();
-    let out = fe.pm(&dir, &["publish", "."], Some(&ci));
+    let ci2 = server.ci_token("acme-lib-repo", "release.yml"); // a fresh per-run token (single-use)
+    let out = fe.pm(&dir, &["publish", "."], Some(&ci2));
     assert!(out.status.success() && stdout(&out).contains("publish: 200"), "republish: {}", stdout(&out));
     let out = fe.pm(&dir, &["promote", "acme/lib", "1.1.0"], Some(&ci));
     assert!(!out.status.success(), "a CI self-promote must be refused");
