@@ -66,7 +66,7 @@ fn main(console: Console, args: List(String), root: Dir, bin: Dir, runner: Exec,
         cmd_audit(console, root, arg(args, 1))
         0
     else if cmd == "verify":
-        cmd_verify(console, net, root, env, args)
+        cmd_verify(console, net, root, env, clock, args)
     else:
         dispatch_more(console, root, args, cmd)
 
@@ -914,7 +914,7 @@ fn cmd_lock(console: Console, root: Dir, dir: String) -> Int:
 // (written by `add`), it re-fetches + re-verifies the registry's signed TUF
 // snapshot + timestamp roles and refuses a tampered chain or a rollback to an
 // older snapshot version than the one the lock pinned. Exits 2 on any discrepancy.
-fn cmd_verify(console: Console, net: Net, root: Dir, env: Env, args: List(String)) -> Int:
+fn cmd_verify(console: Console, net: Net, root: Dir, env: Env, clock: Clock, args: List(String)) -> Int:
     let target = arg(args, 1)
     let dir = if string.is_empty(target): "." else: target
     if !exists(root, join_path(dir, "witchy.lock")):
@@ -924,7 +924,7 @@ fn cmd_verify(console: Console, net: Net, root: Dir, env: Env, args: List(String
         let lock = read(root, join_path(dir, "witchy.lock"))
         let manifest = read(root, join_path(dir, "witchy.toml"))
         let hash_code = report_verify(console, hash_mismatches(root, dir, manifest, lock))
-        let tuf_code = verify_tuf(console, net, root, env, dir, lock)
+        let tuf_code = verify_tuf(console, net, root, env, clock, dir, lock)
         if hash_code != 0: hash_code else: tuf_code
 
 fn report_verify(console: Console, bad: List(String)) -> Int:
@@ -940,16 +940,16 @@ fn report_verify(console: Console, bad: List(String)) -> Int:
 // the signed snapshot + timestamp roles and re-checks the whole chain against the
 // registry root key, refusing a tampered role or a rollback. The registry only
 // PRODUCES these roles (coven_meta); the front-end is the verifier. Checks (the
-// freshness/`expires` check is the one chain link omitted here — it needs a wall
-// clock the confined front-end does not hold; the security-relevant signature,
-// content-binding, version-match and rollback links are all enforced):
+// signature, content-binding, version-match, rollback, AND freshness/`expires`
+// links are all enforced — the front-end holds a Clock, so the previously-omitted
+// expiry check now runs):
 //   1. timestamp signed by the root key
 //   2. snapshot signed by the root key
 //   3. sha256(canonical(snapshot)) == timestamp.snapshot_hash   (content binding)
 //   4. snapshot.version == timestamp.snapshot_version           (role agreement)
 //   5. snapshot.version >= the version pinned in witchy.lock    (no rollback)
 //   6. each vendored registry dep's record digest is the snapshot's target digest
-fn verify_tuf(console: Console, net: Net, root: Dir, env: Env, dir: String, lock: String) -> Int:
+fn verify_tuf(console: Console, net: Net, root: Dir, env: Env, clock: Clock, dir: String, lock: String) -> Int:
     let pinned = pinned_snapshot_version(lock)
     if pinned < 0:
         // No registry deps were added (no pinned snapshot) — nothing to verify.
@@ -957,9 +957,9 @@ fn verify_tuf(console: Console, net: Net, root: Dir, env: Env, dir: String, lock
     else:
         let addr = coven_addr(env, "")
         let (host, port) = hostport(addr)
-        verify_chain(console, net, root, dir, host, port, pinned, pinned_rootpub(lock))
+        verify_chain(console, net, root, dir, host, port, pinned, pinned_rootpub(lock), clock)
 
-fn verify_chain(console: Console, net: Net, root: Dir, dir: String, host: String, port: Int, pinned: Int, pinned_pub: String) -> Int:
+fn verify_chain(console: Console, net: Net, root: Dir, dir: String, host: String, port: Int, pinned: Int, pinned_pub: String, clock: Clock) -> Int:
     let rootpub = http.body(http.get(net, host, port, "/coven/rootpub"))
     // SEC-002: the root key is the trust anchor for the whole chain — every record and
     // TUF role is verified against it. If the lock pinned one at `add` (trust-on-first-use),
@@ -975,9 +975,9 @@ fn verify_chain(console: Console, net: Net, root: Dir, dir: String, host: String
             print(console, "FAIL: TUF chain — registry served no snapshot/timestamp role")
             2
         else:
-            check_chain(console, root, dir, rootpub, http.body(snap_resp), http.body(ts_resp), pinned)
+            check_chain(console, root, dir, rootpub, http.body(snap_resp), http.body(ts_resp), pinned, clock)
 
-fn check_chain(console: Console, root: Dir, dir: String, rootpub: String, snap_env: String, ts_env: String, pinned: Int) -> Int:
+fn check_chain(console: Console, root: Dir, dir: String, rootpub: String, snap_env: String, ts_env: String, pinned: Int, clock: Clock) -> Int:
     let snap_signed = signed_canonical(snap_env)
     let ts_signed = signed_canonical(ts_env)
     if !signed_valid(rootpub, ts_env):
@@ -994,6 +994,12 @@ fn check_chain(console: Console, root: Dir, dir: String, rootpub: String, snap_e
         2
     else if signed_field_int(snap_env, "version") < pinned:
         print(console, "FAIL: TUF chain — the registry's snapshot version ${signed_field_int(snap_env, "version")} is older than the pinned ${pinned}: the metadata has been rolled back")
+        2
+    else if signed_field_int(ts_env, "expires") < now(clock) / 1000:
+        // SEC-017: TUF freshness — refuse a stale-but-validly-signed timestamp (a freeze /
+        // replay of old metadata up to the pinned floor). coven sets `expires` 24h out; the
+        // front-end holds a Clock, so the check that was previously omitted now runs.
+        print(console, "FAIL: TUF chain — the registry timestamp role expired at ${signed_field_int(ts_env, "expires")} (now ${now(clock) / 1000}): stale metadata (freeze/replay)")
         2
     else:
         check_targets(console, root, dir, snap_env)
