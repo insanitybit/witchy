@@ -9652,6 +9652,36 @@ fn main(console: Console):
         assert_eq!(run_on_wasm(src), vec!["2", "0", "1", "3", "3", "3", "1", "200"]);
     }
 
+    /// KNOWN BUG — a PARITY VIOLATION in the compiled backend's dict hash index.
+    /// The interpreter (oracle) is correct; the compiled backend diverges:
+    /// removing a key then re-inserting it, followed by ANY `dict.keys`/`values`/
+    /// `pairs` iteration, corrupts the re-inserted entry so `get_or` then returns
+    /// the default — even though `dict.length` is still right. It does NOT happen
+    /// when the key was overwritten before removal, nor without an intervening
+    /// iteration, so the compiled hash index (RFC-0016 / the O(1) dict, src/
+    /// codegen.rs) ends up inconsistent with the entry storage across a
+    /// remove->reinsert and iteration exposes it. The interpreter returns
+    /// "5","1","5"; the compiled backend returns "5","1","-1". Remove `#[ignore]`
+    /// once the compiled dict is fixed (the first assert — interp vs wasm — is
+    /// the parity check that catches it).
+    #[test]
+    #[ignore = "parity violation: compiled dict corrupts entry on remove+reinsert+iterate"]
+    fn dict_remove_reinsert_then_iterate_keeps_entry() {
+        let src = r#"
+import dict
+fn main(console: Console):
+    var b = dict.new()
+    b = dict.insert(b, "x", 1)
+    b = dict.remove(b, "x")
+    b = dict.insert(b, "x", 5)
+    print(console, __render(dict.get_or(b, "x", -1)))
+    print(console, __render(list.length(dict.keys(b))))
+    print(console, __render(dict.get_or(b, "x", -1)))
+"#;
+        assert_eq!(interp(src), run_on_wasm(src), "compiled backend diverges from the interpreter oracle");
+        assert_eq!(run_on_wasm(src), vec!["5", "1", "5"]);
+    }
+
     #[test]
     fn dict_keys_values_pairs_on_wasm() {
         // keys/values/pairs compiled to WASM: keys -> list of keys, values ->
