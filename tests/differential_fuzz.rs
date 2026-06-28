@@ -150,6 +150,17 @@ fn gen_dict(r: &mut Rng, ops: u32) -> String {
     d
 }
 
+/// Heap-allocated records: `R(Int, String, List(Int))` and the nested `P(R, Int)` — struct
+/// layout + (nested) field access, the same class as the int_to_string / dict-corruption bugs.
+fn gen_record_r(r: &mut Rng) -> String {
+    format!("R({}, {}, {})", gen_int(r, 1), gen_str(r, 1), gen_intlist(r, 1))
+}
+
+fn gen_record_p(r: &mut Rng) -> String {
+    let inner = gen_record_r(r);
+    format!("P({}, {})", inner, gen_int(r, 1))
+}
+
 fn gen_intlist(r: &mut Rng, depth: u32) -> String {
     // Always >= 1 element: an empty `[]` has an ambiguous element type, which the structural
     // renderer can't build (a known interpreter-only limit) — that's a generator miss, not a
@@ -162,9 +173,16 @@ fn gen_intlist(r: &mut Rng, depth: u32) -> String {
 /// One random program: a `main` that prints many heap-exercising expressions.
 fn gen_program(seed: u64, statements: usize) -> String {
     let mut r = Rng(seed);
-    let mut body = String::from("import string\nimport list\nimport math\nimport dict\n\nfn main(console: Console):\n");
+    // Fixed record types so statements can construct + field-access heap structs (incl. a
+    // nested record, the deepest heap-layout shape) without per-program type generation.
+    let mut body = String::from(
+        "import string\nimport list\nimport math\nimport dict\n\n\
+         type R:\n    a: Int\n    b: String\n    c: List(Int)\n\
+         type P:\n    x: R\n    y: Int\n\n\
+         fn main(console: Console):\n",
+    );
     for _ in 0..statements {
-        let kind = r.below(16);
+        let kind = r.below(22);
         let depth = 1 + r.below(4) as u32;
         let dops = 2 + r.below(10) as u32;
         let line = match kind {
@@ -183,11 +201,17 @@ fn gen_program(seed: u64, statements: usize) -> String {
             12 => format!("    print(console, __render({}))\n", gen_dict(&mut r, dops)),
             13 => format!("    print(console, \"${{dict.length({})}}\")\n", gen_dict(&mut r, dops)),
             14 => format!("    print(console, __render(dict.pairs({})))\n", gen_dict(&mut r, dops)),
-            _ => {
+            15 => {
                 let d = gen_dict(&mut r, dops);
                 let k = gen_dkey(&mut r);
                 format!("    print(console, __render(dict.get_or({}, {}, (-1))))\n", d, k)
             }
+            16 => format!("    print(console, __render({}))\n", gen_record_r(&mut r)),
+            17 => format!("    print(console, __render({}.a))\n", gen_record_r(&mut r)),
+            18 => format!("    print(console, {}.b)\n", gen_record_r(&mut r)),
+            19 => format!("    print(console, __render({}.c))\n", gen_record_r(&mut r)),
+            20 => format!("    print(console, __render({}))\n", gen_record_p(&mut r)),
+            _ => format!("    print(console, __render({}.x.a))\n", gen_record_p(&mut r)),
         };
         body.push_str(&line);
     }
