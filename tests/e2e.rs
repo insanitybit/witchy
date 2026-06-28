@@ -625,6 +625,9 @@ fn tuf_chain_verified_and_snapshot_tamper_rejected() {
     // The lock pinned a TUF snapshot version, and verify confirms the chain.
     let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
     assert!(lock.contains("registry_snapshot_version"), "lock should pin snapshot version: {lock}");
+    // SEC-002: the lock also pins the registry's Ed25519 root public key (trust-on-first-use),
+    // so `verify` refuses a chain rooted in a different (MITM/hostile-mirror) key.
+    assert!(lock.contains("registry_rootpub = \""), "lock should pin the root key: {lock}");
     let out = fe.pm(&app, &["verify"], None);
     assert!(out.status.success(), "verify failed: {}\n{}", stderr(&out), stdout(&out));
     assert!(stdout(&out).contains("TUF chain"), "verify out: {}", stdout(&out));

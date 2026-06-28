@@ -957,17 +957,25 @@ fn verify_tuf(console: Console, net: Net, root: Dir, env: Env, dir: String, lock
     else:
         let addr = coven_addr(env, "")
         let (host, port) = hostport(addr)
-        verify_chain(console, net, root, dir, host, port, pinned)
+        verify_chain(console, net, root, dir, host, port, pinned, pinned_rootpub(lock))
 
-fn verify_chain(console: Console, net: Net, root: Dir, dir: String, host: String, port: Int, pinned: Int) -> Int:
+fn verify_chain(console: Console, net: Net, root: Dir, dir: String, host: String, port: Int, pinned: Int, pinned_pub: String) -> Int:
     let rootpub = http.body(http.get(net, host, port, "/coven/rootpub"))
-    let snap_resp = http.get(net, host, port, "/coven/snapshot")
-    let ts_resp = http.get(net, host, port, "/coven/timestamp")
-    if http.status(snap_resp) != 200 || http.status(ts_resp) != 200:
-        print(console, "FAIL: TUF chain — registry served no snapshot/timestamp role")
+    // SEC-002: the root key is the trust anchor for the whole chain — every record and
+    // TUF role is verified against it. If the lock pinned one at `add` (trust-on-first-use),
+    // refuse a chain rooted in a DIFFERENT key, so a hostile mirror or on-path attacker
+    // cannot swap the plaintext-fetched root key and re-sign everything to match.
+    if pinned_pub != "" && pinned_pub != rootpub:
+        print(console, "FAIL: TUF chain — registry root key does not match the key pinned in witchy.lock (possible MITM / hostile mirror)")
         2
     else:
-        check_chain(console, root, dir, rootpub, http.body(snap_resp), http.body(ts_resp), pinned)
+        let snap_resp = http.get(net, host, port, "/coven/snapshot")
+        let ts_resp = http.get(net, host, port, "/coven/timestamp")
+        if http.status(snap_resp) != 200 || http.status(ts_resp) != 200:
+            print(console, "FAIL: TUF chain — registry served no snapshot/timestamp role")
+            2
+        else:
+            check_chain(console, root, dir, rootpub, http.body(snap_resp), http.body(ts_resp), pinned)
 
 fn check_chain(console: Console, root: Dir, dir: String, rootpub: String, snap_env: String, ts_env: String, pinned: Int) -> Int:
     let snap_signed = signed_canonical(snap_env)
@@ -1079,6 +1087,13 @@ fn pinned_snapshot_version(lock: String) -> Int:
     match toml.get(lock, "registry_snapshot_version"):
         Some(v) -> string.to_int(v)
         None -> -1
+
+// The `registry_rootpub` (Ed25519 root public key hex) pinned in the lock, or "" if
+// none — older locks predate the pin and fall back to trust-on-first-use. (SEC-002)
+fn pinned_rootpub(lock: String) -> String:
+    match toml.get(lock, "registry_rootpub"):
+        Some(v) -> v
+        None -> ""
 
 // The path-dependency names whose recomputed hash differs from the lockfile's.
 fn hash_mismatches(root: Dir, dir: String, manifest: String, lock: String) -> List(String):
@@ -1341,7 +1356,7 @@ fn update_vendored(console: Console, net: Net, root: Dir, host: String, port: In
         // supply-chain attack the gate exists to stop.
         2
     else:
-        write(root, "witchy.lock", vendor_lock(root, snapshot_pin(net, host, port)))
+        write(root, "witchy.lock", vendor_lock(root, snapshot_pin(net, host, port) + rootpub_pin(net, host, port)))
         print(console, "updated ${changed} dependencies -> witchy.lock")
         0
 
@@ -1524,7 +1539,7 @@ fn split_spec(spec: String) -> (String, String):
 // source and `verify`/`gate` can re-check it. Idempotently rewrites the lock from
 // every currently-vendored rune so repeated `add`s accumulate, not clobber.
 fn pin_lock(console: Console, net: Net, root: Dir, host: String, port: Int, name: String) -> Int:
-    write(root, "witchy.lock", vendor_lock(root, snapshot_pin(net, host, port)))
+    write(root, "witchy.lock", vendor_lock(root, snapshot_pin(net, host, port) + rootpub_pin(net, host, port)))
     print(console, "locked " + basename(name) + " -> witchy.lock")
     0
 
@@ -1539,6 +1554,17 @@ fn snapshot_pin(net: Net, host: String, port: Int) -> String:
     else:
         let v = signed_field_int(http.body(resp), "version")
         "registry_snapshot_version = ${v}\n"
+
+// The `registry_rootpub = "<hex>"` line pinning the registry's Ed25519 root public key
+// into the lock (trust-on-first-use). `verify` re-fetches the key and refuses a chain
+// rooted in a different one, so a hostile mirror / MITM cannot swap the root key. Empty
+// when the registry serves no key. (SEC-002)
+fn rootpub_pin(net: Net, host: String, port: Int) -> String:
+    let resp = http.get(net, host, port, "/coven/rootpub")
+    if http.status(resp) != 200:
+        ""
+    else:
+        "registry_rootpub = \"" + http.body(resp) + "\"\n"
 
 // The lockfile text generated from the vendored tree: one `[[rune]]` block per
 // vendored rune (those carrying a coven.json), pinning name/version/hash from the
