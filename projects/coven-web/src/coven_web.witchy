@@ -506,6 +506,9 @@ fn headers_for(p: String) -> List((String, String)):
      ("document-isolation-policy", "isolate-and-require-corp"),
      ("permissions-policy", permissions_policy()),
      ("x-permitted-cross-domain-policies", "none"),
+     // SEC-014: pin this origin to HTTPS (the fronting TLS proxy terminates it). Browsers
+     // ignore HSTS over plain HTTP, so sending it always is safe and upgrades the rest.
+     ("strict-transport-security", "max-age=31536000; includeSubDomains; preload"),
      ("cache-control", "no-store")]
 
 fn csp_for(p: String) -> String:
