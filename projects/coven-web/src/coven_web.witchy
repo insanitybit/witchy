@@ -19,13 +19,14 @@ import crypto
 import encoding
 import webauthn
 import oauth
+import rand
 import jwt
 import secretstore
 import url
 import result
 import option
 
-fn main(console: Console, net: Net, assets: Dir, secrets: SecretStore, clock: Clock, args: List(String)):
+fn main(console: Console, net: Net, assets: Dir, secrets: SecretStore, clock: Clock, rand: Rand, args: List(String)):
     // The root signing key is the store's `signing` secret (`--signing-key <seed>` is
     // sugar for `--secret-file signing=<path>`); it backs sessions + OAuth state. The
     // GitHub OAuth client secret, when present, is a second named secret.
@@ -90,7 +91,7 @@ fn main(console: Console, net: Net, assets: Dir, secrets: SecretStore, clock: Cl
     // assertion the server verifies, minting a session token), and a second-factor
     // promote that verifies the assertion server-side before forwarding.
     app = app.post("/api/webauthn/register", h_wa_register(assets))
-    app = app.get("/api/webauthn/challenge", h_wa_challenge(assets, key, clock))
+    app = app.get("/api/webauthn/challenge", h_wa_challenge(assets, rand))
     app = app.post("/api/webauthn/login", h_wa_login(assets, key, clock, origin, rp_id))
     app = app.post("/api/coven/promote-2fa", h_wa_promote(assets, net, upstream, origin, rp_id))
     // "Log in with GitHub" (OAuth2 Authorization Code) — registered only when a client
@@ -98,12 +99,12 @@ fn main(console: Console, net: Net, assets: Dir, secrets: SecretStore, clock: Cl
     // `/callback` verifies the state, trades the code for a token, reads the user, and
     // mints the same bearer session a passkey sign-in would (composition over std/oauth).
     if gh_client_id != "":
-        app = app.get("/auth/github/login", h_github_login(key, clock, gh_base, gh_client_id, gh_redirect))
+        app = app.get("/auth/github/login", h_github_login(key, clock, rand, gh_base, gh_client_id, gh_redirect))
         app = app.get("/auth/github/callback", h_github_callback(net, key, clock, secrets, gh_base, gh_api, gh_client_id, gh_redirect))
     // "Log in with Google" (OIDC) — same shape, but the callback VERIFIES the id_token (a
     // JWT) against Google's JWKS rather than fetching a user endpoint.
     if google_client_id != "":
-        app = app.get("/auth/google/login", h_google_login(key, clock, google_authorize, google_client_id, google_redirect))
+        app = app.get("/auth/google/login", h_google_login(key, clock, rand, google_authorize, google_client_id, google_redirect))
         app = app.get("/auth/google/callback", h_google_callback(net, key, clock, secrets, google_token, google_jwks, google_client_id, google_redirect))
     // Layer order (innermost -> outermost): spa_fallback rewrites a router 404 on a CLIENT
     // route to the SPA shell (so a deep link / reload of /v/… loads the app, then the glamour
@@ -220,10 +221,11 @@ fn h_wa_register(store: Dir) -> fn(Request) -> Response:
                         write(store, "_wa_cred.json", json.encode(JsonObject([("credentialId", JsonString(cred)), ("publicKey", JsonString(pk))])))
                         server.json(200, "{\"ok\":true}")
 
-fn h_wa_challenge(store: Dir, key: Secret, clock: Clock) -> fn(Request) -> Response:
+fn h_wa_challenge(store: Dir, rand: Rand) -> fn(Request) -> Response:
     fn(req: Request):
-        let raw = crypto.sign(key, "ch:" + "${now(clock)}")
-        let ch_hex = string.substring(raw, 0, 64)
+        // SEC-011: a fresh 32-byte CSPRNG challenge (not a key-derived, time-predictable
+        // value). Stored single-use; the assertion handler clears it after one verify.
+        let ch_hex = rand.hex(rand, 32)
         let ch_b64 = encoding.base64url_of_hex(ch_hex)
         write(store, "_wa_challenge.json", json.encode(JsonObject([("b64", JsonString(ch_b64))])))
         server.json(200, json.encode(JsonObject([("challengeHex", JsonString(ch_hex))])))
@@ -354,8 +356,8 @@ fn state_ttl_ms() -> Int:
 // unpredictable (an HMAC under the server Secret), set in a cookie at `/login`, and woven
 // into the `state`; `/callback` accepts only a state whose nonce equals the cookie's, so
 // a state minted for one session can't be replayed into another (login CSRF / fixation).
-fn login_nonce(key: Secret, clock: Clock) -> String:
-    crypto.sign(key, "oauth-nonce:" + "${now(clock)}")
+fn login_nonce(rand: Rand) -> String:
+    rand.hex(rand, 16)
 
 fn nonce_cookie(nonce: String) -> String:
     "oauth_nonce=" + nonce + "; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=600"
@@ -392,9 +394,9 @@ fn valid_state(key: Secret, clock: Clock, state: String, expected_nonce: String)
         // SEC-007: the nonce must be non-empty AND equal the issuing session's cookie.
         ascii.all_digits(exp_s) && ct_eq(sig, crypto.sign(key, "oauth-state:" + exp_s + ":" + nonce)) && string.to_int(exp_s) > now(clock) && nonce != "" && ct_eq(nonce, expected_nonce)
 
-fn h_github_login(key: Secret, clock: Clock, gh_base: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
+fn h_github_login(key: Secret, clock: Clock, rand: Rand, gh_base: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
     fn(req: Request):
-        let nonce = login_nonce(key, clock)
+        let nonce = login_nonce(rand)
         let state = sign_state(key, clock, nonce)
         let url = oauth.authorize_url(gh_base + "/login/oauth/authorize", client_id, redirect_uri, "read:user", state)
         server.with_header(server.redirect(url), "set-cookie", nonce_cookie(nonce))
@@ -426,9 +428,9 @@ fn github_finish(net: Net, key: Secret, clock: Clock, gh_api: String, token: Str
 // we verify against Google's published JWKS — read the user's `email` from the VERIFIED
 // claims, never from anything client-supplied. The issuer is the fixed well-known value.
 
-fn h_google_login(key: Secret, clock: Clock, authorize_url: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
+fn h_google_login(key: Secret, clock: Clock, rand: Rand, authorize_url: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
     fn(req: Request):
-        let nonce = login_nonce(key, clock)
+        let nonce = login_nonce(rand)
         let state = sign_state(key, clock, nonce)
         // SEC-008: also send the nonce as the OIDC `nonce` request param; Google echoes it
         // into the id_token's `nonce` claim, which we verify (anti-replay).
