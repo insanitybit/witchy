@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# The green gate: one command that checks the whole workspace, locally. Run it
+# before you commit, and before you push. Steps are ordered cheap-to-expensive so
+# a failure surfaces as early as possible.
+#
+#   ./scripts/check.sh         build, clippy, tests, and the wasm playground build
+#   ./scripts/check.sh --full  also run the from-scratch end-to-end acceptance test
+#
+# rustfmt is deliberately NOT part of the gate: the Rust in this repo is
+# hand-formatted, so `cargo fmt` would fight the intended style.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+full=0
+for arg in "$@"; do
+    case "$arg" in
+        --full) full=1 ;;
+        -h | --help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "check.sh: unknown argument '$arg' (try --full or --help)" >&2; exit 2 ;;
+    esac
+done
+
+# The wasm build needs the rustup toolchain's std: a Homebrew rustc/cargo first on
+# PATH can't supply wasm `core`, and `rustup run` alone does not fix it. Force the
+# toolchain's bin dir to the front and clear any RUSTC/RUSTFLAGS override (the same
+# approach as build-playground.sh).
+if command -v rustup >/dev/null; then
+    rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
+    tc_bin="$(dirname "$(rustup which --toolchain stable rustc)")"
+    wasm_cargo=(env -u RUSTC -u RUSTFLAGS "PATH=$tc_bin:$PATH" cargo)
+else
+    wasm_cargo=(cargo)
+fi
+
+# Prefer nextest (the project's runner); fall back to plain `cargo test`.
+if cargo nextest --version >/dev/null 2>&1; then
+    test_cmd=(cargo nextest run --workspace)
+else
+    test_cmd=(cargo test --workspace)
+fi
+
+step=0
+run() {
+    step=$((step + 1))
+    printf '\n\033[1;34m==> [%d] %s\033[0m\n' "$step" "$1"
+    shift
+    "$@"
+}
+
+run "build (workspace)"      cargo build --workspace
+run "clippy (deny warnings)" cargo clippy --workspace --all-targets -- -D warnings
+run "tests (workspace)"      "${test_cmd[@]}"
+run "wasm playground build"  "${wasm_cargo[@]}" build --lib --no-default-features --target wasm32-unknown-unknown
+if [ "$full" -eq 1 ]; then
+    run "e2e (from scratch)"  ./scripts/e2e-full.sh
+fi
+
+printf '\n\033[1;32mall green\033[0m'
+[ "$full" -eq 1 ] || printf ' — run with --full for the e2e acceptance test'
+printf '\n'

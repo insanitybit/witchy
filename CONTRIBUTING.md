@@ -2,11 +2,19 @@
 
 ## Build and test
 
+`./scripts/check.sh` is the green gate — **run it before every commit.** It runs
+the whole workspace through build, clippy (deny-warnings), the test suite, and
+the wasm playground build, in that order, and is the single source of truth for
+"the project is healthy". `--full` adds the from-scratch e2e acceptance test.
+
 ```sh
-cargo build                             # debug build of the `witchy` CLI
-cargo nextest run --workspace           # the unit + integration suite (must stay green)
-cargo clippy --workspace -- -D warnings # lint gate (CI enforces)
-./scripts/e2e-full.sh       # the from-scratch acceptance test (see below)
+./scripts/check.sh          # build + clippy + tests + wasm build
+./scripts/check.sh --full   # the above, plus ./scripts/e2e-full.sh
+
+# Or run one piece while iterating on it:
+cargo build --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo nextest run --workspace
 ```
 
 The end-to-end package-manager tests (`tests/e2e.rs`) drive the real binary
@@ -19,7 +27,8 @@ auditing (`caps`/`caps-diff`), sandbox enforcement (confinement + allowlist
 refusals), a complete registry lifecycle (trusted publish → staged → 2FA
 promote → verified add → the capability-widening gate → namespace binding), a
 multi-rune example project, and doc extraction — ~30 asserted checks.
-`--quick` skips the test stage (CI runs it as its own job).
+`--quick` skips its test stage, which is redundant once `check.sh` has run the
+suite.
 
 ## The one rule: parity
 

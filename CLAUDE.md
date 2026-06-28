@@ -40,8 +40,9 @@ paths still resolve from the binary — but new code belongs in the owning crate
 Two backends, **zero silent divergence**. Any observable behavior must work
 (or loudly error) identically on both. Add a differential test in
 `src/example_tests.rs` and, for anything user-visible, a runnable `book/`
-example. `cargo nextest run --workspace` must stay green;
-`cargo clippy --workspace --all-targets -- -D warnings` is the lint gate.
+example. There is no CI: `./scripts/check.sh` is the green gate (build + clippy
+`-D warnings` + `nextest --workspace` + the wasm build) — run it before every
+commit, and `--full` before a push.
 
 ## Trait-method dispatch (recently extended)
 
