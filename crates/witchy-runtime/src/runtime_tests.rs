@@ -122,6 +122,19 @@
             (i32.store (i32.const 32) (i32.const 0))))
     "#;
 
+    // SEC-035: read_line_capped consumes exactly one line per call (leaving the rest for
+    // the next recv — line protocols depend on this) and returns the remainder at EOF.
+    #[test]
+    fn read_line_capped_splits_one_line_per_call() {
+        use std::io::BufReader;
+        let data = b"hello\nworld\ntail-no-newline";
+        let mut r = BufReader::new(&data[..]);
+        assert_eq!(read_line_capped(&mut r).unwrap(), b"hello\n");
+        assert_eq!(read_line_capped(&mut r).unwrap(), b"world\n");
+        assert_eq!(read_line_capped(&mut r).unwrap(), b"tail-no-newline");
+        assert_eq!(read_line_capped(&mut r).unwrap(), b""); // EOF
+    }
+
     #[test]
     fn heap_check_clean_redzone_passes() {
         let mut rt = Runtime::new().unwrap();

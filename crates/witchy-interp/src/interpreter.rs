@@ -1646,9 +1646,11 @@ impl Interpreter {
                         .sockets
                         .get_mut(*id)
                         .ok_or_else(|| RuntimeError { message: "invalid socket".into() })?;
-                    let mut line = String::new();
-                    sock.read_line(&mut line)
-                        .map_err(|e| RuntimeError { message: format!("recv failed: {e}") })?;
+                    // (SEC-035) Shared, bounded read so a peer that never sends a newline
+                    // can't OOM the host — same cap + logic as the compiled backend.
+                    let raw = witchy_runtime::runtime::read_line_capped(sock)
+                        .map_err(|e| RuntimeError { message: e.to_string() })?;
+                    let line = String::from_utf8_lossy(&raw);
                     Ok(Some(Value::Str(line.trim_end_matches('\n').to_string())))
                 }
                 _ => err("recv_line expects a Socket"),
@@ -1677,9 +1679,22 @@ impl Interpreter {
                         .sockets
                         .get_mut(*id)
                         .ok_or_else(|| RuntimeError { message: "invalid socket".into() })?;
+                    // (SEC-035) Cap the read so a peer streaming without EOF can't OOM the
+                    // host — one byte past the cap detects overflow; same as the compiled side.
+                    use std::io::Read;
                     let mut buf = Vec::new();
-                    std::io::Read::read_to_end(sock, &mut buf)
+                    sock.by_ref()
+                        .take(witchy_runtime::runtime::MAX_RECV_BYTES + 1)
+                        .read_to_end(&mut buf)
                         .map_err(|e| RuntimeError { message: format!("recv failed: {e}") })?;
+                    if buf.len() as u64 > witchy_runtime::runtime::MAX_RECV_BYTES {
+                        return Err(RuntimeError {
+                            message: format!(
+                                "recv_all exceeded the {}-byte cap",
+                                witchy_runtime::runtime::MAX_RECV_BYTES
+                            ),
+                        });
+                    }
                     Ok(Some(Value::Str(String::from_utf8_lossy(&buf).into_owned())))
                 }
                 _ => err("recv_all expects a Socket"),

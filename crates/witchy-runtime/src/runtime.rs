@@ -1450,15 +1450,47 @@ fn host_net_send_bytes(mut caller: Caller<'_, VmState>, sid: i32, ptr: i32) -> R
         .map_err(|e| Error::msg(format!("send failed: {e}")))
 }
 
+/// (SEC-035) A capability-secure server must not let a peer OOM the host by streaming
+/// without bound. Every "read to a delimiter / EOF" host op caps its buffer at this many
+/// bytes and fails closed past it (rather than silently truncating). 64 MiB is far above
+/// any legitimate line/message; a hostile peer can't grow host memory beyond it. The
+/// interpreter applies the SAME cap with the SAME loop, so the backends stay in parity.
+pub const MAX_RECV_BYTES: u64 = 64 << 20;
+
+/// Read one line (through `\n`) from a buffered reader, but never buffer more than
+/// [`MAX_RECV_BYTES`] — so a peer that never sends a newline can't grow the buffer
+/// without bound. Returns the bytes read (including any trailing `\n`); errors if the cap
+/// is reached with no newline (a hostile or malformed stream).
+pub fn read_line_capped<R: std::io::BufRead>(r: &mut R) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    loop {
+        let room = MAX_RECV_BYTES as usize - buf.len();
+        let chunk = r.fill_buf().map_err(|e| Error::msg(format!("recv failed: {e}")))?;
+        if chunk.is_empty() {
+            break; // EOF before a newline
+        }
+        if let Some(i) = chunk.iter().take(room).position(|&b| b == b'\n') {
+            buf.extend_from_slice(&chunk[..=i]);
+            r.consume(i + 1);
+            return Ok(buf);
+        }
+        let take = chunk.len().min(room);
+        buf.extend_from_slice(&chunk[..take]);
+        r.consume(take);
+        if buf.len() as u64 >= MAX_RECV_BYTES {
+            bail!("recv_line exceeded the {MAX_RECV_BYTES}-byte cap with no newline");
+        }
+    }
+    Ok(buf)
+}
+
 /// `net_recv_line_len(sock) -> len`: read one line NOW (newline trimmed, like
 /// the interpreter), stage it, and report its length for `fill_pending`.
 fn host_net_recv_line_len(mut caller: Caller<'_, VmState>, sid: i32) -> Result<i32> {
-    use std::io::BufRead;
     let state = caller.data_mut();
     let sock = socket_of(state, sid)?;
-    let mut line = String::new();
-    sock.read_line(&mut line)
-        .map_err(|e| Error::msg(format!("recv failed: {e}")))?;
+    let raw = read_line_capped(sock)?;
+    let line = String::from_utf8_lossy(&raw);
     let trimmed = line.trim_end_matches('\n').to_string();
     let len = trimmed.len() as i32;
     state.pending = Some(trimmed.into_bytes());
@@ -1472,8 +1504,15 @@ fn host_net_recv_all_len(mut caller: Caller<'_, VmState>, sid: i32) -> Result<i3
     let state = caller.data_mut();
     let sock = socket_of(state, sid)?;
     let mut buf = Vec::new();
-    sock.read_to_end(&mut buf)
+    // (SEC-035) Cap the read so a peer streaming without EOF can't OOM the host. Read one
+    // byte past the cap to detect overflow, then fail closed.
+    sock.by_ref()
+        .take(MAX_RECV_BYTES + 1)
+        .read_to_end(&mut buf)
         .map_err(|e| Error::msg(format!("recv failed: {e}")))?;
+    if buf.len() as u64 > MAX_RECV_BYTES {
+        bail!("recv_all exceeded the {MAX_RECV_BYTES}-byte cap");
+    }
     let s = String::from_utf8_lossy(&buf).into_owned();
     let len = s.len() as i32;
     state.pending = Some(s.into_bytes());
