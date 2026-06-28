@@ -165,8 +165,8 @@ fn gen_program(seed: u64, statements: usize) -> String {
     let mut body = String::from("import string\nimport list\nimport math\nimport dict\n\nfn main(console: Console):\n");
     for _ in 0..statements {
         let kind = r.below(16);
-        let depth = 1 + r.below(3) as u32;
-        let dops = 2 + r.below(7) as u32;
+        let depth = 1 + r.below(4) as u32;
+        let dops = 2 + r.below(10) as u32;
         let line = match kind {
             0 => format!("    print(console, __render({}))\n", gen_int(&mut r, depth)),
             1 => format!("    print(console, {})\n", gen_str(&mut r, depth)),
@@ -196,8 +196,8 @@ fn gen_program(seed: u64, statements: usize) -> String {
 
 #[test]
 fn differential_fuzz_interpreter_vs_compiled() {
-    let programs = 40usize;
-    let statements = 120usize;
+    let programs = 80usize;
+    let statements = 160usize;
     let mut agree = 0;
     let mut compile_skipped = 0;
     for seed in 0..programs as u64 {
