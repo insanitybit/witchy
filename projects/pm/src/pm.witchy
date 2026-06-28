@@ -1756,15 +1756,25 @@ fn positionals(args: List(String)) -> List(String):
 // bytes — content addressing + the signature, not the transport, are trusted.
 fn fetch_source(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, version: String, dest: String) -> Int:
     let rootpub = http.body(http.get(net, host, port, "/coven/rootpub"))
-    let record = http.get(net, host, port, "/coven/record?name=" + wire(name) + "&version=" + version)
-    if http.status(record) != 200:
-        print(console, "registry has no record for " + name + "@" + version)
-        1
-    else if !record_signature_valid(rootpub, http.body(record)):
-        print(console, "BLOCK: registry record for " + name + "@" + version + " has an invalid signature — refusing to trust it")
+    // SEC-002: enforce the lock's pinned root key on the fetch/add path too (not only in
+    // `verify`), so a MITM cannot swap the root key and self-sign a record on an upgrade.
+    // Also closes SEC-005's exploit: a record that fooled the unverified widening gate is
+    // rejected HERE — before any source is vendored — because the gate trusts an unverified
+    // footprint field but this verifies the record against the pinned trust anchor.
+    let pinned_pub = if exists(root, "witchy.lock"): pinned_rootpub(read(root, "witchy.lock")) else: ""
+    if pinned_pub != "" && pinned_pub != rootpub:
+        print(console, "BLOCK: registry root key for " + name + "@" + version + " does not match the key pinned in witchy.lock (possible MITM / hostile mirror)")
         1
     else:
-        fetch_verified(console, net, root, host, port, name, version, dest, http.body(record))
+        let record = http.get(net, host, port, "/coven/record?name=" + wire(name) + "&version=" + version)
+        if http.status(record) != 200:
+            print(console, "registry has no record for " + name + "@" + version)
+            1
+        else if !record_signature_valid(rootpub, http.body(record)):
+            print(console, "BLOCK: registry record for " + name + "@" + version + " has an invalid signature — refusing to trust it")
+            1
+        else:
+            fetch_verified(console, net, root, host, port, name, version, dest, http.body(record))
 
 fn fetch_verified(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, version: String, dest: String, record: String) -> Int:
     let resp = http.get(net, host, port, "/coven/source?name=" + wire(name) + "&version=" + version)
