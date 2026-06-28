@@ -22,6 +22,10 @@ pub use witchy_syntax::{
     aliases, ast, async_lower, build_entry, consts, derive, doc, fmt, format, generators,
     lambda_scan, lexer, linker, opt, optimize, parser, records, reflect,
 };
+// RFC-0030: deterministic optimization counters (`witchy stats`) — native-only
+// (needs the wasmtime sandbox to run a program and read its counters).
+#[cfg(feature = "native")]
+pub mod stats;
 // RFC-0018: footprint analysis + grant docs live in the `witchy-caps` crate.
 pub use witchy_caps::capabilities;
 #[cfg(test)]

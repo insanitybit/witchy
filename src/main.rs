@@ -269,6 +269,37 @@ fn main() -> wasmtime::Result<()> {
     // `witchy caps [file]` reports the host-capability footprint. With no
     // file, inside a project, it analyzes the project's entry module (the
     // whole dependency tree's footprint is `witchy audit`).
+    // `witchy stats <file>` (RFC-0030) compiles + runs a Console program and
+    // prints its deterministic optimization counters under the active WITCHY_OPT
+    // setting — exact counts (heap-frontier bytes, in-place re-owns, region
+    // copy-out bytes), not timings, so an optimization's effect is a checkable
+    // fact. Diff two runs (e.g. `WITCHY_OPT=all` vs `WITCHY_OPT=-inplace`) to see
+    // an optimization fire.
+    if std::env::args().nth(1).as_deref() == Some("stats") {
+        let Some(path) = std::env::args().nth(2) else {
+            eprintln!("usage: witchy stats <file>   (counters honor WITCHY_OPT)");
+            std::process::exit(1);
+        };
+        let src = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("witchy stats: {path}: {e}");
+                std::process::exit(1);
+            }
+        };
+        match witchy::stats::compute(&src) {
+            Ok(s) => {
+                println!("heap_bytes {}", s.heap_bytes);
+                println!("reowns {}", s.reowns);
+                println!("region_copy_bytes {}", s.region_copy_bytes);
+            }
+            Err(e) => {
+                eprintln!("witchy stats: {e}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
     if std::env::args().nth(1).as_deref() == Some("caps") {
         let path = match std::env::args().nth(2) {
             Some(p) => p,

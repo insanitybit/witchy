@@ -294,6 +294,19 @@ impl Vm {
             .and_then(|g| g.get(&mut self.store).i64())
     }
 
+    /// (RFC-0030) The final value of the `$heap` bump-pointer (exported as
+    /// `__heap`): the live heap frontier in bytes at program end. With no
+    /// region/watermark reclaim this is the peak. For a fixed program the delta
+    /// across `WITCHY_OPT` settings shows an allocation optimization firing — e.g.
+    /// in-place push keeps an accumulation O(n) where forced-copy is O(n^2). A
+    /// test/diagnostic API consumed by `witchy stats`.
+    pub fn heap_bytes(&mut self) -> Option<i64> {
+        self.instance
+            .get_global(&mut self.store, "__heap")
+            .and_then(|g| g.get(&mut self.store).i32())
+            .map(i64::from)
+    }
+
     /// Everything this VM has printed so far, in order. (Used by tests to
     /// assert a compiled program's behavior end to end.)
     #[allow(dead_code)]
