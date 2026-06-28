@@ -1435,16 +1435,20 @@ fn host_net_recv_bytes_len(mut caller: Caller<'_, VmState>, sid: i32, n: i64) ->
     let state = caller.data_mut();
     let sock = socket_of(state, sid)?;
     let want = n.max(0) as usize;
-    let mut buf = vec![0u8; want];
-    let mut read = 0;
-    while read < want {
-        match sock.read(&mut buf[read..]) {
+    // `want` is guest-supplied (up to i64::MAX); do NOT pre-allocate it — that would let a
+    // module request `recv_bytes(sock, huge)` and ABORT the host with a multi-GB/EB Vec even
+    // when the socket holds almost nothing. Read in bounded chunks so memory tracks the bytes
+    // actually received, not the claimed count.
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    while buf.len() < want {
+        let to_read = (want - buf.len()).min(chunk.len());
+        match sock.read(&mut chunk[..to_read]) {
             Ok(0) => break,
-            Ok(k) => read += k,
+            Ok(k) => buf.extend_from_slice(&chunk[..k]),
             Err(e) => bail!("recv failed: {e}"),
         }
     }
-    buf.truncate(read);
     let s = String::from_utf8_lossy(&buf).into_owned();
     let len = s.len() as i32;
     state.pending = Some(s.into_bytes());
