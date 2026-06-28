@@ -1753,7 +1753,7 @@ Intentionally minimal (matching the package manager's needs): `major.minor.patch
 
 #### `type Version`
 
-- `Version(Int, Int, Int)`
+- `Version { major: Int, minor: Int, patch: Int }`
 
 #### `type Req`
 
@@ -1767,13 +1767,7 @@ A version constraint (requirement).
 
 #### `fn version(major: Int, minor: Int, patch: Int) -> Version`
 
---- constructors + accessors ------------------------------------------------
-
-#### `fn major(v: Version) -> Int`
-
-#### `fn minor(v: Version) -> Int`
-
-#### `fn patch(v: Version) -> Int`
+--- constructors ------------------------------------------------------------
 
 #### `fn parse(s: String) -> Result(Version, String)`
 
@@ -1783,17 +1777,9 @@ Parse `major.minor.patch` (missing trailing components default to 0). Errors on 
 
 #### `fn compare(a: Version, b: Version) -> Int`
 
--1 if a < b, 0 if equal, 1 if a > b — comparing major, then minor, then patch.
-
-#### `fn equals(a: Version, b: Version) -> Bool`
+-1 if a < b, 0 if equal, 1 if a > b. `Version` derives `Ord`, so callers that only need a Bool can compare with `<` / `>` / `==` directly.
 
 #### `fn lt(a: Version, b: Version) -> Bool`
-
-#### `fn lte(a: Version, b: Version) -> Bool`
-
-#### `fn gt(a: Version, b: Version) -> Bool`
-
-#### `fn gte(a: Version, b: Version) -> Bool`
 
 #### `fn parse_req(s: String) -> Result(Req, String)`
 

@@ -381,6 +381,11 @@ pub fn link(
         }
     }
 
+    // Modules pulled in by the prelude/import passes below post-date the
+    // records-lowering + compile-time expansion above; index from here so we can
+    // run those same passes on just the new ones (see after the pull-in loop).
+    let pulled_std_start = modules.len();
+
     // THE PRELUDE: the core data modules are always in the link set, so the
     // module-qualified spellings (`list.push`, `string.split`, `dict.insert`,
     // `math.sqrt`) resolve without an import line. Locally provided modules
@@ -414,6 +419,30 @@ pub fn link(
             }
         }
         i += 1;
+    }
+
+    // The std modules pulled in just above were appended AFTER the
+    // records-lowering + compile-time expansion passes ran, so run those same
+    // passes on them now — otherwise a std type's `derive(...)` (e.g. `semver`'s
+    // `Version`) would never desugar to its `meta.derive_*` comptime call, nor
+    // run it to generate the impl. `records::lower` (which runs `derive::expand`)
+    // is idempotent — it consumes the annotation — and comptime auto-imports
+    // `meta`, so this is a no-op for the derive-free modules and needs nothing
+    // extra in the link set. The entry modules already ran both passes above, so
+    // restrict to `pulled_std_start..` to avoid re-running comptime expansion
+    // (which, unlike derive desugaring, is not idempotent).
+    for (_, m) in modules[pulled_std_start..].iter_mut() {
+        *m = crate::records::lower(m.clone()).map_err(|message| LinkError { message })?;
+    }
+    for k in pulled_std_start..modules.len() {
+        let name = modules[k].0.clone();
+        let siblings: Vec<(String, Module)> = modules
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != k)
+            .map(|(_, m)| m.clone())
+            .collect();
+        expand(&name, &mut modules[k].1, &siblings).map_err(|message| LinkError { message })?;
     }
 
     // MethodCall nodes survive linking: `x.f(a)` resolves to a REAL method

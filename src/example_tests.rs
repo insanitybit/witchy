@@ -705,7 +705,7 @@
                 prop_assert_eq!(link_run(&src), vec!["y".to_string()]);
             }
 
-            /// `semver.to_string` after `parse` reproduces the canonical version.
+            /// `semver.format` after `parse` reproduces the canonical version.
             #[test]
             fn semver_roundtrips(a in 0i64..2000, b in 0i64..2000, c in 0i64..2000) {
                 let v = format!("{a}.{b}.{c}");
