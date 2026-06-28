@@ -104,8 +104,30 @@ fn gen_str(r: &mut Rng, depth: u32) -> String {
             _ => "\"\"".to_string(),
         }
     } else {
-        format!("({} + {})", gen_str(r, depth - 1), gen_str(r, depth - 1))
+        match r.below(4) {
+            0 | 1 => format!("({} + {})", gen_str(r, depth - 1), gen_str(r, depth - 1)),
+            2 => format!("string.to_upper({})", gen_str(r, depth - 1)),
+            // arbitrary indices: an out-of-range substring traps identically on both backends.
+            _ => format!("string.substring({}, {}, {})", gen_str(r, depth - 1), gen_int(r, 0), gen_int(r, 0)),
+        }
     }
+}
+
+/// List(String), nested List(List(Int)), and a tuple — the heaviest heap-layout coverage.
+fn gen_strlist(r: &mut Rng, depth: u32) -> String {
+    let n = 1 + r.below(4);
+    let elems: Vec<String> = (0..n).map(|_| gen_str(r, depth.min(2))).collect();
+    format!("[{}]", elems.join(", "))
+}
+
+fn gen_nested_intlist(r: &mut Rng) -> String {
+    let n = 1 + r.below(3);
+    let elems: Vec<String> = (0..n).map(|_| gen_intlist(r, 1)).collect();
+    format!("[{}]", elems.join(", "))
+}
+
+fn gen_tuple(r: &mut Rng) -> String {
+    format!("({}, {})", gen_int(r, 1), gen_str(r, 1))
 }
 
 fn gen_intlist(r: &mut Rng, depth: u32) -> String {
@@ -122,7 +144,7 @@ fn gen_program(seed: u64, statements: usize) -> String {
     let mut r = Rng(seed);
     let mut body = String::from("import string\nimport list\nimport math\n\nfn main(console: Console):\n");
     for _ in 0..statements {
-        let kind = r.below(9);
+        let kind = r.below(12);
         let depth = 1 + r.below(3) as u32;
         let line = match kind {
             0 => format!("    print(console, __render({}))\n", gen_int(&mut r, depth)),
@@ -133,7 +155,10 @@ fn gen_program(seed: u64, statements: usize) -> String {
             5 => format!("    print(console, __render({}))\n", gen_float(&mut r, depth)),
             6 => format!("    print(console, __render({}))\n", gen_bool(&mut r, depth)),
             7 => format!("    print(console, __render({}))\n", gen_option(&mut r)),
-            _ => format!("    print(console, __render({}))\n", gen_cond_int(&mut r, depth)),
+            8 => format!("    print(console, __render({}))\n", gen_cond_int(&mut r, depth)),
+            9 => format!("    print(console, __render({}))\n", gen_strlist(&mut r, depth)),
+            10 => format!("    print(console, __render({}))\n", gen_nested_intlist(&mut r)),
+            _ => format!("    print(console, __render({}))\n", gen_tuple(&mut r)),
         };
         body.push_str(&line);
     }
