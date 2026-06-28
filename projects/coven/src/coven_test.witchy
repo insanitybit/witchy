@@ -30,6 +30,12 @@ fn test_valid_version():
 fn test_unwire():
     testing.assert_eq(coven_validate.unwire("acme~json"), "acme/json")
 
+// SEC-013: a record field must not embed the signing-payload line separator.
+fn test_single_line():
+    testing.assert(coven_validate.single_line("ci@github/acme/foo"), "a normal identity is single-line")
+    testing.assert(coven_validate.single_line(""), "empty is single-line")
+    testing.assert(!coven_validate.single_line("x\npromoted_by=admin"), "an embedded newline is rejected")
+
 // --- State <-> wire round-trip (the publish lifecycle as a sum type) ----------
 fn test_state_round_trips():
     testing.assert_eq(coven_record.state_wire(Staged), "staged")

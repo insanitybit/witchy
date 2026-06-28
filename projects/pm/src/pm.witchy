@@ -119,8 +119,8 @@ fn cmd_info(console: Console, root: Dir, dir: String):
         let manifest = read(root, join_path(dir, "witchy.toml"))
         print(console, "name:     " + field(manifest, "rune.name"))
         print(console, "version:  " + field(manifest, "rune.version"))
-        print(console, "declared: " + string.join(declared_caps(manifest), ", "))
-        print(console, "actual:   " + string.join(rune_footprint(root, dir), ", "))
+        print(console, "declared: " + list.join(declared_caps(manifest), ", "))
+        print(console, "actual:   " + list.join(rune_footprint(root, dir), ", "))
 
 // run <file|dir> — compile and run a program by driving the compiler. Given a
 // project directory (or, with no argument, the current directory) that carries a
@@ -384,7 +384,7 @@ fn run_one_build_step(console: Console, runner: Exec, root: Dir, bin: Dir, dir: 
         let granted = granted_build_kinds(manifest, name)
         let missing = rights.uncovered(granted, demanded)
         if list.length(missing) > 0:
-            print(console, "`" + name + "` build step demands build capabilities you have not granted: " + string.join(missing, ", "))
+            print(console, "`" + name + "` build step demands build capabilities you have not granted: " + list.join(missing, ", "))
             print(console, "  add them to [build.grants.\"" + name + "\"] (read/exec/env/net).")
             (1, [])
         else:
@@ -420,7 +420,7 @@ fn audit_then_flags(console: Console, root: Dir, dir: String, name: String, depd
             flags = dep_flag(flags, module_stem(f), path)
     let widened = rights.uncovered(shipped, generated)
     if list.length(widened) > 0:
-        print(console, "`" + name + "`'s build step generated source that WIDENS its footprint (+ " + string.join(widened, ", ") + ") beyond the locked baseline — refusing. Generated code is still code; it cannot smuggle in authority the version was not accepted with.")
+        print(console, "`" + name + "`'s build step generated source that WIDENS its footprint (+ " + list.join(widened, ", ") + ") beyond the locked baseline — refusing. Generated code is still code; it cannot smuggle in authority the version was not accepted with.")
         (1, [])
     else:
         (0, flags)
@@ -491,7 +491,7 @@ fn cmd_audit(console: Console, root: Dir, file: String):
         print(console, "usage: pm audit <file>")
     else:
         let report = compiler.footprint(read(root, file))
-        print(console, file + " demands: " + string.join(footprint_total(report), ", "))
+        print(console, file + " demands: " + list.join(footprint_total(report), ", "))
 
 // --- check: declared footprint must admit the actual footprint ---------------
 // The manifest's declared caps are *not trusted*: pm recomputes the footprint
@@ -511,12 +511,12 @@ fn cmd_check(console: Console, root: Dir, dir: String) -> Int:
         report_check(console, undeclared, unused)
 
 fn report_check(console: Console, undeclared: List(String), unused: List(String)) -> Int:
-    if !string.is_empty(string.join(undeclared, ", ")):
-        print(console, "BLOCK: code demands authority not admitted by [capabilities]: " + string.join(undeclared, ", "))
+    if !string.is_empty(list.join(undeclared, ", ")):
+        print(console, "BLOCK: code demands authority not admitted by [capabilities]: " + list.join(undeclared, ", "))
         2
     else:
-        if !string.is_empty(string.join(unused, ", ")):
-            print(console, "OK (lint): declared but unused: " + string.join(unused, ", "))
+        if !string.is_empty(list.join(unused, ", ")):
+            print(console, "OK (lint): declared but unused: " + list.join(unused, ", "))
         else:
             print(console, "OK: declared footprint admits the code, nothing unused")
         0
@@ -630,7 +630,7 @@ fn cmd_publish(console: Console, net: Net, root: Dir, env: Env, args: List(Strin
         let (host, port) = hostport(addr)
         let manifest = read(root, join_path(dir, "witchy.toml"))
         if has_path_dependency(manifest):
-            print(console, "BLOCK: a published rune must be self-contained — it cannot have a path dependency (a published rune resolves only registry deps): " + string.join(path_deps(manifest), ", "))
+            print(console, "BLOCK: a published rune must be self-contained — it cannot have a path dependency (a published rune resolves only registry deps): " + list.join(path_deps(manifest), ", "))
             1
         else:
             publish_checked(console, net, root, dir, manifest, host, port, identity, env)
@@ -932,7 +932,7 @@ fn report_verify(console: Console, bad: List(String)) -> Int:
         print(console, "OK: every locked hash matches the dependency sources")
         0
     else:
-        print(console, "BLOCK: lock no longer matches source for: " + string.join(bad, ", "))
+        print(console, "BLOCK: lock no longer matches source for: " + list.join(bad, ", "))
         2
 
 // --- TUF chain verification (client side) ------------------------------------
@@ -1008,7 +1008,7 @@ fn check_targets(console: Console, root: Dir, dir: String, snap_env: String) -> 
         print(console, "OK: TUF chain verified (snapshot + timestamp signatures, content binding, no rollback)")
         0
     else:
-        print(console, "FAIL: TUF chain — vendored record digest does not match the snapshot target for: " + string.join(bad, ", "))
+        print(console, "FAIL: TUF chain — vendored record digest does not match the snapshot target for: " + list.join(bad, ", "))
         2
 
 // The vendored rune directories (those carrying a coven.json) under <dir>/vendor.
@@ -1135,9 +1135,9 @@ fn report_gate(console: Console, root: Dir, dir: String, manifest: String, widen
         print(console, "OK: dependencies demand no authority beyond witchy.lock")
         0
     else:
-        print(console, "BLOCK: dependencies demand new authority: " + string.join(widened, ", "))
+        print(console, "BLOCK: dependencies demand new authority: " + list.join(widened, ", "))
         for cap in widened:
-            print(console, "  " + cap + " <- " + string.join(gate_contributors(root, dir, manifest, cap), ", "))
+            print(console, "  " + cap + " <- " + list.join(gate_contributors(root, dir, manifest, cap), ", "))
         2
 
 // The capabilities the lockfile already records (union of every [[rune]] entry's
@@ -1226,7 +1226,7 @@ fn footprint_toml(caps: List(String)) -> String:
     var parts = []
     for c in caps:
         parts = list.push(parts, "\"" + c + "\"")
-    string.join(parts, ", ")
+    list.join(parts, ", ")
 
 // Collapse `a/b/../c` to `a/c`, dropping `.` and empty segments — the confined
 // Dir capability rejects `..`, so a relative dep path must be resolved first.
@@ -1246,7 +1246,7 @@ fn normalize_path(let p: String) -> String:
                 stack = list.push(stack, "..")
         else if seg != "" && seg != ".":
             stack = list.push(stack, seg)
-    string.join(stack, "/")
+    list.join(stack, "/")
 
 // Whether the last segment of `stack` is a real directory `..` can cancel (i.e.
 // not itself a leading `..`).
@@ -1372,8 +1372,8 @@ fn gated_refetch(console: Console, net: Net, root: Dir, host: String, port: Int,
     let incoming = incoming_footprint(net, host, port, fullname, latest)
     let widened = rights.uncovered(baseline, incoming)
     if list.length(widened) > 0:
-        print(console, "BLOCK: upgrading " + fullname + " " + current + " -> " + latest + " widens authority: " + string.join(widened, ", "))
-        print(console, "  re-run with --allow-cap " + string.join(widened, " --allow-cap ") + " to consent")
+        print(console, "BLOCK: upgrading " + fullname + " " + current + " -> " + latest + " widens authority: " + list.join(widened, ", "))
+        print(console, "  re-run with --allow-cap " + list.join(widened, " --allow-cap ") + " to consent")
         (0, true)
     else:
         (refetch(console, net, root, host, port, fullname, latest, current), false)
@@ -1486,8 +1486,8 @@ fn add_pkg_gated(console: Console, net: Net, root: Dir, host: String, port: Int,
             let incoming = incoming_footprint(net, host, port, name, chosen)
             let widened = rights.uncovered(baseline, incoming)
             if list.length(widened) > 0:
-                print(console, "BLOCKED: adding `" + name + "` would widen your project's capability footprint: " + string.join(widened, ", "))
-                print(console, "  re-run with --allow-cap " + string.join(widened, " --allow-cap ") + " to consent")
+                print(console, "BLOCKED: adding `" + name + "` would widen your project's capability footprint: " + list.join(widened, ", "))
+                print(console, "  re-run with --allow-cap " + list.join(widened, " --allow-cap ") + " to consent")
                 2
             else:
                 let code = add_rune(console, net, root, host, port, name, req, "vendor", cooldown, [])
@@ -1852,11 +1852,22 @@ fn report_rune_verify(console: Console, root: Dir, dir: String, rootpub: String,
 // (byte-identical to coven's Record signing payload).
 fn record_signature_valid(rootpub: String, text: String) -> Bool:
     match json.decode(text):
-        Ok(doc) -> crypto.ed25519_verify(rootpub, record_payload(doc), jget(doc, "sig"))
+        Ok(doc) ->
+            if record_field_has_newline(doc):
+                false
+            else:
+                crypto.ed25519_verify(rootpub, record_payload(doc), jget(doc, "sig"))
         Err(e) -> false
 
+// SEC-013: refuse a record whose free-form fields embed the payload line separator
+// (`\n`) — a crafted value could inject a sibling `key=` line, making the canonical
+// signing payload ambiguous. coven refuses to sign such a record; reject it on the
+// consumer side too (defense in depth against a hostile/buggy registry).
+fn record_field_has_newline(doc: Json) -> Bool:
+    string.contains(jget(doc, "uploaded_by"), "\n") || string.contains(jget(doc, "promoted_by"), "\n") || string.contains(jget(doc, "second_factor"), "\n") || string.contains(jget(doc, "provenance"), "\n")
+
 fn record_payload(doc: Json) -> String:
-    "coven-v1\nname=" + jget(doc, "name") + "\nversion=" + jget(doc, "version") + "\nstate=" + jget(doc, "state") + "\nhash=" + jget(doc, "hash") + "\nrt=" + string.join(json.get_strings(doc, "runtime_footprint"), ",") + "\nbuild=\nuploaded_by=" + jget(doc, "uploaded_by") + "\npromoted_by=" + jget(doc, "promoted_by") + "\nfactor=" + jget(doc, "second_factor") + "\nprovenance=" + jget(doc, "provenance") + "\nreleased_at=" + "${jget_int(doc, "released_at")}"
+    "coven-v1\nname=" + jget(doc, "name") + "\nversion=" + jget(doc, "version") + "\nstate=" + jget(doc, "state") + "\nhash=" + jget(doc, "hash") + "\nrt=" + list.join(json.get_strings(doc, "runtime_footprint"), ",") + "\nbuild=\nuploaded_by=" + jget(doc, "uploaded_by") + "\npromoted_by=" + jget(doc, "promoted_by") + "\nfactor=" + jget(doc, "second_factor") + "\nprovenance=" + jget(doc, "provenance") + "\nreleased_at=" + "${jget_int(doc, "released_at")}"
 
 fn jget_int(doc: Json, key: String) -> Int:
     match json.get(doc, key):
@@ -1872,7 +1883,7 @@ fn hostport(addr: String) -> (String, Int):
 
 // Rune names contain `/`; the wire encodes it as `~` for a query value.
 fn wire(name: String) -> String:
-    string.join(string.split(name, "/"), "~")
+    list.join(string.split(name, "/"), "~")
 
 fn basename(name: String) -> String:
     if string.contains(name, "/"):
@@ -1958,7 +1969,7 @@ fn bool_or(j: Json, default: Bool) -> Bool:
         None -> default
 
 fn added(doc: Json) -> String:
-    string.join(json.get_strings(doc, "added"), ", ")
+    list.join(json.get_strings(doc, "added"), ", ")
 
 // --- small generic helpers ---------------------------------------------------
 fn arg(let args: List(String), i: Int) -> String:

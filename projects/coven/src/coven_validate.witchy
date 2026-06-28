@@ -7,7 +7,7 @@ import string
 
 // Rune names contain `/`; the wire encodes it as `~` for use in a query value.
 pub fn unwire(n: String) -> String:
-    string.join(string.split(n, "~"), "/")
+    list.join(string.split(n, "~"), "/")
 
 // `namespace/name`, lowercase, exactly one `/`, no `..` traversal.
 pub fn valid_name(name: String) -> Bool:
@@ -25,6 +25,14 @@ fn split_once_opt(s: String, sep: String) -> Option((String, String)):
         Some(string.split_once(s, sep))
     else:
         None
+
+// A signed-record field must not contain the canonical payload's line separator
+// (`\n`): a value like `x\npromoted_by=admin` would inject a sibling `key=` line into
+// `coven_record.signing_payload`, making the field→payload encoding ambiguous. Names
+// and versions are already constrained; this guards the free-form identity/provenance
+// fields (`uploaded_by`, `promoted_by`, `factor`, `provenance`). (SEC-013.)
+pub fn single_line(s: String) -> Bool:
+    !string.contains(s, "\n")
 
 // A version is strict `major.minor.patch` — digits and dots only (no traversal).
 pub fn valid_version(version: String) -> Bool:

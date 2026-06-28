@@ -227,7 +227,7 @@ impl Coven:
     fn publish_checked(self, manifest: String, name: String, version: String, uploaded_by: String, claims: Option(Json), files: List((String, String))) -> Result(Response, CovenError):
         let computed = coven_footprint.computed_footprint(files)
         let gap = rights.uncovered(toml.get_array(manifest, "capabilities.runtime"), computed)
-        require(string.is_empty(string.join(gap, ", ")), 400, "declared [capabilities] does not cover what the source demands (" + string.join(gap, ", ") + ") — coven recomputes and will not publish an under-declared rune")?
+        require(string.is_empty(list.join(gap, ", ")), 400, "declared [capabilities] does not cover what the source demands (" + list.join(gap, ", ") + ") — coven recomputes and will not publish an under-declared rune")?
         let hash = coven_store.content_hash(files)
         coven_store.store_source(self.store, name, version, files)
         // Trusted (claims present): a SLSA provenance attestation bound to the verified
@@ -235,6 +235,9 @@ impl Coven:
         let provenance = match claims:
             Some(c) -> coven_trust.attestation(c, hash, now(self.clock) / 1000)
             None -> "uploader=" + uploaded_by + "|hash=" + hash
+        // SEC-013: a free-form field with an embedded newline could inject a sibling
+        // `key=` line into the canonical signing payload — refuse rather than sign it.
+        require(coven_validate.single_line(uploaded_by) && coven_validate.single_line(provenance), 400, "record fields must not contain newlines")?
         let rec = coven_record.sign_record(self.key, name, version, Staged, hash, computed, uploaded_by, "", "", provenance, 0)
         coven_store.write_record(self.store, name, version, rec)
         self.rebuild_metadata()
@@ -256,6 +259,8 @@ impl Coven:
         let rec = self.load_record(name, version)?
         require(coven_record.state_of(rec.state) == Staged, 400, name + "@" + version + " is " + rec.state + "; only a staged version can be promoted")?
         require(promoter != rec.uploaded_by, 403, "separation of duties: the identity that published a version may not promote it")?
+        // SEC-013: keep the canonical signing payload unambiguous (see publish_checked).
+        require(coven_validate.single_line(promoter) && coven_validate.single_line(factor), 400, "record fields must not contain newlines")?
         let signed = coven_record.sign_record(self.key, name, version, Released, rec.hash, rec.runtime_footprint, rec.uploaded_by, promoter, factor, coven_record.str_or_empty(rec.provenance), now(self.clock) / 1000)
         coven_store.write_record(self.store, name, version, signed)
         self.rebuild_metadata()
