@@ -48,48 +48,8 @@ pub use witchy::wir_opt;
 #[cfg(feature = "native")]
 pub use witchy::wir_prelude;
 
-use std::time::Duration;
 
-use runtime::{Capabilities, Runtime};
-
-/// A well-behaved VM that was granted `print`.
-const GREETER: &str = r#"
-(module
-  (import "witchy" "print" (func $print (param i32 i32)))
-  (memory (export "memory") 1)
-  (data (i32.const 0) "hello from inside the sandbox\n")
-  (func (export "run")
-    (call $print (i32.const 0) (i32.const 30))))
-"#;
-
-/// A "malicious library": it *tries* to import `print`, but we will grant it
-/// nothing. It must fail to even come up.
-const MALICIOUS: &str = r#"
-(module
-  (import "witchy" "print" (func $print (param i32 i32)))
-  (memory (export "memory") 1)
-  (data (i32.const 0) "I am exfiltrating your secrets\n")
-  (func (export "run")
-    (call $print (i32.const 0) (i32.const 31))))
-"#;
-
-/// A greedy VM: it declares 4 pages of initial memory. We will cap it at 1,
-/// so it must be denied at instantiation.
-const GREEDY: &str = r#"
-(module
-  (memory (export "memory") 4)
-  (func (export "run")))
-"#;
-
-/// A runaway VM: an infinite loop that never yields. The scheduler must be
-/// able to preempt it.
-const RUNAWAY: &str = r#"
-(module
-  (memory (export "memory") 1)
-  (func (export "run")
-    (loop $forever (br $forever))))
-"#;
-
+use runtime::Runtime;
 /// One-screen overview of the command-line interface, shown for bare `witchy`.
 fn print_usage() {
     println!(
@@ -110,7 +70,6 @@ USAGE:
     witchy which    <name>                        find a function in the standard library by (partial) name
     witchy fmt [--check] <file.witchy>            reformat in place (--check: verify only, exit 1 if not)
     witchy lsp                                    run the language server
-    witchy demo                                   built-in capability/runtime demonstration
 
 Package commands: new, init, add, build, run [args...], update, audit, tree,
 outdated, why, why-cap, verify, vendor, publish, promote, yank, list — run
@@ -922,7 +881,7 @@ fn main() -> wasmtime::Result<()> {
     }
     // `witchy [--net <host:port>]... <file.witchy>` runs a program, granting the
     // listed hosts to its `Net` capability (the host decides what authority to
-    // hand over). With no file argument, run the demos.
+    // hand over). With no file argument, show usage.
     {
         let mut net_allow: Vec<String> = Vec::new();
         let mut file: Option<String> = None;
@@ -985,11 +944,8 @@ fn main() -> wasmtime::Result<()> {
             // Standard help flags show the usage overview.
             Some("--help" | "-h" | "help") => {
                 print_usage();
-                return Ok(());
+                Ok(())
             }
-            // `witchy demo` runs the built-in capability/runtime demonstration
-            // below; fall through to it.
-            Some("demo") => {}
             Some(path) if !std::path::Path::new(path).is_file() => {
                 // A first argument that is neither a known subcommand nor a real
                 // file is almost always a mistyped command — point at usage.
@@ -1016,7 +972,7 @@ fn main() -> wasmtime::Result<()> {
                         std::process::exit(1);
                     }
                 }
-                return Ok(());
+                Ok(())
             }
             Some(path) => {
                 match execute_file_exit(path, net_allow, prog_args, signing_key, named_secrets) {
@@ -1034,201 +990,15 @@ fn main() -> wasmtime::Result<()> {
                         std::process::exit(1);
                     }
                 }
-                return Ok(());
+                Ok(())
             }
-            // Bare `witchy` (or only flags): show usage rather than the demo.
+            // Bare `witchy` (or only flags): show usage.
             None => {
                 print_usage();
-                return Ok(());
+                Ok(())
             }
         }
     }
-
-    let mut rt = Runtime::new()?;
-
-    println!("== capability gating ==");
-
-    // Granted the `print` capability — works.
-    let mut greeter = rt.spawn(GREETER, Capabilities { print: true, ..Default::default() }, 4)?;
-    greeter.run()?;
-
-    // Granted nothing — must fail to instantiate because `witchy.print` is not
-    // linked into its VM.
-    match rt.spawn(MALICIOUS, Capabilities::none(), 4) {
-        Ok(_) => println!("!! SECURITY FAILURE: ungranted VM was allowed to instantiate"),
-        Err(e) => println!("DENIED (as designed): {e}"),
-    }
-
-    println!("\n== containment ==");
-
-    // Memory budget: the greedy VM wants 4 pages but is capped at 1.
-    match rt.spawn(GREEDY, Capabilities::none(), 1) {
-        Ok(_) => println!("!! BUDGET FAILURE: over-budget VM was allowed to start"),
-        Err(e) => println!("memory budget enforced: {e}"),
-    }
-
-    // Preemption: the runaway VM loops forever; the scheduler interrupts it.
-    let mut runaway = rt.spawn(RUNAWAY, Capabilities::none(), 4)?;
-    match rt.run_with_budget(&mut runaway, Duration::from_millis(50)) {
-        Ok(_) => println!("!! PREEMPTION FAILURE: runaway VM finished on its own"),
-        Err(e) => {
-            let reason = e
-                .downcast_ref::<wasmtime::Trap>()
-                .map(|t| t.to_string())
-                .unwrap_or_else(|| e.to_string());
-            println!("PREEMPTED (as designed): {reason}");
-        }
-    }
-
-    run_witchy("witchy language (interpreter)", include_str!("../examples/hello/src/hello.witchy"));
-    run_witchy("witchy mutable value semantics", include_str!("../examples/mutate/src/mutate.witchy"));
-    run_witchy("witchy ownership", include_str!("../examples/ownership/src/ownership.witchy"));
-    run_witchy("witchy features combined", include_str!("../examples/commands/src/commands.witchy"));
-    run_witchy("witchy fizzbuzz (while, %, if/else)", include_str!("../examples/fizzbuzz/src/fizzbuzz.witchy"));
-    run_witchy("witchy tuples (multiple return values)", include_str!("../examples/tuples/src/tuples.witchy"));
-    run_witchy("witchy generics (swap any pair)", include_str!("../examples/generics/src/generics.witchy"));
-    run_witchy("witchy generic ADTs (Result)", include_str!("../examples/result/src/result.witchy"));
-    run_witchy("witchy ? error propagation", include_str!("../examples/try/src/try.witchy"));
-    run_witchy("witchy for-in loops over lists", include_str!("../examples/loops/src/loops.witchy"));
-    run_witchy("witchy list patterns (head/tail)", include_str!("../examples/listmatch/src/listmatch.witchy"));
-    run_witchy("witchy records (named fields)", include_str!("../examples/records/src/records.witchy"));
-    run_witchy("witchy record update", include_str!("../examples/record_update/src/record_update.witchy"));
-    run_witchy("witchy expression evaluator (recursive ADT)", include_str!("../examples/eval/src/eval.witchy"));
-    run_witchy("witchy bank (records + lists + Result)", include_str!("../examples/bank/src/bank.witchy"));
-    run_witchy("witchy higher-order functions (closures)", include_str!("../examples/higher_order/src/higher_order.witchy"));
-    run_witchy("witchy list combinators (map/filter via push)", include_str!("../examples/list_ops/src/list_ops.witchy"));
-    run_witchy("witchy dictionaries (word count)", include_str!("../examples/wordcount/src/wordcount.witchy"));
-    run_witchy("witchy dict iteration (values/pairs)", include_str!("../examples/inventory/src/inventory.witchy"));
-    run_witchy("witchy early return (guard clauses)", include_str!("../examples/guard/src/guard.witchy"));
-    run_witchy("witchy negative-literal patterns", include_str!("../examples/signs/src/signs.witchy"));
-    run_witchy("witchy string slicing (substring/index_of)", include_str!("../examples/parse_kv/src/parse_kv.witchy"));
-    run_witchy("witchy filesystem capability", include_str!("../examples/files/src/files.witchy"));
-    run_compiled(&mut rt, "witchy compiled to WASM (ints)", include_str!("../examples/compute/src/compute.witchy"));
-    run_compiled(&mut rt, "witchy compiled to WASM (ADTs)", include_str!("../examples/shapes/src/shapes.witchy"));
-    run_compiled(&mut rt, "witchy compiled to WASM (record field access)", include_str!("../examples/record_compiled/src/record_compiled.witchy"));
-    run_compiled(&mut rt, "witchy compiled to WASM (strings)", include_str!("../examples/strings/src/strings.witchy"));
-    run_net_demo("witchy network capability");
-    run_program_demo(
-        "witchy modules (import)",
-        &[
-            ("strutil", include_str!("../examples/app/src/strutil.witchy")),
-            ("app", include_str!("../examples/app/src/app.witchy")),
-        ],
-        "app",
-    );
-    run_program_demo(
-        "witchy standard library (import list)",
-        &[
-            ("list", include_str!("../std/list.witchy")),
-            ("std_demo", include_str!("../examples/std_demo/src/std_demo.witchy")),
-        ],
-        "std_demo",
-    );
-    run_compiled_program(
-        &mut rt,
-        "witchy list combinators compiled to WASM (map/filter/fold/sort_by)",
-        &[
-            ("list", include_str!("../std/list.witchy")),
-            ("list_pipeline", include_str!("../examples/list_pipeline/src/list_pipeline.witchy")),
-        ],
-        "list_pipeline",
-    );
-    run_program_demo(
-        "witchy list search/slice (contains/index_of/take/drop)",
-        &[
-            ("list", include_str!("../std/list.witchy")),
-            ("list_more", include_str!("../examples/list_more/src/list_more.witchy")),
-        ],
-        "list_more",
-    );
-    run_program_demo(
-        "witchy list zip/enumerate",
-        &[
-            ("list", include_str!("../std/list.witchy")),
-            ("string", include_str!("../std/string.witchy")),
-            ("zip", include_str!("../examples/zip/src/zip.witchy")),
-        ],
-        "zip",
-    );
-    run_program_demo(
-        "witchy list any/all (predicates)",
-        &[
-            ("list", include_str!("../std/list.witchy")),
-            ("predicates", include_str!("../examples/predicates/src/predicates.witchy")),
-        ],
-        "predicates",
-    );
-    run_program_demo(
-        "witchy text processing (split/map/join)",
-        &[
-            ("list", include_str!("../std/list.witchy")),
-            ("string", include_str!("../std/string.witchy")),
-            ("text", include_str!("../examples/text/src/text.witchy")),
-        ],
-        "text",
-    );
-    run_program_demo(
-        "witchy sorting (sort_by with a comparator)",
-        &[
-            ("list", include_str!("../std/list.witchy")),
-            ("string", include_str!("../std/string.witchy")),
-            ("sort", include_str!("../examples/sort/src/sort.witchy")),
-        ],
-        "sort",
-    );
-    run_program_demo(
-        "witchy standard library (import math)",
-        &[
-            ("math", include_str!("../std/math.witchy")),
-            ("math_demo", include_str!("../examples/math_demo/src/math_demo.witchy")),
-        ],
-        "math_demo",
-    );
-    run_program_demo(
-        "witchy float math (sqrt + float_abs/float_min/float_max)",
-        &[
-            ("math", include_str!("../std/math.witchy")),
-            ("floats", include_str!("../examples/floats/src/floats.witchy")),
-        ],
-        "floats",
-    );
-    run_program_demo(
-        "witchy standard Result (import result + ?)",
-        &[
-            ("result", include_str!("../std/result.witchy")),
-            (
-                "rclient",
-                r#"
-import result
-
-fn checked_div(a: Int, b: Int) -> Result(Int, String):
-    match b:
-        0 -> Err("divide by zero")
-        _ -> Ok((a / b))
-
-fn compute(x: Int, y: Int) -> Result(Int, String):
-    let q = (checked_div(x, y))?
-    Ok((q + 1))
-
-fn main(console: Console):
-    print(console, __render(result.unwrap_or(compute(10, 2), (0 - 1))))
-    print(console, __render(result.unwrap_or(compute(10, 0), (0 - 1))))
-"#,
-            ),
-        ],
-        "rclient",
-    );
-    run_program_demo(
-        "witchy standard Option (import option)",
-        &[
-            ("option", include_str!("../std/option.witchy")),
-            ("option_std", include_str!("../examples/option_std/src/option_std.witchy")),
-        ],
-        "option_std",
-    );
-
-    println!("\nspike OK");
-    Ok(())
 }
 
 /// Run a `.witchy` file: resolve `import X` to sibling `X.witchy` files
@@ -1543,23 +1313,12 @@ fn parse_secret_file(spec: &str) -> Result<(String, Vec<u8>), String> {
     }
 }
 
-// Convenience wrapper (no command-line args) — used by the test suite; the CLI
-// run path calls `execute_file_exit` to also get the process exit code.
-#[cfg_attr(not(test), allow(dead_code))]
+// A no-args convenience wrapper over `execute_file_exit` (which the CLI run path
+// uses to also get the process exit code), discarding the exit code — used by the
+// test suite.
+#[cfg(test)]
 fn execute_file(path: &str, net_allow: Vec<String>) -> Result<Vec<String>, String> {
-    execute_file_args(path, net_allow, Vec::new(), None)
-}
-
-/// Like [`execute_file`] but with command-line `args` and an optional signing
-/// key, discarding the process exit code (used by the test suite).
-#[cfg_attr(not(test), allow(dead_code))]
-fn execute_file_args(
-    path: &str,
-    net_allow: Vec<String>,
-    args: Vec<String>,
-    signing_key: Option<[u8; 32]>,
-) -> Result<Vec<String>, String> {
-    execute_file_exit(path, net_allow, args, signing_key, Vec::new()).map(|(output, _)| output)
+    execute_file_exit(path, net_allow, Vec::new(), None, Vec::new()).map(|(output, _)| output)
 }
 
 /// Link, type-check, and run `path`, returning its output and the process exit
@@ -2475,195 +2234,7 @@ fn report_grant_check(prog_path: &str, grants_path: &str) -> Result<bool, String
     Ok(!check.sufficient())
 }
 
-/// Parse, link, and run a multi-module program through the interpreter.
-fn run_program_demo(title: &str, sources: &[(&str, &str)], entry: &str) {
-    println!("\n== {title} ==");
-    match interpreter::run_program(sources, entry) {
-        Ok(out) => {
-            for line in out {
-                println!("{line}");
-            }
-        }
-        Err(e) => println!("error: {e}"),
-    }
-}
-
-/// Demonstrate the Net capability against a loopback echo server: a granted
-/// address can be reached; an address outside the allow-list is denied.
-fn run_net_demo(title: &str) {
-    use std::io::{BufRead, BufReader, Write};
-    println!("\n== {title} ==");
-    let listener = match std::net::TcpListener::bind("127.0.0.1:0") {
-        Ok(l) => l,
-        Err(e) => {
-            println!("could not bind loopback: {e}");
-            return;
-        }
-    };
-    let addr = listener.local_addr().unwrap().to_string();
-    let server = std::thread::spawn(move || {
-        if let Ok((stream, _)) = listener.accept() {
-            let mut r = BufReader::new(stream);
-            let mut line = String::new();
-            let _ = r.read_line(&mut line);
-            let _ = r.get_mut().write_all(format!("echo: {line}").as_bytes());
-        }
-    });
-
-    let program = format!(
-        r#"
-        fn main(console: Console, net: Net) {{
-          let s = connect(net, "{addr}")
-          send_line(s, "hello over the wire")
-          print(console, recv_line(s))
-        }}
-    "#
-    );
-    match interpreter::run_with(&program, ".", vec![addr.clone()]) {
-        Ok(out) => {
-            for line in out {
-                println!("{line}");
-            }
-        }
-        Err(e) => println!("error: {e}"),
-    }
-    server.join().ok();
-
-    let denied = r#"
-fn main(console: Console, net: Net):
-    let s = connect(net, "10.255.255.1:80")
-    send_line(s, "x")
-"#;
-    if let Err(e) = interpreter::run_with(denied, ".", vec![addr]) {
-        println!("DENIED outside the allow-list (as designed): {e}");
-    }
-}
-
-
 /// End-to-end coverage: every shipped example must type-check and produce the
 /// expected result (interpreted), or type-check and compile to valid WASM.
 #[cfg(test)]
 mod example_tests;
-
-/// Compile a witchy program to WASM and run it on the runtime, demonstrating
-/// that the capability gate now applies to *compiled* witchy: granted, it runs;
-/// ungranted, the module cannot instantiate.
-fn run_compiled(rt: &mut Runtime, title: &str, program: &str) {
-    println!("\n== {title} ==");
-    if let Err(e) = typeck::check_str(program) {
-        println!("{e}");
-        return;
-    }
-    let module = match parser::parse_module(program) {
-        Ok(m) => m,
-        Err(e) => {
-            println!("{e}");
-            return;
-        }
-    };
-    let bytes = match codegen::compile_module_binary(&module) {
-        Ok(Some(b)) => b,
-        Ok(None) => {
-            println!("cannot compile to WASM (an interpreter-only feature?)");
-            return;
-        }
-        Err(e) => {
-            println!("{e}");
-            return;
-        }
-    };
-
-    // Granted the output capabilities: the compiled module runs and prints.
-    match rt.spawn(
-        &bytes,
-        Capabilities {
-            print: true,
-            print_int: true,
-            ..Default::default()
-        },
-        4,
-    ) {
-        Ok(mut vm) => {
-            if let Err(e) = vm.run() {
-                println!("error: {e}");
-            }
-        }
-        Err(e) => println!("spawn failed: {e}"),
-    }
-
-    // Denied: the same compiled module cannot even instantiate.
-    match rt.spawn(&bytes, Capabilities::none(), 4) {
-        Ok(_) => println!("!! SECURITY FAILURE: compiled module ran without the capability"),
-        Err(e) => println!("DENIED without capability (as designed): {e}"),
-    }
-}
-
-/// Link a multi-module program, compile the flat module to WASM, and run it on
-/// its own VM — so an imported library (e.g. `list`) is genuinely compiled, not
-/// just the entry module.
-fn run_compiled_program(rt: &mut Runtime, title: &str, sources: &[(&str, &str)], entry: &str) {
-    println!("\n== {title} ==");
-    let mods: Result<Vec<(String, ast::Module)>, String> = sources
-        .iter()
-        .map(|(n, s)| {
-            parser::parse_module(s)
-                .map(|m| ((*n).to_string(), m))
-                .map_err(|e| e.to_string())
-        })
-        .collect();
-    let linked = match mods.and_then(|m| pipeline::link(m, entry).map_err(|e| e.to_string())) {
-        Ok(m) => m,
-        Err(e) => {
-            println!("{e}");
-            return;
-        }
-    };
-    if let Err(e) = typeck::check(&linked) {
-        println!("{e}");
-        return;
-    }
-    let bytes = match codegen::compile_module_binary(&linked) {
-        Ok(Some(b)) => b,
-        Ok(None) => {
-            println!("cannot compile to WASM (an interpreter-only feature?)");
-            return;
-        }
-        Err(e) => {
-            println!("{e}");
-            return;
-        }
-    };
-    match rt.spawn(
-        &bytes,
-        Capabilities {
-            print: true,
-            print_int: true,
-            ..Default::default()
-        },
-        4,
-    ) {
-        Ok(mut vm) => {
-            if let Err(e) = vm.run() {
-                println!("error: {e}");
-            }
-        }
-        Err(e) => println!("spawn failed: {e}"),
-    }
-}
-
-fn run_witchy(title: &str, program: &str) {
-    println!("\n== {title} ==");
-    if let Err(e) = typeck::check_str(program) {
-        println!("{e}");
-        return;
-    }
-    match interpreter::run(program) {
-        Ok(output) => {
-            for line in output {
-                println!("{line}");
-            }
-        }
-        Err(e) => println!("error: {e}"),
-    }
-}
-
