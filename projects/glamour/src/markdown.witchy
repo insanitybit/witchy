@@ -35,7 +35,7 @@ fn blocks(lines: List(String)) -> List(VNode(msg)):
             while j < n && !string.starts_with(list.at(lines, j), "```"):
                 code = list.push(code, list.at(lines, j))
                 j = j + 1
-            let pre = glamour.element("pre", [], [glamour.element("code", [], [glamour.text(string.join(code, "\n"))])])
+            let pre = glamour.element("pre", [], [glamour.element("code", [], [glamour.text(list.join(code, "\n"))])])
             acc = list.push(acc, pre)
             i = j + 1
         else if is_list_item(line):
@@ -53,7 +53,7 @@ fn blocks(lines: List(String)) -> List(VNode(msg)):
             while j < n && !block_break(list.at(lines, j)):
                 para = list.push(para, list.at(lines, j))
                 j = j + 1
-            acc = list.push(acc, glamour.element("p", [], inline(string.join(para, " "))))
+            acc = list.push(acc, glamour.element("p", [], inline(list.join(para, " "))))
             i = j
     acc
 
@@ -139,7 +139,7 @@ fn as_text_bracket(s: String, at: Int, head: List(VNode(msg))) -> List(VNode(msg
 // Neutralize dangerous URL schemes; relative URLs and http(s)/mailto pass through.
 fn safe_href(url: String) -> String:
     let lower = string.to_lower(string.trim(url))
-    if string.starts_with(lower, "javascript:") || string.starts_with(lower, "data:") || string.starts_with(lower, "vbscript:"):
+    if string.starts_with(lower, "javascript:") || string.starts_with(lower, "data:") || string.starts_with(lower, "vbscript:") || string.starts_with(lower, "//"):
         "#"
     else:
         string.trim(url)

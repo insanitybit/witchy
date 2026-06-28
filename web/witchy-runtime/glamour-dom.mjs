@@ -367,9 +367,12 @@ const URL_ATTRS = new Set(["href", "src", "action", "formaction", "poster", "xli
 // `javascript:`) to an inert `#`. `data:` is allowed only for inline images.
 function safeUrl(value) {
   const s = String(value).trim();
-  if (/^(https?:|mailto:|tel:|\/|\.|#|\?)/i.test(s)) return s; // relative or known-safe scheme
-  if (/^data:image\//i.test(s)) return s;                      // inline images only
-  return "#";                                                  // javascript:, data:text/html, … → inert
+  // A single leading slash is a same-origin relative path; `//host` is protocol-relative
+  // (off-origin navigation) — SEC-025 — so the slash branch rejects a second slash.
+  if (/^(https?:|mailto:|tel:|\.|#|\?|\/(?!\/))/i.test(s)) return s; // relative or known-safe scheme
+  // Inline images only, and only raster — `data:image/svg+xml` can carry script (SEC-026).
+  if (/^data:image\/(png|jpe?g|gif|webp)[;,]/i.test(s)) return s;
+  return "#";                                                  // javascript:, data:text/html, svg, //host → inert
 }
 
 // Apply one wire-format attribute to an element. This is the SINGLE DOM-write choke

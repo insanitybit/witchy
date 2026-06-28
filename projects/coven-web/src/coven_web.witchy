@@ -364,12 +364,12 @@ fn github_callback(net: Net, key: Secret, clock: Clock, secrets: SecretStore, gh
             None -> server.json(500, "{\"error\":\"github login is misconfigured (no client secret)\"}")
             Some(sec) ->
                 match oauth.exchange_code(net, gh_base + "/login/oauth/access_token", client_id, crypto.reveal(sec), code, redirect_uri):
-                    Err(e) -> server.json(502, json.encode(JsonObject([("error", JsonString("token exchange failed: " + e))])))
+                    Err(_) -> server.json(502, json.encode(JsonObject([("error", JsonString("token exchange failed"))])))
                     Ok(token) -> github_finish(net, key, clock, gh_api, token)
 
 fn github_finish(net: Net, key: Secret, clock: Clock, gh_api: String, token: String) -> Response:
     match oauth.bearer_get_json(net, gh_api + "/user", token):
-        Err(e) -> server.json(502, json.encode(JsonObject([("error", JsonString("user fetch failed: " + e))])))
+        Err(_) -> server.json(502, json.encode(JsonObject([("error", JsonString("user fetch failed"))])))
         Ok(user) ->
             let login = wa_field(user, "login")
             session_redirect(key, clock, login)
@@ -396,15 +396,15 @@ fn google_callback(net: Net, key: Secret, clock: Clock, secrets: SecretStore, to
             None -> server.json(500, "{\"error\":\"google login is misconfigured (no client secret)\"}")
             Some(sec) ->
                 match oauth.exchange_code_id_token(net, token_url, client_id, crypto.reveal(sec), code, redirect_uri):
-                    Err(e) -> server.json(502, json.encode(JsonObject([("error", JsonString("token exchange failed: " + e))])))
+                    Err(_) -> server.json(502, json.encode(JsonObject([("error", JsonString("token exchange failed"))])))
                     Ok(id_token) -> google_verify(net, key, clock, jwks_url, client_id, id_token)
 
 fn google_verify(net: Net, key: Secret, clock: Clock, jwks_url: String, client_id: String, id_token: String) -> Response:
     match http.get_url(net, jwks_url):
-        Err(e) -> server.json(502, json.encode(JsonObject([("error", JsonString("JWKS fetch failed: " + e))])))
+        Err(_) -> server.json(502, json.encode(JsonObject([("error", JsonString("JWKS fetch failed"))])))
         Ok(resp) ->
             match json.decode(http.body(resp)):
-                Err(e) -> server.json(502, json.encode(JsonObject([("error", JsonString("JWKS is not JSON: " + e))])))
+                Err(_) -> server.json(502, json.encode(JsonObject([("error", JsonString("JWKS is not JSON"))])))
                 Ok(jwks) -> google_finish(key, clock, jwks, client_id, id_token)
 
 // Google may send `email_verified` as a JSON boolean or the string "true".
@@ -415,7 +415,7 @@ fn email_is_verified(claims: Json) -> Bool:
 
 fn google_finish(key: Secret, clock: Clock, jwks: Json, client_id: String, id_token: String) -> Response:
     match select_and_verify(clock, jwks, client_id, id_token):
-        Err(e) -> server.json(403, json.encode(JsonObject([("error", JsonString("id_token rejected: " + e))])))
+        Err(_) -> server.json(403, json.encode(JsonObject([("error", JsonString("id_token rejected"))])))
         Ok(claims) ->
             // SEC-008: admit only a VERIFIED Google email — otherwise an account asserting
             // an unverified email equal to a maintainer's would be let in as that maintainer.
@@ -484,16 +484,20 @@ fn spa_fallback(assets: Dir) -> fn(fn(Request) -> Response) -> fn(Request) -> Re
                         resp
 
 // Sec-Fetch CSRF defense for state-changing requests. A browser stamps cross-site
-// requests with `sec-fetch-site: cross-site|same-site`; we admit only `same-origin`
-// (and absent, for non-browser clients that authenticate by other means). Safe
-// methods (GET/HEAD) pass through untouched.
+// requests with `sec-fetch-site: cross-site|same-site`; we admit only `same-origin` and
+// refuse both cross-site AND absent (SEC-020): a missing header means a non-browser
+// client, which must opt in with an explicit `Sec-Fetch-Site: same-origin`. Safe methods
+// (GET/HEAD) pass through untouched.
 fn sec_fetch_csrf() -> fn(fn(Request) -> Response) -> fn(Request) -> Response:
     fn(inner: fn(Request) -> Response):
         fn(req: Request):
             if is_state_changing(server.method(req)):
                 match server.request_header(req, "sec-fetch-site"):
                     Some(site) -> if site == "same-origin": inner(req) else: server.forbidden("cross-site request refused")
-                    None -> inner(req)
+                    // Fail closed when absent (SEC-020): a browser always sends sec-fetch-site,
+                    // so a missing header is a non-browser client — which must opt in explicitly
+                    // (`Sec-Fetch-Site: same-origin`) rather than silently bypassing CSRF defense.
+                    None -> server.forbidden("missing sec-fetch-site on a state-changing request")
             else:
                 inner(req)
 

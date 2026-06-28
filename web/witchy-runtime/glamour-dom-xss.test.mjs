@@ -115,7 +115,10 @@ fn view(model: Int) -> VNode(Msg):
     let rel = glamour.element("a", [glamour.prop("href", "/page")], [glamour.text("rel")])
     let ok = glamour.element("a", [glamour.prop("href", "https://example.com")], [glamour.text("abs")])
     let pic = glamour.element("img", [glamour.prop("src", "javascript:alert(2)")], [])
-    glamour.element("div", [], [evil, rel, ok, pic])
+    let proto = glamour.element("a", [glamour.prop("href", "//evil.com/x")], [glamour.text("proto")])
+    let svg = glamour.element("img", [glamour.prop("src", "data:image/svg+xml,<svg onload=alert(1)>")], [])
+    let png = glamour.element("img", [glamour.prop("src", "data:image/png;base64,iVBORw0KGgo=")], [])
+    glamour.element("div", [], [evil, rel, ok, pic, proto, svg, png])
 
 fn update(model: Int, msg: Msg) -> (Int, Cmd(Msg)):
     (model, NoCmd)
@@ -159,8 +162,8 @@ try {
   await mount(wasm, root, { document: fakeDocument, initialModel: 0 });
 
   const links = querySelectorAll(root, "a");
-  ok(links.length === 3, "three <a> elements render");
-  const [evil, rel, abs] = links;
+  ok(links.length === 4, "four <a> elements render");
+  const [evil, rel, abs, proto] = links;
 
   // The hostile link: javascript: href neutralized, string handler dropped.
   ok(evil.getAttribute("href") === "#", "javascript: href is sanitized to #");
@@ -173,7 +176,17 @@ try {
 
   // The hostile image source is neutralized too.
   const imgs = querySelectorAll(root, "img");
-  ok(imgs.length === 1 && imgs[0].getAttribute("src") === "#", "javascript: img src is sanitized to #");
+  ok(imgs.length === 3, "three <img> elements render");
+  ok(imgs[0].getAttribute("src") === "#", "javascript: img src is sanitized to #");
+
+  // SEC-025: a protocol-relative //host href is off-origin navigation → neutralized.
+  ok(proto.getAttribute("href") === "#", "protocol-relative // href is sanitized to #");
+  // SEC-026: data:image/svg+xml can carry script → neutralized; raster data: passes.
+  ok(imgs[1].getAttribute("src") === "#", "data:image/svg+xml src is sanitized to #");
+  ok(
+    imgs[2].getAttribute("src") === "data:image/png;base64,iVBORw0KGgo=",
+    "a benign data:image/png src passes through",
+  );
 } finally {
   rmSync(work, { recursive: true, force: true });
 }
