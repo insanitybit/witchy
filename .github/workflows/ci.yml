@@ -49,6 +49,32 @@ jobs:
       - name: Unit + integration tests
         run: cargo nextest run --workspace --profile ci --all-targets
 
+  heap-check:
+    name: Checked heap (RFC-0023)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2.82.5
+        with:
+          tool: nextest
+      # The opt-in checked heap (redzones + a post-run shadow sweep) makes
+      # intra-linear-memory corruption loud — out-of-object writes wasmtime cannot see.
+      # The differential fuzzer is the coverage engine (random heap-heavy programs run
+      # through the real runtime); under the flag it becomes the depth oracle too, turning
+      # "is our codegen/allocator memory-safe?" into a property the run checks. (Scoped to
+      # real-runtime behavior tests: codegen unit tests hand-roll minimal wasmtime linkers
+      # that don't define the checked-heap imports, so they run unflagged in `test`.)
+      - name: Differential fuzzer under WITCHY_HEAP_CHECK
+        env:
+          WITCHY_HEAP_CHECK: "1"
+        run: cargo nextest run --profile ci --test differential_fuzz
+
   parity:
     name: Backend parity sweep
     runs-on: ubuntu-latest
