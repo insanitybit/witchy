@@ -5983,7 +5983,8 @@ fn main(console: Console):
     #[test]
     fn duration_module_backends_agree() {
         // The duration module over the built-in Duration type: human/clock format
-        // a Duration (combined from literals), to_milliseconds bridges back to Int.
+        // a Duration (combined from literals), to_milliseconds bridges back to Int,
+        // and the whole-unit total conversions (to_seconds..to_weeks) truncate.
         let client = r#"
 import duration
 fn main(console: Console):
@@ -5996,6 +5997,11 @@ fn main(console: Console):
     print(console, duration.human(500ms))
     print(console, __render(duration.to_milliseconds(duration.hours(2))))
     print(console, __render(duration.part_minutes(1h + 2m + 3s)))
+    print(console, __render(duration.to_seconds(duration.days(10))))
+    print(console, __render(duration.to_minutes(duration.days(10))))
+    print(console, __render(duration.to_hours(duration.days(10))))
+    print(console, __render(duration.to_days(duration.days(10))))
+    print(console, __render(duration.to_weeks(duration.days(10))))
 "#;
         let sources = [
             ("duration", crate::bundled_module("duration").unwrap()),
@@ -6008,6 +6014,7 @@ fn main(console: Console):
             compiled,
             vec![
                 "3723000", "1:02:03", "0:01:30", "1h1m1s", "1m30s", "5s", "500ms", "7200000", "2",
+                "864000", "14400", "240", "10", "1",
             ]
         );
     }
