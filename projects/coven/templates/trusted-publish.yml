@@ -32,7 +32,10 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # Pin actions to a full commit SHA (not a mutable tag): this job holds an
+      # `id-token: write` grant, so a compromised tag could exfiltrate the minted
+      # OIDC token. Renovate/Dependabot can keep the pin fresh.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       # Put the witchy toolchain on PATH so `witchy pm publish` is available.
       # Replace this step with your install method (a release-binary download, or
