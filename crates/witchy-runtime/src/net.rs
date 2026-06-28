@@ -112,3 +112,39 @@ fn client_config() -> Arc<rustls::ClientConfig> {
     .with_no_client_auth();
     Arc::new(config)
 }
+
+/// (SEC-035) A capability-secure server must not let a peer OOM the host by streaming
+/// without bound. Every "read to a delimiter / EOF" recv op caps its buffer at this many
+/// bytes and fails closed past it (rather than silently truncating). 64 MiB is far above
+/// any legitimate line/message; a hostile peer can't grow host memory beyond it. Lives
+/// here (ungated, shared by both backends) so the interpreter and the compiled runtime
+/// apply the SAME cap — keeping recv behavior in parity.
+pub const MAX_RECV_BYTES: u64 = 64 << 20;
+
+/// Read one line (through `\n`) from a buffered reader, but never buffer more than
+/// [`MAX_RECV_BYTES`] — so a peer that never sends a newline can't grow the buffer
+/// without bound. Returns the bytes read (including any trailing `\n`); errors if the cap
+/// is reached with no newline (a hostile or malformed stream).
+pub fn read_line_capped<R: std::io::BufRead>(r: &mut R) -> std::io::Result<Vec<u8>> {
+    use std::io::{Error, ErrorKind};
+    let mut buf = Vec::new();
+    loop {
+        let room = MAX_RECV_BYTES as usize - buf.len();
+        let chunk = r.fill_buf()?;
+        if chunk.is_empty() {
+            break; // EOF before a newline
+        }
+        if let Some(i) = chunk.iter().take(room).position(|&b| b == b'\n') {
+            buf.extend_from_slice(&chunk[..=i]);
+            r.consume(i + 1);
+            return Ok(buf);
+        }
+        let take = chunk.len().min(room);
+        buf.extend_from_slice(&chunk[..take]);
+        r.consume(take);
+        if buf.len() as u64 >= MAX_RECV_BYTES {
+            return Err(Error::new(ErrorKind::InvalidData, "recv_line exceeded the byte cap with no newline"));
+        }
+    }
+    Ok(buf)
+}

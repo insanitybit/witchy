@@ -186,7 +186,9 @@ pub struct VmState {
     /// The `Dir` capability handle table: index 0 is the granted root, and each
     /// `subdir` mints a new confined entry. Guest code only ever holds the i32
     /// index — the paths live host-side, so a module cannot forge a directory.
-    pub(crate) dirs: Vec<std::path::PathBuf>,
+    // Each Dir handle: its confined base path + an RFC-0011 entry policy
+    // (`""` = unrestricted; see `witchy_caps::capabilities::dir_admits`).
+    pub(crate) dirs: Vec<(std::path::PathBuf, String)>,
     /// The `File` capability handle table (RFC-0012): `dir.open`/`dir.create` mint
     /// a confined entry; guest code holds only the i32 index, so a file path can no
     /// more be forged than a directory.
@@ -370,6 +372,7 @@ impl Runtime {
             .iter()
             .cloned()
             .chain(caps.dir_roots.iter().cloned())
+            .map(|p| (p, String::new()))
             .collect();
         let nets = caps.net_allow.iter().cloned().collect();
         let state = VmState {
@@ -463,6 +466,7 @@ pub(crate) fn link_capability_imports(
     // write operation cannot even instantiate under a read-only grant.
     if caps.dir_root.is_some() && caps.dir_read {
         linker.func_wrap("witchy", "dir_subdir", host_dir_subdir)?;
+        linker.func_wrap("witchy", "dir_only", host_dir_only)?;
         linker.func_wrap("witchy", "dir_read_len", host_dir_read_len)?;
         linker.func_wrap("witchy", "dir_exists", host_dir_exists)?;
         linker.func_wrap("witchy", "dir_is_dir", host_dir_is_dir)?;
@@ -973,8 +977,29 @@ fn dir_base(caller: &Caller<'_, VmState>, h: i32) -> Result<std::path::PathBuf> 
         .data()
         .dirs
         .get(h as usize)
-        .cloned()
+        .map(|d| d.0.clone())
         .ok_or_else(|| Error::msg(format!("invalid Dir handle {h}")))
+}
+
+/// Look up a Dir handle's entry policy (RFC-0011; `""` = unrestricted).
+fn dir_policy(caller: &Caller<'_, VmState>, h: i32) -> Result<String> {
+    caller
+        .data()
+        .dirs
+        .get(h as usize)
+        .map(|d| d.1.clone())
+        .ok_or_else(|| Error::msg(format!("invalid Dir handle {h}")))
+}
+
+/// Trap unless Dir handle `h`'s entry policy admits accessing `name` (RFC-0011).
+fn dir_guard(caller: &Caller<'_, VmState>, h: i32, name: &str) -> Result<()> {
+    if witchy_caps::capabilities::dir_admits(&dir_policy(caller, h)?, name) {
+        Ok(())
+    } else {
+        Err(Error::msg(format!(
+            "`{name}` is not permitted by this Dir capability's entry policy"
+        )))
+    }
 }
 
 fn confine(r: std::result::Result<std::path::PathBuf, crate::confine::ConfineError>) -> Result<std::path::PathBuf> {
@@ -987,9 +1012,22 @@ fn host_dir_subdir(mut caller: Caller<'_, VmState>, h: i32, name_ptr: i32) -> Re
     let mem = memory_of(&mut caller)?;
     let name = read_wstr(mem.data(&caller), name_ptr)?;
     let base = dir_base(&caller, h)?;
+    let pol = dir_policy(&caller, h)?;
     let sub = confine(crate::confine::resolve(&base, &name))?;
     let dirs = &mut caller.data_mut().dirs;
-    dirs.push(sub);
+    dirs.push((sub, pol)); // a subtree inherits the parent's entry policy
+    Ok((dirs.len() - 1) as i32)
+}
+
+/// `dir_only(h, policy) -> handle` (RFC-0011): mint a Dir handle whose entry
+/// policy is the current one narrowed by `policy` (refinement only shrinks).
+fn host_dir_only(mut caller: Caller<'_, VmState>, h: i32, policy_ptr: i32) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let refine = read_wstr(mem.data(&caller), policy_ptr)?;
+    let base = dir_base(&caller, h)?;
+    let narrowed = witchy_caps::capabilities::dir_only(&dir_policy(&caller, h)?, &refine);
+    let dirs = &mut caller.data_mut().dirs;
+    dirs.push((base, narrowed));
     Ok((dirs.len() - 1) as i32)
 }
 
@@ -1009,6 +1047,7 @@ fn file_path(caller: &Caller<'_, VmState>, f: i32) -> Result<std::path::PathBuf>
 fn host_dir_open(mut caller: Caller<'_, VmState>, h: i32, rel_ptr: i32) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
+    dir_guard(&caller, h, &rel)?;
     let base = dir_base(&caller, h)?;
     let path = confine(crate::confine::resolve(&base, &rel))?;
     let files = &mut caller.data_mut().files;
@@ -1021,6 +1060,7 @@ fn host_dir_open(mut caller: Caller<'_, VmState>, h: i32, rel_ptr: i32) -> Resul
 fn host_dir_create(mut caller: Caller<'_, VmState>, h: i32, rel_ptr: i32) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
+    dir_guard(&caller, h, &rel)?;
     let base = dir_base(&caller, h)?;
     let path = confine(crate::confine::resolve_write(&base, &rel))?;
     let files = &mut caller.data_mut().files;
@@ -1055,6 +1095,7 @@ fn host_file_write(mut caller: Caller<'_, VmState>, f: i32, contents_ptr: i32) -
 fn host_dir_read_len(mut caller: Caller<'_, VmState>, h: i32, rel_ptr: i32) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
+    dir_guard(&caller, h, &rel)?;
     let base = dir_base(&caller, h)?;
     let path = confine(crate::confine::resolve(&base, &rel))?;
     let contents = std::fs::read_to_string(&path)
@@ -1210,6 +1251,7 @@ fn host_dir_write(
     let data = mem.data(&caller);
     let rel = read_wstr(data, rel_ptr)?;
     let contents = read_wstr(data, contents_ptr)?;
+    dir_guard(&caller, h, &rel)?;
     let base = dir_base(&caller, h)?;
     let path = confine(crate::confine::resolve_write(&base, &rel))?;
     std::fs::write(&path, contents)
@@ -1228,6 +1270,7 @@ fn host_dir_append(
     let data = mem.data(&caller);
     let rel = read_wstr(data, rel_ptr)?;
     let contents = read_wstr(data, contents_ptr)?;
+    dir_guard(&caller, h, &rel)?;
     let base = dir_base(&caller, h)?;
     let path = confine(crate::confine::resolve_write(&base, &rel))?;
     use std::io::Write as _;
@@ -1450,46 +1493,12 @@ fn host_net_send_bytes(mut caller: Caller<'_, VmState>, sid: i32, ptr: i32) -> R
         .map_err(|e| Error::msg(format!("send failed: {e}")))
 }
 
-/// (SEC-035) A capability-secure server must not let a peer OOM the host by streaming
-/// without bound. Every "read to a delimiter / EOF" host op caps its buffer at this many
-/// bytes and fails closed past it (rather than silently truncating). 64 MiB is far above
-/// any legitimate line/message; a hostile peer can't grow host memory beyond it. The
-/// interpreter applies the SAME cap with the SAME loop, so the backends stay in parity.
-pub const MAX_RECV_BYTES: u64 = 64 << 20;
-
-/// Read one line (through `\n`) from a buffered reader, but never buffer more than
-/// [`MAX_RECV_BYTES`] — so a peer that never sends a newline can't grow the buffer
-/// without bound. Returns the bytes read (including any trailing `\n`); errors if the cap
-/// is reached with no newline (a hostile or malformed stream).
-pub fn read_line_capped<R: std::io::BufRead>(r: &mut R) -> Result<Vec<u8>> {
-    let mut buf = Vec::new();
-    loop {
-        let room = MAX_RECV_BYTES as usize - buf.len();
-        let chunk = r.fill_buf().map_err(|e| Error::msg(format!("recv failed: {e}")))?;
-        if chunk.is_empty() {
-            break; // EOF before a newline
-        }
-        if let Some(i) = chunk.iter().take(room).position(|&b| b == b'\n') {
-            buf.extend_from_slice(&chunk[..=i]);
-            r.consume(i + 1);
-            return Ok(buf);
-        }
-        let take = chunk.len().min(room);
-        buf.extend_from_slice(&chunk[..take]);
-        r.consume(take);
-        if buf.len() as u64 >= MAX_RECV_BYTES {
-            bail!("recv_line exceeded the {MAX_RECV_BYTES}-byte cap with no newline");
-        }
-    }
-    Ok(buf)
-}
-
 /// `net_recv_line_len(sock) -> len`: read one line NOW (newline trimmed, like
 /// the interpreter), stage it, and report its length for `fill_pending`.
 fn host_net_recv_line_len(mut caller: Caller<'_, VmState>, sid: i32) -> Result<i32> {
     let state = caller.data_mut();
     let sock = socket_of(state, sid)?;
-    let raw = read_line_capped(sock)?;
+    let raw = crate::net::read_line_capped(sock).map_err(|e| Error::msg(format!("recv failed: {e}")))?;
     let line = String::from_utf8_lossy(&raw);
     let trimmed = line.trim_end_matches('\n').to_string();
     let len = trimmed.len() as i32;
@@ -1507,11 +1516,11 @@ fn host_net_recv_all_len(mut caller: Caller<'_, VmState>, sid: i32) -> Result<i3
     // (SEC-035) Cap the read so a peer streaming without EOF can't OOM the host. Read one
     // byte past the cap to detect overflow, then fail closed.
     sock.by_ref()
-        .take(MAX_RECV_BYTES + 1)
+        .take(crate::net::MAX_RECV_BYTES + 1)
         .read_to_end(&mut buf)
         .map_err(|e| Error::msg(format!("recv failed: {e}")))?;
-    if buf.len() as u64 > MAX_RECV_BYTES {
-        bail!("recv_all exceeded the {MAX_RECV_BYTES}-byte cap");
+    if buf.len() as u64 > crate::net::MAX_RECV_BYTES {
+        bail!("recv_all exceeded the {}-byte cap", crate::net::MAX_RECV_BYTES);
     }
     let s = String::from_utf8_lossy(&buf).into_owned();
     let len = s.len() as i32;

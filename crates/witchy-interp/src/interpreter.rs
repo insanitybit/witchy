@@ -22,7 +22,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::net::TcpListener;
 
 use witchy_runtime::net::Stream;
@@ -45,7 +45,10 @@ pub enum Value {
     /// An unforgeable capability to a directory subtree (cap-std `Dir` style).
     /// Carries the host path it is rooted at; can only be obtained from the root
     /// grant or by attenuation (`subdir`).
-    Dir(PathBuf),
+    // A confined directory: its root path + an entry policy (RFC-0011; `""` =
+    // unrestricted). `dir.only(confine.ext(...))` narrows the policy; reads/writes
+    // through the Dir are admitted only when the policy admits the entry name.
+    Dir(PathBuf, String),
     /// A file capability (RFC-0012): authority to one file (the leaf of the
     /// Dir/File hierarchy). Carries the confined host path; obtained by navigating
     /// a `Dir` (`dir.open`/`dir.create`) or as a `main` grant. Rights are checked
@@ -159,7 +162,7 @@ impl fmt::Display for Value {
                 Ok(())
             }
             Value::Cap(c) => write!(f, "<capability {c:?}>"),
-            Value::Dir(_) => write!(f, "<dir>"),
+            Value::Dir(..) => write!(f, "<dir>"),
             Value::File(_) => write!(f, "<file>"),
             Value::Net(_) => write!(f, "<net>"),
             Value::Secret(_) => write!(f, "<secret>"),
@@ -644,7 +647,7 @@ impl Interpreter {
             Some(Type::Named(n, _)) if n == "Console" => Ok(Value::Cap(Capability::Console)),
             Some(Type::Named(n, _)) if n == "Clock" => Ok(Value::Cap(Capability::Clock)),
             Some(Type::Named(n, _)) if n == "Env" => Ok(Value::Cap(Capability::Env)),
-            Some(Type::Named(n, _)) if n == "Dir" => Ok(Value::Dir(self.root.clone())),
+            Some(Type::Named(n, _)) if n == "Dir" => Ok(Value::Dir(self.root.clone(), String::new())),
             Some(Type::Named(n, _)) if n == "Net" => Ok(Value::Net(self.net_allow.clone())),
             Some(Type::Named(n, _)) if n == "Exec" => Ok(Value::Cap(Capability::Exec)),
             Some(Type::Named(n, _)) if n == "Secret" => match self.signing_key {
@@ -1248,19 +1251,28 @@ impl Interpreter {
             },
             // Filesystem capability (cap-std style): attenuate to a subdirectory.
             "subtree" => match args {
-                [Value::Dir(base), Value::Str(name)] => {
-                    Ok(Some(Value::Dir(resolve(base, name)?)))
+                // A subtree inherits the parent's entry policy (refinement is monotone).
+                [Value::Dir(base, pol), Value::Str(name)] => {
+                    Ok(Some(Value::Dir(resolve(base, name)?, pol.clone())))
                 }
                 _ => err("subtree expects a Dir and a name"),
             },
             // RFC-0012 navigation: a `Dir` opens a confined `File`. `read_file`
             // requires the file to exist; `write_file` allows a not-yet-existing target.
             "read_file" => match args {
-                [Value::Dir(base), Value::Str(rel)] => Ok(Some(Value::File(resolve(base, rel)?))),
+                [Value::Dir(base, pol), Value::Str(rel)] => {
+                    if !witchy_caps::capabilities::dir_admits(pol, rel) {
+                        return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
+                    }
+                    Ok(Some(Value::File(resolve(base, rel)?)))
+                }
                 _ => err("read_file expects a Dir and a relative path"),
             },
             "write_file" => match args {
-                [Value::Dir(base), Value::Str(rel)] => {
+                [Value::Dir(base, pol), Value::Str(rel)] => {
+                    if !witchy_caps::capabilities::dir_admits(pol, rel) {
+                        return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
+                    }
                     Ok(Some(Value::File(resolve_write(base, rel)?)))
                 }
                 _ => err("write_file expects a Dir and a relative path"),
@@ -1273,7 +1285,7 @@ impl Interpreter {
             // `(Int, String)` over a `List(String)`. (One staged-string result, so
             // the compiled backend mirrors `dir_read` exactly — see rfcs/0004.)
             "exec" => match args {
-                [Value::Cap(Capability::Exec), Value::Dir(base), Value::Str(path), Value::Str(joined), Value::Str(stdin)] => {
+                [Value::Cap(Capability::Exec), Value::Dir(base, _), Value::Str(path), Value::Str(joined), Value::Str(stdin)] => {
                     let prog = resolve(base, path)?;
                     let argv: Vec<&str> =
                         if joined.is_empty() { Vec::new() } else { joined.split('\0').collect() };
@@ -1307,7 +1319,10 @@ impl Interpreter {
             },
             // Read a file relative to a Dir capability (confined to its subtree).
             "read" => match args {
-                [Value::Dir(base), Value::Str(rel)] => {
+                [Value::Dir(base, pol), Value::Str(rel)] => {
+                    if !witchy_caps::capabilities::dir_admits(pol, rel) {
+                        return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
+                    }
                     let path = resolve(base, rel)?;
                     match std::fs::read_to_string(&path) {
                         Ok(contents) => Ok(Some(Value::Str(contents))),
@@ -1325,7 +1340,10 @@ impl Interpreter {
             // (the target may not exist yet, so confinement is checked via its
             // parent directory).
             "write" => match args {
-                [Value::Dir(base), Value::Str(rel), Value::Str(contents)] => {
+                [Value::Dir(base, pol), Value::Str(rel), Value::Str(contents)] => {
+                    if !witchy_caps::capabilities::dir_admits(pol, rel) {
+                        return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
+                    }
                     let path = resolve_write(base, rel)?;
                     match std::fs::write(&path, contents) {
                         Ok(()) => Ok(Some(Value::Nil)),
@@ -1342,7 +1360,10 @@ impl Interpreter {
             // Append to a file (creating it if absent) — `write`'s confinement
             // and rights, without clobbering existing contents.
             "append" => match args {
-                [Value::Dir(base), Value::Str(rel), Value::Str(contents)] => {
+                [Value::Dir(base, pol), Value::Str(rel), Value::Str(contents)] => {
+                    if !witchy_caps::capabilities::dir_admits(pol, rel) {
+                        return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
+                    }
                     let path = resolve_write(base, rel)?;
                     use std::io::Write as _;
                     let res = std::fs::OpenOptions::new()
@@ -1361,7 +1382,7 @@ impl Interpreter {
             // (never errors), so a path outside the subtree, or a missing file,
             // simply reads as `false`. Lets `read` callers avoid a crash.
             "exists" => match args {
-                [Value::Dir(base), Value::Str(rel)] => {
+                [Value::Dir(base, _), Value::Str(rel)] => {
                     let ok = resolve(base, rel).map(|p| p.exists()).unwrap_or(false);
                     Ok(Some(Value::Bool(ok)))
                 }
@@ -1371,7 +1392,7 @@ impl Interpreter {
             // total (a path outside the subtree or a non-dir reads as `false`), so
             // a caller can walk `src/**` without tripping over a file.
             "is_dir" => match args {
-                [Value::Dir(base), Value::Str(rel)] => {
+                [Value::Dir(base, _), Value::Str(rel)] => {
                     let ok = resolve(base, rel).map(|p| p.is_dir()).unwrap_or(false);
                     Ok(Some(Value::Bool(ok)))
                 }
@@ -1380,7 +1401,7 @@ impl Interpreter {
             // List the immediate entries of the Dir capability's own directory, as
             // sorted names (deterministic — `read_dir` order is OS-dependent).
             "list" => match args {
-                [Value::Dir(base)] => {
+                [Value::Dir(base, _)] => {
                     let mut names: Vec<String> = match std::fs::read_dir(base) {
                         Ok(entries) => entries
                             .filter_map(|e| e.ok())
@@ -1396,7 +1417,7 @@ impl Interpreter {
             // Create a subdirectory within the Dir capability's subtree, confined
             // like `write` (idempotent — succeeds if it already exists).
             "make_dir" => match args {
-                [Value::Dir(base), Value::Str(name)] => {
+                [Value::Dir(base, _), Value::Str(name)] => {
                     let path = resolve_write(base, name)?;
                     match std::fs::create_dir_all(&path) {
                         Ok(()) => Ok(Some(Value::Nil)),
@@ -1573,7 +1594,17 @@ impl Interpreter {
                     };
                     Ok(Some(net_narrow_to(allow, addr)?))
                 }
-                _ => err("only expects a Net and a NetPolicy"),
+                // RFC-0011: `dir.only(DirPolicy)` narrows the Dir's entry policy.
+                [Value::Dir(base, pol), Value::Ctor { fields, .. }] if fields.len() == 1 => {
+                    let Value::Str(refine) = &fields[0] else {
+                        return err("only expects a DirPolicy");
+                    };
+                    Ok(Some(Value::Dir(
+                        base.clone(),
+                        witchy_caps::capabilities::dir_only(pol, refine),
+                    )))
+                }
+                _ => err("only expects a Net and a NetPolicy, or a Dir and a DirPolicy"),
             },
             "deny" => match args {
                 [Value::Net(allow), Value::Ctor { fields, .. }] if fields.len() == 1 => {
@@ -1648,7 +1679,7 @@ impl Interpreter {
                         .ok_or_else(|| RuntimeError { message: "invalid socket".into() })?;
                     // (SEC-035) Shared, bounded read so a peer that never sends a newline
                     // can't OOM the host — same cap + logic as the compiled backend.
-                    let raw = witchy_runtime::runtime::read_line_capped(sock)
+                    let raw = witchy_runtime::net::read_line_capped(sock)
                         .map_err(|e| RuntimeError { message: e.to_string() })?;
                     let line = String::from_utf8_lossy(&raw);
                     Ok(Some(Value::Str(line.trim_end_matches('\n').to_string())))
@@ -1684,14 +1715,14 @@ impl Interpreter {
                     use std::io::Read;
                     let mut buf = Vec::new();
                     sock.by_ref()
-                        .take(witchy_runtime::runtime::MAX_RECV_BYTES + 1)
+                        .take(witchy_runtime::net::MAX_RECV_BYTES + 1)
                         .read_to_end(&mut buf)
                         .map_err(|e| RuntimeError { message: format!("recv failed: {e}") })?;
-                    if buf.len() as u64 > witchy_runtime::runtime::MAX_RECV_BYTES {
+                    if buf.len() as u64 > witchy_runtime::net::MAX_RECV_BYTES {
                         return Err(RuntimeError {
                             message: format!(
                                 "recv_all exceeded the {}-byte cap",
-                                witchy_runtime::runtime::MAX_RECV_BYTES
+                                witchy_runtime::net::MAX_RECV_BYTES
                             ),
                         });
                     }
@@ -2755,7 +2786,7 @@ fn run_module_inner_limited(
                         interp.dir_roots.get(dir_idx - 1).cloned().unwrap_or_else(|| interp.root.clone())
                     };
                     dir_idx += 1;
-                    vals.push(Value::Dir(r));
+                    vals.push(Value::Dir(r, String::new()));
                 } else if matches!(&p.ty, Some(Type::Named(n, _)) if n == "File") {
                     // The i-th `File` param maps to the i-th `--file` grant (RFC-0012).
                     let path = interp.file_grants.get(file_idx).cloned().ok_or_else(|| RuntimeError {

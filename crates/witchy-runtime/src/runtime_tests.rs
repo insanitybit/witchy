@@ -129,10 +129,10 @@
         use std::io::BufReader;
         let data = b"hello\nworld\ntail-no-newline";
         let mut r = BufReader::new(&data[..]);
-        assert_eq!(read_line_capped(&mut r).unwrap(), b"hello\n");
-        assert_eq!(read_line_capped(&mut r).unwrap(), b"world\n");
-        assert_eq!(read_line_capped(&mut r).unwrap(), b"tail-no-newline");
-        assert_eq!(read_line_capped(&mut r).unwrap(), b""); // EOF
+        assert_eq!(crate::net::read_line_capped(&mut r).unwrap(), b"hello\n");
+        assert_eq!(crate::net::read_line_capped(&mut r).unwrap(), b"world\n");
+        assert_eq!(crate::net::read_line_capped(&mut r).unwrap(), b"tail-no-newline");
+        assert_eq!(crate::net::read_line_capped(&mut r).unwrap(), b""); // EOF
     }
 
     #[test]
