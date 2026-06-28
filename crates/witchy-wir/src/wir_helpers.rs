@@ -2974,7 +2974,13 @@ pub fn dict_remove_helper() -> WirFunc {
             setl("n", i32c(0)),
             scan,
             N::Store { ptr: getl("new"), value: getl("n"), kind: Kind::I32, offset: 0 },
-            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("new"), i32c(4)), b(BinOp::Mul, getl("n"), i32c(16))) },
+            // Reserve the FULL allocated capacity (`count` slots, per the `ensure`
+            // above), not just the `n` surviving entries: the own-ABI keeps
+            // capacity = count, so a later in-place insert appends into the
+            // count-n slack slots. Advancing heap only past `n` left that slack
+            // unreserved, so the next allocation stomped the re-inserted entry
+            // (compiled-dict remove+reinsert+iterate corruption).
+            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("new"), i32c(4)), b(BinOp::Mul, getl("count"), i32c(16))) },
             N::Push(getl("new")),
         ],
         raw_body: None,
