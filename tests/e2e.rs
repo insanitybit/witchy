@@ -2311,7 +2311,7 @@ fn coven_web_google_login_verifies_id_token_and_completes_a_session() {
     let signed = format!(
         "{}.{}",
         b64url(br#"{"alg":"RS256","kid":"g1","typ":"JWT"}"#),
-        b64url(br#"{"iss":"https://accounts.google.com","aud":"gClientID","email":"alice@example.com","sub":"1","exp":2000000000,"nbf":0}"#)
+        b64url(br#"{"iss":"https://accounts.google.com","aud":"gClientID","email":"alice@example.com","email_verified":true,"sub":"1","exp":2000000000,"nbf":0}"#)
     );
     let mut sig = vec![0u8; idk.public_modulus_len()];
     idk.sign(
