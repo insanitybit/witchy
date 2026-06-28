@@ -154,6 +154,17 @@
     }
 
     #[test]
+    fn module_qualified_call_without_import_suggests_import() {
+        // `json.stringify(x)` with no `import json` parses as a method call on the
+        // bare name `json`; the error should point at the missing import, not talk
+        // about method resolution.
+        let err = check_str("fn main(console: Console):\n    print(console, json.stringify(5))\n")
+            .expect_err("json is unimported");
+        assert!(err.contains("import json"), "{err}");
+        assert!(!err.contains("method call"), "should not mention method resolution: {err}");
+    }
+
+    #[test]
     fn accepts_a_well_typed_program() {
         let src = r#"
 fn double(n: Int) -> Int:

@@ -890,6 +890,17 @@ impl Ctx<'_> {
                          a plain function is called as `{method}(value, …)` (or module-qualified, \
                          e.g. `list.{method}(value, …)`)"
                     )),
+                    // `json.stringify(x)` with no `import json` parses as a method
+                    // call on the bare name `json`; if that name is actually a std
+                    // module the user just forgot the import, so say so rather than
+                    // talk about method resolution.
+                    None if matches!(receiver.as_ref(), Expr::Var(m) if witchy_syntax::linker::STD_MODULES.contains(&m.as_str())) => {
+                        let Expr::Var(m) = receiver.as_ref() else { unreachable!() };
+                        self.missing_impls.borrow_mut().push(format!(
+                            "`{m}.{method}` looks like a module-qualified call, but `{m}` is \
+                             not imported — add `import {m}`"
+                        ));
+                    }
                     None => self.missing_impls.borrow_mut().push(format!(
                         "cannot resolve the method call `.{method}(…)` — the receiver's type \
                          is not known here; call the function directly: `{method}(value, …)`"
