@@ -1713,11 +1713,6 @@ fn subst_vars(t: &Type, subst: &HashMap<&str, String>) -> Type {
     }
 }
 
-/// Witchy spells type variables lowercase and concrete types capitalized.
-fn is_type_var_name(n: &str) -> bool {
-    n.chars().next().is_some_and(|c| c.is_lowercase())
-}
-
 /// A type argument we will specialize an *unbounded* generic on. Restricted to
 /// the primitive types: these are exactly the ones the generic i32 ABI gets
 /// wrong — `String` (pointer-compared instead of content-compared by `==`) and
@@ -1788,32 +1783,6 @@ fn operator_trait_method(op: BinOp) -> Option<&'static str> {
         BinOp::GtEq => "greater_equal",
         _ => return None,
     })
-}
-
-/// Collect the type-variable names appearing in a type (lowercase, argument-free
-/// `Named`s), in order of first appearance.
-fn collect_type_vars(t: &Type, out: &mut Vec<String>) {
-    match t {
-        Type::Named(n, args) => {
-            if args.is_empty() && is_type_var_name(n) && !out.iter().any(|v| v == n) {
-                out.push(n.clone());
-            }
-            for a in args {
-                collect_type_vars(a, out);
-            }
-        }
-        Type::Tuple(ts) => {
-            for a in ts {
-                collect_type_vars(a, out);
-            }
-        }
-        Type::Fn(ps, r) => {
-            for a in ps {
-                collect_type_vars(a, out);
-            }
-            collect_type_vars(r, out);
-        }
-    }
 }
 
 /// The type variables in a function's parameters and return type (deduplicated,

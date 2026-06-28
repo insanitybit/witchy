@@ -37,7 +37,7 @@
 //! pass; typeck, the interpreter, and both codegen backends panic on it.
 
 use witchy_syntax::ast::{
-    Block, Expr, Function, Item, MatchArm, Module, Param, Pattern, Stmt, Type,
+    collect_type_names, Block, Expr, Function, Item, MatchArm, Module, Param, Pattern, Stmt, Type,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -749,32 +749,6 @@ fn push_ref(
     }
     if let Some(owner) = ctor_owner.get(name) {
         enqueue(owner);
-    }
-}
-
-/// Collect every type NAME mentioned in a type expression (heads of `Named`,
-/// recursively through its arguments, tuples, and function types). Type
-/// *variables* (lowercase, e.g. `msg`) are collected too but harmlessly miss the
-/// type lookup.
-fn collect_type_names(t: &Type, out: &mut HashSet<String>) {
-    match t {
-        Type::Named(name, args) => {
-            out.insert(name.clone());
-            for a in args {
-                collect_type_names(a, out);
-            }
-        }
-        Type::Tuple(elems) => {
-            for e in elems {
-                collect_type_names(e, out);
-            }
-        }
-        Type::Fn(params, ret) => {
-            for p in params {
-                collect_type_names(p, out);
-            }
-            collect_type_names(ret, out);
-        }
     }
 }
 

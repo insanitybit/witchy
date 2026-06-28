@@ -15,6 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::ast::*;
+use crate::lambda_scan::collect_pattern_vars;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LinkError {
@@ -837,28 +838,6 @@ fn collect_bound_block(b: &Block, out: &mut HashSet<String>) {
             Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => collect_bound_expr(e, out),
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
-    }
-}
-
-fn collect_pattern_vars(p: &Pattern, out: &mut HashSet<String>) {
-    match p {
-        Pattern::Var(n) => {
-            out.insert(n.clone());
-        }
-        Pattern::Ctor { args, .. } | Pattern::Tuple(args) => {
-            for a in args {
-                collect_pattern_vars(a, out);
-            }
-        }
-        Pattern::List { elems, rest } => {
-            for e in elems {
-                collect_pattern_vars(e, out);
-            }
-            if let Some(Some(name)) = rest {
-                out.insert(name.clone());
-            }
-        }
-        Pattern::Wildcard | Pattern::Int(_) | Pattern::Str(_) | Pattern::Bool(_) => {}
     }
 }
 

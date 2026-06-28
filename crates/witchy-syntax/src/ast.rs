@@ -460,3 +460,58 @@ pub enum Pattern {
         rest: Option<Option<String>>,
     },
 }
+
+/// Collect every type *name* (`Type::Named` head) in `t` into any `Extend<String>`
+/// sink — a `Vec` to keep appearance order, a `HashSet` for set membership.
+/// Recurses through tuple/function components and generic arguments.
+pub fn collect_type_names<S: Extend<String>>(t: &Type, out: &mut S) {
+    match t {
+        Type::Named(name, args) => {
+            out.extend([name.clone()]);
+            for a in args {
+                collect_type_names(a, out);
+            }
+        }
+        Type::Tuple(ts) => {
+            for t in ts {
+                collect_type_names(t, out);
+            }
+        }
+        Type::Fn(params, ret) => {
+            for p in params {
+                collect_type_names(p, out);
+            }
+            collect_type_names(ret, out);
+        }
+    }
+}
+
+/// Collect the type *variables* in `t` — argument-less, lowercase-initial
+/// `Type::Named` heads — in first-appearance order, without duplicates (the
+/// parameters a generic signature is implicitly quantified over).
+pub fn collect_type_vars(t: &Type, out: &mut Vec<String>) {
+    match t {
+        Type::Named(name, args) => {
+            if args.is_empty()
+                && name.chars().next().is_some_and(char::is_lowercase)
+                && !out.iter().any(|v| v == name)
+            {
+                out.push(name.clone());
+            }
+            for a in args {
+                collect_type_vars(a, out);
+            }
+        }
+        Type::Tuple(ts) => {
+            for t in ts {
+                collect_type_vars(t, out);
+            }
+        }
+        Type::Fn(params, ret) => {
+            for p in params {
+                collect_type_vars(p, out);
+            }
+            collect_type_vars(ret, out);
+        }
+    }
+}

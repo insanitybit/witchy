@@ -21,8 +21,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use witchy_syntax::ast::{
-    BinOp, Block, Convention, Expr, Function, Item, MatchArm, Module, Param, Pattern,
-    Stmt, Type, UnOp,
+    collect_type_vars, BinOp, Block, Convention, Expr, Function, Item, MatchArm, Module, Param,
+    Pattern, Stmt, Type, UnOp,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -6449,36 +6449,6 @@ fn unify_type_vars(ty: &Type, shape: &EqShape, subst: &mut HashMap<String, EqSha
             }
         }
         _ => {}
-    }
-}
-
-/// Collect a type's variables (lowercase, argument-less names) in order of
-/// first appearance — the same parameter-ordering rule the type checker's
-/// `collect_type_params` applies to a type declaration.
-fn collect_type_vars(ty: &Type, acc: &mut Vec<String>) {
-    match ty {
-        Type::Tuple(ts) => {
-            for t in ts {
-                collect_type_vars(t, acc);
-            }
-        }
-        Type::Fn(params, ret) => {
-            for p in params {
-                collect_type_vars(p, acc);
-            }
-            collect_type_vars(ret, acc);
-        }
-        Type::Named(name, args) => {
-            if args.is_empty() && name.chars().next().is_some_and(|c| c.is_lowercase()) {
-                if !acc.contains(name) {
-                    acc.push(name.clone());
-                }
-            } else {
-                for a in args {
-                    collect_type_vars(a, acc);
-                }
-            }
-        }
     }
 }
 

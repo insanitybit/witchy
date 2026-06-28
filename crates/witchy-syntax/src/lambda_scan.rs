@@ -188,10 +188,11 @@ fn fv_expr(e: &Expr, s: &mut LambdaScan) {
 }
 
 /// Collect the variable names a pattern binds (recursively through ctor/tuple/
-/// list sub-patterns and a list-rest binding).
-pub fn collect_pattern_vars(pat: &Pattern, out: &mut Vec<String>) {
+/// list sub-patterns and a list-rest binding) into any `Extend<String>` sink —
+/// a `Vec` to keep binding order, a `HashSet` for set membership.
+pub fn collect_pattern_vars<S: Extend<String>>(pat: &Pattern, out: &mut S) {
     match pat {
-        Pattern::Var(name) => out.push(name.clone()),
+        Pattern::Var(name) => out.extend([name.clone()]),
         Pattern::Ctor { args, .. } | Pattern::Tuple(args) => {
             for sub in args {
                 collect_pattern_vars(sub, out);
@@ -202,7 +203,7 @@ pub fn collect_pattern_vars(pat: &Pattern, out: &mut Vec<String>) {
                 collect_pattern_vars(sub, out);
             }
             if let Some(Some(name)) = rest {
-                out.push(name.clone());
+                out.extend([name.clone()]);
             }
         }
         _ => {}

@@ -8,7 +8,7 @@
 //! resolved to a fixpoint first). Aliases are simple (non-parameterized): a name
 //! standing for one fully-written type.
 
-use crate::ast::{Block, Expr, Function, Item, MethodSig, Module, Stmt, Type};
+use crate::ast::{collect_type_names, Block, Expr, Function, Item, MethodSig, Module, Stmt, Type};
 use std::collections::HashMap;
 
 /// The name of a type alias defined in terms of itself (directly or through a
@@ -35,28 +35,6 @@ pub fn find_cycle(module: &Module) -> Option<String> {
         }
     }
     None
-}
-
-fn collect_type_names(t: &Type, out: &mut Vec<String>) {
-    match t {
-        Type::Named(name, args) => {
-            out.push(name.clone());
-            for a in args {
-                collect_type_names(a, out);
-            }
-        }
-        Type::Tuple(ts) => {
-            for t in ts {
-                collect_type_names(t, out);
-            }
-        }
-        Type::Fn(params, ret) => {
-            for p in params {
-                collect_type_names(p, out);
-            }
-            collect_type_names(ret, out);
-        }
-    }
 }
 
 /// DFS from `node`, returning a node that lies on a cycle if one is reachable.
