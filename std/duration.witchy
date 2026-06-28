@@ -39,6 +39,18 @@ pub fn to_milliseconds(d: Duration) -> Int:
 pub fn to_seconds(d: Duration) -> Int:
     duration_to_int(d) / 1000
 
+pub fn to_minutes(d: Duration) -> Int:
+    duration_to_int(d) / 60000
+
+pub fn to_hours(d: Duration) -> Int:
+    duration_to_int(d) / 3600000
+
+pub fn to_days(d: Duration) -> Int:
+    duration_to_int(d) / 86400000
+
+pub fn to_weeks(d: Duration) -> Int:
+    duration_to_int(d) / 604800000
+
 // ---- Combinators ----
 
 // The longer of two durations.

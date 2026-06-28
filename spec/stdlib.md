@@ -438,6 +438,14 @@ Build a duration from hours, minutes, and seconds.
 
 #### `fn to_seconds(d: Duration) -> Int`
 
+#### `fn to_minutes(d: Duration) -> Int`
+
+#### `fn to_hours(d: Duration) -> Int`
+
+#### `fn to_days(d: Duration) -> Int`
+
+#### `fn to_weeks(d: Duration) -> Int`
+
 #### `fn max(a: Duration, b: Duration) -> Duration`
 
 The longer of two durations.
