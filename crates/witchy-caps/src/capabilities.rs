@@ -22,7 +22,7 @@ use witchy_syntax::ast::{Item, Module, Type};
 
 /// The host capabilities the runtime grants at an entry point.
 pub const HOST_CAPABILITIES: &[&str] =
-    &["Console", "Clock", "Env", "Secret", "SecretStore", "Dir", "File", "Net", "Exec"];
+    &["Console", "Clock", "Rand", "Env", "Secret", "SecretStore", "Dir", "File", "Net", "Exec"];
 
 /// The build-time capabilities a rune's `build` entrypoint may demand — the
 /// parallel set to the runtime host caps, tracked on a separate axis. Kind-only
@@ -194,6 +194,40 @@ pub fn net_only(allow: &[String], patterns: &str) -> Result<Vec<String>, String>
     }
     narrowed.extend(allow.iter().filter(|e| e.starts_with('!')).cloned());
     Ok(narrowed)
+}
+
+/// A `Dir` entry policy (RFC-0011): a `\n`-joined set of `ext:<suffix>` patterns.
+/// `""` means unrestricted (the universe). Refinement only ever shrinks the set,
+/// like `net_only`. Shared by both backends so the narrowing is one implementation.
+pub fn dir_only(current: &str, refine: &str) -> String {
+    if refine.is_empty() {
+        return current.to_string();
+    }
+    if current.is_empty() {
+        return refine.to_string();
+    }
+    let cur: std::collections::BTreeSet<&str> = current.split('\n').collect();
+    let common: Vec<&str> = refine.split('\n').filter(|p| cur.contains(p)).collect();
+    if common.is_empty() {
+        // Disjoint refinement — admit nothing (an unmatchable sentinel).
+        "ext:\u{0}".to_string()
+    } else {
+        common.join("\n")
+    }
+}
+
+/// Whether a `Dir`'s entry policy admits accessing the relative path `name`
+/// (RFC-0011). An empty policy admits everything; otherwise `name` must end with
+/// one of the allowed `ext:` suffixes. Enforced at `read`/`write`/`open` on both
+/// backends, the filesystem analog of `net_allows`.
+pub fn dir_admits(policy: &str, name: &str) -> bool {
+    if policy.is_empty() {
+        return true;
+    }
+    policy
+        .split('\n')
+        .filter_map(|p| p.strip_prefix("ext:"))
+        .any(|ext| name.ends_with(ext))
 }
 
 /// Whether `secret`'s bytes are the host's signing key (the `--signing-key` seed).
@@ -634,6 +668,26 @@ pub fn run_grant(module: &Module) -> CapSet {
 }
 
 #[cfg(test)]
+mod dir_policy_tests {
+    use super::{dir_admits, dir_only};
+
+    // RFC-0011: a Dir entry policy admits everything when empty, else only the
+    // allowed extensions; `dir.only` intersects (refinement shrinks), and a
+    // disjoint refinement admits nothing.
+    #[test]
+    fn dir_ext_policy_admits_and_intersects() {
+        assert!(dir_admits("", "anything.bin"), "empty policy is unrestricted");
+        assert!(dir_admits("ext:.txt", "notes.txt"));
+        assert!(!dir_admits("ext:.txt", "secret.key"));
+        assert_eq!(dir_only("", "ext:.txt"), "ext:.txt");
+        assert_eq!(dir_only("ext:.txt\next:.md", "ext:.txt"), "ext:.txt");
+        // disjoint intersection -> admits nothing
+        let none = dir_only("ext:.txt", "ext:.md");
+        assert!(!dir_admits(&none, "x.txt") && !dir_admits(&none, "x.md"));
+    }
+}
+
+#[cfg(test)]
 mod net_only_tests {
     use super::{net_allows, net_only};
 
@@ -657,6 +711,30 @@ mod net_only_tests {
         );
         // A non-denied host in the block stays reachable.
         assert!(net_allows(&narrowed, "127.0.0.2:80"));
+    }
+
+    // RFC-0020: `confine.private()` -> `net.deny(...)` appends the private-range
+    // CIDRs as `!`-deny entries; an address resolving into any of them (loopback,
+    // RFC-1918, the 169.254.169.254 metadata IP, CGNAT, "this host") is refused,
+    // while public addresses stay reachable. This is the SSRF/DNS-rebinding defense.
+    #[test]
+    fn private_ranges_deny_internal_addresses() {
+        let ranges = [
+            "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+            "169.254.0.0/16", "100.64.0.0/10", "0.0.0.0/8",
+        ];
+        // Allow-all base, then deny the private ranges — the `net.deny(private())` shape.
+        let mut allow = vec!["0.0.0.0/0:*".to_string()];
+        allow.extend(ranges.iter().map(|c| format!("!{c}:*")));
+        for internal in [
+            "127.0.0.1:443", "10.1.2.3:443", "172.16.5.5:443", "172.31.0.1:443",
+            "192.168.1.1:443", "169.254.169.254:80", "100.64.0.1:443", "0.1.2.3:443",
+        ] {
+            assert!(!net_allows(&allow, internal), "{internal} should be denied by confine.private()");
+        }
+        // Public addresses remain reachable.
+        assert!(net_allows(&allow, "8.8.8.8:443"));
+        assert!(net_allows(&allow, "93.184.216.34:443"));
     }
 
     #[test]

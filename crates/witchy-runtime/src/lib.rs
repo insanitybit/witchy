@@ -13,6 +13,7 @@
 pub mod confine;
 pub mod native;
 pub mod net;
+pub mod rand;
 pub mod value;
 
 /// The wasmtime sandbox (the TCB) — native-only.

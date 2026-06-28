@@ -113,6 +113,7 @@ pub enum BuildCap {
 pub enum Capability {
     Console,
     Clock,
+    Rand,
     Env,
     /// The right to spawn a native subprocess (`exec`). Right-less and payload-
     /// free: the executable is named + confined by a `Dir[Read]` argument.
@@ -536,6 +537,10 @@ pub struct Interpreter {
     file_grants: Vec<PathBuf>,
     /// Allow-list backing the root `Net` capability.
     net_allow: Vec<String>,
+    /// (`Rand`) splitmix64 state for `rand_u64`. Seeded from `WITCHY_RAND_SEED` for
+    /// deterministic parity/tests; `None` until first use, then clock-seeded (the
+    /// interpreter is the oracle/playground, never the production CSPRNG path).
+    rand_state: Option<u64>,
     /// Ed25519 seed backing the root `Secret` capability, if the host granted
     /// one. A `main` that declares a `Secret` parameter requires this.
     signing_key: Option<[u8; 32]>,
@@ -624,6 +629,7 @@ impl Interpreter {
             dir_roots: Vec::new(),
             file_grants: Vec::new(),
             net_allow: Vec::new(),
+            rand_state: witchy_runtime::rand::seed_from_env(),
             signing_key: None,
             secrets: std::collections::BTreeMap::new(),
             sockets: Vec::new(),
@@ -646,6 +652,7 @@ impl Interpreter {
         match ty {
             Some(Type::Named(n, _)) if n == "Console" => Ok(Value::Cap(Capability::Console)),
             Some(Type::Named(n, _)) if n == "Clock" => Ok(Value::Cap(Capability::Clock)),
+            Some(Type::Named(n, _)) if n == "Rand" => Ok(Value::Cap(Capability::Rand)),
             Some(Type::Named(n, _)) if n == "Env" => Ok(Value::Cap(Capability::Env)),
             Some(Type::Named(n, _)) if n == "Dir" => Ok(Value::Dir(self.root.clone(), String::new())),
             Some(Type::Named(n, _)) if n == "Net" => Ok(Value::Net(self.net_allow.clone())),
@@ -891,6 +898,22 @@ impl Interpreter {
         }
         self.cur_fn = prev;
         Ok(result)
+    }
+
+    /// One `Rand` draw: advance splitmix64. Seeded from `WITCHY_RAND_SEED` (set in
+    /// `new`) it is deterministic and matches the compiled backend; otherwise lazily
+    /// clock-seed on first use so the oracle still varies per run.
+    fn rand_next(&mut self) -> i64 {
+        let mut s = self.rand_state.unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0)
+                ^ 0x9E37_79B9_7F4A_7C15
+        });
+        let v = witchy_runtime::rand::seeded_next(&mut s);
+        self.rand_state = Some(s);
+        v as i64
     }
 
     fn call_builtin(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>, RuntimeError> {
@@ -1438,6 +1461,14 @@ impl Interpreter {
                     Ok(Some(Value::Int(ms)))
                 }
                 _ => err("now expects a Clock"),
+            },
+            // A fresh draw of the `Rand` capability. Seeded (WITCHY_RAND_SEED) it is
+            // deterministic and matches the compiled backend bit-for-bit (parity);
+            // unseeded the oracle clock-seeds splitmix (the production CSPRNG is the
+            // compiled host's getrandom, not this tree-walker).
+            "rand_u64" => match args {
+                [Value::Cap(Capability::Rand)] => Ok(Some(Value::Int(self.rand_next()))),
+                _ => err("rand_u64 expects a Rand"),
             },
             // Read a named environment variable through an `Env` capability:
             // `get_env(env, name) -> Option(String)` (None when unset). Reading the

@@ -894,7 +894,7 @@ impl Codegen {
                 "math.to_float" => Kind::F64,
                 "math.to_int" | "string.length" | "string.char_count" | "string.index_of"
                 | "list.length" | "dict.length" | "string.to_int" | "int_to_duration"
-                | "duration_to_int" | "now" => Kind::I64,
+                | "duration_to_int" | "now" | "rand_u64" => Kind::I64,
                 "list.at" => self.elem_kind_of_list_arg(e),
                 "__render" | "int_to_string" | "print" => Kind::I32,
                 // A closure-local called by name returns the universal i64 slot,
@@ -1057,7 +1057,7 @@ impl Codegen {
                 | "crypto.rsa_pkcs1_sha256_verify" => ValType::Bool,
                 "string.length" | "string.char_count" | "string.index_of" | "list.length"
                 | "dict.length" | "math.to_int" | "string.to_int" | "int_to_duration"
-                | "duration_to_int" | "now" => ValType::Int,
+                | "duration_to_int" | "now" | "rand_u64" => ValType::Int,
                 "math.to_float" | "math.sqrt" => ValType::Float,
                 other => self.fn_ret_valtype.get(other).copied().unwrap_or(ValType::Other),
             },
@@ -6058,6 +6058,15 @@ impl Codegen {
                     W::CallHost { import: "now_host".to_string(), args: vec![] }
                 }
             }
+            // `rand_u64(rand)`: like `now`, the Rand arg is type-level; the host import
+            // is the authority and takes no operands, returning a fresh i64 draw.
+            ("rand_u64", 1) => {
+                if self.collect_wir {
+                    call("rand_u64", vec![])
+                } else {
+                    W::CallHost { import: "rand_u64_host".to_string(), args: vec![] }
+                }
+            }
             // `get_env(env, name)`: only the name travels (the Env grant is the host).
             // `fail(msg)`: a deliberate, loud abort — evaluate (and drop) the
             // message, then `unreachable` traps. The trailing `i32.const 0` is dead
@@ -6217,13 +6226,21 @@ impl Codegen {
                 let a = self.lower_args(&[&args[0], &args[1]])?;
                 if self.collect_wir { call("net_restrict", a) } else { host("net_restrict_host", a) }
             }
-            // RFC-0011 typed verbs: `only`/`deny` take a `NetPolicy` record; extract its
-            // single `pattern` field and feed the host op the same address string.
+            // RFC-0011 typed verbs: `only`/`deny` take a policy record; extract its
+            // single `pattern` field and feed the host op the same string. `only` is
+            // polymorphic on the receiver — a `Dir` narrows its ENTRY policy
+            // (`dir_only`), a `Net` narrows its ADDRESS set (`net_restrict`).
             ("only", 2) => {
-                self.used_net_ops.insert("restrict");
                 let pattern = Expr::Field { base: Box::new(args[1].clone()), field: "pattern".into() };
-                let a = self.lower_args(&[&args[0], &pattern])?;
-                if self.collect_wir { call("net_restrict", a) } else { host("net_restrict_host", a) }
+                if matches!(self.type_table.type_of(&args[0]), Some(witchy_types::typeck::Ty::Dir(_))) {
+                    self.used_dir_ops.insert("only");
+                    let a = self.lower_args(&[&args[0], &pattern])?;
+                    if self.collect_wir { call("dir_only", a) } else { host("dir_only_host", a) }
+                } else {
+                    self.used_net_ops.insert("restrict");
+                    let a = self.lower_args(&[&args[0], &pattern])?;
+                    if self.collect_wir { call("net_restrict", a) } else { host("net_restrict_host", a) }
+                }
             }
             ("deny", 2) => {
                 self.used_net_ops.insert("deny");

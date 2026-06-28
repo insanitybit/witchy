@@ -238,6 +238,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "print_float" (func $print_float (param f64)))
   (import "witchy" "string_from_code" (func $string_from_code_host (param i64 i32) (result i32)))
   (import "witchy" "dir_subdir" (func $dir_subdir_host (param i32 i32) (result i32)))
+  (import "witchy" "dir_only" (func $dir_only_host (param i32 i32) (result i32)))
   (import "witchy" "dir_exists" (func $dir_exists_host (param i32 i32) (result i32)))
   (import "witchy" "dir_is_dir" (func $dir_is_dir_host (param i32 i32) (result i32)))
   (import "witchy" "dir_write" (func $dir_write_host (param i32 i32 i32)))
@@ -257,6 +258,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "net_send_bytes" (func $net_send_bytes_host (param i32 i32)))
   (import "witchy" "net_close" (func $net_close_host (param i32)))
   (import "witchy" "now" (func $now_host (result i64)))
+  (import "witchy" "rand_u64" (func $rand_u64_host (result i64)))
   (import "witchy" "regex_match_spans_len" (func $regex_match_spans_len_host (param i32 i32) (result i32)))
   (import "witchy" "crypto.ecdsa_p256_verify" (func $crypto_ecdsa_p256_verify (param i32 i32 i32) (result i32)))
   (import "witchy" "crypto.ecdsa_p256_verify_hex" (func $crypto_ecdsa_p256_verify_hex (param i32 i32 i32) (result i32)))
@@ -269,7 +271,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 61;
+pub const IMPORT_COUNT: usize = 63;
 
 /// The full ordered name list for the funcs section: `$mk0..$mk{MAX_MK}` then
 /// the static helper names. Matches the order the prelude emits bodies, so

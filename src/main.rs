@@ -657,6 +657,9 @@ fn main() -> wasmtime::Result<()> {
         let mut signing_key: Option<[u8; 32]> = None;
         let mut named_secrets: Vec<(String, Vec<u8>)> = Vec::new();
         let mut grants_doc: Option<String> = None;
+        // RFC-0013: pre-approve the grant (skip the interactive confirmation),
+        // for non-interactive launches (CI, installers, scripts).
+        let mut accept_grants = false;
         let mut path: Option<String> = None;
         let mut prog_args: Vec<String> = Vec::new();
         let mut argv = std::env::args().skip(2);
@@ -678,6 +681,8 @@ fn main() -> wasmtime::Result<()> {
                         std::process::exit(1);
                     }
                 },
+                // RFC-0013: accept the grant without the interactive prompt.
+                "--accept-grants" if path.is_none() => accept_grants = true,
                 // RFC-0012: each `--file` grants one file to a `main` `File` param,
                 // positionally (the i-th `--file` backs the i-th `File` parameter).
                 "--file" if path.is_none() => match argv.next() {
@@ -726,7 +731,7 @@ fn main() -> wasmtime::Result<()> {
             }
         }
         let Some(path) = path else {
-            eprintln!("usage: witchy sandbox [--grants <doc.toml> | [--dir <root>] [--file <path>]... [--net <host:port>]... [--signing-key <seed-file>] [--secret name=value] [--secret-file name=path]] <file.witchy> [args...]");
+            eprintln!("usage: witchy sandbox [--grants <doc.toml> [--accept-grants] | [--dir <root>] [--file <path>]... [--net <host:port>]... [--signing-key <seed-file>] [--secret name=value] [--secret-file name=path]] <file.witchy> [args...]");
             std::process::exit(1);
         };
         // A precompiled `.wasm` runs directly (authority from its imports); a
@@ -737,7 +742,7 @@ fn main() -> wasmtime::Result<()> {
                 eprintln!("--grants applies to a `.witchy` source, not a precompiled `.wasm`");
                 std::process::exit(1);
             }
-            run_file_grants(&path, &doc, prog_args)
+            run_file_grants(&path, &doc, accept_grants, prog_args)
         } else if path.ends_with(".wasm") {
             run_wasm_file(&path, dir_roots, file_grants, net_allow, prog_args, signing_key, named_secrets)
         } else {
@@ -1630,6 +1635,9 @@ fn run_linked_compiled(
     if grant.contains_key("Clock") {
         caps.clock = true;
     }
+    if grant.contains_key("Rand") {
+        caps.rand = true;
+    }
     if grant.contains_key("Env") {
         caps.env = true;
     }
@@ -1786,8 +1794,10 @@ fn resolve_secret_from(from: &str) -> Result<Vec<u8>, String> {
 fn run_file_grants(
     path: &str,
     grants_path: &str,
+    accept_grants: bool,
     args: Vec<String>,
 ) -> Result<(Vec<String>, Option<i32>), String> {
+    use std::io::IsTerminal;
     let (linked, _stem) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
     let doc_src = std::fs::read_to_string(grants_path)
@@ -1843,11 +1853,35 @@ fn run_file_grants(
             }
         }
     }
-    // Be transparent about what the document confers before handing it over.
-    eprintln!(
-        "running `{path}` with grant `{grants_path}` \u{2014} confers: {}",
-        capabilities::show_caps(&doc.cap_set())
-    );
+    // Show exactly what `main` will receive — a reviewable diff — then, unless
+    // pre-accepted (`--accept-grants`) or non-interactive, require confirmation
+    // before handing the authority over (RFC-0013's approval step).
+    eprintln!("grant `{grants_path}` for `{path}` confers:");
+    eprintln!("  capabilities: {}", capabilities::show_caps(&doc.cap_set()));
+    for (name, g) in &doc.dirs {
+        eprintln!("  dir    {name}: {}", g.root);
+    }
+    for (name, g) in &doc.files {
+        eprintln!("  file   {name}: {}", g.path);
+    }
+    if !net_allow.is_empty() {
+        eprintln!("  net:   {}", net_allow.join(", "));
+    }
+    for (name, s) in &doc.secrets {
+        eprintln!("  secret {name}: {}", s.from);
+    }
+    if !accept_grants && std::io::stdin().is_terminal() {
+        use std::io::Write;
+        eprint!("Approve and run? [y/N] ");
+        let _ = std::io::stderr().flush();
+        let mut line = String::new();
+        std::io::stdin()
+            .read_line(&mut line)
+            .map_err(|e| format!("reading confirmation: {e}"))?;
+        if !matches!(line.trim().chars().next(), Some('y' | 'Y')) {
+            return Err("grant not approved \u{2014} aborting".to_string());
+        }
+    }
     // Secrets reach the program by name through the `SecretStore` (`require`/`get`);
     // the bare `Secret` handle (`--signing-key`) is not granted via documents here.
     run_linked_compiled(&linked, dir_roots, file_grants, net_allow, args, None, named_secrets, true)
@@ -1928,6 +1962,9 @@ fn run_wasm_module(
     };
     if has("now") {
         caps.clock = true;
+    }
+    if has("rand_u64") {
+        caps.rand = true;
     }
     if has("env_len") || has("env_fill") {
         caps.env = true;
@@ -2049,6 +2086,7 @@ fn run_wasm_bytes(bytes: &[u8]) -> Result<Vec<String>, String> {
                 print_int: true,
                 quiet: true,
                 clock: true,
+                rand: true,
                 env: true,
                 dir_root: Some(std::path::PathBuf::from(".")),
                 dir_read: true,

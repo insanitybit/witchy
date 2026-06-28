@@ -103,6 +103,8 @@ pub struct Capabilities {
     pub quiet: bool,
     /// May read the wall clock via `witchy.now` (a `Clock` capability).
     pub clock: bool,
+    /// May draw cryptographic randomness via `witchy.rand_u64` (a `Rand` capability).
+    pub rand: bool,
     /// May read process environment variables via `witchy.env_*` (an `Env`
     /// capability).
     pub env: bool,
@@ -216,6 +218,9 @@ pub struct VmState {
     /// `[end, end+HEAP_REDZONE)` and the post-run sweep traps if any poison byte was
     /// overwritten. Empty — and the sweep a no-op — unless the checked codegen ran.
     pub(crate) heap_objects: Vec<(u32, u32)>,
+    /// (`Rand`) splitmix64 state for the seeded test/parity path (`WITCHY_RAND_SEED`);
+    /// `None` means `rand_u64` draws from the OS CSPRNG instead.
+    rand_state: Option<u64>,
 }
 
 /// A spawned VM plus the entrypoint we can drive.
@@ -390,6 +395,7 @@ impl Runtime {
             build_out: caps.build_out.clone(),
             build_read_roots: caps.build_read_roots.clone(),
             heap_objects: Vec::new(),
+            rand_state: crate::rand::seed_from_env(),
         };
 
         let mut store = Store::new(&self.engine, state);
@@ -454,6 +460,9 @@ pub(crate) fn link_capability_imports(
         linker.func_wrap("witchy", "print_int", host_print_int)?;
         // Same "print a computed result" facility, for a Float-returning main.
         linker.func_wrap("witchy", "print_float", host_print_float)?;
+    }
+    if caps.rand {
+        linker.func_wrap("witchy", "rand_u64", host_rand_u64)?;
     }
     if caps.clock {
         linker.func_wrap("witchy", "now", host_now)?;
@@ -931,6 +940,20 @@ fn host_encoding(mut caller: Caller<'_, VmState>, op: i32, in_ptr: i32, out_ptr:
 /// `now() -> Int`: wall-clock milliseconds since the Unix epoch — the same value
 /// the interpreter's `now(Clock)` produces. Linked only when the VM was
 /// granted a `Clock` capability.
+/// `rand_u64() -> i64`: a fresh draw of the `Rand` capability. Seeded (WITCHY_RAND_SEED)
+/// it advances the per-VM splitmix64 state so a run is deterministic and parity-stable;
+/// unseeded it draws 8 bytes from the OS CSPRNG. Linked only when `Rand` was granted.
+fn host_rand_u64(mut caller: Caller<'_, VmState>) -> i64 {
+    match &mut caller.data_mut().rand_state {
+        Some(state) => crate::rand::seeded_next(state) as i64,
+        None => {
+            let mut b = [0u8; 8];
+            getrandom::fill(&mut b).expect("OS CSPRNG is available");
+            i64::from_le_bytes(b)
+        }
+    }
+}
+
 fn host_now(_caller: Caller<'_, VmState>) -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

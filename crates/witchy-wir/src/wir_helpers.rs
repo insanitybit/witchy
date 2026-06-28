@@ -4238,10 +4238,26 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
+        "rand_u64" => Some(WirHelperSpec {
+            func: host_call_helper_ret("rand_u64", "rand_u64", 0, WirTy::Int),
+            helper_deps: &[],
+            import_deps: &["rand_u64"],
+            uses_heap: false,
+            uses_table: false,
+        }),
         "dir_subdir" => Some(WirHelperSpec {
             func: host_call_helper("dir_subdir", "dir_subdir", 2),
             helper_deps: &[],
             import_deps: &["dir_subdir"],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        // RFC-0011: `dir.only(DirPolicy)` narrows a Dir's entry policy, minting a
+        // new Dir handle — mirrors `dir_subdir` (2 args, i32 handle result).
+        "dir_only" => Some(WirHelperSpec {
+            func: host_call_helper("dir_only", "dir_only", 2),
+            helper_deps: &[],
+            import_deps: &["dir_only"],
             uses_heap: false,
             uses_table: false,
         }),

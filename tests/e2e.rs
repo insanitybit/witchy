@@ -2166,6 +2166,39 @@ fn http_get(addr: &str, path: &str) -> (u16, String) {
 
 /// GET a path and return the WHOLE raw HTTP response (status line + headers + body), so
 /// a test can read a redirect's `Location` header.
+/// The `Rand` capability: `rand_u64(rand)` draws from the OS CSPRNG, but under
+/// `WITCHY_RAND_SEED` both backends draw the SAME deterministic splitmix sequence — so a
+/// program using randomness stays parity-stable and reproducible for tests.
+#[test]
+fn rand_capability_seeds_deterministically_and_agrees_across_backends() {
+    let dir = unique("witchy-rand");
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("rand.witchy");
+    std::fs::write(
+        &src,
+        "fn main(console: Console, rand: Rand):\n    print(console, __render(rand_u64(rand)))\n    print(console, __render(rand_u64(rand)))\n",
+    )
+    .unwrap();
+    let path = src.to_str().unwrap();
+
+    // Seeded: the interpreter and the compiled backend draw the same sequence → agree.
+    let parity = Command::new(BIN).args(["parity", path]).env("WITCHY_RAND_SEED", "42").output().unwrap();
+    assert!(
+        parity.status.success() && stdout(&parity).contains("agree"),
+        "seeded rand must be parity-stable: {}\n{}",
+        stdout(&parity),
+        stderr(&parity)
+    );
+
+    let run = |seed: &str| {
+        let o = Command::new(BIN).args(["run", path]).env("WITCHY_RAND_SEED", seed).output().unwrap();
+        assert!(o.status.success(), "run failed: {}", stderr(&o));
+        stdout(&o)
+    };
+    assert_eq!(run("42"), run("42"), "the same seed must reproduce the sequence");
+    assert_ne!(run("42"), run("7"), "a different seed must produce a different sequence");
+}
+
 fn http_get_raw(addr: &str, path: &str) -> String {
     http_get_raw_cookie(addr, path, "")
 }

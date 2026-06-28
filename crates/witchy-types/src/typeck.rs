@@ -217,6 +217,8 @@ pub enum Ty {
     Nil,
     Console,
     Clock,
+    /// The runtime authority to draw cryptographic randomness (`rand_u64`).
+    Rand,
     Env,
     Secret,
     /// The runtime authority to spawn a native subprocess. Right-less (one op):
@@ -258,6 +260,7 @@ impl fmt::Display for Ty {
             Ty::Nil => write!(f, "Nil"),
             Ty::Console => write!(f, "Console"),
             Ty::Clock => write!(f, "Clock"),
+            Ty::Rand => write!(f, "Rand"),
             Ty::Env => write!(f, "Env"),
             Ty::Secret => write!(f, "Secret"),
             Ty::Exec => write!(f, "Exec"),
@@ -382,7 +385,7 @@ fn check_unique_functions(module: &Module) -> Result<(), TypeError> {
 /// (`Option`/`Result`/`Dict`). Any other named type must be declared (a `type`
 /// or be a lowercase generic parameter.
 const BUILTIN_TYPE_NAMES: &[&str] = &[
-    "Int", "Float", "Duration", "String", "Bool", "Nil", "Console", "Clock", "Env", "Secret",
+    "Int", "Float", "Duration", "String", "Bool", "Nil", "Console", "Clock", "Rand", "Env", "Secret",
     "SecretStore", "Dir", "File", "Net", "Exec", "Socket", "Listener", "List", "Option", "Result",
     "Dict", "BuildOut", "BuildRead", "BuildEnv", "BuildNet", "BuildExec",
 ];
@@ -460,7 +463,7 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
 /// authority (the rights of `Dir`/`Net` don't matter here — any are grantable).
 pub(crate) fn is_capability_type(t: &ast::Type) -> bool {
     matches!(t, ast::Type::Named(n, _)
-        if matches!(n.as_str(), "Console" | "Clock" | "Env" | "Dir" | "File" | "Net" | "Exec" | "Secret" | "SecretStore"))
+        if matches!(n.as_str(), "Console" | "Clock" | "Rand" | "Env" | "Dir" | "File" | "Net" | "Exec" | "Secret" | "SecretStore"))
 }
 
 /// Whether `t` is `List(String)` — the command-line-arguments parameter `main`
@@ -771,6 +774,7 @@ impl Checker {
             "Nil" => Ty::Nil,
             "Console" => Ty::Console,
             "Clock" => Ty::Clock,
+            "Rand" => Ty::Rand,
             "Env" => Ty::Env,
             "Secret" => Ty::Secret,
             "Exec" => Ty::Exec,
@@ -816,6 +820,7 @@ impl Checker {
                 "Nil" => Ty::Nil,
                 "Console" => Ty::Console,
             "Clock" => Ty::Clock,
+            "Rand" => Ty::Rand,
             "Env" => Ty::Env,
             "Secret" => Ty::Secret,
                 "Exec" => Ty::Exec,
@@ -1000,6 +1005,7 @@ impl Checker {
         match name {
             "print" => Some((vec![Ty::Console, Ty::String], Ty::Nil)),
             "now" => Some((vec![Ty::Clock], Ty::Int)),
+            "rand_u64" => Some((vec![Ty::Rand], Ty::Int)),
             "get_env" => Some((vec![Ty::Env, Ty::String], Ty::Named("Option".into(), vec![Ty::String]))),
             // Build-time host operations (the build sandbox provides these). Each
             // consumes a build capability; the specific tool/dir/host/var is the
@@ -1273,6 +1279,24 @@ impl Checker {
     }
 
     fn check_dir_op(&mut self, name: &str, args: &[Expr]) -> Result<Option<Ty>, TypeError> {
+        // RFC-0011: `only` is polymorphic — `dir.only(DirPolicy)` narrows a Dir's
+        // entry policy (handled here); a `Net` receiver defers to `check_net_op`.
+        if name == "only" {
+            if args.len() != 2 {
+                return terr(format!("`only` expects 2 argument(s) but got {}", args.len()));
+            }
+            let recv = self.infer(&args[0])?;
+            let Ty::Dir(rights) = self.resolve(&recv) else {
+                return Ok(None); // not a Dir.only — let check_net_op handle Net.only
+            };
+            if !rights.read {
+                return terr(format!("`only` needs `Read` but the capability is `{rights}`"));
+            }
+            let pt = self.infer(&args[1])?;
+            self.unify(&Ty::Named("DirPolicy".into(), Vec::new()), &pt)
+                .map_err(|e| TypeError { message: format!("in call to `only`: {}", e.message) })?;
+            return Ok(Some(Ty::Dir(rights)));
+        }
         let arity = match name {
             "list" => 1,
             "read" | "exists" | "is_dir" | "subtree" | "make_dir" | "read_file" | "write_file" => 2,
@@ -2750,6 +2774,7 @@ pub fn ty_to_ast(t: &Ty) -> Option<witchy_syntax::ast::Type> {
         Ty::Nil => T::Named("Nil".into(), Vec::new()),
         Ty::Console => T::Named("Console".into(), Vec::new()),
         Ty::Clock => T::Named("Clock".into(), Vec::new()),
+        Ty::Rand => T::Named("Rand".into(), Vec::new()),
         Ty::Env => T::Named("Env".into(), Vec::new()),
         Ty::Secret => T::Named("Secret".into(), Vec::new()),
         Ty::Exec => T::Named("Exec".into(), Vec::new()),
