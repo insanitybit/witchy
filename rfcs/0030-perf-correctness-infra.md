@@ -1,9 +1,9 @@
 ---
 rfc: 0030
 title: Performance & correctness infrastructure — one opt lever, differential de-opt, deterministic counters
-status: proposed
+status: implemented
 created: 2026-06-28
-tracking:
+tracking: branch perf/rfc-0030-witchy-opt (WITCHY_OPT lever + de-opt registry, witchy stats counters, differential sweep + soak in src/stats.rs, bench leg in scripts/check.sh)
 ---
 
 # RFC-0030: Performance & correctness infrastructure

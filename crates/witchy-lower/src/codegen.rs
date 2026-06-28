@@ -4529,7 +4529,15 @@ impl Codegen {
     /// is still correct — just less memory-efficient). Bumps `wm_level`; the
     /// caller decrements it once the body is lowered.
     fn loop_watermark_wir(&mut self, body: &Block) -> Option<(witchy_wir::wir::WirNode, witchy_wir::wir::WirNode)> {
-        if force_copy_mode() || self.wm_level >= WM_POOL || !self.loop_arena_resettable(body) {
+        // Gated on the `region` optimization (RFC-0030): `WITCHY_OPT=-region` (or
+        // `none`) drops the per-iteration reset so the loop's arena garbage leaks —
+        // correct, just unbounded — which is exactly the regression the soak test
+        // and the differential sweep guard against.
+        if force_copy_mode()
+            || !witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::Region)
+            || self.wm_level >= WM_POOL
+            || !self.loop_arena_resettable(body)
+        {
             return None;
         }
         let wm = format!("__witchy_wm_{}", self.wm_level);

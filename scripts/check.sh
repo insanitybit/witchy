@@ -65,6 +65,17 @@ run "tests (workspace)"        "${test_cmd[@]}"
 run "wasm playground build"    "${wasm_cargo[@]}" build --lib --no-default-features --target wasm32-unknown-unknown
 if [ "$full" -eq 1 ]; then
     run "e2e (from scratch)"   ./scripts/e2e-full.sh
+    # RFC-0030 bench/soak. The deterministic guards — the never-OOM soak and the
+    # per-optimization counter assertions (src/stats.rs) — are HARD-gated in the
+    # workspace test step above. The wall-clock benchmarks below are TREND only:
+    # timing is noisy and machine-dependent, so a regression warns rather than
+    # failing the gate, and the leg is skipped when the harness tools are absent.
+    if command -v hyperfine >/dev/null 2>&1 && [ -f bench/run.sh ]; then
+        printf '\n\033[1;34m==> [bench] trend vs bench/BASELINE.md (informational)\033[0m\n'
+        bash bench/run.sh || printf '\033[1;33mbench: regression or harness issue (non-fatal)\033[0m\n'
+    else
+        printf '\n\033[1;34m==> [bench] skipped (hyperfine/go toolchain not present)\033[0m\n'
+    fi
 fi
 
 printf '\n\033[1;32mall green\033[0m'

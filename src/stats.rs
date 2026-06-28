@@ -61,6 +61,11 @@ mod tests {
     // every iteration and balloons the heap to O(n^2).
     const ACC: &str = "fn main(console: Console):\n    var xs = []\n    var i = 0\n    while i < 400:\n        xs = list.push(xs, i)\n        i = i + 1\n    print(console, __render(list.length(xs)))\n";
 
+    // A soak loop: per-iteration scratch that never escapes. The `region`
+    // (loop-watermark) reclaim resets the arena each iteration, so heap stays
+    // CONSTANT no matter how many iterations; with it off the same program leaks.
+    const SOAK: &str = "fn main(console: Console):\n    var sum = 0\n    var i = 0\n    while i < 5000:\n        let tmp = [i, i + 1, i + 2, i + 3]\n        sum = sum + list.length(tmp)\n        i = i + 1\n    print(console, __render(sum))\n";
+
     /// RFC-0030 counter assertion: the `inplace` optimization is proven to FIRE
     /// (fewer re-owns, less heap) while changing nothing observable. This is the
     /// `(b)` half of the definition of done, the complement to the differential
@@ -89,5 +94,64 @@ mod tests {
             on.heap_bytes,
             off.heap_bytes
         );
+    }
+
+    /// RFC-0030 soak / never-OOM guard: a long loop whose per-iteration scratch is
+    /// escape-free must run in BOUNDED heap — the `region` loop-watermark reclaim
+    /// resets the arena every iteration. With it off the same program leaks O(n).
+    /// `peak_heap < budget` is the deterministic never-OOM assertion the goal names.
+    #[test]
+    fn region_reclaim_keeps_soak_bounded() {
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let on = compute(SOAK).expect("compute with region on");
+        opt::set_for_tests(Some(OptSet::default_set().without(Opt::Region)));
+        let off = compute(SOAK).expect("compute with region off");
+        opt::set_for_tests(None);
+
+        assert_eq!(on.output, off.output, "the optimization must not change output");
+        assert_eq!(on.output, vec!["20000".to_string()]);
+        // Bounded heap regardless of iteration count — the never-OOM floor.
+        assert!(on.heap_bytes < 4096, "region reclaim must bound the soak heap: {}", on.heap_bytes);
+        // ... and far below the leaking build.
+        assert!(
+            off.heap_bytes > on.heap_bytes * 10,
+            "without region the soak leaks O(n): on={} off={}",
+            on.heap_bytes,
+            off.heap_bytes
+        );
+    }
+
+    /// RFC-0030 differential de-opt sweep (DoD half (a)): a program's OUTPUT must
+    /// be identical under every `WITCHY_OPT` setting — `none`, `all`, the default,
+    /// and the default minus each optimization — AND must match the interpreter
+    /// oracle. Toggling an optimization changes *how* a program runs, never *what*
+    /// it computes; walking `Opt::ALL` covers new optimizations automatically.
+    #[test]
+    fn differential_sweep_output_is_invariant_on_both_backends() {
+        let src = "fn main(console: Console):\n    var xs = []\n    var s = \"\"\n    var d = dict.new()\n    var i = 0\n    while i < 300:\n        xs = list.push(xs, i)\n        s = s + __render(i % 10)\n        d = dict.update(d, i % 7, 0, fn(n: Int): n + 1)\n        i = i + 1\n    print(console, __render(list.length(xs)))\n    print(console, __render(string.length(s)))\n    print(console, __render(dict.get_or(d, 3, 0)))\n";
+
+        // The interpreter oracle (the fixed semantics; it has no WITCHY_OPT).
+        let linked = crate::resolve_std_only(src).expect("link");
+        typeck::check(&linked).expect("typeck");
+        let oracle = crate::interpreter::run_module(linked, ".", Vec::new()).expect("interp run");
+
+        opt::set_for_tests(Some(OptSet::all()));
+        let base = compute(src).expect("compute all").output;
+        opt::set_for_tests(None);
+        assert_eq!(base, oracle, "wasm (all) must match the interpreter oracle");
+
+        let mut settings: Vec<(String, OptSet)> = vec![
+            ("none".into(), OptSet::none()),
+            ("default".into(), OptSet::default_set()),
+        ];
+        for o in Opt::ALL {
+            settings.push((format!("-{}", o.name()), OptSet::default_set().without(o)));
+        }
+        for (label, set) in settings {
+            opt::set_for_tests(Some(set));
+            let out = compute(src).expect("compute").output;
+            opt::set_for_tests(None);
+            assert_eq!(out, base, "WITCHY_OPT={label} changed observable output");
+        }
     }
 }
