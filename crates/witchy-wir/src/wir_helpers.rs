@@ -46,7 +46,7 @@ pub fn print_str_helper() -> WirFunc {
 /// `$ensure(size: i32)` — grow linear memory so `$heap + size` fits. Mirrors the
 /// `ENSURE_WAT` helper: `need = heap + size; have = memory.size * 65536; if need
 /// >u have: drop(memory.grow(ceil((need-have)/65536)))`. Uses the `$heap` global.
-pub fn ensure_helper() -> WirFunc {
+pub fn ensure_helper(checked: bool) -> WirFunc {
     let getl = |n: &str| WirExpr::GetLocal(n.into());
     let i32c = WirExpr::ConstI32;
     let bin = |op: BinOp, l: WirExpr, r: WirExpr| WirExpr::Binary {
@@ -55,6 +55,39 @@ pub fn ensure_helper() -> WirFunc {
         lhs: Box::new(l),
         rhs: Box::new(r),
     };
+    let mut body = vec![
+        WirNode::SetLocal {
+            local: "need".into(),
+            value: bin(BinOp::Add, WirExpr::GetGlobal("heap".into()), getl("size")),
+        },
+        WirNode::SetLocal {
+            local: "have".into(),
+            value: bin(BinOp::Mul, WirExpr::MemorySize, i32c(65536)),
+        },
+        WirNode::If {
+            cond: bin(BinOp::GtU, getl("need"), getl("have")),
+            then_: vec![WirNode::Drop(WirExpr::MemoryGrow(Box::new(bin(
+                BinOp::DivU,
+                bin(BinOp::Add, bin(BinOp::Sub, getl("need"), getl("have")), i32c(65535)),
+                i32c(65536),
+            ))))],
+            els: vec![],
+            result: None,
+        },
+    ];
+    // (RFC-0023) Every allocator funnels through `$ensure` before writing, so this is the
+    // chokepoint at which to reclaim stale redzones: hand the host the current `$heap`
+    // (the allocation's base) so it can drop any registered object whose redzone sits
+    // at/above it — i.e. space a region/watermark reset is about to reuse.
+    if checked {
+        body.insert(
+            0,
+            WirNode::Do(WirExpr::CallHost {
+                import: "heap_frontier".into(),
+                args: vec![WirExpr::GetGlobal("heap".into())],
+            }),
+        );
+    }
     WirFunc {
         name: "ensure".into(),
         params: vec![WirLocal { name: "size".into(), ty: WirTy::Bool }],
@@ -63,26 +96,27 @@ pub fn ensure_helper() -> WirFunc {
             WirLocal { name: "need".into(), ty: WirTy::Bool },
             WirLocal { name: "have".into(), ty: WirTy::Bool },
         ],
-        body: vec![
-            WirNode::SetLocal {
-                local: "need".into(),
-                value: bin(BinOp::Add, WirExpr::GetGlobal("heap".into()), getl("size")),
-            },
-            WirNode::SetLocal {
-                local: "have".into(),
-                value: bin(BinOp::Mul, WirExpr::MemorySize, i32c(65536)),
-            },
-            WirNode::If {
-                cond: bin(BinOp::GtU, getl("need"), getl("have")),
-                then_: vec![WirNode::Drop(WirExpr::MemoryGrow(Box::new(bin(
-                    BinOp::DivU,
-                    bin(BinOp::Add, bin(BinOp::Sub, getl("need"), getl("have")), i32c(65535)),
-                    i32c(65536),
-                ))))],
-                els: vec![],
-                result: None,
-            },
-        ],
+        body,
+        raw_body: None,
+    }
+}
+
+/// (RFC-0023) `$__heap_reclaim(wm: i32)` — tell the checked-heap shadow that everything
+/// at or above `wm` is being reclaimed (drop those redzones). Emitted by the `region:`
+/// pointer copy-out just before it slides its result down over the body's allocations
+/// via a raw `memory.copy` (which bypasses `$ensure`, so the shadow wouldn't otherwise
+/// learn of the reuse). Routed through this helper rather than an inline `CallHost` so
+/// the capability-minimal prune isn't deferred (`no_direct_host` stays true).
+pub fn heap_reclaim_helper() -> WirFunc {
+    WirFunc {
+        name: "__heap_reclaim".into(),
+        params: vec![WirLocal { name: "wm".into(), ty: WirTy::Bool }],
+        ret: vec![],
+        locals: vec![],
+        body: vec![WirNode::Do(WirExpr::CallHost {
+            import: "heap_frontier".into(),
+            args: vec![WirExpr::GetLocal("wm".into())],
+        })],
         raw_body: None,
     }
 }
@@ -3969,11 +4003,24 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
-        "ensure" => Some(WirHelperSpec {
-            func: ensure_helper(),
+        "ensure" => {
+            let checked = heap_check_enabled();
+            let import_deps: &'static [&'static str] =
+                if checked { &["heap_frontier"] } else { &[] };
+            Some(WirHelperSpec {
+                func: ensure_helper(checked),
+                helper_deps: &[],
+                import_deps,
+                uses_heap: true,
+                uses_table: false,
+            })
+        }
+        // (RFC-0023) Only ever reached when the checked codegen emits a call to it.
+        "__heap_reclaim" => Some(WirHelperSpec {
+            func: heap_reclaim_helper(),
             helper_deps: &[],
-            import_deps: &[],
-            uses_heap: true,
+            import_deps: &["heap_frontier"],
+            uses_heap: false,
             uses_table: false,
         }),
         "list_at" => Some(WirHelperSpec {

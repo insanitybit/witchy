@@ -139,3 +139,50 @@
             "an overrun into the redzone must trap the sweep, got: {err}"
         );
     }
+
+    // A region/watermark reset moves $heap back and reuses the space. `heap_frontier(wm)`
+    // is the reclaim signal (emitted by the checked `$ensure` and the region copy-out): it
+    // drops every redzone reaching `wm`, so the reused space's legitimate overwrite (here,
+    // the i64 store over A's old redzone) is NOT later mistaken for an overrun.
+    const HEAP_REGION_REUSE: &str = r#"
+        (module
+          (import "witchy" "heap_register" (func $reg (param i32 i32)))
+          (import "witchy" "heap_frontier" (func $reclaim (param i32)))
+          (memory (export "memory") 1)
+          (func (export "run")
+            (call $reg (i32.const 16) (i32.const 20))   ;; A [16,20), redzone [20,28)
+            (call $reclaim (i32.const 16))              ;; reset to wm=16 reclaims A's redzone
+            (i64.store (i32.const 20) (i64.const 123))  ;; reused space overwritten (legit)
+            (call $reg (i32.const 16) (i32.const 28))))  ;; B re-registered at the base
+    "#;
+
+    #[test]
+    fn heap_check_region_reuse_does_not_false_positive() {
+        let mut rt = Runtime::new().unwrap();
+        let mut vm = rt.spawn(HEAP_REGION_REUSE, Capabilities::none(), 4).unwrap();
+        vm.run().expect("a reclaim of the watermark must drop the stale redzone");
+    }
+
+    // The reclaim must NOT drop a redzone that lies entirely below the watermark — a
+    // pre-region object stays guarded across the region.
+    const HEAP_RECLAIM_KEEPS_BELOW: &str = r#"
+        (module
+          (import "witchy" "heap_register" (func $reg (param i32 i32)))
+          (import "witchy" "heap_frontier" (func $reclaim (param i32)))
+          (memory (export "memory") 1)
+          (func (export "run")
+            (call $reg (i32.const 16) (i32.const 20))   ;; A [16,20), redzone [20,28)
+            (call $reclaim (i32.const 28))              ;; wm=28 is above A's whole redzone
+            (i32.store (i32.const 20) (i32.const 0))))   ;; corrupt A's still-guarded redzone
+    "#;
+
+    #[test]
+    fn heap_check_reclaim_keeps_redzone_below_watermark() {
+        let mut rt = Runtime::new().unwrap();
+        let mut vm = rt.spawn(HEAP_RECLAIM_KEEPS_BELOW, Capabilities::none(), 4).unwrap();
+        let err = vm.run().map(|_| ()).unwrap_err();
+        assert!(
+            err.to_string().contains("HEAP CHECK"),
+            "a redzone below the reclaim watermark must stay guarded, got: {err}"
+        );
+    }

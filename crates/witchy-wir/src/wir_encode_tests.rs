@@ -255,7 +255,7 @@
                 params: vec![Kind::I64],
                 results: vec![],
             }],
-            funcs: vec![ensure_helper(), list_push_cap_helper(), run],
+            funcs: vec![ensure_helper(false), list_push_cap_helper(), run],
             memory_pages: 1,
             data: vec![],
             globals: vec![
@@ -365,7 +365,7 @@
                 params: vec![Kind::I32, Kind::I32],
                 results: vec![],
             }],
-            funcs: vec![ensure_helper(), int_to_string_helper(false), print_str_helper(), run],
+            funcs: vec![ensure_helper(false), int_to_string_helper(false), print_str_helper(), run],
             memory_pages: 1,
             data: vec![],
             globals: vec![WirGlobal {
@@ -414,7 +414,7 @@
                 params: vec![Kind::I64],
                 results: vec![],
             }],
-            funcs: vec![ensure_helper(), run],
+            funcs: vec![ensure_helper(false), run],
             memory_pages: 1,
             data: vec![],
             globals: vec![WirGlobal {
@@ -677,7 +677,7 @@
                 params: vec![Kind::I64],
                 results: vec![],
             }],
-            funcs: vec![ensure_helper(), substr_helper(), run],
+            funcs: vec![ensure_helper(false), substr_helper(), run],
             memory_pages: 1,
             data,
             globals: vec![WirGlobal {
@@ -742,7 +742,7 @@
                 results: vec![],
             }],
             funcs: vec![
-                ensure_helper(),
+                ensure_helper(false),
                 substr_helper(),
                 char_to_byte_helper(),
                 str_substring_helper(),
@@ -810,7 +810,7 @@
                 params: vec![Kind::I64],
                 results: vec![],
             }],
-            funcs: vec![ensure_helper(), substr_helper(), is_ws_helper(), trim_helper(), run],
+            funcs: vec![ensure_helper(false), substr_helper(), is_ws_helper(), trim_helper(), run],
             memory_pages: 1,
             data,
             globals: vec![WirGlobal {
@@ -866,7 +866,7 @@
                 params: vec![Kind::I64],
                 results: vec![],
             }],
-            funcs: vec![ensure_helper(), list_push_helper(), run],
+            funcs: vec![ensure_helper(false), list_push_helper(), run],
             memory_pages: 1,
             data,
             globals: vec![WirGlobal {
@@ -930,7 +930,7 @@
                 params: vec![Kind::I64],
                 results: vec![],
             }],
-            funcs: vec![ensure_helper(), substr_helper(), list_push_helper(), split_helper(), run],
+            funcs: vec![ensure_helper(false), substr_helper(), list_push_helper(), split_helper(), run],
             memory_pages: 1,
             data,
             globals: vec![WirGlobal {
@@ -994,7 +994,7 @@
                 results: vec![],
             }],
             funcs: vec![
-                ensure_helper(),
+                ensure_helper(false),
                 substr_helper(),
                 char_to_byte_helper(),
                 str_substring_helper(),
@@ -1065,7 +1065,7 @@
                 params: vec![Kind::I64],
                 results: vec![],
             }],
-            funcs: vec![ensure_helper(), list_concat_helper(), run],
+            funcs: vec![ensure_helper(false), list_concat_helper(), run],
             memory_pages: 1,
             data,
             globals: vec![WirGlobal {
@@ -1125,7 +1125,7 @@
                 params: vec![Kind::I64],
                 results: vec![],
             }],
-            funcs: vec![ensure_helper(), ascii_case_helper(), run],
+            funcs: vec![ensure_helper(false), ascii_case_helper(), run],
             memory_pages: 1,
             data,
             globals: vec![WirGlobal {
@@ -1243,7 +1243,7 @@
                 results: vec![],
             }],
             funcs: vec![
-                ensure_helper(),
+                ensure_helper(false),
                 str_eq_helper(),
                 key_eq_helper(),
                 dict_hash_helper(),
@@ -1326,7 +1326,7 @@
         let module = WirModule {
             imports: vec![WirImport { name: "print_int".into(), params: vec![Kind::I64], results: vec![] }],
             funcs: vec![
-                ensure_helper(),
+                ensure_helper(false),
                 str_eq_helper(),
                 key_eq_helper(),
                 dict_hash_helper(),
@@ -1398,7 +1398,7 @@
         };
         let module = WirModule {
             imports: vec![WirImport { name: "print_int".into(), params: vec![Kind::I64], results: vec![] }],
-            funcs: vec![ensure_helper(), match_at_helper(), replace_helper(), run],
+            funcs: vec![ensure_helper(false), match_at_helper(), replace_helper(), run],
             memory_pages: 1,
             data,
             globals: vec![WirGlobal { name: "heap".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(1024), export: None }],

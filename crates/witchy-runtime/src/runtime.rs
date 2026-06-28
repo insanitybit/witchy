@@ -437,10 +437,11 @@ pub(crate) fn link_capability_imports(
     linker: &mut Linker<VmState>,
     caps: &Capabilities,
 ) -> Result<()> {
-    // (RFC-0023) The checked-heap shadow import is not a capability — it grants no
-    // authority (it only poisons/records a redzone), so it is always defined and only
-    // the checked codegen ever emits a call to it.
+    // (RFC-0023) The checked-heap shadow imports are not capabilities — they grant no
+    // authority (they only poison/record/reclaim a redzone), so they are always defined
+    // and only the checked codegen ever emits calls to them.
     linker.func_wrap("witchy", "heap_register", host_heap_register)?;
+    linker.func_wrap("witchy", "heap_frontier", host_heap_frontier)?;
 
     // --- capability wiring: only granted host functions are defined ---
     if caps.print {
@@ -1698,14 +1699,35 @@ fn host_heap_register(mut caller: Caller<'_, VmState>, start: i32, end: i32) -> 
     if start < 0 || end < start {
         return Ok(());
     }
+    let (s, e) = (start as u32, end as u32);
     let mem = memory_of(&mut caller)?;
-    let rz_start = end as usize;
+    let rz_start = e as usize;
     let rz_end = rz_start + HEAP_REDZONE;
     let data = mem.data_mut(&mut caller);
     if rz_end <= data.len() {
         data[rz_start..rz_end].fill(HEAP_POISON);
     }
-    caller.data_mut().heap_objects.push((start as u32, end as u32));
+    caller.data_mut().heap_objects.push((s, e));
+    Ok(())
+}
+
+/// (RFC-0023) Reset-aware reclaim: drop every registered object whose redzone reaches
+/// `addr`, since the space at/above `addr` is about to be legitimately reused. Two
+/// callers, both passing the low edge of the reclaimed range: the checked `$ensure`
+/// passes the current `$heap` (so reuse by *any* allocator after a `$heap = wm` reset is
+/// covered — even uninstrumented ones — with no codegen hook on the reset); the
+/// `region:` pointer copy-out passes its watermark `wm` *before* sliding the result down
+/// over the body's allocations (a raw `memory.copy` that bypasses `$ensure`). The
+/// object's body may still be live below `addr`; we only stop guarding its redzone.
+fn host_heap_frontier(mut caller: Caller<'_, VmState>, addr: i32) -> Result<()> {
+    let frontier = addr.max(0) as u32;
+    // Keep only objects whose entire redzone lies strictly below the frontier; evict any
+    // whose redzone `[oe, oe+rz)` reaches the frontier, since a write at/above it will
+    // legitimately reuse that space.
+    caller
+        .data_mut()
+        .heap_objects
+        .retain(|&(_, oe)| oe as u64 + HEAP_REDZONE as u64 <= frontier as u64);
     Ok(())
 }
 

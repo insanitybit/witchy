@@ -3313,6 +3313,16 @@ impl Codegen {
                     local: TUPLE_TMP.to_string(),
                     value: W::Call { func: helper, args: vec![W::GetLocal(TUPLE_TMP.to_string())] },
                 });
+                // (RFC-0023) The next `memory.copy` slides the result down over the
+                // body's (and the deep-copy's) allocations, reusing every address at or
+                // above the watermark — a raw copy `$ensure` never sees. Tell the checked
+                // heap to drop those redzones first, so the reuse isn't read as an overrun.
+                if witchy_wir::wir_helpers::heap_check_enabled() {
+                    seq.push(N::Do(W::Call {
+                        func: "__heap_reclaim".to_string(),
+                        args: vec![W::GetLocal(wm.clone())],
+                    }));
+                }
                 seq.push(N::MemoryCopy {
                     dest: W::GetLocal(wm.clone()),
                     src: W::GetGlobal("rcopy_base".to_string()),
