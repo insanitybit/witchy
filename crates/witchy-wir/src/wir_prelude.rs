@@ -263,11 +263,12 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "crypto.rsa_pkcs1_sha256_verify" (func $crypto_rsa_pkcs1_sha256_verify (param i32 i32 i32) (result i32)))
   (import "witchy" "crypto.ed25519_verify" (func $crypto_ed25519_verify (param i32 i32 i32) (result i32)))
   (import "witchy" "exec_run" (func $exec_run_host (param i32 i32 i32 i32) (result i32)))
+  (import "witchy" "heap_register" (func $heap_register_host (param i32 i32)))
 "#;
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 59;
+pub const IMPORT_COUNT: usize = 60;
 
 /// The full ordered name list for the funcs section: `$mk0..$mk{MAX_MK}` then
 /// the static helper names. Matches the order the prelude emits bodies, so

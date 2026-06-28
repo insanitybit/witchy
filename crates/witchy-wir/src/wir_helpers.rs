@@ -91,8 +91,26 @@ pub fn ensure_helper() -> WirFunc {
 /// `4 + 8n` bytes, store the i32 tag/length header then each i64 field slot,
 /// advance `$heap`, return the pointer. Mirrors `wir_prelude::mk_helper` /
 /// `codegen::mk_helper`. Calls `$ensure`; uses the `$heap` global.
-pub fn mk_helper(n: usize) -> WirFunc {
+/// (RFC-0023) Trailing redzone size, in bytes, reserved after each checked
+/// allocation. MUST equal `witchy_runtime`'s `HEAP_REDZONE` — the host poisons and
+/// sweeps exactly this many bytes at `[end, end+HEAP_REDZONE)`.
+pub const HEAP_REDZONE: usize = 8;
+
+/// (RFC-0023) Whether the opt-in checked heap is selected for this compile. Read from
+/// the environment like the other codegen toggles (`WITCHY_WASM_OPT`, `WIRDIAG`), so a
+/// single `WITCHY_HEAP_CHECK=1` makes both the codegen instrument allocations and the
+/// runtime sweep their redzones.
+pub fn heap_check_enabled() -> bool {
+    std::env::var_os("WITCHY_HEAP_CHECK").is_some_and(|v| v == "1")
+}
+
+pub fn mk_helper(n: usize, checked: bool) -> WirFunc {
     let size = 4 + 8 * n;
+    // (RFC-0023) When checked, reserve a trailing redzone the host poisons via
+    // `heap_register` and sweeps after the run — so an overrun past this object's end
+    // is caught. The object layout `[p, p+size)` and the returned `p` are unchanged,
+    // so a correct program behaves identically; only `$heap` advances by `rz` more.
+    let rz = if checked { HEAP_REDZONE } else { 0 };
     let mut params = vec![WirLocal { name: "tag".into(), ty: WirTy::Bool }];
     for i in 0..n {
         params.push(WirLocal { name: format!("f{i}"), ty: WirTy::Int });
@@ -100,7 +118,7 @@ pub fn mk_helper(n: usize) -> WirFunc {
     let mut body = vec![
         WirNode::Do(WirExpr::Call {
             func: "ensure".into(),
-            args: vec![WirExpr::ConstI32(size as i32)],
+            args: vec![WirExpr::ConstI32((size + rz) as i32)],
         }),
         WirNode::SetLocal { local: "p".into(), value: WirExpr::GetGlobal("heap".into()) },
         // header: store the i32 tag at p+0.
@@ -119,14 +137,30 @@ pub fn mk_helper(n: usize) -> WirFunc {
             offset: (4 + 8 * i) as u32,
         });
     }
-    // advance $heap past the allocation, then return the base pointer.
+    // (RFC-0023) Hand the live object `[p, p+size)` to the host shadow, which poisons
+    // the redzone `[p+size, p+size+rz)`; the post-run sweep then proves it survived.
+    if checked {
+        body.push(WirNode::Do(WirExpr::CallHost {
+            import: "heap_register".into(),
+            args: vec![
+                WirExpr::GetLocal("p".into()),
+                WirExpr::Binary {
+                    op: BinOp::Add,
+                    kind: Kind::I32,
+                    lhs: Box::new(WirExpr::GetLocal("p".into())),
+                    rhs: Box::new(WirExpr::ConstI32(size as i32)),
+                },
+            ],
+        }));
+    }
+    // advance $heap past the allocation (and its redzone), then return the base pointer.
     body.push(WirNode::SetGlobal {
         global: "heap".into(),
         value: WirExpr::Binary {
             op: BinOp::Add,
             kind: Kind::I32,
             lhs: Box::new(WirExpr::GetLocal("p".into())),
-            rhs: Box::new(WirExpr::ConstI32(size as i32)),
+            rhs: Box::new(WirExpr::ConstI32((size + rz) as i32)),
         },
     });
     body.push(WirNode::Push(WirExpr::GetLocal("p".into())));
@@ -4647,10 +4681,16 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             if let Some(rest) = name.strip_prefix("mk") {
                 if let Ok(n) = rest.parse::<usize>() {
                     if n <= 256 {
+                        // (RFC-0023) Opt-in checked codegen: each aggregate allocator
+                        // emits a redzone + `heap_register` so an out-of-object overrun
+                        // is caught by the post-run sweep. Off by default (zero cost).
+                        let checked = heap_check_enabled();
+                        let import_deps: &'static [&'static str] =
+                            if checked { &["heap_register"] } else { &[] };
                         return Some(WirHelperSpec {
-                            func: mk_helper(n),
+                            func: mk_helper(n, checked),
                             helper_deps: &["ensure"],
-                            import_deps: &[],
+                            import_deps,
                             uses_heap: true,
                             uses_table: false,
                         });
