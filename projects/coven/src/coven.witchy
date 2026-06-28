@@ -327,6 +327,12 @@ impl Coven:
             // same issuer lacking those claims (""==""), letting an unrelated identity squat
             // and publish to the namespace.
             require(!string.is_empty(repo) && !string.is_empty(wf), 403, "cannot bind `" + ns + "`: the identity token carries no repository/workflow_ref claims (trusted publishing requires a CI identity)")?
+            // SEC-023: the first publisher must own the namespace. A real CI `repository` is
+            // `org/repo`; require its org to equal the namespace, so `evilorg/fork` cannot
+            // land-grab `victim`. (A `/`-less repository — a non-GitHub issuer or a test —
+            // can't express an org, so it is not org-checked; an attacker can't forge the
+            // signed claim, and every GitHub Actions token is `org/repo`.)
+            require(!string.contains(repo, "/") || ns == coven_trust.namespace_of(repo), 403, "namespace `" + ns + "` does not match the token's repository org `" + coven_trust.namespace_of(repo) + "`")?
             fs.ensure_dir(self.store, "_policy/" + ns)
             write(self.store, pubfile, json.encode(JsonObject([("issuer", JsonString(coven_json.str(claims, "iss"))), ("repository", JsonString(repo)), ("workflow_ref", JsonString(wf))])))
             Ok(coven_json.str(claims, "sub"))

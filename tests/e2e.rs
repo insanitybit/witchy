@@ -480,6 +480,27 @@ fn trusted_publishing_binds_repo_and_rejects_others() {
     assert!(out.status.success() && stdout(&out).contains("promote: 200"), "human promote: {}", stdout(&out));
 }
 
+/// SEC-023: the first trusted publish to a namespace must come from a repository whose
+/// org segment equals the namespace — so an attacker's CI token (`evilcorp/fork`) cannot
+/// land-grab a victim's intended namespace. A matching org binds it.
+#[test]
+fn trusted_publish_first_bind_requires_matching_repo_org() {
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "orgmatch");
+    let lib = fe.lib("victim/pkg", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
+
+    // A token from a DIFFERENT org cannot first-claim the `victim` namespace.
+    let evil = server.ci_token("evilcorp/fork", "release.yml");
+    let out = fe.pm(&lib, &["publish", "."], Some(&evil));
+    assert!(!out.status.success(), "a cross-org first-bind must be refused");
+    assert!(stdout(&out).contains("publish: 403"), "cross-org bind: {}", stdout(&out));
+
+    // A repository whose org IS the namespace may claim it.
+    let good = server.ci_token("victim/pkg-repo", "release.yml");
+    let out = fe.pm(&lib, &["publish", "."], Some(&good));
+    assert!(out.status.success() && stdout(&out).contains("publish: 200"), "matching-org bind: {}", stdout(&out));
+}
+
 /// SEC-018: on a trusted registry, `yank` requires an EXISTING maintainer of the
 /// namespace — it is not an unauthenticated operation. A non-maintainer token is
 /// refused 403; the maintainer (the human who promoted, bound TOFU) may yank.
