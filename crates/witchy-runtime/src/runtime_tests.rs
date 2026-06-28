@@ -87,3 +87,16 @@
             "expected an interrupt trap, got: {err}"
         );
     }
+
+    #[test]
+    fn read_wstr_list_huge_count_fails_closed_not_aborts() {
+        // SEC-033: a guest claiming i32::MAX elements in a tiny buffer must NOT pre-allocate
+        // ~51GB and abort the host — the capacity hint is capped at the slots that fit in
+        // memory, and the read fails closed (out-of-bounds Err) on the first slot past the end.
+        let mut data = vec![0u8; 8];
+        data[0..4].copy_from_slice(&i32::MAX.to_le_bytes());
+        assert!(
+            read_wstr_list(&data, 0).is_err(),
+            "a bogus huge list count must fail closed, not allocate/abort"
+        );
+    }
