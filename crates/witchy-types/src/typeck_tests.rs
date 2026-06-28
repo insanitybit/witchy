@@ -174,6 +174,17 @@
     }
 
     #[test]
+    fn ordering_a_non_ord_type_points_at_deriving_ord() {
+        // `<` on a concrete type without Ord must point at deriving `Ord`, and
+        // must not leak the `less` desugar name (nor mis-suggest the list
+        // function `last`, which the post-desugar unknown-function path used to).
+        let err = check_str("type Foo:\n    Foo(Int)\nfn main(console: Console):\n    print(console, \"${Foo(1) < Foo(2)}\")\n")
+            .expect_err("Foo has no Ord");
+        assert!(err.contains("Ord"), "{err}");
+        assert!(!err.contains("`less`") && !err.contains("`last`"), "should not leak desugar/typo: {err}");
+    }
+
+    #[test]
     fn accepts_a_well_typed_program() {
         let src = r#"
 fn double(n: Int) -> Int:

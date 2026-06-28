@@ -1922,6 +1922,22 @@ impl Checker {
                              are always available)"
                         ));
                     }
+                    // `<` `<=` `>` `>=` desugar to these trait-method calls; an
+                    // unresolved one means the operand's type lacks `Ord`, so name
+                    // the operator and the fix rather than leaking the desugar name
+                    // (and suggesting an unrelated `list` function as a "typo").
+                    if let Some(op) = match name.as_str() {
+                        "less" => Some("<"),
+                        "greater" => Some(">"),
+                        "less_equal" => Some("<="),
+                        "greater_equal" => Some(">="),
+                        _ => None,
+                    } {
+                        return terr(format!(
+                            "`{op}` is not defined for this type — it requires `Ord`; derive it \
+                             with `derive(PartialEq, Eq, PartialOrd, Ord)` or implement it"
+                        ));
+                    }
                     // If the name is an unimported stdlib function, point the way;
                     // otherwise suggest a near-miss stdlib name (a likely typo).
                     let hint = match witchy_syntax::linker::std_modules_for_function(name).as_slice() {
@@ -2327,7 +2343,9 @@ impl Checker {
                          the Ord trait"
                     )),
                     other => terr(format!(
-                        "ordering comparison requires Int, Float, String, or Duration, found `{other}`"
+                        "ordering comparison requires Int, Float, String, Duration, or a type \
+                         that derives `Ord` — found `{other}` (derive it with \
+                         `derive(PartialEq, Eq, PartialOrd, Ord)`)"
                     )),
                 }
             }
