@@ -196,6 +196,26 @@ pub fn net_only(allow: &[String], patterns: &str) -> Result<Vec<String>, String>
     Ok(narrowed)
 }
 
+/// Whether `secret`'s bytes are the host's signing key (the `--signing-key` seed).
+/// A `Secret` equal to the signing key — the bare `Secret` capability, or
+/// `SecretStore.require("signing")` — is SIGN-ONLY (`crypto.sign`/`public_key`) and
+/// must not be revealable: otherwise handing code a key to sign with also lets it
+/// exfiltrate the key. Named `--secret`/`--secret-file` value-secrets stay revealable.
+/// Both backends gate `crypto.reveal` through this one identity rule, so they can
+/// never drift, and the comparison is constant-time so a guessed secret leaks nothing.
+pub fn secret_is_signing_key(signing_key: Option<&[u8]>, secret: &[u8]) -> bool {
+    match signing_key {
+        Some(seed) if seed.len() == secret.len() => {
+            let mut diff = 0u8;
+            for (a, b) in seed.iter().zip(secret.iter()) {
+                diff |= a ^ b;
+            }
+            diff == 0
+        }
+        _ => false,
+    }
+}
+
 /// The error a backend MUST raise when `main` binds a host capability the host
 /// cannot actually mint, so BOTH backends refuse identically and the spec's
 /// "the root grant is always concrete — the host hands `main` a real capability or

@@ -948,6 +948,20 @@ impl Interpreter {
                 _ => err("secretstore.require expects (SecretStore, name)"),
             };
         }
+        // `crypto.reveal` is gated: a `Secret` equal to the signing key (the bare
+        // `Secret` / `require("signing")`) is sign-only and must not be revealed —
+        // only named value-secrets are. Mirrors the WASM host (`host_crypto_reveal_len`)
+        // through the one shared identity rule so the backends can't drift.
+        if name == "crypto.reveal" {
+            if let [Value::Secret(bytes)] = args {
+                if witchy_caps::capabilities::secret_is_signing_key(
+                    self.signing_key.as_ref().map(|s| s.as_slice()),
+                    bytes,
+                ) {
+                    return err("the signing key is not revealable; use crypto.sign / crypto.public_key");
+                }
+            }
+        }
         // Native stdlib modules (crypto, …): pure, stateless functions reached by
         // their qualified name (`crypto.sha256`). Dispatched through the registry
         // so adding one needs no change here — see `src/native.rs`.

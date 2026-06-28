@@ -3630,3 +3630,47 @@ fn sandbox_dir_requires_explicit_grant() {
     assert!(stdout(&out).contains("true"), "got: {}", stdout(&out));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// SEC-004: `crypto.reveal` gates the SIGNING key only. A named `--secret`
+/// value-secret (e.g. an OAuth client secret) stays revealable, but the signing key
+/// (`--signing-key`) is sign-only — revealing it aborts. Closes the seed-exfiltration
+/// hole while preserving the legitimate value-secret use.
+#[test]
+fn sandbox_reveal_gates_signing_key_only() {
+    let dir = unique("reveal");
+    // A named value-secret reveals fine.
+    let named = dir.join("named.witchy");
+    std::fs::write(
+        &named,
+        "import crypto\nimport secretstore\nfn main(console: Console, store: SecretStore):\n    print(console, crypto.reveal(secretstore.require(store, \"token\")))\n",
+    )
+    .unwrap();
+    let out = Command::new(BIN)
+        .args(["sandbox", "--secret", "token=s3cr3t", named.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "named-secret reveal failed: {}\n{}", stderr(&out), stdout(&out));
+    assert!(stdout(&out).contains("s3cr3t"), "got: {}", stdout(&out));
+
+    // The signing key is NOT revealable.
+    let seedfile = dir.join("seed.hex");
+    std::fs::write(&seedfile, "41".repeat(32)).unwrap();
+    let signing = dir.join("signing.witchy");
+    std::fs::write(
+        &signing,
+        "import crypto\nfn main(console: Console, key: Secret):\n    print(console, crypto.reveal(key))\n",
+    )
+    .unwrap();
+    let out = Command::new(BIN)
+        .args(["sandbox", "--signing-key", seedfile.to_str().unwrap(), signing.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "revealing the signing key must abort");
+    assert!(
+        stderr(&out).contains("not revealable") || stdout(&out).contains("not revealable"),
+        "expected a not-revealable error: out={} err={}",
+        stdout(&out),
+        stderr(&out)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

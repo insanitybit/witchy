@@ -2707,15 +2707,17 @@ fn yn(b: Bool) -> String:
         assert!(denied.is_err(), "signing imports must not instantiate without the grant");
     }
 
-    /// `SecretStore.get`/`.require` and `crypto.reveal` must behave identically on
-    /// both backends. The `signing` secret (granted by the seed) is fetched via
-    /// `require`, signed/published/revealed; an absent secret yields `None`. The
-    /// interpreter (oracle) and the compiled WASM must produce byte-identical
-    /// output — the same parity discipline as raw `crypto.sign`.
+    /// `SecretStore.get`/`.require` and `crypto.sign`/`public_key` must behave
+    /// identically on both backends. The `signing` secret (granted by the seed) is
+    /// fetched via `require`, signed over, and its public key derived; an absent
+    /// secret yields `None`. The interpreter (oracle) and the compiled WASM must
+    /// produce byte-identical output — the same parity discipline as raw
+    /// `crypto.sign`. (Revealing the signing key is SEC-004-gated and covered by
+    /// `signing_key_is_not_revealable_on_both_backends`.)
     #[test]
     fn secretstore_and_reveal_agree_on_both_backends() {
         use crate::runtime::{Capabilities, Runtime};
-        let src = "import secretstore\nimport crypto\nfn main(console: Console, secrets: SecretStore):\n    let key = secrets.require(\"signing\")\n    print(console, crypto.public_key(key))\n    print(console, crypto.sign(key, \"msg\"))\n    print(console, crypto.reveal(key))\n    match secrets.get(\"signing\"):\n        Some(k) -> print(console, \"got signing\")\n        None -> print(console, \"no signing\")\n    match secrets.get(\"absent\"):\n        Some(k) -> print(console, \"unexpected\")\n        None -> print(console, \"absent none\")\n";
+        let src = "import secretstore\nimport crypto\nfn main(console: Console, secrets: SecretStore):\n    let key = secrets.require(\"signing\")\n    print(console, crypto.public_key(key))\n    print(console, crypto.sign(key, \"msg\"))\n    match secrets.get(\"signing\"):\n        Some(k) -> print(console, \"got signing\")\n        None -> print(console, \"no signing\")\n    match secrets.get(\"absent\"):\n        Some(k) -> print(console, \"unexpected\")\n        None -> print(console, \"absent none\")\n";
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
@@ -2723,8 +2725,8 @@ fn yn(b: Bool) -> String:
         let interp_out =
             interpreter::run_module_signed(linked.clone(), ".", Vec::new(), Vec::new(), Some(seed))
                 .expect("interp");
-        assert_eq!(interp_out[3], "got signing");
-        assert_eq!(interp_out[4], "absent none");
+        assert_eq!(interp_out[2], "got signing");
+        assert_eq!(interp_out[3], "absent none");
         let bytes = codegen::compile_module_binary(&linked)
             .expect("compile")
             .expect("the binary path lowers this program");
@@ -2745,7 +2747,50 @@ fn yn(b: Bool) -> String:
         assert_eq!(
             actor.output(),
             interp_out,
-            "SecretStore.get/require + crypto.reveal must be byte-identical on both backends"
+            "SecretStore.get/require + crypto.sign/public_key must be byte-identical on both backends"
+        );
+    }
+
+    /// SEC-004: the signing key — the bare `Secret`, or `require("signing")` — is
+    /// SIGN-ONLY. `crypto.reveal` on it must error (so handing code a key to sign
+    /// with cannot also exfiltrate it), and it must error IDENTICALLY on both
+    /// backends (the gate is one shared identity rule). Named value-secrets stay
+    /// revealable — covered end-to-end by the `sandbox` CLI e2e test.
+    #[test]
+    fn signing_key_is_not_revealable_on_both_backends() {
+        use crate::runtime::{Capabilities, Runtime};
+        let src = "import secretstore\nimport crypto\nfn main(console: Console, secrets: SecretStore):\n    print(console, crypto.reveal(secrets.require(\"signing\")))\n";
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let seed = [7u8; 32];
+
+        // Interpreter (oracle): refuses.
+        let interp =
+            interpreter::run_module_signed(linked.clone(), ".", Vec::new(), Vec::new(), Some(seed));
+        let msg = interp.expect_err("interp must refuse to reveal the signing key").message;
+        assert!(msg.contains("not revealable"), "unexpected interp error: {msg}");
+
+        // Compiled WASM (the security boundary): also refuses.
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                &bytes,
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    signing_key: Some(seed),
+                    ..Default::default()
+                },
+                64,
+            )
+            .expect("spawn");
+        assert!(
+            actor.run().is_err(),
+            "compiled backend must refuse to reveal the signing key"
         );
     }
 

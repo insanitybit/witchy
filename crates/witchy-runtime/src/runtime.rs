@@ -1533,6 +1533,12 @@ fn host_secretstore_lookup(mut caller: Caller<'_, VmState>, name_ptr: i32) -> Re
 fn host_crypto_reveal_len(mut caller: Caller<'_, VmState>, key: i32) -> Result<i32> {
     use crate::value::NativeValue as Value;
     let bytes = secret_seed_bytes(&caller.data().caps, key)?;
+    if witchy_caps::capabilities::secret_is_signing_key(
+        caller.data().caps.signing_key.as_ref().map(|s| s.as_slice()),
+        &bytes,
+    ) {
+        bail!("the signing key is not revealable; use crypto.sign / crypto.public_key");
+    }
     let f = crate::native::lookup("crypto.reveal")
         .ok_or_else(|| Error::msg("crypto.reveal is not registered"))?;
     let s = match f(&[Value::Secret(bytes)]).map_err(|e| Error::msg(e.message))? {
