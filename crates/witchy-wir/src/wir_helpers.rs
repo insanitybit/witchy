@@ -228,7 +228,7 @@ pub fn list_at_helper() -> WirFunc {
 /// otherwise count digits (a div-by-10 loop), allocate `[len][digits]`, write the
 /// optional `-` then the digits back-to-front (a second div/rem loop). Calls
 /// `$ensure`; uses the `$heap` global; byte writes via `Store8`.
-pub fn int_to_string_helper() -> WirFunc {
+pub fn int_to_string_helper(checked: bool) -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -240,18 +240,28 @@ pub fn int_to_string_helper() -> WirFunc {
         lhs: Box::new(l),
         rhs: Box::new(r),
     };
-    // n == 0 → the single ascii '0'.
-    let then_zero = vec![
-        N::Do(E::Call { func: "ensure".into(), args: vec![i32c(5)] }),
+    // (RFC-0023) This string builder — exact-size, no spare capacity — is the home of
+    // the motivating `int_to_string` OOB. When checked, reserve+register a redzone so
+    // the post-run sweep proves the digit writes stayed inside the object.
+    let rz = if checked { HEAP_REDZONE as i32 } else { 0 };
+    let reg = |start: E, end: E| {
+        N::Do(E::CallHost { import: "heap_register".into(), args: vec![start, end] })
+    };
+    // n == 0 → the single ascii '0' (object `[res, res+5)`).
+    let mut then_zero = vec![
+        N::Do(E::Call { func: "ensure".into(), args: vec![i32c(5 + rz)] }),
         N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
         N::Store { ptr: getl("res"), value: i32c(1), kind: Kind::I32, offset: 0 },
         N::Store8 { ptr: getl("res"), value: i32c(48), offset: 4 },
-        N::SetGlobal {
-            global: "heap".into(),
-            value: bin(BinOp::Add, Kind::I32, getl("res"), i32c(5)),
-        },
-        N::Push(getl("res")),
     ];
+    if checked {
+        then_zero.push(reg(getl("res"), bin(BinOp::Add, Kind::I32, getl("res"), i32c(5))));
+    }
+    then_zero.push(N::SetGlobal {
+        global: "heap".into(),
+        value: bin(BinOp::Add, Kind::I32, getl("res"), i32c(5 + rz)),
+    });
+    then_zero.push(N::Push(getl("res")));
     // Count digits of `t` (mutated to 0): `while t != 0 { ndigits++; t /= 10 }`.
     let count_loop = N::Block {
         label: "b1".into(),
@@ -306,7 +316,7 @@ pub fn int_to_string_helper() -> WirFunc {
             ],
         }],
     };
-    let else_nonzero = vec![
+    let mut else_nonzero = vec![
         N::SetLocal { local: "neg".into(), value: bin(BinOp::Lt, Kind::I64, getl("n"), i64c(0)) },
         // mag = neg ? -n : n
         N::SetLocal {
@@ -327,7 +337,7 @@ pub fn int_to_string_helper() -> WirFunc {
         },
         N::Do(E::Call {
             func: "ensure".into(),
-            args: vec![bin(BinOp::Add, Kind::I32, i32c(4), getl("len"))],
+            args: vec![bin(BinOp::Add, Kind::I32, i32c(4 + rz), getl("len"))],
         }),
         N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
         N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
@@ -349,12 +359,19 @@ pub fn int_to_string_helper() -> WirFunc {
         },
         N::SetLocal { local: "t".into(), value: getl("mag") },
         write_loop,
-        N::SetGlobal {
-            global: "heap".into(),
-            value: bin(BinOp::Add, Kind::I32, bin(BinOp::Add, Kind::I32, getl("res"), i32c(4)), getl("len")),
-        },
-        N::Push(getl("res")),
     ];
+    // object end = res + 4 + len; rebuilt per use (WirExpr is moved, not cloned).
+    let str_end = || {
+        bin(BinOp::Add, Kind::I32, bin(BinOp::Add, Kind::I32, getl("res"), i32c(4)), getl("len"))
+    };
+    if checked {
+        else_nonzero.push(reg(getl("res"), str_end()));
+    }
+    else_nonzero.push(N::SetGlobal {
+        global: "heap".into(),
+        value: if checked { bin(BinOp::Add, Kind::I32, str_end(), i32c(rz)) } else { str_end() },
+    });
+    else_nonzero.push(N::Push(getl("res")));
     WirFunc {
         name: "int_to_string".into(),
         params: vec![WirLocal { name: "n".into(), ty: WirTy::Int }],
@@ -3966,13 +3983,18 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
-        "int_to_string" => Some(WirHelperSpec {
-            func: int_to_string_helper(),
-            helper_deps: &["ensure"],
-            import_deps: &[],
-            uses_heap: true,
-            uses_table: false,
-        }),
+        "int_to_string" => {
+            let checked = heap_check_enabled();
+            let import_deps: &'static [&'static str] =
+                if checked { &["heap_register"] } else { &[] };
+            Some(WirHelperSpec {
+                func: int_to_string_helper(checked),
+                helper_deps: &["ensure"],
+                import_deps,
+                uses_heap: true,
+                uses_table: false,
+            })
+        }
         "str_eq" => Some(WirHelperSpec {
             func: str_eq_helper(),
             helper_deps: &[],

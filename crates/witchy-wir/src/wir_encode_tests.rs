@@ -365,7 +365,7 @@
                 params: vec![Kind::I32, Kind::I32],
                 results: vec![],
             }],
-            funcs: vec![ensure_helper(), int_to_string_helper(), print_str_helper(), run],
+            funcs: vec![ensure_helper(), int_to_string_helper(false), print_str_helper(), run],
             memory_pages: 1,
             data: vec![],
             globals: vec![WirGlobal {
