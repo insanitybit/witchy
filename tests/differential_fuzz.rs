@@ -130,6 +130,26 @@ fn gen_tuple(r: &mut Rng) -> String {
     format!("({}, {})", gen_int(r, 1), gen_str(r, 1))
 }
 
+/// A `Dict(String, Int)` built by a chain of insert/remove/set_at over a SMALL key space,
+/// so inserts/removes/reinserts collide — the remove+reinsert+iterate pattern that has
+/// previously corrupted the compiled dict. (`dict.new()` alone is ambiguous like `[]`, so
+/// start from a typed insert.)
+fn gen_dkey(r: &mut Rng) -> String {
+    format!("\"k{}\"", r.below(4))
+}
+
+fn gen_dict(r: &mut Rng, ops: u32) -> String {
+    let mut d = format!("dict.insert(dict.new(), {}, {})", gen_dkey(r), gen_int(r, 1));
+    for _ in 0..ops {
+        d = match r.below(4) {
+            0 => format!("dict.set_at({}, {}, {})", d, gen_dkey(r), gen_int(r, 1)),
+            1 => format!("dict.remove({}, {})", d, gen_dkey(r)),
+            _ => format!("dict.insert({}, {}, {})", d, gen_dkey(r), gen_int(r, 1)),
+        };
+    }
+    d
+}
+
 fn gen_intlist(r: &mut Rng, depth: u32) -> String {
     // Always >= 1 element: an empty `[]` has an ambiguous element type, which the structural
     // renderer can't build (a known interpreter-only limit) — that's a generator miss, not a
@@ -142,10 +162,11 @@ fn gen_intlist(r: &mut Rng, depth: u32) -> String {
 /// One random program: a `main` that prints many heap-exercising expressions.
 fn gen_program(seed: u64, statements: usize) -> String {
     let mut r = Rng(seed);
-    let mut body = String::from("import string\nimport list\nimport math\n\nfn main(console: Console):\n");
+    let mut body = String::from("import string\nimport list\nimport math\nimport dict\n\nfn main(console: Console):\n");
     for _ in 0..statements {
-        let kind = r.below(12);
+        let kind = r.below(16);
         let depth = 1 + r.below(3) as u32;
+        let dops = 2 + r.below(7) as u32;
         let line = match kind {
             0 => format!("    print(console, __render({}))\n", gen_int(&mut r, depth)),
             1 => format!("    print(console, {})\n", gen_str(&mut r, depth)),
@@ -158,7 +179,15 @@ fn gen_program(seed: u64, statements: usize) -> String {
             8 => format!("    print(console, __render({}))\n", gen_cond_int(&mut r, depth)),
             9 => format!("    print(console, __render({}))\n", gen_strlist(&mut r, depth)),
             10 => format!("    print(console, __render({}))\n", gen_nested_intlist(&mut r)),
-            _ => format!("    print(console, __render({}))\n", gen_tuple(&mut r)),
+            11 => format!("    print(console, __render({}))\n", gen_tuple(&mut r)),
+            12 => format!("    print(console, __render({}))\n", gen_dict(&mut r, dops)),
+            13 => format!("    print(console, \"${{dict.length({})}}\")\n", gen_dict(&mut r, dops)),
+            14 => format!("    print(console, __render(dict.pairs({})))\n", gen_dict(&mut r, dops)),
+            _ => {
+                let d = gen_dict(&mut r, dops);
+                let k = gen_dkey(&mut r);
+                format!("    print(console, __render(dict.get_or({}, {}, (-1))))\n", d, k)
+            }
         };
         body.push_str(&line);
     }
