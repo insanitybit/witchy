@@ -317,8 +317,15 @@ impl Coven:
         let ns = coven_trust.namespace_of(name)
         let pubfile = "_policy/" + ns + "/publisher.json"
         if !exists(self.store, pubfile):
+            let repo = coven_trust.claim(claims, "repository")
+            let wf = coven_trust.claim(claims, "workflow_ref")
+            // SEC-012: bind only on a token that carries the CI identity claims. Binding with
+            // an empty repository/workflow_ref would later be satisfied by ANY token from the
+            // same issuer lacking those claims (""==""), letting an unrelated identity squat
+            // and publish to the namespace.
+            require(!string.is_empty(repo) && !string.is_empty(wf), 403, "cannot bind `" + ns + "`: the identity token carries no repository/workflow_ref claims (trusted publishing requires a CI identity)")?
             fs.ensure_dir(self.store, "_policy/" + ns)
-            write(self.store, pubfile, json.encode(JsonObject([("issuer", JsonString(coven_json.str(claims, "iss"))), ("repository", JsonString(coven_trust.claim(claims, "repository"))), ("workflow_ref", JsonString(coven_trust.claim(claims, "workflow_ref")))])))
+            write(self.store, pubfile, json.encode(JsonObject([("issuer", JsonString(coven_json.str(claims, "iss"))), ("repository", JsonString(repo)), ("workflow_ref", JsonString(wf))])))
             Ok(coven_json.str(claims, "sub"))
         else:
             enforce_publish_policy(coven_json.or_null(read(self.store, pubfile)), claims, ns)
@@ -385,7 +392,11 @@ fn verified_claims(issuers: List(Issuer), id_token: Option(String), now: Int, mi
 
 // A trusted publish must match the namespace's first-bound policy on every field.
 fn enforce_publish_policy(policy: Json, claims: Json, ns: String) -> Result(String, CovenError):
-    if coven_json.str(policy, "issuer") != coven_json.str(claims, "iss"):
+    if string.is_empty(coven_json.str(policy, "repository")) || string.is_empty(coven_json.str(policy, "workflow_ref")):
+        // SEC-012: a policy bound before the bind-time guard (empty repository/workflow_ref)
+        // must not be matchable by a claimless token via ""==""; refuse and require a rebind.
+        Err(CovenError(403, "namespace `" + ns + "` has an incomplete trust policy; rebind it from a CI identity"))
+    else if coven_json.str(policy, "issuer") != coven_json.str(claims, "iss"):
         Err(CovenError(403, "namespace `" + ns + "` trusts issuer `" + coven_json.str(policy, "issuer") + "`, not `" + coven_json.str(claims, "iss") + "`"))
     else if coven_json.str(policy, "repository") != coven_trust.claim(claims, "repository"):
         Err(CovenError(403, "identity not authorized to publish to `" + ns + "`: repository `" + coven_trust.claim(claims, "repository") + "` does not match the bound `" + coven_json.str(policy, "repository") + "`"))
