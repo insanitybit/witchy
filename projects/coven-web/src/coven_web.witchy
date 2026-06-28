@@ -374,10 +374,23 @@ fn google_verify(net: Net, key: Secret, clock: Clock, jwks_url: String, client_i
                 Err(e) -> server.json(502, json.encode(JsonObject([("error", JsonString("JWKS is not JSON: " + e))])))
                 Ok(jwks) -> google_finish(key, clock, jwks, client_id, id_token)
 
+// Google may send `email_verified` as a JSON boolean or the string "true".
+fn email_is_verified(claims: Json) -> Bool:
+    match json.get_bool(claims, "email_verified"):
+        Some(b) -> b
+        None -> wa_field(claims, "email_verified") == "true"
+
 fn google_finish(key: Secret, clock: Clock, jwks: Json, client_id: String, id_token: String) -> Response:
     match select_and_verify(clock, jwks, client_id, id_token):
         Err(e) -> server.json(403, json.encode(JsonObject([("error", JsonString("id_token rejected: " + e))])))
-        Ok(claims) -> session_redirect(key, clock, wa_field(claims, "email"))
+        Ok(claims) ->
+            // SEC-008: admit only a VERIFIED Google email — otherwise an account asserting
+            // an unverified email equal to a maintainer's would be let in as that maintainer.
+            let email = wa_field(claims, "email")
+            if email != "" && email_is_verified(claims):
+                session_redirect(key, clock, email)
+            else:
+                server.json(403, json.encode(JsonObject([("error", JsonString("Google account email is not verified"))])))
 
 // Pick the signing key for the token's `kid` from the JWKS and verify it (signature +
 // issuer `accounts.google.com` + audience = our client id + expiry). Returns the claims.
