@@ -91,7 +91,6 @@ pub fn for_each(xs: List(a), f: fn(a) -> Task(m, Nil)) -> Task(m, Nil):
         and_then(f(list.at(xs, 0)), fn(_done): for_each(list.tail(xs), f))
 
 // ---- spawn + channels (the surface) ----
-
 type Sender(m):
     Sender(Int)
 
@@ -317,13 +316,12 @@ pub fn run(root: Task(m, Nil)):
             slots = s2
             channels = c2
             go = list.any(s2, fn(s): is_live(s))
+        else if list.any(s2, fn(s): is_parked(s)):
+            let (s3, c3) = close_round(0, list.length(s2), s2, c2)
+            slots = s3
+            channels = c3
+            go = true
         else:
-            if list.any(s2, fn(s): is_parked(s)):
-                let (s3, c3) = close_round(0, list.length(s2), s2, c2)
-                slots = s3
-                channels = c3
-                go = true
-            else:
-                slots = s2
-                channels = c2
-                go = false
+            slots = s2
+            channels = c2
+            go = false

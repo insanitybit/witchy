@@ -15,7 +15,7 @@ fn main(console: Console):
         print(console, shown + verdict(matches(pattern, text)))
 
 fn cases() -> List((String, String)):
-    [("abc", "abc"), ("a.c", "axc"), ("a.c", "ac"), ("a*b", "aaab"), ("a*b", "b"), ("^hello", "hello world"), ("world$", "hello world"), ("^a.*z$", "abcz"), ("^a.*z$", "abc")]
+    [("abc", "abc"), ("a.c", "axc"), ("a.c", "ac"), ("a*b", "aaab"), ("a*b", "b"), ("^hello", "hello world"), ("world\$", "hello world"), ("^a.*z\$", "abcz"), ("^a.*z\$", "abc")]
 
 pub fn matches(pattern: String, text: String) -> Bool:
     let re = string.chars(pattern)
@@ -41,7 +41,7 @@ fn match_here(re: List(String), ri: Int, s: List(String), si: Int) -> Bool:
         true
     else if ri + 1 < list.length(re) && list.at(re, ri + 1) == "*":
         match_star(list.at(re, ri), re, ri + 2, s, si)
-    else if list.at(re, ri) == "$" && ri + 1 == list.length(re):
+    else if list.at(re, ri) == "\$" && ri + 1 == list.length(re):
         si >= list.length(s)
     else if si < list.length(s) && (list.at(re, ri) == "." || list.at(re, ri) == list.at(s, si)):
         match_here(re, ri + 1, s, si + 1)

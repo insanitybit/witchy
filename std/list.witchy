@@ -67,7 +67,7 @@ pub fn range_step(start: Int, stop: Int, step: Int) -> List(Int):
         while i > stop:
             out = list.push(out, i)
             // Likewise stop before `i + step` underflows past i64::MIN.
-            if i < ((0 - 9223372036854775807) - 1) - step:
+            if i < 0 - 9223372036854775807 - 1 - step:
                 break
             i = i + step
     out

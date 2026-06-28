@@ -21,17 +21,21 @@ type Mirror:
     MFloat(Float)
     MBool(Bool)
     MString(String)
-    // A list's elements, reflected.
     MList(List(Mirror))
-    // A tuple's slots, reflected (a fixed-arity heterogeneous sequence).
     MTuple(List(Mirror))
-    // A record: its type name and (field name, reflected value) pairs in order.
     MRecord(String, List((String, Mirror)))
-    // A sum-type value: type name, variant name, reflected payloads in order.
     MVariant(String, String, List(Mirror))
-    // The unit/`Nil` value.
     MNil
 
+// A list's elements, reflected.
+
+// A tuple's slots, reflected (a fixed-arity heterogeneous sequence).
+
+// A record: its type name and (field name, reflected value) pairs in order.
+
+// A sum-type value: type name, variant name, reflected payloads in order.
+
+// The unit/`Nil` value.
 trait Reflect:
     fn reflect(self) -> Mirror
 

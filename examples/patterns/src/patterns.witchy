@@ -14,8 +14,8 @@ fn check(console: Console, pattern: String, text: String):
     print(console, mark + "  " + pattern + "  ~  " + text)
 
 fn main(console: Console):
-    check(console, "^h.*o$", "hello")
-    check(console, "^h.*o$", "hi there")
+    check(console, "^h.*o\$", "hello")
+    check(console, "^h.*o\$", "hi there")
     check(console, "colou?r", "color")
     check(console, "colou?r", "colour")
     check(console, "ab+a", "abbba")

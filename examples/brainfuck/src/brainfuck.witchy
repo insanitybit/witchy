@@ -84,7 +84,7 @@ fn chr(value: Int) -> String:
     if value < 32 || value > 126:
         ""
     else:
-        let printable = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+        let printable = " !\"#\$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
         list.at(string.chars(printable), value - 32)
 
 fn set(xs: List(Int), index: Int, value: Int) -> List(Int):

@@ -17,12 +17,7 @@ import result
 // approves, the provider redirects to `redirect_uri?code=...&state=...`. `scope` is the
 // provider's space-separated permission list (e.g. GitHub `read:user`, OIDC `openid email`).
 pub fn authorize_url(authorize_endpoint: String, client_id: String, redirect_uri: String, scope: String, state: String) -> String:
-    authorize_endpoint
-        + "?response_type=code"
-        + "&client_id=" + url.encode(client_id)
-        + "&redirect_uri=" + url.encode(redirect_uri)
-        + "&scope=" + url.encode(scope)
-        + "&state=" + url.encode(state)
+    authorize_endpoint + "?response_type=code" + "&client_id=" + url.encode(client_id) + "&redirect_uri=" + url.encode(redirect_uri) + "&scope=" + url.encode(scope) + "&state=" + url.encode(state)
 
 // Exchange an authorization `code` for an access token at the provider's token endpoint
 // — an HTTPS POST with a form-encoded body and `Accept: application/json`. Returns the
@@ -45,11 +40,8 @@ pub fn exchange_code_id_token(net: Net[Connect, Tcp], token_url: String, client_
 // The raw token-endpoint response as JSON (the HTTPS POST exchanging the code) — the level
 // beneath `exchange_code`; read `access_token` / `id_token` / `refresh_token` from it.
 pub fn token_response(net: Net[Connect, Tcp], token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(Json, String):
-    let body = "grant_type=authorization_code"
-        + "&client_id=" + url.encode(client_id)
-        + "&client_secret=" + url.encode(client_secret)
-        + "&code=" + url.encode(code)
-        + "&redirect_uri=" + url.encode(redirect_uri)
+    let body = "grant_type=authorization_code" + "&client_id=" + url.encode(client_id) + "&client_secret=" + url.encode(client_secret) + "&code=" + url.encode(code) + "&redirect_uri=" + url.encode(redirect_uri)
+
     let req = http.post_request(token_url)
         .with_header("accept", "application/json")
         .with_header("content-type", "application/x-www-form-urlencoded")

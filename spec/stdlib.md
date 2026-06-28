@@ -2176,6 +2176,8 @@ The `async`/`await` CPS transform lowers onto this substrate (`task.lazy`/ `and_
 
 #### `type Handle`
 
+---- spawn + join ----
+
 - `Handle(Int)`
 
 #### `type Slot`

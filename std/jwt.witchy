@@ -7,6 +7,7 @@
 // the ASCII bytes of `header.payload`; for RS256 it is verified against the issuer's
 // RSA public key (DER PKCS#1, hex). On success the decoded payload `claims` are
 // returned for the caller to inspect (`sub`, `iss`, provider-specific owner fields).
+
 import string
 import list
 import json

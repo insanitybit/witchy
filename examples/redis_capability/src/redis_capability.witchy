@@ -13,7 +13,6 @@
 //
 // Run:   witchy examples/redis_capability/src/redis_capability.witchy
 // Audit: witchy caps examples/redis_capability/src/redis_capability.witchy
-
 capability Redis from Net[Connect, Tcp]
 
 pub fn open(net: Net[Connect, Tcp]) -> Redis:

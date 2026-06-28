@@ -138,7 +138,7 @@ jobs:
       - name: witchy fmt --check
         run: |
           fail=0
-          for f in std/*.witchy examples/*.witchy; do
+          for f in std/*.witchy examples/*/src/*.witchy; do
             if ! ./target/release/witchy fmt --check "$f" >/dev/null 2>&1; then
               echo "needs formatting: $f"
               fail=1

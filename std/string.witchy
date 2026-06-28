@@ -281,7 +281,7 @@ pub fn parse_int(s: String) -> Option(Int):
                 let mag = string.substring(s, j, n)
                 let mlen = string.char_count(mag)
                 let limit = if neg: "9223372036854775808" else: "9223372036854775807"
-                if mlen > 19 || (mlen == 19 && mag > limit):
+                if mlen > 19 || mlen == 19 && mag > limit:
                     None
                 else:
                     Some(string.to_int(s))

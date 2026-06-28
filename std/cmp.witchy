@@ -65,7 +65,6 @@ pub fn reverse(o: Ordering) -> Ordering:
         Equal -> Equal
 
 // --- primitive impls ---------------------------------------------------------
-
 impl PartialEq for Int:
     fn eq(self, other: Self) -> Bool:
         self == other

@@ -13,7 +13,6 @@ mode opt
 // modules (the bundled standard library is exempt), so the guarantee covers the
 // whole reachable graph, not just this one file. See examples/projects/opt_pipeline
 // for a multi-file version, and rfcs/performance-modes.md for the full story.
-
 fn main(console: Console):
     // Building a list by self-assign push stays O(n): the uniqueness analysis
     // proves `xs` is unaliased, so each push mutates in place (capacity doubling)

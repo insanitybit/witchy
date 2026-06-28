@@ -12,6 +12,7 @@
 //   * the ECDSA-P256 signature over `authenticatorData || SHA256(clientDataJSON)`
 //     verifies under the public key bound to this credential at registration.
 // A forged or replayed assertion fails one of these and is rejected here.
+
 import crypto
 import json
 import string
@@ -61,8 +62,8 @@ fn check_auth_and_sig(stored_pubkey_hex: String, auth_data_hex: String, client_d
         Err("rpIdHash mismatch (wrong relying party)")
     else:
         let flags = hex_byte_at(auth_data_hex, 32)
-        let up = flags - ((flags / 2) * 2)      // bit 0: user present
-        let uv = (flags / 4) - ((flags / 8) * 2) // bit 2: user verified
+        let up = flags - flags / 2 * 2
+        let uv = flags / 4 - flags / 8 * 2
         if up != 1:
             Err("user-presence flag not set")
         else if require_uv && uv != 1:

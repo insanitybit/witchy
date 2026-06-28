@@ -8,7 +8,6 @@
 // `from` takes no `self`, so the blanket impl calls it on the target type as
 // `b.from(self)`. The `where` bound decides which `from` to call when the use site
 // is monomorphized.
-
 trait From(a):
     fn from(value: a) -> Self
 

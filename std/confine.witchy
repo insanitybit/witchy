@@ -8,6 +8,7 @@
 // These are pure value builders (empty capability footprint). The policy wraps the same
 // `host:port` allowlist pattern the host enforces (RFC-0003); the `tls:` HTTPS scheme is a
 // connect-time choice on the address, not a property of the policy (RFC-0009).
+
 import string
 
 // A typed `Net` address policy — one allowlist pattern (`host:port`, with `:*` / CIDR forms).

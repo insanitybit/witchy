@@ -16,9 +16,9 @@ fn test_star():
 
 fn test_anchors():
     testing.assert(regex.matches("^hello", "hello world"), "^ anchors at start")
-    testing.assert(regex.matches("world$", "hello world"), "$ anchors at end")
-    testing.assert(regex.matches("^a.*z$", "abcz"), "^...$ spans the whole text")
-    testing.assert(!regex.matches("^a.*z$", "abc"), "$ requires the final char")
+    testing.assert(regex.matches("world\$", "hello world"), "\$ anchors at end")
+    testing.assert(regex.matches("^a.*z\$", "abcz"), "^...\$ spans the whole text")
+    testing.assert(!regex.matches("^a.*z\$", "abc"), "\$ requires the final char")
 
 fn test_unanchored():
     testing.assert(regex.matches("bc", "abcd"), "unanchored match in the middle")

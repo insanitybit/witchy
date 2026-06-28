@@ -35,6 +35,7 @@ pub fn decode(text: String) -> Result(Toml, String):
             root = match key_value(t):
                 Some((k, v)) -> insert_kv(root, section, k, parse_value(v))
                 None -> root
+
     Ok(root)
 
 // "a.b.c" -> ["a", "b", "c"]; "" -> [].
@@ -102,9 +103,10 @@ fn subtable(pairs: List((String, Toml)), head: String) -> Toml:
     for p in pairs:
         let (k, v) = p
         if k == head:
-            match v:
-                TomlTable(_inner) -> result = v
-                _ -> result = TomlTable([])
+            if let TomlTable(_inner) = v:
+                result = v
+            else:
+                result = TomlTable([])
     result
 
 fn drop_first(xs: List(String)) -> List(String):

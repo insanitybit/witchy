@@ -39,6 +39,17 @@ else
     test_cmd=(cargo test --workspace)
 fi
 
+# The witchy formatter over the stdlib and examples (NOT rustfmt over the Rust —
+# that's hand-formatted and out of scope). Uses the binary built in step 1.
+witchy_fmt_check() {
+    local fail=0
+    for f in std/*.witchy examples/*/src/*.witchy; do
+        [ -f "$f" ] || continue
+        target/debug/witchy fmt --check "$f" >/dev/null 2>&1 || { echo "needs formatting: $f"; fail=1; }
+    done
+    return "$fail"
+}
+
 step=0
 run() {
     step=$((step + 1))
@@ -47,12 +58,13 @@ run() {
     "$@"
 }
 
-run "build (workspace)"      cargo build --workspace
-run "clippy (deny warnings)" cargo clippy --workspace --all-targets -- -D warnings
-run "tests (workspace)"      "${test_cmd[@]}"
-run "wasm playground build"  "${wasm_cargo[@]}" build --lib --no-default-features --target wasm32-unknown-unknown
+run "build (workspace)"        cargo build --workspace
+run "clippy (deny warnings)"   cargo clippy --workspace --all-targets -- -D warnings
+run "witchy fmt (std+examples)" witchy_fmt_check
+run "tests (workspace)"        "${test_cmd[@]}"
+run "wasm playground build"    "${wasm_cargo[@]}" build --lib --no-default-features --target wasm32-unknown-unknown
 if [ "$full" -eq 1 ]; then
-    run "e2e (from scratch)"  ./scripts/e2e-full.sh
+    run "e2e (from scratch)"   ./scripts/e2e-full.sh
 fi
 
 printf '\n\033[1;32mall green\033[0m'

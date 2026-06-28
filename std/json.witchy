@@ -740,4 +740,4 @@ fn mirror_variant_to_json(tyname: String, variant: String, payload: List(Mirror)
             Some(m) -> mirror_to_json(m)
             None -> JsonNull
     else:
-        JsonObject([("$variant", JsonString(variant)), ("$values", JsonArray(mirror_each(payload)))])
+        JsonObject([("\$variant", JsonString(variant)), ("\$values", JsonArray(mirror_each(payload)))])
