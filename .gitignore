@@ -21,3 +21,7 @@ scripts/.zizmor/
 # coven-web app.js + WebAuthn cred/challenge state — never commit)
 scratch/
 dist/
+
+# source PDFs (e.g. the papers under external-refs/) — keep locally as
+# reference; commit the markdown notes/index, not the binaries
+*.pdf
