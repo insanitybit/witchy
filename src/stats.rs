@@ -446,6 +446,45 @@ mod tests {
         );
     }
 
+    /// RFC-0016 RC-floor generalizes past dicts to the STRING primitive allocators:
+    /// a confined string `var` transformed each iteration (`s = s.to_upper()` →
+    /// `string.to_upper(s)`, a fresh same-length buffer via the now-`$rc_alloc`-routed
+    /// `ascii_case`) frees its old buffer for reuse — so the loop is bounded with the
+    /// floor on and leaks O(n) with it off, identical output either way.
+    #[test]
+    fn string_transform_bounded_by_rc_floor() {
+        let prog = |n: i32| {
+            format!(
+                "fn main(console: Console):\n    var s = \"the quick brown fox jumps\"\n    var i = 0\n    while i < {n}:\n        s = s.to_upper()\n        s = s.to_lower()\n        i = i + 1\n    print(console, __render(s.length()))\n"
+            )
+        };
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let small_off = compute(&prog(500)).expect("off small");
+        let big_off = compute(&prog(3000)).expect("off big");
+        opt::set_for_tests(Some(OptSet::default_set().with(Opt::RcFloor)));
+        let small_on = compute(&prog(500)).expect("on small");
+        let big_on = compute(&prog(3000)).expect("on big");
+        opt::set_for_tests(None);
+        // to_upper/to_lower preserve length: the string stays 25 chars regardless.
+        for r in [&small_off, &big_off, &small_on, &big_on] {
+            assert_eq!(r.output, vec!["25".to_string()], "transform preserves length");
+        }
+        assert!(
+            big_off.heap_bytes > small_off.heap_bytes * 3,
+            "without rc-floor the string churn must leak O(n): n=500 {}, n=3000 {}",
+            small_off.heap_bytes,
+            big_off.heap_bytes
+        );
+        assert!(
+            big_on.heap_bytes < small_on.heap_bytes * 2,
+            "rc-floor must bound the string churn: n=500 {}, n=3000 {}",
+            small_on.heap_bytes,
+            big_on.heap_bytes
+        );
+        assert_eq!(big_off.rc_reused_bytes, 0, "rc-floor off must not reclaim");
+        assert!(big_on.rc_reused_bytes > 0, "rc-floor must reclaim string buffers");
+    }
+
     /// RFC-0027 packed DoD counter (b): a confined list literal of fixed-scalar
     /// records read only via `at(_).field`/`length` is stored as ONE flat inline
     /// buffer with `unbox` on, instead of N boxed records + an N-pointer array with

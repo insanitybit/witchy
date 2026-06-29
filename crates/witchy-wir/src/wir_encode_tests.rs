@@ -59,7 +59,38 @@
     /// `wat` crate — `to_wat` is now only emit-wat's display, not an exec path.)
     fn assert_agrees(module: &WirModule, expected: &[&str]) {
         let exp: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
-        assert_eq!(run_encoded(module), exp, "binary output mismatch");
+        assert_eq!(run_encoded(&with_rc_floor(module)), exp, "binary output mismatch");
+    }
+
+    /// (RFC-0016) The list/string/dict/`mk` allocators are routed through `$rc_alloc`,
+    /// so a hand-assembled module using one needs the allocator + its globals present.
+    /// Inject them idempotently (by name, so func/global resolution is unaffected and
+    /// runtime output is unchanged) — only when a routed helper is actually present —
+    /// so each test need not list `rc_alloc`/`rc_freelist`/`__rc_reused_bytes` itself.
+    fn with_rc_floor(module: &WirModule) -> WirModule {
+        const RC_USERS: &[&str] =
+            &["substr", "concat", "list_push", "list_concat", "ascii_case", "dict_new", "dict_remove"];
+        let mut m = module.clone();
+        let uses_rc = m.funcs.iter().any(|f| RC_USERS.contains(&f.name.as_str()));
+        if uses_rc && !m.funcs.iter().any(|f| f.name == "rc_alloc") {
+            if !m.funcs.iter().any(|f| f.name == "ensure") {
+                m.funcs.insert(0, crate::wir_helpers::ensure_helper(false));
+            }
+            let pos = m.funcs.len().saturating_sub(1); // before the trailing `run`
+            m.funcs.insert(pos, crate::wir_helpers::rc_alloc_helper());
+        }
+        if uses_rc {
+            for (name, kind, init) in [
+                ("heap", Kind::I32, GlobalInit::I32(1024)),
+                ("rc_freelist", Kind::I32, GlobalInit::I32(0)),
+                ("__rc_reused_bytes", Kind::I64, GlobalInit::I64(0)),
+            ] {
+                if !m.globals.iter().any(|g| g.name == name) {
+                    m.globals.push(WirGlobal { name: name.into(), kind, mutable: true, init, export: None });
+                }
+            }
+        }
+        m
     }
 
     /// Module with one Int-returning func + a `run` that prints its result.

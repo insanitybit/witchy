@@ -907,11 +907,14 @@ pub fn concat_helper() -> WirFunc {
         body: vec![
             N::SetLocal { local: "alen".into(), value: load_i32(getl("a")) },
             N::SetLocal { local: "blen".into(), value: load_i32(getl("b")) },
-            N::Do(E::Call {
-                func: "ensure".into(),
-                args: vec![add(i32c(4), add(getl("alen"), getl("blen")))],
-            }),
-            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            // (RFC-0016) allocate through `$rc_alloc` (header at res-4 + free-list reuse).
+            N::SetLocal {
+                local: "res".into(),
+                value: E::Call {
+                    func: "rc_alloc".into(),
+                    args: vec![add(i32c(4), add(getl("alen"), getl("blen")))],
+                },
+            },
             // header: total length at res+0
             N::Store {
                 ptr: getl("res"),
@@ -930,11 +933,6 @@ pub fn concat_helper() -> WirFunc {
                 dest: add(add(getl("res"), i32c(4)), getl("alen")),
                 src: add(getl("b"), i32c(4)),
                 len: getl("blen"),
-            },
-            // heap = res + 4 + alen + blen
-            N::SetGlobal {
-                global: "heap".into(),
-                value: add(add(getl("res"), i32c(4)), add(getl("alen"), getl("blen"))),
             },
             N::Push(getl("res")),
         ],
@@ -1343,11 +1341,15 @@ pub fn list_push_helper() -> WirFunc {
                 local: "len".into(),
                 value: E::Load { ptr: Box::new(getl("list")), kind: Kind::I32, offset: 0 },
             },
-            N::Do(E::Call {
-                func: "ensure".into(),
-                args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, b(BinOp::Add, getl("len"), i32c(1)), i32c(8)))],
-            }),
-            N::SetLocal { local: "new".into(), value: E::GetGlobal("heap".into()) },
+            // (RFC-0016) allocate the new buffer through `$rc_alloc` (header at new-4,
+            // bumps `$heap`) so a confined list overwritten by a fresh push is freeable.
+            N::SetLocal {
+                local: "new".into(),
+                value: E::Call {
+                    func: "rc_alloc".into(),
+                    args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, b(BinOp::Add, getl("len"), i32c(1)), i32c(8)))],
+                },
+            },
             N::Store {
                 ptr: getl("new"),
                 value: b(BinOp::Add, getl("len"), i32c(1)),
@@ -1364,14 +1366,6 @@ pub fn list_push_helper() -> WirFunc {
                 value: getl("x"),
                 kind: Kind::I64,
                 offset: 4,
-            },
-            N::SetGlobal {
-                global: "heap".into(),
-                value: b(
-                    BinOp::Add,
-                    b(BinOp::Add, getl("new"), i32c(4)),
-                    b(BinOp::Mul, b(BinOp::Add, getl("len"), i32c(1)), i32c(8)),
-                ),
             },
             N::Push(getl("new")),
         ],
@@ -1700,17 +1694,16 @@ pub fn substr_helper() -> WirFunc {
         ret: vec![WirTy::Str],
         locals: vec![WirLocal { name: "res".into(), ty: WirTy::Bool }],
         body: vec![
-            N::Do(E::Call { func: "ensure".into(), args: vec![add(i32c(4), getl("len"))] }),
-            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            // (RFC-0016) allocate through `$rc_alloc` (header + reuse).
+            N::SetLocal {
+                local: "res".into(),
+                value: E::Call { func: "rc_alloc".into(), args: vec![add(i32c(4), getl("len"))] },
+            },
             N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
             N::MemoryCopy {
                 dest: add(getl("res"), i32c(4)),
                 src: add(add(getl("src"), i32c(4)), getl("start")),
                 len: getl("len"),
-            },
-            N::SetGlobal {
-                global: "heap".into(),
-                value: add(add(getl("res"), i32c(4)), getl("len")),
             },
             N::Push(getl("res")),
         ],
@@ -2184,12 +2177,15 @@ pub fn list_concat_helper() -> WirFunc {
         body: vec![
             setl("alen", load(getl("a"))),
             setl("blen", load(getl("b"))),
-            N::Do(E::Call {
-                func: "ensure".into(),
-                args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, total.clone(), i32c(8)))],
-            }),
-            setl("new", E::GetGlobal("heap".into())),
-            N::Store { ptr: getl("new"), value: total.clone(), kind: Kind::I32, offset: 0 },
+            // (RFC-0016) allocate through `$rc_alloc` (header at new-4 + free-list reuse).
+            setl(
+                "new",
+                E::Call {
+                    func: "rc_alloc".into(),
+                    args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, total.clone(), i32c(8)))],
+                },
+            ),
+            N::Store { ptr: getl("new"), value: total, kind: Kind::I32, offset: 0 },
             // a's elements → new+4
             N::MemoryCopy {
                 dest: b(BinOp::Add, getl("new"), i32c(4)),
@@ -2201,10 +2197,6 @@ pub fn list_concat_helper() -> WirFunc {
                 dest: b(BinOp::Add, b(BinOp::Add, getl("new"), i32c(4)), b(BinOp::Mul, getl("alen"), i32c(8))),
                 src: b(BinOp::Add, getl("b"), i32c(4)),
                 len: b(BinOp::Mul, getl("blen"), i32c(8)),
-            },
-            N::SetGlobal {
-                global: "heap".into(),
-                value: b(BinOp::Add, b(BinOp::Add, getl("new"), i32c(4)), b(BinOp::Mul, total, i32c(8))),
             },
             N::Push(getl("new")),
         ],
@@ -2267,15 +2259,11 @@ pub fn ascii_case_helper() -> WirFunc {
             .collect(),
         body: vec![
             setl("len", load(getl("s"))),
-            N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, i32c(4), getl("len"))] }),
-            setl("res", E::GetGlobal("heap".into())),
+            // (RFC-0016) allocate through `$rc_alloc` (header + reuse).
+            setl("res", E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(4), getl("len"))] }),
             N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
             setl("i", i32c(0)),
             scan_loop,
-            N::SetGlobal {
-                global: "heap".into(),
-                value: b(BinOp::Add, b(BinOp::Add, getl("res"), i32c(4)), getl("len")),
-            },
             N::Push(getl("res")),
         ],
         raw_body: None,
@@ -4356,7 +4344,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "substr" => Some(WirHelperSpec {
             func: substr_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,
@@ -4398,7 +4386,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "concat" => Some(WirHelperSpec {
             func: concat_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,
@@ -4412,7 +4400,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "list_push" => Some(WirHelperSpec {
             func: list_push_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,
@@ -4433,7 +4421,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "list_concat" => Some(WirHelperSpec {
             func: list_concat_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,
@@ -4447,7 +4435,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "ascii_case" => Some(WirHelperSpec {
             func: ascii_case_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,

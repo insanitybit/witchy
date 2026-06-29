@@ -1191,11 +1191,16 @@ pub fn fresh_heap_builtin_offset(name: &str, argc: usize) -> Option<i32> {
         // header `$rc_free` needs), with the hidden index word at `ptr-4` — i.e.
         // the rc-region start is `ptr-4`.
         ("dict.insert", 3) | ("dict.update", 4) | ("dict.remove", 2) => Some(4),
-        // NOTE: list / string fresh allocators (`list.push`/`list.concat`,
-        // `string.trim`/`replace`/…) are NOT yet routed through `$rc_alloc`, so
-        // their buffers carry no `[size]` header and MUST NOT be freed here (a
-        // headerless block would corrupt the free-list). They join this table
-        // only once their allocators route through `$rc_alloc` — see RFC-0016.
+        // List / string results: the buffer pointer IS the rc-region start (offset 0).
+        // These allocators (`list_push`/`list_concat`/`ascii_case`/`substr`, and
+        // `trim` via `substr`) are routed through `$rc_alloc`, so their results carry
+        // the `[size]` header and are freeable. NOT `string.replace` (its
+        // `replace_helper` keeps the worst-case `ensure` + actual-bump pattern, not
+        // routed) and NOT string `+` (a Binary, never a Call — handled in-place by
+        // `$str_append_cap`).
+        ("list.push", 2) | ("list.concat", 2) => Some(0),
+        ("string.to_upper", 1) | ("string.to_lower", 1) | ("string.trim", 1)
+        | ("string.substring", 3) => Some(0),
         _ => None,
     }
 }
