@@ -138,9 +138,7 @@ pub fn spawn_all(children: List(Task(m, Nil))) -> Task(m, List(Handle)):
     if list.is_empty(children):
         done([])
     else:
-        and_then(spawn(list.at(children, 0)), fn(h):
-            and_then(spawn_all(list.tail(children)), fn(rest):
-                done(list.concat([h], rest))))
+        and_then(spawn(list.at(children, 0)), fn(h): and_then(spawn_all(list.tail(children)), fn(rest): done(list.concat([h], rest))))
 
 // Join every handle in `hs` — block until they have all finished.
 pub fn join_all(hs: List(Handle)) -> Task(m, Nil):
@@ -180,6 +178,58 @@ pub fn gather(jobs: List(Task(m, m))) -> Task(m, List(m)):
         let senders = list.map(jobs, fn(j): and_then(j, fn(r): send(tx, r)))
         and_then(scope(senders), fn(_ignore): recv_n(rx, list.length(jobs)))
     )
+
+// Receive one message from each receiver in `rxs`, in list order. A closed
+// receiver contributes nothing (its slot is skipped). Used by `par_map` to read
+// back results in INPUT order — each task owns its own channel, so the parent
+// collecting channel-by-channel is independent of which task finished first.
+fn recv_each(rxs: List(Receiver(m))) -> Task(m, List(m)):
+    if list.is_empty(rxs):
+        done([])
+    else:
+        and_then(recv(list.at(rxs, 0)), fn(o):
+            match o:
+                Some(x) -> and_then(recv_each(list.tail(rxs)), fn(rest): done(list.concat([x], rest)))
+                None -> recv_each(list.tail(rxs))
+        )
+
+// Build one private channel per item, pairing each item's task (which sends its
+// own result) with its receiver, so results can be read back in input order.
+fn par_build(items: List(a), f: fn(a) -> Task(m, m)) -> Task(m, (List(Task(m, Nil)), List(Receiver(m)))):
+    if list.is_empty(items):
+        done(([], []))
+    else:
+        and_then(channel(0), fn(pair):
+            let (tx, rx) = pair
+            let job = and_then(f(list.at(items, 0)), fn(r): send(tx, r))
+            and_then(par_build(list.tail(items), f), fn(rest):
+                let (jobs, rxs) = rest
+                done((list.concat([job], jobs), list.concat([rx], rxs)))
+            )
+        )
+
+// STRUCTURED parallel map (the level-1 combinator): run `f` over every item of
+// `items` concurrently and return the results in INPUT order. The tasks are never
+// visible — spawn and join happen inside — so this cannot leak a handle, cannot
+// deadlock on a forgotten join, and is the ergonomic default for data parallelism.
+// Each item's result rides its own channel, so the returned order is the input
+// order regardless of completion order: the result is a pure function of `items`
+// and `f`, hence DETERMINISTIC by construction and byte-identical on both backends.
+// That determinism is exactly what lets a future parallel backend run the items on
+// separate cores without changing the observable result (see RFC-0032). Results are
+// of the message type `m` (they ride channels), as with `gather`.
+pub fn par_map(items: List(a), f: fn(a) -> Task(m, m)) -> Task(m, List(m)):
+    and_then(par_build(items, f), fn(built):
+        let (jobs, rxs) = built
+        and_then(scope(jobs), fn(_ignore): recv_each(rxs))
+    )
+
+// STRUCTURED parallel reduce: `par_map` the items, then fold the results with
+// `combine` starting from `init`. `combine` should be associative for the fold to
+// be meaningful independent of evaluation order; the map runs concurrently while
+// the fold is a deterministic left fold over the input-ordered results.
+pub fn par_reduce(items: List(a), f: fn(a) -> Task(m, m), init: m, combine: fn(m, m) -> m) -> Task(m, m):
+    and_then(par_map(items, f), fn(results): done(list.fold(results, init, combine)))
 
 // The outcome of a `select`: a message from the first or the second receiver, or
 // `Closed` once neither can deliver.

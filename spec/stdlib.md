@@ -144,6 +144,14 @@ STRUCTURED concurrency (a "nursery"): run every task in `children` concurrently 
 
 STRUCTURED fan-out-and-collect: run every task in `jobs` concurrently and return all of their results once they have ALL finished. Each job produces a value of the message type `m` (results ride the same channels), so `gather` is the typed companion to `scope` — the same leak-free, no-escaping-handle guarantee, with the results handed back. Results are in COMPLETION order (deterministic on the cooperative executor, hence byte-identical on both backends), not input order.
 
+#### `fn par_map(items: List(a), f: fn(a) -> Task(m, m)) -> Task(m, List(m))`
+
+STRUCTURED parallel map (the level-1 combinator): run `f` over every item of `items` concurrently and return the results in INPUT order. The tasks are never visible — spawn and join happen inside — so this cannot leak a handle, cannot deadlock on a forgotten join, and is the ergonomic default for data parallelism. Each item's result rides its own channel, so the returned order is the input order regardless of completion order: the result is a pure function of `items` and `f`, hence DETERMINISTIC by construction and byte-identical on both backends. That determinism is exactly what lets a future parallel backend run the items on separate cores without changing the observable result (see RFC-0032). Results are of the message type `m` (they ride channels), as with `gather`.
+
+#### `fn par_reduce(items: List(a), f: fn(a) -> Task(m, m), init: m, combine: fn(m, m) -> m) -> Task(m, m)`
+
+STRUCTURED parallel reduce: `par_map` the items, then fold the results with `combine` starting from `init`. `combine` should be associative for the fold to be meaningful independent of evaluation order; the map runs concurrently while the fold is a deterministic left fold over the input-ordered results.
+
 #### `fn select(a: Receiver(m), b: Receiver(m)) -> Task(m, Selected(m))`
 
 Receive from whichever of `a` or `b` has a message first; a tie favours `a`. Yields `Closed` once both channels are closed.

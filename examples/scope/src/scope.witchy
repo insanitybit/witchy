@@ -5,6 +5,7 @@
 // leaks — the safe form to prefer over a bare `spawn` you must remember to `join`.
 // The cooperative executor schedules deterministically, so the run is
 // byte-identical on both backends.
+
 import chan
 import list
 
@@ -18,6 +19,16 @@ async fn main(console: Console):
     // Fan out result-producing tasks and collect every result, leak-free.
     let squares = chan.gather([square(1), square(2), square(3), square(4), square(5)]).await
     print(console, "sum of squares: ${list.sum(squares)}")
+
+    // `par_map` is the level-1 combinator: map a task over a list concurrently and
+    // get the results back in INPUT order (deterministic regardless of which task
+    // finished first). The tasks are never visible — nothing to leak or forget to join.
+    let mapped = chan.par_map([1, 2, 3, 4, 5], fn(n): square(n)).await
+    print(console, "par_map squares: ${mapped}")
+
+    // `par_reduce` folds those results with an associative combine.
+    let total = chan.par_reduce([1, 2, 3, 4, 5], fn(n): square(n), 0, fn(a, b): a + b).await
+    print(console, "par_reduce total: ${total}")
 
     // `scope` is the side-effecting form: run them all, join them all.
     let (tx, rx) = chan.channel(0).await
