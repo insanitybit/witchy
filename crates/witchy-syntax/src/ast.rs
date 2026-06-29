@@ -198,6 +198,47 @@ pub enum Type {
     Tuple(Vec<Type>),
     /// A function type: `fn(Int, String) -> Bool`.
     Fn(Vec<Type>, Box<Type>),
+    /// (RFC-0025/0026) An ownership/immutability qualifier on a type: `frozen T`,
+    /// `unique T`, `local unique T`. A compile-time CONTRACT — typeck enforces it
+    /// (a `frozen` value may not be mutated; a `unique` value must be the sole
+    /// reference) but it carries no runtime representation: both backends lower the
+    /// inner type identically, so it is invisible to codegen and parity-neutral.
+    /// Use [`Type::unqualified`] to see through it where the qualifier is irrelevant.
+    Qualified(TypeQual, Box<Type>),
+}
+
+/// An ownership/immutability qualifier (RFC-0025 `frozen`, RFC-0026 `unique`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeQual {
+    /// `frozen` — deeply immutable; sharing is safe, mutation is a check-time error.
+    Frozen,
+    /// `unique` — the sole reference; may be returned as `unique`.
+    Unique,
+    /// `local unique` — unique within this activation only; may not escape.
+    LocalUnique,
+}
+
+impl TypeQual {
+    /// The source keyword(s) for this qualifier — for formatting / reflection.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TypeQual::Frozen => "frozen",
+            TypeQual::Unique => "unique",
+            TypeQual::LocalUnique => "local unique",
+        }
+    }
+}
+
+impl Type {
+    /// See through any ownership/immutability qualifiers to the underlying type —
+    /// for the many sites where `frozen T` / `unique T` behave exactly as `T`
+    /// (shape, lowering, generic structure). Recurses through stacked qualifiers.
+    pub fn unqualified(&self) -> &Type {
+        match self {
+            Type::Qualified(_, inner) => inner.unqualified(),
+            other => other,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -466,6 +507,7 @@ pub enum Pattern {
 /// Recurses through tuple/function components and generic arguments.
 pub fn collect_type_names<S: Extend<String>>(t: &Type, out: &mut S) {
     match t {
+        Type::Qualified(_, inner) => collect_type_names(inner, out),
         Type::Named(name, args) => {
             out.extend([name.clone()]);
             for a in args {
@@ -491,6 +533,7 @@ pub fn collect_type_names<S: Extend<String>>(t: &Type, out: &mut S) {
 /// parameters a generic signature is implicitly quantified over).
 pub fn collect_type_vars(t: &Type, out: &mut Vec<String>) {
     match t {
+        Type::Qualified(_, inner) => collect_type_vars(inner, out),
         Type::Named(name, args) => {
             if args.is_empty()
                 && name.chars().next().is_some_and(char::is_lowercase)

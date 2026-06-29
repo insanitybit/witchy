@@ -80,6 +80,7 @@ fn method_fn(
 /// not the bare head `Pair`, which would clash with a real `Pair(Int, String)`.
 fn subst_self(t: &Type, self_ty: &Type) -> Type {
     match t {
+        Type::Qualified(q, inner) => Type::Qualified(*q, Box::new(subst_self(inner, self_ty))),
         Type::Named(n, args) if n == "Self" && args.is_empty() => self_ty.clone(),
         Type::Named(n, args) => {
             Type::Named(n.clone(), args.iter().map(|a| subst_self(a, self_ty)).collect())
@@ -1760,6 +1761,7 @@ fn subst_expr_types(e: &mut Expr, subst: &HashMap<&str, String>) {
 
 fn subst_vars(t: &Type, subst: &HashMap<&str, String>) -> Type {
     match t {
+        Type::Qualified(q, inner) => Type::Qualified(*q, Box::new(subst_vars(inner, subst))),
         Type::Named(n, args) if args.is_empty() && subst.contains_key(n.as_str()) => {
             decode_scope_type(&subst[n.as_str()])
         }

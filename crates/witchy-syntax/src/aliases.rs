@@ -119,6 +119,7 @@ pub fn resolve(mut module: Module) -> Module {
 /// whether anything changed.
 fn resolve_type(ty: &mut Type, map: &HashMap<String, Type>) -> bool {
     match ty {
+        Type::Qualified(_, inner) => resolve_type(inner, map),
         Type::Named(name, args) => {
             if args.is_empty() {
                 if let Some(target) = map.get(name) {

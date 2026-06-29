@@ -395,6 +395,7 @@ const BUILTIN_TYPE_NAMES: &[&str] = &[
 /// "unknown type" error rather than an opaque type that mis-unifies later.
 fn validate_type(t: &ast::Type, known: &HashSet<&str>) -> Result<(), TypeError> {
     match t {
+        ast::Type::Qualified(_, inner) => validate_type(inner, known),
         ast::Type::Tuple(ts) => ts.iter().try_for_each(|x| validate_type(x, known)),
         ast::Type::Fn(params, ret) => {
             params.iter().try_for_each(|p| validate_type(p, known))?;
@@ -670,6 +671,7 @@ fn is_scalar_ty(t: &Ty) -> bool {
 
 fn collect_type_params(t: &ast::Type, acc: &mut Vec<String>) {
     match t {
+        ast::Type::Qualified(_, inner) => collect_type_params(inner, acc),
         ast::Type::Tuple(ts) => {
             for x in ts {
                 collect_type_params(x, acc);
@@ -754,6 +756,9 @@ impl Checker {
     #[allow(clippy::wrong_self_convention)]
     fn to_ty(&mut self, t: &ast::Type) -> Ty {
         let (name, args) = match t {
+            // (RFC-0025/0026) Ownership/immutability qualifiers are compile-time
+            // contracts with no runtime type — lower to the inner type.
+            ast::Type::Qualified(_, inner) => return self.to_ty(inner),
             ast::Type::Named(name, args) => (name, args),
             ast::Type::Tuple(ts) => {
                 return Ty::Tuple(ts.iter().map(|t| self.to_ty(t)).collect());
@@ -804,6 +809,7 @@ impl Checker {
     #[allow(clippy::wrong_self_convention)]
     fn to_ty_generic(&mut self, t: &ast::Type, vars: &mut HashMap<String, Ty>) -> Ty {
         match t {
+            ast::Type::Qualified(_, inner) => self.to_ty_generic(inner, vars),
             ast::Type::Tuple(ts) => {
                 Ty::Tuple(ts.iter().map(|t| self.to_ty_generic(t, vars)).collect())
             }

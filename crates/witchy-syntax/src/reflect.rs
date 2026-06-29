@@ -65,6 +65,7 @@ pub fn type_info_expr(t: &TypeDef) -> Expr {
 /// `List(String)`, `Option(Point)`, `(Int, String)`, `fn(Int) -> Bool`.
 fn type_to_string(t: &Type) -> String {
     match t {
+        Type::Qualified(q, inner) => format!("{} {}", q.as_str(), type_to_string(inner)),
         Type::Named(n, args) if args.is_empty() => n.clone(),
         Type::Named(n, args) => {
             let inner: Vec<String> = args.iter().map(type_to_string).collect();

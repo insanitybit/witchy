@@ -52,6 +52,7 @@ fn build_cap(name: &str) -> Option<&'static str> {
 /// generics for soundness even though a build cap is normally a direct param.
 fn build_caps_in(ty: &Type, out: &mut CapSet) {
     match ty {
+        Type::Qualified(_, inner) => build_caps_in(inner, out),
         Type::Named(name, args) => {
             if let Some(b) = build_cap(name) {
                 out.entry(b).or_default();
@@ -354,6 +355,7 @@ fn merge_into(dst: &mut CapSet, src: &CapSet) {
 /// must see through the wrapper to stay sound.
 fn caps_in(ty: &Type, taint: &HashMap<String, CapSet>, out: &mut CapSet) {
     match ty {
+        Type::Qualified(_, inner) => caps_in(inner, taint, out),
         Type::Named(name, args) => {
             if let Some(h) = host_cap(name) {
                 out.entry(h).or_default().extend(rights_from_args(h, args));

@@ -733,6 +733,12 @@ impl Parser {
     }
 
     fn ty(&mut self) -> Result<Type, ParseError> {
+        // Ownership/immutability qualifiers (RFC-0025/0026): `frozen T`, `unique T`,
+        // `local unique T`. Contextual — only a qualifier keyword FOLLOWED BY a type
+        // is one; a bare `frozen` (nothing following) stays an ordinary type variable.
+        if let Some(q) = self.eat_type_qual() {
+            return Ok(Type::Qualified(q, Box::new(self.ty()?)));
+        }
         if self.eat(&Tok::Fn) {
             // Function type: `fn(T1, T2) -> R`.
             self.expect(&Tok::LParen)?;
@@ -791,6 +797,32 @@ impl Parser {
             self.expect(&Tok::RBracket)?;
         }
         Ok(Type::Named(name, args))
+    }
+
+    /// Consume a leading ownership/immutability qualifier (`frozen` / `unique` /
+    /// `local unique`) if one is present AND is followed by a type — so a bare
+    /// lowercase type variable that happens to be spelled like a qualifier is
+    /// unaffected. `None` when no qualifier applies.
+    fn eat_type_qual(&mut self) -> Option<TypeQual> {
+        let starts_type = |t: Option<&Tok>| {
+            matches!(t, Some(Tok::Ident(_)) | Some(Tok::LParen) | Some(Tok::Fn))
+        };
+        // `local unique T`
+        if self.at_ident("local")
+            && matches!(self.toks.get(self.pos + 1).map(|t| &t.kind), Some(Tok::Ident(n)) if n == "unique")
+            && starts_type(self.toks.get(self.pos + 2).map(|t| &t.kind))
+        {
+            self.advance();
+            self.advance();
+            return Some(TypeQual::LocalUnique);
+        }
+        for (kw, q) in [("frozen", TypeQual::Frozen), ("unique", TypeQual::Unique)] {
+            if self.at_ident(kw) && starts_type(self.toks.get(self.pos + 1).map(|t| &t.kind)) {
+                self.advance();
+                return Some(q);
+            }
+        }
+        None
     }
 
     // --- blocks & statements ---

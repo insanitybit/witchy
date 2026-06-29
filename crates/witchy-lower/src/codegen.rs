@@ -5323,6 +5323,7 @@ impl Codegen {
     fn adt_is_self_recursive(&self, name: &str) -> bool {
         fn mentions(ty: &Type, name: &str) -> bool {
             match ty {
+                Type::Qualified(_, inner) => mentions(inner, name),
                 Type::Named(n, args) => n == name || args.iter().any(|a| mentions(a, name)),
                 Type::Tuple(ts) => ts.iter().any(|t| mentions(t, name)),
                 Type::Fn(params, ret) => {
@@ -5356,6 +5357,7 @@ impl Codegen {
         visiting: &mut Vec<String>,
     ) -> Option<EqShape> {
         match ty {
+            Type::Qualified(_, inner) => self.eq_shape_of_type_rec(inner, subst, visiting),
             Type::Named(n, args) => match n.as_str() {
                 "Int" | "Duration" => Some(EqShape::Int),
                 "Bool" => Some(EqShape::Bool),
@@ -7036,6 +7038,7 @@ const WM_POOL: usize = 4;
 /// Does the type mention a bare lowercase type variable anywhere?
 fn type_has_var(t: &Type) -> bool {
     match t {
+        Type::Qualified(_, inner) => type_has_var(inner),
         Type::Named(n, args) => {
             (args.is_empty() && n.chars().next().is_some_and(|c| c.is_lowercase()))
                 || args.iter().any(type_has_var)

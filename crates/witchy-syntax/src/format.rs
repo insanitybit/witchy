@@ -1465,6 +1465,7 @@ fn pattern(p: &Pattern) -> String {
 
 pub fn type_str(t: &Type) -> String {
     match t {
+        Type::Qualified(q, inner) => format!("{} {}", q.as_str(), type_str(inner)),
         Type::Named(n, args) if args.is_empty() => n.clone(),
         // Capability rights use bracket syntax (`Dir[Read]`, `Net[Connect]`);
         // ordinary generic types use parens (`List(Int)`, `Option(T)`).
