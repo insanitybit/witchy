@@ -98,16 +98,29 @@ pub fn confined_slice_candidates_block(body: &Block) -> HashSet<String> {
     collect_assigned_targets(body, &mut reassigned);
     src_of
         .into_iter()
-        .filter(|(w, src)| !whole.contains(w) && !reassigned.contains(src))
+        // `w` is read-only-by-view (never whole), and the source is neither
+        // reassigned/mutated nor used as a whole value anywhere else (so no alias
+        // can mutate the buffer the view borrows). The slice binding's own use of
+        // the source is exempted in `collect_whole_uses`, so a whole `src` here is
+        // a genuine second use.
+        .filter(|(w, src)| {
+            !whole.contains(w) && !reassigned.contains(src) && !whole.contains(src)
+        })
         .map(|(w, _)| w)
         .collect()
+}
+
+/// Whether a call name is `list.slice` — possibly with a monomorphization suffix
+/// (`list.slice__Int`) appended by generic instantiation.
+pub fn is_list_slice(callee: &str) -> bool {
+    callee == "list.slice" || callee.starts_with("list.slice__")
 }
 
 /// `let w = list.slice(xs, lo, hi)` (xs a plain var) — record `w -> xs`.
 fn collect_slice_lets(b: &Block, out: &mut HashMap<String, String>) {
     for s in &b.stmts {
         if let Stmt::Let { name, value: Expr::Call { name: callee, args }, .. } = s {
-            if callee == "list.slice" {
+            if is_list_slice(callee) {
                 if let Some(Expr::Var(src)) = args.first() {
                     out.insert(name.clone(), src.clone());
                 }
@@ -233,10 +246,13 @@ fn collect_whole_uses(e: &Expr, out: &mut HashSet<String>) {
         }
         // A view-safe READ — `list.at(v, i)` / `list.length(v)` — does not use its
         // list argument as a whole value (it indexes/measures it), so a binding
-        // used only this way stays a confined-slice candidate (RFC-0028). Records
-        // are never list arguments, so this does not affect SROA candidates.
+        // used only this way stays a confined-slice candidate (RFC-0028). Likewise
+        // `list.slice(src, lo, hi)` reads `src` structurally: a source used ONLY as
+        // a slice source is never mutated/aliased whole, which is what lets the
+        // copy be elided safely. Records are never list arguments, so this does not
+        // affect SROA candidates.
         Expr::Call { name, args }
-            if (name == "list.at" || name == "list.length")
+            if (name == "list.at" || name == "list.length" || is_list_slice(name))
                 && matches!(args.first(), Some(Expr::Var(_))) =>
         {
             for a in &args[1..] {
@@ -486,6 +502,31 @@ mod tests {
             !confined_slice_candidates(&f).contains("w"),
             "mutating the source can reallocate the borrowed buffer"
         );
+    }
+
+    #[test]
+    fn slice_whose_source_is_used_whole_is_not_a_candidate() {
+        // The source is aliased (`let ys = xs`), so an in-place mutation of the
+        // alias could rewrite the buffer the view borrows — disqualify it even
+        // though `xs` itself is never directly reassigned.
+        let f = func(
+            "fn d(xs: List(Int)) -> Int:\n    let w = list.slice(xs, 1, 3)\n    let ys = xs\n    list.at(w, 0) + list.length(ys)\n",
+        );
+        assert!(
+            !confined_slice_candidates(&f).contains("w"),
+            "a source used as a whole value elsewhere may be aliased and mutated"
+        );
+    }
+
+    #[test]
+    fn two_views_of_an_unmutated_source_are_both_candidates() {
+        // The slice binding's own use of the source is exempt, so a source read
+        // ONLY as a slice source (here twice) stays eligible for both windows.
+        let f = func(
+            "fn d(xs: List(Int)) -> Int:\n    let a = list.slice(xs, 0, 2)\n    let b = list.slice(xs, 2, 4)\n    list.at(a, 0) + list.at(b, 0)\n",
+        );
+        let c = confined_slice_candidates(&f);
+        assert!(c.contains("a") && c.contains("b"), "both read-only windows are candidates: {c:?}");
     }
 
     #[test]

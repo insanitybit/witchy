@@ -257,6 +257,143 @@ pub fn list_at_helper() -> WirFunc {
     }
 }
 
+// Helpers below realize a confined slice *view* (RFC-0028 confined Views): a
+// `let w = list.slice(src, lo, hi)` whose copy was elided keeps only `src`, `lo`,
+// `hi`, and reads through them. Both recompute the clamped window
+// (`off = max(lo,0)`, `end = min(hi, len(src))`) on each call from i32 args, so
+// `lo`/`hi` are stored verbatim once at the binding and the result matches the
+// interpreter reading the materialized copy. `i32` is encoded as `WirTy::Bool`.
+fn view_clamp_setup(getl: &dyn Fn(&str) -> WirExpr) -> Vec<WirNode> {
+    let i32c = WirExpr::ConstI32;
+    let bin = |op: BinOp, l: WirExpr, r: WirExpr| WirExpr::Binary {
+        op,
+        kind: Kind::I32,
+        lhs: Box::new(l),
+        rhs: Box::new(r),
+    };
+    vec![
+        // srclen = len(src) (the i32 element-count header)
+        WirNode::SetLocal {
+            local: "srclen".into(),
+            value: WirExpr::Load { ptr: Box::new(getl("src")), kind: Kind::I32, offset: 0 },
+        },
+        // off = max(lo, 0)
+        WirNode::SetLocal { local: "off".into(), value: getl("lo") },
+        WirNode::If {
+            cond: bin(BinOp::Lt, getl("off"), i32c(0)),
+            then_: vec![WirNode::SetLocal { local: "off".into(), value: i32c(0) }],
+            els: vec![],
+            result: None,
+        },
+        // end = min(hi, srclen)
+        WirNode::SetLocal { local: "end".into(), value: getl("hi") },
+        WirNode::If {
+            cond: bin(BinOp::Gt, getl("end"), getl("srclen")),
+            then_: vec![WirNode::SetLocal { local: "end".into(), value: getl("srclen") }],
+            els: vec![],
+            result: None,
+        },
+        // len = end - off  (may be negative when the window is empty)
+        WirNode::SetLocal {
+            local: "len".into(),
+            value: bin(BinOp::Sub, getl("end"), getl("off")),
+        },
+    ]
+}
+
+/// `$list_at_view(src: i32, lo: i32, hi: i32, j: i32) -> i64` — bounds-checked
+/// read of a confined slice view: clamp the window, trap on `j < 0 || j >= len`,
+/// else load the i64 slot at `(src+4) + (off+j)*8`. A negative `len` (empty
+/// window) traps every `j >= 0`, matching an out-of-range read of an empty copy.
+pub fn list_at_view_helper() -> WirFunc {
+    let getl = |n: &str| WirExpr::GetLocal(n.into());
+    let i32c = WirExpr::ConstI32;
+    let bin = |op: BinOp, l: WirExpr, r: WirExpr| WirExpr::Binary {
+        op,
+        kind: Kind::I32,
+        lhs: Box::new(l),
+        rhs: Box::new(r),
+    };
+    let mut body = view_clamp_setup(&getl);
+    body.push(WirNode::If {
+        cond: bin(
+            BinOp::Or,
+            bin(BinOp::Lt, getl("j"), i32c(0)),
+            bin(BinOp::Ge, getl("j"), getl("len")),
+        ),
+        then_: vec![WirNode::Unreachable],
+        els: vec![],
+        result: None,
+    });
+    body.push(WirNode::Push(WirExpr::Load {
+        ptr: Box::new(bin(
+            BinOp::Add,
+            bin(BinOp::Add, getl("src"), i32c(4)),
+            bin(BinOp::Mul, bin(BinOp::Add, getl("off"), getl("j")), i32c(8)),
+        )),
+        kind: Kind::I64,
+        offset: 0,
+    }));
+    WirFunc {
+        name: "list_at_view".into(),
+        params: vec![
+            WirLocal { name: "src".into(), ty: WirTy::Bool },
+            WirLocal { name: "lo".into(), ty: WirTy::Bool },
+            WirLocal { name: "hi".into(), ty: WirTy::Bool },
+            WirLocal { name: "j".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Int], // i64 slot
+        locals: vec![
+            WirLocal { name: "srclen".into(), ty: WirTy::Bool },
+            WirLocal { name: "off".into(), ty: WirTy::Bool },
+            WirLocal { name: "end".into(), ty: WirTy::Bool },
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+        ],
+        body,
+        raw_body: None,
+    }
+}
+
+/// `$list_len_view(src: i32, lo: i32, hi: i32) -> i32` — the element count of a
+/// confined slice view: `max(0, min(hi, len(src)) - max(lo, 0))`. Matches the
+/// length of the materialized `list.slice` copy.
+pub fn list_len_view_helper() -> WirFunc {
+    let getl = |n: &str| WirExpr::GetLocal(n.into());
+    let i32c = WirExpr::ConstI32;
+    let bin = |op: BinOp, l: WirExpr, r: WirExpr| WirExpr::Binary {
+        op,
+        kind: Kind::I32,
+        lhs: Box::new(l),
+        rhs: Box::new(r),
+    };
+    let mut body = view_clamp_setup(&getl);
+    // clamp the (possibly negative) window length to 0 for an empty view
+    body.push(WirNode::If {
+        cond: bin(BinOp::Lt, getl("len"), i32c(0)),
+        then_: vec![WirNode::SetLocal { local: "len".into(), value: i32c(0) }],
+        els: vec![],
+        result: None,
+    });
+    body.push(WirNode::Push(getl("len")));
+    WirFunc {
+        name: "list_len_view".into(),
+        params: vec![
+            WirLocal { name: "src".into(), ty: WirTy::Bool },
+            WirLocal { name: "lo".into(), ty: WirTy::Bool },
+            WirLocal { name: "hi".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool], // i32 count
+        locals: vec![
+            WirLocal { name: "srclen".into(), ty: WirTy::Bool },
+            WirLocal { name: "off".into(), ty: WirTy::Bool },
+            WirLocal { name: "end".into(), ty: WirTy::Bool },
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+        ],
+        body,
+        raw_body: None,
+    }
+}
+
 /// `$int_to_string(n: i64) -> i32` — render a signed integer to a fresh witchy
 /// string (`[i32 len][ascii]`). Mirrors `INT_TO_STRING_WAT`: `0` is a fast path;
 /// otherwise count digits (a div-by-10 loop), allocate `[len][digits]`, write the
@@ -4025,6 +4162,20 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "list_at" => Some(WirHelperSpec {
             func: list_at_helper(),
+            helper_deps: &[],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "list_at_view" => Some(WirHelperSpec {
+            func: list_at_view_helper(),
+            helper_deps: &[],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "list_len_view" => Some(WirHelperSpec {
+            func: list_len_view_helper(),
             helper_deps: &[],
             import_deps: &[],
             uses_heap: false,

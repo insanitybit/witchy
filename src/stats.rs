@@ -138,6 +138,9 @@ mod tests {
             "fn main(console: Console):\n    var xs = []\n    var s = \"\"\n    var d = dict.new()\n    var i = 0\n    while i < 300:\n        let scratch = [i, i + 1]\n        xs.push(i + list.length(scratch) - 2)\n        s = s + __render(i % 10)\n        d = dict.update(d, i % 7, 0, fn(n: Int): n + 1)\n        i = i + 1\n    let folded = 2 * 3 + 4\n    print(console, __render(list.length(xs)))\n    print(console, __render(string.length(s)))\n    print(console, __render(dict.get_or(d, 3, 0)))\n    print(console, __render(folded))\n",
             // `for var` write-back over record elements.
             "type P:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    var ps = [P(1, 2), P(3, 4)]\n    for var p in ps:\n        p.x = p.x + 100\n    print(console, \"${ps}\")\n",
+            // confined slice VIEW: a read-only window over an unmutated param,
+            // read only via at/length — toggling `views` must not change output.
+            "import list\n\nfn win(xs: List(Int), lo: Int, hi: Int) -> Int:\n    let w = list.slice(xs, lo, hi)\n    var t = 0\n    var j = 0\n    while j < list.length(w):\n        t = t + list.at(w, j)\n        j = j + 1\n    t\n\nfn main(console: Console):\n    let xs = [10, 20, 30, 40, 50, 60]\n    print(console, __render(win(xs, 1, 4)))\n    print(console, __render(win(xs, 4, 100)))\n    print(console, __render(win(xs, 2, 2)))\n",
         ];
         for src in corpus {
             // The interpreter oracle (the fixed semantics; it has no WITCHY_OPT).
@@ -171,6 +174,36 @@ mod tests {
         let linked = crate::resolve_std_only(src).expect("link");
         typeck::check(&linked).expect("typeck");
         crate::interpreter::run_module(linked, ".", Vec::new()).expect("interp run")
+    }
+
+    /// RFC-0028 confined Views DoD counter (b): a read-only window over an
+    /// unmutated source, read only via `at`/`length`, elides the `list.slice`
+    /// COPY — so reading a 400-element window allocates the source once with
+    /// `views` on, and the source PLUS a full copy with it off. Output is
+    /// identical (parity), and `heap_bytes` proves the copy is gone. The source
+    /// is a parameter because a push-built list counts as reassigned.
+    #[test]
+    fn confined_view_elides_the_slice_copy() {
+        // `xs` is a 400-element param; `win` slices the whole thing and reads it
+        // only via `length`/`at`. The window copy is ~400*8 bytes.
+        let src = "import list\n\nfn win(xs: List(Int)) -> Int:\n    let w = list.slice(xs, 0, 400)\n    var t = 0\n    var j = 0\n    while j < list.length(w):\n        t = t + list.at(w, j)\n        j = j + 1\n    t\n\nfn main(console: Console):\n    var xs = []\n    var i = 0\n    while i < 400:\n        xs = list.push(xs, i)\n        i = i + 1\n    print(console, __render(win(xs)))\n";
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let on = compute(src).expect("views on");
+        opt::set_for_tests(Some(OptSet::default_set().without(Opt::Views)));
+        let off = compute(src).expect("views off");
+        opt::set_for_tests(None);
+
+        // Same observable behavior (sum 0..399 = 79800).
+        assert_eq!(on.output, off.output, "views must not change output");
+        assert_eq!(on.output, vec!["79800".to_string()]);
+        // The copy is elided: views-off allocates a full ~3.2KB window copy on top
+        // of the source that views-on never does.
+        assert!(
+            off.heap_bytes >= on.heap_bytes + 3000,
+            "views must elide the slice copy: on={} off={}",
+            on.heap_bytes,
+            off.heap_bytes
+        );
     }
 
     /// RFC-0028 `for var`: a mutation of the loop element is written back into the

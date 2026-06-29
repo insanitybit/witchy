@@ -318,6 +318,8 @@ struct SavedScope {
     var_params: Vec<String>,
     sroa_candidates: HashSet<String>,
     sroa_active: HashMap<String, usize>,
+    view_candidates: HashSet<String>,
+    view_active: HashSet<String>,
 }
 
 struct Codegen {
@@ -417,6 +419,14 @@ struct Codegen {
     /// `let` precedes its uses in statement order.
     sroa_candidates: HashSet<String>,
     sroa_active: HashMap<String, usize>,
+    /// (RFC-0028) Confined slice *views*: `let w = list.slice(src, lo, hi)` bindings
+    /// the escape analysis proved read-only-by-`at`/`length` over an unmutated
+    /// source, so the slice copy is elided — `w` keeps `${w}$src`/`${w}$lo`/`${w}$hi`
+    /// i32 locals and reads through the source. `view_candidates` is the per-unit
+    /// set (under the `views` lever); `view_active` is the subset whose `let` codegen
+    /// replaced, so `list.at`/`list.length` lower to the view helpers only for those.
+    view_candidates: HashSet<String>,
+    view_active: HashSet<String>,
     /// The active compile unit's uniqueness facts + (kills consumed, sites
     /// seen) for the post-compile consumption check; units nest via lambdas.
     facts_stack: Vec<(analysis::Facts, usize, usize)>,
@@ -782,6 +792,8 @@ impl Codegen {
             inplace_push: HashSet::new(),
             sroa_candidates: HashSet::new(),
             sroa_active: HashMap::new(),
+            view_candidates: HashSet::new(),
+            view_active: HashSet::new(),
             facts_stack: Vec::new(),
             summaries: analysis::Summaries::empty(),
             cur_fn_own_param: None,
@@ -2053,6 +2065,15 @@ impl Codegen {
                 locals.push(WirLocal { name: format!("{name}${i}"), ty: i64t() });
             }
         }
+        // (RFC-0028) Confined slice views: source pointer + raw lo/hi bounds, all
+        // i32. (The plain `${name}` local from the loop above is then unused.)
+        let mut views: Vec<&String> = self.view_active.iter().collect();
+        views.sort();
+        for name in views {
+            locals.push(WirLocal { name: format!("{name}$src"), ty: i32t() });
+            locals.push(WirLocal { name: format!("{name}$lo"), ty: i32t() });
+            locals.push(WirLocal { name: format!("{name}$hi"), ty: i32t() });
+        }
         // Shadow `${v}__cap` ownership-token slots for the in-place accumulators.
         // The own-ABI parameter's token is a param (above), not a local.
         let mut cap_vars: Vec<&String> = self.inplace_push.iter().collect();
@@ -2141,6 +2162,17 @@ impl Codegen {
             && witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::Sroa)
         {
             crate::escape::sroa_candidates_block(body)
+        } else {
+            HashSet::new()
+        };
+        // (RFC-0028) Confined slice views: elide the `list.slice` copy for a
+        // read-only window over an unmutated source. Gated on the `views` lever and
+        // off in forced-copy mode (so the de-opt differential exercises the copy).
+        self.view_active.clear();
+        self.view_candidates = if !force_copy_mode()
+            && witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::Views)
+        {
+            crate::escape::confined_slice_candidates_block(body)
         } else {
             HashSet::new()
         };
@@ -2251,8 +2283,46 @@ impl Codegen {
                     // allocating a heap object. Falls through to the normal path if
                     // any field can't lower (then the name never enters sroa_active,
                     // so its field reads stay heap loads — consistent).
+                    let mut view_done = false;
+                    if self.view_candidates.contains(name) {
+                        if let Some((src, lo, hi)) = view_slice_args(value) {
+                            // Elide the copy: store the source pointer and the raw
+                            // lo/hi bounds (evaluated once, as the materialized slice
+                            // would), then read through them. The analysis guarantees
+                            // `src` is an unmutated var, so its pointer stays valid.
+                            let srcw = self.lower_expr(src)?;
+                            let lok = self.kind_of(lo);
+                            let low = self.lower_expr(lo)?;
+                            let hik = self.kind_of(hi);
+                            let hiw = self.lower_expr(hi)?;
+                            seq.push(N::SetLocal { local: format!("{name}$src"), value: srcw });
+                            seq.push(N::SetLocal {
+                                local: format!("{name}$lo"),
+                                value: Self::wir_convert(low, lok, Kind::I32),
+                            });
+                            seq.push(N::SetLocal {
+                                local: format!("{name}$hi"),
+                                value: Self::wir_convert(hiw, hik, Kind::I32),
+                            });
+                            // Carry the source's element typing onto the view name so
+                            // `list.at(w, _)` recovers the element kind for `FromSlot`.
+                            if let Expr::Var(s) = src {
+                                if let Some(vt) = self.local_list_elem_valtype.get(s).copied() {
+                                    self.local_list_elem_valtype.insert(name.clone(), vt);
+                                }
+                                if let Some(r) = self.local_list_elem.get(s).cloned() {
+                                    self.local_list_elem.insert(name.clone(), r);
+                                }
+                                if let Some(t) = self.local_list_elem_tuple.get(s).cloned() {
+                                    self.local_list_elem_tuple.insert(name.clone(), t);
+                                }
+                            }
+                            self.view_active.insert(name.clone());
+                            view_done = true;
+                        }
+                    }
                     let mut sroa_done = false;
-                    if self.sroa_candidates.contains(name) {
+                    if !view_done && self.sroa_candidates.contains(name) {
                         if let Some(args) = sroa_fields(value) {
                             let mut stores = Vec::with_capacity(args.len());
                             let mut ok = true;
@@ -2278,7 +2348,7 @@ impl Codegen {
                             }
                         }
                     }
-                    if !sroa_done {
+                    if !view_done && !sroa_done {
                         let v = self.lower_expr(value)?;
                         seq.push(N::SetLocal { local: name.clone(), value: v });
                         // An accumulator binding starts with a zero ownership token
@@ -4576,6 +4646,8 @@ impl Codegen {
             var_params: std::mem::take(&mut self.cur_fn_var_params),
             sroa_candidates: std::mem::take(&mut self.sroa_candidates),
             sroa_active: std::mem::take(&mut self.sroa_active),
+            view_candidates: std::mem::take(&mut self.view_candidates),
+            view_active: std::mem::take(&mut self.view_active),
         }
     }
 
@@ -4598,6 +4670,8 @@ impl Codegen {
         self.cur_fn_var_params = s.var_params;
         self.sroa_candidates = s.sroa_candidates;
         self.sroa_active = s.sroa_active;
+        self.view_candidates = s.view_candidates;
+        self.view_active = s.view_active;
     }
 
     /// The `$key_eq` comparison mode for a Dict key expression: 0 for Int/Bool
@@ -5889,6 +5963,39 @@ impl Codegen {
         // A void effect that yields Nil: `{inner} ... i32.const 0`.
         let nil0 = |inner: W| W::Seq(vec![N::Do(inner), N::Push(W::ConstI32(0))]);
         Some(match (name, args.len()) {
+            // (RFC-0028) Confined slice view reads: lower to the zero-copy view
+            // helpers, reading through the elided slice's source + bounds. Guarded
+            // to active views (the `let` replaced the binding), so any other
+            // `list.at`/`length` falls through to the materialized-list arms below.
+            ("list.at", 2)
+                if matches!(&args[0], Expr::Var(w) if self.view_active.contains(w)) =>
+            {
+                let ek = self.list_elem_kind(&args[0]);
+                let Expr::Var(w) = &args[0] else { unreachable!() };
+                let ik = self.kind_of(&args[1]);
+                let inner = vec![
+                    W::GetLocal(format!("{w}$src")),
+                    W::GetLocal(format!("{w}$lo")),
+                    W::GetLocal(format!("{w}$hi")),
+                    Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I32),
+                ];
+                W::FromSlot(Box::new(call("list_at_view", inner)), Self::wir_kind(ek))
+            }
+            ("list.length", 1)
+                if self.collect_wir
+                    && matches!(&args[0], Expr::Var(w) if self.view_active.contains(w)) =>
+            {
+                let Expr::Var(w) = &args[0] else { unreachable!() };
+                Self::wir_convert(
+                    call("list_len_view", vec![
+                        W::GetLocal(format!("{w}$src")),
+                        W::GetLocal(format!("{w}$lo")),
+                        W::GetLocal(format!("{w}$hi")),
+                    ]),
+                    Kind::I32,
+                    Kind::I64,
+                )
+            }
             ("crypto.ed25519_verify", 3) => {
                 self.uses_crypto_ed25519_verify = true;
                 call("crypto_ed25519_verify", self.lower_args(&[&args[0], &args[1], &args[2]])?)
@@ -7839,6 +7946,19 @@ fn wir_and_chain(conds: &[witchy_wir::wir::WirExpr]) -> witchy_wir::wir::WirExpr
 fn sroa_fields(e: &Expr) -> Option<&[Expr]> {
     match e {
         Expr::Ctor { args, .. } | Expr::Tuple(args) => Some(args),
+        _ => None,
+    }
+}
+
+/// The `(source, lo, hi)` of a `list.slice(source, lo, hi)` call — the binding a
+/// confined slice view elides — or `None` for any other expression.
+fn view_slice_args(e: &Expr) -> Option<(&Expr, &Expr, &Expr)> {
+    match e {
+        Expr::Call { name, args }
+            if crate::escape::is_list_slice(name) && args.len() == 3 =>
+        {
+            Some((&args[0], &args[1], &args[2]))
+        }
         _ => None,
     }
 }
