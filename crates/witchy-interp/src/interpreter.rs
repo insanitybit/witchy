@@ -826,6 +826,23 @@ impl Interpreter {
             }
             return Ok(Value::Dict(out));
         }
+        // (RFC-0032) `vm.par_map(xs, f)`: the interpreter is the sequential oracle —
+        // apply `f` to each element in order. The compiled backend runs the same map
+        // across OS-thread VMs; because results are collected by input index and `f` is
+        // pure + capture-free, the two agree (parity by determinism). The portable
+        // reference body in `std/vm.witchy` does the same thing via `list.map`.
+        if name == "vm.par_map" && argvals.len() == 2 {
+            let Value::List(items) = &argvals[0] else {
+                return err("par_map expects a list as its first argument");
+            };
+            let items = items.clone();
+            let f = argvals[1].clone();
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                out.push(self.apply_closure(f.clone(), vec![item])?);
+            }
+            return Ok(Value::List(out));
+        }
         // A local variable holding a function value (a closure): apply it.
         if let Some(Value::Closure { .. }) = env.get(name) {
             let clo = env.get(name).unwrap().clone();

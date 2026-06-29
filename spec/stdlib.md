@@ -2487,6 +2487,18 @@ Render a Url back to its string form — the inverse of `parse`. The port is sho
 
 Percent-encode `s` for use as a query-string value (RFC 3986): the unreserved set (`A-Z a-z 0-9 - _ . ~`) passes through, every other byte becomes `%XX`. Used to build query strings safely — e.g. an OAuth `redirect_uri`, `scope`, or `state`.
 
+## `vm`
+
+std/vm — (RFC-0032) parallel execution across cores.
+
+`par_map` maps a function over a list with the elements processed in PARALLEL on the compiled backend: the work is split across OS-thread worker VMs, each its own isolated WebAssembly instance, and the results are gathered back in INPUT order. Because the result is ordered by input index and the mapped function is pure, the parallel result is identical to a sequential map — so the interpreter oracle (and this module's own reference body) computes it sequentially and the two backends agree. Parallelism changes how fast the map runs, not what it returns.
+
+The mapped function must be CAPTURE-FREE (a top-level function, or a closure that captures nothing): a worker VM has its own linear memory, so a captured parent-heap value would not be reachable. The compiled backend only takes the parallel path for a capture-free function over scalar elements; everything else runs the sequential reference body below, with identical results.
+
+#### `fn par_map(xs: List(a), f: fn(a) -> b) -> List(b)`
+
+Map `f` over every element of `xs`, in parallel where the backend supports it, returning the results in input order.
+
 ## `webauthn`
 
 webauthn — server-side verification of a WebAuthn *assertion* (the credential "get" / second-factor ceremony), in pure witchy. ES256 (P-256, COSE alg -7) only.

@@ -256,6 +256,18 @@
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
+    /// (RFC-0032) `vm.par_map(xs, f)` maps a capture-free function over a list. On the
+    /// interpreter it is the sequential oracle; on the compiled backend it runs across
+    /// OS-thread VMs. Because results are collected by input index and `f` is pure, the
+    /// two backends produce identical output (parity by determinism).
+    #[test]
+    fn vm_par_map_backends_agree() {
+        let src = "import vm\n\nfn dbl(n: Int) -> Int:\n    n * 2\n\nfn main(console: Console):\n    let ys = vm.par_map([1, 2, 3, 4, 5], dbl)\n    print(console, __render(ys))\n    print(console, __render(list.length(ys)))\n";
+        let expected = ["[2, 4, 6, 8, 10]", "5"];
+        assert_eq!(interpreter::run(src).expect("interp"), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+    }
+
     /// Host-capability operations are reachable via UFCS method syntax: `console.print(x)`
     /// lowers to the bare intrinsic `print(console, x)` — the same surface a library
     /// capability's own `impl` methods already get. The foundation for RFC-0011's
