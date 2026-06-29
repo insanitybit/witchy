@@ -1,10 +1,15 @@
 ---
 rfc: 0016
 title: Reference-counted memory — RC floor, arena/region/in-place as elision
-status: planned
+status: implemented
 created: 2026-06-26
 superseded-by:
-tracking:
+tracking: "RC-floor reclamation shipped (free-at-overwrite + size-classed free-list over a
+  uniform negative-offset [size] header across all allocators: dict, list/string, and the
+  generic mkN for records/tuples/ADTs), gated WITCHY_OPT=rc-floor, plus the elision rungs
+  (in-place reuse rc-elide, region/watermark). Remaining CLEANUP (not a missing mechanism):
+  unify the per-method self_* in-place recognizers into one oracle-driven recognizer (the
+  _cap helpers stay as in-place primitives), and route string.replace's allocator."
 ---
 
 # RFC-0016: Reference-counted memory — RC floor, arena/region/in-place as elision
