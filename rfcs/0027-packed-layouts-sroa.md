@@ -157,6 +157,28 @@ fn dist(a: Point, b: Point) -> Int:
 - Classic SROA / scalar replacement (LLVM `sroa`); escape analysis →
   stack allocation (Java HotSpot, Go).
 
+> 2026-06-29: **Part 2 (SROA) shipped; Part 1 (packed) — analysis increment 1
+> landed, via INFERENCE for the confined case.** SROA (scalar replacement of
+> frame-confined records/tuples) is implemented and gated `WITCHY_OPT=sroa`.
+>
+> For packed layouts, rather than start with the declared `packed` qualifier
+> (which needs parser + typeck packability checking + `mode opt` gating infra that
+> does not exist yet, and makes every host fn reading `List(<record>)` layout-aware
+> — the most invasive path), the first increment delivers the SAME cache-density
+> win by INFERENCE for the confined case, mirroring how confined views (RFC-0028)
+> deliver zero-copy borrows without a `View` type. `escape::confined_record_list_candidates`
+> (committed, additive, no consumer yet) identifies `let xs = [P(..), ..]` read
+> ONLY via `list.length(xs)` and `list.at(xs, i).field` (never whole, no element
+> taken whole, never reassigned) — a list that can become a flat packed buffer with
+> each `at(i).field` lowered to a direct slot read. NEXT (increment 2, the hard +
+> risky part, warrants fresh context): the gated codegen consumer — type-level
+> packability filter (element record fixed-size all-scalar), flat-buffer
+> construction at the `let`, `list.at(xs,i).field` → slot read, `list.length` →
+> count, gated by a `packed`/`unbox` `WITCHY_OPT` lever (re-added with this
+> consumer + a `witchy stats` heap-drop counter + the differential sweep). The
+> declared `packed` qualifier (for non-confined / `pub`-API / host-visible layouts)
+> remains future work on top. RFC stays `proposed` until the codegen lands.
+
 ---
 
 <!--
