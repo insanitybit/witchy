@@ -108,8 +108,14 @@ and activate when a dotnet toolchain is present.
    deferring the wasmer-LLVM engine.
 2. **Direct calls over `call_indirect`** when the closure target is statically
    known (the common `list.map(xs, fn(x): …)` shape).
-3. **Flatten non-escaping tuples/records into locals** (escape-analysis lite —
-   reuse the lambda-capture escape scan).
+3. **Flatten non-escaping tuples/records into locals** — SHIPPED as escape-driven
+   SROA (RFC-0027): a frame-confined record/tuple (used only via field/index
+   access, per the `escape` analysis) is scalar-replaced — each field lives in an
+   i64-slot local instead of a heap object, for read-only AND field-mutated
+   (`p.x = v`) aggregates. Gated by `WITCHY_OPT=sroa`; a 300-iteration confined
+   record drops from 6017 to 17 heap bytes. The general optimization knob is the
+   single `WITCHY_OPT` lever (RFC-0030), with the differential de-opt sweep and
+   `witchy stats` counters as the soundness/effect gates.
 4. **SIMD** (`relaxed-simd` in wasmtime config) for the obvious stdlib loops
    (string compare/search, list scans) — after Phase 0 shows where it pays.
 
