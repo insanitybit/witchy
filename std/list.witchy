@@ -31,6 +31,19 @@ pub fn push(xs: List(a), x: a) -> List(a):
 pub fn concat(xs: List(a), ys: List(a)) -> List(a):
     list.concat(xs, ys)
 
+// Concatenate the strings in `parts`, inserting `sep` between adjacent
+// elements: `["a", "b", "c"].join("-")` is `"a-b-c"`, and `[].join(sep)` is `""`.
+pub fn join(parts: List(String), sep: String) -> String:
+    var s = ""
+    var first = true
+    for p in parts:
+        if first:
+            s = p
+            first = false
+        else:
+            s = s + sep + p
+    s
+
 pub fn range(n: Int) -> List(Int):
     var out = []
     var i = 0

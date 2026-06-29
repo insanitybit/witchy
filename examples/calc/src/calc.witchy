@@ -30,7 +30,7 @@ type Parse:
 
 fn main(console: Console):
     for source in ["2 + 3 * 4", "(2 + 3) * 4", "100 - 2 - 3", "2 * (10 - 1)", "8 / (4 - 4)", "2 * (3 +"]:
-        print(console, string.pad_right(source, 16, " ") + "=> " + run(source))
+        print(console, source.pad_right(16, " ") + "=> " + run(source))
 
 // Evaluate a source string end to end, rendering the result or the first error.
 pub fn run(source: String) -> String:
@@ -50,28 +50,28 @@ fn render(result: Result(Int, String)) -> String:
 
 // --- lexer -------------------------------------------------------------------
 fn tokenize(source: String) -> Result(List(Token), String):
-    let chars = string.chars(source)
-    let n = list.length(chars)
+    let chars = source.chars()
+    let n = chars.length()
     var tokens = []
     var failure = ""
     var i = 0
-    while i < n && string.is_empty(failure):
-        let c = list.at(chars, i)
+    while i < n && failure.is_empty():
+        let c = chars.at(i)
         if c == " ":
             i = i + 1
         else if ascii.is_digit(c):
             var value = 0
-            while i < n && ascii.is_digit(list.at(chars, i)):
-                value = value * 10 + ascii.to_digit(list.at(chars, i))
+            while i < n && ascii.is_digit(chars.at(i)):
+                value = value * 10 + ascii.to_digit(chars.at(i))
                 i = i + 1
-            tokens = list.push(tokens, Num(value))
+            tokens = tokens.push(Num(value))
         else:
             match symbol(c):
                 Some(tok) ->
-                    tokens = list.push(tokens, tok)
+                    tokens = tokens.push(tok)
                     i = i + 1
                 None -> failure = "unexpected character `" + c + "`"
-    if string.is_empty(failure):
+    if failure.is_empty():
         Ok(tokens)
     else:
         Err(failure)
@@ -95,7 +95,7 @@ fn symbol(c: String) -> Option(Token):
 // --- parser (recursive descent, precedence-climbing) -------------------------
 fn parse(tokens: List(Token)) -> Result(Expr, String):
     match parse_expr(tokens, 0):
-        Ok2(tree, pos) -> if pos == list.length(tokens): Ok(tree) else: Err("unexpected trailing input")
+        Ok2(tree, pos) -> if pos == tokens.length(): Ok(tree) else: Err("unexpected trailing input")
         Bad(message) -> Err(message)
 
 // expr := term (('+' | '-') term)*   (lowest precedence, left-associative)
@@ -151,8 +151,8 @@ fn close_group(inner: Expr, tokens: List(Token), pos: Int) -> Parse:
         _ -> Bad("expected `)`")
 
 fn peek(tokens: List(Token), pos: Int) -> Option(Token):
-    if pos < list.length(tokens):
-        Some(list.at(tokens, pos))
+    if pos < tokens.length():
+        Some(tokens.at(pos))
     else:
         None
 

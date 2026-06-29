@@ -6,7 +6,7 @@ next row is built from the last (sum of adjacent entries, 1s on the ends). A
 (only the rows you `take` are built). Runs on both backends.
 
 **Shows:** `gen fn`/`yield`, the `iter` module (`take`, `collect`), `while`
-loops, the `list` module (`push`, `at`, `length`), `string.join`.
+loops, the `list` module (`push`, `at`, `length`), `list.join`.
 
 ## Run
 

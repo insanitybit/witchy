@@ -51,7 +51,10 @@ A `Dir` is not "the filesystem" — it is one subtree. `read(dir, path)` resolve
 symlinks that point outside the subtree. `dir.subtree("sub")` mints a new,
 smaller capability — handing a callee `dir.subtree("uploads")` gives it that
 folder and nothing else. (`subtree(dir, "sub")` is the equivalent free-function
-form.)
+form.) A `Dir` also carries an **entry policy** (RFC-0011): `dir.only(confine.ext(".txt"))`
+narrows it so `read`/`write`/`open` only touch matching entries (a non-matching
+name is refused at the access check), and a subtree inherits the policy — the
+filesystem analog of `net.only`/`net.deny`.
 
 A **`File`** is the *leaf* of the same hierarchy (RFC-0012): authority to one
 file, right-typed like `Dir` (`File[Read]`/`File[Write]`). A `Dir` navigates to
@@ -75,6 +78,18 @@ elsewhere. Policy patterns are **scheme-agnostic `host:port`**: HTTPS is not a
 right and not an allowlist scheme but a *connect-time* `tls:` choice on the
 address you dial (`connect(net, "tls:github.com:443")`), terminated on the host —
 see `rfcs/0009-https-tls-client.md`.
+
+**Resolve-once-and-pin.** `connect` resolves a hostname a *single* time: the IP set
+checked against the allowlist is the same set dialed — no code path re-resolves
+between the check and the connection, so a name cannot rebind to a different
+address underneath the check (DNS-rebinding / SSRF). CIDR and IP allowlist entries
+are matched against the **resolved IP** (rebinding-proof); a bare-hostname entry is
+matched by name and dials all of the name's resolved addresses (an ergonomic
+convenience, *not* rebinding-proof). For the common "deny the internal ranges"
+guard, `net.deny(confine.private())` excludes loopback, RFC-1918, link-local
+(including the `169.254.169.254` cloud-metadata IP), CGNAT, and "this host" —
+enforced on the resolved IP, so a name that rebinds to an internal address is
+refused at connect time. See `rfcs/0020-rebinding-resistant-http.md`.
 
 `Exec` is the right to spawn a native subprocess — the runtime analog of the
 build-time `BuildExec`. It is right-less and carries no payload of its own: the

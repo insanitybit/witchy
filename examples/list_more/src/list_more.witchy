@@ -7,11 +7,11 @@ import list
 fn main(console: Console):
     let xs = [10, 20, 30, 40]
 
-    print(console, "${list.contains(xs, 30)}")
-    print(console, "${list.index_of(xs, 40)}")
-    print(console, "${list.index_of(xs, 99)}")
+    print(console, "${xs.contains(30)}")
+    print(console, "${xs.index_of(40)}")
+    print(console, "${xs.index_of(99)}")
 
-    let head2 = list.take(xs, 2)
-    let tail2 = list.drop(xs, 2)
-    print(console, "${list.at(head2, 1)}")
-    print(console, "${list.at(tail2, 0)}")
+    let head2 = xs.take(2)
+    let tail2 = xs.drop(2)
+    print(console, "${head2.at(1)}")
+    print(console, "${tail2.at(0)}")

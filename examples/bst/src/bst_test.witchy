@@ -9,7 +9,7 @@ import testing
 
 // Render a list of ints as a space-separated string.
 fn show(xs: List(Int)) -> String:
-    string.join(list.map(xs, fn(n: Int): "${n}"), " ")
+    list.join(xs.map(fn(n: Int): "${n}"), " ")
 
 fn test_tree_sort():
     testing.assert_eq(show(bst.inorder(bst.from_list([5, 3, 8, 1, 4, 7, 9, 2, 6]))), "1 2 3 4 5 6 7 8 9")

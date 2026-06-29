@@ -25,8 +25,8 @@ pub fn imperative(upper: Int) -> Int:
 // Functional: the same computation as a pipeline of list adapters.
 pub fn functional(upper: Int) -> Int:
     let squares = list.map(list.range(100), fn(n: Int): n * n)
-    let under = list.take_while(squares, fn(sq: Int): sq < upper)
-    list.sum(list.filter(under, is_odd))
+    let under = squares.take_while(fn(sq: Int): sq < upper)
+    list.sum(under.filter(is_odd))
 
 fn main(console: Console):
     let upper = 1000

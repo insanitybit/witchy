@@ -22,7 +22,7 @@ fn total_of(report: String) -> String:
 
 fn render_total(doc: Json) -> String:
     match json.get(doc, "total"):
-        Some(total) -> string.join(string_items(total), ", ")
+        Some(total) -> list.join(string_items(total), ", ")
         None -> "(none)"
 
 // Collect a JSON array of strings into a witchy List(String).
@@ -31,5 +31,5 @@ fn string_items(j: Json) -> List(String):
     if let Some(items) = json.as_array(j):
         for it in items:
             if let Some(s) = json.as_string(it):
-                out = list.push(out, s)
+                out = out.push(s)
     out

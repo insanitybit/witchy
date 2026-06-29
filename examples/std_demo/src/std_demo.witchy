@@ -6,10 +6,10 @@ import list
 
 fn main(console: Console):
     let ns = list.range(5)
-    let squares = list.map(ns, fn(n: Int): n * n)
-    let total = list.fold(squares, 0, fn(acc: Int, n: Int): acc + n)
+    let squares = ns.map(fn(n: Int): n * n)
+    let total = squares.fold(0, fn(acc: Int, n: Int): acc + n)
     print(console, "${total}")
 
-    let odds = list.filter(ns, fn(n: Int): n % 2 == 1)
-    let rev = list.reverse(odds)
-    print(console, "${list.at(rev, 0)}")
+    let odds = ns.filter(fn(n: Int): n % 2 == 1)
+    let rev = odds.reverse()
+    print(console, "${rev.at(0)}")

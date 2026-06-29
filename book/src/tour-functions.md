@@ -21,10 +21,15 @@ the common case (though `return` exists for early exits). Parameters *must* be
 annotated; locals are inferred. A `pub fn` is exported from its module;
 everything else is module-private.
 
-Method-call syntax (`value.method(args)`) belongs to **methods** — functions
-declared in an `impl` block with a `self` parameter. A plain function is
-called as a function. We'll meet `impl` properly in the types chapter; the
-shape looks like this:
+Method-call syntax, `value.method(args)`, is the idiomatic way to call the
+standard data libraries — `xs.map(f)`, `d.insert(k, v)`, `s.to_upper()` — and it
+chains left-to-right: `dict.new().insert("a", 1).insert("b", 2)`. For a built-in
+type this is sugar: `value.method(args)` resolves to `module.method(value, args)`,
+so `xs.map(f)` *is* `list.map(xs, f)`. The module-qualified form always works too,
+and is the only form when a helper lives in a module other than the receiver's
+type — `json.stringify(x)`, `math.to_float(n)`. The same dot syntax also calls
+**methods** you declare in an `impl` block with a `self` parameter — which we'll
+meet properly in the types chapter; the shape looks like this:
 
 ```witchy
 type Score:
@@ -107,6 +112,23 @@ fn main(console: Console):
 one is a compile error. Ranges are never materialized into a list — `for n in
 0..1000000` allocates nothing.
 
+A `var` collection updates in place by subscript or field — `xs[i] = v`,
+`d[k] = v`, `acct.balance = b` (and the compound `xs[i] += v`). It's shorthand for
+the value update (`xs = xs.set_at(i, v)`), so witchy's value semantics hold while
+it reads like mutation, and the optimizer keeps it in place:
+
+```witchy
+fn main(console: Console):
+    var xs = [1, 2, 3]
+    xs[0] = 9
+    xs[2] += 5
+    print(console, "${xs}")
+```
+
+```text
+[9, 2, 8]
+```
+
 ## Closures
 
 A `fn(params): body` expression is a closure. It captures the variables it uses
@@ -171,15 +193,15 @@ error — which is what lets backends share it without a defensive copy.
 
 ```witchy
 fn sum(let xs: List(Int), i: Int) -> Int:
-    if i >= list.length(xs):
+    if i >= xs.length():
         0
     else:
-        list.at(xs, i) + sum(xs, i + 1)
+        xs.at(i) + sum(xs, i + 1)
 
 fn main(console: Console):
     let xs = [1, 2, 3, 4]
     print(console, "${sum(xs, 0)}")
-    print(console, "${list.length(xs)}")
+    print(console, "${xs.length()}")
 ```
 
 ```text
@@ -205,6 +227,14 @@ fn main(console: Console):
 ```text
 [witchy]
 ```
+
+`move` is the caller's half of the transfer, and it stands on its own: it ends the
+binding *here* — a later use of `name` is a compile error — whether or not the
+callee asked for `own`. (Move it into a plain owned parameter and the binding is
+still consumed; the callee just got a copy.) Pairing `move` with an `own`
+parameter is the idiom, and on the compiled backend that pair is a guaranteed
+copy-free hand-off. You don't write `move` for a `var` parameter, though — there
+you hand the variable over directly and it's written back.
 
 So the whole model is four choices, all visible in the signature: owned-immutable
 by default, `let` to borrow, `own`/`move` to transfer, `var` to mutate the

@@ -148,10 +148,10 @@ fn join_rendered(xs: List(Mirror)) -> String:
     var parts = []
     for m in xs:
         parts = list.push(parts, render(m))
-    string.join(parts, ", ")
+    list.join(parts, ", ")
 
 fn render_fields(fields: List((String, Mirror))) -> String:
     var parts = []
     for k, m in fields:
         parts = list.push(parts, k + ": " + render(m))
-    string.join(parts, ", ")
+    list.join(parts, ", ")

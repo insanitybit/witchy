@@ -4,8 +4,7 @@
 
 witchy has the types you'd expect: `Int` (64-bit, signed), `Float` (IEEE-754
 double), `Bool`, and `String` (UTF-8). It also has one you might not: `Duration`
-is a *distinct* type with literal syntax, so you can't accidentally add a
-timeout to a byte count.
+is a *distinct* type with literal syntax.
 
 ```witchy
 fn main(console: Console):
@@ -60,7 +59,7 @@ n is 3, doubled 6
 ```
 
 `${expr}` renders *any* value — scalars, lists, tuples, records, sum types,
-dicts, and any nesting — identically on both backends.
+dicts, and any nesting.
 Strings are UTF-8 and the common operations
 (`string.length`, `string.char_count`, `string.split`, `string.contains`, …)
 live in the `string` module — part of the prelude, so no import line is
@@ -97,12 +96,12 @@ Three built-in compound types. **Lists** are homogeneous and immutable;
 
 ```witchy
 fn show(xs: List(Int)) -> String:
-    string.join(list.map(xs, fn(n: Int): "${n}"), " ")
+    xs.map(fn(n: Int): "${n}").join(" ")
 
 fn main(console: Console):
     let xs = [1, 2, 3]
     print(console, show(xs))
-    print(console, "${list.length(xs)}")
+    print(console, "${xs.length()}")
     print(console, "${xs[0]}")
 
     let pair = (1, "one")
@@ -110,9 +109,9 @@ fn main(console: Console):
     print(console, "${n} = ${word}")
     print(console, "${pair.0} = ${pair.1}")
 
-    let ages = dict.insert(dict.insert(dict.new(), "ada", 36), "bob", 41)
-    print(console, "${dict.get_or(ages, "ada", 0)}")
-    print(console, "${dict.get_or(ages, "nobody", 0)}")
+    let ages = dict.new().insert("ada", 36).insert("bob", 41)
+    print(console, "${ages.get_or("ada", 0)}")
+    print(console, "${ages.get_or("nobody", 0)}")
 ```
 
 ```text

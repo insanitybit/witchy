@@ -48,12 +48,54 @@ Two consequences worth knowing: a `comptime` block may not emit another
 `comptime` block, and if the emitted text fails to parse, the compiler shows
 you exactly what was emitted alongside the error.
 
+## Tagged literals: `comptime` in expression position
+
+A string literal written *immediately after an identifier* — `tag"…"` — is a
+**tagged literal**. Like `comptime` it runs at compile time, but in *expression*
+position: the lexer splits the literal into its static fragments and its `${…}`
+holes, and the compiler calls your `tag` function
+
+```text
+fn tag(parts: List(String), holes: List(String)) -> String
+```
+
+with `parts` = the static fragments and `holes` = one **opaque marker** per hole.
+The tag *places* each marker where that hole's value belongs and returns witchy
+**expression source**; the compiler parses it and substitutes the real hole
+expression — resolved at the call site — at each marker, then splices the result
+in before type-checking.
+
+```witchy
+import list
+
+fn greet(parts: List(String), holes: List(String)) -> String:
+    "\"Hello, \" + " + holes.at(0) + " + \"!\""
+
+fn main(console: Console):
+    let name = "witch"
+    print(console, greet"hi ${name}")
+```
+
+```text
+Hello, witch!
+```
+
+The tag runs **once, in the compiler**; both backends then compile the same AST.
+Holes are typed by position (the substituted expression is type-checked normally),
+so a type error points back *into the literal* at that `${…}`, and a marker may be
+placed zero, once, or many times. The payoff is safety by construction: the
+`glamour` rune's `html` tag turns a `${userInput}` in text position into a
+`text(…)` **node**, never markup — so interpolated input is **XSS-immune**, not
+escaped-after-the-fact.
+
 ## When to reach for it
 
 Use `comptime` for families of declarations that follow a pattern — lookup
-tables, wrapper functions, enumerated constants. For generating code from
-*files* (a schema, a protocol definition), use a [build step](packages-build.md)
-instead: build steps run in the build sandbox with explicitly granted read
-roots, and their output becomes a separate generated module.
+tables, wrapper functions, enumerated constants. Reach for a **tagged literal**
+when you want a compile-time mini-language in expression position (typed
+templates, safe HTML/SQL). For generating code from *files* (a schema, a protocol
+definition), use a [build step](packages-build.md) instead: build steps run in the
+build sandbox with explicitly granted read roots, and their output becomes a
+separate generated module.
 
 Next: the heart of witchy — capabilities.

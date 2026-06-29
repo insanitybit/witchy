@@ -669,7 +669,7 @@ fn parse_children(toks: List(HtmlTok), at: Int, name: String, holes: List(String
                 let (src, j) = parse_node(toks, i, holes)
                 kids = list.push(kids, src)
                 i = j
-    (string.join(kids, ", "), i)
+    (list.join(kids, ", "), i)
 
 // ---- emitters: produce witchy expression SOURCE ----
 
@@ -694,7 +694,7 @@ fn emit_attrs(attrs: List(HAttr), holes: List(String)) -> String:
     var srcs = []
     for a in attrs:
         srcs = list.push(srcs, emit_attr(a, holes))
-    string.join(srcs, ", ")
+    list.join(srcs, ", ")
 
 fn emit_attr(a: HAttr, holes: List(String)) -> String:
     match a:

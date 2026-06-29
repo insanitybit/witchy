@@ -18,5 +18,5 @@ fn test_group_anagrams():
     let groups = anagram.group_anagrams(["listen", "silent", "cat", "act"])
     // Two buckets: {listen, silent} and {cat, act}, in first-seen order.
     testing.assert_int_eq(list.length(groups), 2)
-    testing.assert_eq(string.join(list.at(groups, 0), ","), "listen,silent")
-    testing.assert_eq(string.join(list.at(groups, 1), ","), "cat,act")
+    testing.assert_eq(list.join(list.at(groups, 0), ","), "listen,silent")
+    testing.assert_eq(list.join(list.at(groups, 1), ","), "cat,act")

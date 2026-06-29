@@ -101,7 +101,7 @@
     fn stdlib_has_no_performance_cliffs() {
         // Link a synthetic entry that imports every std module, so cross-module call
         // summaries resolve exactly as in real compilation (a per-module scan would
-        // false-positive on calls like `string.join` whose summary lives elsewhere).
+        // false-positive on calls like `list.join` whose summary lives elsewhere).
         let imports: String =
             crate::linker::STD_MODULES.iter().map(|m| format!("import {m}\n")).collect();
         let entry_src = format!("{imports}\npub fn perfcheck() -> Int:\n    0\n");
@@ -293,6 +293,28 @@
         );
         assert_eq!(
             run_linked_on_wasm_net(&[("main", src)], "main", &["10.0.0.5:6379"]),
+            expected,
+            "wasm",
+        );
+    }
+
+    #[test]
+    fn confine_private_denies_internal_addresses_backends_agree() {
+        // RFC-0020: `net.deny(confine.private())` is the one-line SSRF/rebinding
+        // defense — a connect to a private IP (here loopback) is refused at the
+        // capability layer, identically on both backends. `connect` aborts on a
+        // denied address, so a successful run means the deny held.
+        let src = "import confine\nfn main(net: Net, console: Console):\n    let safe = net.deny(confine.private())\n    print(console, \"denied private ranges\")\n";
+        let linked = resolve_std_src(src);
+        typeck::check(&linked).expect("typecheck");
+        let expected = vec!["denied private ranges".to_string()];
+        assert_eq!(
+            interpreter::run_module(linked.clone(), ".", vec!["8.8.8.8:443".into()]).expect("interp"),
+            expected,
+            "interpreter",
+        );
+        assert_eq!(
+            run_linked_on_wasm_net(&[("main", src)], "main", &["8.8.8.8:443"]),
             expected,
             "wasm",
         );
@@ -1365,7 +1387,7 @@ fn main(console: Console):
     /// backends (comptime runs at link time, so the generated code is identical).
     #[test]
     fn comptime_typeinfo_generates_specialized_to_json() {
-        let src = "import meta\nimport json\nimport string\n\ntype Point:\n    x: Int\n    y: Int\n\ntype User:\n    name: String\n    age: Int\n    active: Bool\n\ncomptime:\n    let ctor = fn(ty: String) -> String:\n        if ty == \"Int\": \"JsonInt\"\n        else if ty == \"String\": \"JsonString\"\n        else if ty == \"Bool\": \"JsonBool\"\n        else: \"JsonNull\"\n    for t in module_types:\n        if t.kind == \"record\":\n            emit(\"fn to_json_${t.name}(v: ${t.name}) -> Json:\")\n            var pairs = []\n            for f in t.fields:\n                pairs = list.push(pairs, \"(\\\"\" + f.name + \"\\\", \" + ctor(f.type_name) + \"(v.\" + f.name + \"))\")\n            emit(\"    JsonObject([\" + string.join(pairs, \", \") + \"])\")\n            emit(\"\")\n\nfn main(console: Console):\n    print(console, json.encode(to_json_Point(Point(1, 2))))\n    print(console, json.encode(to_json_User(User(\"ann\", 30, true))))\n";
+        let src = "import meta\nimport json\nimport string\n\ntype Point:\n    x: Int\n    y: Int\n\ntype User:\n    name: String\n    age: Int\n    active: Bool\n\ncomptime:\n    let ctor = fn(ty: String) -> String:\n        if ty == \"Int\": \"JsonInt\"\n        else if ty == \"String\": \"JsonString\"\n        else if ty == \"Bool\": \"JsonBool\"\n        else: \"JsonNull\"\n    for t in module_types:\n        if t.kind == \"record\":\n            emit(\"fn to_json_${t.name}(v: ${t.name}) -> Json:\")\n            var pairs = []\n            for f in t.fields:\n                pairs = list.push(pairs, \"(\\\"\" + f.name + \"\\\", \" + ctor(f.type_name) + \"(v.\" + f.name + \"))\")\n            emit(\"    JsonObject([\" + list.join(pairs, \", \") + \"])\")\n            emit(\"\")\n\nfn main(console: Console):\n    print(console, json.encode(to_json_Point(Point(1, 2))))\n    print(console, json.encode(to_json_User(User(\"ann\", 30, true))))\n";
         let want: Vec<String> = [
             "{\"x\":1,\"y\":2}",
             "{\"name\":\"ann\",\"age\":30,\"active\":true}",
@@ -1487,7 +1509,7 @@ fn main(console: Console):
         assert_eq!(wasm_run(src), interp, "wasm must agree on the mixed paths");
     }
 
-    /// THE FORCED-COPY DIFFERENTIAL: `WITCHY_NO_INPLACE` compiles with the
+    /// THE FORCED-COPY DIFFERENTIAL: `WITCHY_OPT=-inplace` compiles with the
     /// in-place machinery off (the copying paths ARE the semantics). Outputs
     /// must be identical — any divergence is an analysis soundness bug.
     #[test]
@@ -1499,6 +1521,35 @@ fn main(console: Console):
         codegen::set_force_copy_for_tests(None);
         assert_eq!(optimized, forced, "forced-copy output must match the optimized build");
         assert_eq!(link_run(src), optimized, "and both must match the interpreter");
+    }
+
+    /// RFC-0030 DIFFERENTIAL DE-OPT SWEEP: a program's output must be identical
+    /// under every `WITCHY_OPT` setting — `none`, `all`, the production default,
+    /// and the default with each optimization individually removed — and must
+    /// match the interpreter oracle. Toggling an optimization changes *how* a
+    /// program runs, never *what* it computes; any divergence is a soundness bug
+    /// in that optimization. As optimizations join the registry they are covered
+    /// here automatically (the loop walks `Opt::ALL`).
+    #[test]
+    fn witchy_opt_sweep_is_differential() {
+        use crate::opt::{self, Opt, OptSet};
+        let src = "fn tag(let prefix: String, n: Int) -> String:\n    prefix + __render(n)\n\nfn main(console: Console):\n    var xs = []\n    let alias = xs\n    var s = \"\"\n    var d = dict.new()\n    var i = 0\n    while i < 600:\n        xs = list.push(xs, i)\n        s = s + tag(\"x\", i)\n        d = dict.update(d, i % 7, 0, fn(n: Int): n + 1)\n        i = i + 1\n    print(console, __render(list.length(xs)))\n    print(console, __render(list.length(alias)))\n    print(console, __render(string.length(s)))\n    print(console, __render(dict.get_or(d, 3, 0)))\n";
+        let oracle = link_run(src);
+
+        let mut settings: Vec<(String, OptSet)> = vec![
+            ("none".into(), OptSet::none()),
+            ("all".into(), OptSet::all()),
+            ("default".into(), OptSet::default_set()),
+        ];
+        for o in Opt::ALL {
+            settings.push((format!("-{}", o.name()), OptSet::default_set().without(o)));
+        }
+        for (label, set) in settings {
+            opt::set_for_tests(Some(set));
+            let out = wasm_run(src);
+            opt::set_for_tests(None);
+            assert_eq!(out, oracle, "WITCHY_OPT={label} diverged from the interpreter oracle");
+        }
     }
 
     /// `crypto.rune_hash` produces the same store hash (`src/pm/store.rs`
@@ -1733,7 +1784,7 @@ fn main(console: Console):
     let m = "[rune]\nname = \"acme/widget\"\nversion = \"1.2.0\"\n\n[capabilities]\nruntime = [\"Net\", \"Console\"]\n"
     print(console, opt(toml.get(m, "rune.name")))
     print(console, opt(toml.get(m, "rune.version")))
-    print(console, string.join(toml.get_array(m, "capabilities.runtime"), "|"))
+    print(console, list.join(toml.get_array(m, "capabilities.runtime"), "|"))
     print(console, opt(toml.get(m, "rune.absent")))
 
 fn opt(o: Option(String)) -> String:
@@ -1777,7 +1828,7 @@ fn main(console: Console):
     let m = "[rune]\nname = \"acme/widget\"  # the canonical name\ntag = \"v#1\"  # has a hash inside\n\n[capabilities]\nruntime = [\"Console\", \"Dir[Read]\"]  # what it needs\n"
     print(console, opt(toml.get(m, "rune.name")))
     print(console, opt(toml.get(m, "rune.tag")))
-    print(console, string.join(toml.get_array(m, "capabilities.runtime"), "|"))
+    print(console, list.join(toml.get_array(m, "capabilities.runtime"), "|"))
 
 fn opt(o: Option(String)) -> String:
     match o:
@@ -1801,14 +1852,14 @@ import string
 
 fn main(console: Console):
     let m = "[rune]\nname = \"ledger\"\n\n[dependencies]\n\"money\" = { path = \"../money\" }\n\"acme/util\" = { path = \"../util\", version = \"1.2\" }\n"
-    print(console, string.join(toml.keys(m, "dependencies"), "|"))
+    print(console, list.join(toml.keys(m, "dependencies"), "|"))
     print(console, opt(toml.inline_get("{ path = \"../money\" }", "path")))
     print(console, opt(toml.inline_get("{ path = \"../util\", version = \"1.2\" }", "version")))
     let lock = "[[rune]]\nname = \"money\"\nhash = \"sha256:aa\"\n\n[[rune]]\nname = \"util\"\nhash = \"sha256:bb\"\n"
     var names = []
     for block in toml.array_tables(lock, "rune"):
         names = list.push(names, opt(toml.get(block, "name")) + "=" + opt(toml.get(block, "hash")))
-    print(console, string.join(names, "|"))
+    print(console, list.join(names, "|"))
 
 fn opt(o: Option(String)) -> String:
     match o:
@@ -2114,7 +2165,7 @@ fn yn(b: Bool) -> String:
     /// changes observable behavior, only when memory is reclaimed.
     #[test]
     fn region_blocks_value_escape_and_parity() {
-        let src = "import string\n\nfn main(console: Console):\n    let summary = region:\n        var parts = []\n        for i in 0..50:\n            parts = list.push(parts, __render(i))\n        string.join(parts, \",\")\n    print(console, __render(string.length(summary)))\n    var n = 0\n    let direct = region -> Int:\n        n = n + 42\n        n\n    print(console, __render(direct))\n";
+        let src = "import string\n\nfn main(console: Console):\n    let summary = region:\n        var parts = []\n        for i in 0..50:\n            parts = list.push(parts, __render(i))\n        list.join(parts, \",\")\n    print(console, __render(string.length(summary)))\n    var n = 0\n    let direct = region -> Int:\n        n = n + 42\n        n\n    print(console, __render(direct))\n";
         let want: Vec<String> = ["139", "42"].iter().map(|s| s.to_string()).collect();
         assert_eq!(link_run(src), want.clone(), "interpreter");
         assert_eq!(wasm_run(src), want, "compiled WASM must agree");
@@ -2353,6 +2404,20 @@ fn yn(b: Bool) -> String:
         .iter()
         .map(|s| s.to_string())
         .collect();
+        assert_eq!(link_run(src), want.clone(), "interpreter");
+        assert_eq!(wasm_run(src), want, "compiled WASM must agree");
+    }
+
+    /// An invalid regex pattern must NOT trap the VM: `matches`/`find`/`find_all`/`split`
+    /// return Bool/Option/List (a total contract), so a bad pattern yields the empty result,
+    /// identically on both backends. Previously the compiled backend trapped while the
+    /// interpreter raised a RuntimeError — a parity gap and a latent DoS if a pattern were
+    /// ever attacker-supplied.
+    #[test]
+    fn regex_invalid_pattern_is_total_on_both_backends() {
+        let src = "import regex\nimport string\n\nfn main(console: Console):\n    print(console, __render(regex.matches(\"[\", \"x\")))\n    print(console, __render(regex.find(\"(unclosed\", \"x\")))\n    print(console, __render(regex.find_all(\"*\", \"x\")))\n    print(console, __render(regex.split(\"((((\", \"a,b\")))\n";
+        let want: Vec<String> =
+            ["false", "None", "[]", "[a,b]"].iter().map(|s| s.to_string()).collect();
         assert_eq!(link_run(src), want.clone(), "interpreter");
         assert_eq!(wasm_run(src), want, "compiled WASM must agree");
     }
@@ -3035,6 +3100,59 @@ fn yn(b: Bool) -> String:
                 .expect("spawn");
             assert!(a.run().is_err(), "WASM must trap on `{bad}`");
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// RFC-0011: `dir.only(confine.ext(...))` confines a `Dir` to an ENTRY policy —
+    /// reading a matching extension is allowed, a non-matching one is refused at the
+    /// policy check — identically on both backends.
+    #[test]
+    fn dir_only_ext_policy_confines_on_both_backends() {
+        use crate::runtime::{Capabilities, Runtime};
+        let root = std::env::temp_dir().join(format!("witchy_dirpol_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        std::fs::write(root.join("ok.txt"), "hello").expect("seed txt");
+        std::fs::write(root.join("secret.key"), "TOPSECRET").expect("seed key");
+        let root_str = root.to_str().expect("utf8 root").to_string();
+
+        let caps = || Capabilities {
+            print: true,
+            quiet: true,
+            dir_root: Some(root.clone()),
+            dir_read: true,
+            dir_write: true,
+            ..Default::default()
+        };
+
+        // Allowed: read a `.txt` through a Dir narrowed to `ext(".txt")`.
+        let ok_src = "import confine\nfn main(console: Console, dir: Dir):\n    let txt = dir.only(confine.ext(\".txt\"))\n    print(console, read(txt, \"ok.txt\"))\n";
+        let want = vec!["hello".to_string()];
+        assert_eq!(
+            interpreter::run_module(resolve_std_src(ok_src), &root_str, Vec::new()).expect("interp"),
+            want,
+            "interpreter",
+        );
+        let bytes = codegen::compile_module_binary(&resolve_std_src(ok_src))
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt.spawn(&bytes, caps(), 64).expect("spawn");
+        actor.run().expect("run");
+        assert_eq!(actor.output(), want, "compiled WASM must agree");
+
+        // Denied: a `.key` through the same narrowed Dir is refused on both backends.
+        let bad_src = "import confine\nfn main(console: Console, dir: Dir):\n    let txt = dir.only(confine.ext(\".txt\"))\n    print(console, read(txt, \"secret.key\"))\n";
+        assert!(
+            interpreter::run_module(resolve_std_src(bad_src), &root_str, Vec::new()).is_err(),
+            "interp must refuse a .key",
+        );
+        let bbytes = codegen::compile_module_binary(&resolve_std_src(bad_src))
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let mut rt2 = Runtime::batch().expect("runtime");
+        let mut a = rt2.spawn(&bbytes, caps(), 64).expect("spawn");
+        assert!(a.run().is_err(), "WASM must refuse a .key");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -4253,8 +4371,8 @@ fn main(console: Console):
         Ok(d) ->
             print(console, opt(json.get_string(d, "name")))
             print(console, oi(json.get_int(d, "n")))
-            print(console, string.join(json.get_strings(d, "caps"), ","))
-            print(console, "[" + string.join(json.get_strings(d, "absent"), ",") + "]")
+            print(console, list.join(json.get_strings(d, "caps"), ","))
+            print(console, "[" + list.join(json.get_strings(d, "absent"), ",") + "]")
         Err(e) -> print(console, "err")
 
 fn opt(o: Option(String)) -> String:
@@ -4293,7 +4411,7 @@ fn main(console: Console):
     print(console, yes(rights.covers("Net[Connect, Tcp]", "Net[Connect]")))
     print(console, yes(rights.covers("Dir", "Console")))
     print(console, yes(rights.covered(["Console", "Dir[Read]"], "Dir[Read]")))
-    print(console, string.join(rights.uncovered(["Net[Connect]"], ["Net", "Console"]), "|"))
+    print(console, list.join(rights.uncovered(["Net[Connect]"], ["Net", "Console"]), "|"))
 
 fn yes(b: Bool) -> String:
     if b: "y" else: "n"
@@ -4350,7 +4468,7 @@ fn yes(b: Bool) -> String:
     #[test]
     fn main_receives_command_line_args() {
         let run = |args: Vec<String>| -> Vec<String> {
-            let src = "import string\nfn main(console: Console, args: List(String)):\n    print(console, string.join(args, \",\"))\n";
+            let src = "import string\nfn main(console: Console, args: List(String)):\n    print(console, list.join(args, \",\"))\n";
             let module = parser::parse_module(src).expect("parse");
             let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
             typeck::check(&linked).expect("typecheck");
@@ -4995,7 +5113,7 @@ fn main(console: Console):
     let words = [build("a"), build("b"), build("a"), build("c"), build("b"), build("a")]
     print(console, __render(cmp.count(words, build("a"))))
     print(console, __render(cmp.count(words, build("z"))))
-    print(console, string.join(cmp.unique(words), ","))
+    print(console, list.join(cmp.unique(words), ","))
     print(console, __render(list.length(cmp.unique([Tag(1), Tag(2), Tag(1), Tag(2), Tag(3)]))))
     print(console, __render(cmp.count([Tag(1), Tag(2), Tag(1)], Tag(1))))
 "#;
@@ -5044,9 +5162,9 @@ fn main(console: Console):
     let u = set.union(a, b)
     let i = set.intersection(a, b)
     let d = set.difference(a, b)
-    print(console, string.join(set.to_list(u), ","))
-    print(console, string.join(set.to_list(i), ","))
-    print(console, string.join(set.to_list(d), ","))
+    print(console, list.join(set.to_list(u), ","))
+    print(console, list.join(set.to_list(i), ","))
+    print(console, list.join(set.to_list(d), ","))
     print(console, __render(set.is_subset(set.from_list([build("y")]), a)))
     print(console, __render(set.is_subset(set.from_list([build("z")]), a)))
     let ids = set.union(set.from_list([Id(1), Id(2), Id(1)]), set.from_list([Id(2), Id(3)]))
@@ -5420,7 +5538,7 @@ fn main(console: Console):
 import list
 import string
 fn show_ints(xs: List(Int)) -> String:
-    string.join(list.map(xs, fn(n: Int): __render(n)), ",")
+    list.join(list.map(xs, fn(n: Int): __render(n)), ",")
 fn main(console: Console):
     print(console, show_ints(list.range_between(2, 6)))
     print(console, show_ints(list.range_between(5, 5)))
@@ -5449,7 +5567,7 @@ import set
 import list
 import string
 fn show_ints(xs: List(Int)) -> String:
-    string.join(list.map(xs, fn(n: Int): __render(n)), ",")
+    list.join(list.map(xs, fn(n: Int): __render(n)), ",")
 fn main(console: Console):
     let sd1 = set.symmetric_difference(set.from_list([1, 2, 3]), set.from_list([2, 3, 4]))
     let sd2 = set.symmetric_difference(set.from_list([1, 1, 2]), set.from_list([2, 2, 3]))
@@ -5483,9 +5601,9 @@ import list
 import string
 fn main(console: Console):
     let roots = list.map([0, 1, 2, 3, 4, 8, 9, 15, 16, 100, 99], fn(n: Int): math.isqrt(n))
-    print(console, string.join(list.map(roots, fn(n: Int): __render(n)), ","))
+    print(console, list.join(list.map(roots, fn(n: Int): __render(n)), ","))
     let flags = list.map([0, 1, 2, 4, 9, 10, 16, 17], fn(n: Int): if math.is_perfect_square(n): "T" else: "F")
-    print(console, string.join(flags, ""))
+    print(console, list.join(flags, ""))
     print(console, __render(math.isqrt(-5)))
     print(console, if math.is_perfect_square(-4): "T" else: "F")
 "#;
@@ -5649,7 +5767,7 @@ fn lt(a: Int, b: Int) -> Bool:
 fn main(console: Console):
     let people = [("alice", 30), ("bob", 25), ("carol", 35)]
     let sorted = list.sort_by(people, func.on_key(lt, snd))
-    print(console, string.join(list.map(sorted, fst), ","))
+    print(console, list.join(list.map(sorted, fst), ","))
     let by_age = func.on_key(lt, snd)
     print(console, if by_age(("x", 1), ("y", 2)): "lt" else: "ge")
 "#;
@@ -5802,9 +5920,9 @@ fn main(console: Console):
 import list
 import string
 fn show_row(r: List(Int)) -> String:
-    string.join(list.map(r, fn(n: Int): __render(n)), ",")
+    list.join(list.map(r, fn(n: Int): __render(n)), ",")
 fn show_grid(g: List(List(Int))) -> String:
-    string.join(list.map(g, show_row), ";")
+    list.join(list.map(g, show_row), ";")
 fn main(console: Console):
     print(console, show_grid(list.transpose([[1, 2, 3], [4, 5, 6]])))
     print(console, show_grid(list.transpose([[1, 2], [3, 4, 5]])))
@@ -5883,7 +6001,7 @@ fn main(console: Console):
         out = list.push(out, n)
         r = r2
         i = i + 1
-    print(console, string.join(list.map(out, fn(n: Int): __render(n)), ","))
+    print(console, list.join(list.map(out, fn(n: Int): __render(n)), ","))
     let (d, _r3) = random.next_below(random.seed(42), 6)
     print(console, __render(d))
     let (b, _r4) = random.next_bool(random.seed(2))
@@ -5933,11 +6051,11 @@ import list
 import string
 fn nums(r: Result(List(Int), String)) -> String:
     match r:
-        Ok(xs) -> string.join(list.map(xs, fn(n: Int): __render(n)), ",")
+        Ok(xs) -> list.join(list.map(xs, fn(n: Int): __render(n)), ",")
         Err(e) -> "err:" + e
 fn onums(o: Option(List(Int))) -> String:
     match o:
-        Some(xs) -> string.join(list.map(xs, fn(n: Int): __render(n)), ",")
+        Some(xs) -> list.join(list.map(xs, fn(n: Int): __render(n)), ",")
         None -> "none"
 fn main(console: Console):
     print(console, nums(result.all([Ok(1), Ok(2), Ok(3)])))
@@ -5969,8 +6087,8 @@ import list
 import string
 fn main(console: Console):
     let (oks, errs) = result.partition([Ok(1), Err("a"), Ok(2), Err("b"), Ok(3)])
-    print(console, string.join(list.map(oks, fn(n: Int): __render(n)), ","))
-    print(console, string.join(errs, ","))
+    print(console, list.join(list.map(oks, fn(n: Int): __render(n)), ","))
+    print(console, list.join(errs, ","))
 "#;
         let sources = [
             ("option", crate::bundled_module("option").unwrap()),
@@ -6164,7 +6282,7 @@ import math
 import list
 import string
 fn show(xs: List(Int)) -> String:
-    string.join(list.map(xs, fn(n: Int): __render(n)), ",")
+    list.join(list.map(xs, fn(n: Int): __render(n)), ",")
 fn main(console: Console):
     print(console, show([math.ceil_div(7, 3), math.ceil_div(6, 3), math.ceil_div(1, 3), math.ceil_div(0, 3)]))
     print(console, show([math.ceil_div(0 - 7, 3), math.ceil_div(0 - 6, 3)]))
@@ -6912,8 +7030,8 @@ fn build(s: String) -> String:
 
 fn main(console: Console):
     let words = [build("pear"), build("apple"), build("fig"), build("apple")]
-    print(console, string.join(cmp.sort(words), ","))
-    print(console, string.join(cmp.sort(["c", "a", "b"]), ""))
+    print(console, list.join(cmp.sort(words), ","))
+    print(console, list.join(cmp.sort(["c", "a", "b"]), ""))
     print(console, cmp.max_of(build("alpha"), build("omega")))
     print(console, cmp.maximum([build("x"), build("a"), build("m")], ""))
     let nums = cmp.sort([3, 1, 2, 1])
@@ -7725,7 +7843,7 @@ fn main(console: Console):
                 vec!["true".to_string(), "false".to_string(), "true".to_string(), "true".to_string(), "false".to_string()],
             ),
             // a string accumulator (`s = s + ..`) — a self-assign whose in-place fast
-            // path is list-only — lowers as a plain value-rebind (the `string.join`
+            // path is list-only — lowers as a plain value-rebind (the `list.join`
             // shape that blocked ~20 programs). The if/else picks first vs separator.
             (
                 "fn main(console: Console):\n    var s = \"\"\n    var first = true\n    for w in [\"a\", \"b\", \"c\"]:\n        if first:\n            s = w\n            first = false\n        else:\n            s = s + \"-\" + w\n    print(console, s)\n",
@@ -9619,6 +9737,66 @@ fn main(console: Console):
     }
 
     #[test]
+    fn or_unwraps_option_backends_agree() {
+        // RFC-0021: `Option(T) || T` unwraps to `T` (None -> the default, evaluated
+        // lazily; Some(x) -> x, present even when empty). Every other `||` is the
+        // unchanged same-type truthy fallback.
+        let src = r#"
+import option
+
+fn pick(b: Bool) -> Option(Int):
+    if b: Some(36) else: None
+
+fn main(console: Console):
+    print(console, "${pick(true) || 0}")
+    print(console, "${pick(false) || 0}")
+    print(console, "" || "default")
+    print(console, "${pick(true) || pick(false)}")
+    print(console, "${Some("") || "x"}")
+"#;
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(
+            run_on_wasm(src),
+            vec!["36", "0", "default", "Some(36)", ""]
+        );
+    }
+
+    #[test]
+    fn place_assignment_sugar_backends_agree() {
+        // RFC-0022: `xs[i] = v`, `d[k] = v`, and `u.field = v` (plus their compound
+        // forms) desugar to value-reassignment — list/dict `set_at` and a record
+        // update — and run identically on both backends.
+        let src = r#"
+type P:
+    x: Int
+    y: Int
+
+fn main(console: Console):
+    var xs = [10, 20, 30]
+    xs[0] = 9
+    xs[2] += 5
+    print(console, "${xs}")
+    var d = dict.new()
+    d["a"] = 1
+    d["b"] = 2
+    print(console, "${dict.get_or(d, "a", 0)} ${dict.get_or(d, "b", 0)}")
+    var p = P(1, 2)
+    p.x = 10
+    p.y += 5
+    print(console, "${p.x} ${p.y}")
+"#;
+        assert_eq!(
+            link_run(src),
+            run_linked_on_wasm(&[("main", src)], "main"),
+            "place-assignment must agree across backends"
+        );
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            vec!["[9, 20, 35]", "1 2", "10 7"]
+        );
+    }
+
+    #[test]
     fn list_of_records_index_access_backends_agree() {
         // `list.at(items, i).field` via a let, for both a List(Record) parameter and a
         // let-bound list literal of records; and a for-loop over the let-bound
@@ -9773,7 +9951,7 @@ import string
 
 fn main() -> Int:
     let parts = string.lines("a\nbb\nccc")
-    let joined = string.join(parts, "-")
+    let joined = list.join(parts, "-")
     let r = string.repeat("z", 5)
     (((list.length(parts) * 100) + string.length(joined)) + string.length(r))
 "#;
@@ -10454,7 +10632,7 @@ fn main(console: Console):
     let ps: List((Int, String)) = iter.collect(iter.enumerate(iter.from_list(["a", "b", "c"])))
     for p in ps:
         es = list.push(es, __render(func.first(p)) + func.second(p))
-    print(console, string.join(es, " "))
+    print(console, list.join(es, " "))
     print(console, __render(iter.count(iter.zip(iter.count_from(1), iter.from_list([0, 0, 0])))))
     print(console, __render(iter.sum(iter.chain(iter.range(0, 4), iter.range(10, 13)))))
     print(console, __render(iter.sum(iter.flat_map(iter.range(1, 4), fn(n: Int): iter.from_list([n, n])))))
@@ -10992,7 +11170,7 @@ fn main(console: Console):
             interpreter::run_module(linked, &tmp, Vec::new())
         };
         // `list` enumerates a subdir's entries in sorted (deterministic) order.
-        let out = run("import string\nfn main(console: Console, root: Dir):\n    print(console, string.join(list(subtree(root, \"store\")), \",\"))\n")
+        let out = run("import string\nfn main(console: Console, root: Dir):\n    print(console, list.join(list(subtree(root, \"store\")), \",\"))\n")
             .expect("run");
         assert_eq!(out, vec!["alpha,bravo"]);
         // `make_dir` creates a confined subdirectory.
@@ -12681,7 +12859,7 @@ fn main(console: Console):
     // Integration showcase: a recursive JSON-value renderer. Exercises a
     // recursive ADT (JArr holds List(Json)), every match arm form, recursion,
     // list.map with a *named function* argument (function-as-value), and
-    // string.join — all composing. Both backends agree.
+    // list.join — all composing. Both backends agree.
     #[test]
     fn json_renderer_integration_backends_agree() {
         let client = r#"
@@ -12701,7 +12879,7 @@ fn render(j: Json) -> String:
         JBool(b) -> if b: "true" else: "false"
         JNum(n) -> __render(n)
         JStr(s) -> (("\"" + s) + "\"")
-        JArr(items) -> (("[" + string.join(list.map(items, render), ",")) + "]")
+        JArr(items) -> (("[" + list.join(list.map(items, render), ",")) + "]")
 
 fn main(console: Console):
     let doc = JArr([JNum(1), JStr("hi"), JBool(true), JNull, JArr([JNum(2), JNum(3)])])

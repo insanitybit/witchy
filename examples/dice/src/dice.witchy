@@ -14,8 +14,8 @@ fn main(console: Console):
     var i = 0
     while i < 10:
         let (face, next) = random.next_below(r, 6)
-        rolls = list.push(rolls, face + 1)
+        rolls = rolls.push(face + 1)
         r = next
         i = i + 1
-    print(console, string.join(list.map(rolls, fn(n: Int): "${n}"), " "))
-    print(console, "total: " + "${list.sum(rolls)}")
+    print(console, list.join(rolls.map(fn(n: Int): "${n}"), " "))
+    print(console, "total: " + "${rolls.sum()}")

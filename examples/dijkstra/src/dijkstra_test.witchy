@@ -12,16 +12,16 @@ let names = ["A", "B", "C", "D", "E"]
 let edges = [(0, 1, 4), (0, 2, 1), (2, 1, 2), (1, 3, 1), (2, 3, 5), (3, 4, 3)]
 
 fn render_ints(xs: List(Int)) -> String:
-    string.join(list.map(xs, fn(n: Int): "${n}"), " ")
+    list.join(xs.map(fn(n: Int): "${n}"), " ")
 
 fn test_distances():
-    let (dist, prev) = dijkstra.dijkstra(list.length(names), edges, 0)
+    let (dist, prev) = dijkstra.dijkstra(names.length(), edges, 0)
     testing.assert_eq(render_ints(dist), "0 3 1 4 7")
 
 fn test_predecessors():
-    let (dist, prev) = dijkstra.dijkstra(list.length(names), edges, 0)
+    let (dist, prev) = dijkstra.dijkstra(names.length(), edges, 0)
     testing.assert_eq(render_ints(prev), "-1 2 0 1 3")
 
 fn test_path_to_target():
-    let (dist, prev) = dijkstra.dijkstra(list.length(names), edges, 0)
-    testing.assert_eq(string.join(dijkstra.path_to(names, prev, 4), " -> "), "A -> C -> B -> D -> E")
+    let (dist, prev) = dijkstra.dijkstra(names.length(), edges, 0)
+    testing.assert_eq(list.join(dijkstra.path_to(names, prev, 4), " -> "), "A -> C -> B -> D -> E")

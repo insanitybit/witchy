@@ -13,20 +13,20 @@ fn main(console: Console):
 
 // Total number of complete placements reachable from `placed`.
 pub fn count(n: Int, placed: List(Int)) -> Int:
-    if list.length(placed) == n:
+    if placed.length() == n:
         1
     else:
         var total = 0
         var col = 0
         while col < n:
             if safe(placed, col):
-                total = total + count(n, list.push(placed, col))
+                total = total + count(n, placed.push(col))
             col = col + 1
         total
 
 // The first complete placement found, or an empty list if none exists.
 pub fn solve(n: Int, placed: List(Int)) -> List(Int):
-    if list.length(placed) == n:
+    if placed.length() == n:
         placed
     else:
         var result = []
@@ -34,8 +34,8 @@ pub fn solve(n: Int, placed: List(Int)) -> List(Int):
         var col = 0
         while col < n && !found:
             if safe(placed, col):
-                let attempt = solve(n, list.push(placed, col))
-                if list.length(attempt) == n:
+                let attempt = solve(n, placed.push(col))
+                if attempt.length() == n:
                     result = attempt
                     found = true
             col = col + 1
@@ -43,11 +43,11 @@ pub fn solve(n: Int, placed: List(Int)) -> List(Int):
 
 // Can a queen sit in `col` of the next row without attacking those placed?
 pub fn safe(placed: List(Int), col: Int) -> Bool:
-    let row = list.length(placed)
+    let row = placed.length()
     var ok = true
     var r = 0
     while r < row:
-        let c = list.at(placed, r)
+        let c = placed.at(r)
         if c == col || row - r == col - c || row - r == c - col:
             ok = false
         r = r + 1

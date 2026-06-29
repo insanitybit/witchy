@@ -66,11 +66,11 @@ fn encode_row(row: List(String)) -> String:
     var parts = []
     for f in row:
         parts = list.push(parts, encode_field(f))
-    string.join(parts, ",")
+    list.join(parts, ",")
 
 fn encode_field(f: String) -> String:
     if needs_quoting(f):
-        "\"" + string.join(string.split(f, "\""), "\"\"") + "\""
+        "\"" + list.join(string.split(f, "\""), "\"\"") + "\""
     else:
         f
 

@@ -3,11 +3,11 @@
 // based and clamps to bounds, so it never panics on a bad index.
 fn main(console: Console):
     let setting = "timeout=30"
-    let eq = string.index_of(setting, "=")
+    let eq = setting.index_of("=")
 
-    let key = string.substring(setting, 0, eq)
-    let value = string.substring(setting, eq + 1, string.length(setting))
+    let key = setting.substring(0, eq)
+    let value = setting.substring(eq + 1, setting.length())
 
     print(console, key)
     print(console, value)
-    print(console, "${string.ends_with(setting, "30")}")
+    print(console, "${setting.ends_with("30")}")

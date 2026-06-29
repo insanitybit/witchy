@@ -13,6 +13,7 @@
   - [Data: Records and Enums](tour-data.md)
   - [Errors as Values](tour-errors.md)
   - [Generics and Traits](tour-generics.md)
+  - [Reflection](tour-reflection.md)
   - [Generators and Iterators](tour-iterators.md)
   - [Compile-Time Code: comptime](tour-comptime.md)
 - [Capabilities: The Heart of witchy](capabilities.md)

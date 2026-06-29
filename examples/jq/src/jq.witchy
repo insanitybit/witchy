@@ -10,7 +10,7 @@ import string
 fn main(console: Console):
     let document = "{\"user\":{\"name\":\"Ada\",\"roles\":[\"admin\",\"dev\"]},\"active\":true,\"count\":42}"
     for path in ["user.name", "user.roles", "user.roles.0", "user.roles.1", "count", "active", "user.missing"]:
-        print(console, string.pad_right(path, 16, " ") + "=> " + query(document, path))
+        print(console, path.pad_right(16, " ") + "=> " + query(document, path))
 
 pub fn query(document: String, path: String) -> String:
     match json.decode(document):
@@ -26,13 +26,13 @@ fn render(selected: Option(Json)) -> String:
 // segment looks up an object key. A miss anywhere yields None.
 fn navigate(root: Json, path: String) -> Option(Json):
     var current = Some(root)
-    for segment in string.split(path, "."):
+    for segment in path.split("."):
         current = descend(current, segment)
     current
 
 fn descend(current: Option(Json), segment: String) -> Option(Json):
     match current:
-        Some(value) -> match string.parse_int(segment):
+        Some(value) -> match segment.parse_int():
             Some(i) -> json.index(value, i)
             None -> json.get(value, segment)
         None -> None

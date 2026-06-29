@@ -8,12 +8,12 @@
 import string
 
 pub fn summarize(let words: List(String)) -> String:
-    "${list.length(words)}" + " words, first: " + list.at(words, 0)
+    "${words.length()}" + " words, first: " + words.at(0)
 
 fn main(console: Console):
     let summary = region -> String:
         var words = []
         for i in 0..1000:
-            words = list.push(words, "w" + "${i}")
+            words = words.push("w" + "${i}")
         summarize(words)
     print(console, summary)

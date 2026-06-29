@@ -57,7 +57,7 @@ pub fn state_of(s: String) -> State:
 // The canonical, signed view of a record — every security-relevant field except the
 // signature. Byte-identical to src/pm/registry.rs::Record::signing_payload.
 pub fn signing_payload(name: String, version: String, state: String, hash: String, rt: List(String), uploaded_by: String, promoted_by: String, factor: String, provenance: String, released_at: Int) -> String:
-    "coven-v1\nname=" + name + "\nversion=" + version + "\nstate=" + state + "\nhash=" + hash + "\nrt=" + string.join(rt, ",") + "\nbuild=\nuploaded_by=" + uploaded_by + "\npromoted_by=" + promoted_by + "\nfactor=" + factor + "\nprovenance=" + provenance + "\nreleased_at=" + "${released_at}"
+    "coven-v1\nname=" + name + "\nversion=" + version + "\nstate=" + state + "\nhash=" + hash + "\nrt=" + list.join(rt, ",") + "\nbuild=\nuploaded_by=" + uploaded_by + "\npromoted_by=" + promoted_by + "\nfactor=" + factor + "\nprovenance=" + provenance + "\nreleased_at=" + "${released_at}"
 
 // Build + sign a record, returning its coven.json text. `released_at` (unix seconds;
 // 0 = not yet released) is part of the signed payload — tamper-evident.

@@ -25,21 +25,7 @@ escaped quotes inside `${...}` become bare, nullary constructors lose their
 `if let`. Every rewrite is meaning-preserving — the formatter refuses to emit
 anything that doesn't parse back to the same program — but the bytes may
 change more than you expect the first time you run it.
-
-## The parity harness (you'll likely never need it)
-
-```sh
-witchy parity program.witchy
-```
-
-This runs a program on *both* the interpreter and the compiled WebAssembly
-backend and confirms identical output — including identical failure. It is
-how **witchy verifies witchy**: the project's CI sweeps every example and
-test through it to enforce the zero-silent-divergence promise. As a witchy
-*user* you rely on that promise rather than re-checking it — the compiler
-already stops you loudly if you reach an edge the compiled tier can't
-express. Reach for `parity` only if you're hacking on witchy itself (or
-filing a compiler bug — its output is the perfect reproduction).
+utput is the perfect reproduction).
 
 ## Seeing and enforcing authority
 

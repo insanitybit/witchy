@@ -16,16 +16,16 @@ gen fn pascal() -> Iter(List(Int)):
 pub fn next_row(row: List(Int)) -> List(Int):
     var out = [1]
     var i = 0
-    while i + 1 < list.length(row):
-        out = list.push(out, list.at(row, i) + list.at(row, i + 1))
+    while i + 1 < row.length():
+        out = out.push(row.at(i) + row.at(i + 1))
         i = i + 1
-    list.push(out, 1)
+    out.push(1)
 
 pub fn show_row(row: List(Int)) -> String:
     var parts = []
     for n in row:
-        parts = list.push(parts, "${n}")
-    string.join(parts, " ")
+        parts = parts.push("${n}")
+    parts.join(" ")
 
 fn main(console: Console):
     let rows: List(List(Int)) = iter.collect(iter.take(pascal(), 6))

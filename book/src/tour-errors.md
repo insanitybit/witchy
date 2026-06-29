@@ -34,8 +34,8 @@ There's a shorthand for "do this only if it's `Some`":
 
 ```witchy
 fn lookup(xs: List(Int), i: Int) -> Option(Int):
-    if i < list.length(xs):
-        Some(list.at(xs, i))
+    if i < xs.length():
+        Some(xs.at(i))
     else:
         None
 
@@ -49,6 +49,32 @@ fn main(console: Console):
 ```text
 got 20
 ```
+
+And when you just want the value or a fallback, `||` unwraps an `Option`:
+`Some(x) || d` is `x`, and `None || d` is `d` (with `d` evaluated only when there's
+nothing to unwrap):
+
+```witchy
+fn lookup(xs: List(Int), i: Int) -> Option(Int):
+    if i < xs.length():
+        Some(xs.at(i))
+    else:
+        None
+
+fn main(console: Console):
+    print(console, "${lookup([10, 20, 30], 1) || 0}")
+    print(console, "${lookup([10, 20, 30], 9) || 0}")
+```
+
+```text
+20
+0
+```
+
+That's `||`'s *truthy fallback*, which works for any same-typed pair: it yields the
+left when truthy, else the right — falsy being `""`, `None`, or `[]`. So
+`name || "anon"` defaults an empty string and `xs || [0]` an empty list;
+`Option(T) || T` additionally unwraps the `Some`.
 
 ## `Result`: a value or an error
 

@@ -21,7 +21,7 @@ A library rune just exports `pub` functions:
 ```witchy
 // src/shout.witchy
 pub fn shout(s: String) -> String:
-    "HEY " + string.to_upper(s)
+    "HEY " + s.to_upper()
 ```
 
 Notice it has no capability parameters — this rune is pure, and that fact is

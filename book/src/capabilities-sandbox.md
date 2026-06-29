@@ -72,6 +72,15 @@ hard error before launch — so "approve this program's permissions" becomes a d
 against what the code actually does, not blind trust. The same check runs
 standalone: `witchy grants-check program.witchy app.grants.toml`.
 
+At launch the grant is printed as a reviewable diff — each capability and its
+`dir`/`file`/`net`/`secret` binding — and on an interactive terminal you are
+prompted to approve it before any authority is handed over. Pass `--accept-grants`
+to skip the prompt for non-interactive launches (CI, installers):
+
+```sh
+witchy sandbox --grants app.grants.toml --accept-grants program.witchy
+```
+
 ## Handles, not pointers
 
 When a program holds a `Dir` inside the sandbox, it doesn't hold a path — it

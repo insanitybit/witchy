@@ -39,7 +39,7 @@ annotations** — it triggers on shapes the compiler can prove unaliased:
 
   ```witchy
   fn grow(own xs: List(Int), n: Int) -> List(Int):
-      xs = list.push(xs, n)
+      xs = xs.push(n)
       xs
 
   // 100k iterations, one owned buffer end to end — O(n), ~8 ms compiled.

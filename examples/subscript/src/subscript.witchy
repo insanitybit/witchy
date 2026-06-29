@@ -1,5 +1,5 @@
 // Subscript indexing: `xs[i]` reads the i-th element of a list — sugar for
-// `list.at(xs, i)`. It chains for nested lists (`grid[r][c]`) and accepts any integer
+// `xs.at(i)`. It chains for nested lists (`grid[r][c]`) and accepts any integer
 // expression as the index. Pure (only `main` touches the Console), so it runs
 // identically interpreted, compiled, and inside the capability sandbox:
 //   witchy examples/subscript.witchy
@@ -12,7 +12,7 @@ import string
 pub fn dot(a: List(Int), b: List(Int)) -> Int:
     var sum = 0
     var i = 0
-    while i < list.length(a):
+    while i < a.length():
         sum = sum + a[i] * b[i]
         i = i + 1
     sum
@@ -29,7 +29,7 @@ fn main(console: Console):
     // Sum of the main diagonal: grid[i][i].
     var diag = 0
     var i = 0
-    while i < list.length(grid):
+    while i < grid.length():
         diag = diag + grid[i][i]
         i = i + 1
     print(console, "diagonal sum = " + "${diag}")

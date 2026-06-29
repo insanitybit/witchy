@@ -8,7 +8,7 @@ import cmp
 
 // Works for any element type with an `Ord` instance. Assumes a non-empty list.
 pub fn largest(xs: List(a)) -> a where a: Ord:
-    var best = list.at(xs, 0)
+    var best = xs.at(0)
     for x in xs:
         if x > best:
             best = x

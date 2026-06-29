@@ -64,7 +64,7 @@ pub fn show(s: Set(a)) -> String:
     var parts = []
     for x in s.items:
         parts = list.push(parts, "${x}")
-    "{" + string.join(parts, ", ") + "}"
+    "{" + list.join(parts, ", ") + "}"
 
 // Every member of either set.
 pub fn union(s: Set(a), t: Set(a)) -> Set(a) where a: Eq:

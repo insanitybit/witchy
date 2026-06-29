@@ -72,17 +72,6 @@ pub fn trim(s: String) -> String:
 pub fn to_int(s: String) -> Int:
     string.to_int(s)
 
-pub fn join(parts: List(String), sep: String) -> String:
-    var s = ""
-    var first = true
-    for p in parts:
-        if first:
-            s = p
-            first = false
-        else:
-            s = s + sep + p
-    s
-
 // Repeat a string `n` times.
 pub fn repeat(s: String, n: Int) -> String:
     var out = ""

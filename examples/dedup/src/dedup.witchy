@@ -16,8 +16,8 @@ fn dedup_step(s: Iter(Int)) -> Option((Int, Iter(Int))):
 pub fn show(xs: List(Int)) -> String:
     var parts = []
     for n in xs:
-        parts = list.push(parts, "${n}")
-    string.join(parts, " ")
+        parts = parts.push("${n}")
+    parts.join(" ")
 
 fn main(console: Console):
     let xs = iter.from_list([1, 1, 2, 3, 3, 3, 2, 2, 4])

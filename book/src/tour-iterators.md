@@ -18,8 +18,8 @@ import iter
 fn show(xs: List(Int)) -> String:
     var parts = []
     for x in xs:
-        parts = list.push(parts, "${x}")
-    string.join(parts, ", ")
+        parts = parts.push("${x}")
+    parts.join(", ")
 
 fn main(console: Console):
     // "the even numbers in [1, 20), each doubled" — built lazily, then realized.
@@ -60,8 +60,8 @@ gen fn fibs() -> Iter(Int):
 fn show(xs: List(Int)) -> String:
     var parts = []
     for x in xs:
-        parts = list.push(parts, "${x}")
-    string.join(parts, ", ")
+        parts = parts.push("${x}")
+    parts.join(", ")
 
 fn main(console: Console):
     let first10: List(Int) = iter.collect(iter.take(fibs(), 10))
@@ -93,8 +93,8 @@ gen fn collatz(start: Int) -> Iter(Int):
 fn show(xs: List(Int)) -> String:
     var parts = []
     for x in xs:
-        parts = list.push(parts, "${x}")
-    string.join(parts, ", ")
+        parts = parts.push("${x}")
+    parts.join(", ")
 
 fn main(console: Console):
     print(console, "collatz(6): " + show(iter.collect(collatz(6))))
@@ -120,6 +120,13 @@ borrowing, so an `Iter(a)` just yields values and a `gen fn` is lowered to an
 ordinary function behind the scenes. The same generator runs identically on the
 interpreter and the compiled backend — laziness is a library and a lowering, not
 a special runtime.
+
+Note that a `gen fn` mutates `var` freely across a `yield` — `a`, `b`, and `n`
+above all carry forward — even though an `async fn` *cannot* carry a `var` across
+an `await` ([Concurrency](tour-async.md)). The difference is the lowering: a
+generator re-runs its body to the next yield, while an `await` captures the rest
+of the function as a by-value continuation, which can't write back to an outer
+`var`.
 
 A generator with no capability parameters is also, by construction, **pure**: a
 `gen fn` that takes no `Console`/`Dir`/`Net` provably cannot do I/O — it can only

@@ -23,7 +23,7 @@ pub fn average(rs: Readings) -> Celsius:
     var total = 0
     for r in rs:
         total = total + r
-    total / list.length(rs)
+    total / rs.length()
 
 fn main(console: Console):
     let week = [18, 21, 25, 23, 20, 19, 22]

@@ -1,7 +1,7 @@
 # Appendix: The Standard Library
 
 witchy ships ~40 standard-library modules. Bring one in with `import name` and
-call its functions module-qualified (`list.map`, `string.join`). A module's
+call its functions module-qualified (`list.map`, `list.join`). A module's
 *types and their constructors* come in unqualified, though — after `import json`
 you write `JsonInt(1)`, not `json.JsonInt(1)`.
 

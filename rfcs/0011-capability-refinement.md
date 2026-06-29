@@ -21,8 +21,15 @@ tracking: commits 4bc6d35, 3b84546, b612d25, 246b71a
 > a sealed `capability X:` may now be a record carrying ≥1 host-cap field plus policy
 > fields (so library caps like `Postgres` are expressible), footprint-transparent
 > (audits as the union of its cap fields) with private, opaque fields (`match`-only,
-> no `.field`/`update`). What did **not** ship yet: `Dir`/`File` *entry* policies
-> (`dir.only(kind/ext)`) and retiring `restrict`/`subdir`. Two prose points below are
+> no `.field`/`update`). **`Dir` entry policies now ship** (2026-06-28): a typed
+> `DirPolicy` from `std/confine` (`confine.ext(".txt")`), `dir.only(policy)` to
+> narrow a `Dir`'s carried entry policy (the `only` verb is now polymorphic over
+> `Net` and `Dir`), enforced on the RESOLVED entry name at `read`/`write`/`append`/
+> `read_file`/`write_file`/`open` on BOTH backends (`witchy_caps::capabilities::
+> dir_admits`; a subtree inherits the parent's policy). Tested both backends
+> (`dir_only_ext_policy_confines_on_both_backends`) + the policy logic
+> (`dir_ext_policy_admits_and_intersects`). Still NOT shipped: the `kind` (file/dir)
+> filter, `File` entry policies, and retiring `restrict`/`subdir`. Two prose points below are
 > also superseded — see *Implementation notes*: `restrict` was **not** retired (it
 > survives as the string form), and there is **no `tls()` policy builder / `tls:` in a
 > policy** (RFC-0009 as implemented makes `tls:` a connect-time choice on the dialed

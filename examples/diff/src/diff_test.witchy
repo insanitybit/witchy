@@ -7,7 +7,7 @@ import string
 import testing
 
 fn render(old: List(String), new: List(String)) -> String:
-    string.join(diff.diff(old, new), "\n")
+    list.join(diff.diff(old, new), "\n")
 
 fn test_insert_delete():
     let old = ["apple", "banana", "cherry", "date", "fig"]

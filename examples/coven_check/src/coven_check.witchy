@@ -20,8 +20,8 @@ fn main(console: Console, root: Dir[Read]) -> Int:
     let demanded = total_caps(compiler.footprint(source))
     // The demanded capabilities the manifest does not admit, rights-precisely
     // (std/rights): a declared `Net[Connect]` does NOT cover a demanded full `Net`.
-    let missing = string.join(rights.uncovered(declared, demanded), ", ")
-    if string.is_empty(missing):
+    let missing = list.join(rights.uncovered(declared, demanded), ", ")
+    if missing.is_empty():
         print(console, "OK: manifest admits everything the code demands")
         0
     else:
@@ -40,5 +40,5 @@ fn string_items(field: Option(Json)) -> List(String):
         if let Some(items) = json.as_array(j):
             for it in items:
                 if let Some(s) = json.as_string(it):
-                    out = list.push(out, s)
+                    out = out.push(s)
     out

@@ -5,16 +5,16 @@ fn bump(var n: Int):
     n = n + 1
 
 fn sum_from(let xs: List(Int), i: Int) -> Int:
-    if i >= list.length(xs):
+    if i >= xs.length():
         0
     else:
-        list.at(xs, i) + sum_from(xs, i + 1)
+        xs.at(i) + sum_from(xs, i + 1)
 
 fn doubled_first(xs: List(Int)) -> Int:
-    list.at(xs, 0) * 2
+    xs.at(0) * 2
 
 fn drain(own xs: List(Int)) -> Int:
-    list.length(xs)
+    xs.length()
 
 type Bag:
     Bag(List(Int))
@@ -47,7 +47,7 @@ async fn main(console: Console):
     let nums = [1, 2, 3, 4]
     print(console, "sum: " + "${sum_from(nums, 0)}")
     print(console, "doubled first: " + "${doubled_first(nums)}")
-    print(console, "nums still here, length: " + "${list.length(nums)}")
+    print(console, "nums still here, length: " + "${nums.length()}")
 
     let bag = Bag([10, 20, 30])
     print(console, "bag total: " + "${bag.total()}")

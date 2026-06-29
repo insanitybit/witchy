@@ -10,4 +10,4 @@ fn main(console: Console):
     var line = ""
     for word in ["witchy", "loops", "work"]:
         line = line + word + " "
-    print(console, string.trim(line))
+    print(console, line.trim())

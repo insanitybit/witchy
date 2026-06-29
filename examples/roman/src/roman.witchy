@@ -13,7 +13,7 @@ pub fn to_roman(n: Int) -> String:
     var remaining = n
     var result = ""
     var i = 0
-    while i < list.length(values):
+    while i < values.length():
         while remaining >= values[i]:
             result = result + symbols[i]
             remaining = remaining - values[i]
@@ -34,10 +34,10 @@ fn char_value(c: String) -> Int:
 pub fn from_roman(s: String) -> Int:
     var total = 0
     var i = 0
-    while i < string.length(s):
-        let cur = char_value(string.char_at(s, i))
+    while i < s.length():
+        let cur = char_value(s.char_at(i))
         // A value smaller than the one after it is subtracted (IV = 4, IX = 9).
-        if i + 1 < string.length(s) && cur < char_value(string.char_at(s, i + 1)):
+        if i + 1 < s.length() && cur < char_value(s.char_at(i + 1)):
             total = total - cur
         else:
             total = total + cur

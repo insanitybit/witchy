@@ -11,11 +11,11 @@ import dict
 fn main(console: Console):
     let maze = ["#########", "#S#   # #", "# # # # #", "#   #   #", "### ### #", "#     #E#", "#########"]
 
-    let width = string.char_count(list.at(maze, 0))
+    let width = string.char_count(maze.at(0))
     let start = find(maze, "S", width)
     let goal = find(maze, "E", width)
     let prev = solve(maze, start, goal, width)
-    if dict.contains_key(prev, goal):
+    if prev.contains_key(goal):
         render_path(console, maze, prev, start, goal, width)
     else:
         print(console, "no path from S to E")
@@ -26,16 +26,16 @@ fn solve(maze: List(String), start: Int, goal: Int, width: Int) -> Dict(Int, Int
     var queue = [start]
     var prev = dict.insert(dict.new(), start, start)
     var found = false
-    while list.length(queue) > 0 && !found:
-        let pos = list.at(queue, 0)
+    while queue.length() > 0 && !found:
+        let pos = queue.at(0)
         queue = rest(queue)
         if pos == goal:
             found = true
         else:
             for step in steps(maze, pos, width):
-                if !dict.contains_key(prev, step):
-                    prev = dict.insert(prev, step, pos)
-                    queue = list.push(queue, step)
+                if !prev.contains_key(step):
+                    prev = prev.insert(step, pos)
+                    queue = queue.push(step)
     prev
 
 // The open (non-wall) neighbours of `pos`, up/down/left/right.
@@ -50,13 +50,13 @@ fn steps(maze: List(String), pos: Int, width: Int) -> List(Int):
     out
 
 fn consider(maze: List(String), out: List(Int), r: Int, c: Int, width: Int) -> List(Int):
-    if r >= 0 && r < list.length(maze) && c >= 0 && c < width && cell(maze, r, c) != "#":
-        list.push(out, r * width + c)
+    if r >= 0 && r < maze.length() && c >= 0 && c < width && cell(maze, r, c) != "#":
+        out.push(r * width + c)
     else:
         out
 
 pub fn cell(maze: List(String), r: Int, c: Int) -> String:
-    string.substring(list.at(maze, r), c, c + 1)
+    string.substring(maze.at(r), c, c + 1)
 
 // The position of marker `m` (e.g. "S"), encoded as row*width + col.
 pub fn find(maze: List(String), m: String, width: Int) -> Int:
@@ -65,7 +65,7 @@ pub fn find(maze: List(String), m: String, width: Int) -> Int:
     for row in maze:
         var c = 0
         while c < width:
-            if string.substring(row, c, c + 1) == m:
+            if row.substring(c, c + 1) == m:
                 pos = r * width + c
             c = c + 1
         r = r + 1
@@ -80,8 +80,8 @@ fn render_path(console: Console, maze: List(String), prev: Dict(Int, Int), start
     var at_pos = goal
     var steps_count = 0
     while at_pos != start:
-        route = dict.insert(route, at_pos, 1)
-        at_pos = dict.get_or(prev, at_pos, start)
+        route = route.insert(at_pos, 1)
+        at_pos = prev.get_or(at_pos, start)
         steps_count = steps_count + 1
     print(console, "shortest path: ${steps_count} steps")
     var r = 0
@@ -90,7 +90,7 @@ fn render_path(console: Console, maze: List(String), prev: Dict(Int, Int), start
         var c = 0
         while c < width:
             let here = r * width + c
-            line = line + glyph(string.substring(row, c, c + 1), dict.contains_key(route, here))
+            line = line + glyph(row.substring(c, c + 1), route.contains_key(here))
             c = c + 1
         print(console, line)
         r = r + 1
@@ -107,7 +107,7 @@ fn glyph(original: String, on_route: Bool) -> String:
 fn rest(xs: List(Int)) -> List(Int):
     var out = []
     var i = 1
-    while i < list.length(xs):
-        out = list.push(out, list.at(xs, i))
+    while i < xs.length():
+        out = out.push(xs.at(i))
         i = i + 1
     out

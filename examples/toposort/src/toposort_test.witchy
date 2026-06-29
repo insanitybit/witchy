@@ -7,7 +7,7 @@ import testing
 
 fn order_or_err(nodes: List(String), edges: List((String, String))) -> String:
     match toposort.toposort(nodes, edges):
-        Ok(order) -> string.join(order, " -> ")
+        Ok(order) -> list.join(order, " -> ")
         Err(message) -> "error: " + message
 
 fn test_linear_chain():

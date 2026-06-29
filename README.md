@@ -11,10 +11,20 @@ fn main(console: Console, dir: Dir):
     print(console, load(dir, "notes.txt"))           // full Dir narrows to Dir[Read]
 ```
 
+
+**Language Stability**
+Keep in mind that witchy is beyond unstable. I wouldn't even label it `0.0.0-alpha` at this point - even that level of semantic versioning feels like it's radically overstating things. The language isn't stable,
+the goals aren't stable, the repo names for the project aren't stable, nothing is stable. I could yank the repo at any moment.
+
+Perhaps most importantly, `witchy` shouldn't be trusted. A significant amount of witchy's security requires that code is memory safe - not *all* of the security, but plenty of it.
+
+Currently, I've spent no real effort ensuring that the generated code actually is safe. The "worst case" should only be a program that's confined to the wasm
+VM, but guarantees within that VM would be totally available if there's a way to trigger arbitrary code execution in the generated code.
+
 # Why witchy?
 
 Supply chain security is a serious problem. Packages have very good reasons for running
-code during install time, yet the capability is all or nothing. Libraries in most
+code during install time, yet the capability is typically all or nothing. Libraries in most
 languages have no means by which they can be restricted. It's very hard to know that
 `some_library::foo()` doesn't delete your file system or steal your secrets.
 
@@ -70,21 +80,32 @@ truly a "safe by default" system;
   but a human has to manually (2FA'd) mark packages as released.
 - Dependency cooldowns and default-deny for build-time execution are the default.
 
-## A disclosure
+### Safety at every level
+
+`witchy` aims to build security into every part of the stack.
+- Capabilities are maximally granted at the wasm boundary, refined and attenuated as the program executes.
+- The standard library includes lots of nuts and bolts so that you don't have to trust 3rd parties just to build
+  a basic HTTP server or encode some data as json.
+- Common footguns like "I want to limit my HTTP client to external IPs" are considered first class in the standard
+  http library, safe patterns for common (but critical) use cases are intended to be trivial to express in `witchy`.
+- Dependency cooldowns, Trusted Publishing, auditing, are all baked into the registry and the tooling.
+
+Every piece of `witchy` is designed with security in mind.
+
+## AI disclosure
 
 `witchy` is a project for fun. It's vibecoded using different models. It's a way
-for me to explore ideas in this space. If that's not for you, no problem! But you
-should be aware, upfront, that this project oscillates heavily between "these changes
-were meaningfully reviewed" and "I literally didn't even check". I have also not
-invested much into the AI side of things! In an ideal world I would ensure there
-are skills, tools, etc, to assist the AI in doing things properly but that's just
-not the case at all today.
+for me to explore ideas in this space. If that's not for you, no problem!
 
-Eventually, I'd love to rewrite docs myself by hand. For now they are mostly AI generated.
+The way I build witchy is intentionally low effort, I have a day job. I primarily interact with witchy by iterating on an RFC document with an agent, sending the agent off to implement the RFC, and then reviewing the documentation of that work. I rarely interact with the witchy compiler code.
+
+Some of the docs are handwritten, most are written by AI. RFCs are rarely hand edited.
+
+If anything changes with regards to AI usage (or anything that might feel meaningful to someone interested in witchy) I'll be sure to disclose that.
 
 If you would like to contribute, please disclose any AI usage (with the model used),
 `witchy` is a project that is accepting of AI written code but takes the position that
-it *must* be open and honest about where and when AI is used.
+it *must* be open and honest about the use of AI.
 
 ## Run the docs
 

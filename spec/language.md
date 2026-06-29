@@ -122,7 +122,7 @@ from `import option` / `import result`.
 
 ```witchy
 fn bounds(xs: List(Int)) -> (Int, Int):
-    (list.at(xs, 0), list.at(xs, list.length(xs) - 1))
+    (xs.at(0), xs.at(xs.length() - 1))
 
 fn main(console: Console):
     let x = 1
@@ -146,6 +146,28 @@ error (closures capture **by value**; return the new value or use `var`).
 `let _ = expr` evaluates and discards — the same meaning as the bare
 expression statement, which is the form `fmt` prints.
 
+**Assigning to a place.** Beyond a bare variable, the left of `=` may be a
+subscript or a field — `xs[i] = v`, `d[k] = v`, `acct.balance = b` (the binding
+must be a `var`). Each is sugar for reassigning the variable
+(`xs = xs.set_at(i, v)`, `acct = Account(balance: b, ..acct)`), so it keeps value
+semantics while reading like in-place mutation — and the uniqueness analysis makes
+it an in-place update. Compound forms (`xs[i] += v`) work too.
+
+```witchy
+type Account:
+    name: String
+    balance: Int
+
+fn main(console: Console):
+    var xs = [1, 2, 3]
+    xs[0] = 9
+    xs[1] += 5
+    var acct = Account("ada", 100)
+    acct.balance = acct.balance + 50
+    print(console, "${xs}")
+    print(console, "${acct.balance}")
+```
+
 ## 4. Expressions and operators
 
 Everything is an expression; a block's value is its final expression.
@@ -157,12 +179,12 @@ Everything is an expression; a block's value is its final expression.
 | `== !=` | **structural** equality — deep, on lists, tuples, records, enums, `Option`, `Dict` (insertion-order-sensitive), on every backend |
 | `< <= > >=` | ordering on `Int`/`Float`/`String`/`Duration` only; ordering a NaN is a runtime error; compounds don't order |
 | `&&` | short-circuit boolean **and** (Bool operands) |
-| `\|\|` | short-circuit **or**: logical-or on Bool, otherwise the *truthy fallback* (`a \|\| b` is `a` when truthy, else `b`). Falsy values are `""` / `None` / `[]`; operands share a type, so `name \|\| "anon"`, `cfg \|\| fallback` (`Option`), `xs \|\| [0]` |
+| `\|\|` | short-circuit **or**: logical-or on Bool, otherwise the *truthy fallback* (`a \|\| b` is `a` when truthy, else `b`, with `b` evaluated lazily). For same-typed operands the result is that type — falsy is `""` / `None` / `[]`, so `name \|\| "anon"`, `cfg \|\| fallback` (`Option`), `xs \|\| [0]`. **`Option(T) \|\| T` unwraps**: `Some(x) \|\| d` is `x`, `None \|\| d` is `d` — so `dict.get(d, k) \|\| 0` yields a bare `Int` (falsy here is `None` only; `Some("")` stays `""`) |
 | `!` | negation |
 | `& \| ^ ~ << >>` | bitwise on `Int` (shifts mask the count to 6 bits) |
 | `xs[i]` | list indexing, sugar for `list.at(xs, i)`; out of bounds is a runtime error on every backend |
 | `lo..hi` | a half-open range (for-loop iteration; never materialized) |
-| `x.f(args)` | a METHOD call: resolves to `impl` methods / trait dispatch for `x`'s type |
+| `x.f(args)` | a method call: an `impl`/trait method on `x`, **or** the stdlib UFCS form `module.f(x, args)` for a built-in type (so `xs.map(f)` *is* `list.map(xs, f)`) |
 | `e?` | unwrap `Ok`/`Some` or return the `Err`/`None` from the enclosing function |
 | `e? "msg"` | like `e?` with context: a `Result` `Err` gets `"msg: "` prepended; an `Option` `None` becomes `Err("msg")` |
 | `cap as Dir[Read]` | capability narrowing (drop rights; never widen) |
@@ -310,11 +332,11 @@ an occurs check).
 
 | Convention | Meaning |
 |---|---|
-| (default) | owned, observably immutable value |
+| (default) | owned, observably immutable value — the callee may read but the caller sees no change |
 | `let` | immutable **borrow**; may not escape — returning a `let`-borrowed parameter is a type error |
 | `var` | the callee mutates and the caller's variable is **written back** — even on early `return`/`?` |
-| `own` | ownership transfer; using the source afterwards is a check-time error |
-| `move e` | explicitly transfer a binding at a call site; pairs with `own` |
+| `own` | ownership transfer; the **callee** consumes the argument, so using the source afterwards is a check-time error |
+| `move e` | use-site ownership transfer; the **caller** consumes the source binding (see below), idiomatically paired with `own` |
 
 ```witchy
 fn bump(var n: Int):
@@ -325,6 +347,19 @@ fn main(console: Console):
     bump(counter)
     print(console, "${counter}")
 ```
+
+`own` and `move` are two independent ways to end a binding's life, meeting in the
+middle. `own` consumes from the **callee** side: passing any variable to an `own`
+parameter marks it moved, so a later use is a check-time error
+(*use of `x` after it was moved*). `move x` consumes from the **caller** side: it
+ends `x` *whatever the callee's convention is* — into a default, `let`, or `own`
+parameter alike — so a later use of `x` is the same check-time error even when the
+parameter only took an ordinary copy. The two compose: `f(move x)` into an `own`
+parameter is a hand-off both sides spell out, and on the compiled backend it is a
+guaranteed no-copy move. `move` is **not** accepted into a `var` parameter — a
+`var` argument must be a plain mutable variable, since the callee writes it back.
+On the interpreter and WASM `move` is value-neutral (value semantics copy already);
+it changes only *when* a copy is elided on the native lowering, never any result.
 
 **Closures.** `fn(n: Int): n + by` captures by value; you call through a
 `fn(...)` -typed value or parameter. Closures cannot assign to captured
@@ -345,13 +380,32 @@ fn main(console: Console):
     print(console, "${apply(add10, 5)}")
 ```
 
+**Where a mutation reaches.** A `var` is a *local* mutable binding, nothing more.
+witchy has value semantics: every boundary that carries a value out of a scope —
+a default call argument, a closure capture, a task message — carries a **copy**,
+so a mutation is never observed through that copy and there is no shared mutable
+state to reason about. The one mechanism that writes back to a caller is a `var`
+*parameter* (above), and even that is a single handed-over variable with no
+aliasing. Concretely:
+
+- A **closure** captures by value and so cannot assign to a captured variable
+  (check-time error); produce the new value and return it, or take a `var`
+  parameter.
+- **`await`** lowers the rest of the function after the seam into a continuation
+  closure (§14), so a `var` declared before an `await` cannot be mutated after it
+  — carrying mutable state across an `await` hits the same closure rule. Recurse
+  with an `async fn`, or thread the state through a channel (`chan.serve`), instead.
+- A **`gen fn`** is the exception: a `var` *may* be freely mutated across a
+  `yield` (§11), because a generator re-runs its body to the next yield rather
+  than capturing a continuation.
+
 ## 8. Generics and traits
 
 ```witchy
 import cmp
 
 fn largest(xs: List(a)) -> a where a: Ord:
-    var best = list.at(xs, 0)
+    var best = xs.at(0)
     for x in xs:
         if x > best:
             best = x
@@ -558,7 +612,7 @@ import list
 // compiler substitutes the real hole expression (here `name`, resolved at the
 // call site) at the marker.
 fn greet(parts: List(String), holes: List(String)) -> String:
-    "\"Hello, \" + " + list.at(holes, 0)
+    "\"Hello, \" + " + holes.at(0)
 
 fn main(console: Console):
     let name = "witch"
@@ -623,6 +677,20 @@ primitive all abort (a runtime error interpreted, a trap compiled). The parity
 invariant covers these too — a program that errors on one backend errors on
 both.
 
+**Unwrapping with `||`.** For a quick value-or-default, `Option(T) || T` unwraps
+to a bare `T` (§4): `Some(x) || d` is `x`, `None || d` is `d` (with `d` evaluated
+only when absent). It is `option.unwrap_or` with operator syntax — handy on the
+`Option`-returning lookups (`dict.get`, `list.first`, …).
+
+```witchy
+import option
+
+fn main(console: Console):
+    let ages = dict.new().insert("ada", 36)
+    print(console, "${dict.get(ages, "ada") || 0}")
+    print(console, "${dict.get(ages, "bob") || 0}")
+```
+
 ## 10. Comprehensions
 
 `[elem for x in iter]`, optionally filtered with `if cond`, builds a list:
@@ -632,7 +700,7 @@ import list
 import string
 
 fn show(xs: List(Int)) -> String:
-    string.join(list.map(xs, fn(n: Int): "${n}"), " ")
+    xs.map(fn(n: Int): "${n}").join(" ")
 
 fn main(console: Console):
     let squares = [n * n for n in 1..6]
@@ -663,7 +731,7 @@ gen fn fibs() -> Iter(Int):
 
 fn main(console: Console):
     let first8 = iter.collect(iter.take(fibs(), 8))
-    print(console, string.join(list.map(first8, fn(n: Int): "${n}"), " "))
+    print(console, list.join(list.map(first8, fn(n: Int): "${n}"), " "))
 
 // 0 1 1 2 3 5 8 13
 ```
@@ -675,8 +743,8 @@ import list
 import string
 
 fn main(console: Console):
-    let shouted = list.map(["a", "b", "c"], fn(s: String): string.to_upper(s))
-    print(console, string.join(shouted, "-"))   // A-B-C
+    let shouted = ["a", "b", "c"].map(fn(s: String): s.to_upper())
+    print(console, shouted.join("-"))   // A-B-C
 ```
 
 The core data modules — `list`, `string`, `dict`, `math`, `option`,
@@ -687,7 +755,9 @@ modules; the global namespace is capability operations (`print`, `read`,
 else says where it came from. (Rendering needs no function at all: `${...}`
 interpolation is the rendering.) For other modules,
 `import name` brings the module in under its name; **function** calls are
-module-qualified (`list.map`). A module's `pub` **types and their constructors**,
+module-qualified (`list.map(xs, f)`) — or, for a built-in type's own operations,
+the equivalent method form (`xs.map(f)`, see §4), which is the idiom for the data
+libraries. A module's `pub` **types and their constructors**,
 however, come into scope *unqualified* — after `import json` you write
 `JsonInt(1)` and `JsonObject([...])`, not `json.JsonInt(1)`. Resolution order: a
 sibling `name.witchy` file, then the bundled standard library (30+ modules — see
@@ -703,7 +773,7 @@ and may return `Nil` or `Int` (the process exit code):
 
 ```witchy
 fn main(console: Console, dir: Dir[Read], args: List(String)) -> Int:
-    print(console, "running with ${list.length(args)} arg(s)")
+    print(console, "running with ${args.length()} arg(s)")
     0
 ```
 
@@ -824,12 +894,21 @@ fn main(console: Console, net: Net):
 ```
 
 The policy constructors are `confine.tcp(host, port)`, `any_port(host)`,
-`cidr(block, port)`, `cidr_any(block)`, and `union(a, b)`. A CIDR/IP policy is
+`cidr(block, port)`, `cidr_any(block)`, `union(a, b)`, and `private()` — the
+internal IP ranges (loopback, RFC-1918, link-local incl. the `169.254.169.254`
+metadata IP, CGNAT) for the one-line SSRF/rebinding guard
+`net.deny(confine.private())`. A CIDR/IP policy is
 checked against the *resolved* IP, so it is rebinding-safe. TLS is not a right or a
 policy scheme but a connect-time `tls:` prefix on the address you dial
 (`connect(net, "tls:host:443")`); see
 [0003-network-address-scoping.md](../rfcs/0003-network-address-scoping.md) and
 [0009-https-tls-client.md](../rfcs/0009-https-tls-client.md).
+
+A `Dir` likewise carries an **entry policy** narrowing which entries it may touch:
+`dir.only(confine.ext(".txt"))` confines it so `read`/`write`/`open` admit only
+matching files (a non-matching name is refused at the access check; a subtree
+inherits the policy) — the filesystem analog of `net.only`. See
+[0011-capability-refinement.md](../rfcs/0011-capability-refinement.md).
 
 ## 14. Concurrency: async, spawn, and channels
 

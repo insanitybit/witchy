@@ -19,7 +19,7 @@ fn main(console: Console):
 
 fn show(result: Result(List(String), String)) -> String:
     match result:
-        Ok(order) -> string.join(order, " -> ")
+        Ok(order) -> list.join(order, " -> ")
         Err(message) -> "error: " + message
 
 // Emit nodes whose prerequisites are all already emitted, one at a time in node
@@ -32,7 +32,7 @@ pub fn toposort(nodes: List(String), edges: List((String, String))) -> Result(Li
             Some(node) -> order = list.push(order, node)
             None -> stuck = true
     if stuck:
-        Err("cycle among " + string.join(remaining(nodes, order), ", "))
+        Err("cycle among " + list.join(remaining(nodes, order), ", "))
     else:
         Ok(order)
 

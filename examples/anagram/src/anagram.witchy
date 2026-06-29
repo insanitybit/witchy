@@ -11,7 +11,7 @@ import list
 fn main(console: Console):
     let words = ["listen", "silent", "enlist", "cat", "act", "dog", "god", "tac"]
     for group in group_anagrams(words):
-        print(console, string.join(group, ", "))
+        print(console, list.join(group, ", "))
 
 pub fn group_anagrams(words: List(String)) -> List(List(String)):
     var signatures = []
@@ -28,7 +28,7 @@ pub fn group_anagrams(words: List(String)) -> List(List(String)):
 
 // A word's characters sorted and rejoined — equal exactly for anagrams.
 pub fn signature(word: String) -> String:
-    string.join(list.sort_by(string.chars(word), fn(a: String, b: String): a < b), "")
+    list.join(list.sort_by(string.chars(word), fn(a: String, b: String): a < b), "")
 
 // The index of `target` in `xs`, or -1 if absent.
 pub fn index_of(xs: List(String), target: String) -> Int:

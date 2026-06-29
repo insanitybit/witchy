@@ -6,7 +6,7 @@ depending on the comparator passed in. The rendering is pure (`pub`, no
 capabilities); only `main` touches the `Console`.
 
 **Shows:** generic `list.sort_by`, comparator closures, `list.map` plus
-`string.join`, `pub` functions across modules, and in-rune `test_*` functions.
+`list.join`, `pub` functions across modules, and in-rune `test_*` functions.
 
 ## Run
 

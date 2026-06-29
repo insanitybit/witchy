@@ -11,12 +11,14 @@ has the precise semantics; this is the cheat sheet.
 
 | `== !=` | equality — structural for built-ins, else the type's `PartialEq` impl (`eq`/`ne`) |
 | `< <= > >=` | ordering via the type's `PartialOrd` impl (built in for `Int`/`Float`/`String`/`Duration`; derive or implement it for your own) |
-| `&& \|\|` | short-circuit boolean and/or |
+| `&&` | short-circuit boolean and |
+| `\|\|` | short-circuit or; for non-Bool, the *truthy fallback* `a \|\| b` (falsy: `""` / `None` / `[]`, same-typed operands), and `Option(T) \|\| T` **unwraps** (`Some(x) \|\| d` is `x`, `None \|\| d` is `d`) |
 | `!` | boolean not |
 | `& \| ^ ~ << >>` | bitwise on `Int` (shift counts masked to 6 bits) |
 | `xs[i]` | list indexing (sugar for `list.at(xs, i)`); out of bounds errors |
+| `xs[i] = v`, `d[k] = v`, `x.f = v` | assign to a place — sugar for a value update (`set_at` / record spread); the binding must be `var`. Compound `+=` etc. work |
 | `lo..hi` | half-open range, for iteration only |
-| `x.f(a)` | a method call (`impl` methods / trait dispatch for `x`'s type) |
+| `x.f(a)` | a method call: an `impl`/trait method, **or** the stdlib UFCS form `module.f(x, a)` (`xs.map(f)` == `list.map(xs, f)`) |
 | `${expr}` | string interpolation — renders *any* value into the string |
 | `e?` | unwrap `Ok`/`Some`, or early-return the `Err`/`None` |
 | `cap as T` | capability narrowing (drop rights; never widen) |

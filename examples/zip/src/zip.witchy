@@ -8,14 +8,14 @@ fn main(console: Console):
     let names = ["alice", "bob", "carol"]
 
     var labelled = []
-    for pair in list.enumerate(names):
+    for pair in names.enumerate():
         let (i, name) = pair
-        labelled = list.push(labelled, "${i}" + ":" + name)
-    print(console, string.join(labelled, " "))
+        labelled = labelled.push("${i}" + ":" + name)
+    print(console, labelled.join(" "))
 
     let ages = [30, 25, 40]
     var joined = []
-    for entry in list.zip(names, ages):
+    for entry in names.zip(ages):
         let (name, age) = entry
-        joined = list.push(joined, name + "=" + "${age}")
-    print(console, string.join(joined, " "))
+        joined = joined.push(name + "=" + "${age}")
+    print(console, joined.join(" "))

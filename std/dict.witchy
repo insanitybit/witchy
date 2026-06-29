@@ -18,6 +18,11 @@ pub fn new() -> Dict(k, v):
 pub fn insert(d: Dict(k, v), key: k, val: v) -> Dict(k, v):
     dict.insert(d, key, val)
 
+// Set `key` to `val` — the `insert` upsert under the name the `d[key] = val`
+// sugar desugars to (RFC-0022), uniform with `list.set_at`.
+pub fn set_at(d: Dict(k, v), key: k, val: v) -> Dict(k, v):
+    dict.insert(d, key, val)
+
 // The value for `key`, or `default` when absent.
 pub fn get_or(d: Dict(k, v), key: k, default: v) -> v:
     dict.get_or(d, key, default)

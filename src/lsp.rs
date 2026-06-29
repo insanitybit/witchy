@@ -82,7 +82,7 @@ const PRELUDE_FNS: &[&str] = &[
     "string.split", "string.trim", "string.length", "string.char_count", "string.chars",
     "string.contains", "string.starts_with", "string.ends_with", "string.replace",
     "string.substring", "string.index_of", "string.to_upper", "string.to_lower",
-    "string.to_int", "string.parse_int", "string.join",
+    "string.to_int", "string.parse_int", "list.join",
     "dict.new", "dict.insert", "dict.get_or", "dict.get", "dict.contains_key", "dict.remove",
     "dict.update", "dict.keys", "dict.values", "dict.pairs", "dict.length",
     "math.to_float", "math.to_int", "math.sqrt", "math.min", "math.max", "math.abs",

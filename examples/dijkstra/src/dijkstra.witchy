@@ -15,13 +15,13 @@ fn main(console: Console):
 
     let source = 0
     let target = 4
-    let (dist, prev) = dijkstra(list.length(names), edges, source)
-    print(console, "shortest distances from " + list.at(names, source) + ":")
+    let (dist, prev) = dijkstra(names.length(), edges, source)
+    print(console, "shortest distances from " + names.at(source) + ":")
     var i = 0
-    while i < list.length(names):
-        print(console, "  " + list.at(names, i) + " = " + "${list.at(dist, i)}")
+    while i < names.length():
+        print(console, "  " + names.at(i) + " = " + "${dist.at(i)}")
         i = i + 1
-    print(console, "path to " + list.at(names, target) + ": " + string.join(path_to(names, prev, target), " -> "))
+    print(console, "path to " + names.at(target) + ": " + list.join(path_to(names, prev, target), " -> "))
 
 // Returns (distance from source, predecessor) for every node. Unreachable nodes
 // keep a sentinel distance; predecessors start at -1.
@@ -38,8 +38,8 @@ pub fn dijkstra(n: Int, edges: List((Int, Int, Int)), source: Int) -> (List(Int)
             settled = put_bool(settled, u, true)
             for edge in edges:
                 let (from, to, weight) = edge
-                if from == u && list.at(dist, u) + weight < list.at(dist, to):
-                    dist = put(dist, to, list.at(dist, u) + weight)
+                if from == u && dist.at(u) + weight < dist.at(to):
+                    dist = put(dist, to, dist.at(u) + weight)
                     prev = put(prev, to, u)
         step = step + 1
     (dist, prev)
@@ -49,10 +49,10 @@ fn nearest_unsettled(dist: List(Int), settled: List(Bool)) -> Int:
     var best = -1
     var best_dist = 0
     var i = 0
-    while i < list.length(dist):
-        if !list.at(settled, i) && (best < 0 || list.at(dist, i) < best_dist):
+    while i < dist.length():
+        if !settled.at(i) && (best < 0 || dist.at(i) < best_dist):
             best = i
-            best_dist = list.at(dist, i)
+            best_dist = dist.at(i)
         i = i + 1
     best
 
@@ -62,18 +62,18 @@ pub fn path_to(names: List(String), prev: List(Int), target: Int) -> List(String
     var reversed = []
     var current = target
     while current >= 0:
-        reversed = list.push(reversed, list.at(names, current))
-        current = list.at(prev, current)
-    list.reverse(reversed)
+        reversed = reversed.push(names.at(current))
+        current = prev.at(current)
+    reversed.reverse()
 
 fn put(xs: List(Int), index: Int, value: Int) -> List(Int):
     var out = []
     var i = 0
     for x in xs:
         if i == index:
-            out = list.push(out, value)
+            out = out.push(value)
         else:
-            out = list.push(out, x)
+            out = out.push(x)
         i = i + 1
     out
 
@@ -82,9 +82,9 @@ fn put_bool(xs: List(Bool), index: Int, value: Bool) -> List(Bool):
     var i = 0
     for x in xs:
         if i == index:
-            out = list.push(out, value)
+            out = out.push(value)
         else:
-            out = list.push(out, x)
+            out = out.push(x)
         i = i + 1
     out
 
@@ -92,7 +92,7 @@ fn filled(n: Int, value: Int) -> List(Int):
     var out = []
     var i = 0
     while i < n:
-        out = list.push(out, value)
+        out = out.push(value)
         i = i + 1
     out
 
@@ -100,6 +100,6 @@ fn filled_bool(n: Int, value: Bool) -> List(Bool):
     var out = []
     var i = 0
     while i < n:
-        out = list.push(out, value)
+        out = out.push(value)
         i = i + 1
     out

@@ -23,9 +23,9 @@ pub fn glider(size: Int) -> List(List(Bool)):
         var row = []
         var c = 0
         while c < size:
-            row = list.push(row, glider_cell(r, c))
+            row = row.push(glider_cell(r, c))
             c = c + 1
-        rows = list.push(rows, row)
+        rows = rows.push(row)
         r = r + 1
     rows
 
@@ -37,8 +37,8 @@ fn glider_cell(r: Int, c: Int) -> Bool:
 
 // Advance the board one generation.
 pub fn step(grid: List(List(Bool))) -> List(List(Bool)):
-    let height = list.length(grid)
-    let width = list.length(list.at(grid, 0))
+    let height = grid.length()
+    let width = list.length(grid.at(0))
     var next = []
     var r = 0
     while r < height:
@@ -47,9 +47,9 @@ pub fn step(grid: List(List(Bool))) -> List(List(Bool)):
         while c < width:
             let n = neighbours(grid, r, c)
             let born_or_survives = if cell_at(grid, r, c): n == 2 || n == 3 else: n == 3
-            row = list.push(row, born_or_survives)
+            row = row.push(born_or_survives)
             c = c + 1
-        next = list.push(next, row)
+        next = next.push(row)
         r = r + 1
     next
 
@@ -68,14 +68,14 @@ pub fn neighbours(grid: List(List(Bool)), r: Int, c: Int) -> Int:
 
 // A cell's state, with anything off the board counted as dead.
 fn cell_at(grid: List(List(Bool)), r: Int, c: Int) -> Bool:
-    if r < 0 || r >= list.length(grid):
+    if r < 0 || r >= grid.length():
         false
     else:
-        let row = list.at(grid, r)
-        if c < 0 || c >= list.length(row):
+        let row = grid.at(r)
+        if c < 0 || c >= row.length():
             false
         else:
-            list.at(row, c)
+            row.at(c)
 
 pub fn render(grid: List(List(Bool))) -> String:
     var lines = []
@@ -83,5 +83,5 @@ pub fn render(grid: List(List(Bool))) -> String:
         var line = ""
         for live in row:
             line = line + if live: "#" else: "."
-        lines = list.push(lines, line)
-    string.join(lines, "\n")
+        lines = lines.push(line)
+    lines.join("\n")

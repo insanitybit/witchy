@@ -1,9 +1,9 @@
 ---
 rfc: 0013
 title: Capability grant documents
-status: partially-implemented
+status: implemented
 created: 2026-06-23
-implemented: 2026-06-25 (parser + footprint cross-check; launch wiring pending)
+implemented: 2026-06-28 (parser + footprint cross-check + `--grants` launch + `--accept-grants` approval)
 tracking:
 ---
 
@@ -25,9 +25,14 @@ tracking:
 > (`[files].config` → the `config` parameter), `[net]` to one allowlist,
 > `[secrets]` to host-resolved named secrets (`from = "env:VAR"`) — runs the
 > cross-check at launch (warn on over-grant, ABORT on under-grant), then runs.
-> NOT yet wired: the interactive **approval diff** / `--accept-grants` confirmation
-> (today the cross-check + abort is the gate), and the bare `Secret` handle via
-> document (secrets reach the program by name through the `SecretStore`).
+> The **approval diff** is now wired too (2026-06-28): `witchy sandbox --grants`
+> prints exactly what `main` will receive (capabilities + each `dir`/`file`/`net`/
+> `secret` binding) and, on an interactive TTY, prompts `Approve and run? [y/N]`
+> before handing authority over; `--accept-grants` pre-approves for non-interactive
+> launches (CI, installers), and a non-TTY launch proceeds after printing the diff
+> (the cross-check + under-grant abort remains the hard gate). The one intentional
+> non-feature: secrets reach the program **by name** through the `SecretStore`, not
+> as a bare `Secret` handle minted from the document.
 >
 > Code blocks here are intentionally **not** tagged `witchy` so the doc-examples
 > test does not try to compile partial snippets.

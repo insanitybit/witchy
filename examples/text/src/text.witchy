@@ -8,10 +8,10 @@ import string
 fn main(console: Console):
     let row = "alice,bob,carol"
 
-    let fields = string.split(row, ",")
-    let loud = list.map(fields, fn(name: String): string.to_upper(name))
-    print(console, string.join(loud, " | "))
+    let fields = row.split(",")
+    let loud = fields.map(fn(name: String): name.to_upper())
+    print(console, loud.join(" | "))
 
     print(console, string.repeat("=", 3))
 
-    print(console, string.replace(row, "bob", "***"))
+    print(console, row.replace("bob", "***"))

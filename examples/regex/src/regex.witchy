@@ -18,9 +18,9 @@ fn cases() -> List((String, String)):
     [("abc", "abc"), ("a.c", "axc"), ("a.c", "ac"), ("a*b", "aaab"), ("a*b", "b"), ("^hello", "hello world"), ("world\$", "hello world"), ("^a.*z\$", "abcz"), ("^a.*z\$", "abc")]
 
 pub fn matches(pattern: String, text: String) -> Bool:
-    let re = string.chars(pattern)
-    let s = string.chars(text)
-    if list.length(re) > 0 && list.at(re, 0) == "^":
+    let re = pattern.chars()
+    let s = text.chars()
+    if re.length() > 0 && re.at(0) == "^":
         match_here(re, 1, s, 0)
     else:
         match_anywhere(re, s)
@@ -29,7 +29,7 @@ pub fn matches(pattern: String, text: String) -> Bool:
 fn match_anywhere(re: List(String), s: List(String)) -> Bool:
     var start = 0
     var found = match_here(re, 0, s, 0)
-    while !found && start < list.length(s):
+    while !found && start < s.length():
         start = start + 1
         if match_here(re, 0, s, start):
             found = true
@@ -37,13 +37,13 @@ fn match_anywhere(re: List(String), s: List(String)) -> Bool:
 
 // Does the pattern from `ri` match the text from `si`?
 fn match_here(re: List(String), ri: Int, s: List(String), si: Int) -> Bool:
-    if ri >= list.length(re):
+    if ri >= re.length():
         true
-    else if ri + 1 < list.length(re) && list.at(re, ri + 1) == "*":
-        match_star(list.at(re, ri), re, ri + 2, s, si)
-    else if list.at(re, ri) == "\$" && ri + 1 == list.length(re):
-        si >= list.length(s)
-    else if si < list.length(s) && (list.at(re, ri) == "." || list.at(re, ri) == list.at(s, si)):
+    else if ri + 1 < re.length() && re.at(ri + 1) == "*":
+        match_star(re.at(ri), re, ri + 2, s, si)
+    else if re.at(ri) == "\$" && ri + 1 == re.length():
+        si >= s.length()
+    else if si < s.length() && (re.at(ri) == "." || re.at(ri) == s.at(si)):
         match_here(re, ri + 1, s, si + 1)
     else:
         false
@@ -52,7 +52,7 @@ fn match_here(re: List(String), ri: Int, s: List(String), si: Int) -> Bool:
 fn match_star(c: String, re: List(String), ri: Int, s: List(String), si: Int) -> Bool:
     var i = si
     var done = match_here(re, ri, s, i)
-    while !done && i < list.length(s) && (c == "." || list.at(s, i) == c):
+    while !done && i < s.length() && (c == "." || s.at(i) == c):
         i = i + 1
         if match_here(re, ri, s, i):
             done = true

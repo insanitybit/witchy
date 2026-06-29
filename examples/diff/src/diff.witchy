@@ -17,46 +17,46 @@ fn main(console: Console):
 pub fn diff(old: List(String), new: List(String)) -> List(String):
     let table = lcs_table(old, new)
     var out = []
-    var i = list.length(old)
-    var j = list.length(new)
+    var i = old.length()
+    var j = new.length()
     while i > 0 && j > 0:
-        if list.at(old, i - 1) == list.at(new, j - 1):
-            out = list.push(out, "  " + list.at(old, i - 1))
+        if old.at(i - 1) == new.at(j - 1):
+            out = out.push("  " + old.at(i - 1))
             i = i - 1
             j = j - 1
-        else if list.at(list.at(table, i - 1), j) >= list.at(list.at(table, i), j - 1):
-            out = list.push(out, "- " + list.at(old, i - 1))
+        else if list.at(table.at(i - 1), j) >= list.at(table.at(i), j - 1):
+            out = out.push("- " + old.at(i - 1))
             i = i - 1
         else:
-            out = list.push(out, "+ " + list.at(new, j - 1))
+            out = out.push("+ " + new.at(j - 1))
             j = j - 1
     while i > 0:
-        out = list.push(out, "- " + list.at(old, i - 1))
+        out = out.push("- " + old.at(i - 1))
         i = i - 1
     while j > 0:
-        out = list.push(out, "+ " + list.at(new, j - 1))
+        out = out.push("+ " + new.at(j - 1))
         j = j - 1
-    list.reverse(out)
+    out.reverse()
 
 // table[i][j] = length of the LCS of old[0..i] and new[0..j], built row by row.
 fn lcs_table(old: List(String), new: List(String)) -> List(List(Int)):
-    let rows = list.length(old)
-    let cols = list.length(new)
+    let rows = old.length()
+    let cols = new.length()
     var table = [zeros(cols + 1)]
     var i = 1
     while i <= rows:
-        let above = list.at(table, i - 1)
+        let above = table.at(i - 1)
         var row = [0]
         var j = 1
         while j <= cols:
             var value = 0
-            if list.at(old, i - 1) == list.at(new, j - 1):
-                value = list.at(above, j - 1) + 1
+            if old.at(i - 1) == new.at(j - 1):
+                value = above.at(j - 1) + 1
             else:
-                value = math.max(list.at(row, j - 1), list.at(above, j))
-            row = list.push(row, value)
+                value = math.max(row.at(j - 1), above.at(j))
+            row = row.push(value)
             j = j + 1
-        table = list.push(table, row)
+        table = table.push(row)
         i = i + 1
     table
 
@@ -64,6 +64,6 @@ fn zeros(n: Int) -> List(Int):
     var out = []
     var k = 0
     while k < n:
-        out = list.push(out, 0)
+        out = out.push(0)
         k = k + 1
     out

@@ -35,8 +35,8 @@ gen fn collatz(start: Int) -> Iter(Int):
 pub fn show(xs: List(Int)) -> String:
     var parts = []
     for x in xs:
-        parts = list.push(parts, "${x}")
-    string.join(parts, ", ")
+        parts = parts.push("${x}")
+    parts.join(", ")
 
 fn main(console: Console):
     let fib10: List(Int) = iter.collect(iter.take(fibs(), 10))

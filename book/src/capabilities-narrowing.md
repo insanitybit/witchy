@@ -98,6 +98,25 @@ guarantees and a reviewer can read at a glance. The narrowing also chains and
 stays confined: `dir.subtree("a").subtree("b")` reaches `a/b`, and `..` still
 cannot escape.
 
+A `Dir` also carries an **entry policy** that narrows *which entries* it may
+touch, the third axis alongside rights (verbs) and subtree (scope).
+`dir.only(confine.ext(".log"))` confines a `Dir` so `read`/`write`/`open` only
+admit matching files — a non-matching name is refused at the access check, and a
+subtree inherits the policy. It is the `Dir` analog of `net.only` below:
+
+```witchy
+import confine
+
+// `read_logs` is handed a Dir that can only touch `.log` files — even though its
+// caller holds the whole directory, it cannot read a `.key` or a `.env`.
+fn read_logs(logs: Dir[Read], name: String) -> String:
+    read(logs, name)
+
+fn main(console: Console, dir: Dir):
+    let logs = dir.only(confine.ext(".log"))   // entry policy: only `.log` files
+    print(console, read_logs(logs, "app.log"))
+```
+
 ## Files: the leaf
 
 A `Dir` is authority over a *subtree*; a **`File`** is the leaf — authority over
@@ -161,6 +180,12 @@ and `union(a, b)` for a multi-endpoint set. The host enforces the set **at the
 syscall** on both backends, so a narrowed `Net` structurally cannot reach
 elsewhere. (HTTPS isn't a separate right: ask for TLS at connect time with a
 `tls:` prefix on the address you dial — `connect(net, "tls:example.com:443")`.)
+
+For the common SSRF / DNS-rebinding guard, `net.deny(confine.private())` excludes
+the internal ranges in one line — loopback, RFC-1918, link-local (including the
+`169.254.169.254` cloud-metadata address), CGNAT, and "this host". It is matched
+against the **resolved** IP, so a hostname that rebinds to an internal address is
+refused at connect time, not just at a check beforehand.
 
 ## Spawning processes: the `Exec` capability
 

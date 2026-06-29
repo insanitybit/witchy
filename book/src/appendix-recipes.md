@@ -91,11 +91,11 @@ sets the process exit code (`0` is success).
 
 ```witchy
 fn main(console: Console, args: List(String)) -> Int:
-    if list.length(args) == 0:
+    if args.length() == 0:
         print(console, "usage: prog <name>")
         1
     else:
-        print(console, "hello, " + list.at(args, 0))
+        print(console, "hello, " + args.at(0))
         0
 ```
 

@@ -10,7 +10,7 @@ fn pair_up(x: a, y: a) -> (a, a):
     (x, y)
 
 fn first(xs: List(a)) -> a:
-    list.at(xs, 0)
+    xs.at(0)
 
 fn main(console: Console):
     let (lo, hi) = pair_up(1, 2)
@@ -73,7 +73,7 @@ ordering; here's a generic "biggest element" for anything orderable:
 import cmp
 
 fn largest(xs: List(a)) -> a where a: Ord:
-    var best = list.at(xs, 0)
+    var best = xs.at(0)
     for x in xs:
         if x > best:
             best = x
@@ -178,6 +178,10 @@ Score(12, beta)
   `json.value_of(score)` the `Json` value. Scalars, lists, options, and nested
   `derive(Reflect)` records all map. (There is **no** `derive(Json)` /
   `to_json`; serialization is reflective, only decoding is generated — next.)
+  When you don't even want a named type, an [anonymous record](tour-data.md)
+  (`.{field: expr}`) is reflectable too, so `json.stringify(.{ok: true})` works
+  with no declaration at all. [Reflection](tour-reflection.md) covers the full
+  story — the `Mirror` type and writing your own reflective consumers.
 - `derive(Deserialize)` (with `import json`, `import result`, and `import
   option` if any field is `Option`) generates the inverse,
   `from_json(j) -> Result(Self, String)`, so `Score.from_json(j)` rebuilds a
@@ -195,7 +199,7 @@ type Version derive(Show, PartialEq, Eq, PartialOrd, Ord):
     minor: Int
 
 fn parse(s: String) -> Option(Version):
-    match string.split(s, "."):
+    match s.split("."):
         [major, minor] -> Some(Version(string.to_int(major), string.to_int(minor)))
         _ -> None
 

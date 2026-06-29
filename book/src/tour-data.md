@@ -26,7 +26,10 @@ ada
 ```
 
 Records are immutable. To "change" a field you make a fresh record; the spread
-form `..base` fills in the fields you don't override:
+form `..base` fills in the fields you don't override. (When the record lives in a
+`var`, the field-assignment shorthand `acct.balance = b` writes that fresh-record
+update for you — sugar for `acct = Account(balance: b, ..acct)`, kept in place by
+the optimizer.)
 
 ```witchy
 type Account:
@@ -47,6 +50,35 @@ fn main(console: Console):
 150
 100
 ```
+
+## Anonymous records
+
+Sometimes you want a record's *shape* without naming a type for it — usually to
+bundle a few values on the spot. `.{field: expr, ...}` is a record with no declared
+type:
+
+```witchy
+import json
+
+fn main(console: Console):
+    let point = .{x: 1, y: 2}
+    print(console, "${point.x}, ${point.y}")
+    print(console, json.stringify(.{name: "ada", scores: [10, 20]}))
+```
+
+```text
+1, 2
+{"name":"ada","scores":[10,20]}
+```
+
+Field access (`point.x`) works exactly as on a named record, and because an
+anonymous record is reflectable, `json.stringify` — and the other reflection-based
+encoders (see [Generics](tour-generics.md)) — serialize it with no per-type code.
+That's the payoff: you can hand structured data to a JSON response or an encoder
+without declaring a one-off `type`. One limit to know: a bare `"${rec}"`
+*structural* print works for a named record but not an anonymous one on the
+compiled backend — render an anonymous record with `json.stringify`, or field by
+field.
 
 ## Enums and sum types
 

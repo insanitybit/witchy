@@ -80,7 +80,7 @@ pub fn normalize(p: String) -> String:
                 stack = list.push(stack, "..")
         else if seg != "" && seg != ".":
             stack = list.push(stack, seg)
-    let joined = string.join(stack, "/")
+    let joined = list.join(stack, "/")
     if absolute:
         "/" + joined
     else if string.is_empty(joined):

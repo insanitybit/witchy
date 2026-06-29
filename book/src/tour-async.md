@@ -171,7 +171,11 @@ async fn main(console: Console):
 
 The list form lowers to `task.for_each`, the receiver form to `chan.consume`. A
 `while` loop cannot `await` (it would need mutable state carried across the point, which captured-by-value closures can't express) — for an open-ended loop,
-recurse with an async fn, or use `for await`.
+recurse with an async fn, or use `for await`. The same rule explains a subtler
+limit: the code *after* an `await` becomes a captured-by-value continuation, so a
+`var` declared before an `await` can't be mutated after it. Carry evolving state by
+recursing with an `async fn`, or thread it through a channel (`chan.serve`), rather
+than in a `var`.
 
 ## Why this stays deterministic
 
