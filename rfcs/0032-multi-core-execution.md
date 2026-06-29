@@ -440,6 +440,25 @@ forms' determinism is precisely the property a future parallel backend must
 preserve: it runs the items on separate cores *without changing the observable
 result*, so multi-core becomes a backend swap rather than a semantics change.
 
+**Shipped (2026-06-29) — TRUE MULTI-CORE for data-parallel compute (Option B).**
+`vm.par_map(xs, f)` (std/vm) over scalar elements with a top-level (capture-free) `f`
+runs on the compiled backend across **N worker VMs** — one wasmtime instance + linear
+memory per core, capped by element count — each processing a contiguous chunk in
+parallel (`std::thread::scope`), results reassembled in input order. This is RFC-0032's
+**Option B (share-nothing instances)** realized: workers share nothing, the mapped
+function is re-entered by table index (`__call_idx`, NULL env) in each fresh instance,
+and scalars marshal as flat i64s. Measured **4.2× at 620% CPU** (10-core, 8×200M-iter
+elements), byte-identical output to the sequential run.
+
+Parity holds *without* spending the invariant: a pure `f` collected by index makes the
+parallel result equal the sequential one, so the interpreter oracle still matches
+(`vm_par_map_backends_agree`). Soundness is enforced at lowering — only scalar elements
+(no pointer marshaling across memories) and a top-level `f` (no captured parent-heap
+state) take the native path; every other shape falls through to the sequential
+`list.map` body, always correct (`vm_par_map_capturing_closure_agrees`). The two-step
+build: `vm.par_map` scaffold (sequential, both backends agree) → host re-entry trampoline
+→ parallel worker VMs.
+
 **Remaining (native runtime — not a pure-witchy change).** These are deliberately
 not half-built; the cooperative model above is the parity-safe foundation they
 swap a backend under:
