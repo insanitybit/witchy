@@ -27,6 +27,10 @@ pub struct Stats {
     pub reowns: i64,
     /// Bytes moved by `region:` copy-outs.
     pub region_copy_bytes: i64,
+    /// (RFC-0016) Bytes `$rc_alloc` reused from the RC-floor free-list rather than
+    /// freshly bumping — 0 unless the free-at-overwrite rule (gated `rc-floor`)
+    /// reclaimed a dead buffer that a later allocation then recycled.
+    pub rc_reused_bytes: i64,
 }
 
 /// Compile `src` (resolved against the bundled std) and run it under the active
@@ -49,6 +53,7 @@ pub fn compute(src: &str) -> Result<Stats, String> {
         heap_bytes: vm.heap_bytes().unwrap_or(0),
         reowns: vm.reowns().unwrap_or(0),
         region_copy_bytes: vm.region_copy_bytes().unwrap_or(0),
+        rc_reused_bytes: vm.rc_reused_bytes().unwrap_or(0),
     })
 }
 
@@ -385,30 +390,59 @@ mod tests {
     /// when the floor lands and bounds it — the DoD (b) characterization for the
     /// floor, the inverse of the bounded-keyset pin.
     #[test]
-    fn cache_eviction_leaks_without_rc_floor() {
+    fn cache_eviction_bounded_by_rc_floor() {
         let prog = |n: i32| {
             format!(
                 "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < {n}:\n        d = dict.insert(d, i, i)\n        d = dict.remove(d, i)\n        i = i + 1\n    print(console, __render(dict.length(d)))\n"
             )
         };
+        // RC-floor OFF (the opt-in lever absent): the eviction garbage leaks O(n).
+        // Every `dict.remove` allocates a fresh buffer and the old, dead, uniquely
+        // owned one is never reclaimed — so 6× the iterations costs ~6× the heap.
         opt::set_for_tests(Some(OptSet::default_set()));
-        let small = compute(&prog(500)).expect("n=500");
-        let big = compute(&prog(3000)).expect("n=3000");
+        let small_off = compute(&prog(500)).expect("n=500 off");
+        let big_off = compute(&prog(3000)).expect("n=3000 off");
+        // RC-floor ON: the free-at-overwrite rule frees each dead buffer into the
+        // size-classed free-list, where the next allocation reuses it — so the loop
+        // is bounded, independent of iteration count.
+        opt::set_for_tests(Some(OptSet::default_set().with(Opt::RcFloor)));
+        let small_on = compute(&prog(500)).expect("n=500 on");
+        let big_on = compute(&prog(3000)).expect("n=3000 on");
         opt::set_for_tests(None);
-        // Each iteration inserts a fresh key then removes it: the dict ends empty.
-        assert_eq!(small.output, vec!["0".to_string()]);
-        assert_eq!(big.output, vec!["0".to_string()]);
-        // PINNED RESIDUAL: 6× the iterations allocates ~6× the heap — the eviction
-        // garbage is never reclaimed. When the per-object RC floor lands and frees
-        // the dead dict buffers (dec-at-last-use → size-classed free list → reuse),
-        // this loop becomes bounded and the assertion below must be UPDATED to
-        // `big.heap_bytes < small.heap_bytes * 2` (mirroring the bounded-keyset pin).
+        // Each iteration inserts a fresh key then removes it: the dict ends empty —
+        // identical observable output with the lever on or off (the parity contract).
+        for r in [&small_off, &big_off, &small_on, &big_on] {
+            assert_eq!(r.output, vec!["0".to_string()], "eviction loop must end empty");
+        }
+        // OFF: the pinned leak still holds (the lever is doing real work, not a no-op).
         assert!(
-            big.heap_bytes > small.heap_bytes * 3,
-            "cache-eviction garbage is expected to leak O(n) until the RC floor lands: \
+            big_off.heap_bytes > small_off.heap_bytes * 3,
+            "without rc-floor the eviction garbage must still leak O(n): \
              n=500 heap={}, n=3000 heap={}",
-            small.heap_bytes,
-            big.heap_bytes
+            small_off.heap_bytes,
+            big_off.heap_bytes
+        );
+        // ON: bounded — 6× the iterations stays within ~2× the heap (mirroring the
+        // bounded-keyset pin), proving the floor reclaims the escaping garbage.
+        assert!(
+            big_on.heap_bytes < small_on.heap_bytes * 2,
+            "rc-floor must bound the eviction loop, but heap scaled with iterations: \
+             n=500 heap={}, n=3000 heap={}",
+            small_on.heap_bytes,
+            big_on.heap_bytes
+        );
+        // DoD counter (b): the `__rc_reused_bytes` stats counter PROVES the floor
+        // fired — OFF it never reclaims (0), ON it recycles bytes that scale with
+        // iteration count (every freed buffer is reused by the next allocation).
+        assert_eq!(big_off.rc_reused_bytes, 0, "rc-floor off must not reclaim");
+        assert!(
+            big_on.rc_reused_bytes > big_off.rc_reused_bytes
+                && big_on.rc_reused_bytes > small_on.rc_reused_bytes,
+            "rc-floor must reclaim bytes that scale with iterations: \
+             off={}, on(n=500)={}, on(n=3000)={}",
+            big_off.rc_reused_bytes,
+            small_on.rc_reused_bytes,
+            big_on.rc_reused_bytes
         );
     }
 

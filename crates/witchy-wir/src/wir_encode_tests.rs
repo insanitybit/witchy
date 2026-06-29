@@ -1188,7 +1188,8 @@
     fn dict_insert_get_has_int_keys() {
         use crate::wir_helpers::{
             dict_find_helper, dict_get_or_helper, dict_has_helper, dict_hash_helper,
-            dict_insert_helper, dict_new_helper, ensure_helper, key_eq_helper, str_eq_helper,
+            dict_insert_helper, dict_new_helper, ensure_helper, key_eq_helper, rc_alloc_helper,
+            str_eq_helper,
         };
         let gl = |n: &str| WirExpr::GetLocal(n.into());
         // dict_insert(d, k, v, mode=0): re-bind `d` to the fresh map.
@@ -1244,6 +1245,7 @@
             }],
             funcs: vec![
                 ensure_helper(false),
+                rc_alloc_helper(),
                 str_eq_helper(),
                 key_eq_helper(),
                 dict_hash_helper(),
@@ -1256,13 +1258,29 @@
             ],
             memory_pages: 1,
             data: vec![],
-            globals: vec![WirGlobal {
-                name: "heap".into(),
-                kind: Kind::I32,
-                mutable: true,
-                init: GlobalInit::I32(1024),
-                export: None,
-            }],
+            globals: vec![
+                WirGlobal {
+                    name: "heap".into(),
+                    kind: Kind::I32,
+                    mutable: true,
+                    init: GlobalInit::I32(1024),
+                    export: None,
+                },
+                WirGlobal {
+                    name: "rc_freelist".into(),
+                    kind: Kind::I32,
+                    mutable: true,
+                    init: GlobalInit::I32(0),
+                    export: None,
+                },
+                WirGlobal {
+                    name: "__rc_reused_bytes".into(),
+                    kind: Kind::I64,
+                    mutable: true,
+                    init: GlobalInit::I64(0),
+                    export: None,
+                },
+            ],
             table: None,
             exports: vec![("run".into(), "run".into())],
         };
@@ -1274,7 +1292,7 @@
         use crate::wir_helpers::{
             dict_find_helper, dict_get_or_helper, dict_hash_helper, dict_insert_helper,
             dict_new_helper, dict_project_helper, dict_remove_helper, ensure_helper, key_eq_helper,
-            str_eq_helper,
+            rc_alloc_helper, str_eq_helper,
         };
         let gl = |n: &str| WirExpr::GetLocal(n.into());
         let ins = |k: i64, v: i64| WirNode::SetLocal {
@@ -1327,6 +1345,7 @@
             imports: vec![WirImport { name: "print_int".into(), params: vec![Kind::I64], results: vec![] }],
             funcs: vec![
                 ensure_helper(false),
+                rc_alloc_helper(),
                 str_eq_helper(),
                 key_eq_helper(),
                 dict_hash_helper(),
@@ -1341,7 +1360,11 @@
             ],
             memory_pages: 1,
             data: vec![],
-            globals: vec![WirGlobal { name: "heap".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(1024), export: None }],
+            globals: vec![
+                WirGlobal { name: "heap".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(1024), export: None },
+                WirGlobal { name: "rc_freelist".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(0), export: None },
+                WirGlobal { name: "__rc_reused_bytes".into(), kind: Kind::I64, mutable: true, init: GlobalInit::I64(0), export: None },
+            ],
             table: None,
             exports: vec![("run".into(), "run".into())],
         };

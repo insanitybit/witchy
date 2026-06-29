@@ -51,6 +51,12 @@ pub enum Opt {
     /// (off ⇒ the uniform boxed layout). Opt-in (the opt-mode asymptotic lever).
     /// RFC-0027.
     Unbox,
+    /// RC-floor reclamation: free a confined, never-aliased heap `var`'s old buffer
+    /// when it is overwritten by a fresh one (`x = f(x)` for ANY `f`), reusing it via
+    /// a size-classed free-list — so generally-escaping / cache-eviction garbage is
+    /// reclaimed, not leaked (off ⇒ leak it). Convention/escape-oracle-driven, general
+    /// over all operations (no per-method code). Opt-in until complete. RFC-0016.
+    RcFloor,
     /// The opt-in Binaryen post-pass (off by default). Replaces `WITCHY_WASM_OPT`.
     WasmOpt,
     // NOTE: the registry holds ONLY optimizations the compiler actually performs —
@@ -65,7 +71,7 @@ pub enum Opt {
 impl Opt {
     /// Every optimization, in a stable order — drives the differential de-opt
     /// sweep and `witchy stats` reporting.
-    pub const ALL: [Opt; 8] = [
+    pub const ALL: [Opt; 9] = [
         Opt::InPlace,
         Opt::Views,
         Opt::Sroa,
@@ -73,6 +79,7 @@ impl Opt {
         Opt::RcElide,
         Opt::Fold,
         Opt::Unbox,
+        Opt::RcFloor,
         Opt::WasmOpt,
     ];
 
@@ -86,6 +93,7 @@ impl Opt {
             Opt::RcElide => "rc-elide",
             Opt::Fold => "fold",
             Opt::Unbox => "unbox",
+            Opt::RcFloor => "rc-floor",
             Opt::WasmOpt => "wasm-opt",
         }
     }
@@ -97,7 +105,7 @@ impl Opt {
     /// In the production default set? Experimental / costly passes are opt-in
     /// (they must be named explicitly in `WITCHY_OPT`).
     fn default_on(self) -> bool {
-        !matches!(self, Opt::WasmOpt | Opt::Unbox)
+        !matches!(self, Opt::WasmOpt | Opt::Unbox | Opt::RcFloor)
     }
 
     fn bit(self) -> u32 {

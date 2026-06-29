@@ -327,6 +327,19 @@ impl Summaries {
             None => true,
         }
     }
+
+    /// Unified leak query: does the value passed in argument position `idx` of a
+    /// call to `name` (with `argc` arguments) escape the call as a whole alias?
+    /// Consults the builtin effect table first (the same precedence the liveness
+    /// Walker uses), then per-function summaries. This is the convention/escape
+    /// oracle that drives RC-floor reclamation — general over builtins AND user
+    /// functions, with no per-method code.
+    pub fn arg_leaks(&self, name: &str, idx: usize, argc: usize) -> bool {
+        match builtin_arg_liveness(name, argc) {
+            Some(effects) => effects.get(idx).copied().unwrap_or(true),
+            None => self.arg_live(name, idx),
+        }
+    }
 }
 
 /// Does `param` flow somewhere live inside `body`, given the current
@@ -1155,6 +1168,34 @@ fn builtin_arg_liveness(name: &str, argc: usize) -> Option<Vec<bool>> {
         // Conversions never retain buffers.
         ("math.to_float", 1) | ("math.to_int", 1) | ("math.sqrt", 1) => read_all(argc),
         ("dict.new", 0) => Some(Vec::new()),
+        _ => None,
+    }
+}
+
+/// For RC-floor free-at-overwrite (RFC-0016): if `name`/`argc` is a native builtin
+/// whose result is ALWAYS a freshly-allocated heap buffer (never an alias of an
+/// input buffer), the byte offset from the result pointer back to the START of its
+/// `$rc_alloc` region — so the OLD buffer can be freed when it is overwritten.
+/// Dicts carry a hidden index word at `ptr-4` (the region starts there); lists,
+/// strings, and records start at the pointer itself.
+///
+/// This is a BOUNDED, one-time table of the PRIMITIVE allocators — the dict's `-4`
+/// layout wrinkle and friends. It does NOT grow per user operation: it is the
+/// soundness floor that the result is fresh (builtins never alias-passthrough a
+/// buffer arg, unlike a user function that might `return` one). User-type
+/// reclamation generalizes through the single `mk` constructor + the escape oracle,
+/// not through this table. See [[feedback_no_special_casing_optimizations]].
+pub fn fresh_heap_builtin_offset(name: &str, argc: usize) -> Option<i32> {
+    match (name, argc) {
+        // Dict results: allocated through `$rc_alloc` (so they carry the `[size]`
+        // header `$rc_free` needs), with the hidden index word at `ptr-4` — i.e.
+        // the rc-region start is `ptr-4`.
+        ("dict.insert", 3) | ("dict.update", 4) | ("dict.remove", 2) => Some(4),
+        // NOTE: list / string fresh allocators (`list.push`/`list.concat`,
+        // `string.trim`/`replace`/…) are NOT yet routed through `$rc_alloc`, so
+        // their buffers carry no `[size]` header and MUST NOT be freed here (a
+        // headerless block would corrupt the free-list). They join this table
+        // only once their allocators route through `$rc_alloc` — see RFC-0016.
         _ => None,
     }
 }

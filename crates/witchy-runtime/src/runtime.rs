@@ -294,6 +294,17 @@ impl Vm {
             .and_then(|g| g.get(&mut self.store).i64())
     }
 
+    /// (RFC-0016) The total bytes `$rc_alloc` handed back out of the RC-floor
+    /// free-list (reused rather than freshly bumped) — the exported
+    /// `__rc_reused_bytes` counter. 0 unless the free-at-overwrite rule (gated
+    /// `WITCHY_OPT=rc-floor`) populated the list, so it proves the reclamation
+    /// actually fired and recycled. None when the module has no heap.
+    pub fn rc_reused_bytes(&mut self) -> Option<i64> {
+        self.instance
+            .get_global(&mut self.store, "__rc_reused_bytes")
+            .and_then(|g| g.get(&mut self.store).i64())
+    }
+
     /// (RFC-0030) The final value of the `$heap` bump-pointer (exported as
     /// `__heap`): the live heap frontier in bytes at program end. With no
     /// region/watermark reclaim this is the peak. For a fixed program the delta

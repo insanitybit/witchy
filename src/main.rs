@@ -292,6 +292,7 @@ fn main() -> wasmtime::Result<()> {
                 println!("heap_bytes {}", s.heap_bytes);
                 println!("reowns {}", s.reowns);
                 println!("region_copy_bytes {}", s.region_copy_bytes);
+                println!("rc_reused_bytes {}", s.rc_reused_bytes);
             }
             Err(e) => {
                 eprintln!("witchy stats: {e}");

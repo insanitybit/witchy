@@ -330,6 +330,7 @@ struct SavedScope {
     packed_candidates: HashSet<String>,
     packed_active: HashMap<String, String>,
     reuse_vars: HashSet<String>,
+    rc_floor_vars: HashSet<String>,
 }
 
 struct Codegen {
@@ -453,6 +454,11 @@ struct Codegen {
     /// build-and-drop loop that would otherwise leak. Per-unit, under the `rc-elide`
     /// lever; the buffer comes from the (normally-lowered) binding.
     reuse_vars: HashSet<String>,
+    /// (RFC-0016) RC-floor reclamation: confined, never-aliased `let`/`var` heap
+    /// locals (`escape::confined_reassigned_vars`) whose OLD buffer is freed into
+    /// the size-classed free-list when it is overwritten by a freshly-allocated one
+    /// (`x = f(x, …)`). Per-unit, under the opt-in `rc-floor` lever.
+    rc_floor_vars: HashSet<String>,
     /// The active compile unit's uniqueness facts + (kills consumed, sites
     /// seen) for the post-compile consumption check; units nest via lambdas.
     facts_stack: Vec<(analysis::Facts, usize, usize)>,
@@ -823,6 +829,7 @@ impl Codegen {
             packed_candidates: HashSet::new(),
             packed_active: HashMap::new(),
             reuse_vars: HashSet::new(),
+            rc_floor_vars: HashSet::new(),
             facts_stack: Vec::new(),
             summaries: analysis::Summaries::empty(),
             cur_fn_own_param: None,
@@ -2122,6 +2129,9 @@ impl Codegen {
         // `$list_set_cap` call; the helper is only invoked for OOB / re-own.
         locals.push(WirLocal { name: "__witchy_set_idx".into(), ty: i32t() });
         locals.push(WirLocal { name: "__witchy_set_val".into(), ty: i64t() });
+        // (RFC-0016) RC-floor free-at-overwrite scratch: the freshly-allocated
+        // buffer (a heap pointer) before the old one is freed and the var rebound.
+        locals.push(WirLocal { name: "__rc_new".into(), ty: i32t() });
         for i in 0..WM_POOL {
             locals.push(WirLocal { name: format!("__witchy_wm_{i}"), ty: i32t() });
         }
@@ -2225,6 +2235,16 @@ impl Codegen {
             && witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::RcElide)
         {
             crate::escape::confined_inplace_reuse_vars_block(body)
+        } else {
+            HashSet::new()
+        };
+        // (RFC-0016) RC-floor reclamation: free a confined heap `var`'s OLD buffer
+        // when it is overwritten by a freshly-allocated one. Opt-in via `rc-floor`;
+        // off in forced-copy mode so the de-opt sweep exercises the leaking path.
+        self.rc_floor_vars = if !force_copy_mode()
+            && witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::RcFloor)
+        {
+            crate::escape::confined_reassigned_vars_block(body, &self.summaries)
         } else {
             HashSet::new()
         };
@@ -2980,6 +3000,65 @@ impl Codegen {
                         });
                         inplace_sites += 1;
                         tail_is_value = false;
+                    } else if self.collect_wir
+                        && self.rc_floor_vars.contains(name)
+                        && matches!(value, Expr::Call { name: f, args }
+                            if matches!(args.first(), Some(Expr::Var(x)) if x == name)
+                                && analysis::fresh_heap_builtin_offset(f, args.len()).is_some())
+                    {
+                        // (RFC-0016) RC-floor free-at-overwrite: `name` is a confined,
+                        // never-aliased heap var overwritten by a builtin that allocates
+                        // a FRESH buffer while threading the old one through as its
+                        // receiver (`d = dict.remove(d, k)`) — a shape the in-place fast
+                        // paths above did not claim, so it would otherwise leak the old
+                        // buffer every iteration (the cache-eviction leak). The old
+                        // buffer is now dead: evaluate the fresh result (which still
+                        // reads the old via the receiver), and when it is a genuinely new
+                        // allocation (the pointer differs — the guard also makes a callee
+                        // that returned its own buffer a safe no-op) free the old region
+                        // into the size-classed free-list before rebinding.
+                        let Expr::Call { name: f, args } = value else { unreachable!() };
+                        let offset = analysis::fresh_heap_builtin_offset(f, args.len())
+                            .expect("guarded Some above");
+                        let vk = self.kind_of(value);
+                        let target = self.locals.get(name).copied().unwrap_or(Kind::I32);
+                        let v = self.lower_expr(value)?;
+                        seq.push(N::SetLocal {
+                            local: "__rc_new".into(),
+                            value: Self::wir_convert(v, vk, target),
+                        });
+                        // The start of the old buffer's `$rc_alloc` region (dicts sit 4
+                        // bytes past it, for the hidden index word).
+                        let old_region = if offset == 0 {
+                            W::GetLocal(name.clone())
+                        } else {
+                            W::Binary {
+                                op: witchy_wir::wir::BinOp::Sub,
+                                kind: witchy_wir::wir::Kind::I32,
+                                lhs: Box::new(W::GetLocal(name.clone())),
+                                rhs: Box::new(W::ConstI32(offset)),
+                            }
+                        };
+                        let cond = W::Binary {
+                            op: witchy_wir::wir::BinOp::Ne,
+                            kind: witchy_wir::wir::Kind::I32,
+                            lhs: Box::new(W::GetLocal("__rc_new".into())),
+                            rhs: Box::new(W::GetLocal(name.clone())),
+                        };
+                        seq.push(N::If {
+                            cond,
+                            then_: vec![N::Do(W::Call {
+                                func: "rc_free".into(),
+                                args: vec![old_region],
+                            })],
+                            els: vec![],
+                            result: None,
+                        });
+                        seq.push(N::SetLocal {
+                            local: name.clone(),
+                            value: W::GetLocal("__rc_new".into()),
+                        });
+                        tail_is_value = false;
                     } else {
                         // A plain local reassignment, INCLUDING a self-assign
                         // accumulator (`s = s + x`, `xs = list.push(xs, e)`) that the
@@ -3640,6 +3719,10 @@ impl Codegen {
                         value: W::ToSlot(Box::new(tail), Self::wir_kind(body_kind)),
                     });
                     seq.push(N::SetGlobal { global: "heap".to_string(), value: W::GetLocal(wm) });
+                    // (RFC-0016) The reset reclaims every address at/above the
+                    // watermark, so any RC-floor free-list entry freed inside the body
+                    // now dangles — drop the list (sound; a no-op when rc-floor is off).
+                    seq.push(N::SetGlobal { global: "rc_freelist".to_string(), value: W::ConstI32(0) });
                     seq.push(N::Push(W::FromSlot(
                         Box::new(W::GetLocal(MATCH_TMP.to_string())),
                         Self::wir_kind(body_kind),
@@ -3698,6 +3781,10 @@ impl Codegen {
                         rhs: Box::new(copied_len()),
                     },
                 });
+                // (RFC-0016) As the scalar path: the slide-down reuses every address
+                // at/above the watermark, so RC-floor free-list entries freed inside
+                // the body dangle — drop the list (a no-op when rc-floor is off).
+                seq.push(N::SetGlobal { global: "rc_freelist".to_string(), value: W::ConstI32(0) });
                 seq.push(N::Push(W::GetLocal(TUPLE_TMP.to_string())));
                 return Some(W::Seq(seq));
             }
@@ -4823,6 +4910,7 @@ impl Codegen {
                 // self-assign accumulator can live inside a lifted lambda body too).
                 locals.push(WirLocal { name: "__witchy_set_idx".into(), ty: i32t() });
                 locals.push(WirLocal { name: "__witchy_set_val".into(), ty: WirTy::Int });
+                locals.push(WirLocal { name: "__rc_new".into(), ty: WirTy::Int });
                 for i in 0..WM_POOL {
                     locals.push(WirLocal { name: format!("__witchy_wm_{i}"), ty: i32t() });
                 }
@@ -4902,6 +4990,7 @@ impl Codegen {
             packed_candidates: std::mem::take(&mut self.packed_candidates),
             packed_active: std::mem::take(&mut self.packed_active),
             reuse_vars: std::mem::take(&mut self.reuse_vars),
+            rc_floor_vars: std::mem::take(&mut self.rc_floor_vars),
         }
     }
 
@@ -4929,6 +5018,7 @@ impl Codegen {
         self.packed_candidates = s.packed_candidates;
         self.packed_active = s.packed_active;
         self.reuse_vars = s.reuse_vars;
+        self.rc_floor_vars = s.rc_floor_vars;
     }
 
     /// The `$key_eq` comparison mode for a Dict key expression: 0 for Int/Bool
@@ -7922,6 +8012,28 @@ pub fn assemble_wir_module(
                         mutable: true,
                         init: GlobalInit::I64(0),
                         export: Some("__witchy_reowns".into()),
+                    },
+                    // (RFC-0016) Head of the RC-floor size-classed free-list (0 = empty).
+                    // `$rc_alloc` pops it, `$rc_free` pushes; declared with `heap` since
+                    // they share the allocation path. Empty (no effect) unless the
+                    // codegen free-at-overwrite (gated `rc-floor`) emits `$rc_free`.
+                    WirGlobal {
+                        name: "rc_freelist".into(),
+                        kind: WK::I32,
+                        mutable: true,
+                        init: GlobalInit::I32(0),
+                        export: None,
+                    },
+                    // (RFC-0016) DoD counter: bytes handed back out of the free-list by
+                    // `$rc_alloc` (reused rather than freshly bumped). 0 unless the
+                    // free-at-overwrite codegen (gated `rc-floor`) populated the list, so
+                    // `witchy stats` proves the optimization actually fired and recycled.
+                    WirGlobal {
+                        name: "__rc_reused_bytes".into(),
+                        kind: WK::I64,
+                        mutable: true,
+                        init: GlobalInit::I64(0),
+                        export: Some("__rc_reused_bytes".into()),
                     },
                 ]
             } else {

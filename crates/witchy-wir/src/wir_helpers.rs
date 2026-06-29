@@ -150,11 +150,14 @@ pub fn mk_helper(n: usize, checked: bool) -> WirFunc {
         params.push(WirLocal { name: format!("f{i}"), ty: WirTy::Int });
     }
     let mut body = vec![
-        WirNode::Do(WirExpr::Call {
-            func: "ensure".into(),
-            args: vec![WirExpr::ConstI32((size + rz) as i32)],
-        }),
-        WirNode::SetLocal { local: "p".into(), value: WirExpr::GetGlobal("heap".into()) },
+        // (RFC-0016) Allocate through the central `$rc_alloc`: it reserves a 4-byte
+        // `[size]` header before the object and reuses a freed block when one fits,
+        // so a confined value's buffer can later be `$rc_free`d and recycled. The
+        // returned pointer is the object base (header at `p-4`) — readers unchanged.
+        WirNode::SetLocal {
+            local: "p".into(),
+            value: WirExpr::Call { func: "rc_alloc".into(), args: vec![WirExpr::ConstI32((size + rz) as i32)] },
+        },
         // header: store the i32 tag at p+0.
         WirNode::Store {
             ptr: WirExpr::GetLocal("p".into()),
@@ -187,16 +190,8 @@ pub fn mk_helper(n: usize, checked: bool) -> WirFunc {
             ],
         }));
     }
-    // advance $heap past the allocation (and its redzone), then return the base pointer.
-    body.push(WirNode::SetGlobal {
-        global: "heap".into(),
-        value: WirExpr::Binary {
-            op: BinOp::Add,
-            kind: Kind::I32,
-            lhs: Box::new(WirExpr::GetLocal("p".into())),
-            rhs: Box::new(WirExpr::ConstI32((size + rz) as i32)),
-        },
-    });
+    // `$rc_alloc` already advanced `$heap` past the allocation + its header; just
+    // return the object base pointer.
     body.push(WirNode::Push(WirExpr::GetLocal("p".into())));
     WirFunc {
         name: format!("mk{n}"),
@@ -204,6 +199,118 @@ pub fn mk_helper(n: usize, checked: bool) -> WirFunc {
         ret: vec![WirTy::Bool], // i32 pointer
         locals: vec![WirLocal { name: "p".into(), ty: WirTy::Bool }],
         body,
+        raw_body: None,
+    }
+}
+
+/// (RFC-0016) `$rc_alloc(size: i32) -> i32` — the central heap allocator: reuse a
+/// freed block from the size-classed free-list (first-fit: the first block whose
+/// stored byte-size ≥ `size`), else bump `$heap` like the inline allocators did.
+/// When nothing has been freed the list is empty, so this is just `ensure`+bump —
+/// byte-for-byte the old behavior — which is why routing the allocators through it
+/// is transparent until the RC-floor `$rc_free` calls (gated, codegen-emitted)
+/// start populating the list. A freed block stores `[next:i32 @+0][size:i32 @+4]`;
+/// the returned pointer is the block base (the caller overwrites those words).
+pub fn rc_alloc_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    let load = |p: E, off: u32| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: off };
+    let not = |x: E| E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(x) };
+    let scan = N::Block {
+        label: "miss".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "fl".into(),
+            body: vec![
+                // empty list / walked off the end → bump path below.
+                N::Br { target: "miss".into(), cond: Some(not(getl("cur"))) },
+                N::If {
+                    // the block's allocated size is in its header at `cur-4`.
+                    cond: b(BinOp::Ge, load(b(BinOp::Sub, getl("cur"), i32c(4)), 0), getl("size")),
+                    then_: vec![
+                        // unlink `cur`: head if prev==0, else prev.next.
+                        N::If {
+                            cond: not(getl("prev")),
+                            then_: vec![N::SetGlobal { global: "rc_freelist".into(), value: load(getl("cur"), 0) }],
+                            els: vec![N::Store { ptr: getl("prev"), value: load(getl("cur"), 0), kind: Kind::I32, offset: 0 }],
+                            result: None,
+                        },
+                        // (RFC-0016) DoD counter: a reused block (its size at `cur-4`)
+                        // is bytes recycled rather than freshly bumped.
+                        N::SetGlobal {
+                            global: "__rc_reused_bytes".into(),
+                            value: E::Binary {
+                                op: BinOp::Add,
+                                kind: Kind::I64,
+                                lhs: Box::new(E::GetGlobal("__rc_reused_bytes".into())),
+                                rhs: Box::new(E::Convert {
+                                    from: Kind::I32,
+                                    to: Kind::I64,
+                                    arg: Box::new(load(b(BinOp::Sub, getl("cur"), i32c(4)), 0)),
+                                }),
+                            },
+                        },
+                        N::Return(Some(getl("cur"))),
+                    ],
+                    els: vec![],
+                    result: None,
+                },
+                setl("prev", getl("cur")),
+                setl("cur", load(getl("cur"), 0)),
+                N::Br { target: "fl".into(), cond: None },
+            ],
+        }],
+    };
+    WirFunc {
+        name: "rc_alloc".into(),
+        params: vec![WirLocal { name: "size".into(), ty: WirTy::Bool }],
+        ret: vec![WirTy::Bool],
+        locals: ["cur", "prev", "base"].iter().map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool }).collect(),
+        body: vec![
+            setl("cur", E::GetGlobal("rc_freelist".into())),
+            setl("prev", i32c(0)),
+            scan,
+            // miss: bump the arena, reserving a 4-byte `[size]` header BEFORE the
+            // object so a later `$rc_free` knows the block's size with no shadow.
+            // The returned object pointer is `base+4`; existing readers are unchanged.
+            N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, getl("size"), i32c(4))] }),
+            setl("base", E::GetGlobal("heap".into())),
+            N::Store { ptr: getl("base"), value: getl("size"), kind: Kind::I32, offset: 0 },
+            N::SetGlobal {
+                global: "heap".into(),
+                value: b(BinOp::Add, getl("base"), b(BinOp::Add, i32c(4), getl("size"))),
+            },
+            N::Push(b(BinOp::Add, getl("base"), i32c(4))),
+        ],
+        raw_body: None,
+    }
+}
+
+/// (RFC-0016) `$rc_free(ptr: i32)` — return a dead, uniquely-owned heap block to the
+/// free-list for reuse by `$rc_alloc`. The block already carries its allocated size
+/// in its header at `ptr-4` (written by `$rc_alloc`), so freeing just links it in:
+/// store the old list head into the block's first word (the object is dead, ≥4 bytes,
+/// so there is room) and make this block the new head. The caller (the codegen
+/// free-at-overwrite rule, gated `WITCHY_OPT=rc-floor`) only needs the pointer — no
+/// size — and is responsible for soundness: it only frees a block the escape oracle
+/// proved confined + unaliased and distinct from the freshly-built result.
+pub fn rc_free_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    WirFunc {
+        name: "rc_free".into(),
+        params: vec![WirLocal { name: "ptr".into(), ty: WirTy::Bool }],
+        ret: vec![],
+        locals: vec![],
+        body: vec![
+            N::Store { ptr: getl("ptr"), value: E::GetGlobal("rc_freelist".into()), kind: Kind::I32, offset: 0 },
+            N::SetGlobal { global: "rc_freelist".into(), value: getl("ptr") },
+        ],
         raw_body: None,
     }
 }
@@ -2606,11 +2713,15 @@ pub fn dict_new_helper() -> WirFunc {
         ret: vec![WirTy::Bool],
         locals: vec![WirLocal { name: "p".into(), ty: WirTy::Bool }],
         body: vec![
-            N::Do(E::Call { func: "ensure".into(), args: vec![i32c(8)] }),
-            N::SetLocal { local: "p".into(), value: b(BinOp::Add, E::GetGlobal("heap".into()), i32c(4)) },
+            // (RFC-0016) `$rc_alloc(8)` reserves the [size] header + the dict's 8-byte
+            // region (the hidden index word + count); `p = rc_res + 4` keeps the index
+            // word at `p-4` exactly as before. `$rc_free` of a dict frees `p-4`.
+            N::SetLocal {
+                local: "p".into(),
+                value: b(BinOp::Add, E::Call { func: "rc_alloc".into(), args: vec![i32c(8)] }, i32c(4)),
+            },
             N::Store { ptr: b(BinOp::Sub, getl("p"), i32c(4)), value: i32c(0), kind: Kind::I32, offset: 0 },
             N::Store { ptr: getl("p"), value: i32c(0), kind: Kind::I32, offset: 0 },
-            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("p"), i32c(4)) },
             N::Push(getl("p")),
         ],
         raw_body: None,
@@ -2758,18 +2869,15 @@ pub fn dict_insert_cap_helper() -> WirFunc {
             els: vec![],
             result: None,
         },
-        N::Do(E::Call {
-            func: "ensure".into(),
-            args: vec![b(BinOp::Add, i32c(8), b(BinOp::Mul, getl("newcap"), i32c(16)))],
-        }),
-        N::SetLocal { local: "new".into(), value: b(BinOp::Add, E::GetGlobal("heap".into()), i32c(4)) },
+        // (RFC-0016) grow buffer via rc_alloc (header + reuse); index word at new-4
+        // inside the rc region (new = rc_res + 4). rc_alloc bumps $heap.
+        N::SetLocal {
+            local: "new".into(),
+            value: b(BinOp::Add, E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(8), b(BinOp::Mul, getl("newcap"), i32c(16)))] }, i32c(4)),
+        },
         N::Store { ptr: b(BinOp::Sub, getl("new"), i32c(4)), value: i32c(0), kind: Kind::I32, offset: 0 },
         N::SetLocal { local: "bytes".into(), value: b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("count"), i32c(16))) },
         N::MemoryCopy { dest: getl("new"), src: getl("d"), len: getl("bytes") },
-        N::SetGlobal {
-            global: "heap".into(),
-            value: b(BinOp::Add, b(BinOp::Add, getl("new"), i32c(4)), b(BinOp::Mul, getl("newcap"), i32c(16))),
-        },
         N::If {
             cond: b(BinOp::Ge, getl("found"), i32c(0)),
             then_: vec![N::Store { ptr: entry("new", "found"), value: getl("v"), kind: Kind::I64, offset: 12 }],
@@ -3189,20 +3297,17 @@ pub fn dict_remove_helper() -> WirFunc {
         locals: ["count", "i", "new", "n"].iter().map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool }).collect(),
         body: vec![
             setl("count", E::Load { ptr: Box::new(getl("d")), kind: Kind::I32, offset: 0 }),
-            N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, i32c(8), b(BinOp::Mul, getl("count"), i32c(16)))] }),
-            setl("new", b(BinOp::Add, E::GetGlobal("heap".into()), i32c(4))),
+            // (RFC-0016) allocate via rc_alloc (header + reuse); the hidden index word
+            // sits at new-4 inside the rc region (new = rc_res + 4).
+            setl("new", b(BinOp::Add, E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(8), b(BinOp::Mul, getl("count"), i32c(16)))] }, i32c(4))),
             N::Store { ptr: b(BinOp::Sub, getl("new"), i32c(4)), value: i32c(0), kind: Kind::I32, offset: 0 },
             setl("i", i32c(0)),
             setl("n", i32c(0)),
             scan,
             N::Store { ptr: getl("new"), value: getl("n"), kind: Kind::I32, offset: 0 },
-            // Reserve the FULL allocated capacity (`count` slots, per the `ensure`
-            // above), not just the `n` surviving entries: the own-ABI keeps
-            // capacity = count, so a later in-place insert appends into the
-            // count-n slack slots. Advancing heap only past `n` left that slack
-            // unreserved, so the next allocation stomped the re-inserted entry
-            // (compiled-dict remove+reinsert+iterate corruption).
-            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("new"), i32c(4)), b(BinOp::Mul, getl("count"), i32c(16))) },
+            // `$rc_alloc` reserved the FULL `count`-slot capacity (the size arg above)
+            // and already advanced `$heap`, so the count-n slack stays reserved for a
+            // later in-place insert — no manual bump.
             N::Push(getl("new")),
         ],
         raw_body: None,
@@ -4160,6 +4265,20 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
+        "rc_alloc" => Some(WirHelperSpec {
+            func: rc_alloc_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "rc_free" => Some(WirHelperSpec {
+            func: rc_free_helper(),
+            helper_deps: &[],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
         "list_at" => Some(WirHelperSpec {
             func: list_at_helper(),
             helper_deps: &[],
@@ -4770,7 +4889,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dict_new" => Some(WirHelperSpec {
             func: dict_new_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc", "ensure"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,
@@ -4798,7 +4917,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dict_insert_cap" => Some(WirHelperSpec {
             func: dict_insert_cap_helper(),
-            helper_deps: &["dict_find", "ensure", "dict_index_put"],
+            helper_deps: &["rc_alloc", "dict_find", "ensure", "dict_index_put"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,
@@ -4868,7 +4987,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dict_remove" => Some(WirHelperSpec {
             func: dict_remove_helper(),
-            helper_deps: &["ensure", "key_eq"],
+            helper_deps: &["rc_alloc", "ensure", "key_eq"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,
@@ -4925,7 +5044,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
                             if checked { &["heap_register"] } else { &[] };
                         return Some(WirHelperSpec {
                             func: mk_helper(n, checked),
-                            helper_deps: &["ensure"],
+                            helper_deps: &["rc_alloc", "ensure"],
                             import_deps,
                             uses_heap: true,
                             uses_table: false,

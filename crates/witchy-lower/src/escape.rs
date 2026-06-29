@@ -48,6 +48,7 @@
 //! field-assignment (`p.x = …`, a whole-value `RecordUpdate` read) already
 //! disqualifies a candidate, so SROA only ever sees read-only aggregates.
 
+use crate::analysis::Summaries;
 use std::collections::{HashMap, HashSet};
 use witchy_syntax::ast::{Block, Expr, Function, Stmt};
 
@@ -332,6 +333,127 @@ fn mark_reuse_escapes_expr(e: &Expr, out: &mut HashSet<String>) {
             }
         }
         _ => each_subexpr(e, &mut |s| mark_reuse_escapes_expr(s, out)),
+    }
+}
+
+/// RC-floor reclamation candidates (RFC-0016): `let`/`var`-bound heap variables
+/// that are reassigned and never escape as a WHOLE value — so when one is
+/// overwritten by a fresh buffer (`x = f(x, …)` for ANY `f`), the old buffer
+/// provably has no other live reference and codegen may free it into the
+/// size-classed free-list. This is the GENERAL, convention- and escape-oracle-
+/// driven confinement: a use is non-escaping when it is a non-leaking call
+/// argument (the convention/escape oracle [`Summaries::arg_leaks`] is false — a
+/// `let` borrow, an `own` move, or a builtin that only reads it) or an element
+/// read (`x[i]` / `x.field`); a bare whole-value use, a leaking call argument, or
+/// a closure capture marks the variable as escaping. Being summary-aware, it
+/// generalizes across builtins AND user functions with no per-method code.
+///
+/// Restricted to `let`/`var` locals: a borrowed parameter's buffer belongs to
+/// the caller, so its old value must never be freed here.
+pub fn confined_reassigned_vars(f: &Function, summaries: &Summaries) -> HashSet<String> {
+    confined_reassigned_vars_block(&f.body, summaries)
+}
+
+/// As [`confined_reassigned_vars`], over a body block directly.
+pub fn confined_reassigned_vars_block(body: &Block, summaries: &Summaries) -> HashSet<String> {
+    let mut bound = HashSet::new();
+    collect_let_names(body, &mut bound);
+    let mut reassigned = HashSet::new();
+    collect_assigned_targets(body, &mut reassigned);
+    bound.retain(|x| reassigned.contains(x));
+    if bound.is_empty() {
+        return HashSet::new();
+    }
+    let mut leaked = HashSet::new();
+    mark_leaking_uses_block(body, summaries, &mut leaked);
+    bound.into_iter().filter(|x| !leaked.contains(x)).collect()
+}
+
+/// Every `let`/`var` binding name in `body` (including nested blocks).
+fn collect_let_names(b: &Block, out: &mut HashSet<String>) {
+    for s in &b.stmts {
+        if let Stmt::Let { name, .. } = s {
+            out.insert(name.clone());
+        }
+        each_block_in_stmt(s, &mut |blk| collect_let_names(blk, out));
+    }
+}
+
+/// Summary-aware companion of [`mark_reuse_escapes_block`]: marks a variable that
+/// escapes as a WHOLE value, consulting the convention/escape oracle for call
+/// arguments rather than a fixed builtin allowlist. The reassignment TARGET is
+/// not itself an escape (it is the overwrite the reclamation frees into).
+fn mark_leaking_uses_block(b: &Block, summaries: &Summaries, out: &mut HashSet<String>) {
+    for s in &b.stmts {
+        match s {
+            Stmt::Assign { value, .. } => mark_leaking_uses_expr(value, summaries, out),
+            _ => each_expr_in_stmt(s, &mut |e| mark_leaking_uses_expr(e, summaries, out)),
+        }
+    }
+}
+
+fn mark_leaking_uses_expr(e: &Expr, summaries: &Summaries, out: &mut HashSet<String>) {
+    match e {
+        Expr::Var(n) => {
+            out.insert(n.clone());
+        }
+        Expr::Field { base, .. } => {
+            if !matches!(base.as_ref(), Expr::Var(_)) {
+                mark_leaking_uses_expr(base, summaries, out);
+            }
+        }
+        Expr::Index { base, index } => {
+            if !matches!(base.as_ref(), Expr::Var(_)) {
+                mark_leaking_uses_expr(base, summaries, out);
+            }
+            mark_leaking_uses_expr(index, summaries, out);
+        }
+        Expr::If { cond, then_block, else_block } => {
+            mark_leaking_uses_expr(cond, summaries, out);
+            mark_leaking_uses_block(then_block, summaries, out);
+            if let Some(b) = else_block {
+                mark_leaking_uses_block(b, summaries, out);
+            }
+        }
+        Expr::While { cond, body } => {
+            mark_leaking_uses_expr(cond, summaries, out);
+            mark_leaking_uses_block(body, summaries, out);
+        }
+        Expr::For { iter, body, .. } => {
+            mark_leaking_uses_expr(iter, summaries, out);
+            mark_leaking_uses_block(body, summaries, out);
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            mark_leaking_uses_expr(scrutinee, summaries, out);
+            mark_leaking_uses_block(body, summaries, out);
+        }
+        Expr::Block(b) => mark_leaking_uses_block(b, summaries, out),
+        Expr::Match { scrutinee, arms } => {
+            mark_leaking_uses_expr(scrutinee, summaries, out);
+            for a in arms {
+                if let Some(g) = &a.guard {
+                    mark_leaking_uses_expr(g, summaries, out);
+                }
+                mark_leaking_uses_expr(&a.body, summaries, out);
+            }
+        }
+        Expr::Lambda { body, .. } => {
+            for s in &body.stmts {
+                each_expr_in_stmt(s, &mut |x| mark_all_vars(x, out));
+            }
+        }
+        Expr::Call { name, args } => {
+            for (i, a) in args.iter().enumerate() {
+                match a {
+                    // A whole-variable argument the callee does not alias out (a
+                    // borrow, an `own` move, or a read-only builtin) does NOT
+                    // escape — the convention/escape oracle decides, uniformly.
+                    Expr::Var(_) if !summaries.arg_leaks(name, i, args.len()) => {}
+                    _ => mark_leaking_uses_expr(a, summaries, out),
+                }
+            }
+        }
+        _ => each_subexpr(e, &mut |s| mark_leaking_uses_expr(s, summaries, out)),
     }
 }
 
@@ -687,6 +809,38 @@ mod tests {
                 _ => None,
             })
             .expect("a function")
+    }
+
+    /// Run [`confined_reassigned_vars`] on the first function, with summaries built
+    /// from the whole module (so user-fn leak facts are available).
+    fn rc_floor(src: &str) -> HashSet<String> {
+        let m = parser::parse_module(src).expect("parse");
+        let summaries = crate::analysis::Summaries::of_module(&m);
+        let f = m
+            .items
+            .iter()
+            .find_map(|it| match it {
+                witchy_syntax::ast::Item::Function(f) => Some(f),
+                _ => None,
+            })
+            .expect("a function");
+        confined_reassigned_vars(f, &summaries)
+    }
+
+    #[test]
+    fn eviction_accumulator_is_an_rc_floor_candidate() {
+        // `d` threads through dict.insert/remove (neither leaks arg0) and is never
+        // used as a whole value elsewhere → confined, reclaimable.
+        let src = "import dict\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < 10:\n        d = dict.insert(d, i, i)\n        d = dict.remove(d, i)\n        i = i + 1\n    print(console, __render(dict.length(d)))\n";
+        assert!(rc_floor(src).contains("d"), "confined eviction accumulator is a candidate");
+    }
+
+    #[test]
+    fn whole_value_escape_disqualifies_rc_floor() {
+        // `d` is passed WHOLE to a user fn that returns it (its summary leaks arg0),
+        // so its buffer may be aliased out → not reclaimable.
+        let src = "import dict\nfn keep(x: Dict) -> Dict:\n    x\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < 10:\n        d = dict.insert(d, i, i)\n        d = keep(d)\n        i = i + 1\n    print(console, __render(dict.length(d)))\n";
+        assert!(!rc_floor(src).contains("d"), "a var aliased out by a call escapes");
     }
 
     #[test]
