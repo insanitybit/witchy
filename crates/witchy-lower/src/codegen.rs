@@ -316,6 +316,8 @@ struct SavedScope {
     ret_slot: bool,
     var: bool,
     var_params: Vec<String>,
+    sroa_candidates: HashSet<String>,
+    sroa_active: HashMap<String, usize>,
 }
 
 struct Codegen {
@@ -406,6 +408,15 @@ struct Codegen {
     /// (the analysis's accumulator set); each carries a shadow `${name}__cap`
     /// ownership-token local.
     inplace_push: HashSet<String>,
+    /// (RFC-0027/0024) Locals the escape analysis proved frame-confined and used
+    /// only via field/index access, so they are scalar-replaced: their fields live
+    /// in `${name}$<i>` i64-slot locals instead of a heap object. Populated per
+    /// unit in `begin_unit` (only under the `sroa` lever). `sroa_active` is the
+    /// subset whose `let` codegen actually replaced (the receiver type resolved),
+    /// so `Expr::Field` reads the locals only for those — kept consistent because a
+    /// `let` precedes its uses in statement order.
+    sroa_candidates: HashSet<String>,
+    sroa_active: HashMap<String, usize>,
     /// The active compile unit's uniqueness facts + (kills consumed, sites
     /// seen) for the post-compile consumption check; units nest via lambdas.
     facts_stack: Vec<(analysis::Facts, usize, usize)>,
@@ -769,6 +780,8 @@ impl Codegen {
             uses_crypto_sha256: false,
             uses_crypto_rune_hash: false,
             inplace_push: HashSet::new(),
+            sroa_candidates: HashSet::new(),
+            sroa_active: HashMap::new(),
             facts_stack: Vec::new(),
             summaries: analysis::Summaries::empty(),
             cur_fn_own_param: None,
@@ -2030,6 +2043,16 @@ impl Codegen {
             let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
             locals.push(WirLocal { name: name.clone(), ty: Self::wir_ty_for_kind(k) });
         }
+        // (RFC-0027) Scalar-replaced aggregates: each field lives in a `${name}$<i>`
+        // i64-slot local instead of a heap object. (The plain `${name}` local from
+        // the loop above is then simply unused.)
+        let mut sroa: Vec<(&String, &usize)> = self.sroa_active.iter().collect();
+        sroa.sort();
+        for (name, count) in sroa {
+            for i in 0..*count {
+                locals.push(WirLocal { name: format!("{name}${i}"), ty: i64t() });
+            }
+        }
         // Shadow `${v}__cap` ownership-token slots for the in-place accumulators.
         // The own-ABI parameter's token is a param (above), not a local.
         let mut cap_vars: Vec<&String> = self.inplace_push.iter().collect();
@@ -2110,6 +2133,17 @@ impl Codegen {
             .iter()
             .cloned()
             .collect();
+        // (RFC-0027) Escape-driven SROA: frame-confined aggregates used only via
+        // field access become field-locals. Gated on the `sroa` lever and off in
+        // forced-copy mode (so the de-opt differential covers it).
+        self.sroa_active.clear();
+        self.sroa_candidates = if !force_copy_mode()
+            && witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::Sroa)
+        {
+            crate::escape::sroa_candidates_block(body)
+        } else {
+            HashSet::new()
+        };
         self.facts_stack.push((facts, 0, 0));
     }
 
@@ -2212,15 +2246,49 @@ impl Codegen {
         for (i, stmt) in block.stmts.iter().enumerate() {
             match stmt {
                 Stmt::Let { name, value, .. } => {
-                    let v = self.lower_expr(value)?;
-                    seq.push(N::SetLocal { local: name.clone(), value: v });
-                    // An accumulator binding starts with a zero ownership token
-                    // (the first push re-owns).
-                    if self.collect_wir && self.inplace_push.contains(name) {
-                        seq.push(N::SetLocal {
-                            local: format!("{name}__cap"),
-                            value: W::ConstI32(0),
-                        });
+                    // (RFC-0027) Scalar-replace a frame-confined aggregate: store
+                    // each field into a `${name}$<i>` i64-slot local instead of
+                    // allocating a heap object. Falls through to the normal path if
+                    // any field can't lower (then the name never enters sroa_active,
+                    // so its field reads stay heap loads — consistent).
+                    let mut sroa_done = false;
+                    if self.sroa_candidates.contains(name) {
+                        if let Some(args) = sroa_fields(value) {
+                            let mut stores = Vec::with_capacity(args.len());
+                            let mut ok = true;
+                            for (idx, arg) in args.iter().enumerate() {
+                                let k = self.kind_of(arg);
+                                if let Some(w) = self.lower_expr(arg) {
+                                    stores.push(N::SetLocal {
+                                        local: format!("{name}${idx}"),
+                                        value: W::ToSlot(Box::new(w), Self::wir_kind(k)),
+                                    });
+                                } else {
+                                    ok = false;
+                                    break;
+                                }
+                            }
+                            if ok {
+                                let n = stores.len();
+                                for s in stores {
+                                    seq.push(s);
+                                }
+                                self.sroa_active.insert(name.clone(), n);
+                                sroa_done = true;
+                            }
+                        }
+                    }
+                    if !sroa_done {
+                        let v = self.lower_expr(value)?;
+                        seq.push(N::SetLocal { local: name.clone(), value: v });
+                        // An accumulator binding starts with a zero ownership token
+                        // (the first push re-owns).
+                        if self.collect_wir && self.inplace_push.contains(name) {
+                            seq.push(N::SetLocal {
+                                local: format!("{name}__cap"),
+                                value: W::ConstI32(0),
+                            });
+                        }
                     }
                     tail_is_value = false;
                 }
@@ -4014,6 +4082,26 @@ impl Codegen {
             // legacy emission is `base; i32.const off; i32.add; i64.load;
             // from_slot(k)` — reproduced as `FromSlot(Load{Add(base, off)}, k)`.
             Expr::Field { base, field } => {
+                // (RFC-0027) A scalar-replaced aggregate's field is read straight
+                // from its `${p}$<i>` slot local — no heap load. Only for names the
+                // `let` actually replaced (`sroa_active`); a `let` precedes its uses
+                // in statement order, so the set is populated first.
+                if let Expr::Var(p) = base.as_ref() {
+                    if self.sroa_active.contains_key(p) {
+                        let (idx, kind) = if let Ok(i) = field.parse::<usize>() {
+                            (i, valtype_kind(self.val_type_of(e)))
+                        } else {
+                            let base_ty = self.record_type_of(base)?;
+                            let names = self.record_fields.get(&base_ty)?;
+                            let i = names.iter().position(|(n, _)| n == field)?;
+                            (i, name_kind(names[i].1.as_deref()))
+                        };
+                        return Some(W::FromSlot(
+                            Box::new(W::GetLocal(format!("{p}${idx}"))),
+                            Self::wir_kind(kind),
+                        ));
+                    }
+                }
                 let (offset, kind) = if let Ok(i) = field.parse::<usize>() {
                     (4 + 8 * i, valtype_kind(self.val_type_of(e)))
                 } else {
@@ -4465,6 +4553,8 @@ impl Codegen {
             ret_slot: self.cur_fn_ret_slot,
             var: self.cur_fn_var,
             var_params: std::mem::take(&mut self.cur_fn_var_params),
+            sroa_candidates: std::mem::take(&mut self.sroa_candidates),
+            sroa_active: std::mem::take(&mut self.sroa_active),
         }
     }
 
@@ -4485,6 +4575,8 @@ impl Codegen {
         self.cur_fn_ret_slot = s.ret_slot;
         self.cur_fn_var = s.var;
         self.cur_fn_var_params = s.var_params;
+        self.sroa_candidates = s.sroa_candidates;
+        self.sroa_active = s.sroa_active;
     }
 
     /// The `$key_eq` comparison mode for a Dict key expression: 0 for Int/Bool
@@ -7718,6 +7810,15 @@ fn wir_and_chain(conds: &[witchy_wir::wir::WirExpr]) -> witchy_wir::wir::WirExpr
             els: vec![N::Push(W::ConstI32(0))],
             result: Some(witchy_wir::wir::WirTy::Bool),
         })),
+    }
+}
+
+/// The fields of an aggregate literal (record `Ctor` or tuple), positionally, for
+/// scalar replacement — `None` for any other expression.
+fn sroa_fields(e: &Expr) -> Option<&[Expr]> {
+    match e {
+        Expr::Ctor { args, .. } | Expr::Tuple(args) => Some(args),
+        _ => None,
     }
 }
 

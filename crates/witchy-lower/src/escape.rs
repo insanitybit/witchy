@@ -55,13 +55,18 @@ use witchy_syntax::ast::{Block, Expr, Function, Stmt};
 /// whose every use is a field/index access — so the aggregate never escapes the
 /// frame as a whole value and is a candidate for scalar replacement.
 pub fn sroa_candidates(f: &Function) -> HashSet<String> {
+    sroa_candidates_block(&f.body)
+}
+
+/// As [`sroa_candidates`], over a body block directly (what codegen has in hand).
+pub fn sroa_candidates_block(body: &Block) -> HashSet<String> {
     let mut potential = HashSet::new();
-    collect_aggregate_lets(&f.body, &mut potential);
+    collect_aggregate_lets(body, &mut potential);
     if potential.is_empty() {
         return potential;
     }
     let mut whole = HashSet::new();
-    collect_whole_uses_block(&f.body, &mut whole);
+    collect_whole_uses_block(body, &mut whole);
     potential.retain(|n| !whole.contains(n));
     potential
 }
@@ -218,7 +223,10 @@ fn each_block_in_expr(e: &Expr, g: &mut impl FnMut(&Block)) {
             }
         }
         Expr::Block(b) | Expr::While { body: b, .. } | Expr::For { body: b, .. }
-        | Expr::WhileLet { body: b, .. } | Expr::Lambda { body: b, .. } => g(b),
+        | Expr::WhileLet { body: b, .. } => g(b),
+        // A lambda is a separate function; its aggregates are scalar-replaced when
+        // it is compiled, not by the enclosing function — don't descend.
+        Expr::Lambda { .. } => {}
         Expr::Match { arms, .. } => {
             for a in arms {
                 each_block_in_expr(&a.body, g);

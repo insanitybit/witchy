@@ -273,6 +273,29 @@ mod tests {
         assert_eq!(wasm, oracle, "tail-position method call must agree on both backends");
     }
 
+    /// RFC-0027 escape-driven SROA: a frame-confined record built each iteration
+    /// and read only via field access is scalar-replaced into locals — zero heap
+    /// growth with `sroa` on, O(n) with `-sroa`. Region is turned off so the
+    /// accumulated record allocations are visible (not watermark-reclaimed). Output
+    /// is identical (the differential sweep also walks `-sroa`).
+    #[test]
+    fn sroa_eliminates_confined_aggregate_allocation() {
+        let src = "type P:\n    x: Int\n    y: Int\nfn main(console: Console):\n    var total = 0\n    var i = 0\n    while i < 300:\n        let p = P(i, i + 1)\n        total = total + p.x + p.y\n        i = i + 1\n    print(console, __render(total))\n";
+        opt::set_for_tests(Some(OptSet::default_set().without(Opt::Region)));
+        let on = compute(src).expect("sroa on");
+        opt::set_for_tests(Some(OptSet::default_set().without(Opt::Region).without(Opt::Sroa)));
+        let off = compute(src).expect("sroa off");
+        opt::set_for_tests(None);
+        assert_eq!(on.output, off.output, "SROA must not change output");
+        assert_eq!(on.output, vec!["90000".to_string()]);
+        assert!(
+            off.heap_bytes > on.heap_bytes * 4,
+            "SROA must remove the per-iteration record alloc: on={} off={}",
+            on.heap_bytes,
+            off.heap_bytes
+        );
+    }
+
     /// `for var` v1 rejects an early exit that belongs to the loop (it would skip
     /// the write-back), but allows a `continue` that belongs to a NESTED loop.
     #[test]
