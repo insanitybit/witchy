@@ -1,7 +1,7 @@
 ---
 rfc: 0028
 title: Ergonomic mutable value semantics — mutating-method statements, for var, and confined views
-status: proposed
+status: implemented
 created: 2026-06-28
 tracking:
 ---
@@ -279,6 +279,24 @@ the in-place machinery.
 > codegen/interp (one shared AST edit → parity by construction, exactly like the
 > `for var` desugar). Confined `View`s (feature 3) stay blocked on RFC-0024's
 > escape lattice.
+
+> 2026-06-29: **Confined views v1 landed — as invisible copy-elision, not a new
+> `View` type.** Feature 3 ships in its first and most impactful form: a
+> `let w = list.slice(src, lo, hi)` that the RFC-0024 escape analysis proves
+> confined (read ONLY via `at`/`length`, with `src` never reassigned/mutated nor
+> used as a whole value — so no alias can mutate the borrowed buffer) compiles to
+> a zero-copy borrow — `w` keeps `src`/`lo`/`hi` and reads through them via the
+> `$list_at_view`/`$list_len_view` helpers, which recompute the clamped window and
+> trap on the view bound so every read matches the interpreter reading the
+> materialized copy. No `View(a)` type, no `.view()`/`windows`/`chunks` surface,
+> no borrow-scope check were added: the same zero-copy result is delivered as an
+> optimization of the existing copy-based `list.slice`, gated `WITCHY_OPT=views`
+> (default-on) and proven by a `witchy stats` heap-drop counter + the differential
+> de-opt sweep. **Deferred to a follow-up:** extending the same view machinery to
+> `windows`/`chunks` producers (they yield `Iter` of windows, a different shape),
+> and the explicitly out-of-scope escaping/returnable and mutable views. With all
+> three features (mutating-method statements, `for var`, confined views) now
+> landed in v1 form, this RFC moves to `implemented`.
 
 <!--
   Once this RFC is implemented/rejected/superseded it is FROZEN.

@@ -250,23 +250,25 @@ Order matters, because each tier's promise has a prerequisite:
 >   checked-heap fuzz leg in `check.sh --full`. 4 optimizations wired+validated
 >   (`inplace`, `region`, `sroa`, `fold`) plus opt-in `wasm-opt`. Plus `check.sh
 >   --fast` commit gate.
-> - **RFC-0028** (2/3) — `for var` write-back iteration and `nodes.push(x)`
->   mutating-method statements (code + tests + spec + book).
+> - **RFC-0028** (3/3, → `implemented`) — `for var` write-back iteration,
+>   `nodes.push(x)` mutating-method statements, AND confined slice views (feature
+>   3): a confined read-only `list.slice` elides its copy and reads through the
+>   source via `$list_at_view`/`$list_len_view` (gated `WITCHY_OPT=views`,
+>   default-on; `stats::confined_view_elides_the_slice_copy` + sweep). Realized as
+>   invisible copy-elision, NOT a new `View` type — see the 0028 change-note.
 > - **RFC-0027** (SROA half) — escape-driven scalar replacement of frame-confined
 >   records/tuples, read-only AND field-mutated, closure-safe.
 > - **RFC-0024** — the escape oracle (`crates/witchy-lower/src/escape.rs`),
->   consumed by SROA.
+>   consumed by SROA and by confined views (`confined_slice_candidates`).
 > - **never-OOM** (the goal's normal-mode clause) is demonstrated: 5000-iteration
 >   loops with transient allocs + scalar-returning calls run in O(1) heap via the
 >   loop-watermark + SROA + in-place machinery.
 >
 > REMAINING, with the cheapest known implementation path for each:
-> - **Confined Views (0028 f3)** — NOT a new type: `slice`/`windows`/`chunks`
->   already exist (copy-based). It is the SROA-shaped optimization of a confined
->   slice — scalar-replace `let w = xs.slice(lo,hi)` (used only via `w[i]`/
->   `w.length()`, non-escaping) into `w$src`/`w$off`/`w$len` locals, lowering uses
->   to source reads. Added wrinkle vs SROA: source-liveness (the borrowed buffer
->   must outlive the view, and not be mutated while borrowed).
+> - **Confined-view follow-up (0028)** — the slice form shipped; extend the same
+>   view machinery to `windows`/`chunks` (they yield `Iter` of windows, a
+>   different producer shape), and someday the explicitly-deferred escaping and
+>   mutable views. Lower priority than the levers below.
 > - **`packed` (0027 other half)** — the only lever changing cache asymptotics;
 >   most invasive (every host fn reading `List(<record>)` becomes layout-aware).
 >   Mode-gate it.

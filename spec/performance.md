@@ -116,6 +116,15 @@ and activate when a dotnet toolchain is present.
    record drops from 6017 to 17 heap bytes. The general optimization knob is the
    single `WITCHY_OPT` lever (RFC-0030), with the differential de-opt sweep and
    `witchy stats` counters as the soundness/effect gates.
+3a. **Zero-copy confined slice views** — SHIPPED (RFC-0028, feature 3). A
+   `let w = list.slice(src, lo, hi)` the same `escape` analysis proves confined
+   (read only via `list.at`/`list.length`, with `src` never reassigned/mutated nor
+   aliased whole) elides the slice COPY: `w` becomes a borrow that reads through
+   `src` at an offset (the `$list_at_view`/`$list_len_view` helpers recompute the
+   clamped window and trap on the view bound, so reads match the interpreter
+   reading the copy). Invisible — no `View` type or new surface, just a faster
+   `list.slice`. Gated `WITCHY_OPT=views`; proven by a `witchy stats` heap-drop
+   counter and the differential de-opt sweep.
 4. **SIMD** (`relaxed-simd` in wasmtime config) for the obvious stdlib loops
    (string compare/search, list scans) — after Phase 0 shows where it pays.
 
