@@ -18,6 +18,35 @@
 //! Additive for now — no consumer is wired yet; the analysis is unit-tested in
 //! isolation. The `sroa` lever in [`witchy_syntax::opt`] will gate the eventual
 //! codegen consumer.
+//!
+//! # Codegen consumer (next increment, atomic)
+//!
+//! Wire scalar replacement into `codegen.rs` storing each field as a UNIFORM i64
+//! slot in a local (mirroring the heap field layout), so every synthetic local is
+//! i64 — no per-field valtype inference needed. Four edits:
+//!
+//! 1. `begin_unit` (~codegen.rs:2102): when `opt::enabled(Opt::Sroa)` and not
+//!    `force_copy_mode()`, compute `escape::sroa_candidates` and stash the set.
+//!    Reset a per-unit `sroa_active: HashSet<String>` (names actually replaced).
+//! 2. `Stmt::Let` lowering (~2214): if `name` is a candidate and `value` is a
+//!    `Ctor`/`Tuple` whose shape codegen can resolve, emit
+//!    `SetLocal(name$i, ToSlot(lower(arg_i), kind_i))` per field instead of the
+//!    `mk` allocation; record `name` in `sroa_active` and `name$i` in a
+//!    declared-locals set. (If the shape can't be resolved, fall through to the
+//!    normal alloc — do NOT add to `sroa_active`.)
+//! 3. `Expr::Field { base: Var(p), field }` lowering (~4016): if `p ∈ sroa_active`,
+//!    return `FromSlot(GetLocal(p$idx), field_kind)` — same `idx`/`kind` the
+//!    existing arm computes — instead of the `Load`. Consistency holds because the
+//!    `Let` precedes its uses in statement order, so `sroa_active` is populated
+//!    first; an unresolved `Let` never enters `sroa_active`, so its fields stay
+//!    heap loads.
+//! 4. `assemble_wir_func` (~2000): declare each `name$i` as an i64 local.
+//!
+//! DoD: the differential sweep already walks `-sroa`, so `sroa == -sroa == none`
+//! falls out; add a `witchy stats` assertion that a frame-confined aggregate's
+//! `allocs`/`heap_bytes` drop with `sroa` on. Keep it conservative — record/tuple
+//! field-assignment (`p.x = …`, a whole-value `RecordUpdate` read) already
+//! disqualifies a candidate, so SROA only ever sees read-only aggregates.
 
 use std::collections::HashSet;
 use witchy_syntax::ast::{Block, Expr, Function, Stmt};
