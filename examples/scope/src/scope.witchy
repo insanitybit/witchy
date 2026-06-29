@@ -8,6 +8,7 @@
 
 import chan
 import list
+import option
 
 async fn square(n: Int) -> Int:
     n * n
@@ -29,6 +30,12 @@ async fn main(console: Console):
     // `par_reduce` folds those results with an associative combine.
     let total = chan.par_reduce([1, 2, 3, 4, 5], fn(n): square(n), 0, fn(a, b): a + b).await
     print(console, "par_reduce total: ${total}")
+
+    // `race` runs two tasks and returns the first result, cancelling the loser. A
+    // tie favours the first racer, deterministically — so this is parity-safe.
+    let winner = chan.race(square(7), square(8)).await
+    let best = option.unwrap_or(winner, 0)
+    print(console, "race winner: ${best}")
 
     // `scope` is the side-effecting form: run them all, join them all.
     let (tx, rx) = chan.channel(0).await

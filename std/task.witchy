@@ -37,6 +37,7 @@ type Step(m, a):
     Pull(Int, fn(Option(m)) -> Task(m, a))
     PullAny(List(Int), fn(Option((Int, m))) -> Task(m, a))
     Wait(Int, fn(Nil) -> Task(m, a))
+    Cancel(Int, fn(Nil) -> Task(m, a))
 
 // A task communicating via channels of message type `m`, producing an `a`.
 type Task(m, a):
@@ -79,6 +80,7 @@ fn and_then_step(s: Step(m, a), k: fn(a) -> Task(m, b)) -> Step(m, b):
         Pull(ch, cont) -> Pull(ch, fn(o): and_then(cont(o), k))
         PullAny(chs, cont) -> PullAny(chs, fn(o): and_then(cont(o), k))
         Wait(t2, cont) -> Wait(t2, fn(u): and_then(cont(u), k))
+        Cancel(target, cont) -> Cancel(target, fn(u): and_then(cont(u), k))
 
 // Transform a task's result.
 pub fn map(t: Task(m, a), f: fn(a) -> b) -> Task(m, b):
@@ -110,6 +112,14 @@ pub fn spawn(child: Task(m, Nil)) -> Task(m, Handle):
 pub fn join(h: Handle) -> Task(m, Nil):
     match h:
         Handle(id) -> Task(fn(): Wait(id, fn(u): Task(fn(): Done(u))))
+
+// Cancel the spawned task behind `h`: it is stepped no further and is treated as
+// finished, so anyone `join`ing it unblocks. Shallow (stops this one task, not its
+// descendants) and idempotent (already-finished is a no-op). Deterministic on the
+// round-robin schedule, hence byte-identical on both backends.
+pub fn cancel(h: Handle) -> Task(m, Nil):
+    match h:
+        Handle(id) -> Task(fn(): Cancel(id, fn(u): Task(fn(): Done(u))))
 
 // ---- executor ----
 
@@ -210,6 +220,9 @@ fn step_one(i: Int, slots: List(Slot(m)), channels: List((List(m), Int))) -> (Li
                 Pull(ch, cont) -> try_pull(i, ch, cont, slots, channels)
                 PullAny(chs, cont) -> try_pull_any(i, chs, cont, slots, channels)
                 Wait(t, cont) -> try_join(i, t, cont, slots, channels)
+                Cancel(target, cont) ->
+                    let slots2 = list.set_at(slots, target, Ended)
+                    (list.set_at(slots2, i, Active(cont(unit()))), channels, true)
 
 fn step_round(i: Int, n: Int, slots: List(Slot(m)), channels: List((List(m), Int)), prog: Bool) -> (List(Slot(m)), List((List(m), Int)), Bool):
     if i >= n:

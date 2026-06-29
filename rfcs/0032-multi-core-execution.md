@@ -9,15 +9,16 @@ tracking: "Tier-C STRUCTURED concurrency shipped as pure-witchy stdlib over the
   map+fold, deterministic by construction), level 2 chan.scope (spawn-all/join-all
   nursery) + chan.gather (typed fan-out-and-collect) + spawn_all/join_all, level 3
   the pre-existing escaping spawn/Handle — leak-free, no escaping handle (1-2),
-  deterministic. Provides real COOPERATIVE concurrency now; see examples/scope.
-  REMAINING (native, not yet built):
+  deterministic. PLUS cancellation: a Cancel Step extension to the executor (in BOTH
+  task+chan, kept structurally in sync) + chan.cancel + chan.race (first-result-wins,
+  loser cancelled, deterministic tie). Provides real COOPERATIVE concurrency now;
+  see examples/scope. REMAINING (native runtime — not a pure-witchy change):
   (1) Tier B vm.spawn — isolated VM + attenuated caps + cross-VM channels (the
   sandboxed-worker value); native runtime both backends. (2) True multi-core — a
   native parallel scheduler (in-VM = wasm-threads + thread-safe allocator + SOUND
   frozen/unique race-freedom = research-grade; OR OS-thread child VMs = the Tier-B
   backend); parity-neutral (must match the cooperative executor's deterministic
-  results). (3) A cancellation primitive (executor extension) for sibling-cancel /
-  race / error-propagation. See [[project_rfc0032_impl_devlog]]."
+  results). See [[project_rfc0032_impl_devlog]]."
 ---
 
 # RFC-0032: Multi-core execution — true parallelism vs the deterministic executor
@@ -424,6 +425,13 @@ construction), the **complete constraint ladder**:
   Leak-free, no escaping handle, failures surface at the scope.
 - **Level 3 — escaping tasks:** the pre-existing `chan.spawn` → `Handle` for
   long-lived/background loops.
+- **Cancellation:** a `Cancel` `Step` extension to the cooperative executor (added
+  to BOTH `std/task` and `std/chan`, which duplicate the executor and are kept
+  structurally identical), plus `chan.cancel(handle)` (shallow, idempotent) and
+  `chan.race(a, b)` — run two tasks, return the first result, cancel the loser; the
+  winner of a tie is fixed by the round-robin schedule, so the outcome is
+  deterministic and byte-identical on both backends. Build `timeout` by racing
+  against a sentinel-yielding task.
 
 All deliver the constraint-ladder's forms — deterministic, byte-identical on both
 backends — i.e. **real cooperative concurrency** (overlapped I/O, structured
@@ -450,5 +458,6 @@ swap a backend under:
    research-grade). Parity-neutral: a parallel scheduler must reproduce the
    cooperative executor's deterministic results, so it is a backend swap, not a
    semantics change.
-3. **Cancellation** (an executor `Step` extension) for sibling-cancel on first-result
-   / error, enabling `race`/`timeout` and structured error propagation.
+
+Cancellation (formerly item 3 here) is now SHIPPED above; what remains is purely the
+native-runtime parallelism (1) and (2), which cannot be a pure-witchy change.

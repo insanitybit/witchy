@@ -29,6 +29,7 @@ type Step(m, a):
     Pull(Int, fn(Option(m)) -> Task(m, a))
     PullAny(List(Int), fn(Option((Int, m))) -> Task(m, a))
     Wait(Int, fn(Nil) -> Task(m, a))
+    Cancel(Int, fn(Nil) -> Task(m, a))
 
 // A task communicating via channels of message type `m`, producing an `a`.
 type Task(m, a):
@@ -71,6 +72,7 @@ fn and_then_step(s: Step(m, a), k: fn(a) -> Task(m, b)) -> Step(m, b):
         Pull(ch, cont) -> Pull(ch, fn(o): and_then(cont(o), k))
         PullAny(chs, cont) -> PullAny(chs, fn(o): and_then(cont(o), k))
         Wait(t2, cont) -> Wait(t2, fn(u): and_then(cont(u), k))
+        Cancel(target, cont) -> Cancel(target, fn(u): and_then(cont(u), k))
 
 // Transform a task's result.
 pub fn map(t: Task(m, a), f: fn(a) -> b) -> Task(m, b):
@@ -131,6 +133,15 @@ pub fn spawn(child: Task(m, Nil)) -> Task(m, Handle):
 pub fn join(h: Handle) -> Task(m, Nil):
     match h:
         Handle(id) -> Task(fn(): Wait(id, fn(u): Task(fn(): Done(u))))
+
+// Cancel the spawned task behind `h`: it is stepped no further and is treated as
+// finished, so anyone `join`ing it unblocks immediately. Cancellation is shallow —
+// it stops this one task, not any tasks it itself spawned — and idempotent (already
+// finished or already cancelled is a no-op). Deterministic on the cooperative
+// schedule, hence byte-identical on both backends. Used by `race` to drop the loser.
+pub fn cancel(h: Handle) -> Task(m, Nil):
+    match h:
+        Handle(id) -> Task(fn(): Cancel(id, fn(u): Task(fn(): Done(u))))
 
 // Spawn every task in `children` concurrently, returning their handles. The
 // children begin running on the next executor turns; nothing is joined yet.
@@ -230,6 +241,19 @@ pub fn par_map(items: List(a), f: fn(a) -> Task(m, m)) -> Task(m, List(m)):
 // the fold is a deterministic left fold over the input-ordered results.
 pub fn par_reduce(items: List(a), f: fn(a) -> Task(m, m), init: m, combine: fn(m, m) -> m) -> Task(m, m):
     and_then(par_map(items, f), fn(results): done(list.fold(results, init, combine)))
+
+// Run `a` and `b` concurrently and return the FIRST result, cancelling the loser.
+// `None` only if neither ever produces a value. The winner is decided by the
+// deterministic round-robin schedule (a tie favours `a`), so the outcome is
+// byte-identical on both backends — and under a future parallel backend the cancel
+// genuinely stops the loser's remaining work. This is the cancellation-enabled
+// combinator of RFC-0032's ladder; build `timeout` by racing a task against one
+// that yields a sentinel.
+pub fn race(a: Task(m, m), b: Task(m, m)) -> Task(m, Option(m)):
+    and_then(channel(0), fn(pair):
+        let (tx, rx) = pair
+        and_then(spawn(and_then(a, fn(ra): send(tx, ra))), fn(ha): and_then(spawn(and_then(b, fn(rb): send(tx, rb))), fn(hb): and_then(recv(rx), fn(o): and_then(cancel(ha), fn(_x): and_then(cancel(hb), fn(_y): done(o))))))
+    )
 
 // The outcome of a `select`: a message from the first or the second receiver, or
 // `Closed` once neither can deliver.
@@ -374,6 +398,9 @@ fn step_one(i: Int, slots: List(Slot(m)), channels: List((List(m), Int))) -> (Li
                 Pull(ch, cont) -> try_pull(i, ch, cont, slots, channels)
                 PullAny(chs, cont) -> try_pull_any(i, chs, cont, slots, channels)
                 Wait(t, cont) -> try_join(i, t, cont, slots, channels)
+                Cancel(target, cont) ->
+                    let slots2 = list.set_at(slots, target, Ended)
+                    (list.set_at(slots2, i, Active(cont(unit()))), channels, true)
 
 fn step_round(i: Int, n: Int, slots: List(Slot(m)), channels: List((List(m), Int)), prog: Bool) -> (List(Slot(m)), List((List(m), Int)), Bool):
     if i >= n:

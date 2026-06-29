@@ -44,6 +44,7 @@ The `async`/`await` CPS transform lowers onto the `std/task` executor (task.lazy
 - `Pull(Int, fn(Option(m)) -> Task(m, a))`
 - `PullAny(List(Int), fn(Option((Int, m))) -> Task(m, a))`
 - `Wait(Int, fn(Nil) -> Task(m, a))`
+- `Cancel(Int, fn(Nil) -> Task(m, a))`
 
 #### `type Task`
 
@@ -128,6 +129,10 @@ Start `child` as a concurrent task; the returned handle completes when it does.
 
 Block until the spawned task behind `h` finishes.
 
+#### `fn cancel(h: Handle) -> Task(m, Nil)`
+
+Cancel the spawned task behind `h`: it is stepped no further and is treated as finished, so anyone `join`ing it unblocks immediately. Cancellation is shallow — it stops this one task, not any tasks it itself spawned — and idempotent (already finished or already cancelled is a no-op). Deterministic on the cooperative schedule, hence byte-identical on both backends. Used by `race` to drop the loser.
+
 #### `fn spawn_all(children: List(Task(m, Nil))) -> Task(m, List(Handle))`
 
 Spawn every task in `children` concurrently, returning their handles. The children begin running on the next executor turns; nothing is joined yet.
@@ -151,6 +156,10 @@ STRUCTURED parallel map (the level-1 combinator): run `f` over every item of `it
 #### `fn par_reduce(items: List(a), f: fn(a) -> Task(m, m), init: m, combine: fn(m, m) -> m) -> Task(m, m)`
 
 STRUCTURED parallel reduce: `par_map` the items, then fold the results with `combine` starting from `init`. `combine` should be associative for the fold to be meaningful independent of evaluation order; the map runs concurrently while the fold is a deterministic left fold over the input-ordered results.
+
+#### `fn race(a: Task(m, m), b: Task(m, m)) -> Task(m, Option(m))`
+
+Run `a` and `b` concurrently and return the FIRST result, cancelling the loser. `None` only if neither ever produces a value. The winner is decided by the deterministic round-robin schedule (a tie favours `a`), so the outcome is byte-identical on both backends — and under a future parallel backend the cancel genuinely stops the loser's remaining work. This is the cancellation-enabled combinator of RFC-0032's ladder; build `timeout` by racing a task against one that yields a sentinel.
 
 #### `fn select(a: Receiver(m), b: Receiver(m)) -> Task(m, Selected(m))`
 
@@ -2227,6 +2236,7 @@ The `async`/`await` CPS transform lowers onto this substrate (`task.lazy`/ `and_
 - `Pull(Int, fn(Option(m)) -> Task(m, a))`
 - `PullAny(List(Int), fn(Option((Int, m))) -> Task(m, a))`
 - `Wait(Int, fn(Nil) -> Task(m, a))`
+- `Cancel(Int, fn(Nil) -> Task(m, a))`
 
 #### `type Task`
 
@@ -2284,6 +2294,10 @@ Start `child` as a concurrent task; the returned handle completes when it does.
 #### `fn join(h: Handle) -> Task(m, Nil)`
 
 Block until the spawned task behind `h` finishes.
+
+#### `fn cancel(h: Handle) -> Task(m, Nil)`
+
+Cancel the spawned task behind `h`: it is stepped no further and is treated as finished, so anyone `join`ing it unblocks. Shallow (stops this one task, not its descendants) and idempotent (already-finished is a no-op). Deterministic on the round-robin schedule, hence byte-identical on both backends.
 
 #### `fn run(root: Task(m, Nil))`
 
