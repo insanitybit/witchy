@@ -1,6 +1,33 @@
     use super::*;
 
     #[test]
+    fn frozen_value_cannot_be_declared_mutable() {
+        // (RFC-0025) `frozen` is deeply immutable, so it cannot also be `var`/`own`.
+        let var_let = check_str(
+            "fn main(console: Console):\n    var x: frozen List(Int) = [1, 2]\n    print(console, \"hi\")\n",
+        )
+        .unwrap_err();
+        assert!(var_let.contains("frozen") && var_let.contains("var"), "{var_let}");
+
+        let var_param =
+            check_str("fn f(var xs: frozen List(Int)) -> Int:\n    list.length(xs)\n").unwrap_err();
+        assert!(var_param.contains("frozen") && var_param.contains("mutable"), "{var_param}");
+
+        let own_param =
+            check_str("fn f(own xs: frozen List(Int)) -> Int:\n    list.length(xs)\n").unwrap_err();
+        assert!(own_param.contains("frozen"), "{own_param}");
+
+        // A `let`-bound frozen value and a read-only frozen parameter are valid.
+        check_str("fn f(xs: frozen List(Int)) -> Int:\n    list.length(xs)\n")
+            .expect("a read-only frozen parameter is valid");
+        check_str("fn main(console: Console):\n    let x: frozen List(Int) = [1, 2]\n    print(console, __render(list.length(x)))\n")
+            .expect("a let-bound frozen value is valid");
+        // `unique`/`local unique` are compatible with mutation (FBIP) — `var` is fine.
+        check_str("fn f(var xs: unique List(Int)) -> Int:\n    list.length(xs)\n")
+            .expect("a unique var is valid (in-place reuse is the point)");
+    }
+
+    #[test]
     fn undeclared_type_names_are_rejected() {
         // A typo'd type used to become an opaque type that mis-unified later
         // ("expected `Flarb`, found `Int`"); now it's a clear "unknown type".

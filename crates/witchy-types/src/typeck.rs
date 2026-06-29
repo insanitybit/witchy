@@ -393,6 +393,17 @@ const BUILTIN_TYPE_NAMES: &[&str] = &[
 /// Validate that every named type in `t` is known — a builtin, a declared type,
 /// or a lowercase generic parameter — so a typo like `fn f(x: Flarb)` is a clear
 /// "unknown type" error rather than an opaque type that mis-unifies later.
+/// Whether a declared type carries a `frozen` qualifier at the top (`frozen T`,
+/// possibly under other stacked qualifiers) — used to enforce that a `frozen`
+/// (deeply immutable) value is never declared mutable (RFC-0025).
+fn is_frozen_type(t: &ast::Type) -> bool {
+    match t {
+        ast::Type::Qualified(ast::TypeQual::Frozen, _) => true,
+        ast::Type::Qualified(_, inner) => is_frozen_type(inner),
+        _ => false,
+    }
+}
+
 fn validate_type(t: &ast::Type, known: &HashSet<&str>) -> Result<(), TypeError> {
     match t {
         ast::Type::Qualified(_, inner) => validate_type(inner, known),
@@ -1639,6 +1650,16 @@ impl Checker {
                     // a return-position type variable) and errors at THIS line
                     // when the RHS disagrees.
                     if let Some(decl) = decl {
+                        // (RFC-0025) `frozen` asserts deep immutability, so a `frozen`
+                        // binding cannot also be mutable — `var x: frozen T` is a
+                        // contradiction the checker rejects (the contract has teeth).
+                        if *mutable && is_frozen_type(decl) {
+                            return Err(TypeError {
+                                message: format!(
+                                    "`{name}` is declared `frozen` (deeply immutable) but also `var` (mutable) — drop the `var` (use `let`), or drop `frozen`"
+                                ),
+                            });
+                        }
                         let want = self.to_ty(decl);
                         self.unify(&want, &vt).map_err(|e| TypeError {
                             message: format!(
@@ -2705,6 +2726,21 @@ impl Checker {
         self.current_ret = Some(ret.clone());
         self.cur_line = 0;
         for (param, ty) in func.params.iter().zip(&params) {
+            // (RFC-0025) A `frozen` parameter is deeply immutable, so a mutable
+            // convention (`var`/`own`, which exist to mutate/consume the argument)
+            // contradicts it.
+            if param.convention.binds_mutable() {
+                if let Some(decl) = &param.ty {
+                    if is_frozen_type(decl) {
+                        return Err(TypeError {
+                            message: format!(
+                                "parameter `{}` of `{}` is `frozen` (deeply immutable) but its convention is mutable (`var`/`own`) — a frozen value cannot be mutated; use a plain (read-only) parameter",
+                                param.name, func.name
+                            ),
+                        });
+                    }
+                }
+            }
             self.define(param.name.clone(), ty.clone(), param.convention.binds_mutable());
         }
         let body = self.infer_block(&func.body)?;
