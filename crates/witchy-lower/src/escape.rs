@@ -48,7 +48,7 @@
 //! field-assignment (`p.x = …`, a whole-value `RecordUpdate` read) already
 //! disqualifies a candidate, so SROA only ever sees read-only aggregates.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use witchy_syntax::ast::{Block, Expr, Function, Stmt};
 
 /// Immutable locals bound to a fixed-shape aggregate (record `Ctor` or tuple)
@@ -69,6 +69,63 @@ pub fn sroa_candidates_block(body: &Block) -> HashSet<String> {
     collect_whole_uses_block(body, &mut whole);
     potential.retain(|n| !whole.contains(n));
     potential
+}
+
+/// (RFC-0028 confined Views) Locals bound to a slice of another list — `let w =
+/// list.slice(xs, lo, hi)` where `xs` is a plain variable — that are used ONLY via
+/// view-safe reads (`w[i]` / `w.length()`, i.e. `list.at`/`list.length`), never as
+/// a whole value, and whose source `xs` is never reassigned or mutated while `w` is
+/// live. Such a `w` is a confined, read-only borrow that can be a zero-copy slice
+/// (its source pointer + offset + length in locals) instead of a copied list.
+///
+/// Conservative and SOUND: any whole-value use of `w` (passing it, returning it,
+/// storing it, rendering it), or any assignment to `xs` (including an in-place
+/// `xs.push`/`set_at`, which can reallocate the buffer `w` borrows), disqualifies it.
+pub fn confined_slice_candidates(f: &Function) -> HashSet<String> {
+    confined_slice_candidates_block(&f.body)
+}
+
+/// As [`confined_slice_candidates`], over a body block directly.
+pub fn confined_slice_candidates_block(body: &Block) -> HashSet<String> {
+    let mut src_of: HashMap<String, String> = HashMap::new();
+    collect_slice_lets(body, &mut src_of);
+    if src_of.is_empty() {
+        return HashSet::new();
+    }
+    let mut whole = HashSet::new();
+    collect_whole_uses_block(body, &mut whole);
+    let mut reassigned = HashSet::new();
+    collect_assigned_targets(body, &mut reassigned);
+    src_of
+        .into_iter()
+        .filter(|(w, src)| !whole.contains(w) && !reassigned.contains(src))
+        .map(|(w, _)| w)
+        .collect()
+}
+
+/// `let w = list.slice(xs, lo, hi)` (xs a plain var) — record `w -> xs`.
+fn collect_slice_lets(b: &Block, out: &mut HashMap<String, String>) {
+    for s in &b.stmts {
+        if let Stmt::Let { name, value: Expr::Call { name: callee, args }, .. } = s {
+            if callee == "list.slice" {
+                if let Some(Expr::Var(src)) = args.first() {
+                    out.insert(name.clone(), src.clone());
+                }
+            }
+        }
+        each_block_in_stmt(s, &mut |blk| collect_slice_lets(blk, out));
+    }
+}
+
+/// Every name that is the target of a reassignment (`x = …`), at any block depth —
+/// including the in-place sugar (`x.push`/`x[i] = …` desugar to `x = …`).
+fn collect_assigned_targets(b: &Block, out: &mut HashSet<String>) {
+    for s in &b.stmts {
+        if let Stmt::Assign { name, .. } = s {
+            out.insert(name.clone());
+        }
+        each_block_in_stmt(s, &mut |blk| collect_assigned_targets(blk, out));
+    }
 }
 
 /// `let x = Ctor(..)` / `var x = (a, b, ..)` — aggregate bindings (immutable or
@@ -172,6 +229,18 @@ fn collect_whole_uses(e: &Expr, out: &mut HashSet<String>) {
         Expr::Lambda { body, .. } => {
             for s in &body.stmts {
                 each_expr_in_stmt(s, &mut |x| mark_all_vars(x, out));
+            }
+        }
+        // A view-safe READ — `list.at(v, i)` / `list.length(v)` — does not use its
+        // list argument as a whole value (it indexes/measures it), so a binding
+        // used only this way stays a confined-slice candidate (RFC-0028). Records
+        // are never list arguments, so this does not affect SROA candidates.
+        Expr::Call { name, args }
+            if (name == "list.at" || name == "list.length")
+                && matches!(args.first(), Some(Expr::Var(_))) =>
+        {
+            for a in &args[1..] {
+                collect_whole_uses(a, out);
             }
         }
         _ => each_subexpr(e, &mut |s| collect_whole_uses(s, out)),
@@ -386,6 +455,36 @@ mod tests {
         assert!(
             !sroa_candidates(&f).contains("p"),
             "a record referenced inside a closure is captured whole"
+        );
+    }
+
+    #[test]
+    fn confined_slice_used_via_at_is_a_candidate() {
+        let f = func(
+            "fn d(xs: List(Int)) -> Int:\n    let w = list.slice(xs, 1, 3)\n    list.at(w, 0) + list.at(w, 1) + list.length(w)\n",
+        );
+        assert!(
+            confined_slice_candidates(&f).contains("w"),
+            "a slice used only via at/length is a zero-copy candidate"
+        );
+    }
+
+    #[test]
+    fn slice_passed_whole_is_not_a_candidate() {
+        let f = func(
+            "fn d(xs: List(Int)) -> Int:\n    let w = list.slice(xs, 1, 3)\n    use_it(w)\n",
+        );
+        assert!(!confined_slice_candidates(&f).contains("w"), "passing the slice whole escapes");
+    }
+
+    #[test]
+    fn slice_whose_source_is_mutated_is_not_a_candidate() {
+        let f = func(
+            "fn d(var xs: List(Int)) -> Int:\n    let w = list.slice(xs, 1, 3)\n    xs = list.push(xs, 9)\n    list.at(w, 0)\n",
+        );
+        assert!(
+            !confined_slice_candidates(&f).contains("w"),
+            "mutating the source can reallocate the borrowed buffer"
         );
     }
 
