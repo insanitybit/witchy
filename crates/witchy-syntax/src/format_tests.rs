@@ -5,6 +5,16 @@
     }
 
     #[test]
+    fn packed_qualifier_survives_formatting() {
+        // (RFC-0027) the `packed` modifier must round-trip through `witchy fmt`, not
+        // be silently dropped (which would un-pack the type).
+        let src = "type Point packed:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    print(console, \"${Point(1, 2).x}\")\n";
+        let out = reformat(src).expect("packed type round-trips");
+        assert!(out.contains("type Point packed:"), "packed must survive formatting: {out}");
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
+    }
+
+    #[test]
     fn comprehensions_survive_formatting_everywhere() {
         // Learner round-3 BLOCKER: `let ys = [n * n for n in xs]` used to print
         // as `let ys = 0` (the inline renderer's placeholder leaked), and the

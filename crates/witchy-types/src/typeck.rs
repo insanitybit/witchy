@@ -445,9 +445,13 @@ fn validate_type(t: &ast::Type, known: &HashSet<&str>) -> Result<(), TypeError> 
 /// module; lowercase argument-less names are generic parameters.
 fn check_type_names(module: &Module) -> Result<(), TypeError> {
     let mut known: HashSet<&str> = BUILTIN_TYPE_NAMES.iter().copied().collect();
+    let mut packed_names: HashSet<&str> = HashSet::new();
     for item in &module.items {
         if let Item::Type(t) = item {
             known.insert(t.name.as_str());
+            if t.packed {
+                packed_names.insert(t.name.as_str());
+            }
         }
     }
     for item in &module.items {
@@ -484,11 +488,48 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                         validate_type(field, &known).map_err(|e| in_ctx(e, &t.name))?;
                     }
                 }
+                // (RFC-0027) A `packed` type's every field must be packable — a
+                // scalar (Int/Float/Bool/Duration) or another `packed` type — so the
+                // inline layout has a fixed, statically-known size. A variable-size
+                // field (String, List, a non-packed record, …) is a check-time error
+                // naming the offending field.
+                if t.packed {
+                    for variant in &t.variants {
+                        for (i, field) in variant.fields.iter().enumerate() {
+                            if !is_packable_type(field, &packed_names) {
+                                let fname = variant
+                                    .field_names
+                                    .get(i)
+                                    .map(String::as_str)
+                                    .unwrap_or("(positional field)");
+                                return Err(TypeError {
+                                    message: format!(
+                                        "`packed` type `{}` has a non-packable field `{}`: \
+                                         a packed type's fields must be scalars \
+                                         (Int/Float/Bool/Duration) or other `packed` types",
+                                        t.name, fname
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                }
             }
             _ => {}
         }
     }
     Ok(())
+}
+
+/// (RFC-0027) Whether `t` is a packable field type for a `packed` layout: a
+/// statically-fixed-size scalar (`Int`/`Float`/`Bool`/`Duration`) or another
+/// `packed` type. Variable-size types (`String`, `List`, non-packed records, sum
+/// types with differing payloads) are not packable.
+fn is_packable_type(t: &ast::Type, packed_names: &HashSet<&str>) -> bool {
+    matches!(t, ast::Type::Named(n, args)
+        if args.is_empty()
+            && (matches!(n.as_str(), "Int" | "Float" | "Bool" | "Duration")
+                || packed_names.contains(n.as_str())))
 }
 
 /// Whether `t` names a host capability that `main` may receive as a root

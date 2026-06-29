@@ -124,6 +124,13 @@ pub struct TypeDef {
     /// own module, making it un-forgeable like the host capability it refines.
     /// `false` for an ordinary `type`.
     pub sealed: bool,
+    /// `type Point packed:` (RFC-0027): the type's values are stored INLINE inside
+    /// containers (a flat `[f0,f1,…]` buffer) instead of behind a pointer — a
+    /// cache-dense layout for fixed-scalar records. Requires all fields be packable
+    /// (scalars or other `packed` types); enforced at check time. `false` for an
+    /// ordinary `type`. The layout change is gated (opt-mode); the surface + the
+    /// packability check are representation-neutral.
+    pub packed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

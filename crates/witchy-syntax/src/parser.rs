@@ -440,6 +440,12 @@ impl Parser {
             let ty = self.ty()?;
             return Ok(Item::TypeAlias { name, ty });
         }
+        // `type Point packed:` (RFC-0027) — inline/unboxed layout. A contextual
+        // modifier (like `derive`), so `packed` stays usable as an ordinary ident.
+        let packed = self.at_ident("packed");
+        if packed {
+            self.advance();
+        }
         // `derive(Show, Eq, Ord)` — compiler-generated impls (additive,
         // expanded before checking; rfcs/language-evolution.md Phase 4).
         let mut derives = Vec::new();
@@ -501,9 +507,10 @@ impl Parser {
                 }],
                 derives,
                 sealed: false,
+                packed,
             }))
         } else {
-            Ok(Item::Type(TypeDef { name, params, variants, derives, sealed: false }))
+            Ok(Item::Type(TypeDef { name, params, variants, derives, sealed: false, packed }))
         }
     }
 
@@ -547,6 +554,7 @@ impl Parser {
                 variants: vec![Variant { name, fields, field_names }],
                 derives: vec![],
                 sealed: true,
+                packed: false,
             }));
         }
         if !self.at_ident("from") {
@@ -576,6 +584,7 @@ impl Parser {
             variants: vec![Variant { name, fields, field_names: vec![] }],
             derives: vec![],
             sealed: true,
+            packed: false,
         }))
     }
 

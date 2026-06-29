@@ -325,6 +325,10 @@ fn type_def(s: &mut String, t: &TypeDef) {
         s.push_str(&t.params.join(", "));
         s.push(')');
     }
+    // (RFC-0027) the `packed` modifier, before `derive` (matching the parser order).
+    if t.packed {
+        s.push_str(" packed");
+    }
     if !t.derives.is_empty() {
         s.push_str(" derive(");
         s.push_str(&t.derives.join(", "));

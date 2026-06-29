@@ -1,6 +1,31 @@
     use super::*;
 
     #[test]
+    fn packed_type_requires_packable_fields() {
+        // (RFC-0027) scalars (and nested packed types) are packable.
+        assert!(check_str(
+            "type Point packed:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    print(console, \"${Point(1, 2).x}\")\n"
+        )
+        .is_ok());
+        assert!(check_str(
+            "type Inner packed:\n    a: Int\n\ntype Outer packed:\n    i: Inner\n    b: Bool\n\nfn main(console: Console):\n    print(console, \"hi\")\n"
+        )
+        .is_ok());
+        // A variable-size field (String) makes the type unpackable — error naming it.
+        let err = check_str(
+            "type Bad packed:\n    s: String\n    n: Int\n\nfn main(console: Console):\n    print(console, \"hi\")\n"
+        )
+        .unwrap_err();
+        assert!(err.contains("packed") && err.contains("`s`"), "{err}");
+        // A non-packed record field is also unpackable.
+        let nested = check_str(
+            "type Plain:\n    a: Int\n\ntype Bad2 packed:\n    p: Plain\n\nfn main(console: Console):\n    print(console, \"hi\")\n"
+        )
+        .unwrap_err();
+        assert!(nested.contains("packed") && nested.contains("`p`"), "{nested}");
+    }
+
+    #[test]
     fn frozen_value_cannot_be_declared_mutable() {
         // (RFC-0025) `frozen` is deeply immutable, so it cannot also be `var`/`own`.
         let var_let = check_str(
