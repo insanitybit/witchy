@@ -190,6 +190,27 @@ mod tests {
         assert_eq!(wasm, oracle, "for var record mutation: wasm must match the interpreter");
     }
 
+    /// RFC-0028 `for var` DoD counter (b): the element write-back is in-place, so
+    /// rewriting every element stays O(n) heap; with `-inplace` the same loop
+    /// re-allocates the whole list per element (O(n^2)). Output is identical.
+    #[test]
+    fn for_var_writeback_is_in_place() {
+        let src = "fn main(console: Console):\n    var xs = []\n    var i = 0\n    while i < 300:\n        xs = list.push(xs, i)\n        i = i + 1\n    for var x in xs:\n        x = x + 1\n    print(console, __render(xs.at(0)))\n    print(console, __render(xs.at(299)))\n";
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let on = compute(src).expect("inplace on");
+        opt::set_for_tests(Some(OptSet::default_set().without(Opt::InPlace)));
+        let off = compute(src).expect("inplace off");
+        opt::set_for_tests(None);
+        assert_eq!(on.output, off.output, "for var output must not depend on the optimization");
+        assert_eq!(on.output, vec!["1".to_string(), "300".to_string()]);
+        assert!(
+            off.heap_bytes > on.heap_bytes * 2,
+            "for var write-back must use the in-place path: on={} off={}",
+            on.heap_bytes,
+            off.heap_bytes
+        );
+    }
+
     /// `for var` v1 rejects an early exit that belongs to the loop (it would skip
     /// the write-back), but allows a `continue` that belongs to a NESTED loop.
     #[test]
