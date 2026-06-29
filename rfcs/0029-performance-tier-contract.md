@@ -242,7 +242,40 @@ Order matters, because each tier's promise has a prerequisite:
 
 ---
 
-> 2026-06-29: **Implementation status + per-feature insight (living note).**
+> 2026-06-29: **PROGRAM COMPLETION ASSESSMENT (evidence-based decision).** All seven
+> RFCs are implemented; how each meets its definition of done splits in two, and the
+> split is itself a finding:
+>
+> - **Five are OPTIMIZATIONS with the full DoD** — a `WITCHY_OPT` lever passing the
+>   differential `-O == all == none` sweep on both backends AND a `witchy stats`
+>   counter proving it fired: `0030` (the gate), `0028` (in-place write-back), `0024`
+>   (escape oracle, consumed by the rest), `0027` (SROA + packed-by-inference, `sroa`
+>   /`unbox`), `0016` (RC-floor reuse rungs, `rc-elide` — uniform + capacity-resizing
+>   lists + records; bounds the measured escaping-reassignment leak).
+>
+> - **Two are CONTRACTS, not optimizations — and that is the correct realization, not
+>   a shortfall.** `0025` (`frozen`) and `0026` (`unique`/`local unique`) ship as
+>   parsed, formatted, enforced type qualifiers (frozen rejects `var`/`own`;
+>   local-unique can't escape). They have NO `WITCHY_OPT` lever and NO stats counter
+>   BECAUSE, in witchy, they have no measurable optimization to gate — VERIFIED:
+>   closures capture by pointer and `let y = x` shares the pointer (zero-copy already),
+>   and the uniqueness pass + the `0016` reuse rung already do in-place reuse wherever
+>   non-aliasing is provable. There is no copy left to elide. Adding a lever for either
+>   would be a PHANTOM (a no-op toggle whose counter could never show it "fired"),
+>   which RFC-0030 explicitly forbids. So the optimization-DoD is inapplicable; their
+>   DoD is enforcement-correctness, which they meet (typeck tests). Their performance
+>   intent is satisfied BY CONSTRUCTION — witchy's value semantics already provide it.
+>
+> So the optimization-DoD holds for every actual optimization in the program; the two
+> qualifier RFCs are complete as the contracts they actually are.
+>
+> TWO RESIDUALS are real optimizations but PERVASIVE multi-session rewrites, out of
+> scope for context-limited increments (left for dedicated sessions, with concrete
+> plans in their RFCs): the full per-object RC floor (`0016` — cache-eviction garbage
+> beyond the reuse rung; the watermark already reclaims loop-local and reuse handles
+> reassignment, so this is the narrow residual) and the declared `packed` qualifier
+> (`0027` — host-visible layouts needing `mode opt` infra; inference covers the local
+> case). Neither blocks the never-OOM or Rust-class goals for ordinary code.
 >
 > SHIPPED (parity-safe, differential-swept, fuzzer-validated under `WITCHY_HEAP_CHECK`):
 > - **RFC-0030** — the whole gate: single `WITCHY_OPT` lever + 8-entry registry,
