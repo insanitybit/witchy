@@ -6798,6 +6798,13 @@ impl Codegen {
                 self.used_dir_ops.insert("list");
                 call("dir_list", self.lower_args(&[&args[0]])?)
             }
+            // (RFC-0032) Intercept `vm.par_map(xs, f)` (otherwise a sequential
+            // `list.map` in std/vm.witchy): the host applies `f` to each element and
+            // lays out the result list. The closure is invoked via the `__call_clos`
+            // export the assembler emits when `vm_par_map` is in the link set.
+            ("vm.par_map", 2) => {
+                call("vm_par_map", self.lower_args(&[&args[0], &args[1]])?)
+            }
             ("read_build", 2) => {
                 self.used_build_ops.insert("read_build");
                 call("build_read", self.lower_args(&[&args[0], &args[1]])?)
@@ -8105,6 +8112,12 @@ pub fn assemble_wir_module(
                     export: Some("__region_copy_bytes".into()),
                 });
             }
+            // (RFC-0032) When `vm.par_map` is linked, emit + export the `__call_clos`
+            // trampoline the host re-enters to apply the mapped closure per element.
+            let exports_call_clos = pruned_funcs.iter().any(|f| f.name == "vm_par_map");
+            if exports_call_clos {
+                pruned_funcs.push(witchy_wir::wir_helpers::call_clos_helper());
+            }
             let data: Vec<DataSegment> = cg
                 .strings
                 .iter()
@@ -8131,6 +8144,9 @@ pub fn assemble_wir_module(
                     let mut exports: Vec<(String, String)> = Vec::new();
                     if has_main {
                         exports.push(("run".into(), "run".into()));
+                    }
+                    if exports_call_clos {
+                        exports.push(("__call_clos".into(), "__call_clos".into()));
                     }
                     if !string_exports.is_empty() {
                         exports.push(("__galloc".into(), "__galloc".into()));

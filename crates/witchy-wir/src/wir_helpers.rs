@@ -3846,6 +3846,70 @@ pub fn dir_list_helper() -> WirFunc {
     }
 }
 
+/// (RFC-0032) `$vm_par_map(xs, f) -> i32` — map closure `f` over the `List(Int)`
+/// `xs`. The host computes the results (in parallel on worker VMs), reports the byte
+/// size of the resulting list (`vm_par_map_run`), then writes the whole
+/// `[count][i64..]` structure into the reserved block (`vm_par_map_write`). Mirrors
+/// `$dir_list`'s two-phase size-then-write protocol.
+pub fn vm_par_map_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "vm_par_map".into(),
+        params: vec![
+            WirLocal { name: "xs".into(), ty: WirTy::Bool },
+            WirLocal { name: "f".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: vec![
+            WirLocal { name: "size".into(), ty: WirTy::Bool },
+            WirLocal { name: "res".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::SetLocal { local: "size".into(), value: E::CallHost { import: "vm_par_map_run".into(), args: vec![getl("xs"), getl("f")] } },
+            N::Do(E::Call { func: "ensure".into(), args: vec![getl("size")] }),
+            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            N::Do(E::CallHost { import: "vm_par_map_write".into(), args: vec![getl("res")] }),
+            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("res"), getl("size")) },
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
+/// (RFC-0032) `$__call_clos(clos, arg) -> i64` — the closure-call trampoline the host
+/// invokes (re-entrant) to apply a `vm.par_map` function to one element. Loads the
+/// code index from the closure record and `call_indirect`s it with the closure as the
+/// environment pointer (so captures, if any, resolve) and `arg` as the slot argument.
+pub fn call_clos_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    WirFunc {
+        name: "__call_clos".into(),
+        params: vec![
+            WirLocal { name: "clos".into(), ty: WirTy::Bool },
+            WirLocal { name: "arg".into(), ty: WirTy::Int },
+        ],
+        ret: vec![WirTy::Int],
+        locals: vec![],
+        body: vec![N::Push(E::CallIndirect {
+            type_arity: 1,
+            args: vec![
+                E::GetLocal("clos".into()),
+                E::GetLocal("arg".into()),
+            ],
+            index: Box::new(E::Load {
+                ptr: Box::new(E::GetLocal("clos".into())),
+                kind: Kind::I32,
+                offset: 0,
+            }),
+        })],
+        raw_body: None,
+    }
+}
+
 /// `$list_drop(list, k) -> i32` — a fresh list with the first `k` elements
 /// dropped. Allocates `(len-k)` slots and `memory.copy`s the tail. Used by the
 /// `[a, ..rest]` list pattern to bind the tail.
@@ -4832,6 +4896,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             import_deps: &["dir_list_size", "write_pending_list"],
             uses_heap: true,
             uses_table: false,
+        }),
+        "vm_par_map" => Some(WirHelperSpec {
+            func: vm_par_map_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &["vm_par_map_run", "vm_par_map_write"],
+            uses_heap: true,
+            uses_table: true,
         }),
         "get_env" => Some(WirHelperSpec {
             func: get_env_helper(),

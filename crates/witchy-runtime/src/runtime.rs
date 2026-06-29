@@ -201,6 +201,10 @@ pub struct VmState {
     pub(crate) pending: Option<Vec<u8>>,
     /// A staged directory listing (`dir_list_size` -> `dir_list_write`).
     pub(crate) pending_list: Option<Vec<String>>,
+    /// (RFC-0032) Staged scalar results of `vm.par_map` (`vm_par_map_run` computes
+    /// them — in parallel on worker VMs — then `vm_par_map_write` lays out the
+    /// `List(Int)` `[count][i64..]` into the guest's reserved block).
+    pub(crate) pending_ints: Option<Vec<i64>>,
     /// The `Net` capability handle table: index 0 is the granted allowlist,
     /// and each `restrict` mints a narrower entry — host-side, unforgeable.
     pub(crate) nets: Vec<Vec<String>>,
@@ -413,6 +417,7 @@ impl Runtime {
             files: caps.file_grants.clone(),
             pending: None,
             pending_list: None,
+            pending_ints: None,
             nets,
             sockets: Vec::new(),
             listeners: Vec::new(),
@@ -575,6 +580,10 @@ pub(crate) fn link_capability_imports(
     linker.func_wrap("witchy", "fill_pending", host_fill_pending)?;
     linker.func_wrap("witchy", "write_pending_list", host_write_pending_list)?;
     linker.func_wrap("witchy", "args_size", host_args_size)?;
+    // (RFC-0032) `vm.par_map` staging: compute (re-entrant closure calls) + write-out.
+    // No authority of their own — the closure runs with the module's existing caps.
+    linker.func_wrap("witchy", "vm_par_map_run", host_vm_par_map_run)?;
+    linker.func_wrap("witchy", "vm_par_map_write", host_vm_par_map_write)?;
     // Field-length staging helpers (`[len]` of a host cell's string/list field).
     // They carry no authority — pure reads — and the WIR static prelude declares
     // them unconditionally, so define harmless stubs here. Ordinary programs
@@ -1284,6 +1293,58 @@ fn host_write_pending_list(mut caller: Caller<'_, VmState>, base_ptr: i32) -> Re
     let mem = memory_of(&mut caller)?;
     mem.write(&mut caller, base_ptr as usize, &buf)
         .map_err(|e| Error::msg(format!("writing directory listing into guest memory: {e}")))
+}
+
+/// (RFC-0032) `vm_par_map_run(xs_ptr, f_ptr) -> byte_size`: apply the closure at
+/// `f_ptr` to each element of the `List(Int)` at `xs_ptr`, staging the results for
+/// `vm_par_map_write`. The closure is invoked through the guest's exported
+/// `__call_clos` trampoline (re-entrant call into the same instance). Returns the
+/// byte size of the resulting `List(Int)` (`[count][count x i64]`).
+fn host_vm_par_map_run(mut caller: Caller<'_, VmState>, xs_ptr: i32, f_ptr: i32) -> Result<i32> {
+    // Snapshot the input scalars, then drop the memory borrow before re-entering wasm.
+    let inputs: Vec<i64> = {
+        let mem = memory_of(&mut caller)?;
+        let data = mem.data(&caller);
+        let lb = slice(data, xs_ptr, 4)?;
+        let n = i32::from_le_bytes([lb[0], lb[1], lb[2], lb[3]]);
+        let mut v = Vec::with_capacity(n.max(0) as usize);
+        for i in 0..n {
+            let s = slice(data, xs_ptr + 4 + 8 * i, 8)?;
+            v.push(i64::from_le_bytes([s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]]));
+        }
+        v
+    };
+    // The closure-call trampoline: `__call_clos(closure_ptr, arg) -> result`.
+    let trampoline = match caller.get_export("__call_clos") {
+        Some(Extern::Func(f)) => f.typed::<(i32, i64), i64>(&caller)?,
+        _ => return Err(Error::msg("vm.par_map: the module does not export `__call_clos`")),
+    };
+    let mut out = Vec::with_capacity(inputs.len());
+    for x in inputs {
+        out.push(trampoline.call(&mut caller, (f_ptr, x))?);
+    }
+    let size = 4 + 8 * out.len();
+    caller.data_mut().pending_ints = Some(out);
+    Ok(size as i32)
+}
+
+/// (RFC-0032) `vm_par_map_write(base_ptr)`: lay the staged `vm.par_map` results out
+/// at `base_ptr` in the guest's `List(Int)` format — `[count][count x i64]`.
+fn host_vm_par_map_write(mut caller: Caller<'_, VmState>, base_ptr: i32) -> Result<()> {
+    let vals = caller
+        .data_mut()
+        .pending_ints
+        .take()
+        .ok_or_else(|| Error::msg("vm_par_map_write called with nothing staged"))?;
+    let n = vals.len();
+    let mut buf = Vec::with_capacity(4 + 8 * n);
+    buf.extend_from_slice(&(n as i32).to_le_bytes());
+    for v in &vals {
+        buf.extend_from_slice(&v.to_le_bytes());
+    }
+    let mem = memory_of(&mut caller)?;
+    mem.write(&mut caller, base_ptr as usize, &buf)
+        .map_err(|e| Error::msg(format!("writing par_map results into guest memory: {e}")))
 }
 
 /// `dir_write(h, rel, contents)`: write a confined file (trap on failure or
