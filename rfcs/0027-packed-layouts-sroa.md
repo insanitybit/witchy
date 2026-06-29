@@ -1,9 +1,22 @@
 ---
 rfc: 0027
 title: packed layouts and escape-driven SROA
-status: proposed
+status: implemented
 created: 2026-06-28
-tracking:
+tracking: "Both parts shipped. Part 2 (escape-driven SROA): a frame-confined record/
+  tuple lowers to WASM locals, opt-in `WITCHY_OPT=sroa`, proven by the de-opt sweep +
+  a `witchy stats` counter. Part 1 (packed layout): a `List` of a fixed-scalar record
+  is ONE flat inline buffer via the `unbox` lever, both by INFERENCE (any confined
+  record-list) and by the DECLARED `packed` qualifier (`type P packed:`), with
+  packability enforced at check time. Declared `packed` is a layout CONTRACT: a packed
+  list packs where confined and is a clean COMPILE ERROR (never a silent boxed
+  fall-back) at any position the flat layout cannot represent — passed/returned/stored
+  whole, compared, rendered, `for`-iterated, channel-sent, or flowed into a generic
+  `List(a)`. DoD: `WITCHY_OPT=unbox` passes the differential `-O==all==none` sweep on
+  both backends + the `declared_packed_list_packs_flat` / `packed_record_list_uses_one_flat_buffer`
+  stats heap-drop counters; the contract is covered by `packed_list_cannot_cross_a_boundary`.
+  REMAINING (future, not a silent gap — today a loud error): a cross-function /
+  host-visible packed ABI that carries the flat representation across boundaries."
 ---
 
 # RFC-0027: Packed layouts and escape-driven SROA

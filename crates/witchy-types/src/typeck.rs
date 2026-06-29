@@ -463,10 +463,12 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                 for p in &f.params {
                     if let Some(t) = &p.ty {
                         validate_type(t, &known).map_err(|e| in_ctx(e, &f.name))?;
+                        reject_packed_list_boundary(t, &packed_names, &f.name, "a parameter")?;
                     }
                 }
                 if let Some(t) = &f.ret {
                     validate_type(t, &known).map_err(|e| in_ctx(e, &f.name))?;
+                    reject_packed_list_boundary(t, &packed_names, &f.name, "a return type")?;
                     // (RFC-0026) `local unique` is valid only WITHIN the call — it may
                     // not escape — so it cannot be a return type (a return escapes).
                     if is_local_unique_type(t) {
@@ -486,6 +488,7 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                 for variant in &t.variants {
                     for field in &variant.fields {
                         validate_type(field, &known).map_err(|e| in_ctx(e, &t.name))?;
+                        reject_packed_list_boundary(field, &packed_names, &t.name, "a field")?;
                     }
                 }
                 // (RFC-0027) A `packed` type's every field must be packable — a
@@ -530,6 +533,56 @@ fn is_packable_type(t: &ast::Type, packed_names: &HashSet<&str>) -> bool {
         if args.is_empty()
             && (matches!(n.as_str(), "Int" | "Float" | "Bool" | "Duration")
                 || packed_names.contains(n.as_str())))
+}
+
+/// (RFC-0027 declared `packed`) Reject `t` if it contains a `List(P)` where `P` is
+/// declared `packed`, in a boundary position (parameter / return / field). A
+/// `packed` type's flat inline layout is a CONFINED LOCAL buffer — it has no
+/// cross-function or stored-field ABI (that is the deep host-layout change the
+/// confined inference deliberately sidesteps), so a `List` of a packed type may
+/// only be built and read within one function. This keeps the layout whole-program
+/// consistent: every site that handles a packed list either packs it (a confined
+/// local) or is a clean compile error here, never a silent boxed fall-back.
+fn reject_packed_list_boundary(
+    t: &ast::Type,
+    packed_names: &HashSet<&str>,
+    ctx: &str,
+    position: &str,
+) -> Result<(), TypeError> {
+    if let Some(p) = packed_list_in_type(t, packed_names) {
+        return Err(TypeError {
+            message: format!(
+                "`{ctx}`: a `List({p})` cannot appear in {position} — `{p}` is declared `packed`, so its \
+                 list is a confined local buffer with no cross-function or stored layout. Build and read a \
+                 `packed` list within one function, or drop `packed` from `{p}` to use the uniform boxed layout"
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// The name of a declared-`packed` type `P` if `t` contains a `List(P)` anywhere —
+/// directly, nested in another list/tuple/function type, or under an ownership
+/// qualifier (`frozen`/`unique`). `None` if no packed-typed list appears.
+fn packed_list_in_type(t: &ast::Type, packed_names: &HashSet<&str>) -> Option<String> {
+    match t {
+        ast::Type::Named(n, args) => {
+            if n == "List" {
+                if let Some(ast::Type::Named(en, eargs)) = args.first().map(ast::Type::unqualified) {
+                    if eargs.is_empty() && packed_names.contains(en.as_str()) {
+                        return Some(en.clone());
+                    }
+                }
+            }
+            args.iter().find_map(|a| packed_list_in_type(a, packed_names))
+        }
+        ast::Type::Tuple(items) => items.iter().find_map(|a| packed_list_in_type(a, packed_names)),
+        ast::Type::Fn(args, ret) => args
+            .iter()
+            .find_map(|a| packed_list_in_type(a, packed_names))
+            .or_else(|| packed_list_in_type(ret, packed_names)),
+        ast::Type::Qualified(_, inner) => packed_list_in_type(inner, packed_names),
+    }
 }
 
 /// Whether `t` names a host capability that `main` may receive as a root

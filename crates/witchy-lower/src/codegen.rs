@@ -588,6 +588,14 @@ struct Codegen {
     /// can derive an `EqShape` for `List`/`Tuple`/nested-record fields (which the
     /// name-only `record_fields` can't represent).
     record_field_types: HashMap<String, Vec<Type>>,
+    /// (RFC-0027 declared `packed`) Type names declared `packed` (`type P packed:`).
+    /// A `List` of such a type is stored as ONE flat inline buffer (the same layout
+    /// the `unbox` inference uses for confined record lists), GUARANTEED by the
+    /// declaration: a confined `let xs = [P(..)..]` packs under `unbox`, and a `List`
+    /// of a declared-packed type used in a position the flat layout cannot support is
+    /// a clean compile error (`reject_reason`) rather than a silent boxed fall-back.
+    /// Module-global (set once at module setup), so it is NOT part of `SavedScope`.
+    packed_types: HashSet<String>,
     /// ADT/record type name -> each variant's field types, indexed by tag, for
     /// structural `==` on sum types (`Color`, `Shape`, ...). Generic variant
     /// fields (a type variable) make a type unresolvable here -> a loud error.
@@ -783,6 +791,7 @@ impl Codegen {
             fn_ret_tuple_slot_list_elem: HashMap::new(),
             record_fields: HashMap::new(),
             record_field_types: HashMap::new(),
+            packed_types: HashSet::new(),
             adt_variants: HashMap::new(),
             ctor_type_name: HashMap::new(),
             local_records: HashMap::new(),
@@ -2218,15 +2227,46 @@ impl Codegen {
         } else {
             HashSet::new()
         };
-        // (RFC-0027) Packed layouts for confined record-list literals — opt-in via
-        // the `unbox` lever. The AST-level candidate set; the Let codegen further
-        // requires the element record to be packable (fixed-size, all-scalar).
+        // (RFC-0027) Packed layouts for confined record-list literals. ONE flat
+        // inline buffer serves two cases through the SAME codegen path:
+        //   * INFERENCE (opt-in `unbox`): any confined list of a packable record.
+        //   * DECLARED `packed`: a list of a `type P packed:` — the layout is part
+        //     of the type, so it is GUARANTEED whenever `unbox` is on.
+        // The confinement query is identical for both; the declared case adds the
+        // layout CONTRACT (the "pack or cleanly reject every site" soundness rule):
+        // a declared-`packed` list that is NOT confined — used where the flat layout
+        // has no representation (passed/returned whole, compared, rendered, iterated
+        // with `for`, sent over a channel, or flowed into a generic `List(a)`) — is a
+        // clean compile error, never a silent fall-back to the boxed layout the
+        // programmer declared away.
         self.packed_active.clear();
-        self.packed_candidates = if witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::Unbox) {
+        let unbox_on = witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::Unbox);
+        let confined_packed = if unbox_on || !self.packed_types.is_empty() {
             crate::escape::confined_record_list_candidates_block(body)
         } else {
             HashSet::new()
         };
+        // The declared-`packed` contract is enforced regardless of the lever: the
+        // lever chooses the REPRESENTATION (flat vs boxed), never the contract or
+        // observable behavior. So a misused declared-`packed` list is rejected even
+        // with `unbox` off, where a *confined* one merely stays boxed.
+        if !self.packed_types.is_empty() {
+            for (name, ctor) in crate::escape::record_list_lets_block(body) {
+                let ty = self.ctor_type_name.get(&ctor).cloned().unwrap_or(ctor);
+                if self.packed_types.contains(&ty) && !confined_packed.contains(&name) {
+                    self.reject_reason.get_or_insert_with(|| CodegenError {
+                        message: format!(
+                            "the list `{name}` of declared-`packed` type `{ty}` is used in a position the flat \
+                             inline layout cannot support — a `packed` list must be a confined local read only via \
+                             `list.length` and `list.at(_, i).field` (it may not be passed or returned whole, \
+                             compared, rendered, iterated with `for`, sent over a channel, or used as a generic \
+                             `List(a)`); drop `packed` from `{ty}` to use the uniform boxed layout there"
+                        ),
+                    });
+                }
+            }
+        }
+        self.packed_candidates = if unbox_on { confined_packed } else { HashSet::new() };
         // (RFC-0016) In-place reuse of a confined, never-aliased list `var` at a
         // same-length reassignment — the never-OOM fix for build-and-drop loops.
         // Gated on `rc-elide`; off in forced-copy mode so the de-opt sweep exercises
@@ -7417,6 +7457,9 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
                 }
             }
             Item::Type(t) => {
+                if t.packed {
+                    cg.packed_types.insert(t.name.clone());
+                }
                 cg.adt_variants
                     .insert(t.name.clone(), t.variants.iter().map(|v| v.fields.clone()).collect());
                 cg.adt_variant_names

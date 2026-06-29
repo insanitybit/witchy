@@ -84,3 +84,36 @@ let summary = region -> String:
 The compiler already inserts the same machinery for free where it can prove
 it safe (escape-free loop iterations); `region:` is the
 explicit form for everything else.
+
+## `packed` types: flat, cache-dense layouts
+
+By default a `List(Point)` is an array of pointers to separately-boxed records.
+For a fixed-scalar record scanned in a tight loop, declaring the type `packed`
+stores the whole list as ONE flat inline buffer — `[count][x0, y0, x1, y1, …]` —
+so a pass touches contiguous memory instead of chasing a pointer per element:
+
+```witchy
+import list
+
+type Point packed:
+    x: Int
+    y: Int
+
+fn main(console: Console):
+    let ps = [Point(1, 2), Point(3, 4), Point(5, 6)]
+    var total = 0
+    var i = 0
+    while i < list.length(ps):
+        total = total + list.at(ps, i).x + list.at(ps, i).y
+        i = i + 1
+    print(console, "${total}")
+```
+
+`packed` is a layout *contract*. Its fields must be fixed-size scalars
+(`Int`/`Float`/`Bool`/`Duration`) or other `packed` types, and a packed list must
+stay a confined local — read via `list.length` and `list.at(_, i).field`. Using
+one where the flat layout cannot apply — passing or returning it whole, storing it
+in a field, comparing, rendering, or `for`-iterating it — is a clean **compile
+error** that names the position, never a silent fall-back to the boxed layout you
+declared away. The flat representation is applied under `WITCHY_OPT=unbox`; the
+contract (and identical results) hold regardless.

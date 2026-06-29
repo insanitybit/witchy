@@ -158,10 +158,19 @@ and activate when a dotnet toolchain is present.
    confined), is stored as ONE flat inline buffer — `[count][f0][f1]…]` — instead
    of an N-pointer array to N boxed records, and each `list.at(xs,i).field` lowers
    to a direct slot load (no pointer deref). Reuses the `$mkN` allocator (no new
-   heap path). The cache-density win of `packed` delivered by inference for the
-   confined case (the declared `packed` qualifier for `pub`-API / host-visible
-   layouts is future work). Opt-in `WITCHY_OPT=unbox`; proven by a `witchy stats`
-   heap-drop counter (10×2-field list: 4 allocations → 1) and the de-opt sweep.
+   heap path). Opt-in `WITCHY_OPT=unbox`; proven by a `witchy stats` heap-drop
+   counter (10×2-field list: 4 allocations → 1) and the de-opt sweep.
+   The **declared `packed` qualifier** (`type P packed:`) also ships: it makes the
+   flat layout a layout CONTRACT rather than a silent best-effort. A `List(P)` of a
+   declared-`packed` type packs through this same confined path, and any use the flat
+   layout cannot represent — passing/returning/storing the list whole, comparing,
+   rendering, `for`-iterating, channel-sending, or flowing into a generic `List(a)` —
+   is a clean COMPILE ERROR naming the offending position (never a silent fall-back to
+   the boxed layout the programmer declared away). Packability (all fields scalar or
+   other `packed`) is enforced at check time. So `packed` guarantees "flat or a loud
+   error," confined to one function. Cross-function / host-visible packed layout (an
+   ABI that carries the flat representation across boundaries) remains future work;
+   today crossing a boundary is the loud error, not silent boxing.
 3a. **Zero-copy confined slice views** — SHIPPED (RFC-0028, feature 3). A
    `let w = list.slice(src, lo, hi)` the same `escape` analysis proves confined
    (read only via `list.at`/`list.length`, with `src` never reassigned/mutated nor

@@ -26,6 +26,25 @@
     }
 
     #[test]
+    fn packed_list_cannot_cross_a_boundary() {
+        // (RFC-0027) a `packed` type's list is a CONFINED LOCAL flat buffer with no
+        // cross-function or stored layout — a `List(P)` in a parameter, return type,
+        // or stored field is a clean compile error (never a silent boxed fall-back).
+        let param = check_str(
+            "import list\ntype P packed:\n    x: Int\nfn f(ps: List(P)) -> Int:\n    list.length(ps)\nfn main(console: Console):\n    print(console, \"hi\")\n"
+        ).unwrap_err();
+        assert!(param.contains("List(P)") && param.contains("parameter"), "{param}");
+        let ret = check_str(
+            "import list\ntype P packed:\n    x: Int\nfn f() -> List(P):\n    [P(1)]\nfn main(console: Console):\n    print(console, \"hi\")\n"
+        ).unwrap_err();
+        assert!(ret.contains("List(P)") && ret.contains("return"), "{ret}");
+        let field = check_str(
+            "type P packed:\n    x: Int\n\ntype Holder:\n    ps: List(P)\n\nfn main(console: Console):\n    print(console, \"hi\")\n"
+        ).unwrap_err();
+        assert!(field.contains("List(P)") && field.contains("field"), "{field}");
+    }
+
+    #[test]
     fn frozen_value_cannot_be_declared_mutable() {
         // (RFC-0025) `frozen` is deeply immutable, so it cannot also be `var`/`own`.
         let var_let = check_str(

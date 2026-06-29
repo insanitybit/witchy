@@ -450,6 +450,34 @@ fn collect_record_list_lets(b: &Block, out: &mut HashSet<String>) {
     }
 }
 
+/// (RFC-0027 declared `packed`) Every `let`/`var xs = [Ctor(..), Ctor(..), ..]`
+/// binding whose elements are a non-empty list of record constructors — recorded
+/// as `name -> the FIRST element's constructor name`. The declared-packed codegen
+/// consumer filters these by whether the constructor's type was declared `packed`,
+/// to enforce the layout CONTRACT: a confined such list packs flat, and one that
+/// is used in a position the flat layout cannot support is a clean compile error
+/// (never a silent fall-back to the boxed layout the programmer declared away).
+/// Uniformity of the constructor (all elements the same record) is left to the
+/// codegen consumer's `packable_record_list`, which also performs the layout.
+pub fn record_list_lets_block(body: &Block) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    record_list_lets_inner(body, &mut out);
+    out
+}
+
+fn record_list_lets_inner(b: &Block, out: &mut HashMap<String, String>) {
+    for s in &b.stmts {
+        if let Stmt::Let { name, value: Expr::List(items), .. } = s {
+            if let Some(Expr::Ctor { name: ctor, .. }) = items.first() {
+                if items.iter().all(|e| matches!(e, Expr::Ctor { .. })) {
+                    out.insert(name.clone(), ctor.clone());
+                }
+            }
+        }
+        each_block_in_stmt(s, &mut |blk| record_list_lets_inner(blk, out));
+    }
+}
+
 fn mark_non_packed_uses_block(b: &Block, out: &mut HashSet<String>) {
     for s in &b.stmts {
         each_expr_in_stmt(s, &mut |e| mark_non_packed_uses(e, out));

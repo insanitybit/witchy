@@ -514,6 +514,30 @@ mod tests {
         );
     }
 
+    /// RFC-0027 declared `packed` DoD: a `type P packed:` whose confined list is read
+    /// only via `list.length`/`list.at(_).field` is stored as ONE flat inline buffer
+    /// under the `unbox` lever (the same layout the inference uses, now GUARANTEED by
+    /// the declaration), dropping the pointer array + per-record headers — identical
+    /// output to the boxed layout (the representation parity contract).
+    #[test]
+    fn declared_packed_list_packs_flat() {
+        let src = "import list\n\ntype P packed:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let ps = [P(0, 1), P(2, 3), P(4, 5), P(6, 7), P(8, 9), P(10, 11), P(12, 13), P(14, 15), P(16, 17), P(18, 19)]\n    var t = 0\n    var i = 0\n    while i < list.length(ps):\n        t = t + list.at(ps, i).x + list.at(ps, i).y\n        i = i + 1\n    print(console, __render(t))\n";
+        opt::set_for_tests(Some(OptSet::all()));
+        let on = compute(src).expect("unbox on");
+        opt::set_for_tests(Some(OptSet::all().without(Opt::Unbox)));
+        let off = compute(src).expect("unbox off");
+        opt::set_for_tests(None);
+        // Sum 0..19 = 190, representation-independent (the parity contract).
+        assert_eq!(on.output, off.output, "packed layout must not change output");
+        assert_eq!(on.output, vec!["190".to_string()]);
+        assert!(
+            off.heap_bytes >= on.heap_bytes + 100,
+            "declared-packed must use less heap than boxed: on={} off={}",
+            on.heap_bytes,
+            off.heap_bytes
+        );
+    }
+
     /// RFC-0028 `for var`: a mutation of the loop element is written back into the
     /// list, identically on the interpreter and on the WASM backend (default and
     /// forced-copy) — the parity contract for the new ergonomic form.
