@@ -21,7 +21,7 @@ pub fn below(rand: Rand, n: Int) -> Int:
 
 // A fair coin.
 pub fn bool(rand: Rand) -> Bool:
-    (rand_u64(rand) & 1) == 1
+    rand_u64(rand) & 1 == 1
 
 // `nbytes` random bytes rendered as lowercase hex (2 chars per byte) — the form a
 // WebAuthn challenge, a CSRF nonce, or a session/token id wants. Draws full 64-bit
@@ -38,7 +38,7 @@ fn word_hex(n: Int) -> String:
     var out = ""
     var shift = 60
     while shift >= 0:
-        let nibble = (n >> shift) & 15
+        let nibble = n >> shift & 15
         out = out + string.substring(digits, nibble, nibble + 1)
         shift = shift - 4
     out

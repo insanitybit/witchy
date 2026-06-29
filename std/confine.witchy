@@ -15,6 +15,18 @@ import string
 type NetPolicy:
     pattern: String
 
+// A typed `Dir` ENTRY policy (RFC-0011): which entries the Dir may read/write/open.
+// `dir.only(confine.ext(".txt"))` confines a `Dir` so it can only touch `.txt`
+// files (enforced at read/write/open on both backends, the filesystem analog of
+// `net.only`). Refinement only ever shrinks the set.
+type DirPolicy:
+    pattern: String
+
+// A Dir entry policy admitting only files whose name ends with `suffix` (include
+// the dot, e.g. `".txt"`). Compose with `dir.only` to confine a `Dir`'s reach.
+pub fn ext(suffix: String) -> DirPolicy:
+    DirPolicy("ext:" + suffix)
+
 // A plaintext TCP endpoint: `<host>:<port>`.
 pub fn tcp(host: String, port: Int) -> NetPolicy:
     NetPolicy(host + ":" + "${port}")
@@ -37,3 +49,12 @@ pub fn cidr_any(block: String) -> NetPolicy:
 // whole set at once.
 pub fn union(a: NetPolicy, b: NetPolicy) -> NetPolicy:
     NetPolicy(a.pattern + "\n" + b.pattern)
+
+// The non-public IP ranges — loopback, RFC-1918, link-local (incl. the
+// `169.254.169.254` cloud-metadata IP), CGNAT, "this host", and the IPv6
+// equivalents. `net.deny(confine.private())` confines a `Net` so it can never dial
+// an internal address: the CIDR forms are matched against the RESOLVED IP, so a
+// hostname that rebinds to an internal address is refused at connect time
+// (the one-line SSRF / DNS-rebinding defense, RFC-0020).
+pub fn private() -> NetPolicy:
+    union(cidr_any("127.0.0.0/8"), union(cidr_any("10.0.0.0/8"), union(cidr_any("172.16.0.0/12"), union(cidr_any("192.168.0.0/16"), union(cidr_any("169.254.0.0/16"), union(cidr_any("100.64.0.0/10"), union(cidr_any("0.0.0.0/8"), union(cidr_any("::1/128"), union(cidr_any("fe80::/10"), cidr_any("fc00::/7"))))))))))
