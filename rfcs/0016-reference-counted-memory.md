@@ -603,3 +603,44 @@ non-goal in `performance-modes.md` (resolved here).
 > checked-heap fuzzed. RESIDUAL (full RC floor's job): pathologically OSCILLATING
 > lengths can still realloc (the header tracks length, not a separate capacity
 > field), and generally-escaping non-reassignment garbage. RFC stays `planned`.
+>
+> 2026-06-29 (later): **The per-object floor's target residual is now empirically
+> PINNED, and the build is scoped + de-risked as a DEDICATED session (no sound
+> partial).** A cache-EVICTION loop — `d = dict.insert(d, k, v)` then
+> `d = dict.remove(d, k)` over DISTINCT keys — leaks O(n)
+> (`stats::cache_eviction_leaks_without_rc_floor`: n=500 vs n=3000 heap scales ~6×),
+> the inverse of `bounded_keyset_dict_cache_is_already_bounded` (a bounded key set,
+> kept O(1) by in-place dict mutation). The eviction program is also in the
+> `differential_sweep` corpus, so its output is proven invariant under every
+> `WITCHY_OPT` setting and against the interpreter on both backends. INVESTIGATION
+> FINDING (the reason this is all-or-nothing, not an increment): **no EXISTING
+> oracle fact yields a *bounded* sound `dec`.** The escape/uniqueness oracle exposes
+> `confined_inplace_reuse_vars`, the `__cap` accumulator token (`is_dirty`,
+> `kills_after`), and `Summaries::own_abi` — and the reuse rung + cap token already
+> bound *every* case those facts can prove (the bounded-keyset cache, the
+> uniform/capacity-resizing reassignment loops). There is NO `last_use(v,p)` lattice
+> and no eviction-ownership fact, so a sound free-at-last-use needs NEW analysis. The
+> de-risked design for the dedicated build, derived from a full read of the
+> allocator + region surface: (1) **header gated on the `RcElide` COMPILE-TIME
+> lever** — when off, byte-identical to today (the de-opt sweep validates header
+> invisibility; `WITCHY_OPT=none` stays the exact pre-RC oracle, zero risk to the
+> 623-example suite). (2) **One uniform `$objalloc(size)` for ALL allocators
+> INCLUDING the region `rcopy` inline alloc + `__galloc`** — `rcopy`'s slide-down is
+> a blind `memory.copy` + uniform-delta pointer rewrite, so headers must be uniform
+> everywhere or region copy-out breaks; a mixed (some header-ful) heap is fine for
+> readers (they read the logical pointer; only `$inc`/`$dec` touch `ptr-8/ptr-4`) and
+> for the blind memmove. The dict's existing hidden `p-4` word is NOT a blocker — it
+> sits at `objalloc_ret+0`, the `[size][rc]` header at `objalloc_ret-8`. (3)
+> **Free-list CLEARED on every watermark reset** (`loop_watermark_wir` / region
+> reset): sound (only leaks; never frees live) and avoids per-reset free-list
+> pruning; the headline eviction loop has no reset (the dict escapes) so its free
+> list stays valid → bounded. (4) **The use-after-free trap to avoid:**
+> `dict.insert` via `dict_insert_cap` can return `old == new` (append-in-place), so
+> a confined-evicting dict var's inserts/removes must route through the NON-cap
+> always-fresh helpers (`dict_insert`/`dict_remove`) before freeing `old`, never the
+> cap helper. (5) **Counters** `rc_dec`/`frees` as exported i64 globals (model on
+> `__witchy_reowns`), surfaced through `runtime.rs` + `stats::Stats`, asserted by the
+> bounded-heap DoD. A wrong `dec` is a use-after-free — the one class witchy refuses
+> — so the floor was NOT shipped speculatively this session; the scaffolding above
+> (pin + sweep entry + de-risked plan) is the sound, validated handoff. RFC stays
+> `planned`.

@@ -129,7 +129,19 @@ and activate when a dotnet toolchain is present.
    This is the arena/in-place machinery as an RC-elision rung (no refcount word);
    the general per-object RC floor (varying-length / generally-escaping garbage)
    remains future. `WITCHY_OPT=rc-elide` (default-on); proven by a bounded-heap
-   `witchy stats` counter (O(1) vs O(n)) and the de-opt sweep.
+   `witchy stats` counter (O(1) vs O(n)) and the de-opt sweep. The narrow residual
+   the per-object floor must still clear is now PINNED and characterized: a
+   cache-EVICTION loop (insert then remove distinct dict keys) leaks O(n) today
+   (`stats::cache_eviction_leaks_without_rc_floor`) — every `dict.insert`/`remove`
+   churns a fresh buffer whose dead, uniquely-owned predecessor is reclaimed by
+   neither the watermark (the dict escapes the iteration) nor the reuse rung
+   (reassignment to a builtin result, not a same-shape literal). Bounding it needs
+   dec-at-last-use + a size-classed free list (the floor proper), which has no sound
+   partial: no existing oracle fact yields a *bounded* sound `dec` (the reuse rung
+   and `__cap` token already bound every case the current facts can prove), so the
+   floor requires a new last-use/eviction confinement fact plus the negative-offset
+   `[size][rc]` header and free list — a dedicated build, not a context-limited
+   increment.
 3b. **Packed confined record-lists** — SHIPPED (RFC-0027, packed inferred case).
    A `let xs = [P(..), ..]` of a fixed-scalar record `P`, read only via
    `list.length(xs)` and `list.at(xs, i).field` (the `escape` analysis proves it

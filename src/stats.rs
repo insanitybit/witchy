@@ -152,6 +152,12 @@ mod tests {
             // RC-floor REUSE (record): a confined var reassigned to the same ctor,
             // read only via fields — `rc-elide` overwrites the field slots in place.
             "type Point:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    var p = Point(0, 0)\n    var i = 0\n    while i < 5:\n        p = Point(i, i * 2)\n        i = i + 1\n    print(console, __render(p.x + p.y))\n",
+            // CACHE EVICTION: insert then remove distinct dict keys (the per-object
+            // RC floor's target garbage). Output must stay invariant under every
+            // `WITCHY_OPT` setting and match the interpreter — the parity guard for
+            // the residual the floor will eventually bound (see
+            // `cache_eviction_leaks_without_rc_floor`).
+            "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < 40:\n        d = dict.insert(d, i, i * 2)\n        d = dict.remove(d, i)\n        i = i + 1\n    print(console, __render(dict.length(d)))\n    d = dict.insert(d, 7, 70)\n    print(console, __render(dict.get_or(d, 7, 0)))\n",
         ];
         for src in corpus {
             // The interpreter oracle (the fixed semantics; it has no WITCHY_OPT).
@@ -360,6 +366,47 @@ mod tests {
             big.heap_bytes < small.heap_bytes * 2,
             "bounded-keyset dict cache must stay bounded (in-place), but heap scaled \
              with iterations: n=500 heap={}, n=3000 heap={}",
+            small.heap_bytes,
+            big.heap_bytes
+        );
+    }
+
+    /// RFC-0016 never-OOM RESIDUAL (the pin the per-object RC floor must clear): a
+    /// cache-EVICTION loop — insert then remove DISTINCT keys in a dict — leaks O(n)
+    /// today. Unlike `bounded_keyset_dict_cache_is_already_bounded` (a bounded key
+    /// set, kept O(1) by in-place dict mutation), eviction churns: every
+    /// `dict.insert` of a fresh key and every `dict.remove` allocates a new dict
+    /// buffer, and the old buffer — though dead and uniquely owned — is never
+    /// reclaimed by the watermark (the dict escapes the iteration) nor by the reuse
+    /// rung (reassignment to a builtin result, not a same-shape literal). So heap
+    /// grows with iteration count. This is EXACTLY the generally-escaping garbage
+    /// RFC-0016's per-object refcount floor (dec-at-last-use + size-classed free
+    /// list) targets. The assertion pins the leak so it FLIPS (green→needs-update)
+    /// when the floor lands and bounds it — the DoD (b) characterization for the
+    /// floor, the inverse of the bounded-keyset pin.
+    #[test]
+    fn cache_eviction_leaks_without_rc_floor() {
+        let prog = |n: i32| {
+            format!(
+                "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < {n}:\n        d = dict.insert(d, i, i)\n        d = dict.remove(d, i)\n        i = i + 1\n    print(console, __render(dict.length(d)))\n"
+            )
+        };
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let small = compute(&prog(500)).expect("n=500");
+        let big = compute(&prog(3000)).expect("n=3000");
+        opt::set_for_tests(None);
+        // Each iteration inserts a fresh key then removes it: the dict ends empty.
+        assert_eq!(small.output, vec!["0".to_string()]);
+        assert_eq!(big.output, vec!["0".to_string()]);
+        // PINNED RESIDUAL: 6× the iterations allocates ~6× the heap — the eviction
+        // garbage is never reclaimed. When the per-object RC floor lands and frees
+        // the dead dict buffers (dec-at-last-use → size-classed free list → reuse),
+        // this loop becomes bounded and the assertion below must be UPDATED to
+        // `big.heap_bytes < small.heap_bytes * 2` (mirroring the bounded-keyset pin).
+        assert!(
+            big.heap_bytes > small.heap_bytes * 3,
+            "cache-eviction garbage is expected to leak O(n) until the RC floor lands: \
+             n=500 heap={}, n=3000 heap={}",
             small.heap_bytes,
             big.heap_bytes
         );
