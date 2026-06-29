@@ -2390,16 +2390,37 @@ impl Codegen {
                 // accounting), a string/list state field, or a global. Those keep
                 // their bespoke legacy emission.
                 Stmt::Assign { name, value } => {
-                    // own-ABI self-call (binary only): `xs = grow(move xs, …)`
-                    // against a callee whose `own` buffer param may be returned.
-                    // The callee returns `(value, cap)` and takes the caller's
-                    // ownership token as a trailing i32 arg — so thread `xs__cap`
-                    // in and capture (value → xs, cap → xs__cap) via CallStoreMulti.
-                    if let Some((callee, _)) = self
+                    // (RFC-0027) A field update of a scalar-replaced record
+                    // (`p.x = v` => `p = RecordUpdate{ base: p, [(x, v)] }`) writes
+                    // the affected field local directly — no heap rebuild. escape
+                    // admits only the single-field self-update form for an active
+                    // SROA name, so the value is evaluated before the one write.
+                    if self.sroa_active.contains_key(name) {
+                        let Expr::RecordUpdate { base, fields } = value else {
+                            return None;
+                        };
+                        let tyname = self.record_type_of(base)?;
+                        let rec = self.record_fields.get(&tyname)?.clone();
+                        for (fname, fval) in fields {
+                            let idx = rec.iter().position(|(n, _)| n == fname)?;
+                            let k = self.kind_of(fval);
+                            let w = self.lower_expr(fval)?;
+                            seq.push(N::SetLocal {
+                                local: format!("{name}${idx}"),
+                                value: W::ToSlot(Box::new(w), Self::wir_kind(k)),
+                            });
+                        }
+                        tail_is_value = false;
+                    } else if let Some((callee, _)) = self
                         .collect_wir
                         .then(|| analysis::self_own_call(name, value, &self.summaries))
                         .flatten()
                     {
+                        // own-ABI self-call (binary only): `xs = grow(move xs, …)`
+                        // against a callee whose `own` buffer param may be returned.
+                        // The callee returns `(value, cap)` and takes the caller's
+                        // ownership token as a trailing i32 arg — so thread `xs__cap`
+                        // in and capture (value → xs, cap → xs__cap) via CallStoreMulti.
                         let callee = callee.to_string();
                         let Expr::Call { args, .. } = value else { return None };
                         let param_kinds: Vec<Kind> = self

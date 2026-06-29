@@ -71,12 +71,12 @@ pub fn sroa_candidates_block(body: &Block) -> HashSet<String> {
     potential
 }
 
-/// `let x = Ctor(..)` / `let x = (a, b, ..)` — immutable aggregate bindings. A
-/// `var` (reassignable) binding is excluded: scalar-replacing a reassigned
-/// aggregate is a later refinement.
+/// `let x = Ctor(..)` / `var x = (a, b, ..)` — aggregate bindings (immutable or
+/// mutable). A mutable one stays a candidate as long as every write is a field
+/// update or a whole-aggregate reassignment (checked in `collect_whole_uses_block`).
 fn collect_aggregate_lets(b: &Block, out: &mut HashSet<String>) {
     for s in &b.stmts {
-        if let Stmt::Let { name, mutable: false, value, .. } = s {
+        if let Stmt::Let { name, value, .. } = s {
             if matches!(value, Expr::Ctor { .. } | Expr::Tuple(_)) {
                 out.insert(name.clone());
             }
@@ -87,12 +87,38 @@ fn collect_aggregate_lets(b: &Block, out: &mut HashSet<String>) {
 
 fn collect_whole_uses_block(b: &Block, out: &mut HashSet<String>) {
     for s in &b.stmts {
+        // A top-level write to an aggregate is SROA-compatible without escaping it
+        // when it is a field update of itself (`p.x = v` desugars to
+        // `p = RecordUpdate{ base: p, .. }`) or a whole reassignment to a fresh
+        // aggregate (`p = Point(..)`): scan only the new field/element values, not
+        // the `..p` spread base. Any OTHER assignment to `name` disqualifies it
+        // (codegen can't scalar-replace it); a write nested in a sub-block falls
+        // through to the generic walk below and disqualifies via the `..p` base.
+        if let Stmt::Assign { name, value } = s {
+            // The only SROA-compatible write is a SINGLE-field update of itself
+            // (`p.x = v` desugars to `p = RecordUpdate{ base: p, [(x, v)] }`): one
+            // field local changes, and its value is evaluated before the write, so
+            // there is no cross-field read hazard. Scan only the field value (not
+            // the `..p` base). Every other assignment to `name` — a whole
+            // reassignment, a multi-field spread, an alias — disqualifies it.
+            if let Expr::RecordUpdate { base, fields } = value {
+                if fields.len() == 1 && matches!(base.as_ref(), Expr::Var(x) if x == name) {
+                    collect_whole_uses(&fields[0].1, out);
+                    continue;
+                }
+            }
+            out.insert(name.clone());
+            collect_whole_uses(value, out);
+            continue;
+        }
         each_expr_in_stmt(s, &mut |e| collect_whole_uses(e, out));
     }
 }
 
 /// Record every binding used as a WHOLE value. A bare `Var(n)` is a whole use;
 /// `Var(n).field` and `Var(n)[i]` are NOT (the base var is read structurally).
+/// Block-bearing forms recurse through [`collect_whole_uses_block`] so a nested
+/// single-field self-update (`p.x = v`) stays a structured write, not a whole use.
 fn collect_whole_uses(e: &Expr, out: &mut HashSet<String>) {
     match e {
         Expr::Var(n) => {
@@ -112,8 +138,53 @@ fn collect_whole_uses(e: &Expr, out: &mut HashSet<String>) {
             }
             collect_whole_uses(index, out);
         }
+        Expr::If { cond, then_block, else_block } => {
+            collect_whole_uses(cond, out);
+            collect_whole_uses_block(then_block, out);
+            if let Some(b) = else_block {
+                collect_whole_uses_block(b, out);
+            }
+        }
+        Expr::While { cond, body } => {
+            collect_whole_uses(cond, out);
+            collect_whole_uses_block(body, out);
+        }
+        Expr::For { iter, body, .. } => {
+            collect_whole_uses(iter, out);
+            collect_whole_uses_block(body, out);
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            collect_whole_uses(scrutinee, out);
+            collect_whole_uses_block(body, out);
+        }
+        Expr::Block(b) => collect_whole_uses_block(b, out),
+        Expr::Match { scrutinee, arms } => {
+            collect_whole_uses(scrutinee, out);
+            for a in arms {
+                if let Some(g) = &a.guard {
+                    collect_whole_uses(g, out);
+                }
+                collect_whole_uses(&a.body, out);
+            }
+        }
+        // A closure captures (by value) every free variable it references, so ANY
+        // mention of a name inside — even `p.field` — makes that name escape whole.
+        Expr::Lambda { body, .. } => {
+            for s in &body.stmts {
+                each_expr_in_stmt(s, &mut |x| mark_all_vars(x, out));
+            }
+        }
         _ => each_subexpr(e, &mut |s| collect_whole_uses(s, out)),
     }
+}
+
+/// Mark every variable an expression mentions as a whole use (used for closure
+/// bodies, where any reference is a by-value capture).
+fn mark_all_vars(e: &Expr, out: &mut HashSet<String>) {
+    if let Expr::Var(n) = e {
+        out.insert(n.clone());
+    }
+    each_subexpr(e, &mut |s| mark_all_vars(s, out));
 }
 
 /// Apply `f` to each immediate sub-expression of `e` (no Field/Index special
@@ -278,6 +349,44 @@ mod tests {
     fn tuple_field_only_is_a_candidate() {
         let f = func("fn d(a: Int) -> Int:\n    let t = (a, a)\n    t.0 + t.1\n");
         assert!(sroa_candidates(&f).contains("t"));
+    }
+
+    #[test]
+    fn mutable_record_with_field_writes_is_a_candidate() {
+        let f = func(
+            "type P:\n    x: Int\n    y: Int\nfn d(a: Int) -> Int:\n    var p = P(a, a)\n    p.x = p.x + 1\n    p.y = p.x * 2\n    p.x + p.y\n",
+        );
+        assert!(sroa_candidates(&f).contains("p"), "a field-written mutable record is SROA-eligible");
+    }
+
+    #[test]
+    fn mutable_record_field_written_in_loop_is_a_candidate() {
+        let f = func(
+            "type P:\n    x: Int\n    y: Int\nfn d(n: Int) -> Int:\n    var total = 0\n    var i = 0\n    while i < n:\n        var p = P(i, 0)\n        p.x = p.x + 1\n        total = total + p.x\n        i = i + 1\n    total\n",
+        );
+        assert!(
+            sroa_candidates(&f).contains("p"),
+            "a record field-written inside a loop is still SROA-eligible (block-aware scan)"
+        );
+    }
+
+    #[test]
+    fn whole_reassignment_disqualifies() {
+        let f = func(
+            "type P:\n    x: Int\n    y: Int\nfn d(a: Int, q: P) -> Int:\n    var p = P(a, a)\n    p = q\n    p.x\n",
+        );
+        assert!(!sroa_candidates(&f).contains("p"), "a whole reassignment escapes");
+    }
+
+    #[test]
+    fn captured_by_closure_disqualifies() {
+        let f = func(
+            "type P:\n    x: Int\n    y: Int\nfn d(a: Int) -> Int:\n    let p = P(a, a)\n    let g = fn() -> Int: p.x + p.y\n    use_it(g)\n",
+        );
+        assert!(
+            !sroa_candidates(&f).contains("p"),
+            "a record referenced inside a closure is captured whole"
+        );
     }
 
     #[test]

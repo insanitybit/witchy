@@ -296,6 +296,27 @@ mod tests {
         );
     }
 
+    /// SROA also covers a MUTABLE record field-written in a loop (`var p = ...;
+    /// p.x = ...`): the field updates write the slot locals in place, so still no
+    /// heap object — O(1) vs O(n). Identical output.
+    #[test]
+    fn sroa_handles_mutable_field_written_record() {
+        let src = "type P:\n    x: Int\n    y: Int\nfn main(console: Console):\n    var total = 0\n    var i = 0\n    while i < 300:\n        var p = P(i, 0)\n        p.x = p.x + 1\n        p.y = p.x * 2\n        total = total + p.x + p.y\n        i = i + 1\n    print(console, __render(total))\n";
+        opt::set_for_tests(Some(OptSet::default_set().without(Opt::Region)));
+        let on = compute(src).expect("sroa on");
+        opt::set_for_tests(Some(OptSet::default_set().without(Opt::Region).without(Opt::Sroa)));
+        let off = compute(src).expect("sroa off");
+        opt::set_for_tests(None);
+        assert_eq!(on.output, off.output, "mutable-record SROA must not change output");
+        assert_eq!(on.output, vec!["135450".to_string()]);
+        assert!(
+            off.heap_bytes > on.heap_bytes * 4,
+            "mutable-record SROA must remove the per-iteration alloc: on={} off={}",
+            on.heap_bytes,
+            off.heap_bytes
+        );
+    }
+
     /// `for var` v1 rejects an early exit that belongs to the loop (it would skip
     /// the write-back), but allows a `continue` that belongs to a NESTED loop.
     #[test]
