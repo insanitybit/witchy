@@ -178,11 +178,12 @@ fn gen_program(seed: u64, statements: usize) -> String {
     let mut body = String::from(
         "import string\nimport list\nimport math\nimport dict\n\n\
          type R:\n    a: Int\n    b: String\n    c: List(Int)\n\
-         type P:\n    x: R\n    y: Int\n\n\
+         type P:\n    x: R\n    y: Int\n\
+         type Q:\n    m: Int\n    n: Int\n\n\
          fn main(console: Console):\n",
     );
-    for _ in 0..statements {
-        let kind = r.below(22);
+    for stmt_i in 0..statements {
+        let kind = r.below(23);
         let depth = 1 + r.below(4) as u32;
         let dops = 2 + r.below(10) as u32;
         let line = match kind {
@@ -211,6 +212,24 @@ fn gen_program(seed: u64, statements: usize) -> String {
             18 => format!("    print(console, {}.b)\n", gen_record_r(&mut r)),
             19 => format!("    print(console, __render({}.c))\n", gen_record_r(&mut r)),
             20 => format!("    print(console, __render({}))\n", gen_record_p(&mut r)),
+            21 => {
+                // A confined `let`-bound list of a PACKABLE record (`Q { m, n }`),
+                // read only via `at(_).field` / `length` — the shape the packed
+                // `unbox` codegen flattens. With `WITCHY_OPT=all` (set on the run)
+                // this exercises the flat-buffer heap-layout path under the checked
+                // heap. Index stays in-bounds (`below(m)`) so both backends agree.
+                let m = 2 + r.below(3);
+                let elems: Vec<String> = (0..m)
+                    .map(|_| format!("Q({}, {})", gen_int(&mut r, 1), gen_int(&mut r, 1)))
+                    .collect();
+                let j = r.below(m);
+                format!(
+                    "    let qk{stmt_i} = [{}]\n    print(console, __render(list.at(qk{stmt_i}, {}).m + list.at(qk{stmt_i}, {}).n + list.length(qk{stmt_i})))\n",
+                    elems.join(", "),
+                    j,
+                    j,
+                )
+            }
             _ => format!("    print(console, __render({}.x.a))\n", gen_record_p(&mut r)),
         };
         body.push_str(&line);
