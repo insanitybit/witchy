@@ -168,6 +168,20 @@ fn main(console: Console):
     print(console, "${acct.balance}")
 ```
 
+A **method call used as a statement** on a `var` place belongs to the same
+family: it writes its result back when the method returns the receiver's type, so
+`xs.push(v)` *is* `xs = list.push(xs, v)` and `d.insert(k, v)` mutates `d` in
+place. A query like `xs.length()` returns a different type, so it stays a plain
+discard; a method statement on a `let` (or in tail/return position) is unchanged.
+
+```witchy
+fn main(console: Console):
+    var xs = []
+    xs.push(1)
+    xs.push(2)
+    print(console, "${xs}")              // [1, 2]
+```
+
 ## 4. Expressions and operators
 
 Everything is an expression; a block's value is its final expression.
@@ -233,6 +247,22 @@ fn main(console: Console):
     while i < 3:
         i = i + 1
     print(console, "${i}")
+```
+
+`for var x in xs:` binds each element of a list variable **mutably** and writes it
+back, so you update elements in place without index bookkeeping (the loop form of
+mutable value semantics) — a mutation of `x` lands in `xs`, in place when the
+uniqueness analysis proves it unaliased. The v1 form takes a single loop variable
+over a plain list variable and rejects a `break`/`continue`/`return`/`?` that
+belongs to the loop (it would skip the write-back); a plain `for x in xs:` binds
+each element read-only.
+
+```witchy
+fn main(console: Console):
+    var xs = [1, 2, 3, 4]
+    for var x in xs:
+        x = x * 10
+    print(console, "${xs}")              // [10, 20, 30, 40]
 ```
 
 `if let PAT = e:` binds and runs only on a match (with an optional `else`);
