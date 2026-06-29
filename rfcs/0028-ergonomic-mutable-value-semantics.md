@@ -265,6 +265,21 @@ the in-place machinery.
 > early exit, plus `nodes.push(x)` mutating-method statements and confined
 > `View`s, remain. RFC stays `proposed` until all three ship.
 
+> 2026-06-28: **`nodes.push(x)` implementation constraint (for the next increment).**
+> A parse-time desugar of a statement-position `place.method(args)` to
+> `place = place.method(args)` is **unsound**: a bare `xs.length()` statement
+> (discarding an `Int`) is legal today, and the desugar would turn it into the
+> type error `xs = xs.length()`. The "callee returns the receiver's type" gate
+> therefore needs the method's return type AND the UFCS receiver-type resolution,
+> neither of which exists pre-typeck — and `typeck::check` is read-only
+> (`&Module`). So this feature must be a **typeck-integrated rewrite**: during
+> typeck's existing typed walk, collect each statement-position method-call site
+> whose receiver is an assignable place and whose resolved return type equals the
+> receiver type, then apply the place-reassignment rewrite to those sites before
+> codegen/interp (one shared AST edit → parity by construction, exactly like the
+> `for var` desugar). Confined `View`s (feature 3) stay blocked on RFC-0024's
+> escape lattice.
+
 <!--
   Once this RFC is implemented/rejected/superseded it is FROZEN.
   - To change the decision: write a NEW RFC that supersedes this one.
