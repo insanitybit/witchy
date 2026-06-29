@@ -3,8 +3,11 @@
 # before you commit, and before you push. Steps are ordered cheap-to-expensive so
 # a failure surfaces as early as possible.
 #
-#   ./scripts/check.sh         build, clippy, tests, and the wasm playground build
-#   ./scripts/check.sh --full  also run the from-scratch end-to-end acceptance test
+#   ./scripts/check.sh --fast  the COMMIT gate: build + clippy + tests (minus the
+#                              load-flaky e2e), skipping the witchy-fmt and wasm
+#                              playground steps — the fast inner loop
+#   ./scripts/check.sh         build, clippy, fmt, tests, and the wasm playground build
+#   ./scripts/check.sh --full  the PUSH gate: also the e2e suite + from-scratch acceptance
 #
 # rustfmt is deliberately NOT part of the gate: the Rust in this repo is
 # hand-formatted, so `cargo fmt` would fight the intended style.
@@ -12,11 +15,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 full=0
+fast=0
 for arg in "$@"; do
     case "$arg" in
         --full) full=1 ;;
-        -h | --help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-        *) echo "check.sh: unknown argument '$arg' (try --full or --help)" >&2; exit 2 ;;
+        --fast) fast=1 ;;
+        -h | --help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "check.sh: unknown argument '$arg' (try --fast, --full, or --help)" >&2; exit 2 ;;
     esac
 done
 
@@ -33,8 +38,14 @@ else
 fi
 
 # Prefer nextest (the project's runner); fall back to plain `cargo test`.
+# In --fast mode, exclude the load-flaky e2e binary (coven/glamour publish tests)
+# from the run — it is the push gate's job, not the per-commit loop's.
 if cargo nextest --version >/dev/null 2>&1; then
-    test_cmd=(cargo nextest run --workspace)
+    if [ "$fast" -eq 1 ]; then
+        test_cmd=(cargo nextest run --workspace -E 'not binary(e2e)')
+    else
+        test_cmd=(cargo nextest run --workspace)
+    fi
 else
     test_cmd=(cargo test --workspace)
 fi
@@ -60,6 +71,13 @@ run() {
 
 run "build (workspace)"        cargo build --workspace
 run "clippy (deny warnings)"   cargo clippy --workspace --all-targets -- -D warnings
+if [ "$fast" -eq 1 ]; then
+    # The fast commit gate: tests minus the flaky e2e; skip the witchy-fmt sweep
+    # (run it only when .witchy files changed) and the separate wasm compile.
+    run "tests (workspace, minus e2e)" "${test_cmd[@]}"
+    printf '\n\033[1;32mfast gate green\033[0m — run without --fast before push (fmt + wasm), --full for e2e\n'
+    exit 0
+fi
 run "witchy fmt (std+examples)" witchy_fmt_check
 run "tests (workspace)"        "${test_cmd[@]}"
 run "wasm playground build"    "${wasm_cargo[@]}" build --lib --no-default-features --target wasm32-unknown-unknown
