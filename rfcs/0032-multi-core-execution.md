@@ -207,6 +207,70 @@ with [0031](0031-simd-stdlib-hot-loops.md) (SIMD) orthogonal and available now.
 - A capability model for spawning a worker (a new authority? a refinement of the
   channel/spawn caps?).
 
+## Surface sketch
+
+The two-tier model needs **almost no new grammar** — it reuses the existing
+capability-narrowing (`cap as Narrower`), `spawn`, and channel syntax.
+
+**Tier C — lightweight tasks: zero new syntax.** The existing `chan` API
+(`chan.spawn`/`channel`/`send`/`recv`/`join`, all in the `Task(m, a)` async monad)
+is already the goroutine surface; it just *becomes parallel*. The change is the
+runtime + the `frozen`/`unique` race-freedom guarantee, not the syntax:
+
+```witchy
+async fn worker(rx: Receiver(Job)) -> Nil:
+    chan.serve(rx, 0, fn(acc, job): chan.done(acc + heavy(job))).await
+
+async fn main(console: Console):
+    let (tx, rx) = chan.channel(16).await
+    let h = chan.spawn(worker(rx)).await   # today cooperative; proposed: on a core
+    chan.send(tx, job).await
+    chan.join(h).await
+```
+
+**Tier B — isolated VM with attenuated caps: a `vm` module, used like
+`chan.spawn`.** The only new surface is `vm.spawn`/`vm.join`; attenuation is
+ordinary capability narrowing. The child runs in a separate VM and gets EXACTLY
+the caps + channel ends passed — nothing else is reachable:
+
+```witchy
+import vm
+import chan
+
+async fn render(rx: Receiver(m), out: Sender(m), net: Net[Connect]) -> Nil:
+    # this VM can ONLY connect over net, recv jobs, send results — no Dir, no
+    # Exec, no parent heap: physically unreachable, not merely unused.
+    chan.serve(rx, "", fn(_, tmpl): chan.done(fetch_and_render(net, tmpl))).await
+
+async fn main(console: Console, net: Net):
+    let (jobs, jobs_rx) = chan.channel(8).await
+    let (out, out_rx)   = chan.channel(8).await
+    # isolated VM, delegating ONLY net narrowed to Connect (+ the channel ends):
+    let child = vm.spawn(render(jobs_rx, out, net as Net[Connect])).await
+    chan.send(jobs, frozen template).await    # frozen ⇒ copied across the boundary
+    let html = chan.recv(out_rx).await
+    vm.join(child).await
+```
+
+The rules (type-checker, not grammar):
+
+- `vm.spawn(entry(args))` mirrors `chan.spawn(entry(args))` — same call shape; the
+  difference is semantic (isolate, re-grant the cap args inside the child, route
+  channel endpoints across).
+- **Marshalable args** — the one new type rule. Across a VM boundary you may pass
+  capabilities (re-granted, narrowed by `as`), channel endpoints (made cross-VM),
+  and `frozen`/`move`d data (copied — separate memories). A plain mutable
+  parent-heap value is a compile error — the `frozen`/`unique` machinery doing its
+  job.
+- The distinction is legible at the call site: `chan.spawn` = "a core" (same VM,
+  shared heap, tier C); `vm.spawn` = "a sandbox + core" (isolated VM, attenuated
+  caps, tier B) — one form each, no overloading.
+- Capability honesty: delegating a *subset* of your own caps needs no new
+  authority (it's attenuation). A resource limit on spawning VMs would be a
+  separate `Spawn` capability threaded from `main` like any other
+  (`async fn main(console: Console, net: Net, spawn: Spawn):` →
+  `vm.spawn(spawn, render(...))`).
+
 ## Alternatives
 
 - **Status quo + SIMD only** ([0031](0031-simd-stdlib-hot-loops.md)). The
