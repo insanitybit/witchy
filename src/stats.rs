@@ -128,30 +128,42 @@ mod tests {
     /// it computes; walking `Opt::ALL` covers new optimizations automatically.
     #[test]
     fn differential_sweep_output_is_invariant_on_both_backends() {
-        let src = "fn main(console: Console):\n    var xs = []\n    var s = \"\"\n    var d = dict.new()\n    var i = 0\n    while i < 300:\n        xs = list.push(xs, i)\n        s = s + __render(i % 10)\n        d = dict.update(d, i % 7, 0, fn(n: Int): n + 1)\n        i = i + 1\n    print(console, __render(list.length(xs)))\n    print(console, __render(string.length(s)))\n    print(console, __render(dict.get_or(d, 3, 0)))\n";
-
-        // The interpreter oracle (the fixed semantics; it has no WITCHY_OPT).
-        let linked = crate::resolve_std_only(src).expect("link");
-        typeck::check(&linked).expect("typeck");
-        let oracle = crate::interpreter::run_module(linked, ".", Vec::new()).expect("interp run");
-
-        opt::set_for_tests(Some(OptSet::all()));
-        let base = compute(src).expect("compute all").output;
-        opt::set_for_tests(None);
-        assert_eq!(base, oracle, "wasm (all) must match the interpreter oracle");
-
-        let mut settings: Vec<(String, OptSet)> = vec![
-            ("none".into(), OptSet::none()),
-            ("default".into(), OptSet::default_set()),
+        // A corpus that exercises every shipped optimization and surface feature:
+        // accumulation (inplace), string/dict building, escape-free scratch
+        // (region), constant folding (fold), `for var` write-back, and
+        // `nodes.push(x)` mutating-method statements.
+        let corpus = [
+            // accumulation (inplace) + string build + dict update + fold, with a
+            // `nodes.push` statement and escape-free loop scratch (region).
+            "fn main(console: Console):\n    var xs = []\n    var s = \"\"\n    var d = dict.new()\n    var i = 0\n    while i < 300:\n        let scratch = [i, i + 1]\n        xs.push(i + list.length(scratch) - 2)\n        s = s + __render(i % 10)\n        d = dict.update(d, i % 7, 0, fn(n: Int): n + 1)\n        i = i + 1\n    let folded = 2 * 3 + 4\n    print(console, __render(list.length(xs)))\n    print(console, __render(string.length(s)))\n    print(console, __render(dict.get_or(d, 3, 0)))\n    print(console, __render(folded))\n",
+            // `for var` write-back over record elements.
+            "type P:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    var ps = [P(1, 2), P(3, 4)]\n    for var p in ps:\n        p.x = p.x + 100\n    print(console, \"${ps}\")\n",
         ];
-        for o in Opt::ALL {
-            settings.push((format!("-{}", o.name()), OptSet::default_set().without(o)));
-        }
-        for (label, set) in settings {
-            opt::set_for_tests(Some(set));
-            let out = compute(src).expect("compute").output;
+        for src in corpus {
+            // The interpreter oracle (the fixed semantics; it has no WITCHY_OPT).
+            let linked = crate::resolve_std_only(src).expect("link");
+            typeck::check(&linked).expect("typeck");
+            let oracle =
+                crate::interpreter::run_module(linked, ".", Vec::new()).expect("interp run");
+
+            opt::set_for_tests(Some(OptSet::all()));
+            let base = compute(src).expect("compute all").output;
             opt::set_for_tests(None);
-            assert_eq!(out, base, "WITCHY_OPT={label} changed observable output");
+            assert_eq!(base, oracle, "wasm (all) must match the interpreter oracle");
+
+            let mut settings: Vec<(String, OptSet)> = vec![
+                ("none".into(), OptSet::none()),
+                ("default".into(), OptSet::default_set()),
+            ];
+            for o in Opt::ALL {
+                settings.push((format!("-{}", o.name()), OptSet::default_set().without(o)));
+            }
+            for (label, set) in settings {
+                opt::set_for_tests(Some(set));
+                let out = compute(src).expect("compute").output;
+                opt::set_for_tests(None);
+                assert_eq!(out, base, "WITCHY_OPT={label} changed observable output");
+            }
         }
     }
 
