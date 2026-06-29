@@ -140,6 +140,10 @@ Join every handle in `hs` — block until they have all finished.
 
 STRUCTURED concurrency (a "nursery"): run every task in `children` concurrently and return only once they have ALL finished. No handle escapes the call, so a child cannot outlive the scope and there are no leaked tasks — prefer this over a bare `spawn` whose handle you must remember to `join`. The children interleave on the cooperative executor, so a concurrent run is byte-identical on both backends (the parity contract). Results flow out over channels, as with any task (a child returns `Nil`).
 
+#### `fn gather(jobs: List(Task(m, m))) -> Task(m, List(m))`
+
+STRUCTURED fan-out-and-collect: run every task in `jobs` concurrently and return all of their results once they have ALL finished. Each job produces a value of the message type `m` (results ride the same channels), so `gather` is the typed companion to `scope` — the same leak-free, no-escaping-handle guarantee, with the results handed back. Results are in COMPLETION order (deterministic on the cooperative executor, hence byte-identical on both backends), not input order.
+
 #### `fn select(a: Receiver(m), b: Receiver(m)) -> Task(m, Selected(m))`
 
 Receive from whichever of `a` or `b` has a message first; a tie favours `a`. Yields `Closed` once both channels are closed.

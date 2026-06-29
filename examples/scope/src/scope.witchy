@@ -1,26 +1,28 @@
-// Structured concurrency: `chan.scope` runs a batch of tasks concurrently and
-// returns only once they have ALL finished. No task handle escapes the call, so
-// a worker cannot outlive the scope and nothing leaks — the safe alternative to a
-// bare `spawn` whose handle you must remember to `join`. Each worker reports its
-// result over a channel (a task returns `Nil`); the run is byte-identical on both
-// backends because the cooperative executor schedules deterministically.
+// Structured concurrency: run a batch of tasks concurrently with a guaranteed
+// join. `chan.gather` fans out result-producing tasks and hands back all results
+// once they ALL finish; `chan.scope` does the same for side-effecting tasks. No
+// task handle escapes either call, so a worker can't outlive the scope and nothing
+// leaks — the safe form to prefer over a bare `spawn` you must remember to `join`.
+// The cooperative executor schedules deterministically, so the run is
+// byte-identical on both backends.
 import chan
-import option
+import list
 
-async fn worker(tx: Sender(Int), n: Int) -> Nil:
-    chan.send(tx, n * n).await
+async fn square(n: Int) -> Int:
+    n * n
+
+async fn announce(tx: Sender(Int), n: Int) -> Nil:
+    chan.send(tx, n).await
 
 async fn main(console: Console):
+    // Fan out result-producing tasks and collect every result, leak-free.
+    let squares = chan.gather([square(1), square(2), square(3), square(4), square(5)]).await
+    print(console, "sum of squares: ${list.sum(squares)}")
+
+    // `scope` is the side-effecting form: run them all, join them all.
     let (tx, rx) = chan.channel(0).await
-
-    // Fan out four workers and join them all — structured, leak-free.
-    chan.scope([worker(tx, 1), worker(tx, 2), worker(tx, 3), worker(tx, 4)]).await
-
-    // Every worker has finished, so all four results are waiting.
+    chan.scope([announce(tx, 10), announce(tx, 20), announce(tx, 30)]).await
     let a = chan.recv(rx).await
     let b = chan.recv(rx).await
     let c = chan.recv(rx).await
-    let d = chan.recv(rx).await
-    let total = option.unwrap_or(a, 0) + option.unwrap_or(b, 0)
-        + option.unwrap_or(c, 0) + option.unwrap_or(d, 0)
-    print(console, "sum of squares: ${total}")
+    print(console, "announced: ${list.length([a, b, c])} workers")

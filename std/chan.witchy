@@ -156,6 +156,31 @@ pub fn join_all(hs: List(Handle)) -> Task(m, Nil):
 pub fn scope(children: List(Task(m, Nil))) -> Task(m, Nil):
     and_then(spawn_all(children), fn(hs): join_all(hs))
 
+// Receive exactly `n` messages from `rx`, in arrival order. Stops early (and
+// shorter) if the channel closes first.
+fn recv_n(rx: Receiver(m), n: Int) -> Task(m, List(m)):
+    if n <= 0:
+        done([])
+    else:
+        and_then(recv(rx), fn(o):
+            match o:
+                Some(x) -> and_then(recv_n(rx, n - 1), fn(rest): done(list.concat([x], rest)))
+                None -> done([])
+        )
+
+// STRUCTURED fan-out-and-collect: run every task in `jobs` concurrently and return
+// all of their results once they have ALL finished. Each job produces a value of
+// the message type `m` (results ride the same channels), so `gather` is the typed
+// companion to `scope` — the same leak-free, no-escaping-handle guarantee, with the
+// results handed back. Results are in COMPLETION order (deterministic on the
+// cooperative executor, hence byte-identical on both backends), not input order.
+pub fn gather(jobs: List(Task(m, m))) -> Task(m, List(m)):
+    and_then(channel(0), fn(pair):
+        let (tx, rx) = pair
+        let senders = list.map(jobs, fn(j): and_then(j, fn(r): send(tx, r)))
+        and_then(scope(senders), fn(_ignore): recv_n(rx, list.length(jobs)))
+    )
+
 // The outcome of a `select`: a message from the first or the second receiver, or
 // `Closed` once neither can deliver.
 type Selected(m):
