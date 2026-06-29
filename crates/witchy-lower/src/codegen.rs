@@ -6343,6 +6343,20 @@ impl Codegen {
     /// `$helper` is a guest module function; the actual host import is `_host`-
     /// suffixed and called from inside the helper). The `uses_*` side-effect flags
     /// are set exactly as the legacy arms do. Returns `None` for unconverted arms.
+    /// `vm.par_map` monomorphized over scalar (i64-representable) type arguments —
+    /// `vm.par_map__Int__Int`, `__Bool__Bool`, etc. Only these take the native
+    /// worker-VM path; the parallel marshaling moves elements as flat i64s, which is
+    /// unsound for pointer types (String/List/records) whose data lives in the parent
+    /// VM's memory. Such a call falls through to the sequential `list.map` body.
+    fn is_scalar_par_map(name: &str) -> bool {
+        let Some(suffix) = name.strip_prefix("vm.par_map__") else {
+            return false;
+        };
+        let scalar = |t: &str| matches!(t, "Int" | "Bool" | "Float" | "Duration");
+        let parts: Vec<&str> = suffix.split("__").collect();
+        parts.len() == 2 && parts.iter().all(|t| scalar(t))
+    }
+
     fn lower_call(&mut self, name: &str, args: &[Expr]) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::WirExpr as W;
         use witchy_wir::wir::WirNode as N;
@@ -6798,11 +6812,22 @@ impl Codegen {
                 self.used_dir_ops.insert("list");
                 call("dir_list", self.lower_args(&[&args[0]])?)
             }
-            // (RFC-0032) Intercept `vm.par_map(xs, f)` (otherwise a sequential
-            // `list.map` in std/vm.witchy): the host applies `f` to each element and
-            // lays out the result list. The closure is invoked via the `__call_clos`
-            // export the assembler emits when `vm_par_map` is in the link set.
-            ("vm.par_map", 2) => {
+            // (RFC-0032) Intercept `vm.par_map(xs, f)` (monomorphized to
+            // `vm.par_map__T__T`) over SCALAR element types, when `f` is a TOP-LEVEL
+            // function reference: the host runs the map across OS-thread worker VMs and
+            // lays out the result list, invoking `f` via the `__call_idx` export by its
+            // table index (NULL environment). The two restrictions keep it sound:
+            //  - scalar elements marshal as flat i64s (a pointer element's data lives in
+            //    the parent VM's memory, unreachable from a worker's separate memory);
+            //  - a top-level `f` is capture-free, so the NULL-env call reads no captured
+            //    parent-heap state.
+            // Anything else (non-scalar elements, a lambda, a captured closure local)
+            // falls through (`_ => None`) to the sequential `list.map` body in
+            // std/vm.witchy, which is always correct.
+            (_, 2)
+                if Self::is_scalar_par_map(name)
+                    && matches!(&args[1], Expr::Var(f) if !self.locals.contains_key(f)) =>
+            {
                 call("vm_par_map", self.lower_args(&[&args[0], &args[1]])?)
             }
             ("read_build", 2) => {
@@ -8112,11 +8137,12 @@ pub fn assemble_wir_module(
                     export: Some("__region_copy_bytes".into()),
                 });
             }
-            // (RFC-0032) When `vm.par_map` is linked, emit + export the `__call_clos`
-            // trampoline the host re-enters to apply the mapped closure per element.
-            let exports_call_clos = pruned_funcs.iter().any(|f| f.name == "vm_par_map");
-            if exports_call_clos {
-                pruned_funcs.push(witchy_wir::wir_helpers::call_clos_helper());
+            // (RFC-0032) When `vm.par_map` is linked, emit + export the `__call_idx`
+            // trampoline the host (incl. fresh worker VMs) re-enters to apply the
+            // mapped closure to each element by its table index.
+            let exports_call_idx = pruned_funcs.iter().any(|f| f.name == "vm_par_map");
+            if exports_call_idx {
+                pruned_funcs.push(witchy_wir::wir_helpers::call_idx_helper());
             }
             let data: Vec<DataSegment> = cg
                 .strings
@@ -8145,8 +8171,8 @@ pub fn assemble_wir_module(
                     if has_main {
                         exports.push(("run".into(), "run".into()));
                     }
-                    if exports_call_clos {
-                        exports.push(("__call_clos".into(), "__call_clos".into()));
+                    if exports_call_idx {
+                        exports.push(("__call_idx".into(), "__call_idx".into()));
                     }
                     if !string_exports.is_empty() {
                         exports.push(("__galloc".into(), "__galloc".into()));

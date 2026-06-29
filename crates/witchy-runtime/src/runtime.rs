@@ -225,6 +225,12 @@ pub struct VmState {
     /// (`Rand`) splitmix64 state for the seeded test/parity path (`WITCHY_RAND_SEED`);
     /// `None` means `rand_u64` draws from the OS CSPRNG instead.
     rand_state: Option<u64>,
+    /// (RFC-0032) The engine + compiled module + preemption flag, stashed so a host
+    /// op (`vm.par_map`) can instantiate fresh worker VMs on OS threads from inside a
+    /// call. `Engine`/`Module` are `Arc`-backed (cheap clone, `Send`+`Sync`).
+    engine: Engine,
+    module: Module,
+    preempt: bool,
 }
 
 /// A spawned VM plus the entrypoint we can drive.
@@ -425,6 +431,9 @@ impl Runtime {
             build_read_roots: caps.build_read_roots.clone(),
             heap_objects: Vec::new(),
             rand_state: crate::rand::seed_from_env(),
+            engine: self.engine.clone(),
+            module: module.clone(),
+            preempt: self.preempt,
         };
 
         let mut store = Store::new(&self.engine, state);
@@ -1301,8 +1310,8 @@ fn host_write_pending_list(mut caller: Caller<'_, VmState>, base_ptr: i32) -> Re
 /// `__call_clos` trampoline (re-entrant call into the same instance). Returns the
 /// byte size of the resulting `List(Int)` (`[count][count x i64]`).
 fn host_vm_par_map_run(mut caller: Caller<'_, VmState>, xs_ptr: i32, f_ptr: i32) -> Result<i32> {
-    // Snapshot the input scalars, then drop the memory borrow before re-entering wasm.
-    let inputs: Vec<i64> = {
+    // Snapshot the input scalars + the closure's code index, then drop the borrow.
+    let (inputs, code_idx): (Vec<i64>, i32) = {
         let mem = memory_of(&mut caller)?;
         let data = mem.data(&caller);
         let lb = slice(data, xs_ptr, 4)?;
@@ -1312,20 +1321,114 @@ fn host_vm_par_map_run(mut caller: Caller<'_, VmState>, xs_ptr: i32, f_ptr: i32)
             let s = slice(data, xs_ptr + 4 + 8 * i, 8)?;
             v.push(i64::from_le_bytes([s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]]));
         }
-        v
+        // The closure record's first word is its table (code) index.
+        let cb = slice(data, f_ptr, 4)?;
+        (v, i32::from_le_bytes([cb[0], cb[1], cb[2], cb[3]]))
     };
-    // The closure-call trampoline: `__call_clos(closure_ptr, arg) -> result`.
-    let trampoline = match caller.get_export("__call_clos") {
-        Some(Extern::Func(f)) => f.typed::<(i32, i64), i64>(&caller)?,
-        _ => return Err(Error::msg("vm.par_map: the module does not export `__call_clos`")),
-    };
-    let mut out = Vec::with_capacity(inputs.len());
-    for x in inputs {
-        out.push(trampoline.call(&mut caller, (f_ptr, x))?);
+    let n = inputs.len();
+    if n == 0 {
+        caller.data_mut().pending_ints = Some(Vec::new());
+        return Ok(4);
     }
-    let size = 4 + 8 * out.len();
-    caller.data_mut().pending_ints = Some(out);
+    // Everything a worker VM needs to instantiate a fresh, isolated copy.
+    let engine = caller.data().engine.clone();
+    let module = caller.data().module.clone();
+    let caps = caller.data().caps.clone();
+    let preempt = caller.data().preempt;
+    // One worker VM per core (capped by the element count), each its own wasmtime
+    // instance + linear memory, processing a contiguous chunk so results reassemble
+    // in input order. Pure capture-free `f` ⇒ the parallel result equals sequential.
+    let workers = std::thread::available_parallelism().map(|p| p.get()).unwrap_or(1).min(n).max(1);
+    let chunk = n.div_ceil(workers);
+    let mut results: Vec<i64> = Vec::with_capacity(n);
+    std::thread::scope(|scope| -> Result<()> {
+        let mut handles = Vec::new();
+        let mut start = 0;
+        while start < n {
+            let end = (start + chunk).min(n);
+            let chunk_inputs = inputs[start..end].to_vec();
+            let (engine, module, caps) = (&engine, &module, &caps);
+            handles.push(scope.spawn(move || {
+                run_par_chunk(engine, module, caps, preempt, code_idx, &chunk_inputs)
+            }));
+            start = end;
+        }
+        for h in handles {
+            let part = h
+                .join()
+                .map_err(|_| Error::msg("vm.par_map worker thread panicked"))??;
+            results.extend(part);
+        }
+        Ok(())
+    })?;
+    let size = 4 + 8 * results.len();
+    caller.data_mut().pending_ints = Some(results);
     Ok(size as i32)
+}
+
+/// (RFC-0032) Run one chunk of a `vm.par_map` on a fresh, isolated worker VM: a new
+/// `Store`/`Instance` of the same module (own linear memory), invoking the mapped
+/// function by table index through the `__call_idx` trampoline for each input.
+fn run_par_chunk(
+    engine: &Engine,
+    module: &Module,
+    caps: &Capabilities,
+    preempt: bool,
+    code_idx: i32,
+    inputs: &[i64],
+) -> Result<Vec<i64>> {
+    let state = worker_vmstate(caps, engine, module, preempt);
+    let mut store = Store::new(engine, state);
+    store.limiter(|s| &mut s.limits);
+    if preempt {
+        // The shared engine has epoch interruption on (for the main VM's watchdog);
+        // a worker is short-lived pure compute, so push its deadline out of the way.
+        store.set_epoch_deadline(u64::MAX);
+    }
+    let mut linker: Linker<VmState> = Linker::new(engine);
+    link_capability_imports(&mut linker, caps)?;
+    let instance = linker.instantiate(&mut store, module)?;
+    let call_idx = instance.get_typed_func::<(i32, i64), i64>(&mut store, "__call_idx")?;
+    let mut out = Vec::with_capacity(inputs.len());
+    for &x in inputs {
+        out.push(call_idx.call(&mut store, (code_idx, x))?);
+    }
+    Ok(out)
+}
+
+/// A fresh `VmState` for a `vm.par_map` worker VM: the same capabilities (so the
+/// module's imports link) but its own empty handle tables and output buffer.
+fn worker_vmstate(caps: &Capabilities, engine: &Engine, module: &Module, preempt: bool) -> VmState {
+    let limits = StoreLimitsBuilder::new().build();
+    let dirs = caps
+        .dir_root
+        .iter()
+        .cloned()
+        .chain(caps.dir_roots.iter().cloned())
+        .map(|p| (p, String::new()))
+        .collect();
+    let nets = caps.net_allow.iter().cloned().collect();
+    VmState {
+        id: 0,
+        caps: caps.clone(),
+        limits,
+        output: Arc::new(Mutex::new(Vec::new())),
+        dirs,
+        files: caps.file_grants.clone(),
+        pending: None,
+        pending_list: None,
+        pending_ints: None,
+        nets,
+        sockets: Vec::new(),
+        listeners: Vec::new(),
+        build_out: caps.build_out.clone(),
+        build_read_roots: caps.build_read_roots.clone(),
+        heap_objects: Vec::new(),
+        rand_state: crate::rand::seed_from_env(),
+        engine: engine.clone(),
+        module: module.clone(),
+        preempt,
+    }
 }
 
 /// (RFC-0032) `vm_par_map_write(base_ptr)`: lay the staged `vm.par_map` results out

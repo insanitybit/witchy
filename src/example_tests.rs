@@ -268,6 +268,18 @@
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
+    /// (RFC-0032) `vm.par_map` stays correct when the native worker-VM fast path does
+    /// NOT apply — a CAPTURING closure (here `fn(n): n + base`) would be unsound to run
+    /// with a null environment in a separate worker VM, so the compiled backend must
+    /// fall through to the sequential `list.map` body. Both backends must still agree.
+    #[test]
+    fn vm_par_map_capturing_closure_agrees() {
+        let src = "import vm\n\nfn main(console: Console):\n    let base = 100\n    let ys = vm.par_map([1, 2, 3], fn(n): n + base)\n    print(console, __render(ys))\n";
+        let expected = ["[101, 102, 103]"];
+        assert_eq!(interpreter::run(src).expect("interp"), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+    }
+
     /// Host-capability operations are reachable via UFCS method syntax: `console.print(x)`
     /// lowers to the bare intrinsic `print(console, x)` — the same surface a library
     /// capability's own `impl` methods already get. The foundation for RFC-0011's

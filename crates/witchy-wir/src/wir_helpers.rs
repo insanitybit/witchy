@@ -3879,32 +3879,27 @@ pub fn vm_par_map_helper() -> WirFunc {
     }
 }
 
-/// (RFC-0032) `$__call_clos(clos, arg) -> i64` — the closure-call trampoline the host
-/// invokes (re-entrant) to apply a `vm.par_map` function to one element. Loads the
-/// code index from the closure record and `call_indirect`s it with the closure as the
-/// environment pointer (so captures, if any, resolve) and `arg` as the slot argument.
-pub fn call_clos_helper() -> WirFunc {
+/// (RFC-0032) `$__call_idx(idx, arg) -> i64` — the closure-call trampoline the host
+/// invokes (re-entrant, including from a fresh worker VM) to apply a `vm.par_map`
+/// function to one element. `call_indirect`s the table slot `idx` with a NULL
+/// environment pointer and `arg` as the slot argument — sound because `vm.par_map`
+/// requires a capture-free function, so the body never reads the environment (and a
+/// worker VM has its own linear memory, where a parent closure record would not live).
+pub fn call_idx_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     WirFunc {
-        name: "__call_clos".into(),
+        name: "__call_idx".into(),
         params: vec![
-            WirLocal { name: "clos".into(), ty: WirTy::Bool },
+            WirLocal { name: "idx".into(), ty: WirTy::Bool },
             WirLocal { name: "arg".into(), ty: WirTy::Int },
         ],
         ret: vec![WirTy::Int],
         locals: vec![],
         body: vec![N::Push(E::CallIndirect {
             type_arity: 1,
-            args: vec![
-                E::GetLocal("clos".into()),
-                E::GetLocal("arg".into()),
-            ],
-            index: Box::new(E::Load {
-                ptr: Box::new(E::GetLocal("clos".into())),
-                kind: Kind::I32,
-                offset: 0,
-            }),
+            args: vec![E::ConstI32(0), E::GetLocal("arg".into())],
+            index: Box::new(E::GetLocal("idx".into())),
         })],
         raw_body: None,
     }
