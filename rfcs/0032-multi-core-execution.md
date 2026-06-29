@@ -4,10 +4,13 @@ title: Multi-core execution — true parallelism vs the deterministic executor
 created: 2026-06-29
 status: partial
 tracking: "Tier-C STRUCTURED concurrency shipped as pure-witchy stdlib over the
-  existing cooperative executor (no runtime change, parity by construction):
-  chan.scope (spawn-all/join-all nursery), chan.gather (typed fan-out-and-collect),
-  spawn_all/join_all — leak-free, no escaping handle, deterministic. Provides real
-  COOPERATIVE concurrency now; see examples/scope. REMAINING (native, not yet built):
+  existing cooperative executor (no runtime change, parity by construction) — the
+  full constraint ladder: level 1 chan.par_map/par_reduce (input-ordered parallel
+  map+fold, deterministic by construction), level 2 chan.scope (spawn-all/join-all
+  nursery) + chan.gather (typed fan-out-and-collect) + spawn_all/join_all, level 3
+  the pre-existing escaping spawn/Handle — leak-free, no escaping handle (1-2),
+  deterministic. Provides real COOPERATIVE concurrency now; see examples/scope.
+  REMAINING (native, not yet built):
   (1) Tier B vm.spawn — isolated VM + attenuated caps + cross-VM channels (the
   sandboxed-worker value); native runtime both backends. (2) True multi-core — a
   native parallel scheduler (in-VM = wasm-threads + thread-safe allocator + SOUND
@@ -408,12 +411,26 @@ complementary, not rival** (see "Composing B and C" above).
 
 **Shipped (2026-06-29) — Tier-C structured concurrency, pure-witchy stdlib.** Over
 the existing cooperative `Step`/`Task` executor (no runtime change; parity by
-construction): `chan.scope` (spawn-all/join-all nursery), `chan.gather` (typed
-fan-out-and-collect), and `chan.spawn_all`/`join_all`. These deliver the
-constraint-ladder's structured forms — leak-free, no escaping handle,
-deterministic, byte-identical on both backends — i.e. **real cooperative
-concurrency** (overlapped I/O, structured lifetimes) today. Demo: `examples/scope`.
-The escaping form (`chan.spawn` → `Handle`) already existed.
+construction), the **complete constraint ladder**:
+
+- **Level 1 — parallel combinators:** `chan.par_map` (map a task over a list
+  concurrently, results in INPUT order — each item gets a private channel so the
+  order is independent of completion order, making the result a *pure function of
+  the inputs*) and `chan.par_reduce` (par_map + associative fold). Tasks never
+  visible; cannot leak or deadlock on a forgotten join; deterministic by
+  construction. The ergonomic default for data parallelism.
+- **Level 2 — task scope / nursery:** `chan.scope` (spawn-all/join-all nursery),
+  `chan.gather` (typed fan-out-and-collect), and `chan.spawn_all`/`join_all`.
+  Leak-free, no escaping handle, failures surface at the scope.
+- **Level 3 — escaping tasks:** the pre-existing `chan.spawn` → `Handle` for
+  long-lived/background loops.
+
+All deliver the constraint-ladder's forms — deterministic, byte-identical on both
+backends — i.e. **real cooperative concurrency** (overlapped I/O, structured
+lifetimes, data-parallel map/reduce) today. Demo: `examples/scope`. The level-1/2
+forms' determinism is precisely the property a future parallel backend must
+preserve: it runs the items on separate cores *without changing the observable
+result*, so multi-core becomes a backend swap rather than a semantics change.
 
 **Remaining (native runtime — not a pure-witchy change).** These are deliberately
 not half-built; the cooperative model above is the parity-safe foundation they
