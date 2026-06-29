@@ -42,6 +42,11 @@ pub enum Opt {
     Region,
     /// AST constant folding + propagation (off ⇒ evaluate at runtime).
     Fold,
+    /// Packed / unboxed layouts: a confined `List` of fixed-scalar records stored
+    /// as one flat inline buffer instead of an array of pointers to boxed records
+    /// (off ⇒ the uniform boxed layout). Opt-in (the opt-mode asymptotic lever).
+    /// RFC-0027.
+    Unbox,
     /// The opt-in Binaryen post-pass (off by default). Replaces `WITCHY_WASM_OPT`.
     WasmOpt,
     // NOTE: the registry holds ONLY optimizations the compiler actually performs —
@@ -49,20 +54,20 @@ pub enum Opt {
     // counter proving it fired (RFC-0030's contract). Planned levers that have no
     // codegen consumer yet are NOT registered here (a phantom lever toggles a
     // no-op, passing the sweep trivially and lying about coverage); they are added
-    // with their backing feature: `unbox` with packed layouts (RFC-0027),
-    // `rc-elide` with the RC floor (RFC-0016), `direct-call` with static-target
-    // call lowering (RFC-0027 / spec/performance.md).
+    // with their backing feature: `rc-elide` with the RC floor (RFC-0016),
+    // `direct-call` with static-target call lowering (spec/performance.md).
 }
 
 impl Opt {
     /// Every optimization, in a stable order — drives the differential de-opt
     /// sweep and `witchy stats` reporting.
-    pub const ALL: [Opt; 6] = [
+    pub const ALL: [Opt; 7] = [
         Opt::InPlace,
         Opt::Views,
         Opt::Sroa,
         Opt::Region,
         Opt::Fold,
+        Opt::Unbox,
         Opt::WasmOpt,
     ];
 
@@ -74,6 +79,7 @@ impl Opt {
             Opt::Sroa => "sroa",
             Opt::Region => "region",
             Opt::Fold => "fold",
+            Opt::Unbox => "unbox",
             Opt::WasmOpt => "wasm-opt",
         }
     }
@@ -85,7 +91,7 @@ impl Opt {
     /// In the production default set? Experimental / costly passes are opt-in
     /// (they must be named explicitly in `WITCHY_OPT`).
     fn default_on(self) -> bool {
-        !matches!(self, Opt::WasmOpt)
+        !matches!(self, Opt::WasmOpt | Opt::Unbox)
     }
 
     fn bit(self) -> u32 {
@@ -206,6 +212,7 @@ mod tests {
         assert!(d.contains(Opt::InPlace));
         assert!(d.contains(Opt::Region));
         assert!(!d.contains(Opt::WasmOpt), "wasm-opt is opt-in");
+        assert!(!d.contains(Opt::Unbox), "unbox (packed layouts) is opt-in");
         assert!(d.contains(Opt::Views) && d.contains(Opt::Sroa), "default includes shipped opts");
     }
 

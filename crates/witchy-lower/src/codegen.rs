@@ -320,6 +320,8 @@ struct SavedScope {
     sroa_active: HashMap<String, usize>,
     view_candidates: HashSet<String>,
     view_active: HashSet<String>,
+    packed_candidates: HashSet<String>,
+    packed_active: HashMap<String, String>,
 }
 
 struct Codegen {
@@ -427,6 +429,15 @@ struct Codegen {
     /// replaced, so `list.at`/`list.length` lower to the view helpers only for those.
     view_candidates: HashSet<String>,
     view_active: HashSet<String>,
+    /// (RFC-0027 packed, inferred) Confined `List` literals of fixed-scalar records
+    /// (`let xs = [P(..), ..]`, read only via `list.length` / `list.at(_).field`,
+    /// per `escape::confined_record_list_candidates`) stored as one FLAT inline
+    /// buffer instead of an array of pointers to boxed records. `packed_candidates`
+    /// is the per-unit AST-level set (under the `unbox` lever); `packed_active` maps
+    /// the names whose `let` codegen actually packed to their element record type, so
+    /// `list.at(xs, i).field` reads the inline slot only for those. Gated, opt-in.
+    packed_candidates: HashSet<String>,
+    packed_active: HashMap<String, String>,
     /// The active compile unit's uniqueness facts + (kills consumed, sites
     /// seen) for the post-compile consumption check; units nest via lambdas.
     facts_stack: Vec<(analysis::Facts, usize, usize)>,
@@ -794,6 +805,8 @@ impl Codegen {
             sroa_active: HashMap::new(),
             view_candidates: HashSet::new(),
             view_active: HashSet::new(),
+            packed_candidates: HashSet::new(),
+            packed_active: HashMap::new(),
             facts_stack: Vec::new(),
             summaries: analysis::Summaries::empty(),
             cur_fn_own_param: None,
@@ -2176,6 +2189,15 @@ impl Codegen {
         } else {
             HashSet::new()
         };
+        // (RFC-0027) Packed layouts for confined record-list literals — opt-in via
+        // the `unbox` lever. The AST-level candidate set; the Let codegen further
+        // requires the element record to be packable (fixed-size, all-scalar).
+        self.packed_active.clear();
+        self.packed_candidates = if witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::Unbox) {
+            crate::escape::confined_record_list_candidates_block(body)
+        } else {
+            HashSet::new()
+        };
         self.facts_stack.push((facts, 0, 0));
     }
 
@@ -2283,8 +2305,24 @@ impl Codegen {
                     // allocating a heap object. Falls through to the normal path if
                     // any field can't lower (then the name never enters sroa_active,
                     // so its field reads stay heap loads — consistent).
+                    // (RFC-0027) Pack a confined list literal of fixed-scalar records
+                    // into one flat inline buffer: header = element COUNT (so
+                    // `list.length` is unchanged), body = every element's fields in
+                    // row-major order. Reuses the checked-heap-correct `$mkN` allocator.
+                    let mut packed_done = false;
+                    if self.packed_candidates.contains(name) {
+                        if let Expr::List(items) = value {
+                            if let Some((rec, flat)) = self.packable_record_list(items) {
+                                if let Some(w) = self.lower_aggregate(items.len() as i32, &flat) {
+                                    seq.push(N::SetLocal { local: name.clone(), value: w });
+                                    self.packed_active.insert(name.clone(), rec);
+                                    packed_done = true;
+                                }
+                            }
+                        }
+                    }
                     let mut view_done = false;
-                    if self.view_candidates.contains(name) {
+                    if !packed_done && self.view_candidates.contains(name) {
                         if let Some((src, lo, hi)) = view_slice_args(value) {
                             // Elide the copy: store the source pointer and the raw
                             // lo/hi bounds (evaluated once, as the materialized slice
@@ -2322,7 +2360,7 @@ impl Codegen {
                         }
                     }
                     let mut sroa_done = false;
-                    if !view_done && self.sroa_candidates.contains(name) {
+                    if !packed_done && !view_done && self.sroa_candidates.contains(name) {
                         if let Some(args) = sroa_fields(value) {
                             let mut stores = Vec::with_capacity(args.len());
                             let mut ok = true;
@@ -2348,7 +2386,7 @@ impl Codegen {
                             }
                         }
                     }
-                    if !view_done && !sroa_done {
+                    if !packed_done && !view_done && !sroa_done {
                         let v = self.lower_expr(value)?;
                         seq.push(N::SetLocal { local: name.clone(), value: v });
                         // An accumulator binding starts with a zero ownership token
@@ -2920,6 +2958,49 @@ impl Codegen {
             args.push(W::ToSlot(Box::new(w), Self::wir_kind(k)));
         }
         Some(W::Call { func: format!("mk{n}"), args })
+    }
+
+    /// Whether a record type is PACKABLE: non-empty and every field is a fixed-size
+    /// scalar (`Int`/`Float`/`Bool`/`Duration`). A pointer field (`String`, `List`,
+    /// a nested record, a sum type) makes the element variable-size / indirected, so
+    /// it cannot be stored inline in a flat buffer (RFC-0027 packed layouts).
+    fn is_packable_record(&self, name: &str) -> bool {
+        match self.record_fields.get(name) {
+            Some(fields) if !fields.is_empty() => fields.iter().all(|(_, ty)| {
+                matches!(
+                    ty.as_deref(),
+                    Some("Int") | Some("Float") | Some("Bool") | Some("Duration")
+                )
+            }),
+            _ => false,
+        }
+    }
+
+    /// A list literal that can be PACKED: every element is a constructor of the SAME
+    /// packable record type, each with the full field arity. Returns the record type
+    /// name and the elements' fields flattened in row-major order (element 0's
+    /// fields, then element 1's, …) — the flat buffer body. `None` otherwise.
+    fn packable_record_list(&self, items: &[Expr]) -> Option<(String, Vec<Expr>)> {
+        let mut rec: Option<&str> = None;
+        let mut flat: Vec<Expr> = Vec::new();
+        for it in items {
+            let Expr::Ctor { name, args } = it else { return None };
+            match rec {
+                None => rec = Some(name),
+                Some(r) if r == name => {}
+                _ => return None, // mixed record types — no single flat layout
+            }
+            flat.extend(args.iter().cloned());
+        }
+        let rec = rec?;
+        if !self.is_packable_record(rec) {
+            return None;
+        }
+        let nfields = self.record_fields.get(rec)?.len();
+        if items.iter().any(|it| matches!(it, Expr::Ctor { args, .. } if args.len() != nfields)) {
+            return None; // a partial ctor would break the fixed stride
+        }
+        Some((rec.to_string(), flat))
     }
 
     /// Lower a SCALAR pattern test against `value` (the matched value as an i64
@@ -4173,6 +4254,52 @@ impl Codegen {
             // legacy emission is `base; i32.const off; i32.add; i64.load;
             // from_slot(k)` — reproduced as `FromSlot(Load{Add(base, off)}, k)`.
             Expr::Field { base, field } => {
+                // (RFC-0027 packed) `list.at(xs, i).field` on a packed record-list
+                // reads the inline slot directly — element `i`, field `j` lives at
+                // `xs + 4 + (i*nfields + j)*8`, the same per-field i64-slot rep a
+                // boxed record uses, just flattened. One load instead of a pointer
+                // deref + a field load. Only for names the `let` actually packed.
+                if let Expr::Call { name: at, args } = base.as_ref() {
+                    if at == "list.at" && args.len() == 2 {
+                        if let Expr::Var(xs) = &args[0] {
+                            if let Some(rec) = self.packed_active.get(xs).cloned() {
+                                let names = self.record_fields.get(&rec)?;
+                                let nfields = names.len();
+                                let j = names.iter().position(|(n, _)| n == field)?;
+                                let fkind = name_kind(names[j].1.as_deref());
+                                let ik = self.kind_of(&args[1]);
+                                let idx = Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I32);
+                                // addr = xs + (4 + j*8) + i*(nfields*8)
+                                let row = W::Binary {
+                                    op: witchy_wir::wir::BinOp::Mul,
+                                    kind: witchy_wir::wir::Kind::I32,
+                                    lhs: Box::new(idx),
+                                    rhs: Box::new(W::ConstI32((nfields * 8) as i32)),
+                                };
+                                let base_off = W::Binary {
+                                    op: witchy_wir::wir::BinOp::Add,
+                                    kind: witchy_wir::wir::Kind::I32,
+                                    lhs: Box::new(W::GetLocal(xs.clone())),
+                                    rhs: Box::new(W::ConstI32((4 + j * 8) as i32)),
+                                };
+                                let addr = W::Binary {
+                                    op: witchy_wir::wir::BinOp::Add,
+                                    kind: witchy_wir::wir::Kind::I32,
+                                    lhs: Box::new(base_off),
+                                    rhs: Box::new(row),
+                                };
+                                return Some(W::FromSlot(
+                                    Box::new(W::Load {
+                                        ptr: Box::new(addr),
+                                        kind: witchy_wir::wir::Kind::I64,
+                                        offset: 0,
+                                    }),
+                                    Self::wir_kind(fkind),
+                                ));
+                            }
+                        }
+                    }
+                }
                 // (RFC-0027) A scalar-replaced aggregate's field is read straight
                 // from its `${p}$<i>` slot local — no heap load. Only for names the
                 // `let` actually replaced (`sroa_active`); a `let` precedes its uses
@@ -4648,6 +4775,8 @@ impl Codegen {
             sroa_active: std::mem::take(&mut self.sroa_active),
             view_candidates: std::mem::take(&mut self.view_candidates),
             view_active: std::mem::take(&mut self.view_active),
+            packed_candidates: std::mem::take(&mut self.packed_candidates),
+            packed_active: std::mem::take(&mut self.packed_active),
         }
     }
 
@@ -4672,6 +4801,8 @@ impl Codegen {
         self.sroa_active = s.sroa_active;
         self.view_candidates = s.view_candidates;
         self.view_active = s.view_active;
+        self.packed_candidates = s.packed_candidates;
+        self.packed_active = s.packed_active;
     }
 
     /// The `$key_eq` comparison mode for a Dict key expression: 0 for Int/Bool

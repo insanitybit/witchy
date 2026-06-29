@@ -141,6 +141,10 @@ mod tests {
             // confined slice VIEW: a read-only window over an unmutated param,
             // read only via at/length — toggling `views` must not change output.
             "import list\n\nfn win(xs: List(Int), lo: Int, hi: Int) -> Int:\n    let w = list.slice(xs, lo, hi)\n    var t = 0\n    var j = 0\n    while j < list.length(w):\n        t = t + list.at(w, j)\n        j = j + 1\n    t\n\nfn main(console: Console):\n    let xs = [10, 20, 30, 40, 50, 60]\n    print(console, __render(win(xs, 1, 4)))\n    print(console, __render(win(xs, 4, 100)))\n    print(console, __render(win(xs, 2, 2)))\n",
+            // PACKED confined record-list: a list literal of fixed-scalar records
+            // read only via at(_).field / length — toggling `unbox` (on under
+            // `all`) must not change output.
+            "import list\n\ntype P:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let ps = [P(1, 2), P(3, 4), P(5, 6)]\n    var t = 0\n    var i = 0\n    while i < list.length(ps):\n        t = t + list.at(ps, i).x * 10 + list.at(ps, i).y\n        i = i + 1\n    print(console, __render(t))\n    print(console, __render(list.length(ps)))\n",
         ];
         for src in corpus {
             // The interpreter oracle (the fixed semantics; it has no WITCHY_OPT).
@@ -201,6 +205,35 @@ mod tests {
         assert!(
             off.heap_bytes >= on.heap_bytes + 3000,
             "views must elide the slice copy: on={} off={}",
+            on.heap_bytes,
+            off.heap_bytes
+        );
+    }
+
+    /// RFC-0027 packed DoD counter (b): a confined list literal of fixed-scalar
+    /// records read only via `at(_).field`/`length` is stored as ONE flat inline
+    /// buffer with `unbox` on, instead of N boxed records + an N-pointer array with
+    /// it off — so the heap drops by the pointer array plus every per-record header.
+    /// Output is identical (parity). `unbox` is opt-in, so this compares `all`
+    /// (unbox on) against `all` minus `unbox`.
+    #[test]
+    fn packed_record_list_uses_one_flat_buffer() {
+        // 10 two-field records: boxed = 10*(4+16) records + (4+10*8) list; packed =
+        // one (4 + 10*2*8) buffer — a ~120-byte drop (pointer array + tag headers).
+        let src = "import list\n\ntype P:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let ps = [P(0, 1), P(2, 3), P(4, 5), P(6, 7), P(8, 9), P(10, 11), P(12, 13), P(14, 15), P(16, 17), P(18, 19)]\n    var t = 0\n    var i = 0\n    while i < list.length(ps):\n        t = t + list.at(ps, i).x + list.at(ps, i).y\n        i = i + 1\n    print(console, __render(t))\n";
+        opt::set_for_tests(Some(OptSet::all()));
+        let on = compute(src).expect("unbox on");
+        opt::set_for_tests(Some(OptSet::all().without(Opt::Unbox)));
+        let off = compute(src).expect("unbox off");
+        opt::set_for_tests(None);
+
+        // Sum 0..19 = 190, layout-independent.
+        assert_eq!(on.output, off.output, "unbox must not change output");
+        assert_eq!(on.output, vec!["190".to_string()]);
+        // The flat buffer drops the pointer array + per-record headers.
+        assert!(
+            off.heap_bytes >= on.heap_bytes + 100,
+            "packed must use less heap than the boxed layout: on={} off={}",
             on.heap_bytes,
             off.heap_bytes
         );

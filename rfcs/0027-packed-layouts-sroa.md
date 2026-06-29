@@ -179,6 +179,23 @@ fn dist(a: Point, b: Point) -> Int:
 > declared `packed` qualifier (for non-confined / `pub`-API / host-visible layouts)
 > remains future work on top. RFC stays `proposed` until the codegen lands.
 
+> 2026-06-29 (later): **Packed increment 2 (the gated codegen) landed.** A confined
+> record-list candidate whose element type is packable (all fixed-scalar fields,
+> `is_packable_record`) now compiles, under opt-in `WITCHY_OPT=unbox`, to ONE flat
+> inline buffer — `let xs = [P(a,b), ..]` → `mk{N*nfields}(N, a0,b0,a1,b1,…)` (header
+> = element count, so `list.length` is unchanged; reuses the checked-heap-correct
+> `$mkN` allocator, no new allocation path), and `list.at(xs,i).field` → a direct
+> i64-slot load at `xs + 4 + (i*nfields + j)*8` (one load, no pointer deref). The
+> per-field slot representation is byte-identical to a boxed record, so it is just
+> flattened. Measured: a 10×2-field list goes from 4 allocations (3 records + list,
+> the de-opt path) to 1, a ~120-byte heap drop (`stats::packed_record_list_uses_one_flat_buffer`)
+> with identical output; the differential sweep gained a packed program so
+> `unbox`-on (`all`) == off == interp. The `unbox` lever is re-registered WITH this
+> consumer + counter (RFC-0030's no-phantom-levers rule). STILL FUTURE: the declared
+> `packed` qualifier (parser + typeck + `mode opt` gating + host-visible layout
+> agreement) for non-confined / `pub`-API cases; the inference covers the local
+> confined case only. RFC stays `proposed` until the declared qualifier lands.
+
 ---
 
 <!--

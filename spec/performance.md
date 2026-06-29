@@ -116,6 +116,16 @@ and activate when a dotnet toolchain is present.
    record drops from 6017 to 17 heap bytes. The general optimization knob is the
    single `WITCHY_OPT` lever (RFC-0030), with the differential de-opt sweep and
    `witchy stats` counters as the soundness/effect gates.
+3b. **Packed confined record-lists** — SHIPPED (RFC-0027, packed inferred case).
+   A `let xs = [P(..), ..]` of a fixed-scalar record `P`, read only via
+   `list.length(xs)` and `list.at(xs, i).field` (the `escape` analysis proves it
+   confined), is stored as ONE flat inline buffer — `[count][f0][f1]…]` — instead
+   of an N-pointer array to N boxed records, and each `list.at(xs,i).field` lowers
+   to a direct slot load (no pointer deref). Reuses the `$mkN` allocator (no new
+   heap path). The cache-density win of `packed` delivered by inference for the
+   confined case (the declared `packed` qualifier for `pub`-API / host-visible
+   layouts is future work). Opt-in `WITCHY_OPT=unbox`; proven by a `witchy stats`
+   heap-drop counter (10×2-field list: 4 allocations → 1) and the de-opt sweep.
 3a. **Zero-copy confined slice views** — SHIPPED (RFC-0028, feature 3). A
    `let w = list.slice(src, lo, hi)` the same `escape` analysis proves confined
    (read only via `list.at`/`list.length`, with `src` never reassigned/mutated nor

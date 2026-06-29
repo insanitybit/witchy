@@ -245,21 +245,27 @@ Order matters, because each tier's promise has a prerequisite:
 > 2026-06-29: **Implementation status + per-feature insight (living note).**
 >
 > SHIPPED (parity-safe, differential-swept, fuzzer-validated under `WITCHY_HEAP_CHECK`):
-> - **RFC-0030** — the whole gate: single `WITCHY_OPT` lever + 6-entry registry,
+> - **RFC-0030** — the whole gate: single `WITCHY_OPT` lever + 7-entry registry,
 >   differential de-opt sweep, `witchy stats` counters, soak, bench leg, and a
 >   checked-heap fuzz leg in `check.sh --full`. Every registered optimization is
 >   wired+validated — `inplace`, `views`, `sroa`, `region`, `fold` (default-on)
->   plus opt-in `wasm-opt`; the three forward-declared phantom levers
->   (`unbox`/`rc-elide`/`direct-call`) were removed until their feature lands (see
->   the 0030 change-note). Plus the `check.sh --fast` commit gate.
+>   plus opt-in `unbox` (packed record-lists) and `wasm-opt`; the two still-phantom
+>   levers (`rc-elide`/`direct-call`) remain unregistered until their feature lands
+>   (see the 0030 change-note). Plus the `check.sh --fast` commit gate.
 > - **RFC-0028** (3/3, → `implemented`) — `for var` write-back iteration,
 >   `nodes.push(x)` mutating-method statements, AND confined slice views (feature
 >   3): a confined read-only `list.slice` elides its copy and reads through the
 >   source via `$list_at_view`/`$list_len_view` (gated `WITCHY_OPT=views`,
 >   default-on; `stats::confined_view_elides_the_slice_copy` + sweep). Realized as
 >   invisible copy-elision, NOT a new `View` type — see the 0028 change-note.
-> - **RFC-0027** (SROA half) — escape-driven scalar replacement of frame-confined
->   records/tuples, read-only AND field-mutated, closure-safe.
+> - **RFC-0027** (SROA + packed-by-inference) — escape-driven scalar replacement of
+>   frame-confined records/tuples (read-only AND field-mutated, closure-safe), AND
+>   packed confined record-lists: a `let xs = [P(..), ..]` of a fixed-scalar record
+>   read only via `at(_).field`/`length` becomes one flat inline buffer instead of
+>   N boxed records + a pointer array, gated opt-in `WITCHY_OPT=unbox` (4 allocs → 1
+>   on a 10-element list; `stats::packed_record_list_uses_one_flat_buffer` + sweep).
+>   STILL OPEN: the declared `packed` qualifier (parser/typeck/`mode opt`, for
+>   non-confined / `pub`-API / host-visible layouts).
 > - **RFC-0024** — the escape oracle (`crates/witchy-lower/src/escape.rs`),
 >   consumed by SROA and by confined views (`confined_slice_candidates`).
 > - **never-OOM** (the goal's normal-mode clause) is demonstrated: 5000-iteration
@@ -271,9 +277,11 @@ Order matters, because each tier's promise has a prerequisite:
 >   view machinery to `windows`/`chunks` (they yield `Iter` of windows, a
 >   different producer shape), and someday the explicitly-deferred escaping and
 >   mutable views. Lower priority than the levers below.
-> - **`packed` (0027 other half)** — the only lever changing cache asymptotics;
->   most invasive (every host fn reading `List(<record>)` becomes layout-aware).
->   Mode-gate it.
+> - **Declared `packed` qualifier (0027 remainder)** — the inferred confined
+>   record-list case SHIPPED (opt-in `unbox`); what remains is the DECLARED
+>   `type X packed:` qualifier for non-confined / `pub`-API / host-visible layouts —
+>   the invasive part (parser + typeck packability + `mode opt` gating + every host
+>   fn reading `List(<record>)` made layout-aware). Mode-gate it.
 > - **RC floor (0016)** — from-scratch refcounting; all-or-nothing (no safe
 >   partial). LOWER marginal value than first thought: never-OOM is already met
 >   for loop/transient patterns; RC's residual win is the long-lived *escaping*
