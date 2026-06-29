@@ -155,6 +155,12 @@ pub fn spawn_all(children: List(Task(m, Nil))) -> Task(m, List(Handle)):
 pub fn join_all(hs: List(Handle)) -> Task(m, Nil):
     for_each(hs, fn(h): join(h))
 
+// Cancel every handle in `hs` — the companion to `spawn_all`/`join_all`. Each is
+// stopped and treated as finished; idempotent, so cancelling an already-finished
+// handle is a no-op. Used by `race_n` to drop the losers.
+pub fn cancel_all(hs: List(Handle)) -> Task(m, Nil):
+    for_each(hs, fn(h): cancel(h))
+
 // STRUCTURED concurrency (a "nursery"): run every task in `children`
 // concurrently and return only once they have ALL finished. No handle escapes
 // the call, so a child cannot outlive the scope and there are no leaked tasks —
@@ -253,6 +259,17 @@ pub fn race(a: Task(m, m), b: Task(m, m)) -> Task(m, Option(m)):
     and_then(channel(0), fn(pair):
         let (tx, rx) = pair
         and_then(spawn(and_then(a, fn(ra): send(tx, ra))), fn(ha): and_then(spawn(and_then(b, fn(rb): send(tx, rb))), fn(hb): and_then(recv(rx), fn(o): and_then(cancel(ha), fn(_x): and_then(cancel(hb), fn(_y): done(o))))))
+    )
+
+// `race` generalized to a pool: run every task in `tasks` concurrently and return
+// the FIRST result, cancelling all the others. `None` only if none ever produces a
+// value (e.g. an empty list). The winner is fixed by the deterministic schedule, so
+// the outcome is byte-identical on both backends.
+pub fn race_n(tasks: List(Task(m, m))) -> Task(m, Option(m)):
+    and_then(channel(0), fn(pair):
+        let (tx, rx) = pair
+        let jobs = list.map(tasks, fn(t): and_then(t, fn(r): send(tx, r)))
+        and_then(spawn_all(jobs), fn(hs): and_then(recv(rx), fn(o): and_then(cancel_all(hs), fn(_x): done(o))))
     )
 
 // The outcome of a `select`: a message from the first or the second receiver, or

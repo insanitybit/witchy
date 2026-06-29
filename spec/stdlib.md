@@ -141,6 +141,10 @@ Spawn every task in `children` concurrently, returning their handles. The childr
 
 Join every handle in `hs` — block until they have all finished.
 
+#### `fn cancel_all(hs: List(Handle)) -> Task(m, Nil)`
+
+Cancel every handle in `hs` — the companion to `spawn_all`/`join_all`. Each is stopped and treated as finished; idempotent, so cancelling an already-finished handle is a no-op. Used by `race_n` to drop the losers.
+
 #### `fn scope(children: List(Task(m, Nil))) -> Task(m, Nil)`
 
 STRUCTURED concurrency (a "nursery"): run every task in `children` concurrently and return only once they have ALL finished. No handle escapes the call, so a child cannot outlive the scope and there are no leaked tasks — prefer this over a bare `spawn` whose handle you must remember to `join`. The children interleave on the cooperative executor, so a concurrent run is byte-identical on both backends (the parity contract). Results flow out over channels, as with any task (a child returns `Nil`).
@@ -160,6 +164,10 @@ STRUCTURED parallel reduce: `par_map` the items, then fold the results with `com
 #### `fn race(a: Task(m, m), b: Task(m, m)) -> Task(m, Option(m))`
 
 Run `a` and `b` concurrently and return the FIRST result, cancelling the loser. `None` only if neither ever produces a value. The winner is decided by the deterministic round-robin schedule (a tie favours `a`), so the outcome is byte-identical on both backends — and under a future parallel backend the cancel genuinely stops the loser's remaining work. This is the cancellation-enabled combinator of RFC-0032's ladder; build `timeout` by racing a task against one that yields a sentinel.
+
+#### `fn race_n(tasks: List(Task(m, m))) -> Task(m, Option(m))`
+
+`race` generalized to a pool: run every task in `tasks` concurrently and return the FIRST result, cancelling all the others. `None` only if none ever produces a value (e.g. an empty list). The winner is fixed by the deterministic schedule, so the outcome is byte-identical on both backends.
 
 #### `fn select(a: Receiver(m), b: Receiver(m)) -> Task(m, Selected(m))`
 
