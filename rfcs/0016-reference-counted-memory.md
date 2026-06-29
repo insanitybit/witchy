@@ -578,7 +578,11 @@ non-goal in `performance-modes.md` (resolved here).
 > list literal of fixed length L, reassigned only to same-length list literals, and
 > NEVER used as a whole value (so its buffer is unaliased) — and codegen overwrites
 > that buffer IN PLACE at each reassignment instead of allocating (a self-
-> referential RHS bails to allocation for that one site). Gated `WITCHY_OPT=rc-elide`
+> referential RHS bails to allocation for that one site). Also covers a record `var`
+> reassigned to the SAME constructor (fixed tag + arity → uniform by construction;
+> overwrite the field slots, tag invariant) — the whole-record-reassignment case
+> SROA does not reach (SROA disqualifies a wholesale-reassigned aggregate).
+> Gated `WITCHY_OPT=rc-elide`
 > (default-on); DoD `stats::uniform_reassignment_is_reused_and_bounded` (O(1) heap
 > on vs O(n) off, identical output) + the differential sweep + the all-opts checked-
 > heap fuzzer. This is exactly the RFC's framing of the arena/in-place machinery as

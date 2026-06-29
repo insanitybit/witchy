@@ -172,52 +172,77 @@ pub fn confined_inplace_reuse_vars(f: &Function) -> HashSet<String> {
 
 /// As [`confined_inplace_reuse_vars`], over a body block directly.
 pub fn confined_inplace_reuse_vars_block(body: &Block) -> HashSet<String> {
-    let mut len_of: HashMap<String, usize> = HashMap::new();
-    collect_list_literal_lets(body, &mut len_of);
-    if len_of.is_empty() {
+    let mut shape_of: HashMap<String, ReuseShape> = HashMap::new();
+    collect_reuse_lets(body, &mut shape_of);
+    if shape_of.is_empty() {
         return HashSet::new();
     }
-    // Every reassignment must be a list literal of the SAME length, or the fixed
-    // L-slot buffer the in-place overwrite relies on would not hold.
+    // Every reassignment must match the binding's shape (a list literal of the same
+    // length, or a constructor of the same name → same tag + arity), or the fixed
+    // buffer the in-place overwrite relies on would not hold.
     let mut disq = HashSet::new();
-    mark_nonuniform_reassigns(body, &len_of, &mut disq);
+    mark_nonuniform_reassigns(body, &shape_of, &mut disq);
     // Never used as a whole value (so the buffer has no other reference).
     let mut whole = HashSet::new();
     mark_reuse_escapes_block(body, &mut whole);
-    len_of
+    shape_of
         .into_iter()
         .filter(|(x, _)| !disq.contains(x) && !whole.contains(x))
         .map(|(x, _)| x)
         .collect()
 }
 
-/// `var x = [..]` / `let x = [..]` — a binding whose value is a list literal;
-/// record `x -> length`. (A non-literal binding is not a fixed-size buffer.)
-fn collect_list_literal_lets(b: &Block, out: &mut HashMap<String, usize>) {
+/// The fixed buffer shape of a reuse candidate: a list of fixed length, or a record
+/// constructor of a fixed name (fixed tag + field arity). A same-shape reassignment
+/// can overwrite the existing buffer slot-for-slot.
+#[derive(Clone, PartialEq)]
+enum ReuseShape {
+    List(usize),
+    Ctor(String),
+}
+
+/// `var x = [..]` / `var x = Ctor(..)` (or `let`) — a binding whose value is a list
+/// literal or a record constructor; record `x -> shape`. (A non-literal binding is
+/// not a fixed-size buffer.)
+fn collect_reuse_lets(b: &Block, out: &mut HashMap<String, ReuseShape>) {
     for s in &b.stmts {
-        if let Stmt::Let { name, value: Expr::List(items), .. } = s {
-            out.insert(name.clone(), items.len());
+        if let Stmt::Let { name, value, .. } = s {
+            match value {
+                Expr::List(items) => {
+                    out.insert(name.clone(), ReuseShape::List(items.len()));
+                }
+                Expr::Ctor { name: ctor, .. } => {
+                    out.insert(name.clone(), ReuseShape::Ctor(ctor.clone()));
+                }
+                _ => {}
+            }
         }
-        each_block_in_stmt(s, &mut |blk| collect_list_literal_lets(blk, out));
+        each_block_in_stmt(s, &mut |blk| collect_reuse_lets(blk, out));
     }
 }
 
-/// Mark a candidate if any reassignment `x = <v>` is NOT a list literal of x's
-/// recorded length (a different length, or a non-literal — neither preserves the
-/// fixed L-slot buffer the in-place overwrite needs).
-fn mark_nonuniform_reassigns(b: &Block, len_of: &HashMap<String, usize>, out: &mut HashSet<String>) {
+/// Mark a candidate if any reassignment `x = <v>` does NOT match x's recorded shape
+/// (a different-length list, a different constructor, or a non-literal — none
+/// preserves the fixed buffer the in-place overwrite needs).
+fn mark_nonuniform_reassigns(
+    b: &Block,
+    shape_of: &HashMap<String, ReuseShape>,
+    out: &mut HashSet<String>,
+) {
     for s in &b.stmts {
         if let Stmt::Assign { name, value } = s {
-            if let Some(&l) = len_of.get(name) {
-                match value {
-                    Expr::List(items) if items.len() == l => {}
-                    _ => {
-                        out.insert(name.clone());
-                    }
+            if let Some(shape) = shape_of.get(name) {
+                let matches = match (shape, value) {
+                    (ReuseShape::List(l), Expr::List(items)) => items.len() == *l,
+                    (ReuseShape::Ctor(c), Expr::Ctor { name: c2, .. }) => c == c2,
+                    _ => false,
+                };
+                if !matches {
+                    out.insert(name.clone());
                 }
             }
         }
-        each_block_in_stmt(s, &mut |blk| mark_nonuniform_reassigns(blk, len_of, out));
+        each_block_in_stmt(s, &mut |blk| mark_nonuniform_reassigns(blk, shape_of, out));
     }
 }
 
@@ -832,6 +857,32 @@ mod tests {
         assert!(
             confined_inplace_reuse_vars(&f).contains("x"),
             "a confined, never-whole-used var reassigned to same-length literals is a reuse candidate"
+        );
+    }
+
+    #[test]
+    fn reassigned_confined_record_var_is_a_reuse_candidate() {
+        // `var p = Point(..); while …: p = Point(..)`, p read only via fields —
+        // same ctor every time (fixed tag + arity) → overwrite the buffer in place.
+        let f = func(
+            "type Point:\n    x: Int\n    y: Int\nfn d(n: Int) -> Int:\n    var p = Point(0, 0)\n    var i = 0\n    while i < n:\n        p = Point(i, i * 2)\n        i = i + 1\n    p.x + p.y\n",
+        );
+        assert!(
+            confined_inplace_reuse_vars(&f).contains("p"),
+            "a confined record var reassigned to same-ctor values is a reuse candidate"
+        );
+    }
+
+    #[test]
+    fn reuse_record_var_with_different_ctor_is_not_a_candidate() {
+        // Different constructors → different tag/arity/size; the fixed buffer can't
+        // be overwritten safely. (AST-level: the analysis runs pre-typeck.)
+        let f = func(
+            "type A:\n    v: Int\ntype B:\n    v: Int\nfn d() -> Int:\n    var o = A(1)\n    o = B(2)\n    o.v\n",
+        );
+        assert!(
+            !confined_inplace_reuse_vars(&f).contains("o"),
+            "a different-constructor reassignment breaks the fixed-buffer invariant"
         );
     }
 

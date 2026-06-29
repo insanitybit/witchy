@@ -149,6 +149,9 @@ mod tests {
             // read only via at/length — toggling `rc-elide` (in-place overwrite vs
             // fresh alloc) must not change output.
             "import list\n\nfn main(console: Console):\n    var v = [0, 0, 0]\n    var i = 0\n    while i < 5:\n        v = [i, i * 2, i * 3]\n        i = i + 1\n    print(console, __render(list.at(v, 0) + list.at(v, 1) + list.at(v, 2)))\n",
+            // RC-floor REUSE (record): a confined var reassigned to the same ctor,
+            // read only via fields — `rc-elide` overwrites the field slots in place.
+            "type Point:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    var p = Point(0, 0)\n    var i = 0\n    while i < 5:\n        p = Point(i, i * 2)\n        i = i + 1\n    print(console, __render(p.x + p.y))\n",
         ];
         for src in corpus {
             // The interpreter oracle (the fixed semantics; it has no WITCHY_OPT).
@@ -287,6 +290,41 @@ mod tests {
         assert!(
             off_big.heap_bytes > on_big.heap_bytes * 2,
             "without rc-elide the same loop leaks O(n): on={} off={}",
+            on_big.heap_bytes,
+            off_big.heap_bytes
+        );
+    }
+
+    /// RFC-0016 RC-floor reuse — RECORD case. A confined `var` reassigned to the
+    /// SAME constructor each iteration (fixed tag + arity → uniform by construction)
+    /// overwrites its field slots in place instead of allocating a fresh record, so
+    /// a whole-record-reassignment loop is O(1) heap (vs O(n) off). Output identical.
+    #[test]
+    fn record_reassignment_is_reused_and_bounded() {
+        let prog = |n: i32| {
+            format!(
+                "type Point:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    var p = Point(0, 0)\n    var i = 0\n    while i < {n}:\n        p = Point(i, i * 2)\n        i = i + 1\n    print(console, __render(p.x + p.y))\n"
+            )
+        };
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let on_small = compute(&prog(500)).expect("on n=500");
+        let on_big = compute(&prog(3000)).expect("on n=3000");
+        opt::set_for_tests(Some(OptSet::default_set().without(Opt::RcElide)));
+        let off_big = compute(&prog(3000)).expect("off n=3000");
+        opt::set_for_tests(None);
+
+        // last iter p = Point(n-1, (n-1)*2); x+y = (n-1)*3.
+        assert_eq!(on_big.output, off_big.output, "rc-elide must not change output");
+        assert_eq!(on_big.output, vec![((3000 - 1) * 3).to_string()]);
+        assert!(
+            on_big.heap_bytes < on_small.heap_bytes * 2,
+            "record reuse must bound the loop: n=500 heap={}, n=3000 heap={}",
+            on_small.heap_bytes,
+            on_big.heap_bytes
+        );
+        assert!(
+            off_big.heap_bytes > on_big.heap_bytes * 2,
+            "without rc-elide the record loop leaks O(n): on={} off={}",
             on_big.heap_bytes,
             off_big.heap_bytes
         );

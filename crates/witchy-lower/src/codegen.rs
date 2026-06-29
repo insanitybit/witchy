@@ -2527,10 +2527,19 @@ impl Codegen {
                     // reads it), allocating normally for that one site otherwise.
                     if self.collect_wir
                         && self.reuse_vars.contains(name)
-                        && matches!(value, Expr::List(_))
+                        && matches!(value, Expr::List(_) | Expr::Ctor { .. })
                         && !expr_reads_var(value, name)
                     {
-                        let Expr::List(items) = value else { unreachable!() };
+                        // `items` are the slot values (list elements or ctor fields);
+                        // both layouts are `[i32 header][i64 slots…]`, so the writes
+                        // are identical. For a list the header is the element COUNT
+                        // (refreshed, invariant L); for a ctor it is the TAG, which is
+                        // unchanged (same constructor, guaranteed by the analysis).
+                        let (items, is_list) = match value {
+                            Expr::List(items) => (items.as_slice(), true),
+                            Expr::Ctor { args, .. } => (args.as_slice(), false),
+                            _ => unreachable!(),
+                        };
                         for (i, item) in items.iter().enumerate() {
                             let k = self.kind_of(item);
                             let w = self.lower_expr(item)?;
@@ -2547,13 +2556,14 @@ impl Codegen {
                                 offset: 0,
                             });
                         }
-                        // Refresh the element-count header (invariant L, kept robust).
-                        seq.push(N::Store {
-                            ptr: W::GetLocal(name.clone()),
-                            value: W::ConstI32(items.len() as i32),
-                            kind: witchy_wir::wir::Kind::I32,
-                            offset: 0,
-                        });
+                        if is_list {
+                            seq.push(N::Store {
+                                ptr: W::GetLocal(name.clone()),
+                                value: W::ConstI32(items.len() as i32),
+                                kind: witchy_wir::wir::Kind::I32,
+                                offset: 0,
+                            });
+                        }
                         tail_is_value = false;
                     } else if self.sroa_active.contains_key(name) {
                         let Expr::RecordUpdate { base, fields } = value else {
