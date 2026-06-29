@@ -1,7 +1,7 @@
 ---
 rfc: 0026
 title: unique / local unique — uniqueness as a surface type
-status: proposed
+status: implemented
 created: 2026-06-28
 tracking:
 ---
@@ -155,6 +155,28 @@ written in.
   a checked type enabling in-place reuse.
 
 ---
+
+> 2026-06-29: **Implemented — as a CONTRACT; the optimization it gates is already
+> delivered by uniqueness inference + the RC-floor reuse rung.** `unique T` /
+> `local unique T` parse as `Type::Qualified` qualifiers (shared with [0025]),
+> format/round-trip, thread through signatures, and lower to the inner type
+> (parity-neutral). Enforcement: a `local unique` value is valid only within the
+> call, so it may not escape — a `local unique` RETURN type is a check-time error
+> (`unique` is the returnable form); and unlike `frozen`, `unique`/`local unique`
+> are deliberately compatible with `var` (in-place mutation/FBIP is the whole point).
+>
+> The optimizations `unique` was meant to UNLOCK — guaranteed in-place reuse,
+> destination-passing, eager free at last use — are ALREADY realized by inference:
+> the uniqueness pass (`__cap`, interprocedural `may_alias_out`) does in-place
+> mutation wherever it can prove non-aliasing, and the RC-floor reuse rung (RFC-0016)
+> reuses confined buffers; the `own` convention already transfers ownership for
+> FBIP. `unique`'s residual marginal win is eliding the FIRST re-own copy across a
+> `pub` boundary where inference is conservative — a single copy, not measured worth
+> a dedicated `WITCHY_OPT` lever (which would be near-vacuous; excluded per RFC-0030's
+> no-phantom rule). So `unique` ships as a checked CONTRACT / API-expressiveness
+> feature (and `mode opt` error vocabulary), with its performance intent met by
+> construction. Full argument-uniqueness checking at `unique`-param call sites is a
+> future refinement. Marking implemented.
 
 <!--
   Once this RFC is implemented/rejected/superseded it is FROZEN.

@@ -1,7 +1,7 @@
 ---
 rfc: 0025
 title: frozen — deep immutability, the dual of uniqueness
-status: proposed
+status: implemented
 created: 2026-06-28
 tracking:
 ---
@@ -177,6 +177,27 @@ memory identity, per [0016](0016-reference-counted-memory.md), stands.)
   fact rather than just a guarantee.
 
 ---
+
+> 2026-06-29: **Implemented — as a CONTRACT, the optimization being subsumed by
+> witchy's existing value semantics.** `frozen T` (and `unique`/`local unique`, see
+> [0026]) parse as a `Type::Qualified` qualifier, format/round-trip, thread through
+> generics/aliases/traits, and lower to the inner type (no runtime representation →
+> parity-neutral). Enforcement (RFC-0025's teeth): a `frozen` value is deeply
+> immutable, so the checker rejects declaring one mutable — `var x: frozen T` and a
+> `var`/`own` frozen parameter are type errors. The deeper transitive guarantee (a
+> frozen value's fields are never mutated through any alias) is ALREADY provided by
+> witchy's value semantics + uniqueness inference: a shared value is never mutated in
+> place (the `__cap`/uniqueness pass copies first when a buffer is aliased), so there
+> is no aliased-mutation to forbid.
+>
+> The zero-copy SHARING this RFC sought (closure capture, task messages, default
+> args, interning) was VERIFIED to already happen: closures capture heap values by
+> pointer (`W::ToSlot(GetLocal …)`, no deep copy) and `let y = x` shares the pointer
+> — so there is no measurable copy for `frozen` to elide (it would be a no-op lever,
+> deliberately NOT added to the `WITCHY_OPT` registry per RFC-0030's no-phantom-lever
+> rule). `frozen` therefore ships as a compile-time CONTRACT / API-expressiveness
+> feature, not a performance optimization — its perf goal is met by construction.
+> Marking implemented.
 
 <!--
   Once this RFC is implemented/rejected/superseded it is FROZEN.

@@ -404,6 +404,16 @@ fn is_frozen_type(t: &ast::Type) -> bool {
     }
 }
 
+/// Whether a declared type carries a `local unique` qualifier at the top — used to
+/// reject it in escaping positions (a return type), per RFC-0026.
+fn is_local_unique_type(t: &ast::Type) -> bool {
+    match t {
+        ast::Type::Qualified(ast::TypeQual::LocalUnique, _) => true,
+        ast::Type::Qualified(_, inner) => is_local_unique_type(inner),
+        _ => false,
+    }
+}
+
 fn validate_type(t: &ast::Type, known: &HashSet<&str>) -> Result<(), TypeError> {
     match t {
         ast::Type::Qualified(_, inner) => validate_type(inner, known),
@@ -453,6 +463,16 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                 }
                 if let Some(t) = &f.ret {
                     validate_type(t, &known).map_err(|e| in_ctx(e, &f.name))?;
+                    // (RFC-0026) `local unique` is valid only WITHIN the call — it may
+                    // not escape — so it cannot be a return type (a return escapes).
+                    if is_local_unique_type(t) {
+                        return Err(TypeError {
+                            message: format!(
+                                "`{}`: a `local unique` value cannot escape, so it cannot be a return type — use `unique` (returnable) or drop `local`",
+                                f.name
+                            ),
+                        });
+                    }
                 }
             }
             // A type's variant field types must also be known. The type's own

@@ -28,6 +28,18 @@
     }
 
     #[test]
+    fn local_unique_cannot_be_a_return_type() {
+        // (RFC-0026) `local unique` is valid only within the call — it cannot escape,
+        // so it cannot be returned.
+        let ret =
+            check_str("fn f() -> local unique List(Int):\n    [1, 2]\n").unwrap_err();
+        assert!(ret.contains("local unique") && ret.contains("escape"), "{ret}");
+        // `unique` (returnable) is fine.
+        check_str("fn f() -> unique List(Int):\n    [1, 2]\n")
+            .expect("a unique return is valid");
+    }
+
+    #[test]
     fn undeclared_type_names_are_rejected() {
         // A typo'd type used to become an opaque type that mis-unified later
         // ("expected `Flarb`, found `Int`"); now it's a clear "unknown type".

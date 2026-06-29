@@ -429,6 +429,38 @@ aliasing. Concretely:
   `yield` (§11), because a generator re-runs its body to the next yield rather
   than capturing a continuation.
 
+**Ownership/immutability qualifiers** (`frozen`, `unique`, `local unique`) are
+compile-time *contracts* on a type — distinct from the calling conventions above,
+they live on the type and propagate through it. They have no runtime
+representation (both backends lower `frozen T`/`unique T` to `T`), so they never
+change observable behavior; they only let the checker enforce, and a library
+*promise*, an ownership fact:
+
+| qualifier | meaning |
+|---|---|
+| `frozen T` | deeply immutable — sharing is safe; declaring it mutable (`var`/`own`) is a check-time error |
+| `unique T` | the sole reference — may be mutated in place and returned as `unique` |
+| `local unique T` | unique within this call only — may be mutated but **may not escape** (returning it is a check-time error) |
+
+```witchy
+import show
+
+fn total(xs: frozen List(Int)) -> Int:
+    var sum = 0
+    for x in xs:
+        sum = sum + x
+    sum
+
+fn main(console: Console):
+    let table: frozen List(Int) = [10, 20, 30]
+    say(console, "${total(table)}")
+```
+
+These restate, as enforced contracts, guarantees witchy's value semantics already
+provide (a shared value is never mutated in place; the uniqueness pass reuses
+buffers it proves unaliased), so they carry no separate performance cost or
+benefit — see [performance.md](performance.md).
+
 ## 8. Generics and traits
 
 ```witchy
