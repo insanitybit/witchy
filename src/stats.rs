@@ -317,6 +317,28 @@ mod tests {
         );
     }
 
+    /// RFC-0030 `fold`: constant folding + propagation elides constant string
+    /// concatenations (`g + "World"` where `g` is a literal `let`) — the allocation
+    /// the WASM mid-end can't see. heap drops sharply with `fold` on; output is
+    /// identical (folding is semantics-preserving).
+    #[test]
+    fn fold_elides_constant_concatenations() {
+        let src = "fn main(console: Console):\n    let g = \"Hi, \"\n    var total = 0\n    var i = 0\n    while i < 300:\n        let s = g + \"World\" + g + \"There\"\n        total = total + string.length(s)\n        i = i + 1\n    print(console, __render(total))\n";
+        opt::set_for_tests(Some(OptSet::default_set().without(Opt::Region)));
+        let on = compute(src).expect("fold on");
+        opt::set_for_tests(Some(OptSet::default_set().without(Opt::Region).without(Opt::Fold)));
+        let off = compute(src).expect("fold off");
+        opt::set_for_tests(None);
+        assert_eq!(on.output, off.output, "fold must not change output");
+        assert_eq!(on.output, vec!["5400".to_string()]);
+        assert!(
+            off.heap_bytes > on.heap_bytes * 4,
+            "fold must elide constant-concat allocations: on={} off={}",
+            on.heap_bytes,
+            off.heap_bytes
+        );
+    }
+
     /// `for var` v1 rejects an early exit that belongs to the loop (it would skip
     /// the write-back), but allows a `continue` that belongs to a NESTED loop.
     #[test]

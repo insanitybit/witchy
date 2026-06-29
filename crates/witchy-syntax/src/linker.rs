@@ -596,8 +596,12 @@ pub fn link(
     };
     resolve_methods(&mut module);
     // Semantics-preserving constant folding over the single linked module both
-    // backends consume (parity-free by construction). See src/optimize.rs.
-    crate::optimize::optimize(&mut module);
+    // backends consume (parity-free by construction). See src/optimize.rs. Gated
+    // on the `fold` lever (RFC-0030) so the differential de-opt sweep covers it:
+    // `WITCHY_OPT=-fold` leaves constant expressions unfolded.
+    if crate::opt::enabled(crate::opt::Opt::Fold) {
+        crate::optimize::optimize(&mut module);
+    }
     // RFC-0028: turn statement-position mutating-method calls into write-backs
     // (`nodes.push(x)` => `nodes = nodes.push(x)`), once, on the shared module.
     rewrite_mut_method_stmts(&mut module);
