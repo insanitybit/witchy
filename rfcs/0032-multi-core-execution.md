@@ -198,6 +198,39 @@ the distinctive sandboxed-worker value with the least new type-system risk), the
 **C** (which needs the `frozen`/`unique` soundness lift) for fine-grained speed —
 with [0031](0031-simd-stdlib-hot-loops.md) (SIMD) orthogonal and available now.
 
+### Structured concurrency — a constraint ladder *within* Tier C
+
+Tier C should not be a single primitive. **Structured concurrency** (Trio
+nurseries, Swift task groups, Kotlin `coroutineScope`, Java/Loom
+`StructuredTaskScope`, and especially Rust's *scoped threads*) shows that
+*constraining* a task's lifetime to a lexical scope is not a tax — it removes
+Go's leaked-goroutine / swallowed-error footgun AND unlocks sharing the looser
+forms cannot have. The decisive witchy-specific payoff: **a scope-bounded task
+may `let`-BORROW the parent's data by reference (zero copy, no `frozen`)**, because
+the scope guarantees the task is joined before the borrow's owner returns — exactly
+why Rust scoped threads borrow non-`'static` data while spawned threads need
+`'static`. It maps onto the existing conventions: `let` = borrow (scope-bounded
+tasks), `frozen`/`own` = sendable (escaping tasks). So there is a ladder where
+*more constraint buys more sharing*, the inverse of a cost:
+
+1. **Parallel combinators** (`chan.par_map` / `par_reduce`) — tasks not even
+   visible; spawn+join internal; results returned as a value. Cannot leak, cannot
+   deadlock on a forgotten join, and **deterministic by construction** (pure fn
+   over a list → trivially parity-safe). The ergonomic default for data
+   parallelism, and the easiest piece to ship first.
+2. **Task scope / nursery** (`scope sc:`) — explicit, heterogeneous tasks, still
+   lexically joined, still `let`-borrow-friendly; failures surface at the scope.
+3. **Free tasks** (`chan.spawn` → `Handle`) — escaping lifetime for long-lived /
+   background / actor loops, but `frozen`/`move` data only (no borrows). The
+   *advanced/looser* form, not the primitive — inverting the usual "spawn first,
+   structure bolted on."
+
+The constraint is enforced as a type rule, not new grammar: a closure passed to a
+scope-bounded spawn may capture `let`-borrows that outlive the scope; one passed to
+the escaping `chan.spawn` may not (it needs `frozen`/`move`). Recommendation: make
+1–2 the default surface (possibly the *only* Tier-C forms in v1), and treat 3 as
+opt-in — learning from Go's mistake rather than reproducing it.
+
 ### Cross-cutting requirements (all options)
 
 - A parity story for the differential sweep (the oracle must reproduce results).
@@ -212,10 +245,26 @@ with [0031](0031-simd-stdlib-hot-loops.md) (SIMD) orthogonal and available now.
 The two-tier model needs **almost no new grammar** — it reuses the existing
 capability-narrowing (`cap as Narrower`), `spawn`, and channel syntax.
 
-**Tier C — lightweight tasks: zero new syntax.** The existing `chan` API
-(`chan.spawn`/`channel`/`send`/`recv`/`join`, all in the `Task(m, a)` async monad)
-is already the goroutine surface; it just *becomes parallel*. The change is the
-runtime + the `frozen`/`unique` race-freedom guarantee, not the syntax:
+**Tier C — lightweight tasks.** The *recommended default* is the structured
+forms, which need only a `scope` block on top of the existing `chan` types and let
+tasks `let`-borrow parent data (no copy):
+
+```witchy
+async fn summarize(let docs: List(Doc)) -> List(Summary):
+    # level 1 — structured parallel map: spawn+join internal, borrows `docs`, no handles
+    chan.par_map(docs, fn(d): heavy_summary(d)).await
+
+async fn pipeline(console: Console, let input: List(Job)) -> Nil:
+    scope sc:                              # level 2 — nursery: all tasks joined at block end
+        sc.spawn(fn(): stage_a(input))     # borrows `input` by ref — sound: joined before return
+        sc.spawn(fn(): stage_b(input))
+    # <-- both joined HERE; a failure in either surfaces here; no escaping handle
+    chan.done(nil).await
+```
+
+The looser **escaping** form is the *existing* `chan` API unchanged — it just
+*becomes parallel*; the cost of the unbounded lifetime is `frozen`/`move` data
+only (no borrows):
 
 ```witchy
 async fn worker(rx: Receiver(Job)) -> Nil:
@@ -223,7 +272,7 @@ async fn worker(rx: Receiver(Job)) -> Nil:
 
 async fn main(console: Console):
     let (tx, rx) = chan.channel(16).await
-    let h = chan.spawn(worker(rx)).await   # today cooperative; proposed: on a core
+    let h = chan.spawn(worker(rx)).await   # level 3 — escaping handle; frozen/move data only
     chan.send(tx, job).await
     chan.join(h).await
 ```
