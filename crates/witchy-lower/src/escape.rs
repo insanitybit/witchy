@@ -515,6 +515,13 @@ fn mark_all_vars(e: &Expr, out: &mut HashSet<String>) {
     each_subexpr(e, &mut |s| mark_all_vars(s, out));
 }
 
+/// Public wrapper over [`each_subexpr`]: apply `f` to each immediate sub-expression
+/// of `e` (recursing into nested blocks), for consumers (e.g. codegen) that need to
+/// scan an expression tree without re-deriving the AST shape.
+pub fn for_each_immediate_subexpr(e: &Expr, f: &mut impl FnMut(&Expr)) {
+    each_subexpr(e, f);
+}
+
 /// Apply `f` to each immediate sub-expression of `e` (no Field/Index special
 /// casing — used for the generic recursion above). Mirrors the AST shape.
 fn each_subexpr(e: &Expr, f: &mut impl FnMut(&Expr)) {

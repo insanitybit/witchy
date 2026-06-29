@@ -322,6 +322,7 @@ struct SavedScope {
     view_active: HashSet<String>,
     packed_candidates: HashSet<String>,
     packed_active: HashMap<String, String>,
+    reuse_vars: HashSet<String>,
 }
 
 struct Codegen {
@@ -438,6 +439,13 @@ struct Codegen {
     /// `list.at(xs, i).field` reads the inline slot only for those. Gated, opt-in.
     packed_candidates: HashSet<String>,
     packed_active: HashMap<String, String>,
+    /// (RFC-0016 RC-floor reuse) Confined, never-aliased `var`s bound to a list
+    /// literal of fixed length L, every reassignment to which is a same-length list
+    /// literal (`escape::confined_inplace_reuse_vars`). A reassignment overwrites the
+    /// existing L-slot buffer IN PLACE instead of allocating a fresh list, bounding a
+    /// build-and-drop loop that would otherwise leak. Per-unit, under the `rc-elide`
+    /// lever; the buffer comes from the (normally-lowered) binding.
+    reuse_vars: HashSet<String>,
     /// The active compile unit's uniqueness facts + (kills consumed, sites
     /// seen) for the post-compile consumption check; units nest via lambdas.
     facts_stack: Vec<(analysis::Facts, usize, usize)>,
@@ -807,6 +815,7 @@ impl Codegen {
             view_active: HashSet::new(),
             packed_candidates: HashSet::new(),
             packed_active: HashMap::new(),
+            reuse_vars: HashSet::new(),
             facts_stack: Vec::new(),
             summaries: analysis::Summaries::empty(),
             cur_fn_own_param: None,
@@ -2198,6 +2207,17 @@ impl Codegen {
         } else {
             HashSet::new()
         };
+        // (RFC-0016) In-place reuse of a confined, never-aliased list `var` at a
+        // same-length reassignment — the never-OOM fix for build-and-drop loops.
+        // Gated on `rc-elide`; off in forced-copy mode so the de-opt sweep exercises
+        // the leaking path.
+        self.reuse_vars = if !force_copy_mode()
+            && witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::RcElide)
+        {
+            crate::escape::confined_inplace_reuse_vars_block(body)
+        } else {
+            HashSet::new()
+        };
         self.facts_stack.push((facts, 0, 0));
     }
 
@@ -2498,12 +2518,44 @@ impl Codegen {
                 // accounting), a string/list state field, or a global. Those keep
                 // their bespoke legacy emission.
                 Stmt::Assign { name, value } => {
-                    // (RFC-0027) A field update of a scalar-replaced record
-                    // (`p.x = v` => `p = RecordUpdate{ base: p, [(x, v)] }`) writes
-                    // the affected field local directly — no heap rebuild. escape
-                    // admits only the single-field self-update form for an active
-                    // SROA name, so the value is evaluated before the one write.
-                    if self.sroa_active.contains_key(name) {
+                    // (RFC-0016) In-place reuse: a confined, never-aliased list `var`
+                    // reassigned to a same-length list literal OVERWRITES its existing
+                    // buffer slot-by-slot instead of allocating a fresh list — so a
+                    // build-and-drop loop stays O(1) heap. The escape oracle proved the
+                    // buffer is unaliased; we additionally require the RHS to not read
+                    // the var (else a slot could be overwritten before a later element
+                    // reads it), allocating normally for that one site otherwise.
+                    if self.collect_wir
+                        && self.reuse_vars.contains(name)
+                        && matches!(value, Expr::List(_))
+                        && !expr_reads_var(value, name)
+                    {
+                        let Expr::List(items) = value else { unreachable!() };
+                        for (i, item) in items.iter().enumerate() {
+                            let k = self.kind_of(item);
+                            let w = self.lower_expr(item)?;
+                            let addr = W::Binary {
+                                op: witchy_wir::wir::BinOp::Add,
+                                kind: witchy_wir::wir::Kind::I32,
+                                lhs: Box::new(W::GetLocal(name.clone())),
+                                rhs: Box::new(W::ConstI32((4 + 8 * i) as i32)),
+                            };
+                            seq.push(N::Store {
+                                ptr: addr,
+                                value: W::ToSlot(Box::new(w), Self::wir_kind(k)),
+                                kind: witchy_wir::wir::Kind::I64,
+                                offset: 0,
+                            });
+                        }
+                        // Refresh the element-count header (invariant L, kept robust).
+                        seq.push(N::Store {
+                            ptr: W::GetLocal(name.clone()),
+                            value: W::ConstI32(items.len() as i32),
+                            kind: witchy_wir::wir::Kind::I32,
+                            offset: 0,
+                        });
+                        tail_is_value = false;
+                    } else if self.sroa_active.contains_key(name) {
                         let Expr::RecordUpdate { base, fields } = value else {
                             return None;
                         };
@@ -4777,6 +4829,7 @@ impl Codegen {
             view_active: std::mem::take(&mut self.view_active),
             packed_candidates: std::mem::take(&mut self.packed_candidates),
             packed_active: std::mem::take(&mut self.packed_active),
+            reuse_vars: std::mem::take(&mut self.reuse_vars),
         }
     }
 
@@ -4803,6 +4856,7 @@ impl Codegen {
         self.view_active = s.view_active;
         self.packed_candidates = s.packed_candidates;
         self.packed_active = s.packed_active;
+        self.reuse_vars = s.reuse_vars;
     }
 
     /// The `$key_eq` comparison mode for a Dict key expression: 0 for Int/Bool
@@ -8078,6 +8132,24 @@ fn sroa_fields(e: &Expr) -> Option<&[Expr]> {
     match e {
         Expr::Ctor { args, .. } | Expr::Tuple(args) => Some(args),
         _ => None,
+    }
+}
+
+/// Whether expression `e` mentions the variable `name` ANYWHERE (even inside an
+/// element read like `name.at(0)`). Used by RC-floor in-place reuse to bail on a
+/// self-referential reassignment (`x = [x.at(0), …]`), where overwriting a slot
+/// before a later element reads it would corrupt the value — that one site
+/// allocates a fresh list instead.
+fn expr_reads_var(e: &Expr, name: &str) -> bool {
+    match e {
+        Expr::Var(n) => n == name,
+        _ => {
+            let mut found = false;
+            crate::escape::for_each_immediate_subexpr(e, &mut |s| {
+                found = found || expr_reads_var(s, name);
+            });
+            found
+        }
     }
 }
 

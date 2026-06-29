@@ -40,6 +40,10 @@ pub enum Opt {
     Sroa,
     /// Region / loop-watermark reclamation (off ⇒ no early reclaim).
     Region,
+    /// RC-floor in-place reuse: a confined, never-aliased `var` reassigned to a
+    /// same-length list literal overwrites its buffer in place instead of allocating
+    /// (off ⇒ allocate a fresh list each reassignment, leaking the old). RFC-0016.
+    RcElide,
     /// AST constant folding + propagation (off ⇒ evaluate at runtime).
     Fold,
     /// Packed / unboxed layouts: a confined `List` of fixed-scalar records stored
@@ -54,18 +58,19 @@ pub enum Opt {
     // counter proving it fired (RFC-0030's contract). Planned levers that have no
     // codegen consumer yet are NOT registered here (a phantom lever toggles a
     // no-op, passing the sweep trivially and lying about coverage); they are added
-    // with their backing feature: `rc-elide` with the RC floor (RFC-0016),
-    // `direct-call` with static-target call lowering (spec/performance.md).
+    // with their backing feature: `direct-call` with static-target call lowering
+    // (spec/performance.md).
 }
 
 impl Opt {
     /// Every optimization, in a stable order — drives the differential de-opt
     /// sweep and `witchy stats` reporting.
-    pub const ALL: [Opt; 7] = [
+    pub const ALL: [Opt; 8] = [
         Opt::InPlace,
         Opt::Views,
         Opt::Sroa,
         Opt::Region,
+        Opt::RcElide,
         Opt::Fold,
         Opt::Unbox,
         Opt::WasmOpt,
@@ -78,6 +83,7 @@ impl Opt {
             Opt::Views => "views",
             Opt::Sroa => "sroa",
             Opt::Region => "region",
+            Opt::RcElide => "rc-elide",
             Opt::Fold => "fold",
             Opt::Unbox => "unbox",
             Opt::WasmOpt => "wasm-opt",

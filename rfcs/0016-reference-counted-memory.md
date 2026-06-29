@@ -565,3 +565,25 @@ non-goal in `performance-modes.md` (resolved here).
   [ZGC](../external-refs/zgc-openjdk/),
   [Go Green Tea](../external-refs/go-green-tea-gc-2025/) — the tracing lineage
   rejected in Alternatives.
+
+---
+
+> 2026-06-29: **First reclamation rung landed — confined in-place reuse (R2-style),
+> via the escape oracle, NOT yet the per-object refcount floor.** The motivating
+> never-OOM gap was first MEASURED (`stats::nonuniform_reassignment_still_leaks`,
+> `escaping_reassignment_*`): a loop reassigning an outer `var` to a fresh list
+> leaks O(n) because the arena/watermark preserves an escaping value but cannot
+> reclaim one that LATER dies. The first rung now closes the common case without a
+> refcount word: `escape::confined_inplace_reuse_vars` proves a `var` bound to a
+> list literal of fixed length L, reassigned only to same-length list literals, and
+> NEVER used as a whole value (so its buffer is unaliased) — and codegen overwrites
+> that buffer IN PLACE at each reassignment instead of allocating (a self-
+> referential RHS bails to allocation for that one site). Gated `WITCHY_OPT=rc-elide`
+> (default-on); DoD `stats::uniform_reassignment_is_reused_and_bounded` (O(1) heap
+> on vs O(n) off, identical output) + the differential sweep + the all-opts checked-
+> heap fuzzer. This is exactly the RFC's framing of the arena/in-place machinery as
+> RC-ELISION rungs on one escape oracle (R2/R4), reached here for the reassignment
+> case. STILL FUTURE (the RFC's core): the per-object refcount word + dec-at-last-
+> use that reclaims VARYING-length reassignment, generally-escaping garbage (a
+> per-request response dropped by the caller), and capacity-resizing reuse —
+> `nonuniform_reassignment_still_leaks` pins what remains. RFC stays `planned`.

@@ -145,6 +145,10 @@ mod tests {
             // read only via at(_).field / length — toggling `unbox` (on under
             // `all`) must not change output.
             "import list\n\ntype P:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let ps = [P(1, 2), P(3, 4), P(5, 6)]\n    var t = 0\n    var i = 0\n    while i < list.length(ps):\n        t = t + list.at(ps, i).x * 10 + list.at(ps, i).y\n        i = i + 1\n    print(console, __render(t))\n    print(console, __render(list.length(ps)))\n",
+            // RC-floor REUSE: a confined var reassigned to same-length list literals,
+            // read only via at/length — toggling `rc-elide` (in-place overwrite vs
+            // fresh alloc) must not change output.
+            "import list\n\nfn main(console: Console):\n    var v = [0, 0, 0]\n    var i = 0\n    while i < 5:\n        v = [i, i * 2, i * 3]\n        i = i + 1\n    print(console, __render(list.at(v, 0) + list.at(v, 1) + list.at(v, 2)))\n",
         ];
         for src in corpus {
             // The interpreter oracle (the fixed semantics; it has no WITCHY_OPT).
@@ -210,19 +214,18 @@ mod tests {
         );
     }
 
-    /// RFC-0016 never-OOM GAP characterization (the demonstrated motivation for the
-    /// RC floor). A loop that each iteration builds a list and reassigns it to an
-    /// OUTER var escapes the loop watermark, so the previous value becomes
-    /// unreachable garbage. The arena + watermark reclaim only *confined* transients,
-    /// not escaping garbage — so today the heap grows O(n) (~28 bytes/iter, one
-    /// 3-element list leaked per iteration). This pins that CURRENT (leaking)
-    /// behavior; it is the concrete evidence that never-OOM is NOT yet met for the
-    /// escaping case, contra the arena-only story. **When RC floor (RFC-0016) lands,
-    /// this dead-on-reassignment buffer is freed/reused and the heap becomes bounded
-    /// — at which point this assertion FLIPS** (big ≈ small) and should be rewritten
-    /// to assert the never-OOM property. The flip is the signal that 0016 landed.
+    /// RFC-0016 RC-floor reuse — the REMAINING gap (NON-uniform reassignment). The
+    /// in-place reuse rung (`uniform_reassignment_is_reused_and_bounded`) bounds a
+    /// loop whose reassignments are all the SAME length, by overwriting the fixed
+    /// buffer. This case differs: the initial `[0]` (len 1) then `[i,i+1,i+2]`
+    /// (len 3) is NON-uniform, so the buffer can't be safely overwritten in place
+    /// (it would overflow) — reuse correctly declines, and the loop STILL leaks O(n)
+    /// (~28 bytes/iter). This pins what the reuse rung does NOT yet cover: a
+    /// capacity-resizing reuse (realloc-or-reuse) or the full per-object RC floor is
+    /// needed for varying-length / generally-escaping garbage. When that lands the
+    /// assertion FLIPS (big ≈ small) — the signal to extend RFC-0016.
     #[test]
-    fn escaping_reassignment_leaks_without_rc_floor() {
+    fn nonuniform_reassignment_still_leaks() {
         let prog = |n: i32| {
             format!(
                 "fn main(console: Console):\n    var latest = [0]\n    var i = 0\n    while i < {n}:\n        latest = [i, i + 1, i + 2]\n        i = i + 1\n    print(console, __render(list.length(latest)))\n"
@@ -239,12 +242,53 @@ mod tests {
         // becomes bounded and the assertion below FLIPS — rewrite it then.
         assert!(
             big.heap_bytes > small.heap_bytes * 2,
-            "escaping-reassignment is expected to LEAK without the RC floor, but heap \
-             did not scale with iterations (n=500 heap={}, n=3000 heap={}) — if RC \
-             floor / dead-on-reassign reclaim landed, flip this to the never-OOM \
-             assertion (big < small*2) and update RFC-0016/0029",
+            "non-uniform reassignment is expected to LEAK (the reuse rung needs a \
+             fixed-length buffer), but heap did not scale with iterations (n=500 \
+             heap={}, n=3000 heap={}) — if capacity-resizing reuse / the full RC \
+             floor landed, flip this to the never-OOM assertion (big < small*2) and \
+             update RFC-0016/0029",
             small.heap_bytes,
             big.heap_bytes
+        );
+    }
+
+    /// RFC-0016 RC-floor reuse DoD (b): a confined, never-aliased `var` reassigned
+    /// to SAME-LENGTH list literals each iteration overwrites its buffer in place
+    /// (rc-elide on) instead of allocating a fresh list each time (off). So the
+    /// build-and-drop loop is O(1) heap with the optimization and O(n) without —
+    /// the never-OOM property for the uniform-reassignment case. Output identical.
+    #[test]
+    fn uniform_reassignment_is_reused_and_bounded() {
+        let prog = |n: i32| {
+            format!(
+                "fn main(console: Console):\n    var latest = [0, 0, 0]\n    var i = 0\n    while i < {n}:\n        latest = [i, i + 1, i + 2]\n        i = i + 1\n    print(console, __render(list.at(latest, 0) + list.at(latest, 2) + list.length(latest)))\n"
+            )
+        };
+        // rc-elide ON (default): heap is bounded regardless of iteration count.
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let on_small = compute(&prog(500)).expect("on n=500");
+        let on_big = compute(&prog(3000)).expect("on n=3000");
+        // rc-elide OFF: the same loop leaks O(n) (a fresh list every iteration).
+        opt::set_for_tests(Some(OptSet::default_set().without(Opt::RcElide)));
+        let off_big = compute(&prog(3000)).expect("off n=3000");
+        opt::set_for_tests(None);
+
+        // last iter: latest = [n-1, n, n+1]; at(0)+at(2)+len = (n-1)+(n+1)+3 = 2n+3.
+        assert_eq!(on_big.output, off_big.output, "rc-elide must not change output");
+        assert_eq!(on_big.output, vec![(2 * 3000 + 3).to_string()]);
+        // Bounded: 6× the iterations is ~the same heap with reuse on.
+        assert!(
+            on_big.heap_bytes < on_small.heap_bytes * 2,
+            "rc-elide must bound the build-and-drop loop: n=500 heap={}, n=3000 heap={}",
+            on_small.heap_bytes,
+            on_big.heap_bytes
+        );
+        // ... and far below the leaking (rc-elide off) build at the same count.
+        assert!(
+            off_big.heap_bytes > on_big.heap_bytes * 2,
+            "without rc-elide the same loop leaks O(n): on={} off={}",
+            on_big.heap_bytes,
+            off_big.heap_bytes
         );
     }
 

@@ -116,6 +116,17 @@ and activate when a dotnet toolchain is present.
    record drops from 6017 to 17 heap bytes. The general optimization knob is the
    single `WITCHY_OPT` lever (RFC-0030), with the differential de-opt sweep and
    `witchy stats` counters as the soundness/effect gates.
+3c. **Confined in-place reuse** — SHIPPED (RFC-0016, first reclamation rung). A
+   `var` bound to a fixed-length list literal, reassigned only to same-length list
+   literals, and never used as a whole value (the `escape` oracle proves its buffer
+   unaliased) has each reassignment OVERWRITE its buffer in place instead of
+   allocating a fresh list — so a build-and-drop loop stays O(1) heap instead of
+   leaking O(n) (the arena/watermark cannot reclaim a value that escaped the loop
+   body and only later died). A self-referential reassignment bails to allocation.
+   This is the arena/in-place machinery as an RC-elision rung (no refcount word);
+   the general per-object RC floor (varying-length / generally-escaping garbage)
+   remains future. `WITCHY_OPT=rc-elide` (default-on); proven by a bounded-heap
+   `witchy stats` counter (O(1) vs O(n)) and the de-opt sweep.
 3b. **Packed confined record-lists** — SHIPPED (RFC-0027, packed inferred case).
    A `let xs = [P(..), ..]` of a fixed-scalar record `P`, read only via
    `list.length(xs)` and `list.at(xs, i).field` (the `escape` analysis proves it

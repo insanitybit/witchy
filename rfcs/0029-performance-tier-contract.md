@@ -245,13 +245,13 @@ Order matters, because each tier's promise has a prerequisite:
 > 2026-06-29: **Implementation status + per-feature insight (living note).**
 >
 > SHIPPED (parity-safe, differential-swept, fuzzer-validated under `WITCHY_HEAP_CHECK`):
-> - **RFC-0030** — the whole gate: single `WITCHY_OPT` lever + 7-entry registry,
+> - **RFC-0030** — the whole gate: single `WITCHY_OPT` lever + 8-entry registry,
 >   differential de-opt sweep, `witchy stats` counters, soak, bench leg, and a
 >   checked-heap fuzz leg in `check.sh --full`. Every registered optimization is
->   wired+validated — `inplace`, `views`, `sroa`, `region`, `fold` (default-on)
->   plus opt-in `unbox` (packed record-lists) and `wasm-opt`; the two still-phantom
->   levers (`rc-elide`/`direct-call`) remain unregistered until their feature lands
->   (see the 0030 change-note). Plus the `check.sh --fast` commit gate.
+>   wired+validated — `inplace`, `views`, `sroa`, `region`, `rc-elide`, `fold`
+>   (default-on) plus opt-in `unbox` (packed record-lists) and `wasm-opt`; only
+>   `direct-call` remains unregistered until its feature lands (see the 0030
+>   change-note). Plus the `check.sh --fast` commit gate.
 > - **RFC-0028** (3/3, → `implemented`) — `for var` write-back iteration,
 >   `nodes.push(x)` mutating-method statements, AND confined slice views (feature
 >   3): a confined read-only `list.slice` elides its copy and reads through the
@@ -268,12 +268,14 @@ Order matters, because each tier's promise has a prerequisite:
 >   non-confined / `pub`-API / host-visible layouts).
 > - **RFC-0024** — the escape oracle (`crates/witchy-lower/src/escape.rs`),
 >   consumed by SROA and by confined views (`confined_slice_candidates`).
-> - **never-OOM** (the goal's normal-mode clause) is met for CONFINED transients:
->   5000-iteration loops with escape-free per-iteration allocs + scalar-returning
->   calls run in O(1) heap via the loop-watermark + SROA + in-place machinery. It
->   is NOT yet met for ESCAPING garbage (a loop reassigning an outer var leaks O(n)
->   — see the RC-floor entry below and `stats::escaping_reassignment_leaks_without_rc_floor`);
->   closing that is RFC-0016's job and is the one real never-OOM gap remaining.
+> - **never-OOM** (the goal's normal-mode clause) is met for CONFINED transients
+>   (loop-watermark + SROA + in-place) AND now for the UNIFORM-reassignment escaping
+>   case: RFC-0016's first reclamation rung (`rc-elide`, confined in-place reuse)
+>   overwrites a never-aliased fixed-length list `var`'s buffer instead of leaking a
+>   fresh list each iteration (`stats::uniform_reassignment_is_reused_and_bounded`).
+>   STILL NOT met for VARYING-length / generally-escaping garbage (a per-request
+>   response dropped by the caller) — `stats::nonuniform_reassignment_still_leaks`
+>   pins it; that needs the per-object RC floor proper (the rest of RFC-0016).
 >
 > REMAINING, with the cheapest known implementation path for each:
 > - **Confined-view follow-up (0028)** — the slice form shipped; extend the same
@@ -285,8 +287,15 @@ Order matters, because each tier's promise has a prerequisite:
 >   `type X packed:` qualifier for non-confined / `pub`-API / host-visible layouts —
 >   the invasive part (parser + typeck packability + `mode opt` gating + every host
 >   fn reading `List(<record>)` made layout-aware). Mode-gate it.
-> - **RC floor (0016)** — from-scratch refcounting; all-or-nothing (no safe
->   partial). CORRECTION (2026-06-29, with evidence): an earlier note called this
+> - **RC floor (0016)** — FIRST RUNG SHIPPED (confined in-place reuse, `rc-elide`,
+>   default-on): a never-aliased fixed-length list `var` reassigned to same-length
+>   literals overwrites its buffer in place, bounding the uniform build-and-drop
+>   loop (the escape oracle proves safety; no refcount word — the arena/in-place
+>   machinery as an RC-elision rung). REMAINING is the per-object refcount floor
+>   proper: dec-at-last-use reclaiming varying-length reassignment, generally-
+>   escaping garbage, and capacity-resizing reuse — from-scratch, all-or-nothing,
+>   no safe partial; a dedicated build. CORRECTION (2026-06-29, with evidence): an
+>   earlier note called this
 >   "lower value, never-OOM already met" — that was WRONG for the escaping case.
 >   Measured (`stats::escaping_reassignment_leaks_without_rc_floor`): a loop that
 >   reassigns an OUTER var to a fresh list each iteration LEAKS ~28 bytes/iter
