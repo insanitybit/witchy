@@ -185,9 +185,11 @@ pub fn confined_inplace_reuse_vars_block(body: &Block) -> HashSet<String> {
     // buffer the in-place overwrite relies on would not hold.
     let mut disq = HashSet::new();
     mark_nonuniform_reassigns(body, &shape_of, &mut disq);
-    // Never used as a whole value (so the buffer has no other reference).
+    // Never used as a whole value (so the buffer has no other reference). The
+    // reuse policy: a reassignment does NOT mark its target (that overwrite is the
+    // optimization), only a genuine whole-value use elsewhere does.
     let mut whole = HashSet::new();
-    mark_reuse_escapes_block(body, &mut whole);
+    scan_uses_block(body, UseScan::ReuseRhs, &mut whole);
     shape_of
         .into_iter()
         .filter(|(x, _)| !disq.contains(x) && !whole.contains(x))
@@ -253,70 +255,96 @@ fn mark_nonuniform_reassigns(
     }
 }
 
-/// Like [`collect_whole_uses_block`] but a reassignment `x = <v>` does NOT mark `x`
-/// (a same-length list-literal reassignment is exactly what the reuse rung wants,
-/// not an escape) — only a genuine whole-value use of `x` in some expression marks
-/// it. Recurses nested blocks through itself (NOT `collect_whole_uses_block`, which
-/// would re-introduce the assign-target marking).
-fn mark_reuse_escapes_block(b: &Block, out: &mut HashSet<String>) {
+/// (RFC-0024) How a reassignment `x = <v>` is treated when scanning for whole-value
+/// uses — the one axis on which the confinement consumers differ. Consolidates the
+/// formerly-duplicated `collect_whole_uses` and `mark_reuse_escapes` walkers.
+#[derive(Clone, Copy, PartialEq)]
+enum UseScan {
+    /// A top-level assignment MARKS its target as a whole use (except a single-field
+    /// self-update `p.x = v`, the only SROA-compatible write). Used by the
+    /// aggregate / SROA candidate passes.
+    Whole,
+    /// A reassignment does NOT mark its target (the overwrite is exactly what the
+    /// in-place reuse rung wants, not an escape) — only a genuine whole-value use in
+    /// some expression marks. Otherwise identical to `Whole`.
+    ReuseRhs,
+}
+
+/// Record every binding used as a WHOLE value in `b` under the given [`UseScan`]
+/// policy. A bare `Var(n)` is a whole use; `Var(n).field` / `Var(n)[i]` and the
+/// view-safe `list.at` / `list.length` / `list.slice` reads are NOT (the base is read
+/// structurally); a closure capture marks everything it mentions. One walker shared
+/// by the aggregate/SROA passes (`Whole`) and the in-place reuse rung (`ReuseRhs`).
+fn scan_uses_block(b: &Block, mode: UseScan, out: &mut HashSet<String>) {
     for s in &b.stmts {
-        match s {
-            // Skip the assign TARGET; scan only the RHS (a fresh literal won't
-            // mention the target unless it reads it, which the consumer handles).
-            Stmt::Assign { value, .. } => mark_reuse_escapes_expr(value, out),
-            _ => each_expr_in_stmt(s, &mut |e| mark_reuse_escapes_expr(e, out)),
+        if let Stmt::Assign { name, value } = s {
+            match mode {
+                UseScan::Whole => {
+                    // The only SROA-compatible write is a SINGLE-field self-update
+                    // (`p.x = v` desugars to `p = RecordUpdate{ base: p, [(x, v)] }`):
+                    // scan only the field value, not the `..p` base. Every other
+                    // assignment to `name` marks it.
+                    if let Expr::RecordUpdate { base, fields } = value {
+                        if fields.len() == 1 && matches!(base.as_ref(), Expr::Var(x) if x == name) {
+                            scan_uses_expr(&fields[0].1, mode, out);
+                            continue;
+                        }
+                    }
+                    out.insert(name.clone());
+                    scan_uses_expr(value, mode, out);
+                }
+                // Skip the assign TARGET; scan only the RHS.
+                UseScan::ReuseRhs => scan_uses_expr(value, mode, out),
+            }
+            continue;
         }
+        each_expr_in_stmt(s, &mut |e| scan_uses_expr(e, mode, out));
     }
 }
 
-/// The expression-level companion of [`mark_reuse_escapes_block`]: identical to
-/// [`collect_whole_uses`] (bare `Var` is a whole use; `x[i]`/`x.field`/`list.at`/
-/// `list.length`/`list.slice` element reads are exempt; a closure capture marks
-/// everything it mentions) EXCEPT that control-flow blocks recurse through
-/// `mark_reuse_escapes_block` so nested reassignments stay non-escaping.
-fn mark_reuse_escapes_expr(e: &Expr, out: &mut HashSet<String>) {
+fn scan_uses_expr(e: &Expr, mode: UseScan, out: &mut HashSet<String>) {
     match e {
         Expr::Var(n) => {
             out.insert(n.clone());
         }
         Expr::Field { base, .. } => {
             if !matches!(base.as_ref(), Expr::Var(_)) {
-                mark_reuse_escapes_expr(base, out);
+                scan_uses_expr(base, mode, out);
             }
         }
         Expr::Index { base, index } => {
             if !matches!(base.as_ref(), Expr::Var(_)) {
-                mark_reuse_escapes_expr(base, out);
+                scan_uses_expr(base, mode, out);
             }
-            mark_reuse_escapes_expr(index, out);
+            scan_uses_expr(index, mode, out);
         }
         Expr::If { cond, then_block, else_block } => {
-            mark_reuse_escapes_expr(cond, out);
-            mark_reuse_escapes_block(then_block, out);
+            scan_uses_expr(cond, mode, out);
+            scan_uses_block(then_block, mode, out);
             if let Some(b) = else_block {
-                mark_reuse_escapes_block(b, out);
+                scan_uses_block(b, mode, out);
             }
         }
         Expr::While { cond, body } => {
-            mark_reuse_escapes_expr(cond, out);
-            mark_reuse_escapes_block(body, out);
+            scan_uses_expr(cond, mode, out);
+            scan_uses_block(body, mode, out);
         }
         Expr::For { iter, body, .. } => {
-            mark_reuse_escapes_expr(iter, out);
-            mark_reuse_escapes_block(body, out);
+            scan_uses_expr(iter, mode, out);
+            scan_uses_block(body, mode, out);
         }
         Expr::WhileLet { scrutinee, body, .. } => {
-            mark_reuse_escapes_expr(scrutinee, out);
-            mark_reuse_escapes_block(body, out);
+            scan_uses_expr(scrutinee, mode, out);
+            scan_uses_block(body, mode, out);
         }
-        Expr::Block(b) => mark_reuse_escapes_block(b, out),
+        Expr::Block(b) => scan_uses_block(b, mode, out),
         Expr::Match { scrutinee, arms } => {
-            mark_reuse_escapes_expr(scrutinee, out);
+            scan_uses_expr(scrutinee, mode, out);
             for a in arms {
                 if let Some(g) = &a.guard {
-                    mark_reuse_escapes_expr(g, out);
+                    scan_uses_expr(g, mode, out);
                 }
-                mark_reuse_escapes_expr(&a.body, out);
+                scan_uses_expr(&a.body, mode, out);
             }
         }
         Expr::Lambda { body, .. } => {
@@ -329,10 +357,10 @@ fn mark_reuse_escapes_expr(e: &Expr, out: &mut HashSet<String>) {
                 && matches!(args.first(), Some(Expr::Var(_))) =>
         {
             for a in &args[1..] {
-                mark_reuse_escapes_expr(a, out);
+                scan_uses_expr(a, mode, out);
             }
         }
-        _ => each_subexpr(e, &mut |s| mark_reuse_escapes_expr(s, out)),
+        _ => each_subexpr(e, &mut |s| scan_uses_expr(s, mode, out)),
     }
 }
 
@@ -551,112 +579,10 @@ fn collect_aggregate_lets(b: &Block, out: &mut HashSet<String>) {
     }
 }
 
+/// Record every binding used as a WHOLE value, marking assignment targets (the
+/// SROA/aggregate policy). A thin consumer of the unified [`scan_uses_block`].
 fn collect_whole_uses_block(b: &Block, out: &mut HashSet<String>) {
-    for s in &b.stmts {
-        // A top-level write to an aggregate is SROA-compatible without escaping it
-        // when it is a field update of itself (`p.x = v` desugars to
-        // `p = RecordUpdate{ base: p, .. }`) or a whole reassignment to a fresh
-        // aggregate (`p = Point(..)`): scan only the new field/element values, not
-        // the `..p` spread base. Any OTHER assignment to `name` disqualifies it
-        // (codegen can't scalar-replace it); a write nested in a sub-block falls
-        // through to the generic walk below and disqualifies via the `..p` base.
-        if let Stmt::Assign { name, value } = s {
-            // The only SROA-compatible write is a SINGLE-field update of itself
-            // (`p.x = v` desugars to `p = RecordUpdate{ base: p, [(x, v)] }`): one
-            // field local changes, and its value is evaluated before the write, so
-            // there is no cross-field read hazard. Scan only the field value (not
-            // the `..p` base). Every other assignment to `name` — a whole
-            // reassignment, a multi-field spread, an alias — disqualifies it.
-            if let Expr::RecordUpdate { base, fields } = value {
-                if fields.len() == 1 && matches!(base.as_ref(), Expr::Var(x) if x == name) {
-                    collect_whole_uses(&fields[0].1, out);
-                    continue;
-                }
-            }
-            out.insert(name.clone());
-            collect_whole_uses(value, out);
-            continue;
-        }
-        each_expr_in_stmt(s, &mut |e| collect_whole_uses(e, out));
-    }
-}
-
-/// Record every binding used as a WHOLE value. A bare `Var(n)` is a whole use;
-/// `Var(n).field` and `Var(n)[i]` are NOT (the base var is read structurally).
-/// Block-bearing forms recurse through [`collect_whole_uses_block`] so a nested
-/// single-field self-update (`p.x = v`) stays a structured write, not a whole use.
-fn collect_whole_uses(e: &Expr, out: &mut HashSet<String>) {
-    match e {
-        Expr::Var(n) => {
-            out.insert(n.clone());
-        }
-        // Field/index access: a Var base is a STRUCTURED (non-whole) use, so it is
-        // not recorded; a compound base recurses normally. The index expression of
-        // a subscript is an ordinary sub-expression.
-        Expr::Field { base, .. } => {
-            if !matches!(base.as_ref(), Expr::Var(_)) {
-                collect_whole_uses(base, out);
-            }
-        }
-        Expr::Index { base, index } => {
-            if !matches!(base.as_ref(), Expr::Var(_)) {
-                collect_whole_uses(base, out);
-            }
-            collect_whole_uses(index, out);
-        }
-        Expr::If { cond, then_block, else_block } => {
-            collect_whole_uses(cond, out);
-            collect_whole_uses_block(then_block, out);
-            if let Some(b) = else_block {
-                collect_whole_uses_block(b, out);
-            }
-        }
-        Expr::While { cond, body } => {
-            collect_whole_uses(cond, out);
-            collect_whole_uses_block(body, out);
-        }
-        Expr::For { iter, body, .. } => {
-            collect_whole_uses(iter, out);
-            collect_whole_uses_block(body, out);
-        }
-        Expr::WhileLet { scrutinee, body, .. } => {
-            collect_whole_uses(scrutinee, out);
-            collect_whole_uses_block(body, out);
-        }
-        Expr::Block(b) => collect_whole_uses_block(b, out),
-        Expr::Match { scrutinee, arms } => {
-            collect_whole_uses(scrutinee, out);
-            for a in arms {
-                if let Some(g) = &a.guard {
-                    collect_whole_uses(g, out);
-                }
-                collect_whole_uses(&a.body, out);
-            }
-        }
-        // A closure captures (by value) every free variable it references, so ANY
-        // mention of a name inside — even `p.field` — makes that name escape whole.
-        Expr::Lambda { body, .. } => {
-            for s in &body.stmts {
-                each_expr_in_stmt(s, &mut |x| mark_all_vars(x, out));
-            }
-        }
-        // A view-safe READ — `list.at(v, i)` / `list.length(v)` — does not use its
-        // list argument as a whole value (it indexes/measures it), so a binding
-        // used only this way stays a confined-slice candidate (RFC-0028). Likewise
-        // `list.slice(src, lo, hi)` reads `src` structurally: a source used ONLY as
-        // a slice source is never mutated/aliased whole, which is what lets the
-        // copy be elided safely. Records are never list arguments, so this does not
-        // affect SROA candidates.
-        Expr::Call { name, args }
-            if (name == "list.at" || name == "list.length" || is_list_slice(name))
-                && matches!(args.first(), Some(Expr::Var(_))) =>
-        {
-            for a in &args[1..] {
-                collect_whole_uses(a, out);
-            }
-        }
-        _ => each_subexpr(e, &mut |s| collect_whole_uses(s, out)),
-    }
+    scan_uses_block(b, UseScan::Whole, out);
 }
 
 /// Mark every variable an expression mentions as a whole use (used for closure
