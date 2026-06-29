@@ -538,6 +538,20 @@ mod tests {
         );
     }
 
+    /// RFC-0027 declared `packed` soundness: a packed list used as a WHOLE value
+    /// in-body (not the confined `list.length`/`list.at(_).field` shape) — here
+    /// aliased to another binding — is a clean codegen COMPILE ERROR, never a silent
+    /// miscompile against the flat layout. The complement of the typeck boundary
+    /// reject: this is the in-function `reject_reason` path.
+    #[test]
+    fn declared_packed_whole_value_use_is_rejected() {
+        let src = "import list\n\ntype P packed:\n    x: Int\n\nfn main(console: Console):\n    let xs = [P(1), P(2)]\n    let ys = xs\n    print(console, __render(list.length(ys)))\n";
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let r = compute(src);
+        opt::set_for_tests(None);
+        assert!(r.is_err(), "a declared-packed list used as a whole value must be rejected, got {r:?}");
+    }
+
     /// RFC-0028 `for var`: a mutation of the loop element is written back into the
     /// list, identically on the interpreter and on the WASM backend (default and
     /// forced-copy) — the parity contract for the new ergonomic form.
