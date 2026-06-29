@@ -1851,7 +1851,7 @@ fn bin_op(t: &Tok) -> BinOp {
 /// `RecordUpdate`, and nested places (`g[i][j] = v`) recurse outward — every
 /// step reassigns a value, so the uniqueness pass keeps it in place. The base
 /// must bottom out at a variable.
-fn desugar_place_assign(place: Expr, value: Expr) -> Result<Stmt, String> {
+pub(crate) fn desugar_place_assign(place: Expr, value: Expr) -> Result<Stmt, String> {
     match place {
         Expr::Var(name) => Ok(Stmt::Assign { name, value }),
         Expr::Index { base, index } => {

@@ -211,6 +211,56 @@ mod tests {
         );
     }
 
+    /// RFC-0028 `nodes.push(x)`: a statement-position mutating-method call writes
+    /// back to the place, identically on both backends. A non-self-returning
+    /// method (`length`) stays a discard, so the program still type-checks.
+    #[test]
+    fn mutating_method_statement_writes_back_on_both_backends() {
+        let src = "fn main(console: Console):\n    var xs = []\n    xs.push(1)\n    xs.push(2)\n    xs.push(3)\n    var d = dict.new()\n    d.insert(\"a\", 7)\n    var ys = [9, 9, 9]\n    ys.length()\n    print(console, \"${xs}\")\n    print(console, __render(dict.get_or(d, \"a\", 0)))\n";
+        let oracle = interp(src);
+        assert_eq!(oracle, vec!["[1, 2, 3]".to_string(), "7".to_string()]);
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let wasm = compute(src).expect("wasm").output;
+        opt::set_for_tests(None);
+        assert_eq!(wasm, oracle, "nodes.push(x): wasm must match the interpreter");
+    }
+
+    /// `nodes.push(x)` DoD counter (b): the statement uses the in-place path, so a
+    /// push loop stays O(n) heap; with `-inplace` it is O(n^2). Same output.
+    #[test]
+    fn mutating_method_statement_is_in_place() {
+        let src = "fn main(console: Console):\n    var xs = []\n    var i = 0\n    while i < 300:\n        xs.push(i)\n        i = i + 1\n    print(console, __render(list.length(xs)))\n";
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let on = compute(src).expect("on");
+        opt::set_for_tests(Some(OptSet::default_set().without(Opt::InPlace)));
+        let off = compute(src).expect("off");
+        opt::set_for_tests(None);
+        assert_eq!(on.output, off.output);
+        assert_eq!(on.output, vec!["300".to_string()]);
+        assert!(
+            off.heap_bytes > on.heap_bytes * 2,
+            "push statement must use the in-place path: on={} off={}",
+            on.heap_bytes,
+            off.heap_bytes
+        );
+    }
+
+    /// Regression (the `next_row`/pascal failure): a self-returning method call in
+    /// TAIL position is the block's value — the function's return — so it must NOT
+    /// be rewritten to a (Nil-valued) write-back. A non-tail one still is.
+    #[test]
+    fn tail_position_method_call_is_not_rewritten() {
+        let src = "fn grow(row: List(Int)) -> List(Int):\n    var out = [0]\n    out.push(row.at(0))\n    out.push(99)\n\nfn main(console: Console):\n    print(console, \"${grow([7])}\")\n";
+        // out.push(row.at(0)) is non-tail -> rewritten (out becomes [0, 7]);
+        // out.push(99) is the TAIL -> the returned value [0, 7, 99], not a discard.
+        let oracle = interp(src);
+        assert_eq!(oracle, vec!["[0, 7, 99]".to_string()]);
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let wasm = compute(src).expect("wasm").output;
+        opt::set_for_tests(None);
+        assert_eq!(wasm, oracle, "tail-position method call must agree on both backends");
+    }
+
     /// `for var` v1 rejects an early exit that belongs to the loop (it would skip
     /// the write-back), but allows a `continue` that belongs to a NESTED loop.
     #[test]
