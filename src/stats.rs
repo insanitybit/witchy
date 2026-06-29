@@ -248,6 +248,38 @@ mod tests {
         );
     }
 
+    /// RFC-0016 never-OOM BOUNDARY (the complement of the leak above): the realistic
+    /// server-cache case — a long loop overwriting a BOUNDED key set in a dict — is
+    /// ALREADY bounded by in-place dict mutation (the buffer is reused, not regrown),
+    /// independent of iteration count. This proves RC floor is NOT needed for the
+    /// bounded-working-set cache; its remaining job is specifically ESCAPING garbage
+    /// (the reassignment leak), not steady-state mutation. Pinning this keeps the
+    /// never-OOM frontier precise: what's handled vs. what 0016 must still fix.
+    #[test]
+    fn bounded_keyset_dict_cache_is_already_bounded() {
+        let prog = |n: i32| {
+            format!(
+                "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < {n}:\n        d = dict.insert(d, i % 8, i)\n        i = i + 1\n    print(console, __render(dict.length(d)))\n"
+            )
+        };
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let small = compute(&prog(500)).expect("n=500");
+        let big = compute(&prog(3000)).expect("n=3000");
+        opt::set_for_tests(None);
+        assert_eq!(small.output, vec!["8".to_string()]);
+        assert_eq!(big.output, vec!["8".to_string()]);
+        // 6× the iterations over the same 8 keys → ~constant heap (in-place reuse),
+        // unlike the escaping-reassignment leak. This is the never-OOM property
+        // HOLDING for the bounded-working-set case.
+        assert!(
+            big.heap_bytes < small.heap_bytes * 2,
+            "bounded-keyset dict cache must stay bounded (in-place), but heap scaled \
+             with iterations: n=500 heap={}, n=3000 heap={}",
+            small.heap_bytes,
+            big.heap_bytes
+        );
+    }
+
     /// RFC-0027 packed DoD counter (b): a confined list literal of fixed-scalar
     /// records read only via `at(_).field`/`length` is stored as ONE flat inline
     /// buffer with `unbox` on, instead of N boxed records + an N-pointer array with
