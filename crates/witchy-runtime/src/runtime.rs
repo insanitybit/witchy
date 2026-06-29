@@ -1333,7 +1333,6 @@ fn host_vm_par_map_run(mut caller: Caller<'_, VmState>, xs_ptr: i32, f_ptr: i32)
     // Everything a worker VM needs to instantiate a fresh, isolated copy.
     let engine = caller.data().engine.clone();
     let module = caller.data().module.clone();
-    let caps = caller.data().caps.clone();
     let preempt = caller.data().preempt;
     // One worker VM per core (capped by the element count), each its own wasmtime
     // instance + linear memory, processing a contiguous chunk so results reassemble
@@ -1347,9 +1346,9 @@ fn host_vm_par_map_run(mut caller: Caller<'_, VmState>, xs_ptr: i32, f_ptr: i32)
         while start < n {
             let end = (start + chunk).min(n);
             let chunk_inputs = inputs[start..end].to_vec();
-            let (engine, module, caps) = (&engine, &module, &caps);
+            let (engine, module) = (&engine, &module);
             handles.push(scope.spawn(move || {
-                run_par_chunk(engine, module, caps, preempt, code_idx, &chunk_inputs)
+                run_par_chunk(engine, module, preempt, code_idx, &chunk_inputs)
             }));
             start = end;
         }
@@ -1369,15 +1368,21 @@ fn host_vm_par_map_run(mut caller: Caller<'_, VmState>, xs_ptr: i32, f_ptr: i32)
 /// (RFC-0032) Run one chunk of a `vm.par_map` on a fresh, isolated worker VM: a new
 /// `Store`/`Instance` of the same module (own linear memory), invoking the mapped
 /// function by table index through the `__call_idx` trampoline for each input.
+///
+/// The worker is granted ZERO ambient authority — `vm.par_map`'s function is pure
+/// (no capability parameters), so the only capability imports linked are the
+/// authority-free staging helpers; every other host import is defined as a TRAP
+/// (deny-by-omission). A worker thus physically cannot touch the filesystem, network,
+/// or any other host resource, even though it shares the parent's compiled module.
+/// This is RFC-0032's Tier-B isolation mechanism in miniature.
 fn run_par_chunk(
     engine: &Engine,
     module: &Module,
-    caps: &Capabilities,
     preempt: bool,
     code_idx: i32,
     inputs: &[i64],
 ) -> Result<Vec<i64>> {
-    let state = worker_vmstate(caps, engine, module, preempt);
+    let state = worker_vmstate(engine, module, preempt);
     let mut store = Store::new(engine, state);
     store.limiter(|s| &mut s.limits);
     if preempt {
@@ -1386,7 +1391,11 @@ fn run_par_chunk(
         store.set_epoch_deadline(u64::MAX);
     }
     let mut linker: Linker<VmState> = Linker::new(engine);
-    link_capability_imports(&mut linker, caps)?;
+    // Empty grant: only the authority-free staging imports are defined…
+    link_capability_imports(&mut linker, &Capabilities::default())?;
+    // …and every capability import the module declares but the worker was not
+    // granted becomes a trap. A pure `f` calls none of them.
+    linker.define_unknown_imports_as_traps(module)?;
     let instance = linker.instantiate(&mut store, module)?;
     let call_idx = instance.get_typed_func::<(i32, i64), i64>(&mut store, "__call_idx")?;
     let mut out = Vec::with_capacity(inputs.len());
@@ -1396,33 +1405,24 @@ fn run_par_chunk(
     Ok(out)
 }
 
-/// A fresh `VmState` for a `vm.par_map` worker VM: the same capabilities (so the
-/// module's imports link) but its own empty handle tables and output buffer.
-fn worker_vmstate(caps: &Capabilities, engine: &Engine, module: &Module, preempt: bool) -> VmState {
-    let limits = StoreLimitsBuilder::new().build();
-    let dirs = caps
-        .dir_root
-        .iter()
-        .cloned()
-        .chain(caps.dir_roots.iter().cloned())
-        .map(|p| (p, String::new()))
-        .collect();
-    let nets = caps.net_allow.iter().cloned().collect();
+/// A fresh, zero-authority `VmState` for a `vm.par_map` worker VM: no granted
+/// capabilities, empty handle tables, its own output buffer.
+fn worker_vmstate(engine: &Engine, module: &Module, preempt: bool) -> VmState {
     VmState {
         id: 0,
-        caps: caps.clone(),
-        limits,
+        caps: Capabilities::default(),
+        limits: StoreLimitsBuilder::new().build(),
         output: Arc::new(Mutex::new(Vec::new())),
-        dirs,
-        files: caps.file_grants.clone(),
+        dirs: Vec::new(),
+        files: Vec::new(),
         pending: None,
         pending_list: None,
         pending_ints: None,
-        nets,
+        nets: Vec::new(),
         sockets: Vec::new(),
         listeners: Vec::new(),
-        build_out: caps.build_out.clone(),
-        build_read_roots: caps.build_read_roots.clone(),
+        build_out: None,
+        build_read_roots: Vec::new(),
         heap_objects: Vec::new(),
         rand_state: crate::rand::seed_from_env(),
         engine: engine.clone(),
