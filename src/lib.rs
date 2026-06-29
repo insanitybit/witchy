@@ -14,7 +14,7 @@
 
 // RFC-0018: AST→WIR lowering (codegen) + its uniqueness analysis live in the
 // `witchy-lower` crate.
-pub use witchy_lower::{analysis, codegen};
+pub use witchy_lower::{analysis, codegen, escape};
 // RFC-0018: the front-end + AST-level base layer lives in the `witchy-syntax`
 // crate; re-export so the rest of the compiler keeps using
 // `crate::{ast,lexer,parser,aliases,consts,fmt,…}::…` paths unchanged.
