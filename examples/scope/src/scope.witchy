@@ -1,0 +1,26 @@
+// Structured concurrency: `chan.scope` runs a batch of tasks concurrently and
+// returns only once they have ALL finished. No task handle escapes the call, so
+// a worker cannot outlive the scope and nothing leaks — the safe alternative to a
+// bare `spawn` whose handle you must remember to `join`. Each worker reports its
+// result over a channel (a task returns `Nil`); the run is byte-identical on both
+// backends because the cooperative executor schedules deterministically.
+import chan
+import option
+
+async fn worker(tx: Sender(Int), n: Int) -> Nil:
+    chan.send(tx, n * n).await
+
+async fn main(console: Console):
+    let (tx, rx) = chan.channel(0).await
+
+    // Fan out four workers and join them all — structured, leak-free.
+    chan.scope([worker(tx, 1), worker(tx, 2), worker(tx, 3), worker(tx, 4)]).await
+
+    // Every worker has finished, so all four results are waiting.
+    let a = chan.recv(rx).await
+    let b = chan.recv(rx).await
+    let c = chan.recv(rx).await
+    let d = chan.recv(rx).await
+    let total = option.unwrap_or(a, 0) + option.unwrap_or(b, 0)
+        + option.unwrap_or(c, 0) + option.unwrap_or(d, 0)
+    print(console, "sum of squares: ${total}")

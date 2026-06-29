@@ -132,6 +132,30 @@ pub fn join(h: Handle) -> Task(m, Nil):
     match h:
         Handle(id) -> Task(fn(): Wait(id, fn(u): Task(fn(): Done(u))))
 
+// Spawn every task in `children` concurrently, returning their handles. The
+// children begin running on the next executor turns; nothing is joined yet.
+pub fn spawn_all(children: List(Task(m, Nil))) -> Task(m, List(Handle)):
+    if list.is_empty(children):
+        done([])
+    else:
+        and_then(spawn(list.at(children, 0)), fn(h):
+            and_then(spawn_all(list.tail(children)), fn(rest):
+                done(list.concat([h], rest))))
+
+// Join every handle in `hs` — block until they have all finished.
+pub fn join_all(hs: List(Handle)) -> Task(m, Nil):
+    for_each(hs, fn(h): join(h))
+
+// STRUCTURED concurrency (a "nursery"): run every task in `children`
+// concurrently and return only once they have ALL finished. No handle escapes
+// the call, so a child cannot outlive the scope and there are no leaked tasks —
+// prefer this over a bare `spawn` whose handle you must remember to `join`. The
+// children interleave on the cooperative executor, so a concurrent run is
+// byte-identical on both backends (the parity contract). Results flow out over
+// channels, as with any task (a child returns `Nil`).
+pub fn scope(children: List(Task(m, Nil))) -> Task(m, Nil):
+    and_then(spawn_all(children), fn(hs): join_all(hs))
+
 // The outcome of a `select`: a message from the first or the second receiver, or
 // `Closed` once neither can deliver.
 type Selected(m):
