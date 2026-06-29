@@ -149,6 +149,161 @@ pub fn confined_record_list_candidates_block(body: &Block) -> HashSet<String> {
     lets
 }
 
+/// (RFC-0016 never-OOM, in-place reuse rung) A `var` bound to a list LITERAL of a
+/// fixed length L, every reassignment to which is ALSO a list literal of length L,
+/// and which is NEVER used as a whole value (only element reads — `x[i]`,
+/// `list.at(x, i)`, `list.length(x)` — and the reassignments themselves). The
+/// escape oracle proves such a var's buffer is never aliased, so each reassignment
+/// may OVERWRITE the existing L-slot buffer IN PLACE instead of allocating a fresh
+/// list. This bounds a build-and-drop loop (`var x = [..]; while …: x = [..]`) that
+/// otherwise leaks O(n): the arena/watermark cannot reclaim a value that escaped
+/// the loop body and only LATER became dead (measured in
+/// `stats::escaping_reassignment_leaks_without_rc_floor`). Parity-safe — with no
+/// alias, an in-place overwrite is indistinguishable from a fresh value.
+///
+/// Conservative + SOUND: a whole-value use (pass / return / store / render /
+/// compare / `let y = x`), a reassignment that is not a same-length list literal,
+/// or a non-literal binding disqualifies it. A reassignment whose RHS reads the var
+/// (`x = [x.at(0), …]`) is left to the codegen consumer, which allocates for that
+/// one site rather than corrupt a slot mid-write.
+pub fn confined_inplace_reuse_vars(f: &Function) -> HashSet<String> {
+    confined_inplace_reuse_vars_block(&f.body)
+}
+
+/// As [`confined_inplace_reuse_vars`], over a body block directly.
+pub fn confined_inplace_reuse_vars_block(body: &Block) -> HashSet<String> {
+    let mut len_of: HashMap<String, usize> = HashMap::new();
+    collect_list_literal_lets(body, &mut len_of);
+    if len_of.is_empty() {
+        return HashSet::new();
+    }
+    // Every reassignment must be a list literal of the SAME length, or the fixed
+    // L-slot buffer the in-place overwrite relies on would not hold.
+    let mut disq = HashSet::new();
+    mark_nonuniform_reassigns(body, &len_of, &mut disq);
+    // Never used as a whole value (so the buffer has no other reference).
+    let mut whole = HashSet::new();
+    mark_reuse_escapes_block(body, &mut whole);
+    len_of
+        .into_iter()
+        .filter(|(x, _)| !disq.contains(x) && !whole.contains(x))
+        .map(|(x, _)| x)
+        .collect()
+}
+
+/// `var x = [..]` / `let x = [..]` — a binding whose value is a list literal;
+/// record `x -> length`. (A non-literal binding is not a fixed-size buffer.)
+fn collect_list_literal_lets(b: &Block, out: &mut HashMap<String, usize>) {
+    for s in &b.stmts {
+        if let Stmt::Let { name, value: Expr::List(items), .. } = s {
+            out.insert(name.clone(), items.len());
+        }
+        each_block_in_stmt(s, &mut |blk| collect_list_literal_lets(blk, out));
+    }
+}
+
+/// Mark a candidate if any reassignment `x = <v>` is NOT a list literal of x's
+/// recorded length (a different length, or a non-literal — neither preserves the
+/// fixed L-slot buffer the in-place overwrite needs).
+fn mark_nonuniform_reassigns(b: &Block, len_of: &HashMap<String, usize>, out: &mut HashSet<String>) {
+    for s in &b.stmts {
+        if let Stmt::Assign { name, value } = s {
+            if let Some(&l) = len_of.get(name) {
+                match value {
+                    Expr::List(items) if items.len() == l => {}
+                    _ => {
+                        out.insert(name.clone());
+                    }
+                }
+            }
+        }
+        each_block_in_stmt(s, &mut |blk| mark_nonuniform_reassigns(blk, len_of, out));
+    }
+}
+
+/// Like [`collect_whole_uses_block`] but a reassignment `x = <v>` does NOT mark `x`
+/// (a same-length list-literal reassignment is exactly what the reuse rung wants,
+/// not an escape) — only a genuine whole-value use of `x` in some expression marks
+/// it. Recurses nested blocks through itself (NOT `collect_whole_uses_block`, which
+/// would re-introduce the assign-target marking).
+fn mark_reuse_escapes_block(b: &Block, out: &mut HashSet<String>) {
+    for s in &b.stmts {
+        match s {
+            // Skip the assign TARGET; scan only the RHS (a fresh literal won't
+            // mention the target unless it reads it, which the consumer handles).
+            Stmt::Assign { value, .. } => mark_reuse_escapes_expr(value, out),
+            _ => each_expr_in_stmt(s, &mut |e| mark_reuse_escapes_expr(e, out)),
+        }
+    }
+}
+
+/// The expression-level companion of [`mark_reuse_escapes_block`]: identical to
+/// [`collect_whole_uses`] (bare `Var` is a whole use; `x[i]`/`x.field`/`list.at`/
+/// `list.length`/`list.slice` element reads are exempt; a closure capture marks
+/// everything it mentions) EXCEPT that control-flow blocks recurse through
+/// `mark_reuse_escapes_block` so nested reassignments stay non-escaping.
+fn mark_reuse_escapes_expr(e: &Expr, out: &mut HashSet<String>) {
+    match e {
+        Expr::Var(n) => {
+            out.insert(n.clone());
+        }
+        Expr::Field { base, .. } => {
+            if !matches!(base.as_ref(), Expr::Var(_)) {
+                mark_reuse_escapes_expr(base, out);
+            }
+        }
+        Expr::Index { base, index } => {
+            if !matches!(base.as_ref(), Expr::Var(_)) {
+                mark_reuse_escapes_expr(base, out);
+            }
+            mark_reuse_escapes_expr(index, out);
+        }
+        Expr::If { cond, then_block, else_block } => {
+            mark_reuse_escapes_expr(cond, out);
+            mark_reuse_escapes_block(then_block, out);
+            if let Some(b) = else_block {
+                mark_reuse_escapes_block(b, out);
+            }
+        }
+        Expr::While { cond, body } => {
+            mark_reuse_escapes_expr(cond, out);
+            mark_reuse_escapes_block(body, out);
+        }
+        Expr::For { iter, body, .. } => {
+            mark_reuse_escapes_expr(iter, out);
+            mark_reuse_escapes_block(body, out);
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            mark_reuse_escapes_expr(scrutinee, out);
+            mark_reuse_escapes_block(body, out);
+        }
+        Expr::Block(b) => mark_reuse_escapes_block(b, out),
+        Expr::Match { scrutinee, arms } => {
+            mark_reuse_escapes_expr(scrutinee, out);
+            for a in arms {
+                if let Some(g) = &a.guard {
+                    mark_reuse_escapes_expr(g, out);
+                }
+                mark_reuse_escapes_expr(&a.body, out);
+            }
+        }
+        Expr::Lambda { body, .. } => {
+            for s in &body.stmts {
+                each_expr_in_stmt(s, &mut |x| mark_all_vars(x, out));
+            }
+        }
+        Expr::Call { name, args }
+            if (name == "list.at" || name == "list.length" || is_list_slice(name))
+                && matches!(args.first(), Some(Expr::Var(_))) =>
+        {
+            for a in &args[1..] {
+                mark_reuse_escapes_expr(a, out);
+            }
+        }
+        _ => each_subexpr(e, &mut |s| mark_reuse_escapes_expr(s, out)),
+    }
+}
+
 /// `let xs = [Ctor(..), Ctor(..), ..]` — a non-empty list literal whose every
 /// element is a record constructor. Records the binding name.
 fn collect_record_list_lets(b: &Block, out: &mut HashSet<String>) {
@@ -657,6 +812,52 @@ mod tests {
         assert!(
             !confined_record_list_candidates(&f).contains("xs"),
             "a reassigned list is not a fixed packed buffer"
+        );
+    }
+
+    #[test]
+    fn reassigned_confined_list_var_is_a_reuse_candidate() {
+        // `var x = [..3..]; while …: x = [..3..]`, x read only via at/length —
+        // never whole-used, uniform length → the buffer can be overwritten in place.
+        let f = func(
+            "fn d(n: Int) -> Int:\n    var x = [0, 0, 0]\n    var i = 0\n    while i < n:\n        x = [i, i + 1, i + 2]\n        i = i + 1\n    list.at(x, 0) + list.length(x)\n",
+        );
+        assert!(
+            confined_inplace_reuse_vars(&f).contains("x"),
+            "a confined, never-whole-used var reassigned to same-length literals is a reuse candidate"
+        );
+    }
+
+    #[test]
+    fn reuse_var_used_whole_is_not_a_candidate() {
+        let f = func(
+            "fn d() -> Int:\n    var x = [0, 0, 0]\n    x = [1, 2, 3]\n    use_it(x)\n    list.length(x)\n",
+        );
+        assert!(
+            !confined_inplace_reuse_vars(&f).contains("x"),
+            "passing the var whole means its buffer may be aliased — not reuse-safe"
+        );
+    }
+
+    #[test]
+    fn reuse_var_aliased_by_let_is_not_a_candidate() {
+        let f = func(
+            "fn d() -> Int:\n    var x = [0, 0, 0]\n    x = [1, 2, 3]\n    let y = x\n    list.at(y, 0)\n",
+        );
+        assert!(
+            !confined_inplace_reuse_vars(&f).contains("x"),
+            "binding `let y = x` aliases the buffer — in-place overwrite would corrupt y"
+        );
+    }
+
+    #[test]
+    fn reuse_var_with_nonuniform_length_is_not_a_candidate() {
+        let f = func(
+            "fn d() -> Int:\n    var x = [0, 0, 0]\n    x = [1, 2]\n    list.length(x)\n",
+        );
+        assert!(
+            !confined_inplace_reuse_vars(&f).contains("x"),
+            "a different-length reassignment breaks the fixed-buffer invariant"
         );
     }
 
