@@ -82,6 +82,11 @@ run "witchy fmt (std+examples)" witchy_fmt_check
 run "tests (workspace)"        "${test_cmd[@]}"
 run "wasm playground build"    "${wasm_cargo[@]}" build --lib --no-default-features --target wasm32-unknown-unknown
 if [ "$full" -eq 1 ]; then
+    # RFC-0023 memory-safety sweep: re-run the differential fuzzer with the checked
+    # heap on, so a codegen heap bug (wrong offset, missing ensure, mis-layout) in
+    # any optimization surfaces as a redzone trap or backend DIVERGE on random
+    # programs — not just the curated suite. Runs with all WITCHY_OPT levers on.
+    run "fuzz (checked heap)"  env WITCHY_HEAP_CHECK=1 cargo nextest run --test differential_fuzz
     run "e2e (from scratch)"   ./scripts/e2e-full.sh
     # RFC-0030 bench/soak. The deterministic guards — the never-OOM soak and the
     # per-optimization counter assertions (src/stats.rs) — are HARD-gated in the
