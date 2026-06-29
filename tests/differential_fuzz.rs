@@ -228,7 +228,17 @@ fn differential_fuzz_interpreter_vs_compiled() {
         let src = gen_program(seed.wrapping_mul(0x1234_5678_9ABC_DEF1).wrapping_add(1), statements);
         let path = std::env::temp_dir().join(format!("witchy_fuzz_{seed}.witchy"));
         std::fs::File::create(&path).unwrap().write_all(src.as_bytes()).unwrap();
-        let out = Command::new(BIN).args(["parity", path.to_str().unwrap()]).output().unwrap();
+        // Fuzz with EVERY codegen optimization on (not just the production default),
+        // so the opt-in heap-layout paths — packed `unbox`, etc. — are exercised too;
+        // under `WITCHY_HEAP_CHECK=1` (check.sh --full) this is the redzone memory-
+        // safety net for them. `-wasm-opt` excludes the external Binaryen post-pass
+        // (a toolchain dependency, not a codegen path). `parity` reads `WITCHY_OPT`
+        // for its compiled side; the interpreter oracle ignores it.
+        let out = Command::new(BIN)
+            .args(["parity", path.to_str().unwrap()])
+            .env("WITCHY_OPT", "all,-wasm-opt")
+            .output()
+            .unwrap();
         let _ = std::fs::remove_file(&path);
         let stdout = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
