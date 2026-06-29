@@ -1,9 +1,21 @@
 ---
 rfc: 0024
 title: Unified facts / escape lattice
-status: proposed
+status: implemented
 created: 2026-06-28
-tracking:
+tracking: "The unified facts/escape oracle is delivered and is the substrate every
+  optimization consumes: `analyze` → `Facts` (uniqueness/dirty/accumulators) and
+  `Summaries` (interprocedural may_alias_out/conventions/own_abi) in
+  crates/witchy-lower/src/analysis.rs, plus the consolidated confinement walker
+  `scan_uses` (escape.rs) parameterized on assign-handling × call-exemption policies —
+  the formerly-separate collect_whole_uses / mark_reuse_escapes / mark_leaking_uses
+  walkers folded into one. Each knob (inplace/views/sroa/region/rc-elide/rc-floor/unbox)
+  is a pure consumer that passes the differential de-opt sweep + a `witchy stats`
+  counter. The RFC's goal — a new knob is 'add a consumer/policy', not bespoke
+  plumbing — is met. Non-essential future refinement (not behavior-affecting):
+  expressing confinement as one literal monotone fixpoint alongside uniqueness rather
+  than as the shared AST-walk consumers, and folding the genuinely-distinct
+  mark_non_packed_uses (different leaf+traversal rules)."
 ---
 
 # RFC-0024: Unified facts / escape lattice
