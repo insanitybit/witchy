@@ -44,6 +44,23 @@ example. There is no CI: `./scripts/check.sh` is the green gate (build + clippy
 `-D warnings` + `nextest --workspace` + the wasm build) — run it before every
 commit, and `--full` before a push.
 
+## Optimizations generalize — never special-case a method
+
+Memory / in-place / reclamation optimizations are **driven by the ownership
+conventions** (`let`/`var`/`own`, and `frozen`/`unique`) plus the escape/uniqueness
+analysis — **one general mechanism for ALL operations.** Do **not** add a
+per-method fast path: no new `*_cap` runtime helpers (`dict_insert_cap`,
+`list_push_cap`, …) and no new per-method `self_*` recognizers in
+`crates/witchy-lower/src/analysis.rs` (`self_insert_args`, `self_set_at`, …). A
+per-operation hack does not generalize — every new method would need its own code,
+and the ones that don't get it silently regress (that is exactly why `dict.remove`
+leaked: it had no `dict_remove_cap`). The conventions already express the ownership
+fact (a unique `var` may be mutated/reclaimed in place; a `let` may not escape);
+consume that fact uniformly. The existing `*_cap` + `self_*` family is **technical
+debt to delete** once the general mechanism subsumes it — removing it with the
+suite still green is the proof the generalization works. (RFC-0016 is the general
+reclamation floor; this is its thesis.)
+
 ## Trait-method dispatch (recently extended)
 
 `show(x)` / `less(x, y)` etc. resolve by recovering the receiver's concrete type
