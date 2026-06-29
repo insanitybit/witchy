@@ -154,4 +154,49 @@ mod tests {
             assert_eq!(out, base, "WITCHY_OPT={label} changed observable output");
         }
     }
+
+    fn interp(src: &str) -> Vec<String> {
+        let linked = crate::resolve_std_only(src).expect("link");
+        typeck::check(&linked).expect("typeck");
+        crate::interpreter::run_module(linked, ".", Vec::new()).expect("interp run")
+    }
+
+    /// RFC-0028 `for var`: a mutation of the loop element is written back into the
+    /// list, identically on the interpreter and on the WASM backend (default and
+    /// forced-copy) — the parity contract for the new ergonomic form.
+    #[test]
+    fn for_var_writes_elements_back_on_both_backends() {
+        let src = "fn main(console: Console):\n    var xs = [1, 2, 3, 4]\n    for var x in xs:\n        x = x * 10\n    print(console, __render(xs))\n";
+        let oracle = interp(src);
+        assert_eq!(oracle, vec!["[10, 20, 30, 40]".to_string()]);
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let wasm = compute(src).expect("wasm").output;
+        opt::set_for_tests(Some(OptSet::default_set().without(Opt::InPlace)));
+        let wasm_copy = compute(src).expect("wasm -inplace").output;
+        opt::set_for_tests(None);
+        assert_eq!(wasm, oracle, "for var: wasm must match the interpreter");
+        assert_eq!(wasm_copy, oracle, "for var: forced-copy must match too");
+    }
+
+    /// `for var` mutating a record field of each element, parity-checked.
+    #[test]
+    fn for_var_mutates_record_fields() {
+        let src = "type P:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    var ps = [P(1, 2), P(3, 4)]\n    for var p in ps:\n        p.x = p.x + 100\n    print(console, __render(ps))\n";
+        let oracle = interp(src);
+        assert!(oracle[0].contains("101") && oracle[0].contains("103"), "{oracle:?}");
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let wasm = compute(src).expect("wasm").output;
+        opt::set_for_tests(None);
+        assert_eq!(wasm, oracle, "for var record mutation: wasm must match the interpreter");
+    }
+
+    /// `for var` v1 rejects an early exit that belongs to the loop (it would skip
+    /// the write-back), but allows a `continue` that belongs to a NESTED loop.
+    #[test]
+    fn for_var_rejects_loop_belonging_early_exit() {
+        let bad = "fn main(console: Console):\n    var xs = [1, 2, 3]\n    for var x in xs:\n        if x == 2:\n            continue\n        x = x * 10\n    print(console, __render(xs))\n";
+        assert!(crate::resolve_std_only(bad).is_err(), "a loop-belonging continue must be rejected");
+        let ok = "fn main(console: Console):\n    var xs = [1, 2, 3]\n    for var x in xs:\n        for y in [0, 1]:\n            if y == 9:\n                continue\n        x = x * 10\n    print(console, __render(xs))\n";
+        assert!(crate::resolve_std_only(ok).is_ok(), "a nested-loop continue must be allowed");
+    }
 }

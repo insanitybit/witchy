@@ -580,18 +580,48 @@ impl Parser {
     }
 
     fn is_assignment(&self) -> bool {
-        matches!(self.kind(), Tok::Ident(_))
-            && matches!(
-                self.toks.get(self.pos + 1).map(|t| &t.kind),
-                Some(
-                    Tok::Eq
-                        | Tok::PlusEq
-                        | Tok::MinusEq
-                        | Tok::StarEq
-                        | Tok::SlashEq
-                        | Tok::PercentEq
-                )
+        if !matches!(self.kind(), Tok::Ident(_)) {
+            return false;
+        }
+        // Scan past a place chain — `name`, `name[idx]…`, `name.field…`, and any
+        // mix (`g[i].f[j]`) — then require an assignment operator. This is what
+        // makes `d[k] = v` and `u.field = v` parse as assignments (RFC-0022),
+        // not bare expression statements.
+        let mut i = self.pos + 1;
+        loop {
+            match self.toks.get(i).map(|t| &t.kind) {
+                Some(Tok::LBracket) => {
+                    let mut depth = 1;
+                    i += 1;
+                    while depth > 0 {
+                        match self.toks.get(i).map(|t| &t.kind) {
+                            Some(Tok::LBracket) => depth += 1,
+                            Some(Tok::RBracket) => depth -= 1,
+                            None => return false,
+                            _ => {}
+                        }
+                        i += 1;
+                    }
+                }
+                Some(Tok::Dot)
+                    if matches!(self.toks.get(i + 1).map(|t| &t.kind), Some(Tok::Ident(_))) =>
+                {
+                    i += 2;
+                }
+                _ => break,
+            }
+        }
+        matches!(
+            self.toks.get(i).map(|t| &t.kind),
+            Some(
+                Tok::Eq
+                    | Tok::PlusEq
+                    | Tok::MinusEq
+                    | Tok::StarEq
+                    | Tok::SlashEq
+                    | Tok::PercentEq
             )
+        )
     }
 
     fn function(&mut self, public: bool) -> Result<Function, ParseError> {
@@ -869,19 +899,25 @@ impl Parser {
             let value = self.expr(0)?;
             Ok(Stmt::Let { name, ty, mutable, value })
         } else if self.is_assignment() {
-            let name = self.ident()?;
-            // `x op= e` desugars to `x = x op e`; plain `x = e` is unchanged.
+            // The left side is a *place*: a variable, a subscript `x[i]`, or a
+            // field `x.f` (RFC-0022). Parse it as an expression (it stops at the
+            // assignment operator), then desugar to a plain `Stmt::Assign` of the
+            // base variable — `x[i] = v` -> `x = x.set_at(i, v)`, `x.f = v` ->
+            // `x = RecordUpdate{x, f: v}`.
+            let place = self.expr(0)?;
+            // `place op= e` desugars to `place = place op e`; plain `place = e` is
+            // unchanged.
             let op = self.advance();
             let rhs = self.expr(0)?;
             let value = match compound_assign_op(&op) {
                 Some(binop) => Expr::Binary {
                     op: binop,
-                    lhs: Box::new(Expr::Var(name.clone())),
+                    lhs: Box::new(place.clone()),
                     rhs: Box::new(rhs),
                 },
                 None => rhs,
             };
-            Ok(Stmt::Assign { name, value })
+            desugar_place_assign(place, value).map_err(|m| self.error(m))
         } else {
             Ok(Stmt::Expr(self.expr(0)?))
         }
@@ -1170,6 +1206,11 @@ impl Parser {
                 // (so the body may itself `await`). The marker only survives in a
                 // non-async fn, where it is rightly an "unknown function" error.
                 let stream = self.eat(&Tok::Await);
+                // `for var x in xs:` — write-back mutable iteration (RFC-0028): each
+                // element is bound mutably and stored back, so you mutate elements
+                // in place without index ceremony. Only the plain single-variable
+                // form over a list variable; desugared below.
+                let mutable = !stream && self.eat(&Tok::Var);
                 let wrap = |iter: Expr| -> Expr {
                     if stream {
                         Expr::Call { name: "chan.__recv_stream".into(), args: vec![iter] }
@@ -1199,6 +1240,21 @@ impl Parser {
                 self.expect(&Tok::In)?;
                 let iter = self.expr(0)?;
                 let mut body = self.block()?;
+                if mutable {
+                    if paren || names.len() != 1 {
+                        return Err(self.error("`for var` takes a single loop variable, not a tuple pattern"));
+                    }
+                    let name = names.pop().unwrap();
+                    let Expr::Var(list_var) = &iter else {
+                        return Err(self.error("`for var x in <list>` requires a plain list variable to write each element back to"));
+                    };
+                    if for_var_body_escapes(&body) {
+                        return Err(self.error(
+                            "`for var` does not yet support break/continue/return/`?` in its body (RFC-0028 v1) — use an index loop for early exit",
+                        ));
+                    }
+                    return Ok(desugar_for_var(name, list_var.clone(), body));
+                }
                 if !paren && names.len() == 1 {
                     return Ok(Expr::For {
                         var: names.pop().unwrap(),
@@ -1786,6 +1842,184 @@ fn bin_op(t: &Tok) -> BinOp {
         Tok::Shl => BinOp::Shl,
         Tok::Shr => BinOp::Shr,
         other => unreachable!("not a binary operator: {other:?}"),
+    }
+}
+
+/// Desugar an assignment whose left side is a *place* expression into a plain
+/// `Stmt::Assign` of the base variable (RFC-0022). A subscript becomes a
+/// `set_at` method call (UFCS-resolved to `list`/`dict`), a field becomes a
+/// `RecordUpdate`, and nested places (`g[i][j] = v`) recurse outward — every
+/// step reassigns a value, so the uniqueness pass keeps it in place. The base
+/// must bottom out at a variable.
+fn desugar_place_assign(place: Expr, value: Expr) -> Result<Stmt, String> {
+    match place {
+        Expr::Var(name) => Ok(Stmt::Assign { name, value }),
+        Expr::Index { base, index } => {
+            let new_base = Expr::MethodCall {
+                receiver: base.clone(),
+                method: "set_at".to_string(),
+                args: vec![*index, value],
+            };
+            desugar_place_assign(*base, new_base)
+        }
+        Expr::Field { base, field } => {
+            let new_base = Expr::RecordUpdate {
+                base: base.clone(),
+                fields: vec![(field, value)],
+            };
+            desugar_place_assign(*base, new_base)
+        }
+        _ => Err(
+            "the left side of `=` must be a variable, an index `x[i]`, or a field `x.f`"
+                .to_string(),
+        ),
+    }
+}
+
+/// Desugar `for var x in xs:` (RFC-0028) into an indexed loop that writes each
+/// element back, so a mutation of `x` lands in `xs` — using only existing nodes
+/// (range-for + `xs[i] = …` place-assignment), so both backends lower it
+/// identically and the uniqueness pass keeps the write in place:
+///
+/// ```text
+/// for __fvN in 0..xs.length():
+///     var x = xs[__fvN]
+///     <body>
+///     xs[__fvN] = x
+/// ```
+///
+/// v1 requires `xs` be a plain list variable and rejects loop-belonging
+/// `break`/`continue`/`return`/`?` in the body (checked by the caller via
+/// [`for_var_body_escapes`]) — straight-line element mutation, the common case;
+/// loss-free write-back across early exit is a later refinement.
+fn desugar_for_var(name: String, list_var: String, body: Block) -> Expr {
+    thread_local! {
+        static FORVAR_COUNTER: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+    let n = FORVAR_COUNTER.with(|c| {
+        let v = c.get();
+        c.set(v + 1);
+        v
+    });
+    let idx = format!("__fv{n}");
+    let elem = || Expr::Index {
+        base: Box::new(Expr::Var(list_var.clone())),
+        index: Box::new(Expr::Var(idx.clone())),
+    };
+    let bind = Stmt::Let { name: name.clone(), ty: None, mutable: true, value: elem() };
+    // `xs[idx] = name` — desugar_place_assign turns it into `xs = xs.set_at(idx, name)`.
+    let writeback = desugar_place_assign(elem(), Expr::Var(name))
+        .expect("an index place always desugars");
+    let mut stmts = Vec::with_capacity(body.stmts.len() + 2);
+    stmts.push(bind);
+    stmts.extend(body.stmts);
+    stmts.push(writeback);
+    let lines = vec![0u32; stmts.len()];
+    let inner = Block { stmts, lines, region: None };
+    Expr::For {
+        var: idx,
+        iter: Box::new(Expr::Range {
+            lo: Box::new(Expr::Int(0)),
+            hi: Box::new(Expr::MethodCall {
+                receiver: Box::new(Expr::Var(list_var)),
+                method: "length".to_string(),
+                args: vec![],
+            }),
+            inclusive: false,
+        }),
+        body: inner,
+    }
+}
+
+/// Does `body` contain a control-flow exit that belongs to the enclosing `for
+/// var` (rather than to a nested loop or lambda)? Such an exit would skip the
+/// element write-back, so RFC-0028 v1 rejects it up front instead of silently
+/// losing the write. `break`/`continue` belong to the nearest loop; `return` and
+/// `?` exit the function (so they belong unless inside a lambda).
+fn for_var_body_escapes(b: &Block) -> bool {
+    b.stmts.iter().any(|s| for_var_stmt_escapes(s, false, false))
+}
+
+fn for_var_stmt_escapes(s: &Stmt, in_loop: bool, in_lambda: bool) -> bool {
+    match s {
+        Stmt::Break | Stmt::Continue => !in_loop,
+        Stmt::Return(e) => {
+            !in_lambda || e.as_ref().is_some_and(|x| for_var_expr_escapes(x, in_loop, in_lambda))
+        }
+        Stmt::Let { value, .. }
+        | Stmt::Assign { value, .. }
+        | Stmt::LetTuple { value, .. }
+        | Stmt::Yield(value)
+        | Stmt::Expr(value) => for_var_expr_escapes(value, in_loop, in_lambda),
+    }
+}
+
+fn for_var_expr_escapes(e: &Expr, in_loop: bool, in_lambda: bool) -> bool {
+    let blk = |b: &Block, il: bool, ila: bool| {
+        b.stmts.iter().any(|s| for_var_stmt_escapes(s, il, ila))
+    };
+    match e {
+        // `?` propagates from the enclosing function (or closure) — a function-level
+        // early exit, exactly like `return`.
+        Expr::Try(inner) => !in_lambda || for_var_expr_escapes(inner, in_loop, in_lambda),
+        // Nested loops capture their own break/continue, but a `return`/`?` inside
+        // one still escapes the `for var`, so descend with in_loop = true.
+        Expr::For { iter, body, .. } => {
+            for_var_expr_escapes(iter, in_loop, in_lambda) || blk(body, true, in_lambda)
+        }
+        Expr::While { cond, body } => {
+            for_var_expr_escapes(cond, in_loop, in_lambda) || blk(body, true, in_lambda)
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            for_var_expr_escapes(scrutinee, in_loop, in_lambda) || blk(body, true, in_lambda)
+        }
+        // A lambda owns its `return`/`?`; break/continue cannot cross into it.
+        Expr::Lambda { body, .. } => blk(body, true, true),
+        Expr::If { cond, then_block, else_block } => {
+            for_var_expr_escapes(cond, in_loop, in_lambda)
+                || blk(then_block, in_loop, in_lambda)
+                || else_block.as_ref().is_some_and(|b| blk(b, in_loop, in_lambda))
+        }
+        Expr::Match { scrutinee, arms } => {
+            for_var_expr_escapes(scrutinee, in_loop, in_lambda)
+                || arms.iter().any(|a| {
+                    a.guard.as_ref().is_some_and(|g| for_var_expr_escapes(g, in_loop, in_lambda))
+                        || for_var_expr_escapes(&a.body, in_loop, in_lambda)
+                })
+        }
+        Expr::Block(b) => blk(b, in_loop, in_lambda),
+        Expr::Call { args, .. }
+        | Expr::Ctor { args, .. }
+        | Expr::List(args)
+        | Expr::Tuple(args) => args.iter().any(|a| for_var_expr_escapes(a, in_loop, in_lambda)),
+        Expr::Apply { func, args } => {
+            for_var_expr_escapes(func, in_loop, in_lambda)
+                || args.iter().any(|a| for_var_expr_escapes(a, in_loop, in_lambda))
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            for_var_expr_escapes(lhs, in_loop, in_lambda)
+                || for_var_expr_escapes(rhs, in_loop, in_lambda)
+        }
+        Expr::Range { lo, hi, .. } => {
+            for_var_expr_escapes(lo, in_loop, in_lambda)
+                || for_var_expr_escapes(hi, in_loop, in_lambda)
+        }
+        Expr::Index { base, index } => {
+            for_var_expr_escapes(base, in_loop, in_lambda)
+                || for_var_expr_escapes(index, in_loop, in_lambda)
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            for_var_expr_escapes(receiver, in_loop, in_lambda)
+                || args.iter().any(|a| for_var_expr_escapes(a, in_loop, in_lambda))
+        }
+        Expr::Unary { expr, .. } | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
+            for_var_expr_escapes(expr, in_loop, in_lambda)
+        }
+        Expr::RecordUpdate { base, fields } => {
+            for_var_expr_escapes(base, in_loop, in_lambda)
+                || fields.iter().any(|(_, v)| for_var_expr_escapes(v, in_loop, in_lambda))
+        }
+        _ => false,
     }
 }
 

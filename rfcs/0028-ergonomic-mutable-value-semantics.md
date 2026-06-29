@@ -256,6 +256,15 @@ the in-place machinery.
 
 ---
 
+> 2026-06-28: **`for var` v1 landed.** Implemented as a parser desugar to an
+> indexed range-loop with a `xs[i] = x` place write-back (so both backends lower
+> it identically and the uniqueness pass keeps it in place); restricted to a
+> single loop variable over a plain list variable. v1 rejects a `break`/
+> `continue`/`return`/`?` that belongs to the loop (a compile error, not a silent
+> lost write) — straight-line element mutation only; loss-free write-back across
+> early exit, plus `nodes.push(x)` mutating-method statements and confined
+> `View`s, remain. RFC stays `proposed` until all three ship.
+
 <!--
   Once this RFC is implemented/rejected/superseded it is FROZEN.
   - To change the decision: write a NEW RFC that supersedes this one.
