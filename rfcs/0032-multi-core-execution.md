@@ -130,10 +130,39 @@ real (marshaling, the actor-model machinery, a deterministic scheduler) but it i
 
 ## Prior art
 
-Go (M:N goroutines on a multi-core scheduler; shared memory + data races),
-Erlang/BEAM (isolated processes + message passing on multiple schedulers — the
-closest analog to Option B, and notably *deterministic-friendly* because nothing
-is shared), and witchy's own retired per-VM actor model. The lesson from BEAM is
-the relevant one: share-nothing + messages is what lets parallelism coexist with
-strong per-process guarantees — which is why Option B, not Option A, is the
-candidate if witchy ever takes this on.
+The prior art splits cleanly along the same Option A / Option B line, which is the
+useful way to read it:
+
+- **Shared-memory (Option A family): Go.** Goroutines on an M:N scheduler (G
+  goroutines over P logical procs over M OS threads; `GOMAXPROCS`, work-stealing,
+  async preemption since 1.14). All goroutines share one heap; channels are
+  idiomatic but a *guideline*, not enforcement — direct shared mutation is
+  allowed, so **data races are possible** and Go ships a race *detector*, not
+  prevention. This buys **fine granularity** (millions of ~2 KB goroutines,
+  *because* they share the runtime/heap) at the cost of giving up enforced value
+  semantics. That cost is exactly what witchy cannot pay: the in-place / RC-floor
+  / packed optimizations and the scalar parity oracle all rest on "one owner, no
+  other observer," which a shared mutable heap voids. So Go is the model witchy
+  **cannot** adopt without abandoning its foundations — it is Option A.
+
+- **Share-nothing isolates (Option B family): Python subinterpreters, Erlang,
+  Web Workers, Ruby Ractors.** This is the shape that fits witchy. **Python**'s
+  PEP 684 (per-interpreter GIL, 3.12) gives each subinterpreter its own state and
+  GIL so several run bytecode on separate OS threads in true parallel, and PEP 734
+  adds the `interpreters` stdlib module to spawn them and pass data over channels —
+  i.e. *one isolated interpreter per worker, sharing only via channels*, which is
+  Option B almost verbatim (witchy "wasm instance" ≈ Python "subinterpreter").
+  **Erlang/BEAM** is the mature version: isolated processes, per-pair message
+  ordering, multiple schedulers, no shared mutable state — parallelism coexisting
+  with strong per-process guarantees *because* nothing is shared. **JS Web
+  Workers** and **Ruby Ractors** are the same bargain.
+
+The granularity trade-off is the honest cost of choosing Option B over Go's
+model: an isolated instance carries its own linear memory, so witchy could spawn
+**thousands of coarse workers, not millions of fine ones**. Option B therefore
+targets coarse, embarrassingly-parallel compute (a worker pool over chunks), not
+a goroutine-per-request style. The lesson across BEAM and Python's recent
+direction is consistent and decisive for us: **share-nothing + messages is what
+lets parallelism coexist with strong guarantees** — which is why Option B
+(the Python-subinterpreter / actor shape), not Option A (the Go shape), is the
+only candidate if witchy ever takes this on.
