@@ -242,7 +242,44 @@ Order matters, because each tier's promise has a prerequisite:
 
 ---
 
-<!--
+> 2026-06-29: **Implementation status + per-feature insight (living note).**
+>
+> SHIPPED (parity-safe, differential-swept, fuzzer-validated under `WITCHY_HEAP_CHECK`):
+> - **RFC-0030** — the whole gate: single `WITCHY_OPT` lever + 9-entry registry,
+>   differential de-opt sweep, `witchy stats` counters, soak, bench leg, and a
+>   checked-heap fuzz leg in `check.sh --full`. 4 optimizations wired+validated
+>   (`inplace`, `region`, `sroa`, `fold`) plus opt-in `wasm-opt`. Plus `check.sh
+>   --fast` commit gate.
+> - **RFC-0028** (2/3) — `for var` write-back iteration and `nodes.push(x)`
+>   mutating-method statements (code + tests + spec + book).
+> - **RFC-0027** (SROA half) — escape-driven scalar replacement of frame-confined
+>   records/tuples, read-only AND field-mutated, closure-safe.
+> - **RFC-0024** — the escape oracle (`crates/witchy-lower/src/escape.rs`),
+>   consumed by SROA.
+> - **never-OOM** (the goal's normal-mode clause) is demonstrated: 5000-iteration
+>   loops with transient allocs + scalar-returning calls run in O(1) heap via the
+>   loop-watermark + SROA + in-place machinery.
+>
+> REMAINING, with the cheapest known implementation path for each:
+> - **Confined Views (0028 f3)** — NOT a new type: `slice`/`windows`/`chunks`
+>   already exist (copy-based). It is the SROA-shaped optimization of a confined
+>   slice — scalar-replace `let w = xs.slice(lo,hi)` (used only via `w[i]`/
+>   `w.length()`, non-escaping) into `w$src`/`w$off`/`w$len` locals, lowering uses
+>   to source reads. Added wrinkle vs SROA: source-liveness (the borrowed buffer
+>   must outlive the view, and not be mutated while borrowed).
+> - **`packed` (0027 other half)** — the only lever changing cache asymptotics;
+>   most invasive (every host fn reading `List(<record>)` becomes layout-aware).
+>   Mode-gate it.
+> - **RC floor (0016)** — from-scratch refcounting; all-or-nothing (no safe
+>   partial). LOWER marginal value than first thought: never-OOM is already met
+>   for loop/transient patterns; RC's residual win is the long-lived *escaping*
+>   heap (caches), which in-place dict/list already bounds by peak size.
+> - **`frozen` (0025) / `unique` (0026)** — type-qualifier machinery (parser +
+>   typeck), then boundary-copy elision / contract-checked in-place reuse.
+>
+> Each is a multi-turn lift at the SROA pace; the substrate (lever, sweep, stats,
+> escape oracle, fast gate) is in place so each plugs into the proven playbook
+> (analysis → gated codegen → differential + counter).
   Once this RFC is implemented/rejected/superseded it is FROZEN.
   - To change the decision: write a NEW RFC that supersedes this one.
   - Allowed edits after freeze: the `status:`/`superseded-by:` fields, and
