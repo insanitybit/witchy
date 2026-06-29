@@ -183,7 +183,7 @@ fn gen_program(seed: u64, statements: usize) -> String {
          fn main(console: Console):\n",
     );
     for stmt_i in 0..statements {
-        let kind = r.below(23);
+        let kind = r.below(24);
         let depth = 1 + r.below(4) as u32;
         let dops = 2 + r.below(10) as u32;
         let line = match kind {
@@ -228,6 +228,23 @@ fn gen_program(seed: u64, statements: usize) -> String {
                     elems.join(", "),
                     j,
                     j,
+                )
+            }
+            22 => {
+                // A confined `var` reassigned to SAME-LENGTH list literals in a loop,
+                // read only via at/length — the shape the RC-floor `rc-elide` rung
+                // overwrites in place. With all opts on (set on the run) this fuzzes
+                // the in-place-overwrite Store offset math under the checked heap.
+                // Elements are fresh int exprs (never read the var → no self-ref bail).
+                let l = 2 + r.below(3);
+                let zeros = vec!["0"; l as usize].join(", ");
+                let iters = 3 + r.below(5);
+                let elems: Vec<String> = (0..l).map(|_| gen_int(&mut r, 1)).collect();
+                format!(
+                    "    var rv{stmt_i} = [{}]\n    var rj{stmt_i} = 0\n    while rj{stmt_i} < {}:\n        rv{stmt_i} = [{}]\n        rj{stmt_i} = rj{stmt_i} + 1\n    print(console, __render(list.at(rv{stmt_i}, 0) + list.length(rv{stmt_i})))\n",
+                    zeros,
+                    iters,
+                    elems.join(", "),
                 )
             }
             _ => format!("    print(console, __render({}.x.a))\n", gen_record_p(&mut r)),
