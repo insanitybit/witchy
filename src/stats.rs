@@ -339,6 +339,24 @@ mod tests {
         );
     }
 
+    /// The goal's NEVER-OOM property: a long loop with transient list/string
+    /// scratch AND a helper that allocates internally but returns a scalar runs in
+    /// CONSTANT heap — loop-watermark reclaim + SROA + in-place keep it O(1)
+    /// regardless of iteration count. 5000 iterations stay under a tiny budget.
+    #[test]
+    fn never_oom_long_loop_stays_bounded() {
+        let src = "fn cost(n: Int) -> Int:\n    let tmp = [n, n + 1, n + 2]\n    list.length(tmp) + string.length(\"${n}\")\nfn main(console: Console):\n    var total = 0\n    var i = 0\n    while i < 5000:\n        let scratch = [i, i + 1]\n        total = total + cost(i) + list.length(scratch)\n        i = i + 1\n    print(console, __render(total))\n";
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let s = compute(src).expect("compute");
+        opt::set_for_tests(None);
+        assert_eq!(s.output, vec!["43890".to_string()]);
+        assert!(
+            s.heap_bytes < 4096,
+            "never-OOM: 5000 iterations must stay in bounded heap, got {}",
+            s.heap_bytes
+        );
+    }
+
     /// `for var` v1 rejects an early exit that belongs to the loop (it would skip
     /// the write-back), but allows a `continue` that belongs to a NESTED loop.
     #[test]
