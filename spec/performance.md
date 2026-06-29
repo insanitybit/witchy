@@ -117,14 +117,15 @@ and activate when a dotnet toolchain is present.
    single `WITCHY_OPT` lever (RFC-0030), with the differential de-opt sweep and
    `witchy stats` counters as the soundness/effect gates.
 3c. **Confined in-place reuse** — SHIPPED (RFC-0016, first reclamation rung). A
-   `var` bound to a fixed-shape aggregate — a fixed-length list literal, reassigned
-   only to same-length list literals, OR a record constructor, reassigned only to
-   the same constructor (same tag + arity) — and never used as a whole value (the
-   `escape` oracle proves its buffer unaliased) has each reassignment OVERWRITE its
-   buffer slots in place instead of allocating fresh — so a build-and-drop loop
-   stays O(1) heap instead of leaking O(n) (the arena/watermark cannot reclaim a
-   value that escaped the loop body and only later died). A self-referential
-   reassignment bails to allocation.
+   `var` reassigned to a fixed-shape aggregate — a list literal (any length), or a
+   record constructor reassigned only to the same constructor — and never used as a
+   whole value (the `escape` oracle proves its buffer unaliased) reuses its buffer
+   instead of allocating fresh: a record overwrites its field slots; a list
+   overwrites the buffer when the new length fits its capacity, else reallocates
+   (the buffer ratchets to the max length). So a build-and-drop loop stays O(1) heap
+   instead of leaking O(n) (the arena/watermark cannot reclaim a value that escaped
+   the loop body and only later died). A self-referential reassignment bails to
+   allocation.
    This is the arena/in-place machinery as an RC-elision rung (no refcount word);
    the general per-object RC floor (varying-length / generally-escaping garbage)
    remains future. `WITCHY_OPT=rc-elide` (default-on); proven by a bounded-heap

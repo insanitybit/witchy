@@ -70,6 +70,13 @@ const SECRET_TMP: &str = "__witchy_secret_tmp";
 /// position is rejected (absurd in practice).
 const APPLY_POOL: usize = 8;
 
+/// (RFC-0016) Scratch i64 slots for capacity-resizing in-place reuse: a list `var`
+/// reassignment `x = [e0, …, e_{k-1}]` evaluates its elements into these once, then
+/// either overwrites `x`'s buffer (when it fits) or reallocates — so the elements
+/// are not double-evaluated across the branch. A literal with more than this many
+/// elements skips the optimization and allocates normally.
+const REUSE_POOL: usize = 8;
+
 /// The closure-environment pointer: the implicit first parameter of every
 /// lifted lambda, pointing at its `[code_index][cap0]..` heap record.
 const ENV_PARAM: &str = "__witchy_env";
@@ -2121,6 +2128,9 @@ impl Codegen {
         for i in 0..APPLY_POOL {
             locals.push(WirLocal { name: format!("__witchy_call_{i}"), ty: i32t() });
         }
+        for i in 0..REUSE_POOL {
+            locals.push(WirLocal { name: format!("__witchy_reuse_{i}"), ty: i64t() });
+        }
         // An `var` function returns its declared value FOLLOWED BY one result per
         // var param (the multi-value move-out ABI, mirroring `var_epilogue` on the
         // WAT path): after the declared tail, push each var param's final value in
@@ -2530,39 +2540,88 @@ impl Codegen {
                         && matches!(value, Expr::List(_) | Expr::Ctor { .. })
                         && !expr_reads_var(value, name)
                     {
-                        // `items` are the slot values (list elements or ctor fields);
-                        // both layouts are `[i32 header][i64 slots…]`, so the writes
-                        // are identical. For a list the header is the element COUNT
-                        // (refreshed, invariant L); for a ctor it is the TAG, which is
-                        // unchanged (same constructor, guaranteed by the analysis).
-                        let (items, is_list) = match value {
-                            Expr::List(items) => (items.as_slice(), true),
-                            Expr::Ctor { args, .. } => (args.as_slice(), false),
-                            _ => unreachable!(),
+                        let slot_addr = |i: usize| W::Binary {
+                            op: witchy_wir::wir::BinOp::Add,
+                            kind: witchy_wir::wir::Kind::I32,
+                            lhs: Box::new(W::GetLocal(name.clone())),
+                            rhs: Box::new(W::ConstI32((4 + 8 * i) as i32)),
                         };
-                        for (i, item) in items.iter().enumerate() {
-                            let k = self.kind_of(item);
-                            let w = self.lower_expr(item)?;
-                            let addr = W::Binary {
-                                op: witchy_wir::wir::BinOp::Add,
-                                kind: witchy_wir::wir::Kind::I32,
-                                lhs: Box::new(W::GetLocal(name.clone())),
-                                rhs: Box::new(W::ConstI32((4 + 8 * i) as i32)),
-                            };
-                            seq.push(N::Store {
-                                ptr: addr,
-                                value: W::ToSlot(Box::new(w), Self::wir_kind(k)),
-                                kind: witchy_wir::wir::Kind::I64,
-                                offset: 0,
-                            });
-                        }
-                        if is_list {
-                            seq.push(N::Store {
-                                ptr: W::GetLocal(name.clone()),
-                                value: W::ConstI32(items.len() as i32),
-                                kind: witchy_wir::wir::Kind::I32,
-                                offset: 0,
-                            });
+                        match value {
+                            // A record: fixed tag + arity (guaranteed same ctor), so the
+                            // buffer always has exactly the right slots — overwrite the
+                            // fields directly, tag header untouched.
+                            Expr::Ctor { args, .. } => {
+                                for (i, item) in args.iter().enumerate() {
+                                    let k = self.kind_of(item);
+                                    let w = self.lower_expr(item)?;
+                                    seq.push(N::Store {
+                                        ptr: slot_addr(i),
+                                        value: W::ToSlot(Box::new(w), Self::wir_kind(k)),
+                                        kind: witchy_wir::wir::Kind::I64,
+                                        offset: 0,
+                                    });
+                                }
+                            }
+                            // A list: capacity-resizing reuse. Evaluate the elements into
+                            // the reuse temp pool ONCE (so the branch does not double-
+                            // evaluate side effects), then either overwrite the existing
+                            // buffer when its capacity (current count) fits, or
+                            // reallocate — so a build-and-drop loop with varying lengths
+                            // still stays bounded (the buffer ratchets to the max length).
+                            // A literal too large for the pool just allocates (no reuse).
+                            Expr::List(items) if items.len() <= REUSE_POOL => {
+                                let len = items.len();
+                                for (i, item) in items.iter().enumerate() {
+                                    let k = self.kind_of(item);
+                                    let w = self.lower_expr(item)?;
+                                    seq.push(N::SetLocal {
+                                        local: format!("__witchy_reuse_{i}"),
+                                        value: W::ToSlot(Box::new(w), Self::wir_kind(k)),
+                                    });
+                                }
+                                let mut then_: witchy_wir::wir::WirSeq = (0..len)
+                                    .map(|i| N::Store {
+                                        ptr: slot_addr(i),
+                                        value: W::GetLocal(format!("__witchy_reuse_{i}")),
+                                        kind: witchy_wir::wir::Kind::I64,
+                                        offset: 0,
+                                    })
+                                    .collect();
+                                then_.push(N::Store {
+                                    ptr: W::GetLocal(name.clone()),
+                                    value: W::ConstI32(len as i32),
+                                    kind: witchy_wir::wir::Kind::I32,
+                                    offset: 0,
+                                });
+                                self.mk_arities.insert(len);
+                                let mut mk_args = Vec::with_capacity(len + 1);
+                                mk_args.push(W::ConstI32(len as i32));
+                                for i in 0..len {
+                                    mk_args.push(W::GetLocal(format!("__witchy_reuse_{i}")));
+                                }
+                                let els = vec![N::SetLocal {
+                                    local: name.clone(),
+                                    value: W::Call { func: format!("mk{len}"), args: mk_args },
+                                }];
+                                // reuse when the current count (header at x+0) >= len.
+                                let cond = W::Binary {
+                                    op: witchy_wir::wir::BinOp::Le,
+                                    kind: witchy_wir::wir::Kind::I32,
+                                    lhs: Box::new(W::ConstI32(len as i32)),
+                                    rhs: Box::new(W::Load {
+                                        ptr: Box::new(W::GetLocal(name.clone())),
+                                        kind: witchy_wir::wir::Kind::I32,
+                                        offset: 0,
+                                    }),
+                                };
+                                seq.push(N::If { cond, then_, els, result: None });
+                            }
+                            // A list literal too large for the temp pool: allocate fresh.
+                            Expr::List(items) => {
+                                let w = self.lower_aggregate(items.len() as i32, items)?;
+                                seq.push(N::SetLocal { local: name.clone(), value: w });
+                            }
+                            _ => unreachable!(),
                         }
                         tail_is_value = false;
                     } else if self.sroa_active.contains_key(name) {
@@ -4769,6 +4828,9 @@ impl Codegen {
                 }
                 for i in 0..APPLY_POOL {
                     locals.push(WirLocal { name: format!("__witchy_call_{i}"), ty: i32t() });
+                }
+                for i in 0..REUSE_POOL {
+                    locals.push(WirLocal { name: format!("__witchy_reuse_{i}"), ty: WirTy::Int });
                 }
                 // Prologue: recover each value param from its i64 slot, then each
                 // capture from the env record (slot j at offset 4 + 8*j).

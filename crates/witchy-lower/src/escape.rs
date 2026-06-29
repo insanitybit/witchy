@@ -149,13 +149,15 @@ pub fn confined_record_list_candidates_block(body: &Block) -> HashSet<String> {
     lets
 }
 
-/// (RFC-0016 never-OOM, in-place reuse rung) A `var` bound to a list LITERAL of a
-/// fixed length L, every reassignment to which is ALSO a list literal of length L,
-/// and which is NEVER used as a whole value (only element reads — `x[i]`,
-/// `list.at(x, i)`, `list.length(x)` — and the reassignments themselves). The
-/// escape oracle proves such a var's buffer is never aliased, so each reassignment
-/// may OVERWRITE the existing L-slot buffer IN PLACE instead of allocating a fresh
-/// list. This bounds a build-and-drop loop (`var x = [..]; while …: x = [..]`) that
+/// (RFC-0016 never-OOM, in-place reuse rung) A `var` bound to a list literal (any
+/// length) reassigned only to list literals, OR a record constructor reassigned only
+/// to the same constructor — and which is NEVER used as a whole value (only element
+/// reads — `x[i]`, `list.at(x, i)`, `list.length(x)`, `x.field` — and the
+/// reassignments themselves). The escape oracle proves such a var's buffer is never
+/// aliased, so each reassignment may REUSE the existing buffer instead of allocating
+/// a fresh value: a record (fixed arity) overwrites its field slots; a list reuses
+/// the buffer when the new length fits its capacity (else reallocates — codegen
+/// capacity-checks at runtime). This bounds a build-and-drop loop (`var x = [..]; while …: x = [..]`) that
 /// otherwise leaks O(n): the arena/watermark cannot reclaim a value that escaped
 /// the loop body and only LATER became dead (measured in
 /// `stats::escaping_reassignment_leaks_without_rc_floor`). Parity-safe — with no
@@ -233,7 +235,11 @@ fn mark_nonuniform_reassigns(
         if let Stmt::Assign { name, value } = s {
             if let Some(shape) = shape_of.get(name) {
                 let matches = match (shape, value) {
-                    (ReuseShape::List(l), Expr::List(items)) => items.len() == *l,
+                    // A list var may be reassigned to a list literal of ANY length —
+                    // codegen capacity-checks at runtime (reuse the buffer when it
+                    // fits, else reallocate). A record var must keep the SAME ctor
+                    // (fixed tag + arity) so its fixed buffer is always exactly right.
+                    (ReuseShape::List(_), Expr::List(_)) => true,
                     (ReuseShape::Ctor(c), Expr::Ctor { name: c2, .. }) => c == c2,
                     _ => false,
                 };
@@ -909,13 +915,15 @@ mod tests {
     }
 
     #[test]
-    fn reuse_var_with_nonuniform_length_is_not_a_candidate() {
+    fn reuse_var_with_nonuniform_length_is_a_candidate() {
+        // A list var reassigned to a DIFFERENT length is still a candidate — codegen
+        // capacity-checks at runtime (reuse when it fits, else reallocate).
         let f = func(
             "fn d() -> Int:\n    var x = [0, 0, 0]\n    x = [1, 2]\n    list.length(x)\n",
         );
         assert!(
-            !confined_inplace_reuse_vars(&f).contains("x"),
-            "a different-length reassignment breaks the fixed-buffer invariant"
+            confined_inplace_reuse_vars(&f).contains("x"),
+            "a list var reassigned to varying lengths is a capacity-resizing reuse candidate"
         );
     }
 

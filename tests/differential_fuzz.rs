@@ -237,7 +237,11 @@ fn gen_program(seed: u64, statements: usize) -> String {
                 // the in-place-overwrite Store offset math under the checked heap.
                 // Elements are fresh int exprs (never read the var → no self-ref bail).
                 let l = 2 + r.below(3);
-                let zeros = vec!["0"; l as usize].join(", ");
+                // Initial length differs from the loop length (sometimes), so the
+                // capacity-resizing path — realloc on first iteration, then reuse —
+                // is exercised alongside the same-length in-place overwrite.
+                let init = 1 + r.below(l);
+                let zeros = vec!["0"; init as usize].join(", ");
                 let iters = 3 + r.below(5);
                 let elems: Vec<String> = (0..l).map(|_| gen_int(&mut r, 1)).collect();
                 format!(

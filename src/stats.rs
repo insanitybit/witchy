@@ -217,18 +217,16 @@ mod tests {
         );
     }
 
-    /// RFC-0016 RC-floor reuse — the REMAINING gap (NON-uniform reassignment). The
-    /// in-place reuse rung (`uniform_reassignment_is_reused_and_bounded`) bounds a
-    /// loop whose reassignments are all the SAME length, by overwriting the fixed
-    /// buffer. This case differs: the initial `[0]` (len 1) then `[i,i+1,i+2]`
-    /// (len 3) is NON-uniform, so the buffer can't be safely overwritten in place
-    /// (it would overflow) — reuse correctly declines, and the loop STILL leaks O(n)
-    /// (~28 bytes/iter). This pins what the reuse rung does NOT yet cover: a
-    /// capacity-resizing reuse (realloc-or-reuse) or the full per-object RC floor is
-    /// needed for varying-length / generally-escaping garbage. When that lands the
-    /// assertion FLIPS (big ≈ small) — the signal to extend RFC-0016.
+    /// RFC-0016 RC-floor reuse — NON-uniform (capacity-resizing) case. A list `var`
+    /// reassigned to VARYING lengths (`[0]` then `[i,i+1,i+2]`) is now bounded too:
+    /// codegen capacity-checks at runtime, reusing the buffer when the new length
+    /// fits and reallocating (ratcheting the buffer up to the max length) otherwise.
+    /// So a build-and-drop loop with a non-uniform initial stays O(1) heap after the
+    /// buffer warms up to the max length — it no longer leaks O(n). (Pathologically
+    /// OSCILLATING lengths can still re-allocate, since the header tracks length not
+    /// a separate capacity; that residual is the full per-object RC floor's job.)
     #[test]
-    fn nonuniform_reassignment_still_leaks() {
+    fn nonuniform_reassignment_is_capacity_resized_and_bounded() {
         let prog = |n: i32| {
             format!(
                 "fn main(console: Console):\n    var latest = [0]\n    var i = 0\n    while i < {n}:\n        latest = [i, i + 1, i + 2]\n        i = i + 1\n    print(console, __render(list.length(latest)))\n"
@@ -237,21 +235,26 @@ mod tests {
         opt::set_for_tests(Some(OptSet::default_set()));
         let small = compute(&prog(500)).expect("n=500");
         let big = compute(&prog(3000)).expect("n=3000");
+        opt::set_for_tests(Some(OptSet::default_set().without(Opt::RcElide)));
+        let off_big = compute(&prog(3000)).expect("off n=3000");
         opt::set_for_tests(None);
         assert_eq!(small.output, vec!["3".to_string()]);
+        assert_eq!(big.output, off_big.output, "rc-elide must not change output");
         assert_eq!(big.output, vec!["3".to_string()]);
-        // CURRENT reality: the escaping garbage leaks O(n), so 6× the iterations is
-        // far more heap. When RFC-0016 reclaims the dead-on-reassign buffer this
-        // becomes bounded and the assertion below FLIPS — rewrite it then.
+        // Bounded: after the buffer ratchets to length 3 (one realloc), every further
+        // iteration reuses it — so 6× the iterations is ~the same heap.
         assert!(
-            big.heap_bytes > small.heap_bytes * 2,
-            "non-uniform reassignment is expected to LEAK (the reuse rung needs a \
-             fixed-length buffer), but heap did not scale with iterations (n=500 \
-             heap={}, n=3000 heap={}) — if capacity-resizing reuse / the full RC \
-             floor landed, flip this to the never-OOM assertion (big < small*2) and \
-             update RFC-0016/0029",
+            big.heap_bytes < small.heap_bytes * 2,
+            "capacity-resizing reuse must bound the loop: n=500 heap={}, n=3000 heap={}",
             small.heap_bytes,
             big.heap_bytes
+        );
+        // ... and far below the leaking (rc-elide off) build.
+        assert!(
+            off_big.heap_bytes > big.heap_bytes * 2,
+            "without rc-elide the non-uniform loop leaks O(n): on={} off={}",
+            big.heap_bytes,
+            off_big.heap_bytes
         );
     }
 

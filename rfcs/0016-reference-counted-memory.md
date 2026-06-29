@@ -588,6 +588,18 @@ non-goal in `performance-modes.md` (resolved here).
 > heap fuzzer. This is exactly the RFC's framing of the arena/in-place machinery as
 > RC-ELISION rungs on one escape oracle (R2/R4), reached here for the reassignment
 > case. STILL FUTURE (the RFC's core): the per-object refcount word + dec-at-last-
-> use that reclaims VARYING-length reassignment, generally-escaping garbage (a
-> per-request response dropped by the caller), and capacity-resizing reuse —
-> `nonuniform_reassignment_still_leaks` pins what remains. RFC stays `planned`.
+> use that reclaims generally-escaping garbage (a per-request response dropped by
+> the caller, the residual after the watermark — which already reclaims loop-LOCAL
+> escaping-then-dropped values). RFC stays `planned`.
+>
+> 2026-06-29 (later): **Capacity-resizing reuse landed — the rung now bounds
+> VARYING-length list reassignment too.** A list `var` reassigned to literals of
+> ANY length (not just a fixed L) is now a reuse candidate: codegen evaluates the
+> elements into a temp pool once, then capacity-checks at runtime — overwriting the
+> buffer when the current count fits the new length, else reallocating (the buffer
+> ratchets up to the max length, so after warm-up the loop is O(1) heap). Records
+> stay on the fixed-arity fast path. `stats::nonuniform_reassignment_is_capacity_resized_and_bounded`
+> (formerly the pinned leak) now asserts BOUNDED; the realloc + reuse paths are
+> checked-heap fuzzed. RESIDUAL (full RC floor's job): pathologically OSCILLATING
+> lengths can still realloc (the header tracks length, not a separate capacity
+> field), and generally-escaping non-reassignment garbage. RFC stays `planned`.
