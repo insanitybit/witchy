@@ -245,11 +245,13 @@ Order matters, because each tier's promise has a prerequisite:
 > 2026-06-29: **Implementation status + per-feature insight (living note).**
 >
 > SHIPPED (parity-safe, differential-swept, fuzzer-validated under `WITCHY_HEAP_CHECK`):
-> - **RFC-0030** — the whole gate: single `WITCHY_OPT` lever + 9-entry registry,
+> - **RFC-0030** — the whole gate: single `WITCHY_OPT` lever + 6-entry registry,
 >   differential de-opt sweep, `witchy stats` counters, soak, bench leg, and a
->   checked-heap fuzz leg in `check.sh --full`. 4 optimizations wired+validated
->   (`inplace`, `region`, `sroa`, `fold`) plus opt-in `wasm-opt`. Plus `check.sh
->   --fast` commit gate.
+>   checked-heap fuzz leg in `check.sh --full`. Every registered optimization is
+>   wired+validated — `inplace`, `views`, `sroa`, `region`, `fold` (default-on)
+>   plus opt-in `wasm-opt`; the three forward-declared phantom levers
+>   (`unbox`/`rc-elide`/`direct-call`) were removed until their feature lands (see
+>   the 0030 change-note). Plus the `check.sh --fast` commit gate.
 > - **RFC-0028** (3/3, → `implemented`) — `for var` write-back iteration,
 >   `nodes.push(x)` mutating-method statements, AND confined slice views (feature
 >   3): a confined read-only `list.slice` elides its copy and reads through the

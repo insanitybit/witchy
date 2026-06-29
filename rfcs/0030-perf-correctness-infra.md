@@ -199,6 +199,20 @@ is immune to the flakiness that wall-clock benchmarks suffer.
 - Koka/Lean Perceus reuse counts; allocation-count testing in GC literature — the
   deterministic-counter approach to proving an allocation optimization fired.
 
+> 2026-06-29: **Registry holds only optimizations that actually exist.** The
+> design table above forward-declared nine levers, three of which had no codegen
+> consumer yet (`unbox` → packed layouts [0027]; `rc-elide` → the RC floor [0016];
+> `direct-call` → static-target call lowering). A registered-but-inert lever
+> *violates this RFC's own contract*: toggling it passes the differential de-opt
+> sweep trivially (it changes nothing) and it can never satisfy the §2 "counter
+> proving it fired" half of the definition of done — so it reports coverage it
+> does not have. The live registry (`crates/witchy-syntax/src/opt.rs`, `Opt::ALL`)
+> therefore contains only the six SHIPPED optimizations — `inplace`, `views`,
+> `sroa`, `region`, `fold`, and opt-in `wasm-opt` — each with a passing sweep entry
+> AND a `witchy stats` counter assertion. The three deferred levers are re-added,
+> row + consumer + counter together, when their backing feature lands. This is the
+> "break, don't deprecate" rule applied to the registry itself: no phantom names.
+
 ---
 
 <!--

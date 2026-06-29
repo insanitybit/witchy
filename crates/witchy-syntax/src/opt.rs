@@ -13,7 +13,7 @@
 //! ```text
 //! WITCHY_OPT=none           # the canonical de-opt reference oracle
 //! WITCHY_OPT=-inplace       # production default minus in-place mutation
-//! WITCHY_OPT=-unbox,-views  # default minus packed layouts and confined views
+//! WITCHY_OPT=-sroa,-views   # default minus scalar replacement and confined views
 //! WITCHY_OPT=wasm-opt       # default plus the opt-in Binaryen post-pass
 //! WITCHY_OPT=none,inplace   # ONLY in-place (allowlist from nothing)
 //! ```
@@ -38,33 +38,32 @@ pub enum Opt {
     /// Escape-driven scalar replacement of non-escaping aggregates (off ⇒ heap).
     /// RFC-0027.
     Sroa,
-    /// Packed / unboxed layouts (off ⇒ the uniform boxed slot). RFC-0027.
-    Unbox,
-    /// RC inc/dec/free elision down to the floor (off ⇒ full RC every op). RFC-0016.
-    RcElide,
     /// Region / loop-watermark reclamation (off ⇒ no early reclaim).
     Region,
     /// AST constant folding + propagation (off ⇒ evaluate at runtime).
     Fold,
     /// The opt-in Binaryen post-pass (off by default). Replaces `WITCHY_WASM_OPT`.
     WasmOpt,
-    /// Direct calls when the target is statically known (off ⇒ `call_indirect`).
-    DirectCall,
+    // NOTE: the registry holds ONLY optimizations the compiler actually performs —
+    // every entry must pass the differential de-opt sweep AND have a `witchy stats`
+    // counter proving it fired (RFC-0030's contract). Planned levers that have no
+    // codegen consumer yet are NOT registered here (a phantom lever toggles a
+    // no-op, passing the sweep trivially and lying about coverage); they are added
+    // with their backing feature: `unbox` with packed layouts (RFC-0027),
+    // `rc-elide` with the RC floor (RFC-0016), `direct-call` with static-target
+    // call lowering (RFC-0027 / spec/performance.md).
 }
 
 impl Opt {
     /// Every optimization, in a stable order — drives the differential de-opt
     /// sweep and `witchy stats` reporting.
-    pub const ALL: [Opt; 9] = [
+    pub const ALL: [Opt; 6] = [
         Opt::InPlace,
         Opt::Views,
         Opt::Sroa,
-        Opt::Unbox,
-        Opt::RcElide,
         Opt::Region,
         Opt::Fold,
         Opt::WasmOpt,
-        Opt::DirectCall,
     ];
 
     /// The token used in `WITCHY_OPT` and reported by `witchy stats`.
@@ -73,12 +72,9 @@ impl Opt {
             Opt::InPlace => "inplace",
             Opt::Views => "views",
             Opt::Sroa => "sroa",
-            Opt::Unbox => "unbox",
-            Opt::RcElide => "rc-elide",
             Opt::Region => "region",
             Opt::Fold => "fold",
             Opt::WasmOpt => "wasm-opt",
-            Opt::DirectCall => "direct-call",
         }
     }
 
@@ -89,7 +85,7 @@ impl Opt {
     /// In the production default set? Experimental / costly passes are opt-in
     /// (they must be named explicitly in `WITCHY_OPT`).
     fn default_on(self) -> bool {
-        !matches!(self, Opt::WasmOpt | Opt::DirectCall)
+        !matches!(self, Opt::WasmOpt)
     }
 
     fn bit(self) -> u32 {
@@ -210,7 +206,7 @@ mod tests {
         assert!(d.contains(Opt::InPlace));
         assert!(d.contains(Opt::Region));
         assert!(!d.contains(Opt::WasmOpt), "wasm-opt is opt-in");
-        assert!(!d.contains(Opt::DirectCall), "direct-call is opt-in");
+        assert!(d.contains(Opt::Views) && d.contains(Opt::Sroa), "default includes shipped opts");
     }
 
     #[test]
