@@ -116,6 +116,94 @@ pub fn is_list_slice(callee: &str) -> bool {
     callee == "list.slice" || callee.starts_with("list.slice__")
 }
 
+/// (RFC-0027 packed, inferred case) Immutable locals bound to a LIST LITERAL of
+/// record constructors (`let xs = [P(..), P(..), ..]`) whose every use is either
+/// `list.length(xs)` or a `list.at(xs, i).field` read — the list is read only
+/// element-field-wise, never escapes as a whole value, no element is taken whole,
+/// and it is never reassigned. Such a list can be stored as a flat PACKED buffer
+/// (fields inline) instead of an array of pointers to boxed records, so each
+/// `list.at(xs, i).field` lowers to a direct slot read — the cache-density win of
+/// RFC-0027's `packed`, delivered by inference for the confined case (the dual of
+/// how confined views deliver zero-copy borrows; see [`confined_slice_candidates`]).
+///
+/// Conservative + SOUND: binding an element whole (`let p = list.at(xs, i)`), using
+/// the list whole (passing/returning/rendering it), or any reassignment disqualifies
+/// it. The element record must also be PACKABLE (fixed-size, all-scalar fields) —
+/// a type-level check this AST pass leaves to the codegen consumer.
+pub fn confined_record_list_candidates(f: &Function) -> HashSet<String> {
+    confined_record_list_candidates_block(&f.body)
+}
+
+/// As [`confined_record_list_candidates`], over a body block directly.
+pub fn confined_record_list_candidates_block(body: &Block) -> HashSet<String> {
+    let mut lets = HashSet::new();
+    collect_record_list_lets(body, &mut lets);
+    if lets.is_empty() {
+        return lets;
+    }
+    let mut disqualified = HashSet::new();
+    mark_non_packed_uses_block(body, &mut disqualified);
+    let mut reassigned = HashSet::new();
+    collect_assigned_targets(body, &mut reassigned);
+    lets.retain(|n| !disqualified.contains(n) && !reassigned.contains(n));
+    lets
+}
+
+/// `let xs = [Ctor(..), Ctor(..), ..]` — a non-empty list literal whose every
+/// element is a record constructor. Records the binding name.
+fn collect_record_list_lets(b: &Block, out: &mut HashSet<String>) {
+    for s in &b.stmts {
+        if let Stmt::Let { name, value: Expr::List(items), .. } = s {
+            if !items.is_empty() && items.iter().all(|e| matches!(e, Expr::Ctor { .. })) {
+                out.insert(name.clone());
+            }
+        }
+        each_block_in_stmt(s, &mut |blk| collect_record_list_lets(blk, out));
+    }
+}
+
+fn mark_non_packed_uses_block(b: &Block, out: &mut HashSet<String>) {
+    for s in &b.stmts {
+        each_expr_in_stmt(s, &mut |e| mark_non_packed_uses(e, out));
+    }
+}
+
+/// Mark every variable used in a position that is NOT packed-safe. A packed-safe
+/// list use is exactly `list.length(xs)` or `list.at(xs, i)` as the immediate base
+/// of a `.field` access; the index `i` is an ordinary sub-expression. Any other
+/// occurrence of a variable — used whole, or a `list.at` result taken whole (it
+/// falls through to the generic arm, which marks the list var) — disqualifies it.
+fn mark_non_packed_uses(e: &Expr, out: &mut HashSet<String>) {
+    match e {
+        Expr::Var(n) => {
+            out.insert(n.clone());
+        }
+        // `list.at(xs, i).field`: the `list.at` base is a packed-safe read of `xs`,
+        // so do NOT mark `xs` — only the index is an ordinary sub-expression.
+        Expr::Field { base, .. }
+            if matches!(base.as_ref(),
+                Expr::Call { name, args }
+                    if name == "list.at" && matches!(args.first(), Some(Expr::Var(_)))) =>
+        {
+            if let Expr::Call { args, .. } = base.as_ref() {
+                for a in &args[1..] {
+                    mark_non_packed_uses(a, out);
+                }
+            }
+        }
+        // `list.length(xs)` is packed-safe; a bare `list.at(xs, i)` (NOT under a
+        // field) is NOT — it falls to the generic arm and marks `xs`.
+        Expr::Call { name, args }
+            if name == "list.length" && matches!(args.first(), Some(Expr::Var(_))) =>
+        {
+            for a in &args[1..] {
+                mark_non_packed_uses(a, out);
+            }
+        }
+        _ => each_subexpr(e, &mut |s| mark_non_packed_uses(s, out)),
+    }
+}
+
 /// `let w = list.slice(xs, lo, hi)` (xs a plain var) — record `w -> xs`.
 fn collect_slice_lets(b: &Block, out: &mut HashMap<String, String>) {
     for s in &b.stmts {
@@ -527,6 +615,49 @@ mod tests {
         );
         let c = confined_slice_candidates(&f);
         assert!(c.contains("a") && c.contains("b"), "both read-only windows are candidates: {c:?}");
+    }
+
+    #[test]
+    fn record_list_read_via_at_field_is_a_packed_candidate() {
+        let f = func(
+            "type P:\n    x: Int\n    y: Int\nfn d() -> Int:\n    let xs = [P(1, 2), P(3, 4)]\n    list.at(xs, 0).x + list.at(xs, 1).y + list.length(xs)\n",
+        );
+        assert!(
+            confined_record_list_candidates(&f).contains("xs"),
+            "a record list read only via at(_).field / length is a packed candidate"
+        );
+    }
+
+    #[test]
+    fn record_list_with_element_taken_whole_is_not_a_packed_candidate() {
+        // Binding an element whole (`let p = list.at(xs, 0)`) means the element must
+        // exist as a record value — the list cannot be packed flat.
+        let f = func(
+            "type P:\n    x: Int\n    y: Int\nfn d() -> Int:\n    let xs = [P(1, 2), P(3, 4)]\n    let p = list.at(xs, 0)\n    p.x\n",
+        );
+        assert!(
+            !confined_record_list_candidates(&f).contains("xs"),
+            "an element taken whole disqualifies packing"
+        );
+    }
+
+    #[test]
+    fn record_list_passed_whole_is_not_a_packed_candidate() {
+        let f = func(
+            "type P:\n    x: Int\n    y: Int\nfn d() -> Int:\n    let xs = [P(1, 2)]\n    use_it(xs)\n",
+        );
+        assert!(!confined_record_list_candidates(&f).contains("xs"), "passing the list whole escapes");
+    }
+
+    #[test]
+    fn reassigned_record_list_is_not_a_packed_candidate() {
+        let f = func(
+            "type P:\n    x: Int\n    y: Int\nfn d(var xs: List(P)) -> Int:\n    xs = [P(1, 2)]\n    list.at(xs, 0).x\n",
+        );
+        assert!(
+            !confined_record_list_candidates(&f).contains("xs"),
+            "a reassigned list is not a fixed packed buffer"
+        );
     }
 
     #[test]
