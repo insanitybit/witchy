@@ -459,14 +459,32 @@ state) take the native path; every other shape falls through to the sequential
 build: `vm.par_map` scaffold (sequential, both backends agree) → host re-entry trampoline
 → parallel worker VMs.
 
-**Remaining (native runtime — not a pure-witchy change).** These are deliberately
-not half-built; the cooperative model above is the parity-safe foundation they
-swap a backend under:
+**Shipped (2026-06-29) — Tier-B isolation MECHANISM (zero-authority workers).** The
+multi-core `vm.par_map` workers run with **zero ambient capabilities**: a worker's
+linker grants only the authority-free staging imports and defines every other host
+import as a TRAP (`Linker::define_unknown_imports_as_traps` — deny-by-omission). A
+worker is thus share-nothing (own linear memory) AND authority-nothing — it physically
+cannot reach the filesystem, network, or any host resource, despite sharing the
+parent's compiled module. This is the capability-attenuation/sandbox mechanism Tier B
+is built on, now proven on the multi-core path.
 
-1. **Tier B — `vm.spawn`** (isolated VM + attenuated caps + cross-VM channels). The
-   sandboxed-worker value, and the RFC's recommended first native step. Build: a
-   host `vm_spawn` that instantiates a second module instance (compiled) /
-   sub-interpreter (interp) running the child entry with re-granted (narrowed)
+**Remaining for the FULL `vm.spawn` (native subsystem — a dedicated effort).** The
+isolation mechanism above plus the worker-VM instantiation machinery are the
+foundation; the full surface needs two more substantial pieces, deliberately not
+half-built:
+
+1. **Capability *passing* to a child** — granting a child VM a *narrowed* cap (not
+   just zero): marshal a parent capability value (a host-side handle, e.g. a confined
+   `Dir`/`Net`) into the child's `VmState` as a freshly-minted handle, so the child
+   wields exactly the attenuated authority passed and nothing else. (Zero-grant is
+   shipped; a chosen non-empty subset is the next step.)
+2. **Cross-VM channels** — the parent and child have separate linear memories, so a
+   channel between them cannot be the current in-VM pure-witchy data structure; it
+   needs a **host-mediated** message queue shared between the two stores, with each
+   VM's executor sending/receiving through host calls. This is the larger piece (the
+   current executor is entirely in-VM). Plus the async surface
+   (`vm.spawn(...).await` / `vm.join`). Build: a host `vm_spawn` that instantiates a
+   second instance running the child entry with the re-granted (narrowed)
    capabilities, wired to the parent by a host-mediated channel; arguments restricted
    to *marshalable* (caps re-granted, channel endpoints, `frozen`/`move` copied); the
    compiled backend must export the child entry + marshal its args. Parity via a
