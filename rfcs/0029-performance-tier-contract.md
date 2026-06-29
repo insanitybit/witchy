@@ -268,9 +268,12 @@ Order matters, because each tier's promise has a prerequisite:
 >   non-confined / `pub`-API / host-visible layouts).
 > - **RFC-0024** — the escape oracle (`crates/witchy-lower/src/escape.rs`),
 >   consumed by SROA and by confined views (`confined_slice_candidates`).
-> - **never-OOM** (the goal's normal-mode clause) is demonstrated: 5000-iteration
->   loops with transient allocs + scalar-returning calls run in O(1) heap via the
->   loop-watermark + SROA + in-place machinery.
+> - **never-OOM** (the goal's normal-mode clause) is met for CONFINED transients:
+>   5000-iteration loops with escape-free per-iteration allocs + scalar-returning
+>   calls run in O(1) heap via the loop-watermark + SROA + in-place machinery. It
+>   is NOT yet met for ESCAPING garbage (a loop reassigning an outer var leaks O(n)
+>   — see the RC-floor entry below and `stats::escaping_reassignment_leaks_without_rc_floor`);
+>   closing that is RFC-0016's job and is the one real never-OOM gap remaining.
 >
 > REMAINING, with the cheapest known implementation path for each:
 > - **Confined-view follow-up (0028)** — the slice form shipped; extend the same
@@ -283,9 +286,19 @@ Order matters, because each tier's promise has a prerequisite:
 >   the invasive part (parser + typeck packability + `mode opt` gating + every host
 >   fn reading `List(<record>)` made layout-aware). Mode-gate it.
 > - **RC floor (0016)** — from-scratch refcounting; all-or-nothing (no safe
->   partial). LOWER marginal value than first thought: never-OOM is already met
->   for loop/transient patterns; RC's residual win is the long-lived *escaping*
->   heap (caches), which in-place dict/list already bounds by peak size.
+>   partial). CORRECTION (2026-06-29, with evidence): an earlier note called this
+>   "lower value, never-OOM already met" — that was WRONG for the escaping case.
+>   Measured (`stats::escaping_reassignment_leaks_without_rc_floor`): a loop that
+>   reassigns an OUTER var to a fresh list each iteration LEAKS ~28 bytes/iter
+>   (n=500 heap=14025, n=3000 heap=84025) — linear growth, the exact server-loop
+>   OOM RFC-0016 targets. The arena/watermark preserves an escaping value but
+>   cannot reclaim one that LATER becomes dead (reassigned/dropped), so neither
+>   region nor in-place fixes it — only free-at-last-use (RC) does. never-OOM is
+>   met for CONFINED transients (region/SROA/in-place) but NOT for escaping garbage.
+>   So RC floor is the genuine remaining never-OOM fix, not optional — but it is a
+>   from-scratch per-object-refcount + dead-on-last-use insertion lift with no
+>   sound partial; it warrants a dedicated, fresh-context build. The characterization
+>   test flips green→red-needs-update when it lands.
 > - **`frozen` (0025) / `unique` (0026)** — type-qualifier machinery (parser +
 >   typeck), then boundary-copy elision / contract-checked in-place reuse.
 >

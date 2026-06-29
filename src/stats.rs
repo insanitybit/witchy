@@ -210,6 +210,44 @@ mod tests {
         );
     }
 
+    /// RFC-0016 never-OOM GAP characterization (the demonstrated motivation for the
+    /// RC floor). A loop that each iteration builds a list and reassigns it to an
+    /// OUTER var escapes the loop watermark, so the previous value becomes
+    /// unreachable garbage. The arena + watermark reclaim only *confined* transients,
+    /// not escaping garbage — so today the heap grows O(n) (~28 bytes/iter, one
+    /// 3-element list leaked per iteration). This pins that CURRENT (leaking)
+    /// behavior; it is the concrete evidence that never-OOM is NOT yet met for the
+    /// escaping case, contra the arena-only story. **When RC floor (RFC-0016) lands,
+    /// this dead-on-reassignment buffer is freed/reused and the heap becomes bounded
+    /// — at which point this assertion FLIPS** (big ≈ small) and should be rewritten
+    /// to assert the never-OOM property. The flip is the signal that 0016 landed.
+    #[test]
+    fn escaping_reassignment_leaks_without_rc_floor() {
+        let prog = |n: i32| {
+            format!(
+                "fn main(console: Console):\n    var latest = [0]\n    var i = 0\n    while i < {n}:\n        latest = [i, i + 1, i + 2]\n        i = i + 1\n    print(console, __render(list.length(latest)))\n"
+            )
+        };
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let small = compute(&prog(500)).expect("n=500");
+        let big = compute(&prog(3000)).expect("n=3000");
+        opt::set_for_tests(None);
+        assert_eq!(small.output, vec!["3".to_string()]);
+        assert_eq!(big.output, vec!["3".to_string()]);
+        // CURRENT reality: the escaping garbage leaks O(n), so 6× the iterations is
+        // far more heap. When RFC-0016 reclaims the dead-on-reassign buffer this
+        // becomes bounded and the assertion below FLIPS — rewrite it then.
+        assert!(
+            big.heap_bytes > small.heap_bytes * 2,
+            "escaping-reassignment is expected to LEAK without the RC floor, but heap \
+             did not scale with iterations (n=500 heap={}, n=3000 heap={}) — if RC \
+             floor / dead-on-reassign reclaim landed, flip this to the never-OOM \
+             assertion (big < small*2) and update RFC-0016/0029",
+            small.heap_bytes,
+            big.heap_bytes
+        );
+    }
+
     /// RFC-0027 packed DoD counter (b): a confined list literal of fixed-scalar
     /// records read only via `at(_).field`/`length` is stored as ONE flat inline
     /// buffer with `unbox` on, instead of N boxed records + an N-pointer array with
