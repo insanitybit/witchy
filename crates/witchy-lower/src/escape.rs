@@ -189,7 +189,7 @@ pub fn confined_inplace_reuse_vars_block(body: &Block) -> HashSet<String> {
     // reuse policy: a reassignment does NOT mark its target (that overwrite is the
     // optimization), only a genuine whole-value use elsewhere does.
     let mut whole = HashSet::new();
-    scan_uses_block(body, UseScan::ReuseRhs, &mut whole);
+    scan_uses_block(body, UseScan::ReuseRhs, CallExempt::ViewReads, &mut whole);
     shape_of
         .into_iter()
         .filter(|(x, _)| !disq.contains(x) && !whole.contains(x))
@@ -256,8 +256,8 @@ fn mark_nonuniform_reassigns(
 }
 
 /// (RFC-0024) How a reassignment `x = <v>` is treated when scanning for whole-value
-/// uses — the one axis on which the confinement consumers differ. Consolidates the
-/// formerly-duplicated `collect_whole_uses` and `mark_reuse_escapes` walkers.
+/// uses — the first policy axis. Consolidates the formerly-duplicated
+/// `collect_whole_uses` / `mark_reuse_escapes` / `mark_leaking_uses` walkers.
 #[derive(Clone, Copy, PartialEq)]
 enum UseScan {
     /// A top-level assignment MARKS its target as a whole use (except a single-field
@@ -265,17 +265,31 @@ enum UseScan {
     /// aggregate / SROA candidate passes.
     Whole,
     /// A reassignment does NOT mark its target (the overwrite is exactly what the
-    /// in-place reuse rung wants, not an escape) — only a genuine whole-value use in
-    /// some expression marks. Otherwise identical to `Whole`.
+    /// in-place reuse rung / RC-floor want, not an escape) — only a genuine
+    /// whole-value use in some expression marks. Otherwise identical to `Whole`.
     ReuseRhs,
 }
 
-/// Record every binding used as a WHOLE value in `b` under the given [`UseScan`]
-/// policy. A bare `Var(n)` is a whole use; `Var(n).field` / `Var(n)[i]` and the
-/// view-safe `list.at` / `list.length` / `list.slice` reads are NOT (the base is read
-/// structurally); a closure capture marks everything it mentions. One walker shared
-/// by the aggregate/SROA passes (`Whole`) and the in-place reuse rung (`ReuseRhs`).
-fn scan_uses_block(b: &Block, mode: UseScan, out: &mut HashSet<String>) {
+/// Which call arguments are exempt (read structurally, not escaped whole) — the
+/// second policy axis.
+#[derive(Clone, Copy)]
+enum CallExempt<'a> {
+    /// The fixed view-safe reads: only `list.at` / `list.length` / `list.slice` with a
+    /// `Var` first argument exempt that argument; every other call escapes its `Var`
+    /// args (conservative — the SROA / slice / reuse candidate passes).
+    ViewReads,
+    /// Summary-aware: a `Var` argument is exempt iff the callee does not alias it out
+    /// (a borrow, an `own` move, or a read-only builtin — `Summaries::arg_leaks`),
+    /// general over builtins AND user functions (RC-floor confinement).
+    NonLeaking(&'a Summaries),
+}
+
+/// Record every binding used as a WHOLE value in `b` under the given policies. A bare
+/// `Var(n)` is a whole use; `Var(n).field` / `Var(n)[i]` are not; call-argument
+/// exemption follows `call`; a closure capture marks everything it mentions. One
+/// walker shared by the SROA/slice/reuse passes (`ViewReads`) and RC-floor
+/// confinement (`NonLeaking`).
+fn scan_uses_block(b: &Block, mode: UseScan, call: CallExempt, out: &mut HashSet<String>) {
     for s in &b.stmts {
         if let Stmt::Assign { name, value } = s {
             match mode {
@@ -286,65 +300,65 @@ fn scan_uses_block(b: &Block, mode: UseScan, out: &mut HashSet<String>) {
                     // assignment to `name` marks it.
                     if let Expr::RecordUpdate { base, fields } = value {
                         if fields.len() == 1 && matches!(base.as_ref(), Expr::Var(x) if x == name) {
-                            scan_uses_expr(&fields[0].1, mode, out);
+                            scan_uses_expr(&fields[0].1, mode, call, out);
                             continue;
                         }
                     }
                     out.insert(name.clone());
-                    scan_uses_expr(value, mode, out);
+                    scan_uses_expr(value, mode, call, out);
                 }
                 // Skip the assign TARGET; scan only the RHS.
-                UseScan::ReuseRhs => scan_uses_expr(value, mode, out),
+                UseScan::ReuseRhs => scan_uses_expr(value, mode, call, out),
             }
             continue;
         }
-        each_expr_in_stmt(s, &mut |e| scan_uses_expr(e, mode, out));
+        each_expr_in_stmt(s, &mut |e| scan_uses_expr(e, mode, call, out));
     }
 }
 
-fn scan_uses_expr(e: &Expr, mode: UseScan, out: &mut HashSet<String>) {
+fn scan_uses_expr(e: &Expr, mode: UseScan, call: CallExempt, out: &mut HashSet<String>) {
     match e {
         Expr::Var(n) => {
             out.insert(n.clone());
         }
         Expr::Field { base, .. } => {
             if !matches!(base.as_ref(), Expr::Var(_)) {
-                scan_uses_expr(base, mode, out);
+                scan_uses_expr(base, mode, call, out);
             }
         }
         Expr::Index { base, index } => {
             if !matches!(base.as_ref(), Expr::Var(_)) {
-                scan_uses_expr(base, mode, out);
+                scan_uses_expr(base, mode, call, out);
             }
-            scan_uses_expr(index, mode, out);
+            scan_uses_expr(index, mode, call, out);
         }
         Expr::If { cond, then_block, else_block } => {
-            scan_uses_expr(cond, mode, out);
-            scan_uses_block(then_block, mode, out);
+            scan_uses_expr(cond, mode, call, out);
+            scan_uses_block(then_block, mode, call, out);
             if let Some(b) = else_block {
-                scan_uses_block(b, mode, out);
+                scan_uses_block(b, mode, call, out);
             }
         }
         Expr::While { cond, body } => {
-            scan_uses_expr(cond, mode, out);
-            scan_uses_block(body, mode, out);
+            scan_uses_expr(cond, mode, call, out);
+            scan_uses_block(body, mode, call, out);
         }
         Expr::For { iter, body, .. } => {
-            scan_uses_expr(iter, mode, out);
-            scan_uses_block(body, mode, out);
+            scan_uses_expr(iter, mode, call, out);
+            scan_uses_block(body, mode, call, out);
         }
         Expr::WhileLet { scrutinee, body, .. } => {
-            scan_uses_expr(scrutinee, mode, out);
-            scan_uses_block(body, mode, out);
+            scan_uses_expr(scrutinee, mode, call, out);
+            scan_uses_block(body, mode, call, out);
         }
-        Expr::Block(b) => scan_uses_block(b, mode, out),
+        Expr::Block(b) => scan_uses_block(b, mode, call, out),
         Expr::Match { scrutinee, arms } => {
-            scan_uses_expr(scrutinee, mode, out);
+            scan_uses_expr(scrutinee, mode, call, out);
             for a in arms {
                 if let Some(g) = &a.guard {
-                    scan_uses_expr(g, mode, out);
+                    scan_uses_expr(g, mode, call, out);
                 }
-                scan_uses_expr(&a.body, mode, out);
+                scan_uses_expr(&a.body, mode, call, out);
             }
         }
         Expr::Lambda { body, .. } => {
@@ -352,15 +366,31 @@ fn scan_uses_expr(e: &Expr, mode: UseScan, out: &mut HashSet<String>) {
                 each_expr_in_stmt(s, &mut |x| mark_all_vars(x, out));
             }
         }
-        Expr::Call { name, args }
-            if (name == "list.at" || name == "list.length" || is_list_slice(name))
-                && matches!(args.first(), Some(Expr::Var(_))) =>
-        {
-            for a in &args[1..] {
-                scan_uses_expr(a, mode, out);
+        Expr::Call { name, args } => match call {
+            // View-safe reads exempt only their `Var` receiver; any other call
+            // escapes its `Var` args (the generic walk marks them).
+            CallExempt::ViewReads => {
+                if (name == "list.at" || name == "list.length" || is_list_slice(name))
+                    && matches!(args.first(), Some(Expr::Var(_)))
+                {
+                    for a in &args[1..] {
+                        scan_uses_expr(a, mode, call, out);
+                    }
+                } else {
+                    each_subexpr(e, &mut |s| scan_uses_expr(s, mode, call, out));
+                }
             }
-        }
-        _ => each_subexpr(e, &mut |s| scan_uses_expr(s, mode, out)),
+            // Any `Var` argument the callee does not alias out is exempt, uniformly.
+            CallExempt::NonLeaking(summaries) => {
+                for (i, a) in args.iter().enumerate() {
+                    match a {
+                        Expr::Var(_) if !summaries.arg_leaks(name, i, args.len()) => {}
+                        _ => scan_uses_expr(a, mode, call, out),
+                    }
+                }
+            }
+        },
+        _ => each_subexpr(e, &mut |s| scan_uses_expr(s, mode, call, out)),
     }
 }
 
@@ -393,7 +423,7 @@ pub fn confined_reassigned_vars_block(body: &Block, summaries: &Summaries) -> Ha
         return HashSet::new();
     }
     let mut leaked = HashSet::new();
-    mark_leaking_uses_block(body, summaries, &mut leaked);
+    scan_uses_block(body, UseScan::ReuseRhs, CallExempt::NonLeaking(summaries), &mut leaked);
     bound.into_iter().filter(|x| !leaked.contains(x)).collect()
 }
 
@@ -404,84 +434,6 @@ fn collect_let_names(b: &Block, out: &mut HashSet<String>) {
             out.insert(name.clone());
         }
         each_block_in_stmt(s, &mut |blk| collect_let_names(blk, out));
-    }
-}
-
-/// Summary-aware companion of [`mark_reuse_escapes_block`]: marks a variable that
-/// escapes as a WHOLE value, consulting the convention/escape oracle for call
-/// arguments rather than a fixed builtin allowlist. The reassignment TARGET is
-/// not itself an escape (it is the overwrite the reclamation frees into).
-fn mark_leaking_uses_block(b: &Block, summaries: &Summaries, out: &mut HashSet<String>) {
-    for s in &b.stmts {
-        match s {
-            Stmt::Assign { value, .. } => mark_leaking_uses_expr(value, summaries, out),
-            _ => each_expr_in_stmt(s, &mut |e| mark_leaking_uses_expr(e, summaries, out)),
-        }
-    }
-}
-
-fn mark_leaking_uses_expr(e: &Expr, summaries: &Summaries, out: &mut HashSet<String>) {
-    match e {
-        Expr::Var(n) => {
-            out.insert(n.clone());
-        }
-        Expr::Field { base, .. } => {
-            if !matches!(base.as_ref(), Expr::Var(_)) {
-                mark_leaking_uses_expr(base, summaries, out);
-            }
-        }
-        Expr::Index { base, index } => {
-            if !matches!(base.as_ref(), Expr::Var(_)) {
-                mark_leaking_uses_expr(base, summaries, out);
-            }
-            mark_leaking_uses_expr(index, summaries, out);
-        }
-        Expr::If { cond, then_block, else_block } => {
-            mark_leaking_uses_expr(cond, summaries, out);
-            mark_leaking_uses_block(then_block, summaries, out);
-            if let Some(b) = else_block {
-                mark_leaking_uses_block(b, summaries, out);
-            }
-        }
-        Expr::While { cond, body } => {
-            mark_leaking_uses_expr(cond, summaries, out);
-            mark_leaking_uses_block(body, summaries, out);
-        }
-        Expr::For { iter, body, .. } => {
-            mark_leaking_uses_expr(iter, summaries, out);
-            mark_leaking_uses_block(body, summaries, out);
-        }
-        Expr::WhileLet { scrutinee, body, .. } => {
-            mark_leaking_uses_expr(scrutinee, summaries, out);
-            mark_leaking_uses_block(body, summaries, out);
-        }
-        Expr::Block(b) => mark_leaking_uses_block(b, summaries, out),
-        Expr::Match { scrutinee, arms } => {
-            mark_leaking_uses_expr(scrutinee, summaries, out);
-            for a in arms {
-                if let Some(g) = &a.guard {
-                    mark_leaking_uses_expr(g, summaries, out);
-                }
-                mark_leaking_uses_expr(&a.body, summaries, out);
-            }
-        }
-        Expr::Lambda { body, .. } => {
-            for s in &body.stmts {
-                each_expr_in_stmt(s, &mut |x| mark_all_vars(x, out));
-            }
-        }
-        Expr::Call { name, args } => {
-            for (i, a) in args.iter().enumerate() {
-                match a {
-                    // A whole-variable argument the callee does not alias out (a
-                    // borrow, an `own` move, or a read-only builtin) does NOT
-                    // escape — the convention/escape oracle decides, uniformly.
-                    Expr::Var(_) if !summaries.arg_leaks(name, i, args.len()) => {}
-                    _ => mark_leaking_uses_expr(a, summaries, out),
-                }
-            }
-        }
-        _ => each_subexpr(e, &mut |s| mark_leaking_uses_expr(s, summaries, out)),
     }
 }
 
@@ -582,7 +534,7 @@ fn collect_aggregate_lets(b: &Block, out: &mut HashSet<String>) {
 /// Record every binding used as a WHOLE value, marking assignment targets (the
 /// SROA/aggregate policy). A thin consumer of the unified [`scan_uses_block`].
 fn collect_whole_uses_block(b: &Block, out: &mut HashSet<String>) {
-    scan_uses_block(b, UseScan::Whole, out);
+    scan_uses_block(b, UseScan::Whole, CallExempt::ViewReads, out);
 }
 
 /// Mark every variable an expression mentions as a whole use (used for closure
