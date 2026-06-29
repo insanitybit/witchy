@@ -2,8 +2,19 @@
 rfc: 0032
 title: Multi-core execution — true parallelism vs the deterministic executor
 created: 2026-06-29
-status: proposed
-tracking:
+status: partial
+tracking: "Tier-C STRUCTURED concurrency shipped as pure-witchy stdlib over the
+  existing cooperative executor (no runtime change, parity by construction):
+  chan.scope (spawn-all/join-all nursery), chan.gather (typed fan-out-and-collect),
+  spawn_all/join_all — leak-free, no escaping handle, deterministic. Provides real
+  COOPERATIVE concurrency now; see examples/scope. REMAINING (native, not yet built):
+  (1) Tier B vm.spawn — isolated VM + attenuated caps + cross-VM channels (the
+  sandboxed-worker value); native runtime both backends. (2) True multi-core — a
+  native parallel scheduler (in-VM = wasm-threads + thread-safe allocator + SOUND
+  frozen/unique race-freedom = research-grade; OR OS-thread child VMs = the Tier-B
+  backend); parity-neutral (must match the cooperative executor's deterministic
+  results). (3) A cancellation primitive (executor extension) for sibling-cancel /
+  race / error-propagation. See [[project_rfc0032_impl_devlog]]."
 ---
 
 # RFC-0032: Multi-core execution — true parallelism vs the deterministic executor
@@ -392,3 +403,35 @@ lesson across BEAM, Python, Rust, and Pony is that **safe parallelism comes from
 controlling sharing** — by isolation (B) or by type (C) — never from Go's
 shared-mutable default (A). So **A is out; B and C are both viable, and they are
 complementary, not rival** (see "Composing B and C" above).
+
+## Implementation status
+
+**Shipped (2026-06-29) — Tier-C structured concurrency, pure-witchy stdlib.** Over
+the existing cooperative `Step`/`Task` executor (no runtime change; parity by
+construction): `chan.scope` (spawn-all/join-all nursery), `chan.gather` (typed
+fan-out-and-collect), and `chan.spawn_all`/`join_all`. These deliver the
+constraint-ladder's structured forms — leak-free, no escaping handle,
+deterministic, byte-identical on both backends — i.e. **real cooperative
+concurrency** (overlapped I/O, structured lifetimes) today. Demo: `examples/scope`.
+The escaping form (`chan.spawn` → `Handle`) already existed.
+
+**Remaining (native runtime — not a pure-witchy change).** These are deliberately
+not half-built; the cooperative model above is the parity-safe foundation they
+swap a backend under:
+
+1. **Tier B — `vm.spawn`** (isolated VM + attenuated caps + cross-VM channels). The
+   sandboxed-worker value, and the RFC's recommended first native step. Build: a
+   host `vm_spawn` that instantiates a second module instance (compiled) /
+   sub-interpreter (interp) running the child entry with re-granted (narrowed)
+   capabilities, wired to the parent by a host-mediated channel; arguments restricted
+   to *marshalable* (caps re-granted, channel endpoints, `frozen`/`move` copied); the
+   compiled backend must export the child entry + marshal its args. Parity via a
+   deterministic cross-VM message order so the interpreter reproduces results.
+2. **True multi-core.** Either OS-thread child VMs (the Tier-B backend, instances are
+   `Send`) or in-VM wasm-threads (shared memory + atomics + a thread-safe allocator
+   via per-thread arenas + making `frozen`/`unique` a SOUND race-freedom guarantee —
+   research-grade). Parity-neutral: a parallel scheduler must reproduce the
+   cooperative executor's deterministic results, so it is a backend swap, not a
+   semantics change.
+3. **Cancellation** (an executor `Step` extension) for sibling-cancel on first-result
+   / error, enabling `race`/`timeout` and structured error propagation.
