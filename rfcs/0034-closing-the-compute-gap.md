@@ -74,21 +74,33 @@ runtime pays nothing (this is exactly the `Module::deserialize` path in
   content-hash cache key. Verify with the differential oracle (output invariant
   under every `WITCHY_OPT` setting on both backends) + `bench/run.sh` vs baseline.
 
-### L2 — Bounds-check elision
-witchy emits an explicit `index < len` check on list access (logical bounds, not
-wasm linear-memory bounds — guard pages don't help). In a loop over `0..len` with
-an induction-variable index, the check is provably redundant. Prove in-range
-indices statically (loop-induction / range analysis over the lowering) and drop the
-check.
-- **Targets:** numeric/array loops (`nsieve`, `fannkuch`, list traversal) — the
-  steady-state gap Binaryen alone won't fully close (it doesn't know our slot ABI
-  or that `len` is monotone in the loop).
-- **Shape:** a new `WITCHY_OPT` lever (`bounds-elide`), default-on once proven,
-  consuming the same uniqueness/escape analysis machinery. Conservative by default:
-  elide ONLY when proven; a miss is a kept check, never an unsound access.
-- **Risk:** medium — it removes a safety check, so soundness is paramount. Same
-  discipline as RFC-0033: default-deny, differential oracle as the gate, an
-  adversarial test corpus (off-by-one, mutated length, aliased index).
+### L2 — Bounds-check elision — ✅ SHIPPED (conservative slice)
+witchy emits an explicit `i < 0 || i >= len` trap guard on every list access (logical
+bounds, not wasm linear-memory bounds — guard pages don't help). The `bounds-elide`
+lever (default-on) drops it for the one pattern where in-range is provable *by
+construction*: inside `for i in 0..list.length(xs)` the compiler-managed counter
+satisfies `0 ≤ i < length(xs)`, so `xs[i]` / `list.at(xs, i)` lowers to a direct
+unchecked load — which the Binaryen pass (L1) can then fold.
+- **Soundness:** elide ONLY when the loop is half-open (`0..=` would let `i == length`),
+  `lo ≥ 0`, the bound is *literally* `list.length(xs)` for the indexed `xs`, and both
+  `xs` and the loop var are unshadowed and unreassigned in the body (an exhaustive
+  `DevirtScan` walk — a rebind of `xs` could make the proven length stale). Any
+  deviation keeps the checked access. Verified: a reassigned list, an inclusive range,
+  and a *different* (shorter) list indexed by the same counter all stay checked and
+  trap/compute identically on both backends; the differential sweep gained an
+  elision-firing case (an unsound out-of-range read would diverge from the
+  always-checked interpreter oracle). Firing proof:
+  `example_tests::elides_bounds_check_in_counted_loop` (no `call $list_at` on, checked
+  off). **Measured (`benchmarks/list_index`, 10M indexed reads, release, warm):
+  33.4 → 22.0 ms = 1.51×.**
+- **Honest reach:** the CLBG numeric kernels (`nsieve`, `fannkuch`) *cache* the length
+  in a var (`while i < n`) and prove nothing from `0..length(xs)` — proving `n ==
+  length(xs)` is non-local, so conservative elision deliberately does NOT touch them.
+  The slice reaches *idiomatic* indexed loops, not hand-tuned cached-length ones. A
+  follow-up could extend to `while i < list.length(xs)` (needs an induction proof that
+  `i` starts ≥ 0 and only increments) — strictly more analysis surface, deferred.
+- **Risk:** medium — it removes a safety check, so soundness is paramount; handled by
+  default-deny + the differential oracle + the adversarial cases above.
 
 ### L3 — Closure devirtualization — ✅ SHIPPED (part a)
 Static user calls already lower to a direct `call`; the ~3.1× cost is *closures* —

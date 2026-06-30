@@ -357,6 +357,7 @@ struct SavedScope {
     rc_floor_vars: HashSet<String>,
     devirt_ok: HashSet<String>,
     devirt_index: HashMap<String, usize>,
+    elide_index_list: Vec<(String, String)>,
 }
 
 struct Codegen {
@@ -453,6 +454,13 @@ struct Codegen {
     /// lambda — mapping the local to that lifted `$__lamw{i}` table index. A call site
     /// `f(x)` with `f` here emits a direct `call $__lamw{i}` instead of `call_indirect`.
     devirt_index: HashMap<String, usize>,
+    /// (RFC-0034 L2) Active `(index-var, list-var)` pairs whose `list.at(list, index)`
+    /// is provably in range — pushed while lowering the body of an eligible
+    /// `for index in 0..list.length(list)` loop (see `bounds_elide_pair`), so the
+    /// access lowers to a direct unchecked load. A stack: nested eligible loops each
+    /// push their own pair (a same-named inner loop disqualifies the outer, so a stale
+    /// pair never shadows). Empty ⇒ every `list.at` keeps its trap guard.
+    elide_index_list: Vec<(String, String)>,
     /// (RFC-0028) Confined slice *views*: `let w = list.slice(src, lo, hi)` bindings
     /// the escape analysis proved read-only-by-`at`/`length` over an unmutated
     /// source, so the slice copy is elided — `w` keeps `${w}$src`/`${w}$lo`/`${w}$hi`
@@ -858,6 +866,7 @@ impl Codegen {
             sroa_active: HashMap::new(),
             devirt_ok: HashSet::new(),
             devirt_index: HashMap::new(),
+            elide_index_list: Vec::new(),
             view_candidates: HashSet::new(),
             view_active: HashSet::new(),
             packed_candidates: HashSet::new(),
@@ -3867,9 +3876,20 @@ impl Codegen {
                 // `$heap` before the loop, restore it after each body. `None` when
                 // the body isn't resettable — the loop is still correct without it.
                 let wm = self.loop_watermark_wir(body);
+                // (RFC-0034 L2) Register `(i, xs)` for `for i in 0..list.length(xs)`
+                // (xs unmutated in the body) so `list.at(xs, i)` lowers to an unchecked
+                // load. Popped right after the body, so the stack stays balanced even on
+                // the early `None` bail below.
+                let elide_pair = bounds_elide_pair(var, lo, hi, *inclusive, body);
+                if let Some(p) = &elide_pair {
+                    self.elide_index_list.push(p.clone());
+                }
                 self.loop_labels.push((format!("$fe{id}"), format!("$fc{id}")));
                 let body_res = self.lower_block(body);
                 self.loop_labels.pop();
+                if elide_pair.is_some() {
+                    self.elide_index_list.pop();
+                }
                 if wm.is_some() {
                     self.wm_level -= 1;
                 }
@@ -4921,6 +4941,7 @@ impl Codegen {
             rc_floor_vars: std::mem::take(&mut self.rc_floor_vars),
             devirt_ok: std::mem::take(&mut self.devirt_ok),
             devirt_index: std::mem::take(&mut self.devirt_index),
+            elide_index_list: std::mem::take(&mut self.elide_index_list),
         }
     }
 
@@ -4951,6 +4972,7 @@ impl Codegen {
         self.rc_floor_vars = s.rc_floor_vars;
         self.devirt_ok = s.devirt_ok;
         self.devirt_index = s.devirt_index;
+        self.elide_index_list = s.elide_index_list;
     }
 
     /// The `$key_eq` comparison mode for a Dict key expression: 0 for Int/Bool
@@ -5770,6 +5792,46 @@ fn collect_devirt_eligible(body: &Block) -> HashSet<String> {
         .filter(|(n, c)| *c == 1 && !other_bind.contains(n) && !reassigned.contains(n))
         .map(|(n, _)| n)
         .collect()
+}
+
+/// (RFC-0034 L2) Is `for var in lo..hi` the bounds-elidable pattern
+/// `for i in 0..list.length(xs)`, with `xs` and the loop var unshadowed and
+/// unreassigned in `body`? If so, returns the `(index-var, list-var)` pair to register
+/// while lowering the body, so a `list.at(xs, i)` there lowers to an unchecked load.
+///
+/// Soundness: the for-counter is compiler-managed (set to the counter each iteration,
+/// advancing `lo, lo+1, …`), so inside the body `lo ≤ i < hi`. With `lo ≥ 0` and
+/// `hi = list.length(xs)`, that is exactly `0 ≤ i < length(xs)` — in range — PROVIDED
+/// the length we proved cannot change: `xs` must not be reassigned (which would rebind
+/// it, possibly to a shorter list) nor re-bound by a shadowing `let`/tuple/for/param/
+/// pattern (which would make `xs` at the access a different value than the one whose
+/// length bounds the loop). `i` likewise must not be reassigned/shadowed in the body
+/// (it would no longer equal the counter). The walk that proves this (`DevirtScan`) is
+/// exhaustive. Half-open only: an inclusive `0..=length(xs)` would let `i == length`
+/// (OOB), so it is rejected. Conservative everywhere — any deviation keeps the checked
+/// access. Gated on `bounds-elide`; off ⇒ None ⇒ the access keeps its trap guard (the
+/// de-opt reference the differential sweep compares against).
+fn bounds_elide_pair(var: &str, lo: &Expr, hi: &Expr, inclusive: bool, body: &Block) -> Option<(String, String)> {
+    if inclusive || !witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::BoundsElide) {
+        return None;
+    }
+    match lo {
+        Expr::Int(k) if *k >= 0 => {}
+        _ => return None,
+    }
+    let xs = match hi {
+        Expr::Call { name, args } if name == "list.length" && args.len() == 1 => match &args[0] {
+            Expr::Var(x) => x.clone(),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let mut scan = DevirtScan::default();
+    scan.walk_block(body);
+    let stable = |n: &str| {
+        !scan.let_bind.contains_key(n) && !scan.other_bind.contains(n) && !scan.reassigned.contains(n)
+    };
+    (stable(&xs) && stable(var)).then_some((var.to_string(), xs))
 }
 
 fn collect_fn_refs_block(b: &Block, out: &mut HashSet<String>) {

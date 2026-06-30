@@ -725,11 +725,46 @@ impl Codegen {
             ("list.at", 2) => {
                 let ek = self.list_elem_kind(&args[0]);
                 let ik = self.kind_of(&args[1]);
-                let inner = vec![
-                    self.lower_expr(&args[0])?,
-                    Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I32),
-                ];
-                W::FromSlot(Box::new(call("list_at", inner)), Self::wir_kind(ek))
+                // (RFC-0034 L2) Bounds-check elision: when the For lowering proved this
+                // exact `list.at(xs, i)` is in range (a registered `(i, xs)` pair), emit
+                // the unchecked element load — `load_i64( (xs + 4) + i*8 )`, the same
+                // address `$list_at` computes, minus the `i < 0 || i >= len` trap guard.
+                // Both args are lowered once either way, so string-offset interning is
+                // identical to the checked path.
+                let elide = matches!((&args[0], &args[1]), (Expr::Var(lv), Expr::Var(iv))
+                    if self.elide_index_list.iter().any(|(i, l)| i == iv && l == lv));
+                let list_w = self.lower_expr(&args[0])?;
+                let idx_w = Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I32);
+                if elide {
+                    let wi32 = witchy_wir::wir::Kind::I32;
+                    let add = witchy_wir::wir::BinOp::Add;
+                    let addr = W::Binary {
+                        op: add,
+                        kind: wi32,
+                        lhs: Box::new(W::Binary {
+                            op: add,
+                            kind: wi32,
+                            lhs: Box::new(list_w),
+                            rhs: Box::new(W::ConstI32(4)),
+                        }),
+                        rhs: Box::new(W::Binary {
+                            op: witchy_wir::wir::BinOp::Mul,
+                            kind: wi32,
+                            lhs: Box::new(idx_w),
+                            rhs: Box::new(W::ConstI32(8)),
+                        }),
+                    };
+                    W::FromSlot(
+                        Box::new(W::Load {
+                            ptr: Box::new(addr),
+                            kind: witchy_wir::wir::Kind::I64,
+                            offset: 0,
+                        }),
+                        Self::wir_kind(ek),
+                    )
+                } else {
+                    W::FromSlot(Box::new(call("list_at", vec![list_w, idx_w])), Self::wir_kind(ek))
+                }
             }
             ("recv_bytes", 2) => {
                 self.used_net_ops.insert("recv_bytes");

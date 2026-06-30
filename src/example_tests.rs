@@ -702,6 +702,35 @@
         assert!(!off.contains("call $__lamw"), "direct-call off: no direct closure call");
     }
 
+    /// (RFC-0034 L2) Bounds-check elision fires and is gated. `xs[i]` inside a
+    /// `for i in 0..list.length(xs)` loop (xs unmutated) lowers to an unchecked element
+    /// load under the default (`bounds-elide` on) — no `call $list_at` — and keeps the
+    /// checked `$list_at` trap guard under `-bounds-elide`. The call-SHAPE firing proof;
+    /// OUTPUT invariance (and the reassigned/inclusive/aliased-list cases that must
+    /// stay checked) is the differential sweep's job.
+    #[test]
+    fn elides_bounds_check_in_counted_loop() {
+        use crate::opt::{self, Opt, OptSet};
+        let path =
+            std::env::temp_dir().join(format!("witchy_bounds_{}.witchy", std::process::id()));
+        std::fs::write(
+            &path,
+            "fn main(console: Console):\n    let xs = [10, 20, 30, 40, 50]\n    var total = 0\n    for i in 0..list.length(xs):\n        total = total + xs[i]\n    print(console, __render(total))\n",
+        )
+        .expect("write temp source");
+
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let on = crate::emit_wat_file(path.to_str().unwrap()).expect("emit-wat on");
+        opt::set_for_tests(Some(OptSet::default_set().without(Opt::BoundsElide)));
+        let off = crate::emit_wat_file(path.to_str().unwrap()).expect("emit-wat off");
+        opt::set_for_tests(None);
+        let _ = std::fs::remove_file(&path);
+
+        // `xs[i]` is the only list access in this program.
+        assert!(!on.contains("call $list_at"), "bounds-elide on: the access should be unchecked");
+        assert!(off.contains("call $list_at"), "bounds-elide off: expected the checked $list_at call");
+    }
+
     /// `for x in a..b` is a counting loop on both backends — never a materialized
     /// list — with faithful `break`/`continue`, inclusive (`..=`), empty, and
     /// nested behavior. The 100_000-iteration loop proves nothing is allocated:

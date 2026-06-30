@@ -64,6 +64,13 @@ pub enum Opt {
     /// of a `call_indirect` through its runtime code-index word — which also lets the
     /// Binaryen pass inline the lambda body (off ⇒ every closure call is indirect).
     DirectCall,
+    /// (RFC-0034 L2) Logical bounds-check elision: inside a `for i in 0..list.length(xs)`
+    /// loop whose `xs` is never reassigned, `xs[i]` / `list.at(xs, i)` is provably
+    /// in-range (the compiler-managed counter satisfies `0 ≤ i < length(xs)` by
+    /// construction), so the `$list_at` index check is replaced by a direct unchecked
+    /// load (off ⇒ every access keeps its `i < 0 || i ≥ len` trap guard). Conservative:
+    /// elides ONLY this proven pattern — a miss is a kept check, never an unsound access.
+    BoundsElide,
     // NOTE: the registry holds ONLY optimizations the compiler actually performs —
     // every entry must pass the differential de-opt sweep AND prove it fired
     // (RFC-0030's contract). For a MEMORY lever that proof is a `witchy stats`
@@ -77,7 +84,7 @@ pub enum Opt {
 impl Opt {
     /// Every optimization, in a stable order — drives the differential de-opt
     /// sweep and `witchy stats` reporting.
-    pub const ALL: [Opt; 10] = [
+    pub const ALL: [Opt; 11] = [
         Opt::InPlace,
         Opt::Views,
         Opt::Sroa,
@@ -88,6 +95,7 @@ impl Opt {
         Opt::RcFloor,
         Opt::WasmOpt,
         Opt::DirectCall,
+        Opt::BoundsElide,
     ];
 
     /// The token used in `WITCHY_OPT` and reported by `witchy stats`.
@@ -103,6 +111,7 @@ impl Opt {
             Opt::RcFloor => "rc-floor",
             Opt::WasmOpt => "wasm-opt",
             Opt::DirectCall => "direct-call",
+            Opt::BoundsElide => "bounds-elide",
         }
     }
 

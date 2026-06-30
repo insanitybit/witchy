@@ -269,6 +269,13 @@ mod tests {
             // must stay an indirect call (an unsound devirt would pin the first lambda
             // and diverge once `f` is rebound). The interpreter oracle pins both.
             "fn main(console: Console):\n    let k = 10\n    let g = fn(x: Int): x + k\n    var f = fn(x: Int): x * 2\n    var i = 0\n    var acc = 0\n    while i < 8:\n        acc = acc + g(i) + f(i)\n        if i == 4:\n            f = fn(x: Int): x * 3\n        i = i + 1\n    print(console, __render(acc))\n",
+            // (RFC-0034 L2) Bounds-check elision: `for i in 0..list.length(xs)` indexing
+            // an unmutated `xs` lowers `xs[i]` to an UNCHECKED load (provably in range);
+            // toggling `bounds-elide` swaps checked/unchecked codegen and must not change
+            // output. Two elidable loops over distinct lists; the interpreter (always
+            // bounds-checked) is the oracle, so an unsound elision reading out of range
+            // would diverge here.
+            "fn main(console: Console):\n    let xs = [3, 1, 4, 1, 5, 9, 2, 6]\n    let ys = [10, 20]\n    var t = 0\n    for i in 0..list.length(xs):\n        t = t + xs[i] * i\n    for j in 0..list.length(ys):\n        t = t + ys[j]\n    print(console, __render(t))\n",
         ];
         for src in corpus {
             // The interpreter oracle (the fixed semantics; it has no WITCHY_OPT).
