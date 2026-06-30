@@ -2541,6 +2541,10 @@ Map `f` over every element of `xs`, in parallel where the backend supports it, r
 
 Run `f` on `input` in an ISOLATED worker VM (on the compiled backend) that is granted EXACTLY the directory capability `dir` — and nothing else. The worker can read/write within `dir` (with `dir`'s own rights) and reach NO other host resource: it is its own WebAssembly instance with its own memory, and every ungranted capability traps. This is the capability-passing sandbox — run untrusted/partially-trusted code with precisely scoped authority. `f` must be a top-level (capture-free) function. Because the result is a deterministic function of `dir`'s contents and `input`, the isolation is invisible to the output, so the interpreter (which runs `f` directly) and the compiled backend agree.
 
+#### `fn serve(init: Bytes, requests: List(Bytes), handler: fn(Bytes, Bytes) -> Bytes) -> List(Bytes)`
+
+Run a stateful SERVICE on a single long-lived ISOLATED worker VM. The worker is created once and processes `requests` in order, threading an accumulator `state` through `handler(state, request) -> new_state`, emitting each new state as that request's response. This is witchy's cross-VM channel: a worker that processes a message stream with persistent state. It is deliberately LOCK-STEP (ordered, not racing) — that determinism is what lets the interpreter (a sequential scan) and the compiled backend (a persistent worker VM) agree, which a truly-racing channel could not. `handler` must be a top-level (capture-free) function.
+
 ## `webauthn`
 
 webauthn — server-side verification of a WebAuthn *assertion* (the credential "get" / second-factor ceremony), in pure witchy. ES256 (P-256, COSE alg -7) only.

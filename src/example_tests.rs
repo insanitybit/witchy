@@ -292,6 +292,19 @@
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
+    /// (RFC-0032) Cross-VM channels: `vm.serve(init, requests, handler)` runs a stateful
+    /// service on a long-lived isolated worker VM — it threads `state` through the request
+    /// stream (here a running byte concatenation) and emits each new state. Lock-step and
+    /// deterministic, so the interpreter (sequential scan) and the compiled backend
+    /// (persistent worker VM) produce identical responses.
+    #[test]
+    fn vm_serve_stateful_service_agrees() {
+        let src = "import vm\nimport bytes\n\nfn step(state: Bytes, req: Bytes) -> Bytes:\n    bytes.concat(state, req)\n\nfn main(console: Console):\n    let reqs = [bytes.from_string(\"a\"), bytes.from_string(\"b\"), bytes.from_string(\"c\")]\n    let outs = vm.serve(bytes.from_string(\"\"), reqs, step)\n    for o in outs:\n        print(console, bytes.to_string(o))\n";
+        let expected = ["a", "ab", "abc"];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+    }
+
     /// (RFC-0032) Capability-passing: `vm.with_dir(dir, f, input)` runs `f` in an isolated
     /// worker VM granted EXACTLY `dir`. The worker reads a file through the passed `Dir`
     /// (and could reach nothing else). Output is a deterministic function of the file +

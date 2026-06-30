@@ -603,6 +603,7 @@ pub(crate) fn link_capability_imports(
     // (RFC-0032) Capability-passing: the only authority the worker gets is the `Dir`
     // the caller already holds and explicitly passes — a re-grant, no new authority.
     linker.func_wrap("witchy", "vm_with_dir_run", host_vm_with_dir_run)?;
+    linker.func_wrap("witchy", "vm_serve_run", host_vm_serve_run)?;
     // Field-length staging helpers (`[len]` of a host cell's string/list field).
     // They carry no authority — pure reads — and the WIR static prelude declares
     // them unconditionally, so define harmless stubs here. Ordinary programs
@@ -1529,6 +1530,84 @@ fn run_with_dir_worker(
         .map_err(|e| Error::msg(format!("writing vm.with_dir input into worker: {e}")))?;
     let rptr = call2.call(&mut store, (code_idx, 0i64, iptr as i64))?;
     read_wbytes(mem.data(&store), rptr as i32)
+}
+
+/// (RFC-0032) `vm_serve_run(init_ptr, requests_ptr, handler_ptr) -> byte_size`: a stateful
+/// SERVICE on a single long-lived isolated worker VM. The worker is created once and
+/// processes the request stream IN ORDER, threading the accumulator `state` through
+/// `handler(state, request) -> new_state` and emitting each new state as the response.
+/// This is the deterministic, parity-safe realization of cross-VM channels: a worker that
+/// processes a message stream with persistent state, lock-step (no nondeterministic
+/// interleaving), so the interpreter's sequential scan reproduces the result exactly.
+fn host_vm_serve_run(
+    mut caller: Caller<'_, VmState>,
+    init_ptr: i32,
+    requests_ptr: i32,
+    handler_ptr: i32,
+) -> Result<i32> {
+    let (init, requests, code_idx) = {
+        let mem = memory_of(&mut caller)?;
+        let data = mem.data(&caller);
+        let init = read_wbytes(data, init_ptr)?;
+        let requests = read_wbytes_list(data, requests_ptr)?;
+        let cb = slice(data, handler_ptr, 4)?;
+        (init, requests, i32::from_le_bytes([cb[0], cb[1], cb[2], cb[3]]))
+    };
+    let engine = caller.data().engine.clone();
+    let module = caller.data().module.clone();
+    let preempt = caller.data().preempt;
+    let responses = run_serve_worker(&engine, &module, preempt, code_idx, &init, &requests)?;
+    let n = responses.len();
+    let size = 4 + 8 * n + responses.iter().map(|b| 4 + b.len()).sum::<usize>();
+    caller.data_mut().pending_bytes = Some(responses);
+    Ok(size as i32)
+}
+
+/// Drive a `vm.serve` worker: one zero-authority instance, `state` (a `Bytes` pointer)
+/// kept live in the worker's memory and threaded through `handler(state, req)` via the
+/// `__call2` trampoline; each new state is read out as that request's response.
+fn run_serve_worker(
+    engine: &Engine,
+    module: &Module,
+    preempt: bool,
+    code_idx: i32,
+    init: &[u8],
+    requests: &[Vec<u8>],
+) -> Result<Vec<Vec<u8>>> {
+    let state = worker_vmstate(engine, module, preempt);
+    let mut store = Store::new(engine, state);
+    store.limiter(|s| &mut s.limits);
+    if preempt {
+        store.set_epoch_deadline(u64::MAX);
+    }
+    let mut linker: Linker<VmState> = Linker::new(engine);
+    link_capability_imports(&mut linker, &Capabilities::default())?;
+    linker.define_unknown_imports_as_traps(module)?;
+    let instance = linker.instantiate(&mut store, module)?;
+    let galloc = instance.get_typed_func::<i32, i32>(&mut store, "__galloc")?;
+    let call2 = instance.get_typed_func::<(i32, i64, i64), i64>(&mut store, "__call2")?;
+    let mem = instance
+        .get_memory(&mut store, "memory")
+        .ok_or_else(|| Error::msg("vm.serve worker VM exports no `memory`"))?;
+    // Helper: copy a byte buffer into the worker as a `[len][bytes]` value, return ptr.
+    let copy_in = |store: &mut Store<VmState>, bytes: &[u8]| -> Result<i32> {
+        let total = 4 + bytes.len() as i32;
+        let p = galloc.call(&mut *store, total)?;
+        let mut buf = Vec::with_capacity(total as usize);
+        buf.extend_from_slice(&(bytes.len() as i32).to_le_bytes());
+        buf.extend_from_slice(bytes);
+        mem.write(&mut *store, p as usize, &buf)
+            .map_err(|e| Error::msg(format!("writing vm.serve buffer into worker: {e}")))?;
+        Ok(p)
+    };
+    let mut state_ptr = copy_in(&mut store, init)?;
+    let mut responses = Vec::with_capacity(requests.len());
+    for req in requests {
+        let req_ptr = copy_in(&mut store, req)?;
+        state_ptr = call2.call(&mut store, (code_idx, state_ptr as i64, req_ptr as i64))? as i32;
+        responses.push(read_wbytes(mem.data(&store), state_ptr)?);
+    }
+    Ok(responses)
 }
 
 /// (RFC-0032) `vm_par_map_str_run(xs_ptr, f_ptr) -> byte_size`: the `String` variant of

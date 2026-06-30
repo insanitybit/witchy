@@ -6874,6 +6874,14 @@ impl Codegen {
             {
                 call("vm_with_dir", self.lower_args(&[&args[0], &args[1], &args[2]])?)
             }
+            // (RFC-0032) `vm.serve(init, requests, handler)` — a stateful service on a
+            // long-lived isolated worker VM (the parity-safe cross-VM channel). `handler`
+            // must be a top-level (capture-free) function.
+            ("vm.serve", 3)
+                if matches!(&args[2], Expr::Var(f) if !self.locals.contains_key(f)) =>
+            {
+                call("vm_serve", self.lower_args(&[&args[0], &args[1], &args[2]])?)
+            }
             ("read_build", 2) => {
                 self.used_build_ops.insert("read_build");
                 call("build_read", self.lower_args(&[&args[0], &args[1]])?)
@@ -8235,8 +8243,12 @@ pub fn assemble_wir_module(
             let has_par_map_buf = pruned_funcs
                 .iter()
                 .any(|f| f.name == "vm_par_map_str" || f.name == "vm_par_map_bytes");
-            // (RFC-0032) `vm.with_dir` invokes a 2-arg closure (Dir + Bytes) via `__call2`.
-            let has_with_dir = pruned_funcs.iter().any(|f| f.name == "vm_with_dir");
+            // (RFC-0032) `vm.with_dir` and `vm.serve` invoke a 2-arg closure via `__call2`,
+            // and copy buffers into a worker via `__galloc`.
+            let has_call2 = pruned_funcs
+                .iter()
+                .any(|f| f.name == "vm_with_dir" || f.name == "vm_serve");
+            let has_with_dir = has_call2;
             let exports_call_idx =
                 has_par_map_buf || pruned_funcs.iter().any(|f| f.name == "vm_par_map");
             if exports_call_idx {

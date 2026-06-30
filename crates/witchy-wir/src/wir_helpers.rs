@@ -4022,6 +4022,39 @@ pub fn call2_helper() -> WirFunc {
     }
 }
 
+/// (RFC-0032) `$vm_serve(init, requests, handler) -> i32` — a stateful service on a
+/// long-lived isolated worker VM: process the request stream in order, threading state
+/// through `handler`, emitting each new state. The host stages the response `List(Bytes)`
+/// (`vm_serve_run`), laid out by `vm_par_map_bytes_write` (same `List(Bytes)` structure).
+pub fn vm_serve_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "vm_serve".into(),
+        params: vec![
+            WirLocal { name: "init".into(), ty: WirTy::Bool },
+            WirLocal { name: "requests".into(), ty: WirTy::Bool },
+            WirLocal { name: "handler".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: vec![
+            WirLocal { name: "size".into(), ty: WirTy::Bool },
+            WirLocal { name: "res".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::SetLocal { local: "size".into(), value: E::CallHost { import: "vm_serve_run".into(), args: vec![getl("init"), getl("requests"), getl("handler")] } },
+            N::Do(E::Call { func: "ensure".into(), args: vec![getl("size")] }),
+            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            N::Do(E::CallHost { import: "vm_par_map_bytes_write".into(), args: vec![getl("res")] }),
+            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("res"), getl("size")) },
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// (RFC-0032) `$vm_with_dir(dir, f, input) -> i32` — capability-passing: run `f` on
 /// `input` in an isolated worker VM granted exactly `dir`. The host stages the result
 /// `Bytes` (`vm_with_dir_run`), which `fill_pending` lays out into the reserved block.
@@ -5066,6 +5099,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             func: vm_with_dir_helper(),
             helper_deps: &["ensure"],
             import_deps: &["vm_with_dir_run", "fill_pending"],
+            uses_heap: true,
+            uses_table: true,
+        }),
+        "vm_serve" => Some(WirHelperSpec {
+            func: vm_serve_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &["vm_serve_run", "vm_par_map_bytes_write"],
             uses_heap: true,
             uses_table: true,
         }),
