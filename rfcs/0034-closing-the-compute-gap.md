@@ -183,18 +183,24 @@ against the recorded baseline and fails loudly on regressions):
 
 ## Sequencing
 
-1. **Measurement** — add the mutable-accumulation + channel benches (cheap, makes
-   the rest provable).
-2. **L4 + L5 + L3** — the tractable runtime/codegen wins (pooling, par_map pool,
-   closure devirtualization); infrastructure is half-built for each.
-3. **L1 (Binaryen)** — the big codegen lever; one dependency, AOT-cached.
-4. **L2 (bounds-check elision)** — the highest-value *compiler* work; schedule
-   deliberately, gate on the differential oracle.
-5. **L6** — representation/SIMD/proposals as the target and need mature.
+1. **Measurement** — ✅ done (mutable-accumulation `record_build` + channel
+   `chan_throughput` benches added; `list_index` added with L2).
+2. **L4 + L5 + L3** — L4 ✅ measured (pooling not-beneficial-yet, opt-in); L3(a)
+   ✅ shipped (closure devirt); L5 not done (lowest value — `parmap` already ~1.4×).
+3. **L1 (Binaryen)** — ✅ shipped (the big codegen lever; AOT-cached).
+4. **L2 (bounds-check elision)** — ✅ shipped (conservative `0..list.length(xs)`
+   slice; gated on the differential oracle).
+5. **L6** — not done; representation/SIMD/proposals as the target and need mature.
 
-Expected envelope if L1–L3 land: numeric ~2× → ~1.3×, closures → near parity,
-parallel → near goroutine cost, startup unchanged-but-already-AOT. The deliberate
-sandbox cost remains, by design.
+**Shipped status:** the three high-ROI compute levers (L1, L2, L3a) are done and
+measured. **Measured wins (release, warm):** mandelbrot 95.9 → 53.4 ms (~Go parity)
+via L1; closures 5.06× → 3.11× Go via L3; indexed loops 1.51× via L2. L4 is opt-in
+(measured not-beneficial on one-shot workloads). What remains is lower-ROI or larger:
+L5 (small — `parmap` is already close) and L6 (SIMD / sub-i64 slots / wasm proposals,
+a large surface). The single biggest *remaining* performance gap is not in this RFC's
+lever list: the async executor OOMs at ~9k channel messages and is ~19× behind a Go
+goroutine on `chan_throughput` (the `vm.par_map` path is healthy at ~1.4×) — a
+memory-model fix for the cooperative executor, the natural follow-on.
 
 ## Invariants (every lever)
 
