@@ -15,7 +15,7 @@
 //! the runtime links only when granted, so an ungranted compiled module cannot
 //! instantiate.
 
-use crate::analysis::{self, is_self_assign_shape, self_concat_pieces, self_insert_args, self_push_elem, self_set_at, self_update_args, self_update_at};
+use crate::analysis::{self};
 use witchy_syntax::lambda_scan::{collect_pattern_vars, scan_lambda};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -2741,304 +2741,247 @@ impl Codegen {
                         tail_is_value = false;
                     } else if self.collect_wir
                         && self.inplace_push.contains(name)
-                        && is_self_assign_shape(name, value, &self.summaries)
-                        && self_push_elem(name, value).is_some()
+                        && analysis::self_inplace_op(name, value).is_some()
                     {
-                        // Only the list-push shape has an in-place fast path. A dict/
-                        // string self-assign (`self_push_elem` is None) falls through
-                        // to the plain value-rebind below — correct value semantics,
-                        // just without the O(1) in-place mutation.
-                        let elem = self_push_elem(name, value).expect("guarded Some above");
-                        let xk = self.kind_of(elem);
+                        let op = analysis::self_inplace_op(name, value).expect("guarded Some above");
                         // A dirty site (its RHS embeds an aliasing share of `name`)
-                        // forces a zero token → re-own + copy; a clean site trusts
-                        // the runtime token. Read-only here; `sites` consumed at end.
+                        // forces a zero ownership token → re-own + copy; a clean site
+                        // trusts the runtime token. Read-only here; `sites` consumed
+                        // at end. Hoisted across all in-place shapes below.
                         let dirty = match self.facts_stack.last() {
                             Some((facts, _, _)) if facts.accumulators.contains(name) => {
                                 facts.is_dirty(stmt)
                             }
                             _ => true,
                         };
-                        let cap = if dirty {
-                            W::ConstI32(0)
-                        } else {
-                            W::GetLocal(format!("{name}__cap"))
-                        };
-                        use witchy_wir::wir::BinOp;
-                        let e = self.lower_expr(elem)?;
-                        self.uses_list_push_cap = true;
-                        // Stash length (i32) + value (i64 slot), then APPEND in place
-                        // when owned slack remains (cap > len): write the value at slot
-                        // `len` and bump the length, leaving the capacity token alone.
-                        // Else fall back to `$list_push_cap` (grow / re-own). Eliding
-                        // the helper CALL on the hot path is RFC-0016 R2 static elision.
-                        seq.push(N::SetLocal {
-                            local: "__witchy_set_idx".into(),
-                            value: W::Load { ptr: Box::new(W::GetLocal(name.clone())), kind: witchy_wir::wir::Kind::I32, offset: 0 },
-                        });
-                        seq.push(N::SetLocal {
-                            local: "__witchy_set_val".into(),
-                            value: W::ToSlot(Box::new(e), Self::wir_kind(xk)),
-                        });
-                        let sl = || W::GetLocal("__witchy_set_idx".to_string());
-                        let sv = || W::GetLocal("__witchy_set_val".to_string());
-                        let bin = |op, l, r| W::Binary { op, kind: witchy_wir::wir::Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-                        let slot_ptr = bin(
-                            BinOp::Add,
-                            bin(BinOp::Add, W::GetLocal(name.clone()), W::ConstI32(4)),
-                            bin(BinOp::Mul, sl(), W::ConstI32(8)),
-                        );
-                        seq.push(N::If {
-                            cond: bin(BinOp::Gt, cap.clone(), sl()),
-                            then_: vec![
-                                N::Store { ptr: slot_ptr, value: sv(), kind: witchy_wir::wir::Kind::I64, offset: 0 },
-                                N::Store { ptr: W::GetLocal(name.clone()), value: bin(BinOp::Add, sl(), W::ConstI32(1)), kind: witchy_wir::wir::Kind::I32, offset: 0 },
-                            ],
-                            els: vec![N::CallStoreMulti {
-                                func: "list_push_cap".to_string(),
-                                args: vec![W::GetLocal(name.clone()), sv(), cap],
-                                dests: vec![name.clone(), format!("{name}__cap")],
-                            }],
-                            result: None,
-                        });
-                        inplace_sites += 1;
-                        tail_is_value = false;
-                    } else if self.collect_wir
-                        && self.inplace_push.contains(name)
-                        && is_self_assign_shape(name, value, &self.summaries)
-                        && self_set_at(name, value).is_some()
-                    {
-                        // `xs = list.set_at(xs, i, v)`: in-place element store via
-                        // `$list_set_cap` (mutate the owned buffer's slot, O(1)),
-                        // mirroring the list-push fast path. Without it the plain
-                        // rebind rebuilds the whole list each set — O(n²) memory
-                        // that traps a large list under the memory cap. A dirty
-                        // site forces a zero token (re-own + copy, preserving any
-                        // alias); a clean site mutates the owned buffer.
-                        let (iexpr, vexpr) = self_set_at(name, value).expect("guarded Some above");
-                        let ik = self.kind_of(iexpr);
-                        let vk = self.kind_of(vexpr);
-                        let dirty = match self.facts_stack.last() {
-                            Some((facts, _, _)) if facts.accumulators.contains(name) => {
-                                facts.is_dirty(stmt)
+                        match op {
+                            analysis::InPlaceOp::Push(elem) => {
+                                // Only the list-push shape has an in-place fast path. A dict/
+                                // string self-assign falls through to the plain value-rebind
+                                // below — correct value semantics, just without the O(1)
+                                // in-place mutation.
+                                let xk = self.kind_of(elem);
+                                let cap = if dirty {
+                                    W::ConstI32(0)
+                                } else {
+                                    W::GetLocal(format!("{name}__cap"))
+                                };
+                                use witchy_wir::wir::BinOp;
+                                let e = self.lower_expr(elem)?;
+                                self.uses_list_push_cap = true;
+                                // Stash length (i32) + value (i64 slot), then APPEND in place
+                                // when owned slack remains (cap > len): write the value at slot
+                                // `len` and bump the length, leaving the capacity token alone.
+                                // Else fall back to `$list_push_cap` (grow / re-own). Eliding
+                                // the helper CALL on the hot path is RFC-0016 R2 static elision.
+                                seq.push(N::SetLocal {
+                                    local: "__witchy_set_idx".into(),
+                                    value: W::Load { ptr: Box::new(W::GetLocal(name.clone())), kind: witchy_wir::wir::Kind::I32, offset: 0 },
+                                });
+                                seq.push(N::SetLocal {
+                                    local: "__witchy_set_val".into(),
+                                    value: W::ToSlot(Box::new(e), Self::wir_kind(xk)),
+                                });
+                                let sl = || W::GetLocal("__witchy_set_idx".to_string());
+                                let sv = || W::GetLocal("__witchy_set_val".to_string());
+                                let bin = |op, l, r| W::Binary { op, kind: witchy_wir::wir::Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+                                let slot_ptr = bin(
+                                    BinOp::Add,
+                                    bin(BinOp::Add, W::GetLocal(name.clone()), W::ConstI32(4)),
+                                    bin(BinOp::Mul, sl(), W::ConstI32(8)),
+                                );
+                                seq.push(N::If {
+                                    cond: bin(BinOp::Gt, cap.clone(), sl()),
+                                    then_: vec![
+                                        N::Store { ptr: slot_ptr, value: sv(), kind: witchy_wir::wir::Kind::I64, offset: 0 },
+                                        N::Store { ptr: W::GetLocal(name.clone()), value: bin(BinOp::Add, sl(), W::ConstI32(1)), kind: witchy_wir::wir::Kind::I32, offset: 0 },
+                                    ],
+                                    els: vec![N::CallStoreMulti {
+                                        func: "list_push_cap".to_string(),
+                                        args: vec![W::GetLocal(name.clone()), sv(), cap],
+                                        dests: vec![name.clone(), format!("{name}__cap")],
+                                    }],
+                                    result: None,
+                                });
                             }
-                            _ => true,
-                        };
-                        let cap = if dirty {
-                            W::ConstI32(0)
-                        } else {
-                            W::GetLocal(format!("{name}__cap"))
-                        };
-                        use witchy_wir::wir::BinOp;
-                        let iw = self.lower_expr(iexpr)?;
-                        let vw = self.lower_expr(vexpr)?;
-                        // Stash index (i32) + value (i64 slot) into scratch locals,
-                        // then store IN PLACE inline when in-bounds and owned, else
-                        // fall back to `$list_set_cap` (OOB no-op / re-own-and-copy).
-                        // Eliding the helper CALL on the hot path is RFC-0016 R2
-                        // static elision; the proven helper still covers the cold path.
-                        seq.push(N::SetLocal {
-                            local: "__witchy_set_idx".into(),
-                            value: Self::wir_convert(iw, ik, Kind::I32),
-                        });
-                        seq.push(N::SetLocal {
-                            local: "__witchy_set_val".into(),
-                            value: W::ToSlot(Box::new(vw), Self::wir_kind(vk)),
-                        });
-                        let si = || W::GetLocal("__witchy_set_idx".to_string());
-                        let sv = || W::GetLocal("__witchy_set_val".to_string());
-                        let bin = |op, l, r| W::Binary { op, kind: witchy_wir::wir::Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-                        let len = W::Load { ptr: Box::new(W::GetLocal(name.clone())), kind: witchy_wir::wir::Kind::I32, offset: 0 };
-                        let cond = bin(
-                            BinOp::And,
-                            bin(BinOp::And, bin(BinOp::Ge, si(), W::ConstI32(0)), bin(BinOp::Lt, si(), len)),
-                            bin(BinOp::Gt, cap.clone(), W::ConstI32(0)),
-                        );
-                        let slot_ptr = bin(
-                            BinOp::Add,
-                            bin(BinOp::Add, W::GetLocal(name.clone()), W::ConstI32(4)),
-                            bin(BinOp::Mul, si(), W::ConstI32(8)),
-                        );
-                        seq.push(N::If {
-                            cond,
-                            then_: vec![N::Store { ptr: slot_ptr, value: sv(), kind: witchy_wir::wir::Kind::I64, offset: 0 }],
-                            els: vec![N::CallStoreMulti {
-                                func: "list_set_cap".to_string(),
-                                args: vec![W::GetLocal(name.clone()), si(), sv(), cap],
-                                dests: vec![name.clone(), format!("{name}__cap")],
-                            }],
-                            result: None,
-                        });
-                        inplace_sites += 1;
-                        tail_is_value = false;
-                    } else if self.collect_wir
-                        && self.inplace_push.contains(name)
-                        && is_self_assign_shape(name, value, &self.summaries)
-                        && self_update_at(name, value).is_some()
-                    {
-                        // `xs = list.update_at(xs, i, f)`: in-place element update
-                        // via `$list_update_cap` (apply the closure to the owned
-                        // slot, O(1)), mirroring the set_at fast path. Without it the
-                        // plain rebind copies the whole list each update — O(n²)
-                        // memory. A dirty site forces a zero token (re-own + copy,
-                        // preserving any alias); a clean site mutates in place.
-                        let (iexpr, fexpr) = self_update_at(name, value).expect("guarded Some above");
-                        let ik = self.kind_of(iexpr);
-                        let dirty = match self.facts_stack.last() {
-                            Some((facts, _, _)) if facts.accumulators.contains(name) => {
-                                facts.is_dirty(stmt)
+                            analysis::InPlaceOp::SetAt(iexpr, vexpr) => {
+                                // `xs = list.set_at(xs, i, v)`: in-place element store via
+                                // `$list_set_cap` (mutate the owned buffer's slot, O(1)),
+                                // mirroring the list-push fast path. Without it the plain
+                                // rebind rebuilds the whole list each set — O(n²) memory
+                                // that traps a large list under the memory cap. A dirty
+                                // site forces a zero token (re-own + copy, preserving any
+                                // alias); a clean site mutates the owned buffer.
+                                let ik = self.kind_of(iexpr);
+                                let vk = self.kind_of(vexpr);
+                                let cap = if dirty {
+                                    W::ConstI32(0)
+                                } else {
+                                    W::GetLocal(format!("{name}__cap"))
+                                };
+                                use witchy_wir::wir::BinOp;
+                                let iw = self.lower_expr(iexpr)?;
+                                let vw = self.lower_expr(vexpr)?;
+                                // Stash index (i32) + value (i64 slot) into scratch locals,
+                                // then store IN PLACE inline when in-bounds and owned, else
+                                // fall back to `$list_set_cap` (OOB no-op / re-own-and-copy).
+                                // Eliding the helper CALL on the hot path is RFC-0016 R2
+                                // static elision; the proven helper still covers the cold path.
+                                seq.push(N::SetLocal {
+                                    local: "__witchy_set_idx".into(),
+                                    value: Self::wir_convert(iw, ik, Kind::I32),
+                                });
+                                seq.push(N::SetLocal {
+                                    local: "__witchy_set_val".into(),
+                                    value: W::ToSlot(Box::new(vw), Self::wir_kind(vk)),
+                                });
+                                let si = || W::GetLocal("__witchy_set_idx".to_string());
+                                let sv = || W::GetLocal("__witchy_set_val".to_string());
+                                let bin = |op, l, r| W::Binary { op, kind: witchy_wir::wir::Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+                                let len = W::Load { ptr: Box::new(W::GetLocal(name.clone())), kind: witchy_wir::wir::Kind::I32, offset: 0 };
+                                let cond = bin(
+                                    BinOp::And,
+                                    bin(BinOp::And, bin(BinOp::Ge, si(), W::ConstI32(0)), bin(BinOp::Lt, si(), len)),
+                                    bin(BinOp::Gt, cap.clone(), W::ConstI32(0)),
+                                );
+                                let slot_ptr = bin(
+                                    BinOp::Add,
+                                    bin(BinOp::Add, W::GetLocal(name.clone()), W::ConstI32(4)),
+                                    bin(BinOp::Mul, si(), W::ConstI32(8)),
+                                );
+                                seq.push(N::If {
+                                    cond,
+                                    then_: vec![N::Store { ptr: slot_ptr, value: sv(), kind: witchy_wir::wir::Kind::I64, offset: 0 }],
+                                    els: vec![N::CallStoreMulti {
+                                        func: "list_set_cap".to_string(),
+                                        args: vec![W::GetLocal(name.clone()), si(), sv(), cap],
+                                        dests: vec![name.clone(), format!("{name}__cap")],
+                                    }],
+                                    result: None,
+                                });
                             }
-                            _ => true,
-                        };
-                        let cap = if dirty {
-                            W::ConstI32(0)
-                        } else {
-                            W::GetLocal(format!("{name}__cap"))
-                        };
-                        let iw = self.lower_expr(iexpr)?;
-                        let fw = self.lower_expr(fexpr)?;
-                        seq.push(N::CallStoreMulti {
-                            func: "list_update_cap".to_string(),
-                            args: vec![
-                                W::GetLocal(name.clone()),
-                                Self::wir_convert(iw, ik, Kind::I32),
-                                fw,
-                                cap,
-                            ],
-                            dests: vec![name.clone(), format!("{name}__cap")],
-                        });
-                        inplace_sites += 1;
-                        tail_is_value = false;
-                    } else if self.collect_wir
-                        && self.inplace_push.contains(name)
-                        && is_self_assign_shape(name, value, &self.summaries)
-                        && self_insert_args(name, value).is_some()
-                    {
-                        // `d = dict.insert(d, k, v)`: the in-place dict upsert via
-                        // `$dict_insert_cap` (O(1) amortized into owned entry slack),
-                        // mirroring the list-push fast path. Without it the plain
-                        // rebind below copies the whole dict each insert — O(n²)
-                        // memory that traps a large dict under a tight memory cap.
-                        let (kexpr, vexpr) = self_insert_args(name, value).expect("guarded Some above");
-                        let mode = self.dict_key_mode_wir(kexpr)?;
-                        let kk = self.kind_of(kexpr);
-                        let vk = self.kind_of(vexpr);
-                        if let Some(kvt) = self.dict_key_valtype_of(value) {
-                            self.local_dict_key_valtype.insert(name.clone(), kvt);
+                            analysis::InPlaceOp::UpdateAt(iexpr, fexpr) => {
+                                // `xs = list.update_at(xs, i, f)`: in-place element update
+                                // via `$list_update_cap` (apply the closure to the owned
+                                // slot, O(1)), mirroring the set_at fast path. Without it the
+                                // plain rebind copies the whole list each update — O(n²)
+                                // memory. A dirty site forces a zero token (re-own + copy,
+                                // preserving any alias); a clean site mutates in place.
+                                let ik = self.kind_of(iexpr);
+                                let cap = if dirty {
+                                    W::ConstI32(0)
+                                } else {
+                                    W::GetLocal(format!("{name}__cap"))
+                                };
+                                let iw = self.lower_expr(iexpr)?;
+                                let fw = self.lower_expr(fexpr)?;
+                                seq.push(N::CallStoreMulti {
+                                    func: "list_update_cap".to_string(),
+                                    args: vec![
+                                        W::GetLocal(name.clone()),
+                                        Self::wir_convert(iw, ik, Kind::I32),
+                                        fw,
+                                        cap,
+                                    ],
+                                    dests: vec![name.clone(), format!("{name}__cap")],
+                                });
+                            }
+                            analysis::InPlaceOp::Insert(kexpr, vexpr) => {
+                                // `d = dict.insert(d, k, v)`: the in-place dict upsert via
+                                // `$dict_insert_cap` (O(1) amortized into owned entry slack),
+                                // mirroring the list-push fast path. Without it the plain
+                                // rebind below copies the whole dict each insert — O(n²)
+                                // memory that traps a large dict under a tight memory cap.
+                                let mode = self.dict_key_mode_wir(kexpr)?;
+                                let kk = self.kind_of(kexpr);
+                                let vk = self.kind_of(vexpr);
+                                if let Some(kvt) = self.dict_key_valtype_of(value) {
+                                    self.local_dict_key_valtype.insert(name.clone(), kvt);
+                                }
+                                if let Some(vvt) = self.dict_value_valtype_of(value) {
+                                    self.local_dict_value_valtype.insert(name.clone(), vvt);
+                                }
+                                let cap = if dirty {
+                                    W::ConstI32(0)
+                                } else {
+                                    W::GetLocal(format!("{name}__cap"))
+                                };
+                                let kw = self.lower_expr(kexpr)?;
+                                let vw = self.lower_expr(vexpr)?;
+                                self.uses_dict_insert_cap = true;
+                                seq.push(N::CallStoreMulti {
+                                    func: "dict_insert_cap".to_string(),
+                                    args: vec![
+                                        W::GetLocal(name.clone()),
+                                        W::ToSlot(Box::new(kw), Self::wir_kind(kk)),
+                                        W::ToSlot(Box::new(vw), Self::wir_kind(vk)),
+                                        W::ConstI32(mode as i32),
+                                        cap,
+                                    ],
+                                    dests: vec![name.clone(), format!("{name}__cap")],
+                                });
+                            }
+                            analysis::InPlaceOp::Update(kexpr, dexpr, fexpr) => {
+                                // `d = dict.update(d, k, dflt, f)`: the in-place upsert via
+                                // `$dict_update_cap` (apply the closure, reinsert into owned
+                                // slack), mirroring the dict-insert fast path. Without it the
+                                // plain rebind copies the whole dict each update.
+                                let mode = self.dict_key_mode_wir(kexpr)?;
+                                let kk = self.kind_of(kexpr);
+                                let dk = self.kind_of(dexpr);
+                                if let Some(kvt) = self.dict_key_valtype_of(value) {
+                                    self.local_dict_key_valtype.insert(name.clone(), kvt);
+                                }
+                                if let Some(vvt) = self.dict_value_valtype_of(value) {
+                                    self.local_dict_value_valtype.insert(name.clone(), vvt);
+                                }
+                                let cap = if dirty {
+                                    W::ConstI32(0)
+                                } else {
+                                    W::GetLocal(format!("{name}__cap"))
+                                };
+                                let kw = self.lower_expr(kexpr)?;
+                                let dw = self.lower_expr(dexpr)?;
+                                let fw = self.lower_expr(fexpr)?;
+                                self.clos_arities.insert(1);
+                                self.uses_dict_update_cap = true;
+                                seq.push(N::CallStoreMulti {
+                                    func: "dict_update_cap".to_string(),
+                                    args: vec![
+                                        W::GetLocal(name.clone()),
+                                        W::ToSlot(Box::new(kw), Self::wir_kind(kk)),
+                                        W::ToSlot(Box::new(dw), Self::wir_kind(dk)),
+                                        W::ConstI32(mode as i32),
+                                        fw,
+                                        cap,
+                                    ],
+                                    dests: vec![name.clone(), format!("{name}__cap")],
+                                });
+                            }
+                            analysis::InPlaceOp::Concat(pieces) => {
+                                // `s = s + a + b`: the in-place string builder via
+                                // `$str_append_cap` (append each piece into owned byte
+                                // slack), mirroring the list/dict fast paths. Without it the
+                                // plain rebind re-concatenates the whole string each
+                                // statement — O(n²) bytes for a growing buffer. A dirty
+                                // first piece forces a zero token (re-own → grow-and-copy,
+                                // preserving any alias); later pieces reuse the fresh slack.
+                                self.uses_str_append_cap = true;
+                                for (i, piece) in pieces.into_iter().enumerate() {
+                                    let pw = self.lower_expr(piece)?;
+                                    let cap = if i == 0 && dirty {
+                                        W::ConstI32(0)
+                                    } else {
+                                        W::GetLocal(format!("{name}__cap"))
+                                    };
+                                    seq.push(N::CallStoreMulti {
+                                        func: "str_append_cap".to_string(),
+                                        args: vec![W::GetLocal(name.clone()), pw, cap],
+                                        dests: vec![name.clone(), format!("{name}__cap")],
+                                    });
+                                }
+                            }
                         }
-                        if let Some(vvt) = self.dict_value_valtype_of(value) {
-                            self.local_dict_value_valtype.insert(name.clone(), vvt);
-                        }
-                        let dirty = match self.facts_stack.last() {
-                            Some((facts, _, _)) if facts.accumulators.contains(name) => {
-                                facts.is_dirty(stmt)
-                            }
-                            _ => true,
-                        };
-                        let cap = if dirty {
-                            W::ConstI32(0)
-                        } else {
-                            W::GetLocal(format!("{name}__cap"))
-                        };
-                        let kw = self.lower_expr(kexpr)?;
-                        let vw = self.lower_expr(vexpr)?;
-                        self.uses_dict_insert_cap = true;
-                        seq.push(N::CallStoreMulti {
-                            func: "dict_insert_cap".to_string(),
-                            args: vec![
-                                W::GetLocal(name.clone()),
-                                W::ToSlot(Box::new(kw), Self::wir_kind(kk)),
-                                W::ToSlot(Box::new(vw), Self::wir_kind(vk)),
-                                W::ConstI32(mode as i32),
-                                cap,
-                            ],
-                            dests: vec![name.clone(), format!("{name}__cap")],
-                        });
-                        inplace_sites += 1;
-                        tail_is_value = false;
-                    } else if self.collect_wir
-                        && self.inplace_push.contains(name)
-                        && is_self_assign_shape(name, value, &self.summaries)
-                        && self_concat_pieces(name, value).is_some()
-                    {
-                        // `s = s + a + b`: the in-place string builder via
-                        // `$str_append_cap` (append each piece into owned byte
-                        // slack), mirroring the list/dict fast paths. Without it the
-                        // plain rebind re-concatenates the whole string each
-                        // statement — O(n²) bytes for a growing buffer. A dirty
-                        // first piece forces a zero token (re-own → grow-and-copy,
-                        // preserving any alias); later pieces reuse the fresh slack.
-                        let pieces = self_concat_pieces(name, value).expect("guarded Some above");
-                        let dirty = match self.facts_stack.last() {
-                            Some((facts, _, _)) if facts.accumulators.contains(name) => {
-                                facts.is_dirty(stmt)
-                            }
-                            _ => true,
-                        };
-                        self.uses_str_append_cap = true;
-                        for (i, piece) in pieces.into_iter().enumerate() {
-                            let pw = self.lower_expr(piece)?;
-                            let cap = if i == 0 && dirty {
-                                W::ConstI32(0)
-                            } else {
-                                W::GetLocal(format!("{name}__cap"))
-                            };
-                            seq.push(N::CallStoreMulti {
-                                func: "str_append_cap".to_string(),
-                                args: vec![W::GetLocal(name.clone()), pw, cap],
-                                dests: vec![name.clone(), format!("{name}__cap")],
-                            });
-                        }
-                        inplace_sites += 1;
-                        tail_is_value = false;
-                    } else if self.collect_wir
-                        && self.inplace_push.contains(name)
-                        && is_self_assign_shape(name, value, &self.summaries)
-                        && self_update_args(name, value).is_some()
-                    {
-                        // `d = dict.update(d, k, dflt, f)`: the in-place upsert via
-                        // `$dict_update_cap` (apply the closure, reinsert into owned
-                        // slack), mirroring the dict-insert fast path. Without it the
-                        // plain rebind copies the whole dict each update.
-                        let (kexpr, dexpr, fexpr) =
-                            self_update_args(name, value).expect("guarded Some above");
-                        let mode = self.dict_key_mode_wir(kexpr)?;
-                        let kk = self.kind_of(kexpr);
-                        let dk = self.kind_of(dexpr);
-                        if let Some(kvt) = self.dict_key_valtype_of(value) {
-                            self.local_dict_key_valtype.insert(name.clone(), kvt);
-                        }
-                        if let Some(vvt) = self.dict_value_valtype_of(value) {
-                            self.local_dict_value_valtype.insert(name.clone(), vvt);
-                        }
-                        let dirty = match self.facts_stack.last() {
-                            Some((facts, _, _)) if facts.accumulators.contains(name) => {
-                                facts.is_dirty(stmt)
-                            }
-                            _ => true,
-                        };
-                        let cap = if dirty {
-                            W::ConstI32(0)
-                        } else {
-                            W::GetLocal(format!("{name}__cap"))
-                        };
-                        let kw = self.lower_expr(kexpr)?;
-                        let dw = self.lower_expr(dexpr)?;
-                        let fw = self.lower_expr(fexpr)?;
-                        self.clos_arities.insert(1);
-                        self.uses_dict_update_cap = true;
-                        seq.push(N::CallStoreMulti {
-                            func: "dict_update_cap".to_string(),
-                            args: vec![
-                                W::GetLocal(name.clone()),
-                                W::ToSlot(Box::new(kw), Self::wir_kind(kk)),
-                                W::ToSlot(Box::new(dw), Self::wir_kind(dk)),
-                                W::ConstI32(mode as i32),
-                                fw,
-                                cap,
-                            ],
-                            dests: vec![name.clone(), format!("{name}__cap")],
-                        });
                         inplace_sites += 1;
                         tail_is_value = false;
                     } else if self.collect_wir

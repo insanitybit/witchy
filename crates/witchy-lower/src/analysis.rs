@@ -202,6 +202,44 @@ pub fn is_self_assign_shape(name: &str, value: &Expr, summaries: &Summaries) -> 
         || self_own_call(name, value, summaries).is_some()
 }
 
+/// The recognized in-place self-assign accumulation operations (`x = f(x, …)`),
+/// unified so codegen consumes ONE shape via a single match instead of a
+/// near-identical per-method arm each. (The own-ABI self-call, [`self_own_call`],
+/// is intentionally NOT here — it threads the ownership token through a user
+/// function rather than a builtin in-place helper, so codegen handles it apart.)
+pub enum InPlaceOp<'a> {
+    Push(&'a Expr),
+    SetAt(&'a Expr, &'a Expr),
+    UpdateAt(&'a Expr, &'a Expr),
+    Insert(&'a Expr, &'a Expr),
+    Update(&'a Expr, &'a Expr, &'a Expr),
+    Concat(Vec<&'a Expr>),
+}
+
+/// Recover the single in-place accumulation shape of `x = f(x, …)` (or `None`).
+/// One entry point replacing the per-method `self_*().is_some()` cascade in codegen.
+pub fn self_inplace_op<'a>(name: &str, value: &'a Expr) -> Option<InPlaceOp<'a>> {
+    if let Some(e) = self_push_elem(name, value) {
+        return Some(InPlaceOp::Push(e));
+    }
+    if let Some((i, v)) = self_set_at(name, value) {
+        return Some(InPlaceOp::SetAt(i, v));
+    }
+    if let Some((i, f)) = self_update_at(name, value) {
+        return Some(InPlaceOp::UpdateAt(i, f));
+    }
+    if let Some((k, v)) = self_insert_args(name, value) {
+        return Some(InPlaceOp::Insert(k, v));
+    }
+    if let Some((k, d, f)) = self_update_args(name, value) {
+        return Some(InPlaceOp::Update(k, d, f));
+    }
+    if let Some(pieces) = self_concat_pieces(name, value) {
+        return Some(InPlaceOp::Concat(pieces));
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Function summaries: can a call leave a live whole-alias of an argument
 // observable by the caller (returned, embedded in the return value, or
