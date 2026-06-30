@@ -15,10 +15,10 @@
 //! the runtime links only when granted, so an ungranted compiled module cannot
 //! instantiate.
 //!
-//! Module layout. The `Codegen` struct and the core block/expression lowering
-//! plus module assembly live here in `mod.rs`; cohesive groups are split into
-//! sibling child modules (each an `impl Codegen` block, or free functions, that
-//! shares this module's items via `use super::*`):
+//! Module layout. The `Codegen` struct and the core block/expression/statement
+//! lowering live here in `mod.rs`; cohesive groups are split into sibling child
+//! modules (each an `impl Codegen` block, or free functions, that shares this
+//! module's items via `use super::*`):
 //!
 //! - [`types`] — type/kind inference (`kind_of`, `val_type_of`, …).
 //! - [`helpers`] — per-`EqShape` structural WIR-helper generation (`$eq`, `$ts`
@@ -26,6 +26,10 @@
 //! - [`builtins`] — the `lower_call` builtin/stdlib call dispatch.
 //! - [`passes`] — pre-lowering AST rewrites (alpha-renaming, concat flip,
 //!   try-context rewrite).
+//! - [`assembly`] — the compile entry points (`compile_module_binary`,
+//!   `assemble_wir_module`, `compile_build_module`) and the wiring that turns
+//!   lowered per-function WIR into a finished module (reachability, item
+//!   registration, prelude/helper selection, WIR → wasm encode).
 
 mod types;
 mod helpers;
