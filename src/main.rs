@@ -1768,7 +1768,7 @@ fn run_linked_compiled(
         }
         caps.secrets.extend(named_secrets);
     }
-    let wasm = compile_linked_to_wasm(linked)?;
+    let wasm = compile_linked_to_wasm_cached(linked)?;
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
     let mut vm = rt
         .spawn(&wasm, caps, RUN_MEMORY_PAGES)
@@ -1812,6 +1812,88 @@ fn compile_linked_to_wasm(linked: &ast::Module) -> Result<Vec<u8>, String> {
              does not support (an interpreter-only feature?)"
                 .to_string()
         })
+}
+
+/// A cheap fingerprint of the compiler build: the `witchy` binary's size + mtime.
+/// Any recompile of the compiler (or its bundled std) changes it, so the source
+/// cache can never serve codegen from an older compiler. A `stat`, not a read, so
+/// it costs nothing; computed once per process.
+fn compiler_fingerprint() -> &'static str {
+    use std::sync::OnceLock;
+    static FP: OnceLock<String> = OnceLock::new();
+    FP.get_or_init(|| {
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| std::fs::metadata(&p).ok())
+            .map(|m| {
+                let mt = m
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0);
+                format!("{}-{mt}", m.len())
+            })
+            .unwrap_or_else(|| "unknown".to_string())
+    })
+}
+
+/// The active optimization set as a stable string — part of the source-cache key,
+/// since every `WITCHY_OPT` setting compiles to different wasm. Reads the same
+/// `opt::enabled` the compiler does, so a test override or the env both flow in.
+fn active_opt_key() -> String {
+    use crate::opt::{self, Opt};
+    Opt::ALL
+        .iter()
+        .filter(|o| opt::enabled(**o))
+        .map(|o| o.name())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Compile `linked` to wasm, reusing a SOURCE-keyed cache to skip codegen on warm
+/// runs. The key hashes the full linked AST + the compiler fingerprint + the active
+/// opt set — every input that determines the emitted wasm — so it is sound by
+/// construction: a key that fails to reflect some input simply MISSES and recompiles,
+/// it can never serve wrong code. Distinct from the runtime's post-Cranelift module
+/// cache (`~/.cache/witchy/aot`); this one (`~/.cache/witchy/src`) caches the wasm
+/// bytes so the front-end's codegen is skipped, not just the native compile. The
+/// capability grant and every security check still run from `linked` on every run —
+/// only the wasm is cached.
+fn compile_linked_to_wasm_cached(linked: &ast::Module) -> Result<Vec<u8>, String> {
+    use sha2::{Digest, Sha256};
+    let key = {
+        let mut h = Sha256::new();
+        h.update(format!("{linked:?}").as_bytes());
+        h.update(b"\0");
+        h.update(compiler_fingerprint().as_bytes());
+        h.update(b"\0");
+        h.update(active_opt_key().as_bytes());
+        h.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>()
+    };
+    let path = (|| -> Option<std::path::PathBuf> {
+        let base = std::env::var_os("XDG_CACHE_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))?;
+        let dir = base.join("witchy").join("src");
+        std::fs::create_dir_all(&dir).ok()?;
+        Some(dir.join(format!("{key}.wasm")))
+    })();
+    if let Some(p) = &path {
+        if let Ok(bytes) = std::fs::read(p) {
+            return Ok(bytes);
+        }
+    }
+    let wasm = compile_linked_to_wasm(linked)?;
+    if let Some(p) = &path {
+        // Write-then-rename so a concurrent reader never sees a partial file; the
+        // pid-tagged temp keeps two processes from racing on one path.
+        let tmp = p.with_extension(format!("{}.tmp", std::process::id()));
+        if std::fs::write(&tmp, &wasm).is_ok() {
+            let _ = std::fs::rename(&tmp, p);
+        }
+    }
+    Ok(wasm)
 }
 
 /// Compile a program and run it in the WASM VM granted EXACTLY its computed
