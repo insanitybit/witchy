@@ -9,6 +9,7 @@ import fs
 import semver
 import string
 import json
+import vm
 import coven_record
 
 // --- record IO ---------------------------------------------------------------
@@ -88,15 +89,30 @@ pub fn all_names(store: Dir) -> List(String):
                 out = list.push(out, ns + "/" + nm)
     out
 
+// The content digest of one signed-record payload. Pure (no capability), so the
+// snapshot's hashing fans out across cores via `vm.par_map`.
+fn hash_payload(payload: String) -> String:
+    "sha256:" + crypto.sha256(payload)
+
 // Every current target as (name@version -> digest of its signed payload). The
-// snapshot sorts these keys to match the Rust BTreeMap's canonical ordering.
+// snapshot sorts these keys to match the Rust BTreeMap's canonical ordering. Reading
+// the records is sequential I/O (it needs the `store` Dir), but the SHA-256 of each
+// payload is pure CPU, so we collect the payloads first and hash them in PARALLEL
+// across worker VMs — the snapshot of a large registry hashes on every core.
 pub fn all_target_digests(store: Dir) -> List((String, Json)):
-    var pairs = []
+    var keys = []
+    var payloads = []
     for name in all_names(store):
         for v in versions_of(store, name):
             if let Some(text) = read_record(store, name, v):
-                let digest = "sha256:" + crypto.sha256(coven_record.record_signing_payload(text))
-                pairs = list.push(pairs, (name + "@" + v, JsonString(digest)))
+                keys = list.push(keys, name + "@" + v)
+                payloads = list.push(payloads, coven_record.record_signing_payload(text))
+    let digests = vm.par_map(payloads, hash_payload)
+    var pairs = []
+    var i = 0
+    while i < list.length(keys):
+        pairs = list.push(pairs, (list.at(keys, i), JsonString(list.at(digests, i))))
+        i = i + 1
     pairs
 
 // The runtime footprint of the highest RELEASED version other than `version` — the
