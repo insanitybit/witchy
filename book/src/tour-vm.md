@@ -119,6 +119,31 @@ channel is *incompatible* with witchy's parity guarantee. Lock-step serving is n
 weaker compromise — it is the correct shape for a language that promises two backends,
 one meaning.
 
+## A multi-core HTTP server, for free
+
+The same prefork idea gives you a parallel web server with **no extra code**.
+`server.serve(net, addr, app)` spawns one worker VM per core, each re-running your
+program to build the same routes with the same capabilities, all accepting from one
+shared listener — the kernel load-balances connections across them.
+
+```sh
+import server
+
+fn home(req: Request) -> Response:
+    server.text(200, "hello, witchy")
+
+fn main(net: Net, console: Console):
+    let app = server.router().get("/", home)
+    server.serve(net, "127.0.0.1:8080", app)   # uses every core
+```
+
+That's a capability-secure, multi-core HTTP server. The handlers are still pure
+`fn(Request) -> Response` — they hold no `Net`, so a handler can't phone home — and
+their state lives in their captured capabilities (a store `Dir` = the filesystem), so
+the workers are interchangeable. You write the routes; the parallelism is automatic.
+Reach for `server.serve_one` if you want a single-core loop (e.g. for per-process
+in-memory state). witchy's own package registry, `coven`, runs exactly this way.
+
 ## When to reach for which
 
 - **`vm.par_map`** — you have a list and a pure function and you want it *fast*.
