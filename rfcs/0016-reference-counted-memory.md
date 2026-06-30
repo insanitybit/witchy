@@ -649,3 +649,20 @@ non-goal in `performance-modes.md` (resolved here).
 > — so the floor was NOT shipped speculatively this session; the scaffolding above
 > (pin + sweep entry + de-risked plan) is the sound, validated handoff. RFC stays
 > `planned`.
+>
+> 2026-06-30: **The per-object floor is split into its own implementation RFC —
+> [RFC-0035](0035-completing-the-rc-floor.md).** A SECOND residual is now pinned
+> alongside cache-eviction: the async executor leaks one continuation `Task` per
+> message (`slots = list.set_at(slots, i, Active(cont(unit())))` displaces the old
+> `Task`), OOMing `chan_throughput` at ~9–12k — inert under `rc-floor`/`all`
+> (verified). It is the decisive case because the leak is INTER-PROCEDURAL: the
+> element is bound in `step_one`, freed by `set_at` in `try_push`, so a per-function
+> static element-liveness cannot reach it — which is the proof the answer must be the
+> runtime refcount this RFC designed, not a deeper compile-time pass. RFC-0035
+> specifies the one missing analysis (`last_use(v,p)`, the backward-liveness lattice
+> named absent in Part II), the inter-procedural-via-summaries handling, the lifetime
+> model for REACHABLE leaks (graphs-as-indices; the `region:`/slotmap/VM spectrum),
+> the acyclicity-as-guarded-invariant obligation, and the default-on migration. NOTE
+> on this doc's `status: implemented`: it covers the shipped elision rungs + the
+> free-at-overwrite var floor; the per-object refcount floor + dec-at-last-use is
+> `proposed` in RFC-0035.

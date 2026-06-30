@@ -236,6 +236,13 @@ is blocked on building the per-object RC floor (a major runtime subsystem) and/o
 flattening the scheduler's nested data — a dedicated project, proven (region-wrap,
 rc-floor, all = all inert) not reachable by a contained, parity-safe change.**
 
+**The fix is specified in [RFC-0035](0035-completing-the-rc-floor.md).** The leak here
+is the *decisive* motivation for completing RFC-0016's per-object refcount floor: it is
+inter-procedural (element bound in `step_one`, freed by `set_at` in `try_push`), which
+proves a static element-liveness can't reach it and the answer is `dec`-at-last-use on a
+runtime refcount. This benchmark (`chan_throughput`, heap flat at 40k) is one of that
+RFC's two proving workloads.
+
 ## Invariants (every lever)
 
 - **Sandbox preserved** — nothing reaches around the VM boundary; capability model
