@@ -1546,6 +1546,357 @@ pub fn fresh_heap_builtin_offset(name: &str, argc: usize) -> Option<i32> {
     }
 }
 
+// ===========================================================================
+// (RFC-0035) last_use / drop placement — the fourth projection of the oracle.
+// ===========================================================================
+// SOUND by over-approximation: a `$drop` is never placed before a value's true last
+// use (never a use-after-free); imprecision costs a late drop (a retained count),
+// never a lost one — the ⊥-keeps-the-count floor. ANALYSIS ONLY: nothing in codegen
+// consumes this yet; it is verified standalone.
+//
+// INCREMENT 1 (here): the `DropFacts` substrate + the AIRTIGHT drop case — a `let`
+// binding whose name is NEVER read and NEVER reassigned anywhere in the body. Zero
+// references ⇒ no alias, no escape, no move-into-a-live-binding to reason about, so
+// freeing it right after the binding is unconditionally safe. This reclaims dead
+// allocations (`let buf = mk(); <buf never used>`) with no liveness subtlety.
+//
+// STILL TO COME (the bulk of last_use, deliberately not shipped unverified): the full
+// backward-liveness drop-at-last-use, which MUST discharge two soundness obligations
+// before it can place a drop on a *used* value — the Perceus dup/move discipline (a
+// value moved into a still-live binding is transferred, not dropped) and
+// inter-procedural escape via `Summaries::arg_leaks` (a value a callee retains stays
+// live). These are exactly what `analyze`/`Walker` already computes for accumulators;
+// generalizing that to all heap values is the next increment.
+
+/// Drop points: statement identity → the binding names whose value is dead after that
+/// statement, so `$drop name` is emitted immediately after it. Keyed by statement
+/// identity (`stmt_key`), like the uniqueness `kills` — the consumer must compile the
+/// exact AST instance analyzed.
+#[derive(Default, Debug)]
+pub struct DropFacts {
+    after: HashMap<usize, Vec<String>>,
+}
+
+impl DropFacts {
+    /// Binding names to `$drop` immediately after `stmt` (empty if none).
+    pub fn drops_after(&self, stmt: &Stmt) -> &[String] {
+        self.after.get(&stmt_key(stmt)).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// Total drop sites — for the standalone tests.
+    pub fn total(&self) -> usize {
+        self.after.values().map(Vec::len).sum()
+    }
+
+    fn record(&mut self, stmt: &Stmt, name: String) {
+        self.after.entry(stmt_key(stmt)).or_default().push(name);
+    }
+}
+
+/// (RFC-0035) Compute drop points for a function body. Increment 1: only the airtight
+/// dead-binding case (see the section banner). `_summaries` is the inter-procedural
+/// seam the later liveness-driven increment consumes.
+pub fn last_use_drops(body: &Block, _summaries: &Summaries) -> DropFacts {
+    let mut facts = DropFacts::default();
+    collect_dead_binding_drops(body, body, &mut facts);
+    facts
+}
+
+/// Record a drop after every `let v = …` in `b` (recursing nested blocks) whose `v` is
+/// never read and never reassigned anywhere in `fn_body` — a provably-unreferenced
+/// allocation. `fn_body` is the whole function body so the read/reassign scan is
+/// complete (a use in any later or nested scope disqualifies the drop).
+fn collect_dead_binding_drops(b: &Block, fn_body: &Block, facts: &mut DropFacts) {
+    for s in &b.stmts {
+        if let Stmt::Let { name, .. } = s {
+            if name_read_count(fn_body, name) == 0 && name_reassign_count(fn_body, name) == 0 {
+                facts.record(s, name.clone());
+            }
+        }
+        each_block_in_stmt(s, &mut |blk| collect_dead_binding_drops(blk, fn_body, facts));
+    }
+}
+
+/// Number of READ occurrences of `name` (an `Expr::Var(name)` in value position)
+/// anywhere in `b`. A binding's own `let`/assign target is NOT a read.
+fn name_read_count(b: &Block, name: &str) -> usize {
+    let mut n = 0;
+    for s in &b.stmts {
+        match s {
+            Stmt::Let { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::LetTuple { value, .. }
+            | Stmt::Return(Some(value))
+            | Stmt::Yield(value)
+            | Stmt::Expr(value) => n += expr_read_count(value, name),
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+    n
+}
+
+fn expr_read_count(e: &Expr, name: &str) -> usize {
+    let mut n = 0;
+    match e {
+        Expr::Var(v) => {
+            if v == name {
+                n += 1;
+            }
+        }
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Duration(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::TaggedLit { .. } => {}
+        Expr::List(xs) | Expr::Tuple(xs) => {
+            for x in xs {
+                n += expr_read_count(x, name);
+            }
+        }
+        Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
+            for a in args {
+                n += expr_read_count(a, name);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            n += expr_read_count(receiver, name);
+            for a in args {
+                n += expr_read_count(a, name);
+            }
+        }
+        Expr::Apply { func, args } => {
+            n += expr_read_count(func, name);
+            for a in args {
+                n += expr_read_count(a, name);
+            }
+        }
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } => {
+            n += expr_read_count(expr, name);
+        }
+        Expr::Field { base, .. } => n += expr_read_count(base, name),
+        Expr::Binary { lhs, rhs, .. }
+        | Expr::Index { base: lhs, index: rhs }
+        | Expr::Range { lo: lhs, hi: rhs, .. } => {
+            n += expr_read_count(lhs, name);
+            n += expr_read_count(rhs, name);
+        }
+        Expr::RecordUpdate { base, fields } => {
+            n += expr_read_count(base, name);
+            for (_, v) in fields {
+                n += expr_read_count(v, name);
+            }
+        }
+        Expr::Record { fields, spread, .. } => {
+            for (_, v) in fields {
+                n += expr_read_count(v, name);
+            }
+            if let Some(sp) = spread {
+                n += expr_read_count(sp, name);
+            }
+        }
+        Expr::If { cond, then_block, else_block } => {
+            n += expr_read_count(cond, name);
+            n += name_read_count(then_block, name);
+            if let Some(b) = else_block {
+                n += name_read_count(b, name);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            n += expr_read_count(scrutinee, name);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    n += expr_read_count(g, name);
+                }
+                n += expr_read_count(&arm.body, name);
+            }
+        }
+        Expr::Block(b) => n += name_read_count(b, name),
+        Expr::While { cond, body } => {
+            n += expr_read_count(cond, name);
+            n += name_read_count(body, name);
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            n += expr_read_count(scrutinee, name);
+            n += name_read_count(body, name);
+        }
+        Expr::For { iter, body, .. } => {
+            n += expr_read_count(iter, name);
+            n += name_read_count(body, name);
+        }
+        Expr::Lambda { body, .. } => {
+            // A read inside a lambda body captures `name` — counts as a use (the closure
+            // keeps it alive), so it correctly disqualifies the dead-binding drop.
+            n += name_read_count(body, name);
+        }
+    }
+    n
+}
+
+/// Number of `name = …` reassignments anywhere in `b` — a write to `name`'s slot is
+/// not a read, but it means the binding's value flows on (or its buffer is reused), so
+/// the dead-binding drop does not apply.
+fn name_reassign_count(b: &Block, name: &str) -> usize {
+    let mut n = 0;
+    for s in &b.stmts {
+        if let Stmt::Assign { name: t, .. } = s {
+            if t == name {
+                n += 1;
+            }
+        }
+        each_block_in_stmt(s, &mut |blk| n += name_reassign_count(blk, name));
+    }
+    n
+}
+
+/// Apply `f` to every `Block` nested directly inside statement `s` (loop/branch/match
+/// bodies, scope blocks, lambda bodies). Mirrors the existing analysis walkers; used by
+/// the drop passes to recurse without re-deriving control-flow structure.
+fn each_block_in_stmt(s: &Stmt, f: &mut impl FnMut(&Block)) {
+    match s {
+        Stmt::Let { value, .. }
+        | Stmt::Assign { value, .. }
+        | Stmt::LetTuple { value, .. }
+        | Stmt::Return(Some(value))
+        | Stmt::Yield(value)
+        | Stmt::Expr(value) => each_block_in_expr(value, f),
+        Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+    }
+}
+
+fn each_block_in_expr(e: &Expr, f: &mut impl FnMut(&Block)) {
+    match e {
+        Expr::If { cond, then_block, else_block } => {
+            each_block_in_expr(cond, f);
+            f(then_block);
+            if let Some(b) = else_block {
+                f(b);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            each_block_in_expr(scrutinee, f);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    each_block_in_expr(g, f);
+                }
+                each_block_in_expr(&arm.body, f);
+            }
+        }
+        Expr::Block(b) => f(b),
+        Expr::While { cond, body } => {
+            each_block_in_expr(cond, f);
+            f(body);
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            each_block_in_expr(scrutinee, f);
+            f(body);
+        }
+        Expr::For { iter, body, .. } => {
+            each_block_in_expr(iter, f);
+            f(body);
+        }
+        Expr::Lambda { body, .. } => f(body),
+        Expr::List(xs) | Expr::Tuple(xs) => xs.iter().for_each(|x| each_block_in_expr(x, f)),
+        Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
+            args.iter().for_each(|a| each_block_in_expr(a, f))
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            each_block_in_expr(receiver, f);
+            args.iter().for_each(|a| each_block_in_expr(a, f));
+        }
+        Expr::Apply { func, args } => {
+            each_block_in_expr(func, f);
+            args.iter().for_each(|a| each_block_in_expr(a, f));
+        }
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } => {
+            each_block_in_expr(expr, f)
+        }
+        Expr::Field { base, .. } => each_block_in_expr(base, f),
+        Expr::Binary { lhs, rhs, .. }
+        | Expr::Index { base: lhs, index: rhs }
+        | Expr::Range { lo: lhs, hi: rhs, .. } => {
+            each_block_in_expr(lhs, f);
+            each_block_in_expr(rhs, f);
+        }
+        Expr::RecordUpdate { base, fields } => {
+            each_block_in_expr(base, f);
+            fields.iter().for_each(|(_, v)| each_block_in_expr(v, f));
+        }
+        Expr::Record { fields, spread, .. } => {
+            fields.iter().for_each(|(_, v)| each_block_in_expr(v, f));
+            if let Some(sp) = spread {
+                each_block_in_expr(sp, f);
+            }
+        }
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Duration(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::Var(_)
+        | Expr::TaggedLit { .. } => {}
+    }
+}
+
+#[cfg(test)]
+mod last_use_tests {
+    use super::*;
+    use witchy_syntax::parser;
+
+    fn drops(src: &str) -> DropFacts {
+        let m = parser::parse_module(src).expect("parse");
+        let summaries = Summaries::of_module(&m);
+        let f = m
+            .items
+            .iter()
+            .find_map(|it| match it {
+                Item::Function(f) => Some(f),
+                _ => None,
+            })
+            .expect("a function");
+        last_use_drops(&f.body, &summaries)
+    }
+
+    /// A binding never read is dead the moment it is made → one drop.
+    #[test]
+    fn unread_binding_is_dropped() {
+        let d = drops("import list\nfn f():\n    let buf = list.push([], 1)\n    0\n");
+        assert_eq!(d.total(), 1, "the never-read `buf` is a dead-binding drop");
+    }
+
+    /// A binding that IS read is not a dead-binding drop (its real last-use drop is the
+    /// next increment, not this airtight case) — never an over-drop.
+    #[test]
+    fn read_binding_is_not_a_dead_drop() {
+        let d = drops("import list\nfn f() -> Int:\n    let buf = list.push([], 1)\n    list.length(buf)\n");
+        assert_eq!(d.total(), 0, "`buf` is read, so no dead-binding drop");
+    }
+
+    /// A binding read only inside a nested block / lambda still counts as used.
+    #[test]
+    fn nested_and_captured_reads_count() {
+        let nested = drops("import list\nfn f() -> Int:\n    let buf = list.push([], 1)\n    if true:\n        list.length(buf)\n    else:\n        0\n");
+        assert_eq!(nested.total(), 0, "a read inside a branch disqualifies the drop");
+        let captured = drops("import list\nfn f() -> fn() -> Int:\n    let buf = list.push([], 1)\n    fn(): list.length(buf)\n");
+        assert_eq!(captured.total(), 0, "a read captured by a lambda keeps it live");
+    }
+
+    /// A reassigned binding is not a dead-binding drop (its buffer churn is rc-floor's
+    /// free-at-overwrite, and its final value's drop is the liveness increment).
+    #[test]
+    fn reassigned_binding_is_not_a_dead_drop() {
+        let d = drops("import list\nfn f():\n    var buf = []\n    buf = list.push(buf, 1)\n    0\n");
+        assert_eq!(d.total(), 0, "`buf` is reassigned, so the dead-binding case does not apply");
+    }
+
+    /// Two independent dead bindings each drop.
+    #[test]
+    fn multiple_dead_bindings() {
+        let d = drops("import list\nfn f():\n    let a = list.push([], 1)\n    let b = list.push([], 2)\n    0\n");
+        assert_eq!(d.total(), 2, "both `a` and `b` are never read");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Module-level diagnostics: every function's cliffs, for `witchy check` and
 // the LSP. Runs on the sugared AST (the shapes appear identically; the
