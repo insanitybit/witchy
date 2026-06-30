@@ -193,13 +193,7 @@ pub fn self_own_call<'a>(
 }
 
 pub fn is_self_assign_shape(name: &str, value: &Expr, summaries: &Summaries) -> bool {
-    self_push_elem(name, value).is_some()
-        || self_insert_args(name, value).is_some()
-        || self_update_args(name, value).is_some()
-        || self_set_at(name, value).is_some()
-        || self_update_at(name, value).is_some()
-        || self_concat_pieces(name, value).is_some()
-        || self_own_call(name, value, summaries).is_some()
+    self_inplace_op(name, value).is_some() || self_own_call(name, value, summaries).is_some()
 }
 
 /// The recognized in-place self-assign accumulation operations (`x = f(x, …)`),
@@ -615,44 +609,53 @@ impl<'a> Walker<'a> {
                             }
                         }
                         shares.retain(|(v, _)| v != name);
-                    } else if self.accs.contains(name) && is_self_assign_shape(name, value, self.summaries) {
+                    } else if let Some(op) =
+                        self.accs.contains(name).then(|| self_inplace_op(name, value)).flatten()
+                    {
                         self.facts.site_entries += 1;
                         // The shape's own occurrence of `name` is the
                         // operation; everything else in the RHS is scanned,
                         // and a share of `name` itself dirties the site.
                         let mut sub: Vec<(String, String)> = Vec::new();
-                        if let Some(elem) = self_push_elem(name, value) {
-                            self.scan(elem, true, "stored back into the list", &mut sub);
-                        } else if let Some((i, v)) = self_set_at(name, value) {
-                            self.scan(i, true, "used as a list index", &mut sub);
-                            self.scan(v, true, "stored back into the list", &mut sub);
-                        } else if let Some((i, f)) = self_update_at(name, value) {
-                            self.scan(i, true, "used as a list index", &mut sub);
-                            self.scan(f, true, "captured by the updater", &mut sub);
-                        } else if let Some((k, v)) = self_insert_args(name, value) {
-                            self.scan(k, true, "stored as a dict key", &mut sub);
-                            self.scan(v, true, "stored as a dict value", &mut sub);
-                        } else if let Some((k, d, f)) = self_update_args(name, value) {
-                            self.scan(k, true, "stored as a dict key", &mut sub);
-                            self.scan(d, true, "stored as a dict value", &mut sub);
-                            self.scan(f, true, "captured by the updater", &mut sub);
-                        } else if let Some(pieces) = self_concat_pieces(name, value) {
-                            for (pi, p) in pieces.iter().enumerate() {
-                                self.scan(p, true, "appended to the string", &mut sub);
-                                // Pieces after the first are evaluated AFTER
-                                // the in-place append has already mutated the
-                                // variable, so even a content READ of it sees
-                                // the wrong value: any mention dirties.
-                                if pi > 0 {
-                                    let mut seen = HashSet::new();
-                                    let one: HashSet<String> =
-                                        std::iter::once(name.clone()).collect();
-                                    mentions_in_expr(p, &one, &mut seen);
-                                    if !seen.is_empty() {
-                                        sub.push((
-                                            name.clone(),
-                                            "read again later in the chain".to_string(),
-                                        ));
+                        match op {
+                            InPlaceOp::Push(elem) => {
+                                self.scan(elem, true, "stored back into the list", &mut sub);
+                            }
+                            InPlaceOp::SetAt(i, v) => {
+                                self.scan(i, true, "used as a list index", &mut sub);
+                                self.scan(v, true, "stored back into the list", &mut sub);
+                            }
+                            InPlaceOp::UpdateAt(i, f) => {
+                                self.scan(i, true, "used as a list index", &mut sub);
+                                self.scan(f, true, "captured by the updater", &mut sub);
+                            }
+                            InPlaceOp::Insert(k, v) => {
+                                self.scan(k, true, "stored as a dict key", &mut sub);
+                                self.scan(v, true, "stored as a dict value", &mut sub);
+                            }
+                            InPlaceOp::Update(k, d, f) => {
+                                self.scan(k, true, "stored as a dict key", &mut sub);
+                                self.scan(d, true, "stored as a dict value", &mut sub);
+                                self.scan(f, true, "captured by the updater", &mut sub);
+                            }
+                            InPlaceOp::Concat(pieces) => {
+                                for (pi, p) in pieces.iter().enumerate() {
+                                    self.scan(p, true, "appended to the string", &mut sub);
+                                    // Pieces after the first are evaluated AFTER
+                                    // the in-place append has already mutated the
+                                    // variable, so even a content READ of it sees
+                                    // the wrong value: any mention dirties.
+                                    if pi > 0 {
+                                        let mut seen = HashSet::new();
+                                        let one: HashSet<String> =
+                                            std::iter::once(name.clone()).collect();
+                                        mentions_in_expr(p, &one, &mut seen);
+                                        if !seen.is_empty() {
+                                            sub.push((
+                                                name.clone(),
+                                                "read again later in the chain".to_string(),
+                                            ));
+                                        }
                                     }
                                 }
                             }
