@@ -97,9 +97,16 @@ Every piece of `witchy` is designed with security in mind.
 `witchy` is a project for fun. It's vibecoded using different models. It's a way
 for me to explore ideas in this space. If that's not for you, no problem!
 
+For the most part, I like to focus on the safety of `witchy`, the ergonomics, etc. I then
+defer virtually all of the "how it's built" and "how it executes" to an agent. I make some of
+the major decisions like the use of wasm, priorities, syntax, the capabilities model, etc, but
+for something like driving how an optimization actually applies during codegen I simply do not
+care to be involved. I'm somewhat interested in that sort of work but my time is limited.
+
 The way I build witchy is intentionally low effort, I have a day job. I primarily interact with witchy by iterating on an RFC document with an agent, sending the agent off to implement the RFC, and then reviewing the documentation of that work. I rarely interact with the witchy compiler code.
 
-Some of the docs are handwritten, most are written by AI. RFCs are rarely hand edited.
+Some of the docs are handwritten, most are written by AI. RFCs are rarely hand edited, instead
+I just give feedback and see what the AI comes up with until I accept it.
 
 If anything changes with regards to AI usage (or anything that might feel meaningful to someone interested in witchy) I'll be sure to disclose that.
 
@@ -126,45 +133,6 @@ needed just to read it.)
 Want to _run code_ with zero install instead? The [playground](#playground)
 compiles and runs your code in your browser. Or jump straight to
 [Install](#install) to build the `witchy` CLI.
-
-Authority enters a witchy program in exactly one place: the typed parameters of
-`main`, minted by the host. A `Console`, a `Dir[Read]`, a `Net[Connect, Tcp]` —
-capabilities are unforgeable values that propagate only as function arguments,
-are visible in every signature, and can only ever be _narrowed_, never widened.
-Calling an effectful operation without the capability is a **compile-time
-error**. A function with no capability parameters provably has no effects.
-
-That makes three things possible that mainstream languages can't offer:
-
-1. **Audit by reading signatures.** `witchy caps program.witchy` recomputes the
-   program's full capability footprint from source — per function, per right
-   (`Dir[Read]` vs `Dir[Write]`, `Net[Connect]` vs `Net[Listen]`). It is never
-   self-asserted metadata.
-2. **Gate on widening.** `witchy caps-diff old new` exits non-zero when authority
-   grew — wire it into CI and a dependency can't quietly gain `Net[Listen]`.
-   The package manager (see below) blocks `add`/`update` on widening.
-3. **Enforce at runtime.** `witchy sandbox program.witchy` compiles to
-   WebAssembly and runs it in a VM granted exactly the computed footprint —
-   the module physically has no other host imports to call.
-
-## Two backends, one semantics
-
-| Backend                          | Role                                                                                                                                                              |
-| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| WebAssembly (wasmtime)           | **The run path.** `witchy <file>`, `witchy run`, and `witchy sandbox` all compile to a wasm binary and execute it under wasmtime — the capability boundary is the VM boundary, and the tier benches at Go-class (see `bench/`) |
-| Tree-walking interpreter         | **The reference oracle.** Defines the semantics the compiled backend is checked against (`witchy parity`), and runs `comptime` blocks, the test runner, and build steps — never a user run path                                |
-
-There is one run path; `run` and `sandbox` differ only in the **capability
-grant**, not the backend: `witchy run` (or a bare `witchy <file>`) uses a
-development grant, `witchy sandbox` grants exactly the computed footprint.
-
-The two backends are held to a **zero-silent-divergence** invariant, enforced
-by the project's own `witchy parity` harness (runs a program on both and
-confirms identical output — including agreement on _error paths_: an
-out-of-bounds index traps on both, an unparseable integer fails on both), a
-test suite with hundreds of differential tests, and a property-based fuzzer.
-You never verify this yourself: anything one backend can't express is a loud
-compile error, never a quiet difference.
 
 ## The language in 30 seconds
 
@@ -289,26 +257,6 @@ with the language reference's examples preloaded.
 
 Editor support: a [Zed extension](editors/zed) with tree-sitter highlighting and
 `witchy lsp` diagnostics.
-
-## Status
-
-Witchy is a young language (pre-1.0). The capability model, the two backends
-and their parity discipline, the formatter, the LSP, and the package-manager
-core are implemented and tested (1,100+ tests).
-
-The **build-time capability system** is built end to end: the build footprint is
-computed and gated on its own axis (`witchy caps` / `caps-diff`); all five build
-capabilities (`BuildOut`/`BuildRead`/`BuildEnv`/`BuildNet`/`BuildExec`) execute
-confined; build steps **auto-run during `witchy build`**, with the rune's
-footprint re-audited over *shipped + generated* source so generated code can't
-smuggle in authority; execution is **default-deny** (a dependency's build step is
-refused until you write its `[build.grants]` section); deterministic outputs are
-cached; deterministic steps run in the **zero-ambient WASM sandbox**; releases
-sit out a signed 72h **staging cooldown** (`--allow-fresh` to override). See
-[rfcs/build-time-execution-plan.md](rfcs/build-time-execution-plan.md).
-
-Not yet done: a hosted public registry. See
-[spec/architecture.md](spec/architecture.md) for the honest limitations list.
 
 ## License
 

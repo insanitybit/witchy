@@ -268,6 +268,18 @@
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
+    /// (RFC-0032) `vm.par_map` over `String` elements: each string is a flat
+    /// `[len][bytes]` value, so it crosses to a worker VM by a plain byte copy (in via
+    /// the worker's `__galloc`, result back out) — no marshaling. A witchy `String` is
+    /// always valid UTF-8, so the round-trip is lossless. Both backends must agree.
+    #[test]
+    fn vm_par_map_string_backends_agree() {
+        let src = "import vm\n\nfn shout(s: String) -> String:\n    s + \"!\"\n\nfn main(console: Console):\n    let ys = vm.par_map([\"a\", \"bb\", \"ccc\"], shout)\n    print(console, __render(ys))\n";
+        let expected = ["[a!, bb!, ccc!]"];
+        assert_eq!(interpreter::run(src).expect("interp"), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+    }
+
     /// (RFC-0032) `vm.par_map` stays correct when the native worker-VM fast path does
     /// NOT apply — a CAPTURING closure (here `fn(n): n + base`) would be unsound to run
     /// with a null environment in a separate worker VM, so the compiled backend must

@@ -593,6 +593,7 @@ pub(crate) fn link_capability_imports(
     // No authority of their own — the closure runs with the module's existing caps.
     linker.func_wrap("witchy", "vm_par_map_run", host_vm_par_map_run)?;
     linker.func_wrap("witchy", "vm_par_map_write", host_vm_par_map_write)?;
+    linker.func_wrap("witchy", "vm_par_map_str_run", host_vm_par_map_str_run)?;
     // Field-length staging helpers (`[len]` of a host cell's string/list field).
     // They carry no authority — pure reads — and the WIR static prelude declares
     // them unconditionally, so define harmless stubs here. Ordinary programs
@@ -1429,6 +1430,98 @@ fn worker_vmstate(engine: &Engine, module: &Module, preempt: bool) -> VmState {
         module: module.clone(),
         preempt,
     }
+}
+
+/// (RFC-0032) `vm_par_map_str_run(xs_ptr, f_ptr) -> byte_size`: the `String` variant of
+/// `vm.par_map`. Each element is a flat `[len][bytes]` value with no internal pointers,
+/// so it crosses VM boundaries by a plain byte copy — NO type-aware marshaling. Inputs
+/// are read from the parent, the map runs across zero-authority worker VMs (copy each
+/// string's bytes IN via the worker's `__galloc`, call `f`, copy the result string's
+/// bytes back OUT), and the results are staged for `write_pending_list` to lay out as a
+/// `List(String)`.
+fn host_vm_par_map_str_run(mut caller: Caller<'_, VmState>, xs_ptr: i32, f_ptr: i32) -> Result<i32> {
+    let (inputs, code_idx): (Vec<String>, i32) = {
+        let mem = memory_of(&mut caller)?;
+        let data = mem.data(&caller);
+        let inputs = read_wstr_list(data, xs_ptr)?;
+        let cb = slice(data, f_ptr, 4)?;
+        (inputs, i32::from_le_bytes([cb[0], cb[1], cb[2], cb[3]]))
+    };
+    let n = inputs.len();
+    if n == 0 {
+        caller.data_mut().pending_list = Some(Vec::new());
+        return Ok(4);
+    }
+    let engine = caller.data().engine.clone();
+    let module = caller.data().module.clone();
+    let preempt = caller.data().preempt;
+    let workers = std::thread::available_parallelism().map(|p| p.get()).unwrap_or(1).min(n).max(1);
+    let chunk = n.div_ceil(workers);
+    let mut results: Vec<String> = Vec::with_capacity(n);
+    std::thread::scope(|scope| -> Result<()> {
+        let mut handles = Vec::new();
+        let mut start = 0;
+        while start < n {
+            let end = (start + chunk).min(n);
+            let chunk_inputs = inputs[start..end].to_vec();
+            let (engine, module) = (&engine, &module);
+            handles.push(scope.spawn(move || {
+                run_par_chunk_str(engine, module, preempt, code_idx, &chunk_inputs)
+            }));
+            start = end;
+        }
+        for h in handles {
+            results.extend(
+                h.join().map_err(|_| Error::msg("vm.par_map worker thread panicked"))??,
+            );
+        }
+        Ok(())
+    })?;
+    let size = 4 + 8 * n + results.iter().map(|s| 4 + s.len()).sum::<usize>();
+    caller.data_mut().pending_list = Some(results);
+    Ok(size as i32)
+}
+
+/// One chunk of a `String` `vm.par_map` on a zero-authority worker VM: copy each input
+/// string's bytes into the worker (`__galloc` + write `[len][bytes]`), invoke `f` by
+/// table index (`__call_idx`), and read the result string's bytes back out. Pure byte
+/// copies in and out — the flat `String` layout needs no marshaling.
+fn run_par_chunk_str(
+    engine: &Engine,
+    module: &Module,
+    preempt: bool,
+    code_idx: i32,
+    inputs: &[String],
+) -> Result<Vec<String>> {
+    let state = worker_vmstate(engine, module, preempt);
+    let mut store = Store::new(engine, state);
+    store.limiter(|s| &mut s.limits);
+    if preempt {
+        store.set_epoch_deadline(u64::MAX);
+    }
+    let mut linker: Linker<VmState> = Linker::new(engine);
+    link_capability_imports(&mut linker, &Capabilities::default())?;
+    linker.define_unknown_imports_as_traps(module)?;
+    let instance = linker.instantiate(&mut store, module)?;
+    let galloc = instance.get_typed_func::<i32, i32>(&mut store, "__galloc")?;
+    let call_idx = instance.get_typed_func::<(i32, i64), i64>(&mut store, "__call_idx")?;
+    let mem = instance
+        .get_memory(&mut store, "memory")
+        .ok_or_else(|| Error::msg("vm.par_map worker VM exports no `memory`"))?;
+    let mut out = Vec::with_capacity(inputs.len());
+    for s in inputs {
+        let bytes = s.as_bytes();
+        let total = 4 + bytes.len() as i32;
+        let wptr = galloc.call(&mut store, total)?;
+        let mut buf = Vec::with_capacity(total as usize);
+        buf.extend_from_slice(&(bytes.len() as i32).to_le_bytes());
+        buf.extend_from_slice(bytes);
+        mem.write(&mut store, wptr as usize, &buf)
+            .map_err(|e| Error::msg(format!("writing par_map input string into worker: {e}")))?;
+        let rptr = call_idx.call(&mut store, (code_idx, wptr as i64))?;
+        out.push(read_wstr(mem.data(&store), rptr as i32)?);
+    }
+    Ok(out)
 }
 
 /// (RFC-0032) `vm_par_map_write(base_ptr)`: lay the staged `vm.par_map` results out

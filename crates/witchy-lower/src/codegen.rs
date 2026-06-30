@@ -6357,6 +6357,17 @@ impl Codegen {
         parts.len() == 2 && parts.iter().all(|t| scalar(t))
     }
 
+    /// `vm.par_map` monomorphized over `String` arguments (`vm.par_map__String__String`).
+    /// A `String` is a flat `[len][bytes]` value, so it crosses to a worker VM by a plain
+    /// byte copy (no marshaling); this takes the native `vm_par_map_str` path.
+    fn is_str_par_map(name: &str) -> bool {
+        let Some(suffix) = name.strip_prefix("vm.par_map__") else {
+            return false;
+        };
+        let parts: Vec<&str> = suffix.split("__").collect();
+        parts.len() == 2 && parts.iter().all(|t| *t == "String")
+    }
+
     fn lower_call(&mut self, name: &str, args: &[Expr]) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::WirExpr as W;
         use witchy_wir::wir::WirNode as N;
@@ -6829,6 +6840,13 @@ impl Codegen {
                     && matches!(&args[1], Expr::Var(f) if !self.locals.contains_key(f)) =>
             {
                 call("vm_par_map", self.lower_args(&[&args[0], &args[1]])?)
+            }
+            // (RFC-0032) `String` variant — flat byte payloads copied across worker VMs.
+            (_, 2)
+                if Self::is_str_par_map(name)
+                    && matches!(&args[1], Expr::Var(f) if !self.locals.contains_key(f)) =>
+            {
+                call("vm_par_map_str", self.lower_args(&[&args[0], &args[1]])?)
             }
             ("read_build", 2) => {
                 self.used_build_ops.insert("read_build");
@@ -8137,12 +8155,19 @@ pub fn assemble_wir_module(
                     export: Some("__region_copy_bytes".into()),
                 });
             }
-            // (RFC-0032) When `vm.par_map` is linked, emit + export the `__call_idx`
-            // trampoline the host (incl. fresh worker VMs) re-enters to apply the
-            // mapped closure to each element by its table index.
-            let exports_call_idx = pruned_funcs.iter().any(|f| f.name == "vm_par_map");
+            // (RFC-0032) When `vm.par_map` (scalar or String) is linked, emit + export
+            // the `__call_idx` trampoline the host (incl. fresh worker VMs) re-enters to
+            // apply the mapped closure to each element by its table index. The String
+            // variant also needs `__galloc` so the host can place input strings into a
+            // worker's memory — emit it unless string-export wrappers already do.
+            let has_par_map_str = pruned_funcs.iter().any(|f| f.name == "vm_par_map_str");
+            let exports_call_idx =
+                has_par_map_str || pruned_funcs.iter().any(|f| f.name == "vm_par_map");
             if exports_call_idx {
                 pruned_funcs.push(witchy_wir::wir_helpers::call_idx_helper());
+            }
+            if has_par_map_str && string_exports.is_empty() {
+                pruned_funcs.push(witchy_wir::wir_helpers::galloc_helper());
             }
             let data: Vec<DataSegment> = cg
                 .strings
@@ -8174,8 +8199,10 @@ pub fn assemble_wir_module(
                     if exports_call_idx {
                         exports.push(("__call_idx".into(), "__call_idx".into()));
                     }
-                    if !string_exports.is_empty() {
+                    if !string_exports.is_empty() || has_par_map_str {
                         exports.push(("__galloc".into(), "__galloc".into()));
+                    }
+                    if !string_exports.is_empty() {
                         for name in &string_exports {
                             let ex = string_export_name(name);
                             exports.push((ex.clone(), ex));
