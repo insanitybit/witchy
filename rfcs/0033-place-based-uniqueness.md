@@ -82,18 +82,35 @@ casing: R3 deletes a type allowlist rather than adding one.
 
 ## Incremental plan (each lands green + parity)
 
-1. **R1 — heap-record in-place update.** Recognize `s = {...s, f: v}` where `s`
-   is a unique accumulator heap record; emit in-place field stores into `s`'s
-   slots + reuse the pointer (cold path: copy + re-own, mirroring `list_set_cap`).
-   Both backends; differential test; a no-cliff test (a heap-record update loop
-   stays O(1)/object, not O(n)).
-2. **R2 — field-path threading.** Extend the in-place recognizer so a self-assign
-   whose target/receiver is a field of a unique record (`s.items = list.push(
-   s.items, x)`) goes in-place. Differential + cliff test (`Stack.push` matches
-   raw `List.push`).
-3. **R3 — own-ABI generalization.** Ungate `analysis.rs:323`; thread the cap for
-   user-type `own` params; confirm `s = push(s, x)` through a user function is
-   in-place end to end. Differential + cliff test.
+1. **R1 — heap-record in-place update.** ✅ **SHIPPED** (commit f4a0415).
+   `s = {...s, f: v}` (the `s.field = v` desugaring) on a unique escaping heap
+   record stores the changed field into `s`'s slots in place and keeps the
+   pointer; the cold/un-owned path is the existing `mk{n}` realloc (re-owns).
+   Records are fixed-shape so the token is a 0/1 owned flag — no new runtime
+   helper. `analysis::InPlaceOp::RecordUpdate` is the recognizer; SROA still
+   handles confined records (checked first). Proven firing
+   (`stats::record_field_update_is_in_place`: forced-copy allocates 4×+ the heap)
+   + parity, with the aliased `{...s, parent: s}` / `r.a = 99` cases in the
+   differential sweep (interp pins value semantics; an unsound in-place would
+   diverge). This closes the dominant case of the edge — `.field =` loops on
+   escaping records are now O(1)/update instead of O(n) reallocs.
+2. **R2 — field-path threading.** ⏳ NOT YET. `s.items = list.push(s.items, x)`
+   in place needs a PERSISTENT field-cap (`{name}${field}__cap`, function-scoped
+   so it survives loop iterations) threaded through the inner `*_cap` helper, plus
+   the analysis recognizing `(var, field)` field-accumulators and resetting the
+   field-cap when the record var is reassigned. Real codegen + analysis work, not
+   a small patch.
+3. **R3 — own-ABI generalization.** ⏳ NOT YET — and it's more than ungating
+   `analysis.rs:323`. Ungating to user heap types (tried: compute the heap-type
+   set from `module.items` record/enum names + builtins) builds, but the codegen
+   own-ABI **call ABI** then bails: a PLAIN call to an own-ABI function (e.g.
+   `identity(Counter(7, 0))`, not a `c = f(c)` self-call) doesn't supply the
+   trailing cap arg the callee's signature now expects, so lowering rejects it.
+   Closing R3 means teaching the GENERAL call-lowering path to append the cap arg
+   (0 for non-threaded callers) and consume the extra cap result for every
+   own-ABI callee — a change to the core call path, high-blast-radius. Defer to a
+   focused pass with the differential oracle (output invariant under every
+   `WITCHY_OPT` setting on both backends) as the gate; do NOT rush it.
 
 ## Parity & soundness
 
