@@ -1297,11 +1297,47 @@ fn host_write_pending_list(mut caller: Caller<'_, VmState>, base_ptr: i32) -> Re
         .map_err(|e| Error::msg(format!("writing directory listing into guest memory: {e}")))
 }
 
-/// (RFC-0032) `vm_par_map_run(xs_ptr, f_ptr) -> byte_size`: apply the closure at
-/// `f_ptr` to each element of the `List(Int)` at `xs_ptr`, staging the results for
-/// `vm_par_map_write`. The closure is invoked through the guest's exported
-/// `__call_clos` trampoline (re-entrant call into the same instance). Returns the
-/// byte size of the resulting `List(Int)` (`[count][count x i64]`).
+/// Process one contiguous chunk of `vm.par_map` inputs on a fresh worker VM.
+type ChunkRunner<T> = fn(&Engine, &Module, bool, i32, &[T]) -> Result<Vec<T>>;
+
+/// Fan `inputs` out across one worker VM per core (capped by the input count), each
+/// processing a contiguous chunk via `run_chunk`, and gather the results IN INPUT ORDER.
+/// The shared parallel engine behind both `vm.par_map` variants (scalar `i64` and buffer
+/// `Vec<u8>`) — they differ only in the element type and the per-chunk runner. Empty
+/// `inputs` yields an empty result with no threads.
+fn par_fan_out<T: Send + Clone>(
+    engine: &Engine,
+    module: &Module,
+    preempt: bool,
+    code_idx: i32,
+    inputs: &[T],
+    run_chunk: ChunkRunner<T>,
+) -> Result<Vec<T>> {
+    let n = inputs.len();
+    let workers = std::thread::available_parallelism().map(|p| p.get()).unwrap_or(1).min(n).max(1);
+    let chunk = n.div_ceil(workers);
+    let mut results: Vec<T> = Vec::with_capacity(n);
+    std::thread::scope(|scope| -> Result<()> {
+        let mut handles = Vec::new();
+        let mut start = 0;
+        while start < n {
+            let end = (start + chunk).min(n);
+            let chunk_inputs = inputs[start..end].to_vec();
+            handles.push(scope.spawn(move || run_chunk(engine, module, preempt, code_idx, &chunk_inputs)));
+            start = end;
+        }
+        for h in handles {
+            results.extend(h.join().map_err(|_| Error::msg("vm.par_map worker thread panicked"))??);
+        }
+        Ok(())
+    })?;
+    Ok(results)
+}
+
+/// (RFC-0032) `vm_par_map_run(xs_ptr, f_ptr) -> byte_size`: map the closure at `f_ptr`
+/// over the `List(Int)` at `xs_ptr` across worker VMs (`par_fan_out` + `run_par_chunk`),
+/// staging the results for `vm_par_map_write` and returning the byte size of the resulting
+/// flat `List(Int)` (`[count][count x i64]`).
 fn host_vm_par_map_run(mut caller: Caller<'_, VmState>, xs_ptr: i32, f_ptr: i32) -> Result<i32> {
     // Snapshot the input scalars + the closure's code index, then drop the borrow.
     let (inputs, code_idx): (Vec<i64>, i32) = {
@@ -1318,41 +1354,10 @@ fn host_vm_par_map_run(mut caller: Caller<'_, VmState>, xs_ptr: i32, f_ptr: i32)
         let cb = slice(data, f_ptr, 4)?;
         (v, i32::from_le_bytes([cb[0], cb[1], cb[2], cb[3]]))
     };
-    let n = inputs.len();
-    if n == 0 {
-        caller.data_mut().pending_ints = Some(Vec::new());
-        return Ok(4);
-    }
-    // Everything a worker VM needs to instantiate a fresh, isolated copy.
     let engine = caller.data().engine.clone();
     let module = caller.data().module.clone();
     let preempt = caller.data().preempt;
-    // One worker VM per core (capped by the element count), each its own wasmtime
-    // instance + linear memory, processing a contiguous chunk so results reassemble
-    // in input order. Pure capture-free `f` ⇒ the parallel result equals sequential.
-    let workers = std::thread::available_parallelism().map(|p| p.get()).unwrap_or(1).min(n).max(1);
-    let chunk = n.div_ceil(workers);
-    let mut results: Vec<i64> = Vec::with_capacity(n);
-    std::thread::scope(|scope| -> Result<()> {
-        let mut handles = Vec::new();
-        let mut start = 0;
-        while start < n {
-            let end = (start + chunk).min(n);
-            let chunk_inputs = inputs[start..end].to_vec();
-            let (engine, module) = (&engine, &module);
-            handles.push(scope.spawn(move || {
-                run_par_chunk(engine, module, preempt, code_idx, &chunk_inputs)
-            }));
-            start = end;
-        }
-        for h in handles {
-            let part = h
-                .join()
-                .map_err(|_| Error::msg("vm.par_map worker thread panicked"))??;
-            results.extend(part);
-        }
-        Ok(())
-    })?;
+    let results = par_fan_out(&engine, &module, preempt, code_idx, &inputs, run_par_chunk)?;
     let size = 4 + 8 * results.len();
     caller.data_mut().pending_ints = Some(results);
     Ok(size as i32)
@@ -1644,37 +1649,11 @@ fn host_vm_par_map_bytes_run(mut caller: Caller<'_, VmState>, xs_ptr: i32, f_ptr
         let cb = slice(data, f_ptr, 4)?;
         (inputs, i32::from_le_bytes([cb[0], cb[1], cb[2], cb[3]]))
     };
-    let n = inputs.len();
-    if n == 0 {
-        caller.data_mut().pending_bytes = Some(Vec::new());
-        return Ok(4);
-    }
     let engine = caller.data().engine.clone();
     let module = caller.data().module.clone();
     let preempt = caller.data().preempt;
-    let workers = std::thread::available_parallelism().map(|p| p.get()).unwrap_or(1).min(n).max(1);
-    let chunk = n.div_ceil(workers);
-    let mut results: Vec<Vec<u8>> = Vec::with_capacity(n);
-    std::thread::scope(|scope| -> Result<()> {
-        let mut handles = Vec::new();
-        let mut start = 0;
-        while start < n {
-            let end = (start + chunk).min(n);
-            let chunk_inputs = inputs[start..end].to_vec();
-            let (engine, module) = (&engine, &module);
-            handles.push(scope.spawn(move || {
-                run_par_chunk_bytes(engine, module, preempt, code_idx, &chunk_inputs)
-            }));
-            start = end;
-        }
-        for h in handles {
-            results.extend(
-                h.join().map_err(|_| Error::msg("vm.par_map worker thread panicked"))??,
-            );
-        }
-        Ok(())
-    })?;
-    let size = 4 + 8 * n + results.iter().map(|b| 4 + b.len()).sum::<usize>();
+    let results = par_fan_out(&engine, &module, preempt, code_idx, &inputs, run_par_chunk_bytes)?;
+    let size = 4 + 8 * results.len() + results.iter().map(|b| 4 + b.len()).sum::<usize>();
     caller.data_mut().pending_bytes = Some(results);
     Ok(size as i32)
 }
