@@ -94,23 +94,41 @@ casing: R3 deletes a type allowlist rather than adding one.
    differential sweep (interp pins value semantics; an unsound in-place would
    diverge). This closes the dominant case of the edge — `.field =` loops on
    escaping records are now O(1)/update instead of O(n) reallocs.
-2. **R2 — field-path threading.** ⏳ NOT YET. `s.items = list.push(s.items, x)`
-   in place needs a PERSISTENT field-cap (`{name}${field}__cap`, function-scoped
-   so it survives loop iterations) threaded through the inner `*_cap` helper, plus
-   the analysis recognizing `(var, field)` field-accumulators and resetting the
-   field-cap when the record var is reassigned. Real codegen + analysis work, not
-   a small patch.
-3. **R3 — own-ABI generalization.** ⏳ NOT YET — and it's more than ungating
-   `analysis.rs:323`. Ungating to user heap types (tried: compute the heap-type
-   set from `module.items` record/enum names + builtins) builds, but the codegen
-   own-ABI **call ABI** then bails: a PLAIN call to an own-ABI function (e.g.
-   `identity(Counter(7, 0))`, not a `c = f(c)` self-call) doesn't supply the
-   trailing cap arg the callee's signature now expects, so lowering rejects it.
-   Closing R3 means teaching the GENERAL call-lowering path to append the cap arg
-   (0 for non-threaded callers) and consume the extra cap result for every
-   own-ABI callee — a change to the core call path, high-blast-radius. Defer to a
-   focused pass with the differential oracle (output invariant under every
-   `WITCHY_OPT` setting on both backends) as the gate; do NOT rush it.
+2. **R2 — field-path threading.** ⏳ NOT YET — needs FIELD-ESCAPE ANALYSIS for
+   soundness. A codegen-only attempt (persistent `{name}${field}__cap`; lower
+   `s.items = list.push(s.items, x)` via `list_push_cap` with effective cap =
+   `field_cap * (record_owned)`) was implemented and **reverted** because the
+   differential oracle proved it UNSOUND: under `WITCHY_OPT=-sroa`, the aliased
+   case `let snap = s.items; s.items = list.push(s.items, 2)` printed "202"
+   instead of "102" — `snap` was corrupted. Root cause: record-level ownership
+   (`s__cap`) does NOT imply the field's list buffer isn't separately aliased.
+   The existing dirty analysis catches WHOLE-record aliasing (`let x = s`) but not
+   FIELD aliasing (`let x = s.items`) — SROA masked it by chance, so only the
+   `-sroa` differential leg exposed it. A sound R2 must mark the field-push cap
+   dirty when `s.field` is read into a live alias (escapes), i.e. extend the
+   uniqueness scan to field paths. That is a real analysis pass — the right home
+   for it, not a codegen hack. (The oracle working exactly as designed is why this
+   was caught before shipping.)
+3. **R3 — own-ABI generalization.** ✅ **SHIPPED** (commit e1a4a2b). own-ABI
+   eligibility is now keyed on a heap-type set (builtins + every user record/enum
+   from `module.items`), not a name allowlist. Two codegen fixes made it real:
+   (a) a PLAIN call to an own-ABI function (`let a = id(x)`, not the `x = f(move
+   x)` self-call) now lowers — it appends the cap=0 arg and discards the cap
+   result via TUPLE_TMP/__witchy_owncap (previously ANY plain own-ABI call bailed
+   the whole module); (b) the `self_own_call` arm is gated on `inplace_push` so it
+   never references an undeclared cap local under force-copy (a latent crash the
+   differential oracle surfaced). `c = bump(c)` where `bump(own c: Counter)`
+   mutates a field now threads the record's ownership across the call — O(1) heap
+   (`stats::record_own_abi_threads_in_place`), parity under every `WITCHY_OPT`.
+
+## Status summary
+
+R1 (record in-place field update) and R3 (own-ABI threads through user types +
+plain own-ABI calls + the force-copy latent-bug fix) are SHIPPED and sound —
+in-place now threads through user abstractions at the RECORD level. R2 (growing a
+record FIELD's list buffer in place — the inner half of `Stack.push == List.push`)
+remains: its naive codegen-only form is unsound (oracle-caught), and the sound
+form requires extending the uniqueness analysis to field-path aliasing.
 
 ## Parity & soundness
 
