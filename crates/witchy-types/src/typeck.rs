@@ -1285,6 +1285,8 @@ impl Checker {
             "recv_all" => Some((vec![Ty::Socket], Ty::String)),
             "recv_bytes" => Some((vec![Ty::Socket, Ty::Int], Ty::String)),
             "accept" => Some((vec![Ty::Listener], Ty::Socket)),
+            // (RFC-0032) Spin up the `server.serve` worker pool over a bound listener.
+            "serve_pool" => Some((vec![Ty::Listener], Ty::Nil)),
             "close" => Some((vec![Ty::Socket], Ty::Nil)),
             // User functions: instantiate generic type parameters fresh per call.
             _ => match self.fn_sigs.get(name).cloned() {

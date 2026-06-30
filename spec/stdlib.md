@@ -2032,7 +2032,11 @@ Return `resp` with its status code replaced.
 
 #### `fn serve(net: Net[Listen, Tcp], addr: String, app: Router)`
 
-Serve `app` on `addr` forever. Needs the `Net` capability to listen; handlers never receive it.
+Serve `app` on `addr` forever, using ALL cores. Needs the `Net` capability to listen; handlers never receive it. `serve_pool` spawns one worker VM per core, each re-running this program and accepting from the SAME bound listener — the kernel load-balances connections across them, so the server scales across cores with no extra effort from you. Handlers are pure `fn(Request) -> Response` whose state lives in their captured capabilities (e.g. a store `Dir` = the filesystem), so the workers are interchangeable. (For a single-threaded server, use `serve_one`.)
+
+#### `fn serve_one(net: Net[Listen, Tcp], addr: String, app: Router)`
+
+Serve `app` on `addr` forever on a SINGLE core (one accept loop, no worker pool) — for servers with per-process in-memory state, or when one core is plenty.
 
 #### `fn serve_n(net: Net[Listen, Tcp], addr: String, app: Router, n: Int)`
 

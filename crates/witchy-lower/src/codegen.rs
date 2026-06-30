@@ -7012,6 +7012,13 @@ impl Codegen {
                 let a = self.lower_args(&[&args[0]])?;
                 if self.collect_wir { call("net_close", a) } else { nil0(host("net_close_host", a)) }
             }
+            // (RFC-0032) `server.serve`'s worker pool: spawn one worker VM per core, all
+            // accepting from the shared listener.
+            ("serve_pool", 1) => {
+                self.used_net_ops.insert("serve_pool");
+                let a = self.lower_args(&[&args[0]])?;
+                if self.collect_wir { call("serve_pool", a) } else { nil0(host("serve_pool_host", a)) }
+            }
             ("write", 3) => {
                 self.used_dir_ops.insert("write");
                 let a = self.lower_args(&[&args[0], &args[1], &args[2]])?;

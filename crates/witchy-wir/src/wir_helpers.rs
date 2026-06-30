@@ -4895,6 +4895,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
+        "serve_pool" => Some(WirHelperSpec {
+            func: host_void_helper("serve_pool", "serve_pool", 1),
+            helper_deps: &[],
+            import_deps: &["serve_pool"],
+            uses_heap: false,
+            uses_table: false,
+        }),
         "net_recv_line" => Some(WirHelperSpec {
             func: net_recv_helper("net_recv_line", "net_recv_line_len", false),
             helper_deps: &["ensure"],

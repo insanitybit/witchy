@@ -214,8 +214,15 @@ pub struct VmState {
     /// Open sockets, indexed by the guest's i32 Socket handles. Each is a plain or
     /// TLS byte stream behind one `dyn Stream` (see `Stream`).
     sockets: Vec<std::io::BufReader<Box<dyn Stream>>>,
-    /// Listening server sockets, indexed by the guest's i32 Listener handles.
-    listeners: Vec<std::net::TcpListener>,
+    /// Listening server sockets, indexed by the guest's i32 Listener handles. `Arc`
+    /// so a `server.serve` worker pool (RFC-0032) can share ONE bound listener across
+    /// worker VMs — `TcpListener::accept` is thread-safe, and the kernel load-balances
+    /// connections across the workers' accept calls.
+    listeners: Vec<std::sync::Arc<std::net::TcpListener>>,
+    /// (RFC-0032) When this VM is a `serve` POOL WORKER, the shared listener it must
+    /// reuse instead of binding its own. `listen` returns this; `serve_pool` sees it set
+    /// and does NOT spawn another pool (only the primary spawns workers).
+    worker_listener: Option<std::sync::Arc<std::net::TcpListener>>,
     /// A build step's confined output directory (`BuildOut`) and read roots
     /// (`BuildRead`) — host-side, so a guest holds only an opaque handle.
     build_out: Option<std::path::PathBuf>,
@@ -431,6 +438,7 @@ impl Runtime {
             nets,
             sockets: Vec::new(),
             listeners: Vec::new(),
+            worker_listener: None,
             build_out: caps.build_out.clone(),
             build_read_roots: caps.build_read_roots.clone(),
             heap_objects: Vec::new(),
@@ -560,6 +568,10 @@ pub(crate) fn link_capability_imports(
     if net && caps.net_listen {
         linker.func_wrap("witchy", "net_listen", host_net_listen)?;
         linker.func_wrap("witchy", "net_accept", host_net_accept)?;
+        // (RFC-0032) The `server.serve` worker pool: spawn one worker VM per core, all
+        // sharing the bound listener. No authority of its own — workers get the same
+        // caps the server already holds.
+        linker.func_wrap("witchy", "serve_pool", host_serve_pool)?;
     }
     if net && (caps.net_connect || caps.net_listen) {
         linker.func_wrap("witchy", "net_send_line", host_net_send_line)?;
@@ -1433,6 +1445,7 @@ fn worker_vmstate(engine: &Engine, module: &Module, preempt: bool) -> VmState {
         nets: Vec::new(),
         sockets: Vec::new(),
         listeners: Vec::new(),
+            worker_listener: None,
         build_out: None,
         build_read_roots: Vec::new(),
         heap_objects: Vec::new(),
@@ -2032,8 +2045,16 @@ fn host_net_listen(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) -> Re
     if !witchy_caps::capabilities::net_allows(&allow, &addr) {
         bail!("listen: `{addr}` is not permitted by this Net capability");
     }
-    let listener = std::net::TcpListener::bind(&addr)
-        .map_err(|e| Error::msg(format!("listen on `{addr}` failed: {e}")))?;
+    // A `serve` pool worker reuses the primary's already-bound listener (so all
+    // workers `accept` from one socket) instead of binding the address again.
+    let shared = caller.data().worker_listener.clone();
+    let listener = match shared {
+        Some(l) => l,
+        None => std::sync::Arc::new(
+            std::net::TcpListener::bind(&addr)
+                .map_err(|e| Error::msg(format!("listen on `{addr}` failed: {e}")))?,
+        ),
+    };
     let listeners = &mut caller.data_mut().listeners;
     listeners.push(listener);
     Ok((listeners.len() - 1) as i32)
@@ -2041,18 +2062,105 @@ fn host_net_listen(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) -> Re
 
 /// `net_accept(listener) -> Socket handle`: block for a client connection.
 fn host_net_accept(mut caller: Caller<'_, VmState>, lid: i32) -> Result<i32> {
-    let state = caller.data_mut();
-    let listener = state
+    // Clone the `Arc` out so the blocking `accept` doesn't hold a borrow of the VM
+    // state — and so a shared (pool) listener is accepted concurrently by every worker.
+    let listener = caller
+        .data()
         .listeners
         .get(lid as usize)
+        .cloned()
         .ok_or_else(|| Error::msg("invalid listener"))?;
     let (stream, _peer) = listener
         .accept()
         .map_err(|e| Error::msg(format!("accept failed: {e}")))?;
+    let state = caller.data_mut();
     state
         .sockets
         .push(std::io::BufReader::new(Box::new(stream) as Box<dyn Stream>));
     Ok((state.sockets.len() - 1) as i32)
+}
+
+/// (RFC-0032) `serve_pool(listener_handle)`: the `server.serve` worker pool. On the
+/// PRIMARY VM it spawns one worker VM per remaining core, each re-running the program
+/// (rebuilding the same routes with the same capabilities) but SHARING this bound
+/// listener. Every worker `accept`s from the one socket and the kernel load-balances
+/// connections, so the server uses all cores. A pool worker (its `worker_listener`
+/// already set) is a no-op here — only the primary spawns the pool.
+fn host_serve_pool(caller: Caller<'_, VmState>, listener_handle: i32) -> Result<()> {
+    if caller.data().worker_listener.is_some() {
+        return Ok(());
+    }
+    let Some(listener) = caller.data().listeners.get(listener_handle as usize).cloned() else {
+        return Ok(());
+    };
+    let workers = std::thread::available_parallelism().map(|p| p.get()).unwrap_or(1).max(1);
+    let engine = caller.data().engine.clone();
+    let module = caller.data().module.clone();
+    let caps = caller.data().caps.clone();
+    let preempt = caller.data().preempt;
+    for _ in 1..workers {
+        let (engine, module, caps, listener) =
+            (engine.clone(), module.clone(), caps.clone(), listener.clone());
+        std::thread::spawn(move || {
+            if let Err(e) = run_server_worker(&engine, &module, &caps, preempt, listener) {
+                eprintln!("[serve worker] exited: {e}");
+            }
+        });
+    }
+    Ok(())
+}
+
+/// Run one `server.serve` pool worker: a fresh VM of the same program + capabilities,
+/// marked with the shared listener, re-running `run` (main) so it rebuilds the routes
+/// and enters the accept loop on the shared socket. Runs until the process exits.
+fn run_server_worker(
+    engine: &Engine,
+    module: &Module,
+    caps: &Capabilities,
+    preempt: bool,
+    listener: std::sync::Arc<std::net::TcpListener>,
+) -> Result<()> {
+    let dirs = caps
+        .dir_root
+        .iter()
+        .cloned()
+        .chain(caps.dir_roots.iter().cloned())
+        .map(|p| (p, String::new()))
+        .collect();
+    let nets = caps.net_allow.iter().cloned().collect();
+    let state = VmState {
+        id: 0,
+        caps: caps.clone(),
+        limits: StoreLimitsBuilder::new().memory_size(16384 * 64 * 1024).build(),
+        output: Arc::new(Mutex::new(Vec::new())),
+        dirs,
+        files: caps.file_grants.clone(),
+        pending: None,
+        pending_list: None,
+        pending_ints: None,
+        pending_bytes: None,
+        nets,
+        sockets: Vec::new(),
+        listeners: Vec::new(),
+        worker_listener: Some(listener),
+        build_out: caps.build_out.clone(),
+        build_read_roots: caps.build_read_roots.clone(),
+        heap_objects: Vec::new(),
+        rand_state: crate::rand::seed_from_env(),
+        engine: engine.clone(),
+        module: module.clone(),
+        preempt,
+    };
+    let mut store = Store::new(engine, state);
+    store.limiter(|s| &mut s.limits);
+    if preempt {
+        store.set_epoch_deadline(u64::MAX);
+    }
+    let mut linker: Linker<VmState> = Linker::new(engine);
+    link_capability_imports(&mut linker, caps)?;
+    let instance = linker.instantiate(&mut store, module)?;
+    let run = instance.get_typed_func::<(), ()>(&mut store, "run")?;
+    run.call(&mut store, ())
 }
 
 use crate::net::Stream;
