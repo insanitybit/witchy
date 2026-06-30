@@ -26,6 +26,44 @@ The numeric value of a single decimal digit, or -1 when `c` is not a digit.
 
 True when `s` is non-empty and every character is an ASCII digit — a safe guard before `string_to_int`, which traps on non-numeric input.
 
+## `bytes`
+
+std/bytes — immutable byte buffers.
+
+A `Bytes` is a flat, UTF-8-free sequence of bytes — the type for binary data (file contents, network frames, hashes, serialized payloads) that `String` (which is always valid UTF-8) cannot faithfully hold. It shares `String`'s in-memory layout (`[length][bytes…]`), so the bridge operations (`from_string`/`to_string`) are free, and a `Bytes` is FLAT: it byte-copies directly across a worker VM boundary (RFC-0032), making it the canonical cross-VM and serialization payload.
+
+#### `fn from_string(s: String) -> Bytes`
+
+The UTF-8 bytes of a string.
+
+#### `fn to_string(b: Bytes) -> String`
+
+Decode bytes as UTF-8 text. Invalid sequences are replaced with U+FFFD (lossy), so this never fails; round-tripping a string is exact because witchy strings are always valid UTF-8.
+
+#### `fn length(b: Bytes) -> Int`
+
+The number of bytes.
+
+#### `fn is_empty(b: Bytes) -> Bool`
+
+Whether `b` has no bytes.
+
+#### `fn at(b: Bytes, index: Int) -> Int`
+
+The byte at `index`, as an Int in `0..=255`.
+
+#### `fn concat(first: Bytes, second: Bytes) -> Bytes`
+
+The two byte buffers joined.
+
+#### `fn slice(b: Bytes, start: Int, end: Int) -> Bytes`
+
+The bytes in `start..end` (clamped to the buffer; `start >= end` yields empty).
+
+#### `fn to_list(b: Bytes) -> List(Int)`
+
+The bytes as a list of Ints in `0..=255`.
+
 ## `chan`
 
 std/chan — decoupled concurrency: `spawn` concurrent tasks, communicate over first-class `channel`s. Spawning and channels are independent — you can spawn without a channel, and a channel is a value you create and pass around, not a task's mailbox. Built on a pure-witchy cooperative executor with a deterministic round-robin schedule, so a concurrent run is byte-identical on the interpreter and the compiled WebAssembly — no scheduler state in the runtime, no `Pin`.

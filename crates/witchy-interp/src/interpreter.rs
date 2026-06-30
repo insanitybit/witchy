@@ -37,6 +37,7 @@ pub enum Value {
     Int(i64),
     Float(f64),
     Str(String),
+    Bytes(Vec<u8>),
     Bool(bool),
     List(Vec<Value>),
     Tuple(Vec<Value>),
@@ -126,6 +127,7 @@ impl fmt::Display for Value {
             Value::Int(n) => write!(f, "{n}"),
             Value::Float(x) => write!(f, "{}", witchy_syntax::fmt::render_float(*x)),
             Value::Str(s) => write!(f, "{s}"),
+            Value::Bytes(b) => write!(f, "Bytes(len={})", b.len()),
             Value::Bool(b) => write!(f, "{b}"),
             Value::Nil => write!(f, "Nil"),
             Value::List(items) => {
@@ -1044,6 +1046,45 @@ impl Interpreter {
             "string.length" => match one(args)? {
                 Value::Str(s) => Ok(Some(Value::Int(s.len() as i64))),
                 other => err(format!("string_length expects a String, got `{other}`")),
+            },
+            // (Bytes) Primitive intrinsics behind `std/bytes`. A `Bytes` is raw bytes
+            // with no UTF-8 contract; `to_string` decodes lossily (a strict decoder can
+            // live in std). `Str <-> Bytes` are real conversions in the tree-walker.
+            "__bytes_from_string" => match one(args)? {
+                Value::Str(s) => Ok(Some(Value::Bytes(s.into_bytes()))),
+                other => err(format!("bytes.from_string expects a String, got `{other}`")),
+            },
+            "__bytes_to_string" => match one(args)? {
+                Value::Bytes(b) => Ok(Some(Value::Str(String::from_utf8_lossy(&b).into_owned()))),
+                other => err(format!("bytes.to_string expects Bytes, got `{other}`")),
+            },
+            "__bytes_length" => match one(args)? {
+                Value::Bytes(b) => Ok(Some(Value::Int(b.len() as i64))),
+                other => err(format!("bytes.length expects Bytes, got `{other}`")),
+            },
+            "__bytes_at" => match args {
+                [Value::Bytes(b), Value::Int(i)] => match b.get(*i as usize) {
+                    Some(byte) => Ok(Some(Value::Int(*byte as i64))),
+                    None => err(format!("bytes index {i} out of bounds (length {})", b.len())),
+                },
+                _ => err("bytes.at expects Bytes and an Int index"),
+            },
+            "__bytes_concat" => match args {
+                [Value::Bytes(a), Value::Bytes(b)] => {
+                    let mut out = a.clone();
+                    out.extend_from_slice(b);
+                    Ok(Some(Value::Bytes(out)))
+                }
+                _ => err("bytes.concat expects two Bytes"),
+            },
+            "__bytes_slice" => match args {
+                [Value::Bytes(b), Value::Int(start), Value::Int(end)] => {
+                    let lo = (*start).max(0) as usize;
+                    let hi = (*end).max(0).min(b.len() as i64) as usize;
+                    let hi = hi.max(lo);
+                    Ok(Some(Value::Bytes(b.get(lo..hi).unwrap_or(&[]).to_vec())))
+                }
+                _ => err("bytes.slice expects Bytes and two Int indices"),
             },
             // The number of Unicode scalars — the character count, as opposed to
             // `string_length`'s byte count (they agree for ASCII).

@@ -268,6 +268,18 @@
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
+    /// (Bytes) The first-class `Bytes` type: a UTF-8-free flat byte buffer. Exercises
+    /// the round-trip with `String`, length/at/concat/slice/to_list, on both backends
+    /// (linked interp + compiled WASM), which must agree — `Bytes` shares `String`'s
+    /// `[len][bytes]` layout, so the compiled ops are identity/String-reuse.
+    #[test]
+    fn bytes_type_backends_agree() {
+        let src = "import bytes\nimport list\n\nfn main(console: Console):\n    let b = bytes.from_string(\"hi!\")\n    print(console, __render(bytes.length(b)))\n    print(console, __render(bytes.at(b, 0)))\n    print(console, bytes.to_string(b))\n    let c = bytes.concat(b, bytes.from_string(\"?\"))\n    print(console, bytes.to_string(c))\n    print(console, bytes.to_string(bytes.slice(c, 1, 3)))\n    print(console, __render(bytes.to_list(b)))\n    print(console, __render(bytes.is_empty(b)))\n";
+        let expected = ["3", "104", "hi!", "hi!?", "i!", "[104, 105, 33]", "false"];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+    }
+
     /// (RFC-0032) `vm.par_map` over `String` elements: each string is a flat
     /// `[len][bytes]` value, so it crosses to a worker VM by a plain byte copy (in via
     /// the worker's `__galloc`, result back out) — no marshaling. A witchy `String` is

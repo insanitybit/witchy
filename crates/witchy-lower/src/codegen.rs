@@ -964,7 +964,8 @@ impl Codegen {
                 "math.to_float" => Kind::F64,
                 "math.to_int" | "string.length" | "string.char_count" | "string.index_of"
                 | "list.length" | "dict.length" | "string.to_int" | "int_to_duration"
-                | "duration_to_int" | "now" | "rand_u64" => Kind::I64,
+                | "duration_to_int" | "now" | "rand_u64"
+                | "__bytes_length" | "__bytes_at" => Kind::I64,
                 "list.at" => self.elem_kind_of_list_arg(e),
                 "__render" | "int_to_string" | "print" => Kind::I32,
                 // A closure-local called by name returns the universal i64 slot,
@@ -7005,6 +7006,50 @@ impl Codegen {
                 call("ascii_case", vec![self.lower_expr(&args[0])?, W::ConstI32(up)])
             }
             ("string.substring", 3) => {
+                self.uses_substring = true;
+                self.uses_substr = true;
+                let sk = self.kind_of(&args[1]);
+                let ek = self.kind_of(&args[2]);
+                call("str_substring", vec![
+                    self.lower_expr(&args[0])?,
+                    Self::wir_convert(self.lower_expr(&args[1])?, sk, Kind::I32),
+                    Self::wir_convert(self.lower_expr(&args[2])?, ek, Kind::I32),
+                ])
+            }
+            // (Bytes) `Bytes` shares `String`'s flat `[len][bytes]` layout, so the
+            // primitive ops are identity / a reuse of the String machinery.
+            ("__bytes_from_string", 1) | ("__bytes_to_string", 1) => self.lower_expr(&args[0])?,
+            ("__bytes_length", 1) => {
+                let arg = self.lower_expr(&args[0])?;
+                Self::wir_convert(
+                    W::Load { ptr: Box::new(arg), kind: witchy_wir::wir::Kind::I32, offset: 0 },
+                    Kind::I32,
+                    Kind::I64,
+                )
+            }
+            ("__bytes_at", 2) => {
+                let b = self.lower_expr(&args[0])?;
+                let ik = self.kind_of(&args[1]);
+                let i = Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I32);
+                Self::wir_convert(
+                    W::Load8U {
+                        ptr: Box::new(W::Binary {
+                            op: witchy_wir::wir::BinOp::Add,
+                            kind: witchy_wir::wir::Kind::I32,
+                            lhs: Box::new(b),
+                            rhs: Box::new(i),
+                        }),
+                        offset: 4,
+                    },
+                    Kind::I32,
+                    Kind::I64,
+                )
+            }
+            ("__bytes_concat", 2) => {
+                self.uses_concat = true;
+                call("concat", vec![self.lower_expr(&args[0])?, self.lower_expr(&args[1])?])
+            }
+            ("__bytes_slice", 3) => {
                 self.uses_substring = true;
                 self.uses_substr = true;
                 let sk = self.kind_of(&args[1]);

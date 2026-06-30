@@ -101,7 +101,7 @@ pub const STD_MODULES: &[&str] = &[
     "show", "http", "json", "url", "duration", "random", "regex", "crypto", "compiler", "toml",
     "iter", "semver", "rights", "fs", "dict", "csv", "time", "encoding", "path", "testing",
     "future", "task", "chan", "webauthn", "secretstore", "reflect", "meta", "convert", "exec",
-    "confine", "jwt", "oauth", "rand", "vm",
+    "confine", "jwt", "oauth", "rand", "vm", "bytes",
 ];
 
 /// The bundled std modules that export a `pub fn` of the given name — used to
@@ -315,6 +315,7 @@ pub fn std_source(name: &str) -> Option<&'static str> {
         "jwt" => Some(include_str!("../../../std/jwt.witchy")),
         "oauth" => Some(include_str!("../../../std/oauth.witchy")),
         "vm" => Some(include_str!("../../../std/vm.witchy")),
+        "bytes" => Some(include_str!("../../../std/bytes.witchy")),
         _ => None,
     }
 }

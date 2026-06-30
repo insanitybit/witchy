@@ -213,6 +213,7 @@ pub enum Ty {
     /// it does not mix with `Int` under arithmetic.
     Duration,
     String,
+    Bytes,
     Bool,
     Nil,
     Console,
@@ -256,6 +257,7 @@ impl fmt::Display for Ty {
             Ty::Float => write!(f, "Float"),
             Ty::Duration => write!(f, "Duration"),
             Ty::String => write!(f, "String"),
+            Ty::Bytes => write!(f, "Bytes"),
             Ty::Bool => write!(f, "Bool"),
             Ty::Nil => write!(f, "Nil"),
             Ty::Console => write!(f, "Console"),
@@ -385,7 +387,7 @@ fn check_unique_functions(module: &Module) -> Result<(), TypeError> {
 /// (`Option`/`Result`/`Dict`). Any other named type must be declared (a `type`
 /// or be a lowercase generic parameter.
 const BUILTIN_TYPE_NAMES: &[&str] = &[
-    "Int", "Float", "Duration", "String", "Bool", "Nil", "Console", "Clock", "Rand", "Env", "Secret",
+    "Int", "Float", "Duration", "String", "Bytes", "Bool", "Nil", "Console", "Clock", "Rand", "Env", "Secret",
     "SecretStore", "Dir", "File", "Net", "Exec", "Socket", "Listener", "List", "Option", "Result",
     "Dict", "BuildOut", "BuildRead", "BuildEnv", "BuildNet", "BuildExec",
 ];
@@ -900,6 +902,7 @@ impl Checker {
             "Float" => Ty::Float,
             "Duration" => Ty::Duration,
             "String" => Ty::String,
+            "Bytes" => Ty::Bytes,
             "Bool" => Ty::Bool,
             "Nil" => Ty::Nil,
             "Console" => Ty::Console,
@@ -947,6 +950,7 @@ impl Checker {
                 "Float" => Ty::Float,
                 "Duration" => Ty::Duration,
                 "String" => Ty::String,
+            "Bytes" => Ty::Bytes,
                 "Bool" => Ty::Bool,
                 "Nil" => Ty::Nil,
                 "Console" => Ty::Console,
@@ -1150,6 +1154,15 @@ impl Checker {
             "run_tool" => Some((vec![Ty::BuildExec, Ty::String, Ty::String], Ty::String)),
             "string.length" => Some((vec![Ty::String], Ty::Int)),
             "string.char_count" => Some((vec![Ty::String], Ty::Int)),
+            // (Bytes) Primitive intrinsics behind the `std/bytes` surface. `Bytes` and
+            // `String` share the flat `[len][bytes]` layout, so the representation-level
+            // ops are identity/reuse on the compiled backend.
+            "__bytes_from_string" => Some((vec![Ty::String], Ty::Bytes)),
+            "__bytes_to_string" => Some((vec![Ty::Bytes], Ty::String)),
+            "__bytes_length" => Some((vec![Ty::Bytes], Ty::Int)),
+            "__bytes_at" => Some((vec![Ty::Bytes, Ty::Int], Ty::Int)),
+            "__bytes_concat" => Some((vec![Ty::Bytes, Ty::Bytes], Ty::Bytes)),
+            "__bytes_slice" => Some((vec![Ty::Bytes, Ty::Int, Ty::Int], Ty::Bytes)),
             "string.to_upper" | "string.to_lower" | "string.trim" => Some((vec![Ty::String], Ty::String)),
             // Abort with a message (the primitive behind std/testing).
             "fail" => Some((vec![Ty::String], Ty::Nil)),
@@ -2926,6 +2939,7 @@ pub fn ty_to_ast(t: &Ty) -> Option<witchy_syntax::ast::Type> {
         Ty::Float => T::Named("Float".into(), Vec::new()),
         Ty::Duration => T::Named("Duration".into(), Vec::new()),
         Ty::String => T::Named("String".into(), Vec::new()),
+        Ty::Bytes => T::Named("Bytes".into(), Vec::new()),
         Ty::Bool => T::Named("Bool".into(), Vec::new()),
         Ty::Nil => T::Named("Nil".into(), Vec::new()),
         Ty::Console => T::Named("Console".into(), Vec::new()),

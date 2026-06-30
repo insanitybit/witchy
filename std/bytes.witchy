@@ -1,0 +1,49 @@
+// std/bytes — immutable byte buffers.
+//
+// A `Bytes` is a flat, UTF-8-free sequence of bytes — the type for binary data
+// (file contents, network frames, hashes, serialized payloads) that `String` (which
+// is always valid UTF-8) cannot faithfully hold. It shares `String`'s in-memory
+// layout (`[length][bytes…]`), so the bridge operations (`from_string`/`to_string`)
+// are free, and a `Bytes` is FLAT: it byte-copies directly across a worker VM
+// boundary (RFC-0032), making it the canonical cross-VM and serialization payload.
+
+import list
+
+// The UTF-8 bytes of a string.
+pub fn from_string(s: String) -> Bytes:
+    __bytes_from_string(s)
+
+// Decode bytes as UTF-8 text. Invalid sequences are replaced with U+FFFD (lossy),
+// so this never fails; round-tripping a string is exact because witchy strings are
+// always valid UTF-8.
+pub fn to_string(b: Bytes) -> String:
+    __bytes_to_string(b)
+
+// The number of bytes.
+pub fn length(b: Bytes) -> Int:
+    __bytes_length(b)
+
+// Whether `b` has no bytes.
+pub fn is_empty(b: Bytes) -> Bool:
+    __bytes_length(b) == 0
+
+// The byte at `index`, as an Int in `0..=255`.
+pub fn at(b: Bytes, index: Int) -> Int:
+    __bytes_at(b, index)
+
+// The two byte buffers joined.
+pub fn concat(first: Bytes, second: Bytes) -> Bytes:
+    __bytes_concat(first, second)
+
+// The bytes in `start..end` (clamped to the buffer; `start >= end` yields empty).
+pub fn slice(b: Bytes, start: Int, end: Int) -> Bytes:
+    __bytes_slice(b, start, end)
+
+// The bytes as a list of Ints in `0..=255`.
+pub fn to_list(b: Bytes) -> List(Int):
+    var out = []
+    var i = 0
+    while i < __bytes_length(b):
+        out = list.push(out, __bytes_at(b, i))
+        i = i + 1
+    out
