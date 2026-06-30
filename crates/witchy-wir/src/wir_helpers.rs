@@ -3923,54 +3923,45 @@ pub fn galloc_helper() -> WirFunc {
     }
 }
 
-/// (RFC-0032) `$__call_idx(idx, arg) -> i64` — the closure-call trampoline the host
-/// invokes (re-entrant, including from a fresh worker VM) to apply a `vm.par_map`
-/// function to one element. `call_indirect`s the table slot `idx` with a NULL
-/// environment pointer and `arg` as the slot argument — sound because `vm.par_map`
-/// requires a capture-free function, so the body never reads the environment (and a
-/// worker VM has its own linear memory, where a parent closure record would not live).
-pub fn call_idx_helper() -> WirFunc {
+/// (RFC-0032) A closure-call trampoline `$name(idx, x0..x{arity-1}) -> i64`: `call_indirect`s
+/// table slot `idx` with a NULL environment pointer and the `arity` slot args. Sound because
+/// `vm.par_map`/`vm.with_dir`/`vm.serve` all require capture-free functions, so the body never
+/// reads the environment — and a worker VM has its own linear memory, where a parent closure's
+/// environment record would not live anyway. The host invokes these re-entrantly (including
+/// from a fresh worker VM) to apply the user function to one element.
+fn call_trampoline_helper(name: &str, arity: usize) -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
+    let arg_names: Vec<String> = (0..arity).map(|i| format!("x{i}")).collect();
+    let mut params = vec![WirLocal { name: "idx".into(), ty: WirTy::Bool }];
+    params.extend(arg_names.iter().map(|n| WirLocal { name: n.clone(), ty: WirTy::Int }));
+    let mut args = vec![E::ConstI32(0)];
+    args.extend(arg_names.iter().map(|n| E::GetLocal(n.clone())));
     WirFunc {
-        name: "__call_idx".into(),
-        params: vec![
-            WirLocal { name: "idx".into(), ty: WirTy::Bool },
-            WirLocal { name: "arg".into(), ty: WirTy::Int },
-        ],
+        name: name.into(),
+        params,
         ret: vec![WirTy::Int],
         locals: vec![],
         body: vec![N::Push(E::CallIndirect {
-            type_arity: 1,
-            args: vec![E::ConstI32(0), E::GetLocal("arg".into())],
+            type_arity: arity,
+            args,
             index: Box::new(E::GetLocal("idx".into())),
         })],
         raw_body: None,
     }
 }
 
-/// (RFC-0032) `$__call2(idx, a, b) -> i64` — the two-argument closure trampoline (a
-/// capability handle + a `Bytes` pointer, for `vm.with_dir`'s `fn(Dir, Bytes) -> Bytes`).
-/// `call_indirect`s table slot `idx` with a NULL environment and the two slot args.
+/// `$__call_idx(idx, arg) -> i64` — the one-argument closure trampoline (`vm.par_map`'s
+/// `fn(T) -> U`). See [`call_trampoline_helper`].
+pub fn call_idx_helper() -> WirFunc {
+    call_trampoline_helper("__call_idx", 1)
+}
+
+/// `$__call2(idx, a, b) -> i64` — the two-argument closure trampoline (a capability handle or
+/// state + a `Bytes` pointer, for `vm.with_dir`'s `fn(Dir, Bytes) -> Bytes` and `vm.serve`'s
+/// `fn(State, Bytes) -> State`). See [`call_trampoline_helper`].
 pub fn call2_helper() -> WirFunc {
-    use WirExpr as E;
-    use WirNode as N;
-    WirFunc {
-        name: "__call2".into(),
-        params: vec![
-            WirLocal { name: "idx".into(), ty: WirTy::Bool },
-            WirLocal { name: "a".into(), ty: WirTy::Int },
-            WirLocal { name: "b".into(), ty: WirTy::Int },
-        ],
-        ret: vec![WirTy::Int],
-        locals: vec![],
-        body: vec![N::Push(E::CallIndirect {
-            type_arity: 2,
-            args: vec![E::ConstI32(0), E::GetLocal("a".into()), E::GetLocal("b".into())],
-            index: Box::new(E::GetLocal("idx".into())),
-        })],
-        raw_body: None,
-    }
+    call_trampoline_helper("__call2", 2)
 }
 
 /// (RFC-0032) `$vm_serve(init, requests, handler) -> i32` — a stateful service on a
