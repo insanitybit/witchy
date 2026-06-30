@@ -1078,6 +1078,263 @@ fn expr(e: &Expr, accs: &HashSet<String>, out: &mut HashSet<String>) {
     }
 }
 
+/// (RFC-0033 R2) `(var, field)` pairs grown by `var.field = list.push(var.field, …)`
+/// where every occurrence of `var.field` in `body` is exactly that push receiver, so
+/// the field's list buffer is never aliased and may be grown in place. Any other read
+/// of `var.field` disables it (conservative + sound). Whole-record aliasing is handled
+/// separately by the record ownership token.
+pub fn field_push_safe_set(body: &Block) -> std::collections::HashSet<(String, String)> {
+    let mut cands = std::collections::HashSet::new();
+    collect_field_push_candidates(body, &mut cands);
+    cands
+        .into_iter()
+        .filter(|(v, f)| !block_field_escapes(body, v, f))
+        .collect()
+}
+
+/// The single value expression of a statement (None for the value-less control
+/// statements). The walkers below thread through exactly these.
+fn stmt_value(s: &Stmt) -> Option<&Expr> {
+    match s {
+        Stmt::Let { value, .. }
+        | Stmt::Assign { value, .. }
+        | Stmt::LetTuple { value, .. }
+        | Stmt::Return(Some(value))
+        | Stmt::Expr(value)
+        | Stmt::Yield(value) => Some(value),
+        Stmt::Return(None) | Stmt::Break | Stmt::Continue => None,
+    }
+}
+
+/// Collect every `(var, field)` updated by `var.field = list.push(var.field, …)` — the
+/// shape R2 grows in place — descending into nested blocks so candidates inside loops
+/// and branches are found.
+fn collect_field_push_candidates(
+    body: &Block,
+    out: &mut std::collections::HashSet<(String, String)>,
+) {
+    for stmt in &body.stmts {
+        if let Stmt::Assign { name, value: Expr::RecordUpdate { base, fields } } = stmt {
+            if matches!(base.as_ref(), Expr::Var(v) if v == name) {
+                for (f, fv) in fields {
+                    if let Expr::Call { name: pn, args } = fv {
+                        if pn == "list.push"
+                            && args.len() == 2
+                            && matches!(&args[0], Expr::Field { base: fb, field }
+                                if field == f
+                                    && matches!(fb.as_ref(), Expr::Var(b) if b == name))
+                        {
+                            out.insert((name.clone(), f.clone()));
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(e) = stmt_value(stmt) {
+            collect_candidates_in_expr(e, out);
+        }
+    }
+}
+
+/// Find nested blocks reachable from an expression and recurse into them (mutually
+/// with `collect_field_push_candidates`). Covers every `Expr` variant — model on the
+/// `expr` walker above.
+fn collect_candidates_in_expr(e: &Expr, out: &mut std::collections::HashSet<(String, String)>) {
+    match e {
+        Expr::If { cond, then_block, else_block } => {
+            collect_candidates_in_expr(cond, out);
+            collect_field_push_candidates(then_block, out);
+            if let Some(b) = else_block {
+                collect_field_push_candidates(b, out);
+            }
+        }
+        Expr::While { cond, body } => {
+            collect_candidates_in_expr(cond, out);
+            collect_field_push_candidates(body, out);
+        }
+        Expr::For { iter, body, .. } => {
+            collect_candidates_in_expr(iter, out);
+            collect_field_push_candidates(body, out);
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            collect_candidates_in_expr(scrutinee, out);
+            collect_field_push_candidates(body, out);
+        }
+        Expr::Match { scrutinee, arms } => {
+            collect_candidates_in_expr(scrutinee, out);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    collect_candidates_in_expr(g, out);
+                }
+                collect_candidates_in_expr(&arm.body, out);
+            }
+        }
+        Expr::Block(b) => collect_field_push_candidates(b, out),
+        Expr::Lambda { body, .. } => collect_field_push_candidates(body, out),
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_candidates_in_expr(lhs, out);
+            collect_candidates_in_expr(rhs, out);
+        }
+        Expr::Unary { expr, .. }
+        | Expr::Try(expr)
+        | Expr::As { expr, .. }
+        | Expr::Field { base: expr, .. } => collect_candidates_in_expr(expr, out),
+        Expr::Call { args, .. }
+        | Expr::Ctor { args, .. }
+        | Expr::List(args)
+        | Expr::Tuple(args) => {
+            for a in args {
+                collect_candidates_in_expr(a, out);
+            }
+        }
+        Expr::Apply { func, args } => {
+            collect_candidates_in_expr(func, out);
+            for a in args {
+                collect_candidates_in_expr(a, out);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            collect_candidates_in_expr(receiver, out);
+            for a in args {
+                collect_candidates_in_expr(a, out);
+            }
+        }
+        Expr::RecordUpdate { base, fields } => {
+            collect_candidates_in_expr(base, out);
+            for (_, v) in fields {
+                collect_candidates_in_expr(v, out);
+            }
+        }
+        Expr::Record { fields, spread, .. } => {
+            for (_, v) in fields {
+                collect_candidates_in_expr(v, out);
+            }
+            if let Some(s) = spread {
+                collect_candidates_in_expr(s, out);
+            }
+        }
+        Expr::Range { lo, hi, .. } => {
+            collect_candidates_in_expr(lo, out);
+            collect_candidates_in_expr(hi, out);
+        }
+        Expr::Index { base, index } => {
+            collect_candidates_in_expr(base, out);
+            collect_candidates_in_expr(index, out);
+        }
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Duration(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::Var(_)
+        | Expr::TaggedLit { .. } => {}
+    }
+}
+
+/// True if `var.field` is read anywhere in `body` OTHER than as a `list.push`
+/// receiver — i.e. the field's list buffer may be aliased, so R2 must not fire.
+fn block_field_escapes(body: &Block, var: &str, field: &str) -> bool {
+    body.stmts.iter().any(|s| match stmt_value(s) {
+        Some(e) => field_escapes_expr(e, var, field),
+        None => false,
+    })
+}
+
+/// True if `e` reads `var.field` anywhere except as the receiver of a
+/// `list.push(var.field, …)` (the one allowed occurrence — only its second
+/// argument can carry an escape). Covers every `Expr` variant; a missing variant
+/// would be unsound, so this mirrors the `expr` walker exactly.
+fn field_escapes_expr(e: &Expr, var: &str, field: &str) -> bool {
+    // The one allowed occurrence: `list.push(var.field, elem)`. The receiver is the
+    // permitted read; only `elem` can carry an escaping use of `var.field`.
+    if let Expr::Call { name, args } = e {
+        if name == "list.push" && args.len() == 2 {
+            if let Expr::Field { base, field: f } = &args[0] {
+                if f == field && matches!(base.as_ref(), Expr::Var(v) if v == var) {
+                    return field_escapes_expr(&args[1], var, field);
+                }
+            }
+        }
+    }
+    match e {
+        // Any OTHER read of `var.field` is an escaping read.
+        Expr::Field { base, field: f }
+            if f == field && matches!(base.as_ref(), Expr::Var(v) if v == var) =>
+        {
+            true
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            field_escapes_expr(lhs, var, field) || field_escapes_expr(rhs, var, field)
+        }
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } => {
+            field_escapes_expr(expr, var, field)
+        }
+        Expr::Field { base, .. } => field_escapes_expr(base, var, field),
+        Expr::Call { args, .. }
+        | Expr::Ctor { args, .. }
+        | Expr::List(args)
+        | Expr::Tuple(args) => args.iter().any(|a| field_escapes_expr(a, var, field)),
+        Expr::Apply { func, args } => {
+            field_escapes_expr(func, var, field)
+                || args.iter().any(|a| field_escapes_expr(a, var, field))
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            field_escapes_expr(receiver, var, field)
+                || args.iter().any(|a| field_escapes_expr(a, var, field))
+        }
+        Expr::RecordUpdate { base, fields } => {
+            field_escapes_expr(base, var, field)
+                || fields.iter().any(|(_, v)| field_escapes_expr(v, var, field))
+        }
+        Expr::Record { fields, spread, .. } => {
+            fields.iter().any(|(_, v)| field_escapes_expr(v, var, field))
+                || spread
+                    .as_ref()
+                    .is_some_and(|s| field_escapes_expr(s, var, field))
+        }
+        Expr::Range { lo, hi, .. } => {
+            field_escapes_expr(lo, var, field) || field_escapes_expr(hi, var, field)
+        }
+        Expr::Index { base, index } => {
+            field_escapes_expr(base, var, field) || field_escapes_expr(index, var, field)
+        }
+        Expr::If { cond, then_block, else_block } => {
+            field_escapes_expr(cond, var, field)
+                || block_field_escapes(then_block, var, field)
+                || else_block
+                    .as_ref()
+                    .is_some_and(|b| block_field_escapes(b, var, field))
+        }
+        Expr::While { cond, body } => {
+            field_escapes_expr(cond, var, field) || block_field_escapes(body, var, field)
+        }
+        Expr::For { iter, body, .. } => {
+            field_escapes_expr(iter, var, field) || block_field_escapes(body, var, field)
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            field_escapes_expr(scrutinee, var, field) || block_field_escapes(body, var, field)
+        }
+        Expr::Match { scrutinee, arms } => {
+            field_escapes_expr(scrutinee, var, field)
+                || arms.iter().any(|a| {
+                    a.guard
+                        .as_ref()
+                        .is_some_and(|g| field_escapes_expr(g, var, field))
+                        || field_escapes_expr(&a.body, var, field)
+                })
+        }
+        Expr::Block(b) => block_field_escapes(b, var, field),
+        Expr::Lambda { body, .. } => block_field_escapes(body, var, field),
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Duration(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::Var(_)
+        | Expr::TaggedLit { .. } => false,
+    }
+}
+
 /// Accumulator variables MOVED (`move x`) within a statement's value — the ones whose
 /// capacity the statement must reset (see the kill logic in `walk_block`). Recurses through
 /// the same-evaluation expression forms (call args, operators, `if`/`match` branches, …) but

@@ -149,6 +149,30 @@ mod tests {
         );
     }
 
+    /// (RFC-0033 R2) A record FIELD that is a list, grown with
+    /// `s.items = list.push(s.items, x)` in a loop, must grow the field's list
+    /// buffer IN PLACE rather than copying the whole field each update. Output is
+    /// invariant; `heap_bytes` is the proof the per-update O(n) copy is gone (O(n)
+    /// total vs O(n^2)). The field is read nowhere but the push receiver, so the
+    /// buffer is never aliased — the field-push-safe gate lets R2 fire.
+    #[test]
+    fn record_field_list_push_is_in_place() {
+        const REC: &str = "type Stack:\n    items: List(Int)\n    size: Int\n\nfn build(n: Int) -> Stack:\n    var s = Stack([], 0)\n    var i = 0\n    while i < n:\n        s.items = list.push(s.items, i)\n        i = i + 1\n    s\n\nfn main(console: Console):\n    print(console, __render(list.length(build(200).items)))\n";
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let on = compute(REC).expect("on");
+        opt::set_for_tests(Some(OptSet::default_set().without(Opt::InPlace)));
+        let off = compute(REC).expect("off");
+        opt::set_for_tests(None);
+        assert_eq!(on.output, off.output, "in-place field push must not change output");
+        assert_eq!(on.output, vec!["200".to_string()]);
+        assert!(
+            off.heap_bytes > on.heap_bytes * 4,
+            "forced-copy reallocs the field list per push: on={} off={}",
+            on.heap_bytes,
+            off.heap_bytes
+        );
+    }
+
     /// RFC-0030 soak / never-OOM guard: a long loop whose per-iteration scratch is
     /// escape-free must run in BOUNDED heap — the `region` loop-watermark reclaim
     /// resets the arena every iteration. With it off the same program leaks O(n).
@@ -224,6 +248,20 @@ mod tests {
             // the residual the floor will eventually bound (see
             // `cache_eviction_leaks_without_rc_floor`).
             "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < 40:\n        d = dict.insert(d, i, i * 2)\n        d = dict.remove(d, i)\n        i = i + 1\n    print(console, __render(dict.length(d)))\n    d = dict.insert(d, 7, 70)\n    print(console, __render(dict.get_or(d, 7, 0)))\n",
+            // (RFC-0033 R2) FIELD-PATH list push: `s.items = list.push(s.items, x)`
+            // grows the field's list buffer in place (build), AND a FIELD-ALIASED case
+            // (`let snap = s.items`) that must NOT mutate the snapshot — value
+            // semantics pin "102". The field-push-safe gate disables R2 once the field
+            // is read for the snapshot; an unsound in-place would print "202" (caught
+            // here, e.g. under `-sroa`, which is how the naive R2 was rejected).
+            "type Stack:\n    items: List(Int)\n    size: Int\n\nfn build(n: Int) -> Stack:\n    var s = Stack([], 0)\n    var i = 0\n    while i < n:\n        s.items = list.push(s.items, i)\n        i = i + 1\n    s\n\nfn aliased() -> Int:\n    var s = Stack([], 0)\n    s.items = list.push(s.items, 1)\n    let snap = s.items\n    s.items = list.push(s.items, 2)\n    list.length(snap) * 100 + list.length(s.items)\n\nfn main(console: Console):\n    print(console, __render(list.length(build(50).items)))\n    print(console, __render(aliased()))\n",
+            // (RFC-0033 R2) WHOLE-RECORD alias of a field-push record: `let x = s`
+            // then another `s.items = list.push(s.items, …)`. The field-push-safe gate
+            // PASSES (s.items is read only as the push receiver), so the second guard —
+            // `eff = field_cap * (record owned)` — must force a field copy because the
+            // record is no longer uniquely owned, leaving the alias's `x.items` length
+            // at 1. An unsound in-place would grow x's shared buffer to 2.
+            "type Stack:\n    items: List(Int)\n    size: Int\n\nfn whole() -> Stack:\n    var s = Stack([], 0)\n    s.items = list.push(s.items, 1)\n    let x = s\n    s.items = list.push(s.items, 2)\n    s.size = list.length(x.items)\n    s\n\nfn main(console: Console):\n    let r = whole()\n    print(console, __render(r.size))\n    print(console, __render(list.length(r.items)))\n",
         ];
         for src in corpus {
             // The interpreter oracle (the fixed semantics; it has no WITCHY_OPT).

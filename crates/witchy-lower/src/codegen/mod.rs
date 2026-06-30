@@ -491,6 +491,14 @@ struct Codegen {
     type_table: witchy_types::typeck::TypeTable,
     /// Whether the `$list_push_cap` helper is needed.
     uses_list_push_cap: bool,
+    /// (RFC-0033 R2) The `${var}${field}__cap` field-buffer capacity tokens emitted
+    /// by the in-place field-path push — declared as i32 locals on the unit being
+    /// assembled. Cleared per function.
+    field_caps: HashSet<String>,
+    /// (RFC-0033 R2) `(var, field)` pairs whose `var.field = list.push(var.field, …)`
+    /// may grow the field's list buffer in place — every other read of `var.field` is
+    /// absent, so the buffer is never aliased. Recomputed per unit in `begin_unit`.
+    field_push_safe: HashSet<(String, String)>,
     /// Whether the `$str_append_cap` helper is needed.
     uses_str_append_cap: bool,
     /// Whether the `$dict_insert_cap` helper is needed.
@@ -851,6 +859,8 @@ impl Codegen {
             cur_fn_name: String::new(),
             type_table: witchy_types::typeck::TypeTable::default(),
             uses_list_push_cap: false,
+            field_caps: HashSet::new(),
+            field_push_safe: HashSet::new(),
             uses_str_append_cap: false,
             uses_dict_insert_cap: false,
             uses_dict_update_cap: false,
@@ -1562,6 +1572,7 @@ impl Codegen {
 
     fn compile_function(&mut self, f: &Function) -> Result<(), CodegenError> {
         self.locals.clear();
+        self.field_caps.clear();
         self.local_records.clear();
         self.local_list_elem.clear();
         self.local_val_types.clear();
@@ -1785,6 +1796,12 @@ impl Codegen {
                 locals.push(WirLocal { name: format!("{v}__cap"), ty: i32t() });
             }
         }
+        // (RFC-0033 R2) field-buffer capacity tokens for in-place field-path pushes.
+        let mut field_caps: Vec<&String> = self.field_caps.iter().collect();
+        field_caps.sort();
+        for fc in field_caps {
+            locals.push(WirLocal { name: fc.clone(), ty: i32t() });
+        }
         locals.push(WirLocal { name: "__witchy_owncap".into(), ty: i32t() });
         locals.push(WirLocal { name: TUPLE_TMP.into(), ty: i32t() });
         locals.push(WirLocal { name: TRY_TMP.into(), ty: i32t() });
@@ -1862,6 +1879,10 @@ impl Codegen {
             .iter()
             .cloned()
             .collect();
+        // (RFC-0033 R2) `(var, field)` pairs whose list buffer is never aliased and may
+        // be grown in place. Consumed only inside the in-place RecordUpdate arm, which is
+        // itself gated on the InPlace opt, so no separate de-opt lever is needed.
+        self.field_push_safe = analysis::field_push_safe_set(body);
         // (RFC-0027) Escape-driven SROA: frame-confined aggregates used only via
         // field access become field-locals. Gated on the `sroa` lever and off in
         // forced-copy mode (so the de-opt differential covers it).
@@ -2679,6 +2700,82 @@ impl Codegen {
                                     let mut updated: Vec<(usize, usize)> = Vec::with_capacity(fields.len());
                                     for (j, (fname, vexpr)) in fields.iter().enumerate() {
                                         let idx = rnames.iter().position(|(n, _)| n == fname)?;
+                                        // (RFC-0033 R2) `s.field = list.push(s.field, e)`: grow the
+                                        // field's list buffer in place instead of copying it each
+                                        // update. Two soundness guards:
+                                        //   * whole-record aliasing — `eff = field_cap * (record
+                                        //     owned)` is 0 unless this record is uniquely owned at
+                                        //     the site (R1's `cap`), so an aliased record copies;
+                                        //   * field aliasing — `field_push_safe` only holds when
+                                        //     `s.field` is read nowhere but this push receiver, so
+                                        //     the buffer is never separately aliased.
+                                        // Either guard failing falls back to the copying push below.
+                                        let push_field = if self
+                                            .field_push_safe
+                                            .contains(&(name.clone(), (*fname).clone()))
+                                        {
+                                            match vexpr {
+                                                Expr::Call { name: pn, args: pa }
+                                                    if pn == "list.push" && pa.len() == 2 =>
+                                                {
+                                                    match &pa[0] {
+                                                        Expr::Field { base, field }
+                                                            if field == fname
+                                                                && matches!(base.as_ref(), Expr::Var(v) if v == name) =>
+                                                        {
+                                                            Some(&pa[1])
+                                                        }
+                                                        _ => None,
+                                                    }
+                                                }
+                                                _ => None,
+                                            }
+                                        } else {
+                                            None
+                                        };
+                                        if let Some(elem) = push_field {
+                                            use witchy_wir::wir::BinOp as B;
+                                            let fcap = format!("{name}${fname}__cap");
+                                            self.field_caps.insert(fcap.clone());
+                                            self.uses_list_push_cap = true;
+                                            let ek = self.kind_of(elem);
+                                            let ew = self.lower_expr(elem)?;
+                                            // The field slot holds an i32 list pointer widened into
+                                            // the i64 universal slot; truncate it back to the ptr.
+                                            let cur =
+                                                Self::wir_convert(load(idx), Kind::I64, Kind::I32);
+                                            // eff = field_cap * (record owned): 0 unless the record
+                                            // is uniquely owned at this site, forcing a field copy.
+                                            let eff = W::Binary {
+                                                op: B::Mul,
+                                                kind: witchy_wir::wir::Kind::I32,
+                                                lhs: Box::new(W::GetLocal(fcap.clone())),
+                                                rhs: Box::new(W::Binary {
+                                                    op: B::Gt,
+                                                    kind: witchy_wir::wir::Kind::I32,
+                                                    lhs: Box::new(cap.clone()),
+                                                    rhs: Box::new(W::ConstI32(0)),
+                                                }),
+                                            };
+                                            seq.push(N::CallStoreMulti {
+                                                func: "list_push_cap".to_string(),
+                                                args: vec![
+                                                    cur,
+                                                    W::ToSlot(Box::new(ew), Self::wir_kind(ek)),
+                                                    eff,
+                                                ],
+                                                dests: vec![TUPLE_TMP.to_string(), fcap],
+                                            });
+                                            seq.push(N::SetLocal {
+                                                local: format!("__witchy_reuse_{j}"),
+                                                value: W::ToSlot(
+                                                    Box::new(W::GetLocal(TUPLE_TMP.to_string())),
+                                                    Self::wir_kind(Kind::I32),
+                                                ),
+                                            });
+                                            updated.push((idx, j));
+                                            continue;
+                                        }
                                         let vk = self.kind_of(vexpr);
                                         let vw = self.lower_expr(vexpr)?;
                                         seq.push(N::SetLocal {
@@ -4666,6 +4763,12 @@ impl Codegen {
                 cap_vars.sort();
                 for v in cap_vars {
                     locals.push(WirLocal { name: format!("{v}__cap"), ty: i32t() });
+                }
+                // (RFC-0033 R2) field-buffer capacity tokens for in-place field-path pushes.
+                let mut field_caps: Vec<&String> = self.field_caps.iter().collect();
+                field_caps.sort();
+                for fc in field_caps {
+                    locals.push(WirLocal { name: fc.clone(), ty: i32t() });
                 }
                 locals.push(WirLocal { name: "__witchy_owncap".into(), ty: i32t() });
                 locals.push(WirLocal { name: TUPLE_TMP.into(), ty: i32t() });
