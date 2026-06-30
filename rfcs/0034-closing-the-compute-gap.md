@@ -202,6 +202,22 @@ lever list: the async executor OOMs at ~9k channel messages and is ~19× behind 
 goroutine on `chan_throughput` (the `vm.par_map` path is healthy at ~1.4×) — a
 memory-model fix for the cooperative executor, the natural follow-on.
 
+**Investigated, and it is NOT a localized fix (recorded so the next effort skips the
+dead-end).** The executor (`std/chan.witchy` `run` + `step_round`/`step_one`, pure
+witchy so any fix is parity-safe) rebuilds its `(slots, channels)` state functionally
+each round and carries it across `while go:` iterations. Wrapping the per-round
+`step_round` call in a `region:` (to reclaim the round's `set_at` intermediates + the
+polled tasks' superseded continuation closures) is **inert**: the OOM ceiling stays at
+~10k and N=8000 throughput is unchanged (1.01×). The reason is that the dominant
+accumulation is NOT the round's internal temporaries but the **carried state copied
+OUT of each round** — the new `slots`/`channels` and the producer's continuation chain
+must survive to the next iteration, so a region cannot reclaim them, and each
+iteration's superseded copy then leaks (the `var` reassignment isn't RC-floor
+reclaimed). A real fix must stop rebuilding the carried state per step: mutate
+`slots`/`channels` in place (a `var` the uniqueness pass can prove unaliased, or an
+explicit in-place scheduler structure) and/or reclaim the per-iteration churn — a
+deliberate executor restructure, not a one-liner. Deferred to a dedicated effort.
+
 ## Invariants (every lever)
 
 - **Sandbox preserved** — nothing reaches around the VM boundary; capability model
