@@ -218,6 +218,24 @@ reclaimed). A real fix must stop rebuilding the carried state per step: mutate
 explicit in-place scheduler structure) and/or reclaim the per-iteration churn — a
 deliberate executor restructure, not a one-liner. Deferred to a dedicated effort.
 
+**Confirmed empirically that NO existing lever fixes it (so the next effort knows the
+floor it must build).** The OOM ceiling on `chan_throughput` is ~10–12k messages under
+`default`, `WITCHY_OPT=rc-floor`, AND `WITCHY_OPT=all` alike — identical. The dominant
+leak is **element-level**: every `poll` replaces a slot's `Task` with its successor
+continuation via `list.set_at(slots, i, Active(cont(…)))`, and the displaced `Task`
+object becomes unreferenced garbage. `rc-floor` reclaims a *confined var's* old list
+*buffer* on reassignment; it does not reclaim a list *element* overwritten by `set_at`,
+which is what churns here. So the cure is the **full per-object RC floor** — the known
+deferred residual (per-object reclamation of cache-eviction-style garbage), a runtime
+subsystem (size-classed free-list + `set_at`/`mk{n}` freeing the displaced pointer),
+NOT a `std/chan` edit and NOT any current `WITCHY_OPT` lever. The throughput gap (~19–26×
+under the ceiling) is separately architectural: the CPS `and_then` chain allocates a
+closure per message and the channel buffer is a `List` nested inside `channels`, which
+the flat-confined-var in-place machinery cannot penetrate. **Bottom line: the executor
+is blocked on building the per-object RC floor (a major runtime subsystem) and/or
+flattening the scheduler's nested data — a dedicated project, proven (region-wrap,
+rc-floor, all = all inert) not reachable by a contained, parity-safe change.**
+
 ## Invariants (every lever)
 
 - **Sandbox preserved** — nothing reaches around the VM boundary; capability model
