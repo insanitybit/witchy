@@ -336,9 +336,6 @@ struct SavedScope {
 struct Codegen {
     strings: Vec<(String, u32)>,
     next_offset: u32,
-    uses_print: bool,
-    uses_print_int: bool,
-    uses_concat: bool,
     uses_int_to_string: bool,
     /// The WIR sink. `compile_function` moves a fully-lowered
     /// body into `wir_funcs` (one `WirFunc` per function whose whole body lowered
@@ -378,10 +375,6 @@ struct Codegen {
     mk_arities: HashSet<usize>,
     /// Counter for unique `match` block labels.
     next_label: u32,
-    /// Whether the string-equality helper `$str_eq` is needed (string patterns).
-    uses_str_eq: bool,
-    /// Whether the `print_float` import is needed (a float-returning `main`).
-    uses_print_float: bool,
     /// Kinds (i32/f64) of the current function's parameters and locals.
     locals: HashMap<String, Kind>,
     /// Declared return kind per function, for resolving call-result kinds.
@@ -403,11 +396,7 @@ struct Codegen {
     /// result is `(List(T), List(U))` — so `let (xs, ys) = unzip(...)` then
     /// `at(xs, i)` recovers an Int element as i64.
     fn_ret_tuple_slot_list_elem: HashMap<String, Vec<Option<ValType>>>,
-    /// Whether the bounds-checked `$list_at` helper is needed (list indexing).
-    uses_list_at: bool,
-    /// Whether the list `push`/`concat`/`drop` runtime helpers are needed.
-    uses_list_push: bool,
-    uses_list_concat: bool,
+    /// Whether the list `drop` runtime helper is needed.
     uses_list_drop: bool,
     /// Whether the `starts_with`/`ends_with` string helpers are needed.
     uses_starts_with: bool,
@@ -766,9 +755,6 @@ impl Codegen {
         Self {
             strings: Vec::new(),
             next_offset: DATA_BASE,
-            uses_print: false,
-            uses_print_int: false,
-            uses_concat: false,
             uses_int_to_string: false,
             captured_seq: None,
             reject_reason: None,
@@ -781,8 +767,6 @@ impl Codegen {
             ctor_field_records: HashMap::new(),
             mk_arities: HashSet::new(),
             next_label: 0,
-            uses_str_eq: false,
-            uses_print_float: false,
             locals: HashMap::new(),
             fn_ret: HashMap::new(),
             fn_ret_closure_kind: HashMap::new(),
@@ -822,9 +806,6 @@ impl Codegen {
             local_fn_ret_kind: HashMap::new(),
             cur_fn_var: false,
             cur_fn_var_params: Vec::new(),
-            uses_list_at: false,
-            uses_list_push: false,
-            uses_list_concat: false,
             uses_list_drop: false,
             uses_starts_with: false,
             uses_crypto_ed25519_verify: false,
@@ -3307,7 +3288,6 @@ impl Codegen {
             // length rather than dereferenced unboundedly (and field conditions are
             // short-circuited under the tag check below anyway).
             Pattern::Str(s) => {
-                self.uses_str_eq = true;
                 let off = self.intern(s);
                 (
                     W::Call {
@@ -4252,7 +4232,6 @@ impl Codegen {
                 // `$concat` (only in a WIR-collecting scope; otherwise this falls
                 // through and the program is rejected as unsupported).
                 if self.collect_wir && *op == BinOp::Concat {
-                    self.uses_concat = true;
                     let a = self.lower_expr(lhs)?;
                     let b = self.lower_expr(rhs)?;
                     return Some(W::Call { func: "concat".to_string(), args: vec![a, b] });
@@ -4264,7 +4243,6 @@ impl Codegen {
                     && self.val_type_of(lhs) == ValType::Str
                     && self.val_type_of(rhs) == ValType::Str
                 {
-                    self.uses_str_eq = true;
                     let a = self.lower_expr(lhs)?;
                     let b = self.lower_expr(rhs)?;
                     let eq = W::Call { func: "str_eq".to_string(), args: vec![a, b] };
@@ -5529,7 +5507,6 @@ impl Codegen {
             },
             // String content equality: load each slot's i32 pointer and `$str_eq`.
             EqShape::Str => {
-                self.uses_str_eq = true;
                 W::Call { func: "str_eq".into(), args: vec![load_i32(aa), load_i32(bb)] }
             }
             // A compound field: the slot holds a pointer to the nested value;
@@ -6006,7 +5983,6 @@ impl Codegen {
     /// WIR twin of [`ensure_ts_helper`], for Tuple/List shapes whose fields all
     /// render via `slot_render_wir`. Cycle-guarded like the eq helpers.
     fn ensure_ts_wir_helper(&mut self, shape: &EqShape) -> Option<String> {
-        self.uses_concat = true;
         let name = format!("ts_{}", shape.id());
         if self.ts_wir_helpers.contains_key(&name) {
             return Some(name);
@@ -6233,7 +6209,6 @@ impl Codegen {
         let setl = |n: &str, v: W| N::SetLocal { local: n.into(), value: v };
         let eqi = |l: W, r: W| W::Binary { op: BinOp::Eq, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
         let load_i32 = |p: W| W::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
-        self.uses_concat = true;
         let (open, close, comma) = (self.intern("("), self.intern(")"), self.intern(", "));
         let mut b: witchy_wir::wir::WirSeq = vec![setl("t", load_i32(getl("p")))];
         for (tag, fields) in all.iter().enumerate() {
@@ -6625,7 +6600,6 @@ impl Codegen {
             ("string.split", 2) => {
                 self.uses_split = true;
                 self.uses_substr = true;
-                self.uses_list_push = true;
                 call("split", self.lower_args(&[&args[0], &args[1]])?)
             }
             ("string.chars", 1) => {
@@ -6633,7 +6607,6 @@ impl Codegen {
                 self.uses_byte_to_char = true;
                 self.uses_substring = true;
                 self.uses_substr = true;
-                self.uses_list_push = true;
                 call("str_chars", self.lower_args(&[&args[0]])?)
             }
             // `now(clock)`: the Clock arg is type-level; the host import is the
@@ -6674,7 +6647,6 @@ impl Codegen {
             // `print(console, msg)`: the Console arg is type-level; print the msg
             // (a void host helper), then yield Nil as `i32.const 0`.
             ("print", 2) => {
-                self.uses_print = true;
                 W::Seq(vec![
                     witchy_wir::wir::WirNode::Do(W::Call {
                         func: "print_str".to_string(),
@@ -6717,12 +6689,10 @@ impl Codegen {
                 call("trim", self.lower_args(&[&args[0]])?)
             }
             ("list.concat", 2) => {
-                self.uses_list_concat = true;
                 call("list_concat", self.lower_args(&[&args[0], &args[1]])?)
             }
             ("dict.new", 0) => {
                 self.uses_dict = true;
-                self.uses_str_eq = true;
                 call("dict_new", vec![])
             }
             ("dict.keys", 1) => {
@@ -7015,7 +6985,6 @@ impl Codegen {
                 )
             }
             ("__bytes_concat", 2) => {
-                self.uses_concat = true;
                 call("concat", vec![self.lower_expr(&args[0])?, self.lower_expr(&args[1])?])
             }
             ("__bytes_slice", 3) => {
@@ -7030,7 +6999,6 @@ impl Codegen {
                 ])
             }
             ("list.push", 2) => {
-                self.uses_list_push = true;
                 let xk = self.kind_of(&args[1]);
                 call("list_push", vec![
                     self.lower_expr(&args[0])?,
@@ -7038,7 +7006,6 @@ impl Codegen {
                 ])
             }
             ("list.at", 2) => {
-                self.uses_list_at = true;
                 let ek = self.list_elem_kind(&args[0]);
                 let ik = self.kind_of(&args[1]);
                 let inner = vec![
@@ -7067,7 +7034,6 @@ impl Codegen {
             // --- dict family: a key-mode i32 side-operand + slot conversions ---
             ("dict.insert", 3) => {
                 self.uses_dict = true;
-                self.uses_str_eq = true;
                 let mode = self.dict_key_mode_wir(&args[1])?;
                 let kk = self.kind_of(&args[1]);
                 let vk = self.kind_of(&args[2]);
@@ -7080,7 +7046,6 @@ impl Codegen {
             }
             ("dict.get_or", 3) => {
                 self.uses_dict = true;
-                self.uses_str_eq = true;
                 let mode = self.dict_key_mode_wir(&args[1])?;
                 let kk = self.kind_of(&args[1]);
                 let dk = self.kind_of(&args[2]);
@@ -7094,7 +7059,6 @@ impl Codegen {
             }
             ("dict.contains_key", 2) => {
                 self.uses_dict = true;
-                self.uses_str_eq = true;
                 let mode = self.dict_key_mode_wir(&args[1])?;
                 let kk = self.kind_of(&args[1]);
                 call("dict_has", vec![
@@ -7105,7 +7069,6 @@ impl Codegen {
             }
             ("dict.remove", 2) => {
                 self.uses_dict = true;
-                self.uses_str_eq = true;
                 let mode = self.dict_key_mode_wir(&args[1])?;
                 let kk = self.kind_of(&args[1]);
                 call("dict_remove", vec![
@@ -7116,7 +7079,6 @@ impl Codegen {
             }
             ("dict.update", 4) => {
                 self.uses_dict = true;
-                self.uses_str_eq = true;
                 self.uses_dict_update = true;
                 self.clos_arities.insert(1);
                 let mode = self.dict_key_mode_wir(&args[1])?;
@@ -7788,12 +7750,6 @@ pub fn assemble_wir_module(
     if !has_main && string_exports.is_empty() {
         if std::env::var_os("WIRDIAG").is_some() { eprintln!("WIRBAIL no-main"); }
         return Ok(None);
-    }
-    if main_returns_int {
-        cg.uses_print_int = true;
-    }
-    if main_returns_float {
-        cg.uses_print_float = true;
     }
 
     // Every reachable function must have fully lowered to WIR.

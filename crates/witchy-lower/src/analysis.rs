@@ -85,7 +85,7 @@ impl Facts {
 // ---------------------------------------------------------------------------
 
 /// `xs = push(xs, e)`: the appended element.
-pub fn self_push_elem<'a>(name: &str, value: &'a Expr) -> Option<&'a Expr> {
+fn self_push_elem<'a>(name: &str, value: &'a Expr) -> Option<&'a Expr> {
     if let Expr::Call { name: f, args } = value {
         if f == "list.push" && args.len() == 2 {
             if matches!(&args[0], Expr::Var(v) if v == name) {
@@ -97,7 +97,7 @@ pub fn self_push_elem<'a>(name: &str, value: &'a Expr) -> Option<&'a Expr> {
 }
 
 /// `d = insert(d, k, v)`: the key and value.
-pub fn self_insert_args<'a>(name: &str, value: &'a Expr) -> Option<(&'a Expr, &'a Expr)> {
+fn self_insert_args<'a>(name: &str, value: &'a Expr) -> Option<(&'a Expr, &'a Expr)> {
     if let Expr::Call { name: f, args } = value {
         if f == "dict.insert" && args.len() == 3 {
             if matches!(&args[0], Expr::Var(v) if v == name) {
@@ -109,7 +109,7 @@ pub fn self_insert_args<'a>(name: &str, value: &'a Expr) -> Option<(&'a Expr, &'
 }
 
 /// `d = update(d, k, default, f)`: the key, default, and updater.
-pub fn self_update_args<'a>(
+fn self_update_args<'a>(
     name: &str,
     value: &'a Expr,
 ) -> Option<(&'a Expr, &'a Expr, &'a Expr)> {
@@ -127,7 +127,7 @@ pub fn self_update_args<'a>(
 /// (a builtin with a stable name), `list.set_at` is an ordinary stdlib function,
 /// so by codegen time the call is monomorphized to `list.set_at__<ElemType>`;
 /// match that suffixed form as well as the bare name.
-pub fn self_set_at<'a>(name: &str, value: &'a Expr) -> Option<(&'a Expr, &'a Expr)> {
+fn self_set_at<'a>(name: &str, value: &'a Expr) -> Option<(&'a Expr, &'a Expr)> {
     if let Expr::Call { name: f, args } = value {
         if (f == "list.set_at" || f.starts_with("list.set_at__")) && args.len() == 3 {
             if matches!(&args[0], Expr::Var(v) if v == name) {
@@ -140,7 +140,7 @@ pub fn self_set_at<'a>(name: &str, value: &'a Expr) -> Option<(&'a Expr, &'a Exp
 
 /// `xs = update_at(xs, i, f)`: the index and the updater closure. Like
 /// [`self_set_at`], `list.update_at` is a monomorphized stdlib function.
-pub fn self_update_at<'a>(name: &str, value: &'a Expr) -> Option<(&'a Expr, &'a Expr)> {
+fn self_update_at<'a>(name: &str, value: &'a Expr) -> Option<(&'a Expr, &'a Expr)> {
     if let Expr::Call { name: f, args } = value {
         if (f == "list.update_at" || f.starts_with("list.update_at__")) && args.len() == 3 {
             if matches!(&args[0], Expr::Var(v) if v == name) {
@@ -153,7 +153,7 @@ pub fn self_update_at<'a>(name: &str, value: &'a Expr) -> Option<(&'a Expr, &'a 
 
 /// `s = s + a + b + …` (any left spine whose leftmost leaf is the assigned
 /// variable): the appended pieces, in order.
-pub fn self_concat_pieces<'a>(name: &str, value: &'a Expr) -> Option<Vec<&'a Expr>> {
+fn self_concat_pieces<'a>(name: &str, value: &'a Expr) -> Option<Vec<&'a Expr>> {
     let mut pieces: Vec<&'a Expr> = Vec::new();
     let mut cur = value;
     loop {
@@ -192,7 +192,7 @@ pub fn self_own_call<'a>(
     None
 }
 
-pub fn is_self_assign_shape(name: &str, value: &Expr, summaries: &Summaries) -> bool {
+fn is_self_assign_shape(name: &str, value: &Expr, summaries: &Summaries) -> bool {
     self_inplace_op(name, value).is_some() || self_own_call(name, value, summaries).is_some()
 }
 
