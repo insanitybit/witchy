@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use wasmtime::{
-    bail, Cache, CacheConfig, Caller, Config, Engine, Error, Extern, Linker, Memory, Module,
-    Result, Store, StoreLimits, StoreLimitsBuilder,
+    bail, Cache, CacheConfig, Caller, Config, Engine, Error, Extern, Instance, Linker, Memory,
+    Module, Result, Store, StoreLimits, StoreLimitsBuilder,
 };
 
 /// An on-disk Cranelift compilation cache so re-running the same program skips
@@ -416,37 +416,8 @@ impl Runtime {
         let limits = StoreLimitsBuilder::new()
             .memory_size(memory_pages_max * 64 * 1024)
             .build();
-        let dirs = caps
-            .dir_root
-            .iter()
-            .cloned()
-            .chain(caps.dir_roots.iter().cloned())
-            .map(|p| (p, String::new()))
-            .collect();
-        let nets = caps.net_allow.iter().cloned().collect();
-        let state = VmState {
-            id,
-            caps: caps.clone(),
-            limits,
-            output: Arc::new(Mutex::new(Vec::new())),
-            dirs,
-            files: caps.file_grants.clone(),
-            pending: None,
-            pending_list: None,
-            pending_ints: None,
-            pending_bytes: None,
-            nets,
-            sockets: Vec::new(),
-            listeners: Vec::new(),
-            worker_listener: None,
-            build_out: caps.build_out.clone(),
-            build_read_roots: caps.build_read_roots.clone(),
-            heap_objects: Vec::new(),
-            rand_state: crate::rand::seed_from_env(),
-            engine: self.engine.clone(),
-            module: module.clone(),
-            preempt: self.preempt,
-        };
+        let state =
+            vmstate_from_caps(id, &caps, limits, None, &self.engine, &module, self.preempt);
 
         let mut store = Store::new(&self.engine, state);
         store.limiter(|s| &mut s.limits);
@@ -1405,21 +1376,7 @@ fn run_par_chunk(
     code_idx: i32,
     inputs: &[i64],
 ) -> Result<Vec<i64>> {
-    let state = worker_vmstate(engine, module, preempt);
-    let mut store = Store::new(engine, state);
-    store.limiter(|s| &mut s.limits);
-    if preempt {
-        // The shared engine has epoch interruption on (for the main VM's watchdog);
-        // a worker is short-lived pure compute, so push its deadline out of the way.
-        store.set_epoch_deadline(u64::MAX);
-    }
-    let mut linker: Linker<VmState> = Linker::new(engine);
-    // Empty grant: only the authority-free staging imports are defined…
-    link_capability_imports(&mut linker, &Capabilities::default())?;
-    // …and every capability import the module declares but the worker was not
-    // granted becomes a trap. A pure `f` calls none of them.
-    linker.define_unknown_imports_as_traps(module)?;
-    let instance = linker.instantiate(&mut store, module)?;
+    let (mut store, instance) = sandbox_worker(engine, module, preempt)?;
     let call_idx = instance.get_typed_func::<(i32, i64), i64>(&mut store, "__call_idx")?;
     let mut out = Vec::with_capacity(inputs.len());
     for &x in inputs {
@@ -1428,32 +1385,101 @@ fn run_par_chunk(
     Ok(out)
 }
 
-/// A fresh, zero-authority `VmState` for a `vm.par_map` worker VM: no granted
-/// capabilities, empty handle tables, its own output buffer.
-fn worker_vmstate(engine: &Engine, module: &Module, preempt: bool) -> VmState {
+/// The single `VmState` constructor: build a VM's host state from the capabilities it
+/// is granted. The primary VM (`spawn`) and every worker VM (`spawn_worker`) go through
+/// here, so the dirs/nets/files/build handle tables are derived from `caps` in exactly
+/// one place. `worker_listener` is `Some` only for a `serve` pool worker.
+fn vmstate_from_caps(
+    id: VmId,
+    caps: &Capabilities,
+    limits: StoreLimits,
+    worker_listener: Option<std::sync::Arc<std::net::TcpListener>>,
+    engine: &Engine,
+    module: &Module,
+    preempt: bool,
+) -> VmState {
+    let dirs = caps
+        .dir_root
+        .iter()
+        .cloned()
+        .chain(caps.dir_roots.iter().cloned())
+        .map(|p| (p, String::new()))
+        .collect();
+    let nets = caps.net_allow.iter().cloned().collect();
     VmState {
-        id: 0,
-        caps: Capabilities::default(),
-        limits: StoreLimitsBuilder::new().build(),
+        id,
+        caps: caps.clone(),
+        limits,
         output: Arc::new(Mutex::new(Vec::new())),
-        dirs: Vec::new(),
-        files: Vec::new(),
+        dirs,
+        files: caps.file_grants.clone(),
         pending: None,
         pending_list: None,
         pending_ints: None,
         pending_bytes: None,
-        nets: Vec::new(),
+        nets,
         sockets: Vec::new(),
         listeners: Vec::new(),
-            worker_listener: None,
-        build_out: None,
-        build_read_roots: Vec::new(),
+        worker_listener,
+        build_out: caps.build_out.clone(),
+        build_read_roots: caps.build_read_roots.clone(),
         heap_objects: Vec::new(),
         rand_state: crate::rand::seed_from_env(),
         engine: engine.clone(),
         module: module.clone(),
         preempt,
     }
+}
+
+/// Instantiate a worker VM of the same `module`, granted `caps`. The single setup path
+/// for all RFC-0032 worker VMs (`vm.par_map`/`with_dir`/`serve`, and the `server.serve`
+/// pool): build the state, the store (with the worker epoch deadline), and the linker,
+/// then instantiate. `sandboxed` defines the UNGRANTED imports as traps (deny-by-omission
+/// — the par_map/with_dir/serve workers); a non-sandboxed worker (the full-capability
+/// server pool) instead fails to instantiate if it needs an ungranted import, exactly
+/// like the primary VM. `worker_listener` shares the primary's bound socket with a pool
+/// worker.
+fn spawn_worker(
+    engine: &Engine,
+    module: &Module,
+    preempt: bool,
+    caps: &Capabilities,
+    sandboxed: bool,
+    worker_listener: Option<std::sync::Arc<std::net::TcpListener>>,
+    limits: StoreLimits,
+) -> Result<(Store<VmState>, Instance)> {
+    let state = vmstate_from_caps(0, caps, limits, worker_listener, engine, module, preempt);
+    let mut store = Store::new(engine, state);
+    store.limiter(|s| &mut s.limits);
+    if preempt {
+        // The shared engine has epoch interruption on (the primary VM's watchdog); a
+        // worker pushes its deadline out of the way (it is its own short/long task).
+        store.set_epoch_deadline(u64::MAX);
+    }
+    let mut linker: Linker<VmState> = Linker::new(engine);
+    link_capability_imports(&mut linker, caps)?;
+    if sandboxed {
+        linker.define_unknown_imports_as_traps(module)?;
+    }
+    let instance = linker.instantiate(&mut store, module)?;
+    Ok((store, instance))
+}
+
+/// The default zero-authority worker grant + limits for the compute/serve workers.
+fn sandbox_worker(
+    engine: &Engine,
+    module: &Module,
+    preempt: bool,
+) -> Result<(Store<VmState>, Instance)> {
+    spawn_worker(
+        engine,
+        module,
+        preempt,
+        &Capabilities::default(),
+        true,
+        None,
+        StoreLimitsBuilder::new().build(),
+    )
 }
 
 /// (RFC-0032) `vm_with_dir_run(dir_handle, f_ptr, input_ptr) -> byte_size`: run `f` on
@@ -1512,23 +1538,17 @@ fn run_with_dir_worker(
     input: &[u8],
 ) -> Result<Vec<u8>> {
     let caps = Capabilities {
-        dir_root: Some(path.clone()),
+        dir_root: Some(path),
         dir_read,
         dir_write,
         ..Capabilities::default()
     };
-    let mut state = worker_vmstate(engine, module, preempt);
-    state.caps = caps.clone();
-    state.dirs = vec![(path, policy)];
-    let mut store = Store::new(engine, state);
-    store.limiter(|s| &mut s.limits);
-    if preempt {
-        store.set_epoch_deadline(u64::MAX);
+    let (mut store, instance) =
+        spawn_worker(engine, module, preempt, &caps, true, None, StoreLimitsBuilder::new().build())?;
+    // Attach the granted Dir's entry policy (RFC-0011) to handle 0.
+    if let Some(d) = store.data_mut().dirs.get_mut(0) {
+        d.1 = policy;
     }
-    let mut linker: Linker<VmState> = Linker::new(engine);
-    link_capability_imports(&mut linker, &caps)?;
-    linker.define_unknown_imports_as_traps(module)?;
-    let instance = linker.instantiate(&mut store, module)?;
     let galloc = instance.get_typed_func::<i32, i32>(&mut store, "__galloc")?;
     let call2 = instance.get_typed_func::<(i32, i64, i64), i64>(&mut store, "__call2")?;
     let mem = instance
@@ -1587,16 +1607,7 @@ fn run_serve_worker(
     init: &[u8],
     requests: &[Vec<u8>],
 ) -> Result<Vec<Vec<u8>>> {
-    let state = worker_vmstate(engine, module, preempt);
-    let mut store = Store::new(engine, state);
-    store.limiter(|s| &mut s.limits);
-    if preempt {
-        store.set_epoch_deadline(u64::MAX);
-    }
-    let mut linker: Linker<VmState> = Linker::new(engine);
-    link_capability_imports(&mut linker, &Capabilities::default())?;
-    linker.define_unknown_imports_as_traps(module)?;
-    let instance = linker.instantiate(&mut store, module)?;
+    let (mut store, instance) = sandbox_worker(engine, module, preempt)?;
     let galloc = instance.get_typed_func::<i32, i32>(&mut store, "__galloc")?;
     let call2 = instance.get_typed_func::<(i32, i64, i64), i64>(&mut store, "__call2")?;
     let mem = instance
@@ -1684,16 +1695,7 @@ fn run_par_chunk_str(
     code_idx: i32,
     inputs: &[String],
 ) -> Result<Vec<String>> {
-    let state = worker_vmstate(engine, module, preempt);
-    let mut store = Store::new(engine, state);
-    store.limiter(|s| &mut s.limits);
-    if preempt {
-        store.set_epoch_deadline(u64::MAX);
-    }
-    let mut linker: Linker<VmState> = Linker::new(engine);
-    link_capability_imports(&mut linker, &Capabilities::default())?;
-    linker.define_unknown_imports_as_traps(module)?;
-    let instance = linker.instantiate(&mut store, module)?;
+    let (mut store, instance) = sandbox_worker(engine, module, preempt)?;
     let galloc = instance.get_typed_func::<i32, i32>(&mut store, "__galloc")?;
     let call_idx = instance.get_typed_func::<(i32, i64), i64>(&mut store, "__call_idx")?;
     let mem = instance
@@ -1770,16 +1772,7 @@ fn run_par_chunk_bytes(
     code_idx: i32,
     inputs: &[Vec<u8>],
 ) -> Result<Vec<Vec<u8>>> {
-    let state = worker_vmstate(engine, module, preempt);
-    let mut store = Store::new(engine, state);
-    store.limiter(|s| &mut s.limits);
-    if preempt {
-        store.set_epoch_deadline(u64::MAX);
-    }
-    let mut linker: Linker<VmState> = Linker::new(engine);
-    link_capability_imports(&mut linker, &Capabilities::default())?;
-    linker.define_unknown_imports_as_traps(module)?;
-    let instance = linker.instantiate(&mut store, module)?;
+    let (mut store, instance) = sandbox_worker(engine, module, preempt)?;
     let galloc = instance.get_typed_func::<i32, i32>(&mut store, "__galloc")?;
     let call_idx = instance.get_typed_func::<(i32, i64), i64>(&mut store, "__call_idx")?;
     let mem = instance
@@ -2120,45 +2113,17 @@ fn run_server_worker(
     preempt: bool,
     listener: std::sync::Arc<std::net::TcpListener>,
 ) -> Result<()> {
-    let dirs = caps
-        .dir_root
-        .iter()
-        .cloned()
-        .chain(caps.dir_roots.iter().cloned())
-        .map(|p| (p, String::new()))
-        .collect();
-    let nets = caps.net_allow.iter().cloned().collect();
-    let state = VmState {
-        id: 0,
-        caps: caps.clone(),
-        limits: StoreLimitsBuilder::new().memory_size(16384 * 64 * 1024).build(),
-        output: Arc::new(Mutex::new(Vec::new())),
-        dirs,
-        files: caps.file_grants.clone(),
-        pending: None,
-        pending_list: None,
-        pending_ints: None,
-        pending_bytes: None,
-        nets,
-        sockets: Vec::new(),
-        listeners: Vec::new(),
-        worker_listener: Some(listener),
-        build_out: caps.build_out.clone(),
-        build_read_roots: caps.build_read_roots.clone(),
-        heap_objects: Vec::new(),
-        rand_state: crate::rand::seed_from_env(),
-        engine: engine.clone(),
-        module: module.clone(),
+    // Full capabilities (NOT sandboxed — a server worker is a full copy of the program,
+    // like the primary), a generous memory budget, and the shared listener.
+    let (mut store, instance) = spawn_worker(
+        engine,
+        module,
         preempt,
-    };
-    let mut store = Store::new(engine, state);
-    store.limiter(|s| &mut s.limits);
-    if preempt {
-        store.set_epoch_deadline(u64::MAX);
-    }
-    let mut linker: Linker<VmState> = Linker::new(engine);
-    link_capability_imports(&mut linker, caps)?;
-    let instance = linker.instantiate(&mut store, module)?;
+        caps,
+        false,
+        Some(listener),
+        StoreLimitsBuilder::new().memory_size(16384 * 64 * 1024).build(),
+    )?;
     let run = instance.get_typed_func::<(), ()>(&mut store, "run")?;
     run.call(&mut store, ())
 }
