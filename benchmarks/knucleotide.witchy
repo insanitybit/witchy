@@ -31,4 +31,4 @@ fn main(console: Console):
             m = m + 1
         counts = dict.update(counts, kmer, 0, fn(c: Int): c + 1)
         j = j + 1
-    print(console, "${dict.size(counts)}")
+    print(console, "${dict.length(counts)}")
