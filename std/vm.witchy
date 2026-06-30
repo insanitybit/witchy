@@ -20,3 +20,14 @@ import list
 // returning the results in input order.
 pub fn par_map(xs: List(a), f: fn(a) -> b) -> List(b):
     list.map(xs, f)
+
+// Run `f` on `input` in an ISOLATED worker VM (on the compiled backend) that is granted
+// EXACTLY the directory capability `dir` — and nothing else. The worker can read/write
+// within `dir` (with `dir`'s own rights) and reach NO other host resource: it is its own
+// WebAssembly instance with its own memory, and every ungranted capability traps. This is
+// the capability-passing sandbox — run untrusted/partially-trusted code with precisely
+// scoped authority. `f` must be a top-level (capture-free) function. Because the result is
+// a deterministic function of `dir`'s contents and `input`, the isolation is invisible to
+// the output, so the interpreter (which runs `f` directly) and the compiled backend agree.
+pub fn with_dir(dir: Dir, f: fn(Dir, Bytes) -> Bytes, input: Bytes) -> Bytes:
+    f(dir, input)

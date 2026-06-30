@@ -2537,6 +2537,10 @@ The mapped function must be CAPTURE-FREE (a top-level function, or a closure tha
 
 Map `f` over every element of `xs`, in parallel where the backend supports it, returning the results in input order.
 
+#### `fn with_dir(dir: Dir, f: fn(Dir, Bytes) -> Bytes, input: Bytes) -> Bytes`
+
+Run `f` on `input` in an ISOLATED worker VM (on the compiled backend) that is granted EXACTLY the directory capability `dir` — and nothing else. The worker can read/write within `dir` (with `dir`'s own rights) and reach NO other host resource: it is its own WebAssembly instance with its own memory, and every ungranted capability traps. This is the capability-passing sandbox — run untrusted/partially-trusted code with precisely scoped authority. `f` must be a top-level (capture-free) function. Because the result is a deterministic function of `dir`'s contents and `input`, the isolation is invisible to the output, so the interpreter (which runs `f` directly) and the compiled backend agree.
+
 ## `webauthn`
 
 webauthn — server-side verification of a WebAuthn *assertion* (the credential "get" / second-factor ceremony), in pure witchy. ES256 (P-256, COSE alg -7) only.

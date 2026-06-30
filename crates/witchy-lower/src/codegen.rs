@@ -6866,6 +6866,14 @@ impl Codegen {
             {
                 call("vm_par_map_bytes", self.lower_args(&[&args[0], &args[1]])?)
             }
+            // (RFC-0032) Capability-passing: run a top-level `f(Dir, Bytes) -> Bytes` in an
+            // isolated worker VM granted exactly `dir`. `f` must be a top-level (capture-free)
+            // function, like the par_map variants.
+            ("vm.with_dir", 3)
+                if matches!(&args[1], Expr::Var(f) if !self.locals.contains_key(f)) =>
+            {
+                call("vm_with_dir", self.lower_args(&[&args[0], &args[1], &args[2]])?)
+            }
             ("read_build", 2) => {
                 self.used_build_ops.insert("read_build");
                 call("build_read", self.lower_args(&[&args[0], &args[1]])?)
@@ -8227,12 +8235,20 @@ pub fn assemble_wir_module(
             let has_par_map_buf = pruned_funcs
                 .iter()
                 .any(|f| f.name == "vm_par_map_str" || f.name == "vm_par_map_bytes");
+            // (RFC-0032) `vm.with_dir` invokes a 2-arg closure (Dir + Bytes) via `__call2`.
+            let has_with_dir = pruned_funcs.iter().any(|f| f.name == "vm_with_dir");
             let exports_call_idx =
                 has_par_map_buf || pruned_funcs.iter().any(|f| f.name == "vm_par_map");
             if exports_call_idx {
                 pruned_funcs.push(witchy_wir::wir_helpers::call_idx_helper());
             }
-            if has_par_map_buf && string_exports.is_empty() {
+            if has_with_dir {
+                pruned_funcs.push(witchy_wir::wir_helpers::call2_helper());
+            }
+            // The String/Bytes par_map variants and `vm.with_dir` all copy a buffer into
+            // a worker via `__galloc`.
+            let needs_galloc = has_par_map_buf || has_with_dir;
+            if needs_galloc && string_exports.is_empty() {
                 pruned_funcs.push(witchy_wir::wir_helpers::galloc_helper());
             }
             let data: Vec<DataSegment> = cg
@@ -8265,7 +8281,10 @@ pub fn assemble_wir_module(
                     if exports_call_idx {
                         exports.push(("__call_idx".into(), "__call_idx".into()));
                     }
-                    if !string_exports.is_empty() || has_par_map_buf {
+                    if has_with_dir {
+                        exports.push(("__call2".into(), "__call2".into()));
+                    }
+                    if !string_exports.is_empty() || needs_galloc {
                         exports.push(("__galloc".into(), "__galloc".into()));
                     }
                     if !string_exports.is_empty() {

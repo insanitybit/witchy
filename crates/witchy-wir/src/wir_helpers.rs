@@ -3998,6 +3998,62 @@ pub fn call_idx_helper() -> WirFunc {
     }
 }
 
+/// (RFC-0032) `$__call2(idx, a, b) -> i64` — the two-argument closure trampoline (a
+/// capability handle + a `Bytes` pointer, for `vm.with_dir`'s `fn(Dir, Bytes) -> Bytes`).
+/// `call_indirect`s table slot `idx` with a NULL environment and the two slot args.
+pub fn call2_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    WirFunc {
+        name: "__call2".into(),
+        params: vec![
+            WirLocal { name: "idx".into(), ty: WirTy::Bool },
+            WirLocal { name: "a".into(), ty: WirTy::Int },
+            WirLocal { name: "b".into(), ty: WirTy::Int },
+        ],
+        ret: vec![WirTy::Int],
+        locals: vec![],
+        body: vec![N::Push(E::CallIndirect {
+            type_arity: 2,
+            args: vec![E::ConstI32(0), E::GetLocal("a".into()), E::GetLocal("b".into())],
+            index: Box::new(E::GetLocal("idx".into())),
+        })],
+        raw_body: None,
+    }
+}
+
+/// (RFC-0032) `$vm_with_dir(dir, f, input) -> i32` — capability-passing: run `f` on
+/// `input` in an isolated worker VM granted exactly `dir`. The host stages the result
+/// `Bytes` (`vm_with_dir_run`), which `fill_pending` lays out into the reserved block.
+pub fn vm_with_dir_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "vm_with_dir".into(),
+        params: vec![
+            WirLocal { name: "dir".into(), ty: WirTy::Bool },
+            WirLocal { name: "f".into(), ty: WirTy::Bool },
+            WirLocal { name: "input".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: vec![
+            WirLocal { name: "size".into(), ty: WirTy::Bool },
+            WirLocal { name: "res".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::SetLocal { local: "size".into(), value: E::CallHost { import: "vm_with_dir_run".into(), args: vec![getl("dir"), getl("f"), getl("input")] } },
+            N::Do(E::Call { func: "ensure".into(), args: vec![getl("size")] }),
+            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            N::Do(E::CallHost { import: "fill_pending".into(), args: vec![getl("res")] }),
+            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("res"), getl("size")) },
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// `$list_drop(list, k) -> i32` — a fresh list with the first `k` elements
 /// dropped. Allocates `(len-k)` slots and `memory.copy`s the tail. Used by the
 /// `[a, ..rest]` list pattern to bind the tail.
@@ -5003,6 +5059,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             func: vm_par_map_bytes_helper(),
             helper_deps: &["ensure"],
             import_deps: &["vm_par_map_bytes_run", "vm_par_map_bytes_write"],
+            uses_heap: true,
+            uses_table: true,
+        }),
+        "vm_with_dir" => Some(WirHelperSpec {
+            func: vm_with_dir_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &["vm_with_dir_run", "fill_pending"],
             uses_heap: true,
             uses_table: true,
         }),

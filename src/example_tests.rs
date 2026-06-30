@@ -292,6 +292,43 @@
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
+    /// (RFC-0032) Capability-passing: `vm.with_dir(dir, f, input)` runs `f` in an isolated
+    /// worker VM granted EXACTLY `dir`. The worker reads a file through the passed `Dir`
+    /// (and could reach nothing else). Output is a deterministic function of the file +
+    /// input, so the interpreter (runs `f` directly) and the compiled backend (isolated
+    /// worker) agree — the isolation is a security property invisible to the result.
+    #[test]
+    fn vm_with_dir_capability_passing_agrees() {
+        use crate::runtime::{Capabilities, Runtime};
+        let root = std::env::temp_dir().join(format!("witchy_withdir_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        std::fs::write(root.join("ok.txt"), "hello-from-dir").expect("seed");
+        let root_str = root.to_str().expect("utf8 root").to_string();
+        let src = "import vm\nimport bytes\n\nfn reader(d: Dir, name: Bytes) -> Bytes:\n    bytes.from_string(read(d, bytes.to_string(name)))\n\nfn main(console: Console, dir: Dir):\n    let out = vm.with_dir(dir, reader, bytes.from_string(\"ok.txt\"))\n    print(console, bytes.to_string(out))\n";
+        let want = vec!["hello-from-dir".to_string()];
+        assert_eq!(
+            interpreter::run_module(resolve_std_src(src), &root_str, Vec::new()).expect("interp"),
+            want,
+            "interpreter",
+        );
+        let bin = codegen::compile_module_binary(&resolve_std_src(src))
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let mut rt = Runtime::batch().expect("runtime");
+        let caps = Capabilities {
+            print: true,
+            quiet: true,
+            dir_root: Some(root.clone()),
+            dir_read: true,
+            ..Default::default()
+        };
+        let mut actor = rt.spawn(&bin, caps, 64).expect("spawn");
+        actor.run().expect("run");
+        assert_eq!(actor.output(), want, "compiled WASM must agree");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// (RFC-0032) `vm.par_map` over `Bytes`: binary payloads cross to worker VMs by a
     /// RAW (non-lossy) byte copy. Maps a top-level fn over a list of Bytes in parallel;
     /// both backends agree (the interp oracle runs the sequential `list.map` body).

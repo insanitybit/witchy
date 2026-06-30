@@ -600,6 +600,9 @@ pub(crate) fn link_capability_imports(
     linker.func_wrap("witchy", "vm_par_map_str_run", host_vm_par_map_str_run)?;
     linker.func_wrap("witchy", "vm_par_map_bytes_run", host_vm_par_map_bytes_run)?;
     linker.func_wrap("witchy", "vm_par_map_bytes_write", host_vm_par_map_bytes_write)?;
+    // (RFC-0032) Capability-passing: the only authority the worker gets is the `Dir`
+    // the caller already holds and explicitly passes — a re-grant, no new authority.
+    linker.func_wrap("witchy", "vm_with_dir_run", host_vm_with_dir_run)?;
     // Field-length staging helpers (`[len]` of a host cell's string/list field).
     // They carry no authority — pure reads — and the WIR static prelude declares
     // them unconditionally, so define harmless stubs here. Ordinary programs
@@ -1437,6 +1440,95 @@ fn worker_vmstate(engine: &Engine, module: &Module, preempt: bool) -> VmState {
         module: module.clone(),
         preempt,
     }
+}
+
+/// (RFC-0032) `vm_with_dir_run(dir_handle, f_ptr, input_ptr) -> byte_size`: run `f` on
+/// `input` inside an isolated worker VM granted EXACTLY the `Dir` at `dir_handle` (its
+/// `read`/`write` rights inherited from the parent) and NOTHING else — every other host
+/// import traps. Stages the result `Bytes` (`[len][bytes]`) for `fill_pending`. This is
+/// the capability-PASSING (Tier B) primitive: a sandboxed worker with attenuated authority.
+fn host_vm_with_dir_run(
+    mut caller: Caller<'_, VmState>,
+    dir_handle: i32,
+    f_ptr: i32,
+    input_ptr: i32,
+) -> Result<i32> {
+    let (path, policy, input, code_idx) = {
+        let path = dir_base(&caller, dir_handle)?;
+        let policy = caller
+            .data()
+            .dirs
+            .get(dir_handle as usize)
+            .map(|d| d.1.clone())
+            .unwrap_or_default();
+        let mem = memory_of(&mut caller)?;
+        let data = mem.data(&caller);
+        let input = read_wbytes(data, input_ptr)?;
+        let cb = slice(data, f_ptr, 4)?;
+        (path, policy, input, i32::from_le_bytes([cb[0], cb[1], cb[2], cb[3]]))
+    };
+    let dir_read = caller.data().caps.dir_read;
+    let dir_write = caller.data().caps.dir_write;
+    let engine = caller.data().engine.clone();
+    let module = caller.data().module.clone();
+    let preempt = caller.data().preempt;
+    let result =
+        run_with_dir_worker(&engine, &module, preempt, path, policy, dir_read, dir_write, code_idx, &input)?;
+    let mut staged = Vec::with_capacity(4 + result.len());
+    staged.extend_from_slice(&(result.len() as i32).to_le_bytes());
+    staged.extend_from_slice(&result);
+    let size = staged.len() as i32;
+    caller.data_mut().pending = Some(staged);
+    Ok(size)
+}
+
+/// Run `f(dir, input)` on a fresh worker VM granted exactly the one `Dir`. `f` is a
+/// two-argument closure (the dir handle `0` + the input `Bytes` pointer), invoked through
+/// the `__call2` trampoline; the result `Bytes` is read raw out of the worker's memory.
+#[allow(clippy::too_many_arguments)]
+fn run_with_dir_worker(
+    engine: &Engine,
+    module: &Module,
+    preempt: bool,
+    path: std::path::PathBuf,
+    policy: String,
+    dir_read: bool,
+    dir_write: bool,
+    code_idx: i32,
+    input: &[u8],
+) -> Result<Vec<u8>> {
+    let caps = Capabilities {
+        dir_root: Some(path.clone()),
+        dir_read,
+        dir_write,
+        ..Capabilities::default()
+    };
+    let mut state = worker_vmstate(engine, module, preempt);
+    state.caps = caps.clone();
+    state.dirs = vec![(path, policy)];
+    let mut store = Store::new(engine, state);
+    store.limiter(|s| &mut s.limits);
+    if preempt {
+        store.set_epoch_deadline(u64::MAX);
+    }
+    let mut linker: Linker<VmState> = Linker::new(engine);
+    link_capability_imports(&mut linker, &caps)?;
+    linker.define_unknown_imports_as_traps(module)?;
+    let instance = linker.instantiate(&mut store, module)?;
+    let galloc = instance.get_typed_func::<i32, i32>(&mut store, "__galloc")?;
+    let call2 = instance.get_typed_func::<(i32, i64, i64), i64>(&mut store, "__call2")?;
+    let mem = instance
+        .get_memory(&mut store, "memory")
+        .ok_or_else(|| Error::msg("vm.with_dir worker VM exports no `memory`"))?;
+    let total = 4 + input.len() as i32;
+    let iptr = galloc.call(&mut store, total)?;
+    let mut buf = Vec::with_capacity(total as usize);
+    buf.extend_from_slice(&(input.len() as i32).to_le_bytes());
+    buf.extend_from_slice(input);
+    mem.write(&mut store, iptr as usize, &buf)
+        .map_err(|e| Error::msg(format!("writing vm.with_dir input into worker: {e}")))?;
+    let rptr = call2.call(&mut store, (code_idx, 0i64, iptr as i64))?;
+    read_wbytes(mem.data(&store), rptr as i32)
 }
 
 /// (RFC-0032) `vm_par_map_str_run(xs_ptr, f_ptr) -> byte_size`: the `String` variant of
