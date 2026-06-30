@@ -49,6 +49,15 @@ annotations** — it triggers on shapes the compiler can prove unaliased:
   This is what the ownership annotations buy at runtime: the signature
   proves the transfer, so the compiler threads the buffer's spare capacity
   through the call instead of copying at every boundary.
+- **Threads through your own types, too.** None of this is limited to the
+  builtin collections. A record field update `s.count = s.count + 1` mutates
+  the record in place; growing a field's list `s.items = list.push(s.items, x)`
+  grows *that* buffer in place; and an `own` record parameter threaded through a
+  function (`s = bump(move s)`) keeps the record uniquely owned across the call.
+  So a wrapper type carries the same zero-copy behavior as the collection it
+  wraps — a `Stack`'s push is as cheap as a raw `list.push`, with no annotation
+  beyond `own` on a threaded parameter. (The same uniqueness pass drives it; an
+  aliased field, like an aliased variable, falls back to a copy.)
 - **Dict hash index.** Dicts carry a hidden open-addressing index; lookups,
   `has`, `get_or`, and upserts are O(1) while iteration order stays
   insertion order.
