@@ -90,15 +90,40 @@ check.
   discipline as RFC-0033: default-deny, differential oracle as the gate, an
   adversarial test corpus (off-by-one, mutated length, aliased index).
 
-### L3 — Closure devirtualization + no-env capture-free closures
+### L3 — Closure devirtualization — ✅ SHIPPED (part a)
 Static user calls already lower to a direct `call`; the ~3.1× cost is *closures* —
-`call_indirect` through a heap closure record plus env allocation. (a) When a
-closure value's target is statically known, call it directly. (b) When a closure
-captures nothing — which `vm.par_map` already *requires* of its function — skip the
-environment record entirely. A reserved `direct-call` lever exists with no consumer.
-- **Targets:** `closure_calls` (~3.1×) and every higher-order/iterator call.
-- **Risk:** low–medium — call-lowering change, well covered by the existing closure
-  tests + the differential oracle.
+`call_indirect` through a heap closure record (a table+type-check dispatch the wasm
+engine cannot inline through). **(a) devirtualization is shipped:** a closure local
+proven bound to exactly one lambda and never reassigned/shadowed is called with a
+direct `call $__lamw{i}`, recovering the lifted body's index at compile time instead
+of loading it from the closure record's first word at runtime. The env (so any
+captures) still flows through unchanged — the closure object is still passed as the
+implicit env arg — so this is sound for capturing *and* capture-free closures alike.
+- **Shape:** the reserved `direct-call` `WITCHY_OPT` lever is now wired (default-on).
+  `begin_unit` computes the eligible locals (`collect_devirt_eligible`: bound by
+  exactly one `let`, never reassigned, never re-introduced by a tuple/pattern/`for`/
+  param binder — an *exhaustive*, no-wildcard AST walk, so a future syntax node that
+  could rebind a name is a compile error, never a silent unsound devirt); the binding
+  recorder maps each eligible local to its `$__lamw{i}` index; the two closure-call
+  arms emit a direct `call` when the local is in that map.
+- **Firing proof:** a call-SHAPE change moves no heap, so there is no `stats`
+  counter — instead `example_tests::devirtualizes_single_bound_closure_call` asserts
+  the emitted WAT is `call $__lamw` under the default and `call_indirect` under
+  `-direct-call`. Soundness: the differential sweep gained a closure case (a
+  single-bound *capturing* `g` that must devirt-with-env + a *reassigned* `f` that
+  must stay indirect), invariant across every `WITCHY_OPT` setting on both backends.
+- **The real win is downstream:** a direct `call` to a tiny lambda is something the
+  Binaryen pass (L1) can *inline*; a `call_indirect` it cannot. So L3 unlocks L1 on
+  higher-order code. **Measured (`closure_calls`, 5M calls, release, warm):** default
+  (devirt+binaryen) **19.5 ms** vs `-direct-call` 31.8 ms — a **1.63×** speedup that
+  closes the gap from **5.06× → 3.11× Go**. The thesis holds: Binaryen *without*
+  devirt barely moves it (31.8 ms vs 30.0 ms with Binaryen also off — it cannot inline
+  through `call_indirect`); the win appears only when devirt makes the call direct.
+- **(b) no-env capture-free closures: deferred.** Dropping the env param for a
+  capture-free closure would break the uniform `call_indirect (type $closN)` ABI
+  (all closures of arity N share one indirect-call type), so it is only safe *with*
+  devirtualization — and then it saves only the closure object's one-time `mk0`
+  allocation, not per-call cost. Marginal next to (a); left for later.
 
 ### L4 — Pooling instance allocator — ⚠️ IMPLEMENTED opt-in, MEASURED not-beneficial-yet
 Set wasmtime `InstanceAllocationStrategy::Pooling`. Reuses pre-reserved instance

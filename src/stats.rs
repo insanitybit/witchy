@@ -262,6 +262,13 @@ mod tests {
             // record is no longer uniquely owned, leaving the alias's `x.items` length
             // at 1. An unsound in-place would grow x's shared buffer to 2.
             "type Stack:\n    items: List(Int)\n    size: Int\n\nfn whole() -> Stack:\n    var s = Stack([], 0)\n    s.items = list.push(s.items, 1)\n    let x = s\n    s.items = list.push(s.items, 2)\n    s.size = list.length(x.items)\n    s\n\nfn main(console: Console):\n    let r = whole()\n    print(console, __render(r.size))\n    print(console, __render(list.length(r.items)))\n",
+            // (RFC-0034 L3) Closure devirtualization: `g` is a single-bound CAPTURING
+            // closure (captures `k`) called in a loop — devirtualized to a direct
+            // `call $__lamw`, the env (so the capture) must still flow, so toggling
+            // `direct-call` must not change output. `f` is REASSIGNED mid-loop, so it
+            // must stay an indirect call (an unsound devirt would pin the first lambda
+            // and diverge once `f` is rebound). The interpreter oracle pins both.
+            "fn main(console: Console):\n    let k = 10\n    let g = fn(x: Int): x + k\n    var f = fn(x: Int): x * 2\n    var i = 0\n    var acc = 0\n    while i < 8:\n        acc = acc + g(i) + f(i)\n        if i == 4:\n            f = fn(x: Int): x * 3\n        i = i + 1\n    print(console, __render(acc))\n",
         ];
         for src in corpus {
             // The interpreter oracle (the fixed semantics; it has no WITCHY_OPT).

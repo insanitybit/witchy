@@ -355,6 +355,8 @@ struct SavedScope {
     packed_active: HashMap<String, String>,
     reuse_vars: HashSet<String>,
     rc_floor_vars: HashSet<String>,
+    devirt_ok: HashSet<String>,
+    devirt_index: HashMap<String, usize>,
 }
 
 struct Codegen {
@@ -443,6 +445,14 @@ struct Codegen {
     /// `let` precedes its uses in statement order.
     sroa_candidates: HashSet<String>,
     sroa_active: HashMap<String, usize>,
+    /// (RFC-0034 L3) Closure locals eligible for devirtualization in the current
+    /// unit: a name bound exactly once and never reassigned (so every `f(x)` reaches
+    /// the same lambda). Computed in `begin_unit` only under the `direct-call` lever.
+    devirt_ok: HashSet<String>,
+    /// (RFC-0034 L3) The subset of `devirt_ok` whose single binding was lowered to a
+    /// lambda — mapping the local to that lifted `$__lamw{i}` table index. A call site
+    /// `f(x)` with `f` here emits a direct `call $__lamw{i}` instead of `call_indirect`.
+    devirt_index: HashMap<String, usize>,
     /// (RFC-0028) Confined slice *views*: `let w = list.slice(src, lo, hi)` bindings
     /// the escape analysis proved read-only-by-`at`/`length` over an unmutated
     /// source, so the slice copy is elided — `w` keeps `${w}$src`/`${w}$lo`/`${w}$hi`
@@ -846,6 +856,8 @@ impl Codegen {
             inplace_push: HashSet::new(),
             sroa_candidates: HashSet::new(),
             sroa_active: HashMap::new(),
+            devirt_ok: HashSet::new(),
+            devirt_index: HashMap::new(),
             view_candidates: HashSet::new(),
             view_active: HashSet::new(),
             packed_candidates: HashSet::new(),
@@ -1966,6 +1978,17 @@ impl Codegen {
         } else {
             HashSet::new()
         };
+        // (RFC-0034 L3) Closure devirtualization: names bound exactly once and never
+        // reassigned, so every call through them reaches the same lambda. The
+        // name→index map is filled lazily as each such `let f = <lambda>` lowers.
+        // Gated on the `direct-call` lever (off ⇒ empty ⇒ every closure call stays
+        // `call_indirect`, which is the de-opt sweep's reference).
+        self.devirt_index.clear();
+        self.devirt_ok = if witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::DirectCall) {
+            collect_devirt_eligible(body)
+        } else {
+            HashSet::new()
+        };
         self.facts_stack.push((facts, 0, 0));
     }
 
@@ -2164,6 +2187,19 @@ impl Codegen {
                                 local: format!("{name}__cap"),
                                 value: W::ConstI32(0),
                             });
+                        }
+                        // (RFC-0034 L3) Record a devirtualizable closure local: `name`
+                        // is bound exactly once and never reassigned (`devirt_ok`), and
+                        // `lower_expr` just registered the lambda — so recover its lifted
+                        // `$__lamw{i}` index. Later `name(x)` calls then emit a direct
+                        // `call` instead of `call_indirect` (see the closure-call arms).
+                        if self.collect_wir && self.devirt_ok.contains(name) {
+                            if let Expr::Lambda { params, body, .. } = value {
+                                let key = Self::lambda_content_key(params, body);
+                                if let Some(&idx) = self.lambda_wir_index.get(&key) {
+                                    self.devirt_index.insert(name.clone(), idx);
+                                }
+                            }
                         }
                     }
                     tail_is_value = false;
@@ -3686,10 +3722,19 @@ impl Codegen {
                 let recover_kind = self.apply_ret_kind(func);
                 let mut ci_args = vec![W::GetLocal(tmp.clone())];
                 ci_args.extend(arg_slots);
-                let call = W::CallIndirect {
-                    type_arity: n,
-                    args: ci_args,
-                    index: Box::new(W::Load { ptr: Box::new(W::GetLocal(tmp.clone())), kind: witchy_wir::wir::Kind::I32, offset: 0 }),
+                // (RFC-0034 L3) Devirtualize an apply whose callee is a single-bound,
+                // never-reassigned closure var: a direct `call $__lamw{i}` (env stays
+                // the stashed closure pointer), skipping the runtime code-index load.
+                let call = match func.as_ref() {
+                    Expr::Var(fname) if self.devirt_index.contains_key(fname) => {
+                        let idx = self.devirt_index[fname];
+                        W::Call { func: format!("__lamw{idx}"), args: ci_args }
+                    }
+                    _ => W::CallIndirect {
+                        type_arity: n,
+                        args: ci_args,
+                        index: Box::new(W::Load { ptr: Box::new(W::GetLocal(tmp.clone())), kind: witchy_wir::wir::Kind::I32, offset: 0 }),
+                    },
                 };
                 let result = W::FromSlot(Box::new(call), Self::wir_kind(recover_kind));
                 return Some(W::Seq(vec![
@@ -4523,14 +4568,23 @@ impl Codegen {
                     }
                     self.clos_arities.insert(n);
                     let rk = self.local_fn_ret_kind.get(name).copied().unwrap_or(Kind::I32);
-                    let call = W::CallIndirect {
-                        type_arity: n,
-                        args: ci_args,
-                        index: Box::new(W::Load {
-                            ptr: Box::new(W::GetLocal(name.to_string())),
-                            kind: witchy_wir::wir::Kind::I32,
-                            offset: 0,
-                        }),
+                    // (RFC-0034 L3) Devirtualize when `name` is a single-bound, never-
+                    // reassigned closure local (`devirt_index`): a direct `call
+                    // $__lamw{i}` — same env (the closure pointer) and slot args, just
+                    // skipping the runtime code-index load — which also lets the
+                    // Binaryen pass inline the lambda body into the caller.
+                    let call = if let Some(&idx) = self.devirt_index.get(name) {
+                        W::Call { func: format!("__lamw{idx}"), args: ci_args }
+                    } else {
+                        W::CallIndirect {
+                            type_arity: n,
+                            args: ci_args,
+                            index: Box::new(W::Load {
+                                ptr: Box::new(W::GetLocal(name.to_string())),
+                                kind: witchy_wir::wir::Kind::I32,
+                                offset: 0,
+                            }),
+                        }
                     };
                     return Some(W::FromSlot(Box::new(call), Self::wir_kind(rk)));
                 }
@@ -4569,6 +4623,16 @@ impl Codegen {
     /// `lambda_wir_funcs` once (idempotent by content hash). `None` (the program is
     /// then rejected as unsupported) when the lambda assigns a captured var or its
     /// body doesn't fully lower.
+    /// The content hash keying a lambda's idempotent registration (and the
+    /// `lambda_wir_index` lookup the devirt binding-recorder reuses to recover the
+    /// `$__lamw{i}` index a `let f = <lambda>` was assigned).
+    fn lambda_content_key(params: &[Param], body: &Block) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        format!("{params:?}{body:?}").hash(&mut h);
+        h.finish()
+    }
+
     fn lower_lambda(&mut self, params: &[Param], body: &Block) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::WirExpr as W;
         // Only a WIR-collecting scope lowers lambdas; otherwise bail so the
@@ -4618,12 +4682,7 @@ impl Codegen {
 
         // Idempotent registration: the same lambda (by content) gets one lifted
         // body + one stable table index across the many lowering passes.
-        let key = {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            format!("{params:?}{body:?}").hash(&mut h);
-            h.finish()
-        };
+        let key = Self::lambda_content_key(params, body);
         let index = if let Some(&i) = self.lambda_wir_index.get(&key) {
             i
         } else {
@@ -4860,6 +4919,8 @@ impl Codegen {
             packed_active: std::mem::take(&mut self.packed_active),
             reuse_vars: std::mem::take(&mut self.reuse_vars),
             rc_floor_vars: std::mem::take(&mut self.rc_floor_vars),
+            devirt_ok: std::mem::take(&mut self.devirt_ok),
+            devirt_index: std::mem::take(&mut self.devirt_index),
         }
     }
 
@@ -4888,6 +4949,8 @@ impl Codegen {
         self.packed_active = s.packed_active;
         self.reuse_vars = s.reuse_vars;
         self.rc_floor_vars = s.rc_floor_vars;
+        self.devirt_ok = s.devirt_ok;
+        self.devirt_index = s.devirt_index;
     }
 
     /// The `$key_eq` comparison mode for a Dict key expression: 0 for Int/Bool
@@ -5569,6 +5632,145 @@ pub fn set_force_copy_for_tests(v: Option<bool>) {
     }));
 }
 
+
+/// (RFC-0034 L3) Names eligible for closure devirtualization in a unit: a name
+/// introduced by EXACTLY ONE `let` and never otherwise re-introduced or reassigned,
+/// so every call through it provably reaches the same value. A devirt site only ever
+/// fires for a name whose single `let` bound a lambda (the binding-recorder checks
+/// that), so this need not inspect the RHS — it only has to guarantee the name is not
+/// MUTABLE OR SHADOWED: any reassignment (`f = …`), a second `let`, a tuple/pattern/
+/// for-var/lambda-param binding of the same name, all disqualify it. Conservative by
+/// construction (default ineligible); the walk is exhaustive (no wildcard arm) so a
+/// future `Expr`/`Stmt` variant that could rebind a name is a compile error, not a
+/// silent unsound devirt.
+#[derive(Default)]
+struct DevirtScan {
+    /// `let name = …` occurrences, by name (a count, so a second `let` excludes it).
+    let_bind: HashMap<String, u32>,
+    /// Names introduced by any NON-`let` binder (tuple destructure, `for` var, lambda
+    /// param, match/while-let pattern) — a single one disqualifies the name.
+    other_bind: HashSet<String>,
+    /// Names reassigned via `name = …` — a single one disqualifies the name.
+    reassigned: HashSet<String>,
+}
+
+impl DevirtScan {
+    fn walk_block(&mut self, b: &Block) {
+        for stmt in &b.stmts {
+            match stmt {
+                Stmt::Let { name, value, .. } => {
+                    *self.let_bind.entry(name.clone()).or_insert(0) += 1;
+                    self.walk_expr(value);
+                }
+                Stmt::Assign { name, value } => {
+                    self.reassigned.insert(name.clone());
+                    self.walk_expr(value);
+                }
+                Stmt::LetTuple { names, value } => {
+                    for n in names {
+                        self.other_bind.insert(n.clone());
+                    }
+                    self.walk_expr(value);
+                }
+                Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => self.walk_expr(e),
+                Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+            }
+        }
+    }
+
+    fn walk_expr(&mut self, e: &Expr) {
+        match e {
+            Expr::Int(_)
+            | Expr::Float(_)
+            | Expr::Duration(_)
+            | Expr::Str(_)
+            | Expr::Bool(_)
+            | Expr::Var(_)
+            | Expr::TaggedLit { .. } => {}
+            Expr::List(xs) | Expr::Tuple(xs) => xs.iter().for_each(|x| self.walk_expr(x)),
+            Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
+                args.iter().for_each(|a| self.walk_expr(a))
+            }
+            Expr::MethodCall { receiver, args, .. } => {
+                self.walk_expr(receiver);
+                args.iter().for_each(|a| self.walk_expr(a));
+            }
+            Expr::Apply { func, args } => {
+                self.walk_expr(func);
+                args.iter().for_each(|a| self.walk_expr(a));
+            }
+            Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } => {
+                self.walk_expr(expr)
+            }
+            Expr::Field { base, .. } => self.walk_expr(base),
+            Expr::Lambda { params, body, .. } => {
+                for p in params {
+                    self.other_bind.insert(p.name.clone());
+                }
+                self.walk_block(body);
+            }
+            Expr::RecordUpdate { base, fields } => {
+                self.walk_expr(base);
+                fields.iter().for_each(|(_, v)| self.walk_expr(v));
+            }
+            Expr::Record { fields, spread, .. } => {
+                fields.iter().for_each(|(_, v)| self.walk_expr(v));
+                if let Some(s) = spread {
+                    self.walk_expr(s);
+                }
+            }
+            Expr::Binary { lhs, rhs, .. }
+            | Expr::Index { base: lhs, index: rhs }
+            | Expr::Range { lo: lhs, hi: rhs, .. } => {
+                self.walk_expr(lhs);
+                self.walk_expr(rhs);
+            }
+            Expr::If { cond, then_block, else_block } => {
+                self.walk_expr(cond);
+                self.walk_block(then_block);
+                if let Some(eb) = else_block {
+                    self.walk_block(eb);
+                }
+            }
+            Expr::Match { scrutinee, arms } => {
+                self.walk_expr(scrutinee);
+                for arm in arms {
+                    collect_pattern_vars(&arm.pattern, &mut self.other_bind);
+                    if let Some(g) = &arm.guard {
+                        self.walk_expr(g);
+                    }
+                    self.walk_expr(&arm.body);
+                }
+            }
+            Expr::Block(b) => self.walk_block(b),
+            Expr::While { cond, body } => {
+                self.walk_expr(cond);
+                self.walk_block(body);
+            }
+            Expr::For { var, iter, body } => {
+                self.other_bind.insert(var.clone());
+                self.walk_expr(iter);
+                self.walk_block(body);
+            }
+            Expr::WhileLet { pattern, scrutinee, body } => {
+                collect_pattern_vars(pattern, &mut self.other_bind);
+                self.walk_expr(scrutinee);
+                self.walk_block(body);
+            }
+        }
+    }
+}
+
+fn collect_devirt_eligible(body: &Block) -> HashSet<String> {
+    let mut s = DevirtScan::default();
+    s.walk_block(body);
+    let DevirtScan { let_bind, other_bind, reassigned } = s;
+    let_bind
+        .into_iter()
+        .filter(|(n, c)| *c == 1 && !other_bind.contains(n) && !reassigned.contains(n))
+        .map(|(n, _)| n)
+        .collect()
+}
 
 fn collect_fn_refs_block(b: &Block, out: &mut HashSet<String>) {
     for stmt in &b.stmts {

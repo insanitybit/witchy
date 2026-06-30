@@ -59,19 +59,25 @@ pub enum Opt {
     RcFloor,
     /// The opt-in Binaryen post-pass (off by default). Replaces `WITCHY_WASM_OPT`.
     WasmOpt,
+    /// (RFC-0034 L3) Closure devirtualization: a closure local provably bound to one
+    /// lambda and never reassigned is called with a direct `call $__lamw{i}` instead
+    /// of a `call_indirect` through its runtime code-index word — which also lets the
+    /// Binaryen pass inline the lambda body (off ⇒ every closure call is indirect).
+    DirectCall,
     // NOTE: the registry holds ONLY optimizations the compiler actually performs —
-    // every entry must pass the differential de-opt sweep AND have a `witchy stats`
-    // counter proving it fired (RFC-0030's contract). Planned levers that have no
-    // codegen consumer yet are NOT registered here (a phantom lever toggles a
-    // no-op, passing the sweep trivially and lying about coverage); they are added
-    // with their backing feature: `direct-call` with static-target call lowering
-    // (spec/performance.md).
+    // every entry must pass the differential de-opt sweep AND prove it fired
+    // (RFC-0030's contract). For a MEMORY lever that proof is a `witchy stats`
+    // counter (heap/reowns); for a call-SHAPE lever like `direct-call`, which moves
+    // no bytes, the firing proof is a codegen-shape assertion (the emitted `call`
+    // vs `call_indirect`, see `codegen_tests::devirtualizes_*`). A planned lever
+    // with no consumer is still NOT registered (a phantom lever toggles a no-op,
+    // passing the sweep trivially and lying about coverage).
 }
 
 impl Opt {
     /// Every optimization, in a stable order — drives the differential de-opt
     /// sweep and `witchy stats` reporting.
-    pub const ALL: [Opt; 9] = [
+    pub const ALL: [Opt; 10] = [
         Opt::InPlace,
         Opt::Views,
         Opt::Sroa,
@@ -81,6 +87,7 @@ impl Opt {
         Opt::Unbox,
         Opt::RcFloor,
         Opt::WasmOpt,
+        Opt::DirectCall,
     ];
 
     /// The token used in `WITCHY_OPT` and reported by `witchy stats`.
@@ -95,6 +102,7 @@ impl Opt {
             Opt::Unbox => "unbox",
             Opt::RcFloor => "rc-floor",
             Opt::WasmOpt => "wasm-opt",
+            Opt::DirectCall => "direct-call",
         }
     }
 
