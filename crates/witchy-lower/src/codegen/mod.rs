@@ -15,6 +15,8 @@
 //! the runtime links only when granted, so an ungranted compiled module cannot
 //! instantiate.
 
+mod types;
+
 use crate::analysis::{self};
 use witchy_syntax::lambda_scan::{collect_pattern_vars, scan_lambda};
 use std::collections::{HashMap, HashSet};
@@ -883,92 +885,6 @@ impl Codegen {
         }
     }
 
-    /// The WASM kind a compiled expression evaluates to.
-    fn kind_of(&self, e: &Expr) -> Kind {
-        match e {
-            Expr::Int(_) | Expr::Duration(_) => Kind::I64,
-            Expr::Float(_) => Kind::F64,
-            Expr::Var(n) => self.locals.get(n).copied().unwrap_or(Kind::I32),
-            Expr::Unary { op, expr } => match op {
-                // `!x` is a bool (i32); negation/complement keep the operand kind.
-                UnOp::Not => Kind::I32,
-                UnOp::Neg | UnOp::BitNot | UnOp::Move | UnOp::Await => self.kind_of(expr),
-            },
-            Expr::Binary { op, lhs, rhs } => match op {
-                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::BitAnd
-                | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
-                    // The common (promoted) kind of the two operands.
-                    let (lk, rk) = (self.kind_of(lhs), self.kind_of(rhs));
-                    if lk == Kind::F64 || rk == Kind::F64 {
-                        Kind::F64
-                    } else if lk == Kind::I64 || rk == Kind::I64 {
-                        Kind::I64
-                    } else {
-                        Kind::I32
-                    }
-                }
-                // concat (ptr) and comparisons / and / or (bool) are i32.
-                _ => Kind::I32,
-            },
-            Expr::Field { base, field } => {
-                if field.parse::<usize>().is_ok() {
-                    return valtype_kind(self.val_type_of(e));
-                }
-                if let Some(bt) = self.record_type_of(base) {
-                    if let Some(fields) = self.record_fields.get(&bt) {
-                        if let Some((_, ft)) = fields.iter().find(|(n, _)| n == field) {
-                            return name_kind(ft.as_deref());
-                        }
-                    }
-                }
-                Kind::I32
-            }
-            Expr::If {
-                then_block,
-                else_block,
-                ..
-            } => {
-                let tk = self.block_kind(then_block);
-                let ek = else_block.as_ref().map(|b| self.block_kind(b)).unwrap_or(Kind::I32);
-                promote_kind(tk, ek)
-            }
-            Expr::Block(b) => self.block_kind(b),
-            Expr::Match { arms, .. } => arms
-                .iter()
-                .fold(Kind::I32, |acc, a| promote_kind(acc, self.kind_of(&a.body))),
-            // `get_or(d, k, default)` returns the dict's value at the default's
-            // kind (the i64 value slot is recovered to it at the call site).
-            Expr::Call { name, args } if name == "dict.get_or" && args.len() == 3 => {
-                self.kind_of(&args[2])
-            }
-            Expr::Call { name, .. } => match name.as_str() {
-                "math.to_float" => Kind::F64,
-                "math.to_int" | "string.length" | "string.char_count" | "string.index_of"
-                | "list.length" | "dict.length" | "string.to_int" | "int_to_duration"
-                | "duration_to_int" | "now" | "rand_u64"
-                | "__bytes_length" | "__bytes_at" => Kind::I64,
-                "list.at" => self.elem_kind_of_list_arg(e),
-                "__render" | "int_to_string" | "print" => Kind::I32,
-                // A closure-local called by name returns the universal i64 slot,
-                // recovered at its tracked return kind (see the call emission).
-                other if self.local_fn_ret_kind.contains_key(other) => {
-                    self.local_fn_ret_kind[other]
-                }
-                other => self.fn_ret.get(other).copied().unwrap_or(Kind::I32),
-            },
-            // `inner?` yields the Ok/Some payload; recover it at the payload's
-            // kind (an Int payload as i64) so a big value isn't truncated.
-            Expr::Try(inner) => self
-                .match_payload_valtype(inner)
-                .map(valtype_kind)
-                .unwrap_or(Kind::I32),
-            // A closure call `f(x)` returns the universal i64 slot; recover it at
-            // the closure's declared return kind (an Int-returning closure as i64).
-            Expr::Apply { func, .. } => self.apply_ret_kind(func),
-            _ => Kind::I32, // Bool, Str, List, Ctor, Spawn
-        }
-    }
-
     /// The WASM kind a closure-valued expression returns: a function-typed
     /// variable's tracked return kind, a lambda's body kind, else i32.
     fn apply_ret_kind(&self, func: &Expr) -> Kind {
@@ -991,140 +907,6 @@ impl Codegen {
         }
     }
 
-    /// The WASM kind of the element produced by `at(list, i)`: the list's tracked
-    /// element kind, or i32 (the generic ABI) when unknown. The `at` *emission*
-    /// uses the same `list_elem_kind`, so the typed-expression kind and the loaded
-    /// width always agree.
-    fn elem_kind_of_list_arg(&self, e: &Expr) -> Kind {
-        if let Expr::Call { name, args } = e {
-            if name == "list.at" {
-                if let Some(arg) = args.first() {
-                    return self.list_elem_kind(arg);
-                }
-            }
-        }
-        Kind::I32
-    }
-
-    /// The WASM kind of the elements of a list expression, where determinable: a
-    /// list variable, list literal, or a `-> List(T)` call (e.g. a monomorphized
-    /// `fill__Int`). Used by both `at`'s type and its load, so an Int element of a
-    /// call-result list is recovered as i64 rather than truncated to i32.
-    fn list_elem_kind(&self, list: &Expr) -> Kind {
-        let vt = self.elem_val_type_of(list);
-        if vt != ValType::Other {
-            return valtype_kind(vt);
-        }
-        if let Expr::Var(v) = list {
-            if let Some(vt) = self.local_list_elem_valtype.get(v) {
-                return valtype_kind(*vt);
-            }
-        }
-        Kind::I32
-    }
-
-    fn block_kind(&self, b: &Block) -> Kind {
-        match b.stmts.last() {
-            Some(Stmt::Expr(e)) => self.kind_of(e),
-            _ => Kind::I32,
-        }
-    }
-
-    /// The source-level value type of an expression, to the extent codegen can
-    /// determine it. Used by `to_string`; `Other` means "not distinguished".
-    fn val_type_of(&self, e: &Expr) -> ValType {
-        match self.val_type_of_inner(e) {
-            // The local tracking maps came up empty: ask typeck's table (the
-            // typed-lowering keystone) before giving up.
-            ValType::Other => self
-                .type_table
-                .type_of(e)
-                .and_then(witchy_types::typeck::ty_to_ast)
-                .map(|t| ty_to_valtype(&t))
-                .unwrap_or(ValType::Other),
-            vt => vt,
-        }
-    }
-
-    fn val_type_of_inner(&self, e: &Expr) -> ValType {
-        match e {
-            Expr::Int(_) | Expr::Duration(_) => ValType::Int,
-            Expr::Bool(_) => ValType::Bool,
-            Expr::Float(_) => ValType::Float,
-            Expr::Str(_) => ValType::Str,
-            Expr::Unary { op, expr } => match op {
-                UnOp::Not => ValType::Bool,
-                UnOp::Neg | UnOp::Move | UnOp::Await => self.val_type_of(expr),
-                UnOp::BitNot => ValType::Int,
-            },
-            Expr::Binary { op, lhs, rhs } => match op {
-                BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq
-                | BinOp::And => ValType::Bool,
-                // Non-Bool `||` is the truthy fallback, so it yields its operand type.
-                BinOp::Or => self.val_type_of(lhs),
-                BinOp::Concat => ValType::Str,
-                // `+` is concat when either side is a string; otherwise the
-                // numeric type rides on the left operand.
-                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-                    match self.val_type_of(lhs) {
-                        ValType::Other if *op == BinOp::Add => self.val_type_of(rhs),
-                        vt => vt,
-                    }
-                }
-                // Bitwise ops are always Int.
-                BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
-                    ValType::Int
-                }
-            },
-            Expr::Var(n) => self.local_val_types.get(n).copied().unwrap_or(ValType::Other),
-            Expr::If { then_block, .. } => self.block_val_type(then_block),
-            Expr::Block(b) => self.block_val_type(b),
-            Expr::Match { arms, .. } => arms
-                .first()
-                .map(|a| self.val_type_of(&a.body))
-                .unwrap_or(ValType::Other),
-            // `at(xs, i)` has the list's element type, so a String element
-            // compares by content (`$str_eq`) rather than by pointer.
-            Expr::Call { name, args } if name == "list.at" && !args.is_empty() => {
-                self.elem_val_type_of(&args[0])
-            }
-            // `get_or(d, k, default)` returns the Dict's value type, which is the
-            // default's type — so a `let v = get_or(d, k, 0)` (or a String default)
-            // tracks `v`, and `v` can in turn be used as a Dict key.
-            Expr::Call { name, args } if name == "dict.get_or" && args.len() == 3 => {
-                self.val_type_of(&args[2])
-            }
-            Expr::Call { name, .. } => match name.as_str() {
-                "__render" | "string.to_upper" | "string.to_lower" | "string.trim"
-                | "string.replace" | "string.substring" | "crypto.sha256" | "crypto.sign"
-                | "crypto.public_key" | "crypto.reveal" | "read" | "read_build" | "crypto.rune_hash"
-                | "exec"
-                | "compiler.footprint"
-                | "compiler.diff" | "compiler.doc" | "regex.match_spans" | "recv_line" | "recv_all"
-                | "crypto.sha512" | "crypto.sha3_256" | "crypto.hmac_sha256"
-                | "recv_bytes" => ValType::Str,
-                "string.starts_with" | "string.ends_with" | "string.contains" | "dict.contains_key"
-                | "exists" | "is_dir" | "crypto.ed25519_verify"
-                | "crypto.ecdsa_p256_verify" | "crypto.ecdsa_p256_verify_hex"
-                | "crypto.rsa_pkcs1_sha256_verify" => ValType::Bool,
-                "string.length" | "string.char_count" | "string.index_of" | "list.length"
-                | "dict.length" | "math.to_int" | "string.to_int" | "int_to_duration"
-                | "duration_to_int" | "now" | "rand_u64" => ValType::Int,
-                "math.to_float" | "math.sqrt" => ValType::Float,
-                other => self.fn_ret_valtype.get(other).copied().unwrap_or(ValType::Other),
-            },
-            // `inner?` yields the Ok/Some payload's value type, so `to_string` of
-            // a `?`-unwrapped value renders correctly and `==` picks `$str_eq`.
-            Expr::Try(inner) => self.match_payload_valtype(inner).unwrap_or(ValType::Other),
-            // A record field access (`p.x`): the field's declared value type — so
-            // `"${p.x}"` / `__render(p.x)` and `==` on a field resolve.
-            Expr::Field { base, field } => {
-                self.field_type_of(base, field).map(|t| ty_to_valtype(&t)).unwrap_or(ValType::Other)
-            }
-            _ => ValType::Other,
-        }
-    }
-
     fn block_val_type(&self, b: &Block) -> ValType {
         match b.stmts.last() {
             Some(Stmt::Expr(e)) => self.val_type_of(e),
@@ -1132,108 +914,9 @@ impl Codegen {
         }
     }
 
-    /// The record type an expression evaluates to, where codegen can determine
-    /// it locally, so a `let x = <expr>` binds `x` to that record and `x.field`
-    /// resolves. Recursive: handles constructors, record-typed vars, record-
-    /// returning calls, `get_or` (the default's type), `at` (a List(Record)
-    /// element), `?` payloads, `update`, and the branches of if/match/block.
-    fn record_type_of(&self, e: &Expr) -> Option<String> {
-        match e {
-            Expr::Ctor { name, .. } if self.record_fields.contains_key(name) => Some(name.clone()),
-            // A record-typed variable. Local tracking is primary; when it misses
-            // (e.g. a `match` binding whose scrutinee is a closure-parameter call,
-            // whose return shape codegen can't infer locally) fall back to typeck's
-            // annotation, which knows the binding's record type.
-            Expr::Var(v) => self.local_records.get(v).cloned().or_else(|| {
-                match self.type_table.type_of(e).and_then(witchy_types::typeck::ty_to_ast) {
-                    Some(witchy_syntax::ast::Type::Named(n, _)) if self.record_fields.contains_key(&n) => Some(n),
-                    _ => None,
-                }
-            }),
-            Expr::Call { name, args } => {
-                if let Some(ty) = self.fn_ret_records.get(name) {
-                    Some(ty.clone())
-                } else if name == "dict.get_or" {
-                    args.get(2).and_then(|d| self.record_type_of(d))
-                } else if name == "list.at" {
-                    match args.first() {
-                        Some(Expr::Var(v)) => self.local_list_elem.get(v).cloned(),
-                        _ => None,
-                    }
-                } else {
-                    None
-                }
-            }
-            Expr::Try(inner) => match inner.as_ref() {
-                Expr::Call { name, .. } => self.fn_ret_result_record.get(name).cloned(),
-                _ => None,
-            },
-            Expr::RecordUpdate { base, .. } => self.record_type_of(base),
-            // `a.b` is a record when field `b` of `a`'s record type is itself a
-            // record (so `a.b.c` resolves).
-            Expr::Field { base, field } => {
-                let base_ty = self.record_type_of(base)?;
-                let names = self.record_fields.get(&base_ty)?;
-                let idx = names.iter().position(|(n, _)| n == field)?;
-                names[idx]
-                    .1
-                    .clone()
-                    .filter(|t| self.record_fields.contains_key(t))
-            }
-            Expr::If { then_block, .. } => self.block_record_type(then_block),
-            Expr::Match { arms, .. } => arms.first().and_then(|a| self.record_type_of(&a.body)),
-            Expr::Block(b) => self.block_record_type(b),
-            _ => None,
-        }
-    }
-
     fn block_record_type(&self, b: &Block) -> Option<String> {
         match b.stmts.last() {
             Some(Stmt::Expr(e)) => self.record_type_of(e),
-            _ => None,
-        }
-    }
-
-    /// The declared type of `base.field`, where `base`'s record type is known —
-    /// so a field access resolves its value type (`__render(p.x)`) and its
-    /// structural shape (`__render(p.tags)`), not just whether it is a record.
-    fn field_type_of(&self, base: &Expr, field: &str) -> Option<Type> {
-        let rec = self.record_type_of(base)?;
-        let names = self.record_fields.get(&rec)?;
-        let idx = names.iter().position(|(n, _)| n == field)?;
-        self.record_field_types.get(&rec)?.get(idx).cloned()
-    }
-
-    /// The element value type of a list-producing expression, where codegen can
-    /// determine it (a `split` result, a list literal, or a tracked list local),
-    /// so a `for x in <iter>` loop variable's value type — and its use as a Dict
-    /// key — can be resolved.
-    /// The record type carried by an Option/Result scrutinee's success variant
-    /// (`Some(R)` / `Ok(R)`), where codegen can determine it: a call to a
-    /// function declared to return `Option(R)`/`Result(R, _)`, or a literal
-    /// `Some(r)`/`Ok(r)` over a record. Lets `match f() { Some(a) -> a.field }`
-    /// resolve `a`. (A generic payload, e.g. `list.find`'s `Option(a)`, is not
-    /// resolvable here — that needs full instantiation tracking.)
-    fn match_payload_record(&self, scrutinee: &Expr) -> Option<String> {
-        match scrutinee {
-            Expr::Var(v) => self.local_payload_records.get(v).cloned(),
-            Expr::Call { name, args } => {
-                // A declared `-> Option(Record)` return...
-                if let Some(rec) = self.fn_ret_result_record.get(name) {
-                    return Some(rec.clone());
-                }
-                // ...or the generic `fn(List(a),..) -> Option(a)` shape, whose
-                // payload is the element record type of the given list argument.
-                if let Some(&k) = self.fn_ret_option_of_list_arg.get(name) {
-                    if let Some(arg) = args.get(k) {
-                        return self.elem_record_type_of(arg);
-                    }
-                }
-                None
-            }
-            Expr::Ctor { name, args } if (name == "Some" || name == "Ok") && args.len() == 1 => {
-                self.record_type_of(&args[0])
-            }
             _ => None,
         }
     }
@@ -1284,36 +967,6 @@ impl Codegen {
                 }
             }
             _ => None,
-        }
-    }
-
-    /// Collect `(var, record_type)` for each pattern variable bound to a
-    /// record-typed constructor field, recursing through nested patterns. Lets a
-    /// `match` arm like `Circle(p) -> p.x` resolve `p`'s record type.
-    fn pattern_record_binds(&self, pat: &Pattern, out: &mut Vec<(String, String)>) {
-        match pat {
-            Pattern::Ctor { name, args } => {
-                let field_recs = self.ctor_field_records.get(name);
-                for (i, arg) in args.iter().enumerate() {
-                    if let Pattern::Var(v) = arg {
-                        if let Some(Some(rec)) = field_recs.and_then(|fr| fr.get(i)) {
-                            out.push((v.clone(), rec.clone()));
-                        }
-                    }
-                    self.pattern_record_binds(arg, out);
-                }
-            }
-            Pattern::Tuple(args) => {
-                for a in args {
-                    self.pattern_record_binds(a, out);
-                }
-            }
-            Pattern::List { elems, .. } => {
-                for e in elems {
-                    self.pattern_record_binds(e, out);
-                }
-            }
-            _ => {}
         }
     }
 
@@ -9123,5 +8776,5 @@ fn alpha_rename(body: &Block, params: &[Param]) -> Block {
 }
 
 #[cfg(test)]
-#[path = "codegen_tests.rs"]
+#[path = "../codegen_tests.rs"]
 mod tests;
