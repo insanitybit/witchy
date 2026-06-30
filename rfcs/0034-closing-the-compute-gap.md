@@ -51,7 +51,14 @@ The compute gap has an *avoidable* part (codegen, checks, ABI — this RFC) and 
 
 ## Levers (priority order)
 
-### L1 — Integrate Binaryen `wasm-opt` as an AOT-cached compile pass
+### L1 — Integrate Binaryen `wasm-opt` as an AOT-cached compile pass — ✅ SHIPPED
+Done (`runtime.rs` `binaryen_optimize`, run in `build_module`'s cold path only, so
+warm runs deserialize the optimized native via the AOT cache and pay nothing; the
+cache key includes the Binaryen flag; optional + graceful if `wasm-opt` is absent).
+**Measured win (release, warm):** mandelbrot 95.9 → 53.4 ms (~1.8×, now Go parity),
+record_build 40.8 → 29.5 ms (~1.4×), nsieve 39.3 → 33.1 ms (~1.2×). Sound: 104
+examples + 15 benchmarks byte-identical with Binaryen on vs off.
+
 The single biggest codegen win Cranelift cannot give. Run real `wasm-opt -O2/-O3`
 (GVN, aggressive inlining, DCE, local CSE, local/memory coalescing) on the wasm
 witchy emits, *before* Cranelift compiles it. It is slow — but it runs **once at
@@ -93,13 +100,19 @@ environment record entirely. A reserved `direct-call` lever exists with no consu
 - **Risk:** low–medium — call-lowering change, well covered by the existing closure
   tests + the differential oracle.
 
-### L4 — Pooling instance allocator
-Set wasmtime `InstanceAllocationStrategy::Pooling`. Reuses instance memory across
-instantiations instead of fresh `mmap`/teardown.
-- **Targets:** the ~15 ms startup floor (AOT is done; this attacks instantiate
-  cost), and especially the many-instance cases — `serve_pool` servers and a
-  worker-VM pool for `vm.par_map` (see L5).
-- **Risk:** low — a Config flag; validate memory-cap behavior still holds.
+### L4 — Pooling instance allocator — ⚠️ IMPLEMENTED opt-in, MEASURED not-beneficial-yet
+Set wasmtime `InstanceAllocationStrategy::Pooling`. Reuses pre-reserved instance
+slots instead of fresh `mmap`/teardown. Shipped behind `WITCHY_POOL` (off by
+default). **Measured (release):** it makes things SLOWER on current workloads —
+one-shot `hello` 15.7 → 25.0 ms (1.59×), and even `parmap`'s single fan-out
+106 → 113 ms (1.07×). Root cause: each pool slot must reserve witchy's 1 GiB
+per-instance memory cap up front, and a non-repeated workload never amortizes
+that reservation.
+- **When it WILL pay off:** a long-running server (`serve_pool`) where the
+  one-time reservation amortizes over many request instances — and/or a smaller
+  per-instance memory cap. Neither holds in the current one-shot-dominated suite.
+- **Decision:** keep opt-in + documented; do NOT default-enable until there's a
+  server/repeated-instance benchmark that shows the win. Pairs with L5.
 
 ### L5 — Worker-VM pool for `vm.par_map`
 Today each `par_map` spins up a fresh `Store`/`Instance` per OS thread. RFC-0032

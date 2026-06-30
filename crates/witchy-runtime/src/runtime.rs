@@ -434,6 +434,20 @@ impl Runtime {
             // run onward skip Cranelift.
             config.cache(Some(cache));
         }
+        // (RFC-0034 L4) Pooling instance allocator: reuse pre-reserved instance
+        // slots instead of fresh mmap/teardown per instantiation — the lever for
+        // the many-instance paths (serve_pool, a future par_map worker pool). Each
+        // slot must reserve witchy's per-instance memory cap (1 GiB), so the pool is
+        // kept modest. Opt-in via WITCHY_POOL while we measure whether the up-front
+        // reservation pays off for one-shot runs (it likely doesn't — the win is
+        // many-instance) before making it default.
+        if !preempt && std::env::var_os("WITCHY_POOL").is_some() {
+            let mut pool = wasmtime::PoolingAllocationConfig::default();
+            pool.total_memories(64);
+            pool.total_core_instances(64);
+            pool.max_memory_size(16384 * 64 * 1024);
+            config.allocation_strategy(wasmtime::InstanceAllocationStrategy::Pooling(pool));
+        }
         let engine = Engine::new(&config)?;
         Ok(Self {
             engine,
