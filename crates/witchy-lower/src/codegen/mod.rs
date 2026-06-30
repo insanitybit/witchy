@@ -2357,12 +2357,17 @@ impl Codegen {
                             });
                         }
                         tail_is_value = false;
-                    } else if let Some((callee, _)) = self
-                        .collect_wir
-                        .then(|| analysis::self_own_call(name, value, &self.summaries))
-                        .flatten()
+                    } else if let Some((callee, _)) = (self.collect_wir
+                        && self.inplace_push.contains(name))
+                    .then(|| analysis::self_own_call(name, value, &self.summaries))
+                    .flatten()
                     {
-                        // own-ABI self-call (binary only): `xs = grow(move xs, …)`
+                        // own-ABI self-call (binary only): `xs = grow(move xs, …)`.
+                        // Gated on `inplace_push` — i.e. the `{name}__cap` token IS
+                        // declared (an accumulator). Under force-copy (`-inplace`,
+                        // no accumulators) this falls through to a plain reassign
+                        // (`name = <plain own-ABI call>`, cap = 0), so the cap local
+                        // is never referenced when it doesn't exist.
                         // against a callee whose `own` buffer param may be returned.
                         // The callee returns `(value, cap)` and takes the caller's
                         // ownership token as a trailing i32 arg — so thread `xs__cap`
@@ -3228,6 +3233,24 @@ impl Codegen {
                 Some(&pk) => Self::wir_convert(w, ak, pk),
                 None => w,
             });
+        }
+        if self.summaries.own_abi(name).is_some() {
+            // (RFC-0033 R3) The callee carries the own-ABI: a trailing i32 cap
+            // PARAM and an extra i32 cap RESULT. A PLAIN call (not the
+            // `x = f(move x)` self-call that `self_own_call` threads) doesn't carry
+            // ownership, so pass cap = 0 — the callee re-owns/copies as needed —
+            // and discard the returned cap, yielding the declared value via
+            // TUPLE_TMP. Without this, a plain call to any own-ABI function bailed.
+            use witchy_wir::wir::{WirExpr as W, WirNode as N};
+            args_w.push(W::ConstI32(0));
+            return Some(W::Seq(vec![
+                N::CallStoreMulti {
+                    func: name.to_string(),
+                    args: args_w,
+                    dests: vec![TUPLE_TMP.to_string(), "__witchy_owncap".to_string()],
+                },
+                N::Push(W::GetLocal(TUPLE_TMP.to_string())),
+            ]));
         }
         Some(witchy_wir::wir::WirExpr::Call { func: name.to_string(), args: args_w })
     }
@@ -4435,7 +4458,7 @@ impl Codegen {
                 let is_plain_user_fn = self.emitted_funcs.contains(name)
                     && !self.locals.contains_key(name)
                     && !self.local_fn_ret_kind.contains_key(name);
-                if is_plain_user_fn && self.summaries.own_abi(name).is_none() && !has_var {
+                if is_plain_user_fn && !has_var {
                     return self.try_lower_user_call(name, args);
                 }
                 return None;

@@ -331,7 +331,20 @@ impl Summaries {
         }
         // The own-ABI: decided AFTER the alias fixpoint, identically wherever
         // this module compiles (callers and the definition must agree
-        // on every function's signature).
+        // on every function's signature). (RFC-0033 R3) An `own` param is
+        // eligible when its type is HEAP-allocated — the builtin collections plus
+        // every user record/enum — so in-place ownership threads through user
+        // abstractions, not just the three builtins. Scalars (Int/Bool/Float/
+        // Duration are `Type::Named` too) are excluded: they own no buffer, and
+        // threading a cap for them would be unsound.
+        let heap_types: std::collections::HashSet<String> = ["List", "Dict", "String", "Bytes"]
+            .into_iter()
+            .map(String::from)
+            .chain(module.items.iter().filter_map(|it| match it {
+                Item::Type(td) => Some(td.name.clone()),
+                _ => None,
+            }))
+            .collect();
         for (name, f) in &bodies {
             let owns: Vec<usize> = f
                 .params
@@ -339,7 +352,7 @@ impl Summaries {
                 .enumerate()
                 .filter(|(_, p)| {
                     p.convention == Convention::Own
-                        && matches!(&p.ty, Some(Type::Named(n, _)) if n == "List" || n == "Dict" || n == "String")
+                        && matches!(&p.ty, Some(Type::Named(n, _)) if heap_types.contains(n))
                 })
                 .map(|(i, _)| i)
                 .collect();

@@ -126,6 +126,29 @@ mod tests {
         );
     }
 
+    /// (RFC-0033 R3) own-ABI threads through a USER record type: `c = bump(c)`,
+    /// where `bump(own c: Counter)` mutates a field and returns it, keeps the
+    /// record's ownership ACROSS the call boundary, so the loop reuses one record
+    /// (O(1) heap) instead of reallocating per call. This is the edge RFC-0033
+    /// closes end to end — in-place threading compounding through a user function.
+    #[test]
+    fn record_own_abi_threads_in_place() {
+        const REC: &str = "type Counter:\n    count: Int\n    pad: Int\n\nfn bump(own c: Counter) -> Counter:\n    c.count = c.count + 1\n    c\n\nfn build(n: Int) -> Counter:\n    var c = Counter(0, 0)\n    var i = 0\n    while i < n:\n        c = bump(c)\n        i = i + 1\n    c\n\nfn main(console: Console):\n    print(console, __render(build(400).count))\n";
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let on = compute(REC).expect("on");
+        opt::set_for_tests(Some(OptSet::default_set().without(Opt::InPlace)));
+        let off = compute(REC).expect("off");
+        opt::set_for_tests(None);
+        assert_eq!(on.output, off.output, "own-ABI threading must not change output");
+        assert_eq!(on.output, vec!["400".to_string()]);
+        assert!(
+            off.heap_bytes > on.heap_bytes * 4,
+            "own-ABI must thread the record in place across the call: on={} off={}",
+            on.heap_bytes,
+            off.heap_bytes
+        );
+    }
+
     /// RFC-0030 soak / never-OOM guard: a long loop whose per-iteration scratch is
     /// escape-free must run in BOUNDED heap — the `region` loop-watermark reclaim
     /// resets the arena every iteration. With it off the same program leaks O(n).
@@ -191,6 +214,10 @@ mod tests {
             // shared record in place. The interpreter oracle pins "1 99"; an unsound
             // in-place would print "99 99" and fail this differential.
             "type R:\n    a: Int\n    b: Int\n\nfn main(console: Console):\n    var r = R(1, 2)\n    let alias = r\n    r.a = 99\n    print(console, \"${alias.a} ${r.a}\")\n",
+            // (RFC-0033 R3) own-ABI threading through a user record + a PLAIN call
+            // to an own-ABI fn (`id(Counter(7,0))`) — both must be invariant under
+            // toggling `inplace` and match the interpreter oracle.
+            "type Counter:\n    count: Int\n    pad: Int\n\nfn bump(own c: Counter) -> Counter:\n    c.count = c.count + 1\n    c\n\nfn id(own c: Counter) -> Counter:\n    c\n\nfn build(n: Int) -> Counter:\n    var c = Counter(0, 0)\n    var i = 0\n    while i < n:\n        c = bump(c)\n        i = i + 1\n    c\n\nfn main(console: Console):\n    print(console, __render(build(30).count))\n    print(console, __render(id(Counter(7, 0)).count))\n",
             // CACHE EVICTION: insert then remove distinct dict keys (the per-object
             // RC floor's target garbage). Output must stay invariant under every
             // `WITCHY_OPT` setting and match the interpreter — the parity guard for
