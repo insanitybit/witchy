@@ -1,0 +1,18 @@
+// Multi-core benchmark: map a CPU-heavy pure function over a list with
+// `vm.par_map`, which runs the elements across OS-thread worker VMs (one
+// wasmtime instance per core). Compare against `parmap.go` (goroutines).
+import vm
+import list
+
+fn busy(n: Int) -> Int:
+    var acc = 0
+    var i = 0
+    while i < 40000000:
+        acc = acc + (n * i) % 7
+        i = i + 1
+    acc
+
+fn main(console: Console):
+    let xs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    let ys = vm.par_map(xs, busy)
+    print(console, "${list.sum(ys)}")

@@ -42,3 +42,20 @@ capacity locals), arena watermark resets for escape-free loops (200k-iteration
 With this, every core structure (list, string, dict) builds and reads at
 Go-class speed on the WASM tier. wasm-opt measured as not-a-lever at current
 codegen quality; parallel actor drain available opt-in.
+
+## Multi-core (RFC-0032) — `vm.par_map` across worker VMs
+
+A CPU-heavy pure function mapped over 16 elements, run in parallel. The witchy
+leg uses `vm.par_map`, which dispatches the elements to OS-thread worker VMs (one
+wasmtime instance per core, zero-authority); the Go leg uses goroutines + a
+`WaitGroup`. 10-core machine, compiled WASM tier, hyperfine.
+
+| bench | Go (goroutines) | witchy (`vm.par_map`) | ratio |
+|---|---|---|---|
+| parmap | 85.1 ms | 106.6 ms | **0.80× (Go 1.25× faster)** |
+
+Both saturate the cores (user time ~508 ms Go vs ~543 ms witchy). witchy's real
+multi-core is within 25% of Go's goroutines on CPU-bound parallel work; the gap is
+per-call worker-VM instantiation overhead (a future instance-pool lever). This is
+the first witchy workload to use more than one core — parity-preserving, because a
+pure function collected by input index yields the same result sequentially.

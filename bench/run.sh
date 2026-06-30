@@ -10,7 +10,7 @@ WITCHY=${WITCHY:-../target/release/witchy}
 (cd .. && cargo build --release --quiet)
 mkdir -p bin
 BENCHES=("$@")
-[ ${#BENCHES[@]} -eq 0 ] && BENCHES=(cpu listbuild strings hello)
+[ ${#BENCHES[@]} -eq 0 ] && BENCHES=(cpu listbuild strings hello parmap)
 for b in "${BENCHES[@]}"; do
   [ -f "${b}.go" ] && go build -o "bin/${b}_go" "${b}.go"
   # Warm witchy's compilation cache so the measured runs are JIT-artifact hits.
