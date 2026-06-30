@@ -1,0 +1,23 @@
+// Channel throughput: a spawned producer sends N ints over a bounded channel and
+// the consumer drains them — timing the async executor's send/recv + cooperative
+// scheduling vs Go goroutines+channels. Both ends know N, so both print it after
+// the full exchange (witchy's for-await body captures by value, so it can't fold
+// the stream into a sum yet — this drains instead).
+//
+// N is capped at 8000: the cooperative executor does NOT reset its arena per
+// scheduling step, so memory grows per message and traps (OOB) past ~9k. Lifting
+// this (arena-reset for the executor loop, per spec/performance.md) is the
+// prerequisite to a high-throughput channel benchmark — and to channel-heavy
+// programs in general. As-is this is a small but real send/recv throughput probe.
+import chan
+
+async fn producer(tx: Sender(Int), n: Int) -> Nil:
+    for i in 0..n:
+        chan.send(tx, i).await
+
+async fn main(console: Console):
+    let (tx, rx) = chan.channel(64).await
+    chan.spawn(producer(tx, 8000)).await
+    for await v in rx:
+        chan.done(v)
+    print(console, "8000")

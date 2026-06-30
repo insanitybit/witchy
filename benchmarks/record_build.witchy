@@ -1,0 +1,21 @@
+// Mutable-accumulation through a USER type (RFC-0033): a record wrapping a list,
+// grown in place via `s.items = list.push(s.items, i)` and a field update
+// `s.total = ...`. The record escapes (returned), so it exercises the heap
+// in-place field update (R1) + field-path list growth (R2) — the workload the
+// CLBG suite never covered. Without RFC-0033 this is O(n^2) and OOM-traps.
+type Stack:
+    items: List(Int)
+    total: Int
+
+fn build(n: Int) -> Stack:
+    var s = Stack([], 0)
+    var i = 0
+    while i < n:
+        s.items = list.push(s.items, i)
+        s.total = s.total + i
+        i = i + 1
+    s
+
+fn main(console: Console):
+    let s = build(3000000)
+    print(console, "${s.total + list.length(s.items)}")
