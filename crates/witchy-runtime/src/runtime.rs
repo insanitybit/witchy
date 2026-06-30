@@ -47,11 +47,11 @@ fn aot_cache_dir() -> Option<std::path::PathBuf> {
 /// than Cranelift's Speed tier (GVN, inlining, DCE, local CSE). It runs ONLY on
 /// the cold compile path below (the result is AOT-cached), so warm runs pay
 /// nothing. Optional + graceful: returns the input unchanged if `wasm-opt` isn't
-/// on PATH or fails, or if `WITCHY_NO_BINARYEN` is set. `--all-features` so it
-/// accepts witchy's bulk-memory (`memory.copy`); -O2 never introduces new
-/// features, so the output runs under the same wasmtime config.
+/// on PATH or fails, or if the `wasm-opt` lever is off (`WITCHY_OPT=-wasm-opt`).
+/// `--all-features` so it accepts witchy's bulk-memory (`memory.copy`); -O2 never
+/// introduces new features, so the output runs under the same wasmtime config.
 fn binaryen_enabled() -> bool {
-    std::env::var_os("WITCHY_NO_BINARYEN").is_none()
+    witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::WasmOpt)
 }
 
 fn binaryen_optimize(wasm: &[u8]) -> std::borrow::Cow<'_, [u8]> {
@@ -469,7 +469,9 @@ impl Runtime {
         memory_pages_max: usize,
     ) -> Result<Vm> {
         let id = self.next_id;
-        let module = build_module(&self.engine, &optimize_module(wasm.as_ref()), !self.preempt)?;
+        // `wasm-opt` runs inside `build_module` (ahead of time, on the cold compile
+        // only, then AOT-cached) — never here on the hot per-spawn path.
+        let module = build_module(&self.engine, wasm.as_ref(), !self.preempt)?;
 
         let limits = StoreLimitsBuilder::new()
             .memory_size(memory_pages_max * 64 * 1024)
@@ -2279,60 +2281,6 @@ fn host_crypto_reveal_len(mut caller: Caller<'_, VmState>, key: i32) -> Result<i
 // --- small helpers for safe guest-memory access ---
 
 /// Read a witchy string value (a `[i32 len][bytes...]` header) at `ptr`.
-/// Run Binaryen's `wasm-opt -O2` over a module before Cranelift sees it — a
-/// mature optimizer (inlining, GVN, const-prop, local coalescing) over our
-/// deliberately naive emitter. OPT-IN via `WITCHY_OPT=wasm-opt` (it costs
-/// tens of milliseconds per module, which the test suite's hundreds of tiny
-/// modules should not pay), and it degrades to the input untouched when the
-/// binary is missing or fails — never a hard dependency.
-pub fn optimize_module(input: &[u8]) -> Vec<u8> {
-    if !witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::WasmOpt) {
-        return input.to_vec();
-    }
-    // A private, randomly named, owner-only directory per invocation — never
-    // predictable paths in the shared temp dir (symlink-attack surface).
-    let private_dir = (|| -> Option<std::path::PathBuf> {
-        for _ in 0..4 {
-            let mut bytes = [0u8; 8];
-            getrandom::fill(&mut bytes).ok()?;
-            let name: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-            let dir = std::env::temp_dir().join(format!("witchy-opt-{name}"));
-            let mut builder = std::fs::DirBuilder::new();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::DirBuilderExt;
-                builder.mode(0o700);
-            }
-            if builder.create(&dir).is_ok() {
-                return Some(dir);
-            }
-        }
-        None
-    })();
-    let Some(dir) = private_dir else {
-        return input.to_vec();
-    };
-    let src = dir.join("module.wat");
-    let out = dir.join("module.wasm");
-    let optimized = (|| -> Option<Vec<u8>> {
-        std::fs::write(&src, input).ok()?;
-        let status = std::process::Command::new("wasm-opt")
-            .args(["-O2", "--all-features"])
-            .arg(&src)
-            .arg("-o")
-            .arg(&out)
-            .stderr(std::process::Stdio::null())
-            .status()
-            .ok()?;
-        if !status.success() {
-            return None;
-        }
-        std::fs::read(&out).ok()
-    })();
-    let _ = std::fs::remove_dir_all(&dir);
-    optimized.unwrap_or_else(|| input.to_vec())
-}
-
 fn read_wstr(data: &[u8], ptr: i32) -> Result<String> {
     let len_bytes = slice(data, ptr, 4)?;
     let len = i32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]]);

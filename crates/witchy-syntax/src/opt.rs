@@ -57,7 +57,11 @@ pub enum Opt {
     /// reclaimed, not leaked (off ⇒ leak it). Convention/escape-oracle-driven, general
     /// over all operations (no per-method code). Opt-in until complete. RFC-0016.
     RcFloor,
-    /// The opt-in Binaryen post-pass (off by default). Replaces `WITCHY_WASM_OPT`.
+    /// Binaryen `wasm-opt -O2` over the emitted wasm before Cranelift compiles it —
+    /// the real wasm optimizer (GVN, inlining, DCE, local CSE) our naive emitter
+    /// leaves on the table. Run AHEAD OF TIME on the cold compile only and
+    /// AOT-serialized into the module cache, so warm runs pay nothing; default-on,
+    /// a graceful no-op if `wasm-opt` isn't on PATH (RFC-0034 L1).
     WasmOpt,
     /// (RFC-0034 L3) Closure devirtualization: a closure local provably bound to one
     /// lambda and never reassigned is called with a direct `call $__lamw{i}` instead
@@ -122,7 +126,7 @@ impl Opt {
     /// In the production default set? Experimental / costly passes are opt-in
     /// (they must be named explicitly in `WITCHY_OPT`).
     fn default_on(self) -> bool {
-        !matches!(self, Opt::WasmOpt | Opt::Unbox | Opt::RcFloor)
+        !matches!(self, Opt::Unbox | Opt::RcFloor)
     }
 
     fn bit(self) -> u32 {
@@ -242,7 +246,7 @@ mod tests {
         let d = OptSet::default_set();
         assert!(d.contains(Opt::InPlace));
         assert!(d.contains(Opt::Region));
-        assert!(!d.contains(Opt::WasmOpt), "wasm-opt is opt-in");
+        assert!(d.contains(Opt::WasmOpt), "wasm-opt (AOT-cached Binaryen) is default-on");
         assert!(!d.contains(Opt::Unbox), "unbox (packed layouts) is opt-in");
         assert!(d.contains(Opt::Views) && d.contains(Opt::Sroa), "default includes shipped opts");
     }
@@ -260,7 +264,7 @@ mod tests {
         let s = parse("-inplace").unwrap();
         assert!(!s.contains(Opt::InPlace));
         assert!(s.contains(Opt::Region), "only inplace removed");
-        assert!(!s.contains(Opt::WasmOpt), "still opt-in off");
+        assert!(s.contains(Opt::WasmOpt), "wasm-opt stays on; only inplace removed");
     }
 
     #[test]
