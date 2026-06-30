@@ -301,7 +301,6 @@ impl Vm {
     /// The exported re-own counter: how many in-place accumulation sites
     /// entered with a zero ownership token (each one copies). None when the
     /// module has no in-place machinery. (A test/diagnostic API.)
-    #[allow(dead_code)]
     pub fn reowns(&mut self) -> Option<i64> {
         self.instance
             .get_global(&mut self.store, "__witchy_reowns")
@@ -340,7 +339,6 @@ impl Vm {
 
     /// Everything this VM has printed so far, in order. (Used by tests to
     /// assert a compiled program's behavior end to end.)
-    #[allow(dead_code)]
     pub fn output(&self) -> Vec<String> {
         self.store.data().output.lock().unwrap().clone()
     }

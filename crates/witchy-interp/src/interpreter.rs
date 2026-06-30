@@ -2649,7 +2649,6 @@ pub fn run(src: &str) -> Result<Vec<String>, RuntimeError> {
 }
 
 /// Run with a chosen root directory for the root `Dir` capability.
-#[allow(dead_code)]
 pub fn run_in(src: &str, root: impl AsRef<Path>) -> Result<Vec<String>, RuntimeError> {
     run_with(src, root, Vec::new())
 }
@@ -2772,7 +2771,6 @@ pub fn run_module_exit_dirs(
 
 /// Parse and run `src` with several `Dir` grants (the multi-`Dir` analog of
 /// [`run_in`]); test/CLI helper for [`run_module_exit_dirs`].
-#[allow(dead_code)]
 pub fn run_in_dirs(src: &str, roots: &[PathBuf]) -> Result<Vec<String>, RuntimeError> {
     let module = parse_module(src).map_err(|e| RuntimeError { message: e.to_string() })?;
     run_module_exit_dirs(module, roots.to_vec(), Vec::new(), Vec::new(), None).map(|(out, _)| out)
