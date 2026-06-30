@@ -636,9 +636,12 @@ fn coven_audits_embedded_compartments() {
     assert_eq!(status, 200, "compartments status: {body}");
     assert!(body.contains("d3-runes-chart"), "the audit should flag the embedded compartment: {body}");
 
-    // A rune with no compartment embed reports none.
+    // A rune with no compartment embed reports none. Mint a FRESH CI token: tokens are
+    // single-use (see `trusted_publish_token_is_single_use`), and the first publish
+    // already consumed `ci`. Same repo, so it publishes into the same TOFU-bound namespace.
+    let ci2 = server.ci_token("acme-repo", "release.yml");
     let plain = fe.lib("acme/plain", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
-    let out2 = fe.pm(&plain, &["publish", "."], Some(&ci));
+    let out2 = fe.pm(&plain, &["publish", "."], Some(&ci2));
     assert!(stdout(&out2).contains("publish: 200"), "plain publish: {}", stdout(&out2));
     let (status2, body2) =
         http_get(&format!("127.0.0.1:{}", server.port), "/coven/compartments?name=acme~plain&version=1.0.0");
