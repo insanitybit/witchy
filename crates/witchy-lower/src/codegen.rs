@@ -6358,25 +6358,17 @@ impl Codegen {
         parts.len() == 2 && parts.iter().all(|t| scalar(t))
     }
 
-    /// `vm.par_map` monomorphized over `String` arguments (`vm.par_map__String__String`).
-    /// A `String` is a flat `[len][bytes]` value, so it crosses to a worker VM by a plain
-    /// byte copy (no marshaling); this takes the native `vm_par_map_str` path.
-    fn is_str_par_map(name: &str) -> bool {
+    /// `vm.par_map` monomorphized over a flat BUFFER element type — `String` or `Bytes`
+    /// (`vm.par_map__String__String` / `__Bytes__Bytes`). Both are `[len][bytes]` with no
+    /// internal pointers, and `List(String)`/`List(Bytes)` share an identical layout, so a
+    /// single runtime path (`vm_par_map_bytes`, raw byte copy in/out) serves both — a
+    /// witchy `String` is just valid-UTF-8 `Bytes`.
+    fn is_buf_par_map(name: &str) -> bool {
         let Some(suffix) = name.strip_prefix("vm.par_map__") else {
             return false;
         };
         let parts: Vec<&str> = suffix.split("__").collect();
-        parts.len() == 2 && parts.iter().all(|t| *t == "String")
-    }
-
-    /// `vm.par_map` monomorphized over `Bytes` (`vm.par_map__Bytes__Bytes`) — flat binary
-    /// payloads copied raw across worker VMs (the non-lossy companion to `is_str_par_map`).
-    fn is_bytes_par_map(name: &str) -> bool {
-        let Some(suffix) = name.strip_prefix("vm.par_map__") else {
-            return false;
-        };
-        let parts: Vec<&str> = suffix.split("__").collect();
-        parts.len() == 2 && parts.iter().all(|t| *t == "Bytes")
+        parts.len() == 2 && parts.iter().all(|t| *t == "String" || *t == "Bytes")
     }
 
     fn lower_call(&mut self, name: &str, args: &[Expr]) -> Option<witchy_wir::wir::WirExpr> {
@@ -6852,16 +6844,10 @@ impl Codegen {
             {
                 call("vm_par_map", self.lower_args(&[&args[0], &args[1]])?)
             }
-            // (RFC-0032) `String` variant — flat byte payloads copied across worker VMs.
+            // (RFC-0032) `String`/`Bytes` variant — flat buffer payloads copied raw across
+            // worker VMs (one path; a `String` is valid-UTF-8 `Bytes`).
             (_, 2)
-                if Self::is_str_par_map(name)
-                    && matches!(&args[1], Expr::Var(f) if !self.locals.contains_key(f)) =>
-            {
-                call("vm_par_map_str", self.lower_args(&[&args[0], &args[1]])?)
-            }
-            // (RFC-0032) `Bytes` variant — raw binary payloads, non-lossy byte copy.
-            (_, 2)
-                if Self::is_bytes_par_map(name)
+                if Self::is_buf_par_map(name)
                     && matches!(&args[1], Expr::Var(f) if !self.locals.contains_key(f)) =>
             {
                 call("vm_par_map_bytes", self.lower_args(&[&args[0], &args[1]])?)
@@ -8247,9 +8233,7 @@ pub fn assemble_wir_module(
             // worker's memory — emit it unless string-export wrappers already do.
             // The String/Bytes variants copy buffers in via `__galloc`; all variants
             // invoke the closure by index via `__call_idx`.
-            let has_par_map_buf = pruned_funcs
-                .iter()
-                .any(|f| f.name == "vm_par_map_str" || f.name == "vm_par_map_bytes");
+            let has_par_map_buf = pruned_funcs.iter().any(|f| f.name == "vm_par_map_bytes");
             // (RFC-0032) `vm.with_dir` and `vm.serve` invoke a 2-arg closure via `__call2`,
             // and copy buffers into a worker via `__galloc`.
             let has_call2 = pruned_funcs

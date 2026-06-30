@@ -3879,38 +3879,6 @@ pub fn vm_par_map_helper() -> WirFunc {
     }
 }
 
-/// (RFC-0032) `$vm_par_map_str(xs, f) -> i32` — the `String` variant of `$vm_par_map`.
-/// The host applies `f` to each string across worker VMs (copying bytes in/out), reports
-/// the byte size of the resulting `List(String)` (`vm_par_map_str_run`), then writes the
-/// `[count][ptr..]` + payload structure into the reserved block (`write_pending_list`,
-/// shared with `dir_list`/`args`).
-pub fn vm_par_map_str_helper() -> WirFunc {
-    use WirExpr as E;
-    use WirNode as N;
-    let getl = |n: &str| E::GetLocal(n.into());
-    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-    WirFunc {
-        name: "vm_par_map_str".into(),
-        params: vec![
-            WirLocal { name: "xs".into(), ty: WirTy::Bool },
-            WirLocal { name: "f".into(), ty: WirTy::Bool },
-        ],
-        ret: vec![WirTy::Bool],
-        locals: vec![
-            WirLocal { name: "size".into(), ty: WirTy::Bool },
-            WirLocal { name: "res".into(), ty: WirTy::Bool },
-        ],
-        body: vec![
-            N::SetLocal { local: "size".into(), value: E::CallHost { import: "vm_par_map_str_run".into(), args: vec![getl("xs"), getl("f")] } },
-            N::Do(E::Call { func: "ensure".into(), args: vec![getl("size")] }),
-            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
-            N::Do(E::CallHost { import: "write_pending_list".into(), args: vec![getl("res")] }),
-            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("res"), getl("size")) },
-            N::Push(getl("res")),
-        ],
-        raw_body: None,
-    }
-}
 
 /// (RFC-0032) `$vm_par_map_bytes(xs, f) -> i32` — the `Bytes` variant of `$vm_par_map_str`.
 /// Same two-phase size-then-write protocol; the host stages raw bytes (no UTF-8 decode).
@@ -5085,13 +5053,6 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             func: vm_par_map_helper(),
             helper_deps: &["ensure"],
             import_deps: &["vm_par_map_run", "vm_par_map_write"],
-            uses_heap: true,
-            uses_table: true,
-        }),
-        "vm_par_map_str" => Some(WirHelperSpec {
-            func: vm_par_map_str_helper(),
-            helper_deps: &["ensure"],
-            import_deps: &["vm_par_map_str_run", "write_pending_list"],
             uses_heap: true,
             uses_table: true,
         }),

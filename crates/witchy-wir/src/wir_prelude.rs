@@ -227,7 +227,6 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "write_pending_list" (func $write_pending_list_host (param i32)))
   (import "witchy" "vm_par_map_run" (func $vm_par_map_run_host (param i32 i32) (result i32)))
   (import "witchy" "vm_par_map_write" (func $vm_par_map_write_host (param i32)))
-  (import "witchy" "vm_par_map_str_run" (func $vm_par_map_str_run_host (param i32 i32) (result i32)))
   (import "witchy" "vm_par_map_bytes_run" (func $vm_par_map_bytes_run_host (param i32 i32) (result i32)))
   (import "witchy" "vm_par_map_bytes_write" (func $vm_par_map_bytes_write_host (param i32)))
   (import "witchy" "vm_with_dir_run" (func $vm_with_dir_run_host (param i32 i32 i32) (result i32)))
@@ -279,7 +278,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 71;
+pub const IMPORT_COUNT: usize = 70;
 
 /// The full ordered name list for the funcs section: `$mk0..$mk{MAX_MK}` then
 /// the static helper names. Matches the order the prelude emits bodies, so
