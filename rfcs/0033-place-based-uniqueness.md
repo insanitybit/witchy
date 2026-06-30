@@ -94,21 +94,26 @@ casing: R3 deletes a type allowlist rather than adding one.
    differential sweep (interp pins value semantics; an unsound in-place would
    diverge). This closes the dominant case of the edge — `.field =` loops on
    escaping records are now O(1)/update instead of O(n) reallocs.
-2. **R2 — field-path threading.** ⏳ NOT YET — needs FIELD-ESCAPE ANALYSIS for
-   soundness. A codegen-only attempt (persistent `{name}${field}__cap`; lower
-   `s.items = list.push(s.items, x)` via `list_push_cap` with effective cap =
-   `field_cap * (record_owned)`) was implemented and **reverted** because the
-   differential oracle proved it UNSOUND: under `WITCHY_OPT=-sroa`, the aliased
-   case `let snap = s.items; s.items = list.push(s.items, 2)` printed "202"
-   instead of "102" — `snap` was corrupted. Root cause: record-level ownership
-   (`s__cap`) does NOT imply the field's list buffer isn't separately aliased.
-   The existing dirty analysis catches WHOLE-record aliasing (`let x = s`) but not
-   FIELD aliasing (`let x = s.items`) — SROA masked it by chance, so only the
-   `-sroa` differential leg exposed it. A sound R2 must mark the field-push cap
-   dirty when `s.field` is read into a live alias (escapes), i.e. extend the
-   uniqueness scan to field paths. That is a real analysis pass — the right home
-   for it, not a codegen hack. (The oracle working exactly as designed is why this
-   was caught before shipping.)
+2. **R2 — field-path threading.** ✅ **SHIPPED** (commit 71ed846).
+   `s.items = list.push(s.items, x)` grows the field's OWN list buffer in place via
+   a persistent field-cap (`{var}${field}__cap`), so a `Stack` wrapper's push is
+   O(n), not O(n²) (`stats::record_field_list_push_is_in_place`). TWO independent
+   soundness guards, because a field buffer can be aliased two ways:
+   - WHOLE-record aliasing (`let x = s`): `eff_cap = field_cap * (record_owned)` —
+     R1's record token is already 0 when the record is aliased, forcing a copy.
+   - FIELD aliasing (`let snap = s.items`): a conservative gate
+     (`analysis::field_push_safe_set`) enables R2 for `(var, field)` ONLY when
+     every occurrence of `var.field` in the body is exactly the `list.push`
+     receiver; any other read (let-bind, embed in a literal, pass to a fn, return)
+     disables it → the existing copying push. A complete AST walk
+     (`field_escapes_expr`/`block_field_escapes`, modelled on the existing
+     uniqueness walker, all variants covered incl. nested blocks/lambdas) decides it.
+   A first codegen-only attempt with ONLY the first guard was unsound — the
+   differential oracle caught it under `WITCHY_OPT=-sroa` (the aliased case printed
+   "202" not "102"). The shipped version is verified by the full differential sweep
+   (every `WITCHY_OPT` setting × both backends) plus adversarial aliasing cases
+   (field aliased directly, inside an `if`, inside a list literal, and a whole-record
+   alias) — all invariant at "102".
 3. **R3 — own-ABI generalization.** ✅ **SHIPPED** (commit e1a4a2b). own-ABI
    eligibility is now keyed on a heap-type set (builtins + every user record/enum
    from `module.items`), not a name allowlist. Two codegen fixes made it real:
@@ -123,12 +128,16 @@ casing: R3 deletes a type allowlist rather than adding one.
 
 ## Status summary
 
-R1 (record in-place field update) and R3 (own-ABI threads through user types +
-plain own-ABI calls + the force-copy latent-bug fix) are SHIPPED and sound —
-in-place now threads through user abstractions at the RECORD level. R2 (growing a
-record FIELD's list buffer in place — the inner half of `Stack.push == List.push`)
-remains: its naive codegen-only form is unsound (oracle-caught), and the sound
-form requires extending the uniqueness analysis to field-path aliasing.
+**RFC-0033 is fully implemented.** R1 (record in-place field update), R2 (the
+field's list buffer grows in place — `Stack.push` is now O(n) like `List.push`),
+and R3 (own-ABI threads through user types, plain own-ABI calls, + a force-copy
+latent-bug fix) are all SHIPPED and sound. The copy-elision / in-place
+optimization now threads through user abstractions and compounds — record-level
+and field-level — entirely at compile time, zero runtime cost. Every increment is
+verified by the differential oracle (output invariant under every `WITCHY_OPT`
+setting on both the interpreter and compiled backends) plus per-increment
+"it-fired" heap-counter stats tests; the oracle caught and forced the correction
+of an unsound first cut of R2 before it shipped.
 
 ## Parity & soundness
 
