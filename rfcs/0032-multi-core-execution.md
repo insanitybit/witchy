@@ -473,12 +473,15 @@ isolation mechanism above plus the worker-VM instantiation machinery are the
 foundation; the full surface needs two more substantial pieces, deliberately not
 half-built:
 
-1. **Capability *passing* to a child** — granting a child VM a *narrowed* cap (not
-   just zero): marshal a parent capability value (a host-side handle, e.g. a confined
-   `Dir`/`Net`) into the child's `VmState` as a freshly-minted handle, so the child
-   wields exactly the attenuated authority passed and nothing else. (Zero-grant is
-   shipped; a chosen non-empty subset is the next step.)
-2. **Cross-VM channels** — the parent and child have separate linear memories, so a
+1. **Capability *passing* to a child — SHIPPED (2026-06-29).** `vm.with_dir(dir, f,
+   input)` runs a top-level `f(Dir, Bytes) -> Bytes` in an isolated worker VM granted
+   EXACTLY the passed `Dir` (the parent's read/write rights re-granted into the worker's
+   `VmState`) and nothing else — every ungranted host import traps. A worker reads a file
+   through the passed `Dir` and the interpreter (runs `f` directly) and compiled backend
+   (isolated worker) agree, since the isolation is invisible to the result. The same
+   pattern (read the parent grant → build the worker `VmState` + link only those caps)
+   generalizes to `Net`/`File`. Test: `vm_with_dir_capability_passing_agrees`.
+2. **Cross-VM channels (the last remaining piece)** — the parent and child have separate linear memories, so a
    channel between them cannot be the current in-VM pure-witchy data structure; it
    needs a **host-mediated** message queue shared between the two stores, with each
    VM's executor sending/receiving through host calls. This is the larger piece (the
