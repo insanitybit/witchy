@@ -1658,8 +1658,10 @@ fn host_vm_par_map_bytes_run(mut caller: Caller<'_, VmState>, xs_ptr: i32, f_ptr
     Ok(size as i32)
 }
 
-/// One chunk of a `Bytes` `vm.par_map` — like `run_par_chunk_str` but reads/writes RAW
-/// bytes (no UTF-8 decode), so binary payloads cross the worker boundary unchanged.
+/// One chunk of a `String`/`Bytes` `vm.par_map`: copy each input buffer into the worker
+/// (`__galloc` + `[len][bytes]`), invoke `f` by table index (`__call_idx`), and read the
+/// result buffer back out RAW (no UTF-8 decode) — a witchy `String` is valid-UTF-8 `Bytes`,
+/// so binary and text cross the worker boundary through the same path, unchanged.
 fn run_par_chunk_bytes(
     engine: &Engine,
     module: &Module,
