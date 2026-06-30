@@ -14,6 +14,8 @@ use crate::wir::*;
 
 mod dict;
 pub use dict::*;
+mod vm;
+pub use vm::*;
 
 /// `$print_str(s: i32)` — write a witchy string (a `[i32 len][utf-8]` record at
 /// `s`) to the host `print` import: `print(s + 4, [s])`. The ONLY authority it
@@ -2993,108 +2995,6 @@ fn two_phase_helper(name: &str, params: &[&str], run_import: &str, write_import:
     }
 }
 
-/// `$vm_par_map(xs, f) -> i32` — scalar `vm.par_map`: results as a flat `List(Int)`.
-pub fn vm_par_map_helper() -> WirFunc {
-    two_phase_helper("vm_par_map", &["xs", "f"], "vm_par_map_run", "vm_par_map_write")
-}
-
-
-/// `$vm_par_map_bytes(xs, f) -> i32` — the `String`/`Bytes` `vm.par_map`: raw buffer
-/// payloads, results as a `List(Bytes)`/`List(String)` (identical layout).
-pub fn vm_par_map_bytes_helper() -> WirFunc {
-    two_phase_helper("vm_par_map_bytes", &["xs", "f"], "vm_par_map_bytes_run", "vm_par_map_bytes_write")
-}
-
-/// (RFC-0032) `$__galloc(len) -> i32` — a bump allocator export the host calls to place
-/// bytes (e.g. a `vm.par_map` input string) into a worker VM's memory: grow if needed,
-/// return the old heap top, advance. Mirrors the inline `__galloc` the string-export
-/// wrappers expose; emitted for a worker when the `String` `vm.par_map` path is linked.
-pub fn galloc_helper() -> WirFunc {
-    use WirExpr as E;
-    use WirNode as N;
-    WirFunc {
-        name: "__galloc".into(),
-        params: vec![WirLocal { name: "len".into(), ty: WirTy::Bool }],
-        ret: vec![WirTy::Bool],
-        locals: vec![WirLocal { name: "p".into(), ty: WirTy::Bool }],
-        body: vec![
-            N::Do(E::Call { func: "ensure".into(), args: vec![E::GetLocal("len".into())] }),
-            N::SetLocal { local: "p".into(), value: E::GetGlobal("heap".into()) },
-            N::SetGlobal {
-                global: "heap".into(),
-                value: E::Binary {
-                    op: BinOp::Add,
-                    kind: Kind::I32,
-                    lhs: Box::new(E::GetGlobal("heap".into())),
-                    rhs: Box::new(E::GetLocal("len".into())),
-                },
-            },
-            N::Push(E::GetLocal("p".into())),
-        ],
-        raw_body: None,
-    }
-}
-
-/// (RFC-0032) A closure-call trampoline `$name(idx, x0..x{arity-1}) -> i64`: `call_indirect`s
-/// table slot `idx` with a NULL environment pointer and the `arity` slot args. Sound because
-/// `vm.par_map`/`vm.with_dir`/`vm.serve` all require capture-free functions, so the body never
-/// reads the environment — and a worker VM has its own linear memory, where a parent closure's
-/// environment record would not live anyway. The host invokes these re-entrantly (including
-/// from a fresh worker VM) to apply the user function to one element.
-fn call_trampoline_helper(name: &str, arity: usize) -> WirFunc {
-    use WirExpr as E;
-    use WirNode as N;
-    let arg_names: Vec<String> = (0..arity).map(|i| format!("x{i}")).collect();
-    let mut params = vec![WirLocal { name: "idx".into(), ty: WirTy::Bool }];
-    params.extend(arg_names.iter().map(|n| WirLocal { name: n.clone(), ty: WirTy::Int }));
-    let mut args = vec![E::ConstI32(0)];
-    args.extend(arg_names.iter().map(|n| E::GetLocal(n.clone())));
-    WirFunc {
-        name: name.into(),
-        params,
-        ret: vec![WirTy::Int],
-        locals: vec![],
-        body: vec![N::Push(E::CallIndirect {
-            type_arity: arity,
-            args,
-            index: Box::new(E::GetLocal("idx".into())),
-        })],
-        raw_body: None,
-    }
-}
-
-/// `$__call_idx(idx, arg) -> i64` — the one-argument closure trampoline (`vm.par_map`'s
-/// `fn(T) -> U`). See [`call_trampoline_helper`].
-pub fn call_idx_helper() -> WirFunc {
-    call_trampoline_helper("__call_idx", 1)
-}
-
-/// `$__call2(idx, a, b) -> i64` — the two-argument closure trampoline (a capability handle or
-/// state + a `Bytes` pointer, for `vm.with_dir`'s `fn(Dir, Bytes) -> Bytes` and `vm.serve`'s
-/// `fn(State, Bytes) -> State`). See [`call_trampoline_helper`].
-pub fn call2_helper() -> WirFunc {
-    call_trampoline_helper("__call2", 2)
-}
-
-/// (RFC-0032) `$vm_serve(init, requests, handler) -> i32` — a stateful service on a
-/// long-lived isolated worker VM: process the request stream in order, threading state
-/// through `handler`, emitting each new state. The host stages the response `List(Bytes)`
-/// (`vm_serve_run`), laid out by `vm_par_map_bytes_write` (same `List(Bytes)` structure).
-pub fn vm_serve_helper() -> WirFunc {
-    two_phase_helper(
-        "vm_serve",
-        &["init", "requests", "handler"],
-        "vm_serve_run",
-        "vm_par_map_bytes_write",
-    )
-}
-
-/// (RFC-0032) `$vm_with_dir(dir, f, input) -> i32` — capability-passing: run `f` on
-/// `input` in an isolated worker VM granted exactly `dir`. The host stages the result
-/// `Bytes` (`vm_with_dir_run`), which `fill_pending` lays out into the reserved block.
-pub fn vm_with_dir_helper() -> WirFunc {
-    two_phase_helper("vm_with_dir", &["dir", "f", "input"], "vm_with_dir_run", "fill_pending")
-}
 
 /// `$list_drop(list, k) -> i32` — a fresh list with the first `k` elements
 /// dropped. Allocates `(len-k)` slots and `memory.copy`s the tail. Used by the
