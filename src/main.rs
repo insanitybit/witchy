@@ -631,17 +631,63 @@ fn main() -> wasmtime::Result<()> {
             eprintln!("{e}");
             std::process::exit(1);
         }
-        // The listen addr is the only Net authority coven is granted.
+        // coven runs on the COMPILED WASM tier — the production tier. It has no
+        // interpreter-only dependency (`compiler.footprint`/`diff`/`doc` all have host
+        // functions; networking and live logging work compiled), so a registry server
+        // gets the compiled tier's speed and the same capability confinement.
         let net_allow = vec![addr];
-        match interpreter::run_module_exit_dirs(module, vec![root], net_allow, coven_args, signing_key) {
-            Ok((lines, code)) => {
-                for l in &lines {
-                    println!("{l}");
-                }
-                std::process::exit(code);
+        let mut caps = runtime::Capabilities {
+            print: true,
+            print_int: true,
+            // A server logs as it runs (live stdout), not captured-then-flushed.
+            quiet: false,
+            args: coven_args,
+            clock: true,
+            dir_root: Some(root),
+            dir_read: true,
+            dir_write: true,
+            net_allow: Some(net_allow),
+            net_connect: true,
+            net_listen: true,
+            signing_key,
+            ..Default::default()
+        };
+        if let Some(seed) = signing_key {
+            // The signing key is the `signing` secret at handle 0 (a bare `Secret`),
+            // also reachable via `SecretStore.get("signing")`.
+            caps.secrets.push(("signing".to_string(), seed.to_vec()));
+        }
+        let wasm = match codegen::compile_module_binary(&module) {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => {
+                eprintln!("coven does not lower to the compiled backend");
+                std::process::exit(1);
             }
             Err(e) => {
-                eprintln!("{}", e.message);
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        };
+        // `batch()` (no preemption): a server blocks in host accept calls, and we never
+        // want the preemption watchdog to interrupt a long-running request.
+        let mut rt = match runtime::Runtime::batch() {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        };
+        let mut vm = match rt.spawn(&wasm, caps, RUN_MEMORY_PAGES) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        };
+        match vm.run() {
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("{e}");
                 std::process::exit(1);
             }
         }
