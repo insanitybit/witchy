@@ -6369,6 +6369,16 @@ impl Codegen {
         parts.len() == 2 && parts.iter().all(|t| *t == "String")
     }
 
+    /// `vm.par_map` monomorphized over `Bytes` (`vm.par_map__Bytes__Bytes`) — flat binary
+    /// payloads copied raw across worker VMs (the non-lossy companion to `is_str_par_map`).
+    fn is_bytes_par_map(name: &str) -> bool {
+        let Some(suffix) = name.strip_prefix("vm.par_map__") else {
+            return false;
+        };
+        let parts: Vec<&str> = suffix.split("__").collect();
+        parts.len() == 2 && parts.iter().all(|t| *t == "Bytes")
+    }
+
     fn lower_call(&mut self, name: &str, args: &[Expr]) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::WirExpr as W;
         use witchy_wir::wir::WirNode as N;
@@ -6848,6 +6858,13 @@ impl Codegen {
                     && matches!(&args[1], Expr::Var(f) if !self.locals.contains_key(f)) =>
             {
                 call("vm_par_map_str", self.lower_args(&[&args[0], &args[1]])?)
+            }
+            // (RFC-0032) `Bytes` variant — raw binary payloads, non-lossy byte copy.
+            (_, 2)
+                if Self::is_bytes_par_map(name)
+                    && matches!(&args[1], Expr::Var(f) if !self.locals.contains_key(f)) =>
+            {
+                call("vm_par_map_bytes", self.lower_args(&[&args[0], &args[1]])?)
             }
             ("read_build", 2) => {
                 self.used_build_ops.insert("read_build");
@@ -8205,13 +8222,17 @@ pub fn assemble_wir_module(
             // apply the mapped closure to each element by its table index. The String
             // variant also needs `__galloc` so the host can place input strings into a
             // worker's memory — emit it unless string-export wrappers already do.
-            let has_par_map_str = pruned_funcs.iter().any(|f| f.name == "vm_par_map_str");
+            // The String/Bytes variants copy buffers in via `__galloc`; all variants
+            // invoke the closure by index via `__call_idx`.
+            let has_par_map_buf = pruned_funcs
+                .iter()
+                .any(|f| f.name == "vm_par_map_str" || f.name == "vm_par_map_bytes");
             let exports_call_idx =
-                has_par_map_str || pruned_funcs.iter().any(|f| f.name == "vm_par_map");
+                has_par_map_buf || pruned_funcs.iter().any(|f| f.name == "vm_par_map");
             if exports_call_idx {
                 pruned_funcs.push(witchy_wir::wir_helpers::call_idx_helper());
             }
-            if has_par_map_str && string_exports.is_empty() {
+            if has_par_map_buf && string_exports.is_empty() {
                 pruned_funcs.push(witchy_wir::wir_helpers::galloc_helper());
             }
             let data: Vec<DataSegment> = cg
@@ -8244,7 +8265,7 @@ pub fn assemble_wir_module(
                     if exports_call_idx {
                         exports.push(("__call_idx".into(), "__call_idx".into()));
                     }
-                    if !string_exports.is_empty() || has_par_map_str {
+                    if !string_exports.is_empty() || has_par_map_buf {
                         exports.push(("__galloc".into(), "__galloc".into()));
                     }
                     if !string_exports.is_empty() {

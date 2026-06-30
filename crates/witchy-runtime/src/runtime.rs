@@ -205,6 +205,9 @@ pub struct VmState {
     /// them — in parallel on worker VMs — then `vm_par_map_write` lays out the
     /// `List(Int)` `[count][i64..]` into the guest's reserved block).
     pub(crate) pending_ints: Option<Vec<i64>>,
+    /// (RFC-0032) Staged raw-byte results of a `Bytes` `vm.par_map` — kept as raw
+    /// `Vec<u8>` (NOT `String`) so arbitrary binary survives the round-trip.
+    pub(crate) pending_bytes: Option<Vec<Vec<u8>>>,
     /// The `Net` capability handle table: index 0 is the granted allowlist,
     /// and each `restrict` mints a narrower entry — host-side, unforgeable.
     pub(crate) nets: Vec<Vec<String>>,
@@ -424,6 +427,7 @@ impl Runtime {
             pending: None,
             pending_list: None,
             pending_ints: None,
+            pending_bytes: None,
             nets,
             sockets: Vec::new(),
             listeners: Vec::new(),
@@ -594,6 +598,8 @@ pub(crate) fn link_capability_imports(
     linker.func_wrap("witchy", "vm_par_map_run", host_vm_par_map_run)?;
     linker.func_wrap("witchy", "vm_par_map_write", host_vm_par_map_write)?;
     linker.func_wrap("witchy", "vm_par_map_str_run", host_vm_par_map_str_run)?;
+    linker.func_wrap("witchy", "vm_par_map_bytes_run", host_vm_par_map_bytes_run)?;
+    linker.func_wrap("witchy", "vm_par_map_bytes_write", host_vm_par_map_bytes_write)?;
     // Field-length staging helpers (`[len]` of a host cell's string/list field).
     // They carry no authority — pure reads — and the WIR static prelude declares
     // them unconditionally, so define harmless stubs here. Ordinary programs
@@ -1419,6 +1425,7 @@ fn worker_vmstate(engine: &Engine, module: &Module, preempt: bool) -> VmState {
         pending: None,
         pending_list: None,
         pending_ints: None,
+        pending_bytes: None,
         nets: Vec::new(),
         sockets: Vec::new(),
         listeners: Vec::new(),
@@ -1522,6 +1529,118 @@ fn run_par_chunk_str(
         out.push(read_wstr(mem.data(&store), rptr as i32)?);
     }
     Ok(out)
+}
+
+/// (RFC-0032) `vm_par_map_bytes_run(xs_ptr, f_ptr) -> byte_size`: the `Bytes` variant of
+/// `vm.par_map`. Identical to the `String` variant but the payload is kept as RAW bytes
+/// (`Vec<u8>`, no UTF-8 decode), so arbitrary binary survives the cross-VM round-trip.
+fn host_vm_par_map_bytes_run(mut caller: Caller<'_, VmState>, xs_ptr: i32, f_ptr: i32) -> Result<i32> {
+    let (inputs, code_idx): (Vec<Vec<u8>>, i32) = {
+        let mem = memory_of(&mut caller)?;
+        let data = mem.data(&caller);
+        let inputs = read_wbytes_list(data, xs_ptr)?;
+        let cb = slice(data, f_ptr, 4)?;
+        (inputs, i32::from_le_bytes([cb[0], cb[1], cb[2], cb[3]]))
+    };
+    let n = inputs.len();
+    if n == 0 {
+        caller.data_mut().pending_bytes = Some(Vec::new());
+        return Ok(4);
+    }
+    let engine = caller.data().engine.clone();
+    let module = caller.data().module.clone();
+    let preempt = caller.data().preempt;
+    let workers = std::thread::available_parallelism().map(|p| p.get()).unwrap_or(1).min(n).max(1);
+    let chunk = n.div_ceil(workers);
+    let mut results: Vec<Vec<u8>> = Vec::with_capacity(n);
+    std::thread::scope(|scope| -> Result<()> {
+        let mut handles = Vec::new();
+        let mut start = 0;
+        while start < n {
+            let end = (start + chunk).min(n);
+            let chunk_inputs = inputs[start..end].to_vec();
+            let (engine, module) = (&engine, &module);
+            handles.push(scope.spawn(move || {
+                run_par_chunk_bytes(engine, module, preempt, code_idx, &chunk_inputs)
+            }));
+            start = end;
+        }
+        for h in handles {
+            results.extend(
+                h.join().map_err(|_| Error::msg("vm.par_map worker thread panicked"))??,
+            );
+        }
+        Ok(())
+    })?;
+    let size = 4 + 8 * n + results.iter().map(|b| 4 + b.len()).sum::<usize>();
+    caller.data_mut().pending_bytes = Some(results);
+    Ok(size as i32)
+}
+
+/// One chunk of a `Bytes` `vm.par_map` — like `run_par_chunk_str` but reads/writes RAW
+/// bytes (no UTF-8 decode), so binary payloads cross the worker boundary unchanged.
+fn run_par_chunk_bytes(
+    engine: &Engine,
+    module: &Module,
+    preempt: bool,
+    code_idx: i32,
+    inputs: &[Vec<u8>],
+) -> Result<Vec<Vec<u8>>> {
+    let state = worker_vmstate(engine, module, preempt);
+    let mut store = Store::new(engine, state);
+    store.limiter(|s| &mut s.limits);
+    if preempt {
+        store.set_epoch_deadline(u64::MAX);
+    }
+    let mut linker: Linker<VmState> = Linker::new(engine);
+    link_capability_imports(&mut linker, &Capabilities::default())?;
+    linker.define_unknown_imports_as_traps(module)?;
+    let instance = linker.instantiate(&mut store, module)?;
+    let galloc = instance.get_typed_func::<i32, i32>(&mut store, "__galloc")?;
+    let call_idx = instance.get_typed_func::<(i32, i64), i64>(&mut store, "__call_idx")?;
+    let mem = instance
+        .get_memory(&mut store, "memory")
+        .ok_or_else(|| Error::msg("vm.par_map worker VM exports no `memory`"))?;
+    let mut out = Vec::with_capacity(inputs.len());
+    for bytes in inputs {
+        let total = 4 + bytes.len() as i32;
+        let wptr = galloc.call(&mut store, total)?;
+        let mut buf = Vec::with_capacity(total as usize);
+        buf.extend_from_slice(&(bytes.len() as i32).to_le_bytes());
+        buf.extend_from_slice(bytes);
+        mem.write(&mut store, wptr as usize, &buf)
+            .map_err(|e| Error::msg(format!("writing par_map input bytes into worker: {e}")))?;
+        let rptr = call_idx.call(&mut store, (code_idx, wptr as i64))?;
+        out.push(read_wbytes(mem.data(&store), rptr as i32)?);
+    }
+    Ok(out)
+}
+
+/// (RFC-0032) `vm_par_map_bytes_write(base_ptr)`: lay the staged `Bytes` results out at
+/// `base_ptr` as a guest `List(Bytes)` — `[count][count x i64 ptr][.[len][bytes]…]`,
+/// the same structure as `List(String)` (see `write_pending_list`).
+fn host_vm_par_map_bytes_write(mut caller: Caller<'_, VmState>, base_ptr: i32) -> Result<()> {
+    let items = caller
+        .data_mut()
+        .pending_bytes
+        .take()
+        .ok_or_else(|| Error::msg("vm_par_map_bytes_write called with nothing staged"))?;
+    let n = items.len();
+    let mut buf = Vec::with_capacity(4 + 8 * n + items.iter().map(|b| 4 + b.len()).sum::<usize>());
+    buf.extend_from_slice(&(n as i32).to_le_bytes());
+    let payload_start = base_ptr as i64 + 4 + 8 * n as i64;
+    let mut offset = 0i64;
+    for b in &items {
+        buf.extend_from_slice(&(payload_start + offset).to_le_bytes());
+        offset += 4 + b.len() as i64;
+    }
+    for b in &items {
+        buf.extend_from_slice(&(b.len() as i32).to_le_bytes());
+        buf.extend_from_slice(b);
+    }
+    let mem = memory_of(&mut caller)?;
+    mem.write(&mut caller, base_ptr as usize, &buf)
+        .map_err(|e| Error::msg(format!("writing par_map bytes into guest memory: {e}")))
 }
 
 /// (RFC-0032) `vm_par_map_write(base_ptr)`: lay the staged `vm.par_map` results out
@@ -2038,6 +2157,29 @@ fn read_wstr_list(data: &[u8], ptr: i32) -> Result<Vec<String>> {
             slot[0], slot[1], slot[2], slot[3], slot[4], slot[5], slot[6], slot[7],
         ]);
         out.push(read_wstr(data, elem as i32)?);
+    }
+    Ok(out)
+}
+
+/// Read a guest `Bytes` — `[len: i32][bytes…]` — as RAW bytes (no UTF-8 decode).
+fn read_wbytes(data: &[u8], ptr: i32) -> Result<Vec<u8>> {
+    let len_bytes = slice(data, ptr, 4)?;
+    let len = i32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]]);
+    Ok(slice(data, ptr + 4, len)?.to_vec())
+}
+
+/// Read a guest `List(Bytes)` — same `[count][i64 ptr…]` layout as `List(String)`, but
+/// each element is read as raw bytes.
+fn read_wbytes_list(data: &[u8], ptr: i32) -> Result<Vec<Vec<u8>>> {
+    let len_bytes = slice(data, ptr, 4)?;
+    let len = i32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]]);
+    let mut out = Vec::with_capacity((len.max(0) as usize).min(data.len() / 8));
+    for i in 0..len {
+        let slot = slice(data, ptr + 4 + 8 * i, 8)?;
+        let elem = i64::from_le_bytes([
+            slot[0], slot[1], slot[2], slot[3], slot[4], slot[5], slot[6], slot[7],
+        ]);
+        out.push(read_wbytes(data, elem as i32)?);
     }
     Ok(out)
 }

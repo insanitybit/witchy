@@ -292,6 +292,17 @@
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
+    /// (RFC-0032) `vm.par_map` over `Bytes`: binary payloads cross to worker VMs by a
+    /// RAW (non-lossy) byte copy. Maps a top-level fn over a list of Bytes in parallel;
+    /// both backends agree (the interp oracle runs the sequential `list.map` body).
+    #[test]
+    fn vm_par_map_bytes_backends_agree() {
+        let src = "import vm\nimport bytes\n\nfn tag(b: Bytes) -> Bytes:\n    bytes.concat(b, bytes.from_string(\"!\"))\n\nfn main(console: Console):\n    let xs = [bytes.from_string(\"a\"), bytes.from_string(\"bb\"), bytes.from_string(\"ccc\")]\n    let ys = vm.par_map(xs, tag)\n    print(console, bytes.to_string(list.at(ys, 0)))\n    print(console, bytes.to_string(list.at(ys, 2)))\n    print(console, __render(bytes.length(list.at(ys, 1))))\n";
+        let expected = ["a!", "ccc!", "3"];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+    }
+
     /// (RFC-0032) `vm.par_map` stays correct when the native worker-VM fast path does
     /// NOT apply — a CAPTURING closure (here `fn(n): n + base`) would be unsound to run
     /// with a null environment in a separate worker VM, so the compiled backend must
