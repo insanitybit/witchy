@@ -43,6 +43,48 @@ fn aot_cache_dir() -> Option<std::path::PathBuf> {
     Some(dir)
 }
 
+/// (RFC-0034 L1) Run Binaryen `wasm-opt -O2` on the module — a heavier optimizer
+/// than Cranelift's Speed tier (GVN, inlining, DCE, local CSE). It runs ONLY on
+/// the cold compile path below (the result is AOT-cached), so warm runs pay
+/// nothing. Optional + graceful: returns the input unchanged if `wasm-opt` isn't
+/// on PATH or fails, or if `WITCHY_NO_BINARYEN` is set. `--all-features` so it
+/// accepts witchy's bulk-memory (`memory.copy`); -O2 never introduces new
+/// features, so the output runs under the same wasmtime config.
+fn binaryen_enabled() -> bool {
+    std::env::var_os("WITCHY_NO_BINARYEN").is_none()
+}
+
+fn binaryen_optimize(wasm: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    use std::borrow::Cow;
+    if !binaryen_enabled() {
+        return Cow::Borrowed(wasm);
+    }
+    let mut rnd = [0u8; 8];
+    getrandom::fill(&mut rnd).ok();
+    let tag: String = rnd.iter().map(|b| format!("{b:02x}")).collect();
+    let dir = std::env::temp_dir();
+    let inp = dir.join(format!("witchy_wopt_{tag}.in.wasm"));
+    let outp = dir.join(format!("witchy_wopt_{tag}.out.wasm"));
+    let run = (|| -> Option<Vec<u8>> {
+        std::fs::write(&inp, wasm).ok()?;
+        let ok = std::process::Command::new("wasm-opt")
+            .args(["-O2", "--all-features", "-o"])
+            .arg(&outp)
+            .arg(&inp)
+            .output()
+            .ok()?
+            .status
+            .success();
+        if ok { std::fs::read(&outp).ok() } else { None }
+    })();
+    let _ = std::fs::remove_file(&inp);
+    let _ = std::fs::remove_file(&outp);
+    match run {
+        Some(bytes) => Cow::Owned(bytes),
+        None => Cow::Borrowed(wasm),
+    }
+}
+
 /// Build a `Module`. On the cacheable (non-preempt) engine, a warm AOT artifact
 /// is loaded via `Module::deserialize` (skips wasm parse/validate/compile); a
 /// cold compile is persisted for next time. `cacheable` is false on the preempt
@@ -55,6 +97,9 @@ fn build_module(engine: &Engine, opt_wasm: &[u8], cacheable: bool) -> Result<Mod
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
         h.update(opt_wasm);
+        // The artifact differs by whether Binaryen ran, so the cache key must too —
+        // otherwise toggling it returns a stale (un)optimized module under the same key.
+        h.update(if binaryen_enabled() { b"+wopt".as_slice() } else { b"-wopt".as_slice() });
         let hex: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
         dir.join(format!("{hex}.cwasm"))
     });
@@ -69,7 +114,8 @@ fn build_module(engine: &Engine, opt_wasm: &[u8], cacheable: bool) -> Result<Mod
             }
         }
     }
-    let module = Module::new(engine, opt_wasm)?;
+    let optimized = binaryen_optimize(opt_wasm);
+    let module = Module::new(engine, &optimized)?;
     if let Some(p) = &path {
         if let Ok(bytes) = module.serialize() {
             // Write-then-rename so a reader never sees a partial file. The temp
