@@ -2637,6 +2637,112 @@ impl Codegen {
                                     });
                                 }
                             }
+                            analysis::InPlaceOp::RecordUpdate(fields) => {
+                                // (RFC-0033 R1) `s = {...s, f: v, …}`: when `s` is the
+                                // uniquely-owned record, write each updated field into s's
+                                // existing slots (`s+4+8*idx`) and keep the pointer — O(updated
+                                // fields), no alloc, no copy of the un-updated fields. A dirty /
+                                // un-owned site re-owns via the `mk{n}` realloc (the existing
+                                // copy path), yielding a fresh owned record + a live token.
+                                // Records are fixed-shape, so the token is a 0/1 owned flag.
+                                // Field values are stashed into the reuse pool BEFORE any store
+                                // so a value reading another field sees the pre-update record.
+                                use witchy_wir::wir::BinOp;
+                                let tyname = self.local_records.get(name).cloned()?;
+                                let rnames = self.record_fields.get(&tyname).cloned()?;
+                                let &(tag, nfields) = self.ctors.get(&tyname)?;
+                                self.mk_arities.insert(nfields);
+                                let cap = if dirty {
+                                    W::ConstI32(0)
+                                } else {
+                                    W::GetLocal(format!("{name}__cap"))
+                                };
+                                let slot = |idx: usize| W::Binary {
+                                    op: BinOp::Add,
+                                    kind: witchy_wir::wir::Kind::I32,
+                                    lhs: Box::new(W::GetLocal(name.clone())),
+                                    rhs: Box::new(W::ConstI32((4 + 8 * idx) as i32)),
+                                };
+                                let load = |idx: usize| W::Load {
+                                    ptr: Box::new(slot(idx)),
+                                    kind: witchy_wir::wir::Kind::I64,
+                                    offset: 0,
+                                };
+                                if fields.len() <= REUSE_POOL {
+                                    // Stash each updated value into a reuse slot, recording
+                                    // (record-field index -> reuse slot).
+                                    let mut updated: Vec<(usize, usize)> = Vec::with_capacity(fields.len());
+                                    for (j, (fname, vexpr)) in fields.iter().enumerate() {
+                                        let idx = rnames.iter().position(|(n, _)| n == fname)?;
+                                        let vk = self.kind_of(vexpr);
+                                        let vw = self.lower_expr(vexpr)?;
+                                        seq.push(N::SetLocal {
+                                            local: format!("__witchy_reuse_{j}"),
+                                            value: W::ToSlot(Box::new(vw), Self::wir_kind(vk)),
+                                        });
+                                        updated.push((idx, j));
+                                    }
+                                    // Cold path: a fresh record (updated fields from the reuse
+                                    // slots, the rest copied from the old `s`).
+                                    let mut mk_args = Vec::with_capacity(nfields + 1);
+                                    mk_args.push(W::ConstI32(tag as i32));
+                                    for i in 0..nfields {
+                                        mk_args.push(match updated.iter().find(|(idx, _)| *idx == i) {
+                                            Some((_, j)) => W::GetLocal(format!("__witchy_reuse_{j}")),
+                                            None => load(i),
+                                        });
+                                    }
+                                    // Hot path: store each updated value into s's slot in place.
+                                    let hot: Vec<N> = updated
+                                        .iter()
+                                        .map(|(idx, j)| N::Store {
+                                            ptr: slot(*idx),
+                                            value: W::GetLocal(format!("__witchy_reuse_{j}")),
+                                            kind: witchy_wir::wir::Kind::I64,
+                                            offset: 0,
+                                        })
+                                        .collect();
+                                    seq.push(N::If {
+                                        cond: W::Binary {
+                                            op: BinOp::Gt,
+                                            kind: witchy_wir::wir::Kind::I32,
+                                            lhs: Box::new(cap),
+                                            rhs: Box::new(W::ConstI32(0)),
+                                        },
+                                        then_: hot,
+                                        els: vec![
+                                            N::SetLocal {
+                                                local: name.clone(),
+                                                value: W::Call { func: format!("mk{nfields}"), args: mk_args },
+                                            },
+                                            N::SetLocal { local: format!("{name}__cap"), value: W::ConstI32(1) },
+                                        ],
+                                        result: None,
+                                    });
+                                } else {
+                                    // >REUSE_POOL updated fields (rare): always realloc + re-own.
+                                    let mut upd: Vec<(usize, W)> = Vec::with_capacity(fields.len());
+                                    for (fname, vexpr) in fields.iter() {
+                                        let idx = rnames.iter().position(|(n, _)| n == fname)?;
+                                        let vk = self.kind_of(vexpr);
+                                        let vw = self.lower_expr(vexpr)?;
+                                        upd.push((idx, W::ToSlot(Box::new(vw), Self::wir_kind(vk))));
+                                    }
+                                    let mut mk_args = Vec::with_capacity(nfields + 1);
+                                    mk_args.push(W::ConstI32(tag as i32));
+                                    for i in 0..nfields {
+                                        mk_args.push(match upd.iter().position(|(idx, _)| *idx == i) {
+                                            Some(p) => upd[p].1.clone(),
+                                            None => load(i),
+                                        });
+                                    }
+                                    seq.push(N::SetLocal {
+                                        local: name.clone(),
+                                        value: W::Call { func: format!("mk{nfields}"), args: mk_args },
+                                    });
+                                    seq.push(N::SetLocal { local: format!("{name}__cap"), value: W::ConstI32(1) });
+                                }
+                            }
                         }
                         inplace_sites += 1;
                         tail_is_value = false;

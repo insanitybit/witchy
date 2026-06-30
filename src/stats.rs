@@ -101,6 +101,31 @@ mod tests {
         );
     }
 
+    /// (RFC-0033 R1) A record whose field is updated in a loop AND which escapes
+    /// (returned → a heap record, not an SROA-confined one) must update IN PLACE
+    /// when uniquely owned: O(1) heap, not a fresh record per iteration. Output is
+    /// invariant; `heap_bytes` is the proof the per-update realloc is gone. This
+    /// threads the in-place optimization through a user type — the edge RFC-0033
+    /// closes (without it, `s.field = v` on an escaping record was O(n) reallocs).
+    #[test]
+    fn record_field_update_is_in_place() {
+        const REC: &str = "type Counter:\n    count: Int\n    pad: Int\n\nfn build(n: Int) -> Counter:\n    var c = Counter(0, 0)\n    var i = 0\n    while i < n:\n        c.count = c.count + 1\n        i = i + 1\n    c\n\nfn main(console: Console):\n    print(console, __render(build(400).count))\n";
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let on = compute(REC).expect("compute with inplace on");
+        opt::set_for_tests(Some(OptSet::default_set().without(Opt::InPlace)));
+        let off = compute(REC).expect("compute with inplace off");
+        opt::set_for_tests(None);
+
+        assert_eq!(on.output, off.output, "in-place must not change output");
+        assert_eq!(on.output, vec!["400".to_string()]);
+        assert!(
+            off.heap_bytes > on.heap_bytes * 4,
+            "forced-copy reallocs a record per field update: on={} off={}",
+            on.heap_bytes,
+            off.heap_bytes
+        );
+    }
+
     /// RFC-0030 soak / never-OOM guard: a long loop whose per-iteration scratch is
     /// escape-free must run in BOUNDED heap — the `region` loop-watermark reclaim
     /// resets the arena every iteration. With it off the same program leaks O(n).
@@ -157,6 +182,15 @@ mod tests {
             // RC-floor REUSE (record): a confined var reassigned to the same ctor,
             // read only via fields — `rc-elide` overwrites the field slots in place.
             "type Point:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    var p = Point(0, 0)\n    var i = 0\n    while i < 5:\n        p = Point(i, i * 2)\n        i = i + 1\n    print(console, __render(p.x + p.y))\n",
+            // (RFC-0033 R1) escaping record updated via `.field =` sugar in a loop:
+            // a heap record (returned, so not SROA-confined) updates in place when
+            // uniquely owned — output must be invariant under toggling `inplace`.
+            "type Counter:\n    count: Int\n    pad: Int\n\nfn build(n: Int) -> Counter:\n    var c = Counter(0, 0)\n    var i = 0\n    while i < n:\n        c.count = c.count + 1\n        i = i + 1\n    c\n\nfn main(console: Console):\n    print(console, __render(build(50).count))\n",
+            // (RFC-0033) ALIASED record then `.field =`: value semantics — the alias
+            // must see the OLD value, so the update re-owns rather than mutating a
+            // shared record in place. The interpreter oracle pins "1 99"; an unsound
+            // in-place would print "99 99" and fail this differential.
+            "type R:\n    a: Int\n    b: Int\n\nfn main(console: Console):\n    var r = R(1, 2)\n    let alias = r\n    r.a = 99\n    print(console, \"${alias.a} ${r.a}\")\n",
             // CACHE EVICTION: insert then remove distinct dict keys (the per-object
             // RC floor's target garbage). Output must stay invariant under every
             // `WITCHY_OPT` setting and match the interpreter — the parity guard for

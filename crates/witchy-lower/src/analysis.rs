@@ -208,6 +208,9 @@ pub enum InPlaceOp<'a> {
     Insert(&'a Expr, &'a Expr),
     Update(&'a Expr, &'a Expr, &'a Expr),
     Concat(Vec<&'a Expr>),
+    /// `s = {...s, f: v, …}` (a `RecordUpdate` whose base is the assigned record):
+    /// the updated `(field-name, value)` pairs. (RFC-0033 R1.)
+    RecordUpdate(&'a [(String, Expr)]),
 }
 
 /// Recover the single in-place accumulation shape of `x = f(x, …)` (or `None`).
@@ -230,6 +233,22 @@ pub fn self_inplace_op<'a>(name: &str, value: &'a Expr) -> Option<InPlaceOp<'a>>
     }
     if let Some(pieces) = self_concat_pieces(name, value) {
         return Some(InPlaceOp::Concat(pieces));
+    }
+    if let Some(fields) = self_record_update(name, value) {
+        return Some(InPlaceOp::RecordUpdate(fields));
+    }
+    None
+}
+
+/// `s = {...s, f: v, …}`: a spread-update whose base is the record's OWN binding.
+/// The record analog of the list/dict self-assign shapes — when `s` is uniquely
+/// owned the update writes the changed fields into `s`'s slots in place rather
+/// than reallocating (RFC-0033 R1). Returns the updated `(field, value)` pairs.
+fn self_record_update<'a>(name: &str, value: &'a Expr) -> Option<&'a [(String, Expr)]> {
+    if let Expr::RecordUpdate { base, fields } = value {
+        if matches!(base.as_ref(), Expr::Var(v) if v == name) {
+            return Some(fields.as_slice());
+        }
     }
     None
 }
@@ -657,6 +676,17 @@ impl<'a> Walker<'a> {
                                             ));
                                         }
                                     }
+                                }
+                            }
+                            InPlaceOp::RecordUpdate(fields) => {
+                                // Each updated value is evaluated (into a temp) BEFORE any
+                                // in-place store, so a field READ of `name` is fine. But a
+                                // value that stores `name` itself into a field (`{...s,
+                                // parent: s}`) creates a live self-alias that in-place would
+                                // make a self-reference while value semantics points at the
+                                // old record — the share detection dirties exactly that.
+                                for (_, v) in fields {
+                                    self.scan(v, true, "stored into a record field", &mut sub);
                                 }
                             }
                         }
