@@ -22,6 +22,7 @@
   - [Optional and Conditional Capabilities](capabilities-optional.md)
   - [The Sandbox](capabilities-sandbox.md)
 - [Concurrency with Async and Channels](tour-async.md)
+- [Multi-Core and Isolated Workers](tour-vm.md)
 - [Project: A Confined Log Scanner](project.md)
 - [Sharing Code: Runes and the Registry](packages.md)
   - [The Manifest, the Lockfile, and the CLI](packages-cli.md)

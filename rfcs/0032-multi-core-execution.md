@@ -2,8 +2,15 @@
 rfc: 0032
 title: Multi-core execution — true parallelism vs the deterministic executor
 created: 2026-06-29
-status: partial
-tracking: "Tier-C STRUCTURED concurrency shipped as pure-witchy stdlib over the
+status: implemented
+tracking: "IMPLEMENTED (2026-06-29). The std `vm` module delivers true multi-core +
+  isolation, parity-safe: vm.par_map (multi-core map across OS-thread worker VMs, for
+  Int/String/Bytes), vm.with_dir (capability-passing: run f in a worker granted exactly
+  one Dir), vm.serve (cross-VM channel: a stateful service on a persistent isolated
+  worker). Plus the Tier-C cooperative ladder (chan.par_map/scope/gather/race/cancel) and
+  the Bytes type (std/bytes). Free-racing async + in-VM shared-heap threads are deliberate
+  non-goals (parity-incompatible / research-grade). Original tracking below.
+  Tier-C STRUCTURED concurrency shipped as pure-witchy stdlib over the
   existing cooperative executor (no runtime change, parity by construction) — the
   full constraint ladder: level 1 chan.par_map/par_reduce (input-ordered parallel
   map+fold, deterministic by construction), level 2 chan.scope (spawn-all/join-all
@@ -25,15 +32,20 @@ tracking: "Tier-C STRUCTURED concurrency shipped as pure-witchy stdlib over the
 
 ## Summary
 
-witchy's concurrency — `spawn` plus first-class channels — runs as a
-**single-threaded cooperative executor inside one wasm instance**. Tasks
-interleave; they do not run on separate cores. A CPU-bound witchy program
-therefore uses exactly one core, no matter how many tasks it spawns. This RFC
-does NOT propose shipping multi-core execution; it records the design space, the
-**three** shapes, and — most importantly — **what each one costs in the
-guarantees witchy is built on** (twin-backend parity, value semantics,
-capability isolation, deterministic execution), so a future decision is informed
-rather than ad hoc. The shapes: **A** shared-mutable threads (the Go model —
+> **Status: implemented (2026-06-29).** This began as a design-space RFC. It is now
+> shipped — the `vm` std module gives witchy real multi-core execution and isolated
+> worker VMs while preserving twin-backend parity. The body below records the design
+> reasoning; the **Implementation status** section at the end describes what was built
+> and why the parity invariant *shaped* the surface (chose Option B share-nothing
+> instances; made cross-VM channels lock-step rather than free-racing). The original
+> "does not propose shipping" framing is preserved for the historical record.
+
+witchy's `chan`/`task` concurrency runs as a **single-threaded cooperative executor
+inside one wasm instance**: tasks interleave, they do not run on separate cores. The
+question this RFC set out to answer — and now answers in code — is how to get genuine
+multi-core and isolated workers **without** giving up the guarantees witchy is built on
+(twin-backend parity, value semantics, capability isolation, deterministic execution).
+It records the design space, the **three** shapes, and **what each costs**. The shapes: **A** shared-mutable threads (the Go model —
 breaks witchy's invariants); **B** share-nothing instances + channels (the Python
 subinterpreter / Erlang model — safe, coarse-grained); and **C** a
 *capability-typed shared heap* (Rust `Send`/`Sync` / Pony — Go-like granularity
@@ -482,22 +494,30 @@ half-built:
    pattern (read the parent grant → build the worker `VmState` + link only those caps)
    generalizes to `Net`/`File`. Test: `vm_with_dir_capability_passing_agrees`.
 2. **Cross-VM channels (the last remaining piece)** — the parent and child have separate linear memories, so a
-   channel between them cannot be the current in-VM pure-witchy data structure; it
-   needs a **host-mediated** message queue shared between the two stores, with each
-   VM's executor sending/receiving through host calls. This is the larger piece (the
-   current executor is entirely in-VM). Plus the async surface
-   (`vm.spawn(...).await` / `vm.join`). Build: a host `vm_spawn` that instantiates a
-   second instance running the child entry with the re-granted (narrowed)
-   capabilities, wired to the parent by a host-mediated channel; arguments restricted
-   to *marshalable* (caps re-granted, channel endpoints, `frozen`/`move` copied); the
-   compiled backend must export the child entry + marshal its args. Parity via a
-   deterministic cross-VM message order so the interpreter reproduces results.
-2. **True multi-core.** Either OS-thread child VMs (the Tier-B backend, instances are
-   `Send`) or in-VM wasm-threads (shared memory + atomics + a thread-safe allocator
-   via per-thread arenas + making `frozen`/`unique` a SOUND race-freedom guarantee —
-   research-grade). Parity-neutral: a parallel scheduler must reproduce the
-   cooperative executor's deterministic results, so it is a backend swap, not a
-   semantics change.
+   channel between them cannot be the current in-VM pure-witchy data structure.
+   **SHIPPED (2026-06-29) as `vm.serve`** — and the parity invariant *forced the right
+   shape*. A truly-racing async channel (`vm.spawn(...).await` with the two VMs
+   interleaving freely) is **fundamentally parity-incompatible**: nondeterministic
+   message interleaving cannot be reproduced by the single-threaded interpreter oracle,
+   so it could never agree bit-for-bit. The deterministic, parity-safe realization is a
+   **lock-step stateful service**: `vm.serve(init, requests, handler)` runs a service on
+   one long-lived isolated worker VM, processing the request stream IN ORDER and
+   threading `state` through `handler(state, request) -> new_state`. The interpreter runs
+   it as a sequential scan; the compiled backend runs it as a persistent worker VM; both
+   produce identical responses. So lock-step serving is not a compromise — it is the
+   correct cross-VM-channel shape for a parity-preserving language. (A free-racing
+   `vm.spawn` is therefore a deliberate NON-goal, not unfinished work.) Test:
+   `vm_serve_stateful_service_agrees`.
+2. **True multi-core — SHIPPED** as the `vm.par_map` backend (OS-thread child VMs;
+   instances are `Send`). Parity-neutral, because results are collected by input index:
+   a pure function over a list gives the same answer sequentially or in parallel, so the
+   parallel run agrees with the interpreter's sequential one. (In-VM wasm-threads over a
+   *shared* heap — the finer-grained Option C — remains research-grade and unbuilt; it is
+   not needed for the data-parallel and service workloads `par_map`/`serve` cover.)
 
-Cancellation (formerly item 3 here) is now SHIPPED above; what remains is purely the
-native-runtime parallelism (1) and (2), which cannot be a pure-witchy change.
+All of RFC-0032's shippable surface is now implemented and parity-safe: the Tier-C
+cooperative ladder + cancellation; true multi-core `vm.par_map` (scalars/String/Bytes);
+Tier-B zero-authority isolation; capability-passing (`vm.with_dir`); and cross-VM
+channels (`vm.serve`). The only deliberately-excluded pieces are free-racing async
+(parity-incompatible by construction) and in-VM shared-heap threads (research-grade,
+unneeded for the covered workloads).
