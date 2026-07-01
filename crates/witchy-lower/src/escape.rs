@@ -422,9 +422,39 @@ pub fn confined_reassigned_vars_block(body: &Block, summaries: &Summaries) -> Ha
     if bound.is_empty() {
         return HashSet::new();
     }
+    // (RFC-0016 soundness) A var whose INITIAL binding aliases another value — `var rest = s`
+    // (`s` a borrowed param or a still-live local), or a field/index projection of one — does
+    // NOT own its first buffer. free-at-overwrite frees `x`'s old buffer at the first `x = f(x)`,
+    // which for such a var is the SOURCE's buffer → a use-after-free of the caller's value
+    // (e.g. `std/string.last_index_of`: `var rest = s; rest = string.substring(rest, …)`). Later
+    // reassignments are fresh allocations, but excluding the whole var is the sound, simple floor
+    // (a missed reclamation only leaks). Fresh-allocation inits (`[]`, `dict.new()`, a literal, a
+    // call result) are NOT aliases and stay eligible — so `var d = dict.new(); d = dict.remove(d,…)`
+    // (the cache-eviction accumulator) is unaffected.
+    let mut alias_init = HashSet::new();
+    collect_alias_initialized_vars(body, &mut alias_init);
+    bound.retain(|x| !alias_init.contains(x));
+    if bound.is_empty() {
+        return HashSet::new();
+    }
     let mut leaked = HashSet::new();
     scan_uses_block(body, UseScan::ReuseRhs, CallExempt::NonLeaking(summaries), &mut leaked);
     bound.into_iter().filter(|x| !leaked.contains(x)).collect()
+}
+
+/// `let`/`var` bindings whose value ALIASES another binding — a bare variable read
+/// (`var x = y`) or a projection of one (`var x = r.field`, `var x = xs[i]`). Such a
+/// binding's first buffer is owned by that source, not by `x`, so `x` must not be
+/// free-at-overwrite-reclaimed (see [`confined_reassigned_vars_block`]).
+fn collect_alias_initialized_vars(b: &Block, out: &mut HashSet<String>) {
+    for s in &b.stmts {
+        if let Stmt::Let { name, value, .. } = s {
+            if matches!(value, Expr::Var(_) | Expr::Field { .. } | Expr::Index { .. }) {
+                out.insert(name.clone());
+            }
+        }
+        each_block_in_stmt(s, &mut |blk| collect_alias_initialized_vars(blk, out));
+    }
 }
 
 /// Every `let`/`var` binding name in `body` (including nested blocks).
