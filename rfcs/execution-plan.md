@@ -67,7 +67,21 @@ TRACK C — performance (DEFERRED by direction)
 - **Goal:** Glamour defines its own sealed **bare** UI caps (`UiRoot` → `UiFetch`/
   `UiRoute`/`UiTimer`/`SecretInput`/`CredentialPort`); token-gated `Cmd`/`VNode`
   constructors; host-owned `SecretRef` so one component can't read another's secret.
-- **Depends on:** **RFC-0038** (the app receives `glamour.UiRoot` at its root).
+- **Depends on:** **RFC-0038** (the app receives `glamour.UiRoot` at its root) — SHIPPED.
+- **Progress (2026-07-01) — slice 1 DONE (commit 39eb281):** Glamour defines its
+  sealed bare UI caps (`grantable capability UiRoot` + narrowed `UiFetch`/`UiRoute`/
+  `UiTimer`/`CredentialPort`/`SecretInput`/`SecretRef`) and narrowing constructors
+  (`fetch_scope`/`route_scope`/`timer_scope`/`credential_port`/`secret_field`).
+  Additive: `witchy caps` on the rune keeps an EMPTY host footprint, UI authority on
+  the `user_caps` axis; all 25 glamour tests pass. **REMAINING (the breaking slice):**
+  token-gate the `Cmd` variants — `Http(UiFetch,…)`, `Nav(UiRoute,…)`,
+  `After(UiTimer,…)`, `Port(CredentialPort,…)` — and gated smart constructors; the
+  token is NOT serialized (compile-time authority), so `cmd_to_json` + the JS host
+  shell (`glamour-dom.mjs`) are UNCHANGED. Then migrate the callers in ONE cut
+  (break-don't-deprecate): `projects/glamour/examples/{catalog,coven_web_app,coven_app}`
+  (each: `main` takes `UiRoot`, narrow to tokens, pass to the gated ctors), plus the
+  `secret_input`/`SecretRef` path, plus a differential test that a component without
+  `UiFetch` cannot construct `Cmd.Http`. coven-web migration is the proof.
 - **Entry points:** `projects/glamour/src/glamour.witchy` (the `Cmd(msg)` type +
   `http_get`/`navigate`/`port` constructors + `on_input`); the host shell
   `web/witchy-runtime/glamour-dom.mjs` (validates tokens, owns secret custody);
