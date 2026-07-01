@@ -1924,6 +1924,22 @@ fn main(console: Console):
         assert_rc_corpus_stable(src, &["q1", "z1"]);
     }
 
+    /// TRACKING a PRE-EXISTING rc-floor bug (NOT the dup/drop emission — bisected: it reproduces
+    /// with every step-1..4 dup/drop disabled, and disappears only when the free-at-overwrite pass
+    /// is disabled). `toml.get_array` on a real manifest returns [] under `WITCHY_OPT=rc-floor`
+    /// because the free-at-overwrite reclamation (`x = f(x)` for a confined var, shipped before this
+    /// work) frees a buffer that is still live inside toml's parse — `escape::confined_reassigned_vars`
+    /// is unsound for a non-obvious aliasing there (the trivial `let a=s; s=string.to_upper(s)` case
+    /// IS handled). Likely SURFACED by the Phase-A universal header (far more free-list reuse now
+    /// overwrites the wrongly-freed block). No production impact: rc-floor is off by default. Ignored
+    /// until the confinement analysis is tightened; un-ignore then. See project_rc_floor_devlog.
+    #[test]
+    #[ignore = "pre-existing free-at-overwrite UAF under rc-floor; fix is in escape::confined_reassigned_vars"]
+    fn rc_floor_toml_get_array_is_sound() {
+        let src = "import toml\nimport list\nfn main(console: Console):\n    let m = \"[capabilities]\\nruntime = [\\\"Console\\\", \\\"Dir[Read]\\\", \\\"Net[Connect]\\\"]\\n\"\n    let declared = toml.get_array(m, \"capabilities.runtime\")\n    print(console, list.join(declared, \",\"))\n";
+        assert_rc_corpus_stable(src, &["Console,Dir[Read],Net[Connect]"]);
+    }
+
     /// `crypto.rune_hash` produces the same store hash (`src/pm/store.rs`
     /// format) on both backends — the host walks the guest's string lists.
     #[test]
