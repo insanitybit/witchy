@@ -526,6 +526,91 @@ fn gen_law_program(seed: u64) -> String {
 /// early trap (which would otherwise slip through as "fewer lines, all true").
 const NLAWS: usize = 8;
 
+/// A minimal helper library for the dead-alloc metamorphic pair: the two alias/self-ref shapes
+/// whose reclamation is sensitive to free-list state (no `type R` dependency, unlike `HELPER_LIB`).
+const HELPER_LIB_MINI: &str = "\
+fn alias_str(s: String) -> String:\n\
+\x20   var t = s\n\
+\x20   t = t + \"!\"\n\
+\x20   t\n\
+fn alias_list(xs: List(Int)) -> List(Int):\n\
+\x20   var ys = xs\n\
+\x20   ys = list.concat(ys, ys)\n\
+\x20   ys\n";
+
+/// (RFC-0037 §4, semantics-preserving transform) A base program of alias/self-ref units and a
+/// TWIN that interleaves DEAD (unused) heap allocations. The dead bindings cannot change the
+/// program's meaning, so base and twin must print identically — but they DO change the
+/// allocation order and free-list state, so if a reclamation/aliasing bug lets a freed block be
+/// reused differently between the two, the outputs diverge. This catches the fragile
+/// use-after-free class (a freed block reused-and-overwritten in one variant but not the other)
+/// in the DEFAULT path, where the `WITCHY_UAF_CHECK` sanitizer's poison is not present. Returns
+/// `(base, twin)` sharing the same helper library so only the dead bindings differ.
+fn gen_reclaim_pair(seed: u64) -> (String, String) {
+    let mut r = Rng(seed);
+    let units = 6 + r.below(6);
+    let mut base = String::new();
+    let mut twin = String::new();
+    for i in 0..units {
+        // dead allocations — ONLY in the twin — perturb the free-list without changing semantics.
+        let dk = 1 + r.below(6);
+        let de: Vec<String> = (0..dk).map(|_| format!("{}", r.below(20))).collect();
+        twin.push_str(&format!(
+            "    let dz{i} = [{}]\n    let dw{i} = string.to_upper(\"{}\")\n",
+            de.join(", "),
+            alnum(&mut r)
+        ));
+        // a shared heap value aliased then RE-READ (the fragile use-after-free class); heap
+        // strings/lists (computed, not static literals) so the rc machinery is live.
+        let unit = if r.below(2) == 0 {
+            format!(
+                "    let sv{i} = string.to_upper(\"{}\")\n    let av{i} = alias_str(sv{i})\n    print(console, sv{i})\n    print(console, av{i})\n",
+                alnum(&mut r)
+            )
+        } else {
+            let n = 1 + r.below(5);
+            let e: Vec<String> = (0..n).map(|_| format!("{}", r.below(50))).collect();
+            format!(
+                "    let lv{i} = [{}]\n    print(console, __render(alias_list(lv{i})))\n    print(console, __render(lv{i}))\n",
+                e.join(", ")
+            )
+        };
+        base.push_str(&unit);
+        twin.push_str(&unit);
+    }
+    let header = format!("import list\nimport string\n\n{HELPER_LIB_MINI}\nfn main(console: Console):\n");
+    (format!("{header}{base}"), format!("{header}{twin}"))
+}
+
+/// Compile+run `src` (compiled backend, `witchy <file>`) under `WITCHY_OPT=cfg`; return
+/// `(exit_ok, stdout)`. A trap and a value are distinguished by `exit_ok`, so a UAF that traps
+/// in one variant but succeeds in the other is a mismatch.
+fn run_compiled(src: &str, cfg: &str, tag: &str) -> (bool, String) {
+    let path = std::env::temp_dir().join(format!("witchy_reclaim_{tag}.witchy"));
+    std::fs::File::create(&path).unwrap().write_all(src.as_bytes()).unwrap();
+    let out = Command::new(BIN).arg(path.to_str().unwrap()).env("WITCHY_OPT", cfg).output().unwrap();
+    let _ = std::fs::remove_file(&path);
+    assert!(out.status.code().is_some(), "witchy crashed (signal) running a metamorphic variant.\n{src}");
+    (out.status.success(), String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+#[test]
+fn metamorphic_dead_alloc_invariant() {
+    let programs = env_usize("WITCHY_RECLAIM_PROGRAMS", 30);
+    for seed in 0..programs as u64 {
+        let (base, twin) = gen_reclaim_pair(seed.wrapping_mul(0xD1B5_4A32_D192_ED03).wrapping_add(3));
+        // Under each lever, inserting dead (unused) allocations must not change output.
+        for cfg in ["", "rc-floor"] {
+            let b = run_compiled(&base, cfg, &format!("{seed}_base"));
+            let t = run_compiled(&twin, cfg, &format!("{seed}_twin"));
+            assert_eq!(
+                b, t,
+                "dead-alloc metamorphic FAILED under WITCHY_OPT={cfg:?} on seed {seed}: inserting unused allocations changed observable behavior (a reclamation/aliasing bug).\n--- base ---\n{base}\n--- twin ---\n{twin}"
+            );
+        }
+    }
+}
+
 #[test]
 fn metamorphic_property_laws() {
     let programs = env_usize("WITCHY_LAW_PROGRAMS", 40);

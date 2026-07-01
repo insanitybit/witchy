@@ -221,6 +221,14 @@ Shipped (in `tests/differential_fuzz.rs`, `crates/witchy-wir/src/wir_helpers/mod
   `string.reverse∘reverse == id`, `len(repeat(s,n)) == len(s)·n`) and checks the printed VALUE,
   not just backend agreement — so a law that is `false` on *both* backends (an oracle that is
   itself wrong, gap G4) is still a failure. The only layer that does not trust the interpreter.
+- **§4 semantics-preserving transform — dead-alloc invariant (P3).** `metamorphic_dead_alloc_invariant`
+  runs a program of alias/self-ref units and a TWIN that interleaves DEAD (unused) heap
+  allocations; the two must print identically under each lever. Inserting unused allocations
+  cannot change meaning but DOES change allocation order / free-list state, so a reclamation
+  bug that reuses a freed block differently between the variants diverges. Oracle-independent
+  (base vs twin, same backend), zero false positives on correct code. A regression net for the
+  reuse-order-sensitive fragile class; the *current* free-at-overwrite bug class does not trigger
+  it because that class self-reuses its freed block (no window for a dead alloc to intercept).
 
 Honest scoping finding from the teeth-tests: on RANDOM programs the plain cross-lever net catches
 a reuse-after-free only when the freed block's *offset-0* word is observably corrupted — which,
