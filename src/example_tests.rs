@@ -1780,6 +1780,51 @@ fn main(console: Console):
         );
     }
 
+    /// (RFC-0035) Assert an adversarial-aliasing program computes `expected` IDENTICALLY on
+    /// the interpreter oracle, the compiled default build, AND the compiled build with
+    /// `rc-floor` on. This is the **use-after-free corpus gate** the per-object refcount
+    /// (the remaining floor: `$drop` at a `set_at` overwrite) must keep green: an element
+    /// still aliased — read into a live binding, duplicated, or stored elsewhere — when its
+    /// container slot is overwritten must NOT be reclaimed. The programs pass today (nothing
+    /// frees the displaced element); when the refcount lands, its `$drop` must decrement to a
+    /// still-positive count (a live alias holds it) and free NOTHING here. A regression flips
+    /// these red — the corpus is authored FIRST, as the gate, per the goal + RFC-0035 step 3.
+    fn assert_rc_corpus_stable(src: &str, expected: &[&str]) {
+        use crate::opt::{self, Opt, OptSet};
+        let want: Vec<String> = expected.iter().map(|s| (*s).to_string()).collect();
+        assert_eq!(link_run(src), want, "interpreter oracle diverged");
+        assert_eq!(wasm_run(src), want, "compiled default diverged from oracle");
+        opt::set_for_tests(Some(OptSet::default_set().with(Opt::RcFloor)));
+        let rc = wasm_run(src);
+        opt::set_for_tests(None);
+        assert_eq!(rc, want, "compiled under rc-floor diverged — a premature free");
+    }
+
+    /// Corpus 1: an element read into a binding that stays live PAST the `set_at` that
+    /// overwrites its slot. `held` must still observe the original element.
+    #[test]
+    fn rc_corpus_element_read_lives_past_set_at() {
+        let src = "import list\ntype Box:\n    Box(String)\nfn unwrap(b: Box) -> String:\n    match b:\n        Box(s) -> s\nfn main(console: Console):\n    var xs = [Box(\"a\"), Box(\"b\"), Box(\"c\")]\n    let held = list.at(xs, 1)\n    xs = list.set_at(xs, 1, Box(\"z\"))\n    print(console, unwrap(held))\n    print(console, unwrap(list.at(xs, 1)))\n";
+        assert_rc_corpus_stable(src, &["b", "z"]);
+    }
+
+    /// Corpus 2: the SAME element aliased into two live bindings, then the container slot
+    /// overwritten. Both aliases must survive (count ≥ 2 at the overwrite).
+    #[test]
+    fn rc_corpus_aliased_element_survives_container_mutation() {
+        let src = "import list\ntype Box:\n    Box(String)\nfn unwrap(b: Box) -> String:\n    match b:\n        Box(s) -> s\nfn main(console: Console):\n    var xs = [Box(\"a\"), Box(\"b\")]\n    let a1 = list.at(xs, 0)\n    let a2 = list.at(xs, 0)\n    xs = list.set_at(xs, 0, Box(\"z\"))\n    print(console, unwrap(a1))\n    print(console, unwrap(a2))\n    print(console, unwrap(list.at(xs, 0)))\n";
+        assert_rc_corpus_stable(src, &["a", "a", "z"]);
+    }
+
+    /// Corpus 3: an element STORED into another container (the same shape as returning it or
+    /// sending it down a channel — it escapes to a place that outlives the overwrite), then
+    /// the original container slot overwritten. The stored copy must survive.
+    #[test]
+    fn rc_corpus_element_stored_elsewhere_survives_container_mutation() {
+        let src = "import list\ntype Box:\n    Box(String)\nfn unwrap(b: Box) -> String:\n    match b:\n        Box(s) -> s\nfn main(console: Console):\n    var xs = [Box(\"a\"), Box(\"b\")]\n    var ys = []\n    ys = list.push(ys, list.at(xs, 0))\n    xs = list.set_at(xs, 0, Box(\"z\"))\n    print(console, unwrap(list.at(ys, 0)))\n    print(console, unwrap(list.at(xs, 0)))\n";
+        assert_rc_corpus_stable(src, &["a", "z"]);
+    }
+
     /// `crypto.rune_hash` produces the same store hash (`src/pm/store.rs`
     /// format) on both backends — the host walks the guest's string lists.
     #[test]
