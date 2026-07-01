@@ -1825,6 +1825,86 @@ fn main(console: Console):
         assert_rc_corpus_stable(src, &["a", "z"]);
     }
 
+    // HEAP-TYPE MATRIX (RFC-0035 step 3 gate). Corpus 1-3 above only exercised RECORD/ADT
+    // elements — the false confidence that let the reverted emission ship (5e9e167): it
+    // assumed every i32 element was an offset-0 rc_alloc object, which was FALSE for the
+    // header-less strings/lists/dicts from the direct-bump helpers. Phase A now routes every
+    // value producer through $rc_alloc, so these element types are all headered. This matrix
+    // is the gate that would have caught the revert: each element type the revert corrupted,
+    // read-past-set_at / aliased / stored / match-on-read, must stay byte-identical across
+    // interp == wasm == wasm(rc-floor). Authored FIRST, before re-applying the dup/drop
+    // emission — a premature/wrong dec flips one of these red.
+
+    /// Matrix: a HEAP String element (built via `${…}` interpolation, so it is a real
+    /// $rc_alloc'd cell, not a static literal) read into a binding that outlives the set_at.
+    #[test]
+    fn rc_corpus_heap_string_element_survives_set_at() {
+        let src = "import list\nfn main(console: Console):\n    var i = 1\n    var xs = [\"v${i}\", \"v${i + 1}\", \"v${i + 2}\"]\n    let held = list.at(xs, 1)\n    xs = list.set_at(xs, 1, \"v${i + 9}\")\n    print(console, held)\n    print(console, list.at(xs, 1))\n";
+        assert_rc_corpus_stable(src, &["v2", "v10"]);
+    }
+
+    /// Matrix: a LIST element (`List(List(Int))`, runtime-built so each inner list is a heap
+    /// cell) read into a binding that outlives the set_at.
+    #[test]
+    fn rc_corpus_list_element_survives_set_at() {
+        let src = "import list\nfn main(console: Console):\n    var i = 1\n    var xs = [[i, i + 1], [i + 2, i + 3], [i + 4, i + 5]]\n    let held = list.at(xs, 1)\n    xs = list.set_at(xs, 1, [9, 9])\n    print(console, __render(held))\n    print(console, __render(list.at(xs, 1)))\n";
+        assert_rc_corpus_stable(src, &["[3, 4]", "[9, 9]"]);
+    }
+
+    /// Matrix: a TUPLE element (`List((Int, Int))`) read into a binding that outlives the set_at.
+    #[test]
+    fn rc_corpus_tuple_element_survives_set_at() {
+        let src = "import list\nfn main(console: Console):\n    var i = 1\n    var xs = [(i, i + 1), (i + 2, i + 3), (i + 4, i + 5)]\n    let held = list.at(xs, 1)\n    xs = list.set_at(xs, 1, (9, 9))\n    print(console, __render(held))\n    print(console, __render(list.at(xs, 1)))\n";
+        assert_rc_corpus_stable(src, &["(3, 4)", "(9, 9)"]);
+    }
+
+    /// Matrix: a DICT element (`List(Dict)`) — the specific case the revert trapped on, because
+    /// a dict pointer is `rc_res + 4` (the hidden index word), so its rc header sits at a
+    /// DIFFERENT negative offset than a plain record. Read into a binding that outlives the set_at.
+    #[test]
+    fn rc_corpus_dict_element_survives_set_at() {
+        let src = "import list\nimport dict\nfn mkd(v: Int) -> Dict(String, Int):\n    var d = dict.new()\n    d = dict.insert(d, \"k\", v)\n    d\nfn main(console: Console):\n    var xs = [mkd(1), mkd(2), mkd(3)]\n    let held = list.at(xs, 1)\n    xs = list.set_at(xs, 1, mkd(9))\n    print(console, __render(dict.get(held, \"k\")))\n    print(console, __render(dict.get(list.at(xs, 1), \"k\")))\n";
+        assert_rc_corpus_stable(src, &["Some(2)", "Some(9)"]);
+    }
+
+    /// Matrix: the SAME heap-String element aliased into two live bindings, then the slot
+    /// overwritten. Both aliases must survive (refcount ≥ 2 at the displaced drop).
+    #[test]
+    fn rc_corpus_aliased_heap_string_survives_set_at() {
+        let src = "import list\nfn main(console: Console):\n    var i = 1\n    var xs = [\"v${i}\", \"v${i + 1}\"]\n    let a1 = list.at(xs, 0)\n    let a2 = list.at(xs, 0)\n    xs = list.set_at(xs, 0, \"v${i + 9}\")\n    print(console, a1)\n    print(console, a2)\n    print(console, list.at(xs, 0))\n";
+        assert_rc_corpus_stable(src, &["v1", "v1", "v10"]);
+    }
+
+    /// Matrix: MATCH-ON-READ of an ADT with a heap payload — the executor's actual shape
+    /// (`match list.at(slots, i): Active(task) -> …`). The scrutinee is a dup'd read temp
+    /// (not a let-binding); its heap payload is extracted into `r`, which must survive the set_at.
+    #[test]
+    fn rc_corpus_match_on_read_adt_payload_survives_set_at() {
+        let src = "import list\ntype W:\n    W(String)\nfn unwrap(w: W) -> String:\n    match w:\n        W(s) -> s\nfn main(console: Console):\n    var i = 1\n    var ws = [W(\"v${i}\"), W(\"v${i + 1}\"), W(\"v${i + 2}\")]\n    let r = match list.at(ws, 1):\n        W(s) -> s\n    ws = list.set_at(ws, 1, W(\"v${i + 9}\"))\n    print(console, r)\n    print(console, unwrap(list.at(ws, 1)))\n";
+        assert_rc_corpus_stable(src, &["v2", "v10"]);
+    }
+
+    /// Matrix: a heap-String element STORED into another container (escapes past the set_at,
+    /// same shape as returning it or sending it down a channel). The stored copy must survive.
+    #[test]
+    fn rc_corpus_heap_string_element_stored_elsewhere_survives() {
+        let src = "import list\nfn main(console: Console):\n    var i = 1\n    var xs = [\"v${i}\", \"v${i + 1}\"]\n    var ys = []\n    ys = list.push(ys, list.at(xs, 0))\n    xs = list.set_at(xs, 0, \"v${i + 9}\")\n    print(console, list.at(ys, 0))\n    print(console, list.at(xs, 0))\n";
+        assert_rc_corpus_stable(src, &["v1", "v10"]);
+    }
+
+    /// Matrix (executor): the async channel path — a spawned producer sends N ints over a bounded
+    /// channel and the consumer drains them (chan_throughput's shape, N=100 for a fast test). This
+    /// is THE residual the RC floor must bound: the cooperative executor does not reset its arena
+    /// per scheduling step, so the per-message garbage (the displaced Slot / continuation closure)
+    /// leaks. With emission off this proves the executor path stays byte-identical under rc-floor;
+    /// when the dup/drop lands, a wrong dec here traps or diverges — it did, at ~8k, in 5e9e167,
+    /// which the record-only corpus + fuzzer MISSED. This is why the executor is in the gate.
+    #[test]
+    fn rc_corpus_channel_executor_is_stable() {
+        let src = "import chan\nasync fn producer(tx: Sender(Int), n: Int) -> Nil:\n    for i in 0..n:\n        chan.send(tx, i).await\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(8).await\n    chan.spawn(producer(tx, 100)).await\n    for await v in rx:\n        chan.done(v)\n    print(console, \"100\")\n";
+        assert_rc_corpus_stable(src, &["100"]);
+    }
+
     /// `crypto.rune_hash` produces the same store hash (`src/pm/store.rs`
     /// format) on both backends — the host walks the guest's string lists.
     #[test]
