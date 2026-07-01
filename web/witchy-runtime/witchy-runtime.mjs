@@ -468,6 +468,23 @@ export async function instantiate(wasmBytes, opts = {}) {
     write_pending_list(_basePtr) {
       // No pure host op stages a list here; honor the call as a no-op.
     },
+    // (RFC-0040) user_cap_field_len(param, field): stage the (param, field) policy
+    // string of a bare grantable-capability grant for `fill_pending`, returning its
+    // byte length. Bare grantable caps carry NO host authority — this is the browser
+    // `[user_caps]` grant (policy DATA the app declares, the mirror of `--grants`),
+    // not a capability, so the pure/deny-by-omission host may provide it. A missing
+    // grant traps, mirroring the wasmtime host (both backends refuse identically).
+    user_cap_field_len(param, field) {
+      const fields = (opts.userCaps || [])[param];
+      const val = fields ? fields[field] : undefined;
+      if (val === undefined) {
+        throw new Error(
+          "witchy-runtime: user_cap_field_len — the app declared a grantable capability but no [user_caps] grant was provided (opts.userCaps)"
+        );
+      }
+      pending = new TextEncoder().encode(String(val));
+      return pending.length;
+    },
 
     // --- pure formatting / encoding ---
     float_to_str(x, outPtr) {

@@ -103,6 +103,38 @@ fn glamour_dom_timer_effect_dispatches_msg_via_fake_clock() {
     );
 }
 
+/// (RFC-0040) The committed Node driver (`user-cap-export.test.mjs`) compiles a
+/// cap-gated export `export_step(ui: UiRoot, input: String)`, instantiates it in the
+/// pure browser host with a `[user_caps]` grant, and asserts the host-minted
+/// `UiRoot`'s policy round-trips into the rune — and that a missing grant traps
+/// (parity with the wasmtime host). This is the browser end of the app-root ABI,
+/// proving the minted VALUE, not just that the wrapper is well-formed.
+#[test]
+fn user_cap_export_mints_uiroot_in_the_browser_host() {
+    if !node_available() {
+        eprintln!("skipping: `node` is not available on PATH");
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let driver = manifest.join("web/witchy-runtime/user-cap-export.test.mjs");
+    assert!(driver.exists(), "the committed user-cap export driver must exist at {}", driver.display());
+
+    let out = Command::new("node")
+        .arg(&driver)
+        .arg(BIN)
+        .current_dir(manifest)
+        .output()
+        .expect("spawn node user-cap-export driver");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the RFC-0040 user-cap export test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stdout.contains("RFC-0040"), "the user-cap export driver did not report success:\n{stdout}");
+}
+
 /// The headline RFC-0008 property, asserted directly: the effects-using demo rune
 /// has an EMPTY capability footprint. The `After(1000, Tick)` timer is the SHELL's
 /// authority; the rune only describes it as data, so `witchy caps` must report no
