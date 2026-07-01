@@ -197,8 +197,18 @@ covers shapes random search reaches only by luck. A bounded enumeration that inc
 ## Implementation status
 
 Shipped (in `tests/differential_fuzz.rs`, `crates/witchy-wir/src/wir_helpers/mod.rs`,
-`scripts/check.sh`):
+`crates/witchy-lower/src/codegen/mod.rs`, `scripts/check.sh`):
 
+- **§3 type-confusion sanitizer (`WITCHY_TYPE_CHECK`).** An 8-bit type id is packed into the
+  HIGH BYTE of each `$rc_alloc` object's size header (`p-4`; the low 24 bits are the size, and
+  the three size readers mask `& 0xFFFFFF`, so it is invisible to reuse/reclamation). A record
+  ctor writes its `type_tag_of` hash; a boxed `.field` read AND the packed (`unbox`)
+  `list.at(xs,i).field` read verify the tag against the statically-known type and trap
+  (`unreachable`) on a mismatch — catching a layout / `unbox` confusion AT the access site. Both
+  read paths are TEETH-TESTED (a perturbed tag DIVERGEs) and false-positive-free (fuzzer + 52
+  examples clean). Tolerant of tag 0 (untagged) so it rolls out incrementally. This cleared the
+  bar that PROMOTED `unbox` into `release` (default-on) — the first flip toward `release == all`.
+  Remaining sanitizer site: `match`/discriminant reads (ADT-relevant, off both promotions' path).
 - **§2 cross-lever differential + §1 grammar-complete generator (P0).** The fuzzer runs every
   program under a config set (`none`, default, `rc-floor`, `unbox`, `all,-wasm-opt`); the
   generator emits a risky-shape helper library (user functions with `let`/`own` params,
