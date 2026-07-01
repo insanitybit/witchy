@@ -343,9 +343,7 @@ pub fn rc_free_helper() -> WirFunc {
 /// pointers all sit below `heap_base` and are no-ops. So codegen may emit this for any
 /// `i32`-kinded value — the guard is the soundness floor, not mere defence-in-depth.
 /// Emitted (gated `rc-floor`) where a heap value is aliased into a second live holder —
-/// a container element read out. RETURNS `ptr` so it can wrap a read expression in place
-/// (`$rc_dup(<load>)` yields the dup'd pointer), making the read produce an OWNED value
-/// its consumer then transfers (stored/returned) or drops at last use.
+/// a container element read out into a binding, a binding copied.
 pub fn rc_dup_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
@@ -357,22 +355,19 @@ pub fn rc_dup_helper() -> WirFunc {
     WirFunc {
         name: "rc_dup".into(),
         params: vec![WirLocal { name: "ptr".into(), ty: WirTy::Bool }],
-        ret: vec![WirTy::Bool],
+        ret: vec![],
         locals: vec![],
-        body: vec![
-            N::If {
-                cond: b(BinOp::GeU, getl("ptr"), E::GetGlobal("heap_base".into())),
-                then_: vec![N::Store {
-                    ptr: rc_addr(),
-                    value: b(BinOp::Add, rc_load(), i32c(1)),
-                    kind: Kind::I32,
-                    offset: 0,
-                }],
-                els: vec![],
-                result: None,
-            },
-            N::Push(getl("ptr")),
-        ],
+        body: vec![N::If {
+            cond: b(BinOp::GeU, getl("ptr"), E::GetGlobal("heap_base".into())),
+            then_: vec![N::Store {
+                ptr: rc_addr(),
+                value: b(BinOp::Add, rc_load(), i32c(1)),
+                kind: Kind::I32,
+                offset: 0,
+            }],
+            els: vec![],
+            result: None,
+        }],
         raw_body: None,
     }
 }

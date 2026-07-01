@@ -1587,23 +1587,12 @@ pub struct Drop {
 #[derive(Default, Debug)]
 pub struct DropFacts {
     after: HashMap<usize, Vec<Drop>>,
-    read_after: HashMap<usize, Vec<String>>,
 }
 
 impl DropFacts {
     /// Values to `$rc_free` immediately after `stmt` (empty if none).
     pub fn drops_after(&self, stmt: &Stmt) -> &[Drop] {
         self.after.get(&stmt_key(stmt)).map(Vec::as_slice).unwrap_or(&[])
-    }
-
-    /// (RFC-0035 step 3) Read-owned heap bindings to `$rc_drop` immediately after `stmt` —
-    /// a `let x = list.at(...)` whose read was `$rc_dup`'d (so `x` owns a reference) and
-    /// whose last use is here. NAMES ONLY: codegen filters to `i32`-kinded (heap) bindings
-    /// and computes the rc-region offset from the element type (0 record/string/list/ADT,
-    /// 4 dict). Unlike `drops_after` (a fresh unique value → `$rc_free`), these use
-    /// `$rc_drop` — the value may be shared, so it frees only at count 0.
-    pub fn read_drops_after(&self, stmt: &Stmt) -> &[String] {
-        self.read_after.get(&stmt_key(stmt)).map(Vec::as_slice).unwrap_or(&[])
     }
 
     /// Total drop sites — for the standalone tests.
@@ -1613,10 +1602,6 @@ impl DropFacts {
 
     fn record(&mut self, stmt: &Stmt, name: String, offset: i32) {
         self.after.entry(stmt_key(stmt)).or_default().push(Drop { name, offset });
-    }
-
-    fn record_read(&mut self, stmt: &Stmt, name: String) {
-        self.read_after.entry(stmt_key(stmt)).or_default().push(name);
     }
 }
 
@@ -1773,33 +1758,14 @@ fn place_drops(
             _ => None,
         })
         .collect();
-    // (RFC-0035 step 3) Lets in THIS block bound to a container READ (`list.at` / index):
-    // the read was `$rc_dup`'d (step 1) so the binding owns a reference and must be
-    // `$rc_drop`'d at its last use. Same-block-binding (soundness, per the fresh case);
-    // codegen decides heap-ness (kind==I32) and the rc-region offset from the element type.
-    let block_read_lets: HashSet<&str> = block
-        .stmts
-        .iter()
-        .filter_map(|s| match s {
-            Stmt::Let { name, value: Expr::Call { name: f, args }, .. }
-                if f == "list.at" && args.len() == 2 =>
-            {
-                Some(name.as_str())
-            }
-            Stmt::Let { name, value: Expr::Index { .. }, .. } => Some(name.as_str()),
-            _ => None,
-        })
-        .collect();
     for s in &block.stmts {
         if let Stmt::Let { name, .. } = s {
-            if !region_confined.contains(name)
-                && name_reassign_count(fn_body, name) == 0
-                && name_read_count(fn_body, name) == 0
-            {
-                if let Some(&off) = block_let_offsets.get(name.as_str()) {
+            if let Some(&off) = block_let_offsets.get(name.as_str()) {
+                if !region_confined.contains(name)
+                    && name_reassign_count(fn_body, name) == 0
+                    && name_read_count(fn_body, name) == 0
+                {
                     facts.record(s, name.clone(), off);
-                } else if block_read_lets.contains(name.as_str()) {
-                    facts.record_read(s, name.clone());
                 }
             }
         }
@@ -1807,16 +1773,13 @@ fn place_drops(
             let mut candidates = Vec::new();
             nonleaking_call_arg_vars(value, summaries, &mut candidates);
             for v in candidates {
-                let ok = !region_confined.contains(&v)
-                    && name_reassign_count(fn_body, &v) == 0
-                    && name_read_count(fn_body, &v) == 1;
-                if !ok {
-                    continue;
-                }
                 if let Some(&off) = block_let_offsets.get(v.as_str()) {
-                    facts.record(s, v, off);
-                } else if block_read_lets.contains(v.as_str()) {
-                    facts.record_read(s, v);
+                    if !region_confined.contains(&v)
+                        && name_reassign_count(fn_body, &v) == 0
+                        && name_read_count(fn_body, &v) == 1
+                    {
+                        facts.record(s, v, off);
+                    }
                 }
             }
         }

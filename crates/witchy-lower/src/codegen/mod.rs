@@ -83,11 +83,6 @@ const TRY_TMP: &str = "__witchy_try_tmp";
 /// Scratch local holding a `match` scrutinee while arms test it.
 const MATCH_TMP: &str = "__witchy_match_tmp";
 
-/// (RFC-0035 step 3) Scratch slot holding a match's RESULT while its dup'd-read
-/// scrutinee is `$rc_drop`'d after the arms — an i64 slot so one temp fits any
-/// result kind (`FromSlot` recovers the width). Only used on the rc-floor drop path.
-const MATCH_RES: &str = "__witchy_match_res";
-
 /// Scratch local holding a `SecretStore.get` handle (the host-table index) so it
 /// is fetched once and reused for both the present-test and the `Some` payload.
 const SECRET_TMP: &str = "__witchy_secret_tmp";
@@ -1836,7 +1831,6 @@ impl Codegen {
         locals.push(WirLocal { name: TUPLE_TMP.into(), ty: i32t() });
         locals.push(WirLocal { name: TRY_TMP.into(), ty: i32t() });
         locals.push(WirLocal { name: MATCH_TMP.into(), ty: i64t() });
-        locals.push(WirLocal { name: MATCH_RES.into(), ty: i64t() });
         locals.push(WirLocal { name: SECRET_TMP.into(), ty: i32t() });
         // Scratch slots for the inlined in-place `set_at` fast path (index i32,
         // value i64): the common in-bounds + owned case stores directly without a
@@ -2597,51 +2591,14 @@ impl Codegen {
                                     bin(BinOp::And, bin(BinOp::Ge, si(), W::ConstI32(0)), bin(BinOp::Lt, si(), len)),
                                     bin(BinOp::Gt, cap.clone(), W::ConstI32(0)),
                                 );
-                                let slot_ptr = || bin(
+                                let slot_ptr = bin(
                                     BinOp::Add,
                                     bin(BinOp::Add, W::GetLocal(name.clone()), W::ConstI32(4)),
                                     bin(BinOp::Mul, si(), W::ConstI32(8)),
                                 );
-                                // (RFC-0035) drop the element this store DISPLACES: load the
-                                // old i32 slot and `$rc_drop` it before overwriting. Sound
-                                // because dup-at-read (step 1) already counted every reader —
-                                // the count is >1 exactly when a live binding still holds the
-                                // element (drop just decrements) and 1 exactly when the slot
-                                // was its last holder (drop frees). Gated: the element is an
-                                // i32 heap pointer, the list var is confined-unique
-                                // (`inplace_push` ⇒ never aliased ⇒ its buffer was never copied,
-                                // so elements are not shared through a container copy), and
-                                // `rc-floor` is on. The `els` re-own+copy cold path is NOT
-                                // dropped — a copy shares element pointers without a dup, so a
-                                // free there could be a UAF (left as a sound leak).
-                                let rc_drop_displaced = Self::wir_kind(vk)
-                                    == witchy_wir::wir::Kind::I32
-                                    && self.inplace_push.contains(name)
-                                    && !force_copy_mode()
-                                    && witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::RcFloor);
-                                let mut then_body = Vec::new();
-                                if rc_drop_displaced {
-                                    then_body.push(N::Do(W::Call {
-                                        func: "rc_drop".into(),
-                                        args: vec![W::FromSlot(
-                                            Box::new(W::Load {
-                                                ptr: Box::new(slot_ptr()),
-                                                kind: witchy_wir::wir::Kind::I64,
-                                                offset: 0,
-                                            }),
-                                            witchy_wir::wir::Kind::I32,
-                                        )],
-                                    }));
-                                }
-                                then_body.push(N::Store {
-                                    ptr: slot_ptr(),
-                                    value: sv(),
-                                    kind: witchy_wir::wir::Kind::I64,
-                                    offset: 0,
-                                });
                                 seq.push(N::If {
                                     cond,
-                                    then_: then_body,
+                                    then_: vec![N::Store { ptr: slot_ptr, value: sv(), kind: witchy_wir::wir::Kind::I64, offset: 0 }],
                                     els: vec![N::CallStoreMulti {
                                         func: "list_set_cap".to_string(),
                                         args: vec![W::GetLocal(name.clone()), si(), sv(), cap],
@@ -3098,34 +3055,6 @@ impl Codegen {
                         args: vec![region],
                     }));
                 }
-                // (RFC-0035 step 3) `$rc_drop` read-owned heap bindings at their last use.
-                // The element was `$rc_dup`'d at the read (step 1), so this releases that
-                // reference — it frees at count 0 (when the slot's set_at `$rc_drop` or
-                // another holder took the rest) and merely decrements otherwise (a live
-                // holder keeps it). Only i32-kinded (heap-pointer) bindings; the rc-region
-                // offset comes from the element type (a dict sits 4 past its region start).
-                let read_drops: Vec<String> = self
-                    .drop_facts_stack
-                    .last()
-                    .map(|d| d.read_drops_after(stmt).to_vec())
-                    .unwrap_or_default();
-                for name in &read_drops {
-                    if !matches!(self.locals.get(name), Some(&Kind::I32)) {
-                        continue;
-                    }
-                    let offset = if self.is_dict_operand(&Expr::Var(name.clone())) { 4 } else { 0 };
-                    let region = if offset == 0 {
-                        W::GetLocal(name.clone())
-                    } else {
-                        W::Binary {
-                            op: witchy_wir::wir::BinOp::Sub,
-                            kind: witchy_wir::wir::Kind::I32,
-                            lhs: Box::new(W::GetLocal(name.clone())),
-                            rhs: Box::new(W::ConstI32(offset)),
-                        }
-                    };
-                    seq.push(N::Do(W::Call { func: "rc_drop".into(), args: vec![region] }));
-                }
             }
         }
         // The block always leaves one value: the tail expression, or `i32.const 0`.
@@ -3432,20 +3361,6 @@ impl Codegen {
                 Kind::I32
             }
         });
-        // (RFC-0035 step 4) When the scrutinee is a container READ (`list.at` / index) it was
-        // `$rc_dup`'d at the read (step 1) and is DEAD after the match — an owned value with no
-        // binding. Drop it once, after the arms. `MATCH_TMP` is shared + reused (matches nest), so
-        // the drop must live INSIDE this lowering: stash each arm's result into `MATCH_RES` (an i64
-        // slot, any width), run the arms with a value-less `d` block, `$rc_drop` the scrutinee, then
-        // yield the stashed result. A bare-var scrutinee is a BORROW (still owned by the var) — not
-        // dropped here. Gated i32 heap + rc-floor; the heap_base guard covers a non-heap i32.
-        let drop_scrut = (matches!(scrutinee, Expr::Call { name, args }
-                if name == "list.at" && args.len() == 2)
-                || matches!(scrutinee, Expr::Index { .. }))
-            && scrut_kind == Kind::I32
-            && !force_copy_mode()
-            && witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::RcFloor);
-        let scrut_drop_offset = if drop_scrut && self.is_dict_operand(scrutinee) { 4 } else { 0 };
         let saved = self.next_label;
         let scrut_w = self.lower_expr(scrutinee)?;
         let id = self.next_label;
@@ -3487,47 +3402,11 @@ impl Codegen {
                     return None;
                 }
             };
-            let arm_result = Self::wir_convert(b, body_kind, result_kind);
-            if drop_scrut {
-                arm_body.push(N::SetLocal {
-                    local: MATCH_RES.to_string(),
-                    value: W::ToSlot(Box::new(arm_result), Self::wir_kind(result_kind)),
-                });
-            } else {
-                arm_body.push(N::Push(arm_result));
-            }
+            arm_body.push(N::Push(Self::wir_convert(b, body_kind, result_kind)));
             arm_body.push(N::Br { target: format!("d{id}"), cond: None });
             arm_blocks.push(N::Block { label: a_label, result: None, body: arm_body });
         }
         arm_blocks.push(N::Unreachable);
-        if drop_scrut {
-            // Arms stashed into `MATCH_RES`; the `d` block yields nothing. After it, `$rc_drop`
-            // the dead scrutinee (its `$rc_alloc` region is `ptr - offset`) and push the result.
-            let scrut_ptr =
-                W::FromSlot(Box::new(W::GetLocal(MATCH_TMP.to_string())), witchy_wir::wir::Kind::I32);
-            let region = if scrut_drop_offset == 0 {
-                scrut_ptr
-            } else {
-                W::Binary {
-                    op: witchy_wir::wir::BinOp::Sub,
-                    kind: witchy_wir::wir::Kind::I32,
-                    lhs: Box::new(scrut_ptr),
-                    rhs: Box::new(W::ConstI32(scrut_drop_offset)),
-                }
-            };
-            return Some(W::Seq(vec![
-                N::SetLocal {
-                    local: MATCH_TMP.to_string(),
-                    value: W::ToSlot(Box::new(scrut_w), Self::wir_kind(scrut_kind)),
-                },
-                N::Block { label: format!("d{id}"), result: None, body: arm_blocks },
-                N::Do(W::Call { func: "rc_drop".into(), args: vec![region] }),
-                N::Push(W::FromSlot(
-                    Box::new(W::GetLocal(MATCH_RES.to_string())),
-                    Self::wir_kind(result_kind),
-                )),
-            ]));
-        }
         Some(W::Seq(vec![
             N::SetLocal {
                 local: MATCH_TMP.to_string(),
