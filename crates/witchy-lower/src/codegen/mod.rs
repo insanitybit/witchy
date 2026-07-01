@@ -355,6 +355,7 @@ struct SavedScope {
     packed_active: HashMap<String, String>,
     reuse_vars: HashSet<String>,
     rc_floor_vars: HashSet<String>,
+    rc_owned_bindings: HashSet<String>,
     devirt_ok: HashSet<String>,
     devirt_index: HashMap<String, usize>,
     elide_index_list: Vec<(String, String)>,
@@ -490,6 +491,12 @@ struct Codegen {
     /// the size-classed free-list when it is overwritten by a freshly-allocated one
     /// (`x = f(x, …)`). Per-unit, under the opt-in `rc-floor` lever.
     rc_floor_vars: HashSet<String>,
+    /// (RFC-0035 step 3) `let x = list.at(xs, i)` bindings whose read was `$rc_dup`'d
+    /// (the SAME per-type gate as the dup site — offset-0 element, `rc-floor` on), so `x`
+    /// owns a reference and must be `$rc_drop`'d at its last use. Recording the ownership
+    /// here (not re-deriving it at the drop) makes drop-iff-dup'd true by construction —
+    /// a never-dup'd binding is never dropped (which would underflow the count → UAF).
+    rc_owned_bindings: HashSet<String>,
     /// The active compile unit's uniqueness facts + (kills consumed, sites
     /// seen) for the post-compile consumption check; units nest via lambdas.
     facts_stack: Vec<(analysis::Facts, usize, usize)>,
@@ -876,6 +883,7 @@ impl Codegen {
             packed_active: HashMap::new(),
             reuse_vars: HashSet::new(),
             rc_floor_vars: HashSet::new(),
+            rc_owned_bindings: HashSet::new(),
             facts_stack: Vec::new(),
             drop_facts_stack: Vec::new(),
             summaries: analysis::Summaries::empty(),
@@ -1991,6 +1999,9 @@ impl Codegen {
         } else {
             HashSet::new()
         };
+        // (RFC-0035 step 3) Populated during this unit's lowering (at each dup-eligible
+        // `let x = list.at(...)`); start empty. Nested units save/restore it via SavedScope.
+        self.rc_owned_bindings = HashSet::new();
         // (RFC-0034 L3) Closure devirtualization: names bound exactly once and never
         // reassigned, so every call through them reaches the same lambda. The
         // name→index map is filled lazily as each such `let f = <lambda>` lowers.
@@ -2120,6 +2131,23 @@ impl Codegen {
         for (i, stmt) in block.stmts.iter().enumerate() {
             match stmt {
                 Stmt::Let { name, value, .. } => {
+                    // (RFC-0035 step 3) If this binds a dup-eligible container read
+                    // (`let x = list.at(xs, i)` where the element is a provably offset-0 rc
+                    // value and rc-floor is on), the read is `$rc_dup`'d in `lower_expr`, so
+                    // `x` owns a reference. Record it under the SAME gate as the dup so its
+                    // last-use `$rc_drop` (below) fires iff the dup did — a never-dup'd
+                    // binding is never dropped (which would underflow the count → UAF).
+                    if !force_copy_mode() && witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::RcFloor) {
+                        if let Expr::Call { name: f, args } = value {
+                            if f == "list.at"
+                                && args.len() == 2
+                                && self.kind_of(value) == Kind::I32
+                                && self.list_elem_is_offset0_rc(&args[0])
+                            {
+                                self.rc_owned_bindings.insert(name.clone());
+                            }
+                        }
+                    }
                     // (RFC-0027) Scalar-replace a frame-confined aggregate: store
                     // each field into a `${name}$<i>` i64-slot local instead of
                     // allocating a heap object. Falls through to the normal path if
@@ -3085,6 +3113,28 @@ impl Codegen {
                         func: "rc_free".into(),
                         args: vec![region],
                     }));
+                }
+                // (RFC-0035 step 3) `$rc_drop` read-owned heap bindings at their last use.
+                // The element was `$rc_dup`'d at the read (step 1), so this releases that
+                // reference — freeing at count 0 (the slot's set_at `$rc_drop` or another
+                // holder took the rest) and merely decrementing otherwise (a live holder
+                // keeps it). Only bindings we recorded as ACTUALLY dup'd (`rc_owned_bindings`
+                // — the same per-type gate as the dup, so drop-iff-dup'd holds by
+                // construction), all at rc-region offset 0 (Dict elements are excluded there).
+                let read_drops: Vec<String> = self
+                    .drop_facts_stack
+                    .last()
+                    .map(|d| d.read_drops_after(stmt).to_vec())
+                    .unwrap_or_default();
+                for name in &read_drops {
+                    if self.rc_owned_bindings.contains(name)
+                        && matches!(self.locals.get(name), Some(&Kind::I32))
+                    {
+                        seq.push(N::Do(W::Call {
+                            func: "rc_drop".into(),
+                            args: vec![W::GetLocal(name.clone())],
+                        }));
+                    }
                 }
             }
         }
@@ -5034,6 +5084,7 @@ impl Codegen {
             packed_active: std::mem::take(&mut self.packed_active),
             reuse_vars: std::mem::take(&mut self.reuse_vars),
             rc_floor_vars: std::mem::take(&mut self.rc_floor_vars),
+            rc_owned_bindings: std::mem::take(&mut self.rc_owned_bindings),
             devirt_ok: std::mem::take(&mut self.devirt_ok),
             devirt_index: std::mem::take(&mut self.devirt_index),
             elide_index_list: std::mem::take(&mut self.elide_index_list),
@@ -5065,6 +5116,7 @@ impl Codegen {
         self.packed_active = s.packed_active;
         self.reuse_vars = s.reuse_vars;
         self.rc_floor_vars = s.rc_floor_vars;
+        self.rc_owned_bindings = s.rc_owned_bindings;
         self.devirt_ok = s.devirt_ok;
         self.devirt_index = s.devirt_index;
         self.elide_index_list = s.elide_index_list;
