@@ -101,25 +101,13 @@ TRACK C — performance (DEFERRED by direction)
   construct `Cmd.Http`; a differential test where component B tries to read A's
   password fails to type-check; both backends + parity (effects are inert data).
 - **Size:** M–L. **Risk:** larger Glamour API surface; depends on 0038 landing.
-- **BLOCKER RESOLVED (RFC-0040):** the browser deployment has no `main`/`--grants`
-  channel; a `UiRoot` enters via the exported step entry instead — see RFC-0040.
-
-### RFC-0040 — Grantable caps on exported root entrypoints (browser app root ABI)
-- **Goal:** a bare grantable cap may lead an `export_*` function; the host mints it
-  per call (reusing RFC-0038's `build_user_cap_field`/`mk{N}`). Lets a browser
-  glamour app receive a real `UiRoot` with no `main`, no `--grants`, no async-executor
-  surgery — the pure-compute rune model is untouched.
-- **Progress (2026-07-01) — codegen foundation DONE (commit e106f20):**
-  `is_string_export` accepts `[bare grantable cap, String]`; the `__export_*` wrapper
-  mints the cap; test `cap_gated_string_export_compiles_and_validates`. **REMAINING:**
-  (a) typeck guard — a `pub fn export_*` with a 2-param `[Named, String]` shape whose
-  leading type is NOT a grantable cap should error (mirror `check_main_signature`);
-  (b) **JS-shell staging** — `web/witchy-host.js` / `glamour-dom.mjs` provide the
-  `user_cap_field_len` import from the app's `UiRoot` grant (deny-by-omission host
-  gains ONE import), so `__export_step` mints the same `UiRoot` each call; a
-  node/`browser_shim`-style value round-trip proves the fields reach the rune;
-  (c) spec (`spec/capabilities.md` — "root entries include exports") + status flip.
-- **Size:** M. Unblocks RFC-0039's browser token-gating (slice 2 above).
+- **BROWSER ROOT ABI — SHIPPED (RFC-0040, `implemented`):** the browser has no
+  `main`/`--grants`; a `UiRoot` enters via the exported step entry
+  (`pub fn export_step(ui: UiRoot, input: String)`), host-minted per call. Codegen
+  (`__export_*` wrapper mints via RFC-0038's `mk{N}`/`build_user_cap_field`) + typeck
+  guard + JS-shell staging (`witchy-runtime.mjs` `user_cap_field_len` from
+  `opts.userCaps`) + a browser value round-trip (`user-cap-export.test.mjs`) all
+  landed, gate-green. So RFC-0039's remaining browser token-gating is FULLY unblocked.
 
 ### RFC-0011 (remainder) — capability refinement: Dir/File policies + carried-state
 - **Goal:** finish RFC-0011 — the Net tier shipped as the template; add the Dir/File

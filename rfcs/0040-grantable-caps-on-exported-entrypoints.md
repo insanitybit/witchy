@@ -1,8 +1,9 @@
 ---
 rfc: 0040
 title: Grantable capabilities on exported root entrypoints (the browser app root ABI)
-status: proposed
+status: implemented
 created: 2026-07-01
+implemented: 2026-07-01 (is_string_export + wrapper minting + typeck guard + JS-shell staging + browser value round-trip)
 predecessors:
   - "0038 (grantable user capabilities — the minting machinery this generalizes)"
   - "0039 (Glamour capability-safe effects — the consumer this unblocks)"
@@ -13,8 +14,20 @@ tracking:
 
 # RFC-0040: Grantable capabilities on exported root entrypoints
 
-> Provisional syntax. Code blocks here are intentionally **not** tagged `witchy`
-> so the doc-examples test does not compile partial snippets.
+> **2026-07-01 — implemented.** `is_string_export` accepts `[bare grantable cap,
+> String]`; the `__export_*` wrapper mints the cap host-side (`mk{N}(build_user_cap_field…)`,
+> the RFC-0038 machinery pointed at one more site); a typeck guard
+> (`check_export_signatures`) rejects a non-grantable leading export param; and the
+> pure browser host (`web/witchy-runtime/witchy-runtime.mjs`) provides
+> `user_cap_field_len` from the app's `[user_caps]` grant (`opts.userCaps`). Proven
+> end-to-end by a node value round-trip (`user-cap-export.test.mjs`, gate-wired via
+> `user_cap_export_mints_uiroot_in_the_browser_host`): the minted `UiRoot`'s policy
+> reaches the rune, and a missing grant traps (parity with the wasmtime host).
+> Behavior lives in `spec/capabilities.md` + the code. Unblocks RFC-0039's browser
+> token-gating.
+>
+> Provisional syntax below is a design record. Code blocks are intentionally **not**
+> tagged `witchy` so the doc-examples test does not compile partial snippets.
 
 ## Summary
 
