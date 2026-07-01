@@ -88,6 +88,31 @@ analyzer (`crates/witchy-caps/src/capabilities.rs`), the runtime gating
 [spec/capabilities.md](spec/capabilities.md) together — and add an
 *enforcement* test (an ungranted module must fail to instantiate).
 
+## Generated and derived docs
+
+Treat generated and derived documentation as build artifacts with source of
+truth elsewhere:
+
+- `spec/stdlib.md` is generated from `std/*.witchy` doc comments. Do not
+  hand-edit it; update the source comments or generator and regenerate it.
+- `wiki/` is derived, disposable synthesis over code, `spec/`, `rfcs/`, and
+  `external-refs/`. Regenerate it instead of hand-maintaining pages.
+- `external-refs/` is curated research input, not the current Witchy spec. Keep
+  notes attributed and use RFCs/spec docs for Witchy decisions.
+
+If a public-facing docs change updates commands, examples, or generated output,
+run the command or generator named by the doc and include that command in the PR.
+
+## Internal and operator-facing artifacts
+
+`CLAUDE.md`, `.claude/skills/**`, `OVERNIGHT_REPORT.md`, and similar local
+operator notes are useful working material, but they are not automatically public
+contributor documentation. Do not delete, publish-sanitize, or rewrite them as
+part of unrelated product docs. If the repository needs a public/open-source cut,
+handle those files in a dedicated policy PR that chooses one outcome explicitly:
+keep them, move them out of the public branch, preserve them privately and delete
+from a mirror, or convert selected instructions into public docs here.
+
 ## License
 
 Dual MIT / Apache-2.0. By contributing you agree your work is licensed the
