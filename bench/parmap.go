@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"sync"
+	"time"
 )
 
 func busy(n int) int {
@@ -14,6 +15,7 @@ func busy(n int) int {
 }
 
 func main() {
+	t0 := time.Now()
 	xs := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
 	ys := make([]int, len(xs))
 	var wg sync.WaitGroup
@@ -27,4 +29,5 @@ func main() {
 		sum += y
 	}
 	fmt.Println(sum)
+	fmt.Printf("bench_ns=%d\n", time.Since(t0).Nanoseconds())
 }

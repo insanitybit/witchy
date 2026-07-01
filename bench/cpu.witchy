@@ -1,8 +1,11 @@
 // Compute-bound: 4M iterations of mixed arithmetic.
-fn main(console: Console):
+fn main(console: Console, clock: Clock):
+    let bench_t0 = now_monotonic(clock)
     var total = 0
     for i in 0..2000:
         var j = 0
         for j in 0..2000:
             total = total + (i * 7 + j) % 13
+    let bench_t1 = now_monotonic(clock)
     print(console, "${total}")
+    print(console, "bench_ns=${bench_t1 - bench_t0}")
