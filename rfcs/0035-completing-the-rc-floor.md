@@ -15,6 +15,44 @@ tracking: "Implements the per-object refcount floor RFC-0016 scoped but left pla
 
 # RFC-0035: Completing the RC floor — last-use reclamation + the lifetime model for reachable data
 
+## Implementation status (2026-07-01)
+
+**The mechanism has shipped; the executor residual is re-scoped.** Under
+`WITCHY_OPT=rc-floor` (opt-in, off by default) the full Perceus discipline is implemented and
+verified sound:
+
+- **Universal `[rc][size]` header** — every value-producing allocator (records/ADTs/tuples/
+  closures via `mk`, all list/string/dict producers, every host-import wrapper) routes through
+  `$rc_alloc`, so any heap object carries a refcount word at `obj-8`. (Region-slide copies and
+  the worker-VM `__galloc` are the documented header-less exceptions; the dict index word is
+  dict-internal.)
+- **`$rc_dup`/`$rc_drop` emission**, per-type gated to provably offset-0 elements
+  (String/List/Tuple/closure/record/ADT; Dict/scalar/type-var excluded — a missed dup/drop leaks,
+  never frees live): dup at the `list.at` read; drop the displaced element at in-place `set_at`;
+  drop read-owned bindings at last use (`rc_owned_bindings`, drop-iff-dup by construction); drop
+  the match-on-read scrutinee after the arms (per-depth save-slot pool for nested matches).
+- **Gate**: an 11-case heap-type-matrix + channel-executor corpus (`rc_corpus_*`), the
+  `WITCHY_HEAP_CHECK` differential fuzzer under `all` (1200-program stress, 0 diverge), forced-copy,
+  and `check.sh --fast` (1089 tests) all green.
+
+This bounds every **confined-unique** churn pattern (set_at / read-out / match-on-read loops).
+The drop is **shell-only** (a dropped shell's heap children leak — recursive `$rdrop` is future).
+
+**The async-executor residual is NOT yet bounded, and the reason refines §1's "inter-procedural"
+framing.** The blocker is not element liveness but **container uniqueness**: the executor
+(`std/task.witchy`) threads `slots`/`channels` as *borrowed* params through a recursive call chain,
+mutating them with `list.set_at(slots, …)` in **return position** (never a `slots = set_at(slots,…)`
+self-assign). So the analysis never proves the buffer unique → every `set_at` takes the **copy**
+path → O(steps) allocation, and the displaced element cannot be dropped (a copy still shares it).
+The own-ABI RFC-0016 has enables in-place mutation only for the `p = f(move p)` *accumulator*
+pipeline; it does **not** cover `set_at` on an `own` param in return position, nor does an `own`
+param's uniqueness propagate to a local (`var s = own_p` still re-owns — measured). Closing
+chan_throughput therefore needs a **uniqueness-analysis extension** (own-param uniqueness → locals,
+and/or in-place `set_at` on an `own` param) so the executor's copies never happen — plus recursive
+`$rdrop` for the nested `Slot→Task→continuation` children. That is a dedicated, UAF-sensitive
+increment, tracked separately. The RC floor here is the correct reclamation *floor* for non-unique
+churn; it is not a substitute for in-place mutation of the executor's O(n²)-copy schedule.
+
 ## Summary
 
 [RFC-0016](0016-reference-counted-memory.md) is the design: **precise reference
