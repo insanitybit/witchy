@@ -229,6 +229,12 @@ Shipped (in `tests/differential_fuzz.rs`, `crates/witchy-wir/src/wir_helpers/mod
   (base vs twin, same backend), zero false positives on correct code. A regression net for the
   reuse-order-sensitive fragile class; the *current* free-at-overwrite bug class does not trigger
   it because that class self-reuses its freed block (no window for a dead alloc to intercept).
+- **§6 minimization / shrinking (P1).** On any DIVERGE or host crash the fuzzer now greedily
+  delta-debugs the failing program (drop a line while the failure persists, to a fixpoint,
+  under a call budget) and reports the MINIMAL reproducer instead of the 100-statement seed.
+  A structural line whose removal ends the failure is kept automatically. Unit-tested via a
+  synthetic oracle (`shrink_reduces_to_minimal_repro`); demonstrated end-to-end on the escape.rs
+  mutant, where a 58-line failing program shrank to the 5-line use-after-free unit.
 
 Honest scoping finding from the teeth-tests: on RANDOM programs the plain cross-lever net catches
 a reuse-after-free only when the freed block's *offset-0* word is observably corrupted — which,

@@ -399,6 +399,76 @@ fn env_usize(key: &str, default: usize) -> usize {
     std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
+/// Outcome of running `witchy parity` on one program under one lever.
+enum ParityResult {
+    Agree,
+    Skip,
+    Diverge(String),
+    Crash(String),
+}
+
+/// Run `witchy parity` on `src` under `WITCHY_OPT=cfg` in a fresh temp file named by `tag`.
+fn run_parity(src: &str, cfg: &str, tag: &str) -> ParityResult {
+    let path = std::env::temp_dir().join(format!("witchy_fuzz_{tag}.witchy"));
+    std::fs::File::create(&path).unwrap().write_all(src.as_bytes()).unwrap();
+    let out = Command::new(BIN).args(["parity", path.to_str().unwrap()]).env("WITCHY_OPT", cfg).output().unwrap();
+    let _ = std::fs::remove_file(&path);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if out.status.code().is_none() {
+        return ParityResult::Crash(format!("{stdout}{stderr}"));
+    }
+    if stdout.contains("DIVERGE") || stderr.contains("DIVERGE") {
+        return ParityResult::Diverge(format!("{stdout}{stderr}"));
+    }
+    if out.status.success() {
+        ParityResult::Agree
+    } else {
+        ParityResult::Skip
+    }
+}
+
+/// (RFC-0037 §6) Greedily minimize a failing program: drop body lines one at a time, keeping any
+/// drop under which `fails` still holds, to a fixpoint. A structural line whose removal stops the
+/// failure (an import, a `let` a later line needs) is kept automatically — the predicate returns
+/// false for it. Bounded by `budget` predicate calls so the (rare) failure path stays finite.
+/// Standard line-level delta debugging; converges to a minimal reproducer for the report.
+fn shrink<F: Fn(&str) -> bool>(src: &str, fails: F, mut budget: usize) -> String {
+    let mut lines: Vec<String> = src.lines().map(str::to_string).collect();
+    let mut changed = true;
+    while changed && budget > 0 {
+        changed = false;
+        let mut i = lines.len();
+        while i > 0 && budget > 0 {
+            i -= 1;
+            let mut cand = lines.clone();
+            cand.remove(i);
+            let text = format!("{}\n", cand.join("\n"));
+            budget -= 1;
+            if fails(&text) {
+                lines = cand;
+                changed = true;
+            }
+        }
+    }
+    format!("{}\n", lines.join("\n"))
+}
+
+/// A DIVERGE or a host crash — the two failure outcomes that `shrink` preserves while minimizing.
+fn is_failure(r: &ParityResult) -> bool {
+    matches!(r, ParityResult::Diverge(_) | ParityResult::Crash(_))
+}
+
+#[test]
+fn shrink_reduces_to_minimal_repro() {
+    // Synthetic failure oracle: a program "fails" iff a marker line is present. The minimizer
+    // must drop every other line, converging to just the marker — proving the delta-debug loop.
+    let src = "line a\nline b\nMARKER here\nline c\nline d\n";
+    let min = shrink(src, |s| s.contains("MARKER here"), 1000);
+    let kept: Vec<&str> = min.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(kept, vec!["MARKER here"], "shrink did not reduce to the minimal failing line: {min:?}");
+}
+
 #[test]
 fn differential_fuzz_interpreter_vs_compiled() {
     // Counts are env-overridable so the scheduled/`--full` job can scale coverage up. The
@@ -412,43 +482,44 @@ fn differential_fuzz_interpreter_vs_compiled() {
     for seed in 0..programs as u64 {
         let (src, used) = gen_program(seed.wrapping_mul(0x1234_5678_9ABC_DEF1).wrapping_add(1), statements);
         kinds_used |= used;
-        let path = std::env::temp_dir().join(format!("witchy_fuzz_{seed}.witchy"));
-        std::fs::File::create(&path).unwrap().write_all(src.as_bytes()).unwrap();
         // Cross-lever differential: `parity` reads `WITCHY_OPT` for its compiled side; the
         // interpreter oracle ignores it. So running parity under each config compares that
         // config's compiled output against the one constant oracle — all-agree ⇒ all compiled
         // outputs agree with each other. Any lever that changes observable behavior is a DIVERGE.
         for &cfg in CONFIGS {
-            let out = Command::new(BIN)
-                .args(["parity", path.to_str().unwrap()])
-                .env("WITCHY_OPT", cfg)
-                .output()
-                .unwrap();
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            let stderr = String::from_utf8_lossy(&out.stderr);
             let label = if cfg.is_empty() { "<default>" } else { cfg };
-
-            // A crash (terminated by signal -> no exit code) means the host process itself died.
-            assert!(
-                out.status.code().is_some(),
-                "witchy crashed (signal) on seed {seed} under WITCHY_OPT={label} — host-level memory unsafety.\n--- program ---\n{src}\n--- stderr ---\n{stderr}"
-            );
-            if stdout.contains("DIVERGE") || stderr.contains("DIVERGE") {
-                panic!(
-                    "BACKENDS DIVERGE on seed {seed} under WITCHY_OPT={label} — a codegen/memory bug (an optimization changed observable behavior).\n--- program ---\n{src}\n--- output ---\n{stdout}{stderr}"
-                );
-            }
-            // Account compile/agree once, on the production-default config, to gauge the generator.
-            if cfg.is_empty() {
-                if out.status.success() {
-                    agree += 1;
-                } else {
-                    // Non-DIVERGE exit-1 = the generator produced a non-compiling program; tolerated.
-                    compile_skipped += 1;
+            match run_parity(&src, cfg, &seed.to_string()) {
+                // A crash (no exit code) means the host process itself died — memory unsafety.
+                ParityResult::Crash(out) => {
+                    let min = shrink(&src, |s| is_failure(&run_parity(s, cfg, "shrink")), 4000);
+                    panic!(
+                        "witchy CRASHED (signal) on seed {seed} under WITCHY_OPT={label} — host-level memory unsafety.\n--- minimal repro ({} lines, from {}) ---\n{min}--- output ---\n{out}",
+                        min.lines().count(),
+                        src.lines().count()
+                    );
+                }
+                ParityResult::Diverge(out) => {
+                    let min = shrink(&src, |s| is_failure(&run_parity(s, cfg, "shrink")), 4000);
+                    panic!(
+                        "BACKENDS DIVERGE on seed {seed} under WITCHY_OPT={label} — an optimization changed observable behavior.\n--- minimal repro ({} lines, from {}) ---\n{min}--- output ---\n{out}",
+                        min.lines().count(),
+                        src.lines().count()
+                    );
+                }
+                // Account compile/agree once, on the production-default config, to gauge the generator.
+                ParityResult::Agree => {
+                    if cfg.is_empty() {
+                        agree += 1;
+                    }
+                }
+                ParityResult::Skip => {
+                    if cfg.is_empty() {
+                        // Non-DIVERGE exit-1 = the generator produced a non-compiling program; tolerated.
+                        compile_skipped += 1;
+                    }
                 }
             }
         }
-        let _ = std::fs::remove_file(&path);
     }
     // Sanity: the generator must mostly produce compiling programs, or it isn't testing codegen.
     assert!(
