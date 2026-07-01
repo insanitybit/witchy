@@ -518,13 +518,13 @@ pub fn rc_dup_helper() -> WirFunc {
     // as a pointer has arbitrary data, so its "size" is implausible. Guarding the increment on a
     // plausible size means `$rc_dup` touches `[ptr-8]` ONLY on real object bases — never corrupting
     // a view's/parent's data (the minigrep/pm OOB). A real object always passes, so no dup is lost.
-    let size_ok = || {
-        b(
-            BinOp::LeU,
-            b(BinOp::Sub, b(BinOp::And, E::Load { ptr: Box::new(b(BinOp::Sub, getl("ptr"), i32c(4))), kind: Kind::I32, offset: 0 }, i32c(0x00FF_FFFF)), i32c(1)),
-            i32c((1 << 20) - 2), // (size-1) <=U (2^20 - 2)  ⇔  1 <= size <= 2^20-1  (rejects size==0 too)
-        )
-    };
+    // `(v-1) <=U (hi-2)` ⇔ `1 <= v <= hi-1` (also rejects v==0, which underflows to a huge unsigned).
+    let in_1_to = |v: E, hi: i32| b(BinOp::LeU, b(BinOp::Sub, v, i32c(1)), i32c(hi - 2));
+    let size_load = || b(BinOp::And, E::Load { ptr: Box::new(b(BinOp::Sub, getl("ptr"), i32c(4))), kind: Kind::I32, offset: 0 }, i32c(0x00FF_FFFF));
+    // Two-factor plausibility: a genuine object always has size ∈ [1, 2^20) at ptr-4 AND rc ∈
+    // [1, 2^24) at ptr-8, so it ALWAYS passes (no dup lost). A view/scalar must have BOTH words
+    // coincidentally in range to slip through — vanishingly unlikely, and it only ever SKIPS a dup.
+    let header_ok = || b(BinOp::And, in_1_to(size_load(), 1 << 20), in_1_to(rc_load(), 1 << 24));
     WirFunc {
         name: "rc_dup".into(),
         params: vec![WirLocal { name: "ptr".into(), ty: WirTy::Bool }],
@@ -533,7 +533,7 @@ pub fn rc_dup_helper() -> WirFunc {
         locals: vec![],
         body: vec![
             N::If {
-                cond: b(BinOp::And, b(BinOp::GeU, getl("ptr"), E::GetGlobal("heap_base".into())), size_ok()),
+                cond: b(BinOp::And, b(BinOp::GeU, getl("ptr"), E::GetGlobal("heap_base".into())), header_ok()),
                 then_: vec![N::Store {
                     ptr: rc_addr(),
                     value: b(BinOp::Add, rc_load(), i32c(1)),
