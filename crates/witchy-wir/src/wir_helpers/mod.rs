@@ -355,19 +355,23 @@ pub fn rc_dup_helper() -> WirFunc {
     WirFunc {
         name: "rc_dup".into(),
         params: vec![WirLocal { name: "ptr".into(), ty: WirTy::Bool }],
-        ret: vec![],
+        // Returns `ptr` so it wraps a read expression in place: `$rc_dup(<read>)`.
+        ret: vec![WirTy::Bool],
         locals: vec![],
-        body: vec![N::If {
-            cond: b(BinOp::GeU, getl("ptr"), E::GetGlobal("heap_base".into())),
-            then_: vec![N::Store {
-                ptr: rc_addr(),
-                value: b(BinOp::Add, rc_load(), i32c(1)),
-                kind: Kind::I32,
-                offset: 0,
-            }],
-            els: vec![],
-            result: None,
-        }],
+        body: vec![
+            N::If {
+                cond: b(BinOp::GeU, getl("ptr"), E::GetGlobal("heap_base".into())),
+                then_: vec![N::Store {
+                    ptr: rc_addr(),
+                    value: b(BinOp::Add, rc_load(), i32c(1)),
+                    kind: Kind::I32,
+                    offset: 0,
+                }],
+                els: vec![],
+                result: None,
+            },
+            N::Push(getl("ptr")),
+        ],
         raw_body: None,
     }
 }

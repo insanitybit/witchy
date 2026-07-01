@@ -735,7 +735,7 @@ impl Codegen {
                     if self.elide_index_list.iter().any(|(i, l)| i == iv && l == lv));
                 let list_w = self.lower_expr(&args[0])?;
                 let idx_w = Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I32);
-                if elide {
+                let read = if elide {
                     let wi32 = witchy_wir::wir::Kind::I32;
                     let add = witchy_wir::wir::BinOp::Add;
                     let addr = W::Binary {
@@ -764,6 +764,22 @@ impl Codegen {
                     )
                 } else {
                     W::FromSlot(Box::new(call("list_at", vec![list_w, idx_w])), Self::wir_kind(ek))
+                };
+                // (RFC-0035 step 1) The element read out of the container is now an OWNED
+                // reference sharing the object with the slot, so `$rc_dup` it — it returns the
+                // pointer, wrapping the read in place. Gated `rc-floor`; only i32-kinded
+                // (heap-pointer) elements whose type is a PROVABLY offset-0 `$rc_alloc` value
+                // (`list_elem_is_offset0_rc` excludes Dict / scalar / bare type-var — the plain
+                // `[ptr-8]` refcount is correct only there). dup-at-read alone only INCREMENTS,
+                // so it cannot free live data; a consumer transfers or drops it in later steps.
+                if Self::wir_kind(ek) == witchy_wir::wir::Kind::I32
+                    && self.list_elem_is_offset0_rc(&args[0])
+                    && !force_copy_mode()
+                    && witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::RcFloor)
+                {
+                    W::Call { func: "rc_dup".into(), args: vec![read] }
+                } else {
+                    read
                 }
             }
             ("recv_bytes", 2) => {

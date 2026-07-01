@@ -129,6 +129,41 @@ impl Codegen {
         Kind::I32
     }
 
+    /// (RFC-0035) Whether `list`'s element is a plain offset-0 `$rc_alloc` heap value —
+    /// String, List, Tuple, a closure, or a user record/ADT — as opposed to a Dict (whose
+    /// rc region starts at `ptr-4`, not `ptr`), a scalar, or an unresolvable / generic
+    /// type-variable element (which under the uniform i32 ABI could be instantiated as a
+    /// Dict). Gates the RC-floor `$rc_dup`/`$rc_drop` emission to the elements the plain
+    /// `[ptr-8]` refcount word is correct for. Conservative BY CONSTRUCTION: only a KNOWN
+    /// concrete offset-0 head returns `true`; every other case (incl. an unresolved element
+    /// type or a bare type variable) returns `false`, and a missed dup/drop only leaks — it
+    /// never frees a live value (the ⊥-keeps-the-count floor).
+    pub(crate) fn list_elem_is_offset0_rc(&self, list: &Expr) -> bool {
+        let Some(t) = self.type_table.type_of(list).and_then(witchy_types::typeck::ty_to_ast) else {
+            return false;
+        };
+        let strip = |t: &Type| -> Type {
+            match t {
+                Type::Qualified(_, inner) => (**inner).clone(),
+                other => other.clone(),
+            }
+        };
+        let Type::Named(head, targs) = strip(&t) else { return false };
+        if head != "List" || targs.len() != 1 {
+            return false;
+        }
+        match strip(&targs[0]) {
+            Type::Tuple(_) | Type::Fn(_, _) => true,
+            Type::Named(n, _) => {
+                n == "String"
+                    || n == "List"
+                    || self.adt_variants.contains_key(&n)
+                    || self.record_fields.contains_key(&n)
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) fn block_kind(&self, b: &Block) -> Kind {
         match b.stmts.last() {
             Some(Stmt::Expr(e)) => self.kind_of(e),
