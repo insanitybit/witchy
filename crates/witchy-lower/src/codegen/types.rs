@@ -142,26 +142,46 @@ impl Codegen {
         let Some(t) = self.type_table.type_of(list).and_then(witchy_types::typeck::ty_to_ast) else {
             return false;
         };
-        let strip = |t: &Type| -> Type {
-            match t {
-                Type::Qualified(_, inner) => (**inner).clone(),
-                other => other.clone(),
-            }
+        let inner = match &t {
+            Type::Qualified(_, i) => i.as_ref(),
+            other => other,
         };
-        let Type::Named(head, targs) = strip(&t) else { return false };
-        if head != "List" || targs.len() != 1 {
-            return false;
+        if let Type::Named(head, targs) = inner {
+            if head == "List" && targs.len() == 1 {
+                return self.type_is_offset0_rc(&targs[0]);
+            }
         }
-        match strip(&targs[0]) {
+        false
+    }
+
+    /// The core of [`list_elem_is_offset0_rc`] on a resolved source TYPE: true for
+    /// String / List / Tuple / closure / a user record or ADT; false for Dict (rc region at
+    /// `ptr-4`), scalars, and bare type variables (uniform-ABI-instantiable as a Dict).
+    pub(crate) fn type_is_offset0_rc(&self, ty: &Type) -> bool {
+        let inner = match ty {
+            Type::Qualified(_, inner) => inner.as_ref(),
+            other => other,
+        };
+        match inner {
             Type::Tuple(_) | Type::Fn(_, _) => true,
             Type::Named(n, _) => {
                 n == "String"
                     || n == "List"
-                    || self.adt_variants.contains_key(&n)
-                    || self.record_fields.contains_key(&n)
+                    || self.adt_variants.contains_key(n)
+                    || self.record_fields.contains_key(n)
             }
             _ => false,
         }
+    }
+
+    /// (RFC-0035) Whether expression `e`'s OWN type is a plain offset-0 `$rc_alloc` heap
+    /// value — used at `list.set_at` to classify the DISPLACED element (which has the same
+    /// type as the value being stored). Conservative: an unresolved type yields `false`.
+    pub(crate) fn expr_is_offset0_rc(&self, e: &Expr) -> bool {
+        self.type_table
+            .type_of(e)
+            .and_then(witchy_types::typeck::ty_to_ast)
+            .is_some_and(|t| self.type_is_offset0_rc(&t))
     }
 
     pub(crate) fn block_kind(&self, b: &Block) -> Kind {
