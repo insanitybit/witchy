@@ -346,6 +346,20 @@ pub fn assemble_wir_module(
     let mut main_param_is_args: Vec<bool> = Vec::new();
     let mut main_param_is_dir: Vec<bool> = Vec::new();
     let mut main_param_is_file: Vec<bool> = Vec::new();
+    // RFC-0038: `Some((type_name, nfields))` for a grantable-capability `main` param
+    // (its record is minted at the root); `None` otherwise.
+    let mut main_param_user_cap: Vec<Option<(String, usize)>> = Vec::new();
+    // Grantable capability name -> field count, to detect + size a grantable param.
+    let grantable_caps: std::collections::HashMap<&str, usize> = module
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            Item::Type(t) if t.grantable => {
+                Some((t.name.as_str(), t.variants.first().map(|v| v.fields.len()).unwrap_or(0)))
+            }
+            _ => None,
+        })
+        .collect();
     let mut main_returns_int = false;
     let mut main_returns_float = false;
     let mut user_order: Vec<String> = Vec::new();
@@ -369,6 +383,16 @@ pub fn assemble_wir_module(
                         .push(matches!(&p.ty, Some(Type::Named(n, _)) if n == "Dir"));
                     main_param_is_file
                         .push(matches!(&p.ty, Some(Type::Named(n, _)) if n == "File"));
+                    let uc = match &p.ty {
+                        Some(Type::Named(n, _)) => {
+                            grantable_caps.get(n.as_str()).map(|nf| (n.clone(), *nf))
+                        }
+                        _ => None,
+                    };
+                    if let Some((_, nfields)) = &uc {
+                        cg.mk_arities.insert(*nfields); // the record allocator for the sealed cap
+                    }
+                    main_param_user_cap.push(uc);
                 }
             }
             if reachable.contains(&f.name) && !witchy_types::typeck::intrinsic(&f.name) {
@@ -477,6 +501,13 @@ pub fn assemble_wir_module(
             !called.iter().any(|n| n.starts_with("host:")) && user_host_imports.is_empty();
         if cg.uses_args {
             called.insert("build_args".to_string());
+        }
+        // RFC-0038: the `run` wrapper mints each grantable-cap param via
+        // `mk{N}(build_user_cap_field(k, 0..N))`; those synthesized calls are in no
+        // user body, so pull the helpers into the reached set explicitly.
+        for (_, nfields) in main_param_user_cap.iter().flatten() {
+            called.insert("build_user_cap_field".to_string());
+            called.insert(format!("mk{nfields}"));
         }
         // The `__galloc` allocator the string-export wrappers expose calls `$ensure`
         // and bumps `$heap`, so pull `ensure` into the reached set (it brings the
@@ -589,6 +620,7 @@ pub fn assemble_wir_module(
             // other cap is a right-less placeholder (handle 0).
             let mut dir_handle = 0i32;
             let mut file_handle = 0i32;
+            let mut user_cap_ord = 0i32;
             let mut main_args: Vec<WirExpr> = Vec::with_capacity(main_params);
             for i in 0..main_params {
                 if main_param_is_args.get(i).copied().unwrap_or(false) {
@@ -599,6 +631,28 @@ pub fn assemble_wir_module(
                 } else if main_param_is_file.get(i).copied().unwrap_or(false) {
                     main_args.push(WirExpr::ConstI32(file_handle));
                     file_handle += 1;
+                } else if let Some((tn, nfields)) = main_param_user_cap.get(i).cloned().flatten() {
+                    // RFC-0038: mint the sealed record from the grant —
+                    // `mk{N}(tag, build_user_cap_field(k, 0), …, build_user_cap_field(k, N-1))`.
+                    // `k` is the grantable param's ordinal (indexing the host's
+                    // `user_cap_fields`); the tag is the ctor's variant discriminant;
+                    // each field is a separately-alloc'd String widened to the i64 slot.
+                    let k = user_cap_ord;
+                    user_cap_ord += 1;
+                    let tag = cg.ctors.get(&tn).map(|c| c.0).unwrap_or(0) as i32;
+                    let mut mk_args: Vec<WirExpr> = Vec::with_capacity(nfields + 1);
+                    mk_args.push(WirExpr::ConstI32(tag));
+                    for fi in 0..nfields as i32 {
+                        mk_args.push(WirExpr::Convert {
+                            from: witchy_wir::wir::Kind::I32,
+                            to: witchy_wir::wir::Kind::I64,
+                            arg: Box::new(WirExpr::Call {
+                                func: "build_user_cap_field".into(),
+                                args: vec![WirExpr::ConstI32(k), WirExpr::ConstI32(fi)],
+                            }),
+                        });
+                    }
+                    main_args.push(WirExpr::Call { func: format!("mk{nfields}"), args: mk_args });
                 } else {
                     main_args.push(WirExpr::ConstI32(0));
                 }

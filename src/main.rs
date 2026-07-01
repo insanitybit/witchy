@@ -1463,7 +1463,7 @@ fn execute_file_exit(
     // share one runtime, so dev == deploy by construction. The interpreter is only
     // the differential oracle (`witchy parity`) and the comptime evaluator — never
     // a user-program run path.
-    run_linked_compiled(&linked, Vec::new(), Vec::new(), net_allow, args, signing_key, named_secrets, false)
+    run_linked_compiled(&linked, Vec::new(), Vec::new(), net_allow, args, signing_key, named_secrets, Vec::new(), false)
         .map(|(lines, code)| (lines, code.unwrap_or(0)))
 }
 
@@ -1710,6 +1710,7 @@ fn run_linked_compiled(
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<(String, Vec<u8>)>,
+    user_cap_fields: Vec<Vec<String>>,
     strict_dir: bool,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     use crate::runtime::{Capabilities, Runtime};
@@ -1736,6 +1737,7 @@ fn run_linked_compiled(
         print_int: true,
         quiet: true,
         args,
+        user_cap_fields,
         ..Default::default()
     };
     if grant.contains_key("Clock") {
@@ -1959,7 +1961,7 @@ fn run_file_sandboxed(
         "sandboxing `{path}` \u{2014} granted exactly: {}",
         capabilities::show_caps(&grant)
     );
-    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, args, signing_key, named_secrets, true)
+    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, args, signing_key, named_secrets, Vec::new(), true)
 }
 
 /// Resolve a `[secrets]` entry's `from = "env:VAR"` to the secret bytes the host
@@ -2013,6 +2015,17 @@ fn run_file_grants(
     // allowlist (all `[net]` addresses); secrets are named and host-resolved.
     let mut dir_roots: Vec<std::path::PathBuf> = Vec::new();
     let mut file_grants: Vec<std::path::PathBuf> = Vec::new();
+    // RFC-0038: grantable-cap params, in declaration order, each field pulled from
+    // its `[user_caps]` entry in the cap's field order (must match codegen's k / N).
+    let grantable: std::collections::HashMap<&str, &ast::TypeDef> = linked
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            ast::Item::Type(t) if t.grantable => Some((t.name.as_str(), t)),
+            _ => None,
+        })
+        .collect();
+    let mut user_cap_fields: Vec<Vec<String>> = Vec::new();
     let mut net_allow: Vec<String> = doc.net.values().flatten().cloned().collect();
     net_allow.sort();
     net_allow.dedup();
@@ -2036,6 +2049,26 @@ fn run_file_grants(
                         format!("grant `{grants_path}` has no `[dirs].{}` for `main` parameter `{}`", p.name, p.name)
                     })?;
                     dir_roots.push(std::path::PathBuf::from(&g.root));
+                }
+                Some(ast::Type::Named(n, _)) if grantable.contains_key(n.as_str()) => {
+                    // RFC-0038: a bare grantable cap — pull each policy field from the
+                    // `[user_caps]` entry in the cap's declared field order.
+                    let uc = doc.user_caps.get(&p.name).ok_or_else(|| {
+                        format!("grant `{grants_path}` has no `[user_caps].{}` for `main` parameter `{}` (type `{n}`)", p.name, p.name)
+                    })?;
+                    let t = grantable[n.as_str()];
+                    let names: &[String] = t.variants.first().map(|v| v.field_names.as_slice()).unwrap_or(&[]);
+                    let mut vals = Vec::with_capacity(names.len());
+                    for fname in names {
+                        let v = uc.fields.get(fname).ok_or_else(|| {
+                            format!("`[user_caps].{}` is missing field `{fname}` required by `{n}`", p.name)
+                        })?;
+                        let s = v.as_str().ok_or_else(|| {
+                            format!("`[user_caps].{}` field `{fname}` must be a string", p.name)
+                        })?;
+                        vals.push(s.to_string());
+                    }
+                    user_cap_fields.push(vals);
                 }
                 _ => {}
             }
@@ -2072,7 +2105,7 @@ fn run_file_grants(
     }
     // Secrets reach the program by name through the `SecretStore` (`require`/`get`);
     // the bare `Secret` handle (`--signing-key`) is not granted via documents here.
-    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, args, None, named_secrets, true)
+    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, args, None, named_secrets, user_cap_fields, true)
 }
 
 /// The `witchy.*` host functions a compiled module imports — its authority

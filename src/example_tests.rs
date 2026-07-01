@@ -4853,6 +4853,53 @@ fn yes(b: Bool) -> String:
         assert!(fp.total.contains_key("Clock"), "Clock should appear in the footprint");
     }
 
+    /// (RFC-0038) A bare grantable capability granted to `main` mints an identical
+    /// sealed record on BOTH backends: the interpreter builds a `Value::Ctor` from
+    /// the grant fields; the compiled backend stages each field host-side and
+    /// wraps them in a record via `mk{N}`. The two must agree bit-for-bit.
+    #[test]
+    fn grantable_user_cap_mints_identically_on_both_backends() {
+        use crate::runtime::{Capabilities, Runtime};
+        let src = "grantable capability UiRoot:\n    policy: String\n    app_id: String\n\nfn descr(u: UiRoot) -> String:\n    match u:\n        UiRoot(p, a) -> p + \"@\" + a\n\nfn main(console: Console, ui: UiRoot):\n    print(console, descr(ui))\n";
+        let expected = vec!["coven-web@web".to_string()];
+
+        // Interpreter: grant keyed by param name -> field values.
+        let module = parser::parse_module(src).expect("parse");
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert("policy".to_string(), "coven-web".to_string());
+        fields.insert("app_id".to_string(), "web".to_string());
+        let mut grants = std::collections::BTreeMap::new();
+        grants.insert("ui".to_string(), fields);
+        assert_eq!(
+            interpreter::run_module_user_caps(module, ".", vec![], vec![], vec![], grants).expect("interp"),
+            expected,
+            "interp"
+        );
+
+        // Compiled: field values staged host-side in declaration order.
+        let linked = resolve_std_src(src);
+        typeck::check(&linked).expect("typecheck");
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                &bytes,
+                Capabilities {
+                    print: true,
+                    print_int: true,
+                    quiet: true,
+                    user_cap_fields: vec![vec!["coven-web".to_string(), "web".to_string()]],
+                    ..Default::default()
+                },
+                crate::RUN_MEMORY_PAGES,
+            )
+            .expect("spawn");
+        actor.run().expect("run");
+        assert_eq!(actor.output(), expected, "compiled WASM must agree");
+    }
+
     /// The `Env` capability reads process environment variables via `get_env`,
     /// returning `Option(String)` (None when unset). Reading the environment is
     /// ambient authority, so it's capability-gated and surfaces in the footprint.
