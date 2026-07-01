@@ -1593,27 +1593,153 @@ impl DropFacts {
     }
 }
 
-/// (RFC-0035) Compute drop points for a function body. Increment 1: only the airtight
-/// dead-binding case (see the section banner). `_summaries` is the inter-procedural
-/// seam the later liveness-driven increment consumes.
-pub fn last_use_drops(body: &Block, _summaries: &Summaries) -> DropFacts {
+/// (RFC-0035) Compute drop points for a function body. Two AIRTIGHT cases, neither
+/// needing backward-liveness dataflow (which is the next increment):
+///  1. **Dead binding** — a `let v` never read and never reassigned → drop right after
+///     it (zero references; trivially safe).
+///  2. **Single use** — a `let v` read EXACTLY ONCE and never reassigned, whose single
+///     read is a direct `Var` argument of a call the summaries say does NOT leak it
+///     (`arg_leaks` false ⇒ the callee neither stores the value nor returns it as an
+///     alias) → drop after that statement. The single read IS trivially the last use
+///     (no dataflow), and `arg_leaks` false guarantees the value's buffer does not
+///     escape or alias the call result, so it is dead afterwards — safe to free even per
+///     loop iteration when the read sits in a loop body. Anything stored in a
+///     constructor/collection, returned, captured, passed to a leaking arg, read more
+///     than once, reassigned, or a parameter (caller-owned) falls through to NO drop.
+pub fn last_use_drops(body: &Block, summaries: &Summaries) -> DropFacts {
     let mut facts = DropFacts::default();
-    collect_dead_binding_drops(body, body, &mut facts);
+    let mut lets = HashSet::new();
+    collect_let_names(body, &mut lets);
+    place_drops(body, body, summaries, &lets, &mut facts);
     facts
 }
 
-/// Record a drop after every `let v = …` in `b` (recursing nested blocks) whose `v` is
-/// never read and never reassigned anywhere in `fn_body` — a provably-unreferenced
-/// allocation. `fn_body` is the whole function body so the read/reassign scan is
-/// complete (a use in any later or nested scope disqualifies the drop).
-fn collect_dead_binding_drops(b: &Block, fn_body: &Block, facts: &mut DropFacts) {
+/// Every `let`-bound name in `b` (recursing nested blocks). Parameters are deliberately
+/// excluded — they are caller-owned, so the callee must never drop them.
+fn collect_let_names(b: &Block, out: &mut HashSet<String>) {
     for s in &b.stmts {
         if let Stmt::Let { name, .. } = s {
-            if name_read_count(fn_body, name) == 0 && name_reassign_count(fn_body, name) == 0 {
+            out.insert(name.clone());
+        }
+        each_block_in_stmt(s, &mut |blk| collect_let_names(blk, out));
+    }
+}
+
+/// Walk every statement (recursing nested blocks once each) and record the two airtight
+/// drop cases. The single-read scan looks at ONLY the current statement's own value
+/// expression (never crossing into a nested block — those are separate statements the
+/// recursion visits), so a per-iteration read is attributed to its own statement inside
+/// the loop body, not to the whole loop.
+fn place_drops(
+    block: &Block,
+    fn_body: &Block,
+    summaries: &Summaries,
+    lets: &HashSet<String>,
+    facts: &mut DropFacts,
+) {
+    for s in &block.stmts {
+        if let Stmt::Let { name, .. } = s {
+            if name_reassign_count(fn_body, name) == 0 && name_read_count(fn_body, name) == 0 {
                 facts.record(s, name.clone());
             }
         }
-        each_block_in_stmt(s, &mut |blk| collect_dead_binding_drops(blk, fn_body, facts));
+        if let Some(value) = stmt_value(s) {
+            let mut candidates = Vec::new();
+            nonleaking_call_arg_vars(value, summaries, &mut candidates);
+            for v in candidates {
+                if lets.contains(&v)
+                    && name_reassign_count(fn_body, &v) == 0
+                    && name_read_count(fn_body, &v) == 1
+                {
+                    facts.record(s, v);
+                }
+            }
+        }
+        each_block_in_stmt(s, &mut |blk| place_drops(blk, fn_body, summaries, lets, facts));
+    }
+}
+
+/// Names appearing as a direct `Var` argument of a `Call` whose parameter does NOT leak
+/// (`Summaries::arg_leaks` false: the callee neither retains the value nor returns it as
+/// an alias). Recurses through value-position sub-expressions (so `f(g(v))` with a
+/// non-leaking `g` is found), but STOPS at block boundaries (if/match/loop bodies,
+/// `Block`, lambda) — those are separate statements `place_drops` visits, and crossing
+/// them would mis-attribute (or double-count) a per-iteration drop.
+fn nonleaking_call_arg_vars(e: &Expr, summaries: &Summaries, out: &mut Vec<String>) {
+    if let Expr::Call { name, args } = e {
+        for (i, a) in args.iter().enumerate() {
+            if let Expr::Var(v) = a {
+                if !summaries.arg_leaks(name, i, args.len()) {
+                    out.push(v.clone());
+                }
+            }
+        }
+    }
+    each_value_child(e, &mut |c| nonleaking_call_arg_vars(c, summaries, out));
+}
+
+/// Apply `f` to each value-position child EXPRESSION of `e` (operands, call args, match
+/// arm bodies, the condition/iterator of a loop or `if`), but NOT into any nested block
+/// (loop/branch bodies, `Block`, lambda body) — those are statement scopes handled by
+/// `place_drops`'s own recursion.
+fn each_value_child(e: &Expr, f: &mut impl FnMut(&Expr)) {
+    match e {
+        Expr::List(xs) | Expr::Tuple(xs) => xs.iter().for_each(f),
+        Expr::Call { args, .. } | Expr::Ctor { args, .. } => args.iter().for_each(f),
+        Expr::MethodCall { receiver, args, .. } => {
+            f(receiver);
+            args.iter().for_each(f);
+        }
+        Expr::Apply { func, args } => {
+            f(func);
+            args.iter().for_each(f);
+        }
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } => f(expr),
+        Expr::Field { base, .. } => f(base),
+        Expr::Binary { lhs, rhs, .. }
+        | Expr::Index { base: lhs, index: rhs }
+        | Expr::Range { lo: lhs, hi: rhs, .. } => {
+            f(lhs);
+            f(rhs);
+        }
+        Expr::RecordUpdate { base, fields } => {
+            f(base);
+            fields.iter().for_each(|(_, v)| f(v));
+        }
+        Expr::Record { fields, spread, .. } => {
+            fields.iter().for_each(|(_, v)| f(v));
+            if let Some(sp) = spread {
+                f(sp);
+            }
+        }
+        // `if`/loops: their condition/iterator is a value child; their bodies are blocks.
+        Expr::If { cond, .. } => f(cond),
+        Expr::While { cond, .. } => f(cond),
+        Expr::WhileLet { scrutinee, .. } => f(scrutinee),
+        Expr::For { iter, .. } => f(iter),
+        // `match`: scrutinee + guards + arm bodies are value children (an arm body that is
+        // itself a `Block` STOPS the recursion at that `Block` arm — handled by the block walk).
+        Expr::Match { scrutinee, arms } => {
+            f(scrutinee);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    f(g);
+                }
+                if !matches!(arm.body, Expr::Block(_)) {
+                    f(&arm.body);
+                }
+            }
+        }
+        // Boundaries (a nested statement scope) and leaves: no value children to descend.
+        Expr::Block(_)
+        | Expr::Lambda { .. }
+        | Expr::Var(_)
+        | Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Duration(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::TaggedLit { .. } => {}
     }
 }
 
@@ -1795,7 +1921,11 @@ fn each_block_in_expr(e: &Expr, f: &mut impl FnMut(&Block)) {
             each_block_in_expr(iter, f);
             f(body);
         }
-        Expr::Lambda { body, .. } => f(body),
+        // A lambda body is a SEPARATE compile unit (its own params + captured-by-value
+        // environment). The drop/let passes must not cross into it — a captured value
+        // belongs to the closure, and dropping it inside the body would double-free on
+        // repeated calls. (Read-counting DOES descend into lambdas — a capture is a use.)
+        Expr::Lambda { .. } => {}
         Expr::List(xs) | Expr::Tuple(xs) => xs.iter().for_each(|x| each_block_in_expr(x, f)),
         Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
             args.iter().for_each(|a| each_block_in_expr(a, f))
@@ -1857,43 +1987,83 @@ mod last_use_tests {
         last_use_drops(&f.body, &summaries)
     }
 
-    /// A binding never read is dead the moment it is made → one drop.
+    // ---- case 1: dead binding (never read) ----
+
     #[test]
     fn unread_binding_is_dropped() {
         let d = drops("import list\nfn f():\n    let buf = list.push([], 1)\n    0\n");
         assert_eq!(d.total(), 1, "the never-read `buf` is a dead-binding drop");
     }
 
-    /// A binding that IS read is not a dead-binding drop (its real last-use drop is the
-    /// next increment, not this airtight case) — never an over-drop.
-    #[test]
-    fn read_binding_is_not_a_dead_drop() {
-        let d = drops("import list\nfn f() -> Int:\n    let buf = list.push([], 1)\n    list.length(buf)\n");
-        assert_eq!(d.total(), 0, "`buf` is read, so no dead-binding drop");
-    }
-
-    /// A binding read only inside a nested block / lambda still counts as used.
-    #[test]
-    fn nested_and_captured_reads_count() {
-        let nested = drops("import list\nfn f() -> Int:\n    let buf = list.push([], 1)\n    if true:\n        list.length(buf)\n    else:\n        0\n");
-        assert_eq!(nested.total(), 0, "a read inside a branch disqualifies the drop");
-        let captured = drops("import list\nfn f() -> fn() -> Int:\n    let buf = list.push([], 1)\n    fn(): list.length(buf)\n");
-        assert_eq!(captured.total(), 0, "a read captured by a lambda keeps it live");
-    }
-
-    /// A reassigned binding is not a dead-binding drop (its buffer churn is rc-floor's
-    /// free-at-overwrite, and its final value's drop is the liveness increment).
-    #[test]
-    fn reassigned_binding_is_not_a_dead_drop() {
-        let d = drops("import list\nfn f():\n    var buf = []\n    buf = list.push(buf, 1)\n    0\n");
-        assert_eq!(d.total(), 0, "`buf` is reassigned, so the dead-binding case does not apply");
-    }
-
-    /// Two independent dead bindings each drop.
     #[test]
     fn multiple_dead_bindings() {
         let d = drops("import list\nfn f():\n    let a = list.push([], 1)\n    let b = list.push([], 2)\n    0\n");
         assert_eq!(d.total(), 2, "both `a` and `b` are never read");
+    }
+
+    // ---- case 2: single use in a non-leaking call argument ----
+
+    /// Read exactly once, as the arg of a non-leaking call (`list.length` reads its
+    /// arg and returns an Int) → dropped after that statement.
+    #[test]
+    fn single_use_nonleaking_call_is_dropped() {
+        let d = drops("import list\nfn f() -> Int:\n    let buf = list.push([], 1)\n    list.length(buf)\n");
+        assert_eq!(d.total(), 1, "`buf`'s single non-leaking read is its last use");
+    }
+
+    /// The soak/residual shape: per-iteration scratch bound in a loop body, read once in
+    /// a non-leaking call → dropped INSIDE the body (per iteration), bounding the loop.
+    #[test]
+    fn single_use_scratch_in_loop_drops_per_iteration() {
+        let d = drops("import list\nfn f() -> Int:\n    var sum = 0\n    var i = 0\n    while i < 5:\n        let tmp = list.push([], i)\n        sum = sum + list.length(tmp)\n        i = i + 1\n    sum\n");
+        assert_eq!(d.total(), 1, "`tmp` (per-iteration scratch) drops; `sum`/`i` are reassigned scalars");
+    }
+
+    // ---- adversarial: each of these must produce NO drop (soundness) ----
+
+    /// A value stored into a constructor/collection is retained by it — never dropped.
+    #[test]
+    fn stored_in_constructor_is_not_dropped() {
+        let d = drops("import list\nfn f() -> List(List(Int)):\n    let v = list.push([], 1)\n    let xs = [v]\n    xs\n");
+        assert_eq!(d.total(), 0, "`v` is stored in `xs`; `xs` is returned — no drop");
+    }
+
+    /// A value passed to a LEAKING arg (`list.push` STORES its element operand) is kept
+    /// live — never dropped. The list operand is a parameter so it can't confound the
+    /// count; only `v` (arg 1, which leaks) is a local candidate, and it must NOT drop.
+    #[test]
+    fn leaking_call_arg_is_not_dropped() {
+        let d = drops("import list\nfn f(other: List(Int)) -> List(Int):\n    let v = list.push([], 1)\n    list.push(other, v)\n");
+        assert_eq!(d.total(), 0, "`v` leaks into the list (arg 1 is stored); `other` is a param");
+    }
+
+    /// Read more than once ⇒ the single-use case does not apply (needs real liveness).
+    #[test]
+    fn read_twice_is_not_dropped() {
+        let d = drops("import list\nfn f() -> Int:\n    let v = list.push([], 1)\n    let n = list.length(v) + list.length(v)\n    n\n");
+        assert_eq!(d.total(), 0, "`v` is read twice; `n` is returned");
+    }
+
+    /// A parameter is caller-owned — the callee must never drop it.
+    #[test]
+    fn parameter_is_not_dropped() {
+        let d = drops("import list\nfn f(xs: List(Int)) -> Int:\n    list.length(xs)\n");
+        assert_eq!(d.total(), 0, "`xs` is a parameter, not a local");
+    }
+
+    /// A value captured by a closure belongs to the closure — never dropped by the outer
+    /// pass (dropping it inside the lambda body would double-free on repeated calls).
+    #[test]
+    fn captured_binding_is_not_dropped() {
+        let d = drops("import list\nfn f() -> fn() -> Int:\n    let buf = list.push([], 1)\n    fn(): list.length(buf)\n");
+        assert_eq!(d.total(), 0, "`buf` is captured by the returned closure");
+    }
+
+    /// A reassigned binding's churn is rc-floor's free-at-overwrite, not this pass.
+    #[test]
+    fn reassigned_binding_is_not_dropped() {
+        let d = drops("import list\nfn f():\n    var buf = []\n    buf = list.push(buf, 1)\n    0\n");
+        assert_eq!(d.total(), 0, "`buf` is reassigned");
     }
 }
 
