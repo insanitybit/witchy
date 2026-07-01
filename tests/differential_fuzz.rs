@@ -10,11 +10,27 @@
 //! mismatch (incl. interp-ok / compiled-trap), `agree (both error)` when both reject (so we
 //! need not avoid runtime traps), and a plain exit-1 for a compile error (a generator miss,
 //! tolerated). A crash (terminated by signal) means the host itself died — also a bug.
+//!
+//! Two RFC-0037 upgrades live here. (§2) CROSS-LEVER DIFFERENTIAL: every program is run under a
+//! SET of `WITCHY_OPT` configurations (baseline `none`, the production default, each opt-in
+//! lever ALONE, and the union). Because the interpreter oracle ignores `WITCHY_OPT`, all configs
+//! agreeing with it means all compiled outputs agree with each other — so any lever that changes
+//! observable behavior is a DIVERGE, not a silent survivor. This is the net that would have
+//! caught the rc-floor use-after-free that hid for ~2 days. (§1) GRAMMAR-COMPLETE GENERATOR: the
+//! generator now emits USER FUNCTIONS with `let`/`own` params, closures, direct + mutual
+//! recursion, tuple-of-owned-buffer returns, and — the class that hid the UAF — a local `var`
+//! that ALIAS-INITS a borrowed param (or another local) and then SELF-REFERENTIALLY REASSIGNS it,
+//! with the shared value RE-READ afterward as a use-after-free trip-wire. A grammar-coverage
+//! meta-assertion fails if any statement kind was never generated.
 
 use std::io::Write;
 use std::process::Command;
 
 const BIN: &str = env!("CARGO_BIN_EXE_witchy");
+
+/// Number of statement kinds the generator can emit (see `gen_program`'s match). The
+/// grammar-coverage meta-assertion requires every one of these to appear across a run.
+const NKINDS: u32 = 32;
 
 /// Deterministic splitmix-ish PRNG — reproducible runs (no wall clock / OS randomness).
 struct Rng(u64);
@@ -170,8 +186,58 @@ fn gen_intlist(r: &mut Rng, depth: u32) -> String {
     format!("[{}]", elems.join(", "))
 }
 
-/// One random program: a `main` that prints many heap-exercising expressions.
-fn gen_program(seed: u64, statements: usize) -> String {
+/// The fixed "risky-shape" helper library (RFC-0037 §1) prepended to every program. These are
+/// the grammar the old generator could never produce: user functions with `let`/`own` params,
+/// a local `var` that alias-inits a borrowed param then self-referentially reassigns it (the
+/// exact use-after-free class), an `own`-buffer accumulator, a tuple-of-two-owned-buffers return
+/// (the RFC-0036 executor shape), direct + mutual recursion, and a closure applied through a
+/// function-typed parameter. Callers vary the ARGUMENTS (via `gen_*`); the shapes are fixed and
+/// known-well-typed so they always compile and exercise codegen on both backends.
+const HELPER_LIB: &str = "\
+// --- RFC-0037 §1 risky-shape helper library ---\n\
+fn alias_str(s: String) -> String:\n\
+\x20   var t = s\n\
+\x20   t = t + \"!\"\n\
+\x20   t\n\
+fn alias_list(xs: List(Int)) -> List(Int):\n\
+\x20   var ys = xs\n\
+\x20   ys = list.concat(ys, ys)\n\
+\x20   ys\n\
+fn alias_field(rr: R) -> String:\n\
+\x20   var b = rr.b\n\
+\x20   b = b + \"z\"\n\
+\x20   b\n\
+fn grow(own xs: List(Int), n: Int) -> List(Int):\n\
+\x20   var ys = xs\n\
+\x20   var i = 0\n\
+\x20   while i < n:\n\
+\x20       ys = list.push(ys, i)\n\
+\x20       i = i + 1\n\
+\x20   ys\n\
+fn swap2(own a: List(Int), own b: List(Int)) -> (List(Int), List(Int)):\n\
+\x20   (b, a)\n\
+fn accum(n: Int) -> Int:\n\
+\x20   if n <= 0:\n\
+\x20       0\n\
+\x20   else:\n\
+\x20       n + accum(n - 1)\n\
+fn even_(n: Int) -> Bool:\n\
+\x20   if n <= 0:\n\
+\x20       true\n\
+\x20   else:\n\
+\x20       odd_(n - 1)\n\
+fn odd_(n: Int) -> Bool:\n\
+\x20   if n <= 0:\n\
+\x20       false\n\
+\x20   else:\n\
+\x20       even_(n - 1)\n\
+fn apply_twice(f: fn(Int) -> Int, x: Int) -> Int:\n\
+\x20   f(f(x))\n";
+
+/// One random program: a `main` that prints many heap-exercising expressions, preceded by the
+/// risky-shape helper library. Returns the source and a bitmask of which statement kinds it
+/// emitted (bit `k` set iff kind `k` was chosen) for the grammar-coverage meta-assertion.
+fn gen_program(seed: u64, statements: usize) -> (String, u64) {
     let mut r = Rng(seed);
     // Fixed record types so statements can construct + field-access heap structs (incl. a
     // nested record, the deepest heap-layout shape) without per-program type generation.
@@ -179,11 +245,15 @@ fn gen_program(seed: u64, statements: usize) -> String {
         "import string\nimport list\nimport math\nimport dict\n\n\
          type R:\n    a: Int\n    b: String\n    c: List(Int)\n\
          type P:\n    x: R\n    y: Int\n\
-         type Q:\n    m: Int\n    n: Int\n\n\
-         fn main(console: Console):\n",
+         type Q:\n    m: Int\n    n: Int\n\n",
     );
+    body.push_str(HELPER_LIB);
+    body.push('\n');
+    body.push_str("fn main(console: Console):\n");
+    let mut used: u64 = 0;
     for stmt_i in 0..statements {
-        let kind = r.below(24);
+        let kind = r.below(NKINDS as u64);
+        used |= 1u64 << kind;
         let depth = 1 + r.below(4) as u32;
         let dops = 2 + r.below(10) as u32;
         let line = match kind {
@@ -251,59 +321,154 @@ fn gen_program(seed: u64, statements: usize) -> String {
                     elems.join(", "),
                 )
             }
-            _ => format!("    print(console, __render({}.x.a))\n", gen_record_p(&mut r)),
+            23 => format!("    print(console, __render({}.x.a))\n", gen_record_p(&mut r)),
+            24 => {
+                // Borrow a String into a helper that alias-inits + self-ref-reassigns it, then
+                // RE-READ the shared arg afterward — the exact use-after-free trip-wire. Under a
+                // bad free-at-overwrite the re-read of `sv` sees freed bytes and DIVERGES.
+                let s = gen_str(&mut r, depth.min(2));
+                format!(
+                    "    let sv{stmt_i} = {s}\n    let av{stmt_i} = alias_str(sv{stmt_i})\n    print(console, sv{stmt_i})\n    print(console, av{stmt_i})\n"
+                )
+            }
+            25 => {
+                // Same trip-wire over a heap List: alias-init + self-ref concat inside the
+                // helper, then re-read the borrowed list.
+                let l = gen_intlist(&mut r, 2);
+                format!(
+                    "    let lv{stmt_i} = {l}\n    print(console, __render(alias_list(lv{stmt_i})))\n    print(console, __render(lv{stmt_i}))\n"
+                )
+            }
+            26 => {
+                // Alias a heap FIELD (`var b = rr.b`) then reassign the local; re-read the field.
+                let rec = gen_record_r(&mut r);
+                format!(
+                    "    let fr{stmt_i} = {rec}\n    print(console, alias_field(fr{stmt_i}))\n    print(console, fr{stmt_i}.b)\n"
+                )
+            }
+            27 => {
+                // Statement-level confined alias-init + self-ref reassignment, re-reading the
+                // original — the same class without a function boundary.
+                let s1 = gen_str(&mut r, 1);
+                let s2 = gen_str(&mut r, 1);
+                format!(
+                    "    var sc{stmt_i} = {s1}\n    sc{stmt_i} = sc{stmt_i} + {s2}\n    var tc{stmt_i} = sc{stmt_i}\n    tc{stmt_i} = string.to_upper(tc{stmt_i})\n    print(console, sc{stmt_i})\n    print(console, tc{stmt_i})\n"
+                )
+            }
+            28 => {
+                // `own`-buffer accumulator threaded through a loop (consumes a fresh literal).
+                let l = gen_intlist(&mut r, 1);
+                let n = r.below(5);
+                format!("    print(console, __render(grow({l}, {n})))\n")
+            }
+            29 => {
+                // Tuple of two OWNED buffers returned + destructured (the RFC-0036 executor shape).
+                let a = gen_intlist(&mut r, 1);
+                let b = gen_intlist(&mut r, 1);
+                format!(
+                    "    let (sp{stmt_i}, sq{stmt_i}) = swap2({a}, {b})\n    print(console, __render(sp{stmt_i}))\n    print(console, __render(sq{stmt_i}))\n"
+                )
+            }
+            30 => {
+                // Direct + mutual recursion (small bounded depth).
+                let n1 = r.below(18);
+                let n2 = r.below(18);
+                format!("    print(console, __render(accum({n1})))\n    print(console, __render(even_({n2})))\n")
+            }
+            _ => {
+                // Closure captured + applied through a function-typed parameter.
+                let c = r.below(20) as i64 - 10;
+                let x = r.below(20) as i64 - 10;
+                format!(
+                    "    let cl{stmt_i} = fn(z: Int) -> Int: z + ({c})\n    print(console, __render(apply_twice(cl{stmt_i}, ({x}))))\n"
+                )
+            }
         };
         body.push_str(&line);
     }
-    body
+    (body, used)
+}
+
+/// The cross-lever config set (RFC-0037 §2). Every program is run under each: the baseline
+/// (`none`, all opts off), the production default (``), each opt-in lever ALONE (`rc-floor`,
+/// `unbox` — the class that hid the UAF is exercised in isolation, not just masked inside the
+/// union), and the union (`all,-wasm-opt`; `-wasm-opt` omits the external Binaryen post-pass).
+const CONFIGS: &[&str] = &["none", "", "rc-floor", "unbox", "all,-wasm-opt"];
+
+fn env_usize(key: &str, default: usize) -> usize {
+    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
 #[test]
 fn differential_fuzz_interpreter_vs_compiled() {
-    let programs = 80usize;
-    let statements = 160usize;
-    let mut agree = 0;
-    let mut compile_skipped = 0;
+    // Counts are env-overridable so the scheduled/`--full` job can scale coverage up. The
+    // defaults keep total work (programs × statements × CONFIGS) close to the pre-cross-lever
+    // budget while adding per-lever coverage.
+    let programs = env_usize("WITCHY_FUZZ_PROGRAMS", 30);
+    let statements = env_usize("WITCHY_FUZZ_STATEMENTS", 100);
+    let mut agree = 0usize;
+    let mut compile_skipped = 0usize;
+    let mut kinds_used: u64 = 0;
     for seed in 0..programs as u64 {
-        let src = gen_program(seed.wrapping_mul(0x1234_5678_9ABC_DEF1).wrapping_add(1), statements);
+        let (src, used) = gen_program(seed.wrapping_mul(0x1234_5678_9ABC_DEF1).wrapping_add(1), statements);
+        kinds_used |= used;
         let path = std::env::temp_dir().join(format!("witchy_fuzz_{seed}.witchy"));
         std::fs::File::create(&path).unwrap().write_all(src.as_bytes()).unwrap();
-        // Fuzz with EVERY codegen optimization on (not just the production default),
-        // so the opt-in heap-layout paths — packed `unbox`, etc. — are exercised too;
-        // under `WITCHY_HEAP_CHECK=1` (check.sh --full) this is the redzone memory-
-        // safety net for them. `-wasm-opt` excludes the external Binaryen post-pass
-        // (a toolchain dependency, not a codegen path). `parity` reads `WITCHY_OPT`
-        // for its compiled side; the interpreter oracle ignores it.
-        let out = Command::new(BIN)
-            .args(["parity", path.to_str().unwrap()])
-            .env("WITCHY_OPT", "all,-wasm-opt")
-            .output()
-            .unwrap();
-        let _ = std::fs::remove_file(&path);
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let stderr = String::from_utf8_lossy(&out.stderr);
+        // Cross-lever differential: `parity` reads `WITCHY_OPT` for its compiled side; the
+        // interpreter oracle ignores it. So running parity under each config compares that
+        // config's compiled output against the one constant oracle — all-agree ⇒ all compiled
+        // outputs agree with each other. Any lever that changes observable behavior is a DIVERGE.
+        for &cfg in CONFIGS {
+            let out = Command::new(BIN)
+                .args(["parity", path.to_str().unwrap()])
+                .env("WITCHY_OPT", cfg)
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let label = if cfg.is_empty() { "<default>" } else { cfg };
 
-        // A crash (terminated by signal -> no exit code) means the host process itself died.
-        assert!(
-            out.status.code().is_some(),
-            "witchy crashed (signal) on seed {seed} — host-level memory unsafety.\n--- program ---\n{src}\n--- stderr ---\n{stderr}"
-        );
-        if stdout.contains("DIVERGE") || stderr.contains("DIVERGE") {
-            panic!(
-                "BACKENDS DIVERGE on seed {seed} — a codegen/memory bug.\n--- program ---\n{src}\n--- output ---\n{stdout}{stderr}"
+            // A crash (terminated by signal -> no exit code) means the host process itself died.
+            assert!(
+                out.status.code().is_some(),
+                "witchy crashed (signal) on seed {seed} under WITCHY_OPT={label} — host-level memory unsafety.\n--- program ---\n{src}\n--- stderr ---\n{stderr}"
             );
+            if stdout.contains("DIVERGE") || stderr.contains("DIVERGE") {
+                panic!(
+                    "BACKENDS DIVERGE on seed {seed} under WITCHY_OPT={label} — a codegen/memory bug (an optimization changed observable behavior).\n--- program ---\n{src}\n--- output ---\n{stdout}{stderr}"
+                );
+            }
+            // Account compile/agree once, on the production-default config, to gauge the generator.
+            if cfg.is_empty() {
+                if out.status.success() {
+                    agree += 1;
+                } else {
+                    // Non-DIVERGE exit-1 = the generator produced a non-compiling program; tolerated.
+                    compile_skipped += 1;
+                }
+            }
         }
-        if out.status.success() {
-            agree += 1;
-        } else {
-            // Non-DIVERGE exit-1 = the generator produced a non-compiling program; tolerated.
-            compile_skipped += 1;
-        }
+        let _ = std::fs::remove_file(&path);
     }
     // Sanity: the generator must mostly produce compiling programs, or it isn't testing codegen.
     assert!(
         agree * 2 >= programs,
         "fuzzer mostly produced non-compiling programs ({agree} agree, {compile_skipped} skipped) — fix the generator"
     );
-    eprintln!("differential fuzz: {agree} agree, {compile_skipped} compile-skipped of {programs}");
+    // Grammar-coverage meta-assertion (RFC-0037 §1): every statement kind the generator CAN emit
+    // must actually have appeared across the run — turning "did we cover the grammar" from an
+    // assumption into a test (this is what would have flagged "we never generate user functions").
+    // Only enforced when enough statements were generated to make full coverage near-certain.
+    if programs * statements >= 1500 {
+        let expected = (1u64 << NKINDS) - 1;
+        let missing = expected & !kinds_used;
+        assert_eq!(
+            missing, 0,
+            "generator never emitted statement kind(s) (missing bitmask {missing:#034b}) — a grammar-coverage hole; raise counts or fix the generator"
+        );
+    }
+    eprintln!(
+        "differential fuzz: {agree} agree, {compile_skipped} compile-skipped of {programs} programs × {} configs; kinds covered {kinds_used:#034b}",
+        CONFIGS.len()
+    );
 }
