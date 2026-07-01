@@ -806,13 +806,11 @@ pub fn dict_pairs_helper() -> WirFunc {
         locals: ["count", "i", "list", "tup"].iter().map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool }).collect(),
         body: vec![
             setl("count", E::Load { ptr: Box::new(getl("d")), kind: Kind::I32, offset: 0 }),
-            N::Do(E::Call {
-                func: "ensure".into(),
-                args: vec![b(BinOp::Add, b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("count"), i32c(8))), b(BinOp::Mul, getl("count"), i32c(20)))],
-            }),
-            setl("list", E::GetGlobal("heap".into())),
+            // (RFC-0016) allocate the list through `$rc_alloc` (header + reuse); it bumps
+            // `$heap` past the list, so each pair tuple's rc_alloc lands in a distinct block
+            // above it and never overlaps a written slot.
+            setl("list", E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("count"), i32c(8)))] }),
             N::Store { ptr: getl("list"), value: getl("count"), kind: Kind::I32, offset: 0 },
-            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("list"), i32c(4)), b(BinOp::Mul, getl("count"), i32c(8))) },
             setl("i", i32c(0)),
             scan,
             N::Push(getl("list")),
