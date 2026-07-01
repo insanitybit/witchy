@@ -7352,6 +7352,62 @@ fn main(console: Console):
     }
 
     #[test]
+    fn examples_agree_under_rc_floor() {
+        // Metamorphic, NO-ORACLE guard for the RC-floor lever: `WITCHY_OPT=rc-floor` adds the
+        // dup/drop refcount discipline + free-at-overwrite/last-use reclamation, which must be
+        // OUTPUT-TRANSPARENT — compiling with it on produces byte-identical output to the default.
+        // A premature or wrong free (a use-after-free) shows up as a divergence here. This is the
+        // check that would have caught the free-at-overwrite alias-init UAF (it corrupted
+        // `toml.get_array`); before it, NO test ran the examples under this lever — exactly how a
+        // gated-lever memory bug hides. Restricted to console-only, `main`-bearing programs so the
+        // run needs no capability grants and the output is deterministic.
+        use crate::opt::{self, Opt, OptSet};
+        let mut diverged = Vec::new();
+        for path in example_entries() {
+            let p = path.to_str().unwrap();
+            let Ok((linked, _)) = crate::link_file(p) else {
+                continue;
+            };
+            if typeck::check(&linked).is_err() {
+                continue;
+            }
+            let has_main = linked
+                .items
+                .iter()
+                .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"));
+            let console_only = crate::capabilities::analyze(&linked)
+                .total
+                .keys()
+                .all(|k| *k == "Console");
+            if !has_main || !console_only {
+                continue;
+            }
+            let compile_with_rc = |on: bool| {
+                opt::set_for_tests(if on {
+                    Some(OptSet::default_set().with(Opt::RcFloor))
+                } else {
+                    None
+                });
+                let bytes = codegen::compile_module_binary(&linked);
+                opt::set_for_tests(None);
+                bytes
+            };
+            if let (Ok(Some(def)), Ok(Some(rc))) = (compile_with_rc(false), compile_with_rc(true)) {
+                let a = crate::run_wasm_bytes(&def);
+                let b = crate::run_wasm_bytes(&rc);
+                if a != b {
+                    diverged.push(format!("{p}: default {a:?} vs rc-floor {b:?}"));
+                }
+            }
+        }
+        assert!(
+            diverged.is_empty(),
+            "rc-floor diverges from the default codegen on examples (a reclamation use-after-free):\n{}",
+            diverged.join("\n")
+        );
+    }
+
+    #[test]
     fn precompiled_wasm_runs_like_the_source() {
         // C Tier 1 (distribution): a program emitted to a `.wasm` and run as a
         // precompiled module — with authority derived from its imports — produces
