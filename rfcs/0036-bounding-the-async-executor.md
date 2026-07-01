@@ -1,7 +1,7 @@
 ---
 rfc: 0036
 title: Bounding the async executor — ownership-threaded state and recursive drop
-status: proposed
+status: proposed (NOT a blocker — premise corrected)
 created: 2026-07-01
 predecessors:
   - "0035 (completing the RC floor — the Perceus dup/drop floor this builds on)"
@@ -13,6 +13,13 @@ tracking: "RFC-0035 shipped the per-object RC floor (universal [rc][size] header
   / match-on-read loop reclaims to ~roots: 20006 -> 7 live cells). It does NOT bound the
   async executor (chan_throughput: ~1.1M live cells, unbounded). This RFC scopes the one
   remaining feature: making the executor's threaded state reclaimable."
+correction: "This RFC was assumed to gate the rc-floor promotion (release==all). MEASUREMENT
+  DISPROVED that (2026-07-01): rc-floor is memory-NEUTRAL on the executor — chan_throughput
+  live_cells is 1116919 with the lever OFF vs 1116918 ON, i.e. the ~1.1M leak is a PRE-EXISTING
+  arena limitation, unchanged by rc-floor. So rc-floor regresses nothing async, and it was
+  PROMOTED to default-on (974ccee) without this RFC. The real rc-floor blocker turned out to be
+  SEC-037 (an $rc_dup use-after-free), now fixed. This RFC remains a worthwhile SEPARATE perf
+  improvement (a channel-heavy program still OOMs ~9k messages), NOT a safety/correctness blocker."
 ---
 
 # RFC-0036: Bounding the async executor — ownership-threaded state and recursive drop

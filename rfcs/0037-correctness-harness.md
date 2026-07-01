@@ -196,6 +196,12 @@ covers shapes random search reaches only by luck. A bounded enumeration that inc
 
 ## Implementation status
 
+OUTCOME: this harness did its job. The cross-lever gate + type-tag sanitizer EARNED the `unbox`
+promotion, and — attempting the `rc-floor` promotion — the whole-gate-with-the-lever-on requirement
+CAUGHT **SEC-037** (a real `$rc_dup` use-after-free that crashed minigrep/pm), which was fixed
+rather than shipped. Both levers are now promoted: `release() == all()` with `check.sh --fast`
+green (974ccee). A fuzzer/sweep alone did not catch SEC-037 — only the whole gate did.
+
 Shipped (in `tests/differential_fuzz.rs`, `crates/witchy-wir/src/wir_helpers/mod.rs`,
 `crates/witchy-lower/src/codegen/mod.rs`, `scripts/check.sh`):
 
