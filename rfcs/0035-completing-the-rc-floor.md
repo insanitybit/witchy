@@ -31,9 +31,14 @@ verified sound:
   never frees live): dup at the `list.at` read; drop the displaced element at in-place `set_at`;
   drop read-owned bindings at last use (`rc_owned_bindings`, drop-iff-dup by construction); drop
   the match-on-read scrutinee after the arms (per-depth save-slot pool for nested matches).
-- **Gate**: an 11-case heap-type-matrix + channel-executor corpus (`rc_corpus_*`), the
-  `WITCHY_HEAP_CHECK` differential fuzzer under `all` (1200-program stress, 0 diverge), forced-copy,
-  and `check.sh --fast` (1089 tests) all green.
+- **Gate**: a 13-case heap-type-matrix + channel-executor corpus (`rc_corpus_*`, incl. nested-match
+  and nested-`List(List)`), a metamorphic `examples_agree_under_rc_floor` guard (every console
+  example must be byte-identical default vs rc-floor), the `WITCHY_HEAP_CHECK` differential fuzzer
+  under `all` (1200-program stress, 0 diverge), forced-copy, and `check.sh --fast` all green.
+- **Soundness fix found via that example guard**: a pre-existing free-at-overwrite use-after-free
+  (`var rest = s; rest = string.substring(rest, …)` in `std/string` — the first reclamation freed a
+  buffer aliasing the borrowed param) is fixed by excluding alias-initialized vars from
+  free-at-overwrite. rc-floor is now sound across the whole example suite.
 
 This bounds every **confined-unique** churn pattern (set_at / read-out / match-on-read loops).
 The drop is **shell-only** (a dropped shell's heap children leak — recursive `$rdrop` is future).
