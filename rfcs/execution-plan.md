@@ -67,22 +67,31 @@ unblocks 0039 and the whole Glamour capability story.
 - **Goal:** let a library mark a sealed cap `grantable` so it can be a `main`
   parameter, minted from a `[user_caps]` grant-doc section; root-grantable caps
   must be **bare** (zero transitive host taint).
-- **Progress (2026-07-01) — compile-time surface DONE (4 commits):** (1) parse
-  `grantable capability X:` (`TypeDef.grantable`); (2) bareness rule
-  (`check_grantable_caps` in typeck rejects any transitive host taint); (3)
-  `check_main_signature` accepts a bare grantable cap; (4) `GrantDoc` parses a
-  `[user_caps]` section (`UserCapGrant`). **REMAINING — runtime minting (the big,
-  security-sensitive slice):** (5) construct the sealed record at the root on BOTH
-  backends — interpreter `root_cap_for` (`crates/witchy-interp/src/interpreter.rs:653`)
-  builds the record Value from grant fields; compiled path builds `main_args` at
-  `crates/witchy-lower/src/codegen/assembly.rs:592` (mirror the `build_args` argv
-  staging: stage policy strings host→guest, then construct via the guest ctor /
-  `from_grant`, pass the record pointer to `main`) — wire the grant binding in
-  `run_file_grants` (`src/main.rs:1982`); PARITY HAZARD: interp minting while WASM
-  can't (or mints a null) is exactly the hole `main.rs:1628` warns of — extend
-  `unmintable_main_cap` so both backends agree. (6) report granted user caps on the
-  parallel footprint axis + extend the grant cross-check. A program that RUNS with
-  a grantable cap is not yet supported until (5) lands.
+- **Progress (2026-07-01) — compile-time surface + interpreter minting DONE (6
+  commits):** (1) parse `grantable capability X:` (`TypeDef.grantable`); (2)
+  bareness rule (`check_grantable_caps` in typeck rejects transitive host taint);
+  (3) `check_main_signature` accepts a bare grantable cap; (4) `GrantDoc` parses
+  `[user_caps]` (`UserCapGrant`); (5a) **interpreter minting** — a record-typed
+  `main` param mints `Value::Ctor` from grant fields in `record_fields` order
+  (`mint_user_cap`), via a new `run_module_user_caps` entry; String policy fields
+  (mode-a). **REMAINING:**
+  - **(5b) compiled minting** — the layout-sensitive piece. Mirror the `build_args`
+    path (`crates/witchy-wir/src/wir_helpers/mod.rs:3385`): a host op stages the
+    record's field strings + reports byte size, `rc_alloc` reserves, and a
+    `write_pending_user_cap` host op writes the record `[fieldptr0,…]` with its
+    internal string pointers — exactly as `write_pending_list` already does for
+    `List(String)` (so study the list layout and adapt to a record). Wire a branch
+    in `assembly.rs:592` `main_args` to call the builder for a grantable-cap param.
+  - **(5c) launch wiring** — `run_file_grants` (`src/main.rs:1982`) passes the
+    `[user_caps]` fields to `run_module_user_caps` (interp) and to the compiled host
+    staging; approval diff lists granted user caps.
+  - **PARITY GUARD (do with 5b):** extend `unmintable_main_cap` so a grantable cap
+    with no `[user_caps]` grant is refused IDENTICALLY on both backends — the hole
+    `main.rs:1628` warns of. Only add a differential/book example once 5b lands
+    (until then interp minting is a standalone unit test — no parity exposure).
+  - **(6) footprint axis** — report granted user caps on the parallel axis
+    (`capabilities.rs:28`) with declaring-package provenance; extend the grant
+    cross-check (over/under) to `[user_caps]`.
 - **Depends on:** nothing (RFC-0002 sealing + RFC-0013 grants already shipped).
 - **Entry points:**
   - `crates/witchy-types/src/typeck.rs:610` `check_main_signature` (the hard-coded
