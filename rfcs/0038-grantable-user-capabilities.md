@@ -1,8 +1,9 @@
 ---
 rfc: 0038
 title: Grantable user-defined capabilities at root entrypoints
-status: proposed
+status: implemented
 created: 2026-07-01
+implemented: 2026-07-01 (parse + bareness + main-acceptance + [user_caps] grant + both-backend minting + footprint axis)
 predecessors:
   - "0002 (user-definable capabilities — the sealed-brand machinery this builds on)"
   - "0011 (capability refinement — carried state, library-defined tiers)"
@@ -12,8 +13,21 @@ tracking:
 
 # RFC-0038: Grantable user-defined capabilities at root entrypoints
 
-> Provisional syntax. Code blocks here are intentionally **not** tagged `witchy`
-> so the doc-examples test does not try to compile partial snippets.
+> **2026-07-01 — implemented.** `grantable capability X:` ships: the surface (a
+> contextual-ident prefix, `TypeDef.grantable`), the **bareness rule**
+> (`check_grantable_caps` in typeck rejects any transitive host taint),
+> `main`-acceptance, the `[user_caps]` grant-document section, and **root minting on
+> both backends** — the interpreter builds a `Value::Ctor` from the grant fields;
+> the compiled backend stages each policy field host-side (`user_cap_field_len` +
+> `fill_pending`) and wraps them in a record via `mk{N}` (each field a separately
+> `rc_alloc`'d String — never co-allocated, to keep every field a genuine
+> object-base and avoid the SEC-037 dup/free class). Grantable caps surface on a
+> `user_caps` footprint axis (`witchy caps`, `compiler.footprint` JSON) and count as
+> a widening in the diff. Behavior lives in `spec/capabilities.md` and the code; a
+> differential test proves both backends mint identically. RFC-0039 builds on this.
+>
+> Provisional syntax below is a design record. Code blocks are intentionally **not**
+> tagged `witchy` so the doc-examples test does not compile partial snippets.
 
 ## Summary
 

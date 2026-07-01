@@ -285,6 +285,50 @@ authority. So you get carried policy with **nothing hidden** — the hard tier (
 `Net` is host-confined to one server) plus a soft, library-enforced tier (the
 `table` filter), in one unforgeable value. See `examples/carried_state`.
 
+## Grantable capabilities: a library's own root authority
+
+The capabilities above all *wrap* a host capability. Sometimes a library wants a
+capability that is its own kind of authority — a UI framework's "permission to
+request a fetch", say — that `main` receives at the root without it being a
+built-in like `Net` or `Dir`. Mark a sealed capability `grantable`:
+
+```witchy
+grantable capability UiRoot:
+    policy: String
+
+fn policy_of(u: UiRoot) -> String:
+    match u:
+        UiRoot(p) -> p
+```
+
+Now `main` can take a `UiRoot`, and the host mints it from a `[user_caps]` block of
+a grant document — the same reviewed launch as `[dirs]`/`[files]`:
+
+```
+fn main(console: Console, ui: UiRoot):
+    print(console, policy_of(ui))
+```
+
+```
+# app.grants.toml — witchy sandbox --grants app.grants.toml app.witchy
+[user_caps]
+ui = { type = "UiRoot", policy = "coven-web" }
+```
+
+The rule that keeps this safe: a grantable capability must be **bare** — it may
+carry policy data, but *zero* host authority, directly or through any field. A
+`grantable` cap that reaches a `Net`/`Dir`/`Secret` is a compile error. So granting
+`UiRoot` can never be a disguised `Net` grant, and a version bump that slips a
+host-cap field into it cannot widen your root authority behind an unchanged `main`
+signature. (A capability that legitimately wraps host authority, like `Table`
+above, stays non-grantable: you build it *inside* the program from an explicit
+`Net`, where the `Net` shows in the signature.)
+
+Bare grantable caps carry no host authority, so they get their own footprint axis:
+`witchy caps` prints a `user caps` line, and requiring a new one counts as a
+**widening** — new library-defined authority, and a new package in your trust base,
+both of which review (and the coven gate) will flag.
+
 ## Withholding authority by structure
 
 Everything above attenuates along *calls* — you weaken a handle as you pass it

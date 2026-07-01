@@ -44,7 +44,7 @@ language/feature RFCs.** So:
 
 ```
 TRACK A — language/features (DO FIRST)
-  0038 grantable user caps ──> 0039 Glamour capability-safe effects
+  0038 grantable user caps  [SHIPPED] ──> 0039 Glamour capability-safe effects
   0011 refinement remainder (Dir/File policies + carried-state)   [independent]
   0019 interactive documentation                                  [independent]
 
@@ -56,85 +56,12 @@ TRACK C — performance (DEFERRED by direction)
   0031 SIMD · 0034 residual (L5/L6) · 0036 residual (executor arena-reset)
 ```
 
-**Recommended first pickup: RFC-0038** — smallest well-scoped language change,
-unblocks 0039 and the whole Glamour capability story.
+**RFC-0038 (grantable user caps) is SHIPPED** (`status: implemented`). Next pickup:
+**RFC-0039** — Glamour now builds its own capabilities on the 0038 substrate.
 
 ---
 
 ## TRACK A — language / features
-
-### RFC-0038 — Grantable user-defined capabilities at root entrypoints
-- **Goal:** let a library mark a sealed cap `grantable` so it can be a `main`
-  parameter, minted from a `[user_caps]` grant-doc section; root-grantable caps
-  must be **bare** (zero transitive host taint).
-- **Progress (2026-07-01) — compile-time surface + interpreter minting DONE (6
-  commits):** (1) parse `grantable capability X:` (`TypeDef.grantable`); (2)
-  bareness rule (`check_grantable_caps` in typeck rejects transitive host taint);
-  (3) `check_main_signature` accepts a bare grantable cap; (4) `GrantDoc` parses
-  `[user_caps]` (`UserCapGrant`); (5a) **interpreter minting** — a record-typed
-  `main` param mints `Value::Ctor` from grant fields in `record_fields` order
-  (`mint_user_cap`), via a new `run_module_user_caps` entry; String policy fields
-  (mode-a). **REMAINING:**
-  - **(5b) compiled minting** — the layout-sensitive piece. Mirror the `build_args`
-    path (`crates/witchy-wir/src/wir_helpers/mod.rs:3385`): a host op stages the
-    record's field strings + reports byte size, `rc_alloc` reserves, and a
-    `write_pending_user_cap` host op writes the record `[fieldptr0,…]` with its
-    internal string pointers — exactly as `write_pending_list` already does for
-    `List(String)` (so study the list layout and adapt to a record). Wire a branch
-    in `assembly.rs:592` `main_args` to call the builder for a grantable-cap param.
-  - **(5c) launch wiring** — `run_file_grants` (`src/main.rs:1982`) passes the
-    `[user_caps]` fields to `run_module_user_caps` (interp) and to the compiled host
-    staging; approval diff lists granted user caps.
-  - **PARITY GUARD (do with 5b):** extend `unmintable_main_cap` so a grantable cap
-    with no `[user_caps]` grant is refused IDENTICALLY on both backends — the hole
-    `main.rs:1628` warns of. Only add a differential/book example once 5b lands
-    (until then interp minting is a standalone unit test — no parity exposure).
-  - **(5b/5c/5d) DONE (commit 7118a31)** — compiled minting works end-to-end with
-    parity: the `run` wrapper mints `mk{N}(tag, i64(build_user_cap_field(k,i))…)`
-    (tag from `cg.ctors`; each field a separately-alloc'd String widened to the i64
-    slot — no co-alloc rc hazard); `run_file_grants` builds `user_cap_fields` in
-    grantable-param order → `Capabilities` → `VmState`; parity test
-    `grantable_user_cap_mints_identically_on_both_backends`. Verified via `witchy
-    sandbox --grants`. **RFC-0038's core language feature is COMPLETE** (slices 1–5).
-  - **(6) footprint axis — the one remaining slice.** Add a `user_caps` axis to
-    `Footprint` (`crates/witchy-caps/src/capabilities.rs:453`): populate in
-    `analyze` (grantable-cap params of each entry), show in `witchy caps`, and add
-    to `FootprintDiff` so a newly-required grantable cap is a widening. The LARGER,
-    separable part: thread it through the footprint JSON schema that **coven**
-    consumes (`compiler.footprint`) + provenance (declaring package/version), so
-    Coven's block-on-widening gate covers UI-effect authority. DoD closes when this
-    lands + a `book/` mention (untagged fence — a grantable-cap `main` needs a
-    `[user_caps]` grant, so it can't be an executed ```witchy block).
-- **Depends on:** nothing (RFC-0002 sealing + RFC-0013 grants already shipped).
-- **Entry points:**
-  - `crates/witchy-types/src/typeck.rs:610` `check_main_signature` (the hard-coded
-    host-cap allowlist + the "may only take host capabilities" error at :626).
-  - `crates/witchy-caps/src/capabilities.rs:384` `type_caps`/`caps_in` (the
-    transitive host-cap taint fixpoint — reuse to enforce bareness).
-  - `crates/witchy-caps/src/grants.rs:32` `GrantDoc` struct + `:139` `GRANTABLE`
-    list + `cap_set()` cross-check; `src/main.rs` `--grants` launch/approval path.
-  - `crates/witchy-syntax` parser + `linker.rs` sealing (add the `grantable` marker).
-- **Ordered steps:**
-  1. Parse a `grantable` marker on `capability` declarations (parser + ast + fmt).
-  2. Bareness check: at type-check, reject a `grantable` cap whose `type_caps` is
-     non-empty (direct or transitive host taint, incl. `from HostCap`). Error at
-     the declaration site.
-  3. `check_main_signature`: accept a bare grantable cap as a root parameter.
-  4. `GrantDoc`: add a `[user_caps]` section (key = `main` param name, `type` +
-     policy fields); extend the over/under-grant cross-check and the approval diff.
-  5. Root minting: prefer a library `grant fn from_grant(...) -> Result(Cap, _)`
-     the host calls (keeps construction in the declaring module); direct
-     field-mapping as sugar for pure-policy caps.
-  6. Footprint: report granted user caps on the existing parallel axis
-     (`capabilities.rs:28`) with declaring-package provenance; `caps-diff` treats a
-     new grantable cap as a widening.
-- **DoD:** typeck accepts a bare grantable cap and rejects a host-tainted one;
-  `[user_caps]` parses/cross-checks/binds at `witchy sandbox --grants`; a grantable
-  cap that wraps `Net` fails to compile; footprint + `caps-diff` cover the new axis;
-  both backends + parity on a program that receives & uses a bare grantable cap.
-- **Size:** M. **Risk:** host becomes a trusted root minter of library caps (mode-b
-  mitigates); get the bareness rule *transitive* and *watertight* — it is the whole
-  safety story.
 
 ### RFC-0039 — Glamour capability-safe effects
 - **Goal:** Glamour defines its own sealed **bare** UI caps (`UiRoot` → `UiFetch`/

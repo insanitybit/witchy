@@ -163,6 +163,54 @@ state, no authority hidden. This is the host-primitive `Net`/`Dir` confinement (
 runtime-enforced) plus a library-defined policy tier (soft, sealed-but-correctness-
 dependent) in one value. See `examples/carried_state/src/carried_state.witchy`.
 
+## Grantable capabilities — a library's own root authority
+
+A library can define its **own** capability that `main` receives at the root,
+without it being a built-in host capability. Mark a sealed capability `grantable`:
+
+```witchy
+grantable capability UiRoot:
+    policy: String
+
+fn policy_of(u: UiRoot) -> String:
+    match u:
+        UiRoot(p) -> p
+```
+
+A `grantable` capability may appear as a parameter of `main`, and the host mints it
+from a `[user_caps]` section of a grant document — the same reviewed-launch
+mechanism as `[dirs]`/`[files]`:
+
+```
+fn main(console: Console, ui: UiRoot):
+    print(console, policy_of(ui))
+```
+
+```
+# app.grants.toml
+[user_caps]
+ui = { type = "UiRoot", policy = "coven-web" }
+```
+
+The one rule: a root-grantable capability must be **bare** — carrying *zero*
+transitive host authority. A `grantable` cap that reaches a `Net`/`Dir`/`Secret`
+through any field is a compile error. This is what keeps it honest: granting
+`UiRoot` can never be a disguised `Net` grant, and a later version that adds a
+host-cap field cannot silently widen root authority behind an unchanged `main`
+signature. A capability that legitimately wraps host authority (`Postgres` above)
+stays non-grantable — you construct it *inside* the program from an explicit `Net`
+root, so the `Net` is visible in the signature.
+
+Because bare grantable caps carry no host authority, they are invisible to the
+host-capability footprint — so they get their own axis. `witchy caps` reports a
+`user caps` line, and the footprint diff treats a newly-required grantable cap as a
+**widening**: it is new library-defined authority, and it puts the declaring
+package in the policy trust base, both of which a review (or the coven gate) must
+see. This lets a domain like a UI framework define its own reviewable authority
+vocabulary (which fetches, which secret inputs, which host ports a component may
+*request*) while the language core stays small and real platform authority stays
+in the host shell.
+
 ## Withholding authority by structure
 
 The patterns above attenuate along *calls*. To deny a capability to a region of
