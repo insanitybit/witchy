@@ -11,6 +11,26 @@ fn main(console: Console):
     }
 
     #[test]
+    fn mints_a_grantable_user_cap() {
+        // (RFC-0038) a `main` binding a bare grantable cap gets a sealed record
+        // minted from the `[user_caps]` grant fields, readable in its own module.
+        let src = "grantable capability UiRoot:\n    policy: String\n\nfn policy_of(u: UiRoot) -> String:\n    match u:\n        UiRoot(p) -> p\n\nfn main(console: Console, ui: UiRoot):\n    print(console, policy_of(ui))\n";
+        let module = witchy_syntax::parser::parse_module(src).unwrap();
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert("policy".to_string(), "coven-web".to_string());
+        let mut grants: UserCapGrants = std::collections::BTreeMap::new();
+        grants.insert("ui".to_string(), fields);
+        let out = run_module_user_caps(module, ".", vec![], vec![], vec![], grants).unwrap();
+        assert_eq!(out, vec!["coven-web".to_string()]);
+
+        // Without the grant, minting fails loudly (an under-grant).
+        let module2 = witchy_syntax::parser::parse_module(src).unwrap();
+        let err = run_module_user_caps(module2, ".", vec![], vec![], vec![], Default::default())
+            .unwrap_err();
+        assert!(err.message.contains("UiRoot") && err.message.contains("user_caps"), "{}", err.message);
+    }
+
+    #[test]
     fn build_step_generates_source_through_confined_caps() {
         // A build step reads a schema (BuildRead) and writes generated source
         // (BuildOut). Its authority is exactly the confined grants minted here.

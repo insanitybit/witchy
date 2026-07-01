@@ -521,6 +521,10 @@ fn concat_spine<'a>(mut e: &'a Expr, name: &str) -> Option<Vec<&'a Expr>> {
     }
 }
 
+/// RFC-0038: `[user_caps]` grant values — `main` parameter name → (field name →
+/// value). A grantable-cap `main` parameter mints a sealed record from its entry.
+pub type UserCapGrants = std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>;
+
 pub struct Interpreter {
     // `Rc` so a call clones a pointer, not the whole function AST (this is the
     // hot path for recursion).
@@ -549,6 +553,10 @@ pub struct Interpreter {
     /// Named secrets backing the `SecretStore` capability (from
     /// `--secret`/`--secret-file`/`--signing-key`). `secret_store.get(name)`.
     secrets: std::collections::BTreeMap<String, Vec<u8>>,
+    /// RFC-0038: grant-document `[user_caps]` field values for a `main` that binds
+    /// grantable capabilities. The grantable-cap param mints a sealed record from
+    /// its entry here (empty unless launched with a `[user_caps]` grant).
+    user_cap_grants: UserCapGrants,
     /// Open sockets, indexed by `Value::Socket` handle. Each is a plain or TLS byte
     /// stream behind one `dyn Stream` (RFC-0009 terminates `tls:` host-side, so
     /// `send_line`/`recv_line` operate on either without knowing which).
@@ -634,6 +642,7 @@ impl Interpreter {
             rand_state: witchy_runtime::rand::seed_from_env(),
             signing_key: None,
             secrets: std::collections::BTreeMap::new(),
+            user_cap_grants: UserCapGrants::new(),
             sockets: Vec::new(),
             listeners: Vec::new(),
             record_fields,
@@ -674,6 +683,30 @@ impl Interpreter {
                 ))
             }
         }
+    }
+
+    /// RFC-0038: mint a bare grantable user capability for a `main` parameter — a
+    /// sealed record built from the `[user_caps]` grant fields, in the type's field
+    /// order. Typeck guarantees any record-typed `main` parameter is a bare
+    /// grantable cap; mode-a minting supports policy fields of type `String`.
+    fn mint_user_cap(&self, param: &str, ty: &str) -> Result<Value, RuntimeError> {
+        let field_order = self.record_fields.get(ty).cloned().unwrap_or_default();
+        let grant = self.user_cap_grants.get(param).ok_or_else(|| RuntimeError {
+            message: format!(
+                "`main` binds the grantable capability `{ty}` (parameter `{param}`), but the host \
+                 granted none — add a `[user_caps]` entry (e.g. `{param} = {{ type = \"{ty}\", … }}`)"
+            ),
+        })?;
+        let mut fields = Vec::with_capacity(field_order.len());
+        for fname in &field_order {
+            let v = grant.get(fname).ok_or_else(|| RuntimeError {
+                message: format!(
+                    "the `[user_caps]` grant for `{param}` is missing field `{fname}` required by `{ty}`"
+                ),
+            })?;
+            fields.push(Value::Str(v.clone()));
+        }
+        Ok(Value::Ctor { name: ty.to_string(), fields })
     }
 
     /// Mint a build-time capability for a `build` parameter, from the confined
@@ -2699,7 +2732,7 @@ pub fn run_module_budgeted(
     let module = witchy_types::traits::lower(module);
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || {
-        run_module_inner_limited(module, root, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, step_limit)
+        run_module_inner_limited(module, root, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, UserCapGrants::new(), step_limit)
     })
     .map(|(output, _)| output)
 }
@@ -2715,7 +2748,7 @@ pub fn run_module_files(
     let module = witchy_types::traits::lower(module);
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || {
-        run_module_inner_limited(module, root, Vec::new(), file_grants, Vec::new(), Vec::new(), None, DEFAULT_STEP_LIMIT)
+        run_module_inner_limited(module, root, Vec::new(), file_grants, Vec::new(), Vec::new(), None, UserCapGrants::new(), DEFAULT_STEP_LIMIT)
     })
     .map(|(output, _)| output)
 }
@@ -2833,6 +2866,26 @@ fn is_args_param(ty: &Option<Type>) -> bool {
     )
 }
 
+/// Run a `main` that binds bare grantable capabilities (RFC-0038): each grantable
+/// parameter mints a sealed record from `user_caps` (parameter name → field
+/// values). The oracle for `witchy sandbox --grants` with a `[user_caps]` section.
+pub fn run_module_user_caps(
+    module: Module,
+    root: impl AsRef<Path>,
+    net_allow: Vec<String>,
+    args: Vec<String>,
+    file_grants: Vec<PathBuf>,
+    user_caps: UserCapGrants,
+) -> Result<Vec<String>, RuntimeError> {
+    let module = witchy_syntax::records::lower(module).map_err(|message| RuntimeError { message })?;
+    let module = witchy_types::traits::lower(module);
+    let root = root.as_ref().to_path_buf();
+    run_on_deep_stack(move || {
+        run_module_inner_limited(module, root, Vec::new(), file_grants, net_allow, args, None, user_caps, DEFAULT_STEP_LIMIT)
+    })
+    .map(|(output, _)| output)
+}
+
 fn run_module_inner(
     module: Module,
     root: PathBuf,
@@ -2841,7 +2894,7 @@ fn run_module_inner(
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
 ) -> Result<(Vec<String>, i32), RuntimeError> {
-    run_module_inner_limited(module, root, dir_roots, Vec::new(), net_allow, args, signing_key, DEFAULT_STEP_LIMIT)
+    run_module_inner_limited(module, root, dir_roots, Vec::new(), net_allow, args, signing_key, UserCapGrants::new(), DEFAULT_STEP_LIMIT)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2853,6 +2906,7 @@ fn run_module_inner_limited(
     net_allow: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
+    user_caps: UserCapGrants,
     step_limit: u64,
 ) -> Result<(Vec<String>, i32), RuntimeError> {
     let mut interp = Interpreter::new(module);
@@ -2862,6 +2916,7 @@ fn run_module_inner_limited(
     interp.file_grants = file_grants;
     interp.net_allow = net_allow;
     interp.signing_key = signing_key;
+    interp.user_cap_grants = user_caps;
     // The signing key is the `signing` secret in the store, so a program may take
     // either a `Secret` (the key directly) or a `SecretStore` and `get("signing")`.
     if let Some(seed) = signing_key {
@@ -2893,6 +2948,15 @@ fn run_module_inner_limited(
                     })?;
                     file_idx += 1;
                     vals.push(Value::File(path));
+                } else if let Some(Type::Named(tn, _)) = &p.ty {
+                    // RFC-0038: a record-typed `main` param is a bare grantable cap
+                    // (typeck guarantees it); mint the sealed record from the grant.
+                    // Any other named type falls through to the host-cap minter.
+                    if interp.record_fields.contains_key(tn) {
+                        vals.push(interp.mint_user_cap(&p.name, tn)?);
+                    } else {
+                        vals.push(interp.root_cap_for(&p.ty)?);
+                    }
                 } else {
                     vals.push(interp.root_cap_for(&p.ty)?);
                 }
