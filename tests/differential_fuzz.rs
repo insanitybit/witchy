@@ -18,10 +18,11 @@
 //! observable behavior is a DIVERGE, not a silent survivor. This is the net that would have
 //! caught the rc-floor use-after-free that hid for ~2 days. (§1) GRAMMAR-COMPLETE GENERATOR: the
 //! generator now emits USER FUNCTIONS with `let`/`own` params, closures, direct + mutual
-//! recursion, tuple-of-owned-buffer returns, and — the class that hid the UAF — a local `var`
-//! that ALIAS-INITS a borrowed param (or another local) and then SELF-REFERENTIALLY REASSIGNS it,
-//! with the shared value RE-READ afterward as a use-after-free trip-wire. A grammar-coverage
-//! meta-assertion fails if any statement kind was never generated.
+//! recursion, tuple-of-owned-buffer returns, user ADTs with `match` / `if let` over heap
+//! payloads, and — the class that hid the UAF — a local `var` that ALIAS-INITS a borrowed param
+//! (or another local) and then SELF-REFERENTIALLY REASSIGNS it, with the shared value RE-READ
+//! afterward as a use-after-free trip-wire. A grammar-coverage meta-assertion fails if any
+//! statement kind was never generated.
 
 use std::io::Write;
 use std::process::Command;
@@ -30,7 +31,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_witchy");
 
 /// Number of statement kinds the generator can emit (see `gen_program`'s match). The
 /// grammar-coverage meta-assertion requires every one of these to appear across a run.
-const NKINDS: u32 = 32;
+const NKINDS: u32 = 36;
 
 /// Deterministic splitmix-ish PRNG — reproducible runs (no wall clock / OS randomness).
 struct Rng(u64);
@@ -177,6 +178,16 @@ fn gen_record_p(r: &mut Rng) -> String {
     format!("P({}, {})", inner, gen_int(r, 1))
 }
 
+/// A random `Shape` ADT constructor. `Named` carries a COMPUTED (heap) string so the ADT's
+/// heap-payload path — construction, `match` extraction, drop — is exercised, not just scalars.
+fn gen_shape(r: &mut Rng) -> String {
+    match r.below(3) {
+        0 => format!("Circle({})", gen_int(r, 0)),
+        1 => format!("Rect({}, {})", gen_int(r, 0), gen_int(r, 0)),
+        _ => format!("Named(string.to_upper(\"{}\"))", alnum(r)),
+    }
+}
+
 fn gen_intlist(r: &mut Rng, depth: u32) -> String {
     // Always >= 1 element: an empty `[]` has an ambiguous element type, which the structural
     // renderer can't build (a known interpreter-only limit) — that's a generator miss, not a
@@ -207,6 +218,11 @@ fn alias_field(rr: R) -> String:\n\
 \x20   var b = rr.b\n\
 \x20   b = b + \"z\"\n\
 \x20   b\n\
+fn shape_area(sh: Shape) -> Int:\n\
+\x20   match sh:\n\
+\x20       Circle(rr) -> rr * rr\n\
+\x20       Rect(w, h) -> w * h\n\
+\x20       Named(nm) -> string.length(nm)\n\
 fn grow(own xs: List(Int), n: Int) -> List(Int):\n\
 \x20   var ys = xs\n\
 \x20   var i = 0\n\
@@ -245,7 +261,8 @@ fn gen_program(seed: u64, statements: usize) -> (String, u64) {
         "import string\nimport list\nimport math\nimport dict\n\n\
          type R:\n    a: Int\n    b: String\n    c: List(Int)\n\
          type P:\n    x: R\n    y: Int\n\
-         type Q:\n    m: Int\n    n: Int\n\n",
+         type Q:\n    m: Int\n    n: Int\n\
+         type Shape:\n    Circle(Int)\n    Rect(Int, Int)\n    Named(String)\n\n",
     );
     body.push_str(HELPER_LIB);
     body.push('\n');
@@ -375,12 +392,40 @@ fn gen_program(seed: u64, statements: usize) -> (String, u64) {
                 let n2 = r.below(18);
                 format!("    print(console, __render(accum({n1})))\n    print(console, __render(even_({n2})))\n")
             }
-            _ => {
+            31 => {
                 // Closure captured + applied through a function-typed parameter.
                 let c = r.below(20) as i64 - 10;
                 let x = r.below(20) as i64 - 10;
                 format!(
                     "    let cl{stmt_i} = fn(z: Int) -> Int: z + ({c})\n    print(console, __render(apply_twice(cl{stmt_i}, ({x}))))\n"
+                )
+            }
+            32 => {
+                // Construct a `Shape` ADT (heap payload for `Named`) and `match` it in a helper.
+                format!("    print(console, __render(shape_area({})))\n", gen_shape(&mut r))
+            }
+            33 => {
+                // `match` as an EXPRESSION bound to a `let`, with indented arms binding payloads.
+                format!(
+                    "    let sh{stmt_i} = {}\n    let out{stmt_i} = match sh{stmt_i}:\n        Circle(rr) -> rr\n        Rect(w, h) -> w + h\n        Named(nm) -> string.length(nm)\n    print(console, __render(out{stmt_i}))\n",
+                    gen_shape(&mut r)
+                )
+            }
+            34 => {
+                // `if let` binding a HEAP payload (`Named(nm)`) then re-reading it — extracts a
+                // heap string out of an ADT and uses it past the destructure.
+                format!(
+                    "    let sh{stmt_i} = Named(string.to_upper(\"{}\"))\n    if let Named(nm{stmt_i}) = sh{stmt_i}:\n        print(console, nm{stmt_i})\n    else:\n        print(console, \"no\")\n",
+                    alnum(&mut r)
+                )
+            }
+            _ => {
+                // A list of ADTs iterated + matched — heap-payload ADTs inside a list buffer.
+                format!(
+                    "    let shs{stmt_i} = [{}, {}, {}]\n    var acc{stmt_i} = 0\n    var jj{stmt_i} = 0\n    while jj{stmt_i} < 3:\n        acc{stmt_i} = acc{stmt_i} + shape_area(shs{stmt_i}[jj{stmt_i}])\n        jj{stmt_i} = jj{stmt_i} + 1\n    print(console, __render(acc{stmt_i}))\n",
+                    gen_shape(&mut r),
+                    gen_shape(&mut r),
+                    gen_shape(&mut r)
                 )
             }
         };
@@ -535,7 +580,7 @@ fn differential_fuzz_interpreter_vs_compiled() {
         let missing = expected & !kinds_used;
         assert_eq!(
             missing, 0,
-            "generator never emitted statement kind(s) (missing bitmask {missing:#034b}) — a grammar-coverage hole; raise counts or fix the generator"
+            "generator never emitted statement kind(s) (missing bitmask {missing:#b}) — a grammar-coverage hole; raise counts or fix the generator"
         );
     }
     eprintln!(
