@@ -83,6 +83,18 @@ const TRY_TMP: &str = "__witchy_try_tmp";
 /// Scratch local holding a `match` scrutinee while arms test it.
 const MATCH_TMP: &str = "__witchy_match_tmp";
 
+/// (RFC-0035 step 4) Scratch i64 slot holding a match's RESULT while its dup'd-read
+/// scrutinee is `$rc_drop`'d after the arms (`FromSlot` recovers any width). Shared is
+/// safe: each match writes-then-reads its result before its parent arm writes.
+const MATCH_RES: &str = "__witchy_match_res";
+
+/// (RFC-0035 step 4) Depth of dup'd-read matches whose scrutinee is dropped after the
+/// arms; indexes `__witchy_scrut_save_{depth}`. Because an arm body may nest matches that
+/// clobber the shared `MATCH_TMP`, the scrutinee is copied into a PER-DEPTH i64 save slot
+/// so the post-arm `$rc_drop` reads the right value. Beyond `SCRUT_POOL` the drop is
+/// skipped (a sound leak, not a wrong dec).
+const SCRUT_POOL: usize = 16;
+
 /// Scratch local holding a `SecretStore.get` handle (the host-table index) so it
 /// is fetched once and reused for both the present-test and the `Some` payload.
 const SECRET_TMP: &str = "__witchy_secret_tmp";
@@ -497,6 +509,10 @@ struct Codegen {
     /// here (not re-deriving it at the drop) makes drop-iff-dup'd true by construction —
     /// a never-dup'd binding is never dropped (which would underflow the count → UAF).
     rc_owned_bindings: HashSet<String>,
+    /// (RFC-0035 step 4) Nesting depth of dup'd-read matches whose scrutinee is `$rc_drop`'d
+    /// after the arms; indexes the `__witchy_scrut_save_{depth}` pool. Balanced inc/dec
+    /// within `lower_match`, so it needs no per-unit reset or scope plumbing.
+    match_scrut_depth: usize,
     /// The active compile unit's uniqueness facts + (kills consumed, sites
     /// seen) for the post-compile consumption check; units nest via lambdas.
     facts_stack: Vec<(analysis::Facts, usize, usize)>,
@@ -884,6 +900,7 @@ impl Codegen {
             reuse_vars: HashSet::new(),
             rc_floor_vars: HashSet::new(),
             rc_owned_bindings: HashSet::new(),
+            match_scrut_depth: 0,
             facts_stack: Vec::new(),
             drop_facts_stack: Vec::new(),
             summaries: analysis::Summaries::empty(),
@@ -1839,6 +1856,10 @@ impl Codegen {
         locals.push(WirLocal { name: TUPLE_TMP.into(), ty: i32t() });
         locals.push(WirLocal { name: TRY_TMP.into(), ty: i32t() });
         locals.push(WirLocal { name: MATCH_TMP.into(), ty: i64t() });
+        locals.push(WirLocal { name: MATCH_RES.into(), ty: i64t() });
+        for i in 0..SCRUT_POOL {
+            locals.push(WirLocal { name: format!("__witchy_scrut_save_{i}"), ty: i64t() });
+        }
         locals.push(WirLocal { name: SECRET_TMP.into(), ty: i32t() });
         // Scratch slots for the inlined in-place `set_at` fast path (index i32,
         // value i64): the common in-bounds + owned case stores directly without a
@@ -3443,9 +3464,33 @@ impl Codegen {
             }
         });
         let saved = self.next_label;
+        // (RFC-0035 step 4) When the scrutinee is a `list.at` READ of a provably offset-0
+        // element, it was `$rc_dup`'d at the read (step 1) and is DEAD after the match — an
+        // owned value with no binding — so `$rc_drop` it once, after the arms. SAME per-type
+        // gate as the dup (Dict/scalar/type-var excluded ⇒ rc-region offset 0). A bare-var
+        // scrutinee is a BORROW (still owned by its var), not dropped here. Because an arm
+        // body may nest matches that clobber the shared MATCH_TMP, the scrutinee is copied
+        // into a PER-DEPTH save slot; beyond SCRUT_POOL the drop is skipped (a sound leak).
+        let depth = self.match_scrut_depth;
+        let drop_scrut = scrut_kind == Kind::I32
+            && depth < SCRUT_POOL
+            && self.wm_level == 0
+            && !force_copy_mode()
+            && witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::RcFloor)
+            && match scrutinee {
+                Expr::Call { name, args } if name == "list.at" && args.len() == 2 => {
+                    self.list_elem_is_offset0_rc(&args[0])
+                }
+                _ => false,
+            };
         let scrut_w = self.lower_expr(scrutinee)?;
         let id = self.next_label;
         self.next_label += 1;
+        // Increment AFTER `scrut_w` (whose `?` could bail without a decrement); the arm-lowering
+        // bails below restore `depth`, and the success paths decrement — so it stays balanced.
+        if drop_scrut {
+            self.match_scrut_depth += 1;
+        }
         let value = W::GetLocal(MATCH_TMP.to_string());
         let not = |c: W| W::Unary {
             op: witchy_wir::wir::UnOp::Not,
@@ -3459,6 +3504,7 @@ impl Codegen {
                 Some(cb) => cb,
                 None => {
                     self.next_label = saved;
+                    self.match_scrut_depth = depth;
                     return None;
                 }
             };
@@ -3470,6 +3516,7 @@ impl Codegen {
                     Some(w) => w,
                     None => {
                         self.next_label = saved;
+                        self.match_scrut_depth = depth;
                         return None;
                     }
                 };
@@ -3480,14 +3527,49 @@ impl Codegen {
                 Some(w) => w,
                 None => {
                     self.next_label = saved;
+                    self.match_scrut_depth = depth;
                     return None;
                 }
             };
-            arm_body.push(N::Push(Self::wir_convert(b, body_kind, result_kind)));
+            // (RFC-0035 step 4) On the drop path, stash the result into MATCH_RES so the
+            // d-block yields nothing and the scrutinee `$rc_drop` can run after it.
+            let arm_result = Self::wir_convert(b, body_kind, result_kind);
+            if drop_scrut {
+                arm_body.push(N::SetLocal {
+                    local: MATCH_RES.to_string(),
+                    value: W::ToSlot(Box::new(arm_result), Self::wir_kind(result_kind)),
+                });
+            } else {
+                arm_body.push(N::Push(arm_result));
+            }
             arm_body.push(N::Br { target: format!("d{id}"), cond: None });
             arm_blocks.push(N::Block { label: a_label, result: None, body: arm_body });
         }
         arm_blocks.push(N::Unreachable);
+        if drop_scrut {
+            self.match_scrut_depth -= 1;
+            // The arms stashed their result into MATCH_RES; the `d` block yields nothing.
+            // After it, `$rc_drop` the dead scrutinee — read from the PER-DEPTH save slot
+            // (not MATCH_TMP, which a nested match may have clobbered), at rc-region offset 0
+            // (Dict/scalar/type-var scrutinees are excluded above) — then push the result.
+            let save = format!("__witchy_scrut_save_{depth}");
+            let scrut_ptr =
+                W::FromSlot(Box::new(W::GetLocal(save.clone())), witchy_wir::wir::Kind::I32);
+            return Some(W::Seq(vec![
+                N::SetLocal {
+                    local: MATCH_TMP.to_string(),
+                    value: W::ToSlot(Box::new(scrut_w), Self::wir_kind(scrut_kind)),
+                },
+                // Copy the scrutinee into its save slot BEFORE the arms run.
+                N::SetLocal { local: save, value: W::GetLocal(MATCH_TMP.to_string()) },
+                N::Block { label: format!("d{id}"), result: None, body: arm_blocks },
+                N::Do(W::Call { func: "rc_drop".into(), args: vec![scrut_ptr] }),
+                N::Push(W::FromSlot(
+                    Box::new(W::GetLocal(MATCH_RES.to_string())),
+                    Self::wir_kind(result_kind),
+                )),
+            ]));
+        }
         Some(W::Seq(vec![
             N::SetLocal {
                 local: MATCH_TMP.to_string(),
@@ -4998,6 +5080,10 @@ impl Codegen {
                 locals.push(WirLocal { name: TUPLE_TMP.into(), ty: i32t() });
                 locals.push(WirLocal { name: TRY_TMP.into(), ty: i32t() });
                 locals.push(WirLocal { name: MATCH_TMP.into(), ty: WirTy::Int });
+                locals.push(WirLocal { name: MATCH_RES.into(), ty: WirTy::Int });
+                for i in 0..SCRUT_POOL {
+                    locals.push(WirLocal { name: format!("__witchy_scrut_save_{i}"), ty: WirTy::Int });
+                }
                 locals.push(WirLocal { name: SECRET_TMP.into(), ty: i32t() });
                 // Scratch slots for the inlined in-place set_at/push fast path (a
                 // self-assign accumulator can live inside a lifted lambda body too).
