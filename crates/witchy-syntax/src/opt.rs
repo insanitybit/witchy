@@ -6,15 +6,34 @@
 //! what the differential de-opt sweep checks: for each optimization `O`,
 //! `WITCHY_OPT=-O` must match `WITCHY_OPT=all` must match `WITCHY_OPT=none`.
 //!
-//! Grammar (comma-separated): the base is the production default unless the first
-//! token is `all` (everything, including opt-in passes) or `none` (nothing);
-//! then `-x` removes an optimization and `+x` / `x` adds one. Examples:
+//! # Two shipping modes
+//!
+//! Shipping is a choice of exactly two modes — the per-lever grammar below is a
+//! development/differential knob, not a production surface:
+//!
+//! - **`release`** — the optimized shipping config, and the DEFAULT when
+//!   `WITCHY_OPT` is unset. Its end-state is **`all`**: every optimization belongs
+//!   in release once it has cleared its hardening bar. A lever is promoted into
+//!   release by flipping [`Opt::default_on`] (removing it from the opt-in matches),
+//!   not by asking users to name it. The two still opt-in today (`unbox`,
+//!   `rc-floor`) are the ones being hardened toward release.
+//! - **`debug`** — maximally debuggable / fastest-compile = no optimizations. It is
+//!   exactly [`OptSet::none`], which is also the differential reference oracle, so
+//!   it is the best-tested config we have.
+//!
+//! # Development grammar (comma-separated)
+//!
+//! The base is `release` (the production default) unless the first token is a mode
+//! or `all` / `none`; then `-x` removes an optimization and `+x` / `x` adds one.
+//! Kept so the cross-lever fuzzer and manual bisection can still address any lever.
 //!
 //! ```text
+//! WITCHY_OPT=release        # the shipping config (same as unset)
+//! WITCHY_OPT=debug          # no optimizations (== none); maximal debuggability
 //! WITCHY_OPT=none           # the canonical de-opt reference oracle
-//! WITCHY_OPT=-inplace       # production default minus in-place mutation
-//! WITCHY_OPT=-sroa,-views   # default minus scalar replacement and confined views
-//! WITCHY_OPT=wasm-opt       # default plus the opt-in Binaryen post-pass
+//! WITCHY_OPT=all            # everything, including still-opt-in passes
+//! WITCHY_OPT=-inplace       # release minus in-place mutation
+//! WITCHY_OPT=release,rc-floor# release plus one hardening candidate (dev/differential)
 //! WITCHY_OPT=none,inplace   # ONLY in-place (allowlist from nothing)
 //! ```
 //!
@@ -123,8 +142,14 @@ impl Opt {
         Opt::ALL.into_iter().find(|o| o.name() == s)
     }
 
-    /// In the production default set? Experimental / costly passes are opt-in
-    /// (they must be named explicitly in `WITCHY_OPT`).
+    /// In the `release` (production default) set? This is the single promotion
+    /// point: an optimization joins `release` — and thus the default users get —
+    /// by being removed from this opt-in list once it has cleared its hardening
+    /// bar. The end-state is `release == all` (nothing opt-in). The two still held
+    /// back are the memory-safety-sharpest passes: `unbox` (layout reinterpretation
+    /// → type-confusion surface) and `rc-floor` (reclamation → use-after-free
+    /// surface, cf. SEC-036); each is being hardened toward release, not shipped on
+    /// the strength of a probabilistic fuzzer alone.
     fn default_on(self) -> bool {
         !matches!(self, Opt::Unbox | Opt::RcFloor)
     }
@@ -149,14 +174,30 @@ impl OptSet {
         OptSet(Opt::ALL.iter().fold(0, |m, o| m | o.bit()))
     }
 
-    /// The production default: every `default_on` optimization.
-    pub fn default_set() -> OptSet {
+    /// The **`release`** mode: the optimized shipping config = every `default_on`
+    /// optimization. This is what an unset `WITCHY_OPT` resolves to. Its end-state
+    /// is [`OptSet::all`] — promoting a lever (via [`Opt::default_on`]) grows this
+    /// set until the two coincide.
+    pub fn release() -> OptSet {
         OptSet(
             Opt::ALL
                 .iter()
                 .filter(|o| o.default_on())
                 .fold(0, |m, o| m | o.bit()),
         )
+    }
+
+    /// The **`debug`** mode: no optimizations — maximal debuggability and fastest
+    /// compile. Identical to [`OptSet::none`] (also the de-opt reference oracle),
+    /// named separately so `WITCHY_OPT=debug` reads as a mode, not a de-opt.
+    pub fn debug() -> OptSet {
+        OptSet::none()
+    }
+
+    /// The production default set (the base for the per-lever grammar). Alias of
+    /// [`OptSet::release`] — the shipping mode IS the default.
+    pub fn default_set() -> OptSet {
+        OptSet::release()
     }
 
     pub fn contains(self, o: Opt) -> bool {
@@ -190,7 +231,9 @@ pub fn parse(spec: &str) -> Result<OptSet, String> {
         match raw {
             "all" if i == 0 => set = OptSet::all(),
             "none" if i == 0 => set = OptSet::none(),
-            "all" | "none" => {
+            "release" if i == 0 => set = OptSet::release(),
+            "debug" if i == 0 => set = OptSet::debug(),
+            "all" | "none" | "release" | "debug" => {
                 return Err(format!("`{raw}` must be the first token in WITCHY_OPT"));
             }
             _ => {
@@ -257,6 +300,22 @@ mod tests {
         assert_eq!(parse("all").unwrap(), OptSet::all());
         assert!(OptSet::all().contains(Opt::WasmOpt));
         assert!(!OptSet::none().contains(Opt::InPlace));
+    }
+
+    #[test]
+    fn debug_and_release_modes() {
+        // `release` == the production default; `debug` == none.
+        assert_eq!(parse("release").unwrap(), OptSet::default_set());
+        assert_eq!(parse("debug").unwrap(), OptSet::none());
+        // Today release holds back exactly the two hardening candidates...
+        let rel = OptSet::release();
+        assert!(!rel.contains(Opt::Unbox) && !rel.contains(Opt::RcFloor), "unbox/rc-floor still opt-in");
+        assert!(rel.contains(Opt::Region) && rel.contains(Opt::WasmOpt), "shipped opts are in release");
+        // ...and release is the base for the dev grammar (release + a candidate).
+        assert!(parse("release,rc-floor").unwrap().contains(Opt::RcFloor));
+        // A mode keyword must be the first token.
+        assert!(parse("region,release").is_err());
+        assert!(parse("inplace,debug").is_err());
     }
 
     #[test]
