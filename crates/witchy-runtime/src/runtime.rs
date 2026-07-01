@@ -254,6 +254,11 @@ pub struct VmState {
     /// (RFC-0032) Staged raw-byte results of a `Bytes` `vm.par_map` — kept as raw
     /// `Vec<u8>` (NOT `String`) so arbitrary binary survives the round-trip.
     pub(crate) pending_bytes: Option<Vec<Vec<u8>>>,
+    /// RFC-0038: `[user_caps]` grant field values for a `main` binding bare
+    /// grantable capabilities — outer index = grantable-cap parameter (declaration
+    /// order), inner = its policy fields in order. Materialized into the guest by
+    /// `user_cap_field_len` + `fill_pending` and wrapped in a record by codegen.
+    pub(crate) user_cap_fields: Vec<Vec<String>>,
     /// The `Net` capability handle table: index 0 is the granted allowlist,
     /// and each `restrict` mints a narrower entry — host-side, unforgeable.
     pub(crate) nets: Vec<Vec<String>>,
@@ -688,6 +693,7 @@ pub(crate) fn link_capability_imports(
     linker.func_wrap("witchy", "compiler_footprint_len", host_compiler_footprint_len)?;
     linker.func_wrap("witchy", "compiler_diff_len", host_compiler_diff_len)?;
     linker.func_wrap("witchy", "compiler_doc_len", host_compiler_doc_len)?;
+    linker.func_wrap("witchy", "user_cap_field_len", host_user_cap_field_len)?;
     linker.func_wrap("witchy", "regex_match_spans_len", host_regex_match_spans_len)?;
     // Float -> string formatting is pure; done in the host so it is byte-
     // identical to the interpreter's `Display` (no float formatter in WAT).
@@ -961,6 +967,24 @@ fn host_compiler_diff_len(
     };
     let len = json.len() as i32;
     caller.data_mut().pending = Some(json.into_bytes());
+    Ok(len)
+}
+
+/// `user_cap_field_len(param, field) -> Int` (RFC-0038): stage the (param, field)
+/// policy string of a bare grantable-capability grant for `fill_pending`, and
+/// report its byte length. Out of range is a launch/codegen mismatch — trap (the
+/// compiled analog of the interpreter's under-grant error), so both backends
+/// refuse a missing grant identically rather than diverging.
+fn host_user_cap_field_len(mut caller: Caller<'_, VmState>, param: i32, field: i32) -> Result<i32> {
+    let s = caller
+        .data()
+        .user_cap_fields
+        .get(param as usize)
+        .and_then(|fs| fs.get(field as usize))
+        .cloned()
+        .ok_or_else(|| Error::msg("a grantable-capability field is missing from the [user_caps] grant"))?;
+    let len = s.len() as i32;
+    caller.data_mut().pending = Some(s.into_bytes());
     Ok(len)
 }
 
@@ -1499,6 +1523,7 @@ fn vmstate_from_caps(
         dirs,
         files: caps.file_grants.clone(),
         pending: None,
+        user_cap_fields: Vec::new(),
         pending_list: None,
         pending_ints: None,
         pending_bytes: None,

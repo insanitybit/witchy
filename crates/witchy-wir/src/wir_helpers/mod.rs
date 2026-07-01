@@ -3863,6 +3863,16 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: true,
             uses_table: false,
         }),
+        // RFC-0038: materialize one policy field of a bare grantable capability
+        // grant as a guest `String` (same host-staged-string pattern). Codegen wraps
+        // N of these in `mk{N}` to build the sealed record at the root.
+        "build_user_cap_field" => Some(WirHelperSpec {
+            func: compiler_introspect_helper("build_user_cap_field", "user_cap_field_len", 2),
+            helper_deps: &["rc_alloc"],
+            import_deps: &["user_cap_field_len", "fill_pending"],
+            uses_heap: true,
+            uses_table: false,
+        }),
         "compiler_diff" => Some(WirHelperSpec {
             func: compiler_introspect_helper("compiler_diff", "compiler_diff_len", 2),
             helper_deps: &["rc_alloc"],
