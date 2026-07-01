@@ -632,6 +632,31 @@ mod tests {
         );
     }
 
+    /// (RFC-0035 Phase C — DoD TARGET, currently BLOCKED) The async channel executor must reclaim
+    /// its per-message garbage to a BOUNDED live-cell count under rc-floor. It does NOT yet: the
+    /// executor (`std/task`) threads `slots`/`channels` as BORROWED params, mutating via `set_at` in
+    /// RETURN position (never a self-assign accumulator), so every set_at takes the copy path
+    /// (O(n^2)) and the displaced Slot/continuation cannot be dropped — measured ~26k live cells at
+    /// N=200, default and rc-floor near-identical. Closing it needs a uniqueness-analysis extension
+    /// (own-ABI for set_at / an `own` param's uniqueness propagated to a local — the current own-ABI
+    /// covers only the `p = f(move p)` accumulator) PLUS recursive `$rdrop` for the nested children.
+    /// Ignored until the executor reclaims; un-ignore then. This pins the goal's residual as a
+    /// concrete pass/fail. See the RFC-0035 implementation-status + project_rc_floor_devlog.
+    #[test]
+    #[ignore = "chan_throughput not yet bounded — needs own-ABI-for-set_at uniqueness + recursive $rdrop"]
+    fn chan_throughput_bounded_by_rc_floor() {
+        let src = "import chan\nasync fn producer(tx: Sender(Int), n: Int) -> Nil:\n    for i in 0..n:\n        chan.send(tx, i).await\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(8).await\n    chan.spawn(producer(tx, 200)).await\n    for await v in rx:\n        chan.done(v)\n    print(console, \"200\")\n";
+        opt::set_for_tests(Some(OptSet::default_set().with(Opt::RcFloor)));
+        let on = compute(src).expect("compile+run executor");
+        opt::set_for_tests(None);
+        assert_eq!(on.output, vec!["200".to_string()]);
+        assert!(
+            on.live_cells < 500,
+            "the executor must reclaim its per-message garbage to bounded live cells, got {}",
+            on.live_cells
+        );
+    }
+
     /// RFC-0027 packed DoD counter (b): a confined list literal of fixed-scalar
     /// records read only via `at(_).field`/`length` is stored as ONE flat inline
     /// buffer with `unbox` on, instead of N boxed records + an N-pointer array with
