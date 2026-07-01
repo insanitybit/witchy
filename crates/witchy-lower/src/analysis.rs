@@ -1608,21 +1608,8 @@ impl DropFacts {
 ///     than once, reassigned, or a parameter (caller-owned) falls through to NO drop.
 pub fn last_use_drops(body: &Block, summaries: &Summaries) -> DropFacts {
     let mut facts = DropFacts::default();
-    let mut lets = HashSet::new();
-    collect_let_names(body, &mut lets);
-    place_drops(body, body, summaries, &lets, &mut facts);
+    place_drops(body, body, summaries, &mut facts);
     facts
-}
-
-/// Every `let`-bound name in `b` (recursing nested blocks). Parameters are deliberately
-/// excluded — they are caller-owned, so the callee must never drop them.
-fn collect_let_names(b: &Block, out: &mut HashSet<String>) {
-    for s in &b.stmts {
-        if let Stmt::Let { name, .. } = s {
-            out.insert(name.clone());
-        }
-        each_block_in_stmt(s, &mut |blk| collect_let_names(blk, out));
-    }
 }
 
 /// Walk every statement (recursing nested blocks once each) and record the two airtight
@@ -1630,13 +1617,22 @@ fn collect_let_names(b: &Block, out: &mut HashSet<String>) {
 /// expression (never crossing into a nested block — those are separate statements the
 /// recursion visits), so a per-iteration read is attributed to its own statement inside
 /// the loop body, not to the whole loop.
-fn place_drops(
-    block: &Block,
-    fn_body: &Block,
-    summaries: &Summaries,
-    lets: &HashSet<String>,
-    facts: &mut DropFacts,
-) {
+///
+/// SOUNDNESS — the single-use drop requires the value's `let` binding to be in the SAME
+/// block as its read (`this_block_lets`). That guarantees the binding and the read run
+/// at the same loop-nesting level: a value bound in a loop body and read there is fresh
+/// each iteration (safe to free per iteration), whereas a value bound OUTSIDE a loop but
+/// read once *inside* it would be read on every iteration — dropping it after the first
+/// read would use-after-free on the next. Requiring same-block binding rules that out.
+fn place_drops(block: &Block, fn_body: &Block, summaries: &Summaries, facts: &mut DropFacts) {
+    let this_block_lets: HashSet<&str> = block
+        .stmts
+        .iter()
+        .filter_map(|s| match s {
+            Stmt::Let { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
     for s in &block.stmts {
         if let Stmt::Let { name, .. } = s {
             if name_reassign_count(fn_body, name) == 0 && name_read_count(fn_body, name) == 0 {
@@ -1647,7 +1643,7 @@ fn place_drops(
             let mut candidates = Vec::new();
             nonleaking_call_arg_vars(value, summaries, &mut candidates);
             for v in candidates {
-                if lets.contains(&v)
+                if this_block_lets.contains(v.as_str())
                     && name_reassign_count(fn_body, &v) == 0
                     && name_read_count(fn_body, &v) == 1
                 {
@@ -1655,7 +1651,7 @@ fn place_drops(
                 }
             }
         }
-        each_block_in_stmt(s, &mut |blk| place_drops(blk, fn_body, summaries, lets, facts));
+        each_block_in_stmt(s, &mut |blk| place_drops(blk, fn_body, summaries, facts));
     }
 }
 
@@ -2017,6 +2013,15 @@ mod last_use_tests {
     fn single_use_scratch_in_loop_drops_per_iteration() {
         let d = drops("import list\nfn f() -> Int:\n    var sum = 0\n    var i = 0\n    while i < 5:\n        let tmp = list.push([], i)\n        sum = sum + list.length(tmp)\n        i = i + 1\n    sum\n");
         assert_eq!(d.total(), 1, "`tmp` (per-iteration scratch) drops; `sum`/`i` are reassigned scalars");
+    }
+
+    /// SOUNDNESS: a value bound OUTSIDE a loop but read once INSIDE it is read on every
+    /// iteration — it must NOT be dropped after the read (that would use-after-free on
+    /// the next iteration). The same-block-binding rule rules this out.
+    #[test]
+    fn outer_binding_read_in_loop_is_not_dropped() {
+        let d = drops("import list\nfn f() -> Int:\n    let v = list.push([], 1)\n    var acc = 0\n    var i = 0\n    while i < 3:\n        acc = acc + list.length(v)\n        i = i + 1\n    acc\n");
+        assert_eq!(d.total(), 0, "`v` is bound outside the loop; a per-iteration drop would UAF");
     }
 
     // ---- adversarial: each of these must produce NO drop (soundness) ----
