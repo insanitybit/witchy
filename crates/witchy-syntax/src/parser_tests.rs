@@ -23,6 +23,25 @@ fn add(a: Int, b: Int) -> Int:
     }
 
     #[test]
+    fn grantable_capability_marker_parses() {
+        // `grantable capability X:` (RFC-0038) is a sealed capability flagged
+        // grantable; an ordinary `capability`/`type` is not.
+        let m = parse_module("grantable capability UiRoot:\n    policy: String\n").unwrap();
+        let Item::Type(t) = &m.items[0] else { panic!("expected a type") };
+        assert_eq!(t.name, "UiRoot");
+        assert!(t.sealed, "capability record is sealed");
+        assert!(t.grantable, "the `grantable` marker is recorded");
+
+        // An ordinary capability record is sealed but not grantable.
+        let m2 = parse_module("capability Session:\n    token: String\n").unwrap();
+        let Item::Type(t2) = &m2.items[0] else { panic!("expected a type") };
+        assert!(t2.sealed && !t2.grantable, "an ordinary capability is not grantable");
+
+        // `grantable` before anything but `capability` is an error.
+        assert!(parse_module("grantable type Foo:\n    Foo\n").is_err());
+    }
+
+    #[test]
     fn impl_trait_param_desugars_to_a_bound() {
         // `fn f(x: impl Show)` becomes a fresh type-var param plus a `Show` bound,
         // so it reuses the whole generics path; two `impl` params get distinct vars.

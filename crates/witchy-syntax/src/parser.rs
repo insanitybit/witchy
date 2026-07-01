@@ -246,7 +246,14 @@ impl Parser {
         } else if self.at(&Tok::Impl) {
             Ok(Item::Impl(self.impl_def()?))
         } else if self.at(&Tok::Capability) {
-            self.capability_def()
+            self.capability_def(false)
+        } else if self.at_ident("grantable") {
+            // `grantable capability X:` (RFC-0038) — a root-grantable sealed cap.
+            self.advance();
+            if !self.at(&Tok::Capability) {
+                return Err(self.error("`grantable` may only precede a `capability` declaration"));
+            }
+            self.capability_def(true)
         } else if self.at(&Tok::Let) {
             // A module-level constant: `let NAME = EXPR`. Inlined at use sites.
             self.advance();
@@ -507,10 +514,19 @@ impl Parser {
                 }],
                 derives,
                 sealed: false,
+                grantable: false,
                 packed,
             }))
         } else {
-            Ok(Item::Type(TypeDef { name, params, variants, derives, sealed: false, packed }))
+            Ok(Item::Type(TypeDef {
+                name,
+                params,
+                variants,
+                derives,
+                sealed: false,
+                grantable: false,
+                packed,
+            }))
         }
     }
 
@@ -530,7 +546,7 @@ impl Parser {
     /// It desugars to a sealed record `Postgres(net, table)`; its footprint is the
     /// UNION of its capability-typed fields (the `String` contributes nothing), so
     /// it still audits as `Net` — carried policy state with no authority hidden.
-    fn capability_def(&mut self) -> Result<Item, ParseError> {
+    fn capability_def(&mut self, grantable: bool) -> Result<Item, ParseError> {
         self.expect(&Tok::Capability)?;
         let name = self.ident()?;
         // Record form: `capability X:` with named fields (carried state).
@@ -554,6 +570,7 @@ impl Parser {
                 variants: vec![Variant { name, fields, field_names }],
                 derives: vec![],
                 sealed: true,
+                grantable,
                 packed: false,
             }));
         }
@@ -584,6 +601,7 @@ impl Parser {
             variants: vec![Variant { name, fields, field_names: vec![] }],
             derives: vec![],
             sealed: true,
+            grantable,
             packed: false,
         }))
     }

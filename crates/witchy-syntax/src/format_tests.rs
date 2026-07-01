@@ -15,6 +15,16 @@
     }
 
     #[test]
+    fn grantable_capability_survives_formatting() {
+        // (RFC-0038) the `grantable` marker must round-trip through `witchy fmt`,
+        // not be silently dropped (which would un-grant the capability).
+        let src = "grantable capability UiRoot:\n    policy: String\n";
+        let out = reformat(src).expect("grantable capability round-trips");
+        assert!(out.contains("grantable capability UiRoot:"), "grantable must survive: {out}");
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
+    }
+
+    #[test]
     fn comprehensions_survive_formatting_everywhere() {
         // Learner round-3 BLOCKER: `let ys = [n * n for n in xs]` used to print
         // as `let ys = 0` (the inline renderer's placeholder leaked), and the

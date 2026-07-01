@@ -124,6 +124,12 @@ pub struct TypeDef {
     /// own module, making it un-forgeable like the host capability it refines.
     /// `false` for an ordinary `type`.
     pub sealed: bool,
+    /// `grantable capability X:` (RFC-0038): a sealed capability the host may mint
+    /// at a root entrypoint (a parameter of `main`) from a grant document's
+    /// `[user_caps]` section. Valid ONLY on a BARE capability — one carrying zero
+    /// transitive host-capability authority — enforced at check time, so a
+    /// grantable cap can never disguise a built-in host cap. `false` otherwise.
+    pub grantable: bool,
     /// `type Point packed:` (RFC-0027): the type's values are stored INLINE inside
     /// containers (a flat `[f0,f1,…]` buffer) instead of behind a pointer — a
     /// cache-dense layout for fixed-scalar records. Requires all fields be packable

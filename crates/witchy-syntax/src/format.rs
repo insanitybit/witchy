@@ -284,6 +284,9 @@ fn function(s: &mut String, f: &Function, indented: bool, c: &mut Comments) {
 
 fn type_def(s: &mut String, t: &TypeDef) {
     if t.sealed {
+        if t.grantable {
+            s.push_str("grantable ");
+        }
         s.push_str("capability ");
         s.push_str(&t.name);
         let v = &t.variants[0];
