@@ -287,6 +287,18 @@ pub fn rc_alloc_helper() -> WirFunc {
         ret: vec![WirTy::Bool],
         locals: ["cur", "prev", "base"].iter().map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool }).collect(),
         body: vec![
+            // (RFC-0035) one more live object — both the reuse and the bump paths below return
+            // a cell, so count it once here (the reuse path re-lives a cell that `$rc_free` had
+            // decremented). Off the RC path no `$rc_free` runs, so it is inert bookkeeping.
+            N::SetGlobal {
+                global: "__witchy_live_cells".into(),
+                value: E::Binary {
+                    op: BinOp::Add,
+                    kind: Kind::I64,
+                    lhs: Box::new(E::GetGlobal("__witchy_live_cells".into())),
+                    rhs: Box::new(E::ConstI64(1)),
+                },
+            },
             setl("cur", E::GetGlobal("rc_freelist".into())),
             setl("prev", i32c(0)),
             scan,
@@ -331,6 +343,16 @@ pub fn rc_free_helper() -> WirFunc {
         body: vec![
             N::Store { ptr: getl("ptr"), value: E::GetGlobal("rc_freelist".into()), kind: Kind::I32, offset: 0 },
             N::SetGlobal { global: "rc_freelist".into(), value: getl("ptr") },
+            // (RFC-0035) one fewer live object — this cell is now on the free-list.
+            N::SetGlobal {
+                global: "__witchy_live_cells".into(),
+                value: E::Binary {
+                    op: BinOp::Sub,
+                    kind: Kind::I64,
+                    lhs: Box::new(E::GetGlobal("__witchy_live_cells".into())),
+                    rhs: Box::new(E::ConstI64(1)),
+                },
+            },
         ],
         raw_body: None,
     }

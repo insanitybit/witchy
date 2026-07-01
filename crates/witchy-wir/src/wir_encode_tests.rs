@@ -95,6 +95,7 @@
                 ("heap", Kind::I32, GlobalInit::I32(1024)),
                 ("rc_freelist", Kind::I32, GlobalInit::I32(0)),
                 ("__rc_reused_bytes", Kind::I64, GlobalInit::I64(0)),
+                ("__witchy_live_cells", Kind::I64, GlobalInit::I64(0)),
             ] {
                 if !m.globals.iter().any(|g| g.name == name) {
                     m.globals.push(WirGlobal { name: name.into(), kind, mutable: true, init, export: None });

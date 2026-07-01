@@ -31,6 +31,10 @@ pub struct Stats {
     /// freshly bumping — 0 unless the free-at-overwrite rule (gated `rc-floor`)
     /// reclaimed a dead buffer that a later allocation then recycled.
     pub rc_reused_bytes: i64,
+    /// (RFC-0035) Live rc_alloc objects at program end (`$rc_alloc` +1, `$rc_free` -1).
+    /// A leak metric: bounded for a fully-reclaiming rc-floor program, growing with the
+    /// input for an unbounded leak. 0 unless a `$rc_free` fired.
+    pub live_cells: i64,
 }
 
 /// Compile `src` (resolved against the bundled std) and run it under the active
@@ -54,6 +58,7 @@ pub fn compute(src: &str) -> Result<Stats, String> {
         reowns: vm.reowns().unwrap_or(0),
         region_copy_bytes: vm.region_copy_bytes().unwrap_or(0),
         rc_reused_bytes: vm.rc_reused_bytes().unwrap_or(0),
+        live_cells: vm.live_cells().unwrap_or(0),
     })
 }
 
@@ -596,6 +601,35 @@ mod tests {
         );
         assert_eq!(big_off.rc_reused_bytes, 0, "rc-floor off must not reclaim");
         assert!(big_on.rc_reused_bytes > 0, "rc-floor must reclaim string buffers");
+    }
+
+    /// (RFC-0035) The Perceus dup/drop floor (steps 1-4) reclaims a container read-out + set_at
+    /// churn loop to a BOUNDED live-object count. Each iteration reads an element into a binding,
+    /// extracts its payload, and displaces the slot; under rc-floor the dup-at-read, the set_at
+    /// displaced-drop, and the last-use drops release all of it, so `__witchy_live_cells` stays
+    /// ~constant while the default leaks one Box (plus its String) per iteration. This is the DoD
+    /// leak metric for the shared-value floor — a direct object count, sharper than heap bytes.
+    #[test]
+    fn read_out_churn_reclaimed_by_rc_floor() {
+        let src = "import list\ntype Box:\n    Box(String)\nfn unwrap(b: Box) -> String:\n    match b:\n        Box(s) -> s\nfn main(console: Console):\n    var xs = [Box(\"a\"), Box(\"b\"), Box(\"c\"), Box(\"d\")]\n    var i = 0\n    while i < 2000:\n        let held = list.at(xs, 0)\n        let s = unwrap(held)\n        xs = list.set_at(xs, 0, Box(\"z\"))\n        i = i + 1\n    print(console, unwrap(list.at(xs, 1)))\n";
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let off = compute(src).expect("off");
+        opt::set_for_tests(Some(OptSet::default_set().with(Opt::RcFloor)));
+        let on = compute(src).expect("on");
+        opt::set_for_tests(None);
+        assert_eq!(on.output, off.output, "rc-floor must not change output");
+        assert_eq!(on.output, vec!["b".to_string()]);
+        assert!(
+            on.live_cells < 100,
+            "rc-floor must reclaim the churn to bounded live cells, got {}",
+            on.live_cells
+        );
+        assert!(
+            off.live_cells > on.live_cells * 10,
+            "default must leak far more live cells: off {} vs on {}",
+            off.live_cells,
+            on.live_cells
+        );
     }
 
     /// RFC-0027 packed DoD counter (b): a confined list literal of fixed-scalar

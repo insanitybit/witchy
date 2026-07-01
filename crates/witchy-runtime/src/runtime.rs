@@ -370,6 +370,16 @@ impl Vm {
             .and_then(|g| g.get(&mut self.store).i64())
     }
 
+    /// (RFC-0035) Live rc_alloc objects at program end — the exported
+    /// `__witchy_live_cells` counter (`$rc_alloc` +1, `$rc_free` -1). A leak metric:
+    /// for a fully-reclaiming rc-floor program it stays bounded (the reachable roots);
+    /// an unbounded leak grows it with the input. 0 unless a `$rc_free` fired.
+    pub fn live_cells(&mut self) -> Option<i64> {
+        self.instance
+            .get_global(&mut self.store, "__witchy_live_cells")
+            .and_then(|g| g.get(&mut self.store).i64())
+    }
+
     /// (RFC-0030) The final value of the `$heap` bump-pointer (exported as
     /// `__heap`): the live heap frontier in bytes at program end. With no
     /// region/watermark reclaim this is the peak. For a fixed program the delta

@@ -749,6 +749,18 @@ pub fn assemble_wir_module(
                         init: GlobalInit::I64(0),
                         export: Some("__rc_reused_bytes".into()),
                     },
+                    // (RFC-0035) Live-cell counter: `$rc_alloc` +1 (each call yields one live
+                    // object), `$rc_free` -1 (each freed object). At exit it is the number of
+                    // rc_alloc objects NOT returned to the free-list — a leak metric. For a
+                    // fully-reclaiming rc-floor program it stays bounded (→ the reachable roots);
+                    // an unbounded leak makes it grow with the input. 0 unless a `$rc_free` fires.
+                    WirGlobal {
+                        name: "__witchy_live_cells".into(),
+                        kind: WK::I64,
+                        mutable: true,
+                        init: GlobalInit::I64(0),
+                        export: Some("__witchy_live_cells".into()),
+                    },
                 ]
             } else {
                 Vec::new()
