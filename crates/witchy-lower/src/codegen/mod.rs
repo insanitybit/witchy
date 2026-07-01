@@ -2200,7 +2200,10 @@ impl Codegen {
                     if self.packed_candidates.contains(name) {
                         if let Expr::List(items) = value {
                             if let Some((rec, flat)) = self.packable_record_list(items) {
-                                if let Some(w) = self.lower_aggregate(items.len() as i32, &flat, 0) {
+                                // (RFC-0037 §3) Tag the flat buffer with a DISTINCT `packed:` id
+                                // so reading it as a boxed record (or vice versa) is a mismatch.
+                                let ptag = type_tag_of(&format!("packed:{rec}"));
+                                if let Some(w) = self.lower_aggregate(items.len() as i32, &flat, ptag) {
                                     seq.push(N::SetLocal { local: name.clone(), value: w });
                                     self.packed_active.insert(name.clone(), rec);
                                     packed_done = true;
@@ -4680,14 +4683,42 @@ impl Codegen {
                                     lhs: Box::new(base_off),
                                     rhs: Box::new(row),
                                 };
-                                return Some(W::FromSlot(
+                                let read = W::FromSlot(
                                     Box::new(W::Load {
                                         ptr: Box::new(addr),
                                         kind: witchy_wir::wir::Kind::I64,
                                         offset: 0,
                                     }),
                                     Self::wir_kind(fkind),
-                                ));
+                                );
+                                // (RFC-0037 §3) Under WITCHY_TYPE_CHECK, verify the flat buffer's
+                                // `packed:` tag before the inline read — catching a boxed/packed
+                                // layout confusion at the access site. `xs` is a var, so no temp.
+                                if witchy_wir::wir_helpers::type_check_enabled() {
+                                    use witchy_wir::wir::{BinOp, Kind as K, WirNode as N};
+                                    let expected = type_tag_of(&format!("packed:{rec}"));
+                                    let tag = || W::Binary {
+                                        op: BinOp::ShrU,
+                                        kind: K::I32,
+                                        lhs: Box::new(W::Load {
+                                            ptr: Box::new(W::Binary { op: BinOp::Sub, kind: K::I32, lhs: Box::new(W::GetLocal(xs.clone())), rhs: Box::new(W::ConstI32(4)) }),
+                                            kind: K::I32,
+                                            offset: 0,
+                                        }),
+                                        rhs: Box::new(W::ConstI32(24)),
+                                    };
+                                    let mismatch = W::Binary {
+                                        op: BinOp::And,
+                                        kind: K::I32,
+                                        lhs: Box::new(W::Binary { op: BinOp::Ne, kind: K::I32, lhs: Box::new(tag()), rhs: Box::new(W::ConstI32(0)) }),
+                                        rhs: Box::new(W::Binary { op: BinOp::Ne, kind: K::I32, lhs: Box::new(tag()), rhs: Box::new(W::ConstI32(expected as i32)) }),
+                                    };
+                                    return Some(W::Seq(vec![
+                                        N::If { cond: mismatch, then_: vec![N::Unreachable], els: vec![], result: None },
+                                        N::Push(read),
+                                    ]));
+                                }
+                                return Some(read);
                             }
                         }
                     }
