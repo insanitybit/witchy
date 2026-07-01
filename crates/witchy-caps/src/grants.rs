@@ -18,6 +18,8 @@
 //! github = ["github.com:443"]
 //! [secrets]
 //! gh = { from = "env:GITHUB_OAUTH" }
+//! [user_caps]
+//! ui = { type = "UiRoot", policy = "coven-web" }
 //! ```
 
 use std::collections::BTreeMap;
@@ -40,6 +42,14 @@ pub struct GrantDoc {
     pub net: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub secrets: BTreeMap<String, SecretGrant>,
+    /// RFC-0038: bare, library-defined `grantable` capabilities the host mints at
+    /// the root, keyed by the `main` parameter they bind to. Each carries a `type`
+    /// (the grantable capability's name) plus the policy fields its constructor
+    /// consumes. Bare caps confer NO host authority, so they are absent from
+    /// `cap_set` (the host cross-check); they are matched on a separate axis
+    /// against the program's required grantable caps.
+    #[serde(default)]
+    pub user_caps: BTreeMap<String, UserCapGrant>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,6 +71,18 @@ pub struct SecretGrant {
     /// Where the host RESOLVES the secret from (e.g. `env:GITHUB_OAUTH`). The
     /// document never carries a secret value.
     pub from: String,
+}
+
+/// RFC-0038: a bare grantable user capability the host mints at the root.
+#[derive(Debug, Deserialize)]
+pub struct UserCapGrant {
+    /// The grantable capability type this binds to (e.g. `UiRoot`).
+    #[serde(rename = "type")]
+    pub cap_type: String,
+    /// The remaining keys: the capability's policy fields, passed to its
+    /// constructor. Bare caps carry only policy data (no host authority).
+    #[serde(flatten)]
+    pub fields: BTreeMap<String, toml::Value>,
 }
 
 impl GrantDoc {
@@ -190,6 +212,22 @@ mod tests {
         assert_eq!(doc.dirs["data"].root, "./data");
         assert_eq!(doc.net["github"], vec!["github.com:443", "api.github.com:443"]);
         assert_eq!(doc.secrets["gh"].from, "env:GITHUB_OAUTH");
+    }
+
+    #[test]
+    fn parses_user_caps_section() {
+        // (RFC-0038) a `[user_caps]` entry binds a grantable cap by `main` param
+        // name, with a `type` and arbitrary policy fields.
+        let doc = GrantDoc::parse(
+            "[user_caps]\nui = { type = \"UiRoot\", policy = \"coven-web\", app_id = \"web\" }\n",
+        )
+        .expect("valid grant doc");
+        let uc = &doc.user_caps["ui"];
+        assert_eq!(uc.cap_type, "UiRoot");
+        assert_eq!(uc.fields["policy"].as_str(), Some("coven-web"));
+        assert_eq!(uc.fields["app_id"].as_str(), Some("web"));
+        // Bare user caps confer no host authority — absent from the host cap_set.
+        assert!(doc.cap_set().is_empty(), "bare user caps add no host authority");
     }
 
     #[test]
