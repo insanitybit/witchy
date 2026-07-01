@@ -1,7 +1,7 @@
 ---
 status: in-progress
 note: Master ordering across the capability-model RFCs (0011-0013) and the identity/login RFCs (0009/0010/namespaces). Detailed identity workstreams live in identity-stack-implementation-plan.md; this file is the sequence and the decision points.
-progress: The identity track (Phases 3-5) shipped — HTTPS/TLS, OIDC verification, GitHub+Google login, and OIDC trusted publishing are all live and dogfooded. The capability-model substrate (Phases 1-2, 6) is partial: RFC-0011's Net tier shipped; RFC-0012 (File), RFC-0013 (grants), and RFC-0011's carried-state/Dir/restrict-retirement remain. See "Status of the artifacts" at the bottom.
+progress: The identity track (Phases 3-5) shipped — HTTPS/TLS, OIDC verification, GitHub+Google login, and OIDC trusted publishing are all live and dogfooded. Capability-model substrate: RFC-0012 (File) and RFC-0013 (grants) have since SHIPPED (both `status: implemented`). The one remaining tail is RFC-0011's carried-state record + Dir/File refinement methods + retiring the `restrict` builtin — now tracked with concrete steps in execution-plan.md. See "Status of the artifacts" at the bottom.
 ---
 
 # Implementation roadmap
@@ -158,11 +158,11 @@ partial. Per phase:
 | Phase | RFC / artifact | State | Evidence |
 |---|---|---|---|
 | 1 | RFC-0011 refinement | **partial** | Net tier shipped: typed `NetPolicy` + `confine.tcp/any_port/cidr/cidr_any/union`, `net.only`/`net.deny`. **Not** built: `Dir`/`File` policy methods, the RFC-0002 carried-state *record* (so library caps like `Postgres.table`), and retiring `restrict`/`subdir`. `restrict` survives as the `--net` string form. |
-| 2 | RFC-0012 File capability | **not started** | `status: proposed`. `Exec` not yet folded into `File[Exec]`. |
+| 2 | RFC-0012 File capability | **shipped** | `status: implemented`. `File` as a first-class read/write capability; the Exec→File fold was REJECTED (Exec stays its own capability — see the RFC title). |
 | 3 | RFC-0009 HTTPS/TLS + RS256 + base64url | **shipped** | rustls 0.23 + aws-lc-rs (not s2n-tls); `tls:` connect-time scheme; `std/crypto` RS256; `std/encoding` base64url. `status: implemented`. |
 | 4 | OIDC verification (JWT/JWKS) + dev IdP | **shipped** | `std/jwt` (`verify_rs256`/`verify_oidc`/JWKS) + `std/oauth`; dev IdP in `src/idp.rs`. |
 | 5 | Social login + OIDC publishing | **shipped** | GitHub + Google login in `projects/coven-web` (RFC-0010 `implemented`); OIDC trusted publishing in `projects/coven` (`coven_trust.witchy` `verify_token` + `coven.witchy` `authorize_publish`/`trusted-publisher` attestation), with differential coverage in `src/example_tests.rs` and `projects/coven/src/coven_test.witchy`. |
-| 6 | RFC-0013 grant documents | **not started** | `status: proposed`. |
+| 6 | RFC-0013 grant documents | **shipped** | `status: implemented` (2026-06-28): `[files]/[dirs]/[net]/[secrets]` TOML + footprint cross-check + `witchy sandbox --grants`/`--accept-grants` + `grants-check`. RFC-0038 (proposed) extends this with a `[user_caps]` section for bare grantable user caps. |
 
 Related, not numbered above: `rfcs/coven-namespaces-plan.md` (the publish-identity
 model — its §1-4 derive-equality / immutable-id / decoupled-promote gate is the design
@@ -170,7 +170,9 @@ realized in coven), `rfcs/identity-stack-implementation-plan.md` (the WS-1…WS-
 for Phases 3-5, now mostly executed), and `rfcs/0014-remove-capability-firewall.md`
 (`proposed`, independent cleanup — retire `retain`/`without`).
 
-**The remaining tail** is the deep capability-model work: RFC-0011's carried-state
-record + `Dir`/`File` refinement methods, RFC-0012 (File), and RFC-0013 (grants).
-These were deliberately deferred (the Phase-1 fast-track decision) so the visible
-identity goal could ship on the existing `restrict` string first.
+**The remaining tail** (updated 2026-07-01): RFC-0012 (File) and RFC-0013 (grants)
+have since SHIPPED. The only capability-model work left is **RFC-0011's
+carried-state record + `Dir`/`File` refinement methods + retiring the `restrict`
+builtin** — deferred by the Phase-1 fast-track decision so the identity goal could
+ship on the existing `restrict` string first. Concrete file-anchored steps for it
+are in [execution-plan.md](execution-plan.md) (Track A, RFC-0011 remainder).
