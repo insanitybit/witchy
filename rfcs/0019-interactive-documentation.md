@@ -39,7 +39,7 @@ The pieces are already built; they are just not connected:
   interpreter oracle (`WITCHY_INTERP=1`) for every example. CI builds the wasm
   on every push ("Playground wasm build").
 - **Every `witchy` block in the docs is already a complete, correct program.**
-  Repo policy (CLAUDE.md) and the `documentation_examples_are_valid` test
+  The project parity policy and the `documentation_examples_are_valid` test
   guarantee it: each ```` ```witchy ```` block parses, links, and type-checks,
   and console-only ones run on *both* backends with identical output. Partial
   snippets use an untagged or ```` ```sh ```` fence. So every rendered witchy

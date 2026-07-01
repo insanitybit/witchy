@@ -18,7 +18,7 @@ GLAMOUR="$REPO/projects/glamour/src/glamour.witchy"
 
 if [[ ! -x "$WITCHY" ]]; then
   echo "build.sh: debug witchy binary not found at $WITCHY" >&2
-  echo "  (build it once with: cargo build  — but NOT while another agent is mid-edit)" >&2
+  echo "  (build it once with: cargo build)" >&2
   exit 1
 fi
 

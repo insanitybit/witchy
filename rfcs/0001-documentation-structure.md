@@ -18,8 +18,8 @@ and **authority**:
 |------------------|----------------------------------------|------------------|------------|------------|
 | `rfcs/`          | proposals + decisions ("why/when")     | historical       | humans     | frozen once decided |
 | `spec/`          | current state ("what IS today")        | authoritative    | humans     | always-current |
-| `wiki/`          | cross-linked browsable synthesis       | derived          | the LLM    | regenerated |
-| `external-refs/` | papers/notes/prior-art                 | curated input    | the LLM    | frozen sources |
+| `wiki/`          | cross-linked browsable synthesis       | derived          | generated  | regenerated |
+| `external-refs/` | papers/notes/prior-art                 | curated input    | maintained | frozen sources |
 
 The code + tests remain the ultimate authority for "what IS"; `spec/` is the
 prose view of that, and CI is meant to keep them honest.
@@ -48,10 +48,10 @@ The four layers, with the rule that makes each one cheap to keep correct:
 - **`spec/`** — the only "always current" prose. Kept thin and, where possible,
   anchored to runnable examples so CI fails when it lies. The danger zone is
   untestable prose; minimize it. See [`spec/README.md`](../spec/README.md).
-- **`wiki/`** — derived and disposable; the LLM owns it. Never hand-authoritative.
+- **`wiki/`** — derived and disposable. Never hand-authoritative.
   Pages stamp the source commit they were built from; large drift triggers
   archive+rebuild, not patching. See [`wiki/README.md`](../wiki/README.md).
-- **`external-refs/`** — frozen external sources + an agent-maintained index. The
+- **`external-refs/`** — frozen external sources plus a maintained index. The
   inputs don't move, so this layer is the cheapest of all to keep correct.
 
 **The maintenance rule, in one line:** manual effort goes only into immutable
@@ -64,8 +64,8 @@ keep it true.
 
 (Full notes in [`external-refs/index.md`](../external-refs/index.md).)
 
-- **Karpathy's "LLM Wiki"** — the three-layer pattern (immutable sources →
-  LLM-owned wiki → schema doc) and the ingest/lint loop. `wiki/` is this.
+- **Generated wiki pattern** — the three-layer pattern (immutable sources →
+  generated wiki → schema doc) and the ingest/lint loop. `wiki/` is this.
 - **ar9av/obsidian-wiki** — a working document-corpus implementation we adapt the
   maintainer skill from.
 - **Python PEPs / Rust RFCs / ADRs (Nygard)** — three independent, battle-tested
@@ -75,12 +75,12 @@ keep it true.
 
 **Cautionary tales we're heeding:**
 
-- The "LLM keeps the wiki maintained at near-zero cost" promise is unproven.
+- The "generated docs stay maintained at near-zero cost" promise is unproven.
   Treat `wiki/` as disposable and lean on commit-stamping + rebuild, not faith.
 - Karpathy himself recommends wiki *alongside* retrieval, not replacing it.
 - Even ADR authors abandon strict immutability for dated "living documents" —
   so `rfcs/` allows dated change-notes rather than pretending edits never happen.
-- No tool combines an agent-wiki *on top of* a formal rfcs/spec structure; that
+- No tool combines a generated wiki *on top of* a formal rfcs/spec structure; that
   integration is ours to prove out.
 
 ## Triage — every current `docs/` file
@@ -158,5 +158,5 @@ a doc can be part-spec, part-rfc and may need splitting.
 > **`ownership-analysis.md`** (both phased *design/analysis* records of shipped
 > machinery, not current-state reference). `local-registry.md` stayed `spec/`
 > (it's a how-to). No docs were split; any genuinely mixed doc can be split in a
-> follow-up RFC. Worktree copies under `.claude/worktrees/` were deliberately not
+> follow-up RFC. Temporary worktree copies were deliberately not
 > touched.

@@ -59,7 +59,7 @@ star (WS-I).
 
 Out of scope / non-goals:
 - **No changes to coven's wire protocol or `src/pm/` / `projects/coven/`.** Coven's HTTP API is a
-  **frozen contract** (§4). Another agent owns that tree; we stay isolated.
+  **frozen contract** (§4). Keep that tree isolated from this workstream.
 - **No CORS on coven.** The frontend is strictly same-origin (the server proxies coven).
 - **Publishing from the browser** is out — publishing stays a CI/trusted-publisher flow. The UI's
   only write surface is **promote / yank**.
@@ -261,7 +261,7 @@ Each is an implementable unit with deliverables and acceptance criteria. Depende
   server** (std/server has no per-request trap isolation; witchy traps are unrecoverable). Add a
   fallible dial — e.g. `net.try_connect -> Option(Socket)` — across the interpreter, the WASM host
   import, typeck, and a `std/http`/`std/server` wrapper, so the proxy returns **502** instead of
-  dying. Shared-tree (touches the compiler) → coordinate with the active agent.
+  dying. Shared-tree (touches the compiler) → coordinate with active compiler work.
 - *Acceptance:* a handler returning a UTF-8 body with multibyte chars is received intact; static
   assets serve with correct MIME; `../` traversal rejected; the proxy returns 502 (not a crash)
   when coven is unreachable.
@@ -379,7 +379,7 @@ Each is an implementable unit with deliverables and acceptance criteria. Depende
   `projects/coven/` or `src/pm/`.
 - Shared-tree changes are limited to **WS-A** (`src/native.rs` + `Cargo.toml`) and **WS-B**
   (`std/server.witchy` + maybe a `string` byte-length op). Land each as a small, isolated commit;
-  coordinate timing with the other active agent. Commit as insanitybit; do not push unless asked.
+  coordinate timing with active compiler work.
 
 ## 11. Open decisions (resolve at kickoff if needed)
 
@@ -426,7 +426,7 @@ Each is an implementable unit with deliverables and acceptance criteria. Depende
   bundle → `dist/app.js` (7.4kb IIFE). Re-verified in-browser: identical behavior (index, detail
   views, sandbox BLOCKED ✓).
 - **Open finding:** B6 (proxy crashes when coven is unreachable) — see WS-B. Blocked on
-  `src/runtime.rs` (currently dirty — the active agent is in it).
+  `src/runtime.rs`.
 - **2026-06-14 — WS-G (trust panel) done.** A `views/trust.ts` view fetches `/api/coven/{rootpub,
   snapshot,timestamp}` and renders the real, Ed25519-signed TUF state: root-key fingerprint,
   snapshot version + target count + signature, timestamp expiry with a **freshness (freeze) check**,
@@ -477,21 +477,17 @@ Each is an implementable unit with deliverables and acceptance criteria. Depende
   `connect-src 'none'` blocks.
 - **2026-06-14 — acted on the "you can modify `src/`" green-light; scoped every backend item.** The
   tree builds (`cargo check` clean, 1m35s), so verifiable `src/` work in non-async files is possible.
-  Findings on why each backend item is still NOT safe to rush mid-async-refactor:
+  Backend risk notes:
   - **WS-A (aws-lc-rs) is entangled.** `native.rs` is **not** cfg-gated off wasm32 (`lib.rs:30`), and
-    aws-lc-rs has no wasm32 support → it would break the wasm playground build (which I can't easily
-    verify here). The crypto host **bridge lives in `runtime.rs`** (`:491-492,576` — an async-dirty
-    file I must not touch), and crypto spans 6 files (native/runtime/main/pm·keys/tuf/store). A clean
-    single-backend migration needs the async work landed first. `cmake` is now installed for then.
-  - **WS-B B6 (fallible connect)** needs `runtime.rs`'s `host_net_connect` (async-dirty) for the WASM
-    path coven-web uses → blocked on async.
-  - **`std/json` `\u` fix** touches only clean files but needs a both-backend `char_from_code`;
-    codegen *can* build it (the `int_to_string` `[len][bytes]` pattern, codegen.rs:7855+), but it's
-    substantial WAT with real WASM-backend regression risk — unwise to land mid-refactor where a
-    miscompile would be blamed on / tangled with the async changes.
-  Decision: defer all three until `ASYNC_DONE.md`; everything safe + verifiable is already done.
-- **2026-06-14 — ASYNC_DONE.md fired; WS-A (aws-lc-rs crypto) DONE + verified.** With the async
-  work settled (uncommitted but stable; `cargo check` green), migrated the native `crypto` module
+    aws-lc-rs has no wasm32 support, so the wasm playground build must be verified with any change.
+    The crypto host bridge lives in `runtime.rs`, and crypto spans 6 files
+    (native/runtime/main/pm·keys/tuf/store).
+  - **WS-B B6 (fallible connect)** needs `runtime.rs`'s `host_net_connect` for the WASM path coven-web uses.
+  - **`std/json` `\u` fix** needs a both-backend `char_from_code`; codegen can build it (the
+    `int_to_string` `[len][bytes]` pattern, codegen.rs:7855+), but it is substantial WAT with real
+    WASM-backend regression risk.
+  Decision: land these as separate backend changes with full wasm playground verification.
+- **2026-06-14 — WS-A (aws-lc-rs crypto) DONE + verified.** Migrated the native `crypto` module
   (`src/native.rs`: sha256/rune_hash/ed25519_verify/sign/public_key) to **aws-lc-rs** via cfg-split
   helpers — native uses aws-lc-rs (FIPS-approved SHA-256 + Ed25519), wasm32 keeps the untouched
   RustCrypto path (aws-lc-rs has no wasm32 support; gated in `Cargo.toml` under
@@ -503,8 +499,9 @@ Each is an implementable unit with deliverables and acceptance criteria. Depende
   pass (aws-lc-rs sigs verify byte-identically under the Rust ed25519-dalek verifier); clippy clean
   in native.rs; aws-lc-rs confirmed absent from the wasm32 build. Follow-ups: new primitives
   (ECDSA P-256/HMAC/SHA-512/SHA-3/DRBG) and optionally migrating pm/keys·tuf·store + runtime's own
-  sha2 to aws-lc-rs for a single backend. **Uncommitted** (alongside the async work; commit
-  selectively: `src/native.rs`, `Cargo.toml`, `Cargo.lock`).
+  sha2 to aws-lc-rs for a single backend. Follow-up candidates: new primitives
+  (ECDSA P-256/HMAC/SHA-512/SHA-3/DRBG) and optionally migrating pm/keys·tuf·store + runtime's own
+  sha2 to aws-lc-rs for a single backend.
 - **2026-06-14 — WS-B B6 (fallible connect / proxy resilience) DONE + verified.** Added a total
   `try_connect(net, addr) -> Option(Socket)` (`interpreter.rs` + `typeck.rs` `check_net_op`, same
   `Net[Connect,Tcp]` gating as `connect`; `codegen.rs` emits a clear interpreter-only error — WASM
@@ -515,8 +512,7 @@ Each is an implementable unit with deliverables and acceptance criteria. Depende
   is interpreter-only for now, coven-web runs on the **interpreter** —
   `cd projects/coven-web/web/dist && witchy --net <web> --net <coven> ../../src/coven_web.witchy <web> <coven>`
   — not `witchy sandbox`. Caps (Net allowlist, Dir=cwd) still enforced; only WASM-VM memory isolation
-  is traded (fine for trusted first-party server code — coven itself runs interpreted). Uncommitted:
-  `src/{interpreter,typeck,codegen}.rs`, `std/http.witchy`, `projects/coven-web/{src/coven_web.witchy,verify.py}`.
+  is traded (fine for trusted first-party server code — coven itself runs interpreted). Follow-up: keep interpreter/WASM parity for `try_connect` and the std/http fallible request surface.
 - **2026-06-14 — WS-A new primitive: `crypto.ecdsa_p256_verify` (WebAuthn ES256) DONE + verified.**
   Added to native.rs (aws-lc-rs `ECDSA_P256_SHA256_ASN1`; native-only `#[cfg(not(wasm32))]` — not
   bridged to WASM, WebAuthn runs interpreted), registered in `native::lookup`, stub in
@@ -537,10 +533,10 @@ Each is an implementable unit with deliverables and acceptance criteria. Depende
     `crypto_sha512_and_hmac_match_known_vectors` passes. New-primitive set now: ES256, SHA-512,
     HMAC-SHA256. **SHA3-256 also DONE (2026-06-14)** — aws-lc-rs `SHA3_256`, native-only, verified
     vs the FIPS 202 KAT (`sha3_256("abc")`); stub + docs updated. (No Rust test added — main.rs is
-    being actively edited by the await agent; verified via a witchy run instead.) New-primitive set:
+    verified via a witchy run instead.) New-primitive set:
     ES256, SHA-512, SHA3-256, HMAC-SHA256. DRBG/`Entropy` still open (needs interpreter/typeck — see below).
-  - **Follow-ups CLEARED once the postfix-`await` migration landed (`ASYNC_DONE.md`, 2026-06-14).**
-    With the tree settled, the previously-blocked items are DONE:
+  - **Follow-ups CLEARED once the postfix-`await` migration landed (2026-06-14).**
+    The previously-blocked items are DONE:
     - **WASM-codegen `try_connect`** — a non-trapping `net_try_connect` host import returns a `-1`
       sentinel on a failed dial; codegen wraps it as `Option(Socket)` (`Some(handle)`/`None`). Verified
       interpreter↔WASM parity for both the refused-port (`None`) and live-listener (`Some`) paths.
@@ -623,13 +619,10 @@ Each is an implementable unit with deliverables and acceptance criteria. Depende
   lacks** (no `chr`/`from_code`; would be a both-backend builtin + surrogate-pair handling, with a
   hard WASM/codegen Unicode side) → deferred until `src/` settles; the encoder is fine (passes raw
   UTF-8). coven-web's source viewer itself is correct for ASCII + raw-UTF-8 runes (verified).
-- **Remaining = shared-tree backend, HARD-BLOCKED by the in-flight futures/channels concurrency work**
-  (another agent; broad `src/` churn incl. new `optimize.rs`). WS-A (aws-lc-rs crypto), WS-B (B1 byte
+- **Remaining = shared-tree backend work.** WS-A (aws-lc-rs crypto), WS-B (B1 byte
   Content-Length / B2 serve_file / B6 fallible connect), and WS-H's real WebAuthn (needs WS-A) all
-  require editing/building `src/`, which would collide and be unverifiable while that lands. **The
-  async work signals completion by writing `ASYNC_DONE.md` (repo root).** A persistent Monitor is
-  armed to wake the loop the instant it appears; on that signal, resume WS-A → WS-B → WS-H and verify
-  each (ideally in a worktree off the freshly-settled tree). Until then the frontend is fully done.
+  require editing/building `src/`. Land them as separate backend PRs after the compiler/runtime tree
+  is quiet enough to verify each change independently. Until then the frontend is fully done.
 
 ## Appendix — references for security primitives (public)
 

@@ -283,7 +283,7 @@ These are real and must be stated, not glossed:
   hosting compiled WASM. Rejected: it is a *second backend* with its own
   semantics to keep in lockstep with the interpreter and the WASM backend —
   precisely the one-semantics/parity model the project refuses to fracture
-  (CLAUDE.md, "The one rule: parity"). The whole appeal of the WASM path is that
+  (the project parity rule). The whole appeal of the WASM path is that
   it reuses the existing compiled artifact unchanged.
 
 - **Give browser-WASM real capabilities now** — a browser host that *does* satisfy

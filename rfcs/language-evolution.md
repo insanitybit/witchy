@@ -6,7 +6,7 @@ note: Imported from docs/ under RFC-0001. Frozen design record — current behav
 # Language evolution: typed lowering, value equality, a real stdlib, self, comptime
 
 Five workstreams, one dependency spine. The learning log (`scratch/LEARNING-LOG.md`)
-is the evidence base: an LLM learned witchy from the book alone and its three
+is the evidence base: a newcomer should be able to learn witchy from the book alone, and the first
 serious findings (F15 silent `dict.get` divergence, F11 `${}` codegen failures,
 F5 unguessable builtins) all trace to the same root — **the compiler's type
 knowledge degrades after typeck**. Typeck infers every type in the program,

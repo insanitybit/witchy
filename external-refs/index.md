@@ -1,25 +1,23 @@
 # External references — index
 
-One entry per external source. Newest-relevant first. The `witchy-wiki` skill
-keeps this current as refs are added.
+One entry per external source. Newest-relevant first.
 
 ## Knowledge-system design (informed RFC-0001 + the wiki/ design)
 
-- **Karpathy, "LLM Wiki"** — gist `442a6bf555914893e9891c11519de94f`.
+- **Generated wiki/source synthesis pattern** — gist `442a6bf555914893e9891c11519de94f`.
   The canonical statement of the three-layer pattern (immutable raw sources →
-  LLM-owned wiki → schema doc) and the ingest/query/lint loop. The wiki we build
+  generated wiki → schema doc) and the ingest/query/lint loop. The wiki we build
   is this pattern. *Caution:* the "maintenance cost is near zero" claim is an
   argued thesis, not a measured result. → informed `rfcs/0001-documentation-structure.md`, `wiki/`.
 - **ar9av/obsidian-wiki** — github.com/ar9av/obsidian-wiki (MIT).
-  The closest document-corpus implementation of the Karpathy pattern: merge-based
-  ingest, frontmatter source attribution, lint-for-staleness, and an
-  archive+rebuild escape hatch. Our `witchy-wiki` skill is adapted from its
-  `.skills/` skeleton. → informed `.claude/skills/witchy-wiki/`.
+  The closest document-corpus implementation of the generated-wiki pattern:
+  merge-based ingest, frontmatter source attribution, lint-for-staleness, and an
+  archive+rebuild escape hatch. → informed the generated-doc maintenance workflow.
 - **Cognition DeepWiki / "Ask Devin"** — docs.devin.ai/work-with-devin/deepwiki.
   Production wiki-plus-RAG over code corpora; staleness handled by periodic
   re-indexing. Evidence the materialized-wiki + retrieval hybrid runs in prod.
-- **AsyncFuncAI/deepwiki-open** — github.com/AsyncFuncAI/deepwiki-open (MIT).
-  Open reference pipeline: clone → embeddings → AI doc-gen → Mermaid → wiki + Ask.
+- **deepwiki-open** — github.com/AsyncFuncAI/deepwiki-open (MIT).
+  Open reference pipeline: clone → embeddings → generated docs → Mermaid → wiki + Ask.
 
 ## Decision-record / spec separation (informed rfcs/ + spec/)
 

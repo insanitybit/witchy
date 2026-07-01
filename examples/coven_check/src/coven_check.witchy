@@ -5,7 +5,8 @@
 // them — *rights-precisely*. A capability the code can use but the manifest
 // under-admits is the dangerous supply-chain case. This is the package
 // manager's `check_declared`, self-hosted, composing std `toml` + `compiler` +
-// `json`. Run:  witchy examples/coven_check.witchy
+// `json`. Run from the repository root:
+//   witchy examples/coven_check/src/coven_check.witchy
 
 import toml
 import compiler

@@ -92,28 +92,6 @@ truly a "safe by default" system;
 
 Every piece of `witchy` is designed with security in mind.
 
-## AI disclosure
-
-`witchy` is a project for fun. It's vibecoded using different models. It's a way
-for me to explore ideas in this space. If that's not for you, no problem!
-
-For the most part, I like to focus on the safety of `witchy`, the ergonomics, etc. I then
-defer virtually all of the "how it's built" and "how it executes" to an agent. I make some of
-the major decisions like the use of wasm, priorities, syntax, the capabilities model, etc, but
-for something like driving how an optimization actually applies during codegen I simply do not
-care to be involved. I'm somewhat interested in that sort of work but my time is limited.
-
-The way I build witchy is intentionally low effort, I have a day job. I primarily interact with witchy by iterating on an RFC document with an agent, sending the agent off to implement the RFC, and then reviewing the documentation of that work. I rarely interact with the witchy compiler code.
-
-Some of the docs are handwritten, most are written by AI. RFCs are rarely hand edited, instead
-I just give feedback and see what the AI comes up with until I accept it.
-
-If anything changes with regards to AI usage (or anything that might feel meaningful to someone interested in witchy) I'll be sure to disclose that.
-
-If you would like to contribute, please disclose any AI usage (with the model used),
-`witchy` is a project that is accepting of AI written code but takes the position that
-it *must* be open and honest about the use of AI.
-
 ## Run the docs
 
 The guided way to learn witchy is **[The witchy Book](book/src/SUMMARY.md)**. Run

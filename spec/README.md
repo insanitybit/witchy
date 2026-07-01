@@ -14,9 +14,8 @@ The authoritative, always-current description of what witchy **is** today. If
   by the test suite (e.g. `src/example_tests.rs`) so CI fails when the spec lies.
   Untestable prose is the danger zone — minimize it.
 - **Stamp freshness.** A spec doc may carry `verified: <commit>` frontmatter
-  recording the last commit its claims were checked against. The
-  [`witchy-wiki`](../.claude/skills/witchy-wiki/SKILL.md) lint pass flags docs
-  whose stamp lags far behind `HEAD`.
+  recording the last commit its claims were checked against. Freshness checks
+  should flag docs whose stamp lags far behind `HEAD`.
 
 ## What lives here
 

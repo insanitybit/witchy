@@ -1,8 +1,8 @@
 # external-refs/
 
 Curated external material that informs witchy's design — papers (PDFs), notes on
-external pages, prior-art writeups, talks. The bookmark-manager layer: dump a
-source in, and the agent files it.
+external pages, prior-art writeups, talks. This is the durable input layer
+for design records and current-state specs.
 
 ## Rules
 
@@ -13,14 +13,13 @@ source in, and the agent files it.
   describe witchy. They feed [`rfcs/`](../rfcs/) and [`wiki/`](../wiki/), which
   cite them.
 - **Index everything.** [`index.md`](./index.md) has one entry per ref: what it
-  is, where it came from, why it matters, and what it informed (with links to the
-  RFC/wiki pages that used it). The [`witchy-wiki`](../.claude/skills/witchy-wiki/SKILL.md)
-  skill maintains the index as new refs land.
+  is, where it came from, why it matters, and what it informed, with links to the
+  RFC or spec pages that cite it.
 
 ## Layout
 
 ```
 external-refs/
-  index.md          # the curated catalog (agent-maintained)
+  index.md          # the curated catalog
   <slug>/           # one dir per ref: the PDF/snapshot + a notes.md
 ```

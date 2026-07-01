@@ -16,7 +16,7 @@
 // The ABI this targets is declared in `src/wir_prelude.rs` (PRELUDE_IMPORTS_WAT)
 // and the wasmtime implementations live in `src/runtime.rs`. The pure functions
 // below mirror those byte-for-byte, so a browser run and a native run agree on
-// every observable byte (the parity rule of CLAUDE.md). See spec/wasm-abi.md.
+// every observable byte (the project parity rule). See spec/wasm-abi.md.
 
 // The ABI version this shim implements. Bump in lockstep with a breaking change
 // to the `"witchy"` import surface (a renamed/re-signatured pure import, or a

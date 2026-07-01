@@ -2,9 +2,7 @@
 """Static verification harness for the WS-I/M6 glamour-WASM source sandbox.
 
 The real coven-web witchy server cannot boot on the current binary (its stdlib
-lacks `http.try_get` — a pre-existing, uncommitted WS-B B6 gap, unrelated to this
-change). Per the task's fallback ("at minimum serve the built sandbox-frame +
-parent statically and drive the source-render path"), this harness serves
+lacks `http.try_get`; this harness therefore serves
 `web/dist/` with coven-web's EXACT per-route CSP + header stack (the strings are
 read verbatim from src/coven_web.witchy so they cannot drift), plus the identical
 `/sandbox-frame` bootstrap, and a `/test` page that runs the trusted-parent
