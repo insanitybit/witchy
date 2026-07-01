@@ -1572,14 +1572,26 @@ pub fn fresh_heap_builtin_offset(name: &str, argc: usize) -> Option<i32> {
 /// statement, so `$drop name` is emitted immediately after it. Keyed by statement
 /// identity (`stmt_key`), like the uniqueness `kills` — the consumer must compile the
 /// exact AST instance analyzed.
+/// One drop: the local holding the value, and the byte offset from that local's
+/// pointer to the START of its `$rc_alloc` region — 0 for list/string/record buffers,
+/// 4 for a dict (its hidden index word sits at `ptr-4`). The codegen frees
+/// `local - offset`. The offset comes from the value's allocator, so a drop is recorded
+/// ONLY for a value produced by a known heap allocator (`fresh_heap_builtin_offset`) —
+/// which is also what makes it definitely a freeable heap pointer, never a scalar.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Drop {
+    pub name: String,
+    pub offset: i32,
+}
+
 #[derive(Default, Debug)]
 pub struct DropFacts {
-    after: HashMap<usize, Vec<String>>,
+    after: HashMap<usize, Vec<Drop>>,
 }
 
 impl DropFacts {
-    /// Binding names to `$drop` immediately after `stmt` (empty if none).
-    pub fn drops_after(&self, stmt: &Stmt) -> &[String] {
+    /// Values to `$rc_free` immediately after `stmt` (empty if none).
+    pub fn drops_after(&self, stmt: &Stmt) -> &[Drop] {
         self.after.get(&stmt_key(stmt)).map(Vec::as_slice).unwrap_or(&[])
     }
 
@@ -1588,8 +1600,8 @@ impl DropFacts {
         self.after.values().map(Vec::len).sum()
     }
 
-    fn record(&mut self, stmt: &Stmt, name: String) {
-        self.after.entry(stmt_key(stmt)).or_default().push(name);
+    fn record(&mut self, stmt: &Stmt, name: String, offset: i32) {
+        self.after.entry(stmt_key(stmt)).or_default().push(Drop { name, offset });
     }
 }
 
@@ -1608,8 +1620,110 @@ impl DropFacts {
 ///     than once, reassigned, or a parameter (caller-owned) falls through to NO drop.
 pub fn last_use_drops(body: &Block, summaries: &Summaries) -> DropFacts {
     let mut facts = DropFacts::default();
-    place_drops(body, body, summaries, &mut facts);
+    // A value bound inside a `region:` block is bulk-reclaimed when the region ends;
+    // freeing it here too would double-free. Exclude every region-confined binding.
+    let region_confined = region_confined_lets(body);
+    place_drops(body, body, summaries, &region_confined, &mut facts);
     facts
+}
+
+/// Names `let`-bound anywhere inside a `region:` block (a `Block` with `region.is_some()`,
+/// or nested within one). Their allocations are region-born and bulk-freed at the region
+/// boundary (RFC-0016 R4), so the RC floor must NOT also free them. The walk is complete
+/// (every sub-expression and nested block, lambdas excepted — a separate unit) so no
+/// confined binding is missed; a miss would be a double-free once codegen consumes drops.
+fn region_confined_lets(body: &Block) -> HashSet<String> {
+    let mut out = HashSet::new();
+    rc_lets_block(body, false, &mut out);
+    out
+}
+
+fn rc_lets_block(b: &Block, outer_confined: bool, out: &mut HashSet<String>) {
+    let confined = outer_confined || b.region.is_some();
+    for s in &b.stmts {
+        if confined {
+            if let Stmt::Let { name, .. } = s {
+                out.insert(name.clone());
+            }
+        }
+        if let Some(v) = stmt_value(s) {
+            rc_lets_expr(v, confined, out);
+        }
+    }
+}
+
+fn rc_lets_expr(e: &Expr, confined: bool, out: &mut HashSet<String>) {
+    match e {
+        Expr::Block(b) => rc_lets_block(b, confined, out),
+        Expr::If { cond, then_block, else_block } => {
+            rc_lets_expr(cond, confined, out);
+            rc_lets_block(then_block, confined, out);
+            if let Some(bb) = else_block {
+                rc_lets_block(bb, confined, out);
+            }
+        }
+        Expr::While { cond, body } => {
+            rc_lets_expr(cond, confined, out);
+            rc_lets_block(body, confined, out);
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            rc_lets_expr(scrutinee, confined, out);
+            rc_lets_block(body, confined, out);
+        }
+        Expr::For { iter, body, .. } => {
+            rc_lets_expr(iter, confined, out);
+            rc_lets_block(body, confined, out);
+        }
+        Expr::Match { scrutinee, arms } => {
+            rc_lets_expr(scrutinee, confined, out);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    rc_lets_expr(g, confined, out);
+                }
+                rc_lets_expr(&arm.body, confined, out);
+            }
+        }
+        Expr::Lambda { .. } => {}
+        Expr::List(xs) | Expr::Tuple(xs) => xs.iter().for_each(|x| rc_lets_expr(x, confined, out)),
+        Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
+            args.iter().for_each(|a| rc_lets_expr(a, confined, out))
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            rc_lets_expr(receiver, confined, out);
+            args.iter().for_each(|a| rc_lets_expr(a, confined, out));
+        }
+        Expr::Apply { func, args } => {
+            rc_lets_expr(func, confined, out);
+            args.iter().for_each(|a| rc_lets_expr(a, confined, out));
+        }
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } => {
+            rc_lets_expr(expr, confined, out)
+        }
+        Expr::Field { base, .. } => rc_lets_expr(base, confined, out),
+        Expr::Binary { lhs, rhs, .. }
+        | Expr::Index { base: lhs, index: rhs }
+        | Expr::Range { lo: lhs, hi: rhs, .. } => {
+            rc_lets_expr(lhs, confined, out);
+            rc_lets_expr(rhs, confined, out);
+        }
+        Expr::RecordUpdate { base, fields } => {
+            rc_lets_expr(base, confined, out);
+            fields.iter().for_each(|(_, v)| rc_lets_expr(v, confined, out));
+        }
+        Expr::Record { fields, spread, .. } => {
+            fields.iter().for_each(|(_, v)| rc_lets_expr(v, confined, out));
+            if let Some(sp) = spread {
+                rc_lets_expr(sp, confined, out);
+            }
+        }
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Duration(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::Var(_)
+        | Expr::TaggedLit { .. } => {}
+    }
 }
 
 /// Walk every statement (recursing nested blocks once each) and record the two airtight
@@ -1624,34 +1738,54 @@ pub fn last_use_drops(body: &Block, summaries: &Summaries) -> DropFacts {
 /// each iteration (safe to free per iteration), whereas a value bound OUTSIDE a loop but
 /// read once *inside* it would be read on every iteration — dropping it after the first
 /// read would use-after-free on the next. Requiring same-block binding rules that out.
-fn place_drops(block: &Block, fn_body: &Block, summaries: &Summaries, facts: &mut DropFacts) {
-    let this_block_lets: HashSet<&str> = block
+fn place_drops(
+    block: &Block,
+    fn_body: &Block,
+    summaries: &Summaries,
+    region_confined: &HashSet<String>,
+    facts: &mut DropFacts,
+) {
+    // The lets in THIS block bound to a known heap allocator, with the free offset.
+    // Restricting drops to these gives same-block binding (soundness) AND a definite
+    // freeable heap pointer + offset (so codegen never frees a scalar or mis-offsets).
+    let block_let_offsets: HashMap<&str, i32> = block
         .stmts
         .iter()
         .filter_map(|s| match s {
-            Stmt::Let { name, .. } => Some(name.as_str()),
+            Stmt::Let { name, value: Expr::Call { name: f, args }, .. } => {
+                fresh_heap_builtin_offset(f, args.len()).map(|off| (name.as_str(), off))
+            }
             _ => None,
         })
         .collect();
     for s in &block.stmts {
         if let Stmt::Let { name, .. } = s {
-            if name_reassign_count(fn_body, name) == 0 && name_read_count(fn_body, name) == 0 {
-                facts.record(s, name.clone());
+            if let Some(&off) = block_let_offsets.get(name.as_str()) {
+                if !region_confined.contains(name)
+                    && name_reassign_count(fn_body, name) == 0
+                    && name_read_count(fn_body, name) == 0
+                {
+                    facts.record(s, name.clone(), off);
+                }
             }
         }
         if let Some(value) = stmt_value(s) {
             let mut candidates = Vec::new();
             nonleaking_call_arg_vars(value, summaries, &mut candidates);
             for v in candidates {
-                if this_block_lets.contains(v.as_str())
-                    && name_reassign_count(fn_body, &v) == 0
-                    && name_read_count(fn_body, &v) == 1
-                {
-                    facts.record(s, v);
+                if let Some(&off) = block_let_offsets.get(v.as_str()) {
+                    if !region_confined.contains(&v)
+                        && name_reassign_count(fn_body, &v) == 0
+                        && name_read_count(fn_body, &v) == 1
+                    {
+                        facts.record(s, v, off);
+                    }
                 }
             }
         }
-        each_block_in_stmt(s, &mut |blk| place_drops(blk, fn_body, summaries, facts));
+        each_block_in_stmt(s, &mut |blk| {
+            place_drops(blk, fn_body, summaries, region_confined, facts)
+        });
     }
 }
 
@@ -2062,6 +2196,14 @@ mod last_use_tests {
     fn captured_binding_is_not_dropped() {
         let d = drops("import list\nfn f() -> fn() -> Int:\n    let buf = list.push([], 1)\n    fn(): list.length(buf)\n");
         assert_eq!(d.total(), 0, "`buf` is captured by the returned closure");
+    }
+
+    /// A value bound inside a `region:` block is reclaimed by the region — the RC floor
+    /// must not also free it (double-free). Otherwise `tmp` would be a single-use drop.
+    #[test]
+    fn region_confined_value_is_not_dropped() {
+        let d = drops("import list\nfn f() -> Int:\n    let n = region -> Int:\n        let tmp = list.push([], 1)\n        list.length(tmp)\n    n\n");
+        assert_eq!(d.total(), 0, "`tmp` is region-confined; the region frees it, not the RC floor");
     }
 
     /// A reassigned binding's churn is rc-floor's free-at-overwrite, not this pass.

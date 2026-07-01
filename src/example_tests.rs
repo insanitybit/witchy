@@ -1169,6 +1169,30 @@ fn main(console: Console):
         (actor.output(), reowns)
     }
 
+    /// `wasm_run` that also reads the `__heap` frontier and `__rc_reused_bytes` —
+    /// the timing-free proof of whether the RC floor bounded the heap (flat frontier)
+    /// by recycling freed blocks (reused > 0), rather than leaking O(iterations).
+    fn wasm_run_heap(src: &str) -> (Vec<String>, i64, i64) {
+        use crate::runtime::{Capabilities, Runtime};
+        let linked = resolve_std_src(src);
+        typeck::check(&linked).expect("typecheck");
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                &bytes,
+                Capabilities { print: true, print_int: true, quiet: true, ..Default::default() },
+                crate::RUN_MEMORY_PAGES,
+            )
+            .expect("spawn");
+        actor.run().expect("run");
+        let heap = actor.heap_bytes().unwrap_or(0);
+        let reused = actor.rc_reused_bytes().unwrap_or(0);
+        (actor.output(), heap, reused)
+    }
+
     /// THE UNIQUENESS ANALYSIS, observable: an alias taken BEFORE the loop
     /// zeroes the ownership token once — the first push re-owns (one copy)
     /// and everything after runs in place. The old syntactic whitelist
@@ -1719,6 +1743,86 @@ fn main(console: Console):
             opt::set_for_tests(None);
             assert_eq!(out, oracle, "WITCHY_OPT={label} diverged from the interpreter oracle");
         }
+    }
+
+    /// (RFC-0035) LAST-USE DROP — observable + differential. A dead per-iteration
+    /// scratch buffer (`list.concat` read exactly once, then dead) sits in a loop that
+    /// is NOT arena-resettable: the dict `acc` escapes each iteration, so the RFC-0030
+    /// watermark is OFF and the scratch would otherwise leak O(iterations). Under
+    /// `rc-floor` the `last_use` analysis frees it right after its last use. Three
+    /// obligations, all asserted: (1) output IDENTICAL to the interpreter oracle and to
+    /// the default build — the free is sound, never observable; (2) the free-list is
+    /// actually recycled (`rc_reused_bytes > 0`) — the drop fired, it is not a no-op;
+    /// (3) the heap frontier stays flat instead of growing with the leak — an order of
+    /// magnitude below the default. This is exactly the niche the heap-reset-boundary
+    /// guard (`wm_level == 0`) preserves: rc-floor reclaims where the watermark cannot,
+    /// and cedes (never double-frees) where it can.
+    #[test]
+    fn rc_floor_last_use_drop_is_differential_and_bounds_the_leak() {
+        use crate::opt::{self, Opt, OptSet};
+        let src = "import list\nimport dict\nfn main(console: Console):\n    var acc = dict.new()\n    var i = 0\n    let base = [1, 2, 3, 4, 5]\n    while i < 2000:\n        let scratch = list.concat(base, base)\n        let n = list.length(scratch)\n        acc = dict.insert(acc, i % 8, n)\n        i = i + 1\n    print(console, __render(dict.length(acc)))\n";
+        let oracle = link_run(src);
+
+        // Default build (rc-floor OFF): correct, but the scratch leaks each iteration.
+        let (default_out, default_heap, _default_reused) = wasm_run_heap(src);
+        assert_eq!(default_out, oracle, "default build diverged from the interpreter oracle");
+
+        // rc-floor ON: identical output, heap bounded, free-list recycled.
+        opt::set_for_tests(Some(OptSet::default_set().with(Opt::RcFloor)));
+        let (rc_out, rc_heap, rc_reused) = wasm_run_heap(src);
+        opt::set_for_tests(None);
+        assert_eq!(rc_out, oracle, "rc-floor diverged from the interpreter oracle");
+        assert_eq!(rc_out, default_out, "rc-floor changed observable output — unsound");
+        assert!(rc_reused > 0, "rc-floor never recycled: the last_use drop did not fire (reused={rc_reused})");
+        assert!(
+            rc_heap.saturating_mul(10) < default_heap,
+            "rc-floor did not bound the leak: rc_heap={rc_heap} default_heap={default_heap}"
+        );
+    }
+
+    /// (RFC-0035) Assert an adversarial-aliasing program computes `expected` IDENTICALLY on
+    /// the interpreter oracle, the compiled default build, AND the compiled build with
+    /// `rc-floor` on. This is the **use-after-free corpus gate** the per-object refcount
+    /// (the remaining floor: `$drop` at a `set_at` overwrite) must keep green: an element
+    /// still aliased — read into a live binding, duplicated, or stored elsewhere — when its
+    /// container slot is overwritten must NOT be reclaimed. The programs pass today (nothing
+    /// frees the displaced element); when the refcount lands, its `$drop` must decrement to a
+    /// still-positive count (a live alias holds it) and free NOTHING here. A regression flips
+    /// these red — the corpus is authored FIRST, as the gate, per the goal + RFC-0035 step 3.
+    fn assert_rc_corpus_stable(src: &str, expected: &[&str]) {
+        use crate::opt::{self, Opt, OptSet};
+        let want: Vec<String> = expected.iter().map(|s| (*s).to_string()).collect();
+        assert_eq!(link_run(src), want, "interpreter oracle diverged");
+        assert_eq!(wasm_run(src), want, "compiled default diverged from oracle");
+        opt::set_for_tests(Some(OptSet::default_set().with(Opt::RcFloor)));
+        let rc = wasm_run(src);
+        opt::set_for_tests(None);
+        assert_eq!(rc, want, "compiled under rc-floor diverged — a premature free");
+    }
+
+    /// Corpus 1: an element read into a binding that stays live PAST the `set_at` that
+    /// overwrites its slot. `held` must still observe the original element.
+    #[test]
+    fn rc_corpus_element_read_lives_past_set_at() {
+        let src = "import list\ntype Box:\n    Box(String)\nfn unwrap(b: Box) -> String:\n    match b:\n        Box(s) -> s\nfn main(console: Console):\n    var xs = [Box(\"a\"), Box(\"b\"), Box(\"c\")]\n    let held = list.at(xs, 1)\n    xs = list.set_at(xs, 1, Box(\"z\"))\n    print(console, unwrap(held))\n    print(console, unwrap(list.at(xs, 1)))\n";
+        assert_rc_corpus_stable(src, &["b", "z"]);
+    }
+
+    /// Corpus 2: the SAME element aliased into two live bindings, then the container slot
+    /// overwritten. Both aliases must survive (count ≥ 2 at the overwrite).
+    #[test]
+    fn rc_corpus_aliased_element_survives_container_mutation() {
+        let src = "import list\ntype Box:\n    Box(String)\nfn unwrap(b: Box) -> String:\n    match b:\n        Box(s) -> s\nfn main(console: Console):\n    var xs = [Box(\"a\"), Box(\"b\")]\n    let a1 = list.at(xs, 0)\n    let a2 = list.at(xs, 0)\n    xs = list.set_at(xs, 0, Box(\"z\"))\n    print(console, unwrap(a1))\n    print(console, unwrap(a2))\n    print(console, unwrap(list.at(xs, 0)))\n";
+        assert_rc_corpus_stable(src, &["a", "a", "z"]);
+    }
+
+    /// Corpus 3: an element STORED into another container (the same shape as returning it or
+    /// sending it down a channel — it escapes to a place that outlives the overwrite), then
+    /// the original container slot overwritten. The stored copy must survive.
+    #[test]
+    fn rc_corpus_element_stored_elsewhere_survives_container_mutation() {
+        let src = "import list\ntype Box:\n    Box(String)\nfn unwrap(b: Box) -> String:\n    match b:\n        Box(s) -> s\nfn main(console: Console):\n    var xs = [Box(\"a\"), Box(\"b\")]\n    var ys = []\n    ys = list.push(ys, list.at(xs, 0))\n    xs = list.set_at(xs, 0, Box(\"z\"))\n    print(console, unwrap(list.at(ys, 0)))\n    print(console, unwrap(list.at(xs, 0)))\n";
+        assert_rc_corpus_stable(src, &["a", "z"]);
     }
 
     /// `crypto.rune_hash` produces the same store hash (`src/pm/store.rs`

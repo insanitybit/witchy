@@ -22,8 +22,3 @@ rules:
     disable: true
   superfluous-actions:
     disable: true
-  # dtolnay/rust-toolchain doesn't tag its release commits, so our correct SHA
-  # pins (commented with the tracked branch) trip this online-only pedantic
-  # audit.
-  stale-action-refs:
-    disable: true

@@ -246,3 +246,59 @@ pre-RC oracle):
   today, so RC is a strict improvement there.
 - **The reachable-leak footgun** — bounded, not eliminated, by the lifetime tools; the
   honest residual that no runtime removes, made visible by named lifetimes + tooling.
+
+## Dev-log
+
+### 2026-06-30 — `last_use` → codegen consumption (migration step 1 + the *elision half* of step 2)
+
+Shipped under `WITCHY_OPT=rc-floor`, off by default, `./scripts/check.sh --fast` green
+(1078 tests, clippy `-D warnings`):
+
+- **`last_use` lattice** (step 1): `DropFacts`/`place_drops` in `analysis.rs` — the two
+  airtight drop cases (a dead binding; a single use as a *non-leaking* call arg, via
+  `Summaries::arg_leaks`), each carrying the free offset from
+  `fresh_heap_builtin_offset` so codegen frees the exact `$rc_alloc` region start (0 for
+  list/string, 4 for a dict's hidden-index word). 12 standalone tests against
+  hand-checked drop points; the soundness guards (same-block binding, region-confined,
+  not-escaped/returned/reassigned/captured/parameter) are each pinned by a test.
+- **Codegen consumption** (elision half of step 2): `begin_unit` computes `DropFacts`
+  into a stack parallel to `facts_stack`; `lower_block` emits `$rc_free(local - offset)`
+  after each drop-statement. This is the **RC-elision** free — a statically
+  unique-and-dead value returned to the size-classed free list directly, no refcount
+  word consulted (RFC-0016 R2). Composes with the already-shipped free-at-overwrite rule.
+- **The heap-reset boundary** (a real double-reclaim bug, found + fixed): a watermarked
+  loop body (RFC-0030) or `region:` block resets `$heap` per iteration, already
+  reclaiming every iteration-local value. An `$rc_free` there is a *double reclaim* — the
+  freed block lands on the free list, the watermark rewinds `$heap` below it, and the
+  next bump re-hands-out the same address still linked in the free list (a dangling
+  free-list chain → out-of-bounds trap, caught in testing). rc-floor now fires only where
+  `wm_level == 0`: straight-line code and loops whose body is NOT arena-resettable
+  (something escapes, so the watermark is off) — exactly the niche the watermark cannot
+  reach.
+- **Differential proof**: `rc_floor_last_use_drop_is_differential_and_bounds_the_leak`. A
+  dead per-iteration scratch buffer in a non-arena-resettable loop (a dict escapes) leaks
+  352 KB by default; under rc-floor the output is identical to the interpreter oracle AND
+  the default build, the heap frontier stays flat at 382 bytes, and `__rc_reused_bytes`
+  proves the free list recycled every buffer.
+- **`cache_eviction`** (residual 1) is already bounded by the shipped free-at-overwrite
+  rule (`stats::cache_eviction_bounded_by_rc_floor`, green) — one of the two pins clears
+  without the refcount word.
+
+### Remaining: the per-object refcount word (step 2 header + step 3 executor)
+
+The **`chan_throughput`/executor residual is NOT closed**, and it does not yield to
+`last_use`. The scheduler's `list.set_at(slots, i, Active(cont(unit())))` displaces a
+`Task` element that was read into a binding *in the caller* (`step_one`); freeing it
+requires the runtime refcount to answer, at the `set_at`, whether a live alias still
+holds the displaced element (count > 1 → keep; 0 → free). This is inherently
+all-or-nothing for soundness: a `set_at` that frees the displaced element WITHOUT the
+full `$dup`/`$drop` discipline would use-after-free whenever a live alias holds it — the
+one class witchy refuses. So the header + `$dup`/`$drop` land *together*, verified
+against the adversarial corpus + the `chan_throughput` soak, or not at all.
+
+Header-layout note for that build: `$rc_alloc`'s `[size]` word sits at the returned
+pointer − 4, and dicts already use − 4 for their hidden index word, so the refcount needs
+a *second* header word — returned pointer − 4 for rc, − 8 for size — a change localized to
+`rc_alloc` / `rc_free` / the free-list reuse scan (the per-primitive allocators call
+`rc_alloc` and are unaffected). Not started: per the HARD RULE (never commit an unproven
+`dec`) it is gated behind a dedicated, fully-verified build, not an autonomous increment.
