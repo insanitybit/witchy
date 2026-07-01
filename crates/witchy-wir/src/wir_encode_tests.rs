@@ -71,6 +71,7 @@
         const RC_USERS: &[&str] = &[
             "substr", "concat", "list_push", "list_concat", "ascii_case", "dict_new", "dict_remove",
             "list_push_cap", "list_set_cap", "list_update_cap", "str_append_cap", "list_drop",
+            "int_to_string", "split", "str_chars",
         ];
         let mut m = module.clone();
         let uses_rc = m.funcs.iter().any(|f| RC_USERS.contains(&f.name.as_str()));

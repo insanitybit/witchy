@@ -626,19 +626,17 @@ pub fn int_to_string_helper(checked: bool) -> WirFunc {
         N::Do(E::CallHost { import: "heap_register".into(), args: vec![start, end] })
     };
     // n == 0 → the single ascii '0' (object `[res, res+5)`).
+    // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse); it reserves
+    // `size+8` and bumps `$heap` by `size`, so `heap` lands at exactly `res+(5+rz)` —
+    // the same point the manual bump reached, keeping the redzone registration valid.
     let mut then_zero = vec![
-        N::Do(E::Call { func: "ensure".into(), args: vec![i32c(5 + rz)] }),
-        N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+        N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![i32c(5 + rz)] } },
         N::Store { ptr: getl("res"), value: i32c(1), kind: Kind::I32, offset: 0 },
         N::Store8 { ptr: getl("res"), value: i32c(48), offset: 4 },
     ];
     if checked {
         then_zero.push(reg(getl("res"), bin(BinOp::Add, Kind::I32, getl("res"), i32c(5))));
     }
-    then_zero.push(N::SetGlobal {
-        global: "heap".into(),
-        value: bin(BinOp::Add, Kind::I32, getl("res"), i32c(5 + rz)),
-    });
     then_zero.push(N::Push(getl("res")));
     // Count digits of `t` (mutated to 0): `while t != 0 { ndigits++; t /= 10 }`.
     let count_loop = N::Block {
@@ -713,11 +711,10 @@ pub fn int_to_string_helper(checked: bool) -> WirFunc {
             local: "len".into(),
             value: bin(BinOp::Add, Kind::I32, getl("ndigits"), getl("neg")),
         },
-        N::Do(E::Call {
-            func: "ensure".into(),
-            args: vec![bin(BinOp::Add, Kind::I32, i32c(4 + rz), getl("len"))],
-        }),
-        N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+        N::SetLocal {
+            local: "res".into(),
+            value: E::Call { func: "rc_alloc".into(), args: vec![bin(BinOp::Add, Kind::I32, i32c(4 + rz), getl("len"))] },
+        },
         N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
         N::If {
             cond: getl("neg"),
@@ -745,10 +742,6 @@ pub fn int_to_string_helper(checked: bool) -> WirFunc {
     if checked {
         else_nonzero.push(reg(getl("res"), str_end()));
     }
-    else_nonzero.push(N::SetGlobal {
-        global: "heap".into(),
-        value: if checked { bin(BinOp::Add, Kind::I32, str_end(), i32c(rz)) } else { str_end() },
-    });
     else_nonzero.push(N::Push(getl("res")));
     WirFunc {
         name: "int_to_string".into(),
@@ -2102,12 +2095,9 @@ pub fn split_helper() -> WirFunc {
             let mut body = vec![
                 setl("slen", load(getl("s"))),
                 setl("seplen", load(getl("sep"))),
-                N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, i32c(4), cap_slots.clone())] }),
-                setl("result", E::GetGlobal("heap".into())),
-                N::SetGlobal {
-                    global: "heap".into(),
-                    value: b(BinOp::Add, b(BinOp::Add, getl("result"), i32c(4)), cap_slots),
-                },
+                // (RFC-0016) claim the buffer region through `$rc_alloc` (header + slots,
+                // bumps `$heap` past them) so each piece's `substr` allocates above it.
+                setl("result", E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(4), cap_slots)] }),
                 setl("count", i32c(0)),
                 // empty sep -> [s]: slot 0 = s, length 1.
                 N::If {
@@ -2215,15 +2205,14 @@ pub fn str_chars_helper() -> WirFunc {
             setl("slen", load(getl("s"))),
             // Reserve header + `byte_len` slots (an upper bound on the char count) and CLAIM the
             // region, so each char's `substr` allocates above it.
-            N::Do(E::Call {
-                func: "ensure".into(),
+            // (RFC-0016) claim the buffer region through `$rc_alloc` — it reserves the
+            // header + slots and bumps `$heap` past them, so each char's `substr` still
+            // allocates ABOVE the buffer (or a distinct free-list block) and never
+            // clobbers a written slot.
+            setl("result", E::Call {
+                func: "rc_alloc".into(),
                 args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("slen"), i32c(8)))],
             }),
-            setl("result", E::GetGlobal("heap".into())),
-            N::SetGlobal {
-                global: "heap".into(),
-                value: b(BinOp::Add, b(BinOp::Add, getl("result"), i32c(4)), b(BinOp::Mul, getl("slen"), i32c(8))),
-            },
             setl("count", i32c(0)),
             setl("bi", i32c(0)),
             scan_loop,
@@ -3535,7 +3524,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
                 if checked { &["heap_register"] } else { &[] };
             Some(WirHelperSpec {
                 func: int_to_string_helper(checked),
-                helper_deps: &["ensure"],
+                helper_deps: &["rc_alloc"],
                 import_deps,
                 uses_heap: true,
                 uses_table: false,
@@ -3648,14 +3637,14 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "split" => Some(WirHelperSpec {
             func: split_helper(),
-            helper_deps: &["ensure", "substr", "list_push"],
+            helper_deps: &["rc_alloc", "substr", "list_push"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,
         }),
         "str_chars" => Some(WirHelperSpec {
             func: str_chars_helper(),
-            helper_deps: &["ensure", "byte_to_char", "str_substring", "list_push"],
+            helper_deps: &["rc_alloc", "byte_to_char", "str_substring", "list_push"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,
