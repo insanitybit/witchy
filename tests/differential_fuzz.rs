@@ -472,3 +472,43 @@ fn differential_fuzz_interpreter_vs_compiled() {
         CONFIGS.len()
     );
 }
+
+/// (RFC-0037 §3) The use-after-free sanitizer (`WITCHY_UAF_CHECK=1`) poisons every freed block
+/// so a stale read of an un-reused block reads a trap pattern — a deterministic DIVERGE where
+/// the plain differential can miss (a freed block is only *reliably* corrupted through its
+/// offset-0 freelist link; a stale read at offset 4.. of an un-reused block is otherwise
+/// intact). The sanitizer is STRICTLY ADDITIVE: on a CORRECT compiler a freed block is never
+/// read again, so poisoning it changes no output. This test enforces that zero-false-positive
+/// property over generated programs AND exercises the poison-on-free path every run, so a
+/// regression in the sanitizer itself (a bad size, an out-of-bounds poison store) surfaces as a
+/// host crash or a spurious DIVERGE. Its BUG-CATCHING value is realized by the same net the
+/// moment a real reclamation bug lands under `rc-floor`.
+#[test]
+fn uaf_sanitizer_is_false_positive_free() {
+    let programs = env_usize("WITCHY_UAF_FUZZ_PROGRAMS", 12);
+    let statements = env_usize("WITCHY_UAF_FUZZ_STATEMENTS", 100);
+    for seed in 0..programs as u64 {
+        let (src, _) = gen_program(seed.wrapping_mul(0x1234_5678_9ABC_DEF1).wrapping_add(1), statements);
+        let path = std::env::temp_dir().join(format!("witchy_uaf_{seed}.witchy"));
+        std::fs::File::create(&path).unwrap().write_all(src.as_bytes()).unwrap();
+        // rc-floor is the only lever that emits `$rc_free`, so it is the one the sanitizer alters.
+        let out = Command::new(BIN)
+            .args(["parity", path.to_str().unwrap()])
+            .env("WITCHY_OPT", "rc-floor")
+            .env("WITCHY_UAF_CHECK", "1")
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_file(&path);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.code().is_some(),
+            "witchy crashed (signal) on seed {seed} under the UAF sanitizer — a bad poison store.\n--- program ---\n{src}\n--- stderr ---\n{stderr}"
+        );
+        if stdout.contains("DIVERGE") || stderr.contains("DIVERGE") {
+            panic!(
+                "UAF sanitizer FALSE POSITIVE on seed {seed}: a correct compiler diverged under WITCHY_UAF_CHECK=1 (poisoning a freed block must never change output).\n--- program ---\n{src}\n--- output ---\n{stdout}{stderr}"
+            );
+        }
+    }
+}

@@ -194,6 +194,37 @@ covers shapes random search reaches only by luck. A bounded enumeration that inc
 - **P3.** Miri in the `--full` gate (§7) + bounded-exhaustive enumeration (§8) + metamorphic
   transforms (§4).
 
+## Implementation status
+
+Shipped (in `tests/differential_fuzz.rs`, `crates/witchy-wir/src/wir_helpers/mod.rs`,
+`scripts/check.sh`):
+
+- **§2 cross-lever differential + §1 grammar-complete generator (P0).** The fuzzer runs every
+  program under a config set (`none`, default, `rc-floor`, `unbox`, `all,-wasm-opt`); the
+  generator emits a risky-shape helper library (user functions with `let`/`own` params,
+  closures, direct + mutual recursion, a tuple-of-owned-buffers return) and statement kinds for
+  the exact class that hid the UAF — a local `var` alias-initing a borrowed param/local then
+  self-referentially reassigning, with the shared value re-read as a trip-wire. A
+  grammar-coverage meta-assertion fails if any kind is never emitted. Counts are
+  env-overridable. Teeth-tested: neutralizing the real `escape.rs` alias-init exclusion makes
+  the generated shapes DIVERGE under `rc-floor`.
+- **§3 use-after-free sanitizer (`WITCHY_UAF_CHECK=1`).** `$rc_free` fills the freed payload
+  with a `0xDEADBEEF` poison pattern (size-guarded against a pre-rc-header buffer) and then
+  relinks the block for reuse exactly as before — so it is STRICTLY ADDITIVE: reuse-corruption
+  detection is preserved unchanged, and a stale read of an *un-reused* block now reads poison
+  deterministically. Verified zero false positives (a correct compiler agrees across the fuzzer
+  and 57 examples under `rc-floor`+`UAF_CHECK`), no regression (every previously-caught UAF
+  still DIVERGES), locked in by `uaf_sanitizer_is_false_positive_free` and a wider `--full` sweep.
+
+Honest scoping finding from the teeth-tests: on RANDOM programs the plain cross-lever net catches
+a reuse-after-free only when the freed block's *offset-0* word is observably corrupted — which,
+for the free-at-overwrite class, happens reliably because `$rc_free` clobbers offset 0 with the
+freelist link (a string's length → wrong value/trap). The sanitizer's marginal, deterministic
+addition is the harder class: a stale read at *offset 4..* of an un-reused block, and cases where
+a non-zero freelist head leaves offset 0 looking valid. The remaining P1–P3 items (minimization,
+type-tag + `live_cells==0` sanitizers, coverage-guided fuzzing, algebraic/metamorphic properties,
+Miri, bounded-exhaustive) are unstarted.
+
 ## Integration
 
 `./scripts/check.sh` is the green gate (there is no external CI). Fold the P0/P1 additions

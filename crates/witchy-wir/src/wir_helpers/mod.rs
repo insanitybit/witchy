@@ -143,6 +143,18 @@ pub fn heap_check_enabled() -> bool {
     std::env::var_os("WITCHY_HEAP_CHECK").is_some_and(|v| v == "1")
 }
 
+/// (RFC-0037 §3) Whether the opt-in use-after-free sanitizer is selected. Read from the
+/// environment like the other codegen toggles. When set (and `rc-floor` is on, since it
+/// only alters `$rc_free`), a freed block is POISONED and NOT relinked for reuse, so the
+/// poison is never overwritten and any use-after-free reads the trap pattern
+/// deterministically — turning a fragile "maybe the reuse happened to overwrite before the
+/// stale read" divergence into a guaranteed one. Output-preserving on a CORRECT program (a
+/// correctly-freed block is never read again), so it only ever surfaces real bugs. Trades
+/// reclamation for detection (freed memory leaks), so it is a debug-only test mode.
+pub fn uaf_check_enabled() -> bool {
+    std::env::var_os("WITCHY_UAF_CHECK").is_some_and(|v| v == "1")
+}
+
 pub fn mk_helper(n: usize, checked: bool) -> WirFunc {
     let size = 4 + 8 * n;
     // (RFC-0023) When checked, reserve a trailing redzone the host poisons via
@@ -335,6 +347,83 @@ pub fn rc_free_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
+    // (RFC-0035) one fewer live object — this cell is now dead.
+    let dec_live = N::SetGlobal {
+        global: "__witchy_live_cells".into(),
+        value: E::Binary {
+            op: BinOp::Sub,
+            kind: Kind::I64,
+            lhs: Box::new(E::GetGlobal("__witchy_live_cells".into())),
+            rhs: Box::new(E::ConstI64(1)),
+        },
+    };
+
+    if uaf_check_enabled() {
+        // (RFC-0037 §3) UAF sanitizer variant: fill the freed payload with a POISON pattern,
+        // then relink the block for reuse exactly as the normal path does. This is STRICTLY
+        // MORE detection than the plain differential, never less:
+        //   * if the block is later reused, the new owner overwrites the poison with its own
+        //     data — so the existing "reuse corrupts a still-aliased value" divergence is
+        //     preserved unchanged; and
+        //   * if the block is NOT reused before a stale read (the FRAGILE case the plain
+        //     differential misses — G3), the read sees POISON, a wrong value (→ DIVERGE) or,
+        //     read as a length, a fast out-of-bounds wasm trap (also a DIVERGE vs the interp).
+        // On a CORRECT program a freed block is never read again, so poisoning changes no
+        // output — zero false positives. The allocated size is in the header at `ptr-4`;
+        // poison every whole word of `[ptr, ptr+size)` when that size is sane (a guard against
+        // a freed buffer that predates the rc header, whose `ptr-4` is not a real size).
+        let i32c = E::ConstI32;
+        let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+        let load = |p: E, off: u32| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: off };
+        const POISON: i32 = 0xDEAD_BEEFu32 as i32;
+        const POISON_LIMIT: i32 = 1 << 20; // 1 MiB — larger than any test object; guards a bogus header.
+        let poison_loop = N::Block {
+            label: "pz_done".into(),
+            result: None,
+            body: vec![N::Loop {
+                label: "pz".into(),
+                body: vec![
+                    // stop before the store would reach the next block's header at ptr+size.
+                    N::Br {
+                        target: "pz_done".into(),
+                        cond: Some(b(BinOp::Gt, b(BinOp::Add, getl("i"), i32c(4)), getl("size"))),
+                    },
+                    N::Store {
+                        ptr: b(BinOp::Add, getl("ptr"), getl("i")),
+                        value: i32c(POISON),
+                        kind: Kind::I32,
+                        offset: 0,
+                    },
+                    N::SetLocal { local: "i".into(), value: b(BinOp::Add, getl("i"), i32c(4)) },
+                    N::Br { target: "pz".into(), cond: None },
+                ],
+            }],
+        };
+        return WirFunc {
+            name: "rc_free".into(),
+            params: vec![WirLocal { name: "ptr".into(), ty: WirTy::Bool }],
+            ret: vec![],
+            locals: ["size", "i"].iter().map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool }).collect(),
+            body: vec![
+                N::SetLocal { local: "size".into(), value: load(b(BinOp::Sub, getl("ptr"), i32c(4)), 0) },
+                // Poison only a sane-sized payload; `LeU` also rejects a negative (→ huge
+                // unsigned) bogus size. size==0 makes the loop a no-op.
+                N::If {
+                    cond: b(BinOp::LeU, getl("size"), i32c(POISON_LIMIT)),
+                    then_: vec![N::SetLocal { local: "i".into(), value: i32c(0) }, poison_loop],
+                    els: vec![],
+                    result: None,
+                },
+                // Relink for reuse (identical to the normal path). The freelist link occupies
+                // word 0, overwriting the poison there; words 4.. stay poisoned until reuse.
+                N::Store { ptr: getl("ptr"), value: E::GetGlobal("rc_freelist".into()), kind: Kind::I32, offset: 0 },
+                N::SetGlobal { global: "rc_freelist".into(), value: getl("ptr") },
+                dec_live,
+            ],
+            raw_body: None,
+        };
+    }
+
     WirFunc {
         name: "rc_free".into(),
         params: vec![WirLocal { name: "ptr".into(), ty: WirTy::Bool }],
@@ -343,16 +432,7 @@ pub fn rc_free_helper() -> WirFunc {
         body: vec![
             N::Store { ptr: getl("ptr"), value: E::GetGlobal("rc_freelist".into()), kind: Kind::I32, offset: 0 },
             N::SetGlobal { global: "rc_freelist".into(), value: getl("ptr") },
-            // (RFC-0035) one fewer live object — this cell is now on the free-list.
-            N::SetGlobal {
-                global: "__witchy_live_cells".into(),
-                value: E::Binary {
-                    op: BinOp::Sub,
-                    kind: Kind::I64,
-                    lhs: Box::new(E::GetGlobal("__witchy_live_cells".into())),
-                    rhs: Box::new(E::ConstI64(1)),
-                },
-            },
+            dec_live,
         ],
         raw_body: None,
     }

@@ -87,6 +87,12 @@ if [ "$full" -eq 1 ]; then
     # any optimization surfaces as a redzone trap or backend DIVERGE on random
     # programs — not just the curated suite. Runs with all WITCHY_OPT levers on.
     run "fuzz (checked heap)"  env WITCHY_HEAP_CHECK=1 cargo nextest run --test differential_fuzz
+    # RFC-0037 §3 use-after-free sweep: the sanitizer poisons every freed block, so a
+    # use-after-free of an un-reused block reads a trap pattern deterministically (a class
+    # the freelist-clobber-based differential can miss). On a correct compiler this is
+    # output-preserving, so a DIVERGE here is a real reclamation bug under `rc-floor`. Wider
+    # than the in-suite default so more freed-then-read shapes are exercised.
+    run "fuzz (uaf sanitizer)" env WITCHY_UAF_FUZZ_PROGRAMS=40 cargo nextest run --test differential_fuzz -E 'test(uaf_sanitizer)'
     run "e2e (from scratch)"   ./scripts/e2e-full.sh
     # RFC-0030 bench/soak. The deterministic guards — the never-OOM soak and the
     # per-optimization counter assertions (src/stats.rs) — are HARD-gated in the
