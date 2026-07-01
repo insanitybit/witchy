@@ -12,11 +12,12 @@
 //! development/differential knob, not a production surface:
 //!
 //! - **`release`** — the optimized shipping config, and the DEFAULT when
-//!   `WITCHY_OPT` is unset. Its end-state is **`all`**: every optimization belongs
-//!   in release once it has cleared its hardening bar. A lever is promoted into
-//!   release by flipping [`Opt::default_on`] (removing it from the opt-in matches),
-//!   not by asking users to name it. The two still opt-in today (`unbox`,
-//!   `rc-floor`) are the ones being hardened toward release.
+//!   `WITCHY_OPT` is unset. It is now **`release == all`**: every optimization is
+//!   promoted and ships on by default (both former opt-in levers, `unbox` and
+//!   `rc-floor`, cleared their hardening bars — the type-tag sanitizer for `unbox`,
+//!   the SEC-037 `$rc_dup` object-base guard for `rc-floor`, each with the whole
+//!   `check.sh --fast` gate green under the lever on). A future not-yet-hardened
+//!   lever would be gated back into opt-in via [`Opt::default_on`].
 //! - **`debug`** — maximally debuggable / fastest-compile = no optimizations. It is
 //!   exactly [`OptSet::none`], which is also the differential reference oracle, so
 //!   it is the best-tested config we have.
@@ -153,7 +154,8 @@ impl Opt {
     /// back is `rc-floor` (reclamation → use-after-free surface, cf. SEC-036), which
     /// needs the executor bound (RFC-0036) before it can ship on by default.
     fn default_on(self) -> bool {
-        !matches!(self, Opt::RcFloor)
+        // release == all: both levers promoted (unbox type-tag sanitized; rc-floor SEC-037-guarded).
+        true
     }
 
     fn bit(self) -> u32 {
@@ -292,8 +294,8 @@ mod tests {
         assert!(d.contains(Opt::InPlace));
         assert!(d.contains(Opt::Region));
         assert!(d.contains(Opt::WasmOpt), "wasm-opt (AOT-cached Binaryen) is default-on");
-        assert!(d.contains(Opt::Unbox), "unbox is now PROMOTED into release (hardened, type-tag sanitized)");
-        assert!(!d.contains(Opt::RcFloor), "rc-floor is the one still opt-in (needs RFC-0036)");
+        assert_eq!(d, OptSet::all(), "release == all: both levers promoted");
+        assert!(d.contains(Opt::Unbox) && d.contains(Opt::RcFloor), "both promoted");
         assert!(d.contains(Opt::Views) && d.contains(Opt::Sroa), "default includes shipped opts");
     }
 
@@ -312,8 +314,8 @@ mod tests {
         assert_eq!(parse("debug").unwrap(), OptSet::none());
         // release now holds back only rc-floor (unbox promoted); rc-floor needs RFC-0036.
         let rel = OptSet::release();
-        assert!(rel.contains(Opt::Unbox), "unbox is promoted into release");
-        assert!(!rel.contains(Opt::RcFloor), "rc-floor is the last opt-in lever");
+        assert_eq!(rel, OptSet::all(), "release == all");
+        assert!(rel.contains(Opt::Unbox) && rel.contains(Opt::RcFloor), "both promoted");
         assert!(rel.contains(Opt::Region) && rel.contains(Opt::WasmOpt), "shipped opts are in release");
         // ...and release is the base for the dev grammar (release + a candidate).
         assert!(parse("release,rc-floor").unwrap().contains(Opt::RcFloor));

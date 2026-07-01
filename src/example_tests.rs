@@ -1763,8 +1763,10 @@ fn main(console: Console):
         let src = "import list\nimport dict\nfn main(console: Console):\n    var acc = dict.new()\n    var i = 0\n    let base = [1, 2, 3, 4, 5]\n    while i < 2000:\n        let scratch = list.concat(base, base)\n        let n = list.length(scratch)\n        acc = dict.insert(acc, i % 8, n)\n        i = i + 1\n    print(console, __render(dict.length(acc)))\n";
         let oracle = link_run(src);
 
-        // Default build (rc-floor OFF): correct, but the scratch leaks each iteration.
+        // rc-floor OFF (explicit — it is default-on now): correct, but the scratch leaks each iteration.
+        opt::set_for_tests(Some(OptSet::default_set().without(Opt::RcFloor)));
         let (default_out, default_heap, _default_reused) = wasm_run_heap(src);
+        opt::set_for_tests(None);
         assert_eq!(default_out, oracle, "default build diverged from the interpreter oracle");
 
         // rc-floor ON: identical output, heap bounded, free-list recycled.

@@ -532,13 +532,21 @@ pub fn rc_dup_helper() -> WirFunc {
         ret: vec![WirTy::Bool],
         locals: vec![],
         body: vec![
+            // NESTED (not `&&`): WIR `And` evaluates both operands, so the header loads must be
+            // guarded by `ptr >= heap_base` first — else a small scalar `ptr` would read `[ptr-8]`
+            // out of bounds and trap. Only inside the heap-pointer guard do we read the header.
             N::If {
-                cond: b(BinOp::And, b(BinOp::GeU, getl("ptr"), E::GetGlobal("heap_base".into())), header_ok()),
-                then_: vec![N::Store {
-                    ptr: rc_addr(),
-                    value: b(BinOp::Add, rc_load(), i32c(1)),
-                    kind: Kind::I32,
-                    offset: 0,
+                cond: b(BinOp::GeU, getl("ptr"), E::GetGlobal("heap_base".into())),
+                then_: vec![N::If {
+                    cond: header_ok(),
+                    then_: vec![N::Store {
+                        ptr: rc_addr(),
+                        value: b(BinOp::Add, rc_load(), i32c(1)),
+                        kind: Kind::I32,
+                        offset: 0,
+                    }],
+                    els: vec![],
+                    result: None,
                 }],
                 els: vec![],
                 result: None,

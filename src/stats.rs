@@ -517,7 +517,7 @@ mod tests {
         // RC-floor OFF (the opt-in lever absent): the eviction garbage leaks O(n).
         // Every `dict.remove` allocates a fresh buffer and the old, dead, uniquely
         // owned one is never reclaimed — so 6× the iterations costs ~6× the heap.
-        opt::set_for_tests(Some(OptSet::default_set()));
+        opt::set_for_tests(Some(OptSet::default_set().without(Opt::RcFloor)));
         let small_off = compute(&prog(500)).expect("n=500 off");
         let big_off = compute(&prog(3000)).expect("n=3000 off");
         // RC-floor ON: the free-at-overwrite rule frees each dead buffer into the
@@ -576,7 +576,7 @@ mod tests {
                 "fn main(console: Console):\n    var s = \"the quick brown fox jumps\"\n    var i = 0\n    while i < {n}:\n        s = s.to_upper()\n        s = s.to_lower()\n        i = i + 1\n    print(console, __render(s.length()))\n"
             )
         };
-        opt::set_for_tests(Some(OptSet::default_set()));
+        opt::set_for_tests(Some(OptSet::default_set().without(Opt::RcFloor)));
         let small_off = compute(&prog(500)).expect("off small");
         let big_off = compute(&prog(3000)).expect("off big");
         opt::set_for_tests(Some(OptSet::default_set().with(Opt::RcFloor)));
@@ -612,7 +612,7 @@ mod tests {
     #[test]
     fn read_out_churn_reclaimed_by_rc_floor() {
         let src = "import list\ntype Box:\n    Box(String)\nfn unwrap(b: Box) -> String:\n    match b:\n        Box(s) -> s\nfn main(console: Console):\n    var xs = [Box(\"a\"), Box(\"b\"), Box(\"c\"), Box(\"d\")]\n    var i = 0\n    while i < 2000:\n        let held = list.at(xs, 0)\n        let s = unwrap(held)\n        xs = list.set_at(xs, 0, Box(\"z\"))\n        i = i + 1\n    print(console, unwrap(list.at(xs, 1)))\n";
-        opt::set_for_tests(Some(OptSet::default_set()));
+        opt::set_for_tests(Some(OptSet::default_set().without(Opt::RcFloor)));
         let off = compute(src).expect("off");
         opt::set_for_tests(Some(OptSet::default_set().with(Opt::RcFloor)));
         let on = compute(src).expect("on");
