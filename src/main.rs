@@ -197,6 +197,27 @@ fn run_embedded_pm(raw: Vec<String>) -> ! {
 }
 
 fn main() -> wasmtime::Result<()> {
+    // (RFC-0037) `--release` / `--debug` — thin WITCHY_OPT mode selectors, usable with any
+    // subcommand. `--debug` compiles with NO optimizations (maximal debuggability); `--release`
+    // is the optimized shipping set (also the default when neither is given). Set the mode here,
+    // before any codegen reads WITCHY_OPT; an explicit `WITCHY_OPT` env still wins only if
+    // neither flag is present. The user-facing run/sandbox arg loops skip these tokens so they
+    // aren't mistaken for the program file.
+    {
+        let a: Vec<String> = std::env::args().collect();
+        let mode = if a.iter().any(|s| s == "--debug") {
+            Some("debug")
+        } else if a.iter().any(|s| s == "--release") {
+            Some("release")
+        } else {
+            None
+        };
+        // SAFETY: this runs at the very top of `main`, before any thread is spawned, so there is
+        // no concurrent env access to race with (the requirement `set_var` is unsafe for).
+        if let Some(m) = mode {
+            unsafe { std::env::set_var("WITCHY_OPT", m) };
+        }
+    }
     // `witchy doc <file>...` prints Markdown API docs (one section per file) to
     // stdout — public functions, their signatures, and their doc comments.
     if std::env::args().nth(1).as_deref() == Some("doc") {
@@ -806,6 +827,9 @@ fn main() -> wasmtime::Result<()> {
                     },
                     None => { eprintln!("--secret-file needs name=path"); std::process::exit(1); }
                 },
+                // (RFC-0037) mode selectors are handled at top of main; skip so they are not
+                // mistaken for the program file.
+                "--release" | "--debug" if path.is_none() => {}
                 _ if path.is_none() => path = Some(a),
                 _ => prog_args.push(a),
             }
@@ -979,6 +1003,8 @@ fn main() -> wasmtime::Result<()> {
                 // Everything after the program file is the program's own argv —
                 // passed through verbatim (flags here belong to the program).
                 prog_args.push(arg);
+            } else if arg == "--release" || arg == "--debug" {
+                // (RFC-0037) mode selectors — handled at top of main; skip here.
             } else if arg == "--secret" || arg.starts_with("--secret=") {
                 let spec = flag_value(&arg, "--secret", &mut args);
                 match parse_secret_inline(&spec) {
