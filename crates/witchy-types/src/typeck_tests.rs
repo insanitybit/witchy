@@ -67,6 +67,23 @@
     }
 
     #[test]
+    fn cap_gated_export_must_lead_with_a_grantable_cap() {
+        // (RFC-0040) a grantable leading param on an `export_*` entry is accepted.
+        assert!(check_str(
+            "grantable capability UiRoot:\n    policy: String\n\npub fn export_step(ui: UiRoot, input: String) -> String:\n    match ui:\n        UiRoot(p) -> p + input\n"
+        )
+        .is_ok());
+        // A non-grantable leading param on a 2-param export is rejected.
+        let err = check_str(
+            "type Config:\n    Config(Int)\n\npub fn export_step(c: Config, input: String) -> String:\n    input\n"
+        )
+        .unwrap_err();
+        assert!(err.contains("export_step") && err.contains("grantable"), "{err}");
+        // A plain single-String export is unaffected.
+        assert!(check_str("pub fn export_step(input: String) -> String:\n    input\n").is_ok());
+    }
+
+    #[test]
     fn packed_list_cannot_cross_a_boundary() {
         // (RFC-0027) a `packed` type's list is a CONFINED LOCAL flat buffer with no
         // cross-function or stored layout — a `List(P)` in a parameter, return type,

@@ -743,6 +743,50 @@ fn type_host_taint<'a>(
     }
 }
 
+/// (RFC-0040) A cap-gated string export — `pub fn export_*(cap, String) -> String`,
+/// a browser app root — must lead with a BARE grantable capability, since the host
+/// mints it at that entry (like `main`). Guard the intended-but-wrong shape (a
+/// 2-param `[Named, String] -> String` export whose leading type isn't grantable)
+/// with a clear error instead of silently not exporting the function.
+fn check_export_signatures(module: &Module) -> Result<(), TypeError> {
+    let grantable: std::collections::HashSet<&str> = module
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            Item::Type(t) if t.grantable => Some(t.name.as_str()),
+            _ => None,
+        })
+        .collect();
+    let is_string = |t: &Option<ast::Type>| {
+        matches!(t, Some(ast::Type::Named(n, a)) if n == "String" && a.is_empty())
+    };
+    for it in &module.items {
+        let Item::Function(f) = it else { continue };
+        if !f.public {
+            continue;
+        }
+        let unqual = f.name.rsplit('.').next().unwrap_or(&f.name);
+        if !unqual.starts_with("export_") {
+            continue;
+        }
+        if let [p0, p1] = f.params.as_slice() {
+            let ret_string = matches!(&f.ret, Some(ast::Type::Named(n, _)) if n == "String");
+            if is_string(&p1.ty) && ret_string {
+                if let Some(ast::Type::Named(n, _)) = &p0.ty {
+                    if n != "String" && !grantable.contains(n.as_str()) {
+                        return terr(format!(
+                            "the leading parameter of the exported entrypoint `{unqual}` is `{n}`, but a \
+                             cap-gated export may lead only with a bare `grantable capability` (RFC-0040) — \
+                             `{n}` is not grantable"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Validate a rune's build entrypoint. The build step is the top-level `fn build`
 /// whose first parameter is `BuildOut`; it runs in a zero-ambient build sandbox,
 /// so it may take *only* build-time capabilities — a runtime capability (or
@@ -3222,6 +3266,8 @@ fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeErr
     // RFC-0038: a `grantable` capability must be BARE (no transitive host authority),
     // checked module-wide (a grantable cap is invalid regardless of `main`).
     check_grantable_caps(module)?;
+    // RFC-0040: a cap-gated string export must lead with a bare grantable capability.
+    check_export_signatures(module)?;
     // A rune's `build` entrypoint is the root of the build sandbox; its parameters
     // are where build-time authority enters, so they must be build capabilities.
     check_build_signature(module)?;
