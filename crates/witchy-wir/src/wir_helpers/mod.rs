@@ -178,6 +178,11 @@ pub fn mk_helper(n: usize, checked: bool) -> WirFunc {
     // is caught. The object layout `[p, p+size)` and the returned `p` are unchanged,
     // so a correct program behaves identically; only `$heap` advances by `rz` more.
     let rz = if checked { HEAP_REDZONE } else { 0 };
+    // (RFC-0037 §3) Under WITCHY_TYPE_CHECK the caller rides an 8-bit TYPE tag in the high
+    // byte of the `tag` argument; we mask it off the offset-0 variant word and stamp it into
+    // the alloc header's high byte (p-4). Off the sanitizer the high byte is 0, so both the
+    // mask and the header write are identity — production is untouched.
+    let type_tagged = type_check_enabled();
     let mut params = vec![WirLocal { name: "tag".into(), ty: WirTy::Bool }];
     for i in 0..n {
         params.push(WirLocal { name: format!("f{i}"), ty: WirTy::Int });
@@ -191,14 +196,51 @@ pub fn mk_helper(n: usize, checked: bool) -> WirFunc {
             local: "p".into(),
             value: WirExpr::Call { func: "rc_alloc".into(), args: vec![WirExpr::ConstI32((size + rz) as i32)] },
         },
-        // header: store the i32 tag at p+0.
+        // header: store the i32 variant tag at p+0 (low 24 bits; the high byte, if any, is the
+        // debug type tag, masked off here so the discriminant readers see only the variant).
         WirNode::Store {
             ptr: WirExpr::GetLocal("p".into()),
-            value: WirExpr::GetLocal("tag".into()),
+            value: WirExpr::Binary {
+                op: BinOp::And,
+                kind: Kind::I32,
+                lhs: Box::new(WirExpr::GetLocal("tag".into())),
+                rhs: Box::new(WirExpr::ConstI32(RC_SIZE_MASK)),
+            },
             kind: Kind::I32,
             offset: 0,
         },
     ];
+    if type_tagged {
+        // Stamp the TYPE tag (the tag arg's high byte) into the alloc header's high byte at p-4,
+        // preserving the size in the low 24 bits. Identity when the high byte is 0 (sanitizer off).
+        let p_minus_4 = || WirExpr::Binary {
+            op: BinOp::Sub,
+            kind: Kind::I32,
+            lhs: Box::new(WirExpr::GetLocal("p".into())),
+            rhs: Box::new(WirExpr::ConstI32(4)),
+        };
+        body.push(WirNode::Store {
+            ptr: p_minus_4(),
+            value: WirExpr::Binary {
+                op: BinOp::Or,
+                kind: Kind::I32,
+                lhs: Box::new(WirExpr::Binary {
+                    op: BinOp::And,
+                    kind: Kind::I32,
+                    lhs: Box::new(WirExpr::Load { ptr: Box::new(p_minus_4()), kind: Kind::I32, offset: 0 }),
+                    rhs: Box::new(WirExpr::ConstI32(RC_SIZE_MASK)),
+                }),
+                rhs: Box::new(WirExpr::Binary {
+                    op: BinOp::And,
+                    kind: Kind::I32,
+                    lhs: Box::new(WirExpr::GetLocal("tag".into())),
+                    rhs: Box::new(WirExpr::ConstI32(!RC_SIZE_MASK)),
+                }),
+            },
+            kind: Kind::I32,
+            offset: 0,
+        });
+    }
     for i in 0..n {
         body.push(WirNode::Store {
             ptr: WirExpr::GetLocal("p".into()),
