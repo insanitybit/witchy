@@ -9,14 +9,42 @@ use super::*;
 /// The names of every JS-callable string export in declaration order (`__export_*`
 /// wrappers are emitted for these and they are extra reachability roots).
 fn string_export_functions(module: &Module) -> Vec<String> {
+    let grantable = grantable_cap_names(module);
     module
         .items
         .iter()
         .filter_map(|it| match it {
-            Item::Function(f) if is_string_export(f) => Some(f.name.clone()),
+            Item::Function(f) if is_string_export(f, &grantable) => Some(f.name.clone()),
             _ => None,
         })
         .collect()
+}
+
+/// (RFC-0040) The bare grantable capability type names declared in the module.
+fn grantable_cap_names(module: &Module) -> std::collections::HashSet<&str> {
+    module
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            Item::Type(t) if t.grantable => Some(t.name.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// (RFC-0040) If `f` is a cap-gated string export (`export_*(cap, String)`), the
+/// leading grantable capability's `(type name, field count)`.
+fn export_cap_of<'a>(f: &'a Function, module: &'a Module) -> Option<(&'a str, usize)> {
+    let grantable = grantable_cap_names(module);
+    let cap = match f.params.as_slice() {
+        [cap, _s] => crate::codegen::export_cap_name(cap).filter(|n| grantable.contains(n))?,
+        _ => return None,
+    };
+    let nfields = module.items.iter().find_map(|it| match it {
+        Item::Type(t) if t.name == cap => t.variants.first().map(|v| v.fields.len()),
+        _ => None,
+    })?;
+    Some((cap, nfields))
 }
 
 fn reachable_functions(module: &Module) -> HashSet<String> {
@@ -366,6 +394,22 @@ pub fn assemble_wir_module(
     // The JS-callable string exports (`pub fn f(String) -> String`); each gets an
     // `__export_f` wrapper and is an extra reachability root (above).
     let string_exports = string_export_functions(module);
+    // (RFC-0040) Cap-gated exports (`export_*(cap, String)`): (export name, cap type,
+    // field count). Their `__export_*` wrapper mints the grantable cap host-side, so
+    // register the record allocator arity now (while `cg` is mutable).
+    let export_cap_info: Vec<(String, String, usize)> = string_exports
+        .iter()
+        .filter_map(|name| {
+            let f = module.items.iter().find_map(|it| match it {
+                Item::Function(fu) if &fu.name == name => Some(fu),
+                _ => None,
+            })?;
+            export_cap_of(f, module).map(|(c, n)| (name.clone(), c.to_string(), n))
+        })
+        .collect();
+    for (_, _, nfields) in &export_cap_info {
+        cg.mk_arities.insert(*nfields);
+    }
     for item in &module.items {
         if let Item::Function(f) = item {
             if f.name == "main" {
@@ -506,6 +550,11 @@ pub fn assemble_wir_module(
         // `mk{N}(build_user_cap_field(k, 0..N))`; those synthesized calls are in no
         // user body, so pull the helpers into the reached set explicitly.
         for (_, nfields) in main_param_user_cap.iter().flatten() {
+            called.insert("build_user_cap_field".to_string());
+            called.insert(format!("mk{nfields}"));
+        }
+        // (RFC-0040) cap-gated exports mint their grantable cap in the __export wrapper.
+        for (_, _, nfields) in &export_cap_info {
             called.insert("build_user_cap_field".to_string());
             called.insert(format!("mk{nfields}"));
         }
@@ -726,6 +775,27 @@ pub fn assemble_wir_module(
                 // check) but the String header is self-describing, so the wrapper
                 // forwards `in_ptr` to the witchy fn directly.
                 for name in &string_exports {
+                    // (RFC-0040) A cap-gated export mints its grantable cap host-side
+                    // (`mk{N}(tag, i64(build_user_cap_field(0, i))…)`, mirroring the `run`
+                    // wrapper for `main`), prepended before the input String pointer.
+                    let mut call_args: Vec<WirExpr> = Vec::new();
+                    if let Some((_, cap_ty, nfields)) = export_cap_info.iter().find(|(n, _, _)| n == name) {
+                        let tag = cg.ctors.get(cap_ty).map(|c| c.0).unwrap_or(0) as i32;
+                        let mut mk_args: Vec<WirExpr> = Vec::with_capacity(nfields + 1);
+                        mk_args.push(WirExpr::ConstI32(tag));
+                        for fi in 0..*nfields as i32 {
+                            mk_args.push(WirExpr::Convert {
+                                from: witchy_wir::wir::Kind::I32,
+                                to: witchy_wir::wir::Kind::I64,
+                                arg: Box::new(WirExpr::Call {
+                                    func: "build_user_cap_field".into(),
+                                    args: vec![WirExpr::ConstI32(0), WirExpr::ConstI32(fi)],
+                                }),
+                            });
+                        }
+                        call_args.push(WirExpr::Call { func: format!("mk{nfields}"), args: mk_args });
+                    }
+                    call_args.push(WirExpr::GetLocal("in_ptr".into()));
                     pruned_funcs.push(WirFunc {
                         name: string_export_name(name),
                         params: vec![
@@ -736,7 +806,7 @@ pub fn assemble_wir_module(
                         locals: vec![],
                         body: vec![WirNode::Push(WirExpr::Call {
                             func: name.clone(),
-                            args: vec![WirExpr::GetLocal("in_ptr".into())],
+                            args: call_args,
                         })],
                         raw_body: None,
                     });

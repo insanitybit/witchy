@@ -6283,17 +6283,31 @@ pub(crate) const STRING_EXPORT_PREFIX: &str = "export_";
 /// JS-callable boundary is named, not implicit. It adds no import and no authority;
 /// the wrapper only reads/writes guest memory (RFC-0007 §"Data marshaling",
 /// RFC-0008's run loop).
-pub(crate) fn is_string_export(f: &Function) -> bool {
+pub(crate) fn is_string_export(f: &Function, grantable: &std::collections::HashSet<&str>) -> bool {
     let is_string = |t: &Option<Type>| matches!(t, Some(Type::Named(n, a)) if n == "String" && a.is_empty());
     // After linking a function is named `{module}.{name}` (the entry module's
     // `main` is the one exception). Match the unqualified tail against the prefix.
     let unqualified = f.name.rsplit('.').next().unwrap_or(&f.name);
-    f.public
-        && unqualified.starts_with(STRING_EXPORT_PREFIX)
-        && f.bounds.is_empty()
-        && f.params.len() == 1
-        && is_string(&f.params[0].ty)
-        && is_string(&f.ret)
+    if !(f.public && unqualified.starts_with(STRING_EXPORT_PREFIX) && f.bounds.is_empty() && is_string(&f.ret)) {
+        return false;
+    }
+    match f.params.as_slice() {
+        // `pub fn export_*(String) -> String`.
+        [p] => is_string(&p.ty),
+        // (RFC-0040) `pub fn export_*(cap: <bare grantable>, String) -> String` — a
+        // browser app root: the leading grantable cap is host-minted per call.
+        [cap, s] => is_string(&s.ty) && export_cap_name(cap).is_some_and(|n| grantable.contains(n)),
+        _ => false,
+    }
+}
+
+/// (RFC-0040) The leading grantable-capability parameter's type name, if a
+/// string-export function has one (`export_*(cap, String) -> String`).
+pub(crate) fn export_cap_name(param: &Param) -> Option<&str> {
+    match &param.ty {
+        Some(Type::Named(n, _)) => Some(n.as_str()),
+        _ => None,
+    }
 }
 
 /// The JS export name for a string-export function: `__export_<unqualified>`. The

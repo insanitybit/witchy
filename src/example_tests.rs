@@ -16076,6 +16076,36 @@ pub fn serve(console: Console, net: Net) -> Int:
         );
     }
 
+    /// (RFC-0040) A `pub fn export_*(cap: <grantable>, String) -> String` is a
+    /// browser app root: the leading bare grantable cap is host-minted per call, so
+    /// the module compiles, validates, and exports its `__export_*` wrapper (which
+    /// mints the cap via `mk{N}(build_user_cap_field…)`, mirroring the `run` wrapper).
+    #[test]
+    fn cap_gated_string_export_compiles_and_validates() {
+        let src = "grantable capability UiRoot:\n    policy: String\n\npub fn export_step(ui: UiRoot, input: String) -> String:\n    match ui:\n        UiRoot(p) -> p + \":\" + input\n\nfn main(console: Console):\n    print(console, \"ok\")\n";
+        let linked = resolve_std_src(src);
+        typeck::check(&linked).expect("typecheck");
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let mut exports: Vec<String> = Vec::new();
+        for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
+            if let wasmparser::Payload::ExportSection(s) = payload.expect("parse") {
+                for e in s {
+                    exports.push(e.expect("export").name.to_string());
+                }
+            }
+        }
+        assert!(
+            exports.contains(&"__export_export_step".to_string()),
+            "the cap-gated export's wrapper must be exported; got {exports:?}"
+        );
+        assert!(
+            wasmparser::validate(&bytes).is_ok(),
+            "a cap-gated export module must validate (the minting wrapper is well-formed)"
+        );
+    }
+
     /// RFC-0008 acceptance criterion: the glamour rune has an EMPTY runtime
     /// footprint — no Net, no Dir, no Clock, nothing. coven's own analyzer
     /// (`capabilities::analyze`, the engine behind `witchy caps`) proves it from
