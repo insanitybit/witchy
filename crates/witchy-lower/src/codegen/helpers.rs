@@ -171,9 +171,12 @@ impl Codegen {
         let alloc = |size_expr: W| -> Vec<N> {
             vec![
                 N::SetLocal { local: "size".into(), value: size_expr },
-                N::Do(W::Call { func: "ensure".into(), args: vec![getl("size")] }),
-                N::SetLocal { local: "n".into(), value: getg("heap") },
-                N::SetGlobal { global: "heap".into(), value: bin(BinOp::Add, getl("n"), getl("size")) },
+                // (SEC-037) Allocate the copy through `$rc_alloc` so it carries the `[rc][size]`
+                // header. A header-less copy reclaimed by rc-floor's free-at-overwrite makes
+                // `$rc_alloc`'s reuse scan read a garbage size → wrong-block reuse → OOB (the
+                // minigrep/pm crash). rc_alloc ensures + reserves the header and returns the same
+                // object base the bump path did, so readers and the `- rcopy_delta` bias are unchanged.
+                N::SetLocal { local: "n".into(), value: W::Call { func: "rc_alloc".into(), args: vec![getl("size")] } },
                 N::SetGlobal {
                     global: "__region_copy_bytes".into(),
                     value: W::Binary {
