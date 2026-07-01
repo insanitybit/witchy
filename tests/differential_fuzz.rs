@@ -483,6 +483,89 @@ fn differential_fuzz_interpreter_vs_compiled() {
 /// regression in the sanitizer itself (a bad size, an out-of-bounds poison store) surfaces as a
 /// host crash or a spurious DIVERGE. Its BUG-CATCHING value is realized by the same net the
 /// moment a real reclamation bug lands under `rc-floor`.
+/// (RFC-0037 §4) A program asserting algebraic stdlib laws over random data. Each law prints a
+/// single `true`/`false`. Checking the printed value — not just backend agreement — is the point:
+/// a law that is `false` on BOTH backends passes the differential (they agree) yet is a real bug,
+/// so this is the one net that catches an oracle that is *itself* wrong (gap G4). The laws are
+/// fixed and total (no trapping inputs), so a well-formed program always results.
+fn gen_law_program(seed: u64) -> String {
+    let mut r = Rng(seed);
+    let ilist = |r: &mut Rng| {
+        let n = 1 + r.below(5);
+        let e: Vec<String> = (0..n).map(|_| format!("{}", r.below(50) as i64 - 25)).collect();
+        format!("[{}]", e.join(", "))
+    };
+    let xs = ilist(&mut r);
+    let a = ilist(&mut r);
+    let b = ilist(&mut r);
+    let s1 = format!("\"{}\"", alnum(&mut r));
+    let s2 = format!("\"{}\"", alnum(&mut r));
+    let k = gen_dkey(&mut r);
+    let v = format!("{}", r.below(1000));
+    let rep = r.below(4);
+    format!(
+        "import list\nimport string\nimport dict\n\nfn main(console: Console):\n\
+         \x20   let xs = {xs}\n\
+         \x20   let a = {a}\n\
+         \x20   let b = {b}\n\
+         \x20   let s1 = {s1}\n\
+         \x20   let s2 = {s2}\n\
+         \x20   let d = dict.insert(dict.new(), \"seed\", 1)\n\
+         \x20   print(console, __render(list.reverse(list.reverse(xs)) == xs))\n\
+         \x20   print(console, __render(list.length(list.concat(a, b)) == list.length(a) + list.length(b)))\n\
+         \x20   print(console, __render(list.sort(list.sort(xs)) == list.sort(xs)))\n\
+         \x20   print(console, __render(list.length(list.sort(xs)) == list.length(xs)))\n\
+         \x20   print(console, __render(dict.get_or(dict.insert(d, {k}, {v}), {k}, 0 - 1) == {v}))\n\
+         \x20   print(console, __render(string.length(s1 + s2) == string.length(s1) + string.length(s2)))\n\
+         \x20   print(console, __render(string.reverse(string.reverse(s1)) == s1))\n\
+         \x20   print(console, __render(string.length(string.repeat(s1, {rep})) == string.length(s1) * {rep}))\n"
+    )
+}
+
+/// Number of algebraic laws `gen_law_program` prints — used to assert none were skipped by an
+/// early trap (which would otherwise slip through as "fewer lines, all true").
+const NLAWS: usize = 8;
+
+#[test]
+fn metamorphic_property_laws() {
+    let programs = env_usize("WITCHY_LAW_PROGRAMS", 40);
+    for seed in 0..programs as u64 {
+        let src = gen_law_program(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(7));
+        let path = std::env::temp_dir().join(format!("witchy_law_{seed}.witchy"));
+        std::fs::File::create(&path).unwrap().write_all(src.as_bytes()).unwrap();
+        // (a) backends must agree (a law that computes differently across backends is a bug).
+        let par = Command::new(BIN).args(["parity", path.to_str().unwrap()]).output().unwrap();
+        let pout = String::from_utf8_lossy(&par.stdout);
+        let perr = String::from_utf8_lossy(&par.stderr);
+        assert!(
+            par.status.code().is_some(),
+            "witchy crashed (signal) on law seed {seed}.\n--- program ---\n{src}\n{perr}"
+        );
+        if pout.contains("DIVERGE") || perr.contains("DIVERGE") {
+            panic!("BACKENDS DIVERGE on law seed {seed}.\n--- program ---\n{src}\n--- output ---\n{pout}{perr}");
+        }
+        assert!(par.status.success(), "law program failed to compile on seed {seed}.\n--- program ---\n{src}\n{pout}{perr}");
+        // (b) and the laws must actually HOLD — a both-backends-`false` law passes (a) but is a
+        // real violation, so inspect the compiled output directly (`witchy <file>` runs compiled).
+        let run = Command::new(BIN).arg(path.to_str().unwrap()).output().unwrap();
+        let _ = std::fs::remove_file(&path);
+        let rout = String::from_utf8_lossy(&run.stdout);
+        let lines: Vec<&str> = rout.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(
+            lines.len(),
+            NLAWS,
+            "law seed {seed}: expected {NLAWS} law results, got {} (an early trap?).\n--- program ---\n{src}\n--- output ---\n{rout}",
+            lines.len()
+        );
+        for (i, line) in lines.iter().enumerate() {
+            assert_eq!(
+                *line, "true",
+                "algebraic LAW #{i} VIOLATED on seed {seed} (printed {line:?}) — a bug even though the backends agree.\n--- program ---\n{src}"
+            );
+        }
+    }
+}
+
 #[test]
 fn uaf_sanitizer_is_false_positive_free() {
     let programs = env_usize("WITCHY_UAF_FUZZ_PROGRAMS", 12);

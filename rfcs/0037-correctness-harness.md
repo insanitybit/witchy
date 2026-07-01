@@ -215,15 +215,21 @@ Shipped (in `tests/differential_fuzz.rs`, `crates/witchy-wir/src/wir_helpers/mod
   deterministically. Verified zero false positives (a correct compiler agrees across the fuzzer
   and 57 examples under `rc-floor`+`UAF_CHECK`), no regression (every previously-caught UAF
   still DIVERGES), locked in by `uaf_sanitizer_is_false_positive_free` and a wider `--full` sweep.
+- **§4 algebraic / metamorphic properties (P2).** `metamorphic_property_laws` fuzzes random data
+  through fixed stdlib laws (`reverse∘reverse == id`, `sort` idempotent + length-preserving,
+  `len(a ++ b) == len a + len b`, `dict.get(insert(d,k,v),k) == v`, string concat length,
+  `string.reverse∘reverse == id`, `len(repeat(s,n)) == len(s)·n`) and checks the printed VALUE,
+  not just backend agreement — so a law that is `false` on *both* backends (an oracle that is
+  itself wrong, gap G4) is still a failure. The only layer that does not trust the interpreter.
 
 Honest scoping finding from the teeth-tests: on RANDOM programs the plain cross-lever net catches
 a reuse-after-free only when the freed block's *offset-0* word is observably corrupted — which,
 for the free-at-overwrite class, happens reliably because `$rc_free` clobbers offset 0 with the
 freelist link (a string's length → wrong value/trap). The sanitizer's marginal, deterministic
 addition is the harder class: a stale read at *offset 4..* of an un-reused block, and cases where
-a non-zero freelist head leaves offset 0 looking valid. The remaining P1–P3 items (minimization,
-type-tag + `live_cells==0` sanitizers, coverage-guided fuzzing, algebraic/metamorphic properties,
-Miri, bounded-exhaustive) are unstarted.
+a non-zero freelist head leaves offset 0 looking valid. The remaining items (minimization §6,
+type-tag + `live_cells==0` sanitizers §3, coverage-guided fuzzing §5, semantics-preserving
+transforms §4, Miri §7, bounded-exhaustive §8) are unstarted.
 
 ## Integration
 
