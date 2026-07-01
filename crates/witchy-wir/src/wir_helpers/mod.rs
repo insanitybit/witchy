@@ -3538,9 +3538,11 @@ pub fn rcopy_str_helper() -> WirFunc {
                 result: None,
             },
             N::SetLocal { local: "size".into(), value: b(BinOp::Add, i32c(4), load_i32(getl("p"))) },
-            N::Do(E::Call { func: "ensure".into(), args: vec![getl("size")] }),
-            N::SetLocal { local: "n".into(), value: E::GetGlobal("heap".into()) },
-            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("n"), getl("size")) },
+            // (SEC-037) Allocate the copy through `$rc_alloc` so it carries the `[rc][size]`
+            // header — otherwise rc-floor's free-at-overwrite could reclaim this header-less
+            // buffer and corrupt the free-list (OOB). rc_alloc ensures + reserves the header and
+            // returns the object base, exactly the pointer the bump path returned.
+            N::SetLocal { local: "n".into(), value: E::Call { func: "rc_alloc".into(), args: vec![getl("size")] } },
             N::SetGlobal {
                 global: "__region_copy_bytes".into(),
                 value: E::Binary {
@@ -4052,7 +4054,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         // this touches are declared by `assemble` when `cg.uses_region` is set.
         "rcopy_str" => Some(WirHelperSpec {
             func: rcopy_str_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,
