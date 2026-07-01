@@ -262,6 +262,8 @@ fn gen_program(seed: u64, statements: usize) -> (String, u64) {
          type R:\n    a: Int\n    b: String\n    c: List(Int)\n\
          type P:\n    x: R\n    y: Int\n\
          type Q:\n    m: Int\n    n: Int\n\
+         type Q1:\n    a: Int\n\
+         type Q3:\n    a: Int\n    b: Int\n    c: Int\n\
          type Shape:\n    Circle(Int)\n    Rect(Int, Int)\n    Named(String)\n\n",
     );
     body.push_str(HELPER_LIB);
@@ -300,21 +302,29 @@ fn gen_program(seed: u64, statements: usize) -> (String, u64) {
             19 => format!("    print(console, __render({}.c))\n", gen_record_r(&mut r)),
             20 => format!("    print(console, __render({}))\n", gen_record_p(&mut r)),
             21 => {
-                // A confined `let`-bound list of a PACKABLE record (`Q { m, n }`),
-                // read only via `at(_).field` / `length` — the shape the packed
-                // `unbox` codegen flattens. With `WITCHY_OPT=all` (set on the run)
-                // this exercises the flat-buffer heap-layout path under the checked
-                // heap. Index stays in-bounds (`below(m)`) so both backends agree.
+                // A confined `let`-bound list of a PACKABLE record read only via
+                // `at(_).field` / `length` — the shape the packed `unbox` codegen flattens
+                // into one flat buffer. VARYING the field count (1/2/3 scalar fields, via
+                // Q1/Q/Q3) exercises different packed strides and offset math under the
+                // checked heap. Index stays in-bounds (`below(m)`) so both backends agree.
                 let m = 2 + r.below(3);
+                let (ctor, fields): (&str, &[&str]) = match r.below(3) {
+                    0 => ("Q1", &["a"]),
+                    1 => ("Q", &["m", "n"]),
+                    _ => ("Q3", &["a", "b", "c"]),
+                };
                 let elems: Vec<String> = (0..m)
-                    .map(|_| format!("Q({}, {})", gen_int(&mut r, 1), gen_int(&mut r, 1)))
+                    .map(|_| {
+                        let args: Vec<String> = fields.iter().map(|_| gen_int(&mut r, 1)).collect();
+                        format!("{ctor}({})", args.join(", "))
+                    })
                     .collect();
                 let j = r.below(m);
+                let reads: Vec<String> = fields.iter().map(|f| format!("list.at(qk{stmt_i}, {j}).{f}")).collect();
                 format!(
-                    "    let qk{stmt_i} = [{}]\n    print(console, __render(list.at(qk{stmt_i}, {}).m + list.at(qk{stmt_i}, {}).n + list.length(qk{stmt_i})))\n",
+                    "    let qk{stmt_i} = [{}]\n    print(console, __render({} + list.length(qk{stmt_i})))\n",
                     elems.join(", "),
-                    j,
-                    j,
+                    reads.join(" + "),
                 )
             }
             22 => {
