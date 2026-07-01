@@ -3092,6 +3092,34 @@ impl Codegen {
                         args: vec![region],
                     }));
                 }
+                // (RFC-0035 step 3) `$rc_drop` read-owned heap bindings at their last use.
+                // The element was `$rc_dup`'d at the read (step 1), so this releases that
+                // reference — it frees at count 0 (when the slot's set_at `$rc_drop` or
+                // another holder took the rest) and merely decrements otherwise (a live
+                // holder keeps it). Only i32-kinded (heap-pointer) bindings; the rc-region
+                // offset comes from the element type (a dict sits 4 past its region start).
+                let read_drops: Vec<String> = self
+                    .drop_facts_stack
+                    .last()
+                    .map(|d| d.read_drops_after(stmt).to_vec())
+                    .unwrap_or_default();
+                for name in &read_drops {
+                    if !matches!(self.locals.get(name), Some(&Kind::I32)) {
+                        continue;
+                    }
+                    let offset = if self.is_dict_operand(&Expr::Var(name.clone())) { 4 } else { 0 };
+                    let region = if offset == 0 {
+                        W::GetLocal(name.clone())
+                    } else {
+                        W::Binary {
+                            op: witchy_wir::wir::BinOp::Sub,
+                            kind: witchy_wir::wir::Kind::I32,
+                            lhs: Box::new(W::GetLocal(name.clone())),
+                            rhs: Box::new(W::ConstI32(offset)),
+                        }
+                    };
+                    seq.push(N::Do(W::Call { func: "rc_drop".into(), args: vec![region] }));
+                }
             }
         }
         // The block always leaves one value: the tail expression, or `i32.const 0`.
