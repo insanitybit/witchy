@@ -202,9 +202,10 @@ Shipped (in `tests/differential_fuzz.rs`, `crates/witchy-wir/src/wir_helpers/mod
 - **§2 cross-lever differential + §1 grammar-complete generator (P0).** The fuzzer runs every
   program under a config set (`none`, default, `rc-floor`, `unbox`, `all,-wasm-opt`); the
   generator emits a risky-shape helper library (user functions with `let`/`own` params,
-  closures, direct + mutual recursion, a tuple-of-owned-buffers return) and statement kinds for
-  the exact class that hid the UAF — a local `var` alias-initing a borrowed param/local then
-  self-referentially reassigning, with the shared value re-read as a trip-wire. A
+  closures, direct + mutual recursion, a tuple-of-owned-buffers return, user ADTs with
+  `match` / `if let` over heap payloads) and statement kinds for the exact class that hid the
+  UAF — a local `var` alias-initing a borrowed param/local then self-referentially reassigning,
+  with the shared value re-read as a trip-wire. A
   grammar-coverage meta-assertion fails if any kind is never emitted. Counts are
   env-overridable. Teeth-tested: neutralizing the real `escape.rs` alias-init exclusion makes
   the generated shapes DIVERGE under `rc-floor`.
