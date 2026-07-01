@@ -89,9 +89,22 @@ unblocks 0039 and the whole Glamour capability story.
     with no `[user_caps]` grant is refused IDENTICALLY on both backends — the hole
     `main.rs:1628` warns of. Only add a differential/book example once 5b lands
     (until then interp minting is a standalone unit test — no parity exposure).
-  - **(6) footprint axis** — report granted user caps on the parallel axis
-    (`capabilities.rs:28`) with declaring-package provenance; extend the grant
-    cross-check (over/under) to `[user_caps]`.
+  - **(5b/5c/5d) DONE (commit 7118a31)** — compiled minting works end-to-end with
+    parity: the `run` wrapper mints `mk{N}(tag, i64(build_user_cap_field(k,i))…)`
+    (tag from `cg.ctors`; each field a separately-alloc'd String widened to the i64
+    slot — no co-alloc rc hazard); `run_file_grants` builds `user_cap_fields` in
+    grantable-param order → `Capabilities` → `VmState`; parity test
+    `grantable_user_cap_mints_identically_on_both_backends`. Verified via `witchy
+    sandbox --grants`. **RFC-0038's core language feature is COMPLETE** (slices 1–5).
+  - **(6) footprint axis — the one remaining slice.** Add a `user_caps` axis to
+    `Footprint` (`crates/witchy-caps/src/capabilities.rs:453`): populate in
+    `analyze` (grantable-cap params of each entry), show in `witchy caps`, and add
+    to `FootprintDiff` so a newly-required grantable cap is a widening. The LARGER,
+    separable part: thread it through the footprint JSON schema that **coven**
+    consumes (`compiler.footprint`) + provenance (declaring package/version), so
+    Coven's block-on-widening gate covers UI-effect authority. DoD closes when this
+    lands + a `book/` mention (untagged fence — a grantable-cap `main` needs a
+    `[user_caps]` grant, so it can't be an executed ```witchy block).
 - **Depends on:** nothing (RFC-0002 sealing + RFC-0013 grants already shipped).
 - **Entry points:**
   - `crates/witchy-types/src/typeck.rs:610` `check_main_signature` (the hard-coded
