@@ -2587,7 +2587,7 @@ pub fn replace_helper() -> WirFunc {
         }],
     };
     let empty_branch = vec![
-        setl("res", E::GetGlobal("heap".into())),
+        // `res` is the buffer allocated up front through `$rc_alloc`.
         setl("dst", b(BinOp::Add, getl("res"), i32c(4))),
         N::MemoryCopy { dest: getl("dst"), src: to_bytes.clone(), len: getl("tlen") },
         setl("dst", b(BinOp::Add, getl("dst"), getl("tlen"))),
@@ -2595,7 +2595,6 @@ pub fn replace_helper() -> WirFunc {
         empty_loop,
         setl("reslen", b(BinOp::Sub, getl("dst"), b(BinOp::Add, getl("res"), i32c(4)))),
         N::Store { ptr: getl("res"), value: getl("reslen"), kind: Kind::I32, offset: 0 },
-        N::SetGlobal { global: "heap".into(), value: getl("dst") },
         N::Return(Some(getl("res"))),
     ];
     // --- non-empty `from`: count matches, then fill. ---
@@ -2657,8 +2656,11 @@ pub fn replace_helper() -> WirFunc {
             setl("slen", load(getl("s"))),
             setl("flen", load(getl("from"))),
             setl("tlen", load(getl("to"))),
-            N::Do(E::Call {
-                func: "ensure".into(),
+            // (RFC-0016) reserve the worst-case buffer (`4 + slen + (slen+1)*tlen`) through
+            // `$rc_alloc` up front; both branches fill into `res` and write the true length
+            // header (the block's size header stays the worst case; tail slack unused).
+            setl("res", E::Call {
+                func: "rc_alloc".into(),
                 args: vec![b(BinOp::Add, b(BinOp::Add, i32c(4), getl("slen")), b(BinOp::Mul, b(BinOp::Add, getl("slen"), i32c(1)), getl("tlen")))],
             }),
             N::If {
@@ -2671,12 +2673,10 @@ pub fn replace_helper() -> WirFunc {
             setl("src", i32c(0)),
             count_loop,
             setl("reslen", b(BinOp::Add, getl("slen"), b(BinOp::Mul, getl("cnt"), b(BinOp::Sub, getl("tlen"), getl("flen"))))),
-            setl("res", E::GetGlobal("heap".into())),
             N::Store { ptr: getl("res"), value: getl("reslen"), kind: Kind::I32, offset: 0 },
             setl("dst", b(BinOp::Add, getl("res"), i32c(4))),
             setl("src", i32c(0)),
             fill_loop,
-            N::SetGlobal { global: "heap".into(), value: getl("dst") },
             N::Push(getl("res")),
         ],
         raw_body: None,
@@ -2706,17 +2706,18 @@ pub fn encoding_helper() -> WirFunc {
             WirLocal { name: "n".into(), ty: WirTy::Bool },
         ],
         body: vec![
-            N::Do(E::Call {
-                func: "ensure".into(),
-                args: vec![b(BinOp::Add, b(BinOp::Mul, E::Load { ptr: Box::new(getl("in")), kind: Kind::I32, offset: 0 }, i32c(2)), i32c(20))],
-            }),
-            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            // (RFC-0016) reserve the worst-case `2*len + 20` buffer through `$rc_alloc`;
+            // the host writes into `res+4` and the length header caps to `n` (the block's
+            // size header stays the worst case; the tail slack is unused).
+            N::SetLocal {
+                local: "res".into(),
+                value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, b(BinOp::Mul, E::Load { ptr: Box::new(getl("in")), kind: Kind::I32, offset: 0 }, i32c(2)), i32c(20))] },
+            },
             N::SetLocal {
                 local: "n".into(),
                 value: E::CallHost { import: "encoding".into(), args: vec![getl("op"), getl("in"), b(BinOp::Add, getl("res"), i32c(4))] },
             },
             N::Store { ptr: getl("res"), value: getl("n"), kind: Kind::I32, offset: 0 },
-            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("res"), i32c(4)), getl("n")) },
             N::Push(getl("res")),
         ],
         raw_body: None,
@@ -2742,11 +2743,10 @@ fn crypto_hash_helper(name: &str, import: &str, hexlen: i32, inputs: &[&str]) ->
         ret: vec![WirTy::Str],
         locals: vec![WirLocal { name: "res".into(), ty: WirTy::Bool }],
         body: vec![
-            N::Do(E::Call { func: "ensure".into(), args: vec![i32c(hexlen + 4)] }),
-            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse).
+            N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![i32c(hexlen + 4)] } },
             N::Store { ptr: getl("res"), value: i32c(hexlen), kind: Kind::I32, offset: 0 },
             N::Do(E::CallHost { import: import.into(), args: host_args }),
-            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("res"), i32c(hexlen + 4)) },
             N::Push(getl("res")),
         ],
         raw_body: None,
@@ -2776,11 +2776,10 @@ fn crypto_keyed_helper(name: &str, import: &str, hexlen: i32, has_msg: bool) -> 
         ret: vec![WirTy::Str],
         locals: vec![WirLocal { name: "res".into(), ty: WirTy::Bool }],
         body: vec![
-            N::Do(E::Call { func: "ensure".into(), args: vec![i32c(hexlen + 4)] }),
-            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse).
+            N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![i32c(hexlen + 4)] } },
             N::Store { ptr: getl("res"), value: i32c(hexlen), kind: Kind::I32, offset: 0 },
             N::Do(E::CallHost { import: import.into(), args: host_args }),
-            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("res"), i32c(hexlen + 4)) },
             N::Push(getl("res")),
         ],
         raw_body: None,
@@ -2810,11 +2809,10 @@ pub fn dir_read_helper() -> WirFunc {
         ],
         body: vec![
             N::SetLocal { local: "len".into(), value: E::CallHost { import: "dir_read_len".into(), args: vec![getl("h"), getl("rel")] } },
-            N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] }),
-            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse); it reserves + bumps `$heap`.
+            N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] } },
             N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
             N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
-            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("res"), i32c(4)), getl("len")) },
             N::Push(getl("res")),
         ],
         raw_body: None,
@@ -2842,11 +2840,10 @@ pub fn file_read_helper() -> WirFunc {
         ],
         body: vec![
             N::SetLocal { local: "len".into(), value: E::CallHost { import: "file_read_len".into(), args: vec![getl("f")] } },
-            N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] }),
-            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse); it reserves + bumps `$heap`.
+            N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] } },
             N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
             N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
-            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("res"), i32c(4)), getl("len")) },
             N::Push(getl("res")),
         ],
         raw_body: None,
@@ -2880,11 +2877,10 @@ pub fn exec_helper() -> WirFunc {
         ],
         body: vec![
             N::SetLocal { local: "len".into(), value: E::CallHost { import: "exec_run".into(), args: vec![getl("h"), getl("path"), getl("args"), getl("stdin")] } },
-            N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] }),
-            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse); it reserves + bumps `$heap`.
+            N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] } },
             N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
             N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
-            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("res"), i32c(4)), getl("len")) },
             N::Push(getl("res")),
         ],
         raw_body: None,
@@ -2913,11 +2909,10 @@ pub fn crypto_reveal_helper() -> WirFunc {
         ],
         body: vec![
             N::SetLocal { local: "len".into(), value: E::CallHost { import: "crypto_reveal_len".into(), args: vec![getl("key")] } },
-            N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] }),
-            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse); it reserves + bumps `$heap`.
+            N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] } },
             N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
             N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
-            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("res"), i32c(4)), getl("len")) },
             N::Push(getl("res")),
         ],
         raw_body: None,
@@ -2947,11 +2942,10 @@ pub fn build_read_helper() -> WirFunc {
         ],
         body: vec![
             N::SetLocal { local: "len".into(), value: E::CallHost { import: "build_read_len".into(), args: vec![getl("h"), getl("rel")] } },
-            N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] }),
-            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse); it reserves + bumps `$heap`.
+            N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] } },
             N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
             N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
-            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("res"), i32c(4)), getl("len")) },
             N::Push(getl("res")),
         ],
         raw_body: None,
@@ -2988,11 +2982,10 @@ pub fn regex_match_spans_helper() -> WirFunc {
                     args: vec![getl("pat"), getl("text")],
                 },
             },
-            N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] }),
-            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse).
+            N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] } },
             N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
             N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
-            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("res"), i32c(4)), getl("len")) },
             N::Push(getl("res")),
         ],
         raw_body: None,
@@ -3007,7 +3000,6 @@ pub fn dir_list_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
-    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     WirFunc {
         name: "dir_list".into(),
         params: vec![WirLocal { name: "h".into(), ty: WirTy::Bool }],
@@ -3018,10 +3010,9 @@ pub fn dir_list_helper() -> WirFunc {
         ],
         body: vec![
             N::SetLocal { local: "size".into(), value: E::CallHost { import: "dir_list_size".into(), args: vec![getl("h")] } },
-            N::Do(E::Call { func: "ensure".into(), args: vec![getl("size")] }),
-            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse).
+            N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![getl("size")] } },
             N::Do(E::CallHost { import: "write_pending_list".into(), args: vec![getl("res")] }),
-            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("res"), getl("size")) },
             N::Push(getl("res")),
         ],
         raw_body: None,
@@ -3050,13 +3041,9 @@ fn two_phase_helper(name: &str, params: &[&str], run_import: &str, write_import:
                 local: "size".into(),
                 value: E::CallHost { import: run_import.into(), args: params.iter().map(|p| getl(p)).collect() },
             },
-            N::Do(E::Call { func: "ensure".into(), args: vec![getl("size")] }),
-            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse).
+            N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![getl("size")] } },
             N::Do(E::CallHost { import: write_import.into(), args: vec![getl("res")] }),
-            N::SetGlobal {
-                global: "heap".into(),
-                value: E::Binary { op: BinOp::Add, kind: Kind::I32, lhs: Box::new(getl("res")), rhs: Box::new(getl("size")) },
-            },
             N::Push(getl("res")),
         ],
         raw_body: None,
@@ -3121,25 +3108,21 @@ pub fn get_env_helper() -> WirFunc {
             N::If {
                 cond: b(BinOp::Lt, getl("len"), i32c(0)),
                 then_: vec![
-                    N::Do(E::Call { func: "ensure".into(), args: vec![i32c(4)] }),
-                    N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+                    // (RFC-0016) the None wrapper `[tag=1]` via `$rc_alloc`.
+                    N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![i32c(4)] } },
                     N::Store { ptr: getl("res"), value: i32c(1), kind: Kind::I32, offset: 0 },
-                    N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("res"), i32c(4)) },
                     N::Return(Some(getl("res"))),
                 ],
                 els: vec![],
                 result: None,
             },
-            N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] }),
-            N::SetLocal { local: "str".into(), value: E::GetGlobal("heap".into()) },
+            // (RFC-0016) the value string, then the `Some[tag=0][ptr]` wrapper, via `$rc_alloc`.
+            N::SetLocal { local: "str".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] } },
             N::Store { ptr: getl("str"), value: getl("len"), kind: Kind::I32, offset: 0 },
             N::Do(E::CallHost { import: "env_fill".into(), args: vec![getl("name"), b(BinOp::Add, getl("str"), i32c(4))] }),
-            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("str"), i32c(4)), getl("len")) },
-            N::Do(E::Call { func: "ensure".into(), args: vec![i32c(12)] }),
-            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![i32c(12)] } },
             N::Store { ptr: getl("res"), value: i32c(0), kind: Kind::I32, offset: 0 },
             N::Store { ptr: getl("res"), value: E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(getl("str")) }, kind: Kind::I64, offset: 4 },
-            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("res"), i32c(12)) },
             N::Push(getl("res")),
         ],
         raw_body: None,
@@ -3164,11 +3147,12 @@ pub fn float_to_str_helper() -> WirFunc {
             WirLocal { name: "n".into(), ty: WirTy::Bool },
         ],
         body: vec![
-            N::Do(E::Call { func: "ensure".into(), args: vec![i32c(516)] }),
-            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            // (RFC-0016) reserve the worst-case 516-byte buffer through `$rc_alloc`; the
+            // host writes n<=512 bytes and the length header caps to n (the block's size
+            // header stays 516 — a valid upper bound; the tail slack is unused).
+            N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![i32c(516)] } },
             N::SetLocal { local: "n".into(), value: E::CallHost { import: "float_to_str".into(), args: vec![getl("x"), b(BinOp::Add, getl("res"), i32c(4))] } },
             N::Store { ptr: getl("res"), value: getl("n"), kind: Kind::I32, offset: 0 },
-            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("res"), i32c(4)), getl("n")) },
             N::Push(getl("res")),
         ],
         raw_body: None,
@@ -3194,8 +3178,9 @@ pub fn string_from_code_helper() -> WirFunc {
             WirLocal { name: "n".into(), ty: WirTy::Bool },
         ],
         body: vec![
-            N::Do(E::Call { func: "ensure".into(), args: vec![i32c(8)] }),
-            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            // (RFC-0016) reserve the worst-case 8-byte cell through `$rc_alloc`; the host
+            // writes n<=4 bytes and the length header caps to n (block size stays 8).
+            N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![i32c(8)] } },
             N::SetLocal {
                 local: "n".into(),
                 value: E::CallHost {
@@ -3204,10 +3189,6 @@ pub fn string_from_code_helper() -> WirFunc {
                 },
             },
             N::Store { ptr: getl("res"), value: getl("n"), kind: Kind::I32, offset: 0 },
-            N::SetGlobal {
-                global: "heap".into(),
-                value: b(BinOp::Add, b(BinOp::Add, getl("res"), i32c(4)), getl("n")),
-            },
             N::Push(getl("res")),
         ],
         raw_body: None,
@@ -3220,7 +3201,6 @@ pub fn build_args_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
-    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     WirFunc {
         name: "build_args".into(),
         params: vec![],
@@ -3231,10 +3211,9 @@ pub fn build_args_helper() -> WirFunc {
         ],
         body: vec![
             N::SetLocal { local: "size".into(), value: E::CallHost { import: "args_size".into(), args: vec![] } },
-            N::Do(E::Call { func: "ensure".into(), args: vec![getl("size")] }),
-            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse).
+            N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![getl("size")] } },
             N::Do(E::CallHost { import: "write_pending_list".into(), args: vec![getl("res")] }),
-            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("res"), getl("size")) },
             N::Push(getl("res")),
         ],
         raw_body: None,
@@ -3265,14 +3244,10 @@ fn compiler_introspect_helper(name: &str, import: &str, nargs: usize) -> WirFunc
         ],
         body: vec![
             N::SetLocal { local: "len".into(), value: E::CallHost { import: import.into(), args: host_args } },
-            N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] }),
-            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse).
+            N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] } },
             N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
             N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
-            N::SetGlobal {
-                global: "heap".into(),
-                value: b(BinOp::Add, b(BinOp::Add, getl("res"), i32c(4)), getl("len")),
-            },
             N::Push(getl("res")),
         ],
         raw_body: None,
@@ -3359,14 +3334,10 @@ fn net_recv_helper(name: &str, len_import: &str, extra_n: bool) -> WirFunc {
                 local: "len".into(),
                 value: E::CallHost { import: len_import.into(), args: len_args },
             },
-            N::Do(E::Call { func: "ensure".into(), args: vec![add(getl("len"), i32c(4))] }),
-            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse).
+            N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![add(getl("len"), i32c(4))] } },
             N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
             N::Do(E::CallHost { import: "fill_pending".into(), args: vec![add(getl("res"), i32c(4))] }),
-            N::SetGlobal {
-                global: "heap".into(),
-                value: add(add(getl("res"), i32c(4)), getl("len")),
-            },
             N::Push(getl("res")),
         ],
         raw_body: None,
@@ -3679,42 +3650,42 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "encoding" => Some(WirHelperSpec {
             func: encoding_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["encoding"],
             uses_heap: true,
             uses_table: false,
         }),
         "string_from_code" => Some(WirHelperSpec {
             func: string_from_code_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["string_from_code"],
             uses_heap: true,
             uses_table: false,
         }),
         "build_args" => Some(WirHelperSpec {
             func: build_args_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["args_size", "write_pending_list"],
             uses_heap: true,
             uses_table: false,
         }),
         "compiler_footprint" => Some(WirHelperSpec {
             func: compiler_introspect_helper("compiler_footprint", "compiler_footprint_len", 1),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["compiler_footprint_len", "fill_pending"],
             uses_heap: true,
             uses_table: false,
         }),
         "compiler_diff" => Some(WirHelperSpec {
             func: compiler_introspect_helper("compiler_diff", "compiler_diff_len", 2),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["compiler_diff_len", "fill_pending"],
             uses_heap: true,
             uses_table: false,
         }),
         "compiler_doc" => Some(WirHelperSpec {
             func: compiler_introspect_helper("compiler_doc", "compiler_doc_len", 2),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["compiler_doc_len", "fill_pending"],
             uses_heap: true,
             uses_table: false,
@@ -3893,21 +3864,21 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "net_recv_line" => Some(WirHelperSpec {
             func: net_recv_helper("net_recv_line", "net_recv_line_len", false),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["net_recv_line_len", "fill_pending"],
             uses_heap: true,
             uses_table: false,
         }),
         "net_recv_all" => Some(WirHelperSpec {
             func: net_recv_helper("net_recv_all", "net_recv_all_len", false),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["net_recv_all_len", "fill_pending"],
             uses_heap: true,
             uses_table: false,
         }),
         "net_recv_bytes" => Some(WirHelperSpec {
             func: net_recv_helper("net_recv_bytes", "net_recv_bytes_len", true),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["net_recv_bytes_len", "fill_pending"],
             uses_heap: true,
             uses_table: false,
@@ -3923,35 +3894,35 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "float_to_str" => Some(WirHelperSpec {
             func: float_to_str_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["float_to_str"],
             uses_heap: true,
             uses_table: false,
         }),
         "crypto_sha256" => Some(WirHelperSpec {
             func: crypto_hash_helper("crypto_sha256", "crypto.sha256", 64, &["in"]),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["crypto.sha256"],
             uses_heap: true,
             uses_table: false,
         }),
         "crypto_sha512" => Some(WirHelperSpec {
             func: crypto_hash_helper("crypto_sha512", "crypto.sha512", 128, &["in"]),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["crypto.sha512"],
             uses_heap: true,
             uses_table: false,
         }),
         "crypto_sha3_256" => Some(WirHelperSpec {
             func: crypto_hash_helper("crypto_sha3_256", "crypto.sha3_256", 64, &["in"]),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["crypto.sha3_256"],
             uses_heap: true,
             uses_table: false,
         }),
         "crypto_hmac_sha256" => Some(WirHelperSpec {
             func: crypto_hash_helper("crypto_hmac_sha256", "crypto.hmac_sha256", 64, &["key", "msg"]),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["crypto.hmac_sha256"],
             uses_heap: true,
             uses_table: false,
@@ -3960,7 +3931,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             // paths + contents are List(String) pointers; the host hashes them
             // into a fixed 71-char digest.
             func: crypto_hash_helper("crypto_rune_hash", "crypto.rune_hash", 71, &["paths", "contents"]),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["crypto.rune_hash"],
             uses_heap: true,
             uses_table: false,
@@ -3969,7 +3940,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             // The Secret capability: the host signs `msg` with the never-exposed
             // seed and writes a 128-char hex signature.
             func: crypto_keyed_helper("crypto_sign", "crypto.sign", 128, true),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["crypto.sign"],
             uses_heap: true,
             uses_table: false,
@@ -3977,7 +3948,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         "crypto_public_key" => Some(WirHelperSpec {
             // No input — the host writes the seed's 64-char hex public key.
             func: crypto_keyed_helper("crypto_public_key", "crypto.public_key", 64, false),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["crypto.public_key"],
             uses_heap: true,
             uses_table: false,
@@ -4016,42 +3987,42 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "regex_match_spans" => Some(WirHelperSpec {
             func: regex_match_spans_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["regex_match_spans_len", "fill_pending"],
             uses_heap: true,
             uses_table: false,
         }),
         "dir_read" => Some(WirHelperSpec {
             func: dir_read_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["dir_read_len", "fill_pending"],
             uses_heap: true,
             uses_table: false,
         }),
         "file_read" => Some(WirHelperSpec {
             func: file_read_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["file_read_len", "fill_pending"],
             uses_heap: true,
             uses_table: false,
         }),
         "exec" => Some(WirHelperSpec {
             func: exec_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["exec_run", "fill_pending"],
             uses_heap: true,
             uses_table: false,
         }),
         "crypto_reveal" => Some(WirHelperSpec {
             func: crypto_reveal_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["crypto_reveal_len", "fill_pending"],
             uses_heap: true,
             uses_table: false,
         }),
         "build_read" => Some(WirHelperSpec {
             func: build_read_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["build_read_len", "fill_pending"],
             uses_heap: true,
             uses_table: false,
@@ -4065,49 +4036,49 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dir_list" => Some(WirHelperSpec {
             func: dir_list_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["dir_list_size", "write_pending_list"],
             uses_heap: true,
             uses_table: false,
         }),
         "vm_par_map" => Some(WirHelperSpec {
             func: vm_par_map_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["vm_par_map_run", "vm_par_map_write"],
             uses_heap: true,
             uses_table: true,
         }),
         "vm_par_map_bytes" => Some(WirHelperSpec {
             func: vm_par_map_bytes_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["vm_par_map_bytes_run", "vm_par_map_bytes_write"],
             uses_heap: true,
             uses_table: true,
         }),
         "vm_with_dir" => Some(WirHelperSpec {
             func: vm_with_dir_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["vm_with_dir_run", "fill_pending"],
             uses_heap: true,
             uses_table: true,
         }),
         "vm_serve" => Some(WirHelperSpec {
             func: vm_serve_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["vm_serve_run", "vm_par_map_bytes_write"],
             uses_heap: true,
             uses_table: true,
         }),
         "get_env" => Some(WirHelperSpec {
             func: get_env_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &["env_len", "env_fill"],
             uses_heap: true,
             uses_table: false,
         }),
         "replace" => Some(WirHelperSpec {
             func: replace_helper(),
-            helper_deps: &["ensure", "match_at"],
+            helper_deps: &["rc_alloc", "match_at"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,

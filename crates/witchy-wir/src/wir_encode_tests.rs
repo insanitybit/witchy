@@ -72,6 +72,13 @@
             "substr", "concat", "list_push", "list_concat", "ascii_case", "dict_new", "dict_remove",
             "list_push_cap", "list_set_cap", "list_update_cap", "str_append_cap", "list_drop",
             "int_to_string", "split", "str_chars",
+            // batch 3: host-import + worst-case string/list producers (all route through rc_alloc)
+            "replace", "encoding", "dir_read", "file_read", "exec", "crypto_reveal", "build_read",
+            "regex_match_spans", "dir_list", "get_env", "float_to_str", "string_from_code", "build_args",
+            "crypto_sha256", "crypto_sha512", "crypto_sha3_256", "crypto_hmac_sha256", "crypto_rune_hash",
+            "crypto_sign", "crypto_public_key", "compiler_footprint", "compiler_diff", "compiler_doc",
+            "net_recv_line", "net_recv_all", "net_recv_bytes",
+            "vm_par_map", "vm_par_map_bytes", "vm_serve", "vm_with_dir",
         ];
         let mut m = module.clone();
         let uses_rc = m.funcs.iter().any(|f| RC_USERS.contains(&f.name.as_str()));
