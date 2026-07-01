@@ -648,6 +648,86 @@ fn check_main_signature(module: &Module) -> Result<(), TypeError> {
     Ok(())
 }
 
+/// RFC-0038: a `grantable capability` may be granted to a root entrypoint, so it
+/// must be **bare** — carrying zero transitive built-in host authority. Otherwise
+/// granting it would be an invisible `Net`/`Dir`/`Secret` grant (and a later
+/// version adding a host-cap field would silently widen root authority with no
+/// signature change). Reject any grantable cap that reaches a host capability
+/// through its fields, directly or through nested user types.
+fn check_grantable_caps(module: &Module) -> Result<(), TypeError> {
+    let types: std::collections::HashMap<&str, &ast::TypeDef> = module
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            Item::Type(t) => Some((t.name.as_str(), t)),
+            _ => None,
+        })
+        .collect();
+    for it in &module.items {
+        let Item::Type(t) = it else { continue };
+        if !t.grantable {
+            continue;
+        }
+        let mut seen = std::collections::HashSet::new();
+        if let Some(host) = grantable_host_taint(t, &types, &mut seen) {
+            return terr(format!(
+                "`grantable capability {}` carries host capability `{host}`; a \
+                 root-grantable capability must be BARE (zero transitive host \
+                 authority), so it cannot disguise a built-in capability. Construct \
+                 it inside the program from an explicit `{host}` root instead.",
+                t.name
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The first built-in host capability reachable from a type def's fields
+/// (transitively through user-type fields), or `None` if the type is bare.
+fn grantable_host_taint<'a>(
+    t: &'a ast::TypeDef,
+    types: &std::collections::HashMap<&'a str, &'a ast::TypeDef>,
+    seen: &mut std::collections::HashSet<&'a str>,
+) -> Option<String> {
+    if !seen.insert(t.name.as_str()) {
+        return None; // cycle guard
+    }
+    for v in &t.variants {
+        for fty in &v.fields {
+            if let Some(h) = type_host_taint(fty, types, seen) {
+                return Some(h);
+            }
+        }
+    }
+    None
+}
+
+fn type_host_taint<'a>(
+    ty: &'a ast::Type,
+    types: &std::collections::HashMap<&'a str, &'a ast::TypeDef>,
+    seen: &mut std::collections::HashSet<&'a str>,
+) -> Option<String> {
+    match ty {
+        ast::Type::Named(n, args) => {
+            if is_capability_type(ty) {
+                return Some(n.clone());
+            }
+            if let Some(inner) = types.get(n.as_str()) {
+                if let Some(h) = grantable_host_taint(inner, types, seen) {
+                    return Some(h);
+                }
+            }
+            args.iter().find_map(|a| type_host_taint(a, types, seen))
+        }
+        ast::Type::Qualified(_, inner) => type_host_taint(inner, types, seen),
+        ast::Type::Tuple(ts) => ts.iter().find_map(|t| type_host_taint(t, types, seen)),
+        ast::Type::Fn(params, ret) => params
+            .iter()
+            .chain(std::iter::once(ret.as_ref()))
+            .find_map(|t| type_host_taint(t, types, seen)),
+    }
+}
+
 /// Validate a rune's build entrypoint. The build step is the top-level `fn build`
 /// whose first parameter is `BuildOut`; it runs in a zero-ambient build sandbox,
 /// so it may take *only* build-time capabilities — a runtime capability (or
@@ -3124,6 +3204,9 @@ fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeErr
     // enters, so they must be capabilities (or the args list) — validate before
     // diving into bodies so a malformed entry point is reported up front.
     check_main_signature(module)?;
+    // RFC-0038: a `grantable` capability must be BARE (no transitive host authority),
+    // checked module-wide (a grantable cap is invalid regardless of `main`).
+    check_grantable_caps(module)?;
     // A rune's `build` entrypoint is the root of the build sandbox; its parameters
     // are where build-time authority enters, so they must be build capabilities.
     check_build_signature(module)?;

@@ -26,6 +26,26 @@
     }
 
     #[test]
+    fn grantable_capability_must_be_bare() {
+        // (RFC-0038) a bare grantable cap (policy data only) is accepted.
+        assert!(check_str("grantable capability UiRoot:\n    policy: String\n").is_ok());
+        // Bare-but-composed: nesting another BARE user cap is still bare.
+        assert!(check_str(
+            "capability UiFetch:\n    scope: String\n\ngrantable capability UiRoot:\n    fetch: UiFetch\n    policy: String\n"
+        )
+        .is_ok());
+        // A grantable cap carrying a host capability directly is rejected.
+        let direct = check_str("grantable capability Bad:\n    net: Net[Connect]\n").unwrap_err();
+        assert!(direct.contains("BARE") && direct.contains("Net"), "{direct}");
+        // ... and transitively, through a nested user cap that wraps a host cap.
+        let transitive = check_str(
+            "capability Inner:\n    net: Net[Connect]\n\ngrantable capability Bad2:\n    inner: Inner\n"
+        )
+        .unwrap_err();
+        assert!(transitive.contains("BARE") && transitive.contains("Net"), "{transitive}");
+    }
+
+    #[test]
     fn packed_list_cannot_cross_a_boundary() {
         // (RFC-0027) a `packed` type's list is a CONFINED LOCAL flat buffer with no
         // cross-function or stored layout — a `List(P)` in a parameter, return type,
