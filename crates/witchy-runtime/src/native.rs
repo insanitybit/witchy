@@ -390,7 +390,7 @@ mod compiler {
     use crate::value::NativeError as RuntimeError;
 
     /// Compute the capability footprint of witchy `source`, returned as JSON:
-    /// `{"total":[..],"build":[..],"entries":[{"name":..,"capabilities":[..],"brands":[..]}]}`,
+    /// `{"total":[..],"build":[..],"user_caps":[..],"entries":[{"name":..,"capabilities":[..],"brands":[..]}]}`,
     /// or `{"error":".."}` if the source does not parse. `build` is the build-time
     /// footprint — the build capabilities (`BuildOut`/`BuildRead`/…) the rune's
     /// `build` entrypoint demands, which a build tool gates separately from the
@@ -404,6 +404,8 @@ mod compiler {
                 let fp = witchy_caps::capabilities::analyze(&module);
                 let total = arr(fp.total.iter().map(|(n, r)| witchy_caps::capabilities::show_cap(n, r)));
                 let build = arr(fp.build.iter().map(|(n, r)| witchy_caps::capabilities::show_cap(n, r)));
+                // RFC-0038: the grantable user-capability axis (bare policy tokens).
+                let user_caps = arr(fp.user_caps.iter().cloned());
                 let entries: Vec<String> = fp
                     .entries
                     .iter()
@@ -420,9 +422,10 @@ mod compiler {
                     })
                     .collect();
                 format!(
-                    "{{\"total\":{},\"build\":{},\"entries\":[{}]}}",
+                    "{{\"total\":{},\"build\":{},\"user_caps\":{},\"entries\":[{}]}}",
                     total,
                     build,
+                    user_caps,
                     entries.join(",")
                 )
             }

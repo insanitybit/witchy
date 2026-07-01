@@ -463,6 +463,12 @@ pub struct Footprint {
     /// union of every entry's brands. Authority-equivalent to their host caps,
     /// but a finer-grained record of *intent*.
     pub brands: BTreeSet<String>,
+    /// RFC-0038: the bare **grantable** user capabilities an entry point receives
+    /// (e.g. `UiRoot`). A separate axis from `total`: these carry no host authority
+    /// (they're policy-only, minted from a `[user_caps]` grant), but a dependency
+    /// that starts requiring one — or a new one — is a widening a reviewer/Coven
+    /// gate must see, since granting one puts the declaring package in the policy TCB.
+    pub user_caps: BTreeSet<String>,
     /// The **build-time** footprint: the build capabilities the rune's `build`
     /// entrypoint demands (empty if it ships no build step). A separate axis from
     /// the runtime `total` — they are granted and gated independently.
@@ -490,6 +496,11 @@ pub struct FootprintDiff {
     pub build_removed: CapSet,
     pub refinements_dropped: BTreeSet<String>,
     pub refinements_gained: BTreeSet<String>,
+    /// RFC-0038: grantable user caps the newer version requires that the older did
+    /// not (a widening — new UI-effect/library authority, and a new package in the
+    /// policy TCB), and ones it dropped (a narrowing, always safe).
+    pub user_caps_added: BTreeSet<String>,
+    pub user_caps_removed: BTreeSet<String>,
 }
 
 impl FootprintDiff {
@@ -499,7 +510,7 @@ impl FootprintDiff {
     /// reviewed decision, never something a version bump slips in. Brand changes
     /// are intentional refinements, not authority, so they never trip this.
     pub fn widened(&self) -> bool {
-        !self.added.is_empty() || !self.build_added.is_empty()
+        !self.added.is_empty() || !self.build_added.is_empty() || !self.user_caps_added.is_empty()
     }
 
     /// Whether the *build* axis specifically widened — the consuming project must
@@ -543,6 +554,8 @@ pub fn diff(old: &Footprint, new: &Footprint) -> FootprintDiff {
         build_removed: cap_delta(&old.build, &new.build),
         refinements_dropped: old.brands.difference(&new.brands).cloned().collect(),
         refinements_gained: new.brands.difference(&old.brands).cloned().collect(),
+        user_caps_added: new.user_caps.difference(&old.user_caps).cloned().collect(),
+        user_caps_removed: old.user_caps.difference(&new.user_caps).cloned().collect(),
     }
 }
 
@@ -587,6 +600,16 @@ pub fn show_caps(caps: &CapSet) -> String {
 pub fn analyze(module: &Module) -> Footprint {
     let taint = taint_map(module);
     let brands = brand_map(module, &taint);
+    // RFC-0038: names of bare grantable capabilities declared in the module.
+    let grantable: std::collections::HashSet<&str> = module
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            Item::Type(t) if t.grantable => Some(t.name.as_str()),
+            _ => None,
+        })
+        .collect();
+    let mut user_caps: BTreeSet<String> = BTreeSet::new();
     let mut entries = Vec::new();
     let mut per_function = Vec::new();
     let mut total = CapSet::new();
@@ -605,6 +628,15 @@ pub fn analyze(module: &Module) -> Footprint {
         let mut capabilities = CapSet::new();
         let mut entry_brands = BTreeSet::new();
         for ty in types {
+            // RFC-0038: a bare grantable cap carries no host authority, so it is
+            // invisible to `caps_in` — record it on its own axis (entry points only).
+            if is_entry {
+                if let Type::Named(n, _) = ty {
+                    if grantable.contains(n.as_str()) {
+                        user_caps.insert(n.clone());
+                    }
+                }
+            }
             let mut caps = CapSet::new();
             caps_in(ty, &taint, &mut caps);
             if caps.is_empty() {
@@ -646,6 +678,7 @@ pub fn analyze(module: &Module) -> Footprint {
         per_function,
         total,
         brands,
+        user_caps,
         build,
     }
 }
@@ -686,6 +719,34 @@ mod dir_policy_tests {
         // disjoint intersection -> admits nothing
         let none = dir_only("ext:.txt", "ext:.md");
         assert!(!dir_admits(&none, "x.txt") && !dir_admits(&none, "x.md"));
+    }
+}
+
+#[cfg(test)]
+mod grantable_footprint_tests {
+    use super::{analyze, diff};
+    use witchy_syntax::parser::parse_module;
+
+    #[test]
+    fn grantable_cap_is_a_footprint_axis_and_widening() {
+        // (RFC-0038) a grantable cap at `main` shows on the `user_caps` axis, and
+        // carries no host authority (absent from `total`).
+        let with = parse_module(
+            "grantable capability UiRoot:\n    policy: String\n\nfn main(console: Console, ui: UiRoot):\n    print(console, \"ok\")\n",
+        )
+        .unwrap();
+        let fp_with = analyze(&with);
+        assert!(fp_with.user_caps.contains("UiRoot"));
+        assert!(!fp_with.total.contains_key("UiRoot"), "a bare cap carries no host authority");
+
+        // Requiring a grantable cap a prior version did not is a widening; dropping
+        // it is a safe narrowing.
+        let without = parse_module("fn main(console: Console):\n    print(console, \"ok\")\n").unwrap();
+        let fp_without = analyze(&without);
+        let widened = diff(&fp_without, &fp_with);
+        assert!(widened.user_caps_added.contains("UiRoot"));
+        assert!(widened.widened(), "a newly-required grantable cap widens the footprint");
+        assert!(!diff(&fp_with, &fp_without).widened(), "dropping it is a narrowing");
     }
 }
 

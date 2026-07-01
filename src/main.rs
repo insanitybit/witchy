@@ -2393,6 +2393,13 @@ fn report_capabilities(path: &str) -> Result<(), String> {
         println!("  {:<width$}  {}{}", e.name, show(&e.capabilities), refined);
     }
     println!("  {:<width$}  {}", "total", show(&fp.total));
+    // RFC-0038: the grantable user-capability axis — bare policy tokens `main`
+    // receives (e.g. `UiRoot`), carrying no host authority but reviewable as a
+    // widening (a new package in the policy TCB / new library-effect authority).
+    if !fp.user_caps.is_empty() {
+        let names: Vec<&str> = fp.user_caps.iter().map(String::as_str).collect();
+        println!("  {:<width$}  {}", "user caps", names.join(", "));
+    }
     // The build axis (only when the rune ships a `build` step). Runtime authority
     // is enforced by the type system; the build footprint is the supply-chain
     // signal — what a rune's build step is allowed to do, outside the consumer's
