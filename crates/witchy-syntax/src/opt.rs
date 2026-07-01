@@ -145,13 +145,15 @@ impl Opt {
     /// In the `release` (production default) set? This is the single promotion
     /// point: an optimization joins `release` — and thus the default users get —
     /// by being removed from this opt-in list once it has cleared its hardening
-    /// bar. The end-state is `release == all` (nothing opt-in). The two still held
-    /// back are the memory-safety-sharpest passes: `unbox` (layout reinterpretation
-    /// → type-confusion surface) and `rc-floor` (reclamation → use-after-free
-    /// surface, cf. SEC-036); each is being hardened toward release, not shipped on
-    /// the strength of a probabilistic fuzzer alone.
+    /// bar. The end-state is `release == all` (nothing opt-in). `unbox` (layout
+    /// reinterpretation → type-confusion surface) has been PROMOTED: its bar is met
+    /// (the `WITCHY_TYPE_CHECK` sanitizer covers its boxed + packed reads and is
+    /// teeth-tested + false-positive-free over the fuzzer and examples, plus the
+    /// cross-lever and heap-checked example sweeps are clean). The one still held
+    /// back is `rc-floor` (reclamation → use-after-free surface, cf. SEC-036), which
+    /// needs the executor bound (RFC-0036) before it can ship on by default.
     fn default_on(self) -> bool {
-        !matches!(self, Opt::Unbox | Opt::RcFloor)
+        !matches!(self, Opt::RcFloor)
     }
 
     fn bit(self) -> u32 {
@@ -290,7 +292,8 @@ mod tests {
         assert!(d.contains(Opt::InPlace));
         assert!(d.contains(Opt::Region));
         assert!(d.contains(Opt::WasmOpt), "wasm-opt (AOT-cached Binaryen) is default-on");
-        assert!(!d.contains(Opt::Unbox), "unbox (packed layouts) is opt-in");
+        assert!(d.contains(Opt::Unbox), "unbox is now PROMOTED into release (hardened, type-tag sanitized)");
+        assert!(!d.contains(Opt::RcFloor), "rc-floor is the one still opt-in (needs RFC-0036)");
         assert!(d.contains(Opt::Views) && d.contains(Opt::Sroa), "default includes shipped opts");
     }
 
@@ -307,9 +310,10 @@ mod tests {
         // `release` == the production default; `debug` == none.
         assert_eq!(parse("release").unwrap(), OptSet::default_set());
         assert_eq!(parse("debug").unwrap(), OptSet::none());
-        // Today release holds back exactly the two hardening candidates...
+        // release now holds back only rc-floor (unbox promoted); rc-floor needs RFC-0036.
         let rel = OptSet::release();
-        assert!(!rel.contains(Opt::Unbox) && !rel.contains(Opt::RcFloor), "unbox/rc-floor still opt-in");
+        assert!(rel.contains(Opt::Unbox), "unbox is promoted into release");
+        assert!(!rel.contains(Opt::RcFloor), "rc-floor is the last opt-in lever");
         assert!(rel.contains(Opt::Region) && rel.contains(Opt::WasmOpt), "shipped opts are in release");
         // ...and release is the base for the dev grammar (release + a candidate).
         assert!(parse("release,rc-floor").unwrap().contains(Opt::RcFloor));
