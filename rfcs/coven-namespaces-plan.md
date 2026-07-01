@@ -1,5 +1,5 @@
 ---
-status: planned
+status: in-progress
 note: Design accepted, not yet built. Implemented in witchy (the self-hosted coven), not Rust.
 ---
 

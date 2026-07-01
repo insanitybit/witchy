@@ -1,7 +1,7 @@
 ---
 rfc: 0002
 title: User-definable capabilities
-status: implemented     # proposed | planned | implemented | rejected | superseded
+status: implemented
 created: 2026-06-21
 superseded-by:
 tracking: "core shipped 2026-06-21 (capability decl + sealing + facets); rights lattice deferred (facets cover it)"

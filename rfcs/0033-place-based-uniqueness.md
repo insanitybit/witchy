@@ -1,6 +1,6 @@
 # RFC-0033 — Place-based uniqueness: thread in-place optimization through user types
 
-- Status: proposed
+- Status: implemented
 - Motivating principle: *optimizations must thread, that's how they compound.*
 
 ## Motivation

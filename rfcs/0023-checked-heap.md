@@ -1,7 +1,7 @@
 ---
 rfc: 0023
 title: Checked heap — opt-in instrumentation that makes guest-heap corruption loud
-status: proposed
+status: implemented
 created: 2026-06-28
 superseded-by:
 tracking:

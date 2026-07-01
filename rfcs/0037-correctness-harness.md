@@ -1,7 +1,7 @@
 ---
 rfc: 0037
 title: A best-in-class correctness harness — differential, sanitized, metamorphic, coverage-guided
-status: proposed
+status: implemented
 created: 2026-07-01
 predecessors:
   - "0023 (checked heap — the redzone sanitizer this extends)"

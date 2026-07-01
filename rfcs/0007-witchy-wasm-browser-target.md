@@ -1,7 +1,7 @@
 ---
 rfc: 0007
 title: "witchy-WASM in the browser: a pure-compute target"
-status: implemented     # proposed | planned | implemented | rejected | superseded
+status: implemented
 created: 2026-06-22
 superseded-by:
 tracking: |

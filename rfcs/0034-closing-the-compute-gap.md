@@ -1,6 +1,6 @@
 # RFC-0034 — Closing the compute gap: codegen & runtime performance levers
 
-- Status: proposed
+- Status: partially-implemented
 - Predecessors: [RFC-0029](0029-performance-tier-contract.md) (perf tier contract),
   [RFC-0033](0033-place-based-uniqueness.md) (in-place through user types),
   [spec/performance.md](../spec/performance.md) (the perf thesis)

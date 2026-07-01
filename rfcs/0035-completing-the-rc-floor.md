@@ -1,7 +1,7 @@
 ---
 rfc: 0035
 title: Completing the RC floor — last-use reclamation + the lifetime model for reachable data
-status: proposed
+status: implemented
 created: 2026-06-30
 predecessors:
   - "0016 (reference-counted memory — the design this implements)"

@@ -1,9 +1,9 @@
 ---
 rfc: 0017
 title: Codegen performance — the constant-factor roadmap and its ceilings
-status: proposed
+status: superseded
 created: 2026-06-27
-superseded-by:
+superseded-by: "0029 (tier contract), 0034 (compute-gap levers), 0031 (SIMD)"
 tracking:
 ---
 

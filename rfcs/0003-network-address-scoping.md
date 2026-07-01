@@ -1,7 +1,7 @@
 ---
 rfc: 0003
 title: Value-level network address scoping (host-enforced)
-status: implemented     # proposed | planned | implemented | rejected | superseded
+status: implemented
 created: 2026-06-21
 superseded-by:
 tracking: "shipped 2026-06-21 as the `restrict` op + shared `address_admits`/`resolve_admitted` matcher"

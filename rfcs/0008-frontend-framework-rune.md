@@ -1,7 +1,7 @@
 ---
 rfc: 0008
 title: A capability-pure frontend framework (MVU over VNode)
-status: implemented     # proposed | planned | implemented | rejected | superseded
+status: implemented
 created: 2026-06-22
 superseded-by:
 tracking: |

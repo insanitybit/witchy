@@ -1,7 +1,7 @@
 ---
 rfc: 0005
 title: Unforgeable capability representation on the compiled backend
-status: proposed        # proposed | planned | implemented | rejected | superseded
+status: proposed
 created: 2026-06-21
 superseded-by:
 tracking:

@@ -1,7 +1,7 @@
 ---
 rfc: 0029
 title: The performance-tier contract — normal mode, opt mode, and one substrate
-status: proposed
+status: implemented
 created: 2026-06-28
 tracking:
 ---

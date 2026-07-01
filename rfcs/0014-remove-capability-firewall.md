@@ -1,7 +1,7 @@
 ---
 rfc: 0014
 title: Remove the retain/without capability firewall
-status: implemented        # proposed | planned | implemented | rejected | superseded
+status: implemented
 created: 2026-06-24
 implemented: 2026-06-25
 superseded-by:

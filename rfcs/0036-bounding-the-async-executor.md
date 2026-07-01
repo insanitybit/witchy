@@ -1,7 +1,7 @@
 ---
 rfc: 0036
 title: Bounding the async executor — ownership-threaded state and recursive drop
-status: proposed (NOT a blocker — premise corrected)
+status: partially-implemented (NOT a blocker — premise corrected)
 created: 2026-07-01
 predecessors:
   - "0035 (completing the RC floor — the Perceus dup/drop floor this builds on)"

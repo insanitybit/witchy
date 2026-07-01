@@ -1,7 +1,7 @@
 ---
 rfc: 0006
 title: Compile-time tagged literals
-status: implemented     # proposed | planned | implemented | rejected | superseded
+status: implemented
 created: 2026-06-22
 superseded-by:
 tracking: |
