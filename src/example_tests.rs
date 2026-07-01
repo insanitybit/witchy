@@ -7408,6 +7408,35 @@ fn main(console: Console):
     }
 
     #[test]
+    fn every_example_agrees_under_rc_floor() {
+        // The oracle-based sweep run under WITCHY_OPT=rc-floor: EVERY example — including the
+        // capability-using ones (coven_check's `Dir[Read]`, networking, …) that the console-only
+        // metamorphic guard above skips — must still agree interpreter-vs-compiled with the dup/drop
+        // + reclamation emission on. This is the FULL lever coverage; it is exactly what found the
+        // free-at-overwrite alias-init use-after-free (in coven_check's toml parse), which the
+        // console-only guard could not see. `set_for_tests` is thread-local, so setting the lever
+        // here is isolated from the parallel test threads.
+        use crate::opt::{self, Opt, OptSet};
+        opt::set_for_tests(Some(OptSet::default_set().with(Opt::RcFloor)));
+        let mut diverged = Vec::new();
+        for path in example_entries() {
+            let p = path.to_str().unwrap();
+            match crate::verify_file(p) {
+                Ok(()) => {}
+                Err(e) if e.contains("DIVERGE") => diverged.push(e),
+                // Interpreter-only feature or no `main`: not comparable, skip.
+                Err(_) => {}
+            }
+        }
+        opt::set_for_tests(None);
+        assert!(
+            diverged.is_empty(),
+            "examples diverge under rc-floor (a reclamation use-after-free):\n{}",
+            diverged.join("\n")
+        );
+    }
+
+    #[test]
     fn precompiled_wasm_runs_like_the_source() {
         // C Tier 1 (distribution): a program emitted to a `.wasm` and run as a
         // precompiled module — with authority derived from its imports — produces
