@@ -2591,14 +2591,51 @@ impl Codegen {
                                     bin(BinOp::And, bin(BinOp::Ge, si(), W::ConstI32(0)), bin(BinOp::Lt, si(), len)),
                                     bin(BinOp::Gt, cap.clone(), W::ConstI32(0)),
                                 );
-                                let slot_ptr = bin(
+                                let slot_ptr = || bin(
                                     BinOp::Add,
                                     bin(BinOp::Add, W::GetLocal(name.clone()), W::ConstI32(4)),
                                     bin(BinOp::Mul, si(), W::ConstI32(8)),
                                 );
+                                // (RFC-0035) drop the element this store DISPLACES: load the
+                                // old i32 slot and `$rc_drop` it before overwriting. Sound
+                                // because dup-at-read (step 1) already counted every reader —
+                                // the count is >1 exactly when a live binding still holds the
+                                // element (drop just decrements) and 1 exactly when the slot
+                                // was its last holder (drop frees). Gated: the element is an
+                                // i32 heap pointer, the list var is confined-unique
+                                // (`inplace_push` ⇒ never aliased ⇒ its buffer was never copied,
+                                // so elements are not shared through a container copy), and
+                                // `rc-floor` is on. The `els` re-own+copy cold path is NOT
+                                // dropped — a copy shares element pointers without a dup, so a
+                                // free there could be a UAF (left as a sound leak).
+                                let rc_drop_displaced = Self::wir_kind(vk)
+                                    == witchy_wir::wir::Kind::I32
+                                    && self.inplace_push.contains(name)
+                                    && !force_copy_mode()
+                                    && witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::RcFloor);
+                                let mut then_body = Vec::new();
+                                if rc_drop_displaced {
+                                    then_body.push(N::Do(W::Call {
+                                        func: "rc_drop".into(),
+                                        args: vec![W::FromSlot(
+                                            Box::new(W::Load {
+                                                ptr: Box::new(slot_ptr()),
+                                                kind: witchy_wir::wir::Kind::I64,
+                                                offset: 0,
+                                            }),
+                                            witchy_wir::wir::Kind::I32,
+                                        )],
+                                    }));
+                                }
+                                then_body.push(N::Store {
+                                    ptr: slot_ptr(),
+                                    value: sv(),
+                                    kind: witchy_wir::wir::Kind::I64,
+                                    offset: 0,
+                                });
                                 seq.push(N::If {
                                     cond,
-                                    then_: vec![N::Store { ptr: slot_ptr, value: sv(), kind: witchy_wir::wir::Kind::I64, offset: 0 }],
+                                    then_: then_body,
                                     els: vec![N::CallStoreMulti {
                                         func: "list_set_cap".to_string(),
                                         args: vec![W::GetLocal(name.clone()), si(), sv(), cap],
