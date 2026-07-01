@@ -6,7 +6,8 @@
 // CLBG numeric kernels (`nsieve`, `fannkuch`) cache the length in a var
 // (`while i < n`), which conservative elision can't prove equals `length(xs)`;
 // this is the idiomatic indexed-loop form it DOES reach.
-fn main(console: Console):
+fn main(console: Console, clock: Clock):
+    let bench_t0 = now_monotonic(clock)
     var xs = []
     var k = 0
     while k < 5000:
@@ -18,4 +19,6 @@ fn main(console: Console):
         for i in 0..list.length(xs):
             total = total + xs[i]
         rep = rep + 1
+    let bench_t1 = now_monotonic(clock)
     print(console, "${total}")
+    print(console, "bench_ns=${bench_t1 - bench_t0}")

@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 func fannkuch(n int) int {
 	perm1 := make([]int, n)
@@ -64,5 +67,7 @@ func fannkuch(n int) int {
 }
 
 func main() {
+	t0 := time.Now()
 	fannkuch(10)
+	fmt.Printf("bench_ns=%d\n", time.Since(t0).Nanoseconds())
 }

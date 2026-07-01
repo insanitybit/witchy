@@ -9,7 +9,8 @@ import dict
 import string
 import list
 
-fn main(console: Console):
+fn main(console: Console, clock: Clock):
+    let bench_t0 = now_monotonic(clock)
     let n = 200000
     let k = 10
     var cs = []
@@ -31,4 +32,6 @@ fn main(console: Console):
             m = m + 1
         counts = dict.update(counts, kmer, 0, fn(c: Int): c + 1)
         j = j + 1
+    let bench_t1 = now_monotonic(clock)
     print(console, "${dict.length(counts)}")
+    print(console, "bench_ns=${bench_t1 - bench_t0}")

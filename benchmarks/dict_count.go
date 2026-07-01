@@ -1,8 +1,12 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 func main() {
+	t0 := time.Now()
 	d := map[int]int{}
 	i := 0
 	for i < 3000000 {
@@ -15,4 +19,5 @@ func main() {
 		total = total + v
 	}
 	fmt.Println(total)
+	fmt.Printf("bench_ns=%d\n", time.Since(t0).Nanoseconds())
 }

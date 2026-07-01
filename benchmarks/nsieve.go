@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 func nsieve(n int) int {
 	flags := make([]bool, n)
@@ -20,9 +23,11 @@ func nsieve(n int) int {
 }
 
 func main() {
+	t0 := time.Now()
 	total := 0
 	total += nsieve(800000)
 	total += nsieve(400000)
 	total += nsieve(200000)
 	fmt.Println(total)
+	fmt.Printf("bench_ns=%d\n", time.Since(t0).Nanoseconds())
 }

@@ -1,8 +1,12 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 func main() {
+	t0 := time.Now()
 	n := 200000
 	k := 10
 	cs := make([]byte, n)
@@ -16,4 +20,5 @@ func main() {
 		counts[string(cs[j:j+k])]++
 	}
 	fmt.Println(len(counts))
+	fmt.Printf("bench_ns=%d\n", time.Since(t0).Nanoseconds())
 }

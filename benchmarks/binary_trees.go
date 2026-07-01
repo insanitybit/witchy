@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 type Tree struct {
 	l, r *Tree
@@ -21,10 +24,12 @@ func check(t *Tree) int {
 }
 
 func main() {
+	t0 := time.Now()
 	total := 0
 	for i := 0; i < 50; i++ {
 		t := build(16)
 		total += check(t)
 	}
 	fmt.Println(total)
+	fmt.Printf("bench_ns=%d\n", time.Since(t0).Nanoseconds())
 }

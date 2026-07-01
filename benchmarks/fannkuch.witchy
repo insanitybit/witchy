@@ -71,5 +71,9 @@ fn fannkuch(n: Int) -> Int:
         perm_count = perm_count + 1
     0
 
-fn main(console: Console):
-    print(console, "${fannkuch(10)}")
+fn main(console: Console, clock: Clock):
+    let bench_t0 = now_monotonic(clock)
+    let r = fannkuch(10)
+    let bench_t1 = now_monotonic(clock)
+    print(console, "${r}")
+    print(console, "bench_ns=${bench_t1 - bench_t0}")

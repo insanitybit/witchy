@@ -1,4 +1,5 @@
-fn main(console: Console):
+fn main(console: Console, clock: Clock):
+    let bench_t0 = now_monotonic(clock)
     var acc = []
     var i = 0
     while i < 3000000:
@@ -7,4 +8,6 @@ fn main(console: Console):
     var total = 0
     for x in acc:
         total = total + x
+    let bench_t1 = now_monotonic(clock)
     print(console, "${total}")
+    print(console, "bench_ns=${bench_t1 - bench_t0}")

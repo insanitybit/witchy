@@ -1,8 +1,12 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 func main() {
+	t0 := time.Now()
 	total := 0
 	y := -1.5
 	for y < 1.5 {
@@ -24,4 +28,5 @@ func main() {
 		y = y + 0.005
 	}
 	fmt.Println(total)
+	fmt.Printf("bench_ns=%d\n", time.Since(t0).Nanoseconds())
 }

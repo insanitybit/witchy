@@ -3,9 +3,13 @@
 // its own BCE; the witchy `bounds-elide` lever is the analogous pass.
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 func main() {
+	t0 := time.Now()
 	xs := make([]int64, 0, 5000)
 	for k := 0; k < 5000; k++ {
 		xs = append(xs, int64(k))
@@ -17,4 +21,5 @@ func main() {
 		}
 	}
 	fmt.Println(total)
+	fmt.Printf("bench_ns=%d\n", time.Since(t0).Nanoseconds())
 }

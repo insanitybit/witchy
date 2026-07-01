@@ -1,8 +1,12 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 func main() {
+	t0 := time.Now()
 	d := map[string]int{}
 	for i := 0; i < 1000000; i++ {
 		w := fmt.Sprintf("word%d", i%1000)
@@ -13,4 +17,5 @@ func main() {
 		total += v
 	}
 	fmt.Println(total + len(d))
+	fmt.Printf("bench_ns=%d\n", time.Since(t0).Nanoseconds())
 }

@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 type Stack struct {
 	items []int
@@ -19,6 +22,8 @@ func build(n int) Stack {
 }
 
 func main() {
+	t0 := time.Now()
 	s := build(3000000)
 	fmt.Println(s.total + len(s.items))
+	fmt.Printf("bench_ns=%d\n", time.Since(t0).Nanoseconds())
 }

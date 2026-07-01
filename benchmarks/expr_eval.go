@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // Go has no sum types, so an AST is a tagged struct with pointer children and a
 // kind switch — the idiomatic equivalent of witchy's `type Expr` + `match`.
@@ -33,9 +36,11 @@ func build(depth int) *Expr {
 }
 
 func main() {
+	t0 := time.Now()
 	total := 0
 	for i := 0; i < 10; i++ {
 		total += eval(build(16))
 	}
 	fmt.Println(total)
+	fmt.Printf("bench_ns=%d\n", time.Since(t0).Nanoseconds())
 }

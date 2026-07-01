@@ -16,6 +16,9 @@ fn build(n: Int) -> Stack:
         i = i + 1
     s
 
-fn main(console: Console):
+fn main(console: Console, clock: Clock):
+    let bench_t0 = now_monotonic(clock)
     let s = build(3000000)
+    let bench_t1 = now_monotonic(clock)
     print(console, "${s.total + list.length(s.items)}")
+    print(console, "bench_ns=${bench_t1 - bench_t0}")
