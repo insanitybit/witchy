@@ -99,6 +99,23 @@ const SCRUT_POOL: usize = 16;
 /// is fetched once and reused for both the present-test and the `Some` payload.
 const SECRET_TMP: &str = "__witchy_secret_tmp";
 
+/// (RFC-0037 §3) Scratch i32 local holding a record pointer under `WITCHY_TYPE_CHECK`, so the
+/// type-tag check and the field load share one evaluation of the base.
+const TYPECHECK_TMP: &str = "__witchy_typecheck_tmp";
+
+/// (RFC-0037 §3) A stable, stateless 8-bit type id for the type-confusion sanitizer: the same
+/// type name always maps to the same NON-ZERO tag (0 means "untagged"), so the WRITE side (a
+/// record ctor) and the CHECK side (a `.field` read) agree without threading a registry. FNV-1a
+/// hash → 1..=255; a collision (~1/255 per type pair) only misses a confusion, never false-traps.
+fn type_tag_of(name: &str) -> u8 {
+    let mut h: u32 = 2166136261;
+    for byte in name.bytes() {
+        h ^= byte as u32;
+        h = h.wrapping_mul(16777619);
+    }
+    (h % 255) as u8 + 1
+}
+
 /// One scratch local per nesting level of expression application (`f(x)(y)`),
 /// holding the callee pointer while its arguments are evaluated. A nested
 /// application inside an argument uses the next level, so the levels never
@@ -1855,6 +1872,7 @@ impl Codegen {
         locals.push(WirLocal { name: "__witchy_owncap".into(), ty: i32t() });
         locals.push(WirLocal { name: TUPLE_TMP.into(), ty: i32t() });
         locals.push(WirLocal { name: TRY_TMP.into(), ty: i32t() });
+        locals.push(WirLocal { name: TYPECHECK_TMP.into(), ty: i32t() });
         locals.push(WirLocal { name: MATCH_TMP.into(), ty: i64t() });
         locals.push(WirLocal { name: MATCH_RES.into(), ty: i64t() });
         for i in 0..SCRUT_POOL {
@@ -2182,7 +2200,7 @@ impl Codegen {
                     if self.packed_candidates.contains(name) {
                         if let Expr::List(items) = value {
                             if let Some((rec, flat)) = self.packable_record_list(items) {
-                                if let Some(w) = self.lower_aggregate(items.len() as i32, &flat) {
+                                if let Some(w) = self.lower_aggregate(items.len() as i32, &flat, 0) {
                                     seq.push(N::SetLocal { local: name.clone(), value: w });
                                     self.packed_active.insert(name.clone(), rec);
                                     packed_done = true;
@@ -2470,7 +2488,7 @@ impl Codegen {
                             }
                             // A list literal too large for the temp pool: allocate fresh.
                             Expr::List(items) => {
-                                let w = self.lower_aggregate(items.len() as i32, items)?;
+                                let w = self.lower_aggregate(items.len() as i32, items, 0)?;
                                 seq.push(N::SetLocal { local: name.clone(), value: w });
                             }
                             _ => unreachable!(),
@@ -3205,11 +3223,18 @@ impl Codegen {
     /// `$mkN` allocator call: push the i32 `header` (length, `0`, or ctor tag),
     /// then each element in the universal i64 slot, then `call $mkN`. `None` if any
     /// element isn't lowerable.
-    fn lower_aggregate(&mut self, header: i32, items: &[Expr]) -> Option<witchy_wir::wir::WirExpr> {
+    fn lower_aggregate(&mut self, header: i32, items: &[Expr], type_tag: u8) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::WirExpr as W;
         let n = items.len();
         self.mk_arities.insert(n);
         let mut args = Vec::with_capacity(n + 1);
+        // (RFC-0037 §3) Under the type sanitizer, ride the 8-bit type tag in the header's high
+        // byte; `mk` masks it off the offset-0 word and stamps it into the alloc header (p-4).
+        let header = if type_tag != 0 && witchy_wir::wir_helpers::type_check_enabled() {
+            header | ((type_tag as i32) << 24)
+        } else {
+            header
+        };
         args.push(W::ConstI32(header));
         for item in items {
             let k = self.kind_of(item);
@@ -4297,14 +4322,18 @@ impl Codegen {
             },
             // Aggregate literals: a list is `[len][elems..]`, a tuple is
             // `[0][elems..]`, a constructor is `[tag][fields..]` — all via `$mkN`.
-            Expr::List(items) => return self.lower_aggregate(items.len() as i32, items),
-            Expr::Tuple(items) => return self.lower_aggregate(0, items),
+            Expr::List(items) => return self.lower_aggregate(items.len() as i32, items, 0),
+            Expr::Tuple(items) => return self.lower_aggregate(0, items, 0),
             Expr::Ctor { name, args } => {
                 let &(tag, nfields) = self.ctors.get(name)?;
                 if nfields != args.len() {
                     return None; // arity mismatch → legacy emits the loud error
                 }
-                return self.lower_aggregate(tag as i32, args);
+                // (RFC-0037 §3) Tag records (ctor name == type name, so the write here and the
+                // `.field` check agree). ADT variants stay untagged (the type name differs from
+                // the variant name); the tolerant check skips them.
+                let type_tag = if self.record_fields.contains_key(name) { type_tag_of(name) } else { 0 };
+                return self.lower_aggregate(tag as i32, args, type_tag);
             }
             // `update rec { field: v }` rebuilds the record: tag, then each field —
             // an overridden value (in a slot) or the base's raw slot copied across.
@@ -4691,6 +4720,47 @@ impl Codegen {
                     let idx = names.iter().position(|(n, _)| n == field)?;
                     (4 + 8 * idx, name_kind(names[idx].1.as_deref()))
                 };
+                // (RFC-0037 §3) Under WITCHY_TYPE_CHECK, verify the record pointer's type tag
+                // (the alloc-header high byte at p-4) matches its statically-known type before
+                // the field load — trapping a layout / `unbox` confusion AT the access site.
+                // Tolerant of an untagged pointer (tag 0), so a value built by a not-yet-tagged
+                // path never false-traps; a genuine mismatch (tag != 0 and != expected) traps.
+                if witchy_wir::wir_helpers::type_check_enabled() {
+                    if let Some(expected) = self.record_type_of(base).map(|t| type_tag_of(&t)) {
+                        use witchy_wir::wir::{BinOp, Kind as K, WirNode as N};
+                        let base_ptr = self.lower_expr(base)?;
+                        let tmp = || W::GetLocal(TYPECHECK_TMP.to_string());
+                        let tag = || W::Binary {
+                            op: BinOp::ShrU,
+                            kind: K::I32,
+                            lhs: Box::new(W::Load {
+                                ptr: Box::new(W::Binary { op: BinOp::Sub, kind: K::I32, lhs: Box::new(tmp()), rhs: Box::new(W::ConstI32(4)) }),
+                                kind: K::I32,
+                                offset: 0,
+                            }),
+                            rhs: Box::new(W::ConstI32(24)),
+                        };
+                        let mismatch = W::Binary {
+                            op: BinOp::And,
+                            kind: K::I32,
+                            lhs: Box::new(W::Binary { op: BinOp::Ne, kind: K::I32, lhs: Box::new(tag()), rhs: Box::new(W::ConstI32(0)) }),
+                            rhs: Box::new(W::Binary { op: BinOp::Ne, kind: K::I32, lhs: Box::new(tag()), rhs: Box::new(W::ConstI32(expected as i32)) }),
+                        };
+                        let read = W::FromSlot(
+                            Box::new(W::Load {
+                                ptr: Box::new(W::Binary { op: BinOp::Add, kind: K::I32, lhs: Box::new(tmp()), rhs: Box::new(W::ConstI32(offset as i32)) }),
+                                kind: K::I64,
+                                offset: 0,
+                            }),
+                            Self::wir_kind(kind),
+                        );
+                        return Some(W::Seq(vec![
+                            N::SetLocal { local: TYPECHECK_TMP.to_string(), value: base_ptr },
+                            N::If { cond: mismatch, then_: vec![N::Unreachable], els: vec![], result: None },
+                            N::Push(read),
+                        ]));
+                    }
+                }
                 let addr = W::Binary {
                     op: witchy_wir::wir::BinOp::Add,
                     kind: witchy_wir::wir::Kind::I32,
