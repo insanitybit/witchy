@@ -1905,6 +1905,25 @@ fn main(console: Console):
         assert_rc_corpus_stable(src, &["100"]);
     }
 
+    /// Matrix: NESTED match-on-read — `match list.at(xs,0): W(s1) -> match list.at(ys,0): Box(s2)
+    /// -> …`. Both scrutinees are dup'd reads that must drop after their arms; the shared MATCH_TMP
+    /// is clobbered by the inner match, so this exercises the per-depth `__witchy_scrut_save` pool.
+    /// Both displaced elements must survive through their bindings.
+    #[test]
+    fn rc_corpus_nested_match_on_read_uses_the_scrut_pool() {
+        let src = "import list\ntype W:\n    W(String)\ntype Box:\n    Box(String)\nfn main(console: Console):\n    var i = 1\n    var xs = [W(\"a${i}\"), W(\"b${i}\")]\n    var ys = [Box(\"c${i}\"), Box(\"d${i}\")]\n    let r = match list.at(xs, 0):\n        W(s1) ->\n            match list.at(ys, 0):\n                Box(s2) -> s1 + s2\n    xs = list.set_at(xs, 0, W(\"z${i}\"))\n    ys = list.set_at(ys, 0, Box(\"q${i}\"))\n    print(console, r)\n";
+        assert_rc_corpus_stable(src, &["a1c1"]);
+    }
+
+    /// Matrix: a NESTED `List(List(String))` element read into a binding, then the outer slot
+    /// overwritten. The displaced inner list (and its heap strings) must survive via the binding —
+    /// dup/drop on a List element whose own children are heap.
+    #[test]
+    fn rc_corpus_nested_list_element_survives_set_at() {
+        let src = "import list\nfn main(console: Console):\n    var i = 1\n    var ls = [[\"p${i}\", \"q${i}\"], [\"r${i}\"]]\n    let inner = list.at(ls, 0)\n    ls = list.set_at(ls, 0, [\"z${i}\"])\n    print(console, list.at(inner, 1))\n    print(console, list.at(list.at(ls, 0), 0))\n";
+        assert_rc_corpus_stable(src, &["q1", "z1"]);
+    }
+
     /// `crypto.rune_hash` produces the same store hash (`src/pm/store.rs`
     /// format) on both backends — the host walks the guest's string lists.
     #[test]
