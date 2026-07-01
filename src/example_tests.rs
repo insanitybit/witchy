@@ -7407,17 +7407,16 @@ fn main(console: Console):
         );
     }
 
-    #[test]
-    fn every_example_agrees_under_rc_floor() {
-        // The oracle-based sweep run under WITCHY_OPT=rc-floor: EVERY example — including the
-        // capability-using ones (coven_check's `Dir[Read]`, networking, …) that the console-only
-        // metamorphic guard above skips — must still agree interpreter-vs-compiled with the dup/drop
-        // + reclamation emission on. This is the FULL lever coverage; it is exactly what found the
-        // free-at-overwrite alias-init use-after-free (in coven_check's toml parse), which the
-        // console-only guard could not see. `set_for_tests` is thread-local, so setting the lever
-        // here is isolated from the parallel test threads.
-        use crate::opt::{self, Opt, OptSet};
-        opt::set_for_tests(Some(OptSet::default_set().with(Opt::RcFloor)));
+    /// The oracle-based sweep run under an OPT-IN codegen lever: EVERY example — including the
+    /// capability-using ones (coven_check's `Dir[Read]`, networking, …) — must still agree
+    /// interpreter-vs-compiled with the lever on. The default `every_compilable_example_*` sweep
+    /// only exercises the DEFAULT-ON opts, so an opt-in lever's frees / layout changes go
+    /// unexercised on real programs — exactly how the free-at-overwrite alias-init use-after-free
+    /// hid for ~2 days (it only fired under `WITCHY_OPT=rc-floor`, which no sweep ran). Every
+    /// opt-in lever gets a sweep here so that class cannot recur. `set_for_tests` is thread-local,
+    /// so the lever is isolated from the parallel test threads.
+    fn assert_examples_agree_under(set: crate::opt::OptSet, lever: &str) {
+        crate::opt::set_for_tests(Some(set));
         let mut diverged = Vec::new();
         for path in example_entries() {
             let p = path.to_str().unwrap();
@@ -7428,12 +7427,27 @@ fn main(console: Console):
                 Err(_) => {}
             }
         }
-        opt::set_for_tests(None);
+        crate::opt::set_for_tests(None);
         assert!(
             diverged.is_empty(),
-            "examples diverge under rc-floor (a reclamation use-after-free):\n{}",
+            "examples diverge under WITCHY_OPT={lever} (a codegen bug the default sweep misses):\n{}",
             diverged.join("\n")
         );
+    }
+
+    #[test]
+    fn every_example_agrees_under_rc_floor() {
+        use crate::opt::{Opt, OptSet};
+        assert_examples_agree_under(OptSet::default_set().with(Opt::RcFloor), "rc-floor");
+    }
+
+    #[test]
+    fn every_example_agrees_under_unbox() {
+        // Same guard for the other opt-in codegen lever: `unbox` (RFC-0027 packed-by-inference)
+        // changes heap LAYOUT, so a missed read/write site would corrupt exactly like a reclamation
+        // UAF. It is currently clean, but — like rc-floor — the default sweep never exercised it.
+        use crate::opt::{Opt, OptSet};
+        assert_examples_agree_under(OptSet::default_set().with(Opt::Unbox), "unbox");
     }
 
     #[test]
