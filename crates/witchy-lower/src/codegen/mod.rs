@@ -493,6 +493,9 @@ struct Codegen {
     /// The active compile unit's uniqueness facts + (kills consumed, sites
     /// seen) for the post-compile consumption check; units nest via lambdas.
     facts_stack: Vec<(analysis::Facts, usize, usize)>,
+    /// (RFC-0035) Per-unit `last_use` drop points (parallel to `facts_stack`): values to
+    /// `$rc_free` after their last use, consumed in `lower_block`. Empty unless `rc-floor`.
+    drop_facts_stack: Vec<analysis::DropFacts>,
     /// Module-wide function summaries for the uniqueness analysis.
     summaries: analysis::Summaries,
     /// The current function's own-ABI parameter (its ownership token is the
@@ -874,6 +877,7 @@ impl Codegen {
             reuse_vars: HashSet::new(),
             rc_floor_vars: HashSet::new(),
             facts_stack: Vec::new(),
+            drop_facts_stack: Vec::new(),
             summaries: analysis::Summaries::empty(),
             cur_fn_own_param: None,
             cur_fn_has_type_vars: false,
@@ -1998,6 +2002,21 @@ impl Codegen {
         } else {
             HashSet::new()
         };
+        // (RFC-0035) last_use drop points: values proven dead AND freeable (bound to a
+        // known heap allocator, never read-again / never aliased / escaped / returned /
+        // reassigned / region-confined) get an `$rc_free` after their last use. Gated on
+        // `rc-floor`; off ⇒ empty ⇒ no frees (the leak-but-sound reference the differential
+        // sweep compares against). The analysis already discharged every double-free /
+        // use-after-free obligation, so consuming it here is a direct free of a unique-dead
+        // value — no runtime refcount check needed (the RC-elision case, RFC-0016 R2).
+        let drops = if !force_copy_mode()
+            && witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::RcFloor)
+        {
+            analysis::last_use_drops(body, &self.summaries)
+        } else {
+            analysis::DropFacts::default()
+        };
+        self.drop_facts_stack.push(drops);
         self.facts_stack.push((facts, 0, 0));
     }
 
@@ -2005,6 +2024,7 @@ impl Codegen {
     /// cloned-subtree bug (compiling different AST nodes than were analyzed)
     /// surfaces here as a loud error, never as a lost cap kill.
     fn finish_unit(&mut self, unit: &str) -> Result<(), CodegenError> {
+        self.drop_facts_stack.pop();
         let Some((facts, kills, sites)) = self.facts_stack.pop() else {
             return cerr(format!("internal: unbalanced analysis unit in `{unit}`"));
         };
@@ -2990,6 +3010,50 @@ impl Codegen {
                             value: W::ConstI32(0),
                         });
                     }
+                }
+            }
+            // (RFC-0035) `$rc_free` every value proven dead after this statement:
+            // bound to a known heap allocator, read at most once here, never aliased
+            // / escaped / returned / reassigned / region-confined (the `last_use`
+            // analysis discharged all of that). The value's last use is in the WIR
+            // just pushed to `seq`, so its region is now unreachable and free to
+            // reclaim — a straight `$rc_free`, no runtime refcount needed (the value
+            // is statically unique-and-dead). `drop_facts_stack` is empty unless
+            // `rc-floor` is on, so this is a no-op on the reference path. Read-only
+            // over the facts, mirroring the kills reset above.
+            //
+            // SOUNDNESS — the heap-reset boundary. `wm_level > 0` means we are lowering
+            // inside an active heap-reset scope: a watermarked loop body (RFC-0030, the
+            // per-iteration `$heap`-rewind) or a `region:`/reclaim block. That reset ALSO
+            // reclaims this value's buffer, so an `$rc_free` here would be a DOUBLE
+            // reclaim — the freed block lands on the free-list, the watermark then rewinds
+            // `$heap` below it, and the next bump re-hands-out the same address that is
+            // still linked in the free-list → the free-list `next` chain dangles into
+            // live data (an out-of-bounds pointer). So rc-floor cedes reclamation to the
+            // enclosing reset and only fires where `wm_level == 0` — straight-line code
+            // and loops whose body is NOT arena-resettable (something escapes the
+            // iteration, the watermark is off), which is exactly rc-floor's niche.
+            if self.collect_wir && self.wm_level == 0 {
+                let drops: Vec<analysis::Drop> = self
+                    .drop_facts_stack
+                    .last()
+                    .map(|d| d.drops_after(stmt).to_vec())
+                    .unwrap_or_default();
+                for d in &drops {
+                    let region = if d.offset == 0 {
+                        W::GetLocal(d.name.clone())
+                    } else {
+                        W::Binary {
+                            op: witchy_wir::wir::BinOp::Sub,
+                            kind: witchy_wir::wir::Kind::I32,
+                            lhs: Box::new(W::GetLocal(d.name.clone())),
+                            rhs: Box::new(W::ConstI32(d.offset)),
+                        }
+                    };
+                    seq.push(N::Do(W::Call {
+                        func: "rc_free".into(),
+                        args: vec![region],
+                    }));
                 }
             }
         }

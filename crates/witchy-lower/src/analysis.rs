@@ -1572,14 +1572,26 @@ pub fn fresh_heap_builtin_offset(name: &str, argc: usize) -> Option<i32> {
 /// statement, so `$drop name` is emitted immediately after it. Keyed by statement
 /// identity (`stmt_key`), like the uniqueness `kills` — the consumer must compile the
 /// exact AST instance analyzed.
+/// One drop: the local holding the value, and the byte offset from that local's
+/// pointer to the START of its `$rc_alloc` region — 0 for list/string/record buffers,
+/// 4 for a dict (its hidden index word sits at `ptr-4`). The codegen frees
+/// `local - offset`. The offset comes from the value's allocator, so a drop is recorded
+/// ONLY for a value produced by a known heap allocator (`fresh_heap_builtin_offset`) —
+/// which is also what makes it definitely a freeable heap pointer, never a scalar.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Drop {
+    pub name: String,
+    pub offset: i32,
+}
+
 #[derive(Default, Debug)]
 pub struct DropFacts {
-    after: HashMap<usize, Vec<String>>,
+    after: HashMap<usize, Vec<Drop>>,
 }
 
 impl DropFacts {
-    /// Binding names to `$drop` immediately after `stmt` (empty if none).
-    pub fn drops_after(&self, stmt: &Stmt) -> &[String] {
+    /// Values to `$rc_free` immediately after `stmt` (empty if none).
+    pub fn drops_after(&self, stmt: &Stmt) -> &[Drop] {
         self.after.get(&stmt_key(stmt)).map(Vec::as_slice).unwrap_or(&[])
     }
 
@@ -1588,8 +1600,8 @@ impl DropFacts {
         self.after.values().map(Vec::len).sum()
     }
 
-    fn record(&mut self, stmt: &Stmt, name: String) {
-        self.after.entry(stmt_key(stmt)).or_default().push(name);
+    fn record(&mut self, stmt: &Stmt, name: String, offset: i32) {
+        self.after.entry(stmt_key(stmt)).or_default().push(Drop { name, offset });
     }
 }
 
@@ -1733,33 +1745,41 @@ fn place_drops(
     region_confined: &HashSet<String>,
     facts: &mut DropFacts,
 ) {
-    let this_block_lets: HashSet<&str> = block
+    // The lets in THIS block bound to a known heap allocator, with the free offset.
+    // Restricting drops to these gives same-block binding (soundness) AND a definite
+    // freeable heap pointer + offset (so codegen never frees a scalar or mis-offsets).
+    let block_let_offsets: HashMap<&str, i32> = block
         .stmts
         .iter()
         .filter_map(|s| match s {
-            Stmt::Let { name, .. } => Some(name.as_str()),
+            Stmt::Let { name, value: Expr::Call { name: f, args }, .. } => {
+                fresh_heap_builtin_offset(f, args.len()).map(|off| (name.as_str(), off))
+            }
             _ => None,
         })
         .collect();
     for s in &block.stmts {
         if let Stmt::Let { name, .. } = s {
-            if !region_confined.contains(name)
-                && name_reassign_count(fn_body, name) == 0
-                && name_read_count(fn_body, name) == 0
-            {
-                facts.record(s, name.clone());
+            if let Some(&off) = block_let_offsets.get(name.as_str()) {
+                if !region_confined.contains(name)
+                    && name_reassign_count(fn_body, name) == 0
+                    && name_read_count(fn_body, name) == 0
+                {
+                    facts.record(s, name.clone(), off);
+                }
             }
         }
         if let Some(value) = stmt_value(s) {
             let mut candidates = Vec::new();
             nonleaking_call_arg_vars(value, summaries, &mut candidates);
             for v in candidates {
-                if this_block_lets.contains(v.as_str())
-                    && !region_confined.contains(&v)
-                    && name_reassign_count(fn_body, &v) == 0
-                    && name_read_count(fn_body, &v) == 1
-                {
-                    facts.record(s, v);
+                if let Some(&off) = block_let_offsets.get(v.as_str()) {
+                    if !region_confined.contains(&v)
+                        && name_reassign_count(fn_body, &v) == 0
+                        && name_read_count(fn_body, &v) == 1
+                    {
+                        facts.record(s, v, off);
+                    }
                 }
             }
         }
