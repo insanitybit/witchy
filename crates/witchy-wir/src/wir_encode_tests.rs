@@ -70,6 +70,7 @@
     fn with_rc_floor(module: &WirModule) -> WirModule {
         const RC_USERS: &[&str] = &[
             "substr", "concat", "list_push", "list_concat", "ascii_case", "dict_new", "dict_remove",
+            "dict_insert", "dict_keys", "dict_values", "dict_pairs",
             "list_push_cap", "list_set_cap", "list_update_cap", "str_append_cap", "list_drop",
             "int_to_string", "split", "str_chars",
             // batch 3: host-import + worst-case string/list producers (all route through rc_alloc)

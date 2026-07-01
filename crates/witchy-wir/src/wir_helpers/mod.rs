@@ -4120,7 +4120,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dict_insert" => Some(WirHelperSpec {
             func: dict_insert_helper(),
-            helper_deps: &["ensure", "dict_find"],
+            helper_deps: &["rc_alloc", "dict_find"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,
@@ -4190,21 +4190,21 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dict_keys" => Some(WirHelperSpec {
             func: dict_project_helper("dict_keys", 4),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,
         }),
         "dict_values" => Some(WirHelperSpec {
             func: dict_project_helper("dict_values", 12),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,
         }),
         "dict_pairs" => Some(WirHelperSpec {
             func: dict_pairs_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,

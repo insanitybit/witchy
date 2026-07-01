@@ -336,13 +336,12 @@ pub fn dict_insert_helper() -> WirFunc {
             .collect(),
         body: vec![
             setl("count", E::Load { ptr: Box::new(getl("d")), kind: Kind::I32, offset: 0 }),
-            N::Do(E::Call {
-                func: "ensure".into(),
-                args: vec![b(BinOp::Add, i32c(24), b(BinOp::Mul, getl("count"), i32c(16)))],
-            }),
             setl("found", E::Call { func: "dict_find".into(), args: vec![getl("d"), getl("k"), getl("mode")] }),
             setl("bytes", b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("count"), i32c(16)))),
-            setl("new", b(BinOp::Add, E::GetGlobal("heap".into()), i32c(4))),
+            // (RFC-0016) allocate the copy through `$rc_alloc` (header + reuse); the hidden
+            // index word sits at `new-4` inside the rc region (new = rc_res + 4). Worst-case
+            // `24 + count*16` (one extra entry for the not-found append); rc_alloc bumps $heap.
+            setl("new", b(BinOp::Add, E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(24), b(BinOp::Mul, getl("count"), i32c(16)))] }, i32c(4))),
             N::Store { ptr: b(BinOp::Sub, getl("new"), i32c(4)), value: i32c(0), kind: Kind::I32, offset: 0 },
             N::MemoryCopy { dest: getl("new"), src: getl("d"), len: getl("bytes") },
             N::If {
@@ -355,17 +354,12 @@ pub fn dict_insert_helper() -> WirFunc {
                         kind: Kind::I64,
                         offset: 12,
                     },
-                    N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("new"), getl("bytes")) },
                     N::Push(getl("new")),
                 ],
                 els: vec![
                     N::Store { ptr: getl("new"), value: b(BinOp::Add, getl("count"), i32c(1)), kind: Kind::I32, offset: 0 },
                     N::Store { ptr: b(BinOp::Add, getl("new"), getl("bytes")), value: getl("k"), kind: Kind::I64, offset: 0 },
                     N::Store { ptr: b(BinOp::Add, getl("new"), getl("bytes")), value: getl("v"), kind: Kind::I64, offset: 8 },
-                    N::SetGlobal {
-                        global: "heap".into(),
-                        value: b(BinOp::Add, b(BinOp::Add, getl("new"), getl("bytes")), i32c(16)),
-                    },
                     N::Push(getl("new")),
                 ],
                 result: Some(WirTy::Bool),
@@ -755,12 +749,11 @@ pub fn dict_project_helper(name: &str, entry_off: u32) -> WirFunc {
         locals: ["count", "i", "new"].iter().map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool }).collect(),
         body: vec![
             setl("count", E::Load { ptr: Box::new(getl("d")), kind: Kind::I32, offset: 0 }),
-            N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("count"), i32c(8)))] }),
-            setl("new", E::GetGlobal("heap".into())),
+            // (RFC-0016) allocate the projected list through `$rc_alloc` (header + reuse).
+            setl("new", E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("count"), i32c(8)))] }),
             N::Store { ptr: getl("new"), value: getl("count"), kind: Kind::I32, offset: 0 },
             setl("i", i32c(0)),
             scan,
-            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("new"), i32c(4)), b(BinOp::Mul, getl("count"), i32c(8))) },
             N::Push(getl("new")),
         ],
         raw_body: None,
@@ -789,11 +782,11 @@ pub fn dict_pairs_helper() -> WirFunc {
             label: "l".into(),
             body: vec![
                 N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("i"), getl("count"))) },
-                setl("tup", E::GetGlobal("heap".into())),
+                // (RFC-0016) each pair tuple via `$rc_alloc` (20 bytes: [tag][key][value]).
+                setl("tup", E::Call { func: "rc_alloc".into(), args: vec![i32c(20)] }),
                 N::Store { ptr: getl("tup"), value: i32c(0), kind: Kind::I32, offset: 0 },
                 N::Store { ptr: getl("tup"), value: entry(4), kind: Kind::I64, offset: 4 },
                 N::Store { ptr: getl("tup"), value: entry(12), kind: Kind::I64, offset: 12 },
-                N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("tup"), i32c(20)) },
                 // list slot i ← tuple pointer (zero-extended into the i64 slot).
                 N::Store {
                     ptr: b(BinOp::Add, getl("list"), b(BinOp::Mul, getl("i"), i32c(8))),
