@@ -13,7 +13,19 @@ under-declared.
 
 ## Run
 
+From the repository root, run the example by file:
+
 ```sh
-witchy run                                          # from this directory
-witchy examples/coven_check/src/coven_check.witchy  # or by file, from the repo root
+witchy examples/coven_check/src/coven_check.witchy
 ```
+
+The example reads fixture files under `examples/data`, so run it with the
+repository root as the current directory. If you are using an uninstalled debug
+binary, substitute `target/debug/witchy` for `witchy`.
+
+The checked fixture is intentionally under-declared: it admits `Net[Connect]`,
+while the sample rune demands full `Net`. The command should print
+`UNDER-DECLARED: code demands Net not admitted by [capabilities]` and exit
+non-zero. If you change the fixture to admit the full source-derived footprint,
+the same checker prints `OK: manifest admits everything the code demands` and
+exits with status `0`.

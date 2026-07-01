@@ -36,6 +36,21 @@ echo "[3/6] esbuild bundle host shell -> dist/app.js"
   --alias:glamour-dom="$REPO/web/witchy-runtime/glamour-dom.mjs" \
   --outfile=dist/app.js
 
+cat > dist/index.html <<'HTML'
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Coven Web</title>
+</head>
+<body>
+  <main id="app" aria-label="Coven registry browser"></main>
+  <script src="/app.js"></script>
+</body>
+</html>
+HTML
+
 # Compile the glamour coven-web APP rune to footprint-empty WASM and base64-INLINE it into
 # the bootstrap bundle (replacing `__APP_WASM_B64__`). Same rationale as the highlighter
 # below: witchy's Dir `read` is UTF-8-only so a `.wasm` route is impossible, and inlining
