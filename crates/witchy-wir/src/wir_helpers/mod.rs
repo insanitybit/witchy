@@ -155,6 +155,22 @@ pub fn uaf_check_enabled() -> bool {
     std::env::var_os("WITCHY_UAF_CHECK").is_some_and(|v| v == "1")
 }
 
+/// (RFC-0037 §3) Whether the opt-in type-confusion sanitizer is selected. A debug-only mode,
+/// off the production path: each `$rc_alloc`'d object carries an 8-bit TYPE TAG packed into the
+/// HIGH BYTE of its allocation-size header word (`ptr-4`, whose low 24 bits are the size —
+/// objects are ≪ 2^24 bytes). A typed read (`list.at` / `.field` / `match`) asserts the tag
+/// matches the statically-expected type and traps on mismatch, catching a layout / `unbox`
+/// confusion at the access site rather than three statements later. Every reader of the size
+/// masks the tag off (`& RC_SIZE_MASK`), so the tag never perturbs reuse / reclamation math.
+pub fn type_check_enabled() -> bool {
+    std::env::var_os("WITCHY_TYPE_CHECK").is_some_and(|v| v == "1")
+}
+
+/// The alloc-size header word (`ptr-4`, written by `$rc_alloc`) holds the allocated size in its
+/// low 24 bits; the high 8 bits are reserved for the [`type_check_enabled`] debug type tag.
+/// Every reader of the size masks with this so the tag is invisible to size arithmetic.
+pub const RC_SIZE_MASK: i32 = 0x00FF_FFFF;
+
 pub fn mk_helper(n: usize, checked: bool) -> WirFunc {
     let size = 4 + 8 * n;
     // (RFC-0023) When checked, reserve a trailing redzone the host poisons via
@@ -248,8 +264,9 @@ pub fn rc_alloc_helper() -> WirFunc {
                 // empty list / walked off the end → bump path below.
                 N::Br { target: "miss".into(), cond: Some(not(getl("cur"))) },
                 N::If {
-                    // the block's allocated size is in its header at `cur-4`.
-                    cond: b(BinOp::Ge, load(b(BinOp::Sub, getl("cur"), i32c(4)), 0), getl("size")),
+                    // the block's allocated size is in its header at `cur-4` (low 24 bits;
+                    // the high byte is the optional debug type tag, masked off here).
+                    cond: b(BinOp::Ge, b(BinOp::And, load(b(BinOp::Sub, getl("cur"), i32c(4)), 0), i32c(RC_SIZE_MASK)), getl("size")),
                     then_: vec![
                         // unlink `cur`: head if prev==0, else prev.next.
                         N::If {
@@ -269,7 +286,7 @@ pub fn rc_alloc_helper() -> WirFunc {
                                 rhs: Box::new(E::Convert {
                                     from: Kind::I32,
                                     to: Kind::I64,
-                                    arg: Box::new(load(b(BinOp::Sub, getl("cur"), i32c(4)), 0)),
+                                    arg: Box::new(b(BinOp::And, load(b(BinOp::Sub, getl("cur"), i32c(4)), 0), i32c(RC_SIZE_MASK))),
                                 }),
                             },
                         },
@@ -405,7 +422,7 @@ pub fn rc_free_helper() -> WirFunc {
             ret: vec![],
             locals: ["size", "i"].iter().map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool }).collect(),
             body: vec![
-                N::SetLocal { local: "size".into(), value: load(b(BinOp::Sub, getl("ptr"), i32c(4)), 0) },
+                N::SetLocal { local: "size".into(), value: b(BinOp::And, load(b(BinOp::Sub, getl("ptr"), i32c(4)), 0), i32c(RC_SIZE_MASK)) },
                 // Poison only a sane-sized payload; `LeU` also rejects a negative (→ huge
                 // unsigned) bogus size. size==0 makes the loop a no-op.
                 N::If {
