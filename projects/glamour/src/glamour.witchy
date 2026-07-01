@@ -17,6 +17,71 @@ import json
 import reflect
 
 // ---------------------------------------------------------------------------
+// UI capabilities (RFC-0039) — Glamour's own authority vocabulary. `UiRoot` is a
+// BARE grantable capability an app's `main` receives from the host (a `[user_caps]`
+// grant, RFC-0038); Glamour NARROWS it into per-concern tokens. A component can
+// only construct the effects for which it holds the matching token, so effect
+// authority is statically reviewable — while REAL browser authority stays in the
+// host shell (RFC-0007/0008). These carry only policy data (no host capability),
+// so the rune's host footprint stays empty; they surface on the `user_caps` axis.
+// ---------------------------------------------------------------------------
+
+// The app-root UI token, granted to `main`. Bare: policy data only.
+grantable capability UiRoot:
+    policy: String
+
+// Authority to construct a fetch command, confined to a method-set + path prefix.
+capability UiFetch:
+    scope: String
+    methods: String
+    prefix: String
+
+// Authority to construct a navigation command, within a base path.
+capability UiRoute:
+    base: String
+    rights: String
+
+// Authority to construct a timer command (no shorter than `min_ms`).
+capability UiTimer:
+    min_ms: Int
+
+// Authority to invoke a named host credential port (login, passkey, promote).
+capability CredentialPort:
+    name: String
+
+// Authority to render a host-owned secret input — the value stays host-side.
+capability SecretInput:
+    form: String
+    field: String
+
+// An opaque handle to a host-held secret value — passed, never read by the rune.
+capability SecretRef:
+    slot: String
+
+// Narrow the app-root token into per-concern tokens. Only Glamour (this module)
+// can mint them; an app hands each narrowed token to the component that needs it,
+// so the component-authority graph is explicit and reviewable.
+pub fn fetch_scope(root: UiRoot, scope: String, methods: String, prefix: String) -> UiFetch:
+    match root:
+        UiRoot(_) -> UiFetch(scope, methods, prefix)
+
+pub fn route_scope(root: UiRoot, base: String, rights: String) -> UiRoute:
+    match root:
+        UiRoot(_) -> UiRoute(base, rights)
+
+pub fn timer_scope(root: UiRoot, min_ms: Int) -> UiTimer:
+    match root:
+        UiRoot(_) -> UiTimer(min_ms)
+
+pub fn credential_port(root: UiRoot, name: String) -> CredentialPort:
+    match root:
+        UiRoot(_) -> CredentialPort(name)
+
+pub fn secret_field(root: UiRoot, form: String, field: String) -> SecretInput:
+    match root:
+        UiRoot(_) -> SecretInput(form, field)
+
+// ---------------------------------------------------------------------------
 // VNode — the view as data (parameterized over the app's message type `msg`,
 // because event handlers carry app-specific messages).
 // ---------------------------------------------------------------------------
