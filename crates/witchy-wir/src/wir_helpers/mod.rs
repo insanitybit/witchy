@@ -214,8 +214,10 @@ pub fn mk_helper(n: usize, checked: bool) -> WirFunc {
 /// When nothing has been freed the list is empty, so this is just `ensure`+bump —
 /// byte-for-byte the old behavior — which is why routing the allocators through it
 /// is transparent until the RC-floor `$rc_free` calls (gated, codegen-emitted)
-/// start populating the list. A freed block stores `[next:i32 @+0][size:i32 @+4]`;
-/// the returned pointer is the block base (the caller overwrites those words).
+/// start populating the list. Header layout: `[rc:i32 @obj-8][size:i32 @obj-4]` before
+/// the returned object pointer; a freed block links via the object's first word (`@obj+0`,
+/// dead once freed). `rc` is the RFC-0035 per-object refcount (1 on alloc / reuse), read
+/// only by the gated `$dup`/`$drop`; `size` drives the free-list reuse scan.
 pub fn rc_alloc_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
@@ -259,6 +261,15 @@ pub fn rc_alloc_helper() -> WirFunc {
                                 }),
                             },
                         },
+                        // (RFC-0035) a recycled block re-enters life owned by one holder:
+                        // reset its refcount word (at `cur-8`) to 1. Off the RC path the
+                        // word is simply never read, so this is inert there.
+                        N::Store {
+                            ptr: b(BinOp::Sub, getl("cur"), i32c(8)),
+                            value: i32c(1),
+                            kind: Kind::I32,
+                            offset: 0,
+                        },
                         N::Return(Some(getl("cur"))),
                     ],
                     els: vec![],
@@ -279,17 +290,22 @@ pub fn rc_alloc_helper() -> WirFunc {
             setl("cur", E::GetGlobal("rc_freelist".into())),
             setl("prev", i32c(0)),
             scan,
-            // miss: bump the arena, reserving a 4-byte `[size]` header BEFORE the
-            // object so a later `$rc_free` knows the block's size with no shadow.
-            // The returned object pointer is `base+4`; existing readers are unchanged.
-            N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, getl("size"), i32c(4))] }),
+            // miss: bump the arena, reserving an 8-byte `[rc:i32][size:i32]` header
+            // BEFORE the object. `size` stays at object-4 (so `$rc_free`, the reuse
+            // scan, and the reused-bytes counter are byte-for-byte unchanged); the new
+            // refcount word sits at object-8, initialized to 1 (the allocating owner).
+            // The returned object pointer is `base+8`; every in-object reader is
+            // relative to it and so is unaffected. Off the RC path (`$dup`/`$drop` not
+            // emitted) the refcount is written but never read — inert, +4 bytes/object.
+            N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, getl("size"), i32c(8))] }),
             setl("base", E::GetGlobal("heap".into())),
-            N::Store { ptr: getl("base"), value: getl("size"), kind: Kind::I32, offset: 0 },
+            N::Store { ptr: getl("base"), value: i32c(1), kind: Kind::I32, offset: 0 },
+            N::Store { ptr: getl("base"), value: getl("size"), kind: Kind::I32, offset: 4 },
             N::SetGlobal {
                 global: "heap".into(),
-                value: b(BinOp::Add, getl("base"), b(BinOp::Add, i32c(4), getl("size"))),
+                value: b(BinOp::Add, getl("base"), b(BinOp::Add, i32c(8), getl("size"))),
             },
-            N::Push(b(BinOp::Add, getl("base"), i32c(4))),
+            N::Push(b(BinOp::Add, getl("base"), i32c(8))),
         ],
         raw_body: None,
     }
@@ -316,6 +332,82 @@ pub fn rc_free_helper() -> WirFunc {
             N::Store { ptr: getl("ptr"), value: E::GetGlobal("rc_freelist".into()), kind: Kind::I32, offset: 0 },
             N::SetGlobal { global: "rc_freelist".into(), value: getl("ptr") },
         ],
+        raw_body: None,
+    }
+}
+
+/// (RFC-0035) `$rc_dup(ptr: i32)` — the Perceus dup: record one more live reference to
+/// the heap object whose `$rc_alloc` region starts at `ptr` (refcount at `ptr-8`). A
+/// zero pointer carries no heap object (a nullary/immediate value), so it is a no-op —
+/// codegen only emits this for always-boxed element types, and this guard is
+/// defence-in-depth. Emitted (gated `rc-floor`) where a heap value is aliased into a
+/// second live holder — a container element read out into a binding, a binding copied.
+pub fn rc_dup_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let rc_addr = || b(BinOp::Sub, getl("ptr"), i32c(8));
+    let rc_load = || E::Load { ptr: Box::new(rc_addr()), kind: Kind::I32, offset: 0 };
+    WirFunc {
+        name: "rc_dup".into(),
+        params: vec![WirLocal { name: "ptr".into(), ty: WirTy::Bool }],
+        ret: vec![],
+        locals: vec![],
+        body: vec![N::If {
+            cond: getl("ptr"),
+            then_: vec![N::Store {
+                ptr: rc_addr(),
+                value: b(BinOp::Add, rc_load(), i32c(1)),
+                kind: Kind::I32,
+                offset: 0,
+            }],
+            els: vec![],
+            result: None,
+        }],
+        raw_body: None,
+    }
+}
+
+/// (RFC-0035) `$rc_drop(ptr: i32)` — the Perceus drop: release one live reference to the
+/// heap object at `$rc_alloc` region `ptr` (refcount at `ptr-8`). At count 1 (the last
+/// reference) the block is returned to the free-list via `$rc_free`; otherwise the count
+/// is decremented. A zero pointer is a no-op. SOUNDNESS: this frees ONLY at a count that
+/// reached 1 through matched `$rc_dup`s — a missed dup would keep the count too low, so
+/// codegen must dup at EVERY aliasing point (the ⊥-keeps-the-count floor governs the
+/// drop side: a missed drop leaks, never frees live). Freeing is shell-only for now — a
+/// child heap value held by the freed block leaks (sound); recursive `$rdrop` is a later
+/// brick. Emitted (gated `rc-floor`) at a heap value's last use and at a slot overwrite.
+pub fn rc_drop_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let rc_addr = || b(BinOp::Sub, getl("ptr"), i32c(8));
+    let rc_load = || E::Load { ptr: Box::new(rc_addr()), kind: Kind::I32, offset: 0 };
+    WirFunc {
+        name: "rc_drop".into(),
+        params: vec![WirLocal { name: "ptr".into(), ty: WirTy::Bool }],
+        ret: vec![],
+        locals: vec![],
+        body: vec![N::If {
+            cond: getl("ptr"),
+            then_: vec![N::If {
+                cond: b(BinOp::Le, rc_load(), i32c(1)),
+                then_: vec![N::Do(E::Call { func: "rc_free".into(), args: vec![getl("ptr")] })],
+                els: vec![N::Store {
+                    ptr: rc_addr(),
+                    value: b(BinOp::Sub, rc_load(), i32c(1)),
+                    kind: Kind::I32,
+                    offset: 0,
+                }],
+                result: None,
+            }],
+            els: vec![],
+            result: None,
+        }],
         raw_body: None,
     }
 }
@@ -3413,6 +3505,20 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         "rc_free" => Some(WirHelperSpec {
             func: rc_free_helper(),
             helper_deps: &[],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "rc_dup" => Some(WirHelperSpec {
+            func: rc_dup_helper(),
+            helper_deps: &[],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "rc_drop" => Some(WirHelperSpec {
+            func: rc_drop_helper(),
+            helper_deps: &["rc_free"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,
