@@ -3884,6 +3884,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
+        "now_monotonic" => Some(WirHelperSpec {
+            func: host_call_helper_ret("now_monotonic", "now_monotonic", 0, WirTy::Int),
+            helper_deps: &[],
+            import_deps: &["now_monotonic"],
+            uses_heap: false,
+            uses_table: false,
+        }),
         "rand_u64" => Some(WirHelperSpec {
             func: host_call_helper_ret("rand_u64", "rand_u64", 0, WirTy::Int),
             helper_deps: &[],

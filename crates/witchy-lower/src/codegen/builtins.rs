@@ -336,6 +336,15 @@ impl Codegen {
                     W::CallHost { import: "now_host".to_string(), args: vec![] }
                 }
             }
+            // `now_monotonic(clock)`: monotonic elapsed nanoseconds. Like `now`, the
+            // Clock arg is type-level and the host import takes no operands.
+            ("now_monotonic", 1) => {
+                if self.collect_wir {
+                    call("now_monotonic", vec![])
+                } else {
+                    W::CallHost { import: "now_monotonic_host".to_string(), args: vec![] }
+                }
+            }
             // `rand_u64(rand)`: like `now`, the Rand arg is type-level; the host import
             // is the authority and takes no operands, returning a fresh i64 draw.
             ("rand_u64", 1) => {

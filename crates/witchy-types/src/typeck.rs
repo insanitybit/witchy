@@ -1140,6 +1140,10 @@ impl Checker {
         match name {
             "print" => Some((vec![Ty::Console, Ty::String], Ty::Nil)),
             "now" => Some((vec![Ty::Clock], Ty::Int)),
+            // Monotonic elapsed nanoseconds (a steady clock, immune to wall-clock
+            // jumps) — for measuring durations. Like `now`, the Clock arg is the
+            // authority; reading it is ambient nondeterminism.
+            "now_monotonic" => Some((vec![Ty::Clock], Ty::Int)),
             "rand_u64" => Some((vec![Ty::Rand], Ty::Int)),
             "get_env" => Some((vec![Ty::Env, Ty::String], Ty::Named("Option".into(), vec![Ty::String]))),
             // Build-time host operations (the build sandbox provides these). Each

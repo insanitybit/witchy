@@ -1520,6 +1520,18 @@ impl Interpreter {
                 }
                 _ => err("now expects a Clock"),
             },
+            // Monotonic elapsed nanoseconds since first use — a steady clock for
+            // measuring durations (unaffected by wall-clock adjustments). The
+            // process-start reference is lazily set on the first call, so a
+            // start/stop bracket around a computation yields its elapsed time.
+            "now_monotonic" => match args {
+                [Value::Cap(Capability::Clock)] => {
+                    static START: std::sync::LazyLock<std::time::Instant> =
+                        std::sync::LazyLock::new(std::time::Instant::now);
+                    Ok(Some(Value::Int(START.elapsed().as_nanos() as i64)))
+                }
+                _ => err("now_monotonic expects a Clock"),
+            },
             // A fresh draw of the `Rand` capability. Seeded (WITCHY_RAND_SEED) it is
             // deterministic and matches the compiled backend bit-for-bit (parity);
             // unseeded the oracle clock-seeds splitmix (the production CSPRNG is the

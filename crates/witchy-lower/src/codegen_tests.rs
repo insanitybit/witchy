@@ -34,7 +34,7 @@
         assert!(imports.iter().any(|i| i == "build_out_write"), "write_out import present");
         assert!(imports.iter().any(|i| i == "build_read_len"), "read_build import present");
         // No runtime-authority imports leaked in.
-        for forbidden in ["dir_write", "dir_read_len", "net_connect", "net_listen", "print", "now", "crypto.sign"] {
+        for forbidden in ["dir_write", "dir_read_len", "net_connect", "net_listen", "print", "now", "now_monotonic", "crypto.sign"] {
             assert!(!imports.iter().any(|i| i == forbidden), "build module must not import `{forbidden}`: {imports:?}");
         }
     }

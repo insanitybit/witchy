@@ -557,6 +557,7 @@ pub(crate) fn link_capability_imports(
     }
     if caps.clock {
         linker.func_wrap("witchy", "now", host_now)?;
+        linker.func_wrap("witchy", "now_monotonic", host_now_monotonic)?;
     }
     if caps.env {
         linker.func_wrap("witchy", "env_len", host_env_len)?;
@@ -1064,6 +1065,16 @@ fn host_now(_caller: Caller<'_, VmState>) -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// `now_monotonic() -> i64`: nanoseconds elapsed on a monotonic (steady) clock
+/// since first use. The reference `Instant` is set lazily on the first call, so
+/// a start/stop bracket around a computation measures its elapsed time without
+/// the wall-clock jump hazard of `now`.
+fn host_now_monotonic(_caller: Caller<'_, VmState>) -> i64 {
+    static START: std::sync::LazyLock<std::time::Instant> =
+        std::sync::LazyLock::new(std::time::Instant::now);
+    START.elapsed().as_nanos() as i64
 }
 
 /// `env_len(name_ptr) -> Int`: the byte length of the named environment

@@ -4830,6 +4830,29 @@ fn yes(b: Bool) -> String:
         assert!(fp.total.contains_key("Clock"), "Clock should appear in the footprint");
     }
 
+    /// `now_monotonic(clock)` yields monotonic elapsed nanoseconds — a steady
+    /// clock for measuring durations (used by the benchmark harness to time the
+    /// compute kernel, excluding process startup). The absolute value is
+    /// nondeterministic, so parity is asserted on a *derived* property (elapsed is
+    /// non-negative and the kernel result is identical) that both backends agree on.
+    #[test]
+    fn now_monotonic_measures_elapsed_on_both_backends() {
+        let src = "fn spin(n: Int) -> Int:\n    var a = 0\n    var i = 0\n    while i < n:\n        a = a + i\n        i = i + 1\n    a\n\nfn main(console: Console, clock: Clock):\n    let t0 = now_monotonic(clock)\n    let r = spin(1000)\n    let t1 = now_monotonic(clock)\n    print(console, \"${r}\")\n    print(console, \"${t1 - t0 >= 0}\")\n";
+        let expected = vec!["499500".to_string(), "true".to_string()];
+        assert_eq!(interpreter::run(src).expect("interp"), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+        // Like `now`, it needs a Clock — another capability is a type error.
+        assert!(typeck::check_str("fn main(c: Console):\n    let t = now_monotonic(c)\n").is_err());
+        // The Clock requirement surfaces in the capability footprint.
+        let fp = crate::capabilities::analyze(
+            &parser::parse_module(
+                "fn main(console: Console, clock: Clock):\n    let t = now_monotonic(clock)\n",
+            )
+            .expect("parse"),
+        );
+        assert!(fp.total.contains_key("Clock"), "Clock should appear in the footprint");
+    }
+
     /// The `Env` capability reads process environment variables via `get_env`,
     /// returning `Option(String)` (None when unset). Reading the environment is
     /// ambient authority, so it's capability-gated and surfaces in the footprint.

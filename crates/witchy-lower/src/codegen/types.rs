@@ -73,7 +73,7 @@ impl Codegen {
                 "math.to_float" => Kind::F64,
                 "math.to_int" | "string.length" | "string.char_count" | "string.index_of"
                 | "list.length" | "dict.length" | "string.to_int" | "int_to_duration"
-                | "duration_to_int" | "now" | "rand_u64"
+                | "duration_to_int" | "now" | "now_monotonic" | "rand_u64"
                 | "__bytes_length" | "__bytes_at" => Kind::I64,
                 "list.at" => self.elem_kind_of_list_arg(e),
                 "__render" | "int_to_string" | "print" => Kind::I32,
@@ -270,7 +270,7 @@ impl Codegen {
                 | "crypto.rsa_pkcs1_sha256_verify" => ValType::Bool,
                 "string.length" | "string.char_count" | "string.index_of" | "list.length"
                 | "dict.length" | "math.to_int" | "string.to_int" | "int_to_duration"
-                | "duration_to_int" | "now" | "rand_u64" => ValType::Int,
+                | "duration_to_int" | "now" | "now_monotonic" | "rand_u64" => ValType::Int,
                 "math.to_float" | "math.sqrt" => ValType::Float,
                 other => self.fn_ret_valtype.get(other).copied().unwrap_or(ValType::Other),
             },
