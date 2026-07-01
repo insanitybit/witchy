@@ -112,20 +112,27 @@ TRACK C — performance (DEFERRED by direction)
   method dispatch `crates/witchy-lower/src/codegen/builtins.rs:559` + interp
   `crates/witchy-interp/src/interpreter.rs:1691`; enforcement `crates/witchy-runtime/src/runtime.rs`.
 - **Sub-tasks:**
-  1. **Dir `kind()` entry policy** (M): add `confine.kind(File|Dir)` builder
-     (`std/confine.witchy` after `:28`, mirroring `ext()`); extend `dir_admits`
-     (`capabilities.rs:224`) to parse `kind:` patterns — pass an `is_dir` flag from
-     `dir_guard` (`runtime.rs:1134`) which knows the target kind; compose with `ext`
-     via the existing newline-join. Fail closed on symlink/uncertain kind.
-  2. **Carried-state record** (S): mostly *verify* — sealed records with ≥1 host cap
-     + policy fields already work (`examples/carried_state`), footprint sums all
-     fields (`capabilities.rs:387`), opaque (match-only) via RFC-0002 sealing. Add a
-     multi-field test asserting it audits as the host cap only; confirm no `.field`
-     leak in typeck.
-  3. **Retire `restrict` builtin** (S–M): reject `restrict(net, addr)` in typeck
-     (suggest `net.only(…)`); remove the builtin arms (`codegen/builtins.rs:550`,
-     `interpreter.rs:1683`); KEEP the `--net` string parser (config/manifests).
-     `subdir` is already retired.
+  1. **Dir `kind()` entry policy** (M) — builders `confine.files()`/`confine.dirs()`
+     → `DirPolicy("kind:file"|"kind:dir")` (`File`/`Dir` aren't values, so use plain
+     builders, not RFC's `kind(File)`). `dir_admits(policy, name, is_dir)` gains a
+     kind constraint AND-composed with `ext` (kind gate + ext gate both apply;
+     preserve existing ext-only behavior). **KEY FINDING (2026-07-01):** all 5
+     current `dir_admits` sites are FILE ops (interp read/write/read_file/write_file
+     `:1378/1387/1437/1458`; runtime `:1163`) → `is_dir=false`. Directory-traversal
+     ops (make_dir/subdir/list/open-subdir) do NOT currently check the policy — so a
+     MEANINGFUL kind filter must ADD `dir_admits(…, is_dir=true)` enforcement to those
+     ops on BOTH backends (else `dirs()` blocks files with nothing to admit). Settle
+     `ext×kind` composition in `dir_only` (single-call union works; sequential
+     cross-dimension narrowing needs group-by-dimension). Differential test:
+     `dir.only(files())` admits a file read, denies a subdir open, identically.
+  2. **Carried-state record** — ✅ DONE: `carried_state_capability_runs_and_audits_through_record`
+     (example_tests.rs:9391) already proves a `Postgres(Net, String)` cap runs on
+     both backends and audits as `Net` only.
+  3. **`File` entry policies** + **retire `restrict`/`subdir` builtins** (per RFC-0011
+     line 31/152): the `restrict`/`subdir` *builtins* migrate to `net.only`/
+     `dir.subtree` (the STRING form survives only as `--net`/config). Only callers are
+     2 interp tests (`interpreter_tests.rs:470/490`) — migrate them; remove the arms
+     (`codegen/builtins.rs:550` `restrict`, typeck verb `typeck.rs:1702/1771`).
 - **DoD:** `dir.only(kind(File), ext(".txt"))` confines identically on both backends
   (differential test); carried-state audits as its host cap only; `restrict` builtin
   rejected, `--net` string still works. **Size:** M (~4–6h of focused work).
