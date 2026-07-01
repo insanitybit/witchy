@@ -735,7 +735,7 @@ impl Codegen {
                     if self.elide_index_list.iter().any(|(i, l)| i == iv && l == lv));
                 let list_w = self.lower_expr(&args[0])?;
                 let idx_w = Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I32);
-                if elide {
+                let read = if elide {
                     let wi32 = witchy_wir::wir::Kind::I32;
                     let add = witchy_wir::wir::BinOp::Add;
                     let addr = W::Binary {
@@ -764,6 +764,23 @@ impl Codegen {
                     )
                 } else {
                     W::FromSlot(Box::new(call("list_at", vec![list_w, idx_w])), Self::wir_kind(ek))
+                };
+                // (RFC-0035) The element read out of the container is now an OWNED
+                // reference — the reader shares the object with the slot — so `$rc_dup` it
+                // (it returns the pointer, so it wraps the read in place). Its consumer
+                // then transfers it (stored into another container / returned) or drops it
+                // at last use. Gated `rc-floor`; only i32-kinded (heap-pointer) elements —
+                // `$rc_dup`'s `ptr >= heap_base` guard makes a non-heap i32 (Bool, a tag, a
+                // cap handle) a no-op, so this is sound for every i32 element with no type
+                // test. `dup`-at-read alone (no drops yet) only ever INCREMENTS, so it
+                // cannot free live data — it is sound independent of drop coverage.
+                if Self::wir_kind(ek) == witchy_wir::wir::Kind::I32
+                    && !force_copy_mode()
+                    && witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::RcFloor)
+                {
+                    W::Call { func: "rc_dup".into(), args: vec![read] }
+                } else {
+                    read
                 }
             }
             ("recv_bytes", 2) => {
