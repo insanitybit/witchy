@@ -705,6 +705,21 @@ pub fn assemble_wir_module(
                         // initial value as the base and restores it; see witchy-runtime.mjs.
                         export: Some("__heap".into()),
                     },
+                    // (RFC-0035) The immutable heap base = the initial `$heap` value (the
+                    // first byte past the static data segment). Every `$rc_alloc` object
+                    // lives at an address >= this; scalars, nullary/immediate values,
+                    // capability handles and static-data pointers all sit BELOW it. The
+                    // gated `$rc_dup`/`$rc_drop` guard on `ptr >= heap_base`, so emitting
+                    // them for any `i32`-kinded value is a sound over-approximation — only
+                    // a real refcounted heap object (which alone has the `[rc]` header at
+                    // `ptr-8`) is ever touched.
+                    WirGlobal {
+                        name: "heap_base".into(),
+                        kind: WK::I32,
+                        mutable: false,
+                        init: GlobalInit::I32(cg.next_offset as i32),
+                        export: None,
+                    },
                     WirGlobal {
                         name: "__witchy_reowns".into(),
                         kind: WK::I64,

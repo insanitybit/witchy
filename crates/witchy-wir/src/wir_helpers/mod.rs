@@ -337,11 +337,13 @@ pub fn rc_free_helper() -> WirFunc {
 }
 
 /// (RFC-0035) `$rc_dup(ptr: i32)` — the Perceus dup: record one more live reference to
-/// the heap object whose `$rc_alloc` region starts at `ptr` (refcount at `ptr-8`). A
-/// zero pointer carries no heap object (a nullary/immediate value), so it is a no-op —
-/// codegen only emits this for always-boxed element types, and this guard is
-/// defence-in-depth. Emitted (gated `rc-floor`) where a heap value is aliased into a
-/// second live holder — a container element read out into a binding, a binding copied.
+/// the heap object whose `$rc_alloc` region starts at `ptr` (refcount at `ptr-8`). The
+/// `ptr >= heap_base` guard means only a REAL refcounted heap object is touched: scalars
+/// (Bool is also `i32`), nullary/immediate values, capability handles and static-data
+/// pointers all sit below `heap_base` and are no-ops. So codegen may emit this for any
+/// `i32`-kinded value — the guard is the soundness floor, not mere defence-in-depth.
+/// Emitted (gated `rc-floor`) where a heap value is aliased into a second live holder —
+/// a container element read out into a binding, a binding copied.
 pub fn rc_dup_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
@@ -356,7 +358,7 @@ pub fn rc_dup_helper() -> WirFunc {
         ret: vec![],
         locals: vec![],
         body: vec![N::If {
-            cond: getl("ptr"),
+            cond: b(BinOp::GeU, getl("ptr"), E::GetGlobal("heap_base".into())),
             then_: vec![N::Store {
                 ptr: rc_addr(),
                 value: b(BinOp::Add, rc_load(), i32c(1)),
@@ -373,12 +375,13 @@ pub fn rc_dup_helper() -> WirFunc {
 /// (RFC-0035) `$rc_drop(ptr: i32)` — the Perceus drop: release one live reference to the
 /// heap object at `$rc_alloc` region `ptr` (refcount at `ptr-8`). At count 1 (the last
 /// reference) the block is returned to the free-list via `$rc_free`; otherwise the count
-/// is decremented. A zero pointer is a no-op. SOUNDNESS: this frees ONLY at a count that
-/// reached 1 through matched `$rc_dup`s — a missed dup would keep the count too low, so
-/// codegen must dup at EVERY aliasing point (the ⊥-keeps-the-count floor governs the
-/// drop side: a missed drop leaks, never frees live). Freeing is shell-only for now — a
-/// child heap value held by the freed block leaks (sound); recursive `$rdrop` is a later
-/// brick. Emitted (gated `rc-floor`) at a heap value's last use and at a slot overwrite.
+/// is decremented. The `ptr >= heap_base` guard no-ops on any non-heap `i32` (scalar,
+/// immediate, capability handle, static-data pointer). SOUNDNESS: this frees ONLY at a
+/// count that reached 1 through matched `$rc_dup`s — a missed dup would keep the count
+/// too low, so codegen must dup at EVERY aliasing point (the ⊥-keeps-the-count floor
+/// governs the drop side: a missed drop leaks, never frees live). Freeing is shell-only
+/// for now — a child heap value held by the freed block leaks (sound); recursive `$rdrop`
+/// is a later brick. Emitted (gated `rc-floor`) at a heap value's last use / a slot overwrite.
 pub fn rc_drop_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
@@ -393,7 +396,7 @@ pub fn rc_drop_helper() -> WirFunc {
         ret: vec![],
         locals: vec![],
         body: vec![N::If {
-            cond: getl("ptr"),
+            cond: b(BinOp::GeU, getl("ptr"), E::GetGlobal("heap_base".into())),
             then_: vec![N::If {
                 cond: b(BinOp::Le, rc_load(), i32c(1)),
                 then_: vec![N::Do(E::Call { func: "rc_free".into(), args: vec![getl("ptr")] })],
