@@ -68,8 +68,10 @@
     /// runtime output is unchanged) — only when a routed helper is actually present —
     /// so each test need not list `rc_alloc`/`rc_freelist`/`__rc_reused_bytes` itself.
     fn with_rc_floor(module: &WirModule) -> WirModule {
-        const RC_USERS: &[&str] =
-            &["substr", "concat", "list_push", "list_concat", "ascii_case", "dict_new", "dict_remove"];
+        const RC_USERS: &[&str] = &[
+            "substr", "concat", "list_push", "list_concat", "ascii_case", "dict_new", "dict_remove",
+            "list_push_cap", "list_set_cap", "list_update_cap", "str_append_cap", "list_drop",
+        ];
         let mut m = module.clone();
         let uses_rc = m.funcs.iter().any(|f| RC_USERS.contains(&f.name.as_str()));
         if uses_rc && !m.funcs.iter().any(|f| f.name == "rc_alloc") {

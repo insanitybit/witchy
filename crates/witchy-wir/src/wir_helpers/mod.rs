@@ -1103,11 +1103,12 @@ pub fn list_push_cap_helper() -> WirFunc {
             els: vec![],
             result: None,
         },
-        N::Do(E::Call {
-            func: "ensure".into(),
-            args: vec![b32(BinOp::Add, i32c(4), b32(BinOp::Mul, getl("newcap"), i32c(8)))],
-        }),
-        N::SetLocal { local: "new".into(), value: E::GetGlobal("heap".into()) },
+        // (RFC-0016) allocate the grown buffer through `$rc_alloc` (header at new-8/new-4
+        // + free-list reuse); it reserves + bumps `$heap`, so the manual ensure/bump go.
+        N::SetLocal {
+            local: "new".into(),
+            value: E::Call { func: "rc_alloc".into(), args: vec![b32(BinOp::Add, i32c(4), b32(BinOp::Mul, getl("newcap"), i32c(8)))] },
+        },
         N::Store {
             ptr: getl("new"),
             value: b32(BinOp::Add, getl("len"), i32c(1)),
@@ -1124,14 +1125,6 @@ pub fn list_push_cap_helper() -> WirFunc {
             value: getl("x"),
             kind: Kind::I64,
             offset: 4,
-        },
-        N::SetGlobal {
-            global: "heap".into(),
-            value: b32(
-                BinOp::Add,
-                b32(BinOp::Add, getl("new"), i32c(4)),
-                b32(BinOp::Mul, getl("newcap"), i32c(8)),
-            ),
         },
         N::SetLocal { local: "ret_ptr".into(), value: getl("new") },
         N::SetLocal { local: "ret_cap".into(), value: getl("newcap") },
@@ -1195,12 +1188,10 @@ pub fn list_set_cap_helper() -> WirFunc {
         },
         N::SetLocal { local: "newcap".into(), value: b(BinOp::Mul, getl("len"), i32c(2)) },
         N::If { cond: b(BinOp::Lt, getl("newcap"), i32c(8)), then_: vec![N::SetLocal { local: "newcap".into(), value: i32c(8) }], els: vec![], result: None },
-        N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("newcap"), i32c(8)))] }),
-        N::SetLocal { local: "new".into(), value: E::GetGlobal("heap".into()) },
+        N::SetLocal { local: "new".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("newcap"), i32c(8)))] } },
         N::Store { ptr: getl("new"), value: getl("len"), kind: Kind::I32, offset: 0 },
         N::MemoryCopy { dest: b(BinOp::Add, getl("new"), i32c(4)), src: b(BinOp::Add, getl("list"), i32c(4)), len: b(BinOp::Mul, getl("len"), i32c(8)) },
         N::Store { ptr: slot("new"), value: getl("x"), kind: Kind::I64, offset: 0 },
-        N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("new"), i32c(4)), b(BinOp::Mul, getl("newcap"), i32c(8))) },
         N::SetLocal { local: "ret_ptr".into(), value: getl("new") },
         N::SetLocal { local: "ret_cap".into(), value: getl("newcap") },
     ];
@@ -1269,12 +1260,10 @@ pub fn list_update_cap_helper() -> WirFunc {
         },
         N::SetLocal { local: "newcap".into(), value: b(BinOp::Mul, getl("len"), i32c(2)) },
         N::If { cond: b(BinOp::Lt, getl("newcap"), i32c(8)), then_: vec![N::SetLocal { local: "newcap".into(), value: i32c(8) }], els: vec![], result: None },
-        N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("newcap"), i32c(8)))] }),
-        N::SetLocal { local: "nb".into(), value: E::GetGlobal("heap".into()) },
+        N::SetLocal { local: "nb".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("newcap"), i32c(8)))] } },
         N::Store { ptr: getl("nb"), value: getl("len"), kind: Kind::I32, offset: 0 },
         N::MemoryCopy { dest: b(BinOp::Add, getl("nb"), i32c(4)), src: b(BinOp::Add, getl("list"), i32c(4)), len: b(BinOp::Mul, getl("len"), i32c(8)) },
         N::Store { ptr: b(BinOp::Add, b(BinOp::Add, getl("nb"), i32c(4)), b(BinOp::Mul, getl("index"), i32c(8))), value: getl("nv"), kind: Kind::I64, offset: 0 },
-        N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("nb"), i32c(4)), b(BinOp::Mul, getl("newcap"), i32c(8))) },
         N::SetLocal { local: "ret_ptr".into(), value: getl("nb") },
         N::SetLocal { local: "ret_cap".into(), value: getl("newcap") },
     ];
@@ -1364,8 +1353,7 @@ pub fn str_append_cap_helper() -> WirFunc {
             els: vec![],
             result: None,
         },
-        N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, i32c(4), getl("newcap"))] }),
-        N::SetLocal { local: "new".into(), value: E::GetGlobal("heap".into()) },
+        N::SetLocal { local: "new".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(4), getl("newcap"))] } },
         N::Store { ptr: getl("new"), value: getl("need"), kind: Kind::I32, offset: 0 },
         N::MemoryCopy {
             dest: b(BinOp::Add, getl("new"), i32c(4)),
@@ -1376,10 +1364,6 @@ pub fn str_append_cap_helper() -> WirFunc {
             dest: b(BinOp::Add, b(BinOp::Add, getl("new"), i32c(4)), getl("len")),
             src: b(BinOp::Add, getl("piece"), i32c(4)),
             len: getl("plen"),
-        },
-        N::SetGlobal {
-            global: "heap".into(),
-            value: b(BinOp::Add, b(BinOp::Add, getl("new"), i32c(4)), getl("newcap")),
         },
         N::SetLocal { local: "ret_ptr".into(), value: getl("new") },
         N::SetLocal { local: "ret_cap".into(), value: getl("newcap") },
@@ -3113,15 +3097,13 @@ pub fn list_drop_helper() -> WirFunc {
         ],
         body: vec![
             N::SetLocal { local: "newlen".into(), value: b(BinOp::Sub, E::Load { ptr: Box::new(getl("list")), kind: Kind::I32, offset: 0 }, getl("k")) },
-            N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("newlen"), i32c(8)))] }),
-            N::SetLocal { local: "new".into(), value: E::GetGlobal("heap".into()) },
+            N::SetLocal { local: "new".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("newlen"), i32c(8)))] } },
             N::Store { ptr: getl("new"), value: getl("newlen"), kind: Kind::I32, offset: 0 },
             N::MemoryCopy {
                 dest: b(BinOp::Add, getl("new"), i32c(4)),
                 src: b(BinOp::Add, b(BinOp::Add, getl("list"), i32c(4)), b(BinOp::Mul, getl("k"), i32c(8))),
                 len: b(BinOp::Mul, getl("newlen"), i32c(8)),
             },
-            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("new"), i32c(4)), b(BinOp::Mul, getl("newlen"), i32c(8))) },
             N::Push(getl("new")),
         ],
         raw_body: None,
@@ -3652,7 +3634,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "list_push_cap" => Some(WirHelperSpec {
             func: list_push_cap_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,
@@ -3687,7 +3669,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "list_drop" => Some(WirHelperSpec {
             func: list_drop_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,
@@ -4213,21 +4195,21 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "str_append_cap" => Some(WirHelperSpec {
             func: str_append_cap_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,
         }),
         "list_set_cap" => Some(WirHelperSpec {
             func: list_set_cap_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,
         }),
         "list_update_cap" => Some(WirHelperSpec {
             func: list_update_cap_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["rc_alloc"],
             import_deps: &[],
             uses_heap: true,
             uses_table: true,
