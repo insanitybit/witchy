@@ -93,6 +93,11 @@ if [ "$full" -eq 1 ]; then
     # output-preserving, so a DIVERGE here is a real reclamation bug under `rc-floor`. Wider
     # than the in-suite default so more freed-then-read shapes are exercised.
     run "fuzz (uaf sanitizer)" env WITCHY_UAF_FUZZ_PROGRAMS=40 cargo nextest run --test differential_fuzz -E 'test(uaf_sanitizer)'
+    # RFC-0037 §3 type-confusion sweep: WITCHY_TYPE_CHECK tags every $rc_alloc object and asserts
+    # the tag at typed reads (boxed .field + packed unbox at().field). On a correct compiler it is
+    # output-preserving, so a DIVERGE/trap is a real layout/unbox confusion. Runs the whole fuzz
+    # corpus (records/ADTs/packable lists) under the sanitizer.
+    run "fuzz (type sanitizer)" env WITCHY_TYPE_CHECK=1 cargo nextest run --test differential_fuzz
     run "e2e (from scratch)"   ./scripts/e2e-full.sh
     # RFC-0030 bench/soak. The deterministic guards — the never-OOM soak and the
     # per-optimization counter assertions (src/stats.rs) — are HARD-gated in the
