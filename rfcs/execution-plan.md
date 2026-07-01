@@ -67,6 +67,22 @@ unblocks 0039 and the whole Glamour capability story.
 - **Goal:** let a library mark a sealed cap `grantable` so it can be a `main`
   parameter, minted from a `[user_caps]` grant-doc section; root-grantable caps
   must be **bare** (zero transitive host taint).
+- **Progress (2026-07-01) — compile-time surface DONE (4 commits):** (1) parse
+  `grantable capability X:` (`TypeDef.grantable`); (2) bareness rule
+  (`check_grantable_caps` in typeck rejects any transitive host taint); (3)
+  `check_main_signature` accepts a bare grantable cap; (4) `GrantDoc` parses a
+  `[user_caps]` section (`UserCapGrant`). **REMAINING — runtime minting (the big,
+  security-sensitive slice):** (5) construct the sealed record at the root on BOTH
+  backends — interpreter `root_cap_for` (`crates/witchy-interp/src/interpreter.rs:653`)
+  builds the record Value from grant fields; compiled path builds `main_args` at
+  `crates/witchy-lower/src/codegen/assembly.rs:592` (mirror the `build_args` argv
+  staging: stage policy strings host→guest, then construct via the guest ctor /
+  `from_grant`, pass the record pointer to `main`) — wire the grant binding in
+  `run_file_grants` (`src/main.rs:1982`); PARITY HAZARD: interp minting while WASM
+  can't (or mints a null) is exactly the hole `main.rs:1628` warns of — extend
+  `unmintable_main_cap` so both backends agree. (6) report granted user caps on the
+  parallel footprint axis + extend the grant cross-check. A program that RUNS with
+  a grantable cap is not yet supported until (5) lands.
 - **Depends on:** nothing (RFC-0002 sealing + RFC-0013 grants already shipped).
 - **Entry points:**
   - `crates/witchy-types/src/typeck.rs:610` `check_main_signature` (the hard-coded
