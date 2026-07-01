@@ -513,6 +513,18 @@ pub fn rc_dup_helper() -> WirFunc {
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let rc_addr = || b(BinOp::Sub, getl("ptr"), i32c(8));
     let rc_load = || E::Load { ptr: Box::new(rc_addr()), kind: Kind::I32, offset: 0 };
+    // (SEC-037) The size word `[ptr-4]` (low 24 bits) — a genuine `$rc_alloc` object always has a
+    // small, plausible size here; a VIEW/slice pointer (into a parent) or a mis-typed scalar dup'd
+    // as a pointer has arbitrary data, so its "size" is implausible. Guarding the increment on a
+    // plausible size means `$rc_dup` touches `[ptr-8]` ONLY on real object bases — never corrupting
+    // a view's/parent's data (the minigrep/pm OOB). A real object always passes, so no dup is lost.
+    let size_ok = || {
+        b(
+            BinOp::LeU,
+            b(BinOp::Sub, b(BinOp::And, E::Load { ptr: Box::new(b(BinOp::Sub, getl("ptr"), i32c(4))), kind: Kind::I32, offset: 0 }, i32c(0x00FF_FFFF)), i32c(1)),
+            i32c((1 << 20) - 2), // (size-1) <=U (2^20 - 2)  ⇔  1 <= size <= 2^20-1  (rejects size==0 too)
+        )
+    };
     WirFunc {
         name: "rc_dup".into(),
         params: vec![WirLocal { name: "ptr".into(), ty: WirTy::Bool }],
@@ -521,7 +533,7 @@ pub fn rc_dup_helper() -> WirFunc {
         locals: vec![],
         body: vec![
             N::If {
-                cond: b(BinOp::GeU, getl("ptr"), E::GetGlobal("heap_base".into())),
+                cond: b(BinOp::And, b(BinOp::GeU, getl("ptr"), E::GetGlobal("heap_base".into())), size_ok()),
                 then_: vec![N::Store {
                     ptr: rc_addr(),
                     value: b(BinOp::Add, rc_load(), i32c(1)),
