@@ -46,6 +46,27 @@
     }
 
     #[test]
+    fn main_accepts_a_grantable_capability() {
+        // (RFC-0038) a bare grantable cap may be a root parameter of `main`.
+        assert!(check_str(
+            "grantable capability UiRoot:\n    policy: String\n\nfn main(console: Console, ui: UiRoot):\n    print(console, \"ok\")\n"
+        )
+        .is_ok());
+        // An ordinary (non-grantable) user type at `main` is still rejected.
+        let err = check_str(
+            "type Config:\n    Config(Int)\n\nfn main(console: Console, c: Config):\n    print(console, \"hi\")\n"
+        )
+        .unwrap_err();
+        assert!(err.contains("main") && err.contains("Config"), "{err}");
+        // A non-grantable *capability* (RFC-0002 refinement) is likewise not root-grantable.
+        let refined = check_str(
+            "capability Redis from Net[Connect]\n\nfn main(console: Console, r: Redis):\n    print(console, \"hi\")\n"
+        )
+        .unwrap_err();
+        assert!(refined.contains("main"), "{refined}");
+    }
+
+    #[test]
     fn packed_list_cannot_cross_a_boundary() {
         // (RFC-0027) a `packed` type's list is a CONFINED LOCAL flat buffer with no
         // cross-function or stored layout — a `List(P)` in a parameter, return type,

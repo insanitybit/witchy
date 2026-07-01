@@ -614,8 +614,22 @@ fn check_main_signature(module: &Module) -> Result<(), TypeError> {
     }) else {
         return Ok(());
     };
+    // RFC-0038: a library-defined capability marked `grantable` may also enter at
+    // the root (the host mints it from a `[user_caps]` grant). Bareness is enforced
+    // separately by `check_grantable_caps`, so here we only recognize the name.
+    let grantable: std::collections::HashSet<&str> = module
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            Item::Type(t) if t.grantable => Some(t.name.as_str()),
+            _ => None,
+        })
+        .collect();
+    let is_grantable_cap = |t: &ast::Type| {
+        matches!(t, ast::Type::Named(n, _) if grantable.contains(n.as_str()))
+    };
     for p in &main.params {
-        if matches!(&p.ty, Some(t) if is_capability_type(t) || is_args_type(t)) {
+        if matches!(&p.ty, Some(t) if is_capability_type(t) || is_args_type(t) || is_grantable_cap(t)) {
             continue;
         }
         let found = match &p.ty {
@@ -624,7 +638,8 @@ fn check_main_signature(module: &Module) -> Result<(), TypeError> {
         };
         return terr(format!(
             "`main` parameter `{}` {found}, but `main` may only take host capabilities \
-             (Console, Clock, Env, Dir, Net, Exec, Secret, SecretStore) or `List(String)` for command-line args",
+             (Console, Clock, Env, Dir, Net, Exec, Secret, SecretStore), a `grantable` \
+             library capability, or `List(String)` for command-line args",
             p.name
         ));
     }
