@@ -409,7 +409,27 @@ pub fn dict_insert_cap_helper() -> WirFunc {
         N::SetLocal { local: "ret_cap".into(), value: getl("cap") },
     ];
     // found < 0 && cap > count: append a fresh entry into the owned slack.
+    // (RFC-0005 step 2) Bound the in-place append against the buffer's REAL allocated
+    // size. A dict `d` is `rc_alloc(...) + 4` (the hidden index word sits at `d-4`), so
+    // its rc size header is at `[d-8]` (low 24 bits). The new entry at index `count`
+    // stores its value up to byte `d + count*16 + 20`; the block runs to `d-4 + size`,
+    // so the write is in-bounds iff `count*16 + 24 <= size`. `cap > count` gates this
+    // path on the analysis's CLAIMED capacity; if it overstates the real allocation the
+    // append lands past the block (silent corruption) — trap instead. Sound: a real
+    // buffer of capacity `cap` has `size = 8 + cap*16`, so `count < cap` implies
+    // `count*16 + 24 <= size`, and `cap > count >= 0` means the check only ever runs on
+    // a real heap buffer (`cap >= 1`).
     let append_inplace = vec![
+        N::If {
+            cond: b(
+                BinOp::GtU,
+                b(BinOp::Add, b(BinOp::Mul, getl("count"), i32c(16)), i32c(24)),
+                b(BinOp::And, E::Load { ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(8))), kind: Kind::I32, offset: 0 }, i32c(super::RC_SIZE_MASK)),
+            ),
+            then_: vec![N::Unreachable],
+            els: vec![],
+            result: None,
+        },
         N::Store { ptr: entry("d", "count"), value: getl("k"), kind: Kind::I64, offset: 4 },
         N::Store { ptr: entry("d", "count"), value: getl("v"), kind: Kind::I64, offset: 12 },
         N::Store { ptr: getl("d"), value: b(BinOp::Add, getl("count"), i32c(1)), kind: Kind::I32, offset: 0 },

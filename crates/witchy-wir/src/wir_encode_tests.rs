@@ -84,6 +84,28 @@
         );
     }
 
+    /// The transitive helper closure of `root` (itself + every helper it calls, via the
+    /// registry's `helper_deps`) — so a synthetic test can pull a helper with a large
+    /// dependency chain (e.g. `dict_insert_cap` -> `dict_find`/`dict_index_put`/
+    /// `key_eq`/`str_eq`/…) without hand-listing every dep.
+    fn helper_closure(root: &str) -> Vec<WirFunc> {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut queue = vec![root.to_string()];
+        let mut out = vec![];
+        while let Some(n) = queue.pop() {
+            if !seen.insert(n.clone()) {
+                continue;
+            }
+            if let Some(spec) = crate::wir_helpers::wir_helper(&n) {
+                for d in spec.helper_deps {
+                    queue.push((*d).to_string());
+                }
+                out.push(spec.func);
+            }
+        }
+        out
+    }
+
     /// (RFC-0016) The list/string/dict/`mk` allocators are routed through `$rc_alloc`,
     /// so a hand-assembled module using one needs the allocator + its globals present.
     /// Inject them idempotently (by name, so func/global resolution is unaffected and
@@ -94,6 +116,7 @@
             "substr", "concat", "list_push", "list_concat", "ascii_case", "dict_new", "dict_remove",
             "dict_insert", "dict_keys", "dict_values", "dict_pairs",
             "list_push_cap", "list_set_cap", "list_update_cap", "str_append_cap", "list_drop",
+            "dict_insert_cap",
             "int_to_string", "split", "str_chars",
             // batch 3: host-import + worst-case string/list producers (all route through rc_alloc)
             "replace", "encoding", "dir_read", "file_read", "exec", "crypto_reveal", "build_read",
@@ -447,6 +470,61 @@
             data: vec![],
             globals: vec![
                 WirGlobal { name: "heap".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(2080), export: None },
+                WirGlobal {
+                    name: "__witchy_reowns".into(),
+                    kind: Kind::I64,
+                    mutable: true,
+                    init: GlobalInit::I64(0),
+                    export: Some("__witchy_reowns".into()),
+                },
+            ],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        assert_traps(&module);
+    }
+
+    /// RFC-0005 step 2: the in-place `$dict_insert_cap` APPEND bounds check TRAPS when
+    /// `cap` overstates the buffer's real allocation. An empty dict whose rc size header
+    /// (`[d-8]`) is too small for even one entry (an entry at index `count` needs
+    /// `count*16+24` bytes) is appended to with cap=1; the check traps instead of writing
+    /// the entry past the block. (A dict is `rc_alloc(..)+4`, so the hidden index word is
+    /// at `d-4` and the size header at `d-8`; setting the index word to 0 makes the find a
+    /// linear scan and skips `dict_index_put`.)
+    #[test]
+    fn dict_insert_cap_traps_on_overstated_cap() {
+        use WirExpr::*;
+        // d = 2052: size header [2044]=20 (< the 24 one entry needs), index word
+        // [2048]=0 (linear-scan find, no index update), count [2052]=0.
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![local("rp", WirTy::Bool), local("rc", WirTy::Bool)],
+            body: vec![
+                WirNode::Store { ptr: ConstI32(2044), value: ConstI32(20), kind: Kind::I32, offset: 0 },
+                WirNode::Store { ptr: ConstI32(2048), value: ConstI32(0), kind: Kind::I32, offset: 0 },
+                WirNode::Store { ptr: ConstI32(2052), value: ConstI32(0), kind: Kind::I32, offset: 0 },
+                WirNode::SetGlobal { global: "heap".into(), value: ConstI32(2200) },
+                // dict_insert_cap(d=2052, k=5, v=9, mode=0 int-keys, cap=1): key not found,
+                // cap(1) > count(0) → append_inplace → the check fires (24 > 20).
+                WirNode::CallStoreMulti {
+                    func: "dict_insert_cap".into(),
+                    args: vec![ConstI32(2052), ConstI64(5), ConstI64(9), ConstI32(0), ConstI32(1)],
+                    dests: vec!["rp".into(), "rc".into()],
+                },
+            ],
+            raw_body: None,
+        };
+        let mut funcs = helper_closure("dict_insert_cap");
+        funcs.push(run);
+        let module = WirModule {
+            imports: vec![WirImport { name: "print_int".into(), params: vec![Kind::I64], results: vec![] }],
+            funcs,
+            memory_pages: 1,
+            data: vec![],
+            globals: vec![
+                WirGlobal { name: "heap".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(2200), export: None },
                 WirGlobal {
                     name: "__witchy_reowns".into(),
                     kind: Kind::I64,
