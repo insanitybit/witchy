@@ -87,3 +87,41 @@ fn witchy_highlighter_colours_current_syntax() {
     );
     assert!(stdout.contains("WITCHY-HIGHLIGHT OK"), "highlighter test did not report success:\n{stdout}");
 }
+
+/// RFC-0041 Phase 2: the RUNNABLE CELL, end to end and headless. The committed Node driver
+/// (`web/witchy-runtime/witchy-runnable.test.mjs`) builds a fake DOM with a
+/// `<pre><code class="language-witchy">` block (what `markdown.to_vnode` emits), enhances it
+/// with `web/witchy-runnable.js`, and DRIVES Run — which compiles+runs the block's source via
+/// the same `witchy-host.js` + `web/witchy.wasm` engine the validated playground uses. It
+/// asserts the output equals the program's, that a compile error surfaces as an error cell,
+/// that enhancement is idempotent, and that non-`witchy` fences are left alone. This is the
+/// crux of the runnable book — proven with no browser (`witchy-host.js` runs under Node/V8).
+/// Requires `web/witchy.wasm` (built by `scripts/build-playground.sh`); SKIPS cleanly if absent.
+#[test]
+fn witchy_runnable_cell_compiles_and_runs_in_page() {
+    if !node_available() {
+        eprintln!("skipping: `node` is not available on PATH");
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if !manifest.join("web/witchy.wasm").exists() {
+        eprintln!("skipping: web/witchy.wasm not built (run scripts/build-playground.sh)");
+        return;
+    }
+    let driver = manifest.join("web/witchy-runtime/witchy-runnable.test.mjs");
+    assert!(driver.exists(), "the committed runnable-cell driver must exist at {}", driver.display());
+
+    let out = Command::new("node")
+        .arg(&driver)
+        .current_dir(manifest)
+        .output()
+        .expect("spawn node runnable-cell driver");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the runnable-cell test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stdout.contains("WITCHY-RUNNABLE OK"), "runnable-cell driver did not report success:\n{stdout}");
+}

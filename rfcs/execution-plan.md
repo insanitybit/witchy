@@ -113,10 +113,15 @@ pickup: **RFC-0019** (the last Track A item), then Track B (**RFC-0005**, **RFC-
     reader's snippet compiles to a capability-DENIED pure-compute wasm (deny-by-omission), so
     it's already contained; a compartment's `connect-src none` would only block loading the
     compiler. Highlighting is host-side over the escaped `language-witchy` text (XSS-safe; no
-    sink in the rune). REMAINING (browser JS + a FakeElement harness to verify): a host
-    enhancer that finds `pre>code.language-witchy` after each render and wires
-    `witchy-editor.js` + a Run button to `witchy-host.js`; capability badges from
-    `examples.json`; keep Run host-managed so glamour doesn't re-diff the cell.
+    sink in the rune). **ENHANCER DONE:** `web/witchy-runnable.js` —
+    `enhanceRunnableCells(root, {document, loadCompiler})` finds `pre>code.language-witchy`,
+    adds a host-managed Run button + output pane (idempotent, DOM-agnostic — no innerHTML/
+    querySelector), and on Run compiles+runs via `witchy-host.js` + `web/witchy.wasm`. Proven
+    END-TO-END headlessly by `witchy-runnable.test.mjs` (a FakeElement harness drives Run,
+    asserts the real output; compile error → error cell; idempotent; non-witchy fences
+    untouched), wrapped by `witchy_runnable_cell_compiles_and_runs_in_page`. REMAINING for the
+    full book: call the enhancer from the docs render loop (a `glamour-dom.mjs` onRender hook)
+    + an editable textarea (`witchy-editor.js`) + capability badges from `examples.json` + theme.
   - **P3 (kept from 0019) — manifest DONE:** `book/examples.json` is generated from the
     SAME classifier as `documentation_examples_are_valid` (per block: runnable/console_only/
     expect_error/right-precise footprint/interpreter output) and freshness-gated by
