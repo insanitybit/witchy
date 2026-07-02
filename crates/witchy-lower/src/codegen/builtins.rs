@@ -547,15 +547,11 @@ impl Codegen {
                 let a = self.lower_args(&[&args[0]])?;
                 if self.collect_wir { call("net_accept", a) } else { host("net_accept_host", a) }
             }
-            ("restrict", 2) => {
-                self.used_net_ops.insert("restrict");
-                let a = self.lower_args(&[&args[0], &args[1]])?;
-                if self.collect_wir { call("net_restrict", a) } else { host("net_restrict_host", a) }
-            }
             // RFC-0011 typed verbs: `only`/`deny` take a policy record; extract its
             // single `pattern` field and feed the host op the same string. `only` is
             // polymorphic on the receiver — a `Dir` narrows its ENTRY policy
-            // (`dir_only`), a `Net` narrows its ADDRESS set (`net_restrict`).
+            // (`dir_only`), a `Net` narrows its ADDRESS set (`net_restrict`, the host op
+            // name is historical — the user-facing verb is `only`).
             ("only", 2) => {
                 let pattern = Expr::Field { base: Box::new(args[1].clone()), field: "pattern".into() };
                 if matches!(self.type_table.type_of(&args[0]), Some(witchy_types::typeck::Ty::Dir(_))) {

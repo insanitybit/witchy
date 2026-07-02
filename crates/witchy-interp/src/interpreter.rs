@@ -1720,12 +1720,6 @@ impl Interpreter {
                 }
                 _ => err("run_tool expects a BuildExec, a tool name, and input"),
             },
-            // Network capability: attenuate a Net to a held address. `only` is
-            // RFC-0011's method-form verb for the same allow-narrowing.
-            "restrict" => match args {
-                [Value::Net(allow), Value::Str(addr)] => Ok(Some(net_narrow_to(allow, addr)?)),
-                _ => err("restrict expects a Net and an address"),
-            },
             // RFC-0011 typed verbs: the argument is a `NetPolicy` carrying one or more address
             // patterns (a `confine.union` joins them, newline-separated). `only` narrows to the
             // set; `deny` subtracts it (a monotone exclusion recorded as `!`-prefixed entries

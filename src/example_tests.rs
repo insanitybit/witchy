@@ -376,13 +376,8 @@
         let expected = ["a", "b"];
         assert_eq!(interpreter::run(src).expect("interp"), expected, "interp");
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
-        // `net.restrict(addr)` (method) and `restrict(net, addr)` (free) both type-check.
-        let net = "fn main(net: Net):\n    let a = net.restrict(\"10.0.0.5:6379\")\n    let b = restrict(net, \"10.0.0.5:6379\")\n";
-        assert!(
-            typeck::check_str(net).is_ok(),
-            "net.restrict method form must type-check: {:?}",
-            typeck::check_str(net)
-        );
+        // The refinement verb `net.only(...)` (method) / `only(...)` (free) is exercised on
+        // both backends by `net_only_refinement_verb_backends_agree` below.
     }
 
     /// RFC-0011: `std/confine` builds a typed `NetPolicy` (`confine.tcp(host, port)`)
@@ -430,11 +425,12 @@
     }
 
     /// RFC-0011: `net.only(policy)` is the typed refinement verb — it narrows a `Net`'s
-    /// address set to a `NetPolicy`, while `restrict(net, "host:port")` is the string form
-    /// (config/serialization). Both narrow identically, on both backends.
+    /// address set to a `NetPolicy` built by `confine`. It narrows identically on both
+    /// backends. (The raw-string form survives only as a `--net`/config grant, not a
+    /// language builtin — see `retired_restrict_builtin_is_rejected`.)
     #[test]
     fn net_only_refinement_verb_backends_agree() {
-        let src = "import confine\nfn main(net: Net, console: Console):\n    let m = net.only(confine.tcp(\"10.0.0.5\", 6379))\n    let f = restrict(net, \"10.0.0.5:6379\")\n    print(console, \"only\")\n";
+        let src = "import confine\nfn main(net: Net, console: Console):\n    let m = net.only(confine.tcp(\"10.0.0.5\", 6379))\n    print(console, \"only\")\n";
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
         let expected = vec!["only".to_string()];
@@ -447,6 +443,22 @@
             run_linked_on_wasm_net(&[("main", src)], "main", &["10.0.0.5:6379"]),
             expected,
             "wasm",
+        );
+    }
+
+    /// RFC-0011: the raw-string `restrict` builtin is RETIRED. Address narrowing now goes
+    /// only through the typed `net.only(confine...)` verb; a raw `host:port` string survives
+    /// solely as a `--net`/config grant, not a language builtin. Both the free `restrict(net,
+    /// …)` and the method `net.restrict(…)` forms are rejected — there is no such verb.
+    #[test]
+    fn retired_restrict_builtin_is_rejected() {
+        assert!(
+            typeck::check_str("fn main(net: Net):\n    let r = restrict(net, \"a:1\")\n").is_err(),
+            "the free `restrict` builtin must be rejected after retirement",
+        );
+        assert!(
+            typeck::check_str("fn main(net: Net):\n    let r = net.restrict(\"a:1\")\n").is_err(),
+            "the `net.restrict` method form must be rejected after retirement",
         );
     }
 
@@ -11014,24 +11026,27 @@ fn main(console: Console, net: Net):
             .to_string();
         assert!(e.contains("not permitted"), "expected a connect denial, got: {e}");
 
-        // restrict to an address not already held is denied (can't widen).
+        // narrowing to an address not already held is denied (can't widen).
         let restrict_denied = r#"
+import confine
 fn main(console: Console, net: Net):
-    send_line(connect(restrict(net, "evil.test:80"), "evil.test:80"), "x")
+    send_line(connect(net.only(confine.tcp("evil.test", 80)), "evil.test:80"), "x")
 "#;
-        let e = interpreter::run_with(restrict_denied, ".", vec!["allowed.test:80".into()])
+        // `resolve_std_src` links `confine`; `run_module` grants the Net allow-list.
+        let e = interpreter::run_module(resolve_std_src(restrict_denied), ".", vec!["allowed.test:80".into()])
             .unwrap_err()
             .to_string();
         assert!(e.contains("not in this Net"), "expected a restrict denial, got: {e}");
 
-        // Attenuation is real: after restricting to one address, a sibling that
+        // Attenuation is real: after narrowing to one address, a sibling that
         // was in the original grant is no longer reachable.
         let attenuated = r#"
+import confine
 fn main(console: Console, net: Net):
-    let narrow = restrict(net, "a.test:80")
+    let narrow = net.only(confine.tcp("a.test", 80))
     send_line(connect(narrow, "b.test:80"), "x")
 "#;
-        let e = interpreter::run_with(attenuated, ".", vec!["a.test:80".into(), "b.test:80".into()])
+        let e = interpreter::run_module(resolve_std_src(attenuated), ".", vec!["a.test:80".into(), "b.test:80".into()])
             .unwrap_err()
             .to_string();
         assert!(e.contains("not permitted"), "expected the sibling to be unreachable, got: {e}");
@@ -12027,11 +12042,9 @@ fn main(console: Console):
             "fn f(n: Net[Listen]):\n    let c = n as Net[Connect]\nfn main(c: Console, net: Net):\n    f(net)\n",
             "`as` can only drop rights",
         );
-        // `restrict` is verb-neutral: it preserves the verb-set it was given.
-        err(
-            "fn f(n: Net[Connect]):\n    let r = restrict(n, \"a:1\")\n    let l = listen(r, \"b:2\")\nfn main(c: Console, net: Net):\n    f(net)\n",
-            "`listen` needs `Listen`",
-        );
+        // The refinement verb `only` is verb-neutral (it preserves the rights set) — the
+        // property this arm shares with the retired `restrict`; it is exercised end-to-end by
+        // `net_only_refinement_verb_backends_agree`.
     }
 
     /// The `Net` transport axis: only `Tcp` is implemented, so `connect`/`listen`

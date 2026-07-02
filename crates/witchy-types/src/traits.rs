@@ -1192,7 +1192,7 @@ fn tuple_args(type_name: &str) -> Option<Vec<&str>> {
 fn cap_op_return_type(e: &Expr) -> Option<String> {
     match e {
         Expr::Call { name, .. } => match name.as_str() {
-            "restrict" | "only" | "deny" => Some("Net".to_string()),
+            "only" | "deny" => Some("Net".to_string()),
             "subtree" | "make_dir" => Some("Dir".to_string()),
             "read_file" | "write_file" => Some("File".to_string()),
             "connect" | "accept" => Some("Socket".to_string()),

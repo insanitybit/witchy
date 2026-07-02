@@ -464,16 +464,24 @@ fn main(console: Console, root: Dir):
         });
 
         // Attenuate to the one held address, connect, send, receive the echo.
+        let (host, port) = addr.rsplit_once(':').expect("addr is host:port");
         let ok = format!(
             r#"
+import confine
 fn main(console: Console, net: Net):
-    let only = restrict(net, "{addr}")
+    let only = net.only(confine.tcp("{host}", {port}))
     let s = connect(only, "{addr}")
     send_line(s, "ping")
     print(console, recv_line(s))
 "#
         );
-        assert_eq!(run_with(&ok, ".", vec![addr.clone()]).unwrap(), vec!["ping"]);
+        // Link in the bundled std (`confine`), then run.
+        let linked_ok = crate::pipeline::link(
+            vec![("main".to_string(), witchy_syntax::parser::parse_module(&ok).expect("parse"))],
+            "main",
+        )
+        .expect("link");
+        assert_eq!(run_module(linked_ok, ".", vec![addr.clone()]).unwrap(), vec!["ping"]);
         server.join().ok();
 
         // Denied: connecting to an address not in the allow-list.
@@ -486,11 +494,17 @@ fn main(console: Console, net: Net):
 
         // Denied: cannot attenuate to an address not already held.
         let bad_restrict = r#"
+import confine
 fn main(console: Console, net: Net):
-    let bad = restrict(net, "10.255.255.1:80")
+    let bad = net.only(confine.tcp("10.255.255.1", 80))
     print(console, "unreachable")
 "#;
-        assert!(run_with(bad_restrict, ".", vec![addr]).is_err());
+        let linked_bad = crate::pipeline::link(
+            vec![("main".to_string(), witchy_syntax::parser::parse_module(bad_restrict).expect("parse"))],
+            "main",
+        )
+        .expect("link");
+        assert!(run_module(linked_bad, ".", vec![addr]).is_err());
     }
 
     #[test]

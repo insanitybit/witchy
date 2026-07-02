@@ -79,7 +79,6 @@ const BUILTINS: &[&str] = &[
     "exec",
     "connect",
     "try_connect",
-    "restrict",
     "send_line",
     "recv_line",
     "send_bytes",
