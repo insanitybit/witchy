@@ -73,15 +73,21 @@ TRACK C — performance (DEFERRED by direction)
   `UiTimer`/`CredentialPort`/`SecretInput`/`SecretRef`) and narrowing constructors
   (`fetch_scope`/`route_scope`/`timer_scope`/`credential_port`/`secret_field`).
   Additive: `witchy caps` on the rune keeps an EMPTY host footprint, UI authority on
-  the `user_caps` axis; all 25 glamour tests pass. **REMAINING (the breaking slice):**
-  token-gate the `Cmd` variants — `Http(UiFetch,…)`, `Nav(UiRoute,…)`,
-  `After(UiTimer,…)`, `Port(CredentialPort,…)` — and gated smart constructors; the
-  token is NOT serialized (compile-time authority), so `cmd_to_json` + the JS host
-  shell (`glamour-dom.mjs`) are UNCHANGED. Then migrate the callers in ONE cut
-  (break-don't-deprecate): `projects/glamour/examples/{catalog,coven_web_app,coven_app}`
-  (each: `main` takes `UiRoot`, narrow to tokens, pass to the gated ctors), plus the
-  `secret_input`/`SecretRef` path, plus a differential test that a component without
-  `UiFetch` cannot construct `Cmd.Http`. coven-web migration is the proof.
+  the `user_caps` axis; all 25 glamour tests pass.
+- **Slice 2 DONE (commit 51fda78) — the HTTP effect is gated end-to-end.**
+  `Cmd.Http(UiFetch,…)`; `http_get`/`http_post` require the token (NOT serialized —
+  `cmd_to_json` ignores it, wire + JS host unchanged); `coven_app`/`coven_web_app`
+  migrated (`export_step(ui: UiRoot,…)` → `fetch_scope` → curried into `update` via a
+  closure, no `step_with` change); 3 node drivers stage the grant. DoD test
+  `glamour_http_effect_requires_a_uifetch_token` proves a fetch without `UiFetch`
+  FAILS to compile. **REMAINING to close 0039:** (a) gate `Nav`/`Port`/`After` the same
+  way — cleanest by BUNDLING the tokens into a per-app caps record (per the RFC's
+  `update(model, msg, caps)` sketch) rather than threading each separately, since an
+  app now needs `UiFetch` + `UiRoute` + `CredentialPort` together; migrate the `port`
+  callers in `coven_web_app` + the `navigate` callers + `After` in `autocounter`;
+  (b) the `SecretInput`/`SecretRef` slice — host-owned secret custody + a differential
+  test that component B cannot read component A's password (fails to type-check);
+  (c) spec (`book/` glamour chapter or `spec/`) + status flip + remove this section.
 - **Entry points:** `projects/glamour/src/glamour.witchy` (the `Cmd(msg)` type +
   `http_get`/`navigate`/`port` constructors + `on_input`); the host shell
   `web/witchy-runtime/glamour-dom.mjs` (validates tokens, owns secret custody);
