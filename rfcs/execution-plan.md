@@ -182,20 +182,34 @@ the last open Track B item.
 - **Exploitability:** a **real** intra-guest gap (an ownership-analysis false
   negative → heap corruption → forged handle), not just defense-in-depth; the
   wasmtime sandbox does not protect guest-internal memory.
+- **Status:** the independently-shippable HARDENING is DONE — (1) **trap on in-place
+  writes** (`list_push_cap` + `str_append_cap` bounds-check the write against the real
+  `[ptr-4]` allocation and trap, converting a silent-corruption false-negative into a
+  loud parity-identical error — proven by `*_traps_on_overstated_cap` + the whole
+  suite/fuzzer staying green; `list_set_cap`/`list_update_cap` were already guarded by
+  `index < len`); (2) **`signing@0` fallback deleted** (the signing key is now a real
+  granted `"signing"` secret, no magic index — `signing_at_zero_fallback_is_removed…`);
+  (7, RFC numbering) **wasmtime proposal surface shrunk** (unused proposals off, Spectre
+  mitigations documented-on). Step 8 (attenuation-rule tests) was ALREADY comprehensive
+  (`dir_rights_are_statically_enforced`, `net_capability_cannot_escalate`,
+  `net_*_enforced_at_instantiation`, `as_ascription_narrows_to_subsets_only`). A
+  differential fuzzer already exists (`metamorphic_property_laws` — it caught a real
+  false-trap during step 1). REMAINING = the **externref CORE** (below) + a bounds
+  check on `dict_insert_cap`'s append branch (deferred: a synthetic positive trap test
+  needs the whole dict helper family).
 - **Entry points:** i32 handle tables in `crates/witchy-runtime/src/runtime.rs`
-  (`dirs`/`nets`/`secrets` ~:239–276), the `signing@0` fallback `:2218`; import
-  signatures `crates/witchy-wir/src/wir_prelude.rs:257` (`IMPORT_COUNT`); lowering
-  `crates/witchy-lower/src/codegen/mod.rs`; wasmtime `Config` `runtime.rs:13`.
-- **Ordered steps (low-risk first):** (1) trap on in-place writes (parity with
-  interp); (2) delete the `signing@0` fallback + require explicit secret grants;
-  (3) choose the aggregate/closure representation (RFC recommends GC structs);
-  (4) enable `wasm_reference_types`/`wasm_gc`; (5) rewire host imports to
-  `externref` cap args + downcast to backing grant; (6) lower caps to `externref`
-  in codegen; (7) fuzz the ownership analysis; (8) attenuation test suite.
+  (`dirs`/`nets`/`secrets`); import signatures `crates/witchy-wir/src/wir_prelude.rs`
+  (`IMPORT_COUNT`); lowering `crates/witchy-lower/src/codegen/mod.rs`; wasmtime `Config`
+  `runtime.rs` (hardened).
+- **Ordered steps (the remaining CORE):** (3) choose the aggregate/closure
+  representation (RFC recommends GC structs); (4) enable `wasm_reference_types`/
+  `wasm_gc` (currently left on in the Config for exactly this); (5) rewire host imports
+  to `externref` cap args + downcast to backing grant; (6) lower caps to `externref`
+  in codegen.
 - **DoD:** all cap imports take `externref`; parity green; no bypass in the bounded
   threat model; fuzzer finds no diffs. **Size:** L (a coordinated ABI cut — cannot
-  coexist with the i32 ABI). **Guardrail:** steps 1–2 ship value immediately and are
-  independently committable; do them first even if the full externref cut waits.
+  coexist with the i32 ABI; best done as a dedicated focused effort, not folded into a
+  loop iteration). The hardening steps (1/2/7) shipped independently first, as planned.
 
 ## TRACK C — performance (DEFERRED by current direction)
 
