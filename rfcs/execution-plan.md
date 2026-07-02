@@ -44,7 +44,8 @@ language/feature RFCs.** So:
 
 ```
 TRACK A — language/features (DO FIRST)
-  0038 grantable user caps  [SHIPPED] ──> 0039 Glamour capability-safe effects
+  0038 grantable user caps            [SHIPPED]
+  0039 Glamour capability-safe effects [SHIPPED]
   0011 refinement remainder (Dir/File policies + carried-state)   [independent]
   0019 interactive documentation                                  [independent]
 
@@ -56,64 +57,13 @@ TRACK C — performance (DEFERRED by direction)
   0031 SIMD · 0034 residual (L5/L6) · 0036 residual (executor arena-reset)
 ```
 
-**RFC-0038 (grantable user caps) is SHIPPED** (`status: implemented`). Next pickup:
-**RFC-0039** — Glamour now builds its own capabilities on the 0038 substrate.
+**RFC-0038 and RFC-0039 are SHIPPED** (`status: implemented`) — Track A's capability
+work (grantable root caps + Glamour's token-gated effects, coven-web migrated) is done.
+Next pickup: **RFC-0011 (remainder)** and **RFC-0019**, which are independent.
 
 ---
 
 ## TRACK A — language / features
-
-### RFC-0039 — Glamour capability-safe effects
-- **Goal:** Glamour defines its own sealed **bare** UI caps (`UiRoot` → `UiFetch`/
-  `UiRoute`/`UiTimer`/`SecretInput`/`CredentialPort`); token-gated `Cmd`/`VNode`
-  constructors; host-owned `SecretRef` so one component can't read another's secret.
-- **Depends on:** **RFC-0038** (the app receives `glamour.UiRoot` at its root) — SHIPPED.
-- **Progress (2026-07-01) — slice 1 DONE (commit 39eb281):** Glamour defines its
-  sealed bare UI caps (`grantable capability UiRoot` + narrowed `UiFetch`/`UiRoute`/
-  `UiTimer`/`CredentialPort`/`SecretInput`/`SecretRef`) and narrowing constructors
-  (`fetch_scope`/`route_scope`/`timer_scope`/`credential_port`/`secret_field`).
-  Additive: `witchy caps` on the rune keeps an EMPTY host footprint, UI authority on
-  the `user_caps` axis; all 25 glamour tests pass.
-- **Slice 2 DONE (commit 51fda78) — the HTTP effect is gated end-to-end.**
-  `Cmd.Http(UiFetch,…)`; `http_get`/`http_post` require the token (NOT serialized —
-  `cmd_to_json` ignores it, wire + JS host unchanged); `coven_app`/`coven_web_app`
-  migrated (`export_step(ui: UiRoot,…)` → `fetch_scope` → curried into `update` via a
-  closure, no `step_with` change); 3 node drivers stage the grant. DoD test
-  `glamour_http_effect_requires_a_uifetch_token` proves a fetch without `UiFetch`
-  FAILS to compile. **REMAINING to close 0039:** (a) gate `Nav`/`Port`/`After` the same
-  way — cleanest by BUNDLING the tokens into a per-app caps record (per the RFC's
-  `update(model, msg, caps)` sketch) rather than threading each separately, since an
-  app now needs `UiFetch` + `UiRoute` + `CredentialPort` together; migrate the `port`
-  callers in `coven_web_app` + the `navigate` callers + `After` in `autocounter`;
-  (b) the `SecretInput`/`SecretRef` slice — host-owned secret custody + a differential
-  test that component B cannot read component A's password (fails to type-check);
-  (c) spec (`book/` glamour chapter or `spec/`) + status flip + remove this section.
-- **Entry points:** `projects/glamour/src/glamour.witchy` (the `Cmd(msg)` type +
-  `http_get`/`navigate`/`port` constructors + `on_input`); the host shell
-  `web/witchy-runtime/glamour-dom.mjs` (validates tokens, owns secret custody);
-  `projects/coven-web` (the proof product to migrate).
-- **Ordered steps:**
-  1. Define the sealed bare caps in glamour (`grantable capability UiRoot` + the
-     narrowed `capability UiFetch/…`); confirm `witchy caps` shows empty *host*
-     footprint.
-  2. Add narrowing constructors (`catalog_fetch(root) -> UiFetch`, `login_scope(…)`).
-  3. Re-shape sensitive `Cmd`/`VNode` variants to take the token as leading arg
-     (`Http(UiFetch, …)`, `secret_input(SecretInput, …)`, `submit_secret(SecretRef,
-     CredentialPort, …)`); keep smart constructors.
-  4. Host shell: keep secret bytes host-side, deliver only `SecretRef`/non-sensitive
-     facts; validate each token's scope before performing the effect.
-  5. Migrate coven-web to token-gated effects (proof; can trail the RFC).
-- **DoD:** empty host footprint on the rune; a component without `UiFetch` cannot
-  construct `Cmd.Http`; a differential test where component B tries to read A's
-  password fails to type-check; both backends + parity (effects are inert data).
-- **Size:** M–L. **Risk:** larger Glamour API surface; depends on 0038 landing.
-- **BROWSER ROOT ABI — SHIPPED (RFC-0040, `implemented`):** the browser has no
-  `main`/`--grants`; a `UiRoot` enters via the exported step entry
-  (`pub fn export_step(ui: UiRoot, input: String)`), host-minted per call. Codegen
-  (`__export_*` wrapper mints via RFC-0038's `mk{N}`/`build_user_cap_field`) + typeck
-  guard + JS-shell staging (`witchy-runtime.mjs` `user_cap_field_len` from
-  `opts.userCaps`) + a browser value round-trip (`user-cap-export.test.mjs`) all
-  landed, gate-green. So RFC-0039's remaining browser token-gating is FULLY unblocked.
 
 ### RFC-0011 (remainder) — capability refinement: Dir/File policies + carried-state
 - **Goal:** finish RFC-0011 — the Net tier shipped as the template; add the Dir/File

@@ -1,8 +1,9 @@
 ---
 rfc: 0039
 title: Glamour capability-safe effects and UI authority
-status: proposed
+status: implemented
 created: 2026-07-01
+implemented: 2026-07-02 (sealed UI caps + token-gated Http/Nav/Timer/Port + host-owned SecretInput/SecretRef; coven-web migrated as the proof; both-backend wire parity)
 predecessors:
   - "0008 (frontend framework rune — the MVU core this hardens)"
   - "0007 (witchy-WASM browser target — the pure-compute rune + host shell split)"
@@ -258,3 +259,21 @@ of the package-manager footprint gate.
     dated change-notes below.
   - The current behavior lives in spec/ and the code — NOT here.
 -->
+
+## Change notes
+
+- **2026-07-02 — implemented and frozen.** Glamour declares the sealed bare UI caps
+  (`UiRoot` grantable; `UiFetch`/`UiRoute`/`UiTimer`/`CredentialPort`/`SecretInput`/
+  `SecretRef` narrowed inside the framework) and gates every sensitive effect on the
+  matching token: `Http(UiFetch,…)`, `Nav(UiRoute,…)`, `After(UiTimer,…)`,
+  `Port(CredentialPort,…)` (the port name rides the token), and the secret path
+  `SecretField(SecretInput,…)` / `SubmitSecret(SecretRef, CredentialPort,…)`. Tokens gate
+  construction and are never serialized (the host shell re-validates). Secrets stay in host
+  custody: `secret_input` keeps the bytes host-side, the rune holds only an opaque
+  `SecretRef`, and `submit_secret` sends the value via a host port. coven-web migrated to
+  token-gated effects as the proof product (its six tokens bundled into one `Caps` record).
+  DoD met: empty host footprint; a fetch without `UiFetch` and a port without
+  `CredentialPort` fail to compile; a sibling that tries to unwrap a `SecretRef` fails to
+  compile; the secret wire is byte-identical on both backends. The behavior now lives in
+  `spec/capabilities.md` (§ Framework effect authority) + the code
+  (`projects/glamour/src/glamour.witchy`, `web/witchy-runtime/glamour-dom.mjs`).

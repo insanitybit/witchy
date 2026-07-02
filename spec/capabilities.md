@@ -221,6 +221,62 @@ mints the bare cap *into the export* each call (the browser mirror of a
 record and still emits inert effect descriptions), so a UI framework's authority
 enters at its true root without the rune ever holding a real platform capability.
 
+## Framework effect authority: capability-safe UI (Glamour)
+
+The grantable mechanism turns "which effects a component may *request*" into typed,
+reviewable authority. Glamour — the MVU view framework — is the reference realization.
+
+Glamour's root token is a bare grantable `UiRoot`. The framework alone narrows it into
+per-concern child tokens (it declares them, so sealing means only it can mint them):
+
+```
+UiFetch          construct an HTTP request   (scope / methods / path prefix)
+UiRoute          navigate                    (base path)
+UiTimer          arm a timer                 (no shorter than min_ms)
+CredentialPort   invoke ONE named host port  (login, a passkey ceremony, promote)
+SecretInput      render a host-owned secret field  (form / field)
+SecretRef        an opaque handle to a host-held secret value
+```
+
+An app composes the object-capability graph by handing each child token to the component
+that needs it: a read-only view gets a `UiFetch`; a promote button gets a `CredentialPort`
+named `promote` and nothing else.
+
+**Effects are token-gated at construction.** Each sensitive effect description takes its
+token as the leading argument, so an unauthorized effect is *unrepresentable* rather than
+merely denied at runtime:
+
+```
+Cmd.Http(UiFetch, method, url, body, on_done)
+Cmd.Nav(UiRoute, path)
+Cmd.After(UiTimer, ms, msg)
+Cmd.Port(CredentialPort, arg, on_done)               # the port NAME rides the token
+Cmd.SubmitSecret(SecretRef, CredentialPort, on_done)
+VNode.SecretField(SecretInput, on_ready)
+```
+
+A component without a `UiFetch` cannot build an HTTP command; a component holding a
+`promote` `CredentialPort` can only ever emit a promote — the name is read out of the
+token, never passed as a free string, so authority cannot be widened at the call site.
+
+**Tokens gate construction; the shell still enforces.** A token is compile-time authority
+and is *not* serialized — `cmd_to_json` drops it. The capability-holding host shell performs
+the effect and re-checks the token's policy (scope/methods/prefix/name) before acting: the
+static token and the dynamic shell are defense in depth, not redundancy.
+
+**Secrets stay in host custody.** `secret_input` renders a password field whose typed value
+never leaves the host — the shell holds the bytes, and the rune receives only a
+non-sensitive status (`Empty`/`NonEmpty`) and an opaque `SecretRef`. `submit_secret` hands
+the host-held value to a credential port; the rune sees only the result. Because
+`SecretInput`/`SecretRef` are sealed to the framework, a sibling component may hold a
+`SecretRef` but cannot unwrap it — so it can never read another component's password, by
+construction rather than convention.
+
+Every one of these tokens is a bare grantable cap, so the effect authority a package
+actually uses surfaces on the `user caps` footprint axis, and Coven's block-on-widening
+gate covers a dependency that broadens it — the package-manager footprint gate, applied to
+UI effects.
+
 ## Withholding authority by structure
 
 The patterns above attenuate along *calls*. To deny a capability to a region of
