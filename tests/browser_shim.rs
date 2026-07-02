@@ -56,3 +56,34 @@ fn browser_shim_runs_pure_rune_and_denies_capabilities() {
     // Defensive: the spike prints SPIKE OK only when every check passed.
     assert!(stdout.contains("SPIKE OK"), "spike did not report success:\n{stdout}");
 }
+
+/// RFC-0041 Phase 0: the shared witchy syntax highlighter (`web/witchy-highlight.js`) is a
+/// PURE `source -> HTML` function, so the committed Node test
+/// (`web/witchy-runtime/witchy-highlight.test.mjs`) exercises it with no DOM: keywords
+/// (incl. `capability`/`grantable`), Title-case types, strings + `${…}` interpolation,
+/// comments, duration numbers, that the RETIRED `restrict` verb is not painted as a builtin,
+/// and that HTML metacharacters are escaped (no injection through the highlighter).
+#[test]
+fn witchy_highlighter_colours_current_syntax() {
+    if !node_available() {
+        eprintln!("skipping: `node` is not available on PATH");
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let driver = manifest.join("web/witchy-runtime/witchy-highlight.test.mjs");
+    assert!(driver.exists(), "the committed highlighter test must exist at {}", driver.display());
+
+    let out = Command::new("node")
+        .arg(&driver)
+        .current_dir(manifest)
+        .output()
+        .expect("spawn node highlighter test");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the highlighter test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stdout.contains("WITCHY-HIGHLIGHT OK"), "highlighter test did not report success:\n{stdout}");
+}
