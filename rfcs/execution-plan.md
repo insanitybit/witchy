@@ -145,10 +145,15 @@ pickup: **RFC-0019** (the last Track A item), then Track B (**RFC-0005**, **RFC-
     SAME classifier as `documentation_examples_are_valid` (per block: runnable/console_only/
     expect_error/right-precise footprint/interpreter output) and freshness-gated by
     `book_examples_manifest_is_current` (the `stdlib_docs_are_current` pattern; regen with
-    `BLESS_EXAMPLES=1`). REMAINING: extend `pg_validate.mjs` for a headless output diff vs the
-    oracle over the shipped book wasm; CI builds app+compiler wasm and deploys with **strict
-    COOP/COEP/CORP**; remove mdBook. (These trail P2 — the runnable cells that consume the
-    manifest.)
+    `BLESS_EXAMPLES=1`). **HEADLESS DRIFT GATE DONE:** `scripts/validate_book_examples.mjs`
+    runs every `runnable` block through the SHIPPED browser wasm (`web/witchy.wasm` +
+    `web/witchy-host.js`) and asserts its output equals the manifest oracle — closing the loop
+    (browser == manifest == interpreter). Verified locally against a FRESH wasm: 90 agree, 0
+    diverge, 43 non-runnable. (The earlier local divergences were a STALE `web/witchy.wasm`
+    artifact — a rebuild fixed all of them; there is no browser std-subset gap.) Wired into the
+    CI `playground` job (stage the wasm → run the validator), NOT the Rust gate (the wasm is a
+    gitignored artifact that would go stale-flaky). REMAINING: deploy the app + wasm (GitHub
+    Pages) with **strict COOP/COEP/CORP**; remove mdBook.
 - **DoD:** the docs are a glamour app (empty host footprint) rendering every page via
   `markdown.to_vnode` with SUMMARY nav; console-only cells run in-browser and agree with
   the oracle (extended `pg_validate`); capability badges + expect-error framing from the

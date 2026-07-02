@@ -140,6 +140,15 @@ jobs:
           targets: wasm32-unknown-unknown
       - name: Build the interpreter for the browser
         run: cargo build --release --lib --no-default-features --target wasm32-unknown-unknown
+      - name: Stage the wasm next to the page
+        run: |
+          mkdir -p web
+          cp target/wasm32-unknown-unknown/release/witchy.wasm web/witchy.wasm
+      # RFC-0041 P3: run every `runnable` book block through the SHIPPED browser wasm and assert
+      # its output equals the committed manifest oracle — the no-silent-drift gate for the
+      # runnable book (an in-book Run can never diverge from the toolchain).
+      - name: Validate the runnable book against the manifest oracle
+        run: node scripts/validate_book_examples.mjs
 
   fmt:
     name: Formatting check (std + examples)
