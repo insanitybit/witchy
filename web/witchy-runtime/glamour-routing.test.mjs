@@ -122,10 +122,10 @@ fn view(model: String) -> VNode(Msg):
         glamour.element("button", [glamour.on("click", Go("/about"))], [glamour.text("about")]),
     ])
 
-fn update(model: String, msg: Msg) -> (String, Cmd(Msg)):
+fn update(model: String, msg: Msg, route: UiRoute) -> (String, Cmd(Msg)):
     match msg:
         Route(path) -> (path, NoCmd)
-        Go(path) -> (model, glamour.navigate(path))
+        Go(path) -> (model, glamour.navigate(route, path))
 
 fn parse_model(j: Json) -> String:
     json.as_string(j).unwrap_or("/")
@@ -153,11 +153,13 @@ fn model_to_json(model: String) -> Json:
 fn msg_to_json(m: Msg) -> Json:
     json.value_of(m)
 
-pub fn export_step(input: String) -> String:
-    step_with(input, view, update, parse_model, parse_msg, model_to_json, msg_to_json)
+pub fn export_step(ui: UiRoot, input: String) -> String:
+    let route = glamour.route_scope(ui, "/", "push")
+    let upd = fn(m: String, msg: Msg): update(m, msg, route)
+    step_with(input, view, upd, parse_model, parse_msg, model_to_json, msg_to_json)
 
-fn main(console: Console):
-    print(console, export_step("{\\"model\\": \\"/\\"}"))
+fn main(console: Console, ui: UiRoot):
+    print(console, export_step(ui, "{\\"model\\": \\"/\\"}"))
 `;
 
 let failures = 0;
@@ -194,6 +196,9 @@ try {
     onPopState: (fn) => {
       popstateFn = fn;
     },
+    // (RFC-0039/0040) the rune's `export_step` takes a `UiRoot`; stage its grant so
+    // Glamour can narrow the `UiRoute` navigation token.
+    instantiateOpts: { userCaps: [["router"]] },
   });
 
   // The initial route is delivered from the URL.

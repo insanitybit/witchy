@@ -199,6 +199,9 @@ try {
     document: fakeDocument,
     initialModel: 0, // Model = Int
     setTimeout: clock.setTimeout,
+    // (RFC-0039/0040) autocounter's `export_step` takes a `UiRoot`; stage its grant so
+    // Glamour can narrow the `UiTimer` token that arms the self-sustaining tick.
+    instantiateOpts: { userCaps: [["timer"]] },
   });
 
   // --- initial render: count 0, NO timer armed yet (initial cmd is `none`) ---

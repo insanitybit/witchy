@@ -128,7 +128,9 @@ try {
   const wasm = readFileSync(wasmPath);
 
   const root = new FakeElement("root");
-  await mount(wasm, root, { document: fakeDocument, initialModel: "" });
+  // (RFC-0039/0040) catalog's `export_step` takes a `UiRoot`; stage its grant so Glamour
+  // can narrow the `UiRoute` token behind `navigate`.
+  await mount(wasm, root, { document: fakeDocument, initialModel: "", instantiateOpts: { userCaps: [["router"]] } });
 
   // The full catalog renders, with a search box and footprint badges.
   ok(querySelectorAll(root, "li").length === 3, "the full catalog renders three runes");

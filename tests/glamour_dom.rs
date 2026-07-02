@@ -72,6 +72,48 @@ fn glamour_http_effect_requires_a_uifetch_token() {
     );
 }
 
+/// (RFC-0039) The same gate on the credential-port effect: a component WITHOUT a
+/// `CredentialPort` cannot invoke a host port. `glamour.port` REQUIRES the token as its
+/// leading argument (the port NAME is carried by the token, not a free string), so an
+/// attempt to run e.g. `promote` without holding that authority FAILS TO COMPILE. This is
+/// the sharp case from the RFC's motivation — `Cmd.Port("promote", …)` from any component —
+/// made unrepresentable rather than merely denied by host policy at runtime.
+#[test]
+fn glamour_port_effect_requires_a_credential_token() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let work = std::env::temp_dir().join(format!("glamour-port-gate-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::copy(
+        manifest.join("projects/glamour/src/glamour.witchy"),
+        work.join("glamour.witchy"),
+    )
+    .unwrap();
+    // Try to invoke the `promote` port WITHOUT holding a `CredentialPort` — passing the
+    // port name as a bare string the way the old ambient API allowed.
+    std::fs::write(
+        work.join("bad.witchy"),
+        "import glamour\n\ntype Msg:\n    Done(String)\n\npub fn go() -> Cmd(Msg):\n    glamour.port(\"promote\", \"acme/charts\", \"Done\")\n",
+    )
+    .unwrap();
+    let out = Command::new(BIN)
+        .args(["compile", "bad.witchy", "--out", "bad.wasm"])
+        .current_dir(&work)
+        .output()
+        .expect("spawn witchy compile");
+    let produced = work.join("bad.wasm").exists();
+    let msg = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&work);
+    assert!(
+        !out.status.success() && !produced,
+        "a port effect without a CredentialPort MUST NOT compile (the capability gate). output:\n{msg}"
+    );
+}
+
 #[test]
 fn glamour_dom_run_loop_renders_and_updates_on_events() {
     if !node_available() {

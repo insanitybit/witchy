@@ -31,6 +31,16 @@ type Msg derive(Reflect):
     OpDone(String)       // result of a register/promote/yank port
     Search(String)       // the catalog filter box changed
 
+// (RFC-0039) The app's capability BUNDLE. Glamour narrows the app-root `UiRoot` into
+// exactly the tokens this shell needs — read-only fetch, navigation, and the four named
+// host credential ports — and `export_step` threads this ONE value into `update`. A
+// component can construct only the effect whose token it was handed, and each
+// `CredentialPort` BAKES IN its port name, so the promote token can never emit a yank:
+// the authority graph is explicit, reviewable, and unforgeable.
+type Caps:
+    //   fetch     router   login          register        promote         yank
+    Caps(UiFetch, UiRoute, CredentialPort, CredentialPort, CredentialPort, CredentialPort)
+
 // --- routing + effects -------------------------------------------------------
 fn fetch_for(fetch: UiFetch, path: String) -> Cmd(Msg):
     if string.starts_with(path, "/trust"):
@@ -47,22 +57,24 @@ fn fetch_for(fetch: UiFetch, path: String) -> Cmd(Msg):
     else:
         glamour.http_get(fetch, "/api/coven/catalog", "GotData")
 
-fn update(m: Model, msg: Msg, fetch: UiFetch) -> (Model, Cmd(Msg)):
-    match m:
-        Model(route, sess, data, notice, query) ->
-            match msg:
-                Visit(path) -> (m, glamour.navigate(path))
-                Route(path) -> (Model(path, sess, "", "", ""), fetch_for(fetch, path))
-                GotData(_status, body) -> (Model(route, sess, body, notice, query), NoCmd)
-                Login -> (m, glamour.port("passkeyLogin", "", "LoggedIn"))
-                Register -> (Model(route, sess, data, "registering passkey…", query), glamour.port("passkeyRegister", "", "OpDone"))
-                LoggedIn(who) -> (Model(route, who, data, "", query), NoCmd)
-                Promote -> (Model(route, sess, data, "promoting…", query), glamour.port("promote", route, "OpDone"))
-                Yank -> (Model(route, sess, data, "yanking…", query), glamour.port("yank", route, "OpDone"))
-                // A write (or register) finished: show its result AND re-fetch the current view so
-                // the record reflects the new state immediately (a promote flips staged -> released).
-                OpDone(result) -> (Model(route, sess, data, result, query), fetch_for(fetch, route))
-                Search(q) -> (Model(route, sess, data, notice, q), NoCmd)
+fn update(m: Model, msg: Msg, caps: Caps) -> (Model, Cmd(Msg)):
+    match caps:
+        Caps(fetch, router, login, register, promote_cred, yank_cred) ->
+            match m:
+                Model(route, sess, data, notice, query) ->
+                    match msg:
+                        Visit(path) -> (m, glamour.navigate(router, path))
+                        Route(path) -> (Model(path, sess, "", "", ""), fetch_for(fetch, path))
+                        GotData(_status, body) -> (Model(route, sess, body, notice, query), NoCmd)
+                        Login -> (m, glamour.port(login, "", "LoggedIn"))
+                        Register -> (Model(route, sess, data, "registering passkey…", query), glamour.port(register, "", "OpDone"))
+                        LoggedIn(who) -> (Model(route, who, data, "", query), NoCmd)
+                        Promote -> (Model(route, sess, data, "promoting…", query), glamour.port(promote_cred, route, "OpDone"))
+                        Yank -> (Model(route, sess, data, "yanking…", query), glamour.port(yank_cred, route, "OpDone"))
+                        // A write (or register) finished: show its result AND re-fetch the current view so
+                        // the record reflects the new state immediately (a promote flips staged -> released).
+                        OpDone(result) -> (Model(route, sess, data, result, query), fetch_for(fetch, route))
+                        Search(q) -> (Model(route, sess, data, notice, q), NoCmd)
 
 // --- views -------------------------------------------------------------------
 fn view(m: Model) -> VNode(Msg):
@@ -363,11 +375,20 @@ fn msg_to_json(m: Msg) -> Json:
     json.value_of(m)
 
 pub fn export_step(ui: UiRoot, input: String) -> String:
-    // (RFC-0039/0040) the host mints `UiRoot` at this browser root; Glamour narrows
-    // it into a `UiFetch`, curried into `update` via a closure — so only code holding
-    // the token can build `Cmd.Http`. (The `port` effects stay host-gated for now.)
-    let fetch = glamour.fetch_scope(ui, "coven-web", "GET", "/api/coven/")
-    let upd = fn(m: Model, msg: Msg): update(m, msg, fetch)
+    // (RFC-0039/0040) the host mints `UiRoot` at this browser root; Glamour narrows it
+    // into the app's `Caps` bundle — read-only fetch, navigation, and the four NAMED
+    // credential ports — threaded into `update` via a closure. Every effect this shell can
+    // emit is now gated by an unforgeable token, and each port's authority is confined to
+    // its own name, so no component can widen what it was granted.
+    let caps = Caps(
+        glamour.fetch_scope(ui, "coven-web", "GET", "/api/coven/"),
+        glamour.route_scope(ui, "/", "push"),
+        glamour.credential_port(ui, "passkeyLogin"),
+        glamour.credential_port(ui, "passkeyRegister"),
+        glamour.credential_port(ui, "promote"),
+        glamour.credential_port(ui, "yank"),
+    )
+    let upd = fn(m: Model, msg: Msg): update(m, msg, caps)
     step_with(input, view, upd, parse_model, parse_msg, model_to_json, msg_to_json)
 
 fn main(console: Console, ui: UiRoot):

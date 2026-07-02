@@ -63,9 +63,9 @@ fn view(session: String) -> VNode(Msg):
     else:
         glamour.element("div", [], [glamour.element("span", [glamour.prop("class", "session-id")], [glamour.text("signed in as " + session)])])
 
-fn update(session: String, msg: Msg) -> (String, Cmd(Msg)):
+fn update(session: String, msg: Msg, cred: CredentialPort) -> (String, Cmd(Msg)):
     match msg:
-        Login -> (session, glamour.port("passkeyLogin", "", "LoggedIn"))
+        Login -> (session, glamour.port(cred, "", "LoggedIn"))
         LoggedIn(who) -> (who, NoCmd)
 
 fn parse_model(j: Json) -> String:
@@ -94,11 +94,13 @@ fn model_to_json(s: String) -> Json:
 fn msg_to_json(m: Msg) -> Json:
     json.value_of(m)
 
-pub fn export_step(input: String) -> String:
-    step_with(input, view, update, parse_model, parse_msg, model_to_json, msg_to_json)
+pub fn export_step(ui: UiRoot, input: String) -> String:
+    let cred = glamour.credential_port(ui, "passkeyLogin")
+    let upd = fn(s: String, msg: Msg): update(s, msg, cred)
+    step_with(input, view, upd, parse_model, parse_msg, model_to_json, msg_to_json)
 
-fn main(console: Console):
-    print(console, export_step("{\\"model\\": \\"\\"}") + "\\n")
+fn main(console: Console, ui: UiRoot):
+    print(console, export_step(ui, "{\\"model\\": \\"\\"}") + "\\n")
 `;
 
 let failures = 0;
@@ -119,7 +121,9 @@ try {
   const ports = { passkeyLogin: (arg) => { portCalls.push(arg); return Promise.resolve("alice"); } };
 
   const root = new FakeElement("root");
-  const app = await mount(wasm, root, { document: fakeDocument, initialModel: "", ports });
+  // (RFC-0039/0040) the rune's `export_step` takes a `UiRoot`; stage its grant so the host
+  // mints it and Glamour can narrow the `passkeyLogin` credential port.
+  const app = await mount(wasm, root, { document: fakeDocument, initialModel: "", ports, instantiateOpts: { userCaps: [["login"]] } });
 
   ok(querySelector(root, "button") !== null && querySelector(root, "button").textContent.includes("sign in"), "anon state shows the sign-in button");
 

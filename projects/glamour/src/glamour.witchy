@@ -169,14 +169,16 @@ pub fn on_input(event: String, tag: String) -> Attr(msg):
 // from the prelude, so an `update` returning `(model, None)` would be read as an
 // `Option`. `NoCmd` is unambiguous and reads as "no command".
 //
-// `After(ms, msg)` is the canonical Elm timer effect: "after `ms` milliseconds,
-// dispatch `msg`". The rune CANNOT perform this — it holds no `Clock` capability —
-// so it only DESCRIBES it; the shell holds the timer (`setTimeout`) and performs
-// it. `Batch(cmds)` runs several commands; it lets one `update` request more than
-// one effect.
+// `After(timer, ms, msg)` is the canonical Elm timer effect: "after `ms`
+// milliseconds, dispatch `msg`". The rune CANNOT perform this — it holds no `Clock`
+// capability — so it only DESCRIBES it; the shell holds the timer (`setTimeout`) and
+// performs it. (RFC-0039) The leading `UiTimer` is the unforgeable authority to arm
+// a timer, confined to `min_ms`; a component without one cannot schedule work.
+// `Batch(cmds)` runs several commands; it lets one `update` request more than one
+// effect.
 pub type Cmd(msg):
     NoCmd
-    After(Int, msg)
+    After(UiTimer, Int, msg)
     Batch(List(Cmd(msg)))
     // An async HTTP request (RFC-0015): method, url, body, and the Reflect VARIANT NAME
     // the shell wraps the `(status, body)` response into and dispatches back. The rune
@@ -190,13 +192,19 @@ pub type Cmd(msg):
     Http(UiFetch, String, String, String, String)
     // Push a new URL onto history (client-side routing); the shell mirrors it back as
     // the app's route msg so `view` re-renders for the new path.
-    Nav(String)
-    // A host-shell PORT (RFC-0015): run the named host capability (session login, a
+    // (RFC-0039) The leading `UiRoute` is the unforgeable authority to navigate,
+    // confined to a `base` path; a component without one cannot redirect the app.
+    Nav(UiRoute, String)
+    // A host-shell PORT (RFC-0015): run a named host capability (session login, a
     // WebAuthn passkey ceremony, storage) with `arg`, dispatching the 1-arg msg `tag(result)`
     // back. The port — and any credential or browser-native API it touches
     // (`navigator.credentials`, the session token) — lives entirely in the host; the rune
     // emits only the description and receives only the result, holding no authority itself.
-    Port(String, String, String)
+    // (RFC-0039) The leading `CredentialPort` is the unforgeable authority AND it NAMES
+    // the port: the name is read out of the token (see `cmd_to_json`), never passed as a
+    // free argument, so a component holding a `promote` port can ONLY ever emit a promote
+    // call — it cannot invoke `yank` or any other port it was not granted.
+    Port(CredentialPort, String, String)
 
 // ---------------------------------------------------------------------------
 // Cmd WIRE FORMAT — serialize a `Cmd(msg)` to the JSON shape the host shell
@@ -216,7 +224,9 @@ pub type Cmd(msg):
 pub fn cmd_to_json(cmd: Cmd(msg), msg_to_json: fn(msg) -> Json) -> Json:
     match cmd:
         NoCmd -> JsonObject([("cmd", JsonString("none"))])
-        After(ms, msg) ->
+        // The `UiTimer` token gated construction; it is NOT serialized (the shell
+        // holds the real timer authority and re-checks `min_ms` itself).
+        After(_timer, ms, msg) ->
             let mj: Json = msg_to_json(msg)
             JsonObject([
                 ("cmd", JsonString("after")),
@@ -243,10 +253,15 @@ pub fn cmd_to_json(cmd: Cmd(msg), msg_to_json: fn(msg) -> Json) -> Json:
                 ("body", JsonString(body)),
                 ("tag", JsonString(tag)),
             ])
-        Nav(path) ->
+        // The `UiRoute` token gated construction; only the path crosses the wire.
+        Nav(_route, path) ->
             JsonObject([("cmd", JsonString("nav")), ("path", JsonString(path))])
-        Port(name, arg, tag) ->
-            JsonObject([("cmd", JsonString("port")), ("port", JsonString(name)), ("arg", JsonString(arg)), ("tag", JsonString(tag))])
+        // The port NAME is read out of the `CredentialPort` token (not a free arg), so
+        // the wire can only ever name the port the component was actually granted.
+        Port(cred, arg, tag) ->
+            match cred:
+                CredentialPort(name) ->
+                    JsonObject([("cmd", JsonString("port")), ("port", JsonString(name)), ("arg", JsonString(arg)), ("tag", JsonString(tag))])
 
 // Convenience constructors for the HTTP effect. `on_done` is the name of a 2-arg msg
 // variant `Tag(Int, String)` the shell dispatches with `(status, body)` (status 0 on a
@@ -257,15 +272,23 @@ pub fn http_get(fetch: UiFetch, url: String, on_done: String) -> Cmd(msg):
 pub fn http_post(fetch: UiFetch, url: String, body: String, on_done: String) -> Cmd(msg):
     Http(fetch, "POST", url, body, on_done)
 
-// Navigate to `path` (pushes history; the shell echoes it back as the route msg).
-pub fn navigate(path: String) -> Cmd(msg):
-    Nav(path)
+// Arm a timer: after `ms` milliseconds the shell dispatches `msg`. Requires a `UiTimer`
+// token (the shell holds the real `setTimeout` and re-checks the token's `min_ms`).
+pub fn after(timer: UiTimer, ms: Int, msg: msg) -> Cmd(msg):
+    After(timer, ms, msg)
 
-// Run a host-shell port (session login, WebAuthn, storage) named `name` with `arg`; the
-// shell dispatches the 1-arg msg variant `on_done` with the port's result. Authority stays
-// in the host; the rune never sees the credential, only the outcome.
-pub fn port(name: String, arg: String, on_done: String) -> Cmd(msg):
-    Port(name, arg, on_done)
+// Navigate to `path` (pushes history; the shell echoes it back as the route msg).
+// Requires a `UiRoute` token — a component without one cannot redirect the app.
+pub fn navigate(route: UiRoute, path: String) -> Cmd(msg):
+    Nav(route, path)
+
+// Run a host-shell port (session login, WebAuthn, storage) with `arg`; the shell dispatches
+// the 1-arg msg variant `on_done` with the port's result. The port NAME is carried by the
+// `CredentialPort` token (minted by `credential_port`), not passed here — so a component can
+// only invoke the exact port it was granted. Authority stays in the host; the rune never
+// sees the credential, only the outcome.
+pub fn port(cred: CredentialPort, arg: String, on_done: String) -> Cmd(msg):
+    Port(cred, arg, on_done)
 
 // ---------------------------------------------------------------------------
 // Serializer — render a VNode tree to an HTML string. There is no browser here,
