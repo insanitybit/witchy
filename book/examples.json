@@ -1,0 +1,1759 @@
+[
+  {
+    "block": 1,
+    "console_only": false,
+    "expect_error": false,
+    "file": "README.md",
+    "footprint": [
+      "Console",
+      "Dir[Read,Write]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 2,
+    "console_only": true,
+    "expect_error": false,
+    "file": "README.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "area: 12",
+      "area: 9"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 1,
+    "console_only": false,
+    "expect_error": false,
+    "file": "spec/capabilities.md",
+    "footprint": [
+      "Console",
+      "Dir[Read,Write]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 2,
+    "console_only": false,
+    "expect_error": false,
+    "file": "spec/capabilities.md",
+    "footprint": [
+      "Console",
+      "Net[Connect,Listen,Tcp,Udp,Uds]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 3,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/capabilities.md",
+    "footprint": [],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 4,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/capabilities.md",
+    "footprint": [],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 5,
+    "console_only": false,
+    "expect_error": false,
+    "file": "spec/capabilities.md",
+    "footprint": [
+      "Clock",
+      "Console"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 1,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "zero",
+      "positive",
+      "negative"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 2,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "sum: 13",
+      "true",
+      "1a"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 3,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "true",
+      "ada",
+      "101",
+      "5"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 4,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "2",
+      "3..9"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 5,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "[9, 7, 3]",
+      "150"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 6,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "[1, 2]"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 7,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "1",
+      "ab",
+      "true",
+      "true",
+      "20",
+      "default"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 8,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "medium",
+      "4",
+      "3"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 9,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "[10, 20, 30, 40]"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 10,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "first even: 4"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 11,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "circle 2",
+      "square 5",
+      "first 10, 2 more",
+      "empty"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 12,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "12",
+      "9"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 13,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "42"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 14,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "15"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 15,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "60"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 16,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "9",
+      "pear"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 17,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "woof"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 18,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "WOOF"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 19,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "Point(1, 2)",
+      "true"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 20,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "{\"files\":[[\"a.txt\",\"hi\"]]}"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 21,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "5"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 22,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "0 7 14"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 23,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "Hello, witch"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 24,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "ok: 10",
+      "err: division by zero"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 25,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "computing 10/0: division by zero"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 26,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "36",
+      "0"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 27,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "1 4 9 16 25",
+      "2 4 6 8 10"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 28,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "0 1 1 2 3 5 8 13"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 29,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "A-B-C"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 30,
+    "console_only": false,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console",
+      "Dir[Read]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 31,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 32,
+    "console_only": false,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Net[Connect,Tcp]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 33,
+    "console_only": false,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Net[Connect,Tcp]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 34,
+    "console_only": false,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console",
+      "Net[Connect,Listen,Tcp,Udp,Uds]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 35,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "got 1",
+      "got 2",
+      "got 3"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 36,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 1,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/appendix-performance.md",
+    "footprint": [],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 2,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/appendix-performance.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "21"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 1,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/appendix-recipes.md",
+    "footprint": [
+      "Console",
+      "Dir[Read]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 2,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/appendix-recipes.md",
+    "footprint": [
+      "Console",
+      "Dir[Read]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 3,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/appendix-recipes.md",
+    "footprint": [
+      "Console",
+      "Dir[Write]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 4,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/appendix-recipes.md",
+    "footprint": [
+      "Console",
+      "Dir[Read]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 5,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/appendix-recipes.md",
+    "footprint": [
+      "Console",
+      "Env"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 6,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/appendix-recipes.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 7,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/appendix-recipes.md",
+    "footprint": [
+      "Console",
+      "Net[Connect,Listen,Tcp,Udp,Uds]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 1,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/capabilities-authority.md",
+    "footprint": [
+      "Clock",
+      "Console"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 2,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/capabilities-authority.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "compute(6): 37"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 1,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/capabilities-narrowing.md",
+    "footprint": [
+      "Console",
+      "Dir[Read,Write]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 2,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/capabilities-narrowing.md",
+    "footprint": [
+      "Console",
+      "Net[Connect,Tcp]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 3,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/capabilities-narrowing.md",
+    "footprint": [
+      "Console",
+      "Dir[Read,Write]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 4,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/capabilities-narrowing.md",
+    "footprint": [
+      "Console",
+      "Dir[Read,Write]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 5,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/capabilities-narrowing.md",
+    "footprint": [
+      "Console",
+      "Dir[Read,Write]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 6,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/capabilities-narrowing.md",
+    "footprint": [
+      "Console",
+      "Dir[Read,Write]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 7,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/capabilities-narrowing.md",
+    "footprint": [
+      "Console",
+      "Net[Connect,Listen,Tcp,Udp,Uds]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 8,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/capabilities-narrowing.md",
+    "footprint": [
+      "Dir[Read]",
+      "Exec"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 9,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/capabilities-narrowing.md",
+    "footprint": [
+      "Dir[Read]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 10,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/capabilities-narrowing.md",
+    "footprint": [
+      "Console",
+      "Net[Connect,Listen,Tcp,Udp,Uds]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 11,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/capabilities-narrowing.md",
+    "footprint": [],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 12,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/capabilities-narrowing.md",
+    "footprint": [
+      "Clock",
+      "Console"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 1,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/capabilities-optional.md",
+    "footprint": [
+      "Console",
+      "Dir[Write]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 2,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/capabilities-optional.md",
+    "footprint": [
+      "Console",
+      "Dir[Read,Write]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 3,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/capabilities-optional.md",
+    "footprint": [
+      "Console",
+      "Dir[Write]",
+      "Env"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 1,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/for-var.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "[10, 20, 30, 40]",
+      "125",
+      "75"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 1,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/getting-started-hello.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "hello, witchy"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 2,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/getting-started-hello.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "zero",
+      "42"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 1,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/introduction.md",
+    "footprint": [
+      "Console",
+      "Dir[Read]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 2,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/introduction.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "{\"count\":5,\"total\":145}"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 3,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/introduction.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "{\"squares\":[1,4,9,16,25]}"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 1,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/mutating-methods.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "[1, 2, 3]",
+      "1"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 2,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/mutating-methods.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "[1, 2, 3]",
+      "[9, 9]"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 1,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/packages-build.md",
+    "footprint": [],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 1,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/packages.md",
+    "footprint": [],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 1,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/project.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "exact:  INFO started",
+      "ci:     INFO started",
+      "ci:     info retry"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 2,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/project.md",
+    "footprint": [
+      "Console",
+      "Dir[Read]",
+      "Env"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 1,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/testing.md",
+    "footprint": [],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 1,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-async.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "doubled: 42"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 2,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-async.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "A 2",
+      "A 1",
+      "B 2",
+      "A done",
+      "B 1",
+      "B done"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 3,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-async.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "got: first",
+      "got: second"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 4,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-async.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "total is 7"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 5,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-async.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "sq 9",
+      "sq 16",
+      "sq 25"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 6,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-async.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "got 1",
+      "got 4",
+      "got 9"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 1,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-comptime.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "0 7 14"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 2,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-comptime.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "Hello, witch!"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 1,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-data.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "ada",
+      "5"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 2,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-data.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "150",
+      "100"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 3,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-data.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "1, 2",
+      "{\"name\":\"ada\",\"scores\":[10,20]}"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 4,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-data.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "true",
+      "12",
+      "12"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 5,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-data.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "click at 3,9",
+      "key Enter",
+      "close"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 6,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-data.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "empty",
+      "one: 7",
+      "first 1 then 2",
+      "zero",
+      "positive",
+      "negative"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 1,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-errors.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "found 4",
+      "none"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 2,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-errors.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "got 20"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 3,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-errors.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "20",
+      "0"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 4,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-errors.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "ok: 5",
+      "error: division by zero"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 5,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-errors.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "ok: 10",
+      "error: division by zero",
+      "error: division by zero"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 6,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-errors.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "9"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 7,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-errors.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "2026-06-12 v1.4.0"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 1,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-functions.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "5"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 2,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-functions.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "14"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 3,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-functions.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "positive",
+      "zero",
+      "negative"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 4,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-functions.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "10",
+      "2"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 5,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-functions.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "[9, 2, 8]"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 6,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-functions.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "15",
+      "36"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 7,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-functions.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "42"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 8,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-functions.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "10",
+      "4"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 9,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-functions.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "[witchy]"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 1,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-generics.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "1, 2",
+      "alpha"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 2,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-generics.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "woof",
+      "beep boop"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 3,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-generics.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "9",
+      "pear"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 4,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-generics.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "now: 21 deg C",
+      "count: 42",
+      "5 deg C"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 5,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-generics.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "true",
+      "Score(12, beta)"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 6,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-generics.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "true",
+      "true"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 1,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-iterators.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "4, 8, 12, 16, 20"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 2,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-iterators.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "0, 1, 1, 2, 3, 5, 8, 13, 21, 34"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 3,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-iterators.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "collatz(6): 6, 3, 10, 5, 16, 8, 4, 2, 1",
+      "collatz(27) steps: 112"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 1,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-reflection.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "{\"x\":1,\"y\":2}",
+      "Point { x: 1, y: 2 }"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 2,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-reflection.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "Square(3, 4)",
+      "{\"$variant\":\"Circle\",\"$values\":[5]}"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 3,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-reflection.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "int",
+      "Point with 2 fields",
+      "variant Circle/1",
+      "list of 3"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 1,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-values.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "42",
+      "0.5",
+      "true",
+      "witchy",
+      "true"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 2,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-values.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "hello, world",
+      "n is 3, doubled 6"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 3,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-values.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "7",
+      "7.0",
+      "7",
+      "123"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 4,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-values.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "1 2 3",
+      "3",
+      "1",
+      "1 = one",
+      "1 = one",
+      "36",
+      "0"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 5,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-values.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "[1, 4, 9, 16, 25]",
+      "[1, 3, 5]",
+      "[4, 5]"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 6,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-values.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "true",
+      "true",
+      "true",
+      "false"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 1,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/tour-vm.md",
+    "footprint": [
+      "Console",
+      "Dir[Read,Write]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 2,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-vm.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "2",
+      "104"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 3,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/tour-vm.md",
+    "footprint": [
+      "Console",
+      "Dir[Read,Write]"
+    ],
+    "output": [],
+    "runnable": false
+  }
+]

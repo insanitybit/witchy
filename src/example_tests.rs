@@ -3265,20 +3265,7 @@ fn yn(b: Bool) -> String:
     /// outputs must agree. Docs that drift from the language break the build.
     #[test]
     fn documentation_examples_are_valid() {
-        let mut files: Vec<std::path::PathBuf> = vec![
-            "README.md".into(),
-            "CONTRIBUTING.md".into(),
-            "examples/README.md".into(),
-        ];
-        for dir in ["spec", "book/src"] {
-            let Ok(entries) = std::fs::read_dir(dir) else { continue };
-            let mut md: Vec<_> = entries
-                .filter_map(|e| e.ok().map(|e| e.path()))
-                .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
-                .collect();
-            md.sort();
-            files.extend(md);
-        }
+        let files = doc_markdown_files();
 
         let mut checked = 0usize;
         let mut ran = 0usize;
@@ -3356,6 +3343,118 @@ fn yn(b: Bool) -> String:
             }
         }
         blocks
+    }
+
+    /// The Markdown docs whose ```` ```witchy ```` blocks are validated + classified: the
+    /// root docs, `spec/`, and `book/src/` (sorted for a stable manifest). Shared by
+    /// `documentation_examples_are_valid` and the manifest generator so both walk one list.
+    fn doc_markdown_files() -> Vec<std::path::PathBuf> {
+        let mut files: Vec<std::path::PathBuf> = vec![
+            "README.md".into(),
+            "CONTRIBUTING.md".into(),
+            "examples/README.md".into(),
+        ];
+        for dir in ["spec", "book/src"] {
+            let Ok(entries) = std::fs::read_dir(dir) else { continue };
+            let mut md: Vec<_> = entries
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
+                .collect();
+            md.sort();
+            files.extend(md);
+        }
+        files
+    }
+
+    /// (RFC-0041 Phase 3) Generate the runnable-example classification manifest as pretty
+    /// JSON. Reuses the SAME classifier as `documentation_examples_are_valid`: per doc
+    /// `witchy` block, whether it is `runnable` (a `Console`-only `main`, no actor/argv) and
+    /// `console_only`, its capability `footprint`, and — for runnable blocks — the interpreter
+    /// `output`. This is the single source of truth the runnable book reads, so the browser
+    /// never re-derives classification (which could disagree with the authoritative Rust one).
+    fn generate_examples_manifest() -> String {
+        let mut entries: Vec<serde_json::Value> = Vec::new();
+        for file in &doc_markdown_files() {
+            let Ok(text) = std::fs::read_to_string(file) else { continue };
+            for (idx, snippet) in extract_witchy_blocks(&text).into_iter().enumerate() {
+                let context = format!("{}: ```witchy block #{}", file.display(), idx + 1);
+                let module = parser::parse_module(&snippet)
+                    .unwrap_or_else(|e| panic!("{context} fails to parse: {e:?}"));
+                let linked = crate::pipeline::link(vec![("main".into(), module)], "main")
+                    .unwrap_or_else(|e| panic!("{context} fails to link: {e}"));
+                typeck::check(&linked).unwrap_or_else(|e| panic!("{context} fails to type-check: {e}"));
+
+                let has_main = linked
+                    .items
+                    .iter()
+                    .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"));
+                let reads_argv = linked.items.iter().any(|it| {
+                    matches!(it, ast::Item::Function(f) if f.name == "main"
+                        && f.params.iter().any(|p| matches!(&p.ty,
+                            Some(ast::Type::Named(n, args)) if n == "List"
+                                && matches!(args.first(),
+                                    Some(ast::Type::Named(s, _)) if s == "String"))))
+                });
+                let fp = crate::capabilities::analyze(&linked);
+                let console_only = fp.total.keys().all(|k| *k == "Console");
+                let runnable = has_main && console_only && !reads_argv;
+                // Right-precise footprint: `Console`, `Dir[Read]`, `Net[Connect,Tcp]`, ….
+                let footprint: Vec<String> = fp
+                    .total
+                    .iter()
+                    .map(|(cap, rights)| {
+                        if rights.is_empty() {
+                            (*cap).to_string()
+                        } else {
+                            format!("{}[{}]", cap, rights.iter().copied().collect::<Vec<_>>().join(","))
+                        }
+                    })
+                    .collect();
+                // Only console-only, non-argv `main`s produce reproducible in-browser output
+                // (the deny-by-omission shim grants nothing else); everything else is
+                // compile-only in the book. The output is the interpreter oracle.
+                let output: Vec<String> = if runnable {
+                    interpreter::run_module(linked, std::path::Path::new("."), Vec::new())
+                        .unwrap_or_else(|e| panic!("{context} fails on the interpreter: {e}"))
+                } else {
+                    Vec::new()
+                };
+                entries.push(serde_json::json!({
+                    "file": file.display().to_string(),
+                    "block": idx + 1,
+                    "runnable": runnable,
+                    "console_only": console_only,
+                    // No doc block is intentionally uncompilable today (the policy is that
+                    // every ```witchy block is a correct program); the field is here for the
+                    // future teaching-example directive RFC-0041 describes.
+                    "expect_error": false,
+                    "footprint": footprint,
+                    "output": output,
+                }));
+            }
+        }
+        serde_json::to_string_pretty(&serde_json::Value::Array(entries)).unwrap() + "\n"
+    }
+
+    /// (RFC-0041 Phase 3) `book/examples.json` — the committed classification manifest — must
+    /// match what the classifier produces, so the runnable book can never show a reader an
+    /// output the toolchain would not. Freshness-gated exactly like `stdlib_docs_are_current`.
+    /// Regenerate with: `BLESS_EXAMPLES=1 cargo test -p witchy book_examples_manifest_is_current`.
+    #[test]
+    fn book_examples_manifest_is_current() {
+        let fresh = generate_examples_manifest();
+        let path = std::path::Path::new("book/examples.json");
+        if std::env::var("BLESS_EXAMPLES").is_ok() {
+            std::fs::write(path, &fresh).expect("write book/examples.json");
+            return;
+        }
+        let committed = std::fs::read_to_string(path).unwrap_or_else(|_| {
+            panic!("book/examples.json missing — regenerate: BLESS_EXAMPLES=1 cargo test book_examples_manifest_is_current")
+        });
+        assert_eq!(
+            committed, fresh,
+            "book/examples.json is stale — regenerate: BLESS_EXAMPLES=1 cargo test book_examples_manifest_is_current"
+        );
     }
 
     /// The in-language test framework: `witchy test` discovers zero-parameter

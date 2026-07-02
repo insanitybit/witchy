@@ -108,11 +108,14 @@ pickup: **RFC-0019** (the last Track A item), then Track B (**RFC-0005**, **RFC-
   - **P2:** runnable cells — each `witchy` block becomes a host-managed **`Compartment`**
     cell (glamour doesn't diff it; untrusted edits run sandboxed) wired to the editor +
     the lazily-loaded compiler; capability badges from the manifest; theme.
-  - **P3 (kept from 0019):** generate `book/examples.json` from
-    `documentation_examples_are_valid` (runnable?/console-only?/expect-error?/footprint/
-    expected-output) + freshness test; extend `pg_validate.mjs` for a headless output diff
-    vs the oracle; CI builds app+compiler wasm and deploys with **strict COOP/COEP/CORP**;
-    remove mdBook.
+  - **P3 (kept from 0019) — manifest DONE:** `book/examples.json` is generated from the
+    SAME classifier as `documentation_examples_are_valid` (per block: runnable/console_only/
+    expect_error/right-precise footprint/interpreter output) and freshness-gated by
+    `book_examples_manifest_is_current` (the `stdlib_docs_are_current` pattern; regen with
+    `BLESS_EXAMPLES=1`). REMAINING: extend `pg_validate.mjs` for a headless output diff vs the
+    oracle over the shipped book wasm; CI builds app+compiler wasm and deploys with **strict
+    COOP/COEP/CORP**; remove mdBook. (These trail P2 — the runnable cells that consume the
+    manifest.)
 - **DoD:** the docs are a glamour app (empty host footprint) rendering every page via
   `markdown.to_vnode` with SUMMARY nav; console-only cells run in-browser and agree with
   the oracle (extended `pg_validate`); capability badges + expect-error framing from the
