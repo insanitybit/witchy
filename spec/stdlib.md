@@ -779,6 +779,10 @@ A parsed request the server hands to a handler: method, raw path, the path param
 
 - `Request(String, String, List((String, String)), List((String, String)), List((String, String)), String)`
 
+#### `type PinnedUrl`
+
+- `PinnedUrl { host: String, port: Int, secure: Bool, path: String, ip: String }`
+
 #### `type RequestBuilder`
 
 An outgoing request being assembled: method, full URL, headers, and body. Build it up with the chainable methods and finish with `.send(net)`.
@@ -820,6 +824,22 @@ Fallible GET: `Ok(response)` on success, `Err(reason)` if the host is unreachabl
 #### `fn try_post(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Result(Response, String)`
 
 Fallible POST: `Ok(response)` on success, `Err(reason)` if the host is unreachable. The fallible counterpart of `post`.
+
+#### `fn pin(net: Net[Connect, Tcp], raw: String, allow_ip: fn(String) -> Bool) -> Result(PinnedUrl, String)`
+
+Resolve `raw`'s host ONCE, keep the first resolved IP the predicate approves, and pin it. The safe shape for fetching an untrusted URL — pair it with a confined `Net` for defense in depth, so the capability floor rejects an internal address even if the predicate is wrong:     let safe = net.deny(confine.private())     match http.pin(safe, user_url, allow_ip):         Ok(p) -> http.get_pinned(safe, p)         Err(e) -> Err(e)
+
+#### `fn unpinned(net: Net[Connect, Tcp], raw: String) -> Result(PinnedUrl, String)`
+
+The NAMED, greppable no-policy pin: resolve once and pin the first address, applying no per-IP policy. Safe only behind a confined `Net` (the allowlist floor still applies); prefer `pin` with a real predicate. Named so a review can find every unchecked pin.
+
+#### `fn get_pinned(net: Net[Connect, Tcp], p: PinnedUrl) -> Result(Response, String)`
+
+GET the pinned target, honoring the pin — dials the pinned IP, never re-resolving.
+
+#### `fn send_pinned(net: Net[Connect, Tcp], p: PinnedUrl, method: String, headers: List((String, String)), body: String) -> Result(Response, String)`
+
+The general pinned send: dial the pinned IP via `connect_pinned` (presenting the original hostname for TLS SNI and the `Host` header), issue the request, and parse the response. Never re-resolves the host, so no rebinding can slip a new address underneath.
 
 #### `fn build(method: String, url: String) -> RequestBuilder`
 

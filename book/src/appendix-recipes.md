@@ -121,6 +121,41 @@ with that narrowing: `http.get` itself demands only `Net[Connect, Tcp]` (and
 `server.serve` only `Net[Listen, Tcp]`), so a narrowed handle passes straight
 through.
 
+## Fetch an untrusted URL without DNS rebinding
+
+When the URL comes from outside — a webhook target, a user-supplied link — a
+plain fetch is exposed to a rebinding attack: the name is resolved once for a
+safety check and *again* at connect time, and an attacker who controls the DNS
+can return an internal address the check never saw. `http.pin` closes that gap.
+It resolves the host **once**, lets your policy approve one of the resolved IPs,
+and returns a sealed `PinnedUrl`; `http.get_pinned` dials **exactly that IP** —
+never re-resolving — while still presenting the original hostname for TLS and the
+`Host` header. Pair it with a `Net` that denies the private ranges, so the
+capability itself is the hard floor even if the policy is wrong:
+
+```witchy
+import http
+import confine
+
+fn main(console: Console, net: Net[Connect, Tcp]):
+    let safe = net.deny(confine.private())
+    match http.pin(safe, "http://example.com/status", public_ok):
+        Err(e) -> print(console, "blocked: " + e)
+        Ok(target) ->
+            match http.get_pinned(safe, target):
+                Ok(resp) -> print(console, "status " + "${http.status(resp)}")
+                Err(e) -> print(console, "fetch failed: " + e)
+
+// Your policy: inspect a resolved IP literal and approve or reject it. Returning
+// `false` for every candidate makes `pin` fail closed.
+fn public_ok(ip: String) -> Bool:
+    true
+```
+
+Because `PinnedUrl` is a sealed capability — only `std/http` can mint one — a
+value of that type is unforgeable proof that the policy ran: a function that asks
+for a `PinnedUrl` cannot be handed an unchecked target.
+
 For everything else — string manipulation, lists, dicts, sorting, JSON, time —
 see the [standard library reference](appendix-stdlib.md) and the `examples/`
 directory in the repository, which carries a runnable program for nearly every

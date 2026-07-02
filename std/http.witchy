@@ -25,6 +25,20 @@ type Response:
 type Request:
     Request(String, String, List((String, String)), List((String, String)), List((String, String)), String)
 
+// (RFC-0020) A vetted pin: a URL resolved ONCE to a single checked IP. Sealed — only
+// this module can mint one (`pin`/`unpinned`), so holding a `PinnedUrl` is proof that a
+// policy ran and cannot be hand-forged with an attacker's address. `get_pinned` dials
+// EXACTLY `ip`, carrying `host` for TLS SNI and the `Host` header, and never re-resolves
+// — closing the DNS-rebinding TOCTOU by construction. The `Net` allowlist stays the hard
+// floor underneath: `connect_pinned` re-checks `ip`, so even a buggy pin policy cannot
+// dial past `net.deny(confine.private())`.
+capability PinnedUrl:
+    host: String
+    port: Int
+    secure: Bool
+    path: String
+    ip: String
+
 // Perform a GET request to `host:port` for `path`, returning the response.
 pub fn get(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Response:
     request(net, "GET", host, port, path, "")
@@ -68,7 +82,12 @@ fn endpoint(secure: Bool, host: String, port: Int) -> String:
 // content-type, ...). `secure` selects HTTPS (TLS). `Connection: close` ends
 // `recv_all` after the body.
 pub fn request_with(net: Net[Connect, Tcp], secure: Bool, method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Response:
-    let sock = connect(net, endpoint(secure, host, port))
+    send_on(connect(net, endpoint(secure, host, port)), method, host, path, headers, body)
+
+// Build an HTTP/1.1 request and send it on an already-connected socket, then parse the
+// response. Shared by `request_with` (a fresh `connect`) and `send_pinned` (a pinned
+// `connect_pinned`) so the two dial paths produce byte-identical requests.
+fn send_on(sock: Socket, method: String, host: String, path: String, headers: List((String, String)), body: String) -> Response:
     var head = method + " " + path + " HTTP/1.1\r\n" + "Host: " + host + "\r\n"
     for h in headers:
         let (k, v) = h
@@ -89,14 +108,7 @@ fn request(net: Net[Connect, Tcp], method: String, host: String, port: Int, path
 pub fn try_request_with(net: Net[Connect, Tcp], secure: Bool, method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Result(Response, String):
     match try_connect(net, endpoint(secure, host, port)):
         None -> Err("connect to " + host + ":" + "${port}" + " failed (unreachable)")
-        Some(sock) ->
-            var head = method + " " + path + " HTTP/1.1\r\n" + "Host: " + host + "\r\n"
-            for h in headers:
-                let (k, v) = h
-                head = head + k + ": " + v + "\r\n"
-            let req = head + "Content-Length: " + "${string.length(body)}" + "\r\n" + "Connection: close\r\n\r\n" + body
-            send_bytes(sock, req)
-            Ok(parse_response(recv_all(sock)))
+        Some(sock) -> Ok(send_on(sock, method, host, path, headers, body))
 
 // Fallible GET: `Ok(response)` on success, `Err(reason)` if the host is
 // unreachable. The fallible counterpart of `get`.
@@ -107,6 +119,56 @@ pub fn try_get(net: Net[Connect, Tcp], host: String, port: Int, path: String) ->
 // unreachable. The fallible counterpart of `post`.
 pub fn try_post(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Result(Response, String):
     try_request_with(net, false, "POST", host, port, path, [], body)
+
+// ---- Rebinding-resistant fetch (RFC-0020): resolve once, pin, connect ----
+
+// Resolve `raw`'s host ONCE, keep the first resolved IP the predicate approves, and pin
+// it. The safe shape for fetching an untrusted URL — pair it with a confined `Net` for
+// defense in depth, so the capability floor rejects an internal address even if the
+// predicate is wrong:
+//     let safe = net.deny(confine.private())
+//     match http.pin(safe, user_url, allow_ip):
+//         Ok(p) -> http.get_pinned(safe, p)
+//         Err(e) -> Err(e)
+pub fn pin(net: Net[Connect, Tcp], raw: String, allow_ip: fn(String) -> Bool) -> Result(PinnedUrl, String):
+    match url.parse(raw):
+        Err(e) -> Err("invalid URL: " + e)
+        Ok(u) ->
+            match first_allowed(resolve(net, url.host(u)), allow_ip):
+                None -> Err("no resolved address for " + url.host(u) + " passed the pin policy")
+                Some(ip) -> Ok(PinnedUrl(url.host(u), url.port(u), url.scheme(u) == "https", url.path(u), ip))
+
+// The NAMED, greppable no-policy pin: resolve once and pin the first address, applying no
+// per-IP policy. Safe only behind a confined `Net` (the allowlist floor still applies);
+// prefer `pin` with a real predicate. Named so a review can find every unchecked pin.
+pub fn unpinned(net: Net[Connect, Tcp], raw: String) -> Result(PinnedUrl, String):
+    pin(net, raw, allow_any)
+
+fn allow_any(ip: String) -> Bool:
+    true
+
+// The first IP the predicate approves, or `None` if none do. The chooser sees the
+// already-resolved candidates and selects one — it never resolves again, so the
+// resolve-once invariant stays in one place.
+fn first_allowed(ips: List(String), allow_ip: fn(String) -> Bool) -> Option(String):
+    for ip in ips:
+        if allow_ip(ip):
+            return Some(ip)
+    None
+
+// GET the pinned target, honoring the pin — dials the pinned IP, never re-resolving.
+pub fn get_pinned(net: Net[Connect, Tcp], p: PinnedUrl) -> Result(Response, String):
+    send_pinned(net, p, "GET", [], "")
+
+// The general pinned send: dial the pinned IP via `connect_pinned` (presenting the
+// original hostname for TLS SNI and the `Host` header), issue the request, and parse the
+// response. Never re-resolves the host, so no rebinding can slip a new address underneath.
+pub fn send_pinned(net: Net[Connect, Tcp], p: PinnedUrl, method: String, headers: List((String, String)), body: String) -> Result(Response, String):
+    match p:
+        PinnedUrl(host, port, secure, path, ip) ->
+            match try_connect_pinned(net, ip, host, port, secure):
+                None -> Err("connect to " + host + " (" + ip + ":" + "${port}" + ") failed")
+                Some(sock) -> Ok(send_on(sock, method, host, path, headers, body))
 
 // ---- Request builder (reqwest-style fluent client) ----
 

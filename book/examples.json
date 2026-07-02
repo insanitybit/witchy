@@ -666,6 +666,18 @@
     "runnable": false
   },
   {
+    "block": 8,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/appendix-recipes.md",
+    "footprint": [
+      "Console",
+      "Net[Connect,Tcp]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
     "block": 1,
     "console_only": false,
     "expect_error": false,
