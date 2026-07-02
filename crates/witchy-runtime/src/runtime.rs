@@ -442,6 +442,21 @@ impl Runtime {
         // compilation cache below, so generated code quality is free on every
         // run after the first.
         config.cranelift_opt_level(wasmtime::OptLevel::Speed);
+        // (RFC-0005 step 7) Defense in depth: shrink the codegen/runtime surface to
+        // exactly what witchy emits. Disable every WASM proposal we never lower to —
+        // threads, SIMD, relaxed-SIMD, multiple memories, tail calls, memory64 — so a
+        // miscompile or a crafted module can't reach that machinery. We KEEP the
+        // proposals we DO emit (bulk memory for `MemoryCopy`/`MemoryFill`, multi-value
+        // for the `*_cap` ABI) at their defaults, and leave reference types / GC on for
+        // the eventual externref capability core (RFC-0005 steps 3–6). Cranelift's
+        // Spectre mitigations (heap + table access) are ON by default and stay on — do
+        // NOT set `signals_based_traps(false)`, which would force them off.
+        config.wasm_threads(false);
+        config.wasm_simd(false);
+        config.wasm_relaxed_simd(false);
+        config.wasm_multi_memory(false);
+        config.wasm_tail_call(false);
+        config.wasm_memory64(false);
         // Epoch-based interruption lets the scheduler preempt a runaway VM.
         // It is only worth its per-backedge cost when a
         // scheduler will actually advance the epoch.
