@@ -3199,6 +3199,9 @@ fn yn(b: Bool) -> String:
                     print: true,
                     quiet: true,
                     signing_key: Some(seed),
+                    // (RFC-0005) the signing key is a real granted "signing" secret,
+                    // not a magic handle-0 fallback — populate it as production does.
+                    secrets: vec![("signing".to_string(), seed.to_vec())],
                     ..Default::default()
                 },
                 64,
@@ -3248,6 +3251,9 @@ fn yn(b: Bool) -> String:
                     print: true,
                     quiet: true,
                     signing_key: Some(seed),
+                    // (RFC-0005) the signing key is a real granted "signing" secret,
+                    // not a magic handle-0 fallback — populate it as production does.
+                    secrets: vec![("signing".to_string(), seed.to_vec())],
                     ..Default::default()
                 },
                 64,
@@ -3293,6 +3299,9 @@ fn yn(b: Bool) -> String:
                     print: true,
                     quiet: true,
                     signing_key: Some(seed),
+                    // (RFC-0005) the signing key is a real granted "signing" secret,
+                    // not a magic handle-0 fallback — populate it as production does.
+                    secrets: vec![("signing".to_string(), seed.to_vec())],
                     ..Default::default()
                 },
                 64,
@@ -3301,6 +3310,53 @@ fn yn(b: Bool) -> String:
         assert!(
             actor.run().is_err(),
             "compiled backend must refuse to reveal the signing key"
+        );
+    }
+
+    /// RFC-0005 step 1: the `signing@0` fallback is GONE. A module that requests
+    /// `secrets.require("signing")` when the secret table does NOT carry a `"signing"`
+    /// entry now fails — even though `signing_key` is set — instead of resolving the
+    /// magic handle `0` to the key. Before, `signing_key.is_some()` alone made
+    /// `require("signing")`/handle-0 return the key; now it must be a real granted
+    /// entry. Both backends refuse identically.
+    #[test]
+    fn signing_at_zero_fallback_is_removed_on_both_backends() {
+        use crate::runtime::{Capabilities, Runtime};
+        let src = "import secretstore\nimport crypto\nfn main(console: Console, secrets: SecretStore):\n    print(console, crypto.public_key(secrets.require(\"signing\")))\n";
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let seed = [7u8; 32];
+
+        // Interpreter (oracle): the store carries no "signing", so require fails —
+        // there is no signing_key-backed fallback in the store either.
+        let interp = interpreter::run_module_signed(linked.clone(), ".", Vec::new(), Vec::new(), None);
+        assert!(interp.is_err(), "interp must refuse require(\"signing\") with no granted entry");
+
+        // Compiled WASM: signing_key IS set, but secrets is EMPTY — the removed
+        // fallback would have leaked the key at handle 0; now the lookup returns -1
+        // and `require` traps.
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                &bytes,
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    signing_key: Some(seed),
+                    // Deliberately do NOT register a "signing" secret: the whole point
+                    // is that signing_key alone no longer resolves handle 0.
+                    ..Default::default()
+                },
+                64,
+            )
+            .expect("spawn");
+        assert!(
+            actor.run().is_err(),
+            "compiled backend must not resolve the signing key via the removed handle-0 fallback"
         );
     }
 
@@ -9002,7 +9058,13 @@ fn main(console: Console):
         let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
             .expect("the WIR binary path should handle the signing host imports");
-        let caps = || Capabilities { print: true, signing_key: Some([7u8; 32]), quiet: true, ..Default::default() };
+        let caps = || Capabilities {
+            print: true,
+            signing_key: Some([7u8; 32]),
+            secrets: vec![("signing".to_string(), vec![7u8; 32])],
+            quiet: true,
+            ..Default::default()
+        };
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt.spawn(&bytes, caps(), crate::RUN_MEMORY_PAGES).expect("spawn with signing key");
         actor.run().expect("run");
@@ -9030,7 +9092,13 @@ fn main(console: Console):
         let mut actor = rt
             .spawn(
                 &bytes,
-                Capabilities { print: true, signing_key: Some([7u8; 32]), quiet: true, ..Default::default() },
+                Capabilities {
+                    print: true,
+                    signing_key: Some([7u8; 32]),
+                    secrets: vec![("signing".to_string(), vec![7u8; 32])],
+                    quiet: true,
+                    ..Default::default()
+                },
                 crate::RUN_MEMORY_PAGES,
             )
             .expect("spawn with signing key");

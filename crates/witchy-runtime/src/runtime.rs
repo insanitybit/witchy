@@ -2322,16 +2322,13 @@ fn host_net_close(mut caller: Caller<'_, VmState>, sid: i32) -> Result<()> {
 }
 
 /// The raw bytes of the secret at `handle` (an index into the host secret table).
-/// Handle 0 falls back to the single `signing_key` so VM-spawn sites that grant a
-/// lone Secret (without populating `secrets`) keep working.
+/// (RFC-0005) No magic-index fallback: `handle` must name a real granted entry in
+/// `caps.secrets`. The signing key, when granted, is a normal `"signing"` entry in
+/// that table (populated at every grant site), so it resolves like any other secret —
+/// there is no special case a fabricated handle `0` could exploit.
 fn secret_seed_bytes(caps: &Capabilities, handle: i32) -> Result<Vec<u8>> {
     if let Some((_, bytes)) = usize::try_from(handle).ok().and_then(|h| caps.secrets.get(h)) {
         return Ok(bytes.clone());
-    }
-    if handle == 0 {
-        if let Some(seed) = caps.signing_key {
-            return Ok(seed.to_vec());
-        }
     }
     Err(Error::msg("crypto: no secret at that handle (none granted?)"))
 }
@@ -2374,18 +2371,17 @@ fn host_crypto_public_key(mut caller: Caller<'_, VmState>, key: i32, out_ptr: i3
 /// `secretstore_lookup(name_ptr) -> i32`: the host-table handle of the secret
 /// named `name`, or -1 if it was not granted. The bytes never cross into the
 /// guest — only the opaque handle, which `crypto.sign`/`reveal` resolve back to
-/// host-side bytes. `signing` resolves to handle 0 (the `--signing-key` slot).
+/// host-side bytes. (RFC-0005) The signing key is a normal `"signing"` entry in
+/// `caps.secrets` (populated at every grant site), so it is found by name like any
+/// other — no magic-index fallback.
 fn host_secretstore_lookup(mut caller: Caller<'_, VmState>, name_ptr: i32) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let name = read_wstr(mem.data(&caller), name_ptr)?;
     let caps = &caller.data().caps;
-    if let Some(i) = caps.secrets.iter().position(|(n, _)| *n == name) {
-        return Ok(i as i32);
+    match caps.secrets.iter().position(|(n, _)| *n == name) {
+        Some(i) => Ok(i as i32),
+        None => Ok(-1),
     }
-    if name == "signing" && caps.signing_key.is_some() {
-        return Ok(0);
-    }
-    Ok(-1)
 }
 
 /// `crypto_reveal_len(key) -> i32`: reveal the secret at handle `key` as a string
