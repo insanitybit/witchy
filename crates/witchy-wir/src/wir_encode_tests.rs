@@ -62,6 +62,28 @@
         assert_eq!(run_encoded(&with_rc_floor(module)), exp, "binary output mismatch");
     }
 
+    /// Assert the module TRAPS when run (e.g. the RFC-0005 in-place bounds check fires).
+    fn assert_traps(module: &WirModule) {
+        let binary = encode(&with_rc_floor(module));
+        let mut config = wasmtime::Config::new();
+        config.consume_fuel(true);
+        let engine = wasmtime::Engine::new(&config).expect("engine");
+        let m = wasmtime::Module::new(&engine, &binary).expect("encoded module invalid");
+        let mut linker = wasmtime::Linker::new(&engine);
+        linker.func_wrap("witchy", "print_int", |_: i64| {}).unwrap();
+        linker
+            .func_wrap("witchy", "print", |_: wasmtime::Caller<'_, ()>, _: i32, _: i32| {})
+            .unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        store.set_fuel(500_000_000).expect("fuel");
+        let inst = linker.instantiate(&mut store, &m).expect("instantiate");
+        let run = inst.get_typed_func::<(), ()>(&mut store, "run").expect("run export");
+        assert!(
+            run.call(&mut store, ()).is_err(),
+            "expected a trap, but the module ran to completion"
+        );
+    }
+
     /// (RFC-0016) The list/string/dict/`mk` allocators are routed through `$rc_alloc`,
     /// so a hand-assembled module using one needs the allocator + its globals present.
     /// Inject them idempotently (by name, so func/global resolution is unaffected and
@@ -275,7 +297,12 @@
             ret: vec![],
             locals: vec![local("rp", WirTy::Bool), local("rc", WirTy::Bool)],
             body: vec![
-                // list at 2048: len=1, elem0=10 (cap 2 → one slot to spare)
+                // list at 2048: len=1, elem0=10 (cap 2 → one slot to spare). The
+                // `$rc_alloc` size header at `[2048-4]` records the real allocation
+                // (4-byte len word + 2 i64 slots = 20 bytes) so the RFC-0005 in-place
+                // bounds check (in `$list_push_cap`) sees the true capacity — a real
+                // list always carries this header.
+                WirNode::Store { ptr: ConstI32(2044), value: ConstI32(20), kind: Kind::I32, offset: 0 },
                 WirNode::Store { ptr: ConstI32(2048), value: ConstI32(1), kind: Kind::I32, offset: 0 },
                 WirNode::Store { ptr: ConstI32(2048), value: ConstI64(10), kind: Kind::I64, offset: 4 },
                 WirNode::SetGlobal { global: "heap".into(), value: ConstI32(2068) },
@@ -323,6 +350,60 @@
         // Agreement gate: the encoder AND the WAT printer (multi-value func +
         // CallStoreMulti arm) both run identically.
         assert_agrees(&module, &["2", "20", "2048", "2"]);
+    }
+
+    /// RFC-0005 step 2: the in-place `$list_push_cap` bounds check TRAPS when the `cap`
+    /// token overstates the buffer's real allocation. A cap-1 buffer (size header 12 =
+    /// 4-byte len word + one i64 slot), appended to as if `cap` were 2, would write a
+    /// SECOND element PAST the block — silent heap corruption. The check converts that
+    /// into a loud trap, exactly as `$list_at` traps an out-of-bounds read.
+    #[test]
+    fn list_push_cap_traps_on_overstated_cap() {
+        use WirExpr::*;
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![local("rp", WirTy::Bool), local("rc", WirTy::Bool)],
+            body: vec![
+                // list at 2048: REAL allocation is 12 bytes (len word + ONE i64 slot), len=1.
+                WirNode::Store { ptr: ConstI32(2044), value: ConstI32(12), kind: Kind::I32, offset: 0 },
+                WirNode::Store { ptr: ConstI32(2048), value: ConstI32(1), kind: Kind::I32, offset: 0 },
+                WirNode::Store { ptr: ConstI32(2048), value: ConstI64(10), kind: Kind::I64, offset: 4 },
+                WirNode::SetGlobal { global: "heap".into(), value: ConstI32(2060) },
+                // cap=2 LIES: the real element capacity is 1. The in-place append at index
+                // 1 would land past the block, so the bounds check must trap.
+                WirNode::CallStoreMulti {
+                    func: "list_push_cap".into(),
+                    args: vec![ConstI32(2048), ConstI64(20), ConstI32(2)],
+                    dests: vec!["rp".into(), "rc".into()],
+                },
+            ],
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![WirImport { name: "print_int".into(), params: vec![Kind::I64], results: vec![] }],
+            funcs: vec![
+                crate::wir_helpers::ensure_helper(false),
+                crate::wir_helpers::list_push_cap_helper(),
+                run,
+            ],
+            memory_pages: 1,
+            data: vec![],
+            globals: vec![
+                WirGlobal { name: "heap".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(2060), export: None },
+                WirGlobal {
+                    name: "__witchy_reowns".into(),
+                    kind: Kind::I64,
+                    mutable: true,
+                    init: GlobalInit::I64(0),
+                    export: Some("__witchy_reowns".into()),
+                },
+            ],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        assert_traps(&module);
     }
 
     /// CallStoreMulti calls a MULTI-result function and stores each result into a

@@ -1253,7 +1253,31 @@ pub fn list_push_cap_helper() -> WirFunc {
         result: None,
     };
     // cap > len: mutate `list` in place.
+    // (RFC-0005 step 2) Bound the in-place write against the buffer's REAL allocated
+    // size (`[list-4]`, low 24 bits — the `$rc_alloc` header). `cap > len` gates this
+    // path, but `cap` is the ownership analysis's CLAIM; a false negative could hand us
+    // a `cap` that overstates the real allocation, and the element store at index `len`
+    // writes bytes `[list+len*8+4, list+len*8+12)` — past the block, silently corrupting
+    // adjacent heap. Trap instead, exactly as `$list_at` traps an out-of-bounds read: a
+    // miscompile becomes a loud, parity-identical error, never a different silent answer.
+    // Sound: when `cap` equals the true capacity, `len < cap` implies `len*8+12 <= size`,
+    // so a correct program never trips it. The header read is safe here — the in-place
+    // path only ever runs on a heap-allocated unique buffer.
     let inplace = vec![
+        N::If {
+            cond: b32(
+                BinOp::GtU,
+                b32(BinOp::Add, b32(BinOp::Mul, getl("len"), i32c(8)), i32c(12)),
+                b32(
+                    BinOp::And,
+                    E::Load { ptr: Box::new(b32(BinOp::Sub, getl("list"), i32c(4))), kind: Kind::I32, offset: 0 },
+                    i32c(RC_SIZE_MASK),
+                ),
+            ),
+            then_: vec![N::Unreachable],
+            els: vec![],
+            result: None,
+        },
         N::Store {
             ptr: b32(BinOp::Add, getl("list"), b32(BinOp::Mul, getl("len"), i32c(8))),
             value: getl("x"),
