@@ -1,10 +1,20 @@
 ---
 rfc: 0019
 title: Interactive documentation — the runnable book
-status: proposed
+status: superseded
 created: 2026-06-27
+superseded-by: 0041
 tracking:
 ---
+
+> **Superseded by [RFC-0041](0041-docs-as-a-glamour-app.md) (2026-07-02).** The
+> runnable-book goal stands, but the shell changes: instead of progressively enhancing
+> mdBook's HTML, the book becomes a **glamour app** witchy renders itself (the dogfood
+> the project is trying to showcase). RFC-0041 **keeps this RFC's reusable core** — the
+> client-side compiler engine (Phase 0 repair + shared host shim/editor/highlighter) and
+> the generated classification/validation manifest + CI (Phase 3) — and **replaces the
+> mdBook shell + theme** (Phases 1–2) with the glamour app. The "no server" analysis
+> below is reaffirmed there.
 
 # RFC-0019: Interactive documentation — the runnable book
 

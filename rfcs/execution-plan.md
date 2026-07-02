@@ -66,30 +66,43 @@ pickup: **RFC-0019** (the last Track A item), then Track B (**RFC-0005**, **RFC-
 
 ## TRACK A — language / features
 
-### RFC-0019 — interactive documentation (runnable book)
-- **Goal:** wire the existing browser witchy engine into the mdBook so doc code
-  blocks become runnable/editable; validate against the oracle in CI.
-- **Depends on:** nothing (engine exists; it's integration).
-- **Entry points:** book `book.toml`, `book/src/*.md`, `book/witchy-hljs.js`; engine
-  `web/witchy.wasm` + `web/witchy-host.js` (working: `compile`/`runWitchy`);
-  **broken** `web/playground.js` (calls the removed `witchy_run`); validator
-  `scripts/pg_validate.mjs`; manifest source `src/example_tests.rs:3255`
-  `documentation_examples_are_valid`; `.github/workflows/ci.yml` book/playground jobs.
+### RFC-0041 — the docs as a glamour app (runnable book, self-hosted) — SUPERSEDES 0019
+- **Goal:** the book becomes a **witchy program** — a glamour app compiled to wasm,
+  static-hosted, client-side, no server — that renders `book/src/*.md` via
+  `markdown.to_vnode` with `SUMMARY.md`-driven nav, and turns every `witchy` code block
+  into an editable/runnable cell backed by the browser compiler. The ultimate dogfood.
+- **Depends on:** nothing new (every piece ships: glamour capability-safe/routing/root
+  ABI, `std/markdown`, the browser compiler, coven-web as the proven pattern).
+- **Entry points:** NEW `projects/docs/` (glamour app, coven-web shape); content
+  `book/src/*.md` + `book/src/SUMMARY.md` (unchanged authoring); renderer
+  `projects/glamour/src/markdown.witchy` (`to_vnode`); host shell
+  `web/witchy-runtime/glamour-dom.mjs`; engine `web/witchy.wasm` + `web/witchy-host.js`
+  (`compile`/`runWitchy`); **broken** `web/playground.js` (calls removed `witchy_run`);
+  validator `scripts/pg_validate.mjs`; manifest source `src/example_tests.rs`
+  `documentation_examples_are_valid`; remove `book.toml` + `scripts/build-book.sh`
+  mdbook path + `.github/workflows/ci.yml` mdbook job.
 - **Phases:**
-  - **P0 (prereq):** fix `playground.js` to use `witchy-host.js`; dedupe the
-    highlighter into one `web/witchy-highlight.js`; extract a reusable editor
-    (`web/witchy-editor.js`).
-  - **P1:** generate `book/examples.json` from `documentation_examples_are_valid`
-    (per-block: runnable?/console-only?/expect-error?/footprint/expected-output);
-    add `book/witchy-playground.js` (progressive enhancement of `code.language-witchy`
-    into runnable/editable cells, lazy-load wasm on first Run); wire `book.toml`.
-  - **P2:** theme + capability badges + polish.
-  - **P3:** extend `pg_validate.mjs` + CI to diff book output vs oracle; a manifest
-    freshness test (mirror `stdlib_docs_are_current`); **strict COOP/COEP/CORP** on
-    the deployed book (house rule).
-- **DoD:** book cells run in-page and agree with the oracle in CI; `documentation_examples_are_valid`
-  stays green; strict cross-origin-isolation headers set. **Size:** L (P0 is the
-  unblocker; P3 is the no-drift guarantee).
+  - **P0 (prereq, kept from 0019):** fix `playground.js` to use `witchy-host.js`; extract
+    one highlighter (`web/witchy-highlight.js`) + one editor (`web/witchy-editor.js`).
+    Pure win — the standalone playground works again regardless of the shell.
+  - **P1:** the glamour docs-app shell — build step SUMMARY.md→nav JSON; `markdown.to_vnode`
+    pages; `UiRoute` client-side routing; `export_step(ui: UiRoot,…)`. Static parity with
+    today's book, minus interactivity.
+  - **P2:** runnable cells — each `witchy` block becomes a host-managed **`Compartment`**
+    cell (glamour doesn't diff it; untrusted edits run sandboxed) wired to the editor +
+    the lazily-loaded compiler; capability badges from the manifest; theme.
+  - **P3 (kept from 0019):** generate `book/examples.json` from
+    `documentation_examples_are_valid` (runnable?/console-only?/expect-error?/footprint/
+    expected-output) + freshness test; extend `pg_validate.mjs` for a headless output diff
+    vs the oracle; CI builds app+compiler wasm and deploys with **strict COOP/COEP/CORP**;
+    remove mdBook.
+- **DoD:** the docs are a glamour app (empty host footprint) rendering every page via
+  `markdown.to_vnode` with SUMMARY nav; console-only cells run in-browser and agree with
+  the oracle (extended `pg_validate`); capability badges + expect-error framing from the
+  manifest; `examples.json` freshness test + headless-diff CI + strict cross-origin
+  headers; mdBook removed; RFC-0019 superseded. **Size:** L (P0 unblocks; search is the
+  named gap — a small client-side index in P3 or a follow-up). **Known cost:** rebuilding
+  the reader shell mdBook gave free (nav/layout/**search**).
 
 ---
 
