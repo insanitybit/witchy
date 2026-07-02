@@ -200,7 +200,14 @@ pickup: **RFC-0019** (the last Track A item), then Track B (**RFC-0005**, **RFC-
 - **Goal:** resolve-once-and-pin HTTP: `net.resolve` + `net.connect_pinned` + a
   sealed `PinnedUrl`, so user-supplied-URL fetch is SSRF/rebinding-safe.
 - **Status:** Layer 0 (resolve-once invariant) + Layer 1 (`confine.private()`)
-  shipped (`std/confine.witchy:59`); Layers 2–3 missing.
+  shipped (`std/confine.witchy:59`); **step 1 (IPv6 CIDR match) DONE** —
+  `address_admits`/`net_allows` now CIDR-match IPv6 (`parse_ipv6_cidr`/`ipv6_in_cidr`/
+  `strip_brackets` in `capabilities.rs`), closing a SILENT `confine.private()` gap (its
+  `::1/128`/`fe80::/10`/`fc00::/7` ranges only ever exact-matched, so an internal IPv6
+  slipped past `net.deny(private())`). Proven by `private_ranges_deny_internal_ipv6`
+  (unit) + `net_deny_private_blocks_internal_ipv6_on_both_backends` (a differential
+  connect test — both backends refuse an internal IPv6 dial). Layers 2–3 (resolve/pin)
+  missing.
 - **Entry points:** `crates/witchy-caps/src/capabilities.rs:150` (IPv4 CIDR — IPv6
   gap here); host ops template `crates/witchy-runtime/src/runtime.rs:1975`
   (`host_net_connect`) + `wir_prelude.rs:282` `IMPORT_COUNT`; `std/http.witchy`.

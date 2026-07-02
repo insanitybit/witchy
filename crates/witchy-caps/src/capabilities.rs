@@ -128,10 +128,18 @@ pub fn address_admits(pattern: &str, target: &str) -> bool {
     if phost == thost {
         return true;
     }
-    // A CIDR host pattern admits a literal IPv4 target inside the block.
+    // A CIDR host pattern admits a literal IP target inside the block — IPv4…
     if let Some((base, bits)) = parse_ipv4_cidr(phost) {
         if let Ok(ip) = thost.parse::<std::net::Ipv4Addr>() {
             return ipv4_in_cidr(ip, base, bits);
+        }
+    }
+    // …and IPv6 (RFC-0020: closes a silent `confine.private()` gap — its `::1/128`,
+    // `fe80::/10`, `fc00::/7` ranges only ever exact-matched before, so an internal IPv6
+    // address slipped past `net.deny(confine.private())`). Hosts may be bracketed (`[::1]`).
+    if let Some((base, bits)) = parse_ipv6_cidr(phost) {
+        if let Ok(ip) = strip_brackets(thost).parse::<std::net::Ipv6Addr>() {
+            return ipv6_in_cidr(ip, base, bits);
         }
     }
     false
@@ -160,6 +168,27 @@ fn ipv4_in_cidr(ip: std::net::Ipv4Addr, base: std::net::Ipv4Addr, bits: u8) -> b
     }
     let mask = if bits == 32 { u32::MAX } else { !((1u32 << (32 - bits)) - 1) };
     (u32::from(ip) & mask) == (u32::from(base) & mask)
+}
+
+/// Strip a single pair of surrounding brackets (`[::1]` → `::1`), the standard way to
+/// write an IPv6 host so `host:port` splitting on the last colon is unambiguous.
+fn strip_brackets(h: &str) -> &str {
+    h.strip_prefix('[').and_then(|s| s.strip_suffix(']')).unwrap_or(h)
+}
+
+fn parse_ipv6_cidr(s: &str) -> Option<(std::net::Ipv6Addr, u8)> {
+    let (ip, bits) = s.split_once('/')?;
+    let ip: std::net::Ipv6Addr = strip_brackets(ip).parse().ok()?;
+    let bits: u8 = bits.parse().ok()?;
+    (bits <= 128).then_some((ip, bits))
+}
+
+fn ipv6_in_cidr(ip: std::net::Ipv6Addr, base: std::net::Ipv6Addr, bits: u8) -> bool {
+    if bits == 0 {
+        return true;
+    }
+    let mask: u128 = if bits == 128 { u128::MAX } else { !((1u128 << (128 - bits)) - 1) };
+    (u128::from(ip) & mask) == (u128::from(base) & mask)
 }
 
 /// Whether the allowlist admits `target` — the per-op confinement check used by
@@ -829,7 +858,7 @@ mod grantable_footprint_tests {
 
 #[cfg(test)]
 mod net_only_tests {
-    use super::{net_allows, net_only};
+    use super::{address_admits, net_allows, net_only};
 
     // RFC-0011 monotonicity: a `deny` in effect must survive a later `only`, even an
     // `only` of the enclosing block. Regression for the `only`-drops-`deny` re-widening.
@@ -875,6 +904,29 @@ mod net_only_tests {
         // Public addresses remain reachable.
         assert!(net_allows(&allow, "8.8.8.8:443"));
         assert!(net_allows(&allow, "93.184.216.34:443"));
+    }
+
+    // RFC-0020 step 1: the IPv6 half of the SSRF/rebinding defense. `confine.private()`'s IPv6
+    // ranges (`::1/128`, `fe80::/10`, `fc00::/7`) are now CIDR-MATCHED — before this they only
+    // ever exact-matched, so an internal IPv6 address slipped past `net.deny(confine.private())`.
+    // Hosts are bracketed (`[::1]`), the standard way to keep `host:port` unambiguous.
+    #[test]
+    fn private_ranges_deny_internal_ipv6() {
+        // Allow all IPv6, then deny the private ranges (the `net.deny(private())` shape).
+        let mut allow = vec!["::/0:*".to_string()];
+        for c in ["::1/128", "fe80::/10", "fc00::/7"] {
+            allow.push(format!("!{c}:*"));
+        }
+        for internal in ["[::1]:443", "[fe80::1]:80", "[fc00::1]:443", "[fdff:ffff::1]:443"] {
+            assert!(!net_allows(&allow, internal), "{internal} should be denied by confine.private()");
+        }
+        // Public IPv6 (Google + Cloudflare DNS) stays reachable.
+        assert!(net_allows(&allow, "[2001:4860:4860::8888]:443"), "public IPv6 stays reachable");
+        assert!(net_allows(&allow, "[2606:4700:4700::1111]:443"));
+        // Directly: the CIDR host-match, bracketed and not.
+        assert!(address_admits("fc00::/7:*", "[fd12:3456::1]:443"));
+        assert!(!address_admits("fe80::/10:*", "[2001:db8::1]:80"));
+        assert!(address_admits("::1/128:*", "[::1]:22"));
     }
 
     #[test]

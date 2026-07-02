@@ -462,6 +462,51 @@
         );
     }
 
+    /// RFC-0020 step 1: the IPv6 SSRF/rebinding defense, end to end. A program granted `[::1]:80`
+    /// that `net.deny(confine.private())` CANNOT connect to `[::1]:80` — the loopback is now
+    /// CIDR-matched by the deny (before this, `confine.private()`'s IPv6 ranges only ever
+    /// exact-matched, so an internal IPv6 slipped through). Refused identically on both backends
+    /// (the allow-list check is the shared `net_allows`).
+    #[test]
+    fn net_deny_private_blocks_internal_ipv6_on_both_backends() {
+        use crate::runtime::{Capabilities, Runtime};
+        let src = "import confine\n\
+                   fn main(console: Console, net: Net):\n\
+                   \x20   let safe = net.deny(confine.private())\n\
+                   \x20   let s = connect(safe, \"[::1]:80\")\n\
+                   \x20   send_line(s, \"x\")\n";
+        let linked = resolve_std_src(src);
+        typeck::check(&linked).expect("typecheck");
+        // Interpreter: granted the loopback, then it denies the private ranges.
+        assert!(
+            interpreter::run_module(linked.clone(), ".", vec!["[::1]:80".into()]).is_err(),
+            "interp must refuse an internal IPv6 connect after net.deny(private())"
+        );
+        // Compiled: same grant, same refusal.
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let mut rt = Runtime::new().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                &bytes,
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    net_allow: Some(vec!["[::1]:80".to_string()]),
+                    net_connect: true,
+                    net_listen: true,
+                    ..Default::default()
+                },
+                64,
+            )
+            .expect("spawn");
+        assert!(
+            actor.run().is_err(),
+            "compiled must refuse an internal IPv6 connect after net.deny(private())"
+        );
+    }
+
     /// RFC-0011: `confine.union(a, b)` builds a multi-endpoint `NetPolicy`, and
     /// `net.only(union(...))` narrows to the WHOLE set — so a further refinement to EITHER
     /// endpoint still succeeds (both are admitted). On both backends.
