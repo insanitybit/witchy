@@ -32,6 +32,8 @@ cp web/witchy-runtime/glamour-dom.mjs web/witchy-runtime/witchy-runtime.mjs \
    web/docs-boot.js web/docs.css "$OUT/"
 cp web/docs.html "$OUT/index.html"
 cp book/examples.json "$OUT/"
+# Strict cross-origin isolation on every response (house rule) — for a `_headers`-honoring host.
+cp web/_headers "$OUT/"
 
 # 4. The browser compiler (built by build-playground.sh) — required for the Run buttons.
 if [ -f web/witchy.wasm ]; then

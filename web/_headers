@@ -1,0 +1,9 @@
+# Strict cross-origin isolation on EVERY response of the docs site (house rule — never relax).
+# `_headers` is honored by Cloudflare Pages and Netlify; GitHub Pages does NOT support custom
+# headers, so the book must deploy to a host that does (or behind a header-setting proxy).
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  Cross-Origin-Resource-Policy: same-origin
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer

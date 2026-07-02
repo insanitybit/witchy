@@ -60,9 +60,12 @@ try {
     env: { ...process.env, WITCHY: BIN },
     stdio: "pipe",
   });
-  for (const f of ["index.html", "docs.wasm", "glamour-dom.mjs", "witchy-runnable.js", "witchy-host.js", "docs-boot.js", "examples.json", "content/SUMMARY.md", "content/introduction.md"]) {
+  for (const f of ["index.html", "docs.wasm", "glamour-dom.mjs", "witchy-runnable.js", "witchy-host.js", "docs-boot.js", "examples.json", "_headers", "content/SUMMARY.md", "content/introduction.md"]) {
     ok(existsSync(join(dist, f)), `the bundle contains ${f}`);
   }
+  // The bundle carries strict cross-origin isolation for a `_headers`-honoring host.
+  const headers = readFileSync(join(dist, "_headers"), "utf8");
+  ok(/Cross-Origin-Opener-Policy:\s*same-origin/.test(headers) && /Cross-Origin-Embedder-Policy:\s*require-corp/.test(headers), "the bundle ships strict COOP/COEP headers");
 
   // 2. Mount the bundle's docs.wasm; fetch reads the bundle's staged `content/`.
   const wasm = readFileSync(join(dist, "docs.wasm"));
