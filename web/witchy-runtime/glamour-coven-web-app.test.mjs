@@ -106,6 +106,8 @@ try {
     document: fakeDocument,
     initialModel: { route: "/", session: "", data: "", notice: "", query: "" },
     fetch: fakeFetch, routeTag: "Route", location, history, ports,
+    // (RFC-0040) the app's `export_step` takes a `UiRoot`; stage its grant.
+    instantiateOpts: { userCaps: [["coven-web"]] },
   });
 
   // 1. Catalog + capability search.

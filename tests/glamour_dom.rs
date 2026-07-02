@@ -33,6 +33,45 @@ fn node_available() -> bool {
         .unwrap_or(false)
 }
 
+/// (RFC-0039) The capability gate, made structural: a component WITHOUT a `UiFetch`
+/// cannot construct `Cmd.Http`. `glamour.http_get` REQUIRES the token as its leading
+/// argument, so a fetch attempt without one FAILS TO COMPILE — the unauthorized
+/// effect is unrepresentable, not merely rejected by a host at runtime.
+#[test]
+fn glamour_http_effect_requires_a_uifetch_token() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let work = std::env::temp_dir().join(format!("glamour-gate-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::copy(
+        manifest.join("projects/glamour/src/glamour.witchy"),
+        work.join("glamour.witchy"),
+    )
+    .unwrap();
+    // Try to build an HTTP effect WITHOUT holding a `UiFetch`.
+    std::fs::write(
+        work.join("bad.witchy"),
+        "import glamour\n\ntype Msg:\n    Got(Int, String)\n\npub fn go() -> Cmd(Msg):\n    glamour.http_get(\"/x\", \"Got\")\n",
+    )
+    .unwrap();
+    let out = Command::new(BIN)
+        .args(["compile", "bad.witchy", "--out", "bad.wasm"])
+        .current_dir(&work)
+        .output()
+        .expect("spawn witchy compile");
+    let produced = work.join("bad.wasm").exists();
+    let msg = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&work);
+    assert!(
+        !out.status.success() && !produced,
+        "an HTTP effect without a UiFetch MUST NOT compile (the capability gate). output:\n{msg}"
+    );
+}
+
 #[test]
 fn glamour_dom_run_loop_renders_and_updates_on_events() {
     if !node_available() {

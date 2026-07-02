@@ -184,7 +184,10 @@ pub type Cmd(msg):
     // performs the fetch (attaching any session credential ITSELF) and feeds the result
     // back as that msg, exactly like the `After` timer. So `update` stays pure and the
     // footprint stays empty, while the app still talks to a server.
-    Http(String, String, String, String)
+    // (RFC-0039) The leading `UiFetch` is the unforgeable authority to construct
+    // this fetch: a component without one CANNOT emit an HTTP effect. The token is
+    // NOT serialized (it gates construction, not the wire) — see `cmd_to_json`.
+    Http(UiFetch, String, String, String, String)
     // Push a new URL onto history (client-side routing); the shell mirrors it back as
     // the app's route msg so `view` re-renders for the new path.
     Nav(String)
@@ -232,7 +235,7 @@ pub fn cmd_to_json(cmd: Cmd(msg), msg_to_json: fn(msg) -> Json) -> Json:
         // `tag` is a literal variant NAME (not routed through msg_to_json): the shell
         // reconstructs `{"$variant": tag, "$values": [status, body]}` once the response
         // arrives, so the response carries data the rune did not have at emit time.
-        Http(method, url, body, tag) ->
+        Http(_fetch, method, url, body, tag) ->
             JsonObject([
                 ("cmd", JsonString("http")),
                 ("method", JsonString(method)),
@@ -248,11 +251,11 @@ pub fn cmd_to_json(cmd: Cmd(msg), msg_to_json: fn(msg) -> Json) -> Json:
 // Convenience constructors for the HTTP effect. `on_done` is the name of a 2-arg msg
 // variant `Tag(Int, String)` the shell dispatches with `(status, body)` (status 0 on a
 // transport error, so failures are ordinary `update` arms, never exceptions).
-pub fn http_get(url: String, on_done: String) -> Cmd(msg):
-    Http("GET", url, "", on_done)
+pub fn http_get(fetch: UiFetch, url: String, on_done: String) -> Cmd(msg):
+    Http(fetch, "GET", url, "", on_done)
 
-pub fn http_post(url: String, body: String, on_done: String) -> Cmd(msg):
-    Http("POST", url, body, on_done)
+pub fn http_post(fetch: UiFetch, url: String, body: String, on_done: String) -> Cmd(msg):
+    Http(fetch, "POST", url, body, on_done)
 
 // Navigate to `path` (pushes history; the shell echoes it back as the route msg).
 pub fn navigate(path: String) -> Cmd(msg):

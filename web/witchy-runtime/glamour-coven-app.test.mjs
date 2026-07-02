@@ -140,6 +140,8 @@ try {
     document: fakeDocument,
     initialModel: { route: "/", catalog: "", package: "" },
     fetch: fakeFetch,
+    // (RFC-0040) the app's `export_step` takes a `UiRoot`; stage its grant.
+    instantiateOpts: { userCaps: [["coven"]] },
     routeTag: "Route",
     location,
     history,

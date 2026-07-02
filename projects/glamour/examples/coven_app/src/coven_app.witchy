@@ -22,16 +22,16 @@ type Msg derive(Reflect):
     GotCatalog(Int, String)
     GotPackage(Int, String)
 
-fn update(m: Model, msg: Msg) -> (Model, Cmd(Msg)):
+fn update(m: Model, msg: Msg, fetch: UiFetch) -> (Model, Cmd(Msg)):
     match m:
         Model(route, cat, pkg) ->
             match msg:
                 Route(path) ->
                     if string.starts_with(path, "/p/"):
                         let name = string.substring(path, 3, string.length(path))
-                        (Model(path, cat, pkg), glamour.http_get("/api/coven/doc?name=" + name, "GotPackage"))
+                        (Model(path, cat, pkg), glamour.http_get(fetch, "/api/coven/doc?name=" + name, "GotPackage"))
                     else:
-                        (Model("/", cat, pkg), glamour.http_get("/api/coven/catalog", "GotCatalog"))
+                        (Model("/", cat, pkg), glamour.http_get(fetch, "/api/coven/catalog", "GotCatalog"))
                 Goto(name) -> (Model(route, cat, pkg), glamour.navigate("/p/" + name))
                 GotCatalog(_status, body) -> (Model(route, body, pkg), NoCmd)
                 GotPackage(_status, body) -> (Model(route, cat, body), NoCmd)
@@ -122,8 +122,13 @@ fn parse_msg(j: Json) -> Msg:
 fn msg_to_json(m: Msg) -> Json:
     json.value_of(m)
 
-pub fn export_step(input: String) -> String:
-    step_with(input, view, update, parse_model, parse_msg, model_to_json, msg_to_json)
+pub fn export_step(ui: UiRoot, input: String) -> String:
+    // (RFC-0039/0040) the host mints `UiRoot` at this browser root; Glamour narrows
+    // it into a `UiFetch`, curried into `update` via a closure — so `update` (and any
+    // component it calls) can build `Cmd.Http` only because it holds the token.
+    let fetch = glamour.fetch_scope(ui, "coven", "GET", "/api/coven/")
+    let upd = fn(m: Model, msg: Msg): update(m, msg, fetch)
+    step_with(input, view, upd, parse_model, parse_msg, model_to_json, msg_to_json)
 
-fn main(console: Console):
-    print(console, export_step("{\"model\": {\"route\": \"/\", \"catalog\": \"\", \"package\": \"\"}}") + "\n")
+fn main(console: Console, ui: UiRoot):
+    print(console, export_step(ui, "{\"model\": {\"route\": \"/\", \"catalog\": \"\", \"package\": \"\"}}") + "\n")

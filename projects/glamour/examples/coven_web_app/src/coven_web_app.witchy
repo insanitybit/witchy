@@ -32,27 +32,27 @@ type Msg derive(Reflect):
     Search(String)       // the catalog filter box changed
 
 // --- routing + effects -------------------------------------------------------
-fn fetch_for(path: String) -> Cmd(Msg):
+fn fetch_for(fetch: UiFetch, path: String) -> Cmd(Msg):
     if string.starts_with(path, "/trust"):
-        glamour.http_get("/api/coven/rootpub", "GotData")
+        glamour.http_get(fetch, "/api/coven/rootpub", "GotData")
     else if string.starts_with(path, "/d/"):
         let (name, ver) = name_ver(path)
-        glamour.http_get("/api/coven/doc?name=" + name + "&version=" + ver, "GotData")
+        glamour.http_get(fetch, "/api/coven/doc?name=" + name + "&version=" + ver, "GotData")
     else if string.starts_with(path, "/s/"):
         let (name, ver) = name_ver(path)
-        glamour.http_get("/api/coven/source?name=" + name + "&version=" + ver, "GotData")
+        glamour.http_get(fetch, "/api/coven/source?name=" + name + "&version=" + ver, "GotData")
     else if string.starts_with(path, "/v/"):
         let (name, ver) = name_ver(path)
-        glamour.http_get("/api/coven/record?name=" + name + "&version=" + ver, "GotData")
+        glamour.http_get(fetch, "/api/coven/record?name=" + name + "&version=" + ver, "GotData")
     else:
-        glamour.http_get("/api/coven/catalog", "GotData")
+        glamour.http_get(fetch, "/api/coven/catalog", "GotData")
 
-fn update(m: Model, msg: Msg) -> (Model, Cmd(Msg)):
+fn update(m: Model, msg: Msg, fetch: UiFetch) -> (Model, Cmd(Msg)):
     match m:
         Model(route, sess, data, notice, query) ->
             match msg:
                 Visit(path) -> (m, glamour.navigate(path))
-                Route(path) -> (Model(path, sess, "", "", ""), fetch_for(path))
+                Route(path) -> (Model(path, sess, "", "", ""), fetch_for(fetch, path))
                 GotData(_status, body) -> (Model(route, sess, body, notice, query), NoCmd)
                 Login -> (m, glamour.port("passkeyLogin", "", "LoggedIn"))
                 Register -> (Model(route, sess, data, "registering passkey…", query), glamour.port("passkeyRegister", "", "OpDone"))
@@ -61,7 +61,7 @@ fn update(m: Model, msg: Msg) -> (Model, Cmd(Msg)):
                 Yank -> (Model(route, sess, data, "yanking…", query), glamour.port("yank", route, "OpDone"))
                 // A write (or register) finished: show its result AND re-fetch the current view so
                 // the record reflects the new state immediately (a promote flips staged -> released).
-                OpDone(result) -> (Model(route, sess, data, result, query), fetch_for(route))
+                OpDone(result) -> (Model(route, sess, data, result, query), fetch_for(fetch, route))
                 Search(q) -> (Model(route, sess, data, notice, q), NoCmd)
 
 // --- views -------------------------------------------------------------------
@@ -362,8 +362,13 @@ fn parse_msg(j: Json) -> Msg:
 fn msg_to_json(m: Msg) -> Json:
     json.value_of(m)
 
-pub fn export_step(input: String) -> String:
-    step_with(input, view, update, parse_model, parse_msg, model_to_json, msg_to_json)
+pub fn export_step(ui: UiRoot, input: String) -> String:
+    // (RFC-0039/0040) the host mints `UiRoot` at this browser root; Glamour narrows
+    // it into a `UiFetch`, curried into `update` via a closure — so only code holding
+    // the token can build `Cmd.Http`. (The `port` effects stay host-gated for now.)
+    let fetch = glamour.fetch_scope(ui, "coven-web", "GET", "/api/coven/")
+    let upd = fn(m: Model, msg: Msg): update(m, msg, fetch)
+    step_with(input, view, upd, parse_model, parse_msg, model_to_json, msg_to_json)
 
-fn main(console: Console):
-    print(console, export_step("{\"model\": {\"route\": \"/\", \"session\": \"\", \"data\": \"\", \"notice\": \"\"}}") + "\n")
+fn main(console: Console, ui: UiRoot):
+    print(console, export_step(ui, "{\"model\": {\"route\": \"/\", \"session\": \"\", \"data\": \"\", \"notice\": \"\"}}") + "\n")

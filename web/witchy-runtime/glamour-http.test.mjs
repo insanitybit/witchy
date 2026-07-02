@@ -123,9 +123,9 @@ fn view(model: String) -> VNode(Msg):
         glamour.element("span", [], [glamour.text(model)]),
     ])
 
-fn update(model: String, msg: Msg) -> (String, Cmd(Msg)):
+fn update(model: String, msg: Msg, fetch: UiFetch) -> (String, Cmd(Msg)):
     match msg:
-        Fetch -> (model, glamour.http_get("/data", "GotData"))
+        Fetch -> (model, glamour.http_get(fetch, "/data", "GotData"))
         GotData(status, body) -> ("\${status}: " + body, NoCmd)
 
 fn parse_model(j: Json) -> String:
@@ -162,11 +162,13 @@ fn model_to_json(model: String) -> Json:
 fn msg_to_json(m: Msg) -> Json:
     json.value_of(m)
 
-pub fn export_step(input: String) -> String:
-    step_with(input, view, update, parse_model, parse_msg, model_to_json, msg_to_json)
+pub fn export_step(ui: UiRoot, input: String) -> String:
+    let fetch = glamour.fetch_scope(ui, "fetcher", "GET", "/")
+    let upd = fn(m: String, msg: Msg): update(m, msg, fetch)
+    step_with(input, view, upd, parse_model, parse_msg, model_to_json, msg_to_json)
 
-fn main(console: Console):
-    print(console, export_step("{\\"model\\": \\"loading\\"}") + "\\n")
+fn main(console: Console, ui: UiRoot):
+    print(console, export_step(ui, "{\\"model\\": \\"loading\\"}") + "\\n")
 `;
 
 let failures = 0;
@@ -196,6 +198,9 @@ try {
     initialModel: "loading",
     fetch: fakeFetch,
     authHeaders: () => ({ authorization: "Bearer SECRET_TOKEN" }),
+    // (RFC-0040) the app's `export_step` takes a `UiRoot`; stage its `[user_caps]`
+    // grant so the host mints it (bare policy data, the browser mirror of --grants).
+    instantiateOpts: { userCaps: [["fetcher"]] },
   });
 
   ok(querySelector(root, "span").textContent === "loading", "initial model renders (loading)");
