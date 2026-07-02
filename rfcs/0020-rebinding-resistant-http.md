@@ -1,9 +1,10 @@
 ---
 rfc: 0020
 title: DNS-rebinding-resistant HTTP — resolve / pin / connect + private-range confine
-status: partially-implemented
+status: implemented
 created: 2026-06-27
-implemented: 2026-06-28 (Layers 0–1: resolve-once-and-pin invariant + confine.private())
+implemented: 2026-07-02 (all layers: 0–1 the resolve-once invariant + confine.private();
+  2 the resolve/connect_pinned primitives; 3 the sealed PinnedUrl fetch surface)
 superseded-by:
 tracking:
 ---
@@ -14,23 +15,37 @@ tracking:
 > convention): they are illustrative sketches, not complete programs, and must
 > not be executed by the doc-test harness.
 
-> **Status: partially implemented** (2026-06-28). Shipped:
-> - **Layer 0** — the resolve-once-and-pin invariant is now documented in
+> **Status: implemented** (2026-07-02). All layers shipped; behavior lives in
+> `spec/capabilities.md`, `std/http`/`std/confine`, and the code. This RFC is frozen.
+> - **Layer 0** — the resolve-once-and-pin invariant is documented in
 >   `spec/capabilities.md` (connect resolves once; the checked IP set is the
 >   dialed set; CIDR/IP entries match the resolved IP, bare hostnames don't).
-> - **Layer 1** — `confine.private()` in `std/confine` (a `NetPolicy` union of
->   loopback / RFC-1918 / link-local incl. the metadata IP / CGNAT / "this host" /
->   IPv6 equivalents). `net.deny(confine.private())` refuses an internal address at
->   connect time, enforced on the resolved IP. Tested both backends
->   (`confine_private_denies_internal_addresses_backends_agree`) and at the
->   enforcement layer (`private_ranges_deny_internal_addresses`). The "Layer 1
->   prerequisite" — `net.only` must carry `!`-deny entries forward — was already
->   satisfied (`capabilities::net_only`, regression-tested).
+> - **Layer 1** — `confine.private()` in `std/confine`. `net.deny(confine.private())`
+>   refuses an internal address at connect time, enforced on the resolved IP. A silent
+>   IPv6 gap in the matcher (its `::1/128`/`fe80::/10`/`fc00::/7` ranges only ever
+>   exact-matched) was closed — `address_admits` now CIDR-matches IPv6.
+> - **Layer 2** — `resolve(net, host) -> List(String)` and
+>   `connect_pinned(net, ip, host, port, secure)` / `try_connect_pinned` on both
+>   backends (new host ops, `IMPORT_COUNT` bumped). `resolve` performs no allowlist
+>   filtering; `connect_pinned` dials the literal IP and re-checks it against the Net
+>   allowlist (the hard floor), presenting the hostname for SNI/`Host`.
+> - **Layer 3** — a sealed `PinnedUrl` and `pin`/`unpinned`/`get_pinned`/`send_pinned`
+>   in `std/http`. **Realization note:** witchy has no sealed SUM type, so `PinnedUrl`
+>   is an EAGER sealed RECORD (`capability PinnedUrl`, invariant: always a vetted pin)
+>   rather than the `Unresolved | Resolved` enum sketched in the Design below. This is
+>   strictly safer — no unvetted state, no closure stored in a sealed value — and keeps
+>   the security authority intact: resolve-once, an unforgeable proof-carrying value,
+>   and the allowlist as the hard floor. The chooser is a plain `fn(String) -> Bool`
+>   predicate argument to `pin` (not a stored `fn`-field), so the "sealed enum carrying
+>   a closure" round-trip concern the Drawbacks flag does not arise. Proven both
+>   backends: `net_resolve_and_connect_pinned_backends_agree`,
+>   `connect_pinned_rechecks_the_allowlist_backends_agree`,
+>   `net_deny_private_blocks_internal_ipv6_on_both_backends`,
+>   `http_pin_and_get_pinned_backends_agree`.
 >
-> NOT yet implemented: **Layers 2–3** — the dynamic `net.resolve` /
-> `net.connect_pinned` primitives and the sealed `PinnedUrl` (`Unresolved` |
-> `Resolved`) type. These add new host ops in the runtime/capabilities crates and
-> are deferred to a focused session (they overlap the in-flight compiler refactor).
+> The `type PinnedUrl:` sum, `net.connect_pinned(ip, host, port, secure)` free-function
+> shape, and `pin_with`/`public_only` in the Design section below are the ORIGINAL
+> sketch; the shipped surface is as summarized above (see `spec/stdlib.md`).
 
 ## Summary
 

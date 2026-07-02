@@ -57,10 +57,11 @@ TRACK C — performance (DEFERRED by direction)
   0031 SIMD · 0034 residual (L5/L6) · 0036 residual (executor arena-reset)
 ```
 
-**RFC-0038, RFC-0039, and RFC-0011 are SHIPPED** (`status: implemented`) — Track A's
-capability work (grantable root caps + Glamour's token-gated effects with coven-web
-migrated + Dir/File entry policies incl. `kind`, `restrict` retired) is done. Next
-pickup: **RFC-0019** (the last Track A item), then Track B (**RFC-0005**, **RFC-0020**).
+**RFC-0038, RFC-0039, RFC-0011, RFC-0041 (supersedes 0019), and RFC-0020 are SHIPPED**
+(`status: implemented`) — Track A's capability + docs work and Track B's
+rebinding-resistant HTTP (resolve/pin/`connect_pinned` + sealed `PinnedUrl`, IPv6 CIDR
+matching) are done. Next pickup: **RFC-0005** (unforgeable capabilities / externref) —
+the last open Track B item.
 
 ---
 
@@ -195,34 +196,6 @@ pickup: **RFC-0019** (the last Track A item), then Track B (**RFC-0005**, **RFC-
   threat model; fuzzer finds no diffs. **Size:** L (a coordinated ABI cut — cannot
   coexist with the i32 ABI). **Guardrail:** steps 1–2 ship value immediately and are
   independently committable; do them first even if the full externref cut waits.
-
-### RFC-0020 — DNS-rebinding-resistant HTTP
-- **Goal:** resolve-once-and-pin HTTP: `net.resolve` + `net.connect_pinned` + a
-  sealed `PinnedUrl`, so user-supplied-URL fetch is SSRF/rebinding-safe.
-- **Status:** Layer 0 (resolve-once invariant) + Layer 1 (`confine.private()`)
-  shipped (`std/confine.witchy:59`); **step 1 (IPv6 CIDR match) DONE** —
-  `address_admits`/`net_allows` now CIDR-match IPv6 (`parse_ipv6_cidr`/`ipv6_in_cidr`/
-  `strip_brackets` in `capabilities.rs`), closing a SILENT `confine.private()` gap (its
-  `::1/128`/`fe80::/10`/`fc00::/7` ranges only ever exact-matched, so an internal IPv6
-  slipped past `net.deny(private())`). Proven by `private_ranges_deny_internal_ipv6`
-  (unit) + `net_deny_private_blocks_internal_ipv6_on_both_backends` (a differential
-  connect test — both backends refuse an internal IPv6 dial). Layers 2–3 (resolve/pin)
-  missing.
-- **Entry points:** `crates/witchy-caps/src/capabilities.rs:150` (IPv4 CIDR — IPv6
-  gap here); host ops template `crates/witchy-runtime/src/runtime.rs:1975`
-  (`host_net_connect`) + `wir_prelude.rs:282` `IMPORT_COUNT`; `std/http.witchy`.
-- **Ordered steps:** (1) add IPv6 CIDR parse/match (closes a silent `confine.private()`
-  gap); (2) `net.resolve` host op (returns `List(String)` of IPs, gated on
-  `Net[Connect]`); (3) `net.connect_pinned` (literal-IP dial, re-checks allowlist,
-  host used for SNI/Host); (4) sealed `PinnedUrl` type + `resolve`/`get_pinned`;
-  (5) wire into `std/http` (`get_pinned`/`pin`/`pin_with`); (6) differential test
-  with a loopback listener + a rebinding-mock resolver (assert no second resolve).
-- **DoD:** IPv6 ranges match; pinned connect uses the resolved IP with correct
-  Host/SNI; a rebinding attack is provably prevented (resolve-once holds); both
-  backends agree. **Size:** M–L. **Guardrail:** the chooser closure must round-trip
-  identically on both backends; step 1 (IPv6) is a standalone S fix worth doing now.
-
----
 
 ## TRACK C — performance (DEFERRED by current direction)
 

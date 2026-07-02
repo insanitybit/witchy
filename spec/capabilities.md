@@ -95,7 +95,29 @@ convenience, *not* rebinding-proof). For the common "deny the internal ranges"
 guard, `net.deny(confine.private())` excludes loopback, RFC-1918, link-local
 (including the `169.254.169.254` cloud-metadata IP), CGNAT, and "this host" —
 enforced on the resolved IP, so a name that rebinds to an internal address is
-refused at connect time. See `rfcs/0020-rebinding-resistant-http.md`.
+refused at connect time.
+
+When the URL is dynamic — a webhook target, a user-supplied link — a program can
+resolve and pin explicitly. `resolve(net, host)` returns the host's current IP
+literals (gated on `Net[Connect]`; it filters nothing, so the program decides), and
+`connect_pinned(net, ip, host, port, secure)` dials that *exact* IP without a second
+lookup, presenting `host` for TLS SNI and the `Host` header. The allowlist is
+re-checked against `ip`, so a pinned dial can never exceed the capability. The
+ergonomic surface is `std/http`: `http.pin(net, url, allow_ip)` resolves once, lets a
+predicate approve one resolved IP, and returns a **sealed** `PinnedUrl` (only
+`std/http` can mint one — the value is unforgeable proof the policy ran);
+`http.get_pinned(net, pin)` dials the pinned IP and never re-resolves. The safe shape
+pairs the two with a confined `Net`, so the capability floor holds even if the policy
+is wrong:
+
+```sh
+let safe = net.deny(confine.private())
+match http.pin(safe, user_url, public_ok):
+    Ok(target) -> http.get_pinned(safe, target)
+    Err(e) -> Err(e)
+```
+
+See `rfcs/0020-rebinding-resistant-http.md`.
 
 `Exec` is the right to spawn a native subprocess — the runtime analog of the
 build-time `BuildExec`. It is right-less and carries no payload of its own: the
