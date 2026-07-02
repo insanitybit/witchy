@@ -1,9 +1,9 @@
 ---
 rfc: 0011
 title: Capability refinement — carried state, library-defined methods, two tiers
-status: partially-implemented
+status: implemented
 created: 2026-06-23
-implemented: 2026-06-24 (Net tier only)
+implemented: 2026-07-02 (Net tier + carried-state record + Dir entry policies incl. kind; `restrict` retired)
 tracking: commits 4bc6d35, 3b84546, b612d25, 246b71a
 ---
 
@@ -28,12 +28,18 @@ tracking: commits 4bc6d35, 3b84546, b612d25, 246b71a
 > `read_file`/`write_file`/`open` on BOTH backends (`witchy_caps::capabilities::
 > dir_admits`; a subtree inherits the parent's policy). Tested both backends
 > (`dir_only_ext_policy_confines_on_both_backends`) + the policy logic
-> (`dir_ext_policy_admits_and_intersects`). Still NOT shipped: the `kind` (file/dir)
-> filter, `File` entry policies, and retiring `restrict`/`subdir`. Two prose points below are
-> also superseded — see *Implementation notes*: `restrict` was **not** retired (it
-> survives as the string form), and there is **no `tls()` policy builder / `tls:` in a
-> policy** (RFC-0009 as implemented makes `tls:` a connect-time choice on the dialed
-> address, not a policy field; `NetPolicy` patterns are scheme-agnostic `host:port`).
+> (`dir_ext_policy_admits_and_intersects`). **Now COMPLETE (2026-07-02):** the `kind`
+> (file/dir) filter ships (`confine.files()`/`dirs()`, a second policy dimension
+> AND-composed with `ext`, enforced on directory traversal — `subtree`/`make_dir` —
+> as well as file access, on both backends; `dir_kind_policy_confines_on_both_backends`);
+> `File` entry policies are realized by the Dir policy governing `read_file`/`write_file`
+> opens (a `File` is a leaf, so `files()` admits opening it and `dirs()` denies it); and
+> the raw-string `restrict` builtin is **retired** (address narrowing is the typed
+> `net.only`/`net.deny` verbs; the string form survives only as a `--net`/config grant).
+> One prose point below remains superseded — see *Implementation notes*: there is **no
+> `tls()` policy builder / `tls:` in a policy** (RFC-0009 as implemented makes `tls:` a
+> connect-time choice on the dialed address, not a policy field; `NetPolicy` patterns are
+> scheme-agnostic `host:port`).
 
 ## Summary
 

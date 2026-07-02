@@ -51,10 +51,16 @@ A `Dir` is not "the filesystem" — it is one subtree. `read(dir, path)` resolve
 symlinks that point outside the subtree. `dir.subtree("sub")` mints a new,
 smaller capability — handing a callee `dir.subtree("uploads")` gives it that
 folder and nothing else. (`subtree(dir, "sub")` is the equivalent free-function
-form.) A `Dir` also carries an **entry policy** (RFC-0011): `dir.only(confine.ext(".txt"))`
-narrows it so `read`/`write`/`open` only touch matching entries (a non-matching
-name is refused at the access check), and a subtree inherits the policy — the
-filesystem analog of `net.only`/`net.deny`.
+form.) A `Dir` also carries an **entry policy** (RFC-0011) in two dimensions:
+name-suffix (`dir.only(confine.ext(".txt"))` — only `.txt` entries) and entry-kind
+(`dir.only(confine.files())` — only file access, no sub-directory open/create;
+`confine.dirs()` — the mirror). They AND-compose: `dir.only(files()).only(ext(".txt"))`
+touches only `.txt` files. A non-admitted entry is refused at the access check —
+including opening a sub-directory, so `files()` genuinely confines traversal — and a
+subtree inherits the policy. An `ext`-only policy still traverses freely (ext gates
+file names, not directories), so `kind` is additive. This is the filesystem analog of
+`net.only`/`net.deny`; like `Net`, the raw-string form is a `--net`/config grant, not
+a language builtin.
 
 A **`File`** is the *leaf* of the same hierarchy (RFC-0012): authority to one
 file, right-typed like `Dir` (`File[Read]`/`File[Write]`). A `Dir` navigates to

@@ -46,7 +46,7 @@ language/feature RFCs.** So:
 TRACK A — language/features (DO FIRST)
   0038 grantable user caps            [SHIPPED]
   0039 Glamour capability-safe effects [SHIPPED]
-  0011 refinement remainder (Dir/File policies + carried-state)   [independent]
+  0011 refinement remainder (Dir/File policies + carried-state) [SHIPPED]
   0019 interactive documentation                                  [independent]
 
 TRACK B — security/net (as capacity allows)
@@ -57,48 +57,14 @@ TRACK C — performance (DEFERRED by direction)
   0031 SIMD · 0034 residual (L5/L6) · 0036 residual (executor arena-reset)
 ```
 
-**RFC-0038 and RFC-0039 are SHIPPED** (`status: implemented`) — Track A's capability
-work (grantable root caps + Glamour's token-gated effects, coven-web migrated) is done.
-Next pickup: **RFC-0011 (remainder)** and **RFC-0019**, which are independent.
+**RFC-0038, RFC-0039, and RFC-0011 are SHIPPED** (`status: implemented`) — Track A's
+capability work (grantable root caps + Glamour's token-gated effects with coven-web
+migrated + Dir/File entry policies incl. `kind`, `restrict` retired) is done. Next
+pickup: **RFC-0019** (the last Track A item), then Track B (**RFC-0005**, **RFC-0020**).
 
 ---
 
 ## TRACK A — language / features
-
-### RFC-0011 (remainder) — capability refinement: Dir/File policies + carried-state
-- **Goal:** finish RFC-0011 — the Net tier shipped as the template; add the Dir/File
-  analogue and the carried-state record; retire the `restrict` builtin.
-- **Depends on:** nothing (extends shipped Net tier). Template to copy: `NetPolicy`
-  + `net.only`/`net.deny`.
-- **Entry points (Net template):** `std/confine.witchy:15` `NetPolicy` + builders
-  `:31`; `crates/witchy-caps/src/capabilities.rs:119` `address_admits`/`net_only`;
-  method dispatch `crates/witchy-lower/src/codegen/builtins.rs:559` + interp
-  `crates/witchy-interp/src/interpreter.rs:1691`; enforcement `crates/witchy-runtime/src/runtime.rs`.
-- **Sub-tasks:**
-  1. **Dir `kind()` entry policy** (M) — builders `confine.files()`/`confine.dirs()`
-     → `DirPolicy("kind:file"|"kind:dir")` (`File`/`Dir` aren't values, so use plain
-     builders, not RFC's `kind(File)`). `dir_admits(policy, name, is_dir)` gains a
-     kind constraint AND-composed with `ext` (kind gate + ext gate both apply;
-     preserve existing ext-only behavior). **KEY FINDING (2026-07-01):** all 5
-     current `dir_admits` sites are FILE ops (interp read/write/read_file/write_file
-     `:1378/1387/1437/1458`; runtime `:1163`) → `is_dir=false`. Directory-traversal
-     ops (make_dir/subdir/list/open-subdir) do NOT currently check the policy — so a
-     MEANINGFUL kind filter must ADD `dir_admits(…, is_dir=true)` enforcement to those
-     ops on BOTH backends (else `dirs()` blocks files with nothing to admit). Settle
-     `ext×kind` composition in `dir_only` (single-call union works; sequential
-     cross-dimension narrowing needs group-by-dimension). Differential test:
-     `dir.only(files())` admits a file read, denies a subdir open, identically.
-  2. **Carried-state record** — ✅ DONE: `carried_state_capability_runs_and_audits_through_record`
-     (example_tests.rs:9391) already proves a `Postgres(Net, String)` cap runs on
-     both backends and audits as `Net` only.
-  3. **`File` entry policies** + **retire `restrict`/`subdir` builtins** (per RFC-0011
-     line 31/152): the `restrict`/`subdir` *builtins* migrate to `net.only`/
-     `dir.subtree` (the STRING form survives only as `--net`/config). Only callers are
-     2 interp tests (`interpreter_tests.rs:470/490`) — migrate them; remove the arms
-     (`codegen/builtins.rs:550` `restrict`, typeck verb `typeck.rs:1702/1771`).
-- **DoD:** `dir.only(kind(File), ext(".txt"))` confines identically on both backends
-  (differential test); carried-state audits as its host cap only; `restrict` builtin
-  rejected, `--net` string still works. **Size:** M (~4–6h of focused work).
 
 ### RFC-0019 — interactive documentation (runnable book)
 - **Goal:** wire the existing browser witchy engine into the mdBook so doc code
