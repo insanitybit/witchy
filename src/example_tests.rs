@@ -16125,6 +16125,57 @@ pub fn serve(console: Console, net: Net) -> Int:
         interp
     }
 
+    /// `std/markdown`'s source, embedded so a test can `import markdown` (it `import glamour`
+    /// transitively) without sibling files on disk.
+    const MARKDOWN_SRC: &str = include_str!("../projects/glamour/src/markdown.witchy");
+
+    /// Like [`glamour_run_both`] but also links `std/markdown` — for the docs renderer.
+    fn markdown_run_both(src: &str) -> Vec<String> {
+        let entry = parser::parse_module(src).expect("parse entry");
+        let glamour = parser::parse_module(GLAMOUR_SRC).expect("parse glamour");
+        let markdown = parser::parse_module(MARKDOWN_SRC).expect("parse markdown");
+        let modules = vec![
+            ("main".to_string(), entry),
+            ("glamour".to_string(), glamour),
+            ("markdown".to_string(), markdown),
+        ];
+        let linked = crate::pipeline::link(modules, "main").expect("link markdown consumer");
+        typeck::check(&linked).expect("typecheck");
+        let interp = interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp run");
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let wasm = crate::run_wasm_bytes(&bytes).expect("wasm run");
+        assert_eq!(wasm, interp, "compiled WASM must match the interpreter");
+        interp
+    }
+
+    /// (RFC-0041) `markdown.to_vnode` preserves a fenced block's INFO STRING as a
+    /// `language-<lang>` class on the `<code>` — the hook a host uses to find runnable
+    /// `witchy` blocks and to highlight by language — while the code stays inert, escaped
+    /// text (never an HTML sink). Identical on both backends. A bare ``` fence gets no class.
+    #[test]
+    fn markdown_code_fence_carries_its_language_class_on_both_backends() {
+        let src = "import glamour\n\
+                   import markdown\n\
+                   \n\
+                   fn main(console: Console):\n\
+                   \x20   print(console, glamour.to_html(markdown.to_vnode(\"```witchy\\nfn f():\\n    pass\\n```\")))\n\
+                   \x20   print(console, glamour.to_html(markdown.to_vnode(\"```\\nplain\\n```\")))\n";
+        let out = markdown_run_both(src);
+        assert!(
+            out[0].contains("<code class=\"language-witchy\">"),
+            "a ```witchy fence tags the code with its language:\n{}",
+            out[0]
+        );
+        assert!(out[0].contains("fn f():") && !out[0].contains("<script"), "the code is inert escaped text");
+        assert!(
+            out[1].contains("<code>plain</code>") && !out[1].contains("language-"),
+            "a bare ``` fence carries no language class:\n{}",
+            out[1]
+        );
+    }
+
     /// (RFC-0039) The secret effect's WIRE FORMAT is pure data, so it serializes IDENTICALLY
     /// on both backends. A `SecretField` VNode and a `SubmitSecret` Cmd carry ONLY their
     /// host-slot coordinates and port name — read out of the sealed `SecretInput`/`SecretRef`/

@@ -105,9 +105,18 @@ pickup: **RFC-0019** (the last Track A item), then Track B (**RFC-0005**, **RFC-
     more dogfood than the RFC's build-step nav.json); a build step can still emit the
     content bundle in P3. Remaining P1 polish: nested nav (currently flat), a real
     `/content/` build (copy `book/src/*.md`), CLI convenience.
-  - **P2:** runnable cells — each `witchy` block becomes a host-managed **`Compartment`**
-    cell (glamour doesn't diff it; untrusted edits run sandboxed) wired to the editor +
-    the lazily-loaded compiler; capability badges from the manifest; theme.
+  - **P2 — design resolved; markdown hook DONE:** `markdown.to_vnode` now tags fences with
+    `<code class="language-witchy">` (inert escaped text — proven both backends by
+    `markdown_code_fence_carries_its_language_class_on_both_backends`), the hook the host uses
+    to find runnable blocks. **DESIGN (refined, supersedes the RFC's Compartment sketch):** a
+    runnable cell is progressive-enhancement in the MAIN frame, NOT a `Compartment` — a
+    reader's snippet compiles to a capability-DENIED pure-compute wasm (deny-by-omission), so
+    it's already contained; a compartment's `connect-src none` would only block loading the
+    compiler. Highlighting is host-side over the escaped `language-witchy` text (XSS-safe; no
+    sink in the rune). REMAINING (browser JS + a FakeElement harness to verify): a host
+    enhancer that finds `pre>code.language-witchy` after each render and wires
+    `witchy-editor.js` + a Run button to `witchy-host.js`; capability badges from
+    `examples.json`; keep Run host-managed so glamour doesn't re-diff the cell.
   - **P3 (kept from 0019) — manifest DONE:** `book/examples.json` is generated from the
     SAME classifier as `documentation_examples_are_valid` (per block: runnable/console_only/
     expect_error/right-precise footprint/interpreter output) and freshness-gated by

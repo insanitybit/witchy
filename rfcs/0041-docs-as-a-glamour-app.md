@@ -117,15 +117,30 @@ with today's book, minus interactivity.
 
 ### Phase 2 — Runnable cells
 
-`markdown.to_vnode` renders a `witchy` fenced block as a code node. For runnable
-blocks the app instead emits a **host-managed cell** that glamour renders once and does
-not diff into — glamour's `Compartment` VNode (RFC-0015) is exactly this escape hatch:
-a subtree the framework hands to the host and never touches. The host shell enhances
-the cell with the shared editor + a Run button wired to `witchy-host.js`
-(`compile`/`runWitchy` against the lazily-loaded `web/witchy.wasm`). Two bonuses fall
-out of using a compartment: the framework-owns-the-DOM vs widget-owns-a-subtree
-conflict disappears, and untrusted example code runs in the compartment's locked-down
-frame — sandboxing the reader's edits is a *feature*, not extra work.
+`markdown.to_vnode` tags each fenced block with its language — `<code class="language-witchy">`
+(shipped: the code stays inert, escaped text, so no sink is introduced) — which is the hook
+the host uses to find runnable blocks.
+
+**Progressive enhancement in the main frame, NOT a compartment** (design refined during
+implementation — supersedes this RFC's first sketch). A runnable cell is *not* a
+`Compartment`: a compartment's locked-down frame (`connect-src 'none'`) would block the cell
+from fetching+instantiating the compiler wasm it needs, and — crucially — **it doesn't need
+that isolation**. A reader's edited snippet compiles to a wasm module that is
+capability-DENIED by omission (the browser grants no `Dir`/`Net`/`Clock`/… imports), so it is
+already contained by wasm's own memory isolation plus the capability model: it can only
+compute and return a string. So the host shell, after each glamour render, finds
+`pre > code.language-witchy` blocks and enhances them in the main frame — the shared
+`witchy-editor.js` + a Run button wired to `witchy-host.js` (`compile`/`runWitchy` against
+the lazily-loaded `web/witchy.wasm`). This is RFC-0019's progressive-enhancement model,
+transplanted onto the glamour output. The framework-owns-the-DOM conflict is handled by
+re-enhancing idempotently after each page render and keeping Run *host-managed* (it never
+dispatches a glamour msg, so glamour does not re-diff the cell). Compartments remain for
+genuinely FOREIGN renderers (RFC-0015), where the isolation IS needed.
+
+**Highlighting is host-side, so it stays XSS-safe.** The rune renders code as inert VNode
+text (never an HTML sink); the host highlights the already-escaped `language-witchy` text
+with the shared `web/witchy-highlight.js` (re-escaping as it tokenizes). Nothing in the rune
+emits HTML.
 
 Each block's behavior mirrors the existing `documentation_examples_are_valid`
 classifier exactly, read from the Phase 3 manifest (never re-derived in JS):
