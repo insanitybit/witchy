@@ -62,13 +62,14 @@ export function buildRunnableCell(doc, source, opts = {}) {
 
   const element = doc.createElement("div");
   element.setAttribute("class", "witchy-cell");
-  // Show the source. The `<code>` deliberately carries NO `language-witchy` class, so a
-  // standalone re-scan (`enhanceRunnableCells`) never re-enhances an already-built cell.
-  const codePre = doc.createElement("pre");
-  codePre.setAttribute("class", "witchy-code");
-  const codeEl = doc.createElement("code");
-  codeEl.appendChild(doc.createTextNode(source));
-  codePre.appendChild(codeEl);
+  // The source is EDITABLE: a `<textarea>` seeded with the block. Because the docs app mounts
+  // the cell in a non-diffed host Slot, an edit survives page re-renders. The textarea carries
+  // no `language-witchy` class, so a standalone re-scan (`enhanceRunnableCells`) never
+  // re-enhances an already-built cell.
+  const editor = doc.createElement("textarea");
+  editor.setAttribute("class", "witchy-editor");
+  editor.setAttribute("spellcheck", "false");
+  editor.value = source;
 
   const runButton = doc.createElement("button");
   runButton.setAttribute("class", "witchy-run");
@@ -77,10 +78,12 @@ export function buildRunnableCell(doc, source, opts = {}) {
   output.setAttribute("class", "witchy-output");
 
   const run = async () => {
+    // Run the CURRENT editor contents (the reader's edits), falling back to the seed source.
+    const src = typeof editor.value === "string" ? editor.value : source;
     runButton.textContent = "Running…";
     try {
       const wasm = await compiler();
-      const { ok, text } = await runWitchy(wasm, source);
+      const { ok, text } = await runWitchy(wasm, src);
       output.textContent = text || (ok ? "(no output)" : "(empty error)");
       output.setAttribute("class", ok ? "witchy-output ok" : "witchy-output err");
     } catch (e) {
@@ -90,11 +93,20 @@ export function buildRunnableCell(doc, source, opts = {}) {
     runButton.textContent = "Run";
   };
   if (typeof runButton.addEventListener === "function") runButton.addEventListener("click", run);
+  // ⌘/Ctrl-Enter runs, matching the standalone playground.
+  if (typeof editor.addEventListener === "function") {
+    editor.addEventListener("keydown", (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        if (typeof e.preventDefault === "function") e.preventDefault();
+        run();
+      }
+    });
+  }
 
-  element.appendChild(codePre);
+  element.appendChild(editor);
   element.appendChild(runButton);
   element.appendChild(output);
-  return { element, codePre, runButton, output, run };
+  return { element, editor, runButton, output, run };
 }
 
 /**

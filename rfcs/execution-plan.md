@@ -139,8 +139,13 @@ pickup: **RFC-0019** (the last Track A item), then Track B (**RFC-0005**, **RFC-
     code)`; and the docs mount registers the slot renderer. Proven by `glamour_docs_app_renders_book_pages`
     (extended): a page's fence becomes a runnable cell AND the page still renders + navigates —
     the non-diffed slot means the re-render corruption is gone. So a book code block compiles +
-    runs real witchy in-page, glamour-clean. **P2 CORE COMPLETE.** Remaining polish: an editable
-    textarea (`witchy-editor.js`), capability badges from `examples.json`, theme.
+    runs real witchy in-page, glamour-clean. **P2 CORE COMPLETE.** Editable cell DONE:
+    `buildRunnableCell` now renders a `<textarea>` seeded with the source, Run executes the
+    reader's EDITED code (proven by `witchy-runnable.test.mjs`: edit → the edited output),
+    ⌘/Ctrl-Enter runs — the "editable AND runnable" headline. (Kept inline in
+    `buildRunnableCell` rather than a separate `witchy-editor.js`; the highlight-overlay + tab
+    behaviour of the standalone playground editor is the only piece not shared, deferred.)
+    Remaining polish: capability badges from `examples.json`, theme.
   - **P3 (kept from 0019) — manifest DONE:** `book/examples.json` is generated from the
     SAME classifier as `documentation_examples_are_valid` (per block: runnable/console_only/
     expect_error/right-precise footprint/interpreter output) and freshness-gated by

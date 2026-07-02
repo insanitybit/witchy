@@ -76,10 +76,16 @@ try {
   ok(cells.length === 1, "one runnable cell is found and enhanced");
   ok(qsa(root, "button").some((b) => (b.getAttribute("class") || "").includes("witchy-run")), "a Run button is added");
   ok(qsa(root, "div").some((d) => (d.getAttribute("class") || "") === "witchy-cell"), "the cell is wrapped");
+  ok(qsa(root, "textarea").length === 1 && cells[0].editor.value.includes("hello from a runnable cell"), "the cell is EDITABLE (a textarea seeded with the source)");
 
   await cells[0].run();
   ok(cells[0].output.textContent === "hello from a runnable cell", "Run compiles + runs the code and shows its output");
   ok((cells[0].output.getAttribute("class") || "").includes("ok"), "a successful run is marked ok");
+
+  // Editing the textarea and re-running runs the READER'S edited source, not the seed.
+  cells[0].editor.value = 'fn main(console: Console):\n    print(console, "the reader edited this")';
+  await cells[0].run();
+  ok(cells[0].output.textContent === "the reader edited this", "Run executes the reader's EDITED source");
 
   // 2. Idempotent: re-enhancing the same root finds nothing new.
   const again = enhanceRunnableCells(root, { document: doc, loadCompiler });
