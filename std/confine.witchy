@@ -27,6 +27,18 @@ type DirPolicy:
 pub fn ext(suffix: String) -> DirPolicy:
     DirPolicy("ext:" + suffix)
 
+// A Dir entry policy admitting only FILE entries: `dir.only(confine.files())` confines a
+// `Dir` so it can read/write files but can neither open, list, nor create sub-directories.
+// AND-composes with `ext` — `dir.only(files()).only(ext(".txt"))` admits only `.txt` files.
+pub fn files() -> DirPolicy:
+    DirPolicy("kind:file")
+
+// A Dir entry policy admitting only DIRECTORY entries: `dir.only(confine.dirs())` confines a
+// `Dir` to traversal (open/list/create sub-directories) with no file read/write. The mirror
+// of `files()`.
+pub fn dirs() -> DirPolicy:
+    DirPolicy("kind:dir")
+
 // A plaintext TCP endpoint: `<host>:<port>`.
 pub fn tcp(host: String, port: Int) -> NetPolicy:
     NetPolicy(host + ":" + "${port}")

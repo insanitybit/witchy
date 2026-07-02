@@ -1158,9 +1158,11 @@ fn dir_policy(caller: &Caller<'_, VmState>, h: i32) -> Result<String> {
         .ok_or_else(|| Error::msg(format!("invalid Dir handle {h}")))
 }
 
-/// Trap unless Dir handle `h`'s entry policy admits accessing `name` (RFC-0011).
-fn dir_guard(caller: &Caller<'_, VmState>, h: i32, name: &str) -> Result<()> {
-    if witchy_caps::capabilities::dir_admits(&dir_policy(caller, h)?, name) {
+/// Trap unless Dir handle `h`'s entry policy admits touching `name` (RFC-0011).
+/// `is_dir` is whether `name` denotes a directory entry (a traversal), so the policy's
+/// `kind:` dimension can distinguish files from directories.
+fn dir_guard(caller: &Caller<'_, VmState>, h: i32, name: &str, is_dir: bool) -> Result<()> {
+    if witchy_caps::capabilities::dir_admits(&dir_policy(caller, h)?, name, is_dir) {
         Ok(())
     } else {
         Err(Error::msg(format!(
@@ -1178,6 +1180,9 @@ fn confine(r: std::result::Result<std::path::PathBuf, crate::confine::ConfineErr
 fn host_dir_subdir(mut caller: Caller<'_, VmState>, h: i32, name_ptr: i32) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let name = read_wstr(mem.data(&caller), name_ptr)?;
+    // Opening a sub-directory is a directory traversal (RFC-0011 `kind`): a `files()`
+    // policy forbids it, an `ext`/empty policy does not.
+    dir_guard(&caller, h, &name, true)?;
     let base = dir_base(&caller, h)?;
     let pol = dir_policy(&caller, h)?;
     let sub = confine(crate::confine::resolve(&base, &name))?;
@@ -1214,7 +1219,7 @@ fn file_path(caller: &Caller<'_, VmState>, f: i32) -> Result<std::path::PathBuf>
 fn host_dir_open(mut caller: Caller<'_, VmState>, h: i32, rel_ptr: i32) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
-    dir_guard(&caller, h, &rel)?;
+    dir_guard(&caller, h, &rel, false)?;
     let base = dir_base(&caller, h)?;
     let path = confine(crate::confine::resolve(&base, &rel))?;
     let files = &mut caller.data_mut().files;
@@ -1227,7 +1232,7 @@ fn host_dir_open(mut caller: Caller<'_, VmState>, h: i32, rel_ptr: i32) -> Resul
 fn host_dir_create(mut caller: Caller<'_, VmState>, h: i32, rel_ptr: i32) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
-    dir_guard(&caller, h, &rel)?;
+    dir_guard(&caller, h, &rel, false)?;
     let base = dir_base(&caller, h)?;
     let path = confine(crate::confine::resolve_write(&base, &rel))?;
     let files = &mut caller.data_mut().files;
@@ -1262,7 +1267,7 @@ fn host_file_write(mut caller: Caller<'_, VmState>, f: i32, contents_ptr: i32) -
 fn host_dir_read_len(mut caller: Caller<'_, VmState>, h: i32, rel_ptr: i32) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
-    dir_guard(&caller, h, &rel)?;
+    dir_guard(&caller, h, &rel, false)?;
     let base = dir_base(&caller, h)?;
     let path = confine(crate::confine::resolve(&base, &rel))?;
     let contents = std::fs::read_to_string(&path)
@@ -1858,7 +1863,7 @@ fn host_dir_write(
     let data = mem.data(&caller);
     let rel = read_wstr(data, rel_ptr)?;
     let contents = read_wstr(data, contents_ptr)?;
-    dir_guard(&caller, h, &rel)?;
+    dir_guard(&caller, h, &rel, false)?;
     let base = dir_base(&caller, h)?;
     let path = confine(crate::confine::resolve_write(&base, &rel))?;
     std::fs::write(&path, contents)
@@ -1877,7 +1882,7 @@ fn host_dir_append(
     let data = mem.data(&caller);
     let rel = read_wstr(data, rel_ptr)?;
     let contents = read_wstr(data, contents_ptr)?;
-    dir_guard(&caller, h, &rel)?;
+    dir_guard(&caller, h, &rel, false)?;
     let base = dir_base(&caller, h)?;
     let path = confine(crate::confine::resolve_write(&base, &rel))?;
     use std::io::Write as _;
@@ -1889,10 +1894,12 @@ fn host_dir_append(
         .map_err(|e| Error::msg(format!("append failed for `{}`: {e}", path.display())))
 }
 
-/// `dir_make_dir(h, name)`: create a confined subdirectory (idempotent).
+/// `dir_make_dir(h, name)`: create a confined subdirectory (idempotent). Creating a
+/// directory is a directory op (RFC-0011 `kind`): a `files()` policy forbids it.
 fn host_dir_make_dir(mut caller: Caller<'_, VmState>, h: i32, name_ptr: i32) -> Result<()> {
     let mem = memory_of(&mut caller)?;
     let name = read_wstr(mem.data(&caller), name_ptr)?;
+    dir_guard(&caller, h, &name, true)?;
     let base = dir_base(&caller, h)?;
     let path = confine(crate::confine::resolve_write(&base, &name))?;
     std::fs::create_dir_all(&path)

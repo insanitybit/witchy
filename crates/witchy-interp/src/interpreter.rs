@@ -1366,7 +1366,12 @@ impl Interpreter {
             // Filesystem capability (cap-std style): attenuate to a subdirectory.
             "subtree" => match args {
                 // A subtree inherits the parent's entry policy (refinement is monotone).
+                // Opening a sub-directory is a directory traversal (RFC-0011 `kind`): a
+                // `files()` policy forbids it, an `ext`/empty policy does not.
                 [Value::Dir(base, pol), Value::Str(name)] => {
+                    if !witchy_caps::capabilities::dir_admits(pol, name, true) {
+                        return err(format!("`{name}` is not permitted by this Dir capability's entry policy"));
+                    }
                     Ok(Some(Value::Dir(resolve(base, name)?, pol.clone())))
                 }
                 _ => err("subtree expects a Dir and a name"),
@@ -1375,7 +1380,7 @@ impl Interpreter {
             // requires the file to exist; `write_file` allows a not-yet-existing target.
             "read_file" => match args {
                 [Value::Dir(base, pol), Value::Str(rel)] => {
-                    if !witchy_caps::capabilities::dir_admits(pol, rel) {
+                    if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
                     }
                     Ok(Some(Value::File(resolve(base, rel)?)))
@@ -1384,7 +1389,7 @@ impl Interpreter {
             },
             "write_file" => match args {
                 [Value::Dir(base, pol), Value::Str(rel)] => {
-                    if !witchy_caps::capabilities::dir_admits(pol, rel) {
+                    if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
                     }
                     Ok(Some(Value::File(resolve_write(base, rel)?)))
@@ -1434,7 +1439,7 @@ impl Interpreter {
             // Read a file relative to a Dir capability (confined to its subtree).
             "read" => match args {
                 [Value::Dir(base, pol), Value::Str(rel)] => {
-                    if !witchy_caps::capabilities::dir_admits(pol, rel) {
+                    if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
                     }
                     let path = resolve(base, rel)?;
@@ -1455,7 +1460,7 @@ impl Interpreter {
             // parent directory).
             "write" => match args {
                 [Value::Dir(base, pol), Value::Str(rel), Value::Str(contents)] => {
-                    if !witchy_caps::capabilities::dir_admits(pol, rel) {
+                    if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
                     }
                     let path = resolve_write(base, rel)?;
@@ -1475,7 +1480,7 @@ impl Interpreter {
             // and rights, without clobbering existing contents.
             "append" => match args {
                 [Value::Dir(base, pol), Value::Str(rel), Value::Str(contents)] => {
-                    if !witchy_caps::capabilities::dir_admits(pol, rel) {
+                    if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
                     }
                     let path = resolve_write(base, rel)?;
@@ -1529,9 +1534,13 @@ impl Interpreter {
                 _ => err("list expects a Dir"),
             },
             // Create a subdirectory within the Dir capability's subtree, confined
-            // like `write` (idempotent — succeeds if it already exists).
+            // like `write` (idempotent — succeeds if it already exists). Creating a
+            // directory is a directory op (RFC-0011 `kind`): a `files()` policy forbids it.
             "make_dir" => match args {
-                [Value::Dir(base, _), Value::Str(name)] => {
+                [Value::Dir(base, pol), Value::Str(name)] => {
+                    if !witchy_caps::capabilities::dir_admits(pol, name, true) {
+                        return err(format!("`{name}` is not permitted by this Dir capability's entry policy"));
+                    }
                     let path = resolve_write(base, name)?;
                     match std::fs::create_dir_all(&path) {
                         Ok(()) => Ok(Some(Value::Nil)),

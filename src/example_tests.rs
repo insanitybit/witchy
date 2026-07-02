@@ -3544,6 +3544,79 @@ fn yn(b: Bool) -> String:
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// RFC-0011: the `kind:` Dir entry policy. `dir.only(confine.files())` admits a file
+    /// read but DENIES opening a sub-directory; `dir.only(confine.dirs())` is the mirror.
+    /// An `ext`-only policy still traverses (kind gates directories, ext gates file names),
+    /// so `kind` is additive and backward-compatible — all identical on both backends.
+    #[test]
+    fn dir_kind_policy_confines_on_both_backends() {
+        use crate::runtime::{Capabilities, Runtime};
+        let root = std::env::temp_dir().join(format!("witchy_dirkind_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub")).expect("mkdir sub");
+        std::fs::write(root.join("ok.txt"), "hello").expect("seed txt");
+        let root_str = root.to_str().expect("utf8 root").to_string();
+
+        let caps = || Capabilities {
+            print: true,
+            quiet: true,
+            dir_root: Some(root.clone()),
+            dir_read: true,
+            dir_write: true,
+            ..Default::default()
+        };
+        // Assert BOTH backends produce `want`.
+        let ok_both = |src: &str, want: Vec<String>| {
+            assert_eq!(
+                interpreter::run_module(resolve_std_src(src), &root_str, Vec::new()).expect("interp"),
+                want,
+                "interp: {src}",
+            );
+            let bytes = codegen::compile_module_binary(&resolve_std_src(src))
+                .expect("compile")
+                .expect("the binary path lowers this program");
+            let mut rt = Runtime::batch().expect("runtime");
+            let mut actor = rt.spawn(&bytes, caps(), 64).expect("spawn");
+            actor.run().expect("run");
+            assert_eq!(actor.output(), want, "wasm: {src}");
+        };
+        // Assert BOTH backends REFUSE (the policy check trips identically).
+        let err_both = |src: &str| {
+            assert!(
+                interpreter::run_module(resolve_std_src(src), &root_str, Vec::new()).is_err(),
+                "interp should refuse: {src}",
+            );
+            let bytes = codegen::compile_module_binary(&resolve_std_src(src))
+                .expect("compile")
+                .expect("the binary path lowers this program");
+            let mut rt = Runtime::batch().expect("runtime");
+            let mut actor = rt.spawn(&bytes, caps(), 64).expect("spawn");
+            assert!(actor.run().is_err(), "wasm should refuse: {src}");
+        };
+
+        // `files()`: read a file OK; opening a sub-directory DENIED (the DoD headline).
+        ok_both(
+            "import confine\nfn main(console: Console, dir: Dir):\n    let d = dir.only(confine.files())\n    print(console, read(d, \"ok.txt\"))\n",
+            vec!["hello".to_string()],
+        );
+        err_both("import confine\nfn main(console: Console, dir: Dir):\n    let d = dir.only(confine.files())\n    let s = d.subtree(\"sub\")\n    print(console, \"unreached\")\n");
+
+        // `dirs()`: open a sub-directory OK; reading a file DENIED (the mirror).
+        ok_both(
+            "import confine\nfn main(console: Console, dir: Dir):\n    let d = dir.only(confine.dirs())\n    let s = d.subtree(\"sub\")\n    print(console, \"traversed\")\n",
+            vec!["traversed".to_string()],
+        );
+        err_both("import confine\nfn main(console: Console, dir: Dir):\n    let d = dir.only(confine.dirs())\n    print(console, read(d, \"ok.txt\"))\n");
+
+        // An `ext`-only policy still traverses — kind gates directories, ext gates files.
+        ok_both(
+            "import confine\nfn main(console: Console, dir: Dir):\n    let d = dir.only(confine.ext(\".txt\"))\n    let s = d.subtree(\"sub\")\n    print(console, \"traversed\")\n",
+            vec!["traversed".to_string()],
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// RFC-0011: `dir.subtree(path)` is the method form of `subdir` — it narrows a
     /// `Dir` to a subtree identically on both backends, and the same `..`/absolute
     /// confinement applies. Mirrors `net.only(...)` as the host-primitive method form.

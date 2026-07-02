@@ -319,6 +319,14 @@ A typed `Dir` ENTRY policy (RFC-0011): which entries the Dir may read/write/open
 
 A Dir entry policy admitting only files whose name ends with `suffix` (include the dot, e.g. `".txt"`). Compose with `dir.only` to confine a `Dir`'s reach.
 
+#### `fn files() -> DirPolicy`
+
+A Dir entry policy admitting only FILE entries: `dir.only(confine.files())` confines a `Dir` so it can read/write files but can neither open, list, nor create sub-directories. AND-composes with `ext` — `dir.only(files()).only(ext(".txt"))` admits only `.txt` files.
+
+#### `fn dirs() -> DirPolicy`
+
+A Dir entry policy admitting only DIRECTORY entries: `dir.only(confine.dirs())` confines a `Dir` to traversal (open/list/create sub-directories) with no file read/write. The mirror of `files()`.
+
 #### `fn tcp(host: String, port: Int) -> NetPolicy`
 
 A plaintext TCP endpoint: `<host>:<port>`.
