@@ -187,6 +187,10 @@ pub struct Capabilities {
     /// The program's command-line arguments (`main(args: List(String))`).
     /// Pure input chosen by the host, not authority.
     pub args: Vec<String>,
+    /// RFC-0038: `[user_caps]` grant field values for a `main` binding bare
+    /// grantable capabilities — outer index is the grantable-cap parameter
+    /// (declaration order), inner is its policy fields in order. Empty otherwise.
+    pub user_cap_fields: Vec<Vec<String>>,
     /// The Ed25519 seed backing the root `Secret` capability. The key
     /// material stays host-side; the guest only ever sees signatures and the
     /// public key.
@@ -1523,7 +1527,7 @@ fn vmstate_from_caps(
         dirs,
         files: caps.file_grants.clone(),
         pending: None,
-        user_cap_fields: Vec::new(),
+        user_cap_fields: caps.user_cap_fields.clone(),
         pending_list: None,
         pending_ints: None,
         pending_bytes: None,
