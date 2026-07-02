@@ -9710,6 +9710,91 @@ fn main(console: Console):
         let _ = std::fs::remove_file(&cert_path);
     }
 
+    /// RFC-0020 Layers 2–3: `net.resolve` + `net.connect_pinned`, end to end on BOTH backends.
+    /// The program resolves `127.0.0.1` to its IP literals, pins the first, and dials THAT exact
+    /// IP with the hostname carried only for SNI/`Host` — the resolve-once-and-pin shape that
+    /// closes the DNS-rebinding TOCTOU (the checked IP IS the dialed IP; there is no second
+    /// resolution). A loopback echo server proves the pinned socket really connects; both
+    /// backends print the resolved IP and the echoed line identically.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn net_resolve_and_connect_pinned_backends_agree() {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        // Echo server: two connections (one per backend run), each echoing one line.
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (tcp, _) = listener.accept().unwrap();
+                let mut r = BufReader::new(tcp);
+                let mut line = String::new();
+                let _ = r.read_line(&mut line);
+                let _ = r.get_mut().write_all(line.as_bytes());
+            }
+        });
+        let src = format!(
+            "fn main(console: Console, net: Net):\n\
+             \x20   let ips = resolve(net, \"127.0.0.1\")\n\
+             \x20   let ip = ips[0]\n\
+             \x20   print(console, ip)\n\
+             \x20   let s = connect_pinned(net, ip, \"127.0.0.1\", {port}, false)\n\
+             \x20   send_line(s, \"ping\")\n\
+             \x20   print(console, recv_line(s))\n\
+             \x20   close(s)\n"
+        );
+        let allow = format!("127.0.0.1:{port}");
+        let expected = vec!["127.0.0.1".to_string(), "ping".to_string()];
+        assert_eq!(link_run_net(&src, &[allow.as_str()]), expected, "interp resolve+pin");
+        assert_eq!(
+            run_linked_on_wasm_net(&[("main", src.as_str())], "main", &[allow.as_str()]),
+            expected,
+            "wasm resolve+pin",
+        );
+        server.join().unwrap();
+    }
+
+    /// RFC-0020: `connect_pinned` re-checks the Net allowlist on the PINNED IP — a hostile or
+    /// buggy chooser that returns an internal address the capability forbids is still refused
+    /// (the hard floor under the sealed policy). Granted only a public endpoint, a pin to
+    /// loopback traps on both backends.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn connect_pinned_rechecks_the_allowlist_backends_agree() {
+        use crate::runtime::{Capabilities, Runtime};
+        let src = "fn main(console: Console, net: Net):\n\
+                   \x20   let s = connect_pinned(net, \"127.0.0.1\", \"example.com\", 80, false)\n\
+                   \x20   send_line(s, \"x\")\n";
+        let linked = resolve_std_src(src);
+        typeck::check(&linked).expect("typecheck");
+        // Granted only 93.184.216.34:80 (a public IP) — the loopback pin is outside it.
+        assert!(
+            interpreter::run_module(linked.clone(), ".", vec!["93.184.216.34:80".into()]).is_err(),
+            "interp must refuse a pinned dial to an IP outside the allowlist",
+        );
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let mut rt = Runtime::new().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                &bytes,
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    net_allow: Some(vec!["93.184.216.34:80".to_string()]),
+                    net_connect: true,
+                    net_listen: true,
+                    ..Default::default()
+                },
+                64,
+            )
+            .expect("spawn");
+        assert!(
+            actor.run().is_err(),
+            "compiled must refuse a pinned dial to an IP outside the allowlist",
+        );
+    }
+
     /// HTTPS end to end: `http.get_url("https://localhost:PORT/")` routes through the
     /// `tls:` scheme to a local rustls server speaking minimal HTTP/1.1, and parses the
     /// response — status and body identical on BOTH backends. Closes the loop from the

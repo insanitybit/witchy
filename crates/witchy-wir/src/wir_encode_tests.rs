@@ -75,7 +75,7 @@
             "int_to_string", "split", "str_chars",
             // batch 3: host-import + worst-case string/list producers (all route through rc_alloc)
             "replace", "encoding", "dir_read", "file_read", "exec", "crypto_reveal", "build_read",
-            "regex_match_spans", "dir_list", "get_env", "float_to_str", "string_from_code", "build_args",
+            "regex_match_spans", "dir_list", "net_resolve", "get_env", "float_to_str", "string_from_code", "build_args",
             "crypto_sha256", "crypto_sha512", "crypto_sha3_256", "crypto_hmac_sha256", "crypto_rune_hash",
             "crypto_sign", "crypto_public_key", "compiler_footprint", "compiler_diff", "compiler_doc",
             "net_recv_line", "net_recv_all", "net_recv_bytes",

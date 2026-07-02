@@ -1195,7 +1195,7 @@ fn cap_op_return_type(e: &Expr) -> Option<String> {
             "only" | "deny" => Some("Net".to_string()),
             "subtree" | "make_dir" => Some("Dir".to_string()),
             "read_file" | "write_file" => Some("File".to_string()),
-            "connect" | "accept" => Some("Socket".to_string()),
+            "connect" | "connect_pinned" | "accept" => Some("Socket".to_string()),
             "listen" => Some("Listener".to_string()),
             _ => None,
         },

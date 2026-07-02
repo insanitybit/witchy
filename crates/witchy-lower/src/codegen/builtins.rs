@@ -612,6 +612,55 @@ impl Codegen {
                     N::Push(choose),
                 ])
             }
+            // (RFC-0020) `net.resolve(net, host) -> List(String)` — resolved IP literals,
+            // via the staged list helper (identical shape to `list`/`dir_list`).
+            ("resolve", 2) => {
+                self.used_net_ops.insert("resolve");
+                let a = self.lower_args(&[&args[0], &args[1]])?;
+                call("net_resolve", a)
+            }
+            // (RFC-0020) `net.connect_pinned(net, ip, host, port, secure) -> Socket` — dial
+            // the exact `ip:port` with `host` presented as SNI/Host. Same shape as `connect`.
+            ("connect_pinned", 5) => {
+                self.used_net_ops.insert("connect");
+                let a = self.lower_args(&[&args[0], &args[1], &args[2], &args[3], &args[4]])?;
+                if self.collect_wir { call("net_connect_pinned", a) } else { host("net_connect_pinned_host", a) }
+            }
+            // Fallible pinned dial — `Option(Socket)`, mirroring `try_connect`'s handle-or-`-1`
+            // sentinel wrapping (Some=tag-0/None=tag-1).
+            ("try_connect_pinned", 5) => {
+                self.used_net_ops.insert("try_connect");
+                let a = self.lower_args(&[&args[0], &args[1], &args[2], &args[3], &args[4]])?;
+                let dial = if self.collect_wir {
+                    call("net_try_connect_pinned", a)
+                } else {
+                    host("net_try_connect_pinned_host", a)
+                };
+                let handle = || W::GetLocal(SECRET_TMP.to_string());
+                let cond = W::Binary {
+                    op: witchy_wir::wir::BinOp::Ge,
+                    kind: witchy_wir::wir::Kind::I32,
+                    lhs: Box::new(handle()),
+                    rhs: Box::new(W::ConstI32(0)),
+                };
+                self.mk_arities.insert(1);
+                self.mk_arities.insert(0);
+                let some = W::Call {
+                    func: "mk1".into(),
+                    args: vec![W::ConstI32(0), W::ToSlot(Box::new(handle()), witchy_wir::wir::Kind::I32)],
+                };
+                let none = W::Call { func: "mk0".into(), args: vec![W::ConstI32(1)] };
+                let choose = W::Control(Box::new(N::If {
+                    cond,
+                    then_: vec![N::Push(some)],
+                    els: vec![N::Push(none)],
+                    result: Some(witchy_wir::wir::WirTy::Str),
+                }));
+                W::Seq(vec![
+                    N::SetLocal { local: SECRET_TMP.to_string(), value: dial },
+                    N::Push(choose),
+                ])
+            }
             ("listen", 2) => {
                 self.used_net_ops.insert("listen");
                 let a = self.lower_args(&[&args[0], &args[1]])?;

@@ -3467,6 +3467,27 @@ fn host_call_helper_ret(name: &str, import: &str, nargs: usize, ret: WirTy) -> W
     }
 }
 
+/// Like [`host_call_helper`] but with explicit per-parameter types — for a host import
+/// whose params aren't all the default i32 slot (e.g. `net_connect_pinned`'s i64 `port`).
+fn host_call_helper_typed(name: &str, import: &str, param_tys: &[WirTy], ret: WirTy) -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let params: Vec<WirLocal> = param_tys
+        .iter()
+        .enumerate()
+        .map(|(i, ty)| WirLocal { name: format!("a{i}"), ty: ty.clone() })
+        .collect();
+    let host_args: Vec<E> = (0..param_tys.len()).map(|i| E::GetLocal(format!("a{i}"))).collect();
+    WirFunc {
+        name: name.into(),
+        params,
+        ret: vec![ret],
+        locals: vec![],
+        body: vec![N::Push(E::CallHost { import: import.into(), args: host_args })],
+        raw_body: None,
+    }
+}
+
 /// Like [`host_call_helper`] but for a VOID host import (no result): perform the
 /// effect, then yield `Nil` (`i32.const 0`) so the call expression has a value —
 /// the binary-path analogue of the WAT path's `{args} call $h  i32.const 0`.
@@ -4010,6 +4031,33 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
+        // (RFC-0020) Pinned dials — thin passthroughs like `net_connect`, but the
+        // fourth param is the i64 `port` (an `Int`), so a typed helper spells the
+        // signature `(net, ip, host, port, secure) -> Socket` out.
+        "net_connect_pinned" => Some(WirHelperSpec {
+            func: host_call_helper_typed(
+                "net_connect_pinned",
+                "net_connect_pinned",
+                &[WirTy::Bool, WirTy::Bool, WirTy::Bool, WirTy::Int, WirTy::Bool],
+                WirTy::Bool,
+            ),
+            helper_deps: &[],
+            import_deps: &["net_connect_pinned"],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "net_try_connect_pinned" => Some(WirHelperSpec {
+            func: host_call_helper_typed(
+                "net_try_connect_pinned",
+                "net_try_connect_pinned",
+                &[WirTy::Bool, WirTy::Bool, WirTy::Bool, WirTy::Int, WirTy::Bool],
+                WirTy::Bool,
+            ),
+            helper_deps: &[],
+            import_deps: &["net_try_connect_pinned"],
+            uses_heap: false,
+            uses_table: false,
+        }),
         "net_listen" => Some(WirHelperSpec {
             func: host_call_helper("net_listen", "net_listen", 2),
             helper_deps: &[],
@@ -4242,6 +4290,17 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             func: dir_list_helper(),
             helper_deps: &["rc_alloc"],
             import_deps: &["dir_list_size", "write_pending_list"],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        // (RFC-0020) `net.resolve(net, host) -> List(String)` — the resolved IP literals.
+        // The two-phase staged-list protocol, identical shape to `dir_list`: the host
+        // resolves the name NOW and reports the marshaled byte size (`net_resolve_size`),
+        // then `write_pending_list` lays the `List(String)` into the reserved block.
+        "net_resolve" => Some(WirHelperSpec {
+            func: two_phase_helper("net_resolve", &["h", "host"], "net_resolve_size", "write_pending_list"),
+            helper_deps: &["rc_alloc"],
+            import_deps: &["net_resolve_size", "write_pending_list"],
             uses_heap: true,
             uses_table: false,
         }),

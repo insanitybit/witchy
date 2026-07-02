@@ -615,6 +615,12 @@ pub(crate) fn link_capability_imports(
         linker.func_wrap("witchy", "net_deny", host_net_deny)?;
         linker.func_wrap("witchy", "net_connect", host_net_connect)?;
         linker.func_wrap("witchy", "net_try_connect", host_net_try_connect)?;
+        // (RFC-0020) resolve-then-pin: inspect a name's IPs, then dial an exact IP with
+        // the hostname carried only for SNI/Host. Gated with connect (adds no authority —
+        // `connect_pinned` re-checks the pinned IP against the same allowlist).
+        linker.func_wrap("witchy", "net_resolve_size", host_net_resolve_size)?;
+        linker.func_wrap("witchy", "net_connect_pinned", host_net_connect_pinned)?;
+        linker.func_wrap("witchy", "net_try_connect_pinned", host_net_try_connect_pinned)?;
     }
     if net && caps.net_listen {
         linker.func_wrap("witchy", "net_listen", host_net_listen)?;
@@ -2035,6 +2041,77 @@ fn host_net_try_connect(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) 
     let targets = witchy_caps::capabilities::resolve_admitted(&allow, host_port)
         .map_err(|e| Error::msg(format!("try_connect: {e}")))?;
     match crate::net::dial(&targets, tls, host_port) {
+        Ok(stream) => {
+            let sockets = &mut caller.data_mut().sockets;
+            sockets.push(std::io::BufReader::new(stream));
+            Ok((sockets.len() - 1) as i32)
+        }
+        Err(_) => Ok(-1),
+    }
+}
+
+/// `net_resolve_size(h, host_ptr) -> bytes` (RFC-0020): resolve `host` to its current IP
+/// literals NOW, stage them, and report the `List(String)` byte size the guest reserves
+/// (then `write_pending_list` lays it out — the same two-phase protocol as `dir_list`). NO
+/// allowlist filtering: the program inspects the IPs and `connect_pinned` re-checks the
+/// chosen one, so resolve adds no authority beyond `connect`. Empty list => resolve failed.
+fn host_net_resolve_size(mut caller: Caller<'_, VmState>, _h: i32, host_ptr: i32) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let host = read_wstr(mem.data(&caller), host_ptr)?;
+    let ips = crate::net::resolve_ips(&host);
+    let size = 4 + 8 * ips.len() + ips.iter().map(|s| 4 + s.len()).sum::<usize>();
+    caller.data_mut().pending_list = Some(ips);
+    Ok(size as i32)
+}
+
+/// `net_connect_pinned(h, ip_ptr, host_ptr, port, secure) -> Socket handle` (RFC-0020):
+/// dial the EXACT `ip:port` — no DNS — while presenting `host` as the TLS SNI / `Host`.
+/// The Net allowlist is still enforced on `ip` (via `resolve_admitted`, which on a literal
+/// IP resolves to itself), so a pin can never exceed the capability's confinement. This is
+/// what closes the rebinding TOCTOU: the inspected IP is the dialed IP, no re-resolution.
+fn host_net_connect_pinned(
+    mut caller: Caller<'_, VmState>,
+    h: i32,
+    ip_ptr: i32,
+    host_ptr: i32,
+    port: i64,
+    secure: i32,
+) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let ip = read_wstr(mem.data(&caller), ip_ptr)?;
+    let host = read_wstr(mem.data(&caller), host_ptr)?;
+    let allow = net_allow(&caller, h)?;
+    let ip_port = crate::net::authority(&ip, port);
+    let targets = witchy_caps::capabilities::resolve_admitted(&allow, &ip_port)
+        .map_err(|e| Error::msg(format!("connect_pinned: {e}")))?;
+    let host_port = crate::net::authority(&host, port);
+    let stream = crate::net::dial(&targets, secure != 0, &host_port)
+        .map_err(|e| Error::msg(format!("connect_pinned to `{ip_port}` failed: {e}")))?;
+    let sockets = &mut caller.data_mut().sockets;
+    sockets.push(std::io::BufReader::new(stream));
+    Ok((sockets.len() - 1) as i32)
+}
+
+/// `net_try_connect_pinned(...) -> Socket handle | -1`: like `net_connect_pinned` but a
+/// failed connection yields `-1` (witchy wraps it as `Option(Socket)`'s `None`). A
+/// capability violation — a pinned IP outside the allowlist — still traps.
+fn host_net_try_connect_pinned(
+    mut caller: Caller<'_, VmState>,
+    h: i32,
+    ip_ptr: i32,
+    host_ptr: i32,
+    port: i64,
+    secure: i32,
+) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let ip = read_wstr(mem.data(&caller), ip_ptr)?;
+    let host = read_wstr(mem.data(&caller), host_ptr)?;
+    let allow = net_allow(&caller, h)?;
+    let ip_port = crate::net::authority(&ip, port);
+    let targets = witchy_caps::capabilities::resolve_admitted(&allow, &ip_port)
+        .map_err(|e| Error::msg(format!("try_connect_pinned: {e}")))?;
+    let host_port = crate::net::authority(&host, port);
+    match crate::net::dial(&targets, secure != 0, &host_port) {
         Ok(stream) => {
             let sockets = &mut caller.data_mut().sockets;
             sockets.push(std::io::BufReader::new(stream));

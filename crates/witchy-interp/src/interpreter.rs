@@ -1794,6 +1794,61 @@ impl Interpreter {
                 }
                 _ => err("try_connect expects a Net and an address"),
             },
+            // (RFC-0020) Resolve a hostname to its current IP literals. No allowlist
+            // filtering — the program inspects the IPs and `connect_pinned` re-checks
+            // the chosen one, so resolve adds no authority beyond `connect`. An empty
+            // list signals a resolution failure (the std wrapper turns it into `Err`).
+            "resolve" => match args {
+                [Value::Net(_allow), Value::Str(host)] => {
+                    let ips = witchy_runtime::net::resolve_ips(host);
+                    Ok(Some(Value::List(ips.into_iter().map(Value::Str).collect())))
+                }
+                _ => err("resolve expects a Net and a host"),
+            },
+            // (RFC-0020) Dial the EXACT `ip:port` — no DNS — while presenting `host` as
+            // the TLS SNI / `Host`. The Net allowlist is still enforced on `ip` (a literal
+            // IP resolves to itself), so a pin can never exceed the capability. This is
+            // what closes the DNS-rebinding TOCTOU: the checked IP is the dialed IP.
+            "connect_pinned" => match args {
+                [Value::Net(allow), Value::Str(ip), Value::Str(host), Value::Int(port), Value::Bool(secure)] => {
+                    let ip_port = witchy_runtime::net::authority(ip, *port);
+                    let targets = match witchy_caps::capabilities::resolve_admitted(allow, &ip_port) {
+                        Ok(t) => t,
+                        Err(e) => return err(format!("connect_pinned: {e}")),
+                    };
+                    let host_port = witchy_runtime::net::authority(host, *port);
+                    match witchy_runtime::net::dial(&targets, *secure, &host_port) {
+                        Ok(stream) => {
+                            let id = self.sockets.len();
+                            self.sockets.push(BufReader::new(stream));
+                            Ok(Some(Value::Socket(id)))
+                        }
+                        Err(e) => err(format!("connect_pinned to `{ip_port}` failed: {e}")),
+                    }
+                }
+                _ => err("connect_pinned expects (Net, ip, host, port, secure)"),
+            },
+            "try_connect_pinned" => match args {
+                [Value::Net(allow), Value::Str(ip), Value::Str(host), Value::Int(port), Value::Bool(secure)] => {
+                    let ip_port = witchy_runtime::net::authority(ip, *port);
+                    // A capability breach still traps; only a transient dial failure -> None.
+                    let targets = match witchy_caps::capabilities::resolve_admitted(allow, &ip_port) {
+                        Ok(t) => t,
+                        Err(e) => return err(format!("try_connect_pinned: {e}")),
+                    };
+                    let host_port = witchy_runtime::net::authority(host, *port);
+                    let v = match witchy_runtime::net::dial(&targets, *secure, &host_port) {
+                        Ok(stream) => {
+                            let id = self.sockets.len();
+                            self.sockets.push(BufReader::new(stream));
+                            Value::Ctor { name: "Some".into(), fields: vec![Value::Socket(id)] }
+                        }
+                        Err(_) => Value::Ctor { name: "None".into(), fields: Vec::new() },
+                    };
+                    Ok(Some(v))
+                }
+                _ => err("try_connect_pinned expects (Net, ip, host, port, secure)"),
+            },
             "send_line" => match args {
                 [Value::Socket(id), Value::Str(line)] => {
                     let sock = self

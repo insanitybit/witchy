@@ -52,6 +52,43 @@ pub fn parse_scheme(addr: &str) -> (bool, &str) {
     }
 }
 
+/// Resolve a hostname to its current IP literals (deduped, order-preserving). Backs
+/// `net.resolve` (RFC-0020) so a program can inspect addresses before pinning one; it
+/// adds no authority, since `connect_pinned` re-checks the chosen IP against the Net
+/// allowlist. An empty result signals a resolution failure to the caller.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn resolve_ips(host: &str) -> Vec<String> {
+    use std::net::ToSocketAddrs;
+    let bare = host.strip_prefix('[').and_then(|s| s.strip_suffix(']')).unwrap_or(host);
+    let mut ips: Vec<String> = Vec::new();
+    if let Ok(addrs) = (bare, 0u16).to_socket_addrs() {
+        for a in addrs {
+            let ip = a.ip().to_string();
+            if !ips.contains(&ip) {
+                ips.push(ip);
+            }
+        }
+    }
+    ips
+}
+
+/// The browser shim has no DNS (pure-compute, deny-by-omission): resolution yields nothing.
+#[cfg(target_arch = "wasm32")]
+pub fn resolve_ips(_host: &str) -> Vec<String> {
+    Vec::new()
+}
+
+/// Build a `host:port` authority, bracketing a bare IPv6 literal (`::1` -> `[::1]:80`) so
+/// the last-colon `host:port` split stays unambiguous. Shared by `connect_pinned` on both
+/// backends so a pinned IPv6 dial is byte-identical.
+pub fn authority(host: &str, port: i64) -> String {
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
 /// The SNI / certificate name for a `host:port` (the host, without the port).
 #[cfg(not(target_arch = "wasm32"))]
 fn server_name(host_port: &str) -> &str {

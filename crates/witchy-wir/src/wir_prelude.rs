@@ -91,6 +91,7 @@ const HELPER_NAMES: &[&str] = &[
     "build_read",
     "build_out_write",
     "dir_list",
+    "net_resolve",
     "net_recv_line",
     "net_recv_all",
     "net_recv_bytes",
@@ -258,6 +259,9 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "file_write" (func $file_write_host (param i32 i32)))
   (import "witchy" "net_connect" (func $net_connect_host (param i32 i32) (result i32)))
   (import "witchy" "net_try_connect" (func $net_try_connect_host (param i32 i32) (result i32)))
+  (import "witchy" "net_resolve_size" (func $net_resolve_size_host (param i32 i32) (result i32)))
+  (import "witchy" "net_connect_pinned" (func $net_connect_pinned_host (param i32 i32 i32 i64 i32) (result i32)))
+  (import "witchy" "net_try_connect_pinned" (func $net_try_connect_pinned_host (param i32 i32 i32 i64 i32) (result i32)))
   (import "witchy" "net_listen" (func $net_listen_host (param i32 i32) (result i32)))
   (import "witchy" "net_accept" (func $net_accept_host (param i32) (result i32)))
   (import "witchy" "serve_pool" (func $serve_pool_host (param i32)))
@@ -281,7 +285,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 72;
+pub const IMPORT_COUNT: usize = 75;
 
 /// The full ordered name list for the funcs section: `$mk0..$mk{MAX_MK}` then
 /// the static helper names. Matches the order the prelude emits bodies, so

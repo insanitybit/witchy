@@ -1743,7 +1743,9 @@ impl Checker {
     /// Returns `Ok(None)` when `name` is not a Net op.
     fn check_net_op(&mut self, name: &str, args: &[Expr]) -> Result<Option<Ty>, TypeError> {
         let arity = match name {
-            "connect" | "try_connect" | "listen" | "only" | "deny" => 2,
+            "connect" | "try_connect" | "listen" | "only" | "deny" | "resolve" => 2,
+            // (RFC-0020) pinned dial: (net, ip, host, port, secure).
+            "connect_pinned" | "try_connect_pinned" => 5,
             _ => return Ok(None),
         };
         if args.len() != arity {
@@ -1753,18 +1755,29 @@ impl Checker {
             ));
         }
         let rights = self.net_cap_rights(name, &args[0])?;
-        // The trailing argument: a typed `NetPolicy` for the policy verbs (`only`/`deny`,
-        // RFC-0011), a `host:port` string for the address verbs (`connect`/`listen`/`restrict`).
-        let expected = if name == "only" || name == "deny" {
-            Ty::Named("NetPolicy".into(), Vec::new())
+        if name == "connect_pinned" || name == "try_connect_pinned" {
+            // (RFC-0020) mixed trailing args: ip:String, host:String, port:Int, secure:Bool.
+            for (arg, expected) in args[1..].iter().zip([Ty::String, Ty::String, Ty::Int, Ty::Bool]) {
+                let at = self.infer(arg)?;
+                self.unify(&expected, &at).map_err(|e| TypeError {
+                    message: format!("in call to `{name}`: {}", e.message),
+                })?;
+            }
         } else {
-            Ty::String
-        };
-        for arg in &args[1..] {
-            let at = self.infer(arg)?;
-            self.unify(&expected, &at).map_err(|e| TypeError {
-                message: format!("in call to `{name}`: {}", e.message),
-            })?;
+            // The trailing argument: a typed `NetPolicy` for the policy verbs (`only`/`deny`,
+            // RFC-0011), a `host:port` string for the address verbs (`connect`/`listen`/`restrict`),
+            // a bare host string for `resolve`.
+            let expected = if name == "only" || name == "deny" {
+                Ty::Named("NetPolicy".into(), Vec::new())
+            } else {
+                Ty::String
+            };
+            for arg in &args[1..] {
+                let at = self.infer(arg)?;
+                self.unify(&expected, &at).map_err(|e| TypeError {
+                    message: format!("in call to `{name}`: {}", e.message),
+                })?;
+            }
         }
         let ret = match name {
             "connect" => {
@@ -1808,6 +1821,45 @@ impl Checker {
                     ));
                 }
                 Ty::Listener
+            }
+            // (RFC-0020) Resolve a name to its IP literals. Gated on `Connect` alone (it
+            // adds no authority — `connect_pinned` re-checks the chosen IP); no transport
+            // requirement, since resolution is not itself a dial.
+            "resolve" => {
+                if !rights.connect {
+                    return terr(format!(
+                        "`resolve` needs `Connect` but the capability is `{rights}`"
+                    ));
+                }
+                Ty::List(Box::new(Ty::String))
+            }
+            // Pinned dials — same rights as `connect` (a literal-IP TCP dial), the hostname
+            // carried only for SNI/Host. `try_` is total (`Option(Socket)`).
+            "connect_pinned" => {
+                if !rights.connect {
+                    return terr(format!(
+                        "`connect_pinned` needs `Connect` but the capability is `{rights}`"
+                    ));
+                }
+                if !rights.tcp {
+                    return terr(format!(
+                        "`connect_pinned` is only implemented over `Tcp`, but the capability is `{rights}`"
+                    ));
+                }
+                Ty::Socket
+            }
+            "try_connect_pinned" => {
+                if !rights.connect {
+                    return terr(format!(
+                        "`try_connect_pinned` needs `Connect` but the capability is `{rights}`"
+                    ));
+                }
+                if !rights.tcp {
+                    return terr(format!(
+                        "`try_connect_pinned` is only implemented over `Tcp`, but the capability is `{rights}`"
+                    ));
+                }
+                Ty::Named("Option".into(), vec![Ty::Socket])
             }
             // Attenuating the address set leaves the rights (verbs + transports) intact.
             // `only` narrows a `Net` to a `NetPolicy`'s address set; `deny` subtracts an
