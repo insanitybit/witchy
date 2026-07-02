@@ -406,6 +406,61 @@
         assert_traps(&module);
     }
 
+    /// RFC-0005 step 2: the in-place `$str_append_cap` bounds check TRAPS when `cap`
+    /// overstates the buffer's real allocation. A 6-byte buffer (4-byte len word + 2
+    /// spare bytes) appended to as if it had room for 5 more would copy PAST the block;
+    /// the check traps before the copy. (Only the len/plen headers matter — the trap
+    /// fires before any byte is read.)
+    #[test]
+    fn str_append_cap_traps_on_overstated_cap() {
+        use WirExpr::*;
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![local("rp", WirTy::Bool), local("rc", WirTy::Bool)],
+            body: vec![
+                // s at 2048: REAL allocation is 6 bytes (len word + 2 bytes), len=2.
+                WirNode::Store { ptr: ConstI32(2044), value: ConstI32(6), kind: Kind::I32, offset: 0 },
+                WirNode::Store { ptr: ConstI32(2048), value: ConstI32(2), kind: Kind::I32, offset: 0 },
+                // piece at 2064: plen=3.
+                WirNode::Store { ptr: ConstI32(2064), value: ConstI32(3), kind: Kind::I32, offset: 0 },
+                WirNode::SetGlobal { global: "heap".into(), value: ConstI32(2080) },
+                // cap=5 LIES: real capacity is 2. need = 2+3 = 5; in-place fires (cap >=
+                // need), and the copy would run to byte s+4+5 = 9, past the 6-byte block.
+                WirNode::CallStoreMulti {
+                    func: "str_append_cap".into(),
+                    args: vec![ConstI32(2048), ConstI32(2064), ConstI32(5)],
+                    dests: vec!["rp".into(), "rc".into()],
+                },
+            ],
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![WirImport { name: "print_int".into(), params: vec![Kind::I64], results: vec![] }],
+            funcs: vec![
+                crate::wir_helpers::ensure_helper(false),
+                crate::wir_helpers::str_append_cap_helper(),
+                run,
+            ],
+            memory_pages: 1,
+            data: vec![],
+            globals: vec![
+                WirGlobal { name: "heap".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(2080), export: None },
+                WirGlobal {
+                    name: "__witchy_reowns".into(),
+                    kind: Kind::I64,
+                    mutable: true,
+                    init: GlobalInit::I64(0),
+                    export: Some("__witchy_reowns".into()),
+                },
+            ],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        assert_traps(&module);
+    }
+
     /// CallStoreMulti calls a MULTI-result function and stores each result into a
     /// local (reverse pop order). Exercises both the new node and a multi-value
     /// function (`pair` leaves two i32s via dual tail Push) — the shape the

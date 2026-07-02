@@ -1536,7 +1536,32 @@ pub fn str_append_cap_helper() -> WirFunc {
         result: None,
     };
     // cap >= need: append `piece`'s bytes at s+4+len in place.
+    // (RFC-0005 step 2) Bound the in-place copy against the buffer's REAL allocated
+    // size (`[s-4]`, low 24 bits). `cap >= need` gates this path on the analysis's
+    // CLAIMED capacity; a false negative could overstate it, and the copy would write
+    // `[s+4+need)` past the block, silently corrupting adjacent heap. Trap instead.
+    // Sound: with a correct `cap >= need` and `cap` == the real capacity, `4+need <=
+    // size`, so a correct program never trips it. GUARD on `cap != 0`: an EMPTY
+    // reown (`cap == 0`) reaches this path only for `need == 0` (a no-op append onto
+    // an interned/static `""` whose `[s-4]` is NOT an rc header), so it copies zero
+    // bytes and must not be bounds-checked; a positive `cap` is always a real heap
+    // buffer, where an overflow is possible and the header is valid.
     let inplace = vec![
+        N::If {
+            cond: getl("cap"),
+            then_: vec![N::If {
+                cond: b(
+                    BinOp::GtU,
+                    b(BinOp::Add, i32c(4), getl("need")),
+                    b(BinOp::And, load(b(BinOp::Sub, getl("s"), i32c(4))), i32c(RC_SIZE_MASK)),
+                ),
+                then_: vec![N::Unreachable],
+                els: vec![],
+                result: None,
+            }],
+            els: vec![],
+            result: None,
+        },
         N::MemoryCopy {
             dest: b(BinOp::Add, b(BinOp::Add, getl("s"), i32c(4)), getl("len")),
             src: b(BinOp::Add, getl("piece"), i32c(4)),
