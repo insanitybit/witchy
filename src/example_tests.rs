@@ -15940,6 +15940,77 @@ pub fn serve(console: Console, net: Net) -> Int:
         interp
     }
 
+    /// (RFC-0039) The secret effect's WIRE FORMAT is pure data, so it serializes IDENTICALLY
+    /// on both backends. A `SecretField` VNode and a `SubmitSecret` Cmd carry ONLY their
+    /// host-slot coordinates and port name — read out of the sealed `SecretInput`/`SecretRef`/
+    /// `CredentialPort` tokens (minted here from a granted `UiRoot`), never a value — and the
+    /// interpreter and compiled WASM agree byte-for-byte. This is the parity half of the
+    /// host-custody guarantee: the description the rune emits is inert, identical data.
+    #[test]
+    fn glamour_secret_wire_is_identical_on_both_backends() {
+        use crate::runtime::{Capabilities, Runtime};
+        let src = "import glamour\n\
+                   import json\n\
+                   \n\
+                   type Msg:\n\
+                   \x20   Done(String)\n\
+                   \n\
+                   fn mj(m: Msg) -> Json:\n\
+                   \x20   JsonString(\"\")\n\
+                   \n\
+                   fn main(console: Console, ui: UiRoot):\n\
+                   \x20   let input = glamour.secret_field(ui, \"login\", \"password\")\n\
+                   \x20   let cred = glamour.credential_port(ui, \"passkeyLogin\")\n\
+                   \x20   let cmd = glamour.submit_secret(glamour.secret_ref(input), cred, \"Done\")\n\
+                   \x20   let node: VNode(Msg) = glamour.secret_input(input, \"PwStatus\")\n\
+                   \x20   print(console, glamour.to_json(node, mj))\n\
+                   \x20   print(console, json.encode(glamour.cmd_to_json(cmd, mj)))\n";
+        let entry = parser::parse_module(src).expect("parse entry");
+        let glamour = parser::parse_module(GLAMOUR_SRC).expect("parse glamour");
+        let modules = vec![("main".to_string(), entry), ("glamour".to_string(), glamour)];
+        let linked = crate::pipeline::link(modules, "main").expect("link glamour consumer");
+        typeck::check(&linked).expect("typecheck");
+
+        // Interpreter: grant a single-field `UiRoot` keyed by the param name `ui`.
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert("policy".to_string(), "login".to_string());
+        let mut grants = std::collections::BTreeMap::new();
+        grants.insert("ui".to_string(), fields);
+        let interp = interpreter::run_module_user_caps(linked.clone(), ".", vec![], vec![], vec![], grants)
+            .expect("interp");
+
+        // Compiled: stage the one field host-side (declaration order).
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                &bytes,
+                Capabilities {
+                    print: true,
+                    print_int: true,
+                    quiet: true,
+                    user_cap_fields: vec![vec!["login".to_string()]],
+                    ..Default::default()
+                },
+                crate::RUN_MEMORY_PAGES,
+            )
+            .expect("spawn");
+        actor.run().expect("run");
+        assert_eq!(actor.output(), interp, "compiled WASM must match the interpreter");
+
+        // And the shape is exactly the host-shell protocol: slot + port, no value.
+        assert_eq!(
+            interp,
+            vec![
+                "{\"secret\":{\"form\":\"login\",\"field\":\"password\"},\"on_ready\":\"PwStatus\"}".to_string(),
+                "{\"cmd\":\"submit_secret\",\"slot\":\"login/password\",\"port\":\"passkeyLogin\",\"tag\":\"Done\"}".to_string(),
+            ],
+            "the secret wire carries only slot + port names (from tokens), never a value"
+        );
+    }
+
     /// RFC-0008: glamour's `html` tag (RFC-0006 compile-time literal) builds a
     /// `VNode(msg)` tree, and the serializer renders it IDENTICALLY on both
     /// backends. The headline property is structural XSS-immunity: a text-position

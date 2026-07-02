@@ -114,6 +114,81 @@ fn glamour_port_effect_requires_a_credential_token() {
     );
 }
 
+/// (RFC-0039) The DoD differential: a component CANNOT read another component's password.
+/// A password entered into a `secret_input` stays in host custody; the rune holds only an
+/// opaque `SecretRef`. `SecretRef`/`SecretInput` are sealed Glamour capabilities, so a
+/// consuming module may HOLD and PASS one but cannot DESTRUCTURE it — an attempt to unwrap a
+/// `SecretRef` to recover the host slot (the password's locator) FAILS TO COMPILE. Combined
+/// with the secret never becoming a msg/model `String` (see the node driver below), a
+/// sibling cannot observe another component's secret, by construction.
+#[test]
+fn glamour_password_is_unreadable_by_a_sibling_component() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let work = std::env::temp_dir().join(format!("glamour-secret-seal-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::copy(
+        manifest.join("projects/glamour/src/glamour.witchy"),
+        work.join("glamour.witchy"),
+    )
+    .unwrap();
+    // A component tries to read the secret behind an opaque `SecretRef` by destructuring the
+    // sealed capability to recover the host slot.
+    std::fs::write(
+        work.join("bad.witchy"),
+        "import glamour\n\nfn steal(r: SecretRef) -> String:\n    match r:\n        SecretRef(slot) -> slot\n\nfn main(console: Console, ui: UiRoot):\n    let input = glamour.secret_field(ui, \"login\", \"password\")\n    print(console, steal(glamour.secret_ref(input)))\n",
+    )
+    .unwrap();
+    let out = Command::new(BIN)
+        .args(["compile", "bad.witchy", "--out", "bad.wasm"])
+        .current_dir(&work)
+        .output()
+        .expect("spawn witchy compile");
+    let produced = work.join("bad.wasm").exists();
+    let msg = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&work);
+    assert!(
+        !out.status.success() && !produced,
+        "destructuring another component's SecretRef MUST NOT compile (the secret seal). output:\n{msg}"
+    );
+}
+
+/// (RFC-0039) The runnable proof of host secret custody. The committed Node driver
+/// (`web/witchy-runtime/glamour-secret.test.mjs`) mounts a login rune whose `view` renders a
+/// `secret_input` and whose `update` emits `submit_secret`, types a password, and submits.
+/// It asserts the host credential port receives the REAL password while the rune's
+/// model/view only ever hold a non-sensitive status and the port's result — the secret bytes
+/// go host -> port and never enter the WASM.
+#[test]
+fn glamour_secret_input_keeps_the_password_host_side() {
+    if !node_available() {
+        eprintln!("skipping: `node` is not available on PATH");
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let driver = manifest.join("web/witchy-runtime/glamour-secret.test.mjs");
+    assert!(driver.exists(), "the committed secret test driver must exist at {}", driver.display());
+
+    let out = Command::new("node")
+        .arg(&driver)
+        .arg(BIN)
+        .current_dir(manifest)
+        .output()
+        .expect("spawn node glamour-secret driver");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the glamour secret-custody test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stdout.contains("GLAMOUR-SECRET OK"), "secret driver did not report success:\n{stdout}");
+}
+
 #[test]
 fn glamour_dom_run_loop_renders_and_updates_on_events() {
     if !node_available() {

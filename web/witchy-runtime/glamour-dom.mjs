@@ -37,6 +37,12 @@ const isElement = (v) => v != null && typeof v.el === "string";
 const isCompartment = (v) => v != null && typeof v.compartment === "string";
 // A keyed child: {"key": <stable id>, "node": <vnode>}. The key drives list diffing.
 const isKeyed = (v) => v != null && typeof v.key === "string" && v.node != null;
+// A host-owned SECRET input (RFC-0039): {"secret": {"form","field"}, "on_ready": msg-tag}.
+// The rune emitted NO value — the typed bytes live only in this shell's custody (the real
+// <input> + `dispatch.__secrets`), never crossing back into the rune.
+const isSecret = (v) => v != null && v.secret != null && typeof v.on_ready === "string";
+// The host-custody slot name for a secret node (matches `secret_ref`'s `form + "/" + field`).
+const secretSlot = (v) => `${v.secret.form}/${v.secret.field}`;
 
 /**
  * Mount a glamour rune into `root`. Returns `{ dispatch, getModel, unmount }`.
@@ -143,6 +149,19 @@ export async function mount(wasmBytes, root, opts = {}) {
         .catch((e) => dispatch({ $variant: cmd.tag, $values: ["error:" + String(e)] }));
       return;
     }
+    if (cmd.cmd === "submit_secret") {
+      // Read the secret from the shell's OWN custody (the rune never held it) and hand it to
+      // the host credential port. Only the port's result returns, as an ordinary msg — the
+      // password bytes go host -> port and stop there. A missing/empty field submits "".
+      const store = dispatch.__secrets || {};
+      const secret = typeof store[cmd.slot] === "string" ? store[cmd.slot] : "";
+      const fn = (opts.secretPorts && opts.secretPorts[cmd.port]) || (opts.ports && opts.ports[cmd.port]);
+      if (!fn) throw new Error(`glamour-dom: no port \`${cmd.port}\` for submit_secret (pass opts.ports.${cmd.port})`);
+      Promise.resolve(fn(secret))
+        .then((result) => dispatch({ $variant: cmd.tag, $values: [String(result)] }))
+        .catch((e) => dispatch({ $variant: cmd.tag, $values: ["error:" + String(e)] }));
+      return;
+    }
     throw new Error(`glamour-dom: unknown cmd kind \`${cmd.cmd}\``);
   };
 
@@ -230,6 +249,12 @@ function patch(doc, parent, dom, oldV, newV, dispatch) {
     return dom;
   }
 
+  if (isSecret(newV)) {
+    // Same slot (a different one would have been rebuilt): keep the live <input> so the
+    // host-held value and caret survive. The rune never described a value to re-apply.
+    return dom;
+  }
+
   // Same element tag: reconcile attributes and recurse into children.
   reconcileAttrs(dom, oldV.attrs || [], newV.attrs || [], dispatch);
   const oldKids = oldV.kids || [];
@@ -299,8 +324,12 @@ function reconcileKeyed(doc, parent, oldKids, newKids, childNodes, dispatch) {
 function kindOrTagChanged(oldV, newV) {
   if (isText(oldV) !== isText(newV)) return true;
   if (isCompartment(oldV) !== isCompartment(newV)) return true;
+  if (isSecret(oldV) !== isSecret(newV)) return true;
   // A different renderer is a different compartment — rebuild (a fresh isolated frame).
   if (isCompartment(oldV) && isCompartment(newV)) return oldV.compartment !== newV.compartment;
+  // A different slot is a different field — rebuild; same slot KEEPS the live <input> so its
+  // (host-held) value and caret survive a re-render.
+  if (isSecret(oldV) && isSecret(newV)) return secretSlot(oldV) !== secretSlot(newV);
   if (isElement(oldV) && isElement(newV)) return oldV.el !== newV.el;
   return false;
 }
@@ -313,6 +342,7 @@ function createNode(doc, v, dispatch) {
   if (isText(v)) return doc.createTextNode(v.text);
   if (isKeyed(v)) return createNode(doc, v.node, dispatch); // the key is a diff hint only
   if (isCompartment(v)) return mountCompartment(doc, v, dispatch);
+  if (isSecret(v)) return mountSecretInput(doc, v, dispatch);
   if (!isElement(v)) {
     throw new Error(`glamour-dom: malformed vnode: ${JSON.stringify(v)}`);
   }
@@ -357,6 +387,30 @@ function mountCompartment(doc, node, dispatch) {
     };
   }
   return frame;
+}
+
+// Mount a host-owned SECRET input (RFC-0039). The typed value lives ONLY in host custody —
+// the real `<input type=password>` and the shell's `dispatch.__secrets` store — and NEVER
+// crosses into the rune. On input we record the value keyed by its slot and dispatch the
+// rune's `on_ready` msg carrying only a NON-sensitive status ("Empty"/"NonEmpty"), so the
+// rune can enable a submit button without ever observing the bytes. To act on the value the
+// rune emits a `submit_secret` Cmd naming the slot; `interpretCmd` reads it from this store
+// and hands it to a host port. A sibling component holds no DOM authority and cannot read
+// this store, so it can never intercept another component's password.
+function mountSecretInput(doc, node, dispatch) {
+  const el = doc.createElement("input");
+  el.setAttribute("type", "password");
+  el.setAttribute("class", "glamour-secret");
+  const slot = secretSlot(node);
+  const store = (dispatch.__secrets = dispatch.__secrets || {});
+  if (typeof el.addEventListener === "function") {
+    el.addEventListener("input", (ev) => {
+      const value = (ev && ev.target && typeof ev.target.value === "string") ? ev.target.value : "";
+      store[slot] = value; // host custody — the value stops HERE, never returned to the rune
+      dispatch({ $variant: node.on_ready, $values: [value.length > 0 ? "NonEmpty" : "Empty"] });
+    });
+  }
+  return el;
 }
 
 // URL-bearing attributes whose value is a navigation/fetch target: a `javascript:`

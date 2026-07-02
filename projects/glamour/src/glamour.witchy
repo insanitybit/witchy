@@ -103,6 +103,15 @@ pub type VNode(msg):
     // by position, so reordering/inserting/removing items reuses the matching DOM node
     // (preserving its identity — and an `<input>`'s focus/caret) instead of rebuilding.
     Keyed(String, VNode(msg))
+    // (RFC-0039) A host-owned SECRET input field. `SecretInput` is the unforgeable
+    // authority to render it, and NAMES the host slot (`form`/`field`); the second field
+    // is the msg-tag the shell dispatches — carrying only a NON-sensitive status
+    // ("Empty"/"NonEmpty") — when the field changes. The typed value stays in host
+    // custody: it NEVER crosses into the rune as a msg or model String, so a sibling
+    // component cannot observe another component's password. To act on the value, the
+    // rune passes an opaque `SecretRef` to `submit_secret` — it holds the handle, never
+    // the bytes.
+    SecretField(SecretInput, String)
 
 // A DOM property/attribute (`class="card"`, `href=…`), OR an event→msg binding.
 // `On` carries a `msg` VALUE, not a closure — the whole MVU model: events are
@@ -142,6 +151,14 @@ pub fn compartment(renderer: String, grant: String, on_event: String) -> VNode(m
 // Tag a child with a stable key for keyed list reconciliation (see `Keyed`).
 pub fn keyed(key: String, node: VNode(msg)) -> VNode(msg):
     Keyed(key, node)
+
+// (RFC-0039) Render a host-owned secret input. Requires a `SecretInput` token (minted by
+// `secret_field`), so a component without one cannot even put a password field on screen.
+// `on_ready` is the msg-tag the shell dispatches — carrying only a non-sensitive status —
+// when the field changes. The typed value stays in host custody; to act on it, hand
+// `secret_ref(input)` to `submit_secret`.
+pub fn secret_input(input: SecretInput, on_ready: String) -> VNode(msg):
+    SecretField(input, on_ready)
 
 pub fn prop(name: String, value: String) -> Attr(msg):
     Prop(name, value)
@@ -205,6 +222,13 @@ pub type Cmd(msg):
     // free argument, so a component holding a `promote` port can ONLY ever emit a promote
     // call — it cannot invoke `yank` or any other port it was not granted.
     Port(CredentialPort, String, String)
+    // (RFC-0039) Submit a host-held SECRET (named by the opaque `SecretRef`) to a host
+    // credential port, dispatching `on_done(result)` back. The rune never holds the secret
+    // bytes — only the opaque handle — and the shell reads the value out of its OWN custody
+    // and hands it to the port. Both the secret slot and the port name ride their tokens,
+    // so neither is a forgeable free argument. This is how a password is used without ever
+    // becoming rune-visible data.
+    SubmitSecret(SecretRef, CredentialPort, String)
 
 // ---------------------------------------------------------------------------
 // Cmd WIRE FORMAT — serialize a `Cmd(msg)` to the JSON shape the host shell
@@ -262,6 +286,15 @@ pub fn cmd_to_json(cmd: Cmd(msg), msg_to_json: fn(msg) -> Json) -> Json:
             match cred:
                 CredentialPort(name) ->
                     JsonObject([("cmd", JsonString("port")), ("port", JsonString(name)), ("arg", JsonString(arg)), ("tag", JsonString(tag))])
+        // A secret submit carries the host-slot name (from the `SecretRef`) and the port
+        // name (from the `CredentialPort`) — both from tokens, neither forgeable — plus the
+        // reply tag. The secret VALUE is NOT here: the shell reads it from its own custody.
+        SubmitSecret(secret, cred, tag) ->
+            match secret:
+                SecretRef(slot) ->
+                    match cred:
+                        CredentialPort(name) ->
+                            JsonObject([("cmd", JsonString("submit_secret")), ("slot", JsonString(slot)), ("port", JsonString(name)), ("tag", JsonString(tag))])
 
 // Convenience constructors for the HTTP effect. `on_done` is the name of a 2-arg msg
 // variant `Tag(Int, String)` the shell dispatches with `(status, body)` (status 0 on a
@@ -290,6 +323,21 @@ pub fn navigate(route: UiRoute, path: String) -> Cmd(msg):
 pub fn port(cred: CredentialPort, arg: String, on_done: String) -> Cmd(msg):
     Port(cred, arg, on_done)
 
+// (RFC-0039) An opaque handle to the host-held secret named by `input`. The rune can pass
+// it to `submit_secret`, but — `SecretRef` being a sealed capability of this module — a
+// consuming component can never unwrap it to read the bytes or even the slot. Only Glamour
+// mints it, and only from a `SecretInput` the component already holds, so the handle can
+// never outrun the render authority that produced the secret.
+pub fn secret_ref(input: SecretInput) -> SecretRef:
+    match input:
+        SecretInput(form, field) -> SecretRef(form + "/" + field)
+
+// (RFC-0039) Submit the host-held secret (named by `secret`) to a host credential `port`.
+// The shell reads the value out of its OWN custody and hands it to the port, dispatching
+// `on_done(result)` back — the rune never sees the bytes, only the outcome.
+pub fn submit_secret(secret: SecretRef, cred: CredentialPort, on_done: String) -> Cmd(msg):
+    SubmitSecret(secret, cred, on_done)
+
 // ---------------------------------------------------------------------------
 // Serializer — render a VNode tree to an HTML string. There is no browser here,
 // so this is how the structural safety becomes OBSERVABLE in tests: text content
@@ -305,6 +353,9 @@ pub fn to_html(node: VNode(msg)) -> String:
         Compartment(renderer, _grant, _on) -> "<iframe sandbox=\"allow-scripts\" class=\"glamour-compartment\" src=\"/compartments/" + escape_attr(renderer) + "/\"></iframe>"
         // The key is a diff hint only — render the inner node.
         Keyed(_key, inner) -> to_html(inner)
+        // A secret field renders as an INERT password input carrying no value — the typed
+        // bytes live only in host custody, never in this (or any) rune-produced string.
+        SecretField(_input, _on_ready) -> "<input type=\"password\" class=\"glamour-secret\"></input>"
         Element(tag, attrs, children) -> render_element(tag, attrs, children)
 
 fn render_element(tag: String, attrs: List(Attr(msg)), children: List(VNode(msg))) -> String:
@@ -378,6 +429,16 @@ fn node_json(node: VNode(msg), msg_to_json: fn(msg) -> Json) -> Json:
             JsonObject([("compartment", JsonString(renderer)), ("grant", JsonString(grant)), ("on", JsonString(on_event))])
         Keyed(key, inner) ->
             JsonObject([("key", JsonString(key)), ("node", node_json(inner, msg_to_json))])
+        // A secret field carries only its host-slot coordinates (`form`/`field`, read out
+        // of the `SecretInput` token) and the non-sensitive `on_ready` msg-tag. No value —
+        // the shell owns the bytes; the rune never emitted them.
+        SecretField(input, on_ready) ->
+            match input:
+                SecretInput(form, field) ->
+                    JsonObject([
+                        ("secret", JsonObject([("form", JsonString(form)), ("field", JsonString(field))])),
+                        ("on_ready", JsonString(on_ready)),
+                    ])
         Element(tag, attrs, children) ->
             var ajs: List(Json) = []
             for a in attrs:
