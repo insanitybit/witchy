@@ -119,9 +119,20 @@ pickup: **RFC-0019** (the last Track A item), then Track B (**RFC-0005**, **RFC-
     querySelector), and on Run compiles+runs via `witchy-host.js` + `web/witchy.wasm`. Proven
     END-TO-END headlessly by `witchy-runnable.test.mjs` (a FakeElement harness drives Run,
     asserts the real output; compile error → error cell; idempotent; non-witchy fences
-    untouched), wrapped by `witchy_runnable_cell_compiles_and_runs_in_page`. REMAINING for the
-    full book: call the enhancer from the docs render loop (a `glamour-dom.mjs` onRender hook)
-    + an editable textarea (`witchy-editor.js`) + capability badges from `examples.json` + theme.
+    untouched), wrapped by `witchy_runnable_cell_compiles_and_runs_in_page`. **WIRING FINDING
+    (tested):** calling the enhancer from an `afterRender` hook does NOT work — the enhancer
+    MUTATES the DOM (wraps `<pre>` in a cell), and glamour's next re-render (e.g. GotNav after
+    GotPage) diffs against that mutated DOM and corrupts it. A no-op `afterRender` renders fine;
+    the real enhancer breaks the page. So progressive DOM-mutation conflicts with glamour's
+    framework-owned diffing — my "no Compartment needed" refinement was WRONG about the DOM
+    ownership (right about the security: no iframe needed). REMAINING for the full book, redone:
+    render a `witchy` code block as a **non-diffed host slot** — glamour already leaves a
+    `Compartment` subtree alone (`patch` returns the live node), so extend that path (or add an
+    analogous "host slot" VNode) so the host mounts the runnable cell ONCE, in the MAIN frame
+    (pure-compute wasm needs no iframe), and glamour never re-diffs it. The enhancer's
+    cell-building + Run logic is reusable; only the find-and-mutate framing changes to
+    build-into-a-host-slot. Then an editable textarea (`witchy-editor.js`) + capability badges
+    from `examples.json` + theme.
   - **P3 (kept from 0019) — manifest DONE:** `book/examples.json` is generated from the
     SAME classifier as `documentation_examples_are_valid` (per block: runnable/console_only/
     expect_error/right-precise footprint/interpreter output) and freshness-gated by

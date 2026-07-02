@@ -121,20 +121,32 @@ with today's book, minus interactivity.
 (shipped: the code stays inert, escaped text, so no sink is introduced) — which is the hook
 the host uses to find runnable blocks.
 
-**Progressive enhancement in the main frame, NOT a compartment** (design refined during
-implementation — supersedes this RFC's first sketch). A runnable cell is *not* a
-`Compartment`: a compartment's locked-down frame (`connect-src 'none'`) would block the cell
-from fetching+instantiating the compiler wasm it needs, and — crucially — **it doesn't need
-that isolation**. A reader's edited snippet compiles to a wasm module that is
-capability-DENIED by omission (the browser grants no `Dir`/`Net`/`Clock`/… imports), so it is
-already contained by wasm's own memory isolation plus the capability model: it can only
-compute and return a string. So the host shell, after each glamour render, finds
-`pre > code.language-witchy` blocks and enhances them in the main frame — the shared
-`witchy-editor.js` + a Run button wired to `witchy-host.js` (`compile`/`runWitchy` against
-the lazily-loaded `web/witchy.wasm`). This is RFC-0019's progressive-enhancement model,
-transplanted onto the glamour output. The framework-owns-the-DOM conflict is handled by
-re-enhancing idempotently after each page render and keeping Run *host-managed* (it never
-dispatches a glamour msg, so glamour does not re-diff the cell). Compartments remain for
+**A non-diffed host slot, rendered in the MAIN frame** (design settled during implementation
+across two iterations — this section records the endpoint, not the false starts).
+
+The *security* question and the *DOM-ownership* question have different answers, and conflating
+them was the first mistake:
+
+- **Security → the main frame, no iframe.** A reader's edited snippet compiles to a wasm
+  module that is capability-DENIED by omission (the browser grants no `Dir`/`Net`/`Clock`/…
+  imports), so it is already contained by wasm's memory isolation plus the capability model —
+  it can only compute and return a string. It needs no sandboxed iframe; a `Compartment`'s
+  `connect-src 'none'` would only get in the way (it would block loading the compiler wasm).
+- **DOM ownership → a non-diffed subtree.** glamour OWNS and re-diffs the DOM on every message
+  (a `GotNav` re-renders the page even though only the nav changed). A runnable cell that
+  *mutates* glamour's DOM — wrapping the `<pre>` in a cell — is therefore clobbered on the next
+  re-diff (verified: a no-op post-render hook renders fine; the mutating enhancer corrupts the
+  page). So the cell must live in a subtree glamour does **not** diff into. glamour already has
+  exactly this: `patch` returns a live `Compartment` node untouched. The runnable cell reuses
+  that non-diff property (via the `Compartment` path or an analogous "host slot" VNode) — but
+  the host mounts it in the MAIN frame as an editor + Run button, not a sandboxed iframe.
+
+So the code block is emitted as a host slot glamour renders once and leaves alone; the host
+builds the cell into it (the shared editor + a Run button wired to `witchy-host.js` /
+`runWitchy` against the lazily-loaded `web/witchy.wasm`). Run stays host-managed (it never
+dispatches a glamour msg). The cell-building + compile+run logic is already implemented and
+tested standalone (`web/witchy-runnable.js` + `witchy-runnable.test.mjs`); wiring it is a
+matter of the host-slot mechanism, not the cell itself. Compartments-as-iframes remain for
 genuinely FOREIGN renderers (RFC-0015), where the isolation IS needed.
 
 **Highlighting is host-side, so it stays XSS-safe.** The rune renders code as inert VNode
