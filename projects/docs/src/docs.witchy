@@ -1,0 +1,145 @@
+// docs — The witchy Book as a glamour app (RFC-0041). A capability-PURE MVU app that
+// renders the book's Markdown pages (via std/markdown) with a sidebar DERIVED FROM
+// `SUMMARY.md`, routed client-side. Every fetch is the host shell's authority — the rune
+// holds no `Net`, only a `UiFetch` narrowed from the app-root `UiRoot` (RFC-0039/0040) — so
+// the whole docs site is XSS-immune by construction and its host footprint is empty. This
+// is the dogfood: the language's own front door is a witchy program, a sibling of coven-web.
+
+import glamour
+import markdown
+import json
+import list
+import reflect
+
+// The current path, the book's `SUMMARY.md` source (for the nav), and the current page's
+// raw Markdown. The host fetches both; the app parses the nav from the summary itself.
+type Model:
+    Model(String, String, String)   // route, summary, content
+
+type Msg derive(Reflect):
+    Route(String)        // the URL changed (initial, popstate, or after a Nav) -> fetch it
+    Visit(String)        // a sidebar click -> navigate to a page
+    GotNav(Int, String)  // SUMMARY.md arrived (status, body) -> the nav source
+    GotPage(Int, String) // the page's Markdown arrived (status, body)
+
+// The slug for a route: `/p/<slug>` -> `<slug>`; anything else is the home page.
+fn slug_of(route: String) -> String:
+    if string.starts_with(route, "/p/"):
+        string.substring(route, 3, string.length(route))
+    else:
+        "introduction"
+
+// Parse `SUMMARY.md` into `(title, slug)` nav entries: every `[Title](slug.md)` link
+// (flattened — nesting is a later polish) becomes a sidebar page. Lines without a Markdown
+// link (the `# Summary` header, blanks) are skipped. Pure string surgery — no capability.
+fn parse_nav(summary: String) -> List((String, String)):
+    var out = []
+    for line in string.lines(summary):
+        if string.contains(line, "](") && string.contains(line, ".md)"):
+            let (_pre, after_lb) = string.split_once(line, "[")
+            let (title, after_bracket) = string.split_once(after_lb, "](")
+            let (slug, _rest) = string.split_once(after_bracket, ".md)")
+            out = list.push(out, (title, slug))
+    out
+
+fn update(m: Model, msg: Msg, fetch: UiFetch, route_cap: UiRoute) -> (Model, Cmd(Msg)):
+    match m:
+        Model(route, summary, content) ->
+            match msg:
+                // A sidebar click is a real navigation; the shell echoes it back as `Route`.
+                Visit(path) -> (m, glamour.navigate(route_cap, path))
+                // The route changed: fetch that page. On the FIRST route (no nav yet) also
+                // fetch SUMMARY.md, batched — the host performs both (it holds the Net).
+                Route(path) ->
+                    let slug = slug_of(path)
+                    let page = glamour.http_get(fetch, "/content/" + slug + ".md", "GotPage")
+                    let cmd = if string.is_empty(summary):
+                        Batch([glamour.http_get(fetch, "/content/SUMMARY.md", "GotNav"), page])
+                    else:
+                        page
+                    (Model(path, summary, content), cmd)
+                GotNav(_status, body) -> (Model(route, body, content), NoCmd)
+                GotPage(_status, body) -> (Model(route, summary, body), NoCmd)
+
+fn view(m: Model) -> VNode(Msg):
+    match m:
+        Model(route, summary, content) ->
+            glamour.element("div", [glamour.prop("class", "book")], [
+                sidebar(route, summary),
+                // Untrusted Markdown renders INLINE as data (never an HTML sink) — safe by
+                // construction (std/markdown): raw HTML shows as literal text, hrefs are
+                // scheme-checked. No compartment needed for content.
+                glamour.element("main", [glamour.prop("class", "page")], [
+                    markdown.to_vnode(content),
+                ]),
+            ])
+
+fn sidebar(route: String, summary: String) -> VNode(Msg):
+    var items = []
+    for entry in parse_nav(summary):
+        let (title, slug) = entry
+        let path = "/p/" + slug
+        let cls = if path == route: "nav-item active" else: "nav-item"
+        items = list.push(items, glamour.element("li", [], [
+            glamour.element("button", [glamour.prop("class", cls), glamour.on("click", Visit(path))], [glamour.text(title)]),
+        ]))
+    glamour.element("nav", [glamour.prop("class", "sidebar")], [
+        glamour.element("h1", [], [glamour.text("The witchy Book")]),
+        glamour.element("ul", [], items),
+    ])
+
+// --- MVU glue (the inbound/outbound JSON boundary) -----------------------------
+fn parse_model(j: Json) -> Model:
+    let route = json.get_string(j, "route").unwrap_or("/")
+    let summary = json.get_string(j, "summary").unwrap_or("")
+    let content = json.get_string(j, "content").unwrap_or("")
+    Model(route, summary, content)
+
+fn arg_int(j: Json, i: Int) -> Int:
+    match json.get(j, "$values"):
+        Some(arr) ->
+            match json.index(arr, i):
+                Some(v) -> json.as_int(v).unwrap_or(0)
+                None -> 0
+        None -> 0
+
+fn arg_str(j: Json, i: Int) -> String:
+    match json.get(j, "$values"):
+        Some(arr) ->
+            match json.index(arr, i):
+                Some(v) -> json.as_string(v).unwrap_or("")
+                None -> ""
+        None -> ""
+
+fn parse_msg(j: Json) -> Msg:
+    match json.get_string(j, "$variant"):
+        Some(v) ->
+            if v == "Visit":
+                Visit(arg_str(j, 0))
+            else if v == "GotNav":
+                GotNav(arg_int(j, 0), arg_str(j, 1))
+            else if v == "GotPage":
+                GotPage(arg_int(j, 0), arg_str(j, 1))
+            else:
+                Route(arg_str(j, 0))
+        None -> Route("/")
+
+fn model_to_json(m: Model) -> Json:
+    match m:
+        Model(route, summary, content) ->
+            JsonObject([("route", JsonString(route)), ("summary", JsonString(summary)), ("content", JsonString(content))])
+
+fn msg_to_json(m: Msg) -> Json:
+    json.value_of(m)
+
+pub fn export_step(ui: UiRoot, input: String) -> String:
+    // (RFC-0039/0040) narrow the host-minted `UiRoot` into a GET-only `UiFetch` (confined
+    // to the content dir) and a `UiRoute` (push under `/p`), curried into `update` — so the
+    // docs app can fetch pages and navigate only because it holds those tokens.
+    let fetch = glamour.fetch_scope(ui, "book", "GET", "/content/")
+    let route_cap = glamour.route_scope(ui, "/p", "push")
+    let upd = fn(m: Model, msg: Msg): update(m, msg, fetch, route_cap)
+    step_with(input, view, upd, parse_model, parse_msg, model_to_json, msg_to_json)
+
+fn main(console: Console, ui: UiRoot):
+    print(console, export_step(ui, "{\"model\": {\"route\": \"/\", \"summary\": \"\", \"content\": \"# The witchy Book\\n\\nWelcome.\"}}") + "\n")

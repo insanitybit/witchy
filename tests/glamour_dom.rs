@@ -635,6 +635,39 @@ fn glamour_coven_app_shell_routes_and_fetches() {
     assert!(stdout.contains("GLAMOUR-COVEN-APP OK"), "coven-app driver did not report success:\n{stdout}");
 }
 
+/// RFC-0041 Phase 1: The witchy Book itself as a glamour app — the dogfood. The committed
+/// Node driver (`web/witchy-runtime/glamour-docs.test.mjs`) mounts the `docs` app
+/// (`projects/docs`) with an injected fake content server (fetch) + history and drives the
+/// real loop: the sidebar lists the book's pages, the initial route fetches a page and
+/// renders its Markdown to real elements (via `std/markdown`), and clicking a page navigates
+/// to its URL, fetches it, and renders it. The app holds no `Net` — the host shell performs
+/// every fetch — so the docs SITE is a capability-pure witchy program.
+#[test]
+fn glamour_docs_app_renders_book_pages() {
+    if !node_available() {
+        eprintln!("skipping: `node` is not available on PATH");
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let driver = manifest.join("web/witchy-runtime/glamour-docs.test.mjs");
+    assert!(driver.exists(), "the committed docs test driver must exist at {}", driver.display());
+
+    let out = Command::new("node")
+        .arg(&driver)
+        .arg(BIN)
+        .current_dir(manifest)
+        .output()
+        .expect("spawn node glamour-docs driver");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the glamour docs-app test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stdout.contains("GLAMOUR-DOCS OK"), "docs driver did not report success:\n{stdout}");
+}
+
 /// RFC-0015 Phase D: the host-shell PORT effect — the mechanism behind session login and
 /// the WebAuthn passkey ceremony. The committed Node driver
 /// (`web/witchy-runtime/glamour-port.test.mjs`) compiles a rune whose `update` returns

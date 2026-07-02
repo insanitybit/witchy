@@ -85,9 +85,15 @@ pickup: **RFC-0019** (the last Track A item), then Track B (**RFC-0005**, **RFC-
   - **P0 (prereq, kept from 0019):** fix `playground.js` to use `witchy-host.js`; extract
     one highlighter (`web/witchy-highlight.js`) + one editor (`web/witchy-editor.js`).
     Pure win — the standalone playground works again regardless of the shell.
-  - **P1:** the glamour docs-app shell — build step SUMMARY.md→nav JSON; `markdown.to_vnode`
-    pages; `UiRoute` client-side routing; `export_step(ui: UiRoot,…)`. Static parity with
-    today's book, minus interactivity.
+  - **P1 — DONE (`projects/docs/src/docs.witchy`):** the glamour docs-app shell — a
+    capability-pure MVU app that fetches `/content/SUMMARY.md`, parses its nav IN WITCHY
+    (`parse_nav`), renders each routed page via `markdown.to_vnode`, and navigates with
+    `UiRoute`. Empty host footprint; narrows `UiRoot`→GET `UiFetch`+`UiRoute`. Proven by
+    `glamour-docs.test.mjs` + `glamour_docs_app_renders_book_pages` (nav from SUMMARY,
+    page fetch+render, Markdown safety). NOTE: nav is fetched+parsed at RUNTIME (simpler +
+    more dogfood than the RFC's build-step nav.json); a build step can still emit the
+    content bundle in P3. Remaining P1 polish: nested nav (currently flat), a real
+    `/content/` build (copy `book/src/*.md`), CLI convenience.
   - **P2:** runnable cells — each `witchy` block becomes a host-managed **`Compartment`**
     cell (glamour doesn't diff it; untrusted edits run sandboxed) wired to the editor +
     the lazily-loaded compiler; capability badges from the manifest; theme.
