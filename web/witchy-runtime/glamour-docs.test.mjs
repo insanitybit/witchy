@@ -9,6 +9,7 @@
 // Usage:  node web/witchy-runtime/glamour-docs.test.mjs [path/to/witchy-binary]
 
 import { mount } from "./glamour-dom.mjs";
+import { runnableSlot } from "../witchy-runnable.js";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, copyFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -39,6 +40,7 @@ class FakeElement extends FakeNode {
   removeEventListener(e, fn) { const s = this.listeners.get(e); if (s) s.delete(fn); }
   dispatchEvent(ev) { const s = this.listeners.get(ev.type); if (s) for (const fn of [...s]) fn(ev); return true; }
   get textContent() { let o = ""; for (const c of this.childNodes) o += c.textContent; return o; }
+  set textContent(v) { this.childNodes = []; this.appendChild(new FakeText(v)); }
 }
 const fakeDocument = { createElement: (t) => new FakeElement(t), createTextNode: (t) => new FakeText(t) };
 function qsa(node, tag, acc = []) {
@@ -78,7 +80,10 @@ try {
     const m = url.match(/\/content\/([^.]+)\.md/);
     const slug = m ? m[1] : "unknown";
     const title = slug.charAt(0).toUpperCase() + slug.slice(1);
-    return Promise.resolve({ status: 200, text: () => Promise.resolve(`## ${title}\n\nBody text for the **${slug}** page.`) });
+    // Every page carries a runnable `witchy` example, so the docs app's slot-remap has
+    // something to turn into a runnable cell (the `language-witchy` fence).
+    const page = `## ${title}\n\nBody text for the **${slug}** page.\n\n\`\`\`witchy\nfn main(console: Console):\n    print(console, "hi from ${slug}")\n\`\`\`\n`;
+    return Promise.resolve({ status: 200, text: () => Promise.resolve(page) });
   };
   const location = { pathname: "/" };
   const pushed = [];
@@ -94,6 +99,14 @@ try {
     history,
     // (RFC-0040) the app's `export_step` takes a `UiRoot`; stage its grant.
     instantiateOpts: { userCaps: [["book"]] },
+    // (RFC-0041 P2) register the runnable-cell renderer for the app's `witchy-runnable` slots.
+    // `loadCompiler` is only called on Run (not driven here — the compile+run path is proven by
+    // witchy-runnable.test.mjs), so it stays a stub; this asserts the SLOT WIRING renders a cell.
+    slots: {
+      "witchy-runnable": runnableSlot({
+        loadCompiler: async () => { throw new Error("compiler not loaded in the rendering test"); },
+      }),
+    },
   });
 
   // 1. The sidebar is DERIVED from the fetched SUMMARY.md (not hardcoded).
@@ -109,6 +122,11 @@ try {
   ok(calls.some((u) => u.includes("/content/introduction.md")), "the initial route fetches the home page");
   ok(qsa(root, "h2").some((h) => h.textContent === "Introduction"), "the fetched Markdown renders to a real <h2>");
   ok(root.textContent.includes("Body text for the"), "the page body renders");
+  // (RFC-0041 P2) the page's `witchy` fence became a RUNNABLE CELL via a host Slot — the docs
+  // app is now a runnable book. Crucially, the page ALSO still renders (the slot is non-diffed,
+  // so — unlike the afterRender-mutation approach — a re-render doesn't corrupt the page).
+  ok(qsa(root, "button").some((b) => (b.getAttribute("class") || "").includes("witchy-run")), "a code block became a runnable cell (Run button) via the host slot");
+  ok(qsa(root, "div").some((d) => (d.getAttribute("class") || "") === "witchy-cell"), "the runnable cell is wrapped in the rendered page");
 
   // 3. Clicking a sidebar page navigates to its URL, fetches it, and renders it.
   clickText(root, "Capabilities");

@@ -1,17 +1,21 @@
-// witchy-runnable — turn the docs' `witchy` code blocks into RUNNABLE cells (RFC-0041 P2).
+// witchy-runnable — build RUNNABLE cells from `witchy` code blocks (RFC-0041 P2).
 //
-// After the glamour docs app renders a page, call `enhanceRunnableCells(root, opts)`: it
-// finds every `pre > code.language-witchy` (the class `markdown.to_vnode` now emits) and adds
-// a Run button + an output pane. On Run, it compiles+runs the block's source with the shared
-// `witchy-host.js` engine against the lazily-loaded compiler (`web/witchy.wasm`) and shows the
-// output. A reader's snippet compiles to a capability-DENIED, pure-compute wasm module
-// (deny-by-omission — the browser grants no Dir/Net/…), so it is already contained; that is
-// why a cell runs safely in the MAIN frame and needs no compartment (RFC-0041 §Phase 2).
+// A reader's snippet compiles to a capability-DENIED, pure-compute wasm module
+// (deny-by-omission — the browser grants no `Dir`/`Net`/…), so it is already contained by
+// wasm's memory isolation plus the capability model: it can only compute and return a string.
+// That is why a cell runs safely in the MAIN frame with no compartment (RFC-0041 §Phase 2).
 //
-// The enhancer is deliberately DOM-agnostic (createElement / getAttribute / childNodes /
-// appendChild / replaceChild only — no innerHTML sink, no querySelector) so it runs under a
-// real browser DOM AND a headless FakeElement DOM, and is idempotent so it is safe to call
-// after every render.
+// Two entry points:
+//   * `runnableSlot(opts)` — a glamour HOST-SLOT renderer: register it as
+//     `mount(..., { slots: { "witchy-runnable": runnableSlot({ loadCompiler }) } })`. glamour
+//     mounts it into a `Slot` node and NEVER diffs into it, so a page re-render can't clobber
+//     the cell. This is what the docs app uses.
+//   * `enhanceRunnableCells(root, opts)` — progressive enhancement for a STATIC page (the
+//     standalone playground): find every `pre>code.language-witchy` and replace it with a cell.
+//
+// Both build the same cell via `buildRunnableCell`. DOM-agnostic (createElement / getAttribute
+// / childNodes only — no innerHTML sink, no querySelector) so it runs under a real browser DOM
+// AND a headless FakeElement DOM.
 
 import { runWitchy } from "./witchy-host.js";
 
@@ -39,67 +43,84 @@ function findWitchyCells(root, acc = []) {
 }
 
 /**
- * Enhance runnable `witchy` code blocks under `root`.
+ * Build a runnable cell for `source`: a `<pre>` showing the code, a Run button, and an output
+ * pane. On Run, compile+run `source` via `witchy-host.js` against the lazily-loaded compiler.
  *
- * @param {Node} root
+ * @param {Document} doc
+ * @param {string} source
  * @param {object} opts
- * @param {Document} [opts.document]     the DOM document (default the global `document`).
- * @param {function} opts.loadCompiler   async `() => wasmExports` — the instantiated
- *   `web/witchy.wasm` exports; called lazily on the first Run and cached. Injectable so a
- *   headless harness can supply the exports (the browser fetches + instantiates the module).
- * @returns {Array} the enhanced cells (`{ pre, code, runButton, output, run }`).
+ * @param {function} opts.loadCompiler  async `() => wasmExports` — the instantiated
+ *   `web/witchy.wasm` exports; called lazily on the first Run and cached per cell.
+ * @returns {{ element, codePre, runButton, output, run }}
+ */
+export function buildRunnableCell(doc, source, opts = {}) {
+  if (typeof opts.loadCompiler !== "function") {
+    throw new Error("witchy-runnable: opts.loadCompiler must be an async () => wasm exports");
+  }
+  let compilerPromise = null;
+  const compiler = () => (compilerPromise ||= Promise.resolve().then(opts.loadCompiler));
+
+  const element = doc.createElement("div");
+  element.setAttribute("class", "witchy-cell");
+  // Show the source. The `<code>` deliberately carries NO `language-witchy` class, so a
+  // standalone re-scan (`enhanceRunnableCells`) never re-enhances an already-built cell.
+  const codePre = doc.createElement("pre");
+  codePre.setAttribute("class", "witchy-code");
+  const codeEl = doc.createElement("code");
+  codeEl.appendChild(doc.createTextNode(source));
+  codePre.appendChild(codeEl);
+
+  const runButton = doc.createElement("button");
+  runButton.setAttribute("class", "witchy-run");
+  runButton.textContent = "Run";
+  const output = doc.createElement("pre");
+  output.setAttribute("class", "witchy-output");
+
+  const run = async () => {
+    runButton.textContent = "Running…";
+    try {
+      const wasm = await compiler();
+      const { ok, text } = await runWitchy(wasm, source);
+      output.textContent = text || (ok ? "(no output)" : "(empty error)");
+      output.setAttribute("class", ok ? "witchy-output ok" : "witchy-output err");
+    } catch (e) {
+      output.textContent = "playground error: " + ((e && e.message) || e);
+      output.setAttribute("class", "witchy-output err");
+    }
+    runButton.textContent = "Run";
+  };
+  if (typeof runButton.addEventListener === "function") runButton.addEventListener("click", run);
+
+  element.appendChild(codePre);
+  element.appendChild(runButton);
+  element.appendChild(output);
+  return { element, codePre, runButton, output, run };
+}
+
+/**
+ * A glamour host-slot renderer (RFC-0041): mounts a runnable cell for the slot's source.
+ * Register as `slots["witchy-runnable"]`; glamour hands it `(doc, source)` and never diffs the
+ * returned node.
+ */
+export function runnableSlot(opts = {}) {
+  return (doc, source) => buildRunnableCell(doc, source, opts).element;
+}
+
+/**
+ * Standalone progressive enhancement (a static page / the playground): find every
+ * `pre>code.language-witchy` under `root` and REPLACE it with a runnable cell. Idempotent (a
+ * built cell's code carries no `language-witchy` class) and DOM-agnostic. The glamour docs app
+ * uses `runnableSlot` instead, so glamour owns the non-diffed slot.
  */
 export function enhanceRunnableCells(root, opts = {}) {
   const doc = opts.document || (typeof document !== "undefined" ? document : null);
   if (!doc) throw new Error("witchy-runnable: no `document` (pass opts.document)");
-  if (typeof opts.loadCompiler !== "function") {
-    throw new Error("witchy-runnable: opts.loadCompiler must be an async () => wasm exports");
-  }
-  // The compiler is fetched+instantiated once, lazily, on the first Run — and shared.
-  let compilerPromise = null;
-  const compiler = () => (compilerPromise ||= Promise.resolve().then(opts.loadCompiler));
-
   const cells = [];
   for (const { pre, code } of findWitchyCells(root)) {
-    if (pre.__witchyEnhanced) continue; // idempotent — safe to re-run after each render
-    pre.__witchyEnhanced = true;
-    const source = code.textContent;
-
-    const runButton = doc.createElement("button");
-    runButton.setAttribute("class", "witchy-run");
-    runButton.textContent = "Run";
-
-    const output = doc.createElement("pre");
-    output.setAttribute("class", "witchy-output");
-
-    const run = async () => {
-      runButton.textContent = "Running…";
-      try {
-        const wasm = await compiler();
-        const { ok, text } = await runWitchy(wasm, source);
-        output.textContent = text || (ok ? "(no output)" : "(empty error)");
-        output.setAttribute("class", ok ? "witchy-output ok" : "witchy-output err");
-      } catch (e) {
-        output.textContent = "playground error: " + ((e && e.message) || e);
-        output.setAttribute("class", "witchy-output err");
-      }
-      runButton.textContent = "Run";
-    };
-    if (typeof runButton.addEventListener === "function") {
-      runButton.addEventListener("click", run);
-    }
-
-    // Wrap `<pre>` + Run + output in a cell, in place of the bare `<pre>`. Run is
-    // HOST-managed (it never dispatches a glamour msg), so glamour never re-diffs the cell.
-    const cell = doc.createElement("div");
-    cell.setAttribute("class", "witchy-cell");
+    const cell = buildRunnableCell(doc, code.textContent, opts);
     const parent = pre.parentNode;
-    if (parent) parent.replaceChild(cell, pre);
-    cell.appendChild(pre);
-    cell.appendChild(runButton);
-    cell.appendChild(output);
-
-    cells.push({ pre, code, runButton, output, run });
+    if (parent) parent.replaceChild(cell.element, pre);
+    cells.push({ pre, code, ...cell });
   }
   return cells;
 }

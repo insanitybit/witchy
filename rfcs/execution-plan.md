@@ -132,12 +132,15 @@ pickup: **RFC-0019** (the last Track A item), then Track B (**RFC-0005**, **RFC-
     kindOrTagChanged); wire parity `glamour_slot_wire_is_identical_on_both_backends`; the core
     non-diff property proven by `glamour_slot_is_a_non_diffed_host_subtree` (a host widget +
     its mutation SURVIVE a re-render; the renderer isn't re-called). All 16 glamour drivers
-    still green. REMAINING to make the docs runnable: `buildRunnableCell(doc, source)` +
-    `runnableSlot(opts)` in `web/witchy-runnable.js` (reuse the tested cell logic), the docs
-    app emits `glamour.slot("witchy-runnable", code)` for `witchy` fences (a small tree-remap
-    of `markdown.to_vnode`'s top-level blocks), and the docs mount registers the slot renderer
-    — verified against the docs driver (cell renders + survives navigation). Then an editable
-    textarea (`witchy-editor.js`) + capability badges from `examples.json` + theme.
+    still green. **WIRING DONE — the runnable book is real end-to-end:** `web/witchy-runnable.js`
+    now exposes `buildRunnableCell(doc, source)` + `runnableSlot(opts)` (reusing the tested cell
+    logic; the standalone `enhanceRunnableCells` uses them too); the docs app's `runnable_markdown`
+    remaps each `witchy` fence in `markdown.to_vnode`'s output to `glamour.slot("witchy-runnable",
+    code)`; and the docs mount registers the slot renderer. Proven by `glamour_docs_app_renders_book_pages`
+    (extended): a page's fence becomes a runnable cell AND the page still renders + navigates —
+    the non-diffed slot means the re-render corruption is gone. So a book code block compiles +
+    runs real witchy in-page, glamour-clean. **P2 CORE COMPLETE.** Remaining polish: an editable
+    textarea (`witchy-editor.js`), capability badges from `examples.json`, theme.
   - **P3 (kept from 0019) — manifest DONE:** `book/examples.json` is generated from the
     SAME classifier as `documentation_examples_are_valid` (per block: runnable/console_only/
     expect_error/right-precise footprint/interpreter output) and freshness-gated by

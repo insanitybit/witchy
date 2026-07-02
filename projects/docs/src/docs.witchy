@@ -70,7 +70,7 @@ fn view(m: Model) -> VNode(Msg):
                 // construction (std/markdown): raw HTML shows as literal text, hrefs are
                 // scheme-checked. No compartment needed for content.
                 glamour.element("main", [glamour.prop("class", "page")], [
-                    markdown.to_vnode(content),
+                    runnable_markdown(content),
                 ]),
             ])
 
@@ -87,6 +87,55 @@ fn sidebar(route: String, summary: String) -> VNode(Msg):
         glamour.element("h1", [], [glamour.text("The witchy Book")]),
         glamour.element("ul", [], items),
     ])
+
+// (RFC-0041 P2) Render the page's Markdown, then replace each `witchy` code block with a host
+// `Slot` — the DOM shell mounts a RUNNABLE cell there, in a subtree glamour never diffs into,
+// so re-renders (a nav change, another fetch) can't clobber it. `markdown.to_vnode` wraps the
+// page in `<div class="markdown">[blocks]`, and a fenced block is a top-level `<pre>`, so we
+// only remap the div's immediate children. Everything else renders exactly as before.
+fn runnable_markdown(md: String) -> VNode(Msg):
+    match markdown.to_vnode(md):
+        Element(tag, attrs, blocks) -> Element(tag, attrs, list.map(blocks, to_runnable))
+        other -> other
+
+fn to_runnable(block: VNode(Msg)) -> VNode(Msg):
+    match block:
+        Element(tag, _attrs, kids) ->
+            if tag == "pre" && list.length(kids) == 1:
+                match list.at(kids, 0):
+                    Element(ctag, cattrs, ckids) ->
+                        if ctag == "code" && is_witchy_code(cattrs):
+                            glamour.slot("witchy-runnable", code_text(ckids))
+                        else:
+                            block
+                    _ -> block
+            else:
+                block
+        _ -> block
+
+// Whether a `<code>`'s attributes carry the `language-witchy` class markdown emits for a
+// `witchy` fence.
+fn attr_is_witchy(a: Attr(Msg)) -> Bool:
+    match a:
+        Prop(name, value) -> name == "class" && value == "language-witchy"
+        On(_e, _m) -> false
+        OnInput(_e, _t) -> false
+
+fn is_witchy_code(attrs: List(Attr(Msg))) -> Bool:
+    var found = false
+    for a in attrs:
+        if attr_is_witchy(a):
+            found = true
+    found
+
+// The source text inside a `<code>` (its single child text node).
+fn code_text(kids: List(VNode(Msg))) -> String:
+    if list.length(kids) >= 1:
+        match list.at(kids, 0):
+            Text(s) -> s
+            _ -> ""
+    else:
+        ""
 
 // --- MVU glue (the inbound/outbound JSON boundary) -----------------------------
 fn parse_model(j: Json) -> Model:
