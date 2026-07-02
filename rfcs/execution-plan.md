@@ -82,20 +82,18 @@ pickup: **RFC-0019** (the last Track A item), then Track B (**RFC-0005**, **RFC-
   `documentation_examples_are_valid`; remove `book.toml` + `scripts/build-book.sh`
   mdbook path + `.github/workflows/ci.yml` mdbook job.
 - **Phases:**
-  - **P0 (prereq, kept from 0019) — IN PROGRESS:** the shared highlighter is DONE —
-    `web/witchy-highlight.js` (pure `source→HTML`, node-tested by
-    `witchy_highlighter_colours_current_syntax`), with a corrected list (retired
-    `restrict`/`subdir` dropped, `capability`/`grantable`/`only`/`deny` added). **REMAINING
-    (bigger than a rewire — discovered):** (a) `web/playground.js`'s hardcoded EXAMPLES are
-    STALE and no longer compile (`int_to_string` removed, `<>` removed, `restrict`/`retain`/
-    `without` gone) — they must be rewritten to current witchy OR re-sourced from the book's
-    tested blocks; (b) rewire the run path to `witchy-host.js`'s `runWitchy` (the engine
-    itself is proven — `pg_validate` matches the oracle); (c) extract `web/witchy-editor.js`.
-    Verifying the page glue needs a FakeElement/jsdom harness (the glamour-driver pattern),
-    since there's no browser in the loop. NOTE for P2: the glamour docs app renders code as
-    XSS-safe VNodes (never an HTML sink), so this HTML-emitting highlighter can't be applied
-    inside the rune directly — highlighting there is either a host-side pass over the rendered
-    text nodes or a witchy VNode-emitting highlighter; a real design point to settle in P2.
+  - **P0 (prereq, kept from 0019) — DONE:** the shared highlighter `web/witchy-highlight.js`
+    (pure `source→HTML`, node-tested by `witchy_highlighter_colours_current_syntax`, corrected
+    list: retired `restrict`/`subdir` dropped, `capability`/`grantable`/`only`/`deny` added).
+    And the standalone playground is REPAIRED: `web/playground.js` is now an ES module that runs
+    snippets via the shared, oracle-validated `witchy-host.js` `runWitchy` (the dead `witchy_run`
+    path is gone) and colours with `witchy-highlight.js`; its EXAMPLES were rewritten to CURRENT
+    witchy (the old ones used removed `int_to_string`/`<>`/`restrict`) and are gated by
+    `playground_examples_are_current_witchy` (5 compile+run; the `Dir[Read]`-writes example is a
+    deliberate, asserted compile error). (The editor overlay stays inline in `index.html` — not
+    extracted to a separate `witchy-editor.js`; the docs cells use the simpler textarea in
+    `buildRunnableCell`. NOTE for P2, since resolved: the docs app renders code as XSS-safe
+    VNodes, so highlighting there is a host-side concern — deferred, not blocking.)
   - **P1 — DONE (`projects/docs/src/docs.witchy`):** the glamour docs-app shell — a
     capability-pure MVU app that fetches `/content/SUMMARY.md`, parses its nav IN WITCHY
     (`parse_nav`), renders each routed page via `markdown.to_vnode`, and navigates with

@@ -125,3 +125,36 @@ fn witchy_runnable_cell_compiles_and_runs_in_page() {
     );
     assert!(stdout.contains("WITCHY-RUNNABLE OK"), "runnable-cell driver did not report success:\n{stdout}");
 }
+
+/// RFC-0041 P0: the standalone playground's example programs are CURRENT witchy. The committed
+/// Node driver (`web/witchy-runtime/playground-examples.test.mjs`) imports `EXAMPLES` straight
+/// from `web/playground.js` and compiles/runs each with the real toolchain — the five console
+/// examples must compile + run, and "Capabilities (a type error)" must fail to compile. This is
+/// the P0 repair (the old examples used removed forms like `int_to_string`/`<>`/`restrict`) and
+/// guards against a future stale edit; the playground's run path itself is the shared, validated
+/// `witchy-host.js` (`runWitchy`) + `witchy-highlight.js`.
+#[test]
+fn playground_examples_are_current_witchy() {
+    if !node_available() {
+        eprintln!("skipping: `node` is not available on PATH");
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let driver = manifest.join("web/witchy-runtime/playground-examples.test.mjs");
+    assert!(driver.exists(), "the committed playground-examples test must exist at {}", driver.display());
+
+    let out = Command::new("node")
+        .arg(&driver)
+        .arg(BIN)
+        .current_dir(manifest)
+        .output()
+        .expect("spawn node playground-examples test");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the playground-examples test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stdout.contains("PLAYGROUND-EXAMPLES OK"), "playground-examples did not report success:\n{stdout}");
+}
