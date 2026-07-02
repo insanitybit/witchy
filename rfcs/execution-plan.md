@@ -157,8 +157,14 @@ pickup: **RFC-0019** (the last Track A item), then Track B (**RFC-0005**, **RFC-
     diverge, 43 non-runnable. (The earlier local divergences were a STALE `web/witchy.wasm`
     artifact — a rebuild fixed all of them; there is no browser std-subset gap.) Wired into the
     CI `playground` job (stage the wasm → run the validator), NOT the Rust gate (the wasm is a
-    gitignored artifact that would go stale-flaky). REMAINING: deploy the app + wasm (GitHub
-    Pages) with **strict COOP/COEP/CORP**; remove mdBook.
+    gitignored artifact that would go stale-flaky). **BUNDLE DONE:** `scripts/build-docs.sh`
+    assembles the deployable static site — the docs app compiled to wasm + the real `book/src`
+    content under `content/` + the flat web modules + `web/docs.html`/`docs-boot.js`/`docs.css`
+    + the manifest + the browser compiler. Validated against the REAL book by
+    `glamour_docs_bundle_renders_the_real_book`: the bundle renders the actual book (32-page nav
+    from the real SUMMARY.md, real pages, a real fence → an editable cell). REMAINING: a CI job
+    that builds + deploys the bundle to GitHub Pages with **strict COOP/COEP/CORP**, and remove
+    mdBook (`book.toml`, the `build-book.sh` mdbook path, the CI `book` job).
 - **DoD:** the docs are a glamour app (empty host footprint) rendering every page via
   `markdown.to_vnode` with SUMMARY nav; console-only cells run in-browser and agree with
   the oracle (extended `pg_validate`); capability badges + expect-error framing from the

@@ -701,6 +701,38 @@ fn glamour_slot_is_a_non_diffed_host_subtree() {
     assert!(stdout.contains("GLAMOUR-SLOT OK"), "slot driver did not report success:\n{stdout}");
 }
 
+/// RFC-0041: the DEPLOYABLE bundle, validated against the REAL book. The committed Node driver
+/// (`web/witchy-runtime/glamour-docs-bundle.test.mjs`) runs `scripts/build-docs.sh` to assemble
+/// the static site (the docs app → wasm + the real `book/src` content + web modules + manifest),
+/// then mounts the bundle's `docs.wasm` with a fetch backed by the bundle's staged `content/` —
+/// proving the actual deploy artifact renders the ACTUAL book: a full nav from the real
+/// `SUMMARY.md`, real pages, and a real page's `witchy` fence becoming an editable runnable cell.
+#[test]
+fn glamour_docs_bundle_renders_the_real_book() {
+    if !node_available() {
+        eprintln!("skipping: `node` is not available on PATH");
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let driver = manifest.join("web/witchy-runtime/glamour-docs-bundle.test.mjs");
+    assert!(driver.exists(), "the committed docs-bundle test driver must exist at {}", driver.display());
+
+    let out = Command::new("node")
+        .arg(&driver)
+        .arg(BIN)
+        .current_dir(manifest)
+        .output()
+        .expect("spawn node glamour-docs-bundle driver");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the docs-bundle test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stdout.contains("GLAMOUR-DOCS-BUNDLE OK"), "docs-bundle driver did not report success:\n{stdout}");
+}
+
 /// RFC-0015 Phase D: the host-shell PORT effect — the mechanism behind session login and
 /// the WebAuthn passkey ceremony. The committed Node driver
 /// (`web/witchy-runtime/glamour-port.test.mjs`) compiles a rune whose `update` returns

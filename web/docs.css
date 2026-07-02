@@ -1,0 +1,38 @@
+/* Minimal witchy-book theme (RFC-0041). The docs app is a glamour rune; this is the only
+   styling — the rune emits inert VNodes, never HTML, so nothing here is a sink. */
+:root { color-scheme: light dark; }
+body { font-family: system-ui, -apple-system, sans-serif; margin: 0; color: #1a1a2e; background: #fff; }
+.book { display: flex; min-height: 100vh; align-items: stretch; }
+
+.sidebar { width: 16rem; flex: 0 0 16rem; padding: 1.25rem 1rem; border-right: 1px solid #e6e6ef; background: #f7f7fb; }
+.sidebar h1 { font-size: 1.05rem; margin: 0 0 1rem; color: #6b3fa0; }
+.sidebar ul { list-style: none; margin: 0; padding: 0; }
+.sidebar li { margin: 0; }
+.nav-item { background: none; border: 0; color: #333; cursor: pointer; padding: 0.3rem 0.25rem; text-align: left; width: 100%; border-radius: 4px; font: inherit; }
+.nav-item:hover { background: #eceaf5; }
+.nav-item.active { font-weight: 600; color: #6b3fa0; background: #eceaf5; }
+
+.page { flex: 1; padding: 2rem clamp(1rem, 5vw, 3rem); max-width: 52rem; line-height: 1.55; }
+.page h1, .page h2, .page h3 { line-height: 1.25; }
+.page pre { background: #f0f0f5; padding: 0.75rem; overflow-x: auto; border-radius: 6px; }
+.page code { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+
+/* A runnable code cell (RFC-0041 P2). */
+.witchy-cell { margin: 1.25rem 0; border: 1px solid #e6e6ef; border-radius: 8px; overflow: hidden; }
+.witchy-editor { display: block; width: 100%; box-sizing: border-box; min-height: 6rem; padding: 0.75rem; border: 0; resize: vertical; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.88rem; line-height: 1.5; background: #1e1e2e; color: #e6e6ef; }
+.witchy-run { display: block; margin: 0; padding: 0.4rem 1rem; border: 0; border-top: 1px solid #e6e6ef; background: #6b3fa0; color: #fff; cursor: pointer; font: inherit; width: 100%; }
+.witchy-run:hover { background: #7d4cbb; }
+.witchy-output { margin: 0; padding: 0.75rem; white-space: pre-wrap; background: #f0f0f5; font-family: ui-monospace, monospace; font-size: 0.85rem; }
+.witchy-output.ok { background: #eaf6ec; }
+.witchy-output.err { background: #fde8e8; }
+
+@media (prefers-color-scheme: dark) {
+  body { background: #14141f; color: #e6e6ef; }
+  .sidebar { background: #1a1a2a; border-color: #2a2a3a; }
+  .nav-item { color: #cfcfe0; }
+  .nav-item:hover, .nav-item.active { background: #2a2a3a; color: #c9a4ff; }
+  .page pre, .witchy-output { background: #1e1e2e; }
+  .witchy-output.ok { background: #16301c; }
+  .witchy-output.err { background: #3a1a1a; }
+  .witchy-cell { border-color: #2a2a3a; }
+}
