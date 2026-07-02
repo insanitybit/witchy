@@ -112,6 +112,13 @@ pub type VNode(msg):
     // rune passes an opaque `SecretRef` to `submit_secret` — it holds the handle, never
     // the bytes.
     SecretField(SecretInput, String)
+    // (RFC-0041) A HOST SLOT: a subtree the host renders ONCE via a registered renderer named
+    // `kind`, and that glamour NEVER diffs into — the framework-owns-the-DOM escape hatch for a
+    // host-managed widget (e.g. a runnable code cell). `data` is the payload the renderer
+    // receives (for `"witchy-runnable"`, the cell's source). Unlike `Compartment` this is NOT a
+    // sandboxed iframe — the host mounts it in the MAIN frame; the rune only names the slot and
+    // supplies its data, while what goes inside is entirely the host's (see `glamour-dom.mjs`).
+    Slot(String, String)
 
 // A DOM property/attribute (`class="card"`, `href=…`), OR an event→msg binding.
 // `On` carries a `msg` VALUE, not a closure — the whole MVU model: events are
@@ -151,6 +158,12 @@ pub fn compartment(renderer: String, grant: String, on_event: String) -> VNode(m
 // Tag a child with a stable key for keyed list reconciliation (see `Keyed`).
 pub fn keyed(key: String, node: VNode(msg)) -> VNode(msg):
     Keyed(key, node)
+
+// (RFC-0041) Emit a host slot: the host's `kind` renderer mounts a widget here (in the main
+// frame) and glamour never diffs into it. `data` is the payload (e.g. a runnable cell's
+// source). The rune stays pure — it only names the slot; the host owns the widget.
+pub fn slot(kind: String, data: String) -> VNode(msg):
+    Slot(kind, data)
 
 // (RFC-0039) Render a host-owned secret input. Requires a `SecretInput` token (minted by
 // `secret_field`), so a component without one cannot even put a password field on screen.
@@ -356,6 +369,10 @@ pub fn to_html(node: VNode(msg)) -> String:
         // A secret field renders as an INERT password input carrying no value — the typed
         // bytes live only in host custody, never in this (or any) rune-produced string.
         SecretField(_input, _on_ready) -> "<input type=\"password\" class=\"glamour-secret\"></input>"
+        // A host slot has no static HTML (the host mounts its widget at runtime); the
+        // fallback shows the payload as an inert, escaped code block so a no-JS render still
+        // presents the source.
+        Slot(_kind, data) -> "<pre class=\"glamour-slot\"><code>" + escape_text(data) + "</code></pre>"
         Element(tag, attrs, children) -> render_element(tag, attrs, children)
 
 fn render_element(tag: String, attrs: List(Attr(msg)), children: List(VNode(msg))) -> String:
@@ -439,6 +456,10 @@ fn node_json(node: VNode(msg), msg_to_json: fn(msg) -> Json) -> Json:
                         ("secret", JsonObject([("form", JsonString(form)), ("field", JsonString(field))])),
                         ("on_ready", JsonString(on_ready)),
                     ])
+        // A host slot names its `kind` renderer and carries its `data` payload; the host
+        // mounts the widget (glamour never diffs into it).
+        Slot(kind, data) ->
+            JsonObject([("slot", JsonString(kind)), ("data", JsonString(data))])
         Element(tag, attrs, children) ->
             var ajs: List(Json) = []
             for a in attrs:

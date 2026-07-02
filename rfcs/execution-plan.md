@@ -125,14 +125,19 @@ pickup: **RFC-0019** (the last Track A item), then Track B (**RFC-0005**, **RFC-
     GotPage) diffs against that mutated DOM and corrupts it. A no-op `afterRender` renders fine;
     the real enhancer breaks the page. So progressive DOM-mutation conflicts with glamour's
     framework-owned diffing — my "no Compartment needed" refinement was WRONG about the DOM
-    ownership (right about the security: no iframe needed). REMAINING for the full book, redone:
-    render a `witchy` code block as a **non-diffed host slot** — glamour already leaves a
-    `Compartment` subtree alone (`patch` returns the live node), so extend that path (or add an
-    analogous "host slot" VNode) so the host mounts the runnable cell ONCE, in the MAIN frame
-    (pure-compute wasm needs no iframe), and glamour never re-diffs it. The enhancer's
-    cell-building + Run logic is reusable; only the find-and-mutate framing changes to
-    build-into-a-host-slot. Then an editable textarea (`witchy-editor.js`) + capability badges
-    from `examples.json` + theme.
+    ownership (right about the security: no iframe needed). **HOST-SLOT MECHANISM DONE** (the
+    fix): glamour has a new `Slot(kind, data)` VNode — a subtree the host mounts once via a
+    registered `opts.slots[kind]` renderer (main frame, no iframe) that glamour NEVER diffs
+    into. Additive (variant + ctor + to_html/node_json; host `isSlot`/`mountSlot`/patch-keep/
+    kindOrTagChanged); wire parity `glamour_slot_wire_is_identical_on_both_backends`; the core
+    non-diff property proven by `glamour_slot_is_a_non_diffed_host_subtree` (a host widget +
+    its mutation SURVIVE a re-render; the renderer isn't re-called). All 16 glamour drivers
+    still green. REMAINING to make the docs runnable: `buildRunnableCell(doc, source)` +
+    `runnableSlot(opts)` in `web/witchy-runnable.js` (reuse the tested cell logic), the docs
+    app emits `glamour.slot("witchy-runnable", code)` for `witchy` fences (a small tree-remap
+    of `markdown.to_vnode`'s top-level blocks), and the docs mount registers the slot renderer
+    — verified against the docs driver (cell renders + survives navigation). Then an editable
+    textarea (`witchy-editor.js`) + capability badges from `examples.json` + theme.
   - **P3 (kept from 0019) — manifest DONE:** `book/examples.json` is generated from the
     SAME classifier as `documentation_examples_are_valid` (per block: runnable/console_only/
     expect_error/right-precise footprint/interpreter output) and freshness-gated by

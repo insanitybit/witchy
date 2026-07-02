@@ -43,6 +43,9 @@ const isKeyed = (v) => v != null && typeof v.key === "string" && v.node != null;
 const isSecret = (v) => v != null && v.secret != null && typeof v.on_ready === "string";
 // The host-custody slot name for a secret node (matches `secret_ref`'s `form + "/" + field`).
 const secretSlot = (v) => `${v.secret.form}/${v.secret.field}`;
+// A host SLOT (RFC-0041): {"slot": kind, "data": payload}. The host's `kind` renderer mounts
+// a widget here (main frame); glamour renders it once and NEVER diffs into it.
+const isSlot = (v) => v != null && typeof v.slot === "string" && typeof v.data === "string";
 
 /**
  * Mount a glamour rune into `root`. Returns `{ dispatch, getModel, unmount }`.
@@ -176,6 +179,10 @@ export async function mount(wasmBytes, root, opts = {}) {
     lastVNode = vnode;
     interpretCmd(cmd);
   };
+  // Host-slot renderers (RFC-0041): `{ [kind]: (doc, data) => domNode }`. Stashed on
+  // `dispatch` so the module-level `mountSlot` (which only receives `dispatch`) can reach them,
+  // mirroring the secret store.
+  dispatch.__slots = opts.slots || {};
 
   // Initial render: model-only input, then build the DOM fresh and interpret the
   // command (the initial step emits `none`, but interpreting it keeps the loop
@@ -255,6 +262,13 @@ function patch(doc, parent, dom, oldV, newV, dispatch) {
     return dom;
   }
 
+  if (isSlot(newV)) {
+    // Same slot kind + data (a change would have been rebuilt by kindOrTagChanged): KEEP the
+    // live host widget — glamour never diffs into a host slot, so a re-render (e.g. a nav-only
+    // change) can't clobber a runnable cell's mounted editor/output.
+    return dom;
+  }
+
   // Same element tag: reconcile attributes and recurse into children.
   reconcileAttrs(dom, oldV.attrs || [], newV.attrs || [], dispatch);
   const oldKids = oldV.kids || [];
@@ -325,11 +339,15 @@ function kindOrTagChanged(oldV, newV) {
   if (isText(oldV) !== isText(newV)) return true;
   if (isCompartment(oldV) !== isCompartment(newV)) return true;
   if (isSecret(oldV) !== isSecret(newV)) return true;
+  if (isSlot(oldV) !== isSlot(newV)) return true;
   // A different renderer is a different compartment — rebuild (a fresh isolated frame).
   if (isCompartment(oldV) && isCompartment(newV)) return oldV.compartment !== newV.compartment;
   // A different slot is a different field — rebuild; same slot KEEPS the live <input> so its
   // (host-held) value and caret survive a re-render.
   if (isSecret(oldV) && isSecret(newV)) return secretSlot(oldV) !== secretSlot(newV);
+  // A host slot rebuilds only if its kind or payload changed; same kind+data keeps the live
+  // widget (so a nav-only re-render never remounts a runnable cell).
+  if (isSlot(oldV) && isSlot(newV)) return oldV.slot !== newV.slot || oldV.data !== newV.data;
   if (isElement(oldV) && isElement(newV)) return oldV.el !== newV.el;
   return false;
 }
@@ -343,6 +361,7 @@ function createNode(doc, v, dispatch) {
   if (isKeyed(v)) return createNode(doc, v.node, dispatch); // the key is a diff hint only
   if (isCompartment(v)) return mountCompartment(doc, v, dispatch);
   if (isSecret(v)) return mountSecretInput(doc, v, dispatch);
+  if (isSlot(v)) return mountSlot(doc, v, dispatch);
   if (!isElement(v)) {
     throw new Error(`glamour-dom: malformed vnode: ${JSON.stringify(v)}`);
   }
@@ -411,6 +430,24 @@ function mountSecretInput(doc, node, dispatch) {
     });
   }
   return el;
+}
+
+// Mount a host SLOT (RFC-0041): the host's `kind` renderer builds the widget in the MAIN
+// frame; glamour renders this once and never diffs into it (see `patch`). The renderers come
+// from `opts.slots` (stashed on `dispatch.__slots`). A `kind` with no registered renderer
+// falls back to an inert code block showing the payload — so the source is still visible.
+function mountSlot(doc, node, dispatch) {
+  const render = (dispatch.__slots || {})[node.slot];
+  if (typeof render === "function") {
+    const el = render(doc, node.data);
+    if (el) return el;
+  }
+  const pre = doc.createElement("pre");
+  pre.setAttribute("class", "glamour-slot");
+  const code = doc.createElement("code");
+  code.appendChild(doc.createTextNode(node.data));
+  pre.appendChild(code);
+  return pre;
 }
 
 // URL-bearing attributes whose value is a navigation/fetch target: a `javascript:`

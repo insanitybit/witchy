@@ -16176,6 +16176,32 @@ pub fn serve(console: Console, net: Net) -> Int:
         );
     }
 
+    /// (RFC-0041) A host `Slot` is pure data on the wire — `{"slot": kind, "data": payload}`
+    /// (the DOM host mounts the widget) with an inert escaped-code fallback for `to_html`.
+    /// Both serializations are IDENTICAL on the interpreter and compiled WASM.
+    #[test]
+    fn glamour_slot_wire_is_identical_on_both_backends() {
+        let src = "import glamour\n\
+                   import json\n\
+                   \n\
+                   fn mj(m: Int) -> Json:\n\
+                   \x20   JsonInt(0)\n\
+                   \n\
+                   fn main(console: Console):\n\
+                   \x20   let v: VNode(Int) = glamour.slot(\"witchy-runnable\", \"fn main():\\n    pass\")\n\
+                   \x20   print(console, glamour.to_json(v, mj))\n\
+                   \x20   print(console, glamour.to_html(v))\n";
+        let out = glamour_run_both(src);
+        assert_eq!(
+            out,
+            vec![
+                "{\"slot\":\"witchy-runnable\",\"data\":\"fn main():\\n    pass\"}".to_string(),
+                "<pre class=\"glamour-slot\"><code>fn main():\n    pass</code></pre>".to_string(),
+            ],
+            "the slot wire + the inert code fallback"
+        );
+    }
+
     /// (RFC-0039) The secret effect's WIRE FORMAT is pure data, so it serializes IDENTICALLY
     /// on both backends. A `SecretField` VNode and a `SubmitSecret` Cmd carry ONLY their
     /// host-slot coordinates and port name — read out of the sealed `SecretInput`/`SecretRef`/
