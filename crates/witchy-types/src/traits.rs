@@ -534,9 +534,23 @@ struct Ctx<'a> {
     or_counter: std::cell::Cell<u32>,
 }
 
+/// The scope-name of an expression as typeck's `annotate` resolved it (RFC-0046):
+/// the real inference judgment, keyed by expression identity. `None` when the
+/// checker left the type with free variables (generic-body expressions) or the
+/// table is empty (the quiet pre-mono pass) — the caller then falls back to the
+/// local string machinery. This is the PRIMARY dispatch source: the table is not
+/// a guess, so it can never resolve a receiver to the wrong concrete type.
+fn table_scope_name(table: &crate::typeck::TypeTable, e: &Expr) -> Option<String> {
+    table
+        .type_of(e)
+        .and_then(crate::typeck::ty_to_ast)
+        .and_then(|t| type_to_scope_name(&t))
+}
+
 impl Ctx<'_> {
     fn type_name(&self, e: &Expr, scope: &Scope) -> Option<String> {
-        recover_generic_call(e, self.fn_sigs, &|a| self.type_name(a, scope))
+        table_scope_name(self.table, e)
+            .or_else(|| recover_generic_call(e, self.fn_sigs, &|a| self.type_name(a, scope)))
             .or_else(|| head_type_name(e, scope, self.ctor_results, self.fn_rets, self.record_fields))
             .or_else(|| cap_op_return_type(e))
     }
@@ -2066,7 +2080,11 @@ impl Mono<'_> {
     }
 
     fn type_name(&self, e: &Expr, scope: &Scope) -> Option<String> {
-        recover_generic_call(e, &self.fn_sigs, &|a| self.type_name(a, scope))
+        // RFC-0046: typeck's resolved type is the primary source (it is the
+        // checker's answer, not a guess). It only carries fully-concrete types,
+        // so a generic-body expression falls through to the local recovery.
+        table_scope_name(self.table, e)
+            .or_else(|| recover_generic_call(e, &self.fn_sigs, &|a| self.type_name(a, scope)))
             .or_else(|| head_type_name(e, scope, self.ctor_results, &self.fn_rets, self.record_fields))
     }
 

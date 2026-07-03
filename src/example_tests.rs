@@ -14361,6 +14361,22 @@ fn main(console: Console):
         assert_eq!(run_on_wasm(src), vec!["42", "yes", "7"]);
     }
 
+    /// RFC-0046 acceptance (b): a trait call resolves on ANY expression the
+    /// checker types — here `list.at(string.split(...), 0)`, a builtin-call
+    /// result nested in another builtin call. The string shadow system stripped
+    /// `string.split`'s `List(String)` return to the bare head `"List"`, so
+    /// `list.at`'s element was unrecoverable and `say`'s `Show` bound
+    /// specialized to the literal type-variable `"a"` and failed. With dispatch
+    /// reading typeck's real `TypeTable` first, the element is `String` and
+    /// `show` resolves — identically on both backends.
+    #[test]
+    fn rfc0046_trait_call_on_builtin_result_resolves_show() {
+        let src = "import show\nimport string\nimport list\n\nfn main(console: Console):\n    let parts = string.split(\"a,b,c\", \",\")\n    say(console, list.at(parts, 1))\n    say(console, list.at(string.split(\"x-y\", \"-\"), 0))\n";
+        let want = vec!["b".to_string(), "x".to_string()];
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
     // Phase 2 of the concurrency redesign: an `async fn` lowers (CPS over closures,
     // `crate::async_lower`) to a cooperative `chan` task, and `await` chains
     // continuations. An async `main` is the executor entry (lowers to `task.run`).
