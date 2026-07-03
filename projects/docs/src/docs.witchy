@@ -105,13 +105,34 @@ fn to_runnable(block: VNode(Msg)) -> VNode(Msg):
                 match list.at(kids, 0):
                     Element(ctag, cattrs, ckids) ->
                         if ctag == "code" && is_witchy_code(cattrs):
-                            glamour.slot("witchy-runnable", code_text(ckids))
+                            let code = code_text(ckids)
+                            // A Run cell ONLY where the snippet actually runs in the cell;
+                            // a capability example renders as highlighted static code (no
+                            // Run button, so no misleading "capability denied" error).
+                            let kind = if runs_in_browser(code): "witchy-runnable" else: "witchy-static"
+                            glamour.slot(kind, code)
                         else:
                             block
                     _ -> block
             else:
                 block
         _ -> block
+
+// A `witchy` fence RUNS in the browser cell iff its `main` needs no capability the denied
+// sandbox withholds — the cell grants only `Console`, so a `Dir`/`Net`/`Secret`/… example
+// (or one taking a glamour UI token) can't run here. Heuristic over the snippet: it has a
+// `main`, and its code names no non-Console capability TYPE. Types are Title-cased, so
+// builtins (`read_file`, `connect`) don't false-match; a capability appears as a `main`
+// parameter type in every real example.
+fn runs_in_browser(code: String) -> Bool:
+    string.contains(code, "fn main(") && !names_denied_capability(code)
+
+fn names_denied_capability(code: String) -> Bool:
+    var found = false
+    for cap in ["Dir", "Net", "File", "Secret", "Clock", "Exec", "UiRoot", "UiFetch", "UiRoute", "UiTimer", "CredentialPort", "SecretInput", "SecretRef"]:
+        if string.contains(code, cap):
+            found = true
+    found
 
 // Whether a `<code>`'s attributes carry the `language-witchy` class markdown emits for a
 // `witchy` fence.

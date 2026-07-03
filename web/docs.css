@@ -59,6 +59,10 @@ body { font-family: system-ui, -apple-system, sans-serif; margin: 0; color: #e6e
 .witchy-output.ok { background: #16301c; }
 .witchy-output.err { background: #3a1a1a; }
 
+/* A NON-runnable witchy example (a capability demo): highlighted, read-only — no Run cell. */
+.witchy-static { margin: 1.25rem 0; padding: 0.75rem; border: 1px solid #2a2a3a; border-radius: 8px; background: #1e1e2e; overflow-x: auto; }
+.witchy-static code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.88rem; line-height: 1.5; tab-size: 4; white-space: pre-wrap; word-break: break-word; }
+
 /* Syntax tokens (emitted by web/witchy-highlight.js). */
 .t-comment { color: #6b7089; font-style: italic; }
 .t-str { color: #9ece6a; }

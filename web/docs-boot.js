@@ -5,7 +5,7 @@
 // injected fakes. So there is no server: the page fetches static content and runs snippets
 // client-side.
 import { mount } from "./glamour-dom.mjs";
-import { runnableSlot } from "./witchy-runnable.js";
+import { runnableSlot, staticSlot } from "./witchy-runnable.js";
 import { assetUrl, contentUrl } from "./docs-asset-url.js";
 import { highlightWitchy } from "./witchy-highlight.js";
 
@@ -39,8 +39,12 @@ await mount(wasm, document.getElementById("app"), {
   history,
   // (RFC-0040) the host mints the app's `UiRoot`; the policy value is just a label.
   instantiateOpts: { userCaps: [["witchy-book"]] },
-  // (RFC-0041) each `witchy` fence becomes an editable, runnable, SYNTAX-HIGHLIGHTED cell in
-  // a non-diffed slot. `highlightWitchy` escapes its input (XSS-safe), so it can paint the
-  // overlay via innerHTML.
-  slots: { "witchy-runnable": runnableSlot({ loadCompiler, highlight: highlightWitchy }) },
+  // (RFC-0041) each `witchy` fence becomes a SYNTAX-HIGHLIGHTED cell in a non-diffed slot:
+  // a runnable one (editable + Run) where the snippet actually runs in the cell, or a
+  // read-only one for a capability example that can't (so it never shows a Run error).
+  // `highlightWitchy` escapes its input (XSS-safe), so it can paint via innerHTML.
+  slots: {
+    "witchy-runnable": runnableSlot({ loadCompiler, highlight: highlightWitchy }),
+    "witchy-static": staticSlot({ highlight: highlightWitchy }),
+  },
 });

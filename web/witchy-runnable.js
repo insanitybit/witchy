@@ -155,6 +155,29 @@ export function runnableSlot(opts = {}) {
 }
 
 /**
+ * A glamour host-slot renderer for NON-runnable witchy code — a capability example that can't
+ * execute in the capability-denied cell (`Dir`/`Net`/… would just error). It renders a
+ * syntax-highlighted, read-only `<pre>`: no textarea, no Run button, so no misleading error,
+ * while the code still reads clearly. SECURITY: `opts.highlight` is set to `innerHTML`, so it
+ * MUST HTML-escape its input (`highlightWitchy` does — see the note in `buildRunnableCell`).
+ */
+export function staticSlot(opts = {}) {
+  const highlight = typeof opts.highlight === "function" ? opts.highlight : null;
+  return (doc, source) => {
+    const pre = doc.createElement("pre");
+    pre.setAttribute("class", "witchy-static");
+    const code = doc.createElement("code");
+    if (highlight && "innerHTML" in code) {
+      code.innerHTML = highlight(source);
+    } else {
+      code.appendChild(doc.createTextNode(source));
+    }
+    pre.appendChild(code);
+    return pre;
+  };
+}
+
+/**
  * Standalone progressive enhancement (a static page / the playground): find every
  * `pre>code.language-witchy` under `root` and REPLACE it with a runnable cell. Idempotent (a
  * built cell's code carries no `language-witchy` class) and DOM-agnostic. The glamour docs app
