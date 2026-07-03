@@ -69,6 +69,9 @@ export function buildRunnableCell(doc, source, opts = {}) {
   const editor = doc.createElement("textarea");
   editor.setAttribute("class", "witchy-editor");
   editor.setAttribute("spellcheck", "false");
+  // Size the box to the code so the whole program shows without scrolling. `rows` needs
+  // no layout (works even headless); the highlight overlay below grows further to fit.
+  editor.setAttribute("rows", String(Math.max(3, source.split("\n").length)));
   editor.value = source;
 
   const runButton = doc.createElement("button");
@@ -103,7 +106,40 @@ export function buildRunnableCell(doc, source, opts = {}) {
     });
   }
 
-  element.appendChild(editor);
+  // (RFC-0041) Optional syntax highlighting: overlay the editable textarea on a `<pre>`
+  // painted by `opts.highlight` (an XSS-safe `source -> HTML`, e.g. `highlightWitchy`). The
+  // pre is in normal flow and SIZES the cell — it grows to fit every line, so the whole
+  // program is always visible (no cutoff). The textarea sits transparently over it (caret
+  // + selection show; its text is transparent so the coloured pre shows through). Both share
+  // identical type metrics (CSS) so the caret aligns. Degrades to a plain textarea where
+  // `innerHTML` is unavailable (the headless FakeElement DOM) or no highlighter is supplied,
+  // so the tested Run path is unchanged.
+  // SECURITY: `opts.highlight` is set to `innerHTML`, so it MUST HTML-escape its input and
+  // emit only its own tags. `highlightWitchy` (the only caller-supplied value) does exactly
+  // that — `escapeHtml` on every text slice, emitting `<span class="t-*">` — and is teeth-
+  // tested for it (`witchy_highlighter_colours_current_syntax`: metacharacters are escaped,
+  // no injection). Do NOT pass a highlighter that interpolates raw source into HTML.
+  const highlight = typeof opts.highlight === "function" ? opts.highlight : null;
+  const canHtml = highlight && "innerHTML" in doc.createElement("pre");
+  let editable = editor;
+  if (canHtml) {
+    const wrap = doc.createElement("div");
+    wrap.setAttribute("class", "witchy-editor-wrap");
+    const painted = doc.createElement("pre");
+    painted.setAttribute("class", "witchy-highlight");
+    painted.setAttribute("aria-hidden", "true");
+    // Trailing "\n" so a final empty line in the textarea has matching height in the pre.
+    const paint = () => {
+      painted.innerHTML = highlight(typeof editor.value === "string" ? editor.value : source) + "\n";
+    };
+    paint();
+    if (typeof editor.addEventListener === "function") editor.addEventListener("input", paint);
+    wrap.appendChild(painted);
+    wrap.appendChild(editor);
+    editable = wrap;
+  }
+
+  element.appendChild(editable);
   element.appendChild(runButton);
   element.appendChild(output);
   return { element, editor, runButton, output, run };

@@ -7,6 +7,7 @@
 import { mount } from "./glamour-dom.mjs";
 import { runnableSlot } from "./witchy-runnable.js";
 import { assetUrl, contentUrl } from "./docs-asset-url.js";
+import { highlightWitchy } from "./witchy-highlight.js";
 
 // Every bundle asset resolves against THIS module's URL — the bundle root — never the current
 // route. A chapter routes to `/p/<slug>`, so a page-relative `./content/...` / `./witchy.wasm`
@@ -38,6 +39,8 @@ await mount(wasm, document.getElementById("app"), {
   history,
   // (RFC-0040) the host mints the app's `UiRoot`; the policy value is just a label.
   instantiateOpts: { userCaps: [["witchy-book"]] },
-  // (RFC-0041) each `witchy` fence becomes an editable, runnable cell in a non-diffed slot.
-  slots: { "witchy-runnable": runnableSlot({ loadCompiler }) },
+  // (RFC-0041) each `witchy` fence becomes an editable, runnable, SYNTAX-HIGHLIGHTED cell in
+  // a non-diffed slot. `highlightWitchy` escapes its input (XSS-safe), so it can paint the
+  // overlay via innerHTML.
+  slots: { "witchy-runnable": runnableSlot({ loadCompiler, highlight: highlightWitchy }) },
 });
