@@ -1026,6 +1026,13 @@ fn expr(e: &Expr) -> String {
                 }
             }
             let p = binop_prec(*op);
+            // `??` is RIGHT-associative: the natural chain `a ?? b ?? c` nests to
+            // the right, so the RIGHT child at equal precedence needs no parens
+            // and the LEFT one does — the mirror image of every other binary op.
+            // Swapping the `is_right` flags encodes exactly that.
+            if matches!(op, BinOp::Coalesce) {
+                return format!("{} ?? {}", operand(lhs, p, true), operand(rhs, p, false));
+            }
             format!("{} {} {}", operand(lhs, p, false), binop(*op), operand(rhs, p, true))
         }
         Expr::Range { lo, hi, inclusive } => {
@@ -1245,6 +1252,7 @@ fn binop(op: BinOp) -> &'static str {
         BinOp::GtEq => ">=",
         BinOp::And => "&&",
         BinOp::Or => "||",
+        BinOp::Coalesce => "??",
         BinOp::BitAnd => "&",
         BinOp::BitOr => "|",
         BinOp::BitXor => "^",
@@ -1258,15 +1266,19 @@ fn binop(op: BinOp) -> &'static str {
 /// redundant. Higher binds tighter.
 fn binop_prec(op: BinOp) -> u8 {
     match op {
-        BinOp::Or => 3,
-        BinOp::And => 5,
-        BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => 7,
-        BinOp::BitOr => 9,
-        BinOp::BitXor => 11,
-        BinOp::BitAnd => 13,
-        BinOp::Shl | BinOp::Shr => 15,
-        BinOp::Add | BinOp::Sub | BinOp::Concat => 17,
-        BinOp::Mul | BinOp::Div | BinOp::Mod => 19,
+        // `??` is RIGHT-associative; the `Expr::Binary` printer swaps the
+        // `operand` flags so the natural right-nested chain prints as
+        // `a ?? b ?? c` and a left-nested one keeps its parens.
+        BinOp::Coalesce => 4,
+        BinOp::Or => 6,
+        BinOp::And => 8,
+        BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => 10,
+        BinOp::BitOr => 12,
+        BinOp::BitXor => 14,
+        BinOp::BitAnd => 16,
+        BinOp::Shl | BinOp::Shr => 18,
+        BinOp::Add | BinOp::Sub | BinOp::Concat => 20,
+        BinOp::Mul | BinOp::Div | BinOp::Mod => 22,
     }
 }
 

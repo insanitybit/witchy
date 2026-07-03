@@ -1867,19 +1867,24 @@ fn infix_bp(t: &Tok) -> Option<(u8, u8)> {
         // `a..b` (half-open) and `a..=b` (inclusive) ranges bind loosest after
         // pipe, so `1..n+1` is `1..(n+1)` and arbitrary Int expressions work.
         DotDot | DotDotEq => (2, 3),
-        OrOr => (3, 4),
-        AndAnd => (5, 6),
-        EqEq | NotEq | Lt | LtEq | Gt | GtEq => (7, 8),
+        // `??` (RFC-0048) is the loosest binary operator before ranges, and
+        // RIGHT-associative (r_bp < l_bp): `a ?? b ?? c` is `a ?? (b ?? c)`,
+        // which is what makes the natural chain type under the strict
+        // `Option(T) ?? T -> T` rule (C# and Swift do the same).
+        QuestionQuestion => (5, 4),
+        OrOr => (6, 7),
+        AndAnd => (8, 9),
+        EqEq | NotEq | Lt | LtEq | Gt | GtEq => (10, 11),
         // Bitwise ops bind tighter than comparison (so `a & b == c` is
         // `(a & b) == c`) and looser than arithmetic, ordered `|` < `^` < `&` <
         // shifts. `Bar` here is bitwise-or; in pattern position it's an
         // or-pattern separator, consumed by `match_expr` before expressions run.
-        Bar => (9, 10),
-        Caret => (11, 12),
-        Amp => (13, 14),
-        Shl | Shr => (15, 16),
-        Plus | Minus => (17, 18),
-        Star | Slash | Percent => (19, 20),
+        Bar => (12, 13),
+        Caret => (14, 15),
+        Amp => (16, 17),
+        Shl | Shr => (18, 19),
+        Plus | Minus => (20, 21),
+        Star | Slash | Percent => (22, 23),
         _ => return None,
     })
 }
@@ -1899,6 +1904,7 @@ fn bin_op(t: &Tok) -> BinOp {
         Tok::GtEq => BinOp::GtEq,
         Tok::AndAnd => BinOp::And,
         Tok::OrOr => BinOp::Or,
+        Tok::QuestionQuestion => BinOp::Coalesce,
         Tok::Bar => BinOp::BitOr,
         Tok::Caret => BinOp::BitXor,
         Tok::Amp => BinOp::BitAnd,

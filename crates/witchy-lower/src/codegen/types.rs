@@ -35,6 +35,12 @@ impl Codegen {
                         Kind::I32
                     }
                 }
+                // `a ?? b` carries its payload kind (an Int payload is i64) —
+                // matching the `??` emission's branch kind.
+                BinOp::Coalesce => self
+                    .match_payload_valtype(lhs)
+                    .map(valtype_kind)
+                    .unwrap_or_else(|| self.kind_of(rhs)),
                 // concat (ptr) and comparisons / and / or (bool) are i32.
                 _ => Kind::I32,
             },
@@ -220,9 +226,14 @@ impl Codegen {
             },
             Expr::Binary { op, lhs, rhs } => match op {
                 BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq
-                | BinOp::And => ValType::Bool,
-                // Non-Bool `||` is the truthy fallback, so it yields its operand type.
-                BinOp::Or => self.val_type_of(lhs),
+                | BinOp::And | BinOp::Or => ValType::Bool,
+                // `a ?? b` yields the unwrapped payload type — the lhs's Option/
+                // Result payload when known, else the fallback's type (they agree
+                // by the typing rule).
+                BinOp::Coalesce => match self.match_payload_valtype(lhs) {
+                    Some(vt) if vt != ValType::Other => vt,
+                    _ => self.val_type_of(rhs),
+                },
                 BinOp::Concat => ValType::Str,
                 // `+` is concat when either side is a string; otherwise the
                 // numeric type rides on the left operand.

@@ -2860,20 +2860,60 @@ impl Checker {
                 Ok(Ty::Bool)
             }
             Or => {
-                // `a || b`: ordinary logical-or for Bool, otherwise the truthy
-                // fallback `if truthy(a): a else: b` over the emptyable built-ins
-                // (falsy = "" / None / []). Both operands share a type and the
-                // result is that type.
-                self.unify(&lt, &rt)?;
-                let t = self.resolve(&lt);
-                let ok = matches!(&t, Ty::Bool | Ty::String | Ty::List(_))
-                    || matches!(&t, Ty::Named(n, _) if n == "Option");
-                if ok {
-                    Ok(t)
-                } else {
-                    terr(format!(
-                        "`||` needs Bool, String, Option, or List operands (the truthy fallback `a || b`), found `{t}`"
-                    ))
+                // `a || b` is Bool-only logical-or (RFC-0048). A non-Bool operand
+                // gets a teaching error pointing at `??`, the fallback operator
+                // that took over the old truthy/unwrap meanings.
+                for t in [self.resolve(&lt), self.resolve(&rt)] {
+                    if !matches!(t, Ty::Bool | Ty::Var(_)) {
+                        return terr(format!(
+                            "`||` is logical-or on Bool, found `{t}`. For a fallback \
+                             value use `??`: `name ?? \"anon\"` (Option), \
+                             `parse(s) ?? 0` (Result)"
+                        ));
+                    }
+                }
+                self.unify(&Ty::Bool, &lt)?;
+                self.unify(&Ty::Bool, &rt)?;
+                Ok(Ty::Bool)
+            }
+            Coalesce => {
+                // `a ?? b` (RFC-0048): the fallback operator. The left side must
+                // be an Option(T) or a Result(T, e); the right side is a T
+                // (evaluated only on None/Err); the expression is a T. Nothing
+                // else is admissible — no truthiness, no same-typed fallback —
+                // so the result type is never ambiguous.
+                match self.resolve(&lt) {
+                    Ty::Named(ref n, ref args) if n == "Option" && args.len() == 1 => {
+                        let t = args[0].clone();
+                        self.unify(&t, &rt).map_err(|e| TypeError {
+                            message: format!(
+                                "`??` fallback: the right side must have the Option's \
+                                 payload type: {}",
+                                e.message
+                            ),
+                        })?;
+                        Ok(t)
+                    }
+                    Ty::Named(ref n, ref args) if n == "Result" && args.len() == 2 => {
+                        let t = args[0].clone();
+                        self.unify(&t, &rt).map_err(|e| TypeError {
+                            message: format!(
+                                "`??` fallback: the right side must have the Result's \
+                                 Ok type: {}",
+                                e.message
+                            ),
+                        })?;
+                        Ok(t)
+                    }
+                    Ty::Var(_) => terr(
+                        "the left side of `??` must be an Option or a Result — \
+                         annotate it (`let x: Option(Int) = …`) so `??` knows what \
+                         to unwrap",
+                    ),
+                    other => terr(format!(
+                        "`??` unwraps an Option or a Result (`opt ?? default`), \
+                         found `{other}` on the left"
+                    )),
                 }
             }
         }

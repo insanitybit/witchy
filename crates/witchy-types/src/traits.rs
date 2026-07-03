@@ -324,7 +324,6 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             statics: &statics,
             table: &empty_table,
             bound_traits: std::cell::RefCell::new(HashMap::new()),
-            or_counter: std::cell::Cell::new(0),
         };
         for item in &mut items {
             if let Item::Function(f) = item {
@@ -436,7 +435,6 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         statics: &statics,
         table: &type_table,
         bound_traits: std::cell::RefCell::new(HashMap::new()),
-        or_counter: std::cell::Cell::new(0),
     };
     for item in &mut items {
         if let Item::Function(f) = item {
@@ -583,8 +581,6 @@ struct Ctx<'a> {
     /// ONLY when that variable is bound by the relevant comparison trait — an
     /// UNbounded generic `==` keeps the native structural comparison.
     bound_traits: std::cell::RefCell<HashMap<String, Vec<String>>>,
-    /// Fresh-name counter for the `Option(T) || T` unwrap rewrite (RFC-0021).
-    or_counter: std::cell::Cell<u32>,
 }
 
 /// The scope-name of an expression as typeck's `annotate` resolved it (RFC-0046):
@@ -813,49 +809,6 @@ impl Ctx<'_> {
                 }
             }
             Expr::Binary { op, lhs, rhs } => {
-                // RFC-0021: `Option(T) || T` unwraps to `T` — `Some(x) || d` is `x`,
-                // `None || d` is `d` (lazily). Rewrite to a `match` so both backends
-                // agree; the runtime `||` stays the same-type truthy fallback for
-                // every other case (`""`/`[]`/`None` falsy, `Option || Option`, …).
-                // Operands are rewritten first so a UFCS/method-call receiver
-                // resolves before we read its head type. Fire ONLY when the left is
-                // concretely `Option` and the right is concretely NOT — otherwise the
-                // node is left for the existing homogeneous rule (which errors on a
-                // genuine `Option || T` mismatch, never silently misbehaves).
-                if matches!(op, BinOp::Or) {
-                    self.rewrite_expr(lhs, scope);
-                    self.rewrite_expr(rhs, scope);
-                    let lhs_head = self.type_name(lhs, scope);
-                    let rhs_head = self.type_name(rhs, scope);
-                    let lhs_opt = lhs_head.as_deref().map(head_of) == Some("Option");
-                    let rhs_opt = rhs_head.as_deref().map(head_of) == Some("Option");
-                    if lhs_opt && rhs_head.is_some() && !rhs_opt {
-                        let n = self.or_counter.get();
-                        self.or_counter.set(n + 1);
-                        let var = format!("__or{n}");
-                        let scrut = std::mem::replace(lhs.as_mut(), Expr::Bool(false));
-                        let fallback = std::mem::replace(rhs.as_mut(), Expr::Bool(false));
-                        *e = Expr::Match {
-                            scrutinee: Box::new(scrut),
-                            arms: vec![
-                                MatchArm {
-                                    pattern: Pattern::Ctor {
-                                        name: "Some".into(),
-                                        args: vec![Pattern::Var(var.clone())],
-                                    },
-                                    guard: None,
-                                    body: Expr::Var(var),
-                                },
-                                MatchArm {
-                                    pattern: Pattern::Ctor { name: "None".into(), args: vec![] },
-                                    guard: None,
-                                    body: fallback,
-                                },
-                            ],
-                        };
-                    }
-                    return;
-                }
                 // Comparison operators on non-primitive operands desugar to their
                 // trait method (`a > b` -> `greater(a, b)`), which the call arm
                 // below then dispatches to the concrete impl. Primitives — and, for
@@ -1153,11 +1106,14 @@ fn head_type_name(
         },
         // Comparisons/logic yield Bool; `<>` yields String; arithmetic and
         // bitwise ops have the type of their (left) operand.
-        Expr::Binary { op, lhs, .. } => match op {
+        Expr::Binary { op, lhs, rhs } => match op {
             BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq
-            | BinOp::And => Some("Bool".into()),
+            | BinOp::And | BinOp::Or => Some("Bool".into()),
             BinOp::Concat => Some("String".into()),
-            // Non-Bool `||` (truthy fallback) has its (left) operand's type.
+            // `a ?? b` (RFC-0048) unwraps: its type is the fallback's (the
+            // Option/Result payload — the two agree by the typing rule, and the
+            // rhs is the side whose head is recoverable here).
+            BinOp::Coalesce => head_type_name(rhs, scope, ctor_results, fn_rets, record_fields),
             _ => head_type_name(lhs, scope, ctor_results, fn_rets, record_fields),
         },
         // A list literal's type encodes its element type when determinable from
@@ -1350,9 +1306,6 @@ fn expr_needs_lowering(e: &Expr) -> bool {
             fields.iter().any(|(_, v)| expr_needs_lowering(v))
                 || spread.as_deref().is_some_and(expr_needs_lowering)
         }
-        // `||` may be the RFC-0021 `Option(T) || T` unwrap, which the rewrite pass
-        // turns into a `match`; trigger lowering so that pass runs.
-        Expr::Binary { op: BinOp::Or, .. } => true,
         Expr::Binary { lhs, rhs, .. } => {
             expr_needs_lowering(lhs) || expr_needs_lowering(rhs)
         }

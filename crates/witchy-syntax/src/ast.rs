@@ -490,6 +490,11 @@ pub enum BinOp {
     GtEq,
     And,
     Or,
+    /// `a ?? b` (RFC-0048): the fallback operator. `Option(T) ?? T -> T` /
+    /// `Result(T, e) ?? T -> T` — unwrap `Some`/`Ok`, or evaluate the right
+    /// side on `None`/`Err` (lazily; the error value is discarded).
+    /// Right-associative, one level looser than `||`.
+    Coalesce,
     BitAnd,
     BitOr,
     BitXor,

@@ -4401,49 +4401,6 @@ impl Codegen {
                 //   a && b  ->  if a { b } else { 0 }
                 //   a || b  ->  if a { 1 } else { b }
                 if matches!(op, BinOp::And | BinOp::Or) {
-                    // Non-Bool `||` is the truthy fallback `a || b` ≡ `if truthy(a):
-                    // a else: b`, evaluating `a` once. Every emptyable value is a
-                    // pointer whose first word is a length (String/List) or variant
-                    // tag (Option); "" / [] / None all have a zero first word, so
-                    // "truthy" is a single `load i32` — no per-type branching.
-                    if *op == BinOp::Or && self.val_type_of(lhs) != ValType::Bool {
-                        use witchy_wir::wir::WirNode as N;
-                        // Option is truthy when present: `Some` is the tag-0 (success)
-                        // variant and `None` is non-zero — the inverse of String/List,
-                        // whose first word is a length that is zero only when empty. So
-                        // the Option predicate is `header == 0`, the rest `header != 0`.
-                        let is_option = matches!(lhs.as_ref(), Expr::Ctor { name, .. } if name == "None" || name == "Some")
-                            || matches!(
-                                self.type_table.type_of(lhs).and_then(witchy_types::typeck::ty_to_ast),
-                                Some(witchy_syntax::ast::Type::Named(ref n, _)) if n == "Option"
-                            );
-                        let tmp = TRY_TMP.to_string();
-                        let lhs_w = self.lower_expr(lhs)?;
-                        let rhs_w = self.lower_expr(rhs)?;
-                        let header = W::Load {
-                            ptr: Box::new(W::GetLocal(tmp.clone())),
-                            kind: witchy_wir::wir::Kind::I32,
-                            offset: 0,
-                        };
-                        let cond = if is_option {
-                            W::Unary {
-                                op: witchy_wir::wir::UnOp::Not,
-                                kind: witchy_wir::wir::Kind::I32,
-                                arg: Box::new(header),
-                            }
-                        } else {
-                            header
-                        };
-                        return Some(W::Seq(vec![
-                            N::SetLocal { local: tmp.clone(), value: lhs_w },
-                            N::If {
-                                cond,
-                                then_: vec![N::Push(W::GetLocal(tmp.clone()))],
-                                els: vec![N::Push(rhs_w)],
-                                result: Some(witchy_wir::wir::WirTy::Bool),
-                            },
-                        ]));
-                    }
                     let cond = self.lower_expr(lhs)?;
                     let other = self.lower_expr(rhs)?;
                     let (then_, els) = if matches!(op, BinOp::And) {
@@ -4461,6 +4418,51 @@ impl Codegen {
                         els,
                         result: Some(witchy_wir::wir::WirTy::Bool),
                     })));
+                }
+                // `a ?? b` (RFC-0048): unwrap `Some`/`Ok` (tag 0, payload at
+                // `tmp+4`) or evaluate the fallback — the same store-once/tag-test
+                // shape as `?`, minus the early return. The fallback is lowered
+                // inside the else branch, so it runs only on `None`/`Err`.
+                if *op == BinOp::Coalesce {
+                    use witchy_wir::wir::WirNode as N;
+                    let k = self
+                        .match_payload_valtype(lhs)
+                        .map(valtype_kind)
+                        .unwrap_or_else(|| self.kind_of(rhs));
+                    let lhs_w = self.lower_expr(lhs)?;
+                    let rhs_w = Self::wir_convert(self.lower_expr(rhs)?, self.kind_of(rhs), k);
+                    let tmp = TRY_TMP.to_string();
+                    let cond = W::Unary {
+                        op: witchy_wir::wir::UnOp::Not,
+                        kind: witchy_wir::wir::Kind::I32,
+                        arg: Box::new(W::Load {
+                            ptr: Box::new(W::GetLocal(tmp.clone())),
+                            kind: witchy_wir::wir::Kind::I32,
+                            offset: 0,
+                        }),
+                    };
+                    let payload = W::FromSlot(
+                        Box::new(W::Load {
+                            ptr: Box::new(W::Binary {
+                                op: witchy_wir::wir::BinOp::Add,
+                                kind: witchy_wir::wir::Kind::I32,
+                                lhs: Box::new(W::GetLocal(tmp.clone())),
+                                rhs: Box::new(W::ConstI32(4)),
+                            }),
+                            kind: witchy_wir::wir::Kind::I64,
+                            offset: 0,
+                        }),
+                        Self::wir_kind(k),
+                    );
+                    return Some(W::Seq(vec![
+                        N::SetLocal { local: tmp.clone(), value: lhs_w },
+                        N::If {
+                            cond,
+                            then_: vec![N::Push(payload)],
+                            els: vec![N::Push(rhs_w)],
+                            result: Some(Self::wir_ty_for_kind(k)),
+                        },
+                    ]));
                 }
                 // String concatenation (`+` flipped to `Concat`) lowers to
                 // `$concat` (only in a WIR-collecting scope; otherwise this falls

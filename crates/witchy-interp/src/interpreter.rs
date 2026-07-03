@@ -2545,11 +2545,22 @@ impl Interpreter {
                     Value::Bool(b) => Ok(Value::Bool(b)),
                     other => err(format!("`||` expects Bool operands, got `{other}`")),
                 },
-                // Non-Bool `||` is the truthy fallback: `a` when truthy, else `b`.
-                // Falsy values are "" / None / [] (typeck restricts the operands to
-                // Bool / String / Option / List).
-                v if value_truthy(&v) => Ok(v),
-                _ => self.eval(rhs, env),
+                other => err(format!("`||` expects Bool operands, got `{other}`")),
+            },
+            // `a ?? b` (RFC-0048): unwrap `Some`/`Ok` to the payload, or evaluate
+            // the fallback on `None`/`Err` (lazily; the error value is discarded).
+            Expr::Binary { op: BinOp::Coalesce, lhs, rhs } => match self.eval(lhs, env)? {
+                Value::Ctor { name, mut fields }
+                    if (name == "Some" || name == "Ok") && fields.len() == 1 =>
+                {
+                    Ok(fields.remove(0))
+                }
+                Value::Ctor { name, .. } if name == "None" || name == "Err" => {
+                    self.eval(rhs, env)
+                }
+                other => err(format!(
+                    "`??` expects an Option or Result on the left, got `{other}`"
+                )),
             },
             Expr::Binary { op, lhs, rhs } => {
                 let l = self.eval(lhs, env)?;
@@ -2721,18 +2732,6 @@ fn over(op: &str) -> impl FnOnce() -> RuntimeError + '_ {
     }
 }
 
-// Runtime truthiness for the non-Bool `||` fallback. Falsy values are the empty
-// forms of the emptyable built-ins: "" / [] / None. Everything else is truthy.
-fn value_truthy(v: &Value) -> bool {
-    match v {
-        Value::Bool(b) => *b,
-        Value::Str(s) => !s.is_empty(),
-        Value::List(xs) => !xs.is_empty(),
-        Value::Ctor { name, .. } => name != "None",
-        _ => true,
-    }
-}
-
 fn eval_binary(op: BinOp, l: Value, r: Value) -> Result<Value, RuntimeError> {
     use BinOp::*;
     use Value::{Float, Int, Str};
@@ -2798,7 +2797,7 @@ fn eval_binary(op: BinOp, l: Value, r: Value) -> Result<Value, RuntimeError> {
             };
             Ok(Value::Bool(result))
         }
-        And | Or => unreachable!("&&/|| are short-circuited in eval"),
+        And | Or | Coalesce => unreachable!("&&/||/?? are short-circuited in eval"),
     }
 }
 
