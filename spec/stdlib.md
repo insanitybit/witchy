@@ -2184,7 +2184,7 @@ Whether `needle` occurs in `s`.
 
 #### `fn index_of(s: String, needle: String) -> Int`
 
-The byte index of the first occurrence of `needle`, or -1.
+The character index (counted by Unicode scalar) of the first occurrence of `needle`, or -1.
 
 #### `fn replace(s: String, from: String, to: String) -> String`
 
@@ -2192,7 +2192,7 @@ Replace every occurrence of `from` with `to`.
 
 #### `fn substring(s: String, start: Int, end: Int) -> String`
 
-The substring from byte `start` (inclusive) to `end` (exclusive).
+The substring from character index `start` (inclusive) to `end` (exclusive), counted by Unicode scalar; out-of-range indices clamp.
 
 #### `fn to_upper(s: String) -> String`
 

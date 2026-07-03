@@ -43,7 +43,8 @@ pub fn starts_with(s: String, prefix: String) -> Bool:
 pub fn ends_with(s: String, suffix: String) -> Bool:
     string.ends_with(s, suffix)
 
-// The byte index of the first occurrence of `needle`, or -1.
+// The character index (counted by Unicode scalar) of the first occurrence of
+// `needle`, or -1.
 pub fn index_of(s: String, needle: String) -> Int:
     string.index_of(s, needle)
 
@@ -51,7 +52,8 @@ pub fn index_of(s: String, needle: String) -> Int:
 pub fn replace(s: String, from: String, to: String) -> String:
     string.replace(s, from, to)
 
-// The substring from byte `start` (inclusive) to `end` (exclusive).
+// The substring from character index `start` (inclusive) to `end` (exclusive),
+// counted by Unicode scalar; out-of-range indices clamp.
 pub fn substring(s: String, start: Int, end: Int) -> String:
     string.substring(s, start, end)
 
@@ -118,7 +120,7 @@ pub fn center(s: String, width: Int, fill: String) -> String:
 // unchanged. The complement of the `starts_with` builtin.
 pub fn strip_prefix(s: String, prefix: String) -> String:
     if string.starts_with(s, prefix):
-        string.substring(s, string.length(prefix), string.length(s))
+        string.substring(s, string.char_count(prefix), string.char_count(s))
     else:
         s
 
@@ -126,7 +128,7 @@ pub fn strip_prefix(s: String, prefix: String) -> String:
 // unchanged. The complement of the `ends_with` builtin.
 pub fn strip_suffix(s: String, suffix: String) -> String:
     if string.ends_with(s, suffix):
-        string.substring(s, 0, string.length(s) - string.length(suffix))
+        string.substring(s, 0, string.char_count(s) - string.char_count(suffix))
     else:
         s
 

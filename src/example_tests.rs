@@ -11030,12 +11030,22 @@ fn main(console: Console):
     print(console, string.strip_suffix("main.witchy", ".witchy"))
     print(console, string.strip_suffix("main.rs", ".witchy"))
     print(console, string.strip_prefix("abc", "abc"))
+    print(console, string.strip_prefix("émile", "é"))
+    print(console, string.strip_suffix("héllo!", "!"))
+    print(console, string.strip_suffix("naïveté", "té"))
 "#;
         let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
         assert_eq!(interpreted, compiled, "strip diverged between backends");
-        assert_eq!(compiled, vec!["lang", "witchy.lang", "main", "main.rs", ""]);
+        // The multibyte rows pin the char-count fix: the old bodies mixed
+        // string.length (bytes) into substring's character offsets, so any
+        // multibyte affix ate extra chars (prefix) or disabled the strip
+        // entirely (suffix).
+        assert_eq!(
+            compiled,
+            vec!["lang", "witchy.lang", "main", "main.rs", "", "mile", "héllo", "naïve"]
+        );
     }
 
     #[test]
