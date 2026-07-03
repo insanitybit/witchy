@@ -88,6 +88,37 @@ fn witchy_highlighter_colours_current_syntax() {
     assert!(stdout.contains("WITCHY-HIGHLIGHT OK"), "highlighter test did not report success:\n{stdout}");
 }
 
+/// RFC-0041 regression: docs-bundle asset/content URLs must resolve against the BUNDLE ROOT, not
+/// the current client route. Guards the bug where a chapter route `/p/<slug>` made a content
+/// fetch route-relative (`/p/content/...` → 404), breaking every page after a nav — and would
+/// have broken the GitHub Pages deploy the same way. The pure resolver (`web/docs-asset-url.js`)
+/// is unit-tested here because the FakeElement docs drivers can't simulate browser base-URL
+/// resolution (which is exactly where the bug lived).
+#[test]
+fn docs_bundle_asset_urls_resolve_against_the_bundle_root() {
+    if !node_available() {
+        eprintln!("skipping: `node` is not available on PATH");
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let driver = manifest.join("web/docs-asset-url.test.mjs");
+    assert!(driver.exists(), "the docs asset-url test must exist at {}", driver.display());
+
+    let out = Command::new("node")
+        .arg(&driver)
+        .current_dir(manifest)
+        .output()
+        .expect("spawn node docs-asset-url test");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the docs asset-url test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stdout.contains("DOCS-ASSET-URL OK"), "docs asset-url test did not report success:\n{stdout}");
+}
+
 /// RFC-0041 Phase 2: the RUNNABLE CELL, end to end and headless. The committed Node driver
 /// (`web/witchy-runtime/witchy-runnable.test.mjs`) builds a fake DOM with a
 /// `<pre><code class="language-witchy">` block (what `markdown.to_vnode` emits), enhances it

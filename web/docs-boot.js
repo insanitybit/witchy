@@ -6,23 +6,30 @@
 // client-side.
 import { mount } from "./glamour-dom.mjs";
 import { runnableSlot } from "./witchy-runnable.js";
+import { assetUrl, contentUrl } from "./docs-asset-url.js";
+
+// Every bundle asset resolves against THIS module's URL — the bundle root — never the current
+// route. A chapter routes to `/p/<slug>`, so a page-relative `./content/...` / `./witchy.wasm`
+// would resolve to `/p/content/...` (a 404); `import.meta.url` is immune to the route and still
+// honours a deploy subpath (GitHub Pages `/<repo>/`, where this module is `/<repo>/docs-boot.js`).
+const here = import.meta.url;
 
 // The browser compiler (`witchy.wasm`) is fetched + instantiated ONCE, lazily, on the first Run
 // on the page, then shared by every cell (the browser HTTP-caches the 4 MB module).
 const loadCompiler = (() => {
   let p = null;
   return () =>
-    (p ||= fetch("./witchy.wasm")
+    (p ||= fetch(assetUrl("witchy.wasm", here))
       .then((r) => r.arrayBuffer())
       .then((b) => WebAssembly.instantiate(b, {}))
       .then(({ instance }) => instance.exports));
 })();
 
-// The rune builds absolute `/content/...` fetch URLs; make them relative to the page so the
-// bundle works under any deploy subpath (e.g. GitHub Pages `/<repo>/`).
-const contentFetch = (url) => fetch(typeof url === "string" && url.startsWith("/") ? "." + url : url);
+// The rune builds absolute `/content/...` fetch URLs; resolve them against the bundle root so a
+// chapter route can never make the fetch route-relative.
+const contentFetch = (url) => fetch(contentUrl(url, here));
 
-const wasm = await fetch("./docs.wasm").then((r) => r.arrayBuffer());
+const wasm = await fetch(assetUrl("docs.wasm", here)).then((r) => r.arrayBuffer());
 await mount(wasm, document.getElementById("app"), {
   initialModel: { route: location.pathname, summary: "", content: "" },
   fetch: contentFetch,
