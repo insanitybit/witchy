@@ -1,8 +1,9 @@
 ---
 rfc: 0041
 title: The witchy docs as a glamour app — a self-hosted, runnable book
-status: proposed
+status: implemented
 created: 2026-07-02
+implemented: 2026-07-03
 supersedes:
   - "0019 (interactive documentation — the runnable book; mdBook shell)"
 predecessors:
@@ -18,6 +19,29 @@ tracking:
 
 > Provisional syntax/paths. Code blocks are intentionally **not** tagged `witchy`
 > so the doc-examples test does not try to compile partial snippets.
+
+> **Status: implemented** (2026-07-03). The book IS a witchy/glamour app: `projects/docs`
+> fetches `book/src/SUMMARY.md`, parses the nav in witchy, renders each page via
+> `markdown.to_vnode`, routes with `UiRoute`, and turns every `witchy` fence into an
+> editable, runnable cell via a non-diffed host **Slot** (glamour gained a `Slot(kind,
+> data)` VNode the host mounts once and never diffs into — the fix for framework-owns-DOM
+> vs host-widget). The cells run a capability-DENIED pure-compute wasm, so they are
+> contained by wasm isolation. `scripts/build-docs.sh` assembles the static bundle
+> (docs.wasm + `book/src` content + web modules + manifest); the CI (`docs-build`/
+> `docs-deploy`) publishes it to GitHub Pages. Proven by `glamour_docs_app_renders_book_pages`,
+> `glamour_docs_bundle_renders_the_real_book` (runs the real bundle over the real book),
+> the host-Slot tests, the repaired playground, and the drift gate
+> `book_examples_manifest_is_current` (browser == manifest == interpreter). mdBook is
+> removed. RFC-0019 is superseded.
+>
+> **Deploy trade-off (maintainer decision):** the target is GitHub Pages, which does not
+> honor the bundle's strict COOP/COEP/CORP `_headers`, so cross-origin isolation is inert
+> there. Accepted because the runnable cells are contained by wasm capability-denial (not
+> by cross-origin isolation) and the compiler is single-threaded (no SharedArrayBuffer).
+> The strict headers are kept in the bundle, so redeploying the SAME artifact to a
+> `_headers`-honoring host (Cloudflare Pages / Netlify) or behind a proxy restores full
+> isolation with no change. FOLLOW-UPS (not DoD blockers): client-side search (the reader
+> feature mdBook gave for free) and per-page capability badges from `examples.json`.
 
 ## Summary
 
