@@ -3181,24 +3181,41 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(cap), vec!["5000000001"], "WASM (capture)");
     }
 
-    /// A Dict keyed by `Float` must look up the same on both backends. Float keys
-    /// go into the universal i64 slot as their bit pattern; `$key_eq` mode 2
-    /// reinterprets and compares with `f64.eq`, matching the interpreter's `==`
-    /// (insertion-order, value equality). (Regression for the interpreter-only
-    /// Float-key gap.)
+    /// (RFC-0047) A Dict keyed by `Float` is a compile-time error — keys require
+    /// `Eq`, and `Float` is only `PartialEq` (NaN != NaN, so a NaN key is
+    /// unretrievable and `0.1 + 0.2` is a precision trap). This closes the NaN-key
+    /// hole wholesale (breaking change: Float keys used to compile and run). The
+    /// error teaches the standard escapes (a scaled Int, or a String rendering).
     #[test]
-    fn dict_float_keys_agree_on_both_backends() {
-        let src = "fn main(console: Console):\n    let d = dict.insert(dict.insert(dict.insert(dict.new(), 1.5, \"a\"), 2.5, \"b\"), 1.5, \"c\")\n    print(console, dict.get_or(d, 1.5, \"?\"))\n    print(console, dict.get_or(d, 2.5, \"?\"))\n    print(console, dict.get_or(d, 9.9, \"?\"))\n    print(console, __render(dict.length(d)))\n    let e = dict.remove(d, 1.5)\n    print(console, dict.get_or(e, 1.5, \"gone\"))\n    print(console, __render(dict.length(e)))\n";
-        let want = vec![
-            "c".to_string(),
-            "b".to_string(),
-            "?".to_string(),
-            "2".to_string(),
-            "gone".to_string(),
-            "1".to_string(),
-        ];
-        assert_eq!(interp(src), want.clone(), "interpreter");
-        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    fn dict_float_keys_are_a_compile_error() {
+        let src = "fn main(console: Console):\n    let d = dict.insert(dict.new(), 1.5, \"a\")\n    print(console, dict.get_or(d, 1.5, \"?\"))\n";
+        let e = typeck::check_str(src).expect_err("a Float-keyed dict must be rejected");
+        assert!(
+            e.contains("not a valid `Dict` key") && e.contains("Eq"),
+            "teaching error naming the Eq requirement, got: {e}"
+        );
+        // The NaN case (the original hole) is rejected by the same type rule,
+        // before any runtime lookup can silently miss.
+        let nan = "fn main(console: Console):\n    let d = dict.insert(dict.new(), 0.0 / 0.0, \"nan\")\n    print(console, dict.get_or(d, 0.0 / 0.0, \"missing\"))\n";
+        assert!(
+            typeck::check_str(nan).expect_err("a NaN Float key must be rejected").contains("not a valid `Dict` key"),
+            "the NaN-key hole is closed by the type rule"
+        );
+        // An Int-keyed dict (the suggested escape) still works on both backends.
+        let ok = "fn main(console: Console):\n    let d = dict.insert(dict.new(), 3, \"a\")\n    print(console, dict.get_or(d, 3, \"?\"))\n";
+        assert_eq!(interp(ok), vec!["a"], "interpreter (Int key)");
+        assert_eq!(run_on_wasm(ok), vec!["a"], "compiled WASM (Int key)");
+    }
+
+    /// (RFC-0047) A `Set` of `Float` is likewise a compile-time error — members
+    /// require `Eq`. The Set stdlib already documents this doctrine; the type rule
+    /// makes it true.
+    #[test]
+    fn set_float_members_are_a_compile_error() {
+        let src = "import set\n\nfn main(console: Console):\n    var s = set.new()\n    s = set.insert(s, 1.5)\n    print(console, __render(set.length(s)))\n";
+        let linked = resolve_std_src(src);
+        let e = typeck::check(&linked).expect_err("a Float-membered set must be rejected").to_string();
+        assert!(e.contains("not a valid `Set` member") && e.contains("Eq"), "teaching error, got: {e}");
     }
 
     /// The Secret capability is enforced in the WASM sandbox: with the same

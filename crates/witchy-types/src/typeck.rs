@@ -628,6 +628,58 @@ fn uncomparable_kind(t: &Ty) -> Option<Uncomparable> {
     }
 }
 
+/// (RFC-0047) Which key/member position a `Float` occupies — used for the teaching
+/// error suggesting the right escape.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FloatKeyKind {
+    DictKey,
+    SetMember,
+}
+
+/// Whether a resolved [`Ty`] has a concrete `Float` in a `Dict` KEY position or a
+/// `Set` MEMBER position, at any depth (a `Dict(k, Dict(Float, v))` counts). Value
+/// positions and list elements are fine — only the hashed/compared key set needs
+/// `Eq`. `None` when there is no such Float.
+fn float_key_position(t: &Ty) -> Option<FloatKeyKind> {
+    match t {
+        Ty::Named(n, args) if n == "Dict" => {
+            // args[0] = key, args[1] = value. A Float directly as the key is the
+            // reject; otherwise recurse into BOTH (a nested dict/set anywhere).
+            if matches!(args.first(), Some(Ty::Float)) {
+                return Some(FloatKeyKind::DictKey);
+            }
+            args.iter().find_map(float_key_position)
+        }
+        Ty::Named(n, args) if n == "Set" => {
+            if matches!(args.first(), Some(Ty::Float)) {
+                return Some(FloatKeyKind::SetMember);
+            }
+            args.iter().find_map(float_key_position)
+        }
+        Ty::Named(_, args) => args.iter().find_map(float_key_position),
+        Ty::List(e) => float_key_position(e),
+        Ty::Tuple(ts) => ts.iter().find_map(float_key_position),
+        Ty::Fn(ps, r) => ps.iter().chain(std::iter::once(r.as_ref())).find_map(float_key_position),
+        _ => None,
+    }
+}
+
+fn float_key_reject_message(kind: FloatKeyKind) -> String {
+    match kind {
+        FloatKeyKind::DictKey => format!(
+            "`Float` is not a valid `Dict` key — keys require `Eq`, but `Float` is \
+             only `PartialEq` (`NaN != NaN`, so a Float key can be unretrievable and \
+             `0.1 + 0.2` is a precision trap). Use an `Int` key (scale to a fixed \
+             precision) or a `String` rendering of the value"
+        ),
+        FloatKeyKind::SetMember => format!(
+            "`Float` is not a valid `Set` member — members require `Eq`, but `Float` \
+             is only `PartialEq` (`NaN != NaN`). Use an `Int` (scaled) or a `String` \
+             rendering"
+        ),
+    }
+}
+
 /// The teaching error for an `==`/`!=` on an un-comparable type. `ty` is the whole
 /// operand type so the message can point at the container when the offender nests.
 fn equality_reject_message(kind: Uncomparable, ty: &Ty) -> String {
@@ -2084,6 +2136,16 @@ impl Checker {
 
     fn infer(&mut self, expr: &Expr) -> Result<Ty, TypeError> {
         let t = self.infer_inner(expr)?;
+        // (RFC-0047) `Dict` keys and `Set` members require `Eq`; `Float` is
+        // `PartialEq` but not `Eq` (NaN != NaN), so a `Float`-keyed dict has an
+        // unretrievable NaN entry and a `Float` key is a precision trap. Reject
+        // it at check time — once any expression's type concretely has a `Float`
+        // in key position, the whole program is refused (a type-level rule, not a
+        // per-NaN runtime trap). Only fires when the key type is concretely Float
+        // (an unresolved key var never triggers).
+        if let Some(kind) = float_key_position(&self.resolve(&t)) {
+            return terr(float_key_reject_message(kind));
+        }
         if let Some(rec) = &mut self.type_record {
             rec.insert(expr as *const Expr as usize, t.clone());
         }
