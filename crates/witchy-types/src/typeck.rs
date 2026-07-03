@@ -666,17 +666,17 @@ fn float_key_position(t: &Ty) -> Option<FloatKeyKind> {
 
 fn float_key_reject_message(kind: FloatKeyKind) -> String {
     match kind {
-        FloatKeyKind::DictKey => format!(
+        FloatKeyKind::DictKey =>
             "`Float` is not a valid `Dict` key — keys require `Eq`, but `Float` is \
              only `PartialEq` (`NaN != NaN`, so a Float key can be unretrievable and \
              `0.1 + 0.2` is a precision trap). Use an `Int` key (scale to a fixed \
              precision) or a `String` rendering of the value"
-        ),
-        FloatKeyKind::SetMember => format!(
+                .to_string(),
+        FloatKeyKind::SetMember =>
             "`Float` is not a valid `Set` member — members require `Eq`, but `Float` \
              is only `PartialEq` (`NaN != NaN`). Use an `Int` (scaled) or a `String` \
              rendering"
-        ),
+                .to_string(),
     }
 }
 
