@@ -71,8 +71,40 @@ fn view(m: Model) -> VNode(Msg):
                 // scheme-checked. No compartment needed for content.
                 glamour.element("main", [glamour.prop("class", "page")], [
                     runnable_markdown(content),
+                    nav_chapters(route, summary),
                 ]),
             ])
+
+// Prev/next chapter links at the foot of the page (mdBook-style), from the current route's
+// position in the SUMMARY-derived nav. A missing edge (first/last page) renders a spacer so the
+// remaining link keeps its side.
+fn nav_chapters(route: String, summary: String) -> VNode(Msg):
+    let entries = parse_nav(summary)
+    let idx = index_of_route(entries, route)
+    glamour.element("div", [glamour.prop("class", "nav-chapters")], [
+        edge_link(entries, idx - 1, "prev", "Previous"),
+        edge_link(entries, idx + 1, "next", "Next"),
+    ])
+
+fn index_of_route(entries: List((String, String)), route: String) -> Int:
+    var idx = 0 - 1
+    var i = 0
+    for entry in entries:
+        let (_title, slug) = entry
+        if "/p/" + slug == route:
+            idx = i
+        i = i + 1
+    idx
+
+fn edge_link(entries: List((String, String)), i: Int, cls: String, label: String) -> VNode(Msg):
+    if i >= 0 && i < list.length(entries):
+        let (title, slug) = list.at(entries, i)
+        glamour.element("button", [glamour.prop("class", "nav-chapter " + cls), glamour.on("click", Visit("/p/" + slug))], [
+            glamour.element("span", [glamour.prop("class", "dir")], [glamour.text(label)]),
+            glamour.element("span", [glamour.prop("class", "title")], [glamour.text(title)]),
+        ])
+    else:
+        glamour.element("span", [glamour.prop("class", "nav-spacer")], [])
 
 fn sidebar(route: String, summary: String) -> VNode(Msg):
     var items = []

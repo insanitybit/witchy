@@ -1,23 +1,68 @@
-/* witchy-book theme (RFC-0041). The docs app is a glamour rune; this is the only styling —
-   the rune emits inert VNodes, never HTML, so nothing here is a sink. Dark by default. */
-:root { color-scheme: dark; }
-body { font-family: system-ui, -apple-system, sans-serif; margin: 0; color: #e6e6ef; background: #14141f; }
-.book { display: flex; min-height: 100vh; align-items: stretch; }
+/* witchy-book theme (RFC-0041) — a reading UX in the spirit of The Rust Book (mdBook): a fixed,
+   independently-scrolling sidebar and a centered reading column. The docs app is a glamour rune;
+   this is the only styling — the rune emits inert VNodes, never HTML, so nothing here is a sink. */
+:root {
+  color-scheme: dark;
+  --bg: #14141f; --fg: #d7d7e0; --muted: #9797ae; --accent: #c9a4ff;
+  --sidebar-bg: #17171f; --border: #29293a; --code-bg: #1e1e2e; --sidebar-w: 18rem;
+}
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  margin: 0; color: var(--fg); background: var(--bg); font-size: 16px; -webkit-font-smoothing: antialiased;
+}
+.book { display: block; }
 
-.sidebar { width: 16rem; flex: 0 0 16rem; padding: 1.25rem 1rem; border-right: 1px solid #2a2a3a; background: #1a1a2a; }
-.sidebar h1 { font-size: 1.05rem; margin: 0 0 1rem; color: #c9a4ff; }
+/* Fixed, independently-scrolling sidebar. */
+.sidebar {
+  position: fixed; top: 0; left: 0; width: var(--sidebar-w); height: 100vh; overflow-y: auto;
+  padding: 1.5rem 1rem; border-right: 1px solid var(--border); background: var(--sidebar-bg);
+}
+.sidebar h1 { font-size: 1rem; letter-spacing: 0.01em; margin: 0 0 1.25rem; color: var(--accent); }
 .sidebar ul { list-style: none; margin: 0; padding: 0; }
-.sidebar li { margin: 0; }
-.nav-item { background: none; border: 0; color: #cfcfe0; cursor: pointer; padding: 0.3rem 0.25rem; text-align: left; width: 100%; border-radius: 4px; font: inherit; }
-.nav-item:hover { background: #2a2a3a; }
-.nav-item.active { font-weight: 600; color: #c9a4ff; background: #2a2a3a; }
+.sidebar li { margin: 1px 0; }
+.nav-item {
+  display: block; background: none; border: 0; color: var(--muted); cursor: pointer;
+  padding: 0.35rem 0.6rem; text-align: left; width: 100%; border-radius: 6px; font: inherit;
+  font-size: 0.9rem; line-height: 1.35;
+}
+.nav-item:hover { background: #22222f; color: var(--fg); }
+.nav-item.active { color: var(--accent); background: #22222f; box-shadow: inset 2px 0 0 var(--accent); }
 
-.page { flex: 1; padding: 2rem clamp(1rem, 5vw, 3rem); max-width: 52rem; line-height: 1.6; }
-.page h1, .page h2, .page h3 { line-height: 1.25; }
-.page a { color: #c9a4ff; }
-.page pre { background: #1e1e2e; padding: 0.75rem; overflow-x: auto; border-radius: 6px; }
-.page code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.9em; }
-.page :not(pre) > code { background: #23233a; padding: 0.1rem 0.3rem; border-radius: 4px; }
+/* A centered reading column beside the sidebar. */
+.page { margin-left: var(--sidebar-w); max-width: 48rem; padding: 3rem clamp(1.25rem, 5vw, 4rem) 5rem; margin-right: auto; line-height: 1.7; }
+.page h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 1.25rem; }
+.page h2 { font-size: 1.5rem; line-height: 1.25; margin: 2.75rem 0 1rem; padding-bottom: 0.3rem; border-bottom: 1px solid var(--border); }
+.page h3 { font-size: 1.2rem; margin: 2rem 0 0.75rem; }
+.page p { margin: 0 0 1.1rem; }
+.page a { color: var(--accent); text-decoration: none; }
+.page a:hover { text-decoration: underline; }
+.page ul, .page ol { padding-left: 1.5rem; margin: 0 0 1.1rem; }
+.page li { margin: 0.3rem 0; }
+.page blockquote { margin: 1.25rem 0; padding: 0.5rem 1rem; border-left: 3px solid var(--accent); background: #1b1b28; color: var(--muted); border-radius: 0 6px 6px 0; }
+.page hr { border: 0; border-top: 1px solid var(--border); margin: 2.5rem 0; }
+.page table { border-collapse: collapse; margin: 1.25rem 0; width: 100%; }
+.page th, .page td { border: 1px solid var(--border); padding: 0.5rem 0.75rem; text-align: left; }
+.page th { background: #1b1b28; }
+/* Plain (non-highlighted) code blocks — `text` output, untagged. Padding kept at 0.75rem so it
+   never overrides a code cell's highlight/textarea alignment. */
+.page pre { background: var(--code-bg); padding: 0.75rem; overflow-x: auto; border-radius: 8px; }
+.page code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.88em; }
+.page :not(pre) > code { background: #23233a; padding: 0.12rem 0.35rem; border-radius: 4px; color: #e6d8ff; }
+
+/* Prev/next chapter navigation at the foot of each page. */
+.nav-chapters { display: flex; justify-content: space-between; gap: 1rem; margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid var(--border); }
+.nav-chapter { flex: 1 1 0; min-width: 0; padding: 0.7rem 1rem; border: 1px solid var(--border); border-radius: 8px; background: none; cursor: pointer; font: inherit; color: var(--fg); }
+.nav-chapter:hover { background: #1b1b28; border-color: var(--accent); }
+.nav-chapter.next { text-align: right; }
+.nav-chapter .dir { display: block; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 0.2rem; }
+.nav-chapter .title { color: var(--accent); }
+.nav-spacer { flex: 1 1 0; }
+
+@media (max-width: 55rem) {
+  .sidebar { position: static; width: auto; height: auto; }
+  .page { margin-left: 0; }
+}
 
 /* A runnable code cell (RFC-0041 P2), with a syntax-highlight overlay. */
 .witchy-cell { margin: 1.25rem 0; border: 1px solid #2a2a3a; border-radius: 8px; overflow: hidden; }
