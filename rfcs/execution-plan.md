@@ -202,10 +202,13 @@ the last open Track B item.
   (`IMPORT_COUNT`); lowering `crates/witchy-lower/src/codegen/mod.rs`; wasmtime `Config`
   `runtime.rs` (hardened).
 - **Ordered steps (the remaining CORE):** (3) choose the aggregate/closure
-  representation (RFC recommends GC structs); (4) enable `wasm_reference_types`/
-  `wasm_gc` (currently left on in the Config for exactly this); (5) rewire host imports
-  to `externref` cap args + downcast to backing grant; (6) lower caps to `externref`
-  in codegen.
+  representation — **DONE: approach (A) GC structs**, with a full implementation design
+  (classification, WIR/codegen GC surface, host boundary, staged per-capability-type
+  landing) in `rfcs/0005-externref-implementation-plan.md`; (4) enable
+  `wasm_reference_types`/`wasm_gc` (currently left on in the Config for exactly this);
+  (5) rewire host imports to `externref` cap args + downcast to backing grant; (6) lower
+  caps to `externref` in codegen. Steps 4–6 are the ABI cut itself — gated on review of
+  the design plan (per the maintainer's design-first call; NOT for the autonomous loop).
 - **DoD:** all cap imports take `externref`; parity green; no bypass in the bounded
   threat model; fuzzer finds no diffs. **Size:** L (a coordinated ABI cut — cannot
   coexist with the i32 ABI; best done as a dedicated focused effort, not folded into a

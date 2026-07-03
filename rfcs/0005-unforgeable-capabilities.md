@@ -216,7 +216,11 @@ one of two resolutions:
 
 Recommendation: **(A)** for soundness and simplicity of reasoning, scoped to only
 the cap-carrying value shapes so the bulk of the heap is untouched. The choice is
-the principal open question and the main implementation cost of this RFC.
+the principal open question and the main implementation cost of this RFC. The
+concrete migration for (A) — the `carries_cap` classification, the WIR/codegen GC
+surface, the host boundary, and a staged, per-capability-type landing order that
+keeps `check.sh` green at each step — is worked out in the companion design doc
+`rfcs/0005-externref-implementation-plan.md`.
 
 ### Host-side resolution
 
