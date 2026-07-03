@@ -36,10 +36,6 @@ cp web/witchy-runtime/glamour-dom.mjs web/witchy-runtime/witchy-runtime.mjs \
    web/witchy-host.js web/witchy-runnable.js web/witchy-highlight.js \
    web/docs-boot.js web/docs-asset-url.js web/docs.css "$OUT/"
 cp web/docs.html "$OUT/index.html"
-# SPA deep-link fallback: a static host (GitHub Pages) serves 404.html for an unknown path,
-# so a direct link to /p/<chapter> (or a refresh there) loads the app, which then routes to
-# that path client-side. Same file as index.html.
-cp web/docs.html "$OUT/404.html"
 cp book/examples.json "$OUT/"
 # Strict cross-origin isolation on every response (house rule) — for a `_headers`-honoring host.
 cp web/_headers "$OUT/"
