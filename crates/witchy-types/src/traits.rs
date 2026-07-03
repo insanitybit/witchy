@@ -480,22 +480,75 @@ fn transitive_supertraits(direct: &HashMap<String, Vec<String>>) -> HashMap<Stri
     out
 }
 
-/// Variable name -> the head name of its (known) type.
-type Scope = HashMap<String, String>;
+/// The dispatch pass's lexical environment: each bound name's (known) head type,
+/// plus the set of ALL names bound as locals (params, `let`s, `for`/pattern
+/// binders, lambda params) — including those whose type is a function or is
+/// otherwise unknown. The type map drives receiver typing; the local set answers
+/// "is this call name a bound local?", so a call on a parameter that happens to
+/// share a trait method's name (`less`/`greater`/`show`, e.g. a comparator
+/// parameter) is invoked as the first-class function it is, never rewritten to a
+/// trait dispatch.
+#[derive(Clone, Default)]
+struct Scope {
+    types: HashMap<String, String>,
+    locals: HashSet<String>,
+}
+
+impl Scope {
+    fn new() -> Self {
+        Scope::default()
+    }
+
+    /// The head type name bound for `name`, if known.
+    fn get(&self, name: &str) -> Option<&String> {
+        self.types.get(name)
+    }
+
+    /// Bind `name` to head type `ty` — and record it as a local.
+    fn insert(&mut self, name: String, ty: String) {
+        self.locals.insert(name.clone());
+        self.types.insert(name, ty);
+    }
+
+    /// Record `name` as a bound local whose type is unknown here (a function-
+    /// typed parameter, an untyped `let`), clearing any stale type binding.
+    fn bind_local(&mut self, name: &str) {
+        self.locals.insert(name.to_string());
+        self.types.remove(name);
+    }
+
+    /// Drop any type binding for `name` (monomorphization's scope, which does
+    /// not consult the local set — it only recovers concrete types).
+    fn remove(&mut self, name: &str) {
+        self.types.remove(name);
+    }
+
+    /// Whether `name` is bound as a local in this scope (so a call on it is a
+    /// first-class function invocation, not a trait-method dispatch).
+    fn is_local(&self, name: &str) -> bool {
+        self.locals.contains(name)
+    }
+}
 
 fn seed_params(params: &[Param], scope: &mut Scope) {
     for p in params {
-        if let Some(name) = p.ty.as_ref().and_then(type_to_scope_name) {
-            scope.insert(p.name.clone(), name);
+        // Every parameter is a bound local — even a function-typed one, whose
+        // type has no scope-name — so a call on it never dispatches as a trait
+        // method that shares its name.
+        match p.ty.as_ref().and_then(type_to_scope_name) {
+            Some(name) => scope.insert(p.name.clone(), name),
+            None => scope.bind_local(&p.name),
         }
     }
 }
 
 /// Bind a `for`-loop variable to the element type of the iterable, when the
-/// iterable's type is a known `List<...>`.
+/// iterable's type is a known `List<...>`. The variable is recorded as a bound
+/// local either way, so a call on it is never a trait dispatch.
 fn bind_loop_var(var: &str, iter_type: Option<String>, scope: &mut Scope) {
-    if let Some(elem) = iter_type.as_deref().and_then(list_elem) {
-        scope.insert(var.to_string(), elem.to_string());
+    match iter_type.as_deref().and_then(list_elem) {
+        Some(elem) => scope.insert(var.to_string(), elem.to_string()),
+        None => scope.bind_local(var),
     }
 }
 
@@ -640,7 +693,9 @@ impl Ctx<'_> {
                             scope.insert(name.clone(), t);
                         }
                         None => {
-                            scope.remove(name.as_str());
+                            // Untypeable, but still a bound local: a call on it
+                            // is a first-class invocation, not a trait dispatch.
+                            scope.bind_local(name);
                         }
                     }
                 }
@@ -677,7 +732,7 @@ impl Ctx<'_> {
                         }
                         None => {
                             for n in names {
-                                scope.remove(n.as_str());
+                                scope.bind_local(n);
                             }
                         }
                     }
@@ -694,7 +749,15 @@ impl Ctx<'_> {
                 for a in args.iter_mut() {
                     self.rewrite_expr(a, scope);
                 }
-                if let Some(trait_name) = self.trait_methods.get(name.as_str()) {
+                // A call on a bound LOCAL (a function-typed parameter, a `let`
+                // holding a closure) is a first-class invocation — never a
+                // trait-method dispatch, even when the local's name coincides
+                // with a trait method (`less`/`greater`/`show`, e.g. a
+                // comparator parameter named `less`). Without this guard, a
+                // comparator's own `less(best, x)` would be rewritten to the
+                // element type's `Ord::less`, silently discarding the passed-in
+                // function.
+                if let Some(trait_name) = self.trait_methods.get(name.as_str()).filter(|_| !scope.is_local(name)) {
                     if let Some(recv) = args.first() {
                         if let Some(tn) = self.type_name(recv, scope) {
                             match self.lookup_impl(name, &tn) {
@@ -1525,11 +1588,12 @@ fn bind_ctor_pattern(pat: &Pattern, ctor_fields: &HashMap<String, Vec<Type>>, sc
         if let Some(fields) = ctor_fields.get(name) {
             for (arg, fty) in args.iter().zip(fields) {
                 match arg {
-                    Pattern::Var(v) => {
-                        if let Some(sn) = concrete_scope_name(fty) {
-                            scope.insert(v.clone(), sn);
-                        }
-                    }
+                    Pattern::Var(v) => match concrete_scope_name(fty) {
+                        Some(sn) => scope.insert(v.clone(), sn),
+                        // A generic-typed binder is still a bound local, so a
+                        // call on it is a first-class invocation, not a dispatch.
+                        None => scope.bind_local(v),
+                    },
                     Pattern::Ctor { .. } => bind_ctor_pattern(arg, ctor_fields, scope),
                     _ => {}
                 }

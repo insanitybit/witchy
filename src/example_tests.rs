@@ -1627,9 +1627,12 @@ fn main(console: Console):
     /// typed lowering resolves the type argument (confirmed via the table),
     /// the specialization's `==` becomes structural. Previously the generic
     /// fallback pointer-compared (or, post-hotfix, refused to compile).
+    /// RFC-0046 step 3: `list.contains`/`index_of` now carry a `where a: Eq`
+    /// bound, so a record element type derives `Eq` (its content equality) to
+    /// use them — which is exactly what makes them monomorphize on WASM.
     #[test]
     fn generic_equality_on_records_is_structural() {
-        let src = "import list\n\ntype Point:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let pts = [Point(1, 2), Point(3, 4)]\n    let probe = Point(1 + 2, 4)\n    print(console, \"${list.contains(pts, probe)}\")\n    print(console, \"${list.index_of(pts, Point(1, 2))}\")\n";
+        let src = "import list\nimport cmp\n\ntype Point derive(PartialEq, Eq):\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let pts = [Point(1, 2), Point(3, 4)]\n    let probe = Point(1 + 2, 4)\n    print(console, \"${list.contains(pts, probe)}\")\n    print(console, \"${list.index_of(pts, Point(1, 2))}\")\n";
         let want: Vec<String> = ["true", "0"].iter().map(|s| s.to_string()).collect();
         assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
@@ -14373,6 +14376,36 @@ fn main(console: Console):
     fn rfc0046_trait_call_on_builtin_result_resolves_show() {
         let src = "import show\nimport string\nimport list\n\nfn main(console: Console):\n    let parts = string.split(\"a,b,c\", \",\")\n    say(console, list.at(parts, 1))\n    say(console, list.at(string.split(\"x-y\", \"-\"), 0))\n";
         let want = vec!["b".to_string(), "x".to_string()];
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// RFC-0046 acceptance (c): the `Eq`-bounded `list.*` search functions
+    /// (`unique`/`contains`/`index_of`/`position`) monomorphize per element
+    /// type, so they COMPILE ON WASM for a user RECORD element type — where the
+    /// unbounded generic `==` could not (the compiled backend has no structural
+    /// equality through an unresolved type variable). `Point` derives `Eq`; the
+    /// bound discharges to that impl, and both backends agree.
+    #[test]
+    fn rfc0046_eq_bounded_list_search_compiles_for_records_on_wasm() {
+        let src = "import list\nimport cmp\n\ntype Point derive(PartialEq, Eq):\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let ps = [Point(1, 2), Point(1, 2), Point(3, 4)]\n    let u = list.unique(ps)\n    print(console, \"${list.length(u)}\")\n    print(console, \"${list.contains(ps, Point(3, 4))}\")\n    print(console, \"${list.index_of(ps, Point(3, 4))}\")\n";
+        let want = vec!["2".to_string(), "true".to_string(), "2".to_string()];
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// RFC-0046 regression: a first-class function whose name coincides with a
+    /// trait method — the comparator PARAMETER `less` that `list.sort_by`/
+    /// `max_by`/`min_by` take — is invoked as the passed-in function, never
+    /// rewritten to the element type's `Ord::less`. Latent until `cmp` was
+    /// linked everywhere (step 3 imports it into `std/list`); a `max_by` with a
+    /// reversed comparator would otherwise silently ignore it and return the
+    /// plain maximum. Reversed-less `max_by` must return the minimum.
+    #[test]
+    fn rfc0046_comparator_param_named_like_trait_method_is_not_dispatched() {
+        let src = "import list\nimport option\nimport cmp\n\nfn main(console: Console):\n    let xs = [3, 1, 4, 1, 5, 9, 2]\n    print(console, \"${option.unwrap_or(list.max_by(xs, fn(a: Int, b: Int): (0 - a) < (0 - b)), 0)}\")\n    print(console, \"${option.unwrap_or(list.min_by(xs, fn(a: Int, b: Int): (0 - a) < (0 - b)), 0)}\")\n";
+        // Reversed comparator: max_by finds the minimum (1), min_by the maximum (9).
+        let want = vec!["1".to_string(), "9".to_string()];
         assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
     }
