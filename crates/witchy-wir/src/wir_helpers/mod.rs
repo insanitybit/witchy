@@ -278,6 +278,41 @@ pub fn mk_helper(n: usize, checked: bool) -> WirFunc {
     }
 }
 
+/// (RFC-0051 I2) `$bump_alloc(size: i32) -> i32` — THE single allocator: the only
+/// construct in the entire compiled module that advances `$heap`, and it is
+/// `$ensure`-prefixed by construction. Everything that needs fresh bytes calls it —
+/// `$rc_alloc`'s bump-miss path, the worker-VM `$__galloc`, and the dict index
+/// rebuild — so the "remember to call ensure()" convention (the `int_to_string`
+/// OOB class) is closed structurally: a workspace test walks every assembled WIR
+/// function and fails on any other `$heap` write (the codegen watermark REWINDS,
+/// which reset `$heap` to a previously captured `__witchy_wm_*` value and never
+/// advance it, are the one shape-exempted case). Returns the old frontier.
+pub fn bump_alloc_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    WirFunc {
+        name: "bump_alloc".into(),
+        params: vec![WirLocal { name: "size".into(), ty: WirTy::Bool }],
+        ret: vec![WirTy::Bool],
+        locals: vec![WirLocal { name: "p".into(), ty: WirTy::Bool }],
+        body: vec![
+            N::Do(E::Call { func: "ensure".into(), args: vec![E::GetLocal("size".into())] }),
+            N::SetLocal { local: "p".into(), value: E::GetGlobal("heap".into()) },
+            N::SetGlobal {
+                global: "heap".into(),
+                value: E::Binary {
+                    op: BinOp::Add,
+                    kind: Kind::I32,
+                    lhs: Box::new(E::GetLocal("p".into())),
+                    rhs: Box::new(E::GetLocal("size".into())),
+                },
+            },
+            N::Push(E::GetLocal("p".into())),
+        ],
+        raw_body: None,
+    }
+}
+
 /// (RFC-0016) `$rc_alloc(size: i32) -> i32` — the central heap allocator: reuse a
 /// freed block from the size-classed free-list (first-fit: the first block whose
 /// stored byte-size ≥ `size`), else bump `$heap` like the inline allocators did.
@@ -373,21 +408,18 @@ pub fn rc_alloc_helper() -> WirFunc {
             setl("cur", E::GetGlobal("rc_freelist".into())),
             setl("prev", i32c(0)),
             scan,
-            // miss: bump the arena, reserving an 8-byte `[rc:i32][size:i32]` header
-            // BEFORE the object. `size` stays at object-4 (so `$rc_free`, the reuse
-            // scan, and the reused-bytes counter are byte-for-byte unchanged); the new
-            // refcount word sits at object-8, initialized to 1 (the allocating owner).
-            // The returned object pointer is `base+8`; every in-object reader is
-            // relative to it and so is unaffected. Off the RC path (`$dup`/`$drop` not
-            // emitted) the refcount is written but never read — inert, +4 bytes/object.
-            N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, getl("size"), i32c(8))] }),
-            setl("base", E::GetGlobal("heap".into())),
+            // miss: bump the arena via `$bump_alloc` (RFC-0051 I2: the ONE construct
+            // that advances `$heap`, ensure-prefixed by construction), reserving an
+            // 8-byte `[rc:i32][size:i32]` header BEFORE the object. `size` stays at
+            // object-4 (so `$rc_free`, the reuse scan, and the reused-bytes counter
+            // are byte-for-byte unchanged); the new refcount word sits at object-8,
+            // initialized to 1 (the allocating owner). The returned object pointer is
+            // `base+8`; every in-object reader is relative to it and so is unaffected.
+            // Off the RC path (`$dup`/`$drop` not emitted) the refcount is written but
+            // never read — inert, +4 bytes/object.
+            setl("base", E::Call { func: "bump_alloc".into(), args: vec![b(BinOp::Add, getl("size"), i32c(8))] }),
             N::Store { ptr: getl("base"), value: i32c(1), kind: Kind::I32, offset: 0 },
             N::Store { ptr: getl("base"), value: getl("size"), kind: Kind::I32, offset: 4 },
-            N::SetGlobal {
-                global: "heap".into(),
-                value: b(BinOp::Add, getl("base"), b(BinOp::Add, i32c(8), getl("size"))),
-            },
             N::Push(b(BinOp::Add, getl("base"), i32c(8))),
         ],
         raw_body: None,
@@ -3746,9 +3778,16 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
+        "bump_alloc" => Some(WirHelperSpec {
+            func: bump_alloc_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
         "rc_alloc" => Some(WirHelperSpec {
             func: rc_alloc_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["ensure", "bump_alloc"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,
@@ -4509,7 +4548,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dict_insert_cap" => Some(WirHelperSpec {
             func: dict_insert_cap_helper(),
-            helper_deps: &["rc_alloc", "dict_find", "ensure", "dict_index_put"],
+            helper_deps: &["rc_alloc", "dict_find", "bump_alloc", "dict_index_put"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,

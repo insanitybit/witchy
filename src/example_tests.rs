@@ -8640,6 +8640,45 @@ fn main(console: Console):
         assert_eq!(link_run(src), want, "interpreter oracle");
     }
 
+    /// (RFC-0051 I2) The single-allocator invariant on LOWERED PROGRAMS: assemble
+    /// full WIR modules (helpers + user code) for representative programs that
+    /// exercise the heap-touching lowering shapes — accumulation (`list.push`/
+    /// dict insert self-assigns → the `*_cap` in-place paths), string building,
+    /// a scalar `region:` reclaim, a pointer `region:` copy-out, and a loop-arena
+    /// reset — and walk every function body: any `SetGlobal { global: "heap" }`
+    /// outside `$bump_alloc` and the named watermark REWINDS
+    /// (`heap = __witchy_wm_*` / `heap = wm + copied_len`, which move `$heap`
+    /// down to or below an already-ensured frontier) fails with the offending
+    /// function's name. Because all WIR construction funnels through
+    /// `assemble_wir_module`, the walk sees everything — including future
+    /// helpers — so the `ensure()` convention cannot be silently forgotten
+    /// (the `int_to_string` OOB class). Registry-wide helper coverage lives in
+    /// witchy-wir's `single_allocator_invariant_holds_across_helper_registry`.
+    #[test]
+    fn single_allocator_invariant_holds_on_lowered_programs() {
+        let progs = [
+            // accumulators: list push / dict insert / string concat self-assigns
+            "fn main(console: Console):\n    var xs = []\n    var d = dict.new()\n    var s = \"\"\n    for i in 0..50:\n        xs = list.push(xs, i)\n        d = dict.insert(d, \"k${i}\", i)\n        s = s + \"x\"\n    xs = list.set_at(xs, 0, 9)\n    print(console, \"${list.length(xs)} ${dict.length(d)} ${string.length(s)}\")\n",
+            // scalar region reclaim (the watermark rewind exemption)
+            "import string\n\nfn main(console: Console):\n    let n = region -> Int:\n        var parts = []\n        for i in 0..20:\n            parts = list.push(parts, \"p${i}\")\n        list.length(parts)\n    print(console, \"${n}\")\n",
+            // pointer region copy-out (the `heap = wm + copied_len` advance-rewind)
+            "import string\n\nfn main(console: Console):\n    let summary = region:\n        var parts = []\n        for i in 0..20:\n            parts = list.push(parts, \"p${i}\")\n        list.join(parts, \",\")\n    print(console, \"${string.length(summary)}\")\n",
+        ];
+        for src in progs {
+            let linked = resolve_std_src(src);
+            typeck::check(&linked).expect("typecheck");
+            let m = codegen::assemble_wir_module(&linked)
+                .expect("assemble")
+                .unwrap_or_else(|| panic!("expected the WIR binary path to handle:\n{src}"));
+            let violations = witchy_wir::wir::heap_write_violations(&m);
+            assert!(
+                violations.is_empty(),
+                "RFC-0051 I2 violated — these functions write `$heap` outside \
+                 `$bump_alloc`/the watermark rewinds: {violations:?}\nprogram:\n{src}"
+            );
+        }
+    }
+
     /// Criterion-2: the slot-elimination pass shows a MEASURABLE improvement on a
     /// real lowered program. `[list.at(xs, 0)]` (with `xs: List(Bool)`) reads an
     /// i64 slot, narrows it to the bool's i32, then re-widens it to store in the

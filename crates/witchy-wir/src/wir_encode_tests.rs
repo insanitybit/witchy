@@ -135,6 +135,12 @@
             let pos = m.funcs.len().saturating_sub(1); // before the trailing `run`
             m.funcs.insert(pos, crate::wir_helpers::rc_alloc_helper());
         }
+        // (RFC-0051 I2) `$rc_alloc`'s bump-miss path (and `$dict_insert_cap`'s index
+        // rebuild) delegate to `$bump_alloc`, the single ensure-prefixed allocator.
+        if uses_rc && !m.funcs.iter().any(|f| f.name == "bump_alloc") {
+            let pos = m.funcs.len().saturating_sub(1);
+            m.funcs.insert(pos, crate::wir_helpers::bump_alloc_helper());
+        }
         if uses_rc {
             for (name, kind, init) in [
                 ("heap", Kind::I32, GlobalInit::I32(1024)),
