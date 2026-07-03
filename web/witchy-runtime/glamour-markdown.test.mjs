@@ -110,7 +110,7 @@ type Msg derive(Reflect):
     Noop
 
 fn view(model: Int) -> VNode(Msg):
-    markdown.to_vnode("# Heading\\n\\nA raw <script>alert(1)</script> tag and a [trap](javascript:steal()) link and **bold** text.\\n\\n- item one\\n- item two\\n")
+    markdown.to_vnode("# Heading\\n\\nA raw <script>alert(1)</script> tag and a [trap](javascript:steal()) link and **bold** text.\\n\\n- item one\\n- item two\\n\\n| Left | Right |\\n|---|---|\\n| one | two |\\n| three | four |\\n")
 
 fn update(model: Int, msg: Msg) -> (Int, Cmd(Msg)):
     (model, NoCmd)
@@ -167,6 +167,11 @@ try {
   ok(querySelectorAll(root, "h1").length === 1, "a heading renders as <h1>");
   ok(querySelectorAll(root, "strong").length === 1, "**bold** renders as <strong>");
   ok(querySelectorAll(root, "li").length === 2, "a list renders two <li>");
+  // A GFM table renders as a real <table> (header <th> + body <td>), not literal pipe text.
+  ok(querySelectorAll(root, "table").length === 1, "a GFM table renders one <table>");
+  ok(querySelectorAll(root, "th").length === 2, "the header row renders two <th>");
+  ok(querySelectorAll(root, "td").length === 4, "the two body rows render four <td>");
+  ok(!root.textContent.includes("| Left | Right |"), "no literal pipe row leaks into the text");
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

@@ -52,6 +52,17 @@ fn blocks(lines: List(String)) -> List(VNode(msg)):
                 j = j + 1
             acc = list.push(acc, glamour.element("ul", [], items))
             i = j
+        else if is_table_row(line) && i + 1 < n && is_table_separator(list.at(lines, i + 1)):
+            // A GFM table: a header row, a `|---|---|` separator, then body rows. The separator
+            // (line i+1) is consumed but never rendered; body rows run until the first non-row.
+            let thead = glamour.element("thead", [], [glamour.element("tr", [], table_row_cells(line, "th"))])
+            var body_rows = []
+            var j = i + 2
+            while j < n && is_table_row(list.at(lines, j)):
+                body_rows = list.push(body_rows, glamour.element("tr", [], table_row_cells(list.at(lines, j), "td")))
+                j = j + 1
+            acc = list.push(acc, glamour.element("table", [], [thead, glamour.element("tbody", [], body_rows)]))
+            i = j
         else:
             var para = []
             var j = i
@@ -77,6 +88,44 @@ fn heading_level(line: String) -> Int:
 
 fn is_list_item(line: String) -> Bool:
     string.starts_with(line, "- ") || string.starts_with(line, "* ")
+
+// --- GFM tables (leading-pipe rows + a `|---|` separator) --------------------
+// Only the leading-pipe form is recognized (every table in our docs uses it), which keeps a
+// prose line that merely contains a `|` from ever being mistaken for a table.
+
+fn is_table_row(line: String) -> Bool:
+    string.starts_with(string.trim(line), "|")
+
+// The delimiter row beneath the header (`|---|:--:|`): pipes, dashes, colons, spaces only, with
+// at least one dash. Alignment colons are tolerated but not (yet) applied as a text-align.
+fn is_table_separator(line: String) -> Bool:
+    let t = string.trim(line)
+    string.starts_with(t, "|") && string.index_of(t, "-") >= 0 && only_chars(t, "|-: ")
+
+fn only_chars(s: String, allowed: String) -> Bool:
+    var ok = true
+    var i = 0
+    let n = string.length(s)
+    while i < n:
+        if string.index_of(allowed, string.char_at(s, i)) < 0:
+            ok = false
+        i = i + 1
+    ok
+
+// Split a `| a | b |` row into cell elements (`tag` = th/td), dropping the empty cells the
+// border pipes produce and rendering each cell's inline Markdown.
+fn table_row_cells(line: String, tag: String) -> List(VNode(msg)):
+    let raw = string.split(string.trim(line), "|")
+    let m = list.length(raw)
+    var cells = []
+    var k = 0
+    while k < m:
+        let cell = list.at(raw, k)
+        let edge = k == 0 || k == m - 1
+        if !(edge && string.is_empty(string.trim(cell))):
+            cells = list.push(cells, glamour.element(tag, [], inline(string.trim(cell))))
+        k = k + 1
+    cells
 
 // --- inline (recursive, earliest-marker) ------------------------------------
 // Handles `code`, **bold**, and [text](url). Everything else is a plain text node,
