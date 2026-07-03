@@ -116,19 +116,24 @@ it *must* be open and honest about the use of AI.
 
 ## Run the docs
 
-The guided way to learn witchy is **[The witchy Book](book/src/SUMMARY.md)**. Run
-it locally with live reload:
+The guided way to learn witchy is **[The witchy Book](book/src/SUMMARY.md)** — which
+_is_ a witchy program: a client-side [Glamour](projects/glamour) app that renders
+every chapter and turns each code block into an editable, runnable cell (the ultimate
+dogfood). Build the static bundle and serve it locally:
 
 ```sh
 git clone https://github.com/insanitybit/witchy && cd witchy
-cargo install mdbook              # one-time, if you don't already have it
-./scripts/build-book.sh --serve   # builds the book and opens it in your browser
+cargo build --release            # the toolchain (compiles the docs app to wasm)
+./scripts/build-playground.sh    # the in-browser compiler behind the Run buttons
+./scripts/build-docs.sh dist     # assemble the static bundle
+python3 -m http.server -d dist 8000   # then open http://localhost:8000
 ```
 
 That's a chapter-by-chapter tour from "hello" through capabilities, concurrency,
-generators, and the package manager — every example is run and verified by the
-test suite, so what you read is exactly what the language does. (No witchy build
-needed just to read it.)
+generators, and the package manager — every example is run and verified by the test
+suite, so what you read is exactly what the language does. The bundle is a bag of
+static files (no server), and you can always read the chapters as plain Markdown
+straight from [`book/src/`](book/src/SUMMARY.md).
 
 Want to _run code_ with zero install instead? The [playground](#playground)
 compiles and runs your code in your browser. Or jump straight to
@@ -243,8 +248,8 @@ with the language reference's examples preloaded.
 ## Learn more
 
 - **[The witchy Book](book/src/SUMMARY.md)** — the guided, chapter-by-chapter
-  introduction (build it with `./scripts/build-book.sh`, or read the chapters as
-  Markdown under `book/src/`). Start here if you're new.
+  introduction (a client-side Glamour app: build it with `./scripts/build-docs.sh`,
+  or read the chapters as Markdown under `book/src/`). Start here if you're new.
 - **[Language reference](spec/language.md)** — the full syntax and semantics.
 - **[Capabilities guide](spec/capabilities.md)** — the security model, for users.
 - **[Standard library](spec/stdlib.md)** — 36 modules, function-by-function.

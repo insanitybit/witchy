@@ -2,7 +2,7 @@
 /benchmarks/.build
 /web/witchy.wasm
 .playwright-mcp/
-/book-html
+/dist
 bench/bin/
 
 .claude/scheduled_tasks.lock
