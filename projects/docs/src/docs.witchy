@@ -104,13 +104,23 @@ fn to_runnable(block: VNode(Msg)) -> VNode(Msg):
             if tag == "pre" && list.length(kids) == 1:
                 match list.at(kids, 0):
                     Element(ctag, cattrs, ckids) ->
-                        if ctag == "code" && is_witchy_code(cattrs):
+                        if ctag == "code":
                             let code = code_text(ckids)
-                            // A Run cell ONLY where the snippet actually runs in the cell;
-                            // a capability example renders as highlighted static code (no
-                            // Run button, so no misleading "capability denied" error).
-                            let kind = if runs_in_browser(code): "witchy-runnable" else: "witchy-static"
-                            glamour.slot(kind, code)
+                            let lang = code_language(cattrs)
+                            if lang == "witchy":
+                                // A Run cell ONLY where the snippet actually runs in the cell;
+                                // a capability example is highlighted static code (no Run
+                                // button, so no misleading "capability denied" error).
+                                let kind = if runs_in_browser(code): "witchy-runnable" else: "witchy-static"
+                                glamour.slot(kind, code)
+                            else if lang == "sh":
+                                glamour.slot("shell-static", code)
+                            else if lang == "toml":
+                                glamour.slot("toml-static", code)
+                            else:
+                                // `text` (program output / diagrams) and untagged fences stay
+                                // as plain styled blocks — not code to syntax-highlight.
+                                block
                         else:
                             block
                     _ -> block
@@ -134,20 +144,25 @@ fn names_denied_capability(code: String) -> Bool:
             found = true
     found
 
-// Whether a `<code>`'s attributes carry the `language-witchy` class markdown emits for a
-// `witchy` fence.
-fn attr_is_witchy(a: Attr(Msg)) -> Bool:
+// The fence language from a `<code>`'s `language-<lang>` class (markdown preserves the fence's
+// info string there), or "" if none — so the app can slot each fence to the right highlighter.
+fn attr_language(a: Attr(Msg)) -> String:
     match a:
-        Prop(name, value) -> name == "class" && value == "language-witchy"
-        On(_e, _m) -> false
-        OnInput(_e, _t) -> false
+        Prop(name, value) ->
+            if name == "class" && string.starts_with(value, "language-"):
+                string.substring(value, 9, string.length(value))
+            else:
+                ""
+        On(_e, _m) -> ""
+        OnInput(_e, _t) -> ""
 
-fn is_witchy_code(attrs: List(Attr(Msg))) -> Bool:
-    var found = false
+fn code_language(attrs: List(Attr(Msg))) -> String:
+    var lang = ""
     for a in attrs:
-        if attr_is_witchy(a):
-            found = true
-    found
+        let l = attr_language(a)
+        if !string.is_empty(l):
+            lang = l
+    lang
 
 // The source text inside a `<code>` (its single child text node).
 fn code_text(kids: List(VNode(Msg))) -> String:

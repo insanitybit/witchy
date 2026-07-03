@@ -5,7 +5,7 @@
 //
 // Usage:  node web/witchy-runtime/witchy-highlight.test.mjs
 
-import { highlightWitchy } from "../witchy-highlight.js";
+import { highlightWitchy, highlightShell, highlightToml } from "../witchy-highlight.js";
 
 let failures = 0;
 const ok = (cond, msg) => { console.log(`  ${cond ? "ok" : "FAIL"}: ${msg}`); if (!cond) failures++; };
@@ -42,6 +42,19 @@ ok(highlightWitchy("let x = net.only(p)").includes('<span class="t-builtin">only
 const h4 = highlightWitchy("a < b > c & d");
 ok(h4.includes("&lt;") && h4.includes("&gt;") && h4.includes("&amp;"), "HTML metacharacters are escaped");
 ok(!h4.includes("<b>"), "raw `<b>` never reaches the output");
+
+// --- Shell + TOML highlighters (the book's `sh` / `toml` fences) ---
+const sh = highlightShell("witchy sandbox --dir . f.witchy # note");
+ok(sh.includes('<span class="t-kw">--dir</span>'), "a shell flag is coloured");
+ok(sh.includes('<span class="t-comment"># note</span>'), "a shell comment is coloured");
+ok(highlightShell('echo "<b>" # <i>').includes("&lt;b&gt;") && !highlightShell('echo "<b>"').includes("<b>"), "shell highlighter escapes HTML (no injection)");
+
+const toml = highlightToml('[rune]\nname = "app"\nlisten = true\nport = 8080');
+ok(toml.includes('<span class="t-type">[rune]</span>'), "a TOML section is coloured");
+ok(toml.includes('<span class="t-builtin">name</span>'), "a TOML key is coloured");
+ok(toml.includes('<span class="t-str">"app"</span>'), "a TOML string is coloured");
+ok(toml.includes('<span class="t-lit">true</span>'), "a TOML boolean is coloured");
+ok(highlightToml('x = "<script>"').includes("&lt;script&gt;"), "TOML highlighter escapes HTML (no injection)");
 
 if (failures > 0) {
   console.error(`\nWITCHY-HIGHLIGHT FAILED (${failures} check(s))`);

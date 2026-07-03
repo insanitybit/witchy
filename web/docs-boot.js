@@ -7,7 +7,7 @@
 import { mount } from "./glamour-dom.mjs";
 import { runnableSlot, staticSlot } from "./witchy-runnable.js";
 import { assetUrl, contentUrl } from "./docs-asset-url.js";
-import { highlightWitchy } from "./witchy-highlight.js";
+import { highlightWitchy, highlightShell, highlightToml } from "./witchy-highlight.js";
 
 // Every bundle asset resolves against THIS module's URL — the bundle root — never the current
 // route. A chapter routes to `/p/<slug>`, so a page-relative `./content/...` / `./witchy.wasm`
@@ -46,5 +46,8 @@ await mount(wasm, document.getElementById("app"), {
   slots: {
     "witchy-runnable": runnableSlot({ loadCompiler, highlight: highlightWitchy }),
     "witchy-static": staticSlot({ highlight: highlightWitchy }),
+    // Non-witchy code fences get read-only highlighting too (same token theme).
+    "shell-static": staticSlot({ highlight: highlightShell }),
+    "toml-static": staticSlot({ highlight: highlightToml }),
   },
 });

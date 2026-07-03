@@ -81,3 +81,43 @@ export function highlightWitchy(src) {
   out += escapeHtml(src.slice(last));
   return out;
 }
+
+// A small SHELL highlighter for the book's `sh` fences (`witchy sandbox …`, `cargo …`). Emits
+// the same `t-*` token classes as `highlightWitchy` (so it reuses the theme) over HTML-escaped
+// text — comments, strings, `$vars`, and `-x`/`--flag` options.
+export function highlightShell(src) {
+  const TOKEN = /(#[^\n]*)|("(?:\\.|[^"\\])*"|'[^']*')|(\$\{?\w+\}?)|(-{1,2}[A-Za-z][\w-]*)/g;
+  let out = "", last = 0, m;
+  TOKEN.lastIndex = 0;
+  while ((m = TOKEN.exec(src))) {
+    out += escapeHtml(src.slice(last, m.index));
+    last = TOKEN.lastIndex;
+    if (m[1]) out += `<span class="t-comment">${escapeHtml(m[1])}</span>`;
+    else if (m[2]) out += `<span class="t-str">${escapeHtml(m[2])}</span>`;
+    else if (m[3]) out += `<span class="t-subst">${escapeHtml(m[3])}</span>`;
+    else if (m[4]) out += `<span class="t-kw">${escapeHtml(m[4])}</span>`;
+  }
+  out += escapeHtml(src.slice(last));
+  return out;
+}
+
+// A small TOML highlighter for the book's `toml` fences (`witchy.toml`). Same `t-*` classes,
+// HTML-escaped — comments, `[sections]`, `key =`, strings, booleans, numbers.
+export function highlightToml(src) {
+  const TOKEN =
+    /(#[^\n]*)|(^\s*\[[^\]\n]*\])|(^\s*[A-Za-z_][\w.-]*)(?=\s*=)|("(?:\\.|[^"\\])*"|'[^']*')|(\btrue\b|\bfalse\b)|(\b\d[\d._:T+-]*\b)/gm;
+  let out = "", last = 0, m;
+  TOKEN.lastIndex = 0;
+  while ((m = TOKEN.exec(src))) {
+    out += escapeHtml(src.slice(last, m.index));
+    last = TOKEN.lastIndex;
+    if (m[1]) out += `<span class="t-comment">${escapeHtml(m[1])}</span>`;
+    else if (m[2]) out += `<span class="t-type">${escapeHtml(m[2])}</span>`;
+    else if (m[3]) out += `<span class="t-builtin">${escapeHtml(m[3])}</span>`;
+    else if (m[4]) out += `<span class="t-str">${escapeHtml(m[4])}</span>`;
+    else if (m[5]) out += `<span class="t-lit">${escapeHtml(m[5])}</span>`;
+    else if (m[6]) out += `<span class="t-num">${escapeHtml(m[6])}</span>`;
+  }
+  out += escapeHtml(src.slice(last));
+  return out;
+}
