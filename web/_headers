@@ -1,6 +1,10 @@
-# Strict cross-origin isolation on EVERY response of the docs site (house rule — never relax).
-# `_headers` is honored by Cloudflare Pages and Netlify; GitHub Pages does NOT support custom
-# headers, so the book must deploy to a host that does (or behind a header-setting proxy).
+# Strict cross-origin isolation on EVERY response of the docs site (house rule).
+# `_headers` is honored by Cloudflare Pages and Netlify. The CI publishes to GitHub Pages,
+# which does NOT support custom headers, so these are INERT there — a reviewed trade-off:
+# the runnable cells run a capability-DENIED pure-compute wasm contained by wasm isolation
+# (not by COOP/COEP), and the single-threaded compiler needs no cross-origin isolation. These
+# headers are kept so deploying the SAME bundle to a `_headers`-honoring host (or behind a
+# header-setting proxy) restores strict isolation with no change.
 /*
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp

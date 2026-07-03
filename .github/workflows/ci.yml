@@ -111,20 +111,61 @@ jobs:
       - name: Run the acceptance script (test suites run in their own job)
         run: ./scripts/e2e-full.sh --quick
 
-  book:
-    name: Build the book
+  # RFC-0041: the book IS a witchy/glamour app (empty host footprint), compiled to
+  # wasm and served client-side. Build the deployable bundle and publish it to GitHub
+  # Pages. NOTE (reviewed trade-off): GitHub Pages does NOT honor the bundle's `_headers`,
+  # so the strict COOP/COEP/CORP isolation it ships is inert here. The runnable cells run
+  # a capability-DENIED pure-compute wasm (deny-by-omission), so they are contained by
+  # wasm isolation rather than by cross-origin isolation; the compiler is single-threaded
+  # (no SharedArrayBuffer), so it needs no isolation to run. To restore strict isolation,
+  # deploy the same bundle to a `_headers`-honoring host (Cloudflare Pages / Netlify).
+  # Split privilege (house rule): docs-build holds only `contents: read` and emits the
+  # artifact; the privileged deploy is a separate job.
+  docs-build:
+    name: Build the docs bundle
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master'
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
+      - uses: ./.github/actions/install-rust
         with:
-          tool: mdbook@0.4.40
-      - name: Build the book
-        run: mdbook build
+          targets: wasm32-unknown-unknown
+      - name: Build the release binary (compiles the docs app to wasm via build-docs.sh)
+        run: cargo build --release
+      - name: Build the browser compiler wasm (the Run buttons)
+        run: |
+          cargo build --release --lib --no-default-features --target wasm32-unknown-unknown
+          mkdir -p web
+          cp target/wasm32-unknown-unknown/release/witchy.wasm web/witchy.wasm
+      - name: Assemble the deployable bundle
+        run: ./scripts/build-docs.sh dist
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
+        with:
+          path: dist
+
+  docs-deploy:
+    name: Deploy the docs to GitHub Pages
+    if: github.ref == 'refs/heads/master'
+    needs: docs-build
+    runs-on: ubuntu-latest
+    # The ONLY job with write authority — and only the two rights a Pages deploy needs.
+    permissions:
+      pages: write
+      id-token: write
+    # Serialize Pages deploys without blocking the rest of CI.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
 
   playground:
     name: Playground wasm build
