@@ -63,6 +63,15 @@ body { font-family: system-ui, -apple-system, sans-serif; margin: 0; color: #e6e
 .witchy-static { margin: 1.25rem 0; padding: 0.75rem; border: 1px solid #2a2a3a; border-radius: 8px; background: #1e1e2e; overflow-x: auto; }
 .witchy-static code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.88rem; line-height: 1.5; tab-size: 4; white-space: pre-wrap; word-break: break-word; }
 
+/* A live INTERACTIVE glamour demo mounted in the page (RFC-0041). */
+.glamour-app { margin: 1.25rem 0; padding: 1.25rem 1rem; border: 1px solid #2a2a3a; border-radius: 8px; background: #1a1a2a; }
+.counter-demo { display: flex; align-items: center; gap: 0.75rem; justify-content: center; }
+.counter-btn { font: inherit; font-size: 1.2rem; line-height: 1; width: 2.2rem; height: 2.2rem; border: 0; border-radius: 6px; background: #6b3fa0; color: #fff; cursor: pointer; }
+.counter-btn:hover { background: #7d4cbb; }
+.counter-value { min-width: 3rem; text-align: center; font-size: 1.5rem; font-variant-numeric: tabular-nums; color: #c9a4ff; }
+.counter-reset { font: inherit; margin-left: 0.5rem; padding: 0.4rem 0.8rem; border: 1px solid #2a2a3a; border-radius: 6px; background: transparent; color: #cfcfe0; cursor: pointer; }
+.counter-reset:hover { background: #2a2a3a; }
+
 /* Syntax tokens (emitted by web/witchy-highlight.js). */
 .t-comment { color: #6b7089; font-style: italic; }
 .t-str { color: #9ece6a; }

@@ -23,6 +23,11 @@ cp projects/glamour/src/glamour.witchy projects/glamour/src/markdown.witchy \
 "$BIN" compile "$tmp/docs.witchy" --out "$OUT/docs.wasm"
 rm -rf "$tmp"
 
+# 1b. Compile the INTERACTIVE demo app(s) mounted live in the book (RFC-0041) — each a small
+# glamour app the docs page mounts with the same runtime, network denied. `glamour` resolves
+# from the bundled-rune path (no adjacent copy needed).
+"$BIN" compile projects/docs/src/counter.witchy --out "$OUT/counter.wasm"
+
 # 2. Stage the book content (SUMMARY + every page) under /content/, where the app fetches it.
 cp book/src/*.md "$OUT/content/"
 

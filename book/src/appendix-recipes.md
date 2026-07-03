@@ -181,6 +181,15 @@ effects-as-data (`Cmd`s the host performs), with UI authority — fetch, routing
 carried as capabilities (`UiFetch`, `UiRoute`, …) narrowed from a single app-root
 `UiRoot`, exactly like every other capability in witchy.
 
+Here is a **live** one — a real Glamour counter (`view`/`update`, clickable buttons)
+compiled to WebAssembly and mounted by the very same runtime that renders this book. Its
+network authority (`UiFetch`) is **denied**, so it can compute and render but can't phone
+home — the capability model, running in the page:
+
+```glamour-app
+counter
+```
+
 For everything else — string manipulation, lists, dicts, sorting, JSON, time —
 see the [standard library reference](appendix-stdlib.md) and the `examples/`
 directory in the repository, which carries a runnable program for nearly every

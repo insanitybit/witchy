@@ -117,6 +117,10 @@ fn to_runnable(block: VNode(Msg)) -> VNode(Msg):
                                 glamour.slot("shell-static", code)
                             else if lang == "toml":
                                 glamour.slot("toml-static", code)
+                            else if lang == "glamour-app":
+                                // The fence body NAMES a bundled demo app; the host mounts it
+                                // live (via the book's own glamour-dom runtime, network denied).
+                                glamour.slot("glamour-app", string.trim(code))
                             else:
                                 // `text` (program output / diagrams) and untagged fences stay
                                 // as plain styled blocks — not code to syntax-highlight.

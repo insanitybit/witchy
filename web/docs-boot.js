@@ -30,6 +30,36 @@ const loadCompiler = (() => {
 // chapter route can never make the fetch route-relative.
 const contentFetch = (url) => fetch(contentUrl(url, here));
 
+// (RFC-0041) A `glamour-app` fence names a bundled INTERACTIVE demo. Mount it LIVE with the
+// book's OWN glamour-dom runtime into a contained sub-tree. NETWORK IS DENIED — no `fetch` is
+// passed, so any `UiFetch`/http Cmd the app emits simply isn't performed; a timer IS provided
+// so an interactive/animated app works. The app is capability-denied and WASM-isolated, so it
+// runs safely in the main frame just like every runnable cell. Each app's initial model is
+// configured here (it must match the app's own model shape).
+const DEMO_APPS = { counter: { initialModel: { n: 0 } } };
+const glamourAppSlot = (doc, name) => {
+  const host = doc.createElement("div");
+  host.setAttribute("class", "glamour-app");
+  const cfg = DEMO_APPS[name];
+  if (!cfg) {
+    host.textContent = `unknown demo app: ${name}`;
+    return host;
+  }
+  (async () => {
+    try {
+      const bytes = await fetch(assetUrl(name + ".wasm", here)).then((r) => r.arrayBuffer());
+      await mount(bytes, host, {
+        initialModel: cfg.initialModel,
+        // NO `fetch` (network denied). A timer is safe and enables `after` Cmds.
+        setTimeout: (fn, ms) => setTimeout(fn, ms),
+      });
+    } catch (e) {
+      host.textContent = "demo failed to load: " + ((e && e.message) || e);
+    }
+  })();
+  return host;
+};
+
 const wasm = await fetch(assetUrl("docs.wasm", here)).then((r) => r.arrayBuffer());
 await mount(wasm, document.getElementById("app"), {
   initialModel: { route: location.pathname, summary: "", content: "" },
@@ -49,5 +79,7 @@ await mount(wasm, document.getElementById("app"), {
     // Non-witchy code fences get read-only highlighting too (same token theme).
     "shell-static": staticSlot({ highlight: highlightShell }),
     "toml-static": staticSlot({ highlight: highlightToml }),
+    // A `glamour-app` fence names a bundled INTERACTIVE demo; mount it live.
+    "glamour-app": glamourAppSlot,
   },
 });
