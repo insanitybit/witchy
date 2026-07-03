@@ -996,6 +996,14 @@ Split an iterator into its first element and the rest, or None if it is empty. T
 
 The first element satisfying `pred`, or None (stops at the first match, so it is safe on an unbounded iterator if a match exists).
 
+#### `fn any(it: Iter(a), pred: fn(a) -> Bool) -> Bool`
+
+Whether at least one element satisfies `pred` — stops (short-circuits) at the first match, so it terminates on an unbounded iterator once one is found. `false` for the empty iterator.
+
+#### `fn all(it: Iter(a), pred: fn(a) -> Bool) -> Bool`
+
+Whether every element satisfies `pred` — stops at the first failure. `true` for the empty iterator (vacuously). Don't call on an unbounded iterator whose elements all satisfy `pred`: it never stops.
+
 ## `json`
 
 A JSON library — the witchy take on Go's encoding/json. This slice is the value type and the encoder (serialization); the decoder (parsing) follows. Pure and capability-free, so — unlike networking — it compiles to WASM like the rest of the data std.
@@ -1272,9 +1280,9 @@ The maximum element under a caller-supplied "is-less-than" comparator, as `Some`
 
 The minimum element under `less`, as `Some`; `None` for the empty list.
 
-#### `fn position(xs: List(a), target: a) -> Option(Int)`
+#### `fn position(xs: List(a), target: a) -> Option(Int) where a: Eq`
 
-The index of the first element equal to `target` as `Some`, or `None` — the Option-returning companion to `index_of` (which uses a -1 sentinel).
+The index of the first element equal to `target` as `Some`, or `None` — the Option-returning companion to `index_of` (which uses a -1 sentinel). The `where a: Eq` bound makes the equality content-correct on both backends.
 
 #### `fn flatten(xss: List(List(a))) -> List(a)`
 
@@ -1328,13 +1336,13 @@ Sort using a caller-supplied "is-less-than" comparator — a stable merge sort (
 
 Sort a list of integers ascending — the common default over `sort_by`.
 
-#### `fn contains(xs: List(a), target: a) -> Bool`
+#### `fn contains(xs: List(a), target: a) -> Bool where a: Eq`
 
-Whether `target` appears in the list (by value equality).
+Whether `target` appears in the list, by the element type's `Eq` impl. The `where a: Eq` bound monomorphizes the equality per element type, so the comparison is content-correct on both backends — including user record element types, which the compiled backend cannot compare through an unbounded generic `==` (RFC-0046).
 
-#### `fn unique(xs: List(a)) -> List(a)`
+#### `fn unique(xs: List(a)) -> List(a) where a: Eq`
 
-The list with duplicates removed, keeping the first occurrence of each element (by value equality), in original order. `contains` here is this module's own list function — a same-module function shadows the like-named string builtin.
+The list with duplicates removed, keeping the first occurrence of each element (by the element type's `Eq`), in original order. `contains` here is this module's own list function — a same-module function shadows the like-named string builtin.
 
 #### `fn any(xs: List(a), pred: fn(a) -> Bool) -> Bool`
 
@@ -1344,9 +1352,9 @@ Whether at least one element satisfies `pred`.
 
 Whether every element satisfies `pred` (true for the empty list).
 
-#### `fn index_of(xs: List(a), target: a) -> Int`
+#### `fn index_of(xs: List(a), target: a) -> Int where a: Eq`
 
-Index of the first element equal to `target`, or -1 if absent.
+Index of the first element equal to `target`, or -1 if absent. The `where a: Eq` bound makes the equality content-correct on both backends.
 
 #### `fn take(xs: List(a), n: Int) -> List(a)`
 

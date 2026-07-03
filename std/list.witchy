@@ -7,6 +7,10 @@
 // element is `None`, never an out-of-bounds trap.
 
 import option
+// `Eq`/`Ord` back the equality- and order-bounded lookups (`contains`, `unique`,
+// `index_of`, `position`, `sort`): the bound monomorphizes the comparison per
+// element type, so it is content-correct on both backends (RFC-0046).
+import cmp
 
 // [0, 1, ..., n-1].
 // --- Native primitives (intercepted by both backends; the bodies below are
@@ -277,8 +281,9 @@ pub fn min_by(xs: List(a), less: fn(a, a) -> Bool) -> Option(a):
         Some(best)
 
 // The index of the first element equal to `target` as `Some`, or `None` — the
-// Option-returning companion to `index_of` (which uses a -1 sentinel).
-pub fn position(xs: List(a), target: a) -> Option(Int):
+// Option-returning companion to `index_of` (which uses a -1 sentinel). The
+// `where a: Eq` bound makes the equality content-correct on both backends.
+pub fn position(xs: List(a), target: a) -> Option(Int) where a: Eq:
     var i = 0
     for x in xs:
         if x == target:
@@ -450,18 +455,22 @@ pub fn sort_by(xs: List(a), less: fn(a, a) -> Bool) -> List(a):
 pub fn sort(xs: List(Int)) -> List(Int):
     sort_by(xs, fn(a: Int, b: Int): a < b)
 
-// Whether `target` appears in the list (by value equality).
-pub fn contains(xs: List(a), target: a) -> Bool:
+// Whether `target` appears in the list, by the element type's `Eq` impl. The
+// `where a: Eq` bound monomorphizes the equality per element type, so the
+// comparison is content-correct on both backends — including user record
+// element types, which the compiled backend cannot compare through an
+// unbounded generic `==` (RFC-0046).
+pub fn contains(xs: List(a), target: a) -> Bool where a: Eq:
     for x in xs:
         if x == target:
             return true
     false
 
 // The list with duplicates removed, keeping the first occurrence of each
-// element (by value equality), in original order. `contains` here is this
-// module's own list function — a same-module function shadows the like-named
-// string builtin.
-pub fn unique(xs: List(a)) -> List(a):
+// element (by the element type's `Eq`), in original order. `contains` here is
+// this module's own list function — a same-module function shadows the
+// like-named string builtin.
+pub fn unique(xs: List(a)) -> List(a) where a: Eq:
     var out = []
     for x in xs:
         if !contains(out, x):
@@ -482,8 +491,9 @@ pub fn all(xs: List(a), pred: fn(a) -> Bool) -> Bool:
             return false
     true
 
-// Index of the first element equal to `target`, or -1 if absent.
-pub fn index_of(xs: List(a), target: a) -> Int:
+// Index of the first element equal to `target`, or -1 if absent. The
+// `where a: Eq` bound makes the equality content-correct on both backends.
+pub fn index_of(xs: List(a), target: a) -> Int where a: Eq:
     var i = 0
     for x in xs:
         if x == target:
