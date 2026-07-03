@@ -594,6 +594,115 @@ pub(crate) fn is_capability_type(t: &ast::Type) -> bool {
         if matches!(n.as_str(), "Console" | "Clock" | "Rand" | "Env" | "Dir" | "File" | "Net" | "Exec" | "Secret" | "SecretStore"))
 }
 
+/// (RFC-0047) The kind of an un-comparable component of a type: `==`/`!=` reject
+/// function and capability types at every depth (top level or nested inside a
+/// container). Returns the FIRST such component found (searching the shared type
+/// of an equality's operands), or `None` if the whole type is comparable.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Uncomparable {
+    Function,
+    Capability,
+}
+
+/// Whether `t` (a resolved [`Ty`]) contains a function or capability type at any
+/// depth — the two kinds `==` refuses. Containers (List/Tuple/Dict/Result/Option/
+/// records-as-Named) are transparent: a `List(fn(Int) -> Int)` is as un-comparable
+/// as a bare function. A bare type variable is comparable here (a bounded generic
+/// resolves after monomorphization; an unbounded one is caught elsewhere).
+fn uncomparable_kind(t: &Ty) -> Option<Uncomparable> {
+    match t {
+        Ty::Fn(_, _) => Some(Uncomparable::Function),
+        Ty::Console | Ty::Clock | Ty::Rand | Ty::Env | Ty::Secret | Ty::Exec | Ty::Socket
+        | Ty::Listener | Ty::Dir(_) | Ty::File(_) | Ty::Net(_) | Ty::BuildOut | Ty::BuildRead
+        | Ty::BuildEnv | Ty::BuildNet | Ty::BuildExec => Some(Uncomparable::Capability),
+        Ty::List(e) => uncomparable_kind(e),
+        Ty::Tuple(ts) => ts.iter().find_map(uncomparable_kind),
+        Ty::Named(n, args) => {
+            // `SecretStore` is a capability the type checker models as a Named type.
+            if n == "SecretStore" {
+                return Some(Uncomparable::Capability);
+            }
+            args.iter().find_map(uncomparable_kind)
+        }
+        _ => None,
+    }
+}
+
+/// (RFC-0047) Which key/member position a `Float` occupies — used for the teaching
+/// error suggesting the right escape.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FloatKeyKind {
+    DictKey,
+    SetMember,
+}
+
+/// Whether a resolved [`Ty`] has a concrete `Float` in a `Dict` KEY position or a
+/// `Set` MEMBER position, at any depth (a `Dict(k, Dict(Float, v))` counts). Value
+/// positions and list elements are fine — only the hashed/compared key set needs
+/// `Eq`. `None` when there is no such Float.
+fn float_key_position(t: &Ty) -> Option<FloatKeyKind> {
+    match t {
+        Ty::Named(n, args) if n == "Dict" => {
+            // args[0] = key, args[1] = value. A Float directly as the key is the
+            // reject; otherwise recurse into BOTH (a nested dict/set anywhere).
+            if matches!(args.first(), Some(Ty::Float)) {
+                return Some(FloatKeyKind::DictKey);
+            }
+            args.iter().find_map(float_key_position)
+        }
+        Ty::Named(n, args) if n == "Set" => {
+            if matches!(args.first(), Some(Ty::Float)) {
+                return Some(FloatKeyKind::SetMember);
+            }
+            args.iter().find_map(float_key_position)
+        }
+        Ty::Named(_, args) => args.iter().find_map(float_key_position),
+        Ty::List(e) => float_key_position(e),
+        Ty::Tuple(ts) => ts.iter().find_map(float_key_position),
+        Ty::Fn(ps, r) => ps.iter().chain(std::iter::once(r.as_ref())).find_map(float_key_position),
+        _ => None,
+    }
+}
+
+fn float_key_reject_message(kind: FloatKeyKind) -> String {
+    match kind {
+        FloatKeyKind::DictKey =>
+            "`Float` is not a valid `Dict` key — keys require `Eq`, but `Float` is \
+             only `PartialEq` (`NaN != NaN`, so a Float key can be unretrievable and \
+             `0.1 + 0.2` is a precision trap). Use an `Int` key (scale to a fixed \
+             precision) or a `String` rendering of the value"
+                .to_string(),
+        FloatKeyKind::SetMember =>
+            "`Float` is not a valid `Set` member — members require `Eq`, but `Float` \
+             is only `PartialEq` (`NaN != NaN`). Use an `Int` (scaled) or a `String` \
+             rendering"
+                .to_string(),
+    }
+}
+
+/// The teaching error for an `==`/`!=` on an un-comparable type. `ty` is the whole
+/// operand type so the message can point at the container when the offender nests.
+fn equality_reject_message(kind: Uncomparable, ty: &Ty) -> String {
+    // The offender is nested when the whole operand type is a container (a List,
+    // Tuple, or a generic like `Option`/`Result`) rather than the fn/capability
+    // itself. `SecretStore` is the one capability spelled as a `Named` type.
+    let nested = matches!(ty, Ty::List(_) | Ty::Tuple(_))
+        || matches!(ty, Ty::Named(n, _) if n != "SecretStore");
+    let where_ = if nested { format!(" (found nested in `{ty}`)") } else { String::new() };
+    match kind {
+        Uncomparable::Function => format!(
+            "`==` is not defined on function types{where_} — there is no meaningful \
+             equality for functions (identity is not stable across compilation). \
+             Compare the values functions *produce*, not the functions"
+        ),
+        Uncomparable::Capability => format!(
+            "`==` is not defined on capability types{where_} — capabilities are \
+             authority, not data; there is no meaningful equality between two \
+             authorities"
+        ),
+    }
+}
+
 /// Whether `t` is `List(String)` — the command-line-arguments parameter `main`
 /// may declare.
 pub fn is_args_type(t: &ast::Type) -> bool {
@@ -2079,6 +2188,16 @@ impl Checker {
 
     fn infer(&mut self, expr: &Expr) -> Result<Ty, TypeError> {
         let t = self.infer_inner(expr)?;
+        // (RFC-0047) `Dict` keys and `Set` members require `Eq`; `Float` is
+        // `PartialEq` but not `Eq` (NaN != NaN), so a `Float`-keyed dict has an
+        // unretrievable NaN entry and a `Float` key is a precision trap. Reject
+        // it at check time — once any expression's type concretely has a `Float`
+        // in key position, the whole program is refused (a type-level rule, not a
+        // per-NaN runtime trap). Only fires when the key type is concretely Float
+        // (an unresolved key var never triggers).
+        if let Some(kind) = float_key_position(&self.resolve(&t)) {
+            return terr(float_key_reject_message(kind));
+        }
         if let Some(rec) = &mut self.type_record {
             rec.insert(expr as *const Expr as usize, t.clone());
         }
@@ -2699,6 +2818,17 @@ impl Checker {
             }
             Eq | NotEq => {
                 self.unify(&lt, &rt)?;
+                // (RFC-0047) `==`/`!=` desugar through `PartialEq` at every depth.
+                // Function and capability types have no meaningful equality — a
+                // function's identity is an implementation accident (monomorphization
+                // /inlining), and a capability is authority, not data — so comparing
+                // them (directly or nested in a container) is a compile-time error,
+                // not a backend-dependent answer. This deletes the confirmed
+                // `f == f` parity divergence by construction.
+                let resolved = self.resolve(&lt);
+                if let Some(kind) = uncomparable_kind(&resolved) {
+                    return terr(equality_reject_message(kind, &resolved));
+                }
                 Ok(Ty::Bool)
             }
             Lt | LtEq | Gt | GtEq => {

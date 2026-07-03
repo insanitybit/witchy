@@ -280,6 +280,81 @@
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
+    /// (SEC-038) `bytes.at` out of bounds must FAIL on both backends, not silently
+    /// read adjacent heap on WASM. The compiled `$bytes_at` bounds-checks and traps
+    /// (like `$list_at`), matching the interpreter's "bytes index out of bounds"
+    /// error. In-bounds indexing still agrees. (Regression for a silent OOB-read
+    /// parity divergence: the old lowering was an unchecked `load8_u`.)
+    #[test]
+    fn bytes_index_out_of_bounds_errors_on_both_backends() {
+        let compile = |src: &str| -> (ast::Module, Vec<u8>) {
+            let linked = resolve_std_src(src);
+            typeck::check(&linked).expect("typecheck");
+            let bytes = codegen::compile_module_binary(&linked)
+                .expect("compile")
+                .expect("the binary path lowers this program");
+            (linked, bytes)
+        };
+        let oob = "import bytes\n\nfn main(console: Console):\n    let b = bytes.from_string(\"hi!\")\n    print(console, __render(bytes.at(b, 5)))\n";
+        let (lmod, wasm) = compile(oob);
+        assert!(
+            interpreter::run_module(lmod, ".", Vec::new()).is_err(),
+            "interpreter must error on OOB bytes index"
+        );
+        assert!(crate::run_wasm_bytes(&wasm).is_err(), "WASM must trap on OOB bytes index");
+        // A negative index likewise traps (it used to read backwards into the heap).
+        let neg = "import bytes\n\nfn main(console: Console):\n    let b = bytes.from_string(\"hi!\")\n    print(console, __render(bytes.at(b, 0 - 1)))\n";
+        let (nmod, nwasm) = compile(neg);
+        assert!(
+            interpreter::run_module(nmod, ".", Vec::new()).is_err(),
+            "interpreter must error on negative bytes index"
+        );
+        assert!(crate::run_wasm_bytes(&nwasm).is_err(), "WASM must trap on negative bytes index");
+        // In-bounds indexing still agrees.
+        let ok = "import bytes\n\nfn main(console: Console):\n    let b = bytes.from_string(\"hi!\")\n    print(console, __render(bytes.at(b, 2)))\n";
+        let expected = ["33"];
+        assert_eq!(link_run(ok), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", ok)], "main"), expected, "wasm");
+    }
+
+    /// (RFC-0047) `==` on a function type is a compile-time error — there is no
+    /// stable equality for functions (identity is a monomorphization/inlining
+    /// accident), and comparing them was a confirmed backend parity divergence
+    /// (interpreter name-compares `true`, compiled pointer-compares `false`).
+    /// Rejecting deletes the divergence by construction. Both the direct case and
+    /// the container/tuple case must error with a teaching message.
+    #[test]
+    fn function_equality_is_a_compile_error() {
+        let direct = "fn f(x: Int) -> Int:\n    x\n\nfn main(console: Console):\n    print(console, __render(f == f))\n";
+        let e = typeck::check_str(direct).expect_err("`f == f` must be rejected");
+        assert!(e.contains("not defined on function types"), "teaching error, got: {e}");
+        // Nested inside a container is caught the same way (depth-uniform).
+        let in_list = "fn f(x: Int) -> Int:\n    x\n\nfn main(console: Console):\n    print(console, __render([f] == [f]))\n";
+        let el = typeck::check_str(in_list).expect_err("`[f] == [f]` must be rejected");
+        assert!(el.contains("not defined on function types"), "teaching error, got: {el}");
+        let in_tuple = "fn f(x: Int) -> Int:\n    x\n\nfn main(console: Console):\n    print(console, __render((f, 1) == (f, 1)))\n";
+        assert!(
+            typeck::check_str(in_tuple).expect_err("`(f, 1) == (f, 1)` must be rejected")
+                .contains("not defined on function types"),
+            "a function nested in a tuple must be rejected too"
+        );
+    }
+
+    /// (RFC-0047) `==` on a capability type is a compile-time error — capabilities
+    /// are authority, not data. Direct and nested-in-a-container both error.
+    #[test]
+    fn capability_equality_is_a_compile_error() {
+        let direct = "fn main(console: Console):\n    print(console, __render(console == console))\n";
+        let e = typeck::check_str(direct).expect_err("`console == console` must be rejected");
+        assert!(e.contains("not defined on capability types"), "teaching error, got: {e}");
+        let in_tuple = "fn main(console: Console):\n    print(console, __render((console, 1) == (console, 1)))\n";
+        assert!(
+            typeck::check_str(in_tuple).expect_err("cap in a tuple must be rejected")
+                .contains("not defined on capability types"),
+            "a capability nested in a tuple must be rejected too"
+        );
+    }
+
     /// (RFC-0032) `vm.par_map` over `String` elements: each string is a flat
     /// `[len][bytes]` value, so it crosses to a worker VM by a plain byte copy (in via
     /// the worker's `__galloc`, result back out) — no marshaling. A witchy `String` is
@@ -3151,24 +3226,41 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(cap), vec!["5000000001"], "WASM (capture)");
     }
 
-    /// A Dict keyed by `Float` must look up the same on both backends. Float keys
-    /// go into the universal i64 slot as their bit pattern; `$key_eq` mode 2
-    /// reinterprets and compares with `f64.eq`, matching the interpreter's `==`
-    /// (insertion-order, value equality). (Regression for the interpreter-only
-    /// Float-key gap.)
+    /// (RFC-0047) A Dict keyed by `Float` is a compile-time error — keys require
+    /// `Eq`, and `Float` is only `PartialEq` (NaN != NaN, so a NaN key is
+    /// unretrievable and `0.1 + 0.2` is a precision trap). This closes the NaN-key
+    /// hole wholesale (breaking change: Float keys used to compile and run). The
+    /// error teaches the standard escapes (a scaled Int, or a String rendering).
     #[test]
-    fn dict_float_keys_agree_on_both_backends() {
-        let src = "fn main(console: Console):\n    let d = dict.insert(dict.insert(dict.insert(dict.new(), 1.5, \"a\"), 2.5, \"b\"), 1.5, \"c\")\n    print(console, dict.get_or(d, 1.5, \"?\"))\n    print(console, dict.get_or(d, 2.5, \"?\"))\n    print(console, dict.get_or(d, 9.9, \"?\"))\n    print(console, __render(dict.length(d)))\n    let e = dict.remove(d, 1.5)\n    print(console, dict.get_or(e, 1.5, \"gone\"))\n    print(console, __render(dict.length(e)))\n";
-        let want = vec![
-            "c".to_string(),
-            "b".to_string(),
-            "?".to_string(),
-            "2".to_string(),
-            "gone".to_string(),
-            "1".to_string(),
-        ];
-        assert_eq!(interp(src), want.clone(), "interpreter");
-        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    fn dict_float_keys_are_a_compile_error() {
+        let src = "fn main(console: Console):\n    let d = dict.insert(dict.new(), 1.5, \"a\")\n    print(console, dict.get_or(d, 1.5, \"?\"))\n";
+        let e = typeck::check_str(src).expect_err("a Float-keyed dict must be rejected");
+        assert!(
+            e.contains("not a valid `Dict` key") && e.contains("Eq"),
+            "teaching error naming the Eq requirement, got: {e}"
+        );
+        // The NaN case (the original hole) is rejected by the same type rule,
+        // before any runtime lookup can silently miss.
+        let nan = "fn main(console: Console):\n    let d = dict.insert(dict.new(), 0.0 / 0.0, \"nan\")\n    print(console, dict.get_or(d, 0.0 / 0.0, \"missing\"))\n";
+        assert!(
+            typeck::check_str(nan).expect_err("a NaN Float key must be rejected").contains("not a valid `Dict` key"),
+            "the NaN-key hole is closed by the type rule"
+        );
+        // An Int-keyed dict (the suggested escape) still works on both backends.
+        let ok = "fn main(console: Console):\n    let d = dict.insert(dict.new(), 3, \"a\")\n    print(console, dict.get_or(d, 3, \"?\"))\n";
+        assert_eq!(interp(ok), vec!["a"], "interpreter (Int key)");
+        assert_eq!(run_on_wasm(ok), vec!["a"], "compiled WASM (Int key)");
+    }
+
+    /// (RFC-0047) A `Set` of `Float` is likewise a compile-time error — members
+    /// require `Eq`. The Set stdlib already documents this doctrine; the type rule
+    /// makes it true.
+    #[test]
+    fn set_float_members_are_a_compile_error() {
+        let src = "import set\n\nfn main(console: Console):\n    var s = set.new()\n    s = set.insert(s, 1.5)\n    print(console, __render(set.length(s)))\n";
+        let linked = resolve_std_src(src);
+        let e = typeck::check(&linked).expect_err("a Float-membered set must be rejected").to_string();
+        assert!(e.contains("not a valid `Set` member") && e.contains("Eq"), "teaching error, got: {e}");
     }
 
     /// The Secret capability is enforced in the WASM sandbox: with the same
@@ -4357,6 +4449,55 @@ fn yn(b: Bool) -> String:
         ];
         assert_eq!(interp(src), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
+    /// (RFC-0047) A CUSTOM `PartialEq` impl is honored at EVERY depth — top level
+    /// AND inside a `List`, `Option`, tuple, and as a `Dict` value. Before, a
+    /// custom impl silently vanished below the surface (the container did a
+    /// structural memcmp): `P(1) == P(2)` called the impl (`true`) but
+    /// `[P(1)] == [P(2)]` was `false`. Both backends must now honor it uniformly.
+    /// (The impl here is always-`true`, so any honored comparison yields `true`;
+    /// a structural memcmp of differing fields would yield `false` — the tell.)
+    #[test]
+    fn custom_partial_eq_is_honored_at_every_depth() {
+        let src = "type P:\n    P(Int)\n\nimpl PartialEq for P:\n    fn eq(self, other: P) -> Bool:\n        true\n\nfn main(console: Console):\n    print(console, __render(P(1) == P(2)))\n    print(console, __render([P(1)] == [P(2)]))\n    print(console, __render(Some(P(1)) == Some(P(2))))\n    print(console, __render((P(1), 0) == (P(2), 0)))\n    let a = dict.insert(dict.new(), 1, P(1))\n    let b = dict.insert(dict.new(), 1, P(2))\n    print(console, __render(a == b))\n";
+        let want = vec![
+            "true".to_string(), // top-level impl (as before)
+            "true".to_string(), // inside a List — NEW: was false
+            "true".to_string(), // inside an Option — NEW
+            "true".to_string(), // inside a tuple — NEW
+            "true".to_string(), // as a Dict value — NEW
+        ];
+        assert_eq!(link_run(src), want.clone(), "interpreter");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), want, "compiled WASM must agree");
+    }
+
+    /// (RFC-0047) A realistic custom equality — case-insensitive strings — honored
+    /// through containers on both backends. `CI("Hi") == CI("hi")` and the same
+    /// inside a `List`/`Option` are `true`; genuinely different values are `false`.
+    #[test]
+    fn case_insensitive_custom_eq_through_containers() {
+        let src = "import string\n\ntype CI:\n    CI(String)\n\nimpl PartialEq for CI:\n    fn eq(self, other: CI) -> Bool:\n        match self:\n            CI(a) -> match other:\n                CI(b) -> string.to_lower(a) == string.to_lower(b)\n\nfn main(console: Console):\n    print(console, __render(CI(\"Hello\") == CI(\"hello\")))\n    print(console, __render([CI(\"Hi\"), CI(\"YO\")] == [CI(\"hi\"), CI(\"yo\")]))\n    print(console, __render(Some(CI(\"Ab\")) == Some(CI(\"ab\"))))\n    print(console, __render(CI(\"x\") == CI(\"y\")))\n";
+        let want = vec![
+            "true".to_string(),
+            "true".to_string(),
+            "true".to_string(),
+            "false".to_string(),
+        ];
+        assert_eq!(link_run(src), want.clone(), "interpreter");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), want, "compiled WASM must agree");
+    }
+
+    /// (RFC-0047) The fast-path invariant: a `derive(PartialEq)` type keeps the
+    /// STRUCTURAL comparison at every depth (no impl dispatch), so a program with
+    /// no CUSTOM impl behaves exactly as before. A derived record differing in a
+    /// field is unequal inside a container.
+    #[test]
+    fn derived_partial_eq_stays_structural_in_containers() {
+        let src = "type Pt derive(PartialEq):\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    print(console, __render([Pt(1, 2), Pt(3, 4)] == [Pt(1, 2), Pt(3, 4)]))\n    print(console, __render([Pt(1, 2)] == [Pt(9, 9)]))\n    print(console, __render(Some(Pt(1, 2)) == Some(Pt(1, 2))))\n";
+        let want = vec!["true".to_string(), "false".to_string(), "true".to_string()];
+        assert_eq!(link_run(src), want.clone(), "interpreter");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), want, "compiled WASM must agree");
     }
 
     /// Structural `==` on sum types: nullary enums and concrete-field variants

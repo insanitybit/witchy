@@ -565,6 +565,16 @@ pub struct Interpreter {
     listeners: Vec<TcpListener>,
     /// Record constructor name -> ordered field names, for `value.field` access.
     record_fields: HashMap<String, Vec<String>>,
+    /// (RFC-0047) Constructor name -> its declaring type name, so value equality
+    /// can find the type of a `Ctor` value and consult `custom_eq_types`.
+    ctor_type_name: HashMap<String, String>,
+    /// (RFC-0047) Type names with a CUSTOM (non-derived) `PartialEq` impl. `==`/`!=`
+    /// honor these impls at EVERY depth: a container comparing elements of such a
+    /// type calls its `PartialEq__T__eq` instead of recursing structurally, so a
+    /// custom equality is respected inside `List`/`Option`/tuple/`Dict`/records.
+    /// A derived (structural) impl is NOT here, so its containers keep the fast
+    /// structural compare — behavior-identical to before.
+    custom_eq_types: std::collections::HashSet<String>,
     /// Evaluation-step counter and ceiling. Unlike the runtime's epoch
     /// preemption, the tree-walker can't be interrupted, so a `while true {}`
     /// would hang the host — this bounds total work and errors out instead.
@@ -614,6 +624,13 @@ impl Interpreter {
     pub fn new(module: Module) -> Self {
         let mut functions = HashMap::new();
         let mut record_fields = HashMap::new();
+        let mut ctor_type_name: HashMap<String, String> = HashMap::new();
+        // (RFC-0047) Type names that DERIVED PartialEq (their impl is structural)
+        // vs. those declared. The `Item::Impl` was already desugared to a
+        // `PartialEq__T__eq` function by `traits::lower`, so custom-eq is detected
+        // post-lowering as "a declared type whose PartialEq impl exists but was NOT
+        // derived" (see `custom_eq_types` assembly below).
+        let mut declared_types: Vec<(String, bool)> = Vec::new();
         for item in module.items {
             match item {
                 Item::Function(f) => {
@@ -623,16 +640,28 @@ impl Interpreter {
                 // which map `value.field` to a position in the constructor.
                 Item::Type(t) => {
                     for v in &t.variants {
+                        ctor_type_name.insert(v.name.clone(), t.name.clone());
                         if !v.field_names.is_empty() {
                             record_fields.insert(v.name.clone(), v.field_names.clone());
                         }
                     }
+                    declared_types.push((t.name.clone(), t.partial_eq_derived));
                 }
                 // Desugared to functions by `traits::lower` before this point;
                 // constants are inlined by `witchy_syntax::consts`.
                 Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } | Item::Comptime(_) => {}
             }
         }
+        // (RFC-0047) A declared type has a CUSTOM (non-derived) PartialEq exactly
+        // when the desugared `PartialEq__T__eq` function is present and the type did
+        // NOT derive PartialEq/Eq. `==`/`!=` then honor that impl at every depth.
+        let custom_eq_types: std::collections::HashSet<String> = declared_types
+            .into_iter()
+            .filter(|(name, derived)| {
+                !derived && functions.contains_key(&format!("PartialEq__{name}__eq"))
+            })
+            .map(|(name, _)| name)
+            .collect();
         Self {
             functions,
             root: PathBuf::from("."),
@@ -646,6 +675,8 @@ impl Interpreter {
             sockets: Vec::new(),
             listeners: Vec::new(),
             record_fields,
+            ctor_type_name,
+            custom_eq_types,
             steps: 0,
             step_limit: DEFAULT_STEP_LIMIT,
             cur_line: 0,
@@ -746,6 +777,88 @@ impl Interpreter {
     }
 
     /// Call a top-level function by name with already-evaluated arguments.
+    /// (RFC-0047) Value equality that honors a custom `PartialEq` impl at every
+    /// depth. Only invoked when the program has at least one custom-eq type. When a
+    /// value's concrete type has a custom (non-derived) impl, dispatch to its
+    /// `PartialEq__T__eq`; otherwise compare structurally, recursing into container
+    /// elements/fields so a custom impl nested inside is still honored. Mirrors the
+    /// compiled backend's per-shape eq helpers (which call the user impl mid-recursion).
+    fn values_equal(&mut self, a: &Value, b: &Value) -> Result<bool, RuntimeError> {
+        // A `Ctor` whose type has a custom impl: call it (this is the whole point).
+        if let (Value::Ctor { name: an, .. }, Value::Ctor { name: bn, .. }) = (a, b) {
+            if let Some(tyname) = self.ctor_type_name.get(an).cloned() {
+                if self.custom_eq_types.contains(&tyname) {
+                    // Only dispatch when both sides are the SAME custom-eq type;
+                    // otherwise the impl's `other: T` parameter wouldn't type. (The
+                    // checker guarantees `==` operands share a type, so this holds.)
+                    let same_type = self.ctor_type_name.get(bn).map(|t| t == &tyname).unwrap_or(false);
+                    if same_type {
+                        let mangled = format!("PartialEq__{tyname}__eq");
+                        let result = self.call(&mangled, vec![a.clone(), b.clone()])?;
+                        return match result {
+                            Value::Bool(v) => Ok(v),
+                            other => err(format!(
+                                "`{mangled}` returned `{other}`, expected a Bool"
+                            )),
+                        };
+                    }
+                }
+            }
+        }
+        // Structural, recursing so a custom-eq type nested inside is honored.
+        Ok(match (a, b) {
+            (Value::List(xs), Value::List(ys)) => {
+                xs.len() == ys.len()
+                    && {
+                        for (x, y) in xs.iter().zip(ys) {
+                            if !self.values_equal(x, y)? {
+                                return Ok(false);
+                            }
+                        }
+                        true
+                    }
+            }
+            (Value::Tuple(xs), Value::Tuple(ys)) => {
+                xs.len() == ys.len()
+                    && {
+                        for (x, y) in xs.iter().zip(ys) {
+                            if !self.values_equal(x, y)? {
+                                return Ok(false);
+                            }
+                        }
+                        true
+                    }
+            }
+            (Value::Ctor { name: an, fields: af }, Value::Ctor { name: bn, fields: bf }) => {
+                an == bn
+                    && af.len() == bf.len()
+                    && {
+                        for (x, y) in af.iter().zip(bf) {
+                            if !self.values_equal(x, y)? {
+                                return Ok(false);
+                            }
+                        }
+                        true
+                    }
+            }
+            (Value::Dict(xs), Value::Dict(ys)) => {
+                // Insertion-order-sensitive pairwise compare, as the structural
+                // `==` and the compiled `$eq_dict_*` do.
+                xs.len() == ys.len()
+                    && {
+                        for ((xk, xv), (yk, yv)) in xs.iter().zip(ys) {
+                            if !self.values_equal(xk, yk)? || !self.values_equal(xv, yv)? {
+                                return Ok(false);
+                            }
+                        }
+                        true
+                    }
+            }
+            // Scalars and everything else fall back to the derived structural `==`.
+            _ => a == b,
+        })
+    }
+
     pub fn call(&mut self, name: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
         if let Some(v) = self.call_builtin(name, &args)? {
             return Ok(v);
@@ -2441,6 +2554,15 @@ impl Interpreter {
             Expr::Binary { op, lhs, rhs } => {
                 let l = self.eval(lhs, env)?;
                 let r = self.eval(rhs, env)?;
+                // (RFC-0047) `==`/`!=` desugar through PartialEq at every depth: if
+                // ANY type in the program has a custom (non-derived) `eq` impl, walk
+                // the two values structurally and call that impl wherever a value of
+                // such a type is reached. With no custom impls (the common case) the
+                // walk never fires and equality is the plain structural `l == r`.
+                if matches!(op, BinOp::Eq | BinOp::NotEq) && !self.custom_eq_types.is_empty() {
+                    let eq = self.values_equal(&l, &r)?;
+                    return Ok(Value::Bool(if *op == BinOp::Eq { eq } else { !eq }));
+                }
                 Ok(eval_binary(*op, l, r)?)
             }
             Expr::If {

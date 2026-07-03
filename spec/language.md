@@ -190,7 +190,7 @@ Everything is an expression; a block's value is its final expression.
 |---|---|
 | `+ - * / %` | arithmetic (`Int` wraps; `/ 0` and `Int.MIN / -1` are runtime errors on every backend); `+` on two Strings concatenates — never coerces |
 
-| `== !=` | **structural** equality — deep, on lists, tuples, records, enums, `Option`, `Dict` (insertion-order-sensitive), on every backend |
+| `== !=` | equality through `PartialEq`, at **every depth** — the derived/default impl is deep structural equality (lists, tuples, records, enums, `Option`, `Dict` insertion-order-sensitive); a **custom `impl PartialEq`** is honored inside containers too (a `List(P)`/`Option(P)`/tuple/`Dict` value of a type with a hand impl compares by that impl). Function and capability types do **not** compare — `==` on them is a compile-time error |
 | `< <= > >=` | ordering on `Int`/`Float`/`String`/`Duration` only; ordering a NaN is a runtime error; compounds don't order |
 | `&&` | short-circuit boolean **and** (Bool operands) |
 | `\|\|` | short-circuit **or**: logical-or on Bool, otherwise the *truthy fallback* (`a \|\| b` is `a` when truthy, else `b`, with `b` evaluated lazily). For same-typed operands the result is that type — falsy is `""` / `None` / `[]`, so `name \|\| "anon"`, `cfg \|\| fallback` (`Option`), `xs \|\| [0]`. **`Option(T) \|\| T` unwraps**: `Some(x) \|\| d` is `x`, `None \|\| d` is `d` — so `dict.get(d, k) \|\| 0` yields a bare `Int` (falsy here is `None` only; `Some("")` stays `""`) |
@@ -1028,9 +1028,12 @@ compiled backends, verified by differential tests:
 - Integer arithmetic wraps; division/modulo by zero errors; shifts mask.
 - Float formatting is shortest-round-trip everywhere; NaN/±infinity behave
   identically; NaN ordering errors.
-- Equality is structural and deep for every comparable type; `Dict` equality is
-  insertion-order-sensitive; multi-parameter generic payloads (`Result`) are
-  the one compile-time-rejected comparison.
+- Equality goes through `PartialEq` at every depth: the derived/default impl is
+  deep structural equality (`Dict` insertion-order-sensitive), and a custom impl
+  is honored inside containers too. `==`/`!=` on function or capability types is a
+  compile-time error (no meaningful, stable equality — this replaces a former
+  backend divergence). `Dict` keys and `Set` members require `Eq`, so a `Float`
+  key/member is a compile-time error (closing the NaN-key hole).
 - String operations are byte-precise across backends; `trim`/case-mapping are
   ASCII-scoped by design.
 - Out-of-bounds, overflow-on-parse, and `fail` abort on every backend.

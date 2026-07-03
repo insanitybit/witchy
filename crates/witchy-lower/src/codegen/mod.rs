@@ -685,6 +685,14 @@ struct Codegen {
     /// Constructor name -> its owning type name (so a `Ctor` operand of `==` can
     /// find its variant set).
     ctor_type_name: HashMap<String, String>,
+    /// (RFC-0047) Type names with a CUSTOM (non-derived) `PartialEq` impl. A
+    /// compound `==` whose element/field type is here calls that type's
+    /// `PartialEq__T__eq` instead of recursing structurally, so a custom equality is
+    /// honored at every depth (inside List/Option/tuple/Dict/records). Derived
+    /// (structural) types are NOT here, so their containers keep the fast structural
+    /// helper — byte-identical code to before. A whole-program fact set once at
+    /// module setup (module-global; not part of `SavedScope`).
+    custom_eq_types: HashSet<String>,
     /// Variables (params / let-bound constructors) known to hold a record of a
     /// given type, so `var.field` can resolve a field index.
     local_records: HashMap<String, String>,
@@ -868,6 +876,7 @@ impl Codegen {
             fn_ret_tuple_slot_list_elem: HashMap::new(),
             record_fields: HashMap::new(),
             record_field_types: HashMap::new(),
+            custom_eq_types: HashSet::new(),
             packed_types: HashSet::new(),
             adt_variants: HashMap::new(),
             ctor_type_name: HashMap::new(),

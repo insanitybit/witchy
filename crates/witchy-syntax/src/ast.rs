@@ -137,6 +137,15 @@ pub struct TypeDef {
     /// ordinary `type`. The layout change is gated (opt-mode); the surface + the
     /// packability check are representation-neutral.
     pub packed: bool,
+    /// (RFC-0047) Set by `derive::expand` when the type derives `PartialEq` (or
+    /// `Eq`, which refines it): its equality impl is the STRUCTURAL default. A type
+    /// with a hand-written `impl PartialEq for T` leaves this `false`. The whole-
+    /// program `==`-through-PartialEq rule reads it: a container comparing elements
+    /// of type `T` recurses structurally (the fast path) unless `T` has a *custom*
+    /// (non-derived) impl, in which case that impl is called at every depth. This
+    /// flag persists across the idempotent re-runs of `derive::expand` (it is set,
+    /// not consumed, so a later empty-`derives` pass never clears it).
+    pub partial_eq_derived: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -539,6 +548,50 @@ pub fn collect_type_names<S: Extend<String>>(t: &Type, out: &mut S) {
             collect_type_names(ret, out);
         }
     }
+}
+
+/// (RFC-0047) The set of type names that have a CUSTOM (hand-written, non-derived)
+/// `PartialEq` impl in the linked module — a whole-program fact both backends
+/// consume so `==`/`!=` honor a custom impl at every depth (inside a `List`,
+/// `Option`, tuple, `Dict`, record, …). A type whose `PartialEq` comes from
+/// `derive(PartialEq)`/`derive(Eq)` is the STRUCTURAL default and is NOT in the
+/// set, so containers of it keep the fast structural compare (identical code to
+/// today). Called on the single linked module, so `derive::expand` has already run
+/// and stamped `TypeDef::partial_eq_derived`.
+///
+/// A type is "custom-eq" when there is an `impl PartialEq for T` AND `T`'s
+/// declaration did not derive PartialEq/Eq. (A type with a hand impl has
+/// `partial_eq_derived == false`; a derived one has it `true`; the two are
+/// mutually exclusive in practice since deriving generates the impl.)
+pub fn custom_partial_eq_types(module: &Module) -> std::collections::HashSet<String> {
+    // Types that DERIVED their PartialEq — their generated impl is structural.
+    let mut derived: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for item in &module.items {
+        if let Item::Type(t) = item {
+            if t.partial_eq_derived {
+                derived.insert(t.name.as_str());
+            }
+        }
+    }
+    let mut custom: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for item in &module.items {
+        if let Item::Impl(im) = item {
+            let is_partial_eq = im.trait_name.as_deref() == Some("PartialEq");
+            // The std/cmp primitive impls (`impl PartialEq for Int`, `String`, …)
+            // ARE the structural/native default expressed as an impl — never route a
+            // container of them through a call; both backends compare primitives
+            // inline. Exclude those names so only genuinely user-defined equalities
+            // (records/enums with a hand impl) enter the set.
+            let is_primitive = matches!(
+                im.type_name.as_str(),
+                "Int" | "Bool" | "Float" | "String" | "Duration" | "Bytes"
+            );
+            if is_partial_eq && !is_primitive && !derived.contains(im.type_name.as_str()) {
+                custom.insert(im.type_name.clone());
+            }
+        }
+    }
+    custom
 }
 
 /// Collect the type *variables* in `t` — argument-less, lowercase-initial

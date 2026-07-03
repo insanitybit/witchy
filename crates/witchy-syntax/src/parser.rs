@@ -516,6 +516,7 @@ impl Parser {
                 sealed: false,
                 grantable: false,
                 packed,
+                partial_eq_derived: false,
             }))
         } else {
             Ok(Item::Type(TypeDef {
@@ -526,6 +527,7 @@ impl Parser {
                 sealed: false,
                 grantable: false,
                 packed,
+                partial_eq_derived: false,
             }))
         }
     }
@@ -572,6 +574,7 @@ impl Parser {
                 sealed: true,
                 grantable,
                 packed: false,
+                partial_eq_derived: false,
             }));
         }
         if !self.at_ident("from") {
@@ -603,6 +606,7 @@ impl Parser {
             sealed: true,
             grantable,
             packed: false,
+            partial_eq_derived: false,
         }))
     }
 

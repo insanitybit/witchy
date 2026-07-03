@@ -738,22 +738,14 @@ impl Codegen {
                 )
             }
             ("__bytes_at", 2) => {
+                // Bounds-checked byte read via the `$bytes_at` helper: trap on
+                // `i < 0 || i >= len`, matching the interpreter's "bytes index out
+                // of bounds" error. (An unchecked `load8_u` here used to silently
+                // read adjacent heap — a parity/OOB bug, SEC-038.)
                 let b = self.lower_expr(&args[0])?;
                 let ik = self.kind_of(&args[1]);
                 let i = Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I32);
-                Self::wir_convert(
-                    W::Load8U {
-                        ptr: Box::new(W::Binary {
-                            op: witchy_wir::wir::BinOp::Add,
-                            kind: witchy_wir::wir::Kind::I32,
-                            lhs: Box::new(b),
-                            rhs: Box::new(i),
-                        }),
-                        offset: 4,
-                    },
-                    Kind::I32,
-                    Kind::I64,
-                )
+                call("bytes_at", vec![b, i])
             }
             ("__bytes_concat", 2) => {
                 call("concat", vec![self.lower_expr(&args[0])?, self.lower_expr(&args[1])?])
