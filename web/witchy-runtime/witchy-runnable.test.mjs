@@ -76,6 +76,7 @@ try {
   ok(cells.length === 1, "one runnable cell is found and enhanced");
   ok(qsa(root, "button").some((b) => (b.getAttribute("class") || "").includes("witchy-run")), "a Run button is added");
   ok(qsa(root, "div").some((d) => (d.getAttribute("class") || "") === "witchy-cell"), "the cell is wrapped");
+  ok(qsa(root, "button").some((b) => (b.getAttribute("class") || "").includes("witchy-copy")), "a Copy button is added to the cell");
   ok(qsa(root, "textarea").length === 1 && cells[0].editor.value.includes("hello from a runnable cell"), "the cell is EDITABLE (a textarea seeded with the source)");
 
   await cells[0].run();
