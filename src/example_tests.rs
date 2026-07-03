@@ -317,6 +317,44 @@
         assert_eq!(run_linked_on_wasm(&[("main", ok)], "main"), expected, "wasm");
     }
 
+    /// (RFC-0047) `==` on a function type is a compile-time error — there is no
+    /// stable equality for functions (identity is a monomorphization/inlining
+    /// accident), and comparing them was a confirmed backend parity divergence
+    /// (interpreter name-compares `true`, compiled pointer-compares `false`).
+    /// Rejecting deletes the divergence by construction. Both the direct case and
+    /// the container/tuple case must error with a teaching message.
+    #[test]
+    fn function_equality_is_a_compile_error() {
+        let direct = "fn f(x: Int) -> Int:\n    x\n\nfn main(console: Console):\n    print(console, __render(f == f))\n";
+        let e = typeck::check_str(direct).expect_err("`f == f` must be rejected");
+        assert!(e.contains("not defined on function types"), "teaching error, got: {e}");
+        // Nested inside a container is caught the same way (depth-uniform).
+        let in_list = "fn f(x: Int) -> Int:\n    x\n\nfn main(console: Console):\n    print(console, __render([f] == [f]))\n";
+        let el = typeck::check_str(in_list).expect_err("`[f] == [f]` must be rejected");
+        assert!(el.contains("not defined on function types"), "teaching error, got: {el}");
+        let in_tuple = "fn f(x: Int) -> Int:\n    x\n\nfn main(console: Console):\n    print(console, __render((f, 1) == (f, 1)))\n";
+        assert!(
+            typeck::check_str(in_tuple).expect_err("`(f, 1) == (f, 1)` must be rejected")
+                .contains("not defined on function types"),
+            "a function nested in a tuple must be rejected too"
+        );
+    }
+
+    /// (RFC-0047) `==` on a capability type is a compile-time error — capabilities
+    /// are authority, not data. Direct and nested-in-a-container both error.
+    #[test]
+    fn capability_equality_is_a_compile_error() {
+        let direct = "fn main(console: Console):\n    print(console, __render(console == console))\n";
+        let e = typeck::check_str(direct).expect_err("`console == console` must be rejected");
+        assert!(e.contains("not defined on capability types"), "teaching error, got: {e}");
+        let in_tuple = "fn main(console: Console):\n    print(console, __render((console, 1) == (console, 1)))\n";
+        assert!(
+            typeck::check_str(in_tuple).expect_err("cap in a tuple must be rejected")
+                .contains("not defined on capability types"),
+            "a capability nested in a tuple must be rejected too"
+        );
+    }
+
     /// (RFC-0032) `vm.par_map` over `String` elements: each string is a flat
     /// `[len][bytes]` value, so it crosses to a worker VM by a plain byte copy (in via
     /// the worker's `__galloc`, result back out) — no marshaling. A witchy `String` is

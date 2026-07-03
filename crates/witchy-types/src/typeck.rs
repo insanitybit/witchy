@@ -594,6 +594,63 @@ pub(crate) fn is_capability_type(t: &ast::Type) -> bool {
         if matches!(n.as_str(), "Console" | "Clock" | "Rand" | "Env" | "Dir" | "File" | "Net" | "Exec" | "Secret" | "SecretStore"))
 }
 
+/// (RFC-0047) The kind of an un-comparable component of a type: `==`/`!=` reject
+/// function and capability types at every depth (top level or nested inside a
+/// container). Returns the FIRST such component found (searching the shared type
+/// of an equality's operands), or `None` if the whole type is comparable.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Uncomparable {
+    Function,
+    Capability,
+}
+
+/// Whether `t` (a resolved [`Ty`]) contains a function or capability type at any
+/// depth — the two kinds `==` refuses. Containers (List/Tuple/Dict/Result/Option/
+/// records-as-Named) are transparent: a `List(fn(Int) -> Int)` is as un-comparable
+/// as a bare function. A bare type variable is comparable here (a bounded generic
+/// resolves after monomorphization; an unbounded one is caught elsewhere).
+fn uncomparable_kind(t: &Ty) -> Option<Uncomparable> {
+    match t {
+        Ty::Fn(_, _) => Some(Uncomparable::Function),
+        Ty::Console | Ty::Clock | Ty::Rand | Ty::Env | Ty::Secret | Ty::Exec | Ty::Socket
+        | Ty::Listener | Ty::Dir(_) | Ty::File(_) | Ty::Net(_) | Ty::BuildOut | Ty::BuildRead
+        | Ty::BuildEnv | Ty::BuildNet | Ty::BuildExec => Some(Uncomparable::Capability),
+        Ty::List(e) => uncomparable_kind(e),
+        Ty::Tuple(ts) => ts.iter().find_map(uncomparable_kind),
+        Ty::Named(n, args) => {
+            // `SecretStore` is a capability the type checker models as a Named type.
+            if n == "SecretStore" {
+                return Some(Uncomparable::Capability);
+            }
+            args.iter().find_map(uncomparable_kind)
+        }
+        _ => None,
+    }
+}
+
+/// The teaching error for an `==`/`!=` on an un-comparable type. `ty` is the whole
+/// operand type so the message can point at the container when the offender nests.
+fn equality_reject_message(kind: Uncomparable, ty: &Ty) -> String {
+    // The offender is nested when the whole operand type is a container (a List,
+    // Tuple, or a generic like `Option`/`Result`) rather than the fn/capability
+    // itself. `SecretStore` is the one capability spelled as a `Named` type.
+    let nested = matches!(ty, Ty::List(_) | Ty::Tuple(_))
+        || matches!(ty, Ty::Named(n, _) if n != "SecretStore");
+    let where_ = if nested { format!(" (found nested in `{ty}`)") } else { String::new() };
+    match kind {
+        Uncomparable::Function => format!(
+            "`==` is not defined on function types{where_} — there is no meaningful \
+             equality for functions (identity is not stable across compilation). \
+             Compare the values functions *produce*, not the functions"
+        ),
+        Uncomparable::Capability => format!(
+            "`==` is not defined on capability types{where_} — capabilities are \
+             authority, not data; there is no meaningful equality between two \
+             authorities"
+        ),
+    }
+}
+
 /// Whether `t` is `List(String)` — the command-line-arguments parameter `main`
 /// may declare.
 pub fn is_args_type(t: &ast::Type) -> bool {
@@ -2647,6 +2704,17 @@ impl Checker {
             }
             Eq | NotEq => {
                 self.unify(&lt, &rt)?;
+                // (RFC-0047) `==`/`!=` desugar through `PartialEq` at every depth.
+                // Function and capability types have no meaningful equality — a
+                // function's identity is an implementation accident (monomorphization
+                // /inlining), and a capability is authority, not data — so comparing
+                // them (directly or nested in a container) is a compile-time error,
+                // not a backend-dependent answer. This deletes the confirmed
+                // `f == f` parity divergence by construction.
+                let resolved = self.resolve(&lt);
+                if let Some(kind) = uncomparable_kind(&resolved) {
+                    return terr(equality_reject_message(kind, &resolved));
+                }
                 Ok(Ty::Bool)
             }
             Lt | LtEq | Gt | GtEq => {
