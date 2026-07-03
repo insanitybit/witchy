@@ -649,6 +649,55 @@ pub fn list_at_helper() -> WirFunc {
     }
 }
 
+/// `$bytes_at(b: i32, i: i32) -> i64` — bounds-checked byte read over the flat
+/// `[i32 len][bytes…]` layout: trap on `i < 0 || i >= len`, else zero-extend the
+/// byte at `b + 4 + i`. Matches the interpreter's "bytes index out of bounds"
+/// error (an unchecked `load8_u` here was SEC-038). No heap/import/table.
+pub fn bytes_at_helper() -> WirFunc {
+    let getl = |n: &str| WirExpr::GetLocal(n.into());
+    let i32c = WirExpr::ConstI32;
+    let bin = |op: BinOp, l: WirExpr, r: WirExpr| WirExpr::Binary {
+        op,
+        kind: Kind::I32,
+        lhs: Box::new(l),
+        rhs: Box::new(r),
+    };
+    WirFunc {
+        name: "bytes_at".into(),
+        params: vec![
+            WirLocal { name: "b".into(), ty: WirTy::Bool },
+            WirLocal { name: "i".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Int], // i64 byte value 0..=255
+        locals: vec![],
+        body: vec![
+            WirNode::If {
+                cond: bin(
+                    BinOp::Or,
+                    bin(BinOp::Lt, getl("i"), i32c(0)),
+                    bin(
+                        BinOp::Ge,
+                        getl("i"),
+                        WirExpr::Load { ptr: Box::new(getl("b")), kind: Kind::I32, offset: 0 },
+                    ),
+                ),
+                then_: vec![WirNode::Unreachable],
+                els: vec![],
+                result: None,
+            },
+            WirNode::Push(WirExpr::Convert {
+                from: Kind::I32,
+                to: Kind::I64,
+                arg: Box::new(WirExpr::Load8U {
+                    ptr: Box::new(bin(BinOp::Add, getl("b"), getl("i"))),
+                    offset: 4,
+                }),
+            }),
+        ],
+        raw_body: None,
+    }
+}
+
 // Helpers below realize a confined slice *view* (RFC-0028 confined Views): a
 // `let w = list.slice(src, lo, hi)` whose copy was elided keeps only `src`, `lo`,
 // `hi`, and reads through them. Both recompute the clamped window
@@ -3664,6 +3713,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "list_at_view" => Some(WirHelperSpec {
             func: list_at_view_helper(),
+            helper_deps: &[],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "bytes_at" => Some(WirHelperSpec {
+            func: bytes_at_helper(),
             helper_deps: &[],
             import_deps: &[],
             uses_heap: false,

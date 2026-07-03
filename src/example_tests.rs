@@ -280,6 +280,43 @@
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
+    /// (SEC-038) `bytes.at` out of bounds must FAIL on both backends, not silently
+    /// read adjacent heap on WASM. The compiled `$bytes_at` bounds-checks and traps
+    /// (like `$list_at`), matching the interpreter's "bytes index out of bounds"
+    /// error. In-bounds indexing still agrees. (Regression for a silent OOB-read
+    /// parity divergence: the old lowering was an unchecked `load8_u`.)
+    #[test]
+    fn bytes_index_out_of_bounds_errors_on_both_backends() {
+        let compile = |src: &str| -> (ast::Module, Vec<u8>) {
+            let linked = resolve_std_src(src);
+            typeck::check(&linked).expect("typecheck");
+            let bytes = codegen::compile_module_binary(&linked)
+                .expect("compile")
+                .expect("the binary path lowers this program");
+            (linked, bytes)
+        };
+        let oob = "import bytes\n\nfn main(console: Console):\n    let b = bytes.from_string(\"hi!\")\n    print(console, __render(bytes.at(b, 5)))\n";
+        let (lmod, wasm) = compile(oob);
+        assert!(
+            interpreter::run_module(lmod, ".", Vec::new()).is_err(),
+            "interpreter must error on OOB bytes index"
+        );
+        assert!(crate::run_wasm_bytes(&wasm).is_err(), "WASM must trap on OOB bytes index");
+        // A negative index likewise traps (it used to read backwards into the heap).
+        let neg = "import bytes\n\nfn main(console: Console):\n    let b = bytes.from_string(\"hi!\")\n    print(console, __render(bytes.at(b, 0 - 1)))\n";
+        let (nmod, nwasm) = compile(neg);
+        assert!(
+            interpreter::run_module(nmod, ".", Vec::new()).is_err(),
+            "interpreter must error on negative bytes index"
+        );
+        assert!(crate::run_wasm_bytes(&nwasm).is_err(), "WASM must trap on negative bytes index");
+        // In-bounds indexing still agrees.
+        let ok = "import bytes\n\nfn main(console: Console):\n    let b = bytes.from_string(\"hi!\")\n    print(console, __render(bytes.at(b, 2)))\n";
+        let expected = ["33"];
+        assert_eq!(link_run(ok), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", ok)], "main"), expected, "wasm");
+    }
+
     /// (RFC-0032) `vm.par_map` over `String` elements: each string is a flat
     /// `[len][bytes]` value, so it crosses to a worker VM by a plain byte copy (in via
     /// the worker's `__galloc`, result back out) — no marshaling. A witchy `String` is
