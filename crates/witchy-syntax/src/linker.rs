@@ -748,8 +748,10 @@ fn rewrite_mut_block(
             Stmt::Let { name, mutable: false, .. } => {
                 mutables.remove(name);
             }
-            Stmt::LetTuple { names, .. } => {
-                for n in names {
+            Stmt::LetPattern { pattern, .. } => {
+                let mut names = Vec::new();
+                crate::ast::pattern_binds(pattern, &mut names);
+                for n in &names {
                     mutables.remove(n);
                 }
             }
@@ -1140,9 +1142,11 @@ fn collect_bound_block(b: &Block, out: &mut HashSet<String>) {
                 out.insert(name.clone());
                 collect_bound_expr(value, out);
             }
-            Stmt::LetTuple { names, value } => {
+            Stmt::LetPattern { pattern, value } => {
+                let mut names = Vec::new();
+                crate::ast::pattern_binds(pattern, &mut names);
                 for n in names {
-                    out.insert(n.clone());
+                    out.insert(n);
                 }
                 collect_bound_expr(value, out);
             }
@@ -1463,7 +1467,18 @@ fn seal_pattern(p: &Pattern, sealed: &HashMap<String, String>, home: &str) -> Re
                 seal_pattern(q, sealed, home)?;
             }
         }
-        Pattern::Wildcard | Pattern::Var(_) | Pattern::Int(_) | Pattern::Str(_) | Pattern::Bool(_) => {}
+        Pattern::Or(alts) => {
+            for q in alts {
+                seal_pattern(q, sealed, home)?;
+            }
+        }
+        Pattern::Wildcard
+        | Pattern::Var(_)
+        | Pattern::Int(_)
+        | Pattern::Str(_)
+        | Pattern::Bool(_)
+        | Pattern::Duration(_)
+        | Pattern::IntRange { .. } => {}
     }
     Ok(())
 }
