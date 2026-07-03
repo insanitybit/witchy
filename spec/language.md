@@ -30,7 +30,7 @@ fn classify(n: Int) -> String:
 fn main(console: Console):
     print(console, classify(0))
     print(console, classify(7))
-    print(console, classify(0 - 3))
+    print(console, classify(-3))
 ```
 
 **Comments.** `//` to end of line; `/* ... */` blocks. `witchy fmt` preserves
@@ -388,8 +388,8 @@ parameter only took an ordinary copy. The two compose: `f(move x)` into an `own`
 parameter is a hand-off both sides spell out, and on the compiled backend it is a
 guaranteed no-copy move. `move` is **not** accepted into a `var` parameter — a
 `var` argument must be a plain mutable variable, since the callee writes it back.
-On the interpreter and WASM `move` is value-neutral (value semantics copy already);
-it changes only *when* a copy is elided on the native lowering, never any result.
+On both backends `move` is value-neutral (value semantics copy already);
+it changes only *when* a copy is elided, never any result.
 
 **Closures.** `fn(n: Int): n + by` captures by value; you call through a
 `fn(...)` -typed value or parameter. Closures cannot assign to captured
@@ -742,7 +742,7 @@ both.
 **Unwrapping with `||`.** For a quick value-or-default, `Option(T) || T` unwraps
 to a bare `T` (§4): `Some(x) || d` is `x`, `None || d` is `d` (with `d` evaluated
 only when absent). It is `option.unwrap_or` with operator syntax — handy on the
-`Option`-returning lookups (`dict.get`, `list.first`, …).
+`Option`-returning lookups (`dict.get`, `list.head`, …).
 
 ```witchy
 import option
