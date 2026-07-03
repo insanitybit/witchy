@@ -1665,15 +1665,16 @@ fn main(console: Console):
         assert_eq!(wasm_run(embed), ew, "wasm (embed)");
     }
 
-    /// `||` is the truthy fallback `a || b` ≡ `if truthy(a): a else: b` over the
-    /// emptyable built-ins: "" / None / [] are falsy, Bool stays logical-or, and the
-    /// operator chains. Both backends must agree — the wasm path reads a single
-    /// header word (length for String/List, variant tag for Option) where the
-    /// interpreter checks the runtime value, so this guards that they stay in sync.
+    /// `a ?? b` (RFC-0048) is THE fallback: `Option(T) ?? T -> T` and
+    /// `Result(T, e) ?? T -> T`, short-circuiting (the fallback runs only on
+    /// `None`/`Err`), chaining right-associatively — and `||` stays Bool-only
+    /// logical-or. Both backends must agree: the wasm path is a store-once/
+    /// tag-test value-if where the interpreter unwraps the runtime ctor, so
+    /// this guards that they stay in sync.
     #[test]
-    fn or_truthy_fallback_both_backends() {
-        let src = "fn main(console: Console):\n    print(console, \"\" || \"fallback\")\n    print(console, \"set\" || \"keep\")\n    match None || Some(\"x\"):\n        Some(v) -> print(console, v)\n        None -> print(console, \"none\")\n    match Some(\"y\") || Some(\"z\"):\n        Some(v) -> print(console, v)\n        None -> print(console, \"none\")\n    print(console, list.at([] || [\"A\"], 0))\n    print(console, list.at([\"B\"] || [\"C\"], 0))\n    print(console, \"${false || true}\")\n    let chain = \"\" || \"\" || \"third\"\n    print(console, chain)\n";
-        let want: Vec<String> = ["fallback", "set", "x", "y", "A", "B", "true", "third"]
+    fn coalesce_fallback_both_backends() {
+        let src = "import option\n\nfn find(b: Bool) -> Option(String):\n    if b: Some(\"hit\") else: None\n\nfn parse(s: String) -> Result(Int, String):\n    match string.parse_int(s):\n        Some(n) -> Ok(n)\n        None -> Err(\"bad int\")\n\nfn main(console: Console):\n    print(console, find(true) ?? \"fallback\")\n    print(console, find(false) ?? \"fallback\")\n    print(console, \"${parse(\"41\") ?? 0}\")\n    print(console, \"${parse(\"x\") ?? 9}\")\n    let d = dict.new().insert(\"a\", 1)\n    print(console, \"${dict.get(d, \"a\") ?? dict.get(d, \"b\") ?? 0}\")\n    print(console, \"${dict.get(d, \"z\") ?? dict.get(d, \"b\") ?? 5}\")\n    print(console, \"${Some(\"\") ?? \"x\"}\")\n    print(console, \"${false || true}\")\n";
+        let want: Vec<String> = ["hit", "fallback", "41", "9", "1", "5", "", "true"]
             .iter()
             .map(|s| s.to_string())
             .collect();
@@ -1682,6 +1683,43 @@ fn main(console: Console):
         let interp = interpreter::run_module(linked, ".", Vec::new()).expect("interpreter run");
         assert_eq!(interp, want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// The fallback side of `??` is LAZY: it must not run when the left is
+    /// `Some`/`Ok` — observable through a printing side effect, on both backends.
+    #[test]
+    fn coalesce_fallback_is_lazy_both_backends() {
+        let src = "import option\n\nfn side(console: Console, tag: String, v: Int) -> Int:\n    print(console, \"eval ${tag}\")\n    v\n\nfn main(console: Console):\n    let a = Some(1) ?? side(console, \"unreached\", 2)\n    print(console, \"${a}\")\n    let b = None ?? side(console, \"reached\", 3)\n    print(console, \"${b}\")\n";
+        let want: Vec<String> =
+            ["1", "eval reached", "3"].iter().map(|s| s.to_string()).collect();
+        let linked = resolve_std_src(src);
+        typeck::check(&linked).expect("typecheck");
+        let interp = interpreter::run_module(linked, ".", Vec::new()).expect("interpreter run");
+        assert_eq!(interp, want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// RFC-0048's other half: the truthy fallback is GONE. `||` on a String (or
+    /// any non-Bool) is a check-time teaching error pointing at `??`, and `??`
+    /// on a non-Option/Result left side is rejected too.
+    #[test]
+    fn or_is_bool_only_teaching_errors() {
+        let err = typeck::check_str(
+            "fn main(console: Console):\n    print(console, \"\" || \"default\")\n",
+        )
+        .expect_err("String || must be rejected");
+        assert!(
+            err.contains("`||` is logical-or on Bool") && err.contains("use `??`"),
+            "unexpected message: {err}"
+        );
+        let err = typeck::check_str(
+            "fn main(console: Console):\n    let n = 1 ?? 2\n    print(console, \"${n}\")\n",
+        )
+        .expect_err("Int ?? must be rejected");
+        assert!(
+            err.contains("`??` unwraps an Option or a Result"),
+            "unexpected message: {err}"
+        );
     }
 
     /// REFLECTION, SECOND USE CASE: `reflect.debug(x)` renders any value from the
@@ -10880,28 +10918,24 @@ fn main(console: Console):
     }
 
     #[test]
-    fn or_unwraps_option_backends_agree() {
-        // RFC-0021: `Option(T) || T` unwraps to `T` (None -> the default, evaluated
-        // lazily; Some(x) -> x, present even when empty). Every other `||` is the
-        // unchanged same-type truthy fallback.
+    fn coalesce_unwraps_option_backends_agree() {
+        // RFC-0048: `Option(T) ?? T` unwraps to `T` (None -> the default, evaluated
+        // lazily; Some(x) -> x, present even when empty — `Some("") ?? "x"` is `""`,
+        // not `"x"`, since there is no truthiness).
         let src = r#"
-import option
-
 fn pick(b: Bool) -> Option(Int):
     if b: Some(36) else: None
 
+fn empty() -> Option(String):
+    Some("")
+
 fn main(console: Console):
-    print(console, "${pick(true) || 0}")
-    print(console, "${pick(false) || 0}")
-    print(console, "" || "default")
-    print(console, "${pick(true) || pick(false)}")
-    print(console, "${Some("") || "x"}")
+    print(console, "${pick(true) ?? 0}")
+    print(console, "${pick(false) ?? 0}")
+    print(console, "${empty() ?? "x"}")
 "#;
         assert_eq!(interp(src), run_on_wasm(src));
-        assert_eq!(
-            run_on_wasm(src),
-            vec!["36", "0", "default", "Some(36)", ""]
-        );
+        assert_eq!(run_on_wasm(src), vec!["36", "0", ""]);
     }
 
     #[test]

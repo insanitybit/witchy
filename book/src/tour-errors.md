@@ -50,8 +50,8 @@ fn main(console: Console):
 got 20
 ```
 
-And when you just want the value or a fallback, `||` unwraps an `Option`:
-`Some(x) || d` is `x`, and `None || d` is `d` (with `d` evaluated only when there's
+And when you just want the value or a fallback, `??` unwraps an `Option`:
+`Some(x) ?? d` is `x`, and `None ?? d` is `d` (with `d` evaluated only when there's
 nothing to unwrap):
 
 ```witchy
@@ -62,8 +62,8 @@ fn lookup(xs: List(Int), i: Int) -> Option(Int):
         None
 
 fn main(console: Console):
-    print(console, "${lookup([10, 20, 30], 1) || 0}")
-    print(console, "${lookup([10, 20, 30], 9) || 0}")
+    print(console, "${lookup([10, 20, 30], 1) ?? 0}")
+    print(console, "${lookup([10, 20, 30], 9) ?? 0}")
 ```
 
 ```text
@@ -71,10 +71,11 @@ fn main(console: Console):
 0
 ```
 
-That's `||`'s *truthy fallback*, which works for any same-typed pair: it yields the
-left when truthy, else the right — falsy being `""`, `None`, or `[]`. So
-`name || "anon"` defaults an empty string and `xs || [0]` an empty list;
-`Option(T) || T` additionally unwraps the `Some`.
+`??` works on `Result` too — `parse(s) ?? 0` yields the `Ok` value or the
+fallback, discarding the error (when the error matters, use `?`, `e? "msg"`, or
+`match`). There is no truthiness in witchy: an empty string or list is data, not
+falsehood — to default one, test it honestly
+(`if name.is_empty(): "anon" else: name`).
 
 ## `Result`: a value or an error
 

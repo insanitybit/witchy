@@ -193,7 +193,8 @@ Everything is an expression; a block's value is its final expression.
 | `== !=` | equality through `PartialEq`, at **every depth** — the derived/default impl is deep structural equality (lists, tuples, records, enums, `Option`, `Dict` insertion-order-sensitive); a **custom `impl PartialEq`** is honored inside containers too (a `List(P)`/`Option(P)`/tuple/`Dict` value of a type with a hand impl compares by that impl). Function and capability types do **not** compare — `==` on them is a compile-time error |
 | `< <= > >=` | ordering on `Int`/`Float`/`String`/`Duration` only; ordering a NaN is a runtime error; compounds don't order |
 | `&&` | short-circuit boolean **and** (Bool operands) |
-| `\|\|` | short-circuit **or**: logical-or on Bool, otherwise the *truthy fallback* (`a \|\| b` is `a` when truthy, else `b`, with `b` evaluated lazily). For same-typed operands the result is that type — falsy is `""` / `None` / `[]`, so `name \|\| "anon"`, `cfg \|\| fallback` (`Option`), `xs \|\| [0]`. **`Option(T) \|\| T` unwraps**: `Some(x) \|\| d` is `x`, `None \|\| d` is `d` — so `dict.get(d, k) \|\| 0` yields a bare `Int` (falsy here is `None` only; `Some("")` stays `""`) |
+| `\|\|` | short-circuit boolean **or** (Bool operands only — for a fallback value use `??`) |
+| `??` | the **fallback** operator: `Option(T) ?? T -> T` unwraps `Some` or yields the fallback on `None`; `Result(T, e) ?? T -> T` unwraps `Ok` or yields the fallback on `Err` (the error is discarded — reach for `?` / `match` when it matters). The fallback is evaluated **lazily** (only on `None`/`Err`). Right-associative and the loosest binary operator, so `d.get(k1) ?? d.get(k2) ?? 0` chains and `d.get(k) ?? n + 1` is `d.get(k) ?? (n + 1)`. There is no truthiness: `""` and `[]` are values, not absences — default them with an explicit test (`if name.is_empty(): "anon" else: name`) |
 | `!` | negation |
 | `& \| ^ ~ << >>` | bitwise on `Int` (shifts mask the count to 6 bits) |
 | `xs[i]` | list indexing, sugar for `list.at(xs, i)`; out of bounds is a runtime error on every backend |
@@ -214,7 +215,7 @@ fn main(console: Console):
     print(console, "${2.5 < 3.0}")
     let xs = [10, 20, 30]
     print(console, "${xs[1]}")
-    print(console, "" || "default")
+    print(console, "${list.head(xs) ?? 0}")
 ```
 
 Float notes: `0.0 / 0.0` is NaN; `1.0 / 0.0` is infinity; NaN `==` anything is
