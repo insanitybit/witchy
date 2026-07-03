@@ -18,7 +18,13 @@ body {
   position: fixed; top: 0; left: 0; width: var(--sidebar-w); height: 100vh; overflow-y: auto;
   padding: 1.5rem 1rem; border-right: 1px solid var(--border); background: var(--sidebar-bg);
 }
-.sidebar h1 { font-size: 1rem; letter-spacing: 0.01em; margin: 0 0 1.25rem; color: var(--accent); }
+/* The sidebar header doubles as the link to the book's cover page. */
+.sidebar-brand {
+  display: block; width: 100%; text-align: left; background: none; border: 0; cursor: pointer;
+  font: inherit; font-size: 1rem; font-weight: 600; letter-spacing: 0.01em;
+  margin: 0 0 1.25rem; padding: 0.2rem 0.6rem; color: var(--accent); border-radius: 6px;
+}
+.sidebar-brand:hover { background: #22222f; }
 .sidebar ul { list-style: none; margin: 0; padding: 0; }
 .sidebar li { margin: 1px 0; }
 .nav-item {
@@ -28,6 +34,11 @@ body {
 }
 .nav-item:hover { background: #22222f; color: var(--fg); }
 .nav-item.active { color: var(--accent); background: #22222f; box-shadow: inset 2px 0 0 var(--accent); }
+/* Top-level chapters sit at the margin; sub-pages nest beneath them, indented and smaller. */
+.nav-depth-0 { color: #c1c1d2; }
+.nav-depth-1 { padding-left: 1.9rem; font-size: 0.85rem; }
+/* The rule separating the appendices from the main chapters (an empty <li>). */
+.nav-divider { list-style: none; height: 0; margin: 0.7rem 0.6rem; border-top: 1px solid var(--border); }
 
 /* A centered reading column beside the sidebar. */
 .page { margin-left: var(--sidebar-w); max-width: 48rem; padding: 3rem clamp(1.25rem, 5vw, 4rem) 5rem; margin-right: auto; line-height: 1.7; }

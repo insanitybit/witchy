@@ -70,7 +70,9 @@ try {
 
   // The fake content server: `/content/SUMMARY.md` -> the nav source; every other
   // `/content/<slug>.md` -> that page's Markdown.
-  const SUMMARY = "# Summary\n\n[The witchy Book](title.md)\n\n- [Introduction](introduction.md)\n- [A Tour of the Language](tour.md)\n- [Capabilities](capabilities.md)\n";
+  // A cover link, three chapters (one with a NESTED sub-page), then a `---` rule and an appendix
+  // — so the sidebar's depth/divider structure is exercised, not just a flat list.
+  const SUMMARY = "# Summary\n\n[The witchy Book](title.md)\n\n- [Introduction](introduction.md)\n- [A Tour of the Language](tour.md)\n- [Capabilities](capabilities.md)\n  - [Narrowing](capabilities-narrowing.md)\n\n---\n\n[Appendix](appendix.md)\n";
   const calls = [];
   const fakeFetch = (url) => {
     calls.push(url);
@@ -113,10 +115,19 @@ try {
   await settle();
   ok(calls.some((u) => u.includes("/content/SUMMARY.md")), "the app fetches SUMMARY.md for the nav");
   const navButtons = qsa(root, "nav").flatMap((n) => qsa(n, "button"));
-  ok(navButtons.length === 4, "the sidebar renders one item per SUMMARY.md link (title + 3 pages)");
+  const clsOf = (n) => n.getAttribute("class") || "";
+  // brand + 5 page buttons (Introduction, Tour, Capabilities, Narrowing, Appendix); the cover
+  // (title.md) is NOT a list item — it's the header link — and the `---` is a non-button divider.
+  ok(navButtons.length === 6, "the sidebar renders the brand + one button per page link");
   ok(navButtons.map((b) => b.textContent).includes("Capabilities"), "a page title parsed from SUMMARY.md renders");
   ok(navButtons.map((b) => b.textContent).includes("A Tour of the Language"), "a multi-word SUMMARY title parses correctly");
-  ok(qsa(root, "h1").some((h) => h.textContent === "The witchy Book"), "the book title renders");
+  // The sidebar header is the clickable cover link (not a duplicated <h1>).
+  ok(navButtons.some((b) => clsOf(b).includes("sidebar-brand") && b.textContent === "The witchy Book"), "the book title renders as the cover link");
+  ok(!qsa(root, "li").some((li) => li.textContent === "The witchy Book"), "the cover is NOT repeated as a list item");
+  // The SUMMARY's two-level structure survives: the sub-page nests (depth-1), the `---` is a divider.
+  ok(navButtons.some((b) => b.textContent === "Narrowing" && clsOf(b).includes("nav-depth-1")), "a sub-page renders nested at depth 1");
+  ok(navButtons.some((b) => b.textContent === "Capabilities" && clsOf(b).includes("nav-depth-0")), "its parent chapter renders at depth 0");
+  ok(qsa(root, "li").some((li) => clsOf(li).includes("nav-divider")), "the `---` rule renders an appendix divider");
 
   // 2. The initial route fetched the home page and rendered its Markdown to real elements.
   ok(calls.some((u) => u.includes("/content/introduction.md")), "the initial route fetches the home page");
