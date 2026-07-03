@@ -183,20 +183,20 @@ the last open Track B item.
   negative → heap corruption → forged handle), not just defense-in-depth; the
   wasmtime sandbox does not protect guest-internal memory.
 - **Status:** the independently-shippable HARDENING is DONE — (1) **trap on in-place
-  writes** (`list_push_cap` + `str_append_cap` bounds-check the write against the real
-  `[ptr-4]` allocation and trap, converting a silent-corruption false-negative into a
-  loud parity-identical error — proven by `*_traps_on_overstated_cap` + the whole
+  writes**, COMPLETE across every in-place-append fast path: `list_push_cap`,
+  `str_append_cap`, and `dict_insert_cap` bounds-check the write against the buffer's
+  real rc allocation (`[ptr-4]` for lists/strings, `[d-8]` for the offset dict pointer)
+  and trap, converting a silent-corruption false-negative into a loud parity-identical
+  error — each proven by a `*_traps_on_overstated_cap` positive test plus the whole
   suite/fuzzer staying green; `list_set_cap`/`list_update_cap` were already guarded by
-  `index < len`); (2) **`signing@0` fallback deleted** (the signing key is now a real
-  granted `"signing"` secret, no magic index — `signing_at_zero_fallback_is_removed…`);
+  `index < len`. (2) **`signing@0` fallback deleted** (the signing key is now a real
+  granted `"signing"` secret, no magic index — `signing_at_zero_fallback_is_removed…`).
   (7, RFC numbering) **wasmtime proposal surface shrunk** (unused proposals off, Spectre
   mitigations documented-on). Step 8 (attenuation-rule tests) was ALREADY comprehensive
   (`dir_rights_are_statically_enforced`, `net_capability_cannot_escalate`,
   `net_*_enforced_at_instantiation`, `as_ascription_narrows_to_subsets_only`). A
   differential fuzzer already exists (`metamorphic_property_laws` — it caught a real
-  false-trap during step 1). REMAINING = the **externref CORE** (below) + a bounds
-  check on `dict_insert_cap`'s append branch (deferred: a synthetic positive trap test
-  needs the whole dict helper family).
+  false-trap during step 1). REMAINING = the **externref CORE** (below).
 - **Entry points:** i32 handle tables in `crates/witchy-runtime/src/runtime.rs`
   (`dirs`/`nets`/`secrets`); import signatures `crates/witchy-wir/src/wir_prelude.rs`
   (`IMPORT_COUNT`); lowering `crates/witchy-lower/src/codegen/mod.rs`; wasmtime `Config`
