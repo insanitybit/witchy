@@ -88,7 +88,7 @@ jobs:
       - name: Differential check every runnable example on both backends
         run: |
           fail=0
-          for f in examples/*.witchy; do
+          for f in examples/*/src/*.witchy; do
             out=$(./target/release/witchy parity "$f" 2>&1) || true
             if echo "$out" | grep -qi "DIVERGE"; then
               echo "DIVERGENCE: $f"

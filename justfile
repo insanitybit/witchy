@@ -80,7 +80,7 @@ parity-sweep: build-release
     #!/usr/bin/env bash
     set -uo pipefail
     fail=0
-    for f in examples/*.witchy; do
+    for f in examples/*/src/*.witchy; do
         out=$({{bin}} parity "$f" 2>&1) || true
         if echo "$out" | grep -qi "DIVERGE"; then
             echo "DIVERGENCE: $f"
@@ -94,7 +94,7 @@ parity-sweep: build-release
 wfmt: build-release
     #!/usr/bin/env bash
     set -euo pipefail
-    for f in std/*.witchy examples/*.witchy; do
+    for f in std/*.witchy examples/*/src/*.witchy; do
         {{bin}} fmt "$f"
     done
 
@@ -103,7 +103,7 @@ wfmt-check: build-release
     #!/usr/bin/env bash
     set -uo pipefail
     fail=0
-    for f in std/*.witchy examples/*.witchy; do
+    for f in std/*.witchy examples/*/src/*.witchy; do
         if ! {{bin}} fmt --check "$f" >/dev/null 2>&1; then
             echo "needs formatting: $f"
             fail=1

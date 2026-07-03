@@ -40,9 +40,10 @@ paths still resolve from the binary — but new code belongs in the owning crate
 Two backends, **zero silent divergence**. Any observable behavior must work
 (or loudly error) identically on both. Add a differential test in
 `src/example_tests.rs` and, for anything user-visible, a runnable `book/`
-example. There is no CI: `./scripts/check.sh` is the green gate (build + clippy
-`-D warnings` + `nextest --workspace` + the wasm build) — run it before every
-commit, and `--full` before a push.
+example. CI exists (`.github/workflows/ci.yml`: build/clippy/nextest, heap-check
+fuzz, parity sweep, e2e, docs, fmt), but the local green gate is
+`./scripts/check.sh` (build + clippy `-D warnings` + `nextest --workspace` + the
+wasm build) — run it before every commit, and `--full` before a push.
 
 ## Optimizations generalize — never special-case a method
 

@@ -202,7 +202,7 @@ From source (requires a Rust toolchain):
 git clone https://github.com/insanitybit/witchy
 cd witchy
 cargo build --release
-./target/release/witchy examples/hello.witchy
+./target/release/witchy examples/hello/src/hello.witchy
 ```
 
 ## CLI

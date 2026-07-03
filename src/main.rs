@@ -74,7 +74,7 @@ USAGE:
 
 Package commands: new, init, add, build, run [args...], update, audit, tree,
 outdated, why, why-cap, verify, vendor, publish, promote, yank, list — run
-`witchy coven` for the full package-manager help. All of them accept
+`witchy pm` for the full package-manager help. All of them accept
 `-C <dir>`; `witchy run` passes everything after `run` (or after `--`) to the
 program as `main`'s `args`, including `--help`."
     );
@@ -966,8 +966,8 @@ fn main() -> wasmtime::Result<()> {
     // earlier (its own bootstrap), so it never reaches here.
     if let Some(a1) = std::env::args().nth(1) {
         const FRONTEND_VERBS: &[&str] = &[
-            "new", "init", "add", "build", "run", "audit", "tree", "outdated", "why", "why-cap",
-            "publish", "promote", "yank", "verify", "vendor",
+            "new", "init", "add", "build", "run", "update", "list", "audit", "tree", "outdated",
+            "why", "why-cap", "publish", "promote", "yank", "verify", "vendor",
         ];
         if FRONTEND_VERBS.contains(&a1.as_str()) {
             run_embedded_pm(std::env::args().skip(1).collect());
