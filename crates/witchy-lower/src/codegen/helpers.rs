@@ -32,6 +32,15 @@ impl Codegen {
             EqShape::Str => {
                 W::Call { func: "str_eq".into(), args: vec![load_i32(aa), load_i32(bb)] }
             }
+            // (RFC-0047) A field whose type has a CUSTOM PartialEq impl: call it,
+            // so a custom equality is honored at every depth. The slot holds a
+            // pointer to the value; the user `eq(self, other) -> Bool` takes two
+            // i32 pointers and returns an i32 bool — the same ABI as `str_eq` and
+            // the structural helpers.
+            compound if self.custom_eq_type_of_shape(compound).is_some() => {
+                let ty = self.custom_eq_type_of_shape(compound).unwrap();
+                W::Call { func: format!("PartialEq__{ty}__eq"), args: vec![load_i32(aa), load_i32(bb)] }
+            }
             // A compound field: the slot holds a pointer to the nested value;
             // recurse into that shape's eq helper (None → the parent bails to WAT,
             // e.g. an Adt/Dict field, or a recursive type via the cycle guard).
@@ -40,6 +49,23 @@ impl Codegen {
                 W::Call { func: h, args: vec![load_i32(aa), load_i32(bb)] }
             }
         })
+    }
+
+    /// (RFC-0047) The custom-eq type name for a compound shape, if its type has a
+    /// user (non-derived) `PartialEq` impl — then a container comparing it calls
+    /// that impl. Only Record/Adt shapes name a concrete type; List/Tuple/Dict are
+    /// structural containers (their ELEMENTS may still be custom-eq, handled by the
+    /// recursive `slot_cmp_wir`).
+    pub(crate) fn custom_eq_type_of_shape(&self, shape: &EqShape) -> Option<String> {
+        let name = match shape {
+            EqShape::Record(n) | EqShape::Adt(n) | EqShape::AdtInst(n, _) | EqShape::AdtRec(n, _) => n,
+            _ => return None,
+        };
+        if self.custom_eq_types.contains(name) {
+            Some(name.clone())
+        } else {
+            None
+        }
     }
 
     /// WIR twin of [`ensure_eq_helper`], for shapes whose fields are all scalar

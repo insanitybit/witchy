@@ -22,6 +22,14 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
         // CONSUME the annotation: this pass runs at every pipeline entry
         // (records::lower is called per stage) and must be idempotent.
         let derives = std::mem::take(&mut t.derives);
+        // (RFC-0047) Record that this type's PartialEq is the STRUCTURAL derive, so
+        // the whole-program `==`-through-PartialEq rule keeps the fast path for it
+        // (a container of `T` recurses structurally rather than calling an impl).
+        // Set (never cleared): `derives` was just consumed, so a later idempotent
+        // re-run sees an empty list — the flag must survive that.
+        if derives.iter().any(|d| d == "PartialEq" || d == "Eq") {
+            t.partial_eq_derived = true;
+        }
         for d in &derives {
             match d.as_str() {
                 "Show" => generated.push(derive_via_comptime("meta.derive_show", t)),

@@ -179,6 +179,27 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
             Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } | Item::Comptime(_) => {}
         }
     }
+    // (RFC-0047) The whole-program set of types with a CUSTOM (non-derived)
+    // `PartialEq`. Detected post-lowering (like the interpreter): a declared type
+    // whose `PartialEq__T__eq` function exists but which did NOT derive PartialEq.
+    // A compound `==` over such an element type calls that impl rather than
+    // recursing structurally; everything else keeps the structural fast path.
+    {
+        let has_eq_fn = |name: &str| {
+            let mangled = format!("PartialEq__{name}__eq");
+            module
+                .items
+                .iter()
+                .any(|it| matches!(it, Item::Function(f) if f.name == mangled))
+        };
+        for item in &module.items {
+            if let Item::Type(t) = item {
+                if !t.partial_eq_derived && has_eq_fn(&t.name) {
+                    cg.custom_eq_types.insert(t.name.clone());
+                }
+            }
+        }
+    }
     // Now that all record types are known, record which constructor fields are
     // records, so binding `Circle(p)` in a pattern lets `p.field` resolve.
     for item in &module.items {

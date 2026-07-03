@@ -4251,6 +4251,55 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
+    /// (RFC-0047) A CUSTOM `PartialEq` impl is honored at EVERY depth — top level
+    /// AND inside a `List`, `Option`, tuple, and as a `Dict` value. Before, a
+    /// custom impl silently vanished below the surface (the container did a
+    /// structural memcmp): `P(1) == P(2)` called the impl (`true`) but
+    /// `[P(1)] == [P(2)]` was `false`. Both backends must now honor it uniformly.
+    /// (The impl here is always-`true`, so any honored comparison yields `true`;
+    /// a structural memcmp of differing fields would yield `false` — the tell.)
+    #[test]
+    fn custom_partial_eq_is_honored_at_every_depth() {
+        let src = "type P:\n    P(Int)\n\nimpl PartialEq for P:\n    fn eq(self, other: P) -> Bool:\n        true\n\nfn main(console: Console):\n    print(console, __render(P(1) == P(2)))\n    print(console, __render([P(1)] == [P(2)]))\n    print(console, __render(Some(P(1)) == Some(P(2))))\n    print(console, __render((P(1), 0) == (P(2), 0)))\n    let a = dict.insert(dict.new(), 1, P(1))\n    let b = dict.insert(dict.new(), 1, P(2))\n    print(console, __render(a == b))\n";
+        let want = vec![
+            "true".to_string(), // top-level impl (as before)
+            "true".to_string(), // inside a List — NEW: was false
+            "true".to_string(), // inside an Option — NEW
+            "true".to_string(), // inside a tuple — NEW
+            "true".to_string(), // as a Dict value — NEW
+        ];
+        assert_eq!(link_run(src), want.clone(), "interpreter");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), want, "compiled WASM must agree");
+    }
+
+    /// (RFC-0047) A realistic custom equality — case-insensitive strings — honored
+    /// through containers on both backends. `CI("Hi") == CI("hi")` and the same
+    /// inside a `List`/`Option` are `true`; genuinely different values are `false`.
+    #[test]
+    fn case_insensitive_custom_eq_through_containers() {
+        let src = "import string\n\ntype CI:\n    CI(String)\n\nimpl PartialEq for CI:\n    fn eq(self, other: CI) -> Bool:\n        match self:\n            CI(a) -> match other:\n                CI(b) -> string.to_lower(a) == string.to_lower(b)\n\nfn main(console: Console):\n    print(console, __render(CI(\"Hello\") == CI(\"hello\")))\n    print(console, __render([CI(\"Hi\"), CI(\"YO\")] == [CI(\"hi\"), CI(\"yo\")]))\n    print(console, __render(Some(CI(\"Ab\")) == Some(CI(\"ab\"))))\n    print(console, __render(CI(\"x\") == CI(\"y\")))\n";
+        let want = vec![
+            "true".to_string(),
+            "true".to_string(),
+            "true".to_string(),
+            "false".to_string(),
+        ];
+        assert_eq!(link_run(src), want.clone(), "interpreter");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), want, "compiled WASM must agree");
+    }
+
+    /// (RFC-0047) The fast-path invariant: a `derive(PartialEq)` type keeps the
+    /// STRUCTURAL comparison at every depth (no impl dispatch), so a program with
+    /// no CUSTOM impl behaves exactly as before. A derived record differing in a
+    /// field is unequal inside a container.
+    #[test]
+    fn derived_partial_eq_stays_structural_in_containers() {
+        let src = "type Pt derive(PartialEq):\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    print(console, __render([Pt(1, 2), Pt(3, 4)] == [Pt(1, 2), Pt(3, 4)]))\n    print(console, __render([Pt(1, 2)] == [Pt(9, 9)]))\n    print(console, __render(Some(Pt(1, 2)) == Some(Pt(1, 2))))\n";
+        let want = vec!["true".to_string(), "false".to_string(), "true".to_string()];
+        assert_eq!(link_run(src), want.clone(), "interpreter");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), want, "compiled WASM must agree");
+    }
+
     /// Structural `==` on sum types: nullary enums and concrete-field variants
     /// compare by tag (then by the matched variant's fields) on both backends.
     /// (Regression for the silent ADT pointer-compare divergence.)
