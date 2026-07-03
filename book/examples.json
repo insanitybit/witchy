@@ -678,6 +678,19 @@
     "runnable": false
   },
   {
+    "block": 9,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/appendix-recipes.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "<article class=\"post\"><h1>Hello from a rune</h1><p>Glamour renders &lt;script&gt; as text.</p></article>"
+    ],
+    "runnable": true
+  },
+  {
     "block": 1,
     "console_only": false,
     "expect_error": false,

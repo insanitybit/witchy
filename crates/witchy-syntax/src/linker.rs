@@ -315,6 +315,14 @@ pub fn std_source(name: &str) -> Option<&'static str> {
         "oauth" => Some(include_str!("../../../std/oauth.witchy")),
         "vm" => Some(include_str!("../../../std/vm.witchy")),
         "bytes" => Some(include_str!("../../../std/bytes.witchy")),
+        // (RFC-0041) `glamour` is a published RUNE, not std — deliberately ABSENT from
+        // `STD_MODULES` so it is not advertised as std and a project still declares it as a
+        // dependency (the PM/footprint treat it as external). But its source is bundled here so
+        // its PURE render surface (`element`/`text`/`to_html`) is importable in a STANDALONE
+        // SNIPPET — the browser playground and the book's runnable cells — where there is no
+        // filesystem to resolve the rune. Authority-neutral: importing it only exposes types;
+        // a `UiRoot`/`UiFetch` can still be minted only by the host, never obtained in a cell.
+        "glamour" => Some(include_str!("../../../projects/glamour/src/glamour.witchy")),
         _ => None,
     }
 }

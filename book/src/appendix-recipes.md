@@ -156,6 +156,31 @@ Because `PinnedUrl` is a sealed capability — only `std/http` can mint one — 
 value of that type is unforgeable proof that the policy ran: a function that asks
 for a `PinnedUrl` cannot be handed an unchecked target.
 
+## Render HTML with Glamour
+
+[Glamour](https://github.com/insanitybit/witchy) is witchy's frontend framework
+(this very book is a Glamour app). A view is built as **data** — a tree of `VNode`s,
+never a string — and rendered to HTML. Because `text` is escaped by construction,
+there is no HTML-injection sink: a `<script>` in your data renders as inert text, not
+markup. Try running this — it needs no capability but `Console`, so it executes right
+here in the page:
+
+```witchy
+import glamour
+
+fn main(console: Console):
+    let view = glamour.element("article", [glamour.prop("class", "post")], [
+        glamour.element("h1", [], [glamour.text("Hello from a rune")]),
+        glamour.element("p", [], [glamour.text("Glamour renders <script> as text.")]),
+    ])
+    print(console, glamour.to_html(view))
+```
+
+Beyond rendering, a full Glamour app adds an MVU loop (`view`/`update`/`step_with`) and
+effects-as-data (`Cmd`s the host performs), with UI authority — fetch, routing, timers —
+carried as capabilities (`UiFetch`, `UiRoute`, …) narrowed from a single app-root
+`UiRoot`, exactly like every other capability in witchy.
+
 For everything else — string manipulation, lists, dicts, sorting, JSON, time —
 see the [standard library reference](appendix-stdlib.md) and the `examples/`
 directory in the repository, which carries a runnable program for nearly every
