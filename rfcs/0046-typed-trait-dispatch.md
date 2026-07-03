@@ -1,0 +1,293 @@
+---
+rfc: 0046
+title: "Typed trait dispatch: retire the string shadow type system"
+status: proposed
+created: 2026-07-03
+predecessors:
+  - "language-evolution.md Phase 0 (typed lowering — the TypeTable this completes)"
+  - "0042 (module namespaces — the other half of 'facts live in declarations')"
+  - "scratch/full-evaluation-2026-07-03.md Theme B (the evidence base)"
+tracking:
+---
+
+# RFC-0046: Typed trait dispatch — retire the string shadow type system
+
+> Provisional snippets throughout; code blocks are deliberately **not** tagged
+> `witchy` so the doc-examples sweep does not execute pre-implementation code.
+
+## Summary
+
+Trait dispatch and monomorphization today run a **second, best-effort type
+system** in `crates/witchy-types/src/traits.rs`, parallel to the real HM
+inference in `typeck.rs`: types are encoded as *strings* (`"List<Int>"`,
+`"Tuple2<Int,String>"`) and recovered by hand-rolled string parsers and
+hardcoded shape tables. This RFC deletes that shadow system and makes dispatch
+consume typeck's real `TypeTable` (`typeck.rs:3119-3131`) — the resolved `Ty`
+of every expression, which `annotate` already computes and which traits.rs
+already threads (but barely uses). One type system, one answer.
+
+This is one of a set (0042–0055) with a single thesis, the same one CLAUDE.md
+states as law for optimizations: **facts must live in local, typed
+declarations — not global censuses, allowlists, or string heuristics.** Here
+the fact is "what type is this expression", the declaration is typeck's
+inference judgment, and the string encoding is the heuristic to delete.
+[RFC-0043](0043-declared-mutation-writeback.md) applies the thesis to
+write-back; [RFC-0050](0050-method-call-generalization.md) to method syntax.
+
+## Motivation
+
+### What the shadow system is (verified against source, 2026-07-03)
+
+`head_type_name` (traits.rs:1035-1112) guesses an expression's type as a
+string, consulting `Scope: HashMap<String, String>` (variable → type-name
+string, :484), `fn_rets` (function → return-type **head only** — `build_tables`
+at :1380-1382 stores `n.clone()` from `Type::Named(n, _)`, **discarding the
+generic arguments**, so `string.split`'s `List(String)` becomes bare `"List"`),
+and a family of string parsers: `apply_subst` (:1118-1140, whole-token
+substitution over the encoded string), `list_elem` (:1142-1144,
+`strip_prefix("List<")`), `generic_arg` (:1149-1153, `find('<')`/`rfind('>')`),
+`tuple_args` (:1158-1176, a depth-counting comma splitter), `head_of`
+(:1356-1358). `type_to_scope_name_d` carries a recursion cap
+(`SCOPE_NAME_MAX_DEPTH = 32`, :1318) because a degenerate type would otherwise
+overflow the encoder. On top sit the shape tables:
+
+- `builtin_ret` (:1024-1031) knows exactly **four** intrinsic returns
+  (`int_to_string`/`__render` → String, `string_length`/`char_count` → Int).
+- `recover_generic_call` (:1401-1431) special-cases `list.at` **by name**
+  (:1413-1414); every other intrinsic's element type is unrecoverable.
+- `bind_type_var` (:1436-1453) binds a return type variable from exactly
+  **three** parameter shapes: `a`, `List(a)`, `Option(a)`. A `Dict(k, v)`,
+  `Iter(a)`, `Result(a, e)`, or user `Box(a)` parameter contributes nothing.
+- `cap_op_return_type` (:1192-1204) hardcodes nine capability-op returns.
+
+The one thing the shadow system does right — documented at :1399-1400 and
+:1022-1023 — is its safety invariant: **a wrong guess only ever yields a type
+error, never wrong code.** Every consumer falls back to "unresolved" and the
+post-mono pass re-finds the failure loudly. That invariant is non-negotiable
+and this RFC preserves it (trivially: the TypeTable is not a guess).
+
+### What it costs users (each probed against the shipped binary)
+
+1. **`iter.collect` cannot infer through generic chains.** A helper
+   `fn firsts(xs: List(a)) -> List(a): iter.collect(iter.take(...))` fails
+   even when the *caller* ascribes `let ys: List(Int) = firsts([1,2,3])` —
+   the bounded `FromIterator` template inside the generic body has no concrete
+   string to bind. Error site: traits.rs:2462.
+2. **Trait calls fail on builtin-call results.**
+   `say(console, list.at(parts, 0))` where `parts = string.split("a,b", ",")`
+   fails to resolve `Show` — `fn_rets` stripped `List(String)` to `"List"`, so
+   `list_elem("List")` is `None`. The same program with a user function of
+   declared return type works. Same syntax, opposite outcomes, decided by
+   which lookup table happened to keep the type.
+3. **`list.unique` does not compile on WASM for record element types** —
+   "cannot compile to WASM: … (an interpreter-only feature?)". This is the
+   *sole* reason the `cmp.member`/`cmp.index_of`/`cmp.count`/`cmp.unique`
+   quadruplet (std/cmp.witchy:230-256) exists: the Eq-bounded cmp forms
+   monomorphize where the unbounded list forms cannot (2026-06-28
+   investigation, re-verified in the 2026-07-03 evaluation).
+4. **std never uses its own Iter library.** Zero combinator/collect use across
+   46 std modules (verified: no `import iter` anywhere in std/). The stdlib
+   avoids its own lazy layer because inference through it is unreliable — the
+   clearest "the library fights its own language" signal we have.
+5. **The fallback error misleads.** "cannot infer the result type for
+   `iter.collect` — … ascribe the binding (`let x: List(Int) = …`)" names
+   `List(Int)` regardless of the actual expected type, and (case 1) the advice
+   doesn't work inside a generic body anyway.
+
+The failure mode is structural, not a bug list: every new expression form,
+intrinsic, or parameter shape needs its own string-table entry, and the ones
+that don't get an entry fail with no location (traits.rs diagnostics carry no
+line — `TypeError` is a bare `message: String`, typeck.rs:320-322). The shadow
+system will keep growing shape-by-shape forever; that is the definition of the
+per-case special-casing CLAUDE.md forbids.
+
+### The wire is already half-connected
+
+typeck's `annotate` (typeck.rs:3184-3195) runs the real checker over the
+exact lowered AST and produces a `TypeTable` keyed by expression identity
+(`&Expr as *const _ as usize`), populated only where the type is fully
+concrete. traits.rs **already receives it**: `Ctx.table` (:527) and
+`Mono.table` (:2035) exist, and are consulted at five sites — the
+tuple-destructure fallback (:645), the binary-operand fallback (:796), the
+method-receiver fallback (:877), the mono argument binder (:2213), and the
+mono result-type probe (:2440). Each of these was added as a patch where the
+string scope failed; each converts the real `Ty` back into… a scope-name
+string (`ty_to_ast` → `type_to_scope_name`), to feed the string machinery.
+The architecture question was answered by these patches; this RFC finishes
+the inversion: **the table is the primary source and the string encoding is
+deleted**, instead of the table being the fifth fallback of the string system.
+
+## Design
+
+### 1. One type representation inside dispatch: `Ty`
+
+`Ctx::type_name`/`Mono`'s scope machinery change signature from
+`Option<String>` to `Option<Ty>` (typeck's resolved type). Dispatch keys —
+the impl table's receiver, the mono memo key, the specialization mangle —
+derive from `Ty` by one function (`ty_head(&Ty) -> &str` and a canonical
+`ty_key(&Ty) -> String` used *only* as a map key/mangled suffix, never
+re-parsed). The rule that makes this safe to enforce mechanically: **no
+function may take a type apart by string inspection.** `list_elem`,
+`generic_arg`, `tuple_args`, `apply_subst`, `head_of`-over-encodings, and
+`SCOPE_NAME_MAX_DEPTH` are deleted; their callers pattern-match `Ty::List(e)`,
+`Ty::Named(n, args)`, `Ty::Tuple(ts)` directly.
+
+### 2. The two-pass architecture stays; the table feeds both
+
+Today's pipeline (traits.rs:280-459) is: a *quiet* pre-mono dispatch pass with
+an **empty** table (:311-312), then `annotate` (:339-349), then
+monomorphization with the real table, then the loud post-mono dispatch pass.
+That order is kept — it exists so annotate sees a checkable module — with one
+change: after the quiet pass and annotate, **the loud pass and mono read types
+from the table first**, falling back to the local judgment forms that need no
+inference (literals, constructors, declared parameters — the cases
+`head_type_name` got right). Where the table has no entry (the type has free
+variables), dispatch reports "unresolved", exactly today's failure — never a
+guess. The safety invariant is preserved by construction: the table *is* the
+checker's answer, and absence still means a loud type error downstream.
+
+If a resolution made by the loud pass would enable further typing (it rewrites
+`MethodCall` into `Call`), re-annotate and re-run to a fixpoint with a small
+bound (two rounds suffices for every known case: one to resolve method calls,
+one to type their results). Each round is whole-module and deterministic, so
+backend parity is unaffected — this all happens on the single linked AST both
+backends consume.
+
+### 3. Deletions
+
+Once dispatch and mono read `Ty`:
+
+- `head_type_name`, `builtin_ret`, `recover_generic_call`, `bind_type_var`,
+  `cap_op_return_type`, and the string parsers/encoder listed above are
+  **deleted** — the checker already types intrinsic calls, capability ops,
+  literals, field reads, and generic returns; the tables were re-deriving what
+  `annotate` knows. Deleting them with the suite green is the proof of the
+  generalization (the same bar CLAUDE.md sets for the `*_cap`/`self_*` zoo).
+- `fn_rets` (the head-only map) is deleted; `fn_sigs` remains only if the
+  fixpoint needs declared signatures for not-yet-annotated rounds — expected
+  to go too.
+- `Scope: HashMap<String, String>` becomes `HashMap<String, Ty>` or is
+  subsumed by the table entirely.
+
+Intrinsics that today have no checker judgment (if any surface during
+migration) get **typed declarations in the checker** — a signature entry, not
+a name-matched return-string.
+
+### 4. Migration order
+
+Each step lands separately, behind the differential suite (`check.sh --fast`
+green, the 655-test corpus + the WITCHY_OPT invariance sweep) plus the
+acceptance tests below:
+
+1. **Mono first** (it already half-uses the table at :2213/:2440): result-type
+   binding (`result_ty`) becomes primary for template resolution; the
+   `bind_type_var` shape table is retired when the table + declared signatures
+   cover its three shapes. Gate: acceptance (a).
+2. **Dispatch receiver typing**: `Ctx::type_name` returns table-first `Ty`.
+   Gate: acceptance (b).
+3. **Eq/Ord-bounded std collections**: give `list.unique`/`contains`/
+   `index_of`/`position` `where a: Eq` bounds; they now monomorphize for
+   record types on WASM. Gate: acceptance (c). The deletion of the `cmp.*`
+   quadruplet is then a follow-up *cut* owned by
+   [RFC-0049](0049-naming-lexicon.md)/[RFC-0044](0044-std-error-policy.md)
+   (shapes and bounds land here; names and deletions land there — 0044:136
+   already freezes the quadruplet against double churn).
+4. **String-machinery deletion** + the misleading fallback error replaced by
+   one that names the actual unresolved variable and the actual expected
+   shape. Gate: the suite green with the tables gone.
+5. **Iter completion and std dogfooding**: `any`/`all`/`min`/`max`/`position`/
+   `last`/`scan`/`flatten` on `Iter` (today unwritable because their
+   `where`-bounded signatures don't survive inference), then std adopts Iter
+   internally where it reads better. Gate: acceptance (d).
+
+### 5. Acceptance tests
+
+(a) `iter.collect` infers through generic chains — the probed `firsts`
+    program compiles and runs identically on both backends, without
+    ascription at either site.
+(b) trait calls resolve on any expression the checker types:
+    `say(console, list.at(string.split("a,b", ","), 0))` resolves `Show`;
+    a differential test pins it.
+(c) `list.unique([Point(1,2), Point(1,2)])` compiles and runs on WASM with a
+    record element type, under an `Eq` bound.
+(d) the Iter combinator set above exists, is documented, and at least three
+    std modules use Iter internally with no output change.
+(e) the existing differential suite, the book fences, and the WITCHY_OPT
+    sweep stay green at every step — no new backend divergence, no new
+    interpreter-only feature.
+
+### 6. Structured spans: a named follow-up, not in scope
+
+`TypeError` has no span fields (typeck.rs:320-322); location is prose-prefixed
+by `at_loc`, and the LSP regexes line numbers back out of the message
+(`extract_line`, src/lsp.rs:359). Dispatch-on-the-table makes span-carrying
+errors *possible* (the table key is the expression; the expression knows its
+line), but threading spans through `TypeError` touches every error site and
+the LSP protocol surface — that is [RFC-0054](0054-structured-errors.md)'s
+compiler-diagnostics half and is deliberately **out of scope** here, so this
+RFC's risk stays confined to dispatch. This RFC only commits to not making
+locations worse: diagnostics raised from dispatch carry at least the enclosing
+function + line that `at_loc` provides today.
+
+## Alternatives
+
+- **Do nothing / keep patching shapes.** Each user-visible failure above has a
+  known one-table-entry fix (add `string.split` to a full-signature map, add
+  `Dict(k,v)` to `bind_type_var`, …). Rejected: that is the strategy that
+  produced the current system — five fallback layers deep, each sound, none
+  sufficient, cost paid per-shape forever. The evaluation's Theme B verdict
+  ("it will keep growing shape-by-shape until dispatch consumes typeck's real
+  TypeTable") is the do-nothing forecast.
+- **Full re-architecture: dispatch inside the checker** (resolve trait calls
+  during inference, Rust-style obligation solving). Strictly better end state,
+  strictly larger blast radius — it rewrites typeck's core loop rather than
+  traits.rs's lookups, and loses the two-pass structure the derive/comptime
+  passes depend on. The table-threading design gets ~all of the user-visible
+  wins while keeping the checker untouched; a checker-integrated solver
+  remains open as a future RFC once this one has shrunk traits.rs.
+- **Keep strings but centralize the encoding** (one parser module, tested).
+  Rejected: the encoding itself is the defect — `fn_rets` dropping generic
+  args and the 32-depth cap are not parser bugs, they are lossy-representation
+  bugs. A tested lossy channel is still lossy.
+
+## Drawbacks
+
+Honest risk profile — this is the largest open compiler item, and the reports
+say so:
+
+- **Blast radius.** traits.rs is 2,566 lines and every generic program in the
+  corpus flows through it; monomorphization decisions change which
+  specializations exist, which changes emitted WASM function sets. Mitigation
+  is the migration order (mono first, deletions last), the differential suite
+  as the gate for every step, and the rule that the table is *additive* until
+  step 4 — the string fallback stays alive until the suite proves it dead.
+- **The fixpoint re-annotate is new machinery** with a compile-time cost
+  (annotate is a full check pass; two rounds ≈ 2× check time on trait-heavy
+  modules). Acceptable: `witchy check` is interactive-fast today and check
+  time is not the bottleneck; measure and cap at two rounds.
+- **`annotate` failure degrades everything at once.** Today an annotate error
+  yields an empty table and the string system limps on; post-deletion it
+  yields "unresolved" dispatch errors. This is *by design* (the module already
+  passed `check`, so annotate failing is a compiler bug we want loud —
+  `WITCHY_DEBUG_ANNOTATE` exists), but it converts silent degradation into
+  visible failure, and the transition will surface latent annotate gaps.
+  Budget for fixing those in step 1-2 rather than treating them as blockers.
+- **Behavioral deltas where the string system guessed right by luck.**
+  Programs that today resolve via a stale/wrong scope string but happen to
+  type-check could change diagnostics. The invariant says they could never
+  have produced wrong *code*, so the delta is error-message churn — pin the
+  important ones in the message-asserting frontend tests (79 exist).
+- **Sequencing pressure.** 0053 (rendering) and 0054 (structured errors) gate
+  on this RFC, and 0043/0050 want its receiver typing. Slipping it slips the
+  set — the reason it lands in five separately-green steps rather than one.
+
+## Prior art
+
+- Rust's trait resolution operates on the inference context's `Ty`, never on
+  rendered type strings; the "shadow type system that re-parses its own
+  pretty-printer" is a known anti-pattern this RFC exits.
+- The project's own typed-lowering keystone (rfcs/language-evolution.md
+  Phase 0) built `annotate` for exactly this consumption; the five existing
+  table fallback sites in traits.rs are its proof of concept.
+- CLAUDE.md's no-special-casing rule (and rfcs/0016's thesis): one general
+  mechanism, per-case tables are debt whose deletion-while-green is the proof.
