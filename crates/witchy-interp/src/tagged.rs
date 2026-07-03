@@ -276,7 +276,7 @@ fn walk_block_depth(block: &mut Block, ctx: &Context, depth: u32) -> Result<(), 
         match stmt {
             Stmt::Let { value, .. }
             | Stmt::Assign { value, .. }
-            | Stmt::LetTuple { value, .. }
+            | Stmt::LetPattern { value, .. }
             | Stmt::Yield(value)
             | Stmt::Expr(value) => walk_expr_depth(value, ctx, depth)?,
             Stmt::Return(opt) => {
@@ -646,7 +646,7 @@ fn substitute_holes_block(
         match stmt {
             Stmt::Let { value, .. }
             | Stmt::Assign { value, .. }
-            | Stmt::LetTuple { value, .. }
+            | Stmt::LetPattern { value, .. }
             | Stmt::Yield(value)
             | Stmt::Expr(value) => substitute_holes(value, holes, where_)?,
             Stmt::Return(opt) => {
@@ -765,7 +765,7 @@ fn collect_refs_block(b: &Block, out: &mut HashSet<String>) {
                 }
                 collect_refs_expr(value, out);
             }
-            Stmt::Assign { value, .. } | Stmt::LetTuple { value, .. } => {
+            Stmt::Assign { value, .. } | Stmt::LetPattern { value, .. } => {
                 collect_refs_expr(value, out)
             }
             Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => collect_refs_expr(e, out),

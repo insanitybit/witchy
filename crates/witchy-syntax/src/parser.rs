@@ -930,37 +930,38 @@ impl Parser {
                 self.expect(&Tok::Eq)?;
                 return Ok(Stmt::Expr(self.expr(0)?));
             }
-            if self.at(&Tok::LParen) {
-                // Tuple destructure: `let (a, b) = e` (bindings are immutable).
-                self.advance();
-                let mut names = Vec::new();
-                while !self.at(&Tok::RParen) {
-                    // `_` discards that element: store it as the name "_", which
-                    // is not a referenceable identifier, so the binding is dropped.
-                    if self.eat(&Tok::Underscore) {
-                        names.push("_".to_string());
-                    } else {
-                        names.push(self.ident()?);
-                    }
-                    if !self.eat(&Tok::Comma) {
-                        break;
-                    }
-                }
-                self.expect(&Tok::RParen)?;
+            // A SIMPLE binding — `let x = e`, `let x: T = e`, or `var x = e` — is a
+            // plain lowercase name (optionally ascribed / mutable): it stays
+            // `Stmt::Let` (which carries the ascription and the `var` bit). Detect
+            // it by a lowercase identifier followed by `:` or `=`.
+            let simple = matches!(self.kind(), Tok::Ident(n) if n.chars().next().is_some_and(char::is_lowercase))
+                && matches!(
+                    self.toks.get(self.pos + 1).map(|t| &t.kind),
+                    Some(Tok::Colon) | Some(Tok::Eq)
+                );
+            if simple {
+                let name = self.ident()?;
+                // `let x: T = e` — an optional ascription, unified with the value.
+                let ty = if self.eat(&Tok::Colon) { Some(self.ty()?) } else { None };
                 self.expect(&Tok::Eq)?;
                 let value = self.expr(0)?;
-                return Ok(Stmt::LetTuple { names, value });
+                return Ok(Stmt::Let { name, ty, mutable, value });
             }
-            let name = self.ident()?;
-            // `let x: T = e` — an optional ascription, unified with the value.
-            let ty = if self.eat(&Tok::Colon) {
-                Some(self.ty()?)
-            } else {
-                None
-            };
+            // Otherwise a destructuring pattern (RFC-0052): ONE grammar for every
+            // binding position. `let (a, (b, c)) = …`, `let Point(x, y) = p`, a
+            // single-variant wrapper — all irrefutable, checked by the refutability
+            // pass (a refutable pattern here is a check-time error pointing at
+            // `if let`). Bindings are immutable, so `var` + a pattern is rejected.
+            if mutable {
+                return Err(self.error(
+                    "`var` takes a single mutable name, not a destructuring pattern — \
+                     use `let` (pattern bindings are immutable)",
+                ));
+            }
+            let pattern = self.pattern()?;
             self.expect(&Tok::Eq)?;
             let value = self.expr(0)?;
-            Ok(Stmt::Let { name, ty, mutable, value })
+            Ok(Stmt::LetPattern { pattern, value })
         } else if self.is_assignment() {
             // The left side is a *place*: a variable, a subscript `x[i]`, or a
             // field `x.f` (RFC-0022). Parse it as an expression (it stops at the
@@ -1281,33 +1282,13 @@ impl Parser {
                         iter
                     }
                 };
-                // `for (a, b) in pairs:` or `for a, b in pairs:` — a tuple pattern
-                // destructures each element: sugar for a fresh element variable
-                // plus a leading `let (a, b) = element` in the body. A single
-                // unparenthesized name is an ordinary loop variable.
-                let paren = self.eat(&Tok::LParen);
-                let mut names = Vec::new();
-                loop {
-                    if self.eat(&Tok::Underscore) {
-                        names.push("_".to_string());
-                    } else {
-                        names.push(self.ident()?);
-                    }
-                    if !self.eat(&Tok::Comma) {
-                        break;
-                    }
-                }
-                if paren {
-                    self.expect(&Tok::RParen)?;
-                }
-                self.expect(&Tok::In)?;
-                let iter = self.expr(0)?;
-                let mut body = self.block()?;
+                // `for var x in xs:` keeps its single-plain-variable restriction
+                // (a write-back form, not a pattern context — RFC-0043/0052).
                 if mutable {
-                    if paren || names.len() != 1 {
-                        return Err(self.error("`for var` takes a single loop variable, not a tuple pattern"));
-                    }
-                    let name = names.pop().unwrap();
+                    let name = self.ident()?;
+                    self.expect(&Tok::In)?;
+                    let iter = self.expr(0)?;
+                    let body = self.block()?;
                     let Expr::Var(list_var) = &iter else {
                         return Err(self.error("`for var x in <list>` requires a plain list variable to write each element back to"));
                     };
@@ -1318,19 +1299,34 @@ impl Parser {
                     }
                     return Ok(desugar_for_var(name, list_var.clone(), body));
                 }
-                if !paren && names.len() == 1 {
+                // Otherwise the loop header is a PATTERN (RFC-0052 — one grammar for
+                // every binding position). The unparenthesized `for a, b in xs`
+                // form is still accepted: parse a pattern, then if a comma follows,
+                // gather the rest into a tuple pattern. The comprehension generator
+                // parses the same way (`for_pattern`), so the two accept the same
+                // headers by construction.
+                let pattern = self.for_pattern()?;
+                self.expect(&Tok::In)?;
+                let iter = self.expr(0)?;
+                let mut body = self.block()?;
+                // A single plain variable is the common fast path — bind it
+                // directly as the loop variable (no destructuring wrapper).
+                if let Pattern::Var(name) = &pattern {
                     return Ok(Expr::For {
-                        var: names.pop().unwrap(),
+                        var: name.clone(),
                         iter: Box::new(wrap(iter)),
                         body,
                     });
                 }
+                // Any other (irrefutable) pattern desugars to a fresh element
+                // variable plus a leading `let PAT = element` (checked for
+                // refutability like every `let` pattern).
                 let var = {
                     let v = format!("__fortuple{}", self.compr_counter);
                     self.compr_counter += 1;
                     v
                 };
-                body.stmts.insert(0, Stmt::LetTuple { names, value: Expr::Var(var.clone()) });
+                body.stmts.insert(0, Stmt::LetPattern { pattern, value: Expr::Var(var.clone()) });
                 if let Some(first) = body.lines.first().copied() {
                     body.lines.insert(0, first);
                 } else {
@@ -1508,15 +1504,19 @@ impl Parser {
     /// nest in source order, so later generators see earlier loop variables.
     fn list_comprehension(&mut self, elem: Expr) -> Result<Expr, ParseError> {
         enum Clause {
-            For(String, Expr),
+            For(Pattern, Expr),
             If(Expr),
         }
         let mut clauses = Vec::new();
         loop {
             if self.eat(&Tok::For) {
-                let var = self.ident()?;
+                // (RFC-0052) The generator takes the SAME pattern grammar as `for`
+                // — `[a + b for (a, b) in pairs]` now works — parsed via the shared
+                // `for_pattern`, so the comprehension accepts exactly what `for`
+                // does by construction.
+                let pattern = self.for_pattern()?;
                 self.expect(&Tok::In)?;
-                clauses.push(Clause::For(var, self.expr(0)?));
+                clauses.push(Clause::For(pattern, self.expr(0)?));
             } else if self.eat(&Tok::If) {
                 clauses.push(Clause::If(self.expr(0)?));
             } else {
@@ -1544,11 +1544,22 @@ impl Parser {
                     then_block: body,
                     else_block: None,
                 }),
-                Clause::For(var, iter) => Stmt::Expr(Expr::For {
-                    var,
-                    iter: Box::new(iter),
-                    body,
-                }),
+                Clause::For(pattern, iter) => {
+                    // A plain variable binds directly; any other (irrefutable)
+                    // pattern desugars to a fresh loop var + a leading
+                    // `let PAT = elem` in the loop body — the same shape `for`
+                    // produces (and the refutability checker vets the pattern).
+                    if let Pattern::Var(name) = pattern {
+                        Stmt::Expr(Expr::For { var: name, iter: Box::new(iter), body })
+                    } else {
+                        let v = format!("__fortuple{}", self.compr_counter);
+                        self.compr_counter += 1;
+                        let mut body = body;
+                        body.stmts.insert(0, Stmt::LetPattern { pattern, value: Expr::Var(v.clone()) });
+                        body.lines.insert(0, 0);
+                        Stmt::Expr(Expr::For { var: v, iter: Box::new(iter), body })
+                    }
+                }
             };
         }
         Ok(Expr::Block(Block {
@@ -1651,14 +1662,12 @@ impl Parser {
         self.expect(&Tok::LBrace)?;
         let mut arms = Vec::new();
         while !self.at(&Tok::RBrace) && !self.at(&Tok::Eof) {
-            // Or-patterns: `p1 | p2 | ... -> body` is sugar for one arm per
-            // alternative, all sharing the guard and body. Alternatives that
-            // bind variables work too, since each expanded arm binds them.
-            let mut alternatives = vec![self.arm_pattern()?];
-            while self.eat(&Tok::Bar) {
-                alternatives.push(self.arm_pattern()?);
-            }
-            let explicit = if self.eat(&Tok::If) {
+            // ONE grammar (RFC-0052): `pattern()` now folds `|` alternatives into
+            // a real `Pattern::Or` and `..`/`..=` into a real `Pattern::IntRange`
+            // at any depth — no parse-time arm duplication, no synthesized range
+            // guard (the checker/backends reason about both nodes directly).
+            let pattern = self.pattern()?;
+            let guard = if self.eat(&Tok::If) {
                 Some(self.expr(0)?)
             } else {
                 None
@@ -1685,29 +1694,7 @@ impl Parser {
                 self.expr(0)?
             };
             self.in_match_arm = outer;
-            let last = alternatives.len() - 1;
-            for (i, (pattern, range_guard)) in alternatives.into_iter().enumerate() {
-                // A range pattern contributes a bounds-check guard; combine it with
-                // any explicit `if` guard. Clone the shared body for all but the last.
-                let guard = match (range_guard, explicit.clone()) {
-                    (Some(r), Some(e)) => Some(Expr::Binary {
-                        op: BinOp::And,
-                        lhs: Box::new(r),
-                        rhs: Box::new(e),
-                    }),
-                    (Some(r), None) => Some(r),
-                    (None, e) => e,
-                };
-                if i == last {
-                    arms.push(MatchArm { pattern, guard, body });
-                    break;
-                }
-                arms.push(MatchArm {
-                    pattern,
-                    guard,
-                    body: body.clone(),
-                });
-            }
+            arms.push(MatchArm { pattern, guard, body });
             self.eat(&Tok::Comma); // optional separator
         }
         self.expect(&Tok::RBrace)?;
@@ -1715,38 +1702,6 @@ impl Parser {
             scrutinee: Box::new(scrutinee),
             arms,
         })
-    }
-
-    /// A match-arm pattern, possibly an integer range. `lo..hi` (exclusive) and
-    /// `lo..=hi` (inclusive) desugar to a fresh binding plus a bounds-check guard,
-    /// so the existing guard machinery handles the test — no dedicated pattern.
-    fn arm_pattern(&mut self) -> Result<(Pattern, Option<Expr>), ParseError> {
-        let pat = self.pattern()?;
-        if let Pattern::Int(lo) = pat {
-            let inclusive = self.at(&Tok::DotDotEq);
-            if inclusive || self.at(&Tok::DotDot) {
-                self.advance();
-                let hi = self.int_bound()?;
-                let name = format!("_range{}", self.compr_counter);
-                self.compr_counter += 1;
-                let bind = || Box::new(Expr::Var(name.clone()));
-                let guard = Expr::Binary {
-                    op: BinOp::And,
-                    lhs: Box::new(Expr::Binary {
-                        op: BinOp::GtEq,
-                        lhs: bind(),
-                        rhs: Box::new(Expr::Int(lo)),
-                    }),
-                    rhs: Box::new(Expr::Binary {
-                        op: if inclusive { BinOp::LtEq } else { BinOp::Lt },
-                        lhs: bind(),
-                        rhs: Box::new(Expr::Int(hi)),
-                    }),
-                };
-                return Ok((Pattern::Var(name), Some(guard)));
-            }
-        }
-        Ok((pat, None))
     }
 
     /// An integer bound in a range pattern, allowing a leading `-`.
@@ -1763,7 +1718,56 @@ impl Parser {
         }
     }
 
+    /// A `for`/comprehension loop-header pattern. Identical to `pattern()`, except
+    /// it also accepts the brace-free comma form `for a, b in xs` (no parens) —
+    /// unparenthesized comma-separated patterns gather into a tuple. Used by BOTH
+    /// `for` and the comprehension generator, so they accept the same headers.
+    fn for_pattern(&mut self) -> Result<Pattern, ParseError> {
+        let first = self.pattern()?;
+        if !self.at(&Tok::Comma) {
+            return Ok(first);
+        }
+        let mut pats = vec![first];
+        while self.eat(&Tok::Comma) {
+            // Trailing comma before `in` — stop.
+            if self.at(&Tok::In) {
+                break;
+            }
+            pats.push(self.pattern()?);
+        }
+        Ok(Pattern::Tuple(pats))
+    }
+
     fn pattern(&mut self) -> Result<Pattern, ParseError> {
+        // One grammar for every binding position (RFC-0052): parse a primary
+        // pattern, then fold trailing `| alt` alternatives into an or-pattern and
+        // trailing `..`/`..=` into a range. Or-patterns and ranges are real AST
+        // nodes usable at ANY depth (`Some(1 | 2)`, `(0..10, _)`).
+        let first = self.pattern_primary()?;
+        // Integer range: `lo..hi` / `lo..=hi`. Only an Int (or `-Int`) primary can
+        // start a range; the primary returns `Pattern::Int` for both.
+        if let Pattern::Int(lo) = first {
+            let inclusive = self.at(&Tok::DotDotEq);
+            if inclusive || self.at(&Tok::DotDot) {
+                self.advance();
+                let hi = self.int_bound()?;
+                return Ok(Pattern::IntRange { lo, hi, inclusive });
+            }
+        }
+        if !self.at(&Tok::Bar) {
+            return Ok(first);
+        }
+        let mut alts = vec![first];
+        while self.eat(&Tok::Bar) {
+            alts.push(self.pattern_primary()?);
+        }
+        Ok(Pattern::Or(alts))
+    }
+
+    /// A single pattern with no trailing `|` alternative or `..` range (those are
+    /// folded by `pattern`). This is the former `pattern` body plus Float-literal
+    /// rejection and Duration-literal admission (RFC-0052).
+    fn pattern_primary(&mut self) -> Result<Pattern, ParseError> {
         match self.kind().clone() {
             Tok::LParen => {
                 self.advance();
@@ -1811,16 +1815,38 @@ impl Parser {
                 self.advance();
                 Ok(Pattern::Int(n))
             }
+            // (RFC-0052) A duration literal pattern (`1s`), carried as whole ms —
+            // exact i64 equality, no float hazard.
+            Tok::Duration(ms) => {
+                self.advance();
+                Ok(Pattern::Duration(ms))
+            }
+            // (RFC-0052) Float literal patterns are rejected — exact Float equality
+            // is a precision trap (and Float is not Eq). Bind and guard instead.
+            Tok::Float(_) => Err(self.error(
+                "Float literals cannot be matched — exact Float equality is a precision \
+                 trap; bind and guard instead (`x if math.float_abs(x - 1.5) < eps ->`)",
+            )),
             Tok::Minus => {
-                // Negative integer literal pattern, e.g. `-1`.
+                // Negative integer/duration literal pattern, e.g. `-1`, `-1s`
+                // (RFC-0052: the sign folds into the literal, matching how `-1s`
+                // types in expression position).
                 self.advance();
                 match self.kind().clone() {
                     Tok::Int(n) => {
                         self.advance();
                         Ok(Pattern::Int(-n))
                     }
+                    Tok::Duration(ms) => {
+                        self.advance();
+                        Ok(Pattern::Duration(-ms))
+                    }
+                    Tok::Float(_) => Err(self.error(
+                        "Float literals cannot be matched — exact Float equality is a \
+                         precision trap; bind and guard instead",
+                    )),
                     other => Err(self.error(format!(
-                        "expected an integer after `-` in a pattern, found `{other}`"
+                        "expected an integer or duration after `-` in a pattern, found `{other}`"
                     ))),
                 }
             }
@@ -2017,7 +2043,7 @@ fn for_var_stmt_escapes(s: &Stmt, in_loop: bool, in_lambda: bool) -> bool {
         }
         Stmt::Let { value, .. }
         | Stmt::Assign { value, .. }
-        | Stmt::LetTuple { value, .. }
+        | Stmt::LetPattern { value, .. }
         | Stmt::Yield(value)
         | Stmt::Expr(value) => for_var_expr_escapes(value, in_loop, in_lambda),
     }
@@ -2231,7 +2257,7 @@ fn lower_sugar_block(b: &mut Block) {
     for stmt in &mut b.stmts {
         match stmt {
             Stmt::Let { value, .. }
-            | Stmt::LetTuple { value, .. }
+            | Stmt::LetPattern { value, .. }
             | Stmt::Assign { value, .. }
             | Stmt::Expr(value)
             | Stmt::Yield(value)

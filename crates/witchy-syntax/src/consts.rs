@@ -133,7 +133,7 @@ fn collect_names_block(b: &Block, out: &mut Vec<String>) {
     for stmt in &b.stmts {
         match stmt {
             Stmt::Let { value, .. }
-            | Stmt::LetTuple { value, .. }
+            | Stmt::LetPattern { value, .. }
             | Stmt::Assign { value, .. }
             | Stmt::Expr(value)
             | Stmt::Yield(value)
@@ -244,11 +244,9 @@ fn subst_stmt(
             scope.insert(name.clone());
             changed
         }
-        Stmt::LetTuple { names, value } => {
+        Stmt::LetPattern { pattern, value } => {
             let changed = subst_expr(value, consts, cnames, scope);
-            for n in names.iter() {
-                scope.insert(n.clone());
-            }
+            pattern_binds(pattern, scope);
             changed
         }
         Stmt::Assign { value, .. } => subst_expr(value, consts, cnames, scope),
@@ -475,6 +473,14 @@ fn pattern_binds(p: &Pattern, scope: &mut HashSet<String>) {
                 scope.insert(n.clone());
             }
         }
-        Pattern::Wildcard | Pattern::Int(_) | Pattern::Str(_) | Pattern::Bool(_) => {}
+        // All alternatives of an or-pattern bind the same names, so the first
+        // one's bindings are the set (RFC-0052).
+        Pattern::Or(alts) => {
+            if let Some(first) = alts.first() {
+                pattern_binds(first, scope);
+            }
+        }
+        Pattern::Wildcard | Pattern::Int(_) | Pattern::Str(_) | Pattern::Bool(_)
+        | Pattern::Duration(_) | Pattern::IntRange { .. } => {}
     }
 }

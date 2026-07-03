@@ -71,10 +71,12 @@ fn fv_block(block: &Block, s: &mut LambdaScan) {
                 s.assigns.insert(name.clone());
                 fv_expr(value, s);
             }
-            Stmt::LetTuple { names, value } => {
+            Stmt::LetPattern { pattern, value } => {
                 fv_expr(value, s);
+                let mut names = Vec::new();
+                crate::ast::pattern_binds(pattern, &mut names);
                 for n in names {
-                    s.bound.insert(n.clone());
+                    s.bound.insert(n);
                 }
             }
             Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => fv_expr(e, s),

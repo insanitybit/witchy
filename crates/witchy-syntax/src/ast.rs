@@ -301,9 +301,14 @@ pub enum Stmt {
         name: String,
         value: Expr,
     },
-    /// `let (a, b) = e` — destructure a tuple into immutable bindings.
-    LetTuple {
-        names: Vec<String>,
+    /// `let PAT = e` — destructure via an irrefutable pattern into immutable
+    /// bindings (RFC-0052). `PAT` is any pattern the refutability checker proves
+    /// always matches: a tuple (any nesting), a single-variant record/ctor with
+    /// irrefutable fields, a wildcard, a variable. A refutable pattern here is a
+    /// check-time error pointing at `if let`. Replaces the old flat-names
+    /// `LetTuple` — every binding position now shares one grammar.
+    LetPattern {
+        pattern: Pattern,
         value: Expr,
     },
     /// `return e` (or bare `return`) — exit the enclosing function early with a
@@ -527,6 +532,49 @@ pub enum Pattern {
         elems: Vec<Pattern>,
         rest: Option<Option<String>>,
     },
+    /// A duration literal pattern (`1s`, `-1s`), carried as whole milliseconds —
+    /// exact `i64` equality against a `Duration` scrutinee (RFC-0052). No float
+    /// hazard, since a Duration is an exact millisecond count.
+    Duration(i64),
+    /// An integer range pattern (RFC-0052): `lo..hi` (half-open) or `lo..=hi`
+    /// (inclusive), usable at any depth. A real AST node (not the old
+    /// guard-desugar) so exhaustiveness can reason about it — though the
+    /// classifier still treats ranges as refutable (no numeric-coverage
+    /// analysis), so a range match still needs a final `_`/binding arm.
+    IntRange { lo: i64, hi: i64, inclusive: bool },
+    /// An or-pattern (RFC-0052): `p1 | p2 | …`, a real AST node usable at any
+    /// depth (`Some(1 | 2)`, `[1 | 2, ..rest]`). Every alternative must bind the
+    /// same names at the same types (the checker enforces binding-consistency).
+    Or(Vec<Pattern>),
+}
+
+/// Collect the variables an irrefutable pattern binds, in appearance order.
+/// (Or-patterns/ranges/literals bind nothing here; the checker rejects those in
+/// irrefutable position, and for or-patterns all alternatives bind the same set,
+/// so the first alternative's names would suffice — but they never reach the
+/// irrefutable binding paths that call this.)
+pub fn pattern_binds(p: &Pattern, out: &mut Vec<String>) {
+    match p {
+        Pattern::Var(n) if n != "_" => out.push(n.clone()),
+        Pattern::Wildcard | Pattern::Var(_) => {}
+        Pattern::Ctor { args, .. } => args.iter().for_each(|a| pattern_binds(a, out)),
+        Pattern::Tuple(ps) => ps.iter().for_each(|q| pattern_binds(q, out)),
+        Pattern::List { elems, rest } => {
+            elems.iter().for_each(|q| pattern_binds(q, out));
+            if let Some(Some(name)) = rest {
+                out.push(name.clone());
+            }
+        }
+        Pattern::Or(alts) => {
+            // All alternatives bind the same names (checker-enforced); take the
+            // first so callers that only need the *set* of names are correct.
+            if let Some(first) = alts.first() {
+                pattern_binds(first, out);
+            }
+        }
+        Pattern::Int(_) | Pattern::Str(_) | Pattern::Bool(_) | Pattern::Duration(_)
+        | Pattern::IntRange { .. } => {}
+    }
 }
 
 /// Collect every type *name* (`Type::Named` head) in `t` into any `Extend<String>`

@@ -5415,7 +5415,7 @@ impl Codegen {
                     }
                     self.scan_escapes_expr(value, inner, ok);
                 }
-                Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => {
+                Stmt::Let { value, .. } | Stmt::LetPattern { value, .. } => {
                     self.scan_escapes_expr(value, inner, ok)
                 }
                 Stmt::Yield(_) => *ok = false,
@@ -6182,7 +6182,7 @@ fn bounds_elide_pair(var: &str, lo: &Expr, hi: &Expr, inclusive: bool, body: &Bl
 fn collect_fn_refs_block(b: &Block, out: &mut HashSet<String>) {
     for stmt in &b.stmts {
         match stmt {
-            Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetTuple { value, .. } => {
+            Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetPattern { value, .. } => {
                 collect_fn_refs_expr(value, out)
             }
             Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => collect_fn_refs_expr(e, out),

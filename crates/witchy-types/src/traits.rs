@@ -1274,7 +1274,7 @@ fn block_needs_lowering(b: &Block) -> bool {
     b.stmts.iter().any(|s| match s {
         Stmt::Let { value, .. }
         | Stmt::Assign { value, .. }
-        | Stmt::LetTuple { value, .. }
+        | Stmt::LetPattern { value, .. }
         | Stmt::Yield(value)
         | Stmt::Expr(value) => expr_needs_lowering(value),
         Stmt::Return(opt) => opt.as_ref().is_some_and(expr_needs_lowering),
@@ -1682,7 +1682,7 @@ fn subst_block_types(b: &mut Block, subst: &HashMap<&str, String>) {
                 subst_expr_types(value, subst);
             }
             Stmt::Assign { value, .. }
-            | Stmt::LetTuple { value, .. }
+            | Stmt::LetPattern { value, .. }
             | Stmt::Return(Some(value))
             | Stmt::Expr(value)
             | Stmt::Yield(value) => subst_expr_types(value, subst),
@@ -1995,7 +1995,7 @@ fn rename_calls_block(b: &mut Block, renames: &HashMap<String, String>) {
         match st {
             Stmt::Let { value, .. }
             | Stmt::Assign { value, .. }
-            | Stmt::LetTuple { value, .. }
+            | Stmt::LetPattern { value, .. }
             | Stmt::Return(Some(value))
             | Stmt::Expr(value)
             | Stmt::Yield(value) => walk_expr(value, renames),

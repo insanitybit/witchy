@@ -58,7 +58,7 @@ fn stmt_max_line(st: &Stmt, default: u32) -> u32 {
     match st {
         Stmt::Let { value, .. }
         | Stmt::Assign { value, .. }
-        | Stmt::LetTuple { value, .. }
+        | Stmt::LetPattern { value, .. }
         | Stmt::Return(Some(value))
         | Stmt::Expr(value) => expr_max_line(value, default),
         _ => default,
@@ -522,11 +522,11 @@ fn stmt(s: &mut String, st: &Stmt, depth: usize, c: &mut Comments) {
             s.push_str(" = ");
             value_or_block(s, value, depth, c);
         }
-        Stmt::LetTuple { names, value } => {
+        Stmt::LetPattern { pattern: pat, value } => {
             pad(s, depth);
-            s.push_str("let (");
-            s.push_str(&names.join(", "));
-            s.push_str(") = ");
+            s.push_str("let ");
+            s.push_str(&pattern(pat));
+            s.push_str(" = ");
             value_or_block(s, value, depth, c);
         }
         Stmt::Return(Some(e)) => {
@@ -758,7 +758,7 @@ fn multiline(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
             // plus a leading destructure; print the sugar back (unparenthesized —
             // the canonical Python-style form; `for (a, b) in e:` also parses).
             if var.starts_with("__fortuple") {
-                if let Some(Stmt::LetTuple { names, value: Expr::Var(v) }) = body.stmts.first() {
+                if let Some(Stmt::LetPattern { pattern: pat, value: Expr::Var(v) }) = body.stmts.first() {
                     if v == var {
                         let inner = Block {
                             stmts: body.stmts[1..].to_vec(),
@@ -766,7 +766,17 @@ fn multiline(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
                             region: body.region.clone(),
                         };
                         s.push_str("for ");
-                        s.push_str(&names.join(", "));
+                        // A tuple header prints in the canonical unparenthesized
+                        // comma form (`for a, b in e:`); any other pattern prints
+                        // as itself.
+                        match pat {
+                            Pattern::Tuple(ps) => {
+                                s.push_str(
+                                    &ps.iter().map(pattern).collect::<Vec<_>>().join(", "),
+                                );
+                            }
+                            other => s.push_str(&pattern(other)),
+                        }
                         s.push_str(" in ");
                         s.push_str(&expr(iter));
                         s.push_str(":\n");
@@ -1479,6 +1489,11 @@ fn pattern(p: &Pattern) -> String {
             }
             format!("[{}]", parts.join(", "))
         }
+        Pattern::Duration(ms) => duration_literal(*ms),
+        Pattern::IntRange { lo, hi, inclusive } => {
+            format!("{lo}{}{hi}", if *inclusive { "..=" } else { ".." })
+        }
+        Pattern::Or(alts) => alts.iter().map(pattern).collect::<Vec<_>>().join(" | "),
     }
 }
 
@@ -1562,7 +1577,7 @@ fn canon_block(b: &mut Block) {
 
 fn canon_stmt(s: &mut Stmt) {
     match s {
-        Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetTuple { value, .. } => {
+        Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetPattern { value, .. } => {
             canon_expr(value)
         }
         Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => canon_expr(e),

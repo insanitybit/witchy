@@ -472,7 +472,7 @@ fn idents_in_expr(e: &Expr, f: &mut dyn FnMut(&str)) {
 fn idents_in_block(b: &Block, f: &mut dyn FnMut(&str)) {
     for stmt in &b.stmts {
         match stmt {
-            Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => idents_in_expr(value, f),
+            Stmt::Let { value, .. } | Stmt::LetPattern { value, .. } => idents_in_expr(value, f),
             Stmt::Assign { name, value } => {
                 f(name);
                 idents_in_expr(value, f);
@@ -2251,7 +2251,7 @@ impl Interpreter {
         let needs_scope = block
             .stmts
             .iter()
-            .any(|s| matches!(s, Stmt::Let { .. } | Stmt::LetTuple { .. }));
+            .any(|s| matches!(s, Stmt::Let { .. } | Stmt::LetPattern { .. }));
         if needs_scope {
             env.push();
         }

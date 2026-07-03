@@ -476,7 +476,7 @@ fn collect_accumulators(
         match stmt {
             Stmt::Let { value, .. }
             | Stmt::Assign { value, .. }
-            | Stmt::LetTuple { value, .. }
+            | Stmt::LetPattern { value, .. }
             | Stmt::Return(Some(value))
             | Stmt::Expr(value)
             | Stmt::Yield(value) => {
@@ -619,7 +619,7 @@ impl<'a> Walker<'a> {
             }
             let mut shares: Vec<(String, String)> = Vec::new();
             match stmt {
-                Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => {
+                Stmt::Let { value, .. } | Stmt::LetPattern { value, .. } => {
                     self.scan(value, true, "bound to a new name", &mut shares);
                 }
                 Stmt::Assign { name, value } => {
@@ -773,7 +773,7 @@ impl<'a> Walker<'a> {
                     moved.retain(|v| v != name);
                 }
                 Stmt::Let { value, .. }
-                | Stmt::LetTuple { value, .. }
+                | Stmt::LetPattern { value, .. }
                 | Stmt::Return(Some(value))
                 | Stmt::Expr(value)
                 | Stmt::Yield(value) => collect_moved_accs(value, self.accs, &mut moved),
@@ -1098,7 +1098,7 @@ fn stmt_value(s: &Stmt) -> Option<&Expr> {
     match s {
         Stmt::Let { value, .. }
         | Stmt::Assign { value, .. }
-        | Stmt::LetTuple { value, .. }
+        | Stmt::LetPattern { value, .. }
         | Stmt::Return(Some(value))
         | Stmt::Expr(value)
         | Stmt::Yield(value) => Some(value),
@@ -1428,7 +1428,7 @@ fn collect_moved_in_block(b: &Block, accs: &HashSet<String>, out: &mut Vec<Strin
     for stmt in &b.stmts {
         match stmt {
             Stmt::Let { value, .. }
-            | Stmt::LetTuple { value, .. }
+            | Stmt::LetPattern { value, .. }
             | Stmt::Assign { value, .. }
             | Stmt::Return(Some(value))
             | Stmt::Expr(value)
@@ -1444,7 +1444,7 @@ fn lambda_mentions(b: &Block, accs: &HashSet<String>, out: &mut HashSet<String>)
         match stmt {
             Stmt::Let { value, .. }
             | Stmt::Assign { value, .. }
-            | Stmt::LetTuple { value, .. }
+            | Stmt::LetPattern { value, .. }
             | Stmt::Return(Some(value))
             | Stmt::Expr(value)
             | Stmt::Yield(value) => expr(value, accs, out),
@@ -1918,7 +1918,7 @@ fn name_read_count(b: &Block, name: &str) -> usize {
         match s {
             Stmt::Let { value, .. }
             | Stmt::Assign { value, .. }
-            | Stmt::LetTuple { value, .. }
+            | Stmt::LetPattern { value, .. }
             | Stmt::Return(Some(value))
             | Stmt::Yield(value)
             | Stmt::Expr(value) => n += expr_read_count(value, name),
@@ -2049,7 +2049,7 @@ fn each_block_in_stmt(s: &Stmt, f: &mut impl FnMut(&Block)) {
     match s {
         Stmt::Let { value, .. }
         | Stmt::Assign { value, .. }
-        | Stmt::LetTuple { value, .. }
+        | Stmt::LetPattern { value, .. }
         | Stmt::Return(Some(value))
         | Stmt::Yield(value)
         | Stmt::Expr(value) => each_block_in_expr(value, f),

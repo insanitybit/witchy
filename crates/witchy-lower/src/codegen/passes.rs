@@ -335,7 +335,7 @@ pub(crate) fn flip_string_add_module(m: &mut Module, table: &witchy_types::typec
             match st {
                 Stmt::Let { value, .. }
                 | Stmt::Assign { value, .. }
-                | Stmt::LetTuple { value, .. }
+                | Stmt::LetPattern { value, .. }
                 | Stmt::Return(Some(value))
                 | Stmt::Expr(value)
                 | Stmt::Yield(value) => walk_expr(value, table),
@@ -520,7 +520,7 @@ pub(crate) fn rewrite_try_ctx_module(m: &mut Module, table: &witchy_types::typec
             match st {
                 Stmt::Let { value, .. }
                 | Stmt::Assign { value, .. }
-                | Stmt::LetTuple { value, .. }
+                | Stmt::LetPattern { value, .. }
                 | Stmt::Return(Some(value))
                 | Stmt::Expr(value)
                 | Stmt::Yield(value) => walk_expr(value, table, changed),

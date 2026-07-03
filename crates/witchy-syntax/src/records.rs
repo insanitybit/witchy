@@ -96,7 +96,7 @@ fn lower_block(b: &mut Block, orders: &Orders) -> Result<(), String> {
     for stmt in &mut b.stmts {
         match stmt {
             Stmt::Let { value, .. }
-            | Stmt::LetTuple { value, .. }
+            | Stmt::LetPattern { value, .. }
             | Stmt::Assign { value, .. }
             | Stmt::Expr(value)
             | Stmt::Yield(value)

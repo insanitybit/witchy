@@ -976,7 +976,7 @@ fn borrow_escape_check(func: &Function) -> Result<(), TypeError> {
                 Stmt::Return(Some(e)) => check_result_expr(e, borrowed, fname)?,
                 Stmt::Let { value, .. }
                 | Stmt::Assign { value, .. }
-                | Stmt::LetTuple { value, .. }
+                | Stmt::LetPattern { value, .. }
                 | Stmt::Expr(value)
                 | Stmt::Yield(value) => scan_returns_expr(value, borrowed, fname)?,
                 Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
@@ -2559,6 +2559,15 @@ impl Checker {
                         Ty::Float => {
                             self.unify(&t, &Ty::Float)?;
                             Ok(Ty::Float)
+                        }
+                        // (RFC-0052) `-1s` negates a Duration to a Duration — a
+                        // Duration is an exact i64 of milliseconds, so unary minus
+                        // is well-defined and both backends negate the i64. This
+                        // is why `let d: Duration = -1s` types (the sign folds into
+                        // the literal's meaning, not into an Int).
+                        Ty::Duration => {
+                            self.unify(&t, &Ty::Duration)?;
+                            Ok(Ty::Duration)
                         }
                         _ => {
                             self.unify(&t, &Ty::Int)?;
