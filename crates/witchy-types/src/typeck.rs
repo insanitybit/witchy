@@ -1361,6 +1361,14 @@ impl Checker {
     fn pop(&mut self) {
         self.scopes.pop();
     }
+    /// The (name, type) bindings introduced in the innermost scope frame — used to
+    /// compare what each or-pattern alternative binds (RFC-0052 binding-consistency).
+    fn scope_bindings(&self) -> Vec<(String, Ty)> {
+        self.scopes
+            .last()
+            .map(|f| f.iter().map(|(n, (t, _))| (n.clone(), t.clone())).collect())
+            .unwrap_or_default()
+    }
     fn define(&mut self, name: String, ty: Ty, mutable: bool) {
         if let Some(r) = self.region_locals.last_mut() {
             r.insert(name.clone());
@@ -2128,23 +2136,22 @@ impl Checker {
                     self.consumed.remove(name); // reassignment re-initializes
                     ty = Ty::Nil;
                 }
-                Stmt::LetTuple { names, value } => {
-                    let mut seen = HashSet::new();
-                    for n in names {
-                        if n != "_" && !seen.insert(n.clone()) {
-                            return terr(format!(
-                                "tuple destructure binds `{n}` more than once — each name must be distinct"
-                            ));
-                        }
+                Stmt::LetPattern { pattern, value } => {
+                    // (RFC-0052) `let PAT = e` — ONE pattern grammar for every
+                    // binding position. A `let`/`for`/comprehension pattern must be
+                    // IRREFUTABLE (proven to always match); a refutable one errors,
+                    // pointing at `if let`.
+                    if let Some(dup) = pattern_dup_binding(pattern) {
+                        return terr(format!(
+                            "pattern binds `{dup}` more than once — each binding in a \
+                             pattern must have a distinct name"
+                        ));
                     }
                     let vt = self.infer(value)?;
-                    let elem_tys: Vec<Ty> = (0..names.len()).map(|_| self.fresh()).collect();
-                    self.unify(&Ty::Tuple(elem_tys.clone()), &vt).map_err(|e| TypeError {
-                        message: format!("tuple destructure: {}", e.message),
-                    })?;
-                    for (n, t) in names.iter().zip(elem_tys) {
-                        self.define(n.clone(), t, false);
+                    if let Some(reason) = self.pattern_refutable(pattern, &vt) {
+                        return terr(reason);
                     }
+                    self.check_pattern(pattern, &vt)?;
                     ty = Ty::Nil;
                 }
                 Stmt::Return(opt) => {
@@ -2956,9 +2963,100 @@ impl Checker {
             merged = &merged | &self.consumed;
         }
         self.consumed = merged;
-        self.check_unreachable(arms)?;
-        self.check_exhaustive(&st, arms)?;
+        // Coverage analysis (exhaustiveness + unreachability) reasons per
+        // alternative, so flatten a top-level `Pattern::Or` arm into one synthetic
+        // arm per alternative (sharing the guard) — exactly what the old
+        // parse-time or-expansion produced, so these checks are unchanged.
+        let flat = flatten_or_arms(arms);
+        self.check_unreachable(&flat)?;
+        self.check_exhaustive(&st, &flat)?;
         Ok(result)
+    }
+
+    /// (RFC-0052) Whether a pattern is REFUTABLE in an irrefutable context
+    /// (`let`/`for`/comprehension) — returns `Some(teaching-error)` if so, `None`
+    /// if it provably always matches. Irrefutable: `_`, a variable, a tuple of
+    /// irrefutable patterns (any nesting), and a constructor/record pattern for a
+    /// SINGLE-variant type whose fields are all irrefutable. Everything else
+    /// (literals, ranges, or-patterns, list patterns, multi-variant constructors)
+    /// is refutable — the message points at `if let`.
+    fn pattern_refutable(&self, pat: &Pattern, ty: &Ty) -> Option<String> {
+        match pat {
+            Pattern::Wildcard | Pattern::Var(_) => None,
+            Pattern::Tuple(ps) => {
+                // Recover each slot type if the expected type is a concrete tuple;
+                // otherwise a placeholder (`Ty::Nil`) — only used to type sub-tuple
+                // slots, and refutability never depends on a slot's exact type.
+                let slots = match self.resolve(ty) {
+                    Ty::Tuple(ts) if ts.len() == ps.len() => Some(ts),
+                    _ => None,
+                };
+                for (i, sub) in ps.iter().enumerate() {
+                    let sub_ty = slots.as_ref().map(|s| s[i].clone()).unwrap_or(Ty::Nil);
+                    if let Some(r) = self.pattern_refutable(sub, &sub_ty) {
+                        return Some(r);
+                    }
+                }
+                None
+            }
+            Pattern::Ctor { name, args } => {
+                // The variant's ADT and how many variants it has.
+                let adt = self
+                    .ctor_sigs
+                    .get(name)
+                    .and_then(|(_, res)| match res {
+                        Ty::Named(adt, _) => Some(adt.clone()),
+                        _ => None,
+                    });
+                let variant_count = adt
+                    .as_ref()
+                    .and_then(|a| self.adt_variants.get(a))
+                    .map(|v| v.len());
+                match variant_count {
+                    // A multi-variant type's constructor pattern can fail.
+                    Some(n) if n > 1 => Some(format!(
+                        "`let {} = …` — `{name}` is one of {n} variants of `{}`, so this \
+                         pattern can fail. Use `if let {} = …:` (with an else), or `match`.",
+                        describe_pattern(pat),
+                        adt.as_deref().unwrap_or("?"),
+                        describe_pattern(pat),
+                    )),
+                    // A single-variant record/wrapper is irrefutable IF its fields
+                    // are; recurse (field types recovered via check_pattern's own
+                    // machinery would need instantiation, so be permissive: use
+                    // fresh vars, which never themselves report refutable).
+                    _ => {
+                        for sub in args {
+                            if let Some(r) = self.pattern_refutable(sub, &Ty::Nil) {
+                                return Some(r);
+                            }
+                        }
+                        None
+                    }
+                }
+            }
+            // Everything below is refutable in an irrefutable context.
+            Pattern::Int(_) | Pattern::Str(_) | Pattern::Bool(_) | Pattern::Duration(_) => {
+                Some(format!(
+                    "`let {} = …` — a literal pattern can fail to match. Use `if let` \
+                     (with an else) or `match`.",
+                    describe_pattern(pat)
+                ))
+            }
+            Pattern::IntRange { .. } => Some(
+                "a range pattern can fail to match — use `if let` (with an else) or `match`"
+                    .to_string(),
+            ),
+            Pattern::Or(_) => Some(
+                "an or-pattern can fail to match — use `if let` (with an else) or `match`"
+                    .to_string(),
+            ),
+            Pattern::List { .. } => Some(
+                "a list pattern can fail to match (a list's length is never statically \
+                 known) — use `if let` (with an else) or `match`"
+                    .to_string(),
+            ),
+        }
     }
 
     fn check_pattern(&mut self, pat: &Pattern, expected: &Ty) -> Result<(), TypeError> {
@@ -3014,6 +3112,69 @@ impl Checker {
                     }
                     Ok(())
                 }
+            }
+            // (RFC-0052) A duration literal pattern matches a `Duration` scrutinee.
+            Pattern::Duration(_) => self.unify(expected, &Ty::Duration),
+            // (RFC-0052) An integer range pattern matches an `Int` scrutinee.
+            Pattern::IntRange { lo, hi, inclusive } => {
+                self.unify(expected, &Ty::Int)?;
+                // A backwards range never matches anything — almost always a typo.
+                let empty = if *inclusive { lo > hi } else { lo >= hi };
+                if empty {
+                    return terr(format!(
+                        "range pattern `{lo}..{}{hi}` is empty (matches nothing) — \
+                         its low bound is not below its high bound",
+                        if *inclusive { "=" } else { "" }
+                    ));
+                }
+                Ok(())
+            }
+            // (RFC-0052) An or-pattern: every alternative checks against the same
+            // expected type AND must bind the SAME names at the SAME types
+            // (binding-consistency). We check the first alternative in the real
+            // scope (defining its bindings), then verify each further alternative
+            // binds an identical name→type set in a throwaway scope.
+            Pattern::Or(alts) => {
+                let Some((first, rest)) = alts.split_first() else {
+                    return terr("empty or-pattern");
+                };
+                // Snapshot the bindings the first alternative introduces.
+                self.push();
+                self.check_pattern(first, expected)?;
+                let mut first_binds = self.scope_bindings();
+                self.pop();
+                first_binds.sort_by(|a, b| a.0.cmp(&b.0));
+                // Define the first alternative's bindings for real (the arm body /
+                // let sees them).
+                self.check_pattern(first, expected)?;
+                for alt in rest {
+                    self.push();
+                    self.check_pattern(alt, expected)?;
+                    let mut alt_binds = self.scope_bindings();
+                    self.pop();
+                    alt_binds.sort_by(|a, b| a.0.cmp(&b.0));
+                    let names_a: Vec<&String> = first_binds.iter().map(|(n, _)| n).collect();
+                    let names_b: Vec<&String> = alt_binds.iter().map(|(n, _)| n).collect();
+                    if names_a != names_b {
+                        return terr(format!(
+                            "or-pattern alternatives must bind the same names — `{}` \
+                             binds {{{}}} but another alternative binds {{{}}}",
+                            describe_pattern(alt),
+                            names_a.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "),
+                            names_b.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "),
+                        ));
+                    }
+                    for ((n, ta), (_, tb)) in first_binds.iter().zip(&alt_binds) {
+                        self.unify(ta, tb).map_err(|e| TypeError {
+                            message: format!(
+                                "or-pattern binding `{n}` has inconsistent types across \
+                                 alternatives: {}",
+                                e.message
+                            ),
+                        })?;
+                    }
+                }
+                Ok(())
             }
         }
     }
@@ -3589,6 +3750,31 @@ pub fn check_str(src: &str) -> Result<(), String> {
 }
 
 /// A short, human-readable rendering of a pattern for diagnostics.
+/// Expand every top-level `Pattern::Or` arm into one arm per alternative
+/// (sharing the guard), so the coverage checks — which reason per alternative —
+/// see the same shape the old parse-time or-expansion produced. Nested
+/// or-patterns are left intact (the checks are permissive on shapes they can't
+/// analyze). The body is irrelevant to coverage, so a `Wildcard` placeholder is
+/// reused. (RFC-0052)
+fn flatten_or_arms(arms: &[MatchArm]) -> Vec<MatchArm> {
+    let mut out = Vec::with_capacity(arms.len());
+    for arm in arms {
+        match &arm.pattern {
+            Pattern::Or(alts) => {
+                for alt in alts {
+                    out.push(MatchArm {
+                        pattern: alt.clone(),
+                        guard: arm.guard.clone(),
+                        body: Expr::Bool(false),
+                    });
+                }
+            }
+            _ => out.push(arm.clone()),
+        }
+    }
+    out
+}
+
 fn describe_pattern(p: &Pattern) -> String {
     match p {
         Pattern::Wildcard => "_".to_string(),
@@ -3596,9 +3782,19 @@ fn describe_pattern(p: &Pattern) -> String {
         Pattern::Int(n) => n.to_string(),
         Pattern::Str(s) => format!("\"{s}\""),
         Pattern::Bool(b) => b.to_string(),
-        Pattern::Ctor { name, .. } => name.clone(),
-        Pattern::Tuple(_) => "tuple pattern".to_string(),
+        Pattern::Ctor { name, args } if args.is_empty() => name.clone(),
+        Pattern::Ctor { name, args } => {
+            format!("{name}({})", args.iter().map(describe_pattern).collect::<Vec<_>>().join(", "))
+        }
+        Pattern::Tuple(ps) => {
+            format!("({})", ps.iter().map(describe_pattern).collect::<Vec<_>>().join(", "))
+        }
         Pattern::List { .. } => "list pattern".to_string(),
+        Pattern::Duration(ms) => format!("{ms}ms"),
+        Pattern::IntRange { lo, hi, inclusive } => {
+            format!("{lo}{}{hi}", if *inclusive { "..=" } else { ".." })
+        }
+        Pattern::Or(alts) => alts.iter().map(describe_pattern).collect::<Vec<_>>().join(" | "),
     }
 }
 

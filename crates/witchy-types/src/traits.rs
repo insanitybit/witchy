@@ -698,12 +698,16 @@ impl Ctx<'_> {
                 Stmt::Assign { value, .. } => self.rewrite_expr(value, scope),
                 // Seed each destructured name from the tuple's slot types so a
                 // trait call on a tuple part (`x0.show()`) dispatches.
-                Stmt::LetTuple { names, value } => {
+                Stmt::LetPattern { pattern, value } => {
                     self.rewrite_expr(value, scope);
-                    // A tuple-returning call (`let (a, b) = pair()`) has no head
-                    // name for `type_name` to recover, so fall back to the typeck
-                    // table — otherwise the destructured names stay untyped and a
-                    // comparison on one (`a < b`) can't find its trait impl.
+                    // Seed each destructured name from the value's type so a trait
+                    // call on a part (`x0.show()`, `a < b`) dispatches. A
+                    // tuple-returning call (`let (a, b) = pair()`) has no head name
+                    // for `type_name` to recover, so fall back to the typeck table
+                    // — otherwise the destructured names stay untyped. Any name we
+                    // can't type is bound untyped (`bind_local`); this is a
+                    // best-effort dispatch aid, so an untyped fallback is always
+                    // sound (the checker re-verifies).
                     let tup = self
                         .type_name(value, scope)
                         .or_else(|| {
@@ -713,28 +717,46 @@ impl Ctx<'_> {
                                 .and_then(|t| type_to_scope_name(&t))
                         })
                         .or_else(|| match value {
-                            // A direct call's declared return type — `pair() -> (T, T)`
-                            // — names the tuple even when nothing else can.
                             Expr::Call { name, .. } => {
                                 self.fn_sigs.get(name).and_then(|(_, ret)| type_to_scope_name(ret))
                             }
                             _ => None,
                         });
-                    match tup.as_deref().and_then(tuple_args) {
-                        Some(args) => {
-                            for (n, t) in names.iter().zip(args) {
-                                scope.insert(n.clone(), t.to_string());
-                            }
-                        }
-                        None => {
-                            for n in names {
-                                scope.bind_local(n);
-                            }
-                        }
-                    }
+                    self.seed_pattern(pattern, tup.as_deref(), scope);
                 }
                 Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => self.rewrite_expr(e, scope),
                 Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+            }
+        }
+    }
+
+    /// Seed the trait-dispatch scope with the names an irrefutable `let`/`for`
+    /// pattern binds, typing each from the value's (best-effort) type name where
+    /// the structure lets us recover it. A tuple pattern against a `Tuple<...>`
+    /// type recurses per slot; anything else binds its names untyped (sound — the
+    /// checker re-verifies, this only helps method dispatch resolve eagerly).
+    fn seed_pattern(&self, pat: &Pattern, ty: Option<&str>, scope: &mut Scope) {
+        match pat {
+            Pattern::Var(n) if n != "_" => match ty {
+                Some(t) => scope.insert(n.clone(), t.to_string()),
+                None => scope.bind_local(n),
+            },
+            Pattern::Tuple(ps) => {
+                let slots = ty.and_then(tuple_args);
+                for (i, sub) in ps.iter().enumerate() {
+                    let sub_ty = slots.as_ref().and_then(|s| s.get(i)).copied();
+                    self.seed_pattern(sub, sub_ty, scope);
+                }
+            }
+            // For ctor/record/list/or sub-patterns we don't recover the per-field
+            // types here (the checker does the real work); bind every name untyped
+            // so it at least resolves as a local.
+            _ => {
+                let mut names = Vec::new();
+                witchy_syntax::ast::pattern_binds(pat, &mut names);
+                for n in &names {
+                    scope.bind_local(n);
+                }
             }
         }
     }
@@ -2112,6 +2134,33 @@ impl Mono<'_> {
         self.type_name(e, scope).map(|t| apply_subst(&t, &self.cur_subst))
     }
 
+    /// Seed the mono scope with the names an irrefutable `let`/`for` pattern
+    /// binds, typing each from the value's type where the structure lets us
+    /// recover it (a tuple pattern recurses per slot). Names we can't type are
+    /// cleared, so no stale outer binding leaks into this specialization.
+    fn seed_pattern_subst(&self, pat: &Pattern, ty: Option<&str>, scope: &mut Scope) {
+        match pat {
+            Pattern::Var(n) if n != "_" => match ty {
+                Some(t) => scope.insert(n.clone(), t.to_string()),
+                None => scope.remove(n.as_str()),
+            },
+            Pattern::Tuple(ps) => {
+                let slots = ty.and_then(tuple_args);
+                for (i, sub) in ps.iter().enumerate() {
+                    let sub_ty = slots.as_ref().and_then(|s| s.get(i)).copied();
+                    self.seed_pattern_subst(sub, sub_ty, scope);
+                }
+            }
+            _ => {
+                let mut names = Vec::new();
+                witchy_syntax::ast::pattern_binds(pat, &mut names);
+                for n in &names {
+                    scope.remove(n.as_str());
+                }
+            }
+        }
+    }
+
     /// The concrete type of field `pos` of the element TUPLE of a list argument,
     /// where the argument is a list literal of tuples (e.g. `unzip([(big, 1)])`).
     fn list_elem_tuple_field_type(&self, arg: &Expr, pos: usize, scope: &Scope) -> Option<String> {
@@ -2447,23 +2496,15 @@ impl Mono<'_> {
                     }
                 }
                 Stmt::Assign { value, .. } => self.walk_expr(value, scope),
-                // `let (x0, x1) = t` seeds each name from the tuple's slot types, so
-                // a destructured tuple value's parts monomorphize (e.g. a tuple
-                // impl's `reflect_one(x0)`).
-                Stmt::LetTuple { names, value } => {
+                // `let PAT = t` seeds each destructured name from the value's type
+                // so a destructured part monomorphizes (e.g. a tuple impl's
+                // `reflect_one(x0)`). A tuple pattern recurses per slot; other
+                // patterns clear their names (untyped) so a stale outer binding
+                // doesn't leak in.
+                Stmt::LetPattern { pattern, value } => {
                     self.walk_expr(value, scope);
-                    match self.type_name_subst(value, scope).as_deref().and_then(tuple_args) {
-                        Some(args) => {
-                            for (n, t) in names.iter().zip(args) {
-                                scope.insert(n.clone(), t.to_string());
-                            }
-                        }
-                        None => {
-                            for n in names {
-                                scope.remove(n.as_str());
-                            }
-                        }
-                    }
+                    let ty = self.type_name_subst(value, scope);
+                    self.seed_pattern_subst(pattern, ty.as_deref(), scope);
                 }
                 Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => self.walk_expr(e, scope),
                 Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
