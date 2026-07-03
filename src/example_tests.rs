@@ -11375,6 +11375,30 @@ fn main(console: Console):
         assert_eq!(compiled, vec!["165", "56", "5", "0", "10", "20"]);
     }
 
+    /// RFC-0046 bonus (step 5 seed): the short-circuiting `iter.any`/`iter.all`
+    /// consumers — completing the combinator set — run identically on both
+    /// backends. `any` stops at the first match (safe on an unbounded iterator);
+    /// `all` stops at the first failure; both handle the empty iterator.
+    #[test]
+    fn std_iter_any_all_backends_agree() {
+        let client = r#"
+import iter
+fn main(console: Console):
+    print(console, __render(iter.any(iter.from_list([2, 4, 6, 7]), fn(x: Int): x % 2 == 1)))
+    print(console, __render(iter.all(iter.from_list([2, 4, 6]), fn(x: Int): x % 2 == 0)))
+    print(console, __render(iter.all(iter.from_list([2, 4, 7]), fn(x: Int): x % 2 == 0)))
+    print(console, __render(iter.any(iter.empty(), fn(x: Int): true)))
+    print(console, __render(iter.all(iter.empty(), fn(x: Int): false)))
+    // any short-circuits on an unbounded iterator once a match exists
+    print(console, __render(iter.any(iter.count_from(1), fn(n: Int): n > 100)))
+"#;
+        let sources = [("iter", crate::bundled_module("iter").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std/iter any/all diverged");
+        assert_eq!(compiled, vec!["true", "true", "false", "false", "true", "true"]);
+    }
+
     /// `lazy_fib` builds an *infinite* Fibonacci iterator with `iter.unfold` and
     /// bounds it with take / take_while / find — the canonical lazy-generator
     /// demo, agreeing on both backends.

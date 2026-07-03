@@ -976,6 +976,14 @@ Split an iterator into its first element and the rest, or None if it is empty. T
 
 The first element satisfying `pred`, or None (stops at the first match, so it is safe on an unbounded iterator if a match exists).
 
+#### `fn any(it: Iter(a), pred: fn(a) -> Bool) -> Bool`
+
+Whether at least one element satisfies `pred` — stops (short-circuits) at the first match, so it terminates on an unbounded iterator once one is found. `false` for the empty iterator.
+
+#### `fn all(it: Iter(a), pred: fn(a) -> Bool) -> Bool`
+
+Whether every element satisfies `pred` — stops at the first failure. `true` for the empty iterator (vacuously). Don't call on an unbounded iterator whose elements all satisfy `pred`: it never stops.
+
 ## `json`
 
 A JSON library — the witchy take on Go's encoding/json. This slice is the value type and the encoder (serialization); the decoder (parsing) follows. Pure and capability-free, so — unlike networking — it compiles to WASM like the rest of the data std.

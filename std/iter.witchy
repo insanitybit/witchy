@@ -329,3 +329,27 @@ pub fn find(it: Iter(a), pred: fn(a) -> Bool) -> Option(a):
                 Some(x)
             else:
                 find(rest, pred)
+
+// Whether at least one element satisfies `pred` — stops (short-circuits) at the
+// first match, so it terminates on an unbounded iterator once one is found.
+// `false` for the empty iterator.
+pub fn any(it: Iter(a), pred: fn(a) -> Bool) -> Bool:
+    match next(it):
+        Empty -> false
+        Item(x, rest) ->
+            if pred(x):
+                true
+            else:
+                any(rest, pred)
+
+// Whether every element satisfies `pred` — stops at the first failure. `true`
+// for the empty iterator (vacuously). Don't call on an unbounded iterator whose
+// elements all satisfy `pred`: it never stops.
+pub fn all(it: Iter(a), pred: fn(a) -> Bool) -> Bool:
+    match next(it):
+        Empty -> true
+        Item(x, rest) ->
+            if pred(x):
+                all(rest, pred)
+            else:
+                false
