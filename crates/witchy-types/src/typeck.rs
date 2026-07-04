@@ -2246,6 +2246,23 @@ impl Checker {
         Ok(t)
     }
 
+    /// Infer a TRANSIENT (desugar-temp) expression WITHOUT recording any of its
+    /// sub-node types into the address-keyed `type_record`. A desugared subtree
+    /// (a `range`/index/`while let` lowering, built locally and dropped as soon
+    /// as inference returns) is never walked by a table consumer — they walk the
+    /// original AST — so recording its node addresses is useless, and a soundness
+    /// hazard: once the temp is freed, a later allocation reusing its address
+    /// would read a stale, wrong type from the table (BUG-004). Suppressing the
+    /// recording for these subtrees closes that hole at the source; the persistent
+    /// node that desugared (the `Range`/`Index`/`WhileLet` itself) is still
+    /// recorded by the enclosing `infer`, with the result type this returns.
+    fn infer_transient(&mut self, e: &Expr) -> Result<Ty, TypeError> {
+        let saved = self.type_record.take();
+        let r = self.infer(e);
+        self.type_record = saved;
+        r
+    }
+
     fn infer_inner(&mut self, expr: &Expr) -> Result<Ty, TypeError> {
         match expr {
             // Expanded away by `crate::tagged` during linking, before checking.
@@ -2260,12 +2277,12 @@ impl Checker {
             // A range lowers to a list-building block; type it as that block.
             Expr::Range { lo, hi, inclusive } => {
                 let d = witchy_syntax::parser::desugar_range((**lo).clone(), (**hi).clone(), *inclusive);
-                self.infer(&d)
+                self.infer_transient(&d)
             }
             // A subscript lowers to an `list.at(base, index)` call; type it as that.
             Expr::Index { base, index } => {
                 let d = witchy_syntax::parser::desugar_index((**base).clone(), (**index).clone());
-                self.infer(&d)
+                self.infer_transient(&d)
             }
             Expr::MethodCall { method, .. } => {
                 // Trait lowering resolves every method call (impl, trait
@@ -2287,7 +2304,7 @@ impl Checker {
                     (**scrutinee).clone(),
                     body.clone(),
                 );
-                self.infer(&d)
+                self.infer_transient(&d)
             }
             Expr::List(items) => {
                 let elem = self.fresh();

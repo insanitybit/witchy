@@ -353,3 +353,78 @@ pub fn all(it: Iter(a), pred: fn(a) -> Bool) -> Bool:
                 all(rest, pred)
             else:
                 false
+
+// The last element (drives the iterator to exhaustion), or None if it is empty.
+// Don't call on an unbounded iterator — it never stops.
+pub fn last(it: Iter(a)) -> Option(a):
+    last_from(it, None)
+
+fn last_from(it: Iter(a), acc: Option(a)) -> Option(a):
+    match next(it):
+        Empty -> acc
+        Item(x, rest) -> last_from(rest, Some(x))
+
+// The 0-based index of the first element satisfying `pred`, or None. Stops at
+// the first match, so it is safe on an unbounded iterator if a match exists.
+pub fn position(it: Iter(a), pred: fn(a) -> Bool) -> Option(Int):
+    position_from(it, pred, 0)
+
+fn position_from(it: Iter(a), pred: fn(a) -> Bool, i: Int) -> Option(Int):
+    match next(it):
+        Empty -> None
+        Item(x, rest) ->
+            if pred(x):
+                Some(i)
+            else:
+                position_from(rest, pred, i + 1)
+
+// The smallest element by the type's `Ord`, or None if the iterator is empty
+// (drives to exhaustion; don't call on an unbounded iterator).
+pub fn min(it: Iter(a)) -> Option(a) where a: Ord:
+    match next(it):
+        Empty -> None
+        Item(x, rest) -> Some(min_from(rest, x))
+
+fn min_from(it: Iter(a), best: a) -> a where a: Ord:
+    match next(it):
+        Empty -> best
+        Item(x, rest) ->
+            if x < best:
+                min_from(rest, x)
+            else:
+                min_from(rest, best)
+
+// The largest element by the type's `Ord`, or None if the iterator is empty
+// (drives to exhaustion; don't call on an unbounded iterator).
+pub fn max(it: Iter(a)) -> Option(a) where a: Ord:
+    match next(it):
+        Empty -> None
+        Item(x, rest) -> Some(max_from(rest, x))
+
+fn max_from(it: Iter(a), best: a) -> a where a: Ord:
+    match next(it):
+        Empty -> best
+        Item(x, rest) ->
+            if x > best:
+                max_from(rest, x)
+            else:
+                max_from(rest, best)
+
+// A lazy STATEFUL map: thread `state` through `f`, which returns the new state
+// and the value to emit. `scan(xs, 0, fn(s, x): (s + x, s + x))` yields the
+// running sums. Unlike `fold`, it produces an iterator, so it is lazy and
+// composable, and unlike `map` it can carry state between elements.
+pub fn scan(it: Iter(a), state: s, f: fn(s, a) -> (s, b)) -> Iter(b):
+    Iter(fn(): scan_step(it, state, f))
+
+fn scan_step(it: Iter(a), state: s, f: fn(s, a) -> (s, b)) -> Step(b):
+    match next(it):
+        Empty -> Empty
+        Item(x, rest) ->
+            match f(state, x):
+                (next_state, y) -> Item(y, scan(rest, next_state, f))
+
+// Concatenate an iterator OF iterators into one flat iterator, lazily and in
+// order — `flatten` is `flat_map` with the identity function.
+pub fn flatten(it: Iter(Iter(a))) -> Iter(a):
+    flat_map(it, fn(inner): inner)

@@ -360,7 +360,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         }
     }
 
-    let (items_back, type_table) = {
+    let (items_back, first_table) = {
         let probe = Module {
             modes: Vec::new(),
             imports: imports.clone(),
@@ -373,16 +373,20 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     };
     let mut items = items_back;
 
-    // Pull out bounded generic functions (templates). Only their concrete
-    // specializations are emitted, generated next.
+    // The no-fallback template set: bounded generics PLUS the generic helpers that
+    // transitively call them (RFC-0046 §2). Both are kept in `items` through the
+    // fixpoint so each re-annotate sees their signatures, then removed afterwards —
+    // they have no runnable generic form (their bounded call can't resolve while
+    // generic). Their concrete specializations are what gets emitted.
+    let no_fallback = no_fallback_template_names(&items);
     let mut templates: HashMap<String, Function> = HashMap::new();
-    items.retain(|it| match it {
-        Item::Function(f) if !f.bounds.is_empty() && !crate::typeck::intrinsic(&f.name) => {
-            templates.insert(f.name.clone(), f.clone());
-            false
+    for it in &items {
+        if let Item::Function(f) = it {
+            if no_fallback.contains(&f.name) {
+                templates.insert(f.name.clone(), f.clone());
+            }
         }
-        _ => true,
-    });
+    }
     // Unbounded generic functions are ALSO templates, but stay in `items` as a
     // fallback: a call whose primitive type argument resolves is rewritten to a
     // specialization (so `==` is content-correct and `Int` stays 64-bit), while a
@@ -400,38 +404,91 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         }
     }
     let mut mono_diags: Vec<String> = Vec::new();
+    let type_table;
     if !templates.is_empty() {
-        let (ctor_results, fn_rets, fn_sigs) = build_tables(&items);
-        let ctor_fields = build_ctor_fields(&items);
-        let record_fields = build_record_fields(&items);
-        let known_fns: std::collections::HashSet<String> = items
-            .iter()
-            .filter_map(|it| match it {
-                Item::Function(f) => Some(f.name.clone()),
-                _ => None,
-            })
-            .collect();
-        let mut mono = Mono {
-            templates: &templates,
-            known_fns: &known_fns,
-            trait_methods: &trait_methods,
-            supertraits: &trait_supertraits,
-            impl_trait_args: &impl_trait_args,
-            diagnostics: Vec::new(),
-            ctor_results: &ctor_results,
-            ctor_fields: &ctor_fields,
-            record_fields: &record_fields,
-            fn_rets,
-            fn_sigs,
-            memo: HashMap::new(),
-            generated: Vec::new(),
-            generated_subst: Vec::new(),
-            cur_subst: HashMap::new(),
-            table: &type_table,
+        // Annotate + monomorphize to a FIXPOINT (RFC-0046 §2): each round types the
+        // concrete specializations the previous round generated, unlocking the
+        // bounded calls inside them (a generic helper's `iter.collect` resolves
+        // only once the helper itself is specialized to a concrete type). Two
+        // rounds resolve every known case — one to specialize the helper, one to
+        // type its result and resolve its inner bounded call — and the loop stops
+        // as soon as a round generates nothing new. Every round is a whole-module,
+        // deterministic pass, so both backends reach the same fixpoint. The memo
+        // persists across rounds so a specialization is never generated twice.
+        const MONO_ROUNDS: usize = 4;
+        let mut table = first_table;
+        let mut memo: HashMap<(String, Vec<String>), String> = HashMap::new();
+        for round in 0..MONO_ROUNDS {
+            let (ctor_results, fn_rets, _fn_sigs) = build_tables(&items);
+            let ctor_fields = build_ctor_fields(&items);
+            let record_fields = build_record_fields(&items);
+            let known_fns: std::collections::HashSet<String> = items
+                .iter()
+                .filter_map(|it| match it {
+                    Item::Function(f) => Some(f.name.clone()),
+                    _ => None,
+                })
+                .collect();
+            let mut mono = Mono {
+                templates: &templates,
+                known_fns: &known_fns,
+                trait_methods: &trait_methods,
+                supertraits: &trait_supertraits,
+                impl_trait_args: &impl_trait_args,
+                diagnostics: Vec::new(),
+                ctor_results: &ctor_results,
+                ctor_fields: &ctor_fields,
+                record_fields: &record_fields,
+                fn_rets,
+                memo: std::mem::take(&mut memo),
+                generated: Vec::new(),
+                generated_subst: Vec::new(),
+                cur_subst: HashMap::new(),
+                table: &table,
+                skip_walk: &no_fallback,
+            };
+            mono.run(&mut items);
+            memo = std::mem::take(&mut mono.memo);
+            mono_diags = std::mem::take(&mut mono.diagnostics);
+            let generated = std::mem::take(&mut mono.generated);
+            drop(mono);
+            let progressed = !generated.is_empty();
+            items.extend(generated.into_iter().map(Item::Function));
+            if !progressed || round + 1 == MONO_ROUNDS {
+                break;
+            }
+            // Re-annotate the module — now carrying the concrete specializations
+            // this round generated — so their bodies' bounded calls resolve next
+            // round. Moving `items` through the probe keeps node addresses stable,
+            // so the table keys still match the items the next round walks.
+            let probe = Module {
+                modes: Vec::new(),
+                imports: imports.clone(),
+                items,
+                import_lines: Vec::new(),
+                item_lines: Vec::new(),
+            };
+            table = crate::typeck::annotate(&probe);
+            items = probe.items;
+        }
+        // The no-fallback generic originals were kept only for the re-annotate;
+        // drop them now that their concrete specializations exist. (An unresolved
+        // call to one is a genuine error the loud pass reports.)
+        items.retain(|it| !matches!(it, Item::Function(f) if no_fallback.contains(&f.name)));
+        // A fresh table over the FINAL module for the loud dispatch pass: node
+        // addresses now match after the retain, and every specialization is typed.
+        let probe = Module {
+            modes: Vec::new(),
+            imports: imports.clone(),
+            items,
+            import_lines: Vec::new(),
+            item_lines: Vec::new(),
         };
-        mono.run(&mut items);
-        items.extend(mono.generated.into_iter().map(Item::Function));
-        mono_diags = mono.diagnostics;
+        type_table = crate::typeck::annotate(&probe);
+        items = probe.items;
+    } else {
+        // No generics to specialize: the first table already matches `items`.
+        type_table = first_table;
     }
 
     // Tables used to determine a receiver's type at a trait-method call site.
@@ -687,8 +744,13 @@ fn table_scope_name(table: &crate::typeck::TypeTable, e: &Expr) -> Option<String
 impl Ctx<'_> {
     fn type_name(&self, e: &Expr, scope: &Scope) -> Option<String> {
         table_scope_name(self.table, e)
-            .or_else(|| recover_generic_call(e, self.fn_sigs, &|a| self.type_name(a, scope)))
             .or_else(|| head_type_name(e, scope, self.ctor_results, self.fn_rets, self.record_fields))
+            // A host capability OP is a BARE intrinsic (`net.deny`, `dir.subtree`),
+            // so the QUIET pre-mono pass (which runs with an empty table) cannot
+            // type its result from the table — it needs this to resolve a chained
+            // method call on a cap-op result (`net.deny(...).only(...)`). The loud
+            // pass gets the same fact from the checker's table; this is the empty-
+            // table residual. See RFC-0046 step-4 note.
             .or_else(|| cap_op_return_type(e))
     }
 
@@ -1267,17 +1329,11 @@ impl Ctx<'_> {
     }
 }
 
-/// Return types of the handful of builtins common enough to want as trait-call
-/// receivers. A wrong guess only ever produces a type error (never wrong code),
-/// so the table stays conservative.
-fn builtin_ret(name: &str) -> Option<String> {
-    let t = match name {
-        "int_to_string" | "__render" => "String",
-        "string_length" | "char_count" => "Int",
-        _ => return None,
-    };
-    Some(t.into())
-}
+// (RFC-0046 step 4) `builtin_ret` — the four hardcoded intrinsic return types
+// (`int_to_string`/`__render` -> String, `string_length`/`char_count` -> Int) —
+// is DELETED. The checker's `call_sig` already types every intrinsic, so the
+// table-first path resolves them; only the empty-table quiet pass could ever have
+// reached it, and no method call takes one of these as a receiver.
 
 /// Best-effort head type name of an expression, or `None` if undeterminable
 /// without full inference. Shared by trait-call resolution and monomorphization.
@@ -1316,7 +1372,7 @@ fn head_type_name(
             Some(format!("Option<{elem}>"))
         }
         Expr::Ctor { name, .. } => ctor_results.get(name).cloned(),
-        Expr::Call { name, .. } => fn_rets.get(name).cloned().or_else(|| builtin_ret(name)),
+        Expr::Call { name, .. } => fn_rets.get(name).cloned(),
         Expr::RecordUpdate { base, .. } => head_type_name(base, scope, ctor_results, fn_rets, record_fields),
         // `!` yields Bool; `-`/`~` preserve the operand's type (so `-5` is Int).
         Expr::Unary { op, expr } => match op {
@@ -1705,65 +1761,14 @@ fn build_mutation_tables(
     (mutators, returns_nil)
 }
 
-/// Recover the concrete result type of a generic call whose declared return is a
-/// bare type variable, by binding that variable from an argument. Handles
-/// `xs[i]` (list element) and any `f(.., List(a)|Option(a)|a, ..) -> a`, so
-/// `show(xs[i])` / `say(list.at(xs, i))` dispatch on the element type. Returns
-/// `None` when undeterminable (the caller falls back to `head_type_name`); a
-/// wrong guess only ever yields a type error, never wrong code.
-fn recover_generic_call(
-    e: &Expr,
-    sigs: &HashMap<String, FnSig>,
-    type_of: &dyn Fn(&Expr) -> Option<String>,
-) -> Option<String> {
-    match e {
-        // `xs[i]` is element access: the element of the base's `List<...>` type.
-        // (typeck lowers a subscript to a `list.at` call, so the arm below also
-        // covers it after that pass.)
-        Expr::Index { base, .. } => list_elem(&type_of(base)?).map(str::to_string),
-        // `list.at(xs, i)` is an intrinsic (no `Item`, so absent from `sigs`); it
-        // yields the element of `xs`'s `List<...>` type.
-        Expr::Call { name, args } if name == "list.at" => {
-            list_elem(&type_of(args.first()?)?).map(str::to_string)
-        }
-        Expr::Call { name, args } => {
-            let (params, ret) = sigs.get(name)?;
-            // Only a bare type VARIABLE return is recoverable here; a concrete
-            // head (uppercase, or carrying its own args) is handled elsewhere.
-            let Type::Named(var, vargs) = ret else { return None };
-            if !vargs.is_empty() || !var.chars().next()?.is_lowercase() {
-                return None;
-            }
-            params
-                .iter()
-                .zip(args)
-                .find_map(|(p, arg)| bind_type_var(var, p.as_ref()?, arg, type_of))
-        }
-        _ => None,
-    }
-}
-
-/// Bind return type variable `var` from a single (param type, argument) pair:
-/// `x: a` -> the arg's type; `xs: List(a)` -> its element; `o: Option(a)` -> its
-/// element. Any other shape contributes no binding.
-fn bind_type_var(
-    var: &str,
-    pty: &Type,
-    arg: &Expr,
-    type_of: &dyn Fn(&Expr) -> Option<String>,
-) -> Option<String> {
-    let inner_is_var = |a: &[Type]| matches!(a, [Type::Named(v, va)] if v == var && va.is_empty());
-    match pty {
-        Type::Named(n, a) if n == var && a.is_empty() => type_of(arg),
-        Type::Named(n, a) if n == "List" && inner_is_var(a) => {
-            list_elem(&type_of(arg)?).map(str::to_string)
-        }
-        Type::Named(n, a) if n == "Option" && inner_is_var(a) => {
-            generic_arg(&type_of(arg)?).map(str::to_string)
-        }
-        _ => None,
-    }
-}
+// (RFC-0046 step 4) `recover_generic_call` + `bind_type_var` are DELETED. They
+// re-derived a generic call's concrete result type (`xs[i]`, `list.at`, `f(..) ->
+// a`) by hand off the string scope — the checker already types every one of these
+// exactly, and the table-first `type_name` (with the step-1 annotate/mono fixpoint
+// and the fresh loud-pass re-annotate) now subsumes them: the loud pass and mono
+// read the resolved `Ty` for the call/subscript node directly, so the shape-guess
+// is gone. The safety invariant is preserved by construction — the table is the
+// checker's answer, not a guess.
 
 /// Record type name -> its named field types, for typing `x.field` receivers.
 fn build_record_fields(items: &[Item]) -> HashMap<String, Vec<(String, Type)>> {
@@ -2179,109 +2184,289 @@ fn signature_type_vars(f: &Function) -> Vec<String> {
     out
 }
 
-/// The type variables a function is generic over: its `where`-bound variables if
-/// bounded, otherwise the free type variables in its signature.
-/// Rename bare calls per `renames`, recursively — the substitution-directed
-/// dispatch rewrite over a specialization's body.
-fn rename_calls_block(b: &mut Block, renames: &HashMap<String, String>) {
-    fn walk_expr(e: &mut Expr, renames: &HashMap<String, String>) {
+/// Collect the names of every free (`Expr::Call`) function this block calls,
+/// recursively — used to discover which generic helpers transitively reach a
+/// bounded template (and so themselves need monomorphization).
+fn collect_call_names(b: &Block, out: &mut HashSet<String>) {
+    fn walk(e: &Expr, out: &mut HashSet<String>) {
         match e {
             Expr::Call { name, args } => {
-                if let Some(to) = renames.get(name.as_str()) {
-                    *name = to.clone();
-                }
+                out.insert(name.clone());
                 for a in args {
-                    walk_expr(a, renames);
+                    walk(a, out);
                 }
             }
             Expr::Apply { func, args } => {
-                walk_expr(func, renames);
+                walk(func, out);
                 for a in args {
-                    walk_expr(a, renames);
+                    walk(a, out);
                 }
             }
             Expr::MethodCall { receiver, args, .. } => {
-                walk_expr(receiver, renames);
+                walk(receiver, out);
                 for a in args {
-                    walk_expr(a, renames);
+                    walk(a, out);
                 }
             }
             Expr::Ctor { args, .. } | Expr::List(args) | Expr::Tuple(args) => {
                 for a in args {
-                    walk_expr(a, renames);
+                    walk(a, out);
                 }
             }
             Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. }
-            | Expr::Field { base: expr, .. } => walk_expr(expr, renames),
+            | Expr::Field { base: expr, .. } => walk(expr, out),
             Expr::Binary { lhs, rhs, .. } => {
-                walk_expr(lhs, renames);
-                walk_expr(rhs, renames);
+                walk(lhs, out);
+                walk(rhs, out);
             }
             Expr::Range { lo, hi, .. } => {
-                walk_expr(lo, renames);
-                walk_expr(hi, renames);
+                walk(lo, out);
+                walk(hi, out);
             }
             Expr::Index { base, index } => {
-                walk_expr(base, renames);
-                walk_expr(index, renames);
+                walk(base, out);
+                walk(index, out);
             }
             Expr::Record { fields, spread, .. } => {
                 for (_, v) in fields {
-                    walk_expr(v, renames);
+                    walk(v, out);
                 }
                 if let Some(sp) = spread {
-                    walk_expr(sp, renames);
+                    walk(sp, out);
                 }
             }
             Expr::RecordUpdate { base, fields } => {
-                walk_expr(base, renames);
+                walk(base, out);
                 for (_, v) in fields {
-                    walk_expr(v, renames);
+                    walk(v, out);
                 }
             }
             Expr::If { cond, then_block, else_block } => {
-                walk_expr(cond, renames);
-                rename_calls_block(then_block, renames);
+                walk(cond, out);
+                collect_call_names(then_block, out);
                 if let Some(b) = else_block {
-                    rename_calls_block(b, renames);
+                    collect_call_names(b, out);
                 }
             }
             Expr::Match { scrutinee, arms } => {
-                walk_expr(scrutinee, renames);
+                walk(scrutinee, out);
                 for a in arms {
-                    if let Some(g) = &mut a.guard {
-                        walk_expr(g, renames);
+                    if let Some(g) = &a.guard {
+                        walk(g, out);
                     }
-                    walk_expr(&mut a.body, renames);
+                    walk(&a.body, out);
                 }
             }
             Expr::While { cond, body } => {
-                walk_expr(cond, renames);
-                rename_calls_block(body, renames);
+                walk(cond, out);
+                collect_call_names(body, out);
             }
             Expr::WhileLet { scrutinee, body, .. } => {
-                walk_expr(scrutinee, renames);
-                rename_calls_block(body, renames);
+                walk(scrutinee, out);
+                collect_call_names(body, out);
             }
             Expr::For { iter, body, .. } => {
-                walk_expr(iter, renames);
-                rename_calls_block(body, renames);
+                walk(iter, out);
+                collect_call_names(body, out);
             }
-            Expr::Lambda { body, .. } | Expr::Block(body) => {
-                rename_calls_block(body, renames)
-            }
+            Expr::Lambda { body, .. } | Expr::Block(body) => collect_call_names(body, out),
             Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_)
             | Expr::Bool(_) | Expr::Var(_) | Expr::TaggedLit { .. } => {}
         }
     }
-    for st in &mut b.stmts {
+    for st in &b.stmts {
         match st {
             Stmt::Let { value, .. }
             | Stmt::Assign { value, .. }
             | Stmt::LetPattern { value, .. }
             | Stmt::Return(Some(value))
             | Stmt::Expr(value)
-            | Stmt::Yield(value) => walk_expr(value, renames),
+            | Stmt::Yield(value) => walk(value, out),
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+/// The set of function names that must be monomorphized WITHOUT a generic
+/// fallback: the `where`-bounded templates, plus every generic helper that
+/// (transitively) calls one. A bounded call's obligation can only be discharged
+/// once the CALLER's type variables are concrete, so a generic function that
+/// contains such a call cannot run generically — it propagates the need for
+/// specialization up to its own concrete call sites (RFC-0046 §2). Closed to a
+/// fixpoint over the call graph.
+fn no_fallback_template_names(items: &[Item]) -> HashSet<String> {
+    let mut names: HashSet<String> = items
+        .iter()
+        .filter_map(|it| match it {
+            Item::Function(f) if !f.bounds.is_empty() && !crate::typeck::intrinsic(&f.name) => {
+                Some(f.name.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    loop {
+        let mut added = false;
+        for it in items {
+            if let Item::Function(f) = it {
+                if names.contains(&f.name)
+                    || crate::typeck::intrinsic(&f.name)
+                    || signature_type_vars(f).is_empty()
+                {
+                    continue;
+                }
+                let mut calls = HashSet::new();
+                collect_call_names(&f.body, &mut calls);
+                if calls.iter().any(|n| names.contains(n)) {
+                    names.insert(f.name.clone());
+                    added = true;
+                }
+            }
+        }
+        if !added {
+            break;
+        }
+    }
+    names
+}
+
+/// The type variables a function is generic over: its `where`-bound variables if
+/// bounded, otherwise the free type variables in its signature.
+/// Rename bare calls per `renames`, recursively — the substitution-directed
+/// dispatch rewrite over a specialization's body. `scope` tracks the names bound
+/// as locals (params, `let`s, `for`/pattern binders, lambda params): a call on a
+/// bound local is a first-class function invocation and is NEVER renamed, even
+/// when its name collides with a `renames` key. Without this guard, a `where`-
+/// bounded generic's own `fn`-typed parameter named like a trait method (a
+/// comparator `less`, `eq`, …) would be silently rewritten to the trait impl,
+/// discarding the passed function and computing the wrong answer (BUG-001).
+fn rename_calls_block(b: &mut Block, renames: &HashMap<String, String>, scope: &mut Scope) {
+    fn bind_pattern(pat: &Pattern, scope: &mut Scope) {
+        let mut names = Vec::new();
+        witchy_syntax::ast::pattern_binds(pat, &mut names);
+        for n in &names {
+            scope.bind_local(n);
+        }
+    }
+    fn walk_expr(e: &mut Expr, renames: &HashMap<String, String>, scope: &mut Scope) {
+        match e {
+            Expr::Call { name, args } => {
+                // A call on a bound LOCAL (a `fn`-typed parameter or `let` named
+                // like a trait method) is a first-class invocation, so it is never
+                // substituted to the impl (BUG-001).
+                if !scope.is_local(name) {
+                    if let Some(to) = renames.get(name.as_str()) {
+                        *name = to.clone();
+                    }
+                }
+                for a in args {
+                    walk_expr(a, renames, scope);
+                }
+            }
+            Expr::Apply { func, args } => {
+                walk_expr(func, renames, scope);
+                for a in args {
+                    walk_expr(a, renames, scope);
+                }
+            }
+            Expr::MethodCall { receiver, args, .. } => {
+                walk_expr(receiver, renames, scope);
+                for a in args {
+                    walk_expr(a, renames, scope);
+                }
+            }
+            Expr::Ctor { args, .. } | Expr::List(args) | Expr::Tuple(args) => {
+                for a in args {
+                    walk_expr(a, renames, scope);
+                }
+            }
+            Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. }
+            | Expr::Field { base: expr, .. } => walk_expr(expr, renames, scope),
+            Expr::Binary { lhs, rhs, .. } => {
+                walk_expr(lhs, renames, scope);
+                walk_expr(rhs, renames, scope);
+            }
+            Expr::Range { lo, hi, .. } => {
+                walk_expr(lo, renames, scope);
+                walk_expr(hi, renames, scope);
+            }
+            Expr::Index { base, index } => {
+                walk_expr(base, renames, scope);
+                walk_expr(index, renames, scope);
+            }
+            Expr::Record { fields, spread, .. } => {
+                for (_, v) in fields {
+                    walk_expr(v, renames, scope);
+                }
+                if let Some(sp) = spread {
+                    walk_expr(sp, renames, scope);
+                }
+            }
+            Expr::RecordUpdate { base, fields } => {
+                walk_expr(base, renames, scope);
+                for (_, v) in fields {
+                    walk_expr(v, renames, scope);
+                }
+            }
+            Expr::If { cond, then_block, else_block } => {
+                walk_expr(cond, renames, scope);
+                rename_calls_block(then_block, renames, &mut scope.clone());
+                if let Some(b) = else_block {
+                    rename_calls_block(b, renames, &mut scope.clone());
+                }
+            }
+            Expr::Match { scrutinee, arms } => {
+                walk_expr(scrutinee, renames, scope);
+                for a in arms {
+                    let mut s = scope.clone();
+                    bind_pattern(&a.pattern, &mut s);
+                    if let Some(g) = &mut a.guard {
+                        walk_expr(g, renames, &mut s);
+                    }
+                    walk_expr(&mut a.body, renames, &mut s);
+                }
+            }
+            Expr::While { cond, body } => {
+                walk_expr(cond, renames, scope);
+                rename_calls_block(body, renames, &mut scope.clone());
+            }
+            Expr::WhileLet { pattern, scrutinee, body } => {
+                walk_expr(scrutinee, renames, scope);
+                let mut s = scope.clone();
+                bind_pattern(pattern, &mut s);
+                rename_calls_block(body, renames, &mut s);
+            }
+            Expr::For { var, iter, body } => {
+                walk_expr(iter, renames, scope);
+                let mut s = scope.clone();
+                s.bind_local(var);
+                rename_calls_block(body, renames, &mut s);
+            }
+            Expr::Lambda { params, body, .. } => {
+                let mut s = scope.clone();
+                seed_params(params, &mut s);
+                rename_calls_block(body, renames, &mut s);
+            }
+            Expr::Block(body) => rename_calls_block(body, renames, &mut scope.clone()),
+            Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_)
+            | Expr::Bool(_) | Expr::Var(_) | Expr::TaggedLit { .. } => {}
+        }
+    }
+    for st in &mut b.stmts {
+        match st {
+            Stmt::Let { name, value, .. } => {
+                walk_expr(value, renames, scope);
+                // A `let less = …` shadows a same-named trait method for the rest
+                // of the block, so a later `less(…)` is its value, not a rename.
+                scope.bind_local(name);
+            }
+            Stmt::LetPattern { pattern, value } => {
+                walk_expr(value, renames, scope);
+                bind_pattern(pattern, scope);
+            }
+            Stmt::Assign { value, .. }
+            | Stmt::Return(Some(value))
+            | Stmt::Expr(value)
+            | Stmt::Yield(value) => walk_expr(value, renames, scope),
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
     }
@@ -2331,9 +2516,6 @@ struct Mono<'a> {
     ctor_fields: &'a HashMap<String, Vec<Type>>,
     record_fields: &'a HashMap<String, Vec<(String, Type)>>,
     fn_rets: HashMap<String, String>,
-    /// Function -> (param types, return type), for recovering a generic call's
-    /// concrete result type (mirrors `Ctx::fn_sigs`).
-    fn_sigs: HashMap<String, FnSig>,
     memo: HashMap<(String, Vec<String>), String>,
     generated: Vec<Function>,
     /// Per-generated-instance type-variable substitution (var -> concrete scope
@@ -2347,12 +2529,22 @@ struct Mono<'a> {
     /// typeck's resolved types for this module instance: the fallback when
     /// the head-name scope can't resolve a type argument.
     table: &'a crate::typeck::TypeTable,
+    /// Names of the template functions that are kept in `items` ONLY so the
+    /// fixpoint re-annotate can see their signatures (bounded templates + the
+    /// generic helpers that transitively call them). Their bodies are still
+    /// generic — walking them would try, and fail, to resolve their own bounded
+    /// calls — so they are skipped here and removed from the module after the
+    /// fixpoint. Their concrete SPECIALIZATIONS (in `generated`) are walked.
+    skip_walk: &'a std::collections::HashSet<String>,
 }
 
 impl Mono<'_> {
     fn run(&mut self, items: &mut [Item]) {
         for item in items.iter_mut() {
             if let Item::Function(f) = item {
+                if self.skip_walk.contains(&f.name) {
+                    continue;
+                }
                 let mut s = Scope::new();
                 seed_params(&f.params, &mut s);
                 self.walk_block(&mut f.body, &mut s);
@@ -2384,7 +2576,6 @@ impl Mono<'_> {
         // checker's answer, not a guess). It only carries fully-concrete types,
         // so a generic-body expression falls through to the local recovery.
         table_scope_name(self.table, e)
-            .or_else(|| recover_generic_call(e, &self.fn_sigs, &|a| self.type_name(a, scope)))
             .or_else(|| head_type_name(e, scope, self.ctor_results, &self.fn_rets, self.record_fields))
     }
 
@@ -2721,7 +2912,12 @@ impl Mono<'_> {
             }
         }
         if !renames.is_empty() {
-            rename_calls_block(&mut f.body, &renames);
+            // Seed the specialization's own parameters as bound locals, so a
+            // `fn`-typed parameter named like a trait method (a comparator) is
+            // invoked as the passed function, not rewritten to the impl (BUG-001).
+            let mut rename_scope = Scope::new();
+            seed_params(&f.params, &mut rename_scope);
+            rename_calls_block(&mut f.body, &renames, &mut rename_scope);
         }
         drop(subst);
         // Monomorphization discharges the `where` bounds: every bound type

@@ -15603,6 +15603,89 @@ fn main(console: Console):
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
+    /// BUG-001: the SECOND comparator-hijack site. A user `where a: Ord` generic
+    /// whose body calls a `fn`-typed parameter named like a trait method (`less`)
+    /// is monomorphized; `Mono::specialize`'s `rename_calls_block` used to blanket-
+    /// rename every `less(…)` call to `Ord__Int__less`, silently discarding the
+    /// passed comparator (both backends agreed on the WRONG answer, so the
+    /// differential net was blind). The rename now skips bound locals, so the
+    /// reversed comparator makes `pick` return the maximum (3), not the minimum.
+    #[test]
+    fn rfc0046_bug001_mono_rename_skips_local_comparator_param() {
+        let src = "fn pick(xs: List(a), less: fn(a, a) -> Bool) -> a where a: Ord:\n    var best = list.at(xs, 0)\n    for x in xs:\n        if less(x, best):\n            best = x\n    best\n\nfn rev(a: Int, b: Int) -> Bool:\n    a > b\n\nfn main(console: Console):\n    print(console, \"${pick([3, 1, 2], rev)}\")\n";
+        // `rev` reverses order, so `pick` returns the max (3), not the min (1).
+        let want = vec!["3".to_string()];
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// RFC-0046 acceptance (a): `iter.collect` infers through a GENERIC helper.
+    /// `firsts` is unbounded-generic over `a`; its tail `iter.collect(...)` is a
+    /// bounded `FromIterator` template whose result type is the helper's own
+    /// generic return `List(a)` — unresolvable while `firsts` stays generic. The
+    /// fixpoint monomorphizes `firsts` at its concrete call site, re-annotates so
+    /// `firsts__Int`'s `iter.collect` types as `List(Int)`, then resolves it — with
+    /// no ascription at EITHER site, identically on both backends. This is the
+    /// primary acceptance test and failed ("cannot infer the result type for
+    /// `iter.collect`") before the fixpoint landed.
+    #[test]
+    fn rfc0046_accept_a_iter_collect_infers_through_generic_helper() {
+        let src = "import iter\n\nfn firsts(xs: List(a)) -> List(a):\n    iter.collect(iter.take(iter.from_list(xs), 2))\n\nfn main(console: Console):\n    let ys = firsts([1, 2, 3])\n    print(console, \"${ys}\")\n";
+        let want = vec!["[1, 2]".to_string()];
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// RFC-0046 acceptance (a), reused at two element types: the same generic
+    /// helper is monomorphized once per concrete instantiation (a record type and
+    /// `String`), each re-annotated and resolved independently — the transitive-
+    /// monomorphization fixpoint is not single-shot.
+    #[test]
+    fn rfc0046_accept_a_generic_helper_specializes_per_element_type() {
+        let src = "import iter\n\ntype Point derive(Show):\n    Point(Int, Int)\n\nfn firsts(xs: List(a)) -> List(a):\n    iter.collect(iter.take(iter.from_list(xs), 2))\n\nfn main(console: Console):\n    let ps = firsts([Point(1, 2), Point(3, 4), Point(5, 6)])\n    print(console, \"${ps}\")\n    let ss = firsts([\"a\", \"b\", \"c\"])\n    print(console, \"${ss}\")\n";
+        let want = vec!["[Point(1, 2), Point(3, 4)]".to_string(), "[a, b]".to_string()];
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// RFC-0046 step 5 (acceptance d, first clause): the new `Iter` combinators —
+    /// `min`/`max` (Ord-bounded), `last`, `position`, `scan` (lazy stateful map),
+    /// and `flatten` — exist and produce identical results on both backends,
+    /// including `min` over `String` (Ord dispatch through a `where a: Ord` iter
+    /// combinator). Each of these was previously unwritable because its bounded /
+    /// generic-return signature did not survive inference; the step-1 fixpoint is
+    /// what lets them monomorphize.
+    #[test]
+    fn rfc0046_iter_combinators_min_max_last_position_scan_flatten() {
+        let src = "import iter\nimport option\n\nfn main(console: Console):\n    print(console, \"${option.unwrap_or(iter.min(iter.from_list([3, 1, 4, 1, 5])), 0)}\")\n    print(console, \"${option.unwrap_or(iter.max(iter.from_list([3, 1, 4, 1, 5])), 0)}\")\n    print(console, \"${option.unwrap_or(iter.last(iter.from_list([10, 20, 30])), 0)}\")\n    print(console, \"${option.unwrap_or(iter.position(iter.from_list([3, 1, 4, 1, 5]), fn(n: Int): n == 4), 0 - 1)}\")\n    let sums: List(Int) = iter.collect(iter.scan(iter.from_list([1, 2, 3, 4]), 0, fn(s: Int, x: Int): (s + x, s + x)))\n    print(console, \"${sums}\")\n    let flat: List(Int) = iter.collect(iter.flatten(iter.from_list([iter.from_list([1, 2]), iter.from_list([3, 4])])))\n    print(console, \"${flat}\")\n    print(console, \"${option.unwrap_or(iter.min(iter.from_list([\"pear\", \"apple\", \"kiwi\"])), \"?\")}\")\n";
+        let want = vec![
+            "1".to_string(),
+            "5".to_string(),
+            "30".to_string(),
+            "2".to_string(),
+            "[1, 3, 6, 10]".to_string(),
+            "[1, 2, 3, 4]".to_string(),
+            "apple".to_string(),
+        ];
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// RFC-0046 step 5 (acceptance d, second clause): three std modules now use
+    /// `Iter` internally — `path` (`drop_last` via `iter.take`), `csv`
+    /// (`encode_row` via `iter.map`), and `semver` (`best` via `iter.filter` +
+    /// `iter.fold`) — proving the stdlib can consume its own lazy layer. The
+    /// observable output is unchanged AND identical on both backends (the generic
+    /// iter pipelines monomorphize for the compiled path). Before RFC-0046, no std
+    /// module imported iter because inference through it was unreliable.
+    #[test]
+    fn rfc0046_std_dogfoods_iter_in_path_csv_semver() {
+        let src = "import path\nimport csv\nimport semver\n\nfn main(console: Console):\n    print(console, path.normalize(\"a/b/c/../../d\"))\n    print(console, csv.encode([[\"a\", \"b,c\"], [\"d\", \"e\"]]))\n    let vs = [semver.version(1, 2, 0), semver.version(1, 5, 3), semver.version(2, 0, 0)]\n    match semver.parse_req(\"^1.0.0\"):\n        Ok(req) ->\n            match semver.best(vs, req):\n                Some(v) -> print(console, semver.format(v))\n                None -> print(console, \"none\")\n        Err(e) -> print(console, e)\n";
+        let want = vec!["a/d".to_string(), "a,\"b,c\"\nd,e".to_string(), "1.5.3".to_string()];
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
     // Phase 2 of the concurrency redesign: an `async fn` lowers (CPS over closures,
     // `crate::async_lower`) to a cooperative `chan` task, and `await` chains
     // continuations. An async `main` is the executor entry (lowers to `task.run`).
