@@ -1485,8 +1485,8 @@ fn main(console: Console):
     print(console, string.substring(s, 1, 4))
     print(console, string.substring(s, 4, 100))
     print(console, string.substring(s, 3, 1))
-    print(console, __render(string.index_of(s, "cd")))
-    print(console, __render(string.index_of(s, "z")))
+    print(console, __render(string.find(s, "cd")))
+    print(console, __render(string.find(s, "z")))
     print(console, __render(string.ends_with(s, "ef")))
 "#;
         assert_eq!(
