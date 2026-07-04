@@ -1410,56 +1410,76 @@ impl Codegen {
                     }
                     self.infer_locals_expr(value);
                 }
-                Stmt::LetTuple { names, value } => {
-                    // The value type of each binding: from a tuple literal's
-                    // elements, or a tuple-typed variable's tracked slot types,
-                    // else Other. This drives both the binding's value type (for
-                    // `to_string`, Dict keys, ...) and its WASM kind (Int->i64).
-                    let vts: Vec<ValType> = if let Expr::Tuple(items) = value {
-                        if items.len() == names.len() {
-                            items.iter().map(|it| self.val_type_of(it)).collect()
-                        } else {
-                            vec![ValType::Other; names.len()]
-                        }
-                    } else if let Expr::Var(p) = value {
-                        self.local_tuple_slots
-                            .get(p)
-                            .filter(|s| s.len() == names.len())
-                            .cloned()
-                            .unwrap_or_else(|| vec![ValType::Other; names.len()])
-                    } else if let Expr::Call { name: fname, args } = value {
-                        if fname == "list.at" && args.len() == 2 {
-                            // `let (a, b) = at(list_of_tuples, i)`: the element-tuple
-                            // slot types of the list (variable or literal).
-                            self.list_elem_tuple_slots(&args[0])
-                                .filter(|s| s.len() == names.len())
-                                .unwrap_or_else(|| vec![ValType::Other; names.len()])
-                        } else {
-                            // A tuple-returning call: destructure at its slot types.
-                            self.fn_ret_tuple_slots
-                                .get(fname)
-                                .filter(|s| s.len() == names.len())
-                                .cloned()
-                                .unwrap_or_else(|| vec![ValType::Other; names.len()])
-                        }
-                    } else {
-                        vec![ValType::Other; names.len()]
-                    };
-                    for (n, vt) in names.iter().zip(&vts) {
-                        self.local_val_types.insert(n.clone(), *vt);
-                        self.locals.insert(n.clone(), valtype_kind(*vt));
-                    }
-                    // `let (xs, ys) = f(...)` where f returns `(List(T), List(U))`:
-                    // record each destructured list var's element type, so a later
-                    // `at(xs, i)` recovers an Int element as i64.
-                    if let Expr::Call { name: fname, .. } = value {
-                        if let Some(elems) = self.fn_ret_tuple_slot_list_elem.get(fname) {
-                            for (n, elem) in names.iter().zip(elems) {
-                                if let Some(vt) = elem {
-                                    self.local_list_elem_valtype.insert(n.clone(), *vt);
+                Stmt::LetPattern { pattern, value } => {
+                    // The common `let (a, b, …) = e` shape — a flat tuple of plain
+                    // variables — gets precise per-slot value types (driving
+                    // `to_string`, Dict keys, and the WASM kind Int->i64). Any other
+                    // (nested / ctor / list) irrefutable pattern degrades to Other
+                    // for its bindings: still correct (the values lower via
+                    // `lower_pattern`), just without the slot-type refinement.
+                    if let Pattern::Tuple(subs) = pattern {
+                        let flat_names: Option<Vec<&String>> = subs
+                            .iter()
+                            .map(|p| match p {
+                                Pattern::Var(n) => Some(n),
+                                Pattern::Wildcard => None, // placeholder handled below
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>()
+                            .filter(|_| subs.iter().all(|p| matches!(p, Pattern::Var(_))));
+                        if let Some(names) = flat_names {
+                            let vts: Vec<ValType> = if let Expr::Tuple(items) = value {
+                                if items.len() == names.len() {
+                                    items.iter().map(|it| self.val_type_of(it)).collect()
+                                } else {
+                                    vec![ValType::Other; names.len()]
+                                }
+                            } else if let Expr::Var(p) = value {
+                                self.local_tuple_slots
+                                    .get(p)
+                                    .filter(|s| s.len() == names.len())
+                                    .cloned()
+                                    .unwrap_or_else(|| vec![ValType::Other; names.len()])
+                            } else if let Expr::Call { name: fname, args } = value {
+                                if fname == "list.at" && args.len() == 2 {
+                                    self.list_elem_tuple_slots(&args[0])
+                                        .filter(|s| s.len() == names.len())
+                                        .unwrap_or_else(|| vec![ValType::Other; names.len()])
+                                } else {
+                                    self.fn_ret_tuple_slots
+                                        .get(fname)
+                                        .filter(|s| s.len() == names.len())
+                                        .cloned()
+                                        .unwrap_or_else(|| vec![ValType::Other; names.len()])
+                                }
+                            } else {
+                                vec![ValType::Other; names.len()]
+                            };
+                            for (n, vt) in names.iter().zip(&vts) {
+                                self.local_val_types.insert((*n).clone(), *vt);
+                                self.locals.insert((*n).clone(), valtype_kind(*vt));
+                            }
+                            // `let (xs, ys) = f(...)` returning `(List(T), List(U))`:
+                            // record each destructured list var's element type.
+                            if let Expr::Call { name: fname, .. } = value {
+                                if let Some(elems) = self.fn_ret_tuple_slot_list_elem.get(fname) {
+                                    for (n, elem) in names.iter().zip(elems) {
+                                        if let Some(vt) = elem {
+                                            self.local_list_elem_valtype.insert((*n).clone(), *vt);
+                                        }
+                                    }
                                 }
                             }
+                            self.infer_locals_expr(value);
+                            continue;
                         }
+                    }
+                    // General irrefutable pattern: bind every name as Other.
+                    let mut names = Vec::new();
+                    witchy_syntax::ast::pattern_binds(pattern, &mut names);
+                    for n in &names {
+                        self.local_val_types.insert(n.clone(), ValType::Other);
+                        self.locals.insert(n.clone(), Kind::I32);
                     }
                     self.infer_locals_expr(value);
                 }
@@ -2367,30 +2387,18 @@ impl Codegen {
                     }
                     tail_is_value = false;
                 }
-                // `let (a, b, ..) = tuple`: store once, then load each 8-byte slot.
-                Stmt::LetTuple { names, value } => {
+                // `let PAT = e` (RFC-0052): store the value once, then emit the
+                // pattern's BINDINGS via the shared `lower_pattern` — the same
+                // machinery `match` uses (a `let` pattern is irrefutable, so its
+                // test condition is discarded; only the binds run). This handles
+                // nested tuples, ctor/record destructures, and list heads
+                // uniformly, superseding the old flat-slot-only loop.
+                Stmt::LetPattern { pattern, value } => {
                     let v = self.lower_expr(value)?;
                     seq.push(N::SetLocal { local: TUPLE_TMP.to_string(), value: v });
-                    for (i, name) in names.iter().enumerate() {
-                        let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
-                        let addr = W::Binary {
-                            op: witchy_wir::wir::BinOp::Add,
-                            kind: witchy_wir::wir::Kind::I32,
-                            lhs: Box::new(W::GetLocal(TUPLE_TMP.to_string())),
-                            rhs: Box::new(W::ConstI32((4 + 8 * i) as i32)),
-                        };
-                        seq.push(N::SetLocal {
-                            local: name.clone(),
-                            value: W::FromSlot(
-                                Box::new(W::Load {
-                                    ptr: Box::new(addr),
-                                    kind: witchy_wir::wir::Kind::I64,
-                                    offset: 0,
-                                }),
-                                Self::wir_kind(k),
-                            ),
-                        });
-                    }
+                    let (_cond, binds) =
+                        self.lower_pattern(&W::GetLocal(TUPLE_TMP.to_string()), pattern)?;
+                    seq.extend(binds);
                     tail_is_value = false;
                 }
                 // `break`/`continue` -> a `br` to the enclosing loop's exit/continue
@@ -3478,6 +3486,53 @@ impl Codegen {
                     }))
                 };
                 (cond, binds)
+            }
+            // (RFC-0052) A duration literal — the scrutinee is an i64 of ms, so
+            // exact i64 equality, identical to an Int literal.
+            Pattern::Duration(ms) => (eq_i64(*ms), vec![]),
+            // (RFC-0052) An integer range `lo..hi` / `lo..=hi`: `lo <= x && x (< | <=) hi`
+            // on the i64 scrutinee. No bindings.
+            Pattern::IntRange { lo, hi, inclusive } => {
+                let ge_lo = W::Binary {
+                    op: witchy_wir::wir::BinOp::Ge,
+                    kind: witchy_wir::wir::Kind::I64,
+                    lhs: Box::new(value.clone()),
+                    rhs: Box::new(W::ConstI64(*lo)),
+                };
+                let hi_cmp = W::Binary {
+                    op: if *inclusive {
+                        witchy_wir::wir::BinOp::Le
+                    } else {
+                        witchy_wir::wir::BinOp::Lt
+                    },
+                    kind: witchy_wir::wir::Kind::I64,
+                    lhs: Box::new(value.clone()),
+                    rhs: Box::new(W::ConstI64(*hi)),
+                };
+                (wir_and_chain(&[ge_lo, hi_cmp]), vec![])
+            }
+            // (RFC-0052) An or-pattern `p1 | p2 | …`: the condition is the OR of the
+            // alternatives' conditions. Bindings are per-alternative and only valid
+            // for the matching alternative, so each alternative's binds are guarded
+            // by re-testing its own condition (`if ci: binds_i`) — every alternative
+            // binds the SAME names (checker-enforced), so exactly one guard fires
+            // and the arm body sees the matched alternative's values.
+            Pattern::Or(alts) => {
+                let mut alt_conds: Vec<W> = Vec::with_capacity(alts.len());
+                let mut binds: witchy_wir::wir::WirSeq = Vec::new();
+                for alt in alts {
+                    let (c, b) = self.lower_pattern(value, alt)?;
+                    if !b.is_empty() {
+                        binds.push(N::If {
+                            cond: c.clone(),
+                            then_: b,
+                            els: vec![],
+                            result: None,
+                        });
+                    }
+                    alt_conds.push(c);
+                }
+                (wir_or_chain(&alt_conds), binds)
             }
         })
     }
@@ -6033,9 +6088,11 @@ impl DevirtScan {
                     self.reassigned.insert(name.clone());
                     self.walk_expr(value);
                 }
-                Stmt::LetTuple { names, value } => {
+                Stmt::LetPattern { pattern, value } => {
+                    let mut names = Vec::new();
+                    witchy_syntax::ast::pattern_binds(pattern, &mut names);
                     for n in names {
-                        self.other_bind.insert(n.clone());
+                        self.other_bind.insert(n);
                     }
                     self.walk_expr(value);
                 }
@@ -6345,6 +6402,21 @@ fn wir_and_chain(conds: &[witchy_wir::wir::WirExpr]) -> witchy_wir::wir::WirExpr
     }
 }
 
+/// Short-circuit OR of i32 boolean conditions — `if first: 1 else: (rest…)`.
+/// The dual of `wir_and_chain`; used for or-patterns (`1 | 2 | 3`).
+fn wir_or_chain(conds: &[witchy_wir::wir::WirExpr]) -> witchy_wir::wir::WirExpr {
+    use witchy_wir::wir::{WirExpr as W, WirNode as N};
+    match conds.split_first() {
+        None => W::ConstI32(0),
+        Some((first, rest)) => W::Control(Box::new(N::If {
+            cond: first.clone(),
+            then_: vec![N::Push(W::ConstI32(1))],
+            els: vec![N::Push(wir_or_chain(rest))],
+            result: Some(witchy_wir::wir::WirTy::Bool),
+        })),
+    }
+}
+
 /// The fields of an aggregate literal (record `Ctor` or tuple), positionally, for
 /// scalar replacement — `None` for any other expression.
 fn sroa_fields(e: &Expr) -> Option<&[Expr]> {
@@ -6393,10 +6465,8 @@ fn collect_let_names(block: &Block, out: &mut Vec<String>) {
                 collect_let_names_expr(value, out);
             }
             Stmt::Assign { value, .. } => collect_let_names_expr(value, out),
-            Stmt::LetTuple { names, value } => {
-                for n in names {
-                    out.push(n.clone());
-                }
+            Stmt::LetPattern { pattern, value } => {
+                witchy_syntax::ast::pattern_binds(pattern, out);
                 collect_let_names_expr(value, out);
             }
             Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => collect_let_names_expr(e, out),

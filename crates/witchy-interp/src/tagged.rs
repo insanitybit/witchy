@@ -782,12 +782,18 @@ fn collect_refs_pattern(p: &Pattern, out: &mut HashSet<String>) {
                 collect_refs_pattern(a, out);
             }
         }
-        Pattern::Tuple(args) | Pattern::List { elems: args, .. } => {
+        Pattern::Tuple(args) | Pattern::List { elems: args, .. } | Pattern::Or(args) => {
             for a in args {
                 collect_refs_pattern(a, out);
             }
         }
-        Pattern::Wildcard | Pattern::Var(_) | Pattern::Int(_) | Pattern::Str(_) | Pattern::Bool(_) => {}
+        Pattern::Wildcard
+        | Pattern::Var(_)
+        | Pattern::Int(_)
+        | Pattern::Str(_)
+        | Pattern::Bool(_)
+        | Pattern::Duration(_)
+        | Pattern::IntRange { .. } => {}
     }
 }
 

@@ -2283,22 +2283,20 @@ impl Interpreter {
                     }
                     result = Value::Nil;
                 }
-                Stmt::LetTuple { names, value } => {
+                Stmt::LetPattern { pattern, value } => {
                     let v = self.eval(value, env)?;
-                    match v {
-                        Value::Tuple(items) if items.len() == names.len() => {
-                            for (n, item) in names.iter().zip(items) {
-                                env.define(n.clone(), item, false);
-                            }
-                        }
-                        other => {
-                            // (`needs_scope` is always true here — there's a LetTuple.)
-                            env.pop();
-                            return err(format!(
-                                "tuple destructure expected a {}-tuple, got `{other}`",
-                                names.len()
-                            ));
-                        }
+                    // The pattern is irrefutable (the refutability checker rejects a
+                    // refutable pattern in `let` position at check time), so
+                    // `match_pattern` always succeeds and binds every name. It handles
+                    // tuples of any nesting, single-variant ctor/record patterns, and
+                    // wildcards uniformly — one grammar, shared with `match` (parity).
+                    if !match_pattern(pattern, &v, env) {
+                        // Unreachable for a checked program; a loud guard beats a
+                        // silent mis-bind if an unchecked path ever reaches here.
+                        env.pop();
+                        return err(format!(
+                            "irrefutable `let` pattern did not match the value `{v}`"
+                        ));
                     }
                     result = Value::Nil;
                 }
@@ -2685,6 +2683,17 @@ fn match_pattern(pat: &Pattern, value: &Value, env: &mut Env) -> bool {
         (Pattern::Int(a), Value::Int(b)) => a == b,
         (Pattern::Str(a), Value::Str(b)) => a == b,
         (Pattern::Bool(a), Value::Bool(b)) => a == b,
+        // A Duration literal pattern is carried as whole milliseconds, and a
+        // Duration value is an `Int` of milliseconds (Expr::Duration -> Value::Int),
+        // so it is exact i64 equality — no float hazard.
+        (Pattern::Duration(a), Value::Int(b)) => a == b,
+        // `lo..hi` (half-open) / `lo..=hi` (inclusive) against an Int.
+        (Pattern::IntRange { lo, hi, inclusive }, Value::Int(b)) => {
+            *b >= *lo && (if *inclusive { *b <= *hi } else { *b < *hi })
+        }
+        // Every alternative binds the same names (checker-enforced), so binding
+        // through the first that matches is well-defined.
+        (Pattern::Or(alts), v) => alts.iter().any(|p| match_pattern(p, v, env)),
         (Pattern::Ctor { name, args }, Value::Ctor { name: vname, fields }) => {
             name == vname
                 && args.len() == fields.len()
