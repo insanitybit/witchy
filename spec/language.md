@@ -1048,9 +1048,11 @@ pass `0`, or use `chan.unbounded()`, for no backpressure. `chan.recv(rx).await`
 yields the next message or `None` once the channel closes (no task can send to it
 anymore). `chan.consume`/`chan.serve` write the receive-loop for you (`serve`
 threads state through each message). A channel can be shared by many receivers
-(a worker pool) or many senders. One message type per program; a spawned task
-returns `Nil`, reporting results over a channel. See the book's *Concurrency*
-chapter and `std/chan` for the full model.
+(a worker pool) or many senders. Each channel is typed independently — a program
+may use channels of many different message types (the executor carries messages
+erased and each endpoint recovers its own type). A spawned task returns `Nil`,
+reporting results over a channel. See the book's *Concurrency* chapter and
+`std/chan` for the full model.
 
 ## 15. In-language tests
 

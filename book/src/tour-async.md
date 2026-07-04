@@ -182,6 +182,7 @@ than in a `var`.
 The executor is ordinary witchy code (see `std/chan`): it owns the channel buffers
 and polls tasks in a fixed round-robin order. No scheduler state lives in the
 runtime, no operating-system threads are involved, and nothing is shared mutably —
-so the interleaving is identical on both backends. One message type flows through a
-program's channels, and a spawned task returns `Nil` (it reports results by sending
-them), which is what keeps the whole executor expressible in pure witchy.
+so the interleaving is identical on both backends. Each channel carries its own
+message type (the executor moves messages erased and every endpoint recovers its
+type), and a spawned task returns `Nil` (it reports results by sending them),
+which is what keeps the whole executor expressible in pure witchy.

@@ -56,7 +56,8 @@ witchy that needs nothing but `Console`.
 import chan
 import json
 
-// One message type flows through a program's channels.
+// This program's channels all carry one message type; a program may also use
+// channels of several different types.
 type Msg:
     Reading(Int)
     Report(Sender(Msg))
