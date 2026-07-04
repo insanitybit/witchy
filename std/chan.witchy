@@ -5,10 +5,16 @@
 // round-robin schedule, so a concurrent run is byte-identical on the interpreter
 // and the compiled WebAssembly — no scheduler state in the runtime, no `Pin`.
 //
-// Model: one message type `m` per program (a single `run`'s channels all carry
-// `m`; union into a sum type if you need several shapes). Spawned tasks return
-// `Nil`; a task reports a result by sending it on a channel, not by returning it
-// (a typed `JoinHandle(T)` would force a native runtime and break the parity
+// Messages: channels are per-type generic (RFC-0055). A `Sender(m)`/`Receiver(m)`
+// pair carries values of ITS OWN type `m`, and independent channels in one program
+// may carry different types — a library may pipeline work through a private channel
+// without forcing its message type on the whole program. Under the hood the
+// executor is ERASED: its buffers, `Step`, and `Slot` carry the opaque `__Msg`; the
+// typed endpoints erase a message on `send` and recover it on `recv`. The erasure
+// is representationally the identity on both backends (a message already rides the
+// universal slot), so interleavings stay byte-identical. Spawned tasks return
+// `Nil`; a task reports a result by sending it on a channel, not by returning it (a
+// typed `JoinHandle(T)` would force a native runtime and break the parity
 // contract). `send`/`recv` are always `await`ed because messaging is an effect on
 // the executor-owned buffer; a *bounded* channel additionally blocks the sender
 // when full (backpressure), an unbounded one never does.
@@ -20,49 +26,60 @@
 import option
 
 // What a task yields to the executor when stepped. `a` is the task's own result.
-type Step(m, a):
+// Messages are the erased `__Msg` (RFC-0055); the typed endpoints below (un)wrap.
+type Step(a):
     Done(a)
-    Yield(Task(m, a))
-    Fork(Task(m, Nil), fn(Int) -> Task(m, a))
-    Open(Int, fn(Int) -> Task(m, a))
-    Push(Int, m, fn(Nil) -> Task(m, a))
-    Pull(Int, fn(Option(m)) -> Task(m, a))
-    PullAny(List(Int), fn(Option((Int, m))) -> Task(m, a))
-    Wait(Int, fn(Nil) -> Task(m, a))
-    Cancel(Int, fn(Nil) -> Task(m, a))
+    Yield(Task(a))
+    Fork(Task(Nil), fn(Int) -> Task(a))
+    Open(Int, fn(Int) -> Task(a))
+    Push(Int, __Msg, fn(Nil) -> Task(a))
+    Pull(Int, fn(Option(__Msg)) -> Task(a))
+    PullAny(List(Int), fn(Option((Int, __Msg))) -> Task(a))
+    Wait(Int, fn(Nil) -> Task(a))
+    Cancel(Int, fn(Nil) -> Task(a))
 
-// A task communicating via channels of message type `m`, producing an `a`.
-type Task(m, a):
-    Task(fn() -> Step(m, a))
+// A task communicating via channels, producing an `a`.
+type Task(a):
+    Task(fn() -> Step(a))
 
-fn poll(t: Task(m, a)) -> Step(m, a):
+fn poll(t: Task(a)) -> Step(a):
     match t:
         Task(th) -> th()
 
 fn unit():
     let _ignore = 0
 
+// ---- erasure boundary (RFC-0055) ----
+
+// Recover a received `Option(__Msg)` at the endpoint's message type. `__unerase`
+// is the identity on both backends; the `Sender(m)`/`Receiver(m)` pairing to one
+// channel id guarantees the value was erased at the same `m`.
+fn unerase_option(o: Option(__Msg)) -> Option(m):
+    match o:
+        Some(x) -> Some(__unerase(x))
+        None -> None
+
 // ---- core combinators ----
 
 // A finished task.
-pub fn done(x: a) -> Task(m, a):
+pub fn done(x: a) -> Task(a):
     Task(fn(): Done(x))
 
-// An already-complete `Task(m, Nil)` — the async/await lowering target for a body
+// An already-complete `Task(Nil)` — the async/await lowering target for a body
 // that falls off its end.
-pub fn ready_unit() -> Task(m, Nil):
+pub fn ready_unit() -> Task(Nil):
     Task(fn(): Done(unit()))
 
 // Hand control back to the executor once, then continue.
-pub fn yield_now() -> Task(m, Nil):
+pub fn yield_now() -> Task(Nil):
     Task(fn(): Yield(Task(fn(): Done(unit()))))
 
 // Sequence: run `t`, then continue with `k` applied to its result. This is what
 // `await` lowers to — the continuation `k` is the rest of the body.
-pub fn and_then(t: Task(m, a), k: fn(a) -> Task(m, b)) -> Task(m, b):
+pub fn and_then(t: Task(a), k: fn(a) -> Task(b)) -> Task(b):
     Task(fn(): and_then_step(poll(t), k))
 
-fn and_then_step(s: Step(m, a), k: fn(a) -> Task(m, b)) -> Step(m, b):
+fn and_then_step(s: Step(a), k: fn(a) -> Task(b)) -> Step(b):
     match s:
         Done(v) -> Yield(k(v))
         Yield(t2) -> Yield(and_then(t2, k))
@@ -75,18 +92,18 @@ fn and_then_step(s: Step(m, a), k: fn(a) -> Task(m, b)) -> Step(m, b):
         Cancel(target, cont) -> Cancel(target, fn(u): and_then(cont(u), k))
 
 // Transform a task's result.
-pub fn map(t: Task(m, a), f: fn(a) -> b) -> Task(m, b):
+pub fn map(t: Task(a), f: fn(a) -> b) -> Task(b):
     and_then(t, fn(x): Task(fn(): Done(f(x))))
 
 // Build the task `thunk()` lazily: nothing runs until the first poll. This is what
 // makes an `async fn` LAZY — calling it yields a task that does no work until
 // driven (by `run`, or by being `spawn`ed, or `await`ed).
-pub fn lazy(thunk: fn() -> Task(m, a)) -> Task(m, a):
+pub fn lazy(thunk: fn() -> Task(a)) -> Task(a):
     Task(fn(): poll(thunk()))
 
 // Run `f(x)` as a task for each `x` in `xs`, in order — the lowering target for an
 // `await` inside a `for x in xs:` loop.
-pub fn for_each(xs: List(a), f: fn(a) -> Task(m, Nil)) -> Task(m, Nil):
+pub fn for_each(xs: List(a), f: fn(a) -> Task(Nil)) -> Task(Nil):
     if list.is_empty(xs):
         ready_unit()
     else:
@@ -104,33 +121,35 @@ type Handle:
 
 // A bounded channel of `capacity` (the sender blocks when it is full); pass 0 for
 // an unbounded channel that never blocks the sender.
-pub fn channel(capacity: Int) -> Task(m, (Sender(m), Receiver(m))):
+pub fn channel(capacity: Int) -> Task((Sender(m), Receiver(m))):
     and_then(open_raw(capacity), fn(id): done((Sender(id), Receiver(id))))
 
 // An unbounded channel — `send` never blocks (the buffer grows without limit).
-pub fn unbounded() -> Task(m, (Sender(m), Receiver(m))):
+pub fn unbounded() -> Task((Sender(m), Receiver(m))):
     channel(0)
 
-fn open_raw(capacity: Int) -> Task(m, Int):
+fn open_raw(capacity: Int) -> Task(Int):
     Task(fn(): Open(capacity, fn(c): Task(fn(): Done(c))))
 
 // Send `msg`; on a bounded channel this blocks until there is room. Always awaited.
-pub fn send(tx: Sender(m), msg: m) -> Task(m, Nil):
+// The message is erased to the executor's opaque slot at this boundary.
+pub fn send(tx: Sender(m), msg: m) -> Task(Nil):
     match tx:
-        Sender(id) -> Task(fn(): Push(id, msg, fn(u): Task(fn(): Done(u))))
+        Sender(id) -> Task(fn(): Push(id, __erase(msg), fn(u): Task(fn(): Done(u))))
 
 // Receive the next message, or `None` once the channel is closed — i.e. once no
-// task can send to it anymore. `for await x in rx:` loops until this `None`.
-pub fn recv(rx: Receiver(m)) -> Task(m, Option(m)):
+// task can send to it anymore. `for await x in rx:` loops until this `None`. The
+// erased value is recovered at `m` at this boundary.
+pub fn recv(rx: Receiver(m)) -> Task(Option(m)):
     match rx:
-        Receiver(id) -> Task(fn(): Pull(id, fn(o): Task(fn(): Done(o))))
+        Receiver(id) -> Task(fn(): Pull(id, fn(o): Task(fn(): Done(unerase_option(o)))))
 
 // Start `child` as a concurrent task; the returned handle completes when it does.
-pub fn spawn(child: Task(m, Nil)) -> Task(m, Handle):
+pub fn spawn(child: Task(Nil)) -> Task(Handle):
     Task(fn(): Fork(child, fn(h): Task(fn(): Done(Handle(h)))))
 
 // Block until the spawned task behind `h` finishes.
-pub fn join(h: Handle) -> Task(m, Nil):
+pub fn join(h: Handle) -> Task(Nil):
     match h:
         Handle(id) -> Task(fn(): Wait(id, fn(u): Task(fn(): Done(u))))
 
@@ -139,26 +158,26 @@ pub fn join(h: Handle) -> Task(m, Nil):
 // it stops this one task, not any tasks it itself spawned — and idempotent (already
 // finished or already cancelled is a no-op). Deterministic on the cooperative
 // schedule, hence byte-identical on both backends. Used by `race` to drop the loser.
-pub fn cancel(h: Handle) -> Task(m, Nil):
+pub fn cancel(h: Handle) -> Task(Nil):
     match h:
         Handle(id) -> Task(fn(): Cancel(id, fn(u): Task(fn(): Done(u))))
 
 // Spawn every task in `children` concurrently, returning their handles. The
 // children begin running on the next executor turns; nothing is joined yet.
-pub fn spawn_all(children: List(Task(m, Nil))) -> Task(m, List(Handle)):
+pub fn spawn_all(children: List(Task(Nil))) -> Task(List(Handle)):
     if list.is_empty(children):
         done([])
     else:
         and_then(spawn(list.at(children, 0)), fn(h): and_then(spawn_all(list.tail(children)), fn(rest): done(list.concat([h], rest))))
 
 // Join every handle in `hs` — block until they have all finished.
-pub fn join_all(hs: List(Handle)) -> Task(m, Nil):
+pub fn join_all(hs: List(Handle)) -> Task(Nil):
     for_each(hs, fn(h): join(h))
 
 // Cancel every handle in `hs` — the companion to `spawn_all`/`join_all`. Each is
 // stopped and treated as finished; idempotent, so cancelling an already-finished
 // handle is a no-op. Used by `race_n` to drop the losers.
-pub fn cancel_all(hs: List(Handle)) -> Task(m, Nil):
+pub fn cancel_all(hs: List(Handle)) -> Task(Nil):
     for_each(hs, fn(h): cancel(h))
 
 // STRUCTURED concurrency (a "nursery"): run every task in `children`
@@ -168,12 +187,12 @@ pub fn cancel_all(hs: List(Handle)) -> Task(m, Nil):
 // children interleave on the cooperative executor, so a concurrent run is
 // byte-identical on both backends (the parity contract). Results flow out over
 // channels, as with any task (a child returns `Nil`).
-pub fn scope(children: List(Task(m, Nil))) -> Task(m, Nil):
+pub fn scope(children: List(Task(Nil))) -> Task(Nil):
     and_then(spawn_all(children), fn(hs): join_all(hs))
 
 // Receive exactly `n` messages from `rx`, in arrival order. Stops early (and
 // shorter) if the channel closes first.
-fn recv_n(rx: Receiver(m), n: Int) -> Task(m, List(m)):
+fn recv_n(rx: Receiver(m), n: Int) -> Task(List(m)):
     if n <= 0:
         done([])
     else:
@@ -189,7 +208,7 @@ fn recv_n(rx: Receiver(m), n: Int) -> Task(m, List(m)):
 // companion to `scope` — the same leak-free, no-escaping-handle guarantee, with the
 // results handed back. Results are in COMPLETION order (deterministic on the
 // cooperative executor, hence byte-identical on both backends), not input order.
-pub fn gather(jobs: List(Task(m, m))) -> Task(m, List(m)):
+pub fn gather(jobs: List(Task(m))) -> Task(List(m)):
     and_then(channel(0), fn(pair):
         let (tx, rx) = pair
         let senders = list.map(jobs, fn(j): and_then(j, fn(r): send(tx, r)))
@@ -200,7 +219,7 @@ pub fn gather(jobs: List(Task(m, m))) -> Task(m, List(m)):
 // receiver contributes nothing (its slot is skipped). Used by `par_map` to read
 // back results in INPUT order — each task owns its own channel, so the parent
 // collecting channel-by-channel is independent of which task finished first.
-fn recv_each(rxs: List(Receiver(m))) -> Task(m, List(m)):
+fn recv_each(rxs: List(Receiver(m))) -> Task(List(m)):
     if list.is_empty(rxs):
         done([])
     else:
@@ -212,7 +231,7 @@ fn recv_each(rxs: List(Receiver(m))) -> Task(m, List(m)):
 
 // Build one private channel per item, pairing each item's task (which sends its
 // own result) with its receiver, so results can be read back in input order.
-fn par_build(items: List(a), f: fn(a) -> Task(m, m)) -> Task(m, (List(Task(m, Nil)), List(Receiver(m)))):
+fn par_build(items: List(a), f: fn(a) -> Task(m)) -> Task((List(Task(Nil)), List(Receiver(m)))):
     if list.is_empty(items):
         done(([], []))
     else:
@@ -235,7 +254,7 @@ fn par_build(items: List(a), f: fn(a) -> Task(m, m)) -> Task(m, (List(Task(m, Ni
 // That determinism is exactly what lets a future parallel backend run the items on
 // separate cores without changing the observable result (see RFC-0032). Results are
 // of the message type `m` (they ride channels), as with `gather`.
-pub fn par_map(items: List(a), f: fn(a) -> Task(m, m)) -> Task(m, List(m)):
+pub fn par_map(items: List(a), f: fn(a) -> Task(m)) -> Task(List(m)):
     and_then(par_build(items, f), fn(built):
         let (jobs, rxs) = built
         and_then(scope(jobs), fn(_ignore): recv_each(rxs))
@@ -245,7 +264,7 @@ pub fn par_map(items: List(a), f: fn(a) -> Task(m, m)) -> Task(m, List(m)):
 // `combine` starting from `init`. `combine` should be associative for the fold to
 // be meaningful independent of evaluation order; the map runs concurrently while
 // the fold is a deterministic left fold over the input-ordered results.
-pub fn par_reduce(items: List(a), f: fn(a) -> Task(m, m), init: m, combine: fn(m, m) -> m) -> Task(m, m):
+pub fn par_reduce(items: List(a), f: fn(a) -> Task(m), init: m, combine: fn(m, m) -> m) -> Task(m):
     and_then(par_map(items, f), fn(results): done(list.fold(results, init, combine)))
 
 // Run `a` and `b` concurrently and return the FIRST result, cancelling the loser.
@@ -255,7 +274,7 @@ pub fn par_reduce(items: List(a), f: fn(a) -> Task(m, m), init: m, combine: fn(m
 // genuinely stops the loser's remaining work. This is the cancellation-enabled
 // combinator of RFC-0032's ladder; build `timeout` by racing a task against one
 // that yields a sentinel.
-pub fn race(a: Task(m, m), b: Task(m, m)) -> Task(m, Option(m)):
+pub fn race(a: Task(m), b: Task(m)) -> Task(Option(m)):
     and_then(channel(0), fn(pair):
         let (tx, rx) = pair
         and_then(spawn(and_then(a, fn(ra): send(tx, ra))), fn(ha): and_then(spawn(and_then(b, fn(rb): send(tx, rb))), fn(hb): and_then(recv(rx), fn(o): and_then(cancel(ha), fn(_x): and_then(cancel(hb), fn(_y): done(o))))))
@@ -265,7 +284,7 @@ pub fn race(a: Task(m, m), b: Task(m, m)) -> Task(m, Option(m)):
 // the FIRST result, cancelling all the others. `None` only if none ever produces a
 // value (e.g. an empty list). The winner is fixed by the deterministic schedule, so
 // the outcome is byte-identical on both backends.
-pub fn race_n(tasks: List(Task(m, m))) -> Task(m, Option(m)):
+pub fn race_n(tasks: List(Task(m))) -> Task(Option(m)):
     and_then(channel(0), fn(pair):
         let (tx, rx) = pair
         let jobs = list.map(tasks, fn(t): and_then(t, fn(r): send(tx, r)))
@@ -281,25 +300,25 @@ type Selected(m):
 
 // Receive from whichever of `a` or `b` has a message first; a tie favours `a`.
 // Yields `Closed` once both channels are closed.
-pub fn select(a: Receiver(m), b: Receiver(m)) -> Task(m, Selected(m)):
+pub fn select(a: Receiver(m), b: Receiver(m)) -> Task(Selected(m)):
     match a:
         Receiver(ia) ->
             match b:
                 Receiver(ib) -> Task(fn(): PullAny([ia, ib], fn(o): select_result(o)))
 
-fn select_result(o: Option((Int, m))) -> Task(m, Selected(m)):
+fn select_result(o: Option((Int, __Msg))) -> Task(Selected(m)):
     match o:
         Some(hit) ->
             let (i, msg) = hit
             if i == 0:
-                Task(fn(): Done(First(msg)))
+                Task(fn(): Done(First(__unerase(msg))))
             else:
-                Task(fn(): Done(Second(msg)))
+                Task(fn(): Done(Second(__unerase(msg))))
         None -> Task(fn(): Done(Closed))
 
 // Receive from `rx`, run `f` on each message, until the channel closes. The
 // stateless server loop; `for await x in rx:` lowers to this.
-pub fn consume(rx: Receiver(m), f: fn(m) -> Task(m, Nil)) -> Task(m, Nil):
+pub fn consume(rx: Receiver(m), f: fn(m) -> Task(Nil)) -> Task(Nil):
     and_then(recv(rx), fn(o):
         match o:
             Some(x) -> and_then(f(x), fn(_u): consume(rx, f))
@@ -309,7 +328,7 @@ pub fn consume(rx: Receiver(m), f: fn(m) -> Task(m, Nil)) -> Task(m, Nil):
 // The stateful server loop: receive a message, run `handler` with the current
 // `state` to get the next state, and repeat until the channel closes. State
 // threads through every message with no hand-written recursion.
-pub fn serve(rx: Receiver(m), state: s, handler: fn(s, m) -> Task(m, s)) -> Task(m, Nil):
+pub fn serve(rx: Receiver(m), state: s, handler: fn(s, m) -> Task(s)) -> Task(Nil):
     and_then(recv(rx), fn(o):
         match o:
             Some(msg) -> and_then(handler(state, msg), fn(next): serve(rx, next, handler))
@@ -319,15 +338,16 @@ pub fn serve(rx: Receiver(m), state: s, handler: fn(s, m) -> Task(m, s)) -> Task
 // ---- executor ----
 
 // A scheduling slot: running, parked on a channel recv/send or on a join, or done.
-type Slot(m):
-    Active(Task(m, Nil))
-    WaitRecv(Int, fn(Option(m)) -> Task(m, Nil))
-    WaitSend(Int, m, fn(Nil) -> Task(m, Nil))
-    WaitAny(List(Int), fn(Option((Int, m))) -> Task(m, Nil))
-    WaitJoin(Int, fn(Nil) -> Task(m, Nil))
+// Parked messages are the erased `__Msg` (RFC-0055).
+type Slot:
+    Active(Task(Nil))
+    WaitRecv(Int, fn(Option(__Msg)) -> Task(Nil))
+    WaitSend(Int, __Msg, fn(Nil) -> Task(Nil))
+    WaitAny(List(Int), fn(Option((Int, __Msg))) -> Task(Nil))
+    WaitJoin(Int, fn(Nil) -> Task(Nil))
     Ended
 
-fn is_live(s: Slot(m)) -> Bool:
+fn is_live(s: Slot) -> Bool:
     match s:
         Ended -> false
         Active(_) -> true
@@ -336,7 +356,7 @@ fn is_live(s: Slot(m)) -> Bool:
         WaitAny(_, _) -> true
         WaitJoin(_, _) -> true
 
-fn is_parked(s: Slot(m)) -> Bool:
+fn is_parked(s: Slot) -> Bool:
     match s:
         WaitRecv(_, _) -> true
         WaitSend(_, _, _) -> true
@@ -346,7 +366,7 @@ fn is_parked(s: Slot(m)) -> Bool:
         Ended -> false
 
 // Channels are `(buffer, capacity)` pairs; capacity 0 means unbounded.
-fn try_pull(i: Int, ch: Int, cont: fn(Option(m)) -> Task(m, Nil), slots: List(Slot(m)), channels: List((List(m), Int))) -> (List(Slot(m)), List((List(m), Int)), Bool):
+fn try_pull(i: Int, ch: Int, cont: fn(Option(__Msg)) -> Task(Nil), slots: List(Slot), channels: List((List(__Msg), Int))) -> (List(Slot), List((List(__Msg), Int)), Bool):
     let (buf, cap) = list.at(channels, ch)
     if list.length(buf) > 0:
         let channels2 = list.set_at(channels, ch, (list.tail(buf), cap))
@@ -354,7 +374,7 @@ fn try_pull(i: Int, ch: Int, cont: fn(Option(m)) -> Task(m, Nil), slots: List(Sl
     else:
         (list.set_at(slots, i, WaitRecv(ch, cont)), channels, false)
 
-fn try_push(i: Int, ch: Int, msg: m, cont: fn(Nil) -> Task(m, Nil), slots: List(Slot(m)), channels: List((List(m), Int))) -> (List(Slot(m)), List((List(m), Int)), Bool):
+fn try_push(i: Int, ch: Int, msg: __Msg, cont: fn(Nil) -> Task(Nil), slots: List(Slot), channels: List((List(__Msg), Int))) -> (List(Slot), List((List(__Msg), Int)), Bool):
     let (buf, cap) = list.at(channels, ch)
     if cap == 0 || list.length(buf) < cap:
         let channels2 = list.set_at(channels, ch, (list.push(buf, msg), cap))
@@ -364,7 +384,7 @@ fn try_push(i: Int, ch: Int, msg: m, cont: fn(Nil) -> Task(m, Nil), slots: List(
 
 // The local index (within `chs`) and global id of the first listed channel with a
 // pending message, or None if all are empty.
-fn first_ready(k: Int, chs: List(Int), channels: List((List(m), Int))) -> Option((Int, Int)):
+fn first_ready(k: Int, chs: List(Int), channels: List((List(__Msg), Int))) -> Option((Int, Int)):
     if k >= list.length(chs):
         None
     else:
@@ -375,7 +395,7 @@ fn first_ready(k: Int, chs: List(Int), channels: List((List(m), Int))) -> Option
         else:
             first_ready(k + 1, chs, channels)
 
-fn try_pull_any(i: Int, chs: List(Int), cont: fn(Option((Int, m))) -> Task(m, Nil), slots: List(Slot(m)), channels: List((List(m), Int))) -> (List(Slot(m)), List((List(m), Int)), Bool):
+fn try_pull_any(i: Int, chs: List(Int), cont: fn(Option((Int, __Msg))) -> Task(Nil), slots: List(Slot), channels: List((List(__Msg), Int))) -> (List(Slot), List((List(__Msg), Int)), Bool):
     match first_ready(0, chs, channels):
         Some(hit) ->
             let (k, ch) = hit
@@ -384,7 +404,7 @@ fn try_pull_any(i: Int, chs: List(Int), cont: fn(Option((Int, m))) -> Task(m, Ni
             (list.set_at(slots, i, Active(cont(Some((k, list.at(buf, 0)))))), channels2, true)
         None -> (list.set_at(slots, i, WaitAny(chs, cont)), channels, false)
 
-fn try_join(i: Int, target: Int, cont: fn(Nil) -> Task(m, Nil), slots: List(Slot(m)), channels: List((List(m), Int))) -> (List(Slot(m)), List((List(m), Int)), Bool):
+fn try_join(i: Int, target: Int, cont: fn(Nil) -> Task(Nil), slots: List(Slot), channels: List((List(__Msg), Int))) -> (List(Slot), List((List(__Msg), Int)), Bool):
     match list.at(slots, target):
         Ended -> (list.set_at(slots, i, Active(cont(unit()))), channels, true)
         Active(_) -> (list.set_at(slots, i, WaitJoin(target, cont)), channels, false)
@@ -393,7 +413,7 @@ fn try_join(i: Int, target: Int, cont: fn(Nil) -> Task(m, Nil), slots: List(Slot
         WaitAny(_, _) -> (list.set_at(slots, i, WaitJoin(target, cont)), channels, false)
         WaitJoin(_, _) -> (list.set_at(slots, i, WaitJoin(target, cont)), channels, false)
 
-fn step_one(i: Int, slots: List(Slot(m)), channels: List((List(m), Int))) -> (List(Slot(m)), List((List(m), Int)), Bool):
+fn step_one(i: Int, slots: List(Slot), channels: List((List(__Msg), Int))) -> (List(Slot), List((List(__Msg), Int)), Bool):
     match list.at(slots, i):
         Ended -> (slots, channels, false)
         WaitRecv(ch, cont) -> try_pull(i, ch, cont, slots, channels)
@@ -419,7 +439,7 @@ fn step_one(i: Int, slots: List(Slot(m)), channels: List((List(m), Int))) -> (Li
                     let slots2 = list.set_at(slots, target, Ended)
                     (list.set_at(slots2, i, Active(cont(unit()))), channels, true)
 
-fn step_round(i: Int, n: Int, slots: List(Slot(m)), channels: List((List(m), Int)), prog: Bool) -> (List(Slot(m)), List((List(m), Int)), Bool):
+fn step_round(i: Int, n: Int, slots: List(Slot), channels: List((List(__Msg), Int)), prog: Bool) -> (List(Slot), List((List(__Msg), Int)), Bool):
     if i >= n:
         (slots, channels, prog)
     else:
@@ -428,7 +448,7 @@ fn step_round(i: Int, n: Int, slots: List(Slot(m)), channels: List((List(m), Int
 
 // At quiescence nothing can deliver: closed receivers get `None`, blocked senders
 // and joiners are released so the run terminates instead of hanging.
-fn close_one(i: Int, slots: List(Slot(m)), channels: List((List(m), Int))) -> (List(Slot(m)), List((List(m), Int))):
+fn close_one(i: Int, slots: List(Slot), channels: List((List(__Msg), Int))) -> (List(Slot), List((List(__Msg), Int))):
     match list.at(slots, i):
         WaitRecv(_ch, cont) -> (list.set_at(slots, i, Active(cont(None))), channels)
         WaitSend(ch, msg, cont) ->
@@ -439,7 +459,7 @@ fn close_one(i: Int, slots: List(Slot(m)), channels: List((List(m), Int))) -> (L
         Active(_) -> (slots, channels)
         Ended -> (slots, channels)
 
-fn close_round(i: Int, n: Int, slots: List(Slot(m)), channels: List((List(m), Int))) -> (List(Slot(m)), List((List(m), Int))):
+fn close_round(i: Int, n: Int, slots: List(Slot), channels: List((List(__Msg), Int))) -> (List(Slot), List((List(__Msg), Int))):
     if i >= n:
         (slots, channels)
     else:
@@ -448,7 +468,7 @@ fn close_round(i: Int, n: Int, slots: List(Slot(m)), channels: List((List(m), In
 
 // Drive `root` (and everything it spawns) to completion on a deterministic
 // round-robin schedule. An async `main` lowers to a single `run` of its body.
-pub fn run(root: Task(m, Nil)):
+pub fn run(root: Task(Nil)):
     var slots = [Active(root)]
     var channels = []
     var go = true
