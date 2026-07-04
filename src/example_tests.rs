@@ -9125,7 +9125,7 @@ fn main(console: Console):
             // string.index_of ($str_index_of → $find_byte + $byte_to_char, the
             // byte-offset → char-index conversion) on the binary path.
             (
-                "fn main(console: Console):\n    print(console, __render(string.index_of(\"hello\", \"ll\")))\n    print(console, __render(string.index_of(\"hello\", \"xyz\")))\n",
+                "fn main(console: Console):\n    print(console, __render(string.index_of(\"hello\", \"ll\") ?? -1))\n    print(console, __render(string.index_of(\"hello\", \"xyz\") ?? -1))\n",
                 vec!["2".to_string(), "-1".to_string()],
             ),
             // string.substring ($str_substring → $char_to_byte + $substr, a
@@ -11209,12 +11209,12 @@ fn main(console: Console):
     print(console, __render(if string.contains("hello world", "world"): 1 else: 0))
     print(console, __render(if string.contains("abc", "xyz"): 1 else: 0))
     print(console, __render(if string.contains("abc", ""): 1 else: 0))
-    print(console, __render(string.index_of("hello", "l")))
-    print(console, __render(string.index_of("hello", "z")))
+    print(console, __render(string.index_of("hello", "l") ?? -1))
+    print(console, __render(string.index_of("hello", "z") ?? -1))
     print(console, string.substring("hello", 1, 4))
     print(console, string.substring("hi", 0, 100))
     print(console, string.substring("hi", 5, 10))
-    print(console, __render(string.index_of("café!", "!")))
+    print(console, __render(string.index_of("café!", "!") ?? -1))
     print(console, string.substring("café!", 3, 5))
 "#;
         assert_eq!(
@@ -15202,8 +15202,8 @@ fn main(console: Console):
     print(console, (("[" + string.substring("", 0, 5)) + "]"))
     print(console, (("[" + string.substring("hello", 3, 1)) + "]"))
     print(console, string.substring("hello", 2, 100))
-    print(console, __render(string.index_of("hello", "")))
-    print(console, __render(string.index_of("hello", "z")))
+    print(console, __render(string.index_of("hello", "") ?? -1))
+    print(console, __render(string.index_of("hello", "z") ?? -1))
     print(console, (("[" + (("" + "x") + "")) + "]"))
     print(console, __render(string.length("")))
 "#;
@@ -17808,6 +17808,30 @@ pub fn serve(console: Console, net: Net) -> Int:
                    \x20   print(console, \"${ascii.to_digit(\"7\") ?? -1}\")\n\
                    \x20   print(console, \"${ascii.to_digit(\"z\") ?? -1}\")\n";
         let expected = ["1", "-1", "1", "7", "-1"];
+        let linked = resolve_std_src(src);
+        assert_eq!(
+            interpreter::run_module(linked, ".", Vec::new()).expect("interp"),
+            expected
+        );
+        assert_eq!(wasm_run(src), expected, "wasm");
+    }
+
+    /// (RFC-0044 rule 1) The `string` search/index family returns `Option`, not a
+    /// `-1`/`""` sentinel: `index_of`/`last_index_of` -> `Option(Int)`, `char_at`
+    /// -> `Option(String)`. The private raw scan intrinsic (`string.find`, keyed
+    /// on the -1 ABI) still powers the tight std loops. Both backends agree.
+    #[test]
+    fn rfc0044_string_search_absence_is_option() {
+        let src = "import string\n\
+                   fn main(console: Console):\n\
+                   \x20   print(console, \"${string.index_of(\"hello\", \"ll\") ?? -1}\")\n\
+                   \x20   print(console, \"${string.index_of(\"hello\", \"z\") ?? -1}\")\n\
+                   \x20   print(console, \"${string.last_index_of(\"a.b.c\", \".\") ?? -1}\")\n\
+                   \x20   print(console, \"${string.last_index_of(\"abc\", \".\") ?? -1}\")\n\
+                   \x20   print(console, \"${string.char_at(\"hi\", 1) ?? \"?\"}\")\n\
+                   \x20   print(console, \"${string.char_at(\"hi\", 9) ?? \"?\"}\")\n\
+                   \x20   print(console, \"${string.count(\"banana\", \"a\")}\")\n";
+        let expected = ["2", "-1", "3", "-1", "i", "?", "3"];
         let linked = resolve_std_src(src);
         assert_eq!(
             interpreter::run_module(linked, ".", Vec::new()).expect("interp"),

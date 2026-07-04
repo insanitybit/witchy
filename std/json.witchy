@@ -159,9 +159,9 @@ fn control_code(c: String) -> Int:
         k = k + 1
     0
 
-// One lowercase hex digit for `v` in 0..15.
+// One lowercase hex digit for `v` in 0..15 (always in range here).
 fn hex_digit(v: Int) -> String:
-    string.char_at("0123456789abcdef", v)
+    string.substring("0123456789abcdef", v, v + 1)
 
 // --- Decoder (parsing) ---------------------------------------------------
 //
@@ -393,7 +393,7 @@ fn unescape(e: String) -> String:
 
 // One hex digit (0-9, a-f, A-F) to its 0..15 value, or -1 if not a hex digit.
 fn hex_val(c: String) -> Int:
-    string.index_of("0123456789abcdef", string.to_lower(c))
+    string.index_of("0123456789abcdef", string.to_lower(c)) ?? -1
 
 // The 16-bit value of the four hex digits at `j`, or -1 if any is not hex.
 fn hex4(cs: List(String), j: Int) -> Int:

@@ -44,9 +44,20 @@ pub fn ends_with(s: String, suffix: String) -> Bool:
     string.ends_with(s, suffix)
 
 // The character index (counted by Unicode scalar) of the first occurrence of
-// `needle`, or -1.
-pub fn index_of(s: String, needle: String) -> Int:
-    string.index_of(s, needle)
+// `needle` as `Some`, or `None` when `needle` does not occur (RFC-0044 rule 1:
+// absence is `Option`, never a -1 sentinel). For a bare yes/no, use `contains`.
+pub fn index_of(s: String, needle: String) -> Option(Int):
+    let i = find(s, needle)
+    if i < 0:
+        None
+    else:
+        Some(i)
+
+// The raw search intrinsic (char index of the first occurrence, or -1). Private:
+// public callers use `index_of` (Option) or `contains` (Bool); the std internals
+// below use it directly for tight scan loops where the -1 test is the condition.
+fn find(s: String, needle: String) -> Int:
+    string.find(s, needle)
 
 // Replace every occurrence of `from` with `to`.
 pub fn replace(var s: String, from: String, to: String) -> String:
@@ -132,9 +143,19 @@ pub fn strip_suffix(var s: String, suffix: String) -> String:
     else:
         s
 
-// The single character at character index `i` (counted by Unicode scalar), or
-// "" when `i` is out of range. A readable shorthand over `substring`.
-pub fn char_at(s: String, i: Int) -> String:
+// The single character (as a String) at character index `i` (counted by Unicode
+// scalar) as `Some`, or `None` when `i` is out of range (RFC-0044 rule 1:
+// absence is `Option`, never a "" sentinel). For a clamping view use `substring`.
+pub fn char_at(s: String, i: Int) -> Option(String):
+    if i >= 0 && i < string.char_count(s):
+        Some(string.substring(s, i, i + 1))
+    else:
+        None
+
+// The raw character at `i`, or "" out of range (the clamping `substring` view).
+// Private: the std internals below index with an already-bounds-checked `i`, so
+// the Option would be pure overhead; public callers use `char_at`.
+fn char_or_empty(s: String, i: Int) -> String:
     string.substring(s, i, i + 1)
 
 // Whether the string has no characters.
@@ -168,11 +189,11 @@ pub fn count(s: String, sub: String) -> Int:
     else:
         var total = 0
         var rest = s
-        var i = string.index_of(rest, sub)
+        var i = find(rest, sub)
         while i >= 0:
             total = total + 1
             rest = string.substring(rest, i + string.char_count(sub), string.char_count(rest))
-            i = string.index_of(rest, sub)
+            i = find(rest, sub)
         total
 
 // The whitespace-separated words of `text`: tabs, newlines, and carriage
@@ -191,7 +212,7 @@ pub fn words(text: String) -> List(String):
 // Replace only the first occurrence of `from` with `to`; return `s` unchanged
 // when `from` is absent. (The `replace` builtin replaces every occurrence.)
 pub fn replace_first(var s: String, from: String, to: String) -> String:
-    let i = string.index_of(s, from)
+    let i = find(s, from)
     if i < 0:
         s
     else:
@@ -201,34 +222,44 @@ pub fn replace_first(var s: String, from: String, to: String) -> String:
 // itself dropped. When `sep` is absent, returns `(s, "")`. Handy for parsing
 // `key=value` or `host:port`. Counted by Unicode scalar.
 pub fn split_once(s: String, sep: String) -> (String, String):
-    let i = string.index_of(s, sep)
+    let i = find(s, sep)
     if i < 0:
         (s, "")
     else:
         (string.substring(s, 0, i), string.substring(s, i + string.char_count(sep), string.char_count(s)))
 
-// The index of the LAST occurrence of `sep` in `s`, or -1 when absent (and -1
-// for an empty `sep`). The right-to-left companion of the `index_of` builtin.
-pub fn last_index_of(s: String, sep: String) -> Int:
+// The character index of the LAST occurrence of `sep` in `s` as `Some`, or
+// `None` when absent or `sep` is empty (RFC-0044 rule 1: absence is `Option`,
+// never -1). The right-to-left companion of `index_of`.
+pub fn last_index_of(s: String, sep: String) -> Option(Int):
+    let i = rfind(s, sep)
+    if i < 0:
+        None
+    else:
+        Some(i)
+
+// The raw last-occurrence index (or -1). Private: public callers use
+// `last_index_of` (Option); the std internals here take the raw index directly.
+fn rfind(s: String, sep: String) -> Int:
     if string.length(sep) == 0:
         0 - 1
     else:
         var last = 0 - 1
         var base = 0
         var rest = s
-        var i = string.index_of(rest, sep)
+        var i = find(rest, sep)
         while i >= 0:
             last = base + i
             base = base + i + string.char_count(sep)
             rest = string.substring(rest, i + string.char_count(sep), string.char_count(rest))
-            i = string.index_of(rest, sep)
+            i = find(rest, sep)
         last
 
 // Split on the LAST occurrence of `sep` (e.g. a file extension): `rsplit_once`
 // of `"a.b.c"` on `"."` is `("a.b", "c")`. When `sep` is absent the whole string
 // is the right part: `("", s)` — mirroring `split_once`'s `(s, "")`.
 pub fn rsplit_once(s: String, sep: String) -> (String, String):
-    let i = last_index_of(s, sep)
+    let i = rfind(s, sep)
     if i < 0:
         ("", s)
     else:
@@ -244,7 +275,7 @@ pub fn parse_int(s: String) -> Option(Int):
         None
     else:
         var start = 0
-        let first = char_at(s, 0)
+        let first = char_or_empty(s, 0)
         let neg = first == "-"
         if first == "-" || first == "+":
             start = 1
@@ -254,7 +285,7 @@ pub fn parse_int(s: String) -> Option(Int):
             var i = start
             var ok = true
             while i < n:
-                let c = char_at(s, i)
+                let c = char_or_empty(s, i)
                 if c < "0" || c > "9":
                     ok = false
                 i = i + 1
@@ -267,7 +298,7 @@ pub fn parse_int(s: String) -> Option(Int):
                 // digit strings compare numerically, and |i64::MIN| is one past
                 // i64::MAX, so the bound depends on the sign.
                 var j = start
-                while j < n - 1 && char_at(s, j) == "0":
+                while j < n - 1 && char_or_empty(s, j) == "0":
                     j = j + 1
                 let mag = string.substring(s, j, n)
                 let mlen = string.char_count(mag)
@@ -289,13 +320,13 @@ fn is_space(c: String) -> Bool:
 pub fn trim_start(var s: String) -> String:
     var i = 0
     let n = string.char_count(s)
-    while i < n && is_space(char_at(s, i)):
+    while i < n && is_space(char_or_empty(s, i)):
         i = i + 1
     string.substring(s, i, n)
 
 // Remove trailing whitespace.
 pub fn trim_end(var s: String) -> String:
     var j = string.char_count(s)
-    while j > 0 && is_space(char_at(s, j - 1)):
+    while j > 0 && is_space(char_or_empty(s, j - 1)):
         j = j - 1
     string.substring(s, 0, j)

@@ -86,7 +86,7 @@ impl Codegen {
             }
             Expr::Call { name, .. } => match name.as_str() {
                 "math.to_float" => Kind::F64,
-                "math.to_int" | "string.length" | "string.char_count" | "string.index_of"
+                "math.to_int" | "string.length" | "string.char_count" | "string.find"
                 | "list.length" | "dict.length" | "string.to_int" | "int_to_duration"
                 | "duration_to_int" | "now" | "now_monotonic" | "rand_u64"
                 | "__bytes_length" | "__bytes_at" => Kind::I64,
@@ -288,7 +288,7 @@ impl Codegen {
                 | "exists" | "is_dir" | "crypto.ed25519_verify"
                 | "crypto.ecdsa_p256_verify" | "crypto.ecdsa_p256_verify_hex"
                 | "crypto.rsa_pkcs1_sha256_verify" => ValType::Bool,
-                "string.length" | "string.char_count" | "string.index_of" | "list.length"
+                "string.length" | "string.char_count" | "string.find" | "list.length"
                 | "dict.length" | "math.to_int" | "string.to_int" | "int_to_duration"
                 | "duration_to_int" | "now" | "now_monotonic" | "rand_u64" => ValType::Int,
                 "math.to_float" | "math.sqrt" => ValType::Float,

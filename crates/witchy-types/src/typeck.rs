@@ -1464,7 +1464,7 @@ impl Checker {
             "string.starts_with" | "string.contains" | "string.ends_with" => {
                 Some((vec![Ty::String, Ty::String], Ty::Bool))
             }
-            "string.index_of" => Some((vec![Ty::String, Ty::String], Ty::Int)),
+            "string.find" => Some((vec![Ty::String, Ty::String], Ty::Int)),
             "string.split" => Some((
                 vec![Ty::String, Ty::String],
                 Ty::List(Box::new(Ty::String)),
@@ -3792,7 +3792,7 @@ pub fn intrinsic(name: &str) -> bool {
             | "dict.new" | "dict.insert" | "dict.get_or" | "dict.contains_key" | "dict.remove"
             | "dict.update" | "dict.keys" | "dict.values" | "dict.pairs" | "dict.length"
             | "string.split" | "string.trim" | "string.contains" | "string.starts_with"
-            | "string.ends_with" | "string.replace" | "string.index_of" | "string.substring"
+            | "string.ends_with" | "string.replace" | "string.find" | "string.substring"
             | "string.length" | "string.char_count" | "string.chars" | "string.to_upper"
             | "string.to_lower" | "string.to_int"
             | "math.to_float" | "math.to_int" | "math.sqrt"

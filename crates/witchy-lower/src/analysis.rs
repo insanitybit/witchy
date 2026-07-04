@@ -1506,7 +1506,7 @@ fn builtin_arg_liveness(name: &str, argc: usize) -> Option<Vec<bool>> {
         | ("list.at", 2)
         | ("dict.contains_key", 2)
         | ("string.contains", 2)
-        | ("string.index_of", 2)
+        | ("string.find", 2)
         | ("dict.keys", 1)
         | ("dict.values", 1)
         | ("dict.pairs", 1)

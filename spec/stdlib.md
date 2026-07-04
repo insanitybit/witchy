@@ -2198,9 +2198,9 @@ Whether `needle` occurs in `s`.
 
 #### `fn ends_with(s: String, suffix: String) -> Bool`
 
-#### `fn index_of(s: String, needle: String) -> Int`
+#### `fn index_of(s: String, needle: String) -> Option(Int)`
 
-The character index (counted by Unicode scalar) of the first occurrence of `needle`, or -1.
+The character index (counted by Unicode scalar) of the first occurrence of `needle` as `Some`, or `None` when `needle` does not occur (RFC-0044 rule 1: absence is `Option`, never a -1 sentinel). For a bare yes/no, use `contains`.
 
 #### `fn replace(var s: String, from: String, to: String) -> String`
 
@@ -2248,9 +2248,9 @@ Remove `prefix` from the front of `s` when present; otherwise return `s` unchang
 
 Remove `suffix` from the end of `s` when present; otherwise return `s` unchanged. The complement of the `ends_with` builtin.
 
-#### `fn char_at(s: String, i: Int) -> String`
+#### `fn char_at(s: String, i: Int) -> Option(String)`
 
-The single character at character index `i` (counted by Unicode scalar), or "" when `i` is out of range. A readable shorthand over `substring`.
+The single character (as a String) at character index `i` (counted by Unicode scalar) as `Some`, or `None` when `i` is out of range (RFC-0044 rule 1: absence is `Option`, never a "" sentinel). For a clamping view use `substring`.
 
 #### `fn is_empty(s: String) -> Bool`
 
@@ -2284,9 +2284,9 @@ Replace only the first occurrence of `from` with `to`; return `s` unchanged when
 
 Split at the first occurrence of `sep` into `(before, after)`, with `sep` itself dropped. When `sep` is absent, returns `(s, "")`. Handy for parsing `key=value` or `host:port`. Counted by Unicode scalar.
 
-#### `fn last_index_of(s: String, sep: String) -> Int`
+#### `fn last_index_of(s: String, sep: String) -> Option(Int)`
 
-The index of the LAST occurrence of `sep` in `s`, or -1 when absent (and -1 for an empty `sep`). The right-to-left companion of the `index_of` builtin.
+The character index of the LAST occurrence of `sep` in `s` as `Some`, or `None` when absent or `sep` is empty (RFC-0044 rule 1: absence is `Option`, never -1). The right-to-left companion of `index_of`.
 
 #### `fn rsplit_once(s: String, sep: String) -> (String, String)`
 

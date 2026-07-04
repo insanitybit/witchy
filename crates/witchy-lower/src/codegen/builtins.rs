@@ -403,7 +403,7 @@ impl Codegen {
                 }
             }
             // `index_of(s, sub)` -> Int: the i32 index, sign-extended to i64.
-            ("string.index_of", 2) => {
+            ("string.find", 2) => {
                 self.uses_find_byte = true;
                 self.uses_index_of = true;
                 let inner = self.lower_args(&[&args[0], &args[1]])?;
