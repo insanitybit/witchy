@@ -367,7 +367,7 @@
         assert_eq!(run_linked_on_wasm(&[("main", &clean)], "main"), ["ok"], "wasm accepts a clean header/path");
     }
 
-    /// (SEC-042) An overflowing `Content-Length` must NOT crash the server. The old
+    /// (SEC-045) An overflowing `Content-Length` must NOT crash the server. The old
     /// `content_length` guarded with `ascii.all_digits` (which passes an arbitrarily
     /// long digit string) then called `string.to_int`, which TRAPS on i64 overflow —
     /// an unauthenticated remote crash. The fix parses totally with `string.parse_int`
@@ -393,7 +393,7 @@
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), want, "wasm must agree and not trap");
     }
 
-    /// (SEC-042) `has_crlf` agrees on both backends for a control-bearing vs a
+    /// (SEC-043) `has_crlf` agrees on both backends for a control-bearing vs a
     /// clean value — the primitive the CRLF validators are built on.
     #[test]
     fn http_has_crlf_agrees_on_both_backends() {

@@ -324,7 +324,7 @@ fn read_headers(sock: Socket) -> List((String, String)):
 fn content_length(headers: List((String, String))) -> Int:
     // The header is attacker-controlled; a non-numeric OR out-of-range value must
     // not trap and take down the server. `ascii.all_digits` accepts arbitrarily
-    // long digit strings, and `string.to_int` then TRAPS on i64 overflow (SEC-042),
+    // long digit strings, and `string.to_int` then TRAPS on i64 overflow (SEC-045),
     // so parse totally with `string.parse_int` (returns None on non-digit, empty,
     // OR overflow) and treat any rejection as no body.
     match http.find_header(headers, "content-length"):
