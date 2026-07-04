@@ -121,3 +121,23 @@ fn main(console: Console):
         );
         assert_eq!(uri_to_path("untitled:foo"), None);
     }
+
+    #[test]
+    fn uri_to_path_survives_percent_before_multibyte_char() {
+        // A `%` NOT followed by two hex digits — here by a multi-byte UTF-8 char
+        // (`€` is 3 bytes) — used to panic: the decoder sliced `&s[i+1..i+3]`,
+        // landing mid-codepoint. It must now pass the `%` through untouched.
+        assert_eq!(
+            uri_to_path("file:///Users/x/100%€/a.witchy"),
+            Some(PathBuf::from("/Users/x/100%€/a.witchy"))
+        );
+        // A bare trailing `%` and a `%` before a non-hex char must also not panic.
+        assert_eq!(
+            uri_to_path("file:///x/%"),
+            Some(PathBuf::from("/x/%"))
+        );
+        assert_eq!(
+            uri_to_path("file:///x/%zz"),
+            Some(PathBuf::from("/x/%zz"))
+        );
+    }

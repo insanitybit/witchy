@@ -414,13 +414,25 @@ fn uri_to_path(uri: &str) -> Option<PathBuf> {
 }
 
 fn percent_decode(s: &str) -> String {
+    // Decode `%XX` escapes byte-wise. Parsing the two hex digits from the byte
+    // array (not `&s[i+1..i+3]`) is deliberate: a `%` followed by a multi-byte
+    // UTF-8 char (e.g. `%€`) would make `i+3` fall mid-codepoint, and string
+    // slicing there panics — crashing the LSP on every affected open/change.
+    let hex = |b: u8| -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    };
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 3 <= bytes.len() {
-            if let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(b);
+            if let (Some(hi), Some(lo)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push(hi * 16 + lo);
                 i += 3;
                 continue;
             }
