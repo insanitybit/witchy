@@ -180,7 +180,7 @@
       "true",
       "true",
       "20",
-      "default"
+      "10"
     ],
     "runnable": true
   },
@@ -234,10 +234,13 @@
       "Console"
     ],
     "output": [
-      "circle 2",
-      "square 5",
+      "small 2",
+      "few",
+      "many",
       "first 10, 2 more",
-      "empty"
+      "1 2 3",
+      "1=2",
+      "3=4"
     ],
     "runnable": true
   },

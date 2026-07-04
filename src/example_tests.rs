@@ -7548,9 +7548,9 @@ fn main(console: Console):
 
     #[test]
     fn ranges_example_runs_on_wasm() {
-        // Integer range patterns (`lo..hi`, `lo..=hi`) desugar to a guarded
-        // binding, so the HTTP-status and grade classifiers match identically on
-        // both backends.
+        // Integer range patterns (`lo..hi`, `lo..=hi`) are real `Pattern::IntRange`
+        // nodes (RFC-0052), so the HTTP-status and grade classifiers match
+        // identically on both backends.
         let sources = [
             ("string", crate::bundled_module("string").unwrap()),
             ("main", include_str!("../examples/ranges/src/ranges.witchy")),
