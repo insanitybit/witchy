@@ -163,12 +163,15 @@ impl Codegen {
                 call("regex_match_spans", self.lower_args(&[&args[0], &args[1]])?)
             }
             // The `encoding` transforms share one `$encoding` helper, selected by an
-            // i32 op pushed *before* the argument.
+            // i32 op pushed *before* the argument. The `*_lossy` decoders are the raw
+            // byte-level primitives; the public `encoding.*decode` wrappers (pure
+            // witchy in `std/encoding.witchy`) validate the alphabet and return
+            // `Result`, so they lower as ordinary function calls, not intercepts.
             ("encoding.hex_encode", 1) => {
                 self.uses_encoding = true;
                 call("encoding", vec![W::ConstI32(0), self.lower_expr(&args[0])?])
             }
-            ("encoding.hex_decode", 1) => {
+            ("encoding.hex_decode_lossy", 1) => {
                 self.uses_encoding = true;
                 call("encoding", vec![W::ConstI32(1), self.lower_expr(&args[0])?])
             }
@@ -176,7 +179,7 @@ impl Codegen {
                 self.uses_encoding = true;
                 call("encoding", vec![W::ConstI32(2), self.lower_expr(&args[0])?])
             }
-            ("encoding.base64_decode", 1) => {
+            ("encoding.base64_decode_lossy", 1) => {
                 self.uses_encoding = true;
                 call("encoding", vec![W::ConstI32(3), self.lower_expr(&args[0])?])
             }
@@ -184,11 +187,11 @@ impl Codegen {
                 self.uses_encoding = true;
                 call("encoding", vec![W::ConstI32(4), self.lower_expr(&args[0])?])
             }
-            ("encoding.base64url_decode", 1) => {
+            ("encoding.base64url_decode_lossy", 1) => {
                 self.uses_encoding = true;
                 call("encoding", vec![W::ConstI32(5), self.lower_expr(&args[0])?])
             }
-            ("encoding.base64url_to_hex", 1) => {
+            ("encoding.base64url_to_hex_lossy", 1) => {
                 self.uses_encoding = true;
                 call("encoding", vec![W::ConstI32(6), self.lower_expr(&args[0])?])
             }

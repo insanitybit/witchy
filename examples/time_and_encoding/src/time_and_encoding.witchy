@@ -24,4 +24,6 @@ fn main(console: Console):
     let payload = "witchy 🧙"
     print(console, "base64:  " + encoding.base64_encode(payload))
     print(console, "hex:     " + encoding.hex_encode(payload))
-    print(console, "decoded: " + encoding.base64_decode(encoding.base64_encode(payload)))
+    match encoding.base64_decode(encoding.base64_encode(payload)):
+        Ok(decoded) -> print(console, "decoded: " + decoded)
+        Err(e) -> print(console, "decode failed: " + e)

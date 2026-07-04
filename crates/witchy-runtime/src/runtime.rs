@@ -1119,17 +1119,20 @@ fn host_regex_match_spans_len(
 /// registry (the same implementation the interpreter uses, so the backends agree
 /// byte-for-byte), write the result bytes at `out_data_ptr`, and return their
 /// length. The guest reserves a sufficient buffer (`2*len + slack`) beforehand.
-/// `op`: 0 = hex_encode, 1 = hex_decode, 2 = base64_encode, 3 = base64_decode.
+/// `op`: 0 = hex_encode, 1 = hex_decode_lossy, 2 = base64_encode, 3 =
+/// base64_decode_lossy. The `*_lossy` decoders are the raw byte-level primitives;
+/// the public `encoding.*decode` wrappers validate the alphabet in pure witchy and
+/// return `Result`, so a malformed segment errors instead of silently truncating.
 fn host_encoding(mut caller: Caller<'_, VmState>, op: i32, in_ptr: i32, out_ptr: i32) -> Result<i32> {
     use crate::value::NativeValue as Value;
     let name = match op {
         0 => "encoding.hex_encode",
-        1 => "encoding.hex_decode",
+        1 => "encoding.hex_decode_lossy",
         2 => "encoding.base64_encode",
-        3 => "encoding.base64_decode",
+        3 => "encoding.base64_decode_lossy",
         4 => "encoding.hex_to_base64url",
-        5 => "encoding.base64url_decode",
-        6 => "encoding.base64url_to_hex",
+        5 => "encoding.base64url_decode_lossy",
+        6 => "encoding.base64url_to_hex_lossy",
         7 => "encoding.utf8_lossy",
         _ => return Err(Error::msg(format!("unknown encoding op {op}"))),
     };

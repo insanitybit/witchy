@@ -115,14 +115,16 @@ pub fn string_from_code(cp: i64) -> String {
 }
 
 /// `encoding.*` via the shared native registry (hex/base64), selected by op code
-/// (0 hex_encode, 1 hex_decode, 2 base64_encode, 3 base64_decode, 4
-/// base64url_of_hex). The playground host shim delegates here.
+/// (0 hex_encode, 1 hex_decode_lossy, 2 base64_encode, 3 base64_decode_lossy, 4
+/// hex_to_base64url). The `*_lossy` decoders are the raw byte-level primitives; the
+/// public `encoding.*decode` wrappers validate the alphabet and return `Result`.
+/// The playground host shim delegates here.
 pub fn encoding(op: i32, input: &str) -> Result<String, String> {
     let name = match op {
         0 => "encoding.hex_encode",
-        1 => "encoding.hex_decode",
+        1 => "encoding.hex_decode_lossy",
         2 => "encoding.base64_encode",
-        3 => "encoding.base64_decode",
+        3 => "encoding.base64_decode_lossy",
         4 => "encoding.hex_to_base64url",
         _ => return Err(format!("unknown encoding op {op}")),
     };

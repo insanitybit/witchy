@@ -1172,7 +1172,7 @@
             #[test]
             fn base64_roundtrips(s in "[ -#%-z|~]{0,48}") {
                 let src = format!(
-                    "import encoding\nfn main(console: Console):\n    let s = \"{}\"\n    print(console, yn(encoding.base64_decode(encoding.base64_encode(s)) == s))\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n",
+                    "import encoding\nfn main(console: Console):\n    let s = \"{}\"\n    print(console, yn(encoding.base64_decode(encoding.base64_encode(s)).unwrap_or(\"?\") == s))\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n",
                     esc(&s)
                 );
                 prop_assert_eq!(link_run(&src), vec!["y".to_string()]);
@@ -1182,7 +1182,7 @@
             #[test]
             fn hex_roundtrips(s in "[ -#%-z|~]{0,48}") {
                 let src = format!(
-                    "import encoding\nfn main(console: Console):\n    let s = \"{}\"\n    print(console, yn(encoding.hex_decode(encoding.hex_encode(s)) == s))\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n",
+                    "import encoding\nfn main(console: Console):\n    let s = \"{}\"\n    print(console, yn(encoding.hex_decode(encoding.hex_encode(s)).unwrap_or(\"?\") == s))\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n",
                     esc(&s)
                 );
                 prop_assert_eq!(link_run(&src), vec!["y".to_string()]);
@@ -2893,11 +2893,11 @@ fn main(console: Console):
 
 fn main(console: Console):
     print(console, encoding.hex_encode("hello"))
-    print(console, encoding.hex_decode("68656c6c6f"))
+    print(console, encoding.hex_decode("68656c6c6f").unwrap_or("?"))
     print(console, encoding.base64_encode("Man"))
     print(console, encoding.base64_encode("Ma"))
-    print(console, encoding.base64_decode("aGVsbG8="))
-    print(console, yn(encoding.base64_decode(encoding.base64_encode("witchy! 🧙")) == "witchy! 🧙"))
+    print(console, encoding.base64_decode("aGVsbG8=").unwrap_or("?"))
+    print(console, yn(encoding.base64_decode(encoding.base64_encode("witchy! 🧙")).unwrap_or("?") == "witchy! 🧙"))
 
 fn yn(b: Bool) -> String:
     if b: "y" else: "n"
@@ -5336,7 +5336,7 @@ fn yn(b: Bool) -> String:
     /// (Regression for the interpreter-only encoding-module gap.)
     #[test]
     fn encoding_module_agrees_on_both_backends() {
-        let src = "import encoding\n\nfn main(console: Console):\n    let p = \"Hello, witchy!\"\n    let b = encoding.base64_encode(p)\n    print(console, b)\n    print(console, encoding.base64_decode(b))\n    let h = encoding.hex_encode(p)\n    print(console, h)\n    print(console, encoding.hex_decode(h))\n    print(console, encoding.base64_encode(\"foo\"))\n";
+        let src = "import encoding\n\nfn main(console: Console):\n    let p = \"Hello, witchy!\"\n    let b = encoding.base64_encode(p)\n    print(console, b)\n    print(console, encoding.base64_decode(b).unwrap_or(\"?\"))\n    let h = encoding.hex_encode(p)\n    print(console, h)\n    print(console, encoding.hex_decode(h).unwrap_or(\"?\"))\n    print(console, encoding.base64_encode(\"foo\"))\n";
         let want = vec![
             "SGVsbG8sIHdpdGNoeSE=".to_string(),
             "Hello, witchy!".to_string(),
@@ -10250,7 +10250,7 @@ fn main(console: Console):
         let n_b64 = b64url(&strip(&n_int));
         let e_b64 = b64url(&strip(&e_int));
         let src = format!(
-            "import jwt\nfn main(console: Console):\n    print(console, jwt.rsa_key_from_jwk(\"{n_b64}\", \"{e_b64}\"))\n"
+            "import jwt\nfn main(console: Console):\n    print(console, jwt.rsa_key_from_jwk(\"{n_b64}\", \"{e_b64}\").unwrap_or(\"?\"))\n"
         );
         let expected = vec![hexs(der)];
         assert_eq!(link_run(&src), expected, "interp: JWK->DER byte-exact vs aws-lc");
@@ -10917,8 +10917,44 @@ fn main(console: Console):
     /// `base64url_decode` yields the text; identical on both backends.
     #[test]
     fn base64url_decode_backends_agree() {
-        let src = "import encoding\nfn main(console: Console):\n    let e = encoding.hex_to_base64url(\"7b2274223a317d\")\n    print(console, encoding.base64url_to_hex(e))\n    print(console, encoding.base64url_decode(e))\n";
+        let src = "import encoding\nfn main(console: Console):\n    let e = encoding.hex_to_base64url(\"7b2274223a317d\")\n    print(console, encoding.base64url_to_hex(e).unwrap_or(\"?\"))\n    print(console, encoding.base64url_decode(e).unwrap_or(\"?\"))\n";
         let expected = vec!["7b2274223a317d".to_string(), "{\"t\":1}".to_string()];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+    }
+
+    /// (BUG-006 / RFC-0044 rule 2) Every decoder rejects malformed input with a
+    /// reachable `Err` that names the input — not a silent truncation — and the
+    /// message is byte-identical on both backends. The named repro
+    /// `base64url_decode("QUJD#WFO")` used to yield "ABC" (dropping everything from
+    /// the `#`); a lone trailing base64 symbol ("QUJDW", "abc") is a truncated
+    /// group; and a valid segment ("QUJD") still decodes to `Ok`.
+    #[test]
+    fn encoding_decoders_reject_malformed_backends_agree() {
+        let src = r#"import encoding
+fn main(console: Console):
+    print(console, r(encoding.base64url_decode("QUJD#WFO")))
+    print(console, r(encoding.base64_decode("aGVsbG8#")))
+    print(console, r(encoding.hex_decode("zz")))
+    print(console, r(encoding.hex_decode("abc")))
+    print(console, r(encoding.base64url_to_hex("QUJD#")))
+    print(console, r(encoding.base64url_decode("QUJDW")))
+    print(console, r(encoding.base64url_decode("QUJD")))
+
+fn r(x: Result(String, String)) -> String:
+    match x:
+        Ok(s) -> "ok:" + s
+        Err(e) -> "err:" + e
+"#;
+        let expected = vec![
+            "err:`QUJD#WFO` is not valid base64url (expected the URL-safe `A-Za-z0-9-_` alphabet)".to_string(),
+            "err:`aGVsbG8#` is not valid base64 (expected the `A-Za-z0-9+/` alphabet)".to_string(),
+            "err:`zz` is not valid hex (expected an even count of `0-9a-fA-F` digits)".to_string(),
+            "err:`abc` is not valid hex (expected an even count of `0-9a-fA-F` digits)".to_string(),
+            "err:`QUJD#` is not valid base64url (expected the URL-safe `A-Za-z0-9-_` alphabet)".to_string(),
+            "err:`QUJDW` is not valid base64url (expected the URL-safe `A-Za-z0-9-_` alphabet)".to_string(),
+            "ok:ABC".to_string(),
+        ];
         assert_eq!(link_run(src), expected, "interp");
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }

@@ -25,7 +25,10 @@ pub fn verify_rs256(token: String, rsa_pubkey_der_hex: String, audience: String,
         Err("malformed JWT: expected three `.`-separated segments")
     else:
         let signed = list.at(parts, 0) + "." + list.at(parts, 1)
-        let sig_hex = encoding.base64url_to_hex(list.at(parts, 2))
+        // A malformed signature segment is a distinct, reachable error — not a
+        // silent truncation to garbage bytes that would later read as "signature
+        // invalid". Rejecting on the decode error is the safe direction.
+        let sig_hex = encoding.base64url_to_hex(list.at(parts, 2)).map_err(fn(e: String): "JWT signature segment is malformed: " + e)?
         if !crypto.rsa_pkcs1_sha256_verify(rsa_pubkey_der_hex, signed, sig_hex):
             Err("JWT signature is invalid (untrusted or forged)")
         else:
@@ -34,7 +37,8 @@ pub fn verify_rs256(token: String, rsa_pubkey_der_hex: String, audience: String,
 // Decode and validate the payload's registered claims: `exp` not in the past, and the
 // audience matches (defends against a token minted for a different relying party).
 fn check_claims(payload_b64: String, audience: String, now: Int) -> Result(Json, String):
-    match json.decode(encoding.base64url_decode(payload_b64)):
+    let payload_json = encoding.base64url_decode(payload_b64).map_err(fn(e: String): "JWT payload is not valid base64url: " + e)?
+    match json.decode(payload_json):
         Err(e) -> Err("JWT payload is not JSON: " + e)
         Ok(claims) ->
             if json.get_int(claims, "exp").unwrap_or(0) <= now:
@@ -76,7 +80,8 @@ pub fn header(token: String) -> Result(Json, String):
     if list.length(parts) < 1 || string.is_empty(list.at(parts, 0)):
         Err("malformed JWT: no header segment")
     else:
-        json.decode(encoding.base64url_decode(list.at(parts, 0)))
+        let header_json = encoding.base64url_decode(list.at(parts, 0)).map_err(fn(e: String): "JWT header is not valid base64url: " + e)?
+        json.decode(header_json)
 
 // The payload claims of a compact JWT WITHOUT verifying its signature — for reading the
 // routing fields (`iss`, and `kid` via `header`) needed to SELECT the verification key
@@ -87,16 +92,19 @@ pub fn claims_unverified(token: String) -> Result(Json, String):
     if list.length(parts) < 2 || string.is_empty(list.at(parts, 1)):
         Err("malformed JWT: no payload segment")
     else:
-        json.decode(encoding.base64url_decode(list.at(parts, 1)))
+        let payload_json = encoding.base64url_decode(list.at(parts, 1)).map_err(fn(e: String): "JWT payload is not valid base64url: " + e)?
+        json.decode(payload_json)
 
 // Build the DER PKCS#1 `RSAPublicKey` (as hex — the shape `verify_rs256` wants) from a
 // JWK's base64url modulus `n` and exponent `e`, so an OIDC verifier can turn a JWKS
 // entry (`{"kty":"RSA","n":…,"e":…}`) into a key. The result is the ASN.1 DER
 // `SEQUENCE { INTEGER n, INTEGER e }`; an INTEGER gains a leading `00` when its top bit
 // is set (DER integers are signed two's-complement, RSA values are unsigned magnitudes).
-pub fn rsa_key_from_jwk(n: String, e: String) -> String:
-    let body = der_integer(encoding.base64url_to_hex(n)) + der_integer(encoding.base64url_to_hex(e))
-    "30" + der_len(body) + body
+pub fn rsa_key_from_jwk(n: String, e: String) -> Result(String, String):
+    let n_hex = encoding.base64url_to_hex(n).map_err(fn(err: String): "JWK modulus `n` is not valid base64url: " + err)?
+    let e_hex = encoding.base64url_to_hex(e).map_err(fn(err: String): "JWK exponent `e` is not valid base64url: " + err)?
+    let body = der_integer(n_hex) + der_integer(e_hex)
+    Ok("30" + der_len(body) + body)
 
 // An ASN.1 INTEGER (tag `02`) wrapping an unsigned magnitude, sign-padded with `00`
 // when the high bit would otherwise read as negative.
@@ -143,7 +151,7 @@ pub fn rsa_key_for_kid(jwks: Json, key_id: String) -> Result(String, String):
                 None -> Err("no RSA key in the JWKS matches kid `" + key_id + "`")
                 Some(ne) ->
                     let (n, e) = ne
-                    Ok(rsa_key_from_jwk(n, e))
+                    rsa_key_from_jwk(n, e)
 
 // First RSA JWK whose `kid` matches, as its `(n, e)` base64url pair.
 fn find_rsa_jwk(keys: List(Json), key_id: String) -> Option((String, String)):

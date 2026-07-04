@@ -1,28 +1,41 @@
 // encoding — hex and base64 over a string's UTF-8 bytes.
 //
-// Like `crypto`, these are native intrinsics: they need byte-level access that
-// witchy strings don't expose, so they are implemented in Rust — the interpreter
-// runs them directly, and the WASM backend bridges each to the same
-// implementation as a host import. The function bodies below are placeholders
-// the runtime never executes — each call is intercepted by its qualified name
-// (`encoding.hex_encode`, …). Decoding is lenient (lossy UTF-8 for non-text
-// payloads), never an error.
+// The byte-level codecs need access witchy strings don't expose, so the raw
+// transforms are native intrinsics (like `crypto`): the private `*_lossy` helpers
+// below are placeholders the runtime never executes — each is intercepted by its
+// qualified name (`encoding.hex_decode_lossy`, …) and run in Rust on both backends.
+//
+// Encoding is total, so the encoders return a plain `String`. Decoding can fail, so
+// the public `*decode` functions guard the raw codec with a pure-witchy alphabet
+// check and return `Result` (RFC-0044): valid input decodes to `Ok`, and any
+// non-alphabet character or a truncated final group is a reachable `Err` — never a
+// silent truncation (the JWT/WebAuthn segment-decoding hazard BUG-006 named).
+
+import string
 
 // Lowercase hex of `data`'s UTF-8 bytes.
 pub fn hex_encode(data: String) -> String:
     data
 
-// Decode a hex string back to text (lossy UTF-8); whitespace skipped.
-pub fn hex_decode(data: String) -> String:
-    data
+// Decode a hex string (an even count of `0-9a-fA-F` digits) back to text (lossy
+// UTF-8 for non-text payloads), or an `Err` naming the input when it is not hex.
+pub fn hex_decode(data: String) -> Result(String, String):
+    if hex_valid(data):
+        Ok(hex_decode_lossy(data))
+    else:
+        Err("`" + data + "` is not valid hex (expected an even count of `0-9a-fA-F` digits)")
 
 // Standard base64 (with `=` padding) of `data`'s UTF-8 bytes.
 pub fn base64_encode(data: String) -> String:
     data
 
-// Decode standard base64 back to text (lossy UTF-8); padding/whitespace tolerated.
-pub fn base64_decode(data: String) -> String:
-    data
+// Decode standard base64 (the `A-Za-z0-9+/` alphabet, `=` padding) back to text
+// (lossy UTF-8), or an `Err` naming the input when it is not valid base64.
+pub fn base64_decode(data: String) -> Result(String, String):
+    if base64_valid(data):
+        Ok(base64_decode_lossy(data))
+    else:
+        Err("`" + data + "` is not valid base64 (expected the `A-Za-z0-9+/` alphabet)")
 
 // base64url (no padding; `-`/`_`) of the bytes given as a HEX string. The hex
 // indirection lets binary round-trip through UTF-8 strings — e.g. a WebAuthn
@@ -30,12 +43,75 @@ pub fn base64_decode(data: String) -> String:
 pub fn hex_to_base64url(hex: String) -> String:
     hex
 
-// Decode base64url (URL-safe `-`/`_`, no padding) back to text (lossy UTF-8) — for the
-// JSON header/payload segments of a JWT/OIDC identity token.
-pub fn base64url_decode(data: String) -> String:
-    data
+// Decode base64url (URL-safe `-`/`_`, no padding) back to text (lossy UTF-8) — the
+// JSON header/payload segments of a JWT/OIDC identity token — or an `Err` naming the
+// input when it is not valid base64url.
+pub fn base64url_decode(data: String) -> Result(String, String):
+    if base64url_valid(data):
+        Ok(base64url_decode_lossy(data))
+    else:
+        Err("`" + data + "` is not valid base64url (expected the URL-safe `A-Za-z0-9-_` alphabet)")
 
 // Decode base64url to a HEX string — for binary that must round-trip through a witchy
-// String, e.g. a JWT's RS256 signature fed to `crypto.rsa_pkcs1_sha256_verify`.
-pub fn base64url_to_hex(data: String) -> String:
+// String, e.g. a JWT's RS256 signature fed to `crypto.rsa_pkcs1_sha256_verify` — or an
+// `Err` naming the input when it is not valid base64url.
+pub fn base64url_to_hex(data: String) -> Result(String, String):
+    if base64url_valid(data):
+        Ok(base64url_to_hex_lossy(data))
+    else:
+        Err("`" + data + "` is not valid base64url (expected the URL-safe `A-Za-z0-9-_` alphabet)")
+
+// --- alphabet validators (pure witchy) --------------------------------------
+// Character-level, so they agree with the native byte-level codecs: a string these
+// accept is entirely ASCII-alphabet, which the codec then consumes in full — so a
+// valid decode is never a truncated one. A rejected string never reaches the codec.
+
+// Every character a hex digit, with an even count (each byte is two digits).
+fn hex_valid(data: String) -> Bool:
+    var count = 0
+    var ok = true
+    for ch in string.chars(data):
+        if string.contains("0123456789abcdefABCDEF", ch):
+            count = count + 1
+        else:
+            ok = false
+    ok && count % 2 == 0
+
+// Every non-padding character in the standard base64 alphabet, with a decodable
+// bit-length.
+fn base64_valid(data: String) -> Bool:
+    valid_symbols(data, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
+
+// Every non-padding character in the URL-safe base64 alphabet, with a decodable
+// bit-length.
+fn base64url_valid(data: String) -> Bool:
+    valid_symbols(data, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+
+// Shared base64/base64url check: every non-padding character is in `alphabet`, and
+// the symbol count is not `≡ 1 (mod 4)` — a lone trailing symbol carries only 6
+// bits, a truncated final group that would decode to nothing.
+fn valid_symbols(data: String, alphabet: String) -> Bool:
+    var count = 0
+    var ok = true
+    for ch in string.chars(data):
+        if ch != "=":
+            if string.contains(alphabet, ch):
+                count = count + 1
+            else:
+                ok = false
+    ok && count % 4 != 1
+
+// --- raw byte-level codecs (native; intercepted by qualified name) ----------
+// These bodies never run: each call is dispatched to the Rust `encoding` registry
+// on the interpreter and to the `$encoding` host import on the compiled backend.
+fn hex_decode_lossy(data: String) -> String:
+    data
+
+fn base64_decode_lossy(data: String) -> String:
+    data
+
+fn base64url_decode_lossy(data: String) -> String:
+    data
+
+fn base64url_to_hex_lossy(data: String) -> String:
     data
