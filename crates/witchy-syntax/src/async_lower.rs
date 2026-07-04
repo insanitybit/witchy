@@ -44,13 +44,35 @@
 use crate::ast::*;
 
 pub fn lower(mut module: Module) -> Result<Module, String> {
-    if !module.items.iter().any(is_async_fn) {
+    if !has_async(&module) {
         return Ok(module);
     }
     let mut items = Vec::with_capacity(module.items.len());
     for item in module.items {
         match item {
-            Item::Function(f) if f.is_async => items.push(Item::Function(lower_async_fn(f)?)),
+            Item::Function(f) if f.is_async => {
+                let is_entry = f.name == "main";
+                items.push(Item::Function(lower_async_fn(f, is_entry)?));
+            }
+            // An `async fn` METHOD in an inherent `impl Type:` block lowers in
+            // place, staying a method (so `value.method()` still resolves by
+            // receiver type and returns a `Task`); a method is never the executor
+            // entry point. Trait-impl `async` methods are rejected at parse time,
+            // so every impl reaching here is inherent. The enumeration is kept
+            // separate from `lower_async_fn`'s CPS transform, so a later rewrite of
+            // the transform (RFC-0059) leaves this traversal untouched.
+            Item::Impl(mut im) if im.methods.iter().any(|m| m.is_async) => {
+                let mut methods = Vec::with_capacity(im.methods.len());
+                for method in std::mem::take(&mut im.methods) {
+                    if method.is_async {
+                        methods.push(lower_async_fn(method, false)?);
+                    } else {
+                        methods.push(method);
+                    }
+                }
+                im.methods = methods;
+                items.push(Item::Impl(im));
+            }
             other => items.push(other),
         }
     }
@@ -69,11 +91,21 @@ pub fn lower(mut module: Module) -> Result<Module, String> {
     Ok(module)
 }
 
-fn is_async_fn(item: &Item) -> bool {
-    matches!(item, Item::Function(f) if f.is_async)
+/// Whether the module contains any `async fn` — top level or as a method in an
+/// `impl` block (both are lowered by [`lower`]).
+fn has_async(module: &Module) -> bool {
+    module.items.iter().any(|item| match item {
+        Item::Function(f) => f.is_async,
+        Item::Impl(im) => im.methods.iter().any(|m| m.is_async),
+        _ => false,
+    })
 }
 
-fn lower_async_fn(f: Function) -> Result<Function, String> {
+/// Lower one `async fn` into a plain `Task`-returning function. `is_entry` is true
+/// only for a top-level `async fn main` — the executor's entry point, whose body
+/// is driven to completion; a method (or any other fn) is never the entry point,
+/// so it returns its `Task` for the caller to `await`/drive.
+fn lower_async_fn(f: Function, is_entry: bool) -> Result<Function, String> {
     // The whole body, deferred so the function is lazy.
     let mut ctx = Ctx { counter: 0, fname: f.name.clone() };
     let body_future = ctx.cps_stmts(&f.body.stmts)?;
@@ -82,7 +114,7 @@ fn lower_async_fn(f: Function) -> Result<Function, String> {
         vec![Expr::Lambda { params: vec![], body: tail_block(body_future), ret: None }],
     );
 
-    if f.name == "main" {
+    if is_entry {
         // The runtime calls `main` directly and cannot drive a task, so an async
         // `main` IS the executor's entry point: run its body (a single task, which
         // may itself `spawn` more) to completion on the cooperative scheduler.

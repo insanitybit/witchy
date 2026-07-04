@@ -37,16 +37,44 @@ const TARGET: &str = "__target";
 /// `iter`/`option` modules it relies on are imported. A no-op for modules
 /// without generators.
 pub fn lower(mut module: Module) -> Module {
-    if !module.items.iter().any(is_gen_fn) {
+    if !has_generator(&module) {
         return module;
     }
     let mut items = Vec::with_capacity(module.items.len() + 1);
     for item in module.items {
         match item {
             Item::Function(f) if f.is_gen => {
-                let (helper, wrapper) = lower_gen(f);
+                let (helper, wrapper) = lower_gen(f, None);
                 items.push(Item::Function(helper));
                 items.push(Item::Function(wrapper));
+            }
+            // A `gen fn` METHOD in an inherent `impl Type:` block lowers exactly
+            // like a top-level one, but its wrapper STAYS a method (so
+            // `value.method()` still resolves by receiver type and returns
+            // `Iter(a)`); only the helper is hoisted to a top-level function, under
+            // a type-qualified name so two types' identically-named generators can't
+            // collide. Trait-impl `gen` methods are rejected at parse time, so every
+            // impl reaching here is inherent. The enumeration is kept separate from
+            // `lower_gen`'s body transform, so a later rewrite of the transform
+            // (RFC-0059) leaves this traversal untouched.
+            Item::Impl(mut im) if im.methods.iter().any(|m| m.is_gen) => {
+                let ctx = MethodCtx {
+                    self_ty: impl_self_ty(&im),
+                    bounds: im.bounds.clone(),
+                    type_name: im.type_name.clone(),
+                };
+                let mut methods = Vec::with_capacity(im.methods.len());
+                for method in std::mem::take(&mut im.methods) {
+                    if method.is_gen {
+                        let (helper, wrapper) = lower_gen(method, Some(&ctx));
+                        items.push(Item::Function(helper));
+                        methods.push(wrapper);
+                    } else {
+                        methods.push(method);
+                    }
+                }
+                im.methods = methods;
+                items.push(Item::Impl(im));
             }
             other => items.push(other),
         }
@@ -65,8 +93,36 @@ pub fn lower(mut module: Module) -> Module {
     module
 }
 
-fn is_gen_fn(item: &Item) -> bool {
-    matches!(item, Item::Function(f) if f.is_gen)
+/// Whether the module contains any `gen fn` — top level or as a method in an
+/// `impl` block (both are lowered by [`lower`]).
+fn has_generator(module: &Module) -> bool {
+    module.items.iter().any(|item| match item {
+        Item::Function(f) => f.is_gen,
+        Item::Impl(im) => im.methods.iter().any(|m| m.is_gen),
+        _ => false,
+    })
+}
+
+/// The impl context a `gen fn` method needs to lower into a top-level helper: the
+/// receiver type (to type the helper's `self`), the impl's `where` bounds (so a
+/// generic impl's helper monomorphizes per element), and the type name (to
+/// disambiguate the helper's name across types).
+struct MethodCtx {
+    self_ty: Type,
+    bounds: Vec<(String, String, Vec<Type>)>,
+    type_name: String,
+}
+
+/// The type a method's `self` stands for in an `impl`: `List(a)` for a generic
+/// target, a tuple for `impl … for (a, b)`, a bare head otherwise. Mirrors
+/// `traits::method_fn`'s self-typing so a hoisted generator helper (an ordinary
+/// top-level function) type-checks without having to infer its receiver.
+fn impl_self_ty(im: &ImplDef) -> Type {
+    if im.type_name.starts_with("Tuple") {
+        Type::Tuple(im.target_args.clone())
+    } else {
+        Type::Named(im.type_name.clone(), im.target_args.clone())
+    }
 }
 
 /// The element type `a` of a `-> Iter(a)` return annotation, if present.
@@ -77,9 +133,17 @@ fn iter_elem(ret: &Option<Type>) -> Option<Type> {
     }
 }
 
-fn lower_gen(f: Function) -> (Function, Function) {
+/// Lower one `gen fn` into (helper, wrapper). `method` is `Some` when `f` is a
+/// method of an inherent `impl`: the helper is then named per-type (so two types'
+/// same-named generators don't collide), its `self` receiver is typed to the impl
+/// type, and it carries the impl's bounds — while the wrapper is returned to be
+/// re-inserted into `impl.methods`, preserving method identity.
+fn lower_gen(f: Function, method: Option<&MethodCtx>) -> (Function, Function) {
     let elem = iter_elem(&f.ret);
-    let helper_name = format!("__gen_{}", f.name);
+    let helper_name = match method {
+        Some(ctx) => format!("__gen_{}_{}", ctx.type_name, f.name),
+        None => format!("__gen_{}", f.name),
+    };
 
     // Helper params: the original params plus `__target: Int`.
     let mut helper_params = f.params.clone();
@@ -88,6 +152,16 @@ fn lower_gen(f: Function) -> (Function, Function) {
         ty: Some(Type::Named("Int".to_string(), vec![])),
         convention: Convention::Let,
     });
+    // For an impl method the receiver `self` is unannotated after parsing (the
+    // trait/impl pass types it later, but that pass never sees this hoisted
+    // helper). Type it here to the implementing type so the helper checks.
+    if let Some(ctx) = method {
+        if let Some(first) = helper_params.first_mut() {
+            if first.ty.is_none() {
+                first.ty = Some(ctx.self_ty.clone());
+            }
+        }
+    }
 
     // Helper body: `var __i = 0` + the body with yields rewritten + final `None`.
     let mut stmts = vec![Stmt::Let {
@@ -104,7 +178,9 @@ fn lower_gen(f: Function) -> (Function, Function) {
         params: helper_params,
         ret: elem.as_ref().map(|a| Type::Named("Option".to_string(), vec![a.clone()])),
         body: Block { stmts, lines: Vec::new(), region: None },
-        bounds: f.bounds.clone(),
+        // A generic impl's helper is monomorphized through its bounds, exactly
+        // like the wrapper method (`traits::method_fn` re-applies `impl.bounds`).
+        bounds: method.map_or_else(|| f.bounds.clone(), |ctx| ctx.bounds.clone()),
         is_gen: false,
         is_async: false,
     };

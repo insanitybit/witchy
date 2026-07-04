@@ -357,6 +357,19 @@ impl Parser {
     /// A method signature inside a `trait`: `fn name(params) -> Ret`, with an
     /// optional default body `{ ... }` that impls inherit unless they override it.
     fn method_sig(&mut self) -> Result<MethodSig, ParseError> {
+        // `gen`/`async` trait methods are not supported: the async lowering leaves
+        // the return type to inference (a phantom `Task`), which no trait signature
+        // can declare, and a `gen fn` in a trait would be an asymmetric half-feature
+        // (the impl generates a helper the trait can't name). Reject loudly here —
+        // declare a plain `fn … -> Iter(_)`/`-> Task(_)` in the trait instead. A
+        // `gen`/`async` method may only appear in an inherent `impl Type:` block.
+        if self.at(&Tok::Gen) || self.at(&Tok::Async) {
+            return Err(self.error(
+                "a `gen`/`async` trait method is not supported: declare a plain \
+                 `fn` returning `Iter(_)`/`Task(_)` in the trait; a `gen`/`async` \
+                 method may only appear in an inherent `impl Type:` block",
+            ));
+        }
         self.expect(&Tok::Fn)?;
         let name = self.ident()?;
         self.expect(&Tok::LParen)?;
@@ -452,6 +465,22 @@ impl Parser {
                 methods.push(self.function(false)?);
             }
             self.expect(&Tok::RBrace)?;
+        }
+        // A `gen`/`async` method implementing a TRAIT method is rejected: the
+        // trait machinery can't express it (async's inferred phantom-`Task` return
+        // has no declarable trait signature; a `gen` impl emits a helper the trait
+        // can't name), so supporting it would be silent half-wiring. The inherent
+        // form (`impl Type:`, no `for`) is fully supported. Loud beats wrong.
+        if trait_name.is_some() {
+            if let Some(method) = methods.iter().find(|m| m.is_gen || m.is_async) {
+                let kw = if method.is_gen { "gen" } else { "async" };
+                return Err(self.error(format!(
+                    "`{kw} fn {}` cannot implement a trait method: a `gen`/`async` \
+                     method is only supported in an inherent `impl {type_name}:` \
+                     block (no `for`)",
+                    method.name,
+                )));
+            }
         }
         Ok(ImplDef {
             trait_name,
