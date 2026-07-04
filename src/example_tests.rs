@@ -15462,6 +15462,22 @@ fn main(console: Console):
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
+    /// BUG-001: the SECOND comparator-hijack site. A user `where a: Ord` generic
+    /// whose body calls a `fn`-typed parameter named like a trait method (`less`)
+    /// is monomorphized; `Mono::specialize`'s `rename_calls_block` used to blanket-
+    /// rename every `less(…)` call to `Ord__Int__less`, silently discarding the
+    /// passed comparator (both backends agreed on the WRONG answer, so the
+    /// differential net was blind). The rename now skips bound locals, so the
+    /// reversed comparator makes `pick` return the maximum (3), not the minimum.
+    #[test]
+    fn rfc0046_bug001_mono_rename_skips_local_comparator_param() {
+        let src = "fn pick(xs: List(a), less: fn(a, a) -> Bool) -> a where a: Ord:\n    var best = list.at(xs, 0)\n    for x in xs:\n        if less(x, best):\n            best = x\n    best\n\nfn rev(a: Int, b: Int) -> Bool:\n    a > b\n\nfn main(console: Console):\n    print(console, \"${pick([3, 1, 2], rev)}\")\n";
+        // `rev` reverses order, so `pick` returns the max (3), not the min (1).
+        let want = vec!["3".to_string()];
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
     // Phase 2 of the concurrency redesign: an `async fn` lowers (CPS over closures,
     // `crate::async_lower`) to a cooperative `chan` task, and `await` chains
     // continuations. An async `main` is the executor entry (lowers to `task.run`).
