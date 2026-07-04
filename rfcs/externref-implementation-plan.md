@@ -1,7 +1,7 @@
 ---
 rfc: 0005-impl
 title: Externref capability core — implementation design (companion to RFC-0005)
-status: design
+status: planned
 created: 2026-07-03
 tracking: rfcs/0005-unforgeable-capabilities.md
 ---
@@ -60,18 +60,28 @@ as an open risk in §8.
 ## 3. Which value shapes are "cap-carrying" (the static classification)
 
 The lowering needs a predicate `carries_cap(ty) -> bool`, computed over resolved
-types (post-`typeck`), true iff a value of `ty` can transitively hold a capability:
+types (post-`typeck`), true iff a value of `ty` can transitively hold a
+*handle-bearing* capability:
 
-- a capability type itself (`Dir`, `Net`, `File`, `Console`, `Exec`, `Secret`,
-  `SecretStore`, `Clock`, and every `capability`/`grantable capability`
-  declaration, incl. the RFC-0002 branded forms like `Redis(net)` and the
-  RFC-0039 UI tokens);
+- a **handle-bearing** capability type — `Dir`, `Net`, `File`, `Secret`,
+  `SecretStore`, `Exec`, the derived `Socket`/`Listener`, and every
+  `capability`/`grantable capability` declaration (incl. the RFC-0002 branded
+  forms like `Redis(net)` and the RFC-0039 UI tokens);
 - a record/`type` variant with any cap-carrying field;
 - a tuple with any cap-carrying element;
 - a closure whose captured environment has any cap-carrying capture;
 - `Option`/`Result`/`List`/`Dict` **only** if their element/payload is
   cap-carrying (a `List(Int)` is not; a `List(Net)` is — rare but must be handled
   or explicitly rejected, see §7).
+
+**`Console` and `Clock` are excluded — they are zero-representation
+capabilities.** Neither has a runtime handle: `host_print` takes only `ptr/len`
+and codegen *drops* the `Console` argument entirely
+(`crates/witchy-lower/src/codegen/builtins.rs:383-391`), and `Clock` is the same
+— it names a host op, not a stored grant. A capability with no bytes in linear
+memory is already unforgeable: there is nothing to corrupt, swap, or mint. So
+`carries_cap` is false for them and they are absent from the migration (§6); the
+cut only touches capabilities that name a host-side grant.
 
 `carries_cap` is monomorphization-time: generics are already specialized before
 codegen, so the concrete element types are known. The predicate is a small
@@ -122,15 +132,79 @@ lockstep. The host body downcasts the `externref` to the backing grant
 drops `dirs`/`nets`/`secrets` as index tables; grants are held alive by the
 `externref`s the host minted into the instance.
 
-## 5. Instantiation: minting the root capabilities
+### 4.4 The i64 Slot boundary (reject-first)
 
-At `Runtime::spawn`, the host mints one `externref` per granted capability
-(wrapping its `Arc<Grant>`) and passes them as the `run`/`__export_*` wrapper's
-externref arguments in declaration order — exactly where the current code passes
-`i32` handles `0,1,2,…`. A cap the program was not granted is simply not minted
-and the corresponding import is not linked (unchanged deny-by-omission). The
-`--dir`/`--net`/`--secret`/`--signing-key` grant plumbing (`main.rs`) is unchanged
-above the mint point; only the handle-vs-externref hand-off at the boundary moves.
+witchy boxes any *dynamically-typed* value into an **i64 Slot**
+(`WirTy::Slot => Kind::I64`, `crates/witchy-wir/src/wir.rs`), moving in and out
+with `ToSlot`/`FromSlot`. An `externref` has no i64 bit-pattern — that
+unforgeability is the whole point — so a cap-carrying value **cannot** round-trip
+through a Slot. Every `ToSlot`/`FromSlot` crossing of a cap-carrying value gets an
+explicit **reject-or-represent** decision. The default is **reject-first**,
+symmetric with the §7 collections decision: forbid the crossing in `typeck` in the
+first cut, lift specific cases to a represented (GC-typed) form only when a real
+program needs it.
+
+- **Generic calls / type-var params boxed to Slot — REJECT.** A `fn id(x: a) -> a`
+  monomorphized at `a = Net` would box the `Net` to a Slot. `typeck` rejects a
+  handle-bearing capability as the argument of a Slot-boxed generic parameter.
+- **`Option`/`Result` payloads — REJECT (first cut).** The `Some`/`Ok` payload is
+  widened to a Slot today, so `Option(Net)` etc. cannot survive it. `typeck`
+  rejects a cap-carrying `Option`/`Result`. (This is the same shape as §7's
+  `List(Net)` reject; revisit together if a program needs it, by representing the
+  payload as a GC field rather than a Slot.)
+- **Closure environments — REPRESENT (no crossing).** Cap-carrying closures are
+  already GC structs (§4.2): the captures are `externref` struct fields, not
+  Slots, so there is no crossing to reject.
+- **Grantable-cap fields — REPRESENT (mandatory).** The RFC-0038 mint path today
+  widens each grantable-cap field to the i64 slot via `build_user_cap_field` +
+  `Convert{I32→I64}` before `mk{N}`
+  (`crates/witchy-lower/src/codegen/assembly.rs:721-731`). Under externref that
+  `Convert` is impossible for a cap field; the field becomes an `externref` GC
+  struct field minted directly (scalar fields keep their Slot widening). This one
+  crossing is *replaced by representation*, not rejected — the feature ships, so
+  it cannot simply be forbidden.
+
+**Error-text style** mirrors §7 and the existing attenuation errors (lowercase,
+name the offending type, give the remedy): e.g. `a capability cannot flow through
+a generic parameter (it has no boxed representation); give the parameter a
+concrete capability type` and `a capability cannot be wrapped in \`Option\`/\`Result\`
+in the first cut; hold it in a record field or pass it directly`.
+
+## 5. Instantiation: minting the root capabilities (an export-surface change)
+
+**Correction to the naive picture.** Today the `run` wrapper takes *no*
+capability arguments: it bakes the handles *internally* as `ConstI32` — `Dir`
+params get `0,1,2,…`, `File` params their own index, every other cap a
+placeholder `0` — and grantable-cap params are minted guest-side by `mk{N}` over
+`build_user_cap_field` (`crates/witchy-lower/src/codegen/assembly.rs:698-731`).
+So the current export signatures carry no authority in their types.
+
+An `externref` cannot be a `ConstI32`. The host must therefore **mint the
+externrefs and pass them as new parameters** to the wrappers — which **changes the
+export signatures**: `run` gains one `externref` param per granted root cap (in
+declaration order, where the `ConstI32`s used to sit), and each cap-gated
+`__export_*` wrapper (RFC-0040) that currently mints its grantable cap in-body
+takes that cap as an `externref` param minted host-side instead. This is the piece
+the earlier draft missed, and it reaches beyond the runtime:
+
+- **`Runtime::spawn`** supplies the externrefs at the wasmtime call site (it
+  already builds the grant set; it now wraps each grant in an `externref` and
+  passes it positionally).
+- **The browser / JS shim** (RFC-0006–0008) that invokes `run()` / `__export_*()`
+  must pass the minted references; the marshaling contract for those exports
+  changes. A pure-compute frontend that grants no caps is unaffected (no
+  externref params), but any cap-holding frontend build is (ties to the browser
+  risk, §8.2).
+- **glamour** (RFC-0040) binds the `__export_*` cap-gated exports; its export
+  glue moves from "wrapper mints the grantable cap" to "host passes the cap
+  externref in." That binding is regenerated in lockstep with the ABI cut.
+
+Migration step: land the signature change behind the stage-3/4 two-mode mint (the
+`ConstI32` path stays for not-yet-migrated cap types); the browser shim and
+glamour export bindings update in the same stage that flips their capability to
+externref. The `--dir`/`--net`/`--secret`/`--signing-key` grant plumbing
+(`main.rs`) is unchanged above the mint point; only the handle-vs-externref
+hand-off — now a *parameter*, not an embedded constant — moves.
 
 ## 6. Staging (how an "all-or-nothing" cut is still reviewable)
 
@@ -142,19 +216,34 @@ done first. Proposed order, each stage its own PR, `check.sh` green at each:
    type-section encoder, and the `StructNew/Get/Set` nodes — all unused. Add
    `carries_cap`. Prove the encoder round-trips a hand-built GC-struct module
    (a `wir_encode_tests` fixture). Nothing lowers to them yet. GREEN.
-2. **`Console` end to end** (the simplest cap: rights-less, never nested in the
-   common programs). Mint it as an `externref`, its `print`/`print_int` imports
-   take `externref`. This proves the boundary + the mint path on the least-risky
-   capability. GREEN (all Console programs, both backends).
-3. **The scalar root caps** (`Dir`, `Net`, `File`, `Secret`, `SecretStore`,
-   `Clock`, `Exec`) — each as an `externref` param, imports downcast. Still no
-   aggregates. GREEN after each.
+2. **`File` end to end (the proving capability).** Mint `File` as an `externref`;
+   `host_file_read_len`/`host_file_write` take `externref` and downcast; the
+   `run` wrapper passes it as a param instead of the `ConstI32` file index.
+   **Why File, not Console or Exec:** Console/Clock are excluded (§3 — no handle
+   to migrate). Of the handle-bearing caps, File is the right first proof because
+   it is *rights-bearing* (`File[Read]`/`File[Write]`), so it exercises the
+   interesting path — a downcast that must still honor the type-checked rights —
+   not just a bare handle; its grant is the simplest object (a `PathBuf` index in
+   `VmState.files`); and it already has the anchoring attenuation slice
+   (`file_capability_rights_and_narrowing`) to hold parity against. Exec would
+   prove less (right-less, one op) at higher blast radius. GREEN (all File
+   programs, both backends).
+3. **The remaining root + derived caps** (`Dir`, `Net`, `Secret`, `SecretStore`,
+   `Exec`, and the `Net`-derived `Socket`/`Listener`) — each as an `externref`
+   param or `externref`-returning import (`connect`/`listen`/`accept` return an
+   `externref` Socket/Listener instead of an i32 index). Imports downcast. Still
+   no aggregates. GREEN after each. (`Console`/`Clock` are not here — nothing to
+   migrate.)
 4. **Cap-carrying aggregates** — records/tuples/branded caps/UI tokens to GC
    structs; then **closures** capturing caps. This is the hard stage; the
-   `carries_cap` classification and GC-struct lowering land here. GREEN.
-5. **Delete the i32 handle machinery** — `VmState.dirs/nets/secrets`, the index
-   arithmetic, the `*_handle` conventions. The suite staying green with them gone
-   is the proof the migration is total.
+   `carries_cap` classification, the GC-struct lowering, and the §4.4 Slot
+   rejects land here. GREEN.
+5. **Delete the i32 handle machinery** — `VmState.dirs/nets/files/sockets/
+   listeners/secrets`, the index arithmetic, the `*_handle` conventions, and the
+   temporary two-mode mint. The suite staying green with them gone is the proof
+   the migration is total. (The host keeps its *ownership anchors* for the minted
+   references — see §8.9; "delete the tables" means the guest-facing index
+   tables, not the host's rooting set.)
 
 Each stage is independently committable and green because a capability type not
 yet migrated keeps its i32 path until its stage — the "cannot coexist" constraint
@@ -194,22 +283,83 @@ Rare but real. Two acceptable resolutions, decide at stage 4:
    OOB; keep the `WITCHY_WASM_BACKTRACE` name section working for GC funcs.
 5. **Wasmtime API churn.** `ExternRef`/GC API is newer; pin the version and adapt
    (per the repo's "latest libs" rule).
+6. **Socket/Listener — DECIDED: scope in.** The `Socket` and `Listener` values
+   returned by `connect`/`listen`/`accept` are guest-indexed i32 handles into
+   `VmState.sockets`/`listeners` (`crates/witchy-runtime/src/runtime.rs:280-283`)
+   — the same forgeable-authority-in-linear-memory shape this cut exists to kill.
+   A corrupted in-range socket index cannot escape the `Net` scope (the address
+   was checked at connect time), but it *can* cross the data of two live
+   connections the program holds — write a secret to the wrong socket, read the
+   wrong response. Under witchy's threat model a live authenticated connection is
+   authority, and "no forgeable authority in linear memory" must include it;
+   leaving Socket/Listener as i32 would be an inconsistent residual. They migrate
+   in stage 3 as `externref`-*returning* imports (minted mid-execution when the
+   connection opens, not at instantiation) — a natural fit since the host already
+   owns the `BufReader`/`TcpListener`.
+7. **Equality / render / reflect over cap-carrying records — all REJECT.** A
+   capability is an opaque unforgeable reference with *identity*, not data, and an
+   `externref` has no bytes to compare, print, or serialize. `typeck` refuses
+   these on any cap-carrying type, first cut:
+   - **`==` (RFC-0047).** A cap-carrying type does not satisfy the `Eq` bound;
+     `==` on it is a type error. (Structural equality would have to compare
+     `externref`s, which have only reference identity — not the value equality
+     `==` promises.) Rejecting keeps the one-equality story honest.
+   - **`show` / `__render` / `${…}`.** A cap-carrying value has no `Show`;
+     rendering it is a type error. Beyond representation, rendering a grant risks
+     leaking it — opaqueness is the right default.
+   - **`derive(Reflect)` / `json.stringify`.** `derive(Reflect)` is refused on a
+     record with a cap-carrying field (it would either leak the grant or demand a
+     placeholder), so `json.stringify` over such a value is unreachable by
+     construction. Error style per §4.4/§7.
+   Each is defense-in-depth *and* a hard representational fact under externref;
+   the reject makes the compiler say so instead of a backend silently diverging.
+8. **Caps crossing `chan.spawn` / VM boundaries — externrefs can't cross Stores.**
+   A wasmtime `externref` is rooted to one `Store`; it cannot be handed to
+   another VM's Store. Today the guest never transports a capability across that
+   boundary: a `serve`-pool worker VM (RFC-0032) receives its authority because
+   the host *re-derives* the worker's grant set from the shared `Capabilities`
+   (`vmstate_from_caps`, `crates/witchy-runtime/src/runtime.rs`), minting fresh
+   handles into the worker's own Store — not by the guest passing a handle over a
+   channel; and cooperative `std/chan` tasks share the parent VM's single Store,
+   so a cap captured by a `Task` closure never leaves it. What `typeck` does *not*
+   yet enforce is a rule forbidding a cap-carrying **channel message type** — it
+   was moot while the common `spawn` is cooperative and message handles would be
+   meaningless across Stores anyway. The cut makes this a hard requirement: add a
+   `typeck` reject for a cap-carrying type used as a channel message type (or
+   otherwise crossing a Store), landed with stage 3/4. The worker path is
+   unchanged — the host keeps re-minting per Store.
+9. **Wasmtime GC rooting — the host keeps an ownership anchor after "delete the
+   tables."** A `Rooted<ExternRef>` is scoped to a `RootScope`/`Store` and may be
+   collected once its scope ends. For a granted capability to stay live for the
+   instance's lifetime, the host must hold a **`ManuallyRooted<ExternRef>`** (or
+   keep the backing `Arc<Grant>` owned host-side) per minted cap — otherwise the
+   guest's reference and its backing grant could be GC'd out from under a live
+   program. This anchor is **identity-keyed** (keyed by the reference / grant
+   identity), *not* the old dense index. So stage 5's "delete the i32 tables"
+   deletes only the **guest-facing index tables**; the host's rooting/ownership
+   set stays. Getting this wrong dangles a grant, so it is called out as its own
+   line item, not folded into §8.1.
 
 ## 9. Definition of done (unchanged from RFC-0005)
 
-All capability imports take `externref`; the i32 handle tables are deleted; parity
-is green on both backends; the differential fuzzer (augmented with adversarial
-aliasing over cap-carrying aggregates) finds no diffs; the attenuation suite (§4
-of RFC-0005, already comprehensive) stands as the runtime backstop. At that point
-a miscompile is a *correctness* bug (wrong data, a trap), never a *security* bug —
-the thesis of RFC-0005.
+All capability imports take `externref`; the i32 handle tables are deleted (the
+host keeps its identity-keyed rooting anchors, §8.9); parity is green on both
+backends; the differential fuzzer (augmented with adversarial aliasing over
+cap-carrying aggregates) finds no diffs; and the attenuation suite (RFC-0005
+hardening #4) stands as the runtime backstop. **That suite was File-only when
+this plan was first drafted** — the "already comprehensive" claim here was wrong.
+It was extended to Net, Dir, and `only`-policy rights/narrowing/re-widening by
+**BUG-009** (landed 2026-07-04, `crates/witchy-types/src/typeck_tests.rs`), which
+was the hard prerequisite for beginning the cut. With BUG-009 in, the Stage-1
+gate is clear. At that point a miscompile is a *correctness* bug (wrong data, a
+trap), never a *security* bug — the thesis of RFC-0005.
 
 ---
 
 <!--
-  This is a DESIGN doc (status: design), not a frozen decision. It refines the
-  implementation of RFC-0005's already-chosen approach (A). Edit freely until the
-  cut begins; then it tracks the actual migration.
+  This is a living companion doc (status: planned), not a frozen decision. It
+  refines the implementation of RFC-0005's already-chosen approach (A). Edit
+  freely until the cut begins; then it tracks the actual migration.
 -->
 
 ## Review note (2026-07-04)
@@ -249,3 +399,35 @@ the `identity-stack-implementation-plan.md` precedent. Cross-links updated.
 cheap, but the cut itself is Size-L and queues behind the language-surface work.
 Do not begin Stage 1 until the revision lands and the Net/Dir attenuation suite
 (BUG-009) exists.
+
+## Revision applied (2026-07-04)
+
+The four blocking gaps and the enumeration items above are now resolved in the
+body; `status: design → planned`.
+
+- **Stage rescope (§3, §6).** `Console`/`Clock` dropped from `carries_cap` and
+  from the migration — they are zero-representation (no runtime handle;
+  `builtins.rs:383-391`), already unforgeable. Stage 2's proving capability is
+  now **File** (rights-bearing, simplest grant, has the anchoring attenuation
+  slice); rationale recorded inline. Stage 3 is the remaining root + derived caps.
+- **i64 Slot boundary (§4.4, new).** Reject-first, symmetric with §7: generic
+  Slot-boxing and `Option`/`Result` payloads are `typeck`-rejected; closure envs
+  and grantable-cap fields are *represented* (GC fields) rather than crossing;
+  error-text style specified.
+- **Socket/Listener (§8.6).** DECIDED — scoped in (stage 3, `externref`-returning
+  imports); rationale per threat model (a live connection is authority).
+- **§5 export-surface change.** Rewritten: the `run`/`__export_*` signatures gain
+  externref params (today they bake `ConstI32` handles + `mk{N}`), reaching the
+  browser shim and glamour (RFC-0040); migration step named.
+- **§8 additions.** Equality (RFC-0047) / `show`·`__render` / `derive(Reflect)`·
+  `json.stringify` over cap-carrying records — all reject, with rationale;
+  caps-across-`chan.spawn` rule (host re-mints per Store; `typeck` reject for
+  cap-carrying message types to be added); wasmtime `Rooted<ExternRef>` anchor
+  (host keeps identity-keyed roots after the index tables are deleted).
+- **§9 DoD corrected.** The "already comprehensive" attenuation claim was false
+  (File-only at drafting); **BUG-009 landed the Net/Dir/policy coverage
+  (2026-07-04)**, clearing the Stage-1 prerequisite.
+
+**Post-revision verdict.** Approvable. Stage 1 (infra, no behavior change) may
+begin now that BUG-009 has landed; the cut still queues behind the
+language-surface work by priority, not by any missing prerequisite.

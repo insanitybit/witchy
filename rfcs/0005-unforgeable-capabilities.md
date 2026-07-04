@@ -1,7 +1,7 @@
 ---
 rfc: 0005
 title: Unforgeable capability representation on the compiled backend
-status: proposed
+status: planned
 created: 2026-06-21
 superseded-by:
 tracking:
@@ -16,11 +16,12 @@ tracking:
 
 On the compiled (WebAssembly) backend, every capability is represented as an
 **`i32` handle** — an index into a host-side table (`VmState::dirs`,
-`VmState::nets`, `caps.secrets`). Those integers are ordinary data: they live in
+`VmState::nets`, `VmState::files`, `VmState::sockets`, `VmState::listeners`,
+`caps.secrets`). Those integers are ordinary data: they live in
 WASM linear memory whenever a capability is stored in a record, captured by a
 closure, or wrapped in a branded capability (RFC-0002). Linear memory is exactly
 what an unsound optimizer can corrupt. witchy's security rests on memory safety,
-and the in-place/uniqueness optimizer (`src/analysis.rs`) is, on a false
+and the in-place/uniqueness optimizer (`crates/witchy-lower/src/analysis.rs`) is, on a false
 negative, an **attacker-reachable memory-corruption primitive** — the untrusted
 program author chooses the source. The chain "craft an aliasing pattern that
 fools the analysis → corrupt a handle in linear memory → pass a forged handle
@@ -33,11 +34,13 @@ This RFC proposes representing capabilities as **wasmtime reference types
 memory, cannot be synthesized by the guest, and cannot be bit-cast from an
 integer; combined with WASM code immutability, this removes memory corruption as
 an attack vector against *all* capability guarantees — identity, scope, rights,
-narrowing, and firewalls alike. It is a parity *fix*, not a parity risk: the
+and narrowing alike. It is a parity *fix*, not a parity risk: the
 interpreter already holds capabilities as unforgeable Rust values. The RFC also
 specifies a set of independent hardening measures (kill the `signing@0` fallback,
 trap on in-place writes, fuzz the ownership analysis, test the attenuation rules)
-that are worth landing regardless of the larger change.
+that are worth landing regardless of the larger change — all four have since
+shipped (see the 2026-07-04 change-note), leaving the core `externref` change
+itself as the open work.
 
 ## Motivation
 
@@ -51,7 +54,7 @@ the adversary writes the source, any soundness gap in an optimization is not bad
 luck but a *weaponizable primitive*: the attacker writes the exact aliasing
 pattern that the analysis mis-classifies.
 
-`src/analysis.rs` proves uniqueness so the compiler can mutate values in place
+`crates/witchy-lower/src/analysis.rs` proves uniqueness so the compiler can mutate values in place
 (`list.push` accumulation, clone-elision for `let`/`var`/`own` parameters). The
 pass is deliberately fail-safe — it defaults to "shared/dirty" and only mutates
 in place when it has *positively proven* uniqueness — which is the right bias.
@@ -76,8 +79,10 @@ wasmtime vulnerability. The boundary therefore leaks precisely where **authority
 is named by forgeable bytes**:
 
 - A capability is an `i32` handle. `secret_seed_bytes`
-  (`src/runtime.rs:1269`), `dir_base`, and `net_allow` all resolve a guest-supplied
-  integer into a host-side grant, validating only that the index is *in range*.
+  (`crates/witchy-runtime/src/runtime.rs`), `dir_base`, `net_allow`, the `files`
+  table (RFC-0012), and the `sockets`/`listeners` tables all resolve a
+  guest-supplied integer into a host-side grant, validating only that the index is
+  *in range*.
 - That integer sits in linear memory whenever the capability is inside an
   aggregate — a record field, a closure environment, or a branded capability
   (`Redis(net)` from RFC-0002, where the `Net` handle is a field of a heap record).
@@ -91,22 +96,34 @@ way to see the hole:
 
 | Guarantee | Where enforced | Survives linear-memory corruption? |
 |---|---|---|
-| Grant *set* (which dirs/hosts/secrets exist at all) | host, at call time | **Yes** — a forged handle can only reach grants already in the instance's tables |
-| Rights (`Dir[Read]` vs `Write`) | type checker only | **No** — runtime handle is the full capability |
-| `as`-narrowing | type checker only | **No** — narrowed and full are the same handle |
-| `retain` / `without` firewalls | type checker only | **No** — the dropped capability still exists in the table |
+| Grant *set* (which dirs/hosts/files/secrets exist at all) | host, at call time | **Yes** — a forged handle can only reach grants already in the instance's tables |
+| Rights (`Dir[Read]` vs `Write`, `File[Read]` vs `Write`) | type checker only | **No** — runtime handle is the full capability |
+| `as`-narrowing / `only` policy narrowing (RFC-0011) | type checker only | **No** — narrowed and full are the same handle |
+| Socket/Listener identity (which live connection a handle names) | host, in-range check only | **No** — a corrupted in-range index reaches a *different* open connection the program holds (`VmState.sockets`/`listeners`, `crates/witchy-runtime/src/runtime.rs:280-283`) |
 
-So the entire *intra-program* attenuation surface — the rights model, narrowing,
-and firewalls that make least-authority *within* a program meaningful — has **zero
+(An earlier revision of this table listed the `retain`/`without` firewall as a
+fourth compile-time-only guarantee; RFC-0014 removed that feature, so the row is
+gone — see the 2026-07-04 change-note.)
+
+So the entire *intra-program* attenuation surface — the rights model and the
+narrowing that make least-authority *within* a program meaningful — has **zero
 runtime representation** and is defended *only* by memory safety plus the type
-checker. Remove memory safety (via the optimizer) and attenuation is gone.
+checker. Remove memory safety (via the optimizer) and attenuation is gone. The
+*derived* capabilities are exposed too: `Socket` and `Listener` values returned
+by `connect`/`listen`/`accept` are dense indices into `VmState.sockets`/
+`listeners`. Corruption cannot mint a connection outside the `Net` scope, but it
+can cross the data of two connections the program legitimately holds — send a
+secret down the wrong socket, or read another connection's response.
 
 ### The `signing@0` footgun (independent of the optimizer)
 
-`secret_seed_bytes` (`src/runtime.rs:1269-1279`) resolves any in-range index into
-`caps.secrets`, **and** falls back to returning the signing key for handle `0`
-whenever a signing key was granted — regardless of whether the program ever
-received a `Secret`:
+*(Fixed since this was written — hardening #1 shipped; see the 2026-07-04
+change-note. The code below is the pre-fix behavior, kept for the record.)*
+
+`secret_seed_bytes` (now `crates/witchy-runtime/src/runtime.rs:2403`) resolved
+any in-range index into `caps.secrets`, **and** fell back to returning the
+signing key for handle `0` whenever a signing key was granted — regardless of
+whether the program ever received a `Secret`:
 
 ```
 fn secret_seed_bytes(caps: &Capabilities, handle: i32) -> Result<Vec<u8>> {
@@ -198,8 +215,8 @@ one of two resolutions:
   linear-memory, so this introduces a second (GC) representation and the lowering
   to choose between them. wasmtime **enables the GC proposal by default** and it
   ships in browsers, so this is more mature than it once was; the WIR encoder
-  (`src/wir*.rs`) and `codegen.rs` would gain reference-typed structs for the
-  cap-carrying subset.
+  (`crates/witchy-wir/src/`) and `crates/witchy-lower/src/codegen.rs` would gain
+  reference-typed structs for the cap-carrying subset.
 - **(B) Side table of references, keyed by the value's identity.** Keep
   aggregates in linear memory but store their capability fields in a parallel
   host/guest *reference table*, with the linear-memory slot holding a table index.
@@ -240,23 +257,29 @@ These stand on their own and are worth landing whether or not the `externref`
 re-architecture proceeds. They also serve as **interim mitigation** while it is
 built.
 
-1. **Delete the `signing@0` fallback.** Remove the `handle == 0 → signing_key`
-   branch in `secret_seed_bytes` (`src/runtime.rs:1273-1276`); require a real
-   granted entry in `caps.secrets`. VM-spawn sites that grant a lone `Secret`
-   should populate `caps.secrets` instead of relying on the magic index. Closes a
-   capability bypass that does not even need memory corruption.
+1. **Delete the `signing@0` fallback.** — **SHIPPED** (see the 2026-07-04
+   change-note): the `handle == 0 → signing_key` branch is gone from
+   `secret_seed_bytes` (`crates/witchy-runtime/src/runtime.rs:2403`); a handle
+   must name a real granted entry in `caps.secrets`, and every grant site
+   populates the signing key as a normal `"signing"` entry. Closed a capability
+   bypass that did not even need memory corruption.
 
-2. **Trap on in-place writes.** Make the in-place store path (the `list_push_cap`
-   fast path) bounds-check the write offset against the buffer capacity and
-   **trap** on violation, the same way `$list_at` already traps. This converts an
-   ownership-analysis false negative from *silent heap corruption* into a *loud,
-   parity-identical runtime error* — fully consistent with witchy's "anything a
-   backend can't do identically is a loud error, never a silently different
-   answer" contract. The cost is one compare on the in-place path, negligible
-   against the store + potential `ensure()` grow.
+2. **Trap on in-place writes.** — **SHIPPED**: the in-place store path
+   bounds-checks the write against the buffer's real allocated size (the
+   `$rc_alloc` header) and **traps** unconditionally on violation
+   (`crates/witchy-wir/src/wir_helpers/mod.rs:1493-1510`), the same way
+   `$list_at` traps an out-of-bounds read. This converts an ownership-analysis
+   false negative from *silent heap corruption* into a *loud, parity-identical
+   runtime error* — fully consistent with witchy's "anything a backend can't do
+   identically is a loud error, never a silently different answer" contract. The
+   cost is one compare on the in-place path, negligible against the store +
+   potential `ensure()` grow.
 
-3. **Fuzz the ownership analysis.** Add a differential/property harness that
-   generates programs with adversarial aliasing (closure captures of
+3. **Fuzz the ownership analysis.** — **SHIPPED** via RFC-0023 (checked heap:
+   canaries + loud corruption) and RFC-0037 (the correctness harness:
+   differential, sanitized, coverage-guided; CI runs the heap-check fuzz sweep).
+   The original rationale, kept for the record: add a differential/property
+   harness that generates programs with adversarial aliasing (closure captures of
    accumulators, embedded self-shares, indirect calls, `var` write-back chains),
    runs both backends, and asserts (a) output parity and (b) no corruption via
    heap canaries. This is the direct way to find the false negatives that turn the
@@ -271,10 +294,15 @@ built.
    miss (this instrumentation is the *only* realistically adoptable use of the
    "memory safety within linear memory" research — see *Alternatives*).
 
-4. **Test the attenuation rules.** A focused typeck suite asserting the
-   compile-time guarantees that rights/narrowing/firewalls rely on: a `Dir[Read]`
-   cannot reach `write`; a `Net[Connect]` cannot `listen`; a `without d` scope
-   cannot name `d`; an `as`-narrowed handle cannot be re-widened. Under the
+4. **Test the attenuation rules.** — **SHIPPED** (BUG-009, landed 2026-07-04;
+   see the change-note): a focused typeck suite asserting the compile-time
+   guarantees that rights and narrowing rely on: a `Dir[Read]` cannot reach
+   `write`; a `Net[Connect]` cannot `listen` (nor a `Net[Listen]` `connect`); an
+   `as`-narrowed handle cannot be re-widened; an `only`-scoped policy handle
+   cannot be re-widened either (`crates/witchy-types/src/typeck_tests.rs` —
+   `file_`/`net_`/`dir_capability_rights_and_narrowing`,
+   `policy_narrowing_preserves_rights_and_cannot_rewiden`). The `without d`
+   case in the original text is gone with the firewall (RFC-0014). Under the
    `externref` model these tests *are* the defense for attenuation (see "Why
    per-rights references are NOT part of this RFC"), so they are load-bearing, not
    merely nice-to-have.
@@ -301,7 +329,10 @@ built.
    *correctness*, not just authority.
 
 7. **Operational wasmtime hardening (adopt today, independent of everything
-   above).** Audit the embedding `Config` for defense in depth: keep Cranelift's
+   above).** — **SHIPPED**: the engine `Config` lockdown is in
+   `crates/witchy-runtime/src/runtime.rs:451-470` (proposals we never emit
+   disabled; `reference_types`/`gc` kept on for this RFC; Spectre mitigations
+   left on). Original scope: audit the embedding `Config` for defense in depth: keep Cranelift's
    Spectre mitigations on (`enable_heap_access_spectre_mitigation` /
    `enable_table_access_spectre_mitigation` are on by default — and note that
    `Config::signals_based_traps(false)` would force them off, so don't); disable
@@ -375,7 +406,8 @@ built.
 - **Migration.** Every cap-passing import signature and call site changes at once
   (`break, don't deprecate`): the `i32`-handle ABI and the `externref` ABI cannot
   coexist on the same import. This is a single coordinated cut across
-  `src/runtime.rs`, `src/codegen.rs`, and the WIR layer.
+  `crates/witchy-runtime/src/runtime.rs`, `crates/witchy-lower/src/codegen.rs`,
+  and the WIR layer (`crates/witchy-wir/src/`).
 
 ## Prior art
 
@@ -447,3 +479,63 @@ name per rfcs/README.md numbering rules); cross-link updated.
 **Verdict.** Needs-revision (keep as accepted direction). Priority: medium
 overall; extracting hardening #4 (the Net/Dir attenuation tests, BUG-009) is
 high priority — ~1 day, load-bearing for the externref design and useful today.
+
+## Change note (2026-07-04): hardening status, authority surface, citations
+
+This note records the revision that the review above required; the body edits
+were applied in the same pass (the RFC is `planned`, not yet frozen).
+
+**Hardening #1–#4 and #7 have all shipped.**
+- **#1 signing@0** — deleted; `secret_seed_bytes`
+  (`crates/witchy-runtime/src/runtime.rs:2403`) resolves only real granted
+  entries, and every grant site populates the signing key as a normal
+  `"signing"` secret.
+- **#2 in-place bound traps** — the in-place store path checks the write against
+  the `$rc_alloc` header's real allocation size and traps, unconditionally, on
+  violation (`crates/witchy-wir/src/wir_helpers/mod.rs:1493-1510`).
+- **#3 fuzzing** — RFC-0023 (checked heap: canaries, loud corruption) and
+  RFC-0037 (differential/sanitized/coverage-guided correctness harness) cover
+  the ownership analysis; CI runs the heap-check fuzz sweep.
+- **#4 attenuation suite** — landed via BUG-009 (2026-07-04): Net, Dir, and
+  `only`-policy rights/narrowing/re-widening tests now sit beside the original
+  File slice in `crates/witchy-types/src/typeck_tests.rs`
+  (`net_capability_rights_and_narrowing`, `dir_capability_rights_and_narrowing`,
+  `policy_narrowing_preserves_rights_and_cannot_rewiden`). This was the last
+  open prerequisite for beginning the externref cut.
+- **#7 Config lockdown** — `crates/witchy-runtime/src/runtime.rs:451-470`:
+  unemitted proposals disabled, `reference_types`/`gc` kept on for this RFC,
+  Spectre mitigations left on.
+
+Items #5 (unguessable handles) and #6 (VeriWasm-style re-checker) remain
+deliberately unimplemented: #5 is subsumed by the core change; #6 is optional
+depth, still worth doing after the cut.
+
+**Re-weighted motivation.** With #2 shipped, the *known* in-place store paths
+now trap instead of silently corrupting. The residual memory-corruption
+primitives are the ones the traps and fuzzers have not fenced — the
+`$rc_dup`-class reclamation/refcount bugs (see the 2026-07 deep-eval findings)
+and any future analysis false negative on a path without a bound check. The
+core argument is unchanged: authority named by integers in linear memory is one
+memory-safety bug away from forgery, so the fix is to move authority *out* of
+linear memory, not to keep fencing paths one at a time.
+
+**Firewall row deleted.** RFC-0014 removed `retain`/`without`; the corruption
+table and hardening #4 no longer reference it.
+
+**Authority surface completed.** `File` (RFC-0012 grants, `VmState.files`,
+`crates/witchy-runtime/src/runtime.rs:255-258`) and the *derived* `Socket`/
+`Listener` capabilities (`VmState.sockets`/`listeners`, `runtime.rs:280-283`)
+are now in the Summary and the corruption table. Sockets and listeners matter:
+they are guest-indexed live connections, so corruption can cross the data of
+two connections the program holds even though it cannot escape the `Net` scope.
+The companion plan scopes their migration explicitly.
+
+**Citations fixed** for the RFC-0018 workspace split (`src/runtime.rs` →
+`crates/witchy-runtime/src/runtime.rs`, `src/analysis.rs` →
+`crates/witchy-lower/src/analysis.rs`, `src/wir*.rs` →
+`crates/witchy-wir/src/`).
+
+**Status.** `proposed` → `planned`: the direction is accepted, the independent
+hardening is done, and the staged migration is specified and revised in the
+companion `rfcs/externref-implementation-plan.md` (2026-07-04 revision). The
+remaining work is the cut itself.
