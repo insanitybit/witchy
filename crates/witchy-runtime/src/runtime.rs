@@ -146,6 +146,26 @@ fn build_module(engine: &Engine, opt_wasm: &[u8], cacheable: bool) -> Result<Mod
 
 pub type VmId = u32;
 
+/// One named secret backing the `SecretStore` capability: its name, its raw
+/// bytes (kept host-side — the guest only ever holds the handle index), and
+/// whether it is **use-only** (RFC-0060). A use-only secret is still consumable
+/// by handle (`crypto.sign`, TLS serving), but `crypto.reveal` on it errors — so
+/// key material a program *serves* with can never be read back into guest memory.
+/// The default (`use_only == false`) is revealable, preserving existing behavior.
+#[derive(Clone, Debug, Default)]
+pub struct SecretGrant {
+    pub name: String,
+    pub bytes: Vec<u8>,
+    pub use_only: bool,
+}
+
+impl SecretGrant {
+    /// A revealable named secret (the default grant shape).
+    pub fn new(name: impl Into<String>, bytes: Vec<u8>) -> Self {
+        Self { name: name.into(), bytes, use_only: false }
+    }
+}
+
 /// The set of capabilities granted to a VM at spawn time. Each `true` flag
 /// causes the corresponding host function to be linked into the VM.
 /// Everything defaults to denied.
@@ -210,7 +230,7 @@ pub struct Capabilities {
     /// `Secret` value is an index into this table, so the raw bytes stay host-side
     /// (the guest only ever holds the handle). Index 0 is the `signing` secret
     /// (from `--signing-key`), so a bare `Secret` capability is handle 0.
-    pub secrets: Vec<(String, Vec<u8>)>,
+    pub secrets: Vec<SecretGrant>,
     /// The confined output directory backing a build step's `BuildOut`
     /// capability — where `write_out` may write generated source, and nowhere
     /// else. `None` denies build-time writes entirely.
@@ -2404,10 +2424,21 @@ fn host_net_close(mut caller: Caller<'_, VmState>, sid: i32) -> Result<()> {
 /// that table (populated at every grant site), so it resolves like any other secret —
 /// there is no special case a fabricated handle `0` could exploit.
 fn secret_seed_bytes(caps: &Capabilities, handle: i32) -> Result<Vec<u8>> {
-    if let Some((_, bytes)) = usize::try_from(handle).ok().and_then(|h| caps.secrets.get(h)) {
-        return Ok(bytes.clone());
+    if let Some(grant) = usize::try_from(handle).ok().and_then(|h| caps.secrets.get(h)) {
+        return Ok(grant.bytes.clone());
     }
     Err(Error::msg("crypto: no secret at that handle (none granted?)"))
+}
+
+/// Whether the secret at `handle` was granted **use-only** (RFC-0060) — usable by
+/// handle but not revealable. A handle that names no granted secret is treated as
+/// not use-only; the consuming op's own `secret_seed_bytes` call raises the "no
+/// secret" error.
+fn secret_use_only(caps: &Capabilities, handle: i32) -> bool {
+    usize::try_from(handle)
+        .ok()
+        .and_then(|h| caps.secrets.get(h))
+        .is_some_and(|grant| grant.use_only)
 }
 
 /// `crypto.sign(key, msg_ptr, out_data_ptr)`: sign the message with the secret at
@@ -2455,7 +2486,7 @@ fn host_secretstore_lookup(mut caller: Caller<'_, VmState>, name_ptr: i32) -> Re
     let mem = memory_of(&mut caller)?;
     let name = read_wstr(mem.data(&caller), name_ptr)?;
     let caps = &caller.data().caps;
-    match caps.secrets.iter().position(|(n, _)| *n == name) {
+    match caps.secrets.iter().position(|grant| grant.name == name) {
         Some(i) => Ok(i as i32),
         None => Ok(-1),
     }
@@ -2468,6 +2499,10 @@ fn host_secretstore_lookup(mut caller: Caller<'_, VmState>, name_ptr: i32) -> Re
 fn host_crypto_reveal_len(mut caller: Caller<'_, VmState>, key: i32) -> Result<i32> {
     use crate::value::NativeValue as Value;
     let bytes = secret_seed_bytes(&caller.data().caps, key)?;
+    // (RFC-0060) A use-only secret is consumable by handle but never revealable.
+    if secret_use_only(&caller.data().caps, key) {
+        bail!("{}", witchy_caps::capabilities::USE_ONLY_SECRET_REVEAL_ERROR);
+    }
     if witchy_caps::capabilities::secret_is_signing_key(
         caller.data().caps.signing_key.as_ref().map(|s| s.as_slice()),
         &bytes,

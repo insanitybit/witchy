@@ -59,14 +59,17 @@ pub enum Value {
     /// A network capability: an allow-list of permitted `host:port` destinations
     /// (wasi:sockets / cap-std-net style). Attenuable via `restrict`.
     Net(Vec<String>),
-    /// A single secret's raw bytes (a signing seed, or a value secret like a token).
-    /// Unforgeable — minted only by the host or fetched from a `SecretStore`. The
-    /// ability to use it *is* authority; `.sign`/`.public_key` read it as a hex
-    /// Ed25519 seed, `.reveal` returns it verbatim.
-    Secret(Vec<u8>),
+    /// A single secret's raw bytes (a signing seed, or a value secret like a token)
+    /// plus its **use-only** flag (RFC-0060). Unforgeable — minted only by the host
+    /// or fetched from a `SecretStore`. The ability to use it *is* authority;
+    /// `.sign`/`.public_key` read it as a hex Ed25519 seed. `.reveal` returns it
+    /// verbatim UNLESS `use_only` is set (or it is the signing key), in which case
+    /// reveal errors — the key stays usable by handle only.
+    Secret(Vec<u8>, bool),
     /// The host-granted store of NAMED secrets (from `--secret`/`--secret-file`/
-    /// `--signing-key`). `secret_store.get(name)` yields a `Secret`.
-    SecretStore(std::collections::BTreeMap<String, Vec<u8>>),
+    /// `--signing-key`). Each entry is `(bytes, use_only)`; `secret_store.get(name)`
+    /// yields a `Secret` carrying both.
+    SecretStore(std::collections::BTreeMap<String, (Vec<u8>, bool)>),
     /// A connected socket — a handle into the interpreter's socket table.
     Socket(usize),
     /// A listening server socket — a handle into the interpreter's listener
@@ -169,7 +172,7 @@ impl fmt::Display for Value {
             Value::Dir(..) => write!(f, "<dir>"),
             Value::File(_) => write!(f, "<file>"),
             Value::Net(_) => write!(f, "<net>"),
-            Value::Secret(_) => write!(f, "<secret>"),
+            Value::Secret(_, _) => write!(f, "<secret>"),
             Value::SecretStore(_) => write!(f, "<secret store>"),
             Value::Socket(id) => write!(f, "<socket #{id}>"),
             Value::Listener(id) => write!(f, "<listener #{id}>"),
@@ -552,8 +555,9 @@ pub struct Interpreter {
     /// one. A `main` that declares a `Secret` parameter requires this.
     signing_key: Option<[u8; 32]>,
     /// Named secrets backing the `SecretStore` capability (from
-    /// `--secret`/`--secret-file`/`--signing-key`). `secret_store.get(name)`.
-    secrets: std::collections::BTreeMap<String, Vec<u8>>,
+    /// `--secret`/`--secret-file`/`--signing-key`), each `(bytes, use_only)`.
+    /// `secret_store.get(name)` mints a `Secret` carrying both. (RFC-0060)
+    secrets: std::collections::BTreeMap<String, (Vec<u8>, bool)>,
     /// RFC-0038: grant-document `[user_caps]` field values for a `main` that binds
     /// grantable capabilities. The grantable-cap param mints a sealed record from
     /// its entry here (empty unless launched with a `[user_caps]` grant).
@@ -701,7 +705,9 @@ impl Interpreter {
             Some(Type::Named(n, _)) if n == "Net" => Ok(Value::Net(self.net_allow.clone())),
             Some(Type::Named(n, _)) if n == "Exec" => Ok(Value::Cap(Capability::Exec)),
             Some(Type::Named(n, _)) if n == "Secret" => match self.signing_key {
-                Some(seed) => Ok(Value::Secret(seed.to_vec())),
+                // The bare `Secret` is the signing key: revealable=false is enforced by
+                // the signing-key identity check, so its `use_only` flag stays false here.
+                Some(seed) => Ok(Value::Secret(seed.to_vec(), false)),
                 None => err("`main` requires a `Secret`, but the host granted none (provide `--signing-key <hex-seed-file>`)"),
             },
             Some(Type::Named(n, _)) if n == "SecretStore" => Ok(Value::SecretStore(self.secrets.clone())),
@@ -1094,9 +1100,9 @@ impl Interpreter {
         if name == "secretstore.get" {
             return match args {
                 [Value::SecretStore(map), Value::Str(key)] => Ok(Some(match map.get(key) {
-                    Some(bytes) => Value::Ctor {
+                    Some((bytes, use_only)) => Value::Ctor {
                         name: "Some".into(),
-                        fields: vec![Value::Secret(bytes.clone())],
+                        fields: vec![Value::Secret(bytes.clone(), *use_only)],
                     },
                     None => Value::Ctor { name: "None".into(), fields: Vec::new() },
                 })),
@@ -1140,7 +1146,7 @@ impl Interpreter {
         if name == "secretstore.require" {
             return match args {
                 [Value::SecretStore(map), Value::Str(key)] => match map.get(key) {
-                    Some(bytes) => Ok(Some(Value::Secret(bytes.clone()))),
+                    Some((bytes, use_only)) => Ok(Some(Value::Secret(bytes.clone(), *use_only))),
                     None => err(format!("required secret `{key}` was not granted")),
                 },
                 _ => err("secretstore.require expects (SecretStore, name)"),
@@ -1151,7 +1157,11 @@ impl Interpreter {
         // only named value-secrets are. Mirrors the WASM host (`host_crypto_reveal_len`)
         // through the one shared identity rule so the backends can't drift.
         if name == "crypto.reveal" {
-            if let [Value::Secret(bytes)] = args {
+            if let [Value::Secret(bytes, use_only)] = args {
+                // (RFC-0060) A use-only secret is consumable by handle but never revealable.
+                if *use_only {
+                    return err(witchy_caps::capabilities::USE_ONLY_SECRET_REVEAL_ERROR);
+                }
                 if witchy_caps::capabilities::secret_is_signing_key(
                     self.signing_key.as_ref().map(|s| s.as_slice()),
                     bytes,
@@ -2862,7 +2872,9 @@ fn value_to_native(v: &Value) -> Result<witchy_runtime::value::NativeValue, Runt
         Value::List(xs) => N::List(
             xs.iter().map(value_to_native).collect::<Result<Vec<_>, RuntimeError>>()?,
         ),
-        Value::Secret(s) => N::Secret(s.clone()),
+        // The native crypto op already passed the reveal gate (use-only is checked
+        // before dispatch), so the raw bytes cross without the flag.
+        Value::Secret(s, _) => N::Secret(s.clone()),
         other => {
             return Err(RuntimeError {
                 message: format!("native function received an unsupported argument: {other}"),
@@ -2878,7 +2890,8 @@ fn native_to_value(v: witchy_runtime::value::NativeValue) -> Value {
         N::Str(s) => Value::Str(s),
         N::Bool(b) => Value::Bool(b),
         N::List(xs) => Value::List(xs.into_iter().map(native_to_value).collect()),
-        N::Secret(s) => Value::Secret(s),
+        // A secret produced by a native op (none do today) is revealable by default.
+        N::Secret(s) => Value::Secret(s, false),
     }
 }
 
@@ -3125,7 +3138,9 @@ fn run_module_inner_limited(
     // The signing key is the `signing` secret in the store, so a program may take
     // either a `Secret` (the key directly) or a `SecretStore` and `get("signing")`.
     if let Some(seed) = signing_key {
-        interp.secrets.insert("signing".to_string(), seed.to_vec());
+        // The signing key is never revealable, but its non-revealability is enforced
+        // by the signing-key identity check, so it is stored use_only=false.
+        interp.secrets.insert("signing".to_string(), (seed.to_vec(), false));
     }
     let root_args = match interp.functions.get("main").cloned() {
         Some(f) => {
