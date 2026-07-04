@@ -29,17 +29,41 @@ fn slug_of(route: String) -> String:
     else:
         "introduction"
 
-// Parse `SUMMARY.md` into `(title, slug)` nav entries: every `[Title](slug.md)` link
-// (flattened — nesting is a later polish) becomes a sidebar page. Lines without a Markdown
-// link (the `# Summary` header, blanks) are skipped. Pure string surgery — no capability.
-fn parse_nav(summary: String) -> List((String, String)):
+// A parsed `SUMMARY.md` entry: a page link at some nesting depth, or the `---` rule that
+// separates the appendices from the main chapters.
+type Nav:
+    Item(Int, String, String)   // depth (0 = chapter/part, 1 = sub-page), title, slug
+    Divider
+
+// Parse `SUMMARY.md` into nav entries, PRESERVING its two-level structure: every
+// `[Title](slug.md)` link becomes an `Item` tagged with its indentation depth (so the sidebar
+// nests sub-pages under their chapter), and a `---` line becomes a `Divider`. Lines without a
+// Markdown link (the `# Summary` header, blanks) are skipped. Pure string surgery — no cap.
+fn parse_nav(summary: String) -> List(Nav):
     var out = []
     for line in string.lines(summary):
-        if string.contains(line, "](") && string.contains(line, ".md)"):
+        if string.trim(line) == "---":
+            out = list.push(out, Divider)
+        else if string.contains(line, "](") && string.contains(line, ".md)"):
             let (_pre, after_lb) = string.split_once(line, "[")
             let (title, after_bracket) = string.split_once(after_lb, "](")
             let (slug, _rest) = string.split_once(after_bracket, ".md)")
-            out = list.push(out, (title, slug))
+            out = list.push(out, Item(nav_depth(line), title, slug))
+    out
+
+// A nav line's indentation depth: bulleted sub-pages nest by a 2-space indent (`  - `); a
+// chapter (`- `) or an un-bulleted part link (the cover, the appendices) sits at depth 0.
+fn nav_depth(line: String) -> Int:
+    (string.length(line) - string.length(string.trim_start(line))) / 2
+
+// The flat reading-order list of real pages (dropping depth + dividers). Prev/next and the
+// active-page lookup walk the book in order, independent of how it nests in the sidebar.
+fn nav_pages(nav: List(Nav)) -> List((String, String)):
+    var out = []
+    for entry in nav:
+        out = match entry:
+            Item(_depth, title, slug) -> list.push(out, (title, slug))
+            Divider -> out
     out
 
 fn update(m: Model, msg: Msg, fetch: UiFetch, route_cap: UiRoute) -> (Model, Cmd(Msg)):
@@ -79,7 +103,7 @@ fn view(m: Model) -> VNode(Msg):
 // position in the SUMMARY-derived nav. A missing edge (first/last page) renders a spacer so the
 // remaining link keeps its side.
 fn nav_chapters(route: String, summary: String) -> VNode(Msg):
-    let entries = parse_nav(summary)
+    let entries = nav_pages(parse_nav(summary))
     let idx = index_of_route(entries, route)
     glamour.element("div", [glamour.prop("class", "nav-chapters")], [
         edge_link(entries, idx - 1, "prev", "Previous"),
@@ -107,18 +131,41 @@ fn edge_link(entries: List((String, String)), i: Int, cls: String, label: String
         glamour.element("span", [glamour.prop("class", "nav-spacer")], [])
 
 fn sidebar(route: String, summary: String) -> VNode(Msg):
+    let nav = parse_nav(summary)
+    // The first entry is the book's cover (the un-bulleted title link); the sidebar header IS
+    // its link, so it isn't repeated in the list below.
     var items = []
-    for entry in parse_nav(summary):
-        let (title, slug) = entry
-        let path = "/p/" + slug
-        let cls = if path == route: "nav-item active" else: "nav-item"
-        items = list.push(items, glamour.element("li", [], [
-            glamour.element("button", [glamour.prop("class", cls), glamour.on("click", Visit(path))], [glamour.text(title)]),
-        ]))
+    var idx = 0
+    for entry in nav:
+        if idx > 0:
+            items = list.push(items, nav_node(entry, route))
+        idx = idx + 1
     glamour.element("nav", [glamour.prop("class", "sidebar")], [
-        glamour.element("h1", [], [glamour.text("The witchy Book")]),
+        glamour.element("button", [glamour.prop("class", "sidebar-brand"), glamour.on("click", Visit(cover_path(nav)))], [glamour.text("The witchy Book")]),
         glamour.element("ul", [], items),
     ])
+
+// The route of the cover page (the first nav entry), so the sidebar header links to it.
+fn cover_path(nav: List(Nav)) -> String:
+    if list.length(nav) >= 1:
+        match list.at(nav, 0):
+            Item(_d, _t, slug) -> "/p/" + slug
+            Divider -> "/p/introduction"
+    else:
+        "/p/introduction"
+
+// One sidebar entry: a page button (indented by its depth, highlighted when it is the current
+// route) or the appendix divider.
+fn nav_node(entry: Nav, route: String) -> VNode(Msg):
+    match entry:
+        Divider -> glamour.element("li", [glamour.prop("class", "nav-divider")], [])
+        Item(depth, title, slug) ->
+            let path = "/p/" + slug
+            let active = if path == route: " active" else: ""
+            let cls = "nav-item nav-depth-${depth}" + active
+            glamour.element("li", [], [
+                glamour.element("button", [glamour.prop("class", cls), glamour.on("click", Visit(path))], [glamour.text(title)]),
+            ])
 
 // (RFC-0041 P2) Render the page's Markdown, then replace each `witchy` code block with a host
 // `Slot` — the DOM shell mounts a RUNNABLE cell there, in a subtree glamour never diffs into,
