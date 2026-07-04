@@ -1012,13 +1012,19 @@ impl Interpreter {
         }
         let mut fenv = Env::new();
         let mut writebacks: Vec<(String, String)> = Vec::new();
+        // (RFC-0043) A mutator's `var` *receiver* (its first param) is not a
+        // procedure-style write-back channel: its expression form is a pure value
+        // call (any argument accepted, nothing written back through the param), and
+        // its statement form's write-back is delivered by the `xs = f(xs, …)` rewrite.
+        // Only a Nil-returning `var` procedure writes back through the parameter.
+        let mutator_receiver = func.is_mutator();
         for (i, param) in func.params.iter().enumerate() {
             fenv.define(
                 param.name.clone(),
                 argvals[i].clone(),
                 param.convention.binds_mutable(),
             );
-            if matches!(param.convention, Convention::Var) {
+            if matches!(param.convention, Convention::Var) && !(i == 0 && mutator_receiver) {
                 match &args[i] {
                     Expr::Var(caller) => writebacks.push((caller.clone(), param.name.clone())),
                     _ => {

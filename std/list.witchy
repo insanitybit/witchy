@@ -28,11 +28,11 @@ pub fn at(xs: List(a), index: Int) -> a:
     list.at(xs, index)
 
 // A new list with `x` appended (lists are values; the original is unchanged).
-pub fn push(xs: List(a), x: a) -> List(a):
+pub fn push(var xs: List(a), x: a) -> List(a):
     list.push(xs, x)
 
 // A new list that is `xs` followed by `ys`.
-pub fn concat(xs: List(a), ys: List(a)) -> List(a):
+pub fn concat(var xs: List(a), ys: List(a)) -> List(a):
     list.concat(xs, ys)
 
 // Concatenate the strings in `parts`, inserting `sep` between adjacent
@@ -408,7 +408,7 @@ pub fn intersperse(xs: List(a), sep: a) -> List(a):
     out
 
 // The list, reversed.
-pub fn reverse(xs: List(a)) -> List(a):
+pub fn reverse(var xs: List(a)) -> List(a):
     var out = []
     var i = list.length(xs) - 1
     while i >= 0:
@@ -443,7 +443,7 @@ fn merge(a: List(a), b: List(a), less: fn(a, a) -> Bool) -> List(a):
 // Sort using a caller-supplied "is-less-than" comparator — a stable merge sort
 // (O(n log n)), so equal elements keep their original order. Generic over the
 // element type.
-pub fn sort_by(xs: List(a), less: fn(a, a) -> Bool) -> List(a):
+pub fn sort_by(var xs: List(a), less: fn(a, a) -> Bool) -> List(a):
     let n = list.length(xs)
     if n <= 1:
         xs
@@ -452,7 +452,7 @@ pub fn sort_by(xs: List(a), less: fn(a, a) -> Bool) -> List(a):
         merge(sort_by(take(xs, mid), less), sort_by(drop(xs, mid), less), less)
 
 // Sort a list of integers ascending — the common default over `sort_by`.
-pub fn sort(xs: List(Int)) -> List(Int):
+pub fn sort(var xs: List(Int)) -> List(Int):
     sort_by(xs, fn(a: Int, b: Int): a < b)
 
 // Whether `target` appears in the list, by the element type's `Eq` impl. The
@@ -565,7 +565,7 @@ pub fn slice(xs: List(a), start: Int, end: Int) -> List(a):
 // A copy of `xs` with the element at `index` replaced by `value`. An out-of-
 // range index leaves the list unchanged. (Lists are immutable, so this returns
 // a new list rather than mutating in place.)
-pub fn set_at(xs: List(a), index: Int, value: a) -> List(a):
+pub fn set_at(var xs: List(a), index: Int, value: a) -> List(a):
     var out = []
     var i = 0
     for x in xs:
@@ -578,7 +578,7 @@ pub fn set_at(xs: List(a), index: Int, value: a) -> List(a):
 
 // A copy of `xs` with the function `f` applied to the element at `index`. An
 // out-of-range index leaves the list unchanged.
-pub fn update_at(xs: List(a), index: Int, f: fn(a) -> a) -> List(a):
+pub fn update_at(var xs: List(a), index: Int, f: fn(a) -> a) -> List(a):
     var out = []
     var i = 0
     for x in xs:

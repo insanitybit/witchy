@@ -49,7 +49,7 @@ pub fn index_of(s: String, needle: String) -> Int:
     string.index_of(s, needle)
 
 // Replace every occurrence of `from` with `to`.
-pub fn replace(s: String, from: String, to: String) -> String:
+pub fn replace(var s: String, from: String, to: String) -> String:
     string.replace(s, from, to)
 
 // The substring from character index `start` (inclusive) to `end` (exclusive),
@@ -58,14 +58,14 @@ pub fn substring(s: String, start: Int, end: Int) -> String:
     string.substring(s, start, end)
 
 // ASCII case mapping (the portable set both backends share).
-pub fn to_upper(s: String) -> String:
+pub fn to_upper(var s: String) -> String:
     string.to_upper(s)
 
-pub fn to_lower(s: String) -> String:
+pub fn to_lower(var s: String) -> String:
     string.to_lower(s)
 
 // Strip leading and trailing ASCII whitespace.
-pub fn trim(s: String) -> String:
+pub fn trim(var s: String) -> String:
     string.trim(s)
 
 // Parse a decimal integer; junk, overflow, or an empty string ABORTS the
@@ -86,7 +86,7 @@ pub fn repeat(s: String, n: Int) -> String:
 // Left-pad `s` with copies of `fill` until it is `width` characters wide.
 // The padding is trimmed to fit exactly, so any fill width yields a result of
 // exactly `width` chars; `s` is returned unchanged when already that long.
-pub fn pad_left(s: String, width: Int, fill: String) -> String:
+pub fn pad_left(var s: String, width: Int, fill: String) -> String:
     let len = string.char_count(s)
     if len >= width:
         s
@@ -95,7 +95,7 @@ pub fn pad_left(s: String, width: Int, fill: String) -> String:
         string.substring(repeat(fill, needed), 0, needed) + s
 
 // Right-pad `s` with copies of `fill` until it is `width` characters wide.
-pub fn pad_right(s: String, width: Int, fill: String) -> String:
+pub fn pad_right(var s: String, width: Int, fill: String) -> String:
     let len = string.char_count(s)
     if len >= width:
         s
@@ -106,7 +106,7 @@ pub fn pad_right(s: String, width: Int, fill: String) -> String:
 // Center `s` in a field `width` characters wide, padding both sides with `fill`;
 // an odd remainder goes on the right. `s` is returned unchanged when already at
 // least that wide.
-pub fn center(s: String, width: Int, fill: String) -> String:
+pub fn center(var s: String, width: Int, fill: String) -> String:
     let len = string.char_count(s)
     if len >= width:
         s
@@ -118,7 +118,7 @@ pub fn center(s: String, width: Int, fill: String) -> String:
 
 // Remove `prefix` from the front of `s` when present; otherwise return `s`
 // unchanged. The complement of the `starts_with` builtin.
-pub fn strip_prefix(s: String, prefix: String) -> String:
+pub fn strip_prefix(var s: String, prefix: String) -> String:
     if string.starts_with(s, prefix):
         string.substring(s, string.char_count(prefix), string.char_count(s))
     else:
@@ -126,7 +126,7 @@ pub fn strip_prefix(s: String, prefix: String) -> String:
 
 // Remove `suffix` from the end of `s` when present; otherwise return `s`
 // unchanged. The complement of the `ends_with` builtin.
-pub fn strip_suffix(s: String, suffix: String) -> String:
+pub fn strip_suffix(var s: String, suffix: String) -> String:
     if string.ends_with(s, suffix):
         string.substring(s, 0, string.char_count(s) - string.char_count(suffix))
     else:
@@ -190,7 +190,7 @@ pub fn words(text: String) -> List(String):
 
 // Replace only the first occurrence of `from` with `to`; return `s` unchanged
 // when `from` is absent. (The `replace` builtin replaces every occurrence.)
-pub fn replace_first(s: String, from: String, to: String) -> String:
+pub fn replace_first(var s: String, from: String, to: String) -> String:
     let i = string.index_of(s, from)
     if i < 0:
         s
@@ -286,7 +286,7 @@ fn is_space(c: String) -> Bool:
     c == " " || c == "\t" || c == "\n" || c == "\r"
 
 // Remove leading whitespace.
-pub fn trim_start(s: String) -> String:
+pub fn trim_start(var s: String) -> String:
     var i = 0
     let n = string.char_count(s)
     while i < n && is_space(char_at(s, i)):
@@ -294,7 +294,7 @@ pub fn trim_start(s: String) -> String:
     string.substring(s, i, n)
 
 // Remove trailing whitespace.
-pub fn trim_end(s: String) -> String:
+pub fn trim_end(var s: String) -> String:
     var j = string.char_count(s)
     while j > 0 && is_space(char_at(s, j - 1)):
         j = j - 1

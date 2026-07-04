@@ -1107,6 +1107,13 @@ struct Checker {
     sealed_types: HashSet<String>,
     adt_variants: HashMap<String, Vec<String>>,
     fn_conventions: HashMap<String, Vec<Convention>>,
+    /// (RFC-0043) Functions that are mutators — `var` first param + a return of
+    /// that param's type. A mutator's *receiver* (arg 0) is exempt from the
+    /// `var`-argument mutability demand: its expression form is a pure value call
+    /// (any argument accepted), and its statement form's write-back is delivered
+    /// by the `xs = f(xs, …)` rewrite. Only a Nil-returning `var` procedure keeps
+    /// the mutable-`var`-argument obligation on that parameter.
+    fn_mutators: HashSet<String>,
     /// Per-function type parameters (name, var id), from lowercase type names in
     /// signatures. Generalized: instantiated fresh at each call site.
     fn_typarams: HashMap<String, Vec<(String, u32)>>,
@@ -2496,8 +2503,12 @@ impl Checker {
                 // Enforce conventions: a `var` parameter needs a mutable variable;
                 // `own` consumes its argument (use-after-move becomes an error).
                 if let Some(convs) = self.fn_conventions.get(name).cloned() {
-                    for (arg, conv) in args.iter().zip(&convs) {
+                    let is_mutator = self.fn_mutators.contains(name);
+                    for (i, (arg, conv)) in args.iter().zip(&convs).enumerate() {
                         match conv {
+                            // (RFC-0043) A mutator's receiver (arg 0) is a pure value
+                            // argument in expression form: any expression is accepted.
+                            Convention::Var if is_mutator && i == 0 => {}
                             Convention::Var => match arg {
                                 Expr::Var(v) if self.is_mutable(v) == Some(true) => {}
                                 Expr::Var(v) => {
@@ -3569,6 +3580,7 @@ fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeErr
         type_record: if record { Some(HashMap::new()) } else { None },
         fn_sigs: HashMap::new(),
         fn_conventions: HashMap::new(),
+        fn_mutators: HashSet::new(),
         ctor_sigs: HashMap::new(),
         ctor_typarams: HashMap::new(),
         record_fields: HashMap::new(),
@@ -3612,6 +3624,9 @@ fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeErr
                 c.fn_typarams.insert(f.name.clone(), typarams);
                 c.fn_conventions
                     .insert(f.name.clone(), f.params.iter().map(|p| p.convention).collect());
+                if f.is_mutator() {
+                    c.fn_mutators.insert(f.name.clone());
+                }
             }
             Item::Type(t) => {
                 // A type's parameters: explicit ones (`type Step(m, a):`) FIX the

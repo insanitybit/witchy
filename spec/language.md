@@ -169,16 +169,26 @@ fn main(console: Console):
 ```
 
 A **method call used as a statement** on a `var` place belongs to the same
-family: it writes its result back when the method returns the receiver's type, so
-`xs.push(v)` *is* `xs = list.push(xs, v)` and `d.insert(k, v)` mutates `d` in
-place. A query like `xs.length()` returns a different type, so it stays a plain
-discard; a method statement on a `let` (or in tail/return position) is unchanged.
+family, and it writes back by **declaration**: a function is a *mutator* when
+its first parameter is a `var` receiver whose type it also returns
+(`fn push(var xs: List(a), x: a) -> List(a)`). A statement-position call to a
+mutator on a `var` place writes its result back, so `xs.push(v)` *is*
+`xs = list.push(xs, v)` and `d.insert(k, v)` mutates `d` in place; the signature
+in [the stdlib reference](stdlib.md) shows the `var` receiver, so which functions
+mutate is documented where it is declared. A call that is *not* a mutator and
+whose result is thrown away is a **compile error** — bind it, reassign it, or
+discard it explicitly with `let _ =` — which catches the mistake of calling a
+value-returning method (`xs.length()`, `xs.map(f)`) and forgetting its result.
+A mutator statement on a `let` place is likewise an error (declare it `var`, or
+bind the result). In expression position a method call is an ordinary value call
+— `let ys = xs.push(4)` builds a new list and leaves `xs` alone.
 
 ```witchy
 fn main(console: Console):
     var xs = []
     xs.push(1)
     xs.push(2)
+    let _ = xs.length()                  // explicit discard — `length` is not a mutator
     print(console, "${xs}")              // [1, 2]
 ```
 
@@ -413,7 +423,7 @@ an occurs check).
 |---|---|
 | (default) | owned, observably immutable value — the callee may read but the caller sees no change |
 | `let` | immutable **borrow**; may not escape — returning a `let`-borrowed parameter is a type error |
-| `var` | the callee mutates and the caller's variable is **written back** — even on early `return`/`?` |
+| `var` | a write-back parameter, in one of two shapes by the return type: a **procedure channel** (returns `Nil`) mutates the parameter and writes it back to the caller's variable — even on early `return`/`?`; a **mutator receiver** (first parameter, returns that parameter's type — `fn push(var xs: List(a), …) -> List(a)`) declares that the function's statement form writes back (§3), while its expression form is an ordinary value call |
 | `own` | ownership transfer; the **callee** consumes the argument, so using the source afterwards is a check-time error |
 | `move e` | use-site ownership transfer; the **caller** consumes the source binding (see below), idiomatically paired with `own` |
 
@@ -427,6 +437,14 @@ fn main(console: Console):
     print(console, "${counter}")
 ```
 
+`bump` above is a **procedure channel**: a `var` parameter and a `Nil` return, so
+the call site must pass a mutable `var` (`bump(counter)`) and the mutation is
+written back through the parameter. A `var` **first** parameter whose type the
+function *returns* is instead a **mutator receiver** (`fn push(var xs: List(a),
+x: a) -> List(a)`): its expression form is a plain value call that accepts any
+receiver argument, and it is its *statement* form that writes back (§3). The two
+readings are disjoint by return shape, so a reader never guesses which applies.
+
 `own` and `move` are two independent ways to end a binding's life, meeting in the
 middle. `own` consumes from the **callee** side: passing any variable to an `own`
 parameter marks it moved, so a later use is a check-time error
@@ -435,10 +453,12 @@ ends `x` *whatever the callee's convention is* — into a default, `let`, or `ow
 parameter alike — so a later use of `x` is the same check-time error even when the
 parameter only took an ordinary copy. The two compose: `f(move x)` into an `own`
 parameter is a hand-off both sides spell out, and on the compiled backend it is a
-guaranteed no-copy move. `move` is **not** accepted into a `var` parameter — a
-`var` argument must be a plain mutable variable, since the callee writes it back.
-On both backends `move` is value-neutral (value semantics copy already);
-it changes only *when* a copy is elided, never any result.
+guaranteed no-copy move. `move` is **not** accepted into a **procedure-channel**
+`var` parameter — that argument must be a plain mutable variable, since the
+callee writes it back (a mutator receiver's expression form is an ordinary value
+call, so it accepts `move` like any value parameter). On both backends `move` is
+value-neutral (value semantics copy already); it changes only *when* a copy is
+elided, never any result.
 
 **Closures.** `fn(n: Int): n + by` captures by value; you call through a
 `fn(...)` -typed value or parameter. Closures cannot assign to captured

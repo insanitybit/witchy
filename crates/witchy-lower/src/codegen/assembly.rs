@@ -106,8 +106,25 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
     for item in &module.items {
         match item {
             Item::Function(f) => {
-                cg.fn_conventions
-                    .insert(f.name.clone(), f.params.iter().map(|p| p.convention).collect());
+                // (RFC-0043) A mutator's `var` receiver (arg 0) does not use the
+                // multi-value write-back ABI — its write-back is the `xs = f(xs, …)`
+                // statement rewrite — so record its receiver as a plain value
+                // convention. Keep both call sites and the callee consistent.
+                let mutator_receiver = f.is_mutator();
+                cg.fn_conventions.insert(
+                    f.name.clone(),
+                    f.params
+                        .iter()
+                        .enumerate()
+                        .map(|(i, p)| {
+                            if i == 0 && mutator_receiver {
+                                Convention::Let
+                            } else {
+                                p.convention
+                            }
+                        })
+                        .collect(),
+                );
                 cg.fn_params.insert(f.name.clone(), f.params.clone());
                 let ret = f.ret.as_ref().map(ty_kind).unwrap_or(Kind::I32);
                 cg.fn_ret.insert(f.name.clone(), ret);

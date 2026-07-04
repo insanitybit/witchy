@@ -981,11 +981,15 @@ impl Parser {
                 ));
             }
             if !mutable && self.eat(&Tok::Underscore) {
-                // `let _ = e` — evaluate for effects, bind nothing. Same
-                // meaning as the bare expression statement (the canonical
-                // form, which `fmt` prints).
+                // `let _ = e` — evaluate for effects, bind nothing. (RFC-0043)
+                // This is the EXPLICIT-DISCARD escape: kept as a wildcard
+                // `LetPattern` (not a bare `Stmt::Expr`) so it is distinguishable
+                // from an accidental discard — a statement-position method call
+                // whose non-Nil result is thrown away is an error, and `let _ =`
+                // is how the author says "I meant to discard this". `fmt` prints
+                // a wildcard `LetPattern` back as `let _ = e`.
                 self.expect(&Tok::Eq)?;
-                return Ok(Stmt::Expr(self.expr(0)?));
+                return Ok(Stmt::LetPattern { pattern: Pattern::Wildcard, value: self.expr(0)? });
             }
             // A SIMPLE binding — `let x = e`, `let x: T = e`, or `var x = e` — is a
             // plain lowercase name (optionally ascribed / mutable): it stays
@@ -2025,7 +2029,7 @@ fn bin_op(t: &Tok) -> BinOp {
 /// `RecordUpdate`, and nested places (`g[i][j] = v`) recurse outward — every
 /// step reassigns a value, so the uniqueness pass keeps it in place. The base
 /// must bottom out at a variable.
-pub(crate) fn desugar_place_assign(place: Expr, value: Expr) -> Result<Stmt, String> {
+pub fn desugar_place_assign(place: Expr, value: Expr) -> Result<Stmt, String> {
     match place {
         Expr::Var(name) => Ok(Stmt::Assign { name, value }),
         Expr::Index { base, index } => {

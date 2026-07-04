@@ -217,7 +217,7 @@ fn insert_ord(sorted: List(a), x: a) -> List(a) where a: Ord:
 // dispatches through the element type's `Ord` impl, so it is content-correct on
 // both backends (Int, String, Duration, or your own `Ord` types) without a
 // caller-supplied comparator. For Ints, `list.sort` is the lighter default.
-pub fn sort(xs: List(a)) -> List(a) where a: Ord:
+pub fn sort(var xs: List(a)) -> List(a) where a: Ord:
     var out = []
     for x in xs:
         out = insert_ord(out, x)

@@ -1780,13 +1780,20 @@ impl Codegen {
             None => self.block_kind(renamed),
         };
         self.cur_fn_ret_kind = ret_kind;
-        self.cur_fn_var = f.params.iter().any(|p| p.convention == Convention::Var);
+        // (RFC-0043) A mutator's `var` receiver (first param) is NOT a
+        // procedure-style write-back channel — its write-back is delivered by the
+        // `xs = f(xs, …)` statement rewrite, so the receiver is lowered like a plain
+        // value param (no extra move-out result). Only a Nil-returning `var`
+        // procedure uses the multi-value write-back ABI.
+        let mutator_receiver = f.is_mutator();
         self.cur_fn_var_params = f
             .params
             .iter()
-            .filter(|p| p.convention == Convention::Var)
-            .map(|p| p.name.clone())
+            .enumerate()
+            .filter(|(i, p)| p.convention == Convention::Var && !(*i == 0 && mutator_receiver))
+            .map(|(_, p)| p.name.clone())
             .collect();
+        self.cur_fn_var = !self.cur_fn_var_params.is_empty();
 
         self.begin_unit(renamed);
 

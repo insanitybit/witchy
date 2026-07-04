@@ -15,12 +15,12 @@ pub fn new() -> Dict(k, v):
 
 // A new dict with `key` set to `val` (replacing any existing entry).
 // Insertion order of first appearance is preserved.
-pub fn insert(d: Dict(k, v), key: k, val: v) -> Dict(k, v):
+pub fn insert(var d: Dict(k, v), key: k, val: v) -> Dict(k, v):
     dict.insert(d, key, val)
 
 // Set `key` to `val` — the `insert` upsert under the name the `d[key] = val`
 // sugar desugars to (RFC-0022), uniform with `list.set_at`.
-pub fn set_at(d: Dict(k, v), key: k, val: v) -> Dict(k, v):
+pub fn set_at(var d: Dict(k, v), key: k, val: v) -> Dict(k, v):
     dict.insert(d, key, val)
 
 // The value for `key`, or `default` when absent.
@@ -29,7 +29,7 @@ pub fn get_or(d: Dict(k, v), key: k, default: v) -> v:
 
 // Single-lookup upsert: apply `f` to the current value (or `default` when
 // `key` is absent) and store the result under `key`.
-pub fn update(d: Dict(k, v), key: k, default: v, f: fn(v) -> v) -> Dict(k, v):
+pub fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) -> Dict(k, v):
     dict.update(d, key, default, f)
 
 // Whether `key` is present.
@@ -37,7 +37,7 @@ pub fn contains_key(d: Dict(k, v), key: k) -> Bool:
     dict.contains_key(d, key)
 
 // A new dict with `key` (and its value) removed; unchanged when absent.
-pub fn remove(d: Dict(k, v), key: k) -> Dict(k, v):
+pub fn remove(var d: Dict(k, v), key: k) -> Dict(k, v):
     dict.remove(d, key)
 
 // The keys, in insertion order.
@@ -96,7 +96,7 @@ pub fn filter(d: Dict(k, v), keep: fn(k, v) -> Bool) -> Dict(k, v):
     out
 
 // `a` with `b`'s entries laid over it (on a key collision, `b` wins).
-pub fn merge(a: Dict(k, v), b: Dict(k, v)) -> Dict(k, v):
+pub fn merge(var a: Dict(k, v), b: Dict(k, v)) -> Dict(k, v):
     var out = a
     for entry in dict.pairs(b):
         let (k, v) = entry

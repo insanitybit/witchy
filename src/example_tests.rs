@@ -17646,3 +17646,123 @@ pub fn serve(console: Console, net: Net) -> Int:
              hole lives), got: {msg}"
         );
     }
+
+    // ---- RFC-0043: write-back by declaration (not the name census) ----
+
+    /// (RFC-0043 Failure 1) An unrelated `impl Bag: fn push(self, v) -> Bag`
+    /// declared elsewhere in the program used to poison the whole-program name
+    /// census: `push` entered the `shadowed` set, so a List `xs.push(1)`
+    /// statement silently stopped writing back (`parity` agreed, so nothing
+    /// caught it). Now resolution is PER RECEIVER TYPE: a List receiver resolves
+    /// to `list.push` (a mutator), never to `Bag.push`, so the write-back fires.
+    /// Both backends must print `[1]` — the census bug is dead by construction.
+    #[test]
+    fn rfc0043_unrelated_impl_no_longer_shadows_list_push() {
+        let src = "import list\n\
+                   type Bag:\n\
+                   \x20   n: Int\n\
+                   \n\
+                   impl Bag:\n\
+                   \x20   fn push(self, v: Int) -> Bag:\n\
+                   \x20       Bag(self.n + v)\n\
+                   \n\
+                   fn main(console: Console):\n\
+                   \x20   var xs = []\n\
+                   \x20   xs.push(1)\n\
+                   \x20   print(console, \"${xs}\")\n";
+        let want = vec!["[1]".to_string()];
+        assert_eq!(link_run(src), want, "interpreter: List push must write back despite `impl Bag: push`");
+        assert_eq!(wasm_run(src), want, "compiled: List push must write back despite `impl Bag: push`");
+    }
+
+    /// (RFC-0043 Failure 2) The old census keyed write-back on the *generic
+    /// declared* return type equalling the receiver's: `filter : List(a) ->
+    /// List(a)` qualified and silently MUTATED, while `map : List(a) -> List(b)`
+    /// did not and silently no-op'd — same syntax, opposite effects, no
+    /// diagnostic. Neither is a mutator (`var` receiver) now, so a `filter`/`map`
+    /// statement whose result is discarded is a LOUD compile error on both
+    /// backends (the check the two backends share), naming the fix.
+    #[test]
+    fn rfc0043_filter_and_map_statements_are_discard_errors() {
+        for method in ["filter", "map"] {
+            let body = if method == "filter" {
+                "xs.filter(fn(n: Int) -> Bool: n > 2)"
+            } else {
+                "xs.map(fn(n: Int) -> Int: n * 10)"
+            };
+            let src = format!(
+                "import list\n\
+                 fn main(console: Console):\n\
+                 \x20   var xs = [1, 2, 3, 4]\n\
+                 \x20   {body}\n\
+                 \x20   print(console, \"${{xs}}\")\n"
+            );
+            let linked = resolve_std_src(&src);
+            let err = typeck::check(&linked)
+                .expect_err(&format!("a discarded `{method}` statement must be a compile error"))
+                .to_string();
+            assert!(
+                err.contains(&format!("result of `{method}` is discarded")),
+                "the {method} discard error must name the method and the fix, got: {err}"
+            );
+        }
+    }
+
+    /// (RFC-0043) `let _ = expr` is the explicit-discard escape: it turns the
+    /// discard error off while running the call for its effects, and leaves the
+    /// receiver untouched. Both backends run and agree (`xs` unchanged).
+    #[test]
+    fn rfc0043_let_underscore_is_the_discard_escape() {
+        let src = "import list\n\
+                   fn main(console: Console):\n\
+                   \x20   var xs = [1, 2, 3, 4]\n\
+                   \x20   let _ = xs.filter(fn(n: Int) -> Bool: n > 2)\n\
+                   \x20   print(console, \"${xs}\")\n";
+        let want = vec!["[1, 2, 3, 4]".to_string()];
+        assert_eq!(link_run(src), want, "interpreter: `let _ =` discards and leaves xs unchanged");
+        assert_eq!(wasm_run(src), want, "compiled: `let _ =` discards and leaves xs unchanged");
+    }
+
+    /// (RFC-0043) The real mutators still write back in statement form on both
+    /// backends — the declared-`var`-receiver path is the same self-assign shape
+    /// (`xs = list.push(xs, …)`) the uniqueness pass already optimizes, so
+    /// push/insert/set_at/remove all mutate in place and agree.
+    #[test]
+    fn rfc0043_real_mutators_still_write_back_both_backends() {
+        // list.push, list.set_at, dict.insert, dict.remove — one program, mixed.
+        let src = "import list\nimport dict\n\
+                   fn main(console: Console):\n\
+                   \x20   var xs = [1, 2, 3]\n\
+                   \x20   xs.push(4)\n\
+                   \x20   xs.set_at(0, 9)\n\
+                   \x20   print(console, \"${xs}\")\n\
+                   \x20   var d = dict.new()\n\
+                   \x20   d.insert(\"a\", 1)\n\
+                   \x20   d.insert(\"b\", 2)\n\
+                   \x20   d.remove(\"a\")\n\
+                   \x20   print(console, \"${dict.contains_key(d, \"a\")}\")\n\
+                   \x20   print(console, \"${dict.get_or(d, \"b\", 0)}\")\n";
+        let want = vec!["[9, 2, 3, 4]".to_string(), "false".to_string(), "2".to_string()];
+        assert_eq!(link_run(src), want, "interpreter: real mutators must write back");
+        assert_eq!(wasm_run(src), want, "compiled: real mutators must write back");
+    }
+
+    /// (RFC-0043) A mutator in statement form on an IMMUTABLE `let` place has no
+    /// `var` to write back to — a compile error naming the fix (declare `var`,
+    /// or bind the result), not a silent discard.
+    #[test]
+    fn rfc0043_mutator_on_immutable_place_is_an_error() {
+        let src = "import list\n\
+                   fn main(console: Console):\n\
+                   \x20   let xs = [1, 2, 3]\n\
+                   \x20   xs.push(4)\n\
+                   \x20   print(console, \"${xs}\")\n";
+        let linked = resolve_std_src(src);
+        let err = typeck::check(&linked)
+            .expect_err("a mutator on a `let` place must be an error")
+            .to_string();
+        assert!(
+            err.contains("mutates its receiver") && err.contains("mutable place"),
+            "the immutable-place error must explain the fix, got: {err}"
+        );
+    }

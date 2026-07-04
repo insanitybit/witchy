@@ -13,6 +13,17 @@
 //! (`where a: Show`) and dispatch through type variables are a later increment; a
 //! call whose receiver type can't be determined is left untouched and the type
 //! checker reports it as an unknown function.
+//!
+//! (RFC-0043) Statement-position mutating-method write-back lives HERE, not in
+//! the linker's old name census (`rewrite_mut_method_stmts`, deleted). This is
+//! the point where `place.method(args)` resolves to a concrete callee BY THE
+//! RECEIVER'S TYPE, so the write-back decision reads the resolved callee's
+//! declaration (`Function::is_mutator`) rather than a whole-program name census.
+//! A statement `xs.push(1)` on a `var` place whose resolved callee is a mutator
+//! becomes `xs = list.push(xs, 1)`; a non-mutator statement call whose result is
+//! non-Nil is a discard error. The rewrite edits the single AST both backends
+//! consume (via `lower`/`lower_for_wasm`) and the checker consumes (via
+//! `lower_checked`), so parity holds by construction.
 
 use std::collections::{HashMap, HashSet};
 
@@ -297,6 +308,14 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     // like `Ord__Int__less` calling `compare`), so the annotate probe below
     // sees a checkable module. Diagnostics are discarded here — anything
     // genuinely unresolvable is re-found loudly by the post-mono pass.
+    //
+    // (RFC-0043) Discarded-non-Nil-method-result errors, however, ARE surfaced
+    // (unlike `missing_impls`): each statement-position method call is resolved
+    // exactly once — by whichever pass first knows its receiver type — so a
+    // discard is detected once. Deduplicated at the end (a generic site the
+    // quiet pass leaves unresolved is flagged per specialization by the final
+    // pass; the same message need only appear once).
+    let discard_errors = std::cell::RefCell::new(Vec::new());
     {
         let (ctor_results, fn_rets, fn_sigs) = build_tables(&items);
         let ctor_fields = build_ctor_fields(&items);
@@ -309,6 +328,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             })
             .collect();
         let quiet = std::cell::RefCell::new(Vec::new());
+        let (mutators, returns_nil) = build_mutation_tables(&items);
         let empty_table = crate::typeck::TypeTable::default();
         let ctx = Ctx {
             trait_methods: &trait_methods,
@@ -322,6 +342,9 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             free_fns: &free_fns,
             missing_impls: &quiet,
             statics: &statics,
+            mutators: &mutators,
+            returns_nil: &returns_nil,
+            discard_errors: &discard_errors,
             table: &empty_table,
             bound_traits: std::cell::RefCell::new(HashMap::new()),
         };
@@ -330,7 +353,9 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                 ctx.set_bounds(&f.bounds);
                 let mut scope = Scope::new();
                 seed_params(&f.params, &mut scope);
-                ctx.rewrite_block(&mut f.body, &mut scope);
+                // (RFC-0043) A function body's tail statement is its return
+                // value (value position); write-back skips it.
+                ctx.rewrite_block(&mut f.body, &mut scope, true);
             }
         }
     }
@@ -421,6 +446,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         })
         .collect();
     let missing_impls = std::cell::RefCell::new(Vec::new());
+    let (mutators, returns_nil) = build_mutation_tables(&items);
     let ctx = Ctx {
         trait_methods: &trait_methods,
         static_trait_methods: &static_trait_methods,
@@ -433,6 +459,9 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         free_fns: &free_fns,
         missing_impls: &missing_impls,
         statics: &statics,
+        mutators: &mutators,
+        returns_nil: &returns_nil,
+        discard_errors: &discard_errors,
         table: &type_table,
         bound_traits: std::cell::RefCell::new(HashMap::new()),
     };
@@ -441,7 +470,8 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             ctx.set_bounds(&f.bounds);
             let mut scope = Scope::new();
             seed_params(&f.params, &mut scope);
-            ctx.rewrite_block(&mut f.body, &mut scope);
+            // (RFC-0043) The body's tail statement is the return value.
+            ctx.rewrite_block(&mut f.body, &mut scope, true);
         }
     }
 
@@ -449,6 +479,13 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         Module { modes: Vec::new(), imports, items, import_lines: Vec::new(), item_lines: Vec::new() },
         {
             let mut d = supertrait_diags;
+            // (RFC-0043) A discarded-result error is a definitive diagnostic on a
+            // fully-resolved callee — surface it FIRST (ahead of any spurious
+            // missing-impl the quiet pass would otherwise report), deduplicated.
+            let mut seen = std::collections::HashSet::new();
+            let mut discards = discard_errors.into_inner();
+            discards.retain(|m| seen.insert(m.clone()));
+            d.extend(discards);
             d.extend(missing_impls.into_inner());
             d.extend(mono_diags);
             d
@@ -490,6 +527,11 @@ fn transitive_supertraits(direct: &HashMap<String, Vec<String>>) -> HashMap<Stri
 struct Scope {
     types: HashMap<String, String>,
     locals: HashSet<String>,
+    /// (RFC-0043) Names bound to a *mutable* place — a `var` parameter or `var`
+    /// let. A statement-position mutator method call (`xs.push(1)`) writes back
+    /// only when its receiver's base is one of these. Any other binding form for
+    /// the same name (a `let`, a loop/pattern binder) shadows it out.
+    mutables: HashSet<String>,
 }
 
 impl Scope {
@@ -502,17 +544,42 @@ impl Scope {
         self.types.get(name)
     }
 
-    /// Bind `name` to head type `ty` — and record it as a local.
+    /// Bind `name` to head type `ty` — and record it as a local. Immutable by
+    /// default (a `let`); use [`Scope::insert_mut`] for a `var`.
     fn insert(&mut self, name: String, ty: String) {
         self.locals.insert(name.clone());
+        self.mutables.remove(&name);
+        self.types.insert(name, ty);
+    }
+
+    /// Bind `name` to head type `ty` as a MUTABLE place (a `var`) — a write-back
+    /// target for a statement-position mutator method call.
+    fn insert_mut(&mut self, name: String, ty: String) {
+        self.locals.insert(name.clone());
+        self.mutables.insert(name.clone());
         self.types.insert(name, ty);
     }
 
     /// Record `name` as a bound local whose type is unknown here (a function-
-    /// typed parameter, an untyped `let`), clearing any stale type binding.
+    /// typed parameter, an untyped `let`), clearing any stale type binding. Also
+    /// clears mutability — an untyped binding form shadows any outer mutable.
     fn bind_local(&mut self, name: &str) {
         self.locals.insert(name.to_string());
+        self.mutables.remove(name);
         self.types.remove(name);
+    }
+
+    /// Record `name` as a bound local that is a mutable place whose type is
+    /// unknown here (an untyped `var`).
+    fn bind_local_mut(&mut self, name: &str) {
+        self.locals.insert(name.to_string());
+        self.mutables.insert(name.to_string());
+        self.types.remove(name);
+    }
+
+    /// Whether `name` is bound as a mutable place (`var`) here.
+    fn is_mutable(&self, name: &str) -> bool {
+        self.mutables.contains(name)
     }
 
     /// Drop any type binding for `name` (monomorphization's scope, which does
@@ -532,9 +599,13 @@ fn seed_params(params: &[Param], scope: &mut Scope) {
     for p in params {
         // Every parameter is a bound local — even a function-typed one, whose
         // type has no scope-name — so a call on it never dispatches as a trait
-        // method that shares its name.
+        // method that shares its name. (RFC-0043) A `var` parameter is a mutable
+        // place, so a statement-position mutator call on it can write back.
+        let mutable = p.convention == Convention::Var;
         match p.ty.as_ref().and_then(type_to_scope_name) {
+            Some(name) if mutable => scope.insert_mut(p.name.clone(), name),
             Some(name) => scope.insert(p.name.clone(), name),
+            None if mutable => scope.bind_local_mut(&p.name),
             None => scope.bind_local(&p.name),
         }
     }
@@ -574,6 +645,23 @@ struct Ctx<'a> {
     missing_impls: &'a std::cell::RefCell<Vec<String>>,
     /// Self-less impl methods: `Type.name(args)` statics.
     statics: &'a HashMap<(String, String), String>,
+    /// (RFC-0043) Resolved (mangled) function names that are MUTATORS — a `var`
+    /// first parameter whose declared type equals the return type. A statement-
+    /// position method call that resolves to one of these, on a mutable place,
+    /// writes its result back (`xs.push(1)` => `xs = list.push(xs, 1)`); a
+    /// non-mutator statement call whose result is non-Nil is a discard error.
+    /// The fact is read from the RESOLVED CALLEE's declaration (per receiver
+    /// type), replacing the linker's whole-program name census.
+    mutators: &'a std::collections::HashSet<String>,
+    /// (RFC-0043) Resolved function name -> whether it returns `Nil`/nothing.
+    /// A statement-position non-mutator method call whose callee returns a
+    /// non-Nil value is a discard error (the RFC's Failure-2 fix).
+    returns_nil: &'a HashMap<String, bool>,
+    /// (RFC-0043) Diagnostics for a discarded non-Nil method result. Kept
+    /// SEPARATE from `missing_impls`: the quiet pre-mono pass discards its
+    /// `missing_impls` (unresolved calls are re-found post-mono), but a discard
+    /// error is a real, final diagnostic surfaced through `lower_checked`.
+    discard_errors: &'a std::cell::RefCell<Vec<String>>,
     /// typeck's resolved types — receiver typing for method resolution.
     table: &'a crate::typeck::TypeTable,
     /// The current function's type-variable bounds (var -> trait names), so a
@@ -679,20 +767,35 @@ impl Ctx<'_> {
         }
     }
 
-    fn rewrite_block(&self, b: &mut Block, scope: &mut Scope) {
-        for stmt in &mut b.stmts {
+    /// `tail_is_value` is whether this block's final statement is in VALUE
+    /// position — a function/closure body, or an `if`/`match` arm used as an
+    /// expression — so its result is consumed and must NOT be turned into a
+    /// write-back or flagged as a discard. (RFC-0043)
+    fn rewrite_block(&self, b: &mut Block, scope: &mut Scope, tail_is_value: bool) {
+        let last = b.stmts.len().wrapping_sub(1);
+        for (i, stmt) in b.stmts.iter_mut().enumerate() {
+            // The final statement of a value-position block IS the block's value;
+            // its result is used, so it is never a write-back or a discard.
+            let value_used = i == last && tail_is_value;
             match stmt {
-                Stmt::Let { name, value, .. } => {
+                // (RFC-0043) A statement-position method call whose result is
+                // NOT consumed: after normal resolution, decide write-back (a
+                // mutator on a mutable place) or a discard error (a non-Nil
+                // result thrown away). The decision reads the RESOLVED callee.
+                Stmt::Expr(Expr::MethodCall { receiver, .. }) if !value_used => {
+                    let place = (**receiver).clone();
+                    self.rewrite_expr_stmt_method(stmt, place, scope);
+                }
+                Stmt::Let { name, value, mutable, .. } => {
                     self.rewrite_expr(value, scope);
                     match self.type_name(value, scope) {
-                        Some(t) => {
-                            scope.insert(name.clone(), t);
-                        }
-                        None => {
-                            // Untypeable, but still a bound local: a call on it
-                            // is a first-class invocation, not a trait dispatch.
-                            scope.bind_local(name);
-                        }
+                        // A `var` let is a mutable place — a write-back target.
+                        Some(t) if *mutable => scope.insert_mut(name.clone(), t),
+                        Some(t) => scope.insert(name.clone(), t),
+                        // Untypeable, but still a bound local: a call on it
+                        // is a first-class invocation, not a trait dispatch.
+                        None if *mutable => scope.bind_local_mut(name),
+                        None => scope.bind_local(name),
                     }
                 }
                 Stmt::Assign { value, .. } => self.rewrite_expr(value, scope),
@@ -724,9 +827,79 @@ impl Ctx<'_> {
                         });
                     self.seed_pattern(pattern, tup.as_deref(), scope);
                 }
-                Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => self.rewrite_expr(e, scope),
+                // A `return`/`yield` value is always consumed. A bare expression
+                // statement is consumed only when it is this block's value tail
+                // (`value_used`) — otherwise its result is discarded, so a nested
+                // block's tail (`if cond: xs.push(1)` as a statement) is a
+                // write-back / discard site, not a value.
+                Stmt::Return(Some(e)) | Stmt::Yield(e) => self.rewrite_expr_vp(e, scope, true),
+                Stmt::Expr(e) => self.rewrite_expr_vp(e, scope, value_used),
                 Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
             }
+        }
+    }
+
+    /// (RFC-0043) Resolve a statement-position method call and decide its fate by
+    /// the RESOLVED callee — the write-back rule that replaces the linker's
+    /// name census. `stmt` is `Stmt::Expr(MethodCall{ receiver, method, args })`
+    /// and `place` is a clone of its receiver expression (still in method form).
+    ///
+    /// After ordinary resolution (`rewrite_expr` turns the `MethodCall` into a
+    /// `Call { name, .. }`), the resolved function name tells us:
+    /// - a MUTATOR (`is_mutator`, e.g. `list.push`) on a mutable place -> the
+    ///   write-back rewrite `xs.push(1)` => `xs = list.push(xs, 1)`;
+    /// - a mutator on an immutable place / non-place -> a "declare it `var`, or
+    ///   bind the result" error;
+    /// - a non-mutator returning `Nil` -> a plain statement (as today);
+    /// - a non-mutator returning non-Nil -> a discarded-result error naming the
+    ///   method (the RFC's Failure-2 fix; `let _ = …` is the discard escape).
+    ///
+    /// A call this pass can't resolve to a `Call` (its receiver type isn't known
+    /// yet) is left untouched — a later pass (per specialization) resolves and
+    /// decides it, or the checker reports the unresolved method.
+    fn rewrite_expr_stmt_method(&self, stmt: &mut Stmt, place: Expr, scope: &mut Scope) {
+        // Read the method name before resolution consumes the node (for the
+        // discard/immutable-place diagnostics).
+        let method = match stmt {
+            Stmt::Expr(Expr::MethodCall { method, .. }) => method.clone(),
+            _ => return,
+        };
+        let Stmt::Expr(value) = stmt else { return };
+        self.rewrite_expr(value, scope);
+        // Resolution turns a method call into a `Call { name, args }`. Anything
+        // else (still a MethodCall, or a non-call) is left for a later pass /
+        // the checker.
+        let Expr::Call { name, .. } = value else { return };
+        let name = name.clone();
+
+        if self.mutators.contains(&name) {
+            // A mutator: statement form writes its result back to the receiver
+            // place. A mutable place (`place_base_is_mutable`) always bottoms out
+            // at a `var` variable, so `desugar_place_assign` succeeds.
+            if place_base_is_mutable(&place, scope) {
+                let call = std::mem::replace(value, Expr::Bool(false));
+                if let Ok(new_stmt) = witchy_syntax::parser::desugar_place_assign(place, call) {
+                    *stmt = new_stmt;
+                    return;
+                }
+            }
+            // A mutator on an immutable place / non-place: its write-back has no
+            // `var` to target — declare it `var`, or bind the result (RFC §1).
+            self.discard_errors.borrow_mut().push(mutator_needs_place_msg(&method));
+            return;
+        }
+
+        // Not a mutator. A resolved callee whose DECLARED return is non-Nil and
+        // is thrown away is a discard error (the Failure-2 fix); `let _ = …` is
+        // the explicit-discard escape (parsed as a wildcard `LetPattern`, so it
+        // never reaches this arm). A `Nil`-returning call is a plain side-
+        // effecting statement, as today. A callee NOT in the table (a bare
+        // intrinsic / capability op the resolver produced, never a std/user
+        // function) has no declared return here — leave it a plain statement
+        // rather than risk a false positive.
+        let returns_nil = self.returns_nil.get(&name).copied().unwrap_or(true);
+        if !returns_nil {
+            self.discard_errors.borrow_mut().push(discarded_result_msg(&method));
         }
     }
 
@@ -761,7 +934,17 @@ impl Ctx<'_> {
         }
     }
 
+    /// Resolve method syntax / trait calls within an expression. (RFC-0043)
+    /// `value_position` flows to nested blocks so each knows whether its tail
+    /// statement is consumed as a value: an `if`/`match` arm inherits the
+    /// surrounding position (a tail `if` in a function body is a return value),
+    /// while a loop body's tail is always discarded. Sub-expression operands are
+    /// always in value position — the thin `rewrite_expr` wrapper passes `true`.
     fn rewrite_expr(&self, e: &mut Expr, scope: &mut Scope) {
+        self.rewrite_expr_vp(e, scope, true);
+    }
+
+    fn rewrite_expr_vp(&self, e: &mut Expr, scope: &mut Scope, value_position: bool) {
         match e {
             Expr::Call { name, args } => {
                 for a in args.iter_mut() {
@@ -1011,7 +1194,8 @@ impl Ctx<'_> {
                 self.rewrite_expr(scrutinee, scope);
                 let mut s = scope.clone();
                 bind_ctor_pattern(pattern, self.ctor_fields, &mut s);
-                self.rewrite_block(body, &mut s);
+                // A loop evaluates to Nil, so its body's tail value is discarded.
+                self.rewrite_block(body, &mut s, false);
             }
             Expr::If {
                 cond,
@@ -1019,14 +1203,16 @@ impl Ctx<'_> {
                 else_block,
             } => {
                 self.rewrite_expr(cond, scope);
-                self.rewrite_block(then_block, &mut scope.clone());
+                // An `if` used as an expression yields its arms' tails, so each
+                // arm inherits the surrounding value position.
+                self.rewrite_block(then_block, &mut scope.clone(), value_position);
                 if let Some(b) = else_block {
-                    self.rewrite_block(b, &mut scope.clone());
+                    self.rewrite_block(b, &mut scope.clone(), value_position);
                 }
             }
             Expr::While { cond, body } => {
                 self.rewrite_expr(cond, scope);
-                self.rewrite_block(body, &mut scope.clone());
+                self.rewrite_block(body, &mut scope.clone(), false);
             }
             Expr::For { var, iter, body } => {
                 self.rewrite_expr(iter, scope);
@@ -1046,7 +1232,7 @@ impl Ctx<'_> {
                 }
                 let mut s = scope.clone();
                 bind_loop_var(var, self.type_name(iter, scope), &mut s);
-                self.rewrite_block(body, &mut s);
+                self.rewrite_block(body, &mut s, false);
             }
             Expr::Match { scrutinee, arms } => {
                 self.rewrite_expr(scrutinee, scope);
@@ -1056,15 +1242,17 @@ impl Ctx<'_> {
                     if let Some(g) = &mut arm.guard {
                         self.rewrite_expr(g, &mut s);
                     }
-                    self.rewrite_expr(&mut arm.body, &mut s);
+                    // A match arm's body inherits the surrounding value position.
+                    self.rewrite_expr_vp(&mut arm.body, &mut s, value_position);
                 }
             }
             Expr::Lambda { params, body, .. } => {
                 let mut s = scope.clone();
                 seed_params(params, &mut s);
-                self.rewrite_block(body, &mut s);
+                // A closure body's tail IS its return value.
+                self.rewrite_block(body, &mut s, true);
             }
-            Expr::Block(b) => self.rewrite_block(b, &mut scope.clone()),
+            Expr::Block(b) => self.rewrite_block(b, &mut scope.clone(), value_position),
             Expr::Var(_) | Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::TaggedLit { .. } => {}
         }
     }
@@ -1409,6 +1597,39 @@ fn head_of(tn: &str) -> &str {
     tn.split('<').next().unwrap_or(tn)
 }
 
+/// (RFC-0043) Whether a receiver place's base variable is a known mutable
+/// (`var`) binding — the only kind a statement-position mutator write-back can
+/// target. `let`/borrow bases, loop variables, pattern bindings, and lambda
+/// parameters are immutable (absent from `scope.mutables`), and a non-place
+/// receiver (a call result, a literal) has no base variable at all.
+fn place_base_is_mutable(e: &Expr, scope: &Scope) -> bool {
+    match e {
+        Expr::Var(x) => scope.is_mutable(x),
+        Expr::Index { base, .. } | Expr::Field { base, .. } => place_base_is_mutable(base, scope),
+        _ => false,
+    }
+}
+
+/// (RFC-0043) The discarded-non-Nil-result error: a statement-position method
+/// call that is not a mutator and whose result is thrown away. `let _ = …` is
+/// the explicit-discard escape.
+fn discarded_result_msg(method: &str) -> String {
+    format!(
+        "result of `{method}` is discarded — bind it (`let ys = xs.{method}(…)`), \
+         reassign (`xs = xs.{method}(…)`), or discard explicitly (`let _ = xs.{method}(…)`). \
+         A method whose statement form should mutate its receiver must declare a `var` receiver."
+    )
+}
+
+/// (RFC-0043) The error for a mutator called in statement form on an immutable
+/// place (or a non-place receiver): its write-back has no `var` to target.
+fn mutator_needs_place_msg(method: &str) -> String {
+    format!(
+        "`{method}` mutates its receiver, but the receiver here is not a mutable place — \
+         declare it `var`, or bind the result (`let ys = xs.{method}(…)`)"
+    )
+}
+
 /// A function's parameter types (None for an unannotated param) and return type,
 /// kept so a generic call's result type can be recovered by binding the return
 /// type variable from an argument — e.g. `list.at(xs: List(a), Int) -> a`.
@@ -1442,6 +1663,37 @@ fn build_tables(
         }
     }
     (ctor_results, fn_rets, fn_sigs)
+}
+
+/// (RFC-0043) The write-back tables read at a resolved call site:
+/// - `mutators`: every function whose declaration is a mutator (`var` first
+///   param + a return of that param's type) — its statement form writes back.
+/// - `returns_nil`: function name -> whether it returns `Nil`/nothing, so a
+///   statement-position non-mutator method call whose result is non-Nil is a
+///   discard error. A function absent from this map has an unknown (generic or
+///   inferred) return; treated as non-Nil (conservatively an error candidate).
+///
+/// Keyed by the FULLY-QUALIFIED / mangled function name the dispatch pass
+/// resolves a `place.method(args)` to (`list.push`, `Bag.push`'s mangling), so
+/// the decision consults the exact resolved callee — never a bare name census.
+fn build_mutation_tables(
+    items: &[Item],
+) -> (std::collections::HashSet<String>, HashMap<String, bool>) {
+    let mut mutators = std::collections::HashSet::new();
+    let mut returns_nil = HashMap::new();
+    for item in items {
+        if let Item::Function(f) = item {
+            if f.is_mutator() {
+                mutators.insert(f.name.clone());
+            }
+            let nil = match f.ret.as_ref() {
+                None => true,
+                Some(t) => matches!(t.unqualified(), Type::Named(n, _) if n == "Nil"),
+            };
+            returns_nil.insert(f.name.clone(), nil);
+        }
+    }
+    (mutators, returns_nil)
 }
 
 /// Recover the concrete result type of a generic call whose declared return is a

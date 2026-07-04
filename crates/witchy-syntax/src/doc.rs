@@ -111,6 +111,15 @@ fn is_impl_var(v: &str) -> bool {
 }
 
 fn param_str(p: &Param, bounds: &[(String, String, Vec<Type>)]) -> String {
+    // (RFC-0043) The parameter convention is part of the signature's meaning — a
+    // `var` receiver marks a mutator (its statement form writes back), so render
+    // it, matching `witchy fmt`. `let` (explicit borrow) prints its keyword too.
+    let conv = match p.convention {
+        crate::ast::Convention::Let => "",
+        crate::ast::Convention::Borrow => "let ",
+        crate::ast::Convention::Var => "var ",
+        crate::ast::Convention::Own => "own ",
+    };
     match &p.ty {
         // An `impl Trait` param is stored desugared (a fresh `impltrait_N` type
         // var plus a bound); render it back to the surface `impl Trait`.
@@ -120,10 +129,10 @@ fn param_str(p: &Param, bounds: &[(String, String, Vec<Type>)]) -> String {
                 .find(|(bv, _, _)| bv == v)
                 .map(|(_, t, _)| t.as_str())
                 .unwrap_or("?");
-            format!("{}: impl {trait_name}", p.name)
+            format!("{conv}{}: impl {trait_name}", p.name)
         }
-        Some(t) => format!("{}: {}", p.name, type_str(t)),
-        None => p.name.clone(),
+        Some(t) => format!("{conv}{}: {}", p.name, type_str(t)),
+        None => format!("{conv}{}", p.name),
     }
 }
 

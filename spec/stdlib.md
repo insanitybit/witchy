@@ -257,7 +257,7 @@ The largest element of `xs`, or `default` when `xs` is empty.
 
 The smallest element of `xs`, or `default` when `xs` is empty.
 
-#### `fn sort(xs: List(a)) -> List(a) where a: Ord`
+#### `fn sort(var xs: List(a)) -> List(a) where a: Ord`
 
 Sort any list of an `Ord` type ascending — a stable insertion sort that dispatches through the element type's `Ord` impl, so it is content-correct on both backends (Int, String, Duration, or your own `Ord` types) without a caller-supplied comparator. For Ints, `list.sort` is the lighter default.
 
@@ -447,11 +447,11 @@ The core operations are native primitives (intercepted by both backends; the bod
 
 An empty Dict.
 
-#### `fn insert(d: Dict(k, v), key: k, val: v) -> Dict(k, v)`
+#### `fn insert(var d: Dict(k, v), key: k, val: v) -> Dict(k, v)`
 
 A new dict with `key` set to `val` (replacing any existing entry). Insertion order of first appearance is preserved.
 
-#### `fn set_at(d: Dict(k, v), key: k, val: v) -> Dict(k, v)`
+#### `fn set_at(var d: Dict(k, v), key: k, val: v) -> Dict(k, v)`
 
 Set `key` to `val` — the `insert` upsert under the name the `d[key] = val` sugar desugars to (RFC-0022), uniform with `list.set_at`.
 
@@ -459,7 +459,7 @@ Set `key` to `val` — the `insert` upsert under the name the `d[key] = val` sug
 
 The value for `key`, or `default` when absent.
 
-#### `fn update(d: Dict(k, v), key: k, default: v, f: fn(v) -> v) -> Dict(k, v)`
+#### `fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) -> Dict(k, v)`
 
 Single-lookup upsert: apply `f` to the current value (or `default` when `key` is absent) and store the result under `key`.
 
@@ -467,7 +467,7 @@ Single-lookup upsert: apply `f` to the current value (or `default` when `key` is
 
 Whether `key` is present.
 
-#### `fn remove(d: Dict(k, v), key: k) -> Dict(k, v)`
+#### `fn remove(var d: Dict(k, v), key: k) -> Dict(k, v)`
 
 A new dict with `key` (and its value) removed; unchanged when absent.
 
@@ -505,7 +505,7 @@ A new Dict with every value passed through `f` (keys unchanged).
 
 Keep only the entries for which `keep(key, value)` holds.
 
-#### `fn merge(a: Dict(k, v), b: Dict(k, v)) -> Dict(k, v)`
+#### `fn merge(var a: Dict(k, v), b: Dict(k, v)) -> Dict(k, v)`
 
 `a` with `b`'s entries laid over it (on a key collision, `b` wins).
 
@@ -1188,11 +1188,11 @@ The number of elements.
 
 The element at `index` (0-based). Out of bounds is a runtime error on every backend.
 
-#### `fn push(xs: List(a), x: a) -> List(a)`
+#### `fn push(var xs: List(a), x: a) -> List(a)`
 
 A new list with `x` appended (lists are values; the original is unchanged).
 
-#### `fn concat(xs: List(a), ys: List(a)) -> List(a)`
+#### `fn concat(var xs: List(a), ys: List(a)) -> List(a)`
 
 A new list that is `xs` followed by `ys`.
 
@@ -1342,15 +1342,15 @@ Combine two lists element-wise with `f`, stopping at the shorter one.
 
 Insert `sep` between adjacent elements: [a, b, c] -> [a, sep, b, sep, c].
 
-#### `fn reverse(xs: List(a)) -> List(a)`
+#### `fn reverse(var xs: List(a)) -> List(a)`
 
 The list, reversed.
 
-#### `fn sort_by(xs: List(a), less: fn(a, a) -> Bool) -> List(a)`
+#### `fn sort_by(var xs: List(a), less: fn(a, a) -> Bool) -> List(a)`
 
 Sort using a caller-supplied "is-less-than" comparator — a stable merge sort (O(n log n)), so equal elements keep their original order. Generic over the element type.
 
-#### `fn sort(xs: List(Int)) -> List(Int)`
+#### `fn sort(var xs: List(Int)) -> List(Int)`
 
 Sort a list of integers ascending — the common default over `sort_by`.
 
@@ -1402,11 +1402,11 @@ Split `xs` into consecutive sublists of length `n` (the final one may be shorter
 
 The elements in the half-open index range [start, end), clamped to bounds. `slice(xs, 1, 3)` of [a,b,c,d] is [b,c].
 
-#### `fn set_at(xs: List(a), index: Int, value: a) -> List(a)`
+#### `fn set_at(var xs: List(a), index: Int, value: a) -> List(a)`
 
 A copy of `xs` with the element at `index` replaced by `value`. An out-of- range index leaves the list unchanged. (Lists are immutable, so this returns a new list rather than mutating in place.)
 
-#### `fn update_at(xs: List(a), index: Int, f: fn(a) -> a) -> List(a)`
+#### `fn update_at(var xs: List(a), index: Int, f: fn(a) -> a) -> List(a)`
 
 A copy of `xs` with the function `f` applied to the element at `index`. An out-of-range index leaves the list unchanged.
 
@@ -2112,11 +2112,11 @@ The empty set.
 
 A set of the distinct values in `xs` (duplicates collapse).
 
-#### `fn insert(s: Set(a), x: a) -> Set(a) where a: Eq`
+#### `fn insert(var s: Set(a), x: a) -> Set(a) where a: Eq`
 
 `s` with `x` added (a no-op if already present).
 
-#### `fn remove(s: Set(a), x: a) -> Set(a) where a: Eq`
+#### `fn remove(var s: Set(a), x: a) -> Set(a) where a: Eq`
 
 `s` with `x` removed (a no-op if absent).
 
@@ -2212,7 +2212,7 @@ Whether `needle` occurs in `s`.
 
 The character index (counted by Unicode scalar) of the first occurrence of `needle`, or -1.
 
-#### `fn replace(s: String, from: String, to: String) -> String`
+#### `fn replace(var s: String, from: String, to: String) -> String`
 
 Replace every occurrence of `from` with `to`.
 
@@ -2220,13 +2220,13 @@ Replace every occurrence of `from` with `to`.
 
 The substring from character index `start` (inclusive) to `end` (exclusive), counted by Unicode scalar; out-of-range indices clamp.
 
-#### `fn to_upper(s: String) -> String`
+#### `fn to_upper(var s: String) -> String`
 
 ASCII case mapping (the portable set both backends share).
 
-#### `fn to_lower(s: String) -> String`
+#### `fn to_lower(var s: String) -> String`
 
-#### `fn trim(s: String) -> String`
+#### `fn trim(var s: String) -> String`
 
 Strip leading and trailing ASCII whitespace.
 
@@ -2238,23 +2238,23 @@ Parse a decimal integer; junk, overflow, or an empty string ABORTS the program (
 
 Repeat a string `n` times.
 
-#### `fn pad_left(s: String, width: Int, fill: String) -> String`
+#### `fn pad_left(var s: String, width: Int, fill: String) -> String`
 
 Left-pad `s` with copies of `fill` until it is `width` characters wide. The padding is trimmed to fit exactly, so any fill width yields a result of exactly `width` chars; `s` is returned unchanged when already that long.
 
-#### `fn pad_right(s: String, width: Int, fill: String) -> String`
+#### `fn pad_right(var s: String, width: Int, fill: String) -> String`
 
 Right-pad `s` with copies of `fill` until it is `width` characters wide.
 
-#### `fn center(s: String, width: Int, fill: String) -> String`
+#### `fn center(var s: String, width: Int, fill: String) -> String`
 
 Center `s` in a field `width` characters wide, padding both sides with `fill`; an odd remainder goes on the right. `s` is returned unchanged when already at least that wide.
 
-#### `fn strip_prefix(s: String, prefix: String) -> String`
+#### `fn strip_prefix(var s: String, prefix: String) -> String`
 
 Remove `prefix` from the front of `s` when present; otherwise return `s` unchanged. The complement of the `starts_with` builtin.
 
-#### `fn strip_suffix(s: String, suffix: String) -> String`
+#### `fn strip_suffix(var s: String, suffix: String) -> String`
 
 Remove `suffix` from the end of `s` when present; otherwise return `s` unchanged. The complement of the `ends_with` builtin.
 
@@ -2286,7 +2286,7 @@ The number of non-overlapping occurrences of `sub` in `s` (0 for an empty `sub`)
 
 The whitespace-separated words of `text`: tabs, newlines, and carriage returns are treated as spaces, and empty pieces (from runs of whitespace) are dropped. `words("the  quick\tfox")` is `["the", "quick", "fox"]`.
 
-#### `fn replace_first(s: String, from: String, to: String) -> String`
+#### `fn replace_first(var s: String, from: String, to: String) -> String`
 
 Replace only the first occurrence of `from` with `to`; return `s` unchanged when `from` is absent. (The `replace` builtin replaces every occurrence.)
 
@@ -2310,11 +2310,11 @@ Safely parse a base-10 integer: an optional leading `-`/`+` then one or more dig
 
 Split text into its newline-separated lines.
 
-#### `fn trim_start(s: String) -> String`
+#### `fn trim_start(var s: String) -> String`
 
 Remove leading whitespace.
 
-#### `fn trim_end(s: String) -> String`
+#### `fn trim_end(var s: String) -> String`
 
 Remove trailing whitespace.
 

@@ -438,6 +438,48 @@ fn f(var a: Int, own b: Int, c: Int) -> Int:
     }
 
     #[test]
+    fn var_receiver_classifies_as_a_mutator() {
+        // (RFC-0043) A `var` first param plus a return of that param's type is a
+        // mutator; the same `var` param returning Nil (or nothing) is a procedure
+        // channel; a plain first param is neither.
+        let m = parse_module(
+            "fn push(var xs: List(a), x: a) -> List(a):\n    xs\n\nfn bump(var n: Int):\n    n = n + 1\n\nfn map(xs: List(a), f: fn(a) -> b) -> List(b):\n    xs\n",
+        )
+        .unwrap();
+        let funcs: Vec<&Function> = m
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                Item::Function(f) => Some(f),
+                _ => None,
+            })
+            .collect();
+        // push: var receiver + self-typed return => mutator, not a procedure.
+        assert!(funcs[0].is_mutator(), "push is a mutator");
+        assert!(!funcs[0].is_var_procedure(), "push is not a procedure channel");
+        // bump: var param + Nil return => procedure, not a mutator.
+        assert!(!funcs[1].is_mutator(), "bump is not a mutator");
+        assert!(funcs[1].is_var_procedure(), "bump is a procedure channel");
+        // map: no var param => neither.
+        assert!(!funcs[2].is_mutator(), "map is not a mutator");
+        assert!(!funcs[2].is_var_procedure(), "map is not a procedure channel");
+    }
+
+    #[test]
+    fn var_receiver_round_trips_through_fmt() {
+        // (RFC-0043) The `var` receiver must survive `witchy fmt` — dropping it
+        // would silently demote a mutator to a plain value function.
+        let src = "pub fn push(var xs: List(a), x: a) -> List(a):\n    xs\n";
+        let out = crate::format::reformat(src).expect("var receiver round-trips");
+        assert!(out.contains("var xs: List(a)"), "var receiver must survive fmt: {out}");
+        assert_eq!(
+            crate::format::reformat(&out).as_deref(),
+            Some(out.as_str()),
+            "formatting is idempotent"
+        );
+    }
+
+    #[test]
     fn inout_sink_keyword_aliases_are_removed() {
         // `inout`/`sink` were Hylo-style alias spellings for `var`/`own`; they
         // were removed, so they now lex as ordinary identifiers and a parameter

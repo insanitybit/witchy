@@ -24,7 +24,7 @@ pub fn from_list(xs: List(a)) -> Set(a) where a: Eq:
     s
 
 // `s` with `x` added (a no-op if already present).
-pub fn insert(s: Set(a), x: a) -> Set(a) where a: Eq:
+pub fn insert(var s: Set(a), x: a) -> Set(a) where a: Eq:
     let items = s.items
     if cmp.member(items, x):
         s
@@ -32,7 +32,7 @@ pub fn insert(s: Set(a), x: a) -> Set(a) where a: Eq:
         Set(list.push(items, x))
 
 // `s` with `x` removed (a no-op if absent).
-pub fn remove(s: Set(a), x: a) -> Set(a) where a: Eq:
+pub fn remove(var s: Set(a), x: a) -> Set(a) where a: Eq:
     let items = s.items
     var out = []
     for y in items:

@@ -774,12 +774,14 @@ mod tests {
         );
     }
 
-    /// RFC-0028 `nodes.push(x)`: a statement-position mutating-method call writes
-    /// back to the place, identically on both backends. A non-self-returning
-    /// method (`length`) stays a discard, so the program still type-checks.
+    /// RFC-0028/0043 `nodes.push(x)`: a statement-position mutator call (declared
+    /// `var` receiver) writes back to the place, identically on both backends.
+    /// A non-mutator method (`length`) discarded in statement form is now a
+    /// compile error (RFC-0043), so it must be an explicit `let _ =` discard for
+    /// the program to type-check.
     #[test]
     fn mutating_method_statement_writes_back_on_both_backends() {
-        let src = "fn main(console: Console):\n    var xs = []\n    xs.push(1)\n    xs.push(2)\n    xs.push(3)\n    var d = dict.new()\n    d.insert(\"a\", 7)\n    var ys = [9, 9, 9]\n    ys.length()\n    print(console, \"${xs}\")\n    print(console, __render(dict.get_or(d, \"a\", 0)))\n";
+        let src = "fn main(console: Console):\n    var xs = []\n    xs.push(1)\n    xs.push(2)\n    xs.push(3)\n    var d = dict.new()\n    d.insert(\"a\", 7)\n    var ys = [9, 9, 9]\n    let _ = ys.length()\n    print(console, \"${xs}\")\n    print(console, __render(dict.get_or(d, \"a\", 0)))\n";
         let oracle = interp(src);
         assert_eq!(oracle, vec!["[1, 2, 3]".to_string(), "7".to_string()]);
         opt::set_for_tests(Some(OptSet::default_set()));
