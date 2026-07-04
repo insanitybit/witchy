@@ -1722,6 +1722,104 @@ fn main(console: Console):
         );
     }
 
+    // ---- RFC-0052: one pattern grammar ------------------------------------
+
+    /// (RFC-0052) Integer range patterns `lo..hi` / `lo..=hi` as real nodes, on
+    /// both backends — half-open and inclusive, with a catch-all.
+    #[test]
+    fn range_patterns_backends_agree() {
+        let src = "fn classify(n: Int) -> String:\n    match n:\n        0..10 -> \"low\"\n        10..=20 -> \"mid\"\n        _ -> \"high\"\n\nfn main(console: Console):\n    print(console, classify(5))\n    print(console, classify(10))\n    print(console, classify(20))\n    print(console, classify(99))\n";
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["low", "mid", "mid", "high"]);
+    }
+
+    /// (RFC-0052) Nested or-patterns `Some(1 | 2 | 3)` — impossible before this
+    /// RFC (parse error) — parse, check, and run identically on both backends.
+    #[test]
+    fn nested_or_patterns_backends_agree() {
+        let src = "fn f(o: Option(Int)) -> String:\n    match o:\n        Some(1 | 2 | 3) -> \"small\"\n        Some(n) -> \"big\"\n        None -> \"none\"\n\nfn main(console: Console):\n    print(console, f(Some(2)))\n    print(console, f(Some(9)))\n    print(console, f(None))\n";
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["small", "big", "none"]);
+    }
+
+    /// (RFC-0052) Binding or-patterns `Circle(n) | Square(n)` — every alternative
+    /// binds the same name; the arm body sees the matched alternative's value.
+    #[test]
+    fn binding_or_patterns_backends_agree() {
+        let src = "type Shape:\n    Circle(Int)\n    Square(Int)\n\nfn size(s: Shape) -> Int:\n    match s:\n        Circle(n) | Square(n) -> n\n\nfn main(console: Console):\n    print(console, \"${size(Circle(3))}\")\n    print(console, \"${size(Square(7))}\")\n";
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["3", "7"]);
+    }
+
+    /// (RFC-0052) Duration literal patterns `1s`/`-1s` — exact ms equality — and
+    /// the `-1s` negative-duration lexer/typeck fix, on both backends.
+    #[test]
+    fn duration_patterns_backends_agree() {
+        let src = "fn f(d: Duration) -> String:\n    match d:\n        1s -> \"one\"\n        -1s -> \"neg\"\n        _ -> \"other\"\n\nfn main(console: Console):\n    print(console, f(1s))\n    print(console, f(-1s))\n    print(console, f(5s))\n";
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["one", "neg", "other"]);
+    }
+
+    /// (RFC-0052) A Float SCRUTINEE bound to a variable pattern now compiles (the
+    /// former check-passes/codegen-fails hole) and agrees on both backends.
+    #[test]
+    fn float_scrutinee_binding_backends_agree() {
+        let src = "fn main(console: Console):\n    let r = match 1.5:\n        x -> x + 1.0\n    print(console, \"${r}\")\n";
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["2.5"]);
+    }
+
+    /// (RFC-0052) `let` destructuring — nested tuples AND a single-variant record
+    /// pattern — the same grammar as `match`, both backends.
+    #[test]
+    fn let_destructure_patterns_backends_agree() {
+        let src = "type Point:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let ((a, b), c) = ((1, 2), 3)\n    print(console, \"${a} ${b} ${c}\")\n    let Point(px, py) = Point(10, 20)\n    print(console, \"${px} ${py}\")\n";
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["1 2 3", "10 20"]);
+    }
+
+    /// (RFC-0052) `for` and comprehension take the SAME pattern grammar: a tuple
+    /// header destructures each element, on both backends.
+    #[test]
+    fn for_and_comprehension_patterns_backends_agree() {
+        let src = "fn main(console: Console):\n    let pairs = [(1, 2), (3, 4)]\n    for (a, b) in pairs:\n        print(console, \"${a}+${b}\")\n    let sums = [a + b for (a, b) in pairs]\n    print(console, \"${sums}\")\n";
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["1+2", "3+4", "[3, 7]"]);
+    }
+
+    /// (RFC-0052) The refutability rule and literal-pattern edges — check-time
+    /// teaching errors, message-pinned.
+    #[test]
+    fn pattern_refutability_and_literal_edges_errors() {
+        // A refutable `let` (multi-variant ctor) points at `if let`.
+        let err = typeck::check_str(
+            "type Shape:\n    Circle(Int)\n    Square(Int)\n\nfn main(console: Console):\n    let Circle(r) = Circle(3)\n    print(console, \"${r}\")\n",
+        )
+        .expect_err("refutable let must be rejected");
+        assert!(
+            err.contains("can fail") && err.contains("if let"),
+            "unexpected message: {err}"
+        );
+        // Float literal patterns are rejected with the precision-trap teaching error.
+        let err = typeck::check_str(
+            "fn main(console: Console):\n    match 1.5:\n        1.5 -> print(console, \"a\")\n        _ -> print(console, \"b\")\n",
+        )
+        .expect_err("float literal pattern must be rejected");
+        assert!(
+            err.contains("Float literals cannot be matched"),
+            "unexpected message: {err}"
+        );
+        // Or-pattern alternatives must bind the same names at the same types.
+        let err = typeck::check_str(
+            "type T:\n    A(Int)\n    B(String)\n\nfn main(console: Console):\n    match A(1):\n        A(x) | B(x) -> print(console, \"${x}\")\n",
+        )
+        .expect_err("inconsistent or-binding types must be rejected");
+        assert!(
+            err.contains("or-pattern binding") && err.contains("inconsistent"),
+            "unexpected message: {err}"
+        );
+    }
+
     /// REFLECTION, SECOND USE CASE: `reflect.debug(x)` renders any value from the
     /// SAME `reflect` that powers `json` — proving the engine is general, not a
     /// json-specific hack. Records, lists-in-fields, and scalars, both backends.
