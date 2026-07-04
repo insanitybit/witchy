@@ -29,7 +29,9 @@ impl Codegen {
                     W::GetLocal(format!("{w}$src")),
                     W::GetLocal(format!("{w}$lo")),
                     W::GetLocal(format!("{w}$hi")),
-                    Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I32),
+                    // i64 index — `$list_at_view` checks in i64 (same i32-wrap fix
+                    // as `$list_at`).
+                    Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I64),
                 ];
                 W::FromSlot(Box::new(call("list_at_view", inner)), Self::wir_kind(ek))
             }
@@ -759,7 +761,9 @@ impl Codegen {
                 // read adjacent heap — a parity/OOB bug, SEC-038.)
                 let b = self.lower_expr(&args[0])?;
                 let ik = self.kind_of(&args[1]);
-                let i = Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I32);
+                // i64 index — checked in i64 by `$bytes_at` (matches the
+                // interpreter's `i as usize`; closes the same i32-wrap hole as list.at).
+                let i = Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I64);
                 call("bytes_at", vec![b, i])
             }
             ("__bytes_concat", 2) => {
@@ -799,7 +803,14 @@ impl Codegen {
                 let elide = matches!((&args[0], &args[1]), (Expr::Var(lv), Expr::Var(iv))
                     if self.elide_index_list.iter().any(|(i, l)| i == iv && l == lv));
                 let list_w = self.lower_expr(&args[0])?;
-                let idx_w = Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I32);
+                // Lower the index ONCE (it may be a side-effecting call), then widen
+                // to the kind the chosen path needs. The elide path does i32 address
+                // math directly; the checked `$list_at` now takes the index as i64
+                // (so an out-of-i32-range index traps + reports its true value,
+                // matching the interpreter's `i as usize` — RFC-0045 message parity
+                // and a latent i32-wrap hole this closes).
+                let idx_target = if elide { Kind::I32 } else { Kind::I64 };
+                let idx_w = Self::wir_convert(self.lower_expr(&args[1])?, ik, idx_target);
                 let read = if elide {
                     let wi32 = witchy_wir::wir::Kind::I32;
                     let add = witchy_wir::wir::BinOp::Add;

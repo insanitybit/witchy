@@ -36,13 +36,6 @@ pub fn abort_nodes(template: DiagTemplate, a: WirExpr, b: WirExpr, str_ptr: WirE
     ]
 }
 
-/// The i64 message-hole arguments for the two index-out-of-bounds templates: the
-/// signed index `i` and the container length, each an i32 sign-extended to i64.
-/// `len` is the i32 element-count / byte-count header loaded from `base`.
-fn oob_holes(idx: WirExpr, len: WirExpr) -> (WirExpr, WirExpr) {
-    let ext = |e: WirExpr| WirExpr::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) };
-    (ext(idx), ext(len))
-}
 
 /// `$print_str(s: i32)` — write a witchy string (a `[i32 len][utf-8]` record at
 /// `s`) to the host `print` import: `print(s + 4, [s])`. The ONLY authority it
@@ -736,55 +729,67 @@ pub fn rc_drop_helper() -> WirFunc {
     }
 }
 
-/// `$list_at(list: i32, i: i32) -> i64` — bounds-checked element read: trap on
-/// `i < 0 || i >= len`, else load the i64 slot at `(list+4) + i*8`. Mirrors
-/// `LIST_AT_WAT`. No heap/import/table.
+/// `$list_at(list: i32, i: i64) -> i64` — bounds-checked element read: trap on
+/// `i < 0 || i >= len`, else load the i64 slot at `(list+4) + i*8`.
+///
+/// The index is i64 (the witchy `Int` width) and the check is done in i64: the
+/// interpreter indexes with the full `i as usize`, so an out-of-`i32`-range index
+/// (which would WRAP to an in-range i32 if narrowed first) must still trap — and
+/// its true value must appear in the message. Only after the check passes (so
+/// `0 <= i < len <= i32::MAX`) is `i` narrowed to i32 for the address arithmetic.
 pub fn list_at_helper() -> WirFunc {
     let getl = |n: &str| WirExpr::GetLocal(n.into());
     let i32c = WirExpr::ConstI32;
-    let bin = |op: BinOp, l: WirExpr, r: WirExpr| WirExpr::Binary {
+    let i64c = WirExpr::ConstI64;
+    let bin32 = |op: BinOp, l: WirExpr, r: WirExpr| WirExpr::Binary {
         op,
         kind: Kind::I32,
         lhs: Box::new(l),
         rhs: Box::new(r),
     };
+    let bin64 = |op: BinOp, l: WirExpr, r: WirExpr| WirExpr::Binary {
+        op,
+        kind: Kind::I64,
+        lhs: Box::new(l),
+        rhs: Box::new(r),
+    };
+    // len as i64 (the i32 element-count header sign-extended) — the check's bound.
+    let len_i64 = || WirExpr::Convert {
+        from: Kind::I32,
+        to: Kind::I64,
+        arg: Box::new(WirExpr::Load { ptr: Box::new(getl("list")), kind: Kind::I32, offset: 0 }),
+    };
+    // i narrowed to i32 — valid only inside the checked range.
+    let i_i32 = || WirExpr::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("i")) };
     WirFunc {
         name: "list_at".into(),
         params: vec![
             WirLocal { name: "list".into(), ty: WirTy::Bool },
-            WirLocal { name: "i".into(), ty: WirTy::Bool },
+            WirLocal { name: "i".into(), ty: WirTy::Int },
         ],
         ret: vec![WirTy::Int], // i64 slot
         locals: vec![],
         body: vec![
             WirNode::If {
-                cond: bin(
+                // Both comparisons yield i32 (wasm `i64.lt_s`/`i64.ge_s` -> i32), so
+                // combine them with `i32.or`.
+                cond: bin32(
                     BinOp::Or,
-                    bin(BinOp::Lt, getl("i"), i32c(0)),
-                    bin(
-                        BinOp::Ge,
-                        getl("i"),
-                        WirExpr::Load { ptr: Box::new(getl("list")), kind: Kind::I32, offset: 0 },
-                    ),
+                    bin64(BinOp::Lt, getl("i"), i64c(0)),
+                    bin64(BinOp::Ge, getl("i"), len_i64()),
                 ),
                 // (RFC-0045) Route the OOB abort through `__witchy_abort` with the
-                // signed index and the list length, so the compiled trap carries the
-                // interpreter's `list index {i} out of bounds (length {len})`.
-                then_: {
-                    let (a, b) = oob_holes(
-                        getl("i"),
-                        WirExpr::Load { ptr: Box::new(getl("list")), kind: Kind::I32, offset: 0 },
-                    );
-                    abort_nodes(DiagTemplate::ListIndexOob, a, b, i32c(0))
-                },
+                // TRUE i64 index and the list length, so the compiled trap carries
+                // the interpreter's `list index {i} out of bounds (length {len})`.
+                then_: abort_nodes(DiagTemplate::ListIndexOob, getl("i"), len_i64(), i32c(0)),
                 els: vec![],
                 result: None,
             },
             WirNode::Push(WirExpr::Load {
-                ptr: Box::new(bin(
+                ptr: Box::new(bin32(
                     BinOp::Add,
-                    bin(BinOp::Add, getl("list"), i32c(4)),
-                    bin(BinOp::Mul, getl("i"), i32c(8)),
+                    bin32(BinOp::Add, getl("list"), i32c(4)),
+                    bin32(BinOp::Mul, i_i32(), i32c(8)),
                 )),
                 kind: Kind::I64,
                 offset: 0,
@@ -801,39 +806,46 @@ pub fn list_at_helper() -> WirFunc {
 pub fn bytes_at_helper() -> WirFunc {
     let getl = |n: &str| WirExpr::GetLocal(n.into());
     let i32c = WirExpr::ConstI32;
-    let bin = |op: BinOp, l: WirExpr, r: WirExpr| WirExpr::Binary {
+    let i64c = WirExpr::ConstI64;
+    let bin32 = |op: BinOp, l: WirExpr, r: WirExpr| WirExpr::Binary {
         op,
         kind: Kind::I32,
         lhs: Box::new(l),
         rhs: Box::new(r),
     };
+    let bin64 = |op: BinOp, l: WirExpr, r: WirExpr| WirExpr::Binary {
+        op,
+        kind: Kind::I64,
+        lhs: Box::new(l),
+        rhs: Box::new(r),
+    };
+    // The index is i64 and checked in i64 (see `list_at_helper` — the interpreter
+    // indexes with `i as usize`, so an out-of-i32-range index must trap and carry
+    // its true value); narrowed to i32 only after the check passes.
+    let len_i64 = || WirExpr::Convert {
+        from: Kind::I32,
+        to: Kind::I64,
+        arg: Box::new(WirExpr::Load { ptr: Box::new(getl("b")), kind: Kind::I32, offset: 0 }),
+    };
+    let i_i32 = || WirExpr::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("i")) };
     WirFunc {
         name: "bytes_at".into(),
         params: vec![
             WirLocal { name: "b".into(), ty: WirTy::Bool },
-            WirLocal { name: "i".into(), ty: WirTy::Bool },
+            WirLocal { name: "i".into(), ty: WirTy::Int },
         ],
         ret: vec![WirTy::Int], // i64 byte value 0..=255
         locals: vec![],
         body: vec![
             WirNode::If {
-                cond: bin(
+                // i64 comparisons yield i32 — combine with `i32.or`.
+                cond: bin32(
                     BinOp::Or,
-                    bin(BinOp::Lt, getl("i"), i32c(0)),
-                    bin(
-                        BinOp::Ge,
-                        getl("i"),
-                        WirExpr::Load { ptr: Box::new(getl("b")), kind: Kind::I32, offset: 0 },
-                    ),
+                    bin64(BinOp::Lt, getl("i"), i64c(0)),
+                    bin64(BinOp::Ge, getl("i"), len_i64()),
                 ),
                 // (RFC-0045) `bytes index {i} out of bounds (length {len})`.
-                then_: {
-                    let (a, len) = oob_holes(
-                        getl("i"),
-                        WirExpr::Load { ptr: Box::new(getl("b")), kind: Kind::I32, offset: 0 },
-                    );
-                    abort_nodes(DiagTemplate::BytesIndexOob, a, len, i32c(0))
-                },
+                then_: abort_nodes(DiagTemplate::BytesIndexOob, getl("i"), len_i64(), i32c(0)),
                 els: vec![],
                 result: None,
             },
@@ -841,7 +853,7 @@ pub fn bytes_at_helper() -> WirFunc {
                 from: Kind::I32,
                 to: Kind::I64,
                 arg: Box::new(WirExpr::Load8U {
-                    ptr: Box::new(bin(BinOp::Add, getl("b"), getl("i"))),
+                    ptr: Box::new(bin32(BinOp::Add, getl("b"), i_i32())),
                     offset: 4,
                 }),
             }),
@@ -901,35 +913,43 @@ fn view_clamp_setup(getl: &dyn Fn(&str) -> WirExpr) -> Vec<WirNode> {
 pub fn list_at_view_helper() -> WirFunc {
     let getl = |n: &str| WirExpr::GetLocal(n.into());
     let i32c = WirExpr::ConstI32;
+    let i64c = WirExpr::ConstI64;
     let bin = |op: BinOp, l: WirExpr, r: WirExpr| WirExpr::Binary {
         op,
         kind: Kind::I32,
         lhs: Box::new(l),
         rhs: Box::new(r),
     };
+    let bin64 = |op: BinOp, l: WirExpr, r: WirExpr| WirExpr::Binary {
+        op,
+        kind: Kind::I64,
+        lhs: Box::new(l),
+        rhs: Box::new(r),
+    };
+    // `len` (the clamped window size, i32) sign-extended for the i64 check/message.
+    let len_i64 = || WirExpr::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(getl("len")) };
+    // `j` narrowed to i32 — valid only inside the checked range.
+    let j_i32 = || WirExpr::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("j")) };
     let mut body = view_clamp_setup(&getl);
+    // A negative `len` (empty window) reads as 0 for both the bound and the message.
     body.push(WirNode::If {
+        cond: bin(BinOp::Lt, getl("len"), i32c(0)),
+        then_: vec![WirNode::SetLocal { local: "len".into(), value: i32c(0) }],
+        els: vec![],
+        result: None,
+    });
+    body.push(WirNode::If {
+        // The index is i64 (matching `$list_at`): an out-of-i32-range `j` must trap
+        // and carry its true value, not wrap. i64 comparisons yield i32 -> `i32.or`.
         cond: bin(
             BinOp::Or,
-            bin(BinOp::Lt, getl("j"), i32c(0)),
-            bin(BinOp::Ge, getl("j"), getl("len")),
+            bin64(BinOp::Lt, getl("j"), i64c(0)),
+            bin64(BinOp::Ge, getl("j"), len_i64()),
         ),
         // (RFC-0045) A view read past its clamped window is an out-of-range read of
         // the materialized copy the interpreter holds: `list index {j} out of
-        // bounds (length {len})`. A negative `len` (empty window) prints as `0` to
-        // match the interpreter's `.len()` on the empty slice.
-        then_: {
-            let len_nonneg = WirNode::If {
-                cond: bin(BinOp::Lt, getl("len"), i32c(0)),
-                then_: vec![WirNode::SetLocal { local: "len".into(), value: i32c(0) }],
-                els: vec![],
-                result: None,
-            };
-            let (a, blen) = oob_holes(getl("j"), getl("len"));
-            let mut ns = vec![len_nonneg];
-            ns.extend(abort_nodes(DiagTemplate::ListIndexOob, a, blen, i32c(0)));
-            ns
-        },
+        // bounds (length {len})`.
+        then_: abort_nodes(DiagTemplate::ListIndexOob, getl("j"), len_i64(), i32c(0)),
         els: vec![],
         result: None,
     });
@@ -937,7 +957,7 @@ pub fn list_at_view_helper() -> WirFunc {
         ptr: Box::new(bin(
             BinOp::Add,
             bin(BinOp::Add, getl("src"), i32c(4)),
-            bin(BinOp::Mul, bin(BinOp::Add, getl("off"), getl("j")), i32c(8)),
+            bin(BinOp::Mul, bin(BinOp::Add, getl("off"), j_i32()), i32c(8)),
         )),
         kind: Kind::I64,
         offset: 0,
@@ -948,7 +968,7 @@ pub fn list_at_view_helper() -> WirFunc {
             WirLocal { name: "src".into(), ty: WirTy::Bool },
             WirLocal { name: "lo".into(), ty: WirTy::Bool },
             WirLocal { name: "hi".into(), ty: WirTy::Bool },
-            WirLocal { name: "j".into(), ty: WirTy::Bool },
+            WirLocal { name: "j".into(), ty: WirTy::Int },
         ],
         ret: vec![WirTy::Int], // i64 slot
         locals: vec![

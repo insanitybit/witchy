@@ -3927,6 +3927,28 @@ fn yn(b: Bool) -> String:
                 "cannot compare NaN",
             ),
         ];
+        // (RFC-0045 / latent i32-wrap hole) A list index beyond i32 range must
+        // still abort with its TRUE value on both backends — `$list_at` now checks
+        // in i64, so a huge index can't wrap to an in-range i32 and read a bogus
+        // slot. `4294967297` = 2^32 + 1 (wraps to 1 as i32) is the regression seed.
+        let wrap_src = "import list\nfn main(console: Console):\n    let xs = [10, 20]\n    print(console, __render(list.at(xs, 4294967297)))\n";
+        {
+            let ierr = interpreter::run(wrap_src).expect_err("interpreter must abort on the huge index");
+            assert!(
+                ierr.message.ends_with("list index 4294967297 out of bounds (length 2)"),
+                "interpreter: {}",
+                ierr.message
+            );
+            let linked = resolve_std_src(wrap_src);
+            let bytes = codegen::compile_module_binary(&linked).expect("compile").expect("binary");
+            let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort on the huge index");
+            assert_eq!(
+                cerr.strip_prefix("runtime error: "),
+                Some("list index 4294967297 out of bounds (length 2)"),
+                "compiled must report the TRUE index, not a wrapped one"
+            );
+        }
+
         for (src, want_core) in cases {
             // Interpreter (the oracle): its full message ends with the core.
             let ierr = interpreter::run(src).expect_err("interpreter must abort");
