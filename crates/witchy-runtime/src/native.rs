@@ -46,12 +46,12 @@ pub fn lookup(qualified: &str) -> Option<NativeFn> {
         "compiler.doc" => Some(compiler::doc),
         "encoding.utf8_lossy" => Some(encoding::utf8_lossy),
         "encoding.hex_encode" => Some(encoding::hex_encode),
-        "encoding.hex_decode" => Some(encoding::hex_decode),
+        "encoding.hex_decode_lossy" => Some(encoding::hex_decode_lossy),
         "encoding.base64_encode" => Some(encoding::base64_encode),
         "encoding.hex_to_base64url" => Some(encoding::hex_to_base64url),
-        "encoding.base64_decode" => Some(encoding::base64_decode),
-        "encoding.base64url_decode" => Some(encoding::base64url_decode),
-        "encoding.base64url_to_hex" => Some(encoding::base64url_to_hex),
+        "encoding.base64_decode_lossy" => Some(encoding::base64_decode_lossy),
+        "encoding.base64url_decode_lossy" => Some(encoding::base64url_decode_lossy),
+        "encoding.base64url_to_hex_lossy" => Some(encoding::base64url_to_hex_lossy),
         "regex.match_spans" => Some(regexp::match_spans),
         "string.from_code" => Some(string::from_code),
         _ => None,
@@ -501,8 +501,12 @@ mod compiler {
 
 /// The `encoding` module: hex and base64, over a string's UTF-8 bytes. These need
 /// byte-level access witchy strings don't expose, so (like `crypto`) they are
-/// native. Decoding is lenient — it returns the bytes it could decode as a UTF-8
-/// string (lossy for non-text payloads), never an error.
+/// native. The `*_lossy` decoders are the raw byte-level primitives — they return
+/// the bytes they could decode as a UTF-8 string (lossy for non-text payloads) and
+/// stop at the first non-alphabet byte. The public `encoding.*decode` wrappers in
+/// `std/encoding.witchy` guard these with a pure-witchy alphabet validator and
+/// return `Result` (RFC-0044): valid input decodes to `Ok`, malformed input is a
+/// reachable `Err`, never a silent truncation.
 mod encoding {
     use super::{type_error, Value};
     use crate::value::NativeError as RuntimeError;
@@ -534,11 +538,13 @@ mod encoding {
         Ok(Value::Str(out))
     }
 
-    /// Decode a hex string back to text (lossy UTF-8). Whitespace is skipped; an
-    /// odd or non-hex tail is ignored.
-    pub fn hex_decode(args: &[Value]) -> Result<Value, RuntimeError> {
+    /// Raw hex decode to text (lossy UTF-8). Whitespace is skipped; an odd or
+    /// non-hex tail is ignored. This is the byte-level primitive behind
+    /// `encoding.hex_decode`, which validates the alphabet first and returns
+    /// `Result` — so this is only ever reached with already-valid input.
+    pub fn hex_decode_lossy(args: &[Value]) -> Result<Value, RuntimeError> {
         let [Value::Str(s)] = args else {
-            return Err(type_error("encoding.hex_decode expects a String"));
+            return Err(type_error("encoding.hex_decode_lossy expects a String"));
         };
         let digits: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
         let mut bytes = Vec::with_capacity(digits.len() / 2);
@@ -615,11 +621,12 @@ mod encoding {
         Ok(Value::Str(out))
     }
 
-    /// Decode standard base64 back to text (lossy UTF-8). Padding and whitespace
-    /// are tolerated; a non-alphabet byte stops decoding.
-    pub fn base64_decode(args: &[Value]) -> Result<Value, RuntimeError> {
+    /// Raw standard-base64 decode to text (lossy UTF-8). Padding and whitespace
+    /// are tolerated; a non-alphabet byte stops decoding. Byte-level primitive
+    /// behind the validating `encoding.base64_decode` wrapper.
+    pub fn base64_decode_lossy(args: &[Value]) -> Result<Value, RuntimeError> {
         let [Value::Str(s)] = args else {
-            return Err(type_error("encoding.base64_decode expects a String"));
+            return Err(type_error("encoding.base64_decode_lossy expects a String"));
         };
         let mut acc: u32 = 0;
         let mut nbits = 0;
@@ -641,20 +648,22 @@ mod encoding {
         Ok(Value::Str(String::from_utf8_lossy(&bytes).into_owned()))
     }
 
-    /// Decode base64url (URL-safe `-`/`_`, padding/whitespace tolerated) back to text
-    /// (lossy UTF-8) — for the JSON header/payload segments of a JWT/OIDC token.
-    pub fn base64url_decode(args: &[Value]) -> Result<Value, RuntimeError> {
+    /// Raw base64url decode (URL-safe `-`/`_`, padding/whitespace tolerated) to text
+    /// (lossy UTF-8). Byte-level primitive behind the validating
+    /// `encoding.base64url_decode` wrapper — the JSON header/payload of a JWT/OIDC token.
+    pub fn base64url_decode_lossy(args: &[Value]) -> Result<Value, RuntimeError> {
         let [Value::Str(s)] = args else {
-            return Err(type_error("encoding.base64url_decode expects a String"));
+            return Err(type_error("encoding.base64url_decode_lossy expects a String"));
         };
         Ok(Value::Str(String::from_utf8_lossy(&base64url_bytes(s)).into_owned()))
     }
 
-    /// Decode base64url to a HEX string — for binary that must round-trip through a
+    /// Raw base64url decode to a HEX string — for binary that must round-trip through a
     /// witchy String, e.g. a JWT's RS256 signature fed to `crypto.rsa_pkcs1_sha256_verify`.
-    pub fn base64url_to_hex(args: &[Value]) -> Result<Value, RuntimeError> {
+    /// Byte-level primitive behind the validating `encoding.base64url_to_hex` wrapper.
+    pub fn base64url_to_hex_lossy(args: &[Value]) -> Result<Value, RuntimeError> {
         let [Value::Str(s)] = args else {
-            return Err(type_error("encoding.base64url_to_hex expects a String"));
+            return Err(type_error("encoding.base64url_to_hex_lossy expects a String"));
         };
         let hex: String = base64url_bytes(s).iter().map(|b| format!("{b:02x}")).collect();
         Ok(Value::Str(hex))
