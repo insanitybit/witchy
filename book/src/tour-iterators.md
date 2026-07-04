@@ -106,6 +106,40 @@ collatz(6): 6, 3, 10, 5, 16, 8, 4, 2, 1
 collatz(27) steps: 112
 ```
 
+### Generator methods
+
+A `gen fn` can also be a **method** in an inherent `impl` block. It dispatches by
+receiver type like any other method and returns an `Iter(a)`; the body reads the
+receiver's fields through `self`:
+
+```witchy
+import iter
+
+type Counter:
+    n: Int
+
+impl Counter:
+    gen fn upto(self) -> Iter(Int):
+        var i = 0
+        while i < self.n:
+            yield i
+            i = i + 1
+
+fn main(console: Console):
+    let c = Counter(4)
+    let xs: List(Int) = iter.collect(c.upto())
+    print(console, "${xs}")
+```
+
+```text
+[0, 1, 2, 3]
+```
+
+One restriction: a `gen fn` may not be a *trait* method (neither declared in a
+`trait` nor implementing one in an `impl Trait for T`) — the compiler rejects it
+at parse time. A trait that wants a lazy sequence declares a plain
+`fn … -> Iter(a)`, and the impl can delegate to an inherent generator method.
+
 ## Why this stays simple
 
 `collect` builds **whatever the call site expects** — any type implementing

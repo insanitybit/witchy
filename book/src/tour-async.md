@@ -177,6 +177,40 @@ limit: the code *after* an `await` becomes a captured-by-value continuation, so 
 recursing with an `async fn`, or thread it through a channel (`chan.serve`), rather
 than in a `var`.
 
+## Async methods
+
+An `async fn` can also be a **method** in an inherent `impl` block. Calling it
+returns a task like any other async call, and the caller `await`s it; the body
+reads the receiver's fields through `self` and may itself `await`:
+
+```witchy
+type Doubler:
+    base: Int
+
+async fn step(n: Int) -> Int:
+    n + n
+
+impl Doubler:
+    async fn scaled(self, x: Int) -> Int:
+        let doubled = step(x).await
+        self.base + doubled
+
+async fn main(console: Console):
+    let d = Doubler(100)
+    let r = d.scaled(5).await
+    print(console, "${r}")
+```
+
+```text
+110
+```
+
+One restriction: an `async fn` may not be a *trait* method (neither declared in a
+`trait` nor implementing one in an `impl Trait for T`) — the compiler rejects it
+at parse time. A trait that wants an asynchronous operation declares a plain
+`fn … -> Task(m, a)`; the implementing method leaves its own return type to
+inference and delegates to an inherent async method.
+
 ## Why this stays deterministic
 
 The executor is ordinary witchy code (see `std/chan`): it owns the channel buffers
