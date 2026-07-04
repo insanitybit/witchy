@@ -114,6 +114,7 @@ pub enum Tok {
     OrOr,   // ||
     Bang,   // !
     Question, // ?
+    QuestionQuestion, // ?? (fallback / coalescing operator, RFC-0048)
 
     Eof,
 }
@@ -201,6 +202,7 @@ impl fmt::Display for Tok {
             OrOr => write!(f, "||"),
             Bang => write!(f, "!"),
             Question => write!(f, "?"),
+            QuestionQuestion => write!(f, "??"),
             Eof => write!(f, "end of input"),
         }
     }
@@ -882,6 +884,12 @@ impl Lexer {
             ('*', _) => Tok::Star,
             ('/', _) => Tok::Slash,
             ('%', _) => Tok::Percent,
+            // `??` is lexed greedily (RFC-0048), so `e???d` is `?? ?` — a parse
+            // error, never a silent regrouping; write `e? ?? d`.
+            ('?', Some('?')) => {
+                self.bump();
+                Tok::QuestionQuestion
+            }
             ('?', _) => Tok::Question,
             ('(', _) => Tok::LParen,
             (')', _) => Tok::RParen,

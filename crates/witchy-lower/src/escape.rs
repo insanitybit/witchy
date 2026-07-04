@@ -696,7 +696,7 @@ fn each_expr_in_stmt(s: &Stmt, f: &mut impl FnMut(&Expr)) {
     match s {
         Stmt::Let { value, .. }
         | Stmt::Assign { value, .. }
-        | Stmt::LetTuple { value, .. }
+        | Stmt::LetPattern { value, .. }
         | Stmt::Yield(value)
         | Stmt::Expr(value) => f(value),
         Stmt::Return(Some(e)) => f(e),

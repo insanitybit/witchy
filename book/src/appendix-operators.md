@@ -11,7 +11,8 @@ has the precise semantics; this is the cheat sheet.
 | `== !=` | equality — structural for built-ins, else the type's `PartialEq` impl (`eq`/`ne`) |
 | `< <= > >=` | ordering via the type's `PartialOrd` impl (built in for `Int`/`Float`/`String`/`Duration`; derive or implement it for your own) |
 | `&&` | short-circuit boolean and |
-| `\|\|` | short-circuit or; for non-Bool, the *truthy fallback* `a \|\| b` (falsy: `""` / `None` / `[]`, same-typed operands), and `Option(T) \|\| T` **unwraps** (`Some(x) \|\| d` is `x`, `None \|\| d` is `d`) |
+| `\|\|` | short-circuit boolean or (Bool operands only) |
+| `??` | fallback: `Option(T) ?? T` / `Result(T, e) ?? T` **unwraps** (`Some(x)`/`Ok(x)` is `x`, else the right side, evaluated lazily) — right-associative, so `d.get(k1) ?? d.get(k2) ?? 0` chains |
 | `!` | boolean not |
 | `& \| ^ ~ << >>` | bitwise on `Int` (shift counts masked to 6 bits) |
 | `xs[i]` | list indexing (sugar for `list.at(xs, i)`); out of bounds errors |

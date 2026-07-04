@@ -190,8 +190,8 @@ fn rewrite_block(b: Block) -> Block {
             Stmt::Assign { name, value } => {
                 out.push(Stmt::Assign { name, value: rewrite_expr(value) })
             }
-            Stmt::LetTuple { names, value } => {
-                out.push(Stmt::LetTuple { names, value: rewrite_expr(value) })
+            Stmt::LetPattern { pattern, value } => {
+                out.push(Stmt::LetPattern { pattern, value: rewrite_expr(value) })
             }
             Stmt::Return(v) => out.push(Stmt::Return(v.map(rewrite_expr))),
             Stmt::Expr(e) => out.push(Stmt::Expr(rewrite_expr(e))),

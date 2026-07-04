@@ -325,7 +325,7 @@ impl Coven:
         // `uploaded_by`, no claims. Trusted: the token must verify (401) AND satisfy the
         // namespace's policy (403); the first trusted publish binds it.
         if list.length(self.issuers) == 0:
-            Ok((req.uploaded_by || "anonymous", None))
+            Ok((if req.uploaded_by.is_empty(): "anonymous" else: req.uploaded_by, None))
         else:
             let claims = verified_claims(self.issuers, req.id_token, now, "publishing to a trusted registry requires a short-lived identity token (long-lived API tokens are not accepted)")?
             let sub = self.authorize_publish(name, claims)?

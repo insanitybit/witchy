@@ -324,7 +324,6 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             statics: &statics,
             table: &empty_table,
             bound_traits: std::cell::RefCell::new(HashMap::new()),
-            or_counter: std::cell::Cell::new(0),
         };
         for item in &mut items {
             if let Item::Function(f) = item {
@@ -436,7 +435,6 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         statics: &statics,
         table: &type_table,
         bound_traits: std::cell::RefCell::new(HashMap::new()),
-        or_counter: std::cell::Cell::new(0),
     };
     for item in &mut items {
         if let Item::Function(f) = item {
@@ -583,8 +581,6 @@ struct Ctx<'a> {
     /// ONLY when that variable is bound by the relevant comparison trait — an
     /// UNbounded generic `==` keeps the native structural comparison.
     bound_traits: std::cell::RefCell<HashMap<String, Vec<String>>>,
-    /// Fresh-name counter for the `Option(T) || T` unwrap rewrite (RFC-0021).
-    or_counter: std::cell::Cell<u32>,
 }
 
 /// The scope-name of an expression as typeck's `annotate` resolved it (RFC-0046):
@@ -702,12 +698,16 @@ impl Ctx<'_> {
                 Stmt::Assign { value, .. } => self.rewrite_expr(value, scope),
                 // Seed each destructured name from the tuple's slot types so a
                 // trait call on a tuple part (`x0.show()`) dispatches.
-                Stmt::LetTuple { names, value } => {
+                Stmt::LetPattern { pattern, value } => {
                     self.rewrite_expr(value, scope);
-                    // A tuple-returning call (`let (a, b) = pair()`) has no head
-                    // name for `type_name` to recover, so fall back to the typeck
-                    // table — otherwise the destructured names stay untyped and a
-                    // comparison on one (`a < b`) can't find its trait impl.
+                    // Seed each destructured name from the value's type so a trait
+                    // call on a part (`x0.show()`, `a < b`) dispatches. A
+                    // tuple-returning call (`let (a, b) = pair()`) has no head name
+                    // for `type_name` to recover, so fall back to the typeck table
+                    // — otherwise the destructured names stay untyped. Any name we
+                    // can't type is bound untyped (`bind_local`); this is a
+                    // best-effort dispatch aid, so an untyped fallback is always
+                    // sound (the checker re-verifies).
                     let tup = self
                         .type_name(value, scope)
                         .or_else(|| {
@@ -717,28 +717,46 @@ impl Ctx<'_> {
                                 .and_then(|t| type_to_scope_name(&t))
                         })
                         .or_else(|| match value {
-                            // A direct call's declared return type — `pair() -> (T, T)`
-                            // — names the tuple even when nothing else can.
                             Expr::Call { name, .. } => {
                                 self.fn_sigs.get(name).and_then(|(_, ret)| type_to_scope_name(ret))
                             }
                             _ => None,
                         });
-                    match tup.as_deref().and_then(tuple_args) {
-                        Some(args) => {
-                            for (n, t) in names.iter().zip(args) {
-                                scope.insert(n.clone(), t.to_string());
-                            }
-                        }
-                        None => {
-                            for n in names {
-                                scope.bind_local(n);
-                            }
-                        }
-                    }
+                    self.seed_pattern(pattern, tup.as_deref(), scope);
                 }
                 Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => self.rewrite_expr(e, scope),
                 Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+            }
+        }
+    }
+
+    /// Seed the trait-dispatch scope with the names an irrefutable `let`/`for`
+    /// pattern binds, typing each from the value's (best-effort) type name where
+    /// the structure lets us recover it. A tuple pattern against a `Tuple<...>`
+    /// type recurses per slot; anything else binds its names untyped (sound — the
+    /// checker re-verifies, this only helps method dispatch resolve eagerly).
+    fn seed_pattern(&self, pat: &Pattern, ty: Option<&str>, scope: &mut Scope) {
+        match pat {
+            Pattern::Var(n) if n != "_" => match ty {
+                Some(t) => scope.insert(n.clone(), t.to_string()),
+                None => scope.bind_local(n),
+            },
+            Pattern::Tuple(ps) => {
+                let slots = ty.and_then(tuple_args);
+                for (i, sub) in ps.iter().enumerate() {
+                    let sub_ty = slots.as_ref().and_then(|s| s.get(i)).copied();
+                    self.seed_pattern(sub, sub_ty, scope);
+                }
+            }
+            // For ctor/record/list/or sub-patterns we don't recover the per-field
+            // types here (the checker does the real work); bind every name untyped
+            // so it at least resolves as a local.
+            _ => {
+                let mut names = Vec::new();
+                witchy_syntax::ast::pattern_binds(pat, &mut names);
+                for n in &names {
+                    scope.bind_local(n);
+                }
             }
         }
     }
@@ -813,49 +831,6 @@ impl Ctx<'_> {
                 }
             }
             Expr::Binary { op, lhs, rhs } => {
-                // RFC-0021: `Option(T) || T` unwraps to `T` — `Some(x) || d` is `x`,
-                // `None || d` is `d` (lazily). Rewrite to a `match` so both backends
-                // agree; the runtime `||` stays the same-type truthy fallback for
-                // every other case (`""`/`[]`/`None` falsy, `Option || Option`, …).
-                // Operands are rewritten first so a UFCS/method-call receiver
-                // resolves before we read its head type. Fire ONLY when the left is
-                // concretely `Option` and the right is concretely NOT — otherwise the
-                // node is left for the existing homogeneous rule (which errors on a
-                // genuine `Option || T` mismatch, never silently misbehaves).
-                if matches!(op, BinOp::Or) {
-                    self.rewrite_expr(lhs, scope);
-                    self.rewrite_expr(rhs, scope);
-                    let lhs_head = self.type_name(lhs, scope);
-                    let rhs_head = self.type_name(rhs, scope);
-                    let lhs_opt = lhs_head.as_deref().map(head_of) == Some("Option");
-                    let rhs_opt = rhs_head.as_deref().map(head_of) == Some("Option");
-                    if lhs_opt && rhs_head.is_some() && !rhs_opt {
-                        let n = self.or_counter.get();
-                        self.or_counter.set(n + 1);
-                        let var = format!("__or{n}");
-                        let scrut = std::mem::replace(lhs.as_mut(), Expr::Bool(false));
-                        let fallback = std::mem::replace(rhs.as_mut(), Expr::Bool(false));
-                        *e = Expr::Match {
-                            scrutinee: Box::new(scrut),
-                            arms: vec![
-                                MatchArm {
-                                    pattern: Pattern::Ctor {
-                                        name: "Some".into(),
-                                        args: vec![Pattern::Var(var.clone())],
-                                    },
-                                    guard: None,
-                                    body: Expr::Var(var),
-                                },
-                                MatchArm {
-                                    pattern: Pattern::Ctor { name: "None".into(), args: vec![] },
-                                    guard: None,
-                                    body: fallback,
-                                },
-                            ],
-                        };
-                    }
-                    return;
-                }
                 // Comparison operators on non-primitive operands desugar to their
                 // trait method (`a > b` -> `greater(a, b)`), which the call arm
                 // below then dispatches to the concrete impl. Primitives — and, for
@@ -1153,11 +1128,14 @@ fn head_type_name(
         },
         // Comparisons/logic yield Bool; `<>` yields String; arithmetic and
         // bitwise ops have the type of their (left) operand.
-        Expr::Binary { op, lhs, .. } => match op {
+        Expr::Binary { op, lhs, rhs } => match op {
             BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq
-            | BinOp::And => Some("Bool".into()),
+            | BinOp::And | BinOp::Or => Some("Bool".into()),
             BinOp::Concat => Some("String".into()),
-            // Non-Bool `||` (truthy fallback) has its (left) operand's type.
+            // `a ?? b` (RFC-0048) unwraps: its type is the fallback's (the
+            // Option/Result payload — the two agree by the typing rule, and the
+            // rhs is the side whose head is recoverable here).
+            BinOp::Coalesce => head_type_name(rhs, scope, ctor_results, fn_rets, record_fields),
             _ => head_type_name(lhs, scope, ctor_results, fn_rets, record_fields),
         },
         // A list literal's type encodes its element type when determinable from
@@ -1318,7 +1296,7 @@ fn block_needs_lowering(b: &Block) -> bool {
     b.stmts.iter().any(|s| match s {
         Stmt::Let { value, .. }
         | Stmt::Assign { value, .. }
-        | Stmt::LetTuple { value, .. }
+        | Stmt::LetPattern { value, .. }
         | Stmt::Yield(value)
         | Stmt::Expr(value) => expr_needs_lowering(value),
         Stmt::Return(opt) => opt.as_ref().is_some_and(expr_needs_lowering),
@@ -1350,9 +1328,6 @@ fn expr_needs_lowering(e: &Expr) -> bool {
             fields.iter().any(|(_, v)| expr_needs_lowering(v))
                 || spread.as_deref().is_some_and(expr_needs_lowering)
         }
-        // `||` may be the RFC-0021 `Option(T) || T` unwrap, which the rewrite pass
-        // turns into a `match`; trigger lowering so that pass runs.
-        Expr::Binary { op: BinOp::Or, .. } => true,
         Expr::Binary { lhs, rhs, .. } => {
             expr_needs_lowering(lhs) || expr_needs_lowering(rhs)
         }
@@ -1729,7 +1704,7 @@ fn subst_block_types(b: &mut Block, subst: &HashMap<&str, String>) {
                 subst_expr_types(value, subst);
             }
             Stmt::Assign { value, .. }
-            | Stmt::LetTuple { value, .. }
+            | Stmt::LetPattern { value, .. }
             | Stmt::Return(Some(value))
             | Stmt::Expr(value)
             | Stmt::Yield(value) => subst_expr_types(value, subst),
@@ -2042,7 +2017,7 @@ fn rename_calls_block(b: &mut Block, renames: &HashMap<String, String>) {
         match st {
             Stmt::Let { value, .. }
             | Stmt::Assign { value, .. }
-            | Stmt::LetTuple { value, .. }
+            | Stmt::LetPattern { value, .. }
             | Stmt::Return(Some(value))
             | Stmt::Expr(value)
             | Stmt::Yield(value) => walk_expr(value, renames),
@@ -2157,6 +2132,33 @@ impl Mono<'_> {
     /// (`s.items: List(a)`) resolves concretely (`List(Int)`) inside `foo__Int`.
     fn type_name_subst(&self, e: &Expr, scope: &Scope) -> Option<String> {
         self.type_name(e, scope).map(|t| apply_subst(&t, &self.cur_subst))
+    }
+
+    /// Seed the mono scope with the names an irrefutable `let`/`for` pattern
+    /// binds, typing each from the value's type where the structure lets us
+    /// recover it (a tuple pattern recurses per slot). Names we can't type are
+    /// cleared, so no stale outer binding leaks into this specialization.
+    fn seed_pattern_subst(&self, pat: &Pattern, ty: Option<&str>, scope: &mut Scope) {
+        match pat {
+            Pattern::Var(n) if n != "_" => match ty {
+                Some(t) => scope.insert(n.clone(), t.to_string()),
+                None => scope.remove(n.as_str()),
+            },
+            Pattern::Tuple(ps) => {
+                let slots = ty.and_then(tuple_args);
+                for (i, sub) in ps.iter().enumerate() {
+                    let sub_ty = slots.as_ref().and_then(|s| s.get(i)).copied();
+                    self.seed_pattern_subst(sub, sub_ty, scope);
+                }
+            }
+            _ => {
+                let mut names = Vec::new();
+                witchy_syntax::ast::pattern_binds(pat, &mut names);
+                for n in &names {
+                    scope.remove(n.as_str());
+                }
+            }
+        }
     }
 
     /// The concrete type of field `pos` of the element TUPLE of a list argument,
@@ -2494,23 +2496,15 @@ impl Mono<'_> {
                     }
                 }
                 Stmt::Assign { value, .. } => self.walk_expr(value, scope),
-                // `let (x0, x1) = t` seeds each name from the tuple's slot types, so
-                // a destructured tuple value's parts monomorphize (e.g. a tuple
-                // impl's `reflect_one(x0)`).
-                Stmt::LetTuple { names, value } => {
+                // `let PAT = t` seeds each destructured name from the value's type
+                // so a destructured part monomorphizes (e.g. a tuple impl's
+                // `reflect_one(x0)`). A tuple pattern recurses per slot; other
+                // patterns clear their names (untyped) so a stale outer binding
+                // doesn't leak in.
+                Stmt::LetPattern { pattern, value } => {
                     self.walk_expr(value, scope);
-                    match self.type_name_subst(value, scope).as_deref().and_then(tuple_args) {
-                        Some(args) => {
-                            for (n, t) in names.iter().zip(args) {
-                                scope.insert(n.clone(), t.to_string());
-                            }
-                        }
-                        None => {
-                            for n in names {
-                                scope.remove(n.as_str());
-                            }
-                        }
-                    }
+                    let ty = self.type_name_subst(value, scope);
+                    self.seed_pattern_subst(pattern, ty.as_deref(), scope);
                 }
                 Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => self.walk_expr(e, scope),
                 Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}

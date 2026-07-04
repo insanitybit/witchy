@@ -71,10 +71,12 @@ fn fv_block(block: &Block, s: &mut LambdaScan) {
                 s.assigns.insert(name.clone());
                 fv_expr(value, s);
             }
-            Stmt::LetTuple { names, value } => {
+            Stmt::LetPattern { pattern, value } => {
                 fv_expr(value, s);
+                let mut names = Vec::new();
+                crate::ast::pattern_binds(pattern, &mut names);
                 for n in names {
-                    s.bound.insert(n.clone());
+                    s.bound.insert(n);
                 }
             }
             Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => fv_expr(e, s),
@@ -204,6 +206,14 @@ pub fn collect_pattern_vars<S: Extend<String>>(pat: &Pattern, out: &mut S) {
             }
             if let Some(Some(name)) = rest {
                 out.extend([name.clone()]);
+            }
+        }
+        // (RFC-0052) Every or-pattern alternative binds the SAME names, so the
+        // first alternative's bindings are the complete set (the checker enforces
+        // consistency). Walking just the first avoids double-counting.
+        Pattern::Or(alts) => {
+            if let Some(first) = alts.first() {
+                collect_pattern_vars(first, out);
             }
         }
         _ => {}

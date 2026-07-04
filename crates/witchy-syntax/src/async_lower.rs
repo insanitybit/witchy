@@ -215,13 +215,13 @@ impl Ctx {
             Stmt::Return(None) => Ok(call("task.ready_unit", vec![])),
             // `let (a, b) = await E` — await the value, then destructure it. The
             // common shape for `let (tx, rx) = chan.channel(..).await`.
-            Stmt::LetTuple { names, value } if as_await(value).is_some() => {
+            Stmt::LetPattern { pattern, value } if as_await(value).is_some() => {
                 let inner = as_await(value).unwrap();
                 reject_await(inner, &self.fname)?;
                 let tmp = self.fresh();
                 let k = self.cps_stmts(rest)?;
                 let destructure =
-                    Stmt::LetTuple { names: names.clone(), value: Expr::Var(tmp.clone()) };
+                    Stmt::LetPattern { pattern: pattern.clone(), value: Expr::Var(tmp.clone()) };
                 let body = Expr::Block(Block {
                     stmts: vec![destructure, Stmt::Expr(k)],
                     lines: vec![0, 0],
@@ -229,7 +229,7 @@ impl Ctx {
                 });
                 Ok(and_then(inner.clone(), tmp, body))
             }
-            Stmt::Assign { value, .. } | Stmt::LetTuple { value, .. } => {
+            Stmt::Assign { value, .. } | Stmt::LetPattern { value, .. } => {
                 reject_await(value, &self.fname)?;
                 if is_last {
                     Ok(prefix_stmt(head.clone(), call("task.ready_unit", vec![])))
@@ -437,7 +437,7 @@ fn stmt_contains_await(s: &Stmt) -> bool {
     match s {
         Stmt::Let { value, .. }
         | Stmt::Assign { value, .. }
-        | Stmt::LetTuple { value, .. }
+        | Stmt::LetPattern { value, .. }
         | Stmt::Expr(value)
         | Stmt::Yield(value) => contains_await(value),
         Stmt::Return(v) => v.as_ref().is_some_and(contains_await),

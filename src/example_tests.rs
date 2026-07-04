@@ -1665,15 +1665,16 @@ fn main(console: Console):
         assert_eq!(wasm_run(embed), ew, "wasm (embed)");
     }
 
-    /// `||` is the truthy fallback `a || b` ≡ `if truthy(a): a else: b` over the
-    /// emptyable built-ins: "" / None / [] are falsy, Bool stays logical-or, and the
-    /// operator chains. Both backends must agree — the wasm path reads a single
-    /// header word (length for String/List, variant tag for Option) where the
-    /// interpreter checks the runtime value, so this guards that they stay in sync.
+    /// `a ?? b` (RFC-0048) is THE fallback: `Option(T) ?? T -> T` and
+    /// `Result(T, e) ?? T -> T`, short-circuiting (the fallback runs only on
+    /// `None`/`Err`), chaining right-associatively — and `||` stays Bool-only
+    /// logical-or. Both backends must agree: the wasm path is a store-once/
+    /// tag-test value-if where the interpreter unwraps the runtime ctor, so
+    /// this guards that they stay in sync.
     #[test]
-    fn or_truthy_fallback_both_backends() {
-        let src = "fn main(console: Console):\n    print(console, \"\" || \"fallback\")\n    print(console, \"set\" || \"keep\")\n    match None || Some(\"x\"):\n        Some(v) -> print(console, v)\n        None -> print(console, \"none\")\n    match Some(\"y\") || Some(\"z\"):\n        Some(v) -> print(console, v)\n        None -> print(console, \"none\")\n    print(console, list.at([] || [\"A\"], 0))\n    print(console, list.at([\"B\"] || [\"C\"], 0))\n    print(console, \"${false || true}\")\n    let chain = \"\" || \"\" || \"third\"\n    print(console, chain)\n";
-        let want: Vec<String> = ["fallback", "set", "x", "y", "A", "B", "true", "third"]
+    fn coalesce_fallback_both_backends() {
+        let src = "import option\n\nfn find(b: Bool) -> Option(String):\n    if b: Some(\"hit\") else: None\n\nfn parse(s: String) -> Result(Int, String):\n    match string.parse_int(s):\n        Some(n) -> Ok(n)\n        None -> Err(\"bad int\")\n\nfn main(console: Console):\n    print(console, find(true) ?? \"fallback\")\n    print(console, find(false) ?? \"fallback\")\n    print(console, \"${parse(\"41\") ?? 0}\")\n    print(console, \"${parse(\"x\") ?? 9}\")\n    let d = dict.new().insert(\"a\", 1)\n    print(console, \"${dict.get(d, \"a\") ?? dict.get(d, \"b\") ?? 0}\")\n    print(console, \"${dict.get(d, \"z\") ?? dict.get(d, \"b\") ?? 5}\")\n    print(console, \"${Some(\"\") ?? \"x\"}\")\n    print(console, \"${false || true}\")\n";
+        let want: Vec<String> = ["hit", "fallback", "41", "9", "1", "5", "", "true"]
             .iter()
             .map(|s| s.to_string())
             .collect();
@@ -1682,6 +1683,141 @@ fn main(console: Console):
         let interp = interpreter::run_module(linked, ".", Vec::new()).expect("interpreter run");
         assert_eq!(interp, want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// The fallback side of `??` is LAZY: it must not run when the left is
+    /// `Some`/`Ok` — observable through a printing side effect, on both backends.
+    #[test]
+    fn coalesce_fallback_is_lazy_both_backends() {
+        let src = "import option\n\nfn side(console: Console, tag: String, v: Int) -> Int:\n    print(console, \"eval ${tag}\")\n    v\n\nfn main(console: Console):\n    let a = Some(1) ?? side(console, \"unreached\", 2)\n    print(console, \"${a}\")\n    let b = None ?? side(console, \"reached\", 3)\n    print(console, \"${b}\")\n";
+        let want: Vec<String> =
+            ["1", "eval reached", "3"].iter().map(|s| s.to_string()).collect();
+        let linked = resolve_std_src(src);
+        typeck::check(&linked).expect("typecheck");
+        let interp = interpreter::run_module(linked, ".", Vec::new()).expect("interpreter run");
+        assert_eq!(interp, want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// RFC-0048's other half: the truthy fallback is GONE. `||` on a String (or
+    /// any non-Bool) is a check-time teaching error pointing at `??`, and `??`
+    /// on a non-Option/Result left side is rejected too.
+    #[test]
+    fn or_is_bool_only_teaching_errors() {
+        let err = typeck::check_str(
+            "fn main(console: Console):\n    print(console, \"\" || \"default\")\n",
+        )
+        .expect_err("String || must be rejected");
+        assert!(
+            err.contains("`||` is logical-or on Bool") && err.contains("use `??`"),
+            "unexpected message: {err}"
+        );
+        let err = typeck::check_str(
+            "fn main(console: Console):\n    let n = 1 ?? 2\n    print(console, \"${n}\")\n",
+        )
+        .expect_err("Int ?? must be rejected");
+        assert!(
+            err.contains("`??` unwraps an Option or a Result"),
+            "unexpected message: {err}"
+        );
+    }
+
+    // ---- RFC-0052: one pattern grammar ------------------------------------
+
+    /// (RFC-0052) Integer range patterns `lo..hi` / `lo..=hi` as real nodes, on
+    /// both backends — half-open and inclusive, with a catch-all.
+    #[test]
+    fn range_patterns_backends_agree() {
+        let src = "fn classify(n: Int) -> String:\n    match n:\n        0..10 -> \"low\"\n        10..=20 -> \"mid\"\n        _ -> \"high\"\n\nfn main(console: Console):\n    print(console, classify(5))\n    print(console, classify(10))\n    print(console, classify(20))\n    print(console, classify(99))\n";
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["low", "mid", "mid", "high"]);
+    }
+
+    /// (RFC-0052) Nested or-patterns `Some(1 | 2 | 3)` — impossible before this
+    /// RFC (parse error) — parse, check, and run identically on both backends.
+    #[test]
+    fn nested_or_patterns_backends_agree() {
+        let src = "fn f(o: Option(Int)) -> String:\n    match o:\n        Some(1 | 2 | 3) -> \"small\"\n        Some(n) -> \"big\"\n        None -> \"none\"\n\nfn main(console: Console):\n    print(console, f(Some(2)))\n    print(console, f(Some(9)))\n    print(console, f(None))\n";
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["small", "big", "none"]);
+    }
+
+    /// (RFC-0052) Binding or-patterns `Circle(n) | Square(n)` — every alternative
+    /// binds the same name; the arm body sees the matched alternative's value.
+    #[test]
+    fn binding_or_patterns_backends_agree() {
+        let src = "type Shape:\n    Circle(Int)\n    Square(Int)\n\nfn size(s: Shape) -> Int:\n    match s:\n        Circle(n) | Square(n) -> n\n\nfn main(console: Console):\n    print(console, \"${size(Circle(3))}\")\n    print(console, \"${size(Square(7))}\")\n";
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["3", "7"]);
+    }
+
+    /// (RFC-0052) Duration literal patterns `1s`/`-1s` — exact ms equality — and
+    /// the `-1s` negative-duration lexer/typeck fix, on both backends.
+    #[test]
+    fn duration_patterns_backends_agree() {
+        let src = "fn f(d: Duration) -> String:\n    match d:\n        1s -> \"one\"\n        -1s -> \"neg\"\n        _ -> \"other\"\n\nfn main(console: Console):\n    print(console, f(1s))\n    print(console, f(-1s))\n    print(console, f(5s))\n";
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["one", "neg", "other"]);
+    }
+
+    /// (RFC-0052) A Float SCRUTINEE bound to a variable pattern now compiles (the
+    /// former check-passes/codegen-fails hole) and agrees on both backends.
+    #[test]
+    fn float_scrutinee_binding_backends_agree() {
+        let src = "fn main(console: Console):\n    let r = match 1.5:\n        x -> x + 1.0\n    print(console, \"${r}\")\n";
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["2.5"]);
+    }
+
+    /// (RFC-0052) `let` destructuring — nested tuples AND a single-variant record
+    /// pattern — the same grammar as `match`, both backends.
+    #[test]
+    fn let_destructure_patterns_backends_agree() {
+        let src = "type Point:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let ((a, b), c) = ((1, 2), 3)\n    print(console, \"${a} ${b} ${c}\")\n    let Point(px, py) = Point(10, 20)\n    print(console, \"${px} ${py}\")\n";
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["1 2 3", "10 20"]);
+    }
+
+    /// (RFC-0052) `for` and comprehension take the SAME pattern grammar: a tuple
+    /// header destructures each element, on both backends.
+    #[test]
+    fn for_and_comprehension_patterns_backends_agree() {
+        let src = "fn main(console: Console):\n    let pairs = [(1, 2), (3, 4)]\n    for (a, b) in pairs:\n        print(console, \"${a}+${b}\")\n    let sums = [a + b for (a, b) in pairs]\n    print(console, \"${sums}\")\n";
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["1+2", "3+4", "[3, 7]"]);
+    }
+
+    /// (RFC-0052) The refutability rule and literal-pattern edges — check-time
+    /// teaching errors, message-pinned.
+    #[test]
+    fn pattern_refutability_and_literal_edges_errors() {
+        // A refutable `let` (multi-variant ctor) points at `if let`.
+        let err = typeck::check_str(
+            "type Shape:\n    Circle(Int)\n    Square(Int)\n\nfn main(console: Console):\n    let Circle(r) = Circle(3)\n    print(console, \"${r}\")\n",
+        )
+        .expect_err("refutable let must be rejected");
+        assert!(
+            err.contains("can fail") && err.contains("if let"),
+            "unexpected message: {err}"
+        );
+        // Float literal patterns are rejected with the precision-trap teaching error.
+        let err = typeck::check_str(
+            "fn main(console: Console):\n    match 1.5:\n        1.5 -> print(console, \"a\")\n        _ -> print(console, \"b\")\n",
+        )
+        .expect_err("float literal pattern must be rejected");
+        assert!(
+            err.contains("Float literals cannot be matched"),
+            "unexpected message: {err}"
+        );
+        // Or-pattern alternatives must bind the same names at the same types.
+        let err = typeck::check_str(
+            "type T:\n    A(Int)\n    B(String)\n\nfn main(console: Console):\n    match A(1):\n        A(x) | B(x) -> print(console, \"${x}\")\n",
+        )
+        .expect_err("inconsistent or-binding types must be rejected");
+        assert!(
+            err.contains("or-pattern binding") && err.contains("inconsistent"),
+            "unexpected message: {err}"
+        );
     }
 
     /// REFLECTION, SECOND USE CASE: `reflect.debug(x)` renders any value from the
@@ -7412,9 +7548,9 @@ fn main(console: Console):
 
     #[test]
     fn ranges_example_runs_on_wasm() {
-        // Integer range patterns (`lo..hi`, `lo..=hi`) desugar to a guarded
-        // binding, so the HTTP-status and grade classifiers match identically on
-        // both backends.
+        // Integer range patterns (`lo..hi`, `lo..=hi`) are real `Pattern::IntRange`
+        // nodes (RFC-0052), so the HTTP-status and grade classifiers match
+        // identically on both backends.
         let sources = [
             ("string", crate::bundled_module("string").unwrap()),
             ("main", include_str!("../examples/ranges/src/ranges.witchy")),
@@ -10880,28 +11016,24 @@ fn main(console: Console):
     }
 
     #[test]
-    fn or_unwraps_option_backends_agree() {
-        // RFC-0021: `Option(T) || T` unwraps to `T` (None -> the default, evaluated
-        // lazily; Some(x) -> x, present even when empty). Every other `||` is the
-        // unchanged same-type truthy fallback.
+    fn coalesce_unwraps_option_backends_agree() {
+        // RFC-0048: `Option(T) ?? T` unwraps to `T` (None -> the default, evaluated
+        // lazily; Some(x) -> x, present even when empty — `Some("") ?? "x"` is `""`,
+        // not `"x"`, since there is no truthiness).
         let src = r#"
-import option
-
 fn pick(b: Bool) -> Option(Int):
     if b: Some(36) else: None
 
+fn empty() -> Option(String):
+    Some("")
+
 fn main(console: Console):
-    print(console, "${pick(true) || 0}")
-    print(console, "${pick(false) || 0}")
-    print(console, "" || "default")
-    print(console, "${pick(true) || pick(false)}")
-    print(console, "${Some("") || "x"}")
+    print(console, "${pick(true) ?? 0}")
+    print(console, "${pick(false) ?? 0}")
+    print(console, "${empty() ?? "x"}")
 "#;
         assert_eq!(interp(src), run_on_wasm(src));
-        assert_eq!(
-            run_on_wasm(src),
-            vec!["36", "0", "default", "Some(36)", ""]
-        );
+        assert_eq!(run_on_wasm(src), vec!["36", "0", ""]);
     }
 
     #[test]

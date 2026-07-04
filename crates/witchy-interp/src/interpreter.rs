@@ -472,7 +472,7 @@ fn idents_in_expr(e: &Expr, f: &mut dyn FnMut(&str)) {
 fn idents_in_block(b: &Block, f: &mut dyn FnMut(&str)) {
     for stmt in &b.stmts {
         match stmt {
-            Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => idents_in_expr(value, f),
+            Stmt::Let { value, .. } | Stmt::LetPattern { value, .. } => idents_in_expr(value, f),
             Stmt::Assign { name, value } => {
                 f(name);
                 idents_in_expr(value, f);
@@ -2251,7 +2251,7 @@ impl Interpreter {
         let needs_scope = block
             .stmts
             .iter()
-            .any(|s| matches!(s, Stmt::Let { .. } | Stmt::LetTuple { .. }));
+            .any(|s| matches!(s, Stmt::Let { .. } | Stmt::LetPattern { .. }));
         if needs_scope {
             env.push();
         }
@@ -2283,22 +2283,20 @@ impl Interpreter {
                     }
                     result = Value::Nil;
                 }
-                Stmt::LetTuple { names, value } => {
+                Stmt::LetPattern { pattern, value } => {
                     let v = self.eval(value, env)?;
-                    match v {
-                        Value::Tuple(items) if items.len() == names.len() => {
-                            for (n, item) in names.iter().zip(items) {
-                                env.define(n.clone(), item, false);
-                            }
-                        }
-                        other => {
-                            // (`needs_scope` is always true here — there's a LetTuple.)
-                            env.pop();
-                            return err(format!(
-                                "tuple destructure expected a {}-tuple, got `{other}`",
-                                names.len()
-                            ));
-                        }
+                    // The pattern is irrefutable (the refutability checker rejects a
+                    // refutable pattern in `let` position at check time), so
+                    // `match_pattern` always succeeds and binds every name. It handles
+                    // tuples of any nesting, single-variant ctor/record patterns, and
+                    // wildcards uniformly — one grammar, shared with `match` (parity).
+                    if !match_pattern(pattern, &v, env) {
+                        // Unreachable for a checked program; a loud guard beats a
+                        // silent mis-bind if an unchecked path ever reaches here.
+                        env.pop();
+                        return err(format!(
+                            "irrefutable `let` pattern did not match the value `{v}`"
+                        ));
                     }
                     result = Value::Nil;
                 }
@@ -2545,11 +2543,22 @@ impl Interpreter {
                     Value::Bool(b) => Ok(Value::Bool(b)),
                     other => err(format!("`||` expects Bool operands, got `{other}`")),
                 },
-                // Non-Bool `||` is the truthy fallback: `a` when truthy, else `b`.
-                // Falsy values are "" / None / [] (typeck restricts the operands to
-                // Bool / String / Option / List).
-                v if value_truthy(&v) => Ok(v),
-                _ => self.eval(rhs, env),
+                other => err(format!("`||` expects Bool operands, got `{other}`")),
+            },
+            // `a ?? b` (RFC-0048): unwrap `Some`/`Ok` to the payload, or evaluate
+            // the fallback on `None`/`Err` (lazily; the error value is discarded).
+            Expr::Binary { op: BinOp::Coalesce, lhs, rhs } => match self.eval(lhs, env)? {
+                Value::Ctor { name, mut fields }
+                    if (name == "Some" || name == "Ok") && fields.len() == 1 =>
+                {
+                    Ok(fields.remove(0))
+                }
+                Value::Ctor { name, .. } if name == "None" || name == "Err" => {
+                    self.eval(rhs, env)
+                }
+                other => err(format!(
+                    "`??` expects an Option or Result on the left, got `{other}`"
+                )),
             },
             Expr::Binary { op, lhs, rhs } => {
                 let l = self.eval(lhs, env)?;
@@ -2674,6 +2683,17 @@ fn match_pattern(pat: &Pattern, value: &Value, env: &mut Env) -> bool {
         (Pattern::Int(a), Value::Int(b)) => a == b,
         (Pattern::Str(a), Value::Str(b)) => a == b,
         (Pattern::Bool(a), Value::Bool(b)) => a == b,
+        // A Duration literal pattern is carried as whole milliseconds, and a
+        // Duration value is an `Int` of milliseconds (Expr::Duration -> Value::Int),
+        // so it is exact i64 equality — no float hazard.
+        (Pattern::Duration(a), Value::Int(b)) => a == b,
+        // `lo..hi` (half-open) / `lo..=hi` (inclusive) against an Int.
+        (Pattern::IntRange { lo, hi, inclusive }, Value::Int(b)) => {
+            *b >= *lo && (if *inclusive { *b <= *hi } else { *b < *hi })
+        }
+        // Every alternative binds the same names (checker-enforced), so binding
+        // through the first that matches is well-defined.
+        (Pattern::Or(alts), v) => alts.iter().any(|p| match_pattern(p, v, env)),
         (Pattern::Ctor { name, args }, Value::Ctor { name: vname, fields }) => {
             name == vname
                 && args.len() == fields.len()
@@ -2718,18 +2738,6 @@ fn match_pattern(pat: &Pattern, value: &Value, env: &mut Env) -> bool {
 fn over(op: &str) -> impl FnOnce() -> RuntimeError + '_ {
     move || RuntimeError {
         message: format!("integer overflow in `{op}`"),
-    }
-}
-
-// Runtime truthiness for the non-Bool `||` fallback. Falsy values are the empty
-// forms of the emptyable built-ins: "" / [] / None. Everything else is truthy.
-fn value_truthy(v: &Value) -> bool {
-    match v {
-        Value::Bool(b) => *b,
-        Value::Str(s) => !s.is_empty(),
-        Value::List(xs) => !xs.is_empty(),
-        Value::Ctor { name, .. } => name != "None",
-        _ => true,
     }
 }
 
@@ -2798,7 +2806,7 @@ fn eval_binary(op: BinOp, l: Value, r: Value) -> Result<Value, RuntimeError> {
             };
             Ok(Value::Bool(result))
         }
-        And | Or => unreachable!("&&/|| are short-circuited in eval"),
+        And | Or | Coalesce => unreachable!("&&/||/?? are short-circuited in eval"),
     }
 }
 

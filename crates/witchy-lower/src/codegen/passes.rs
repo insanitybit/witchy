@@ -75,11 +75,9 @@ impl Renamer {
                 self.rename_expr(value);
                 *name = self.resolve(name);
             }
-            Stmt::LetTuple { names, value } => {
+            Stmt::LetPattern { pattern, value } => {
                 self.rename_expr(value);
-                for n in names {
-                    *n = self.declare(n);
-                }
+                self.rename_pattern(pattern);
             }
             Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => self.rename_expr(e),
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
@@ -214,6 +212,47 @@ impl Renamer {
                     *n = self.declare(n);
                 }
             }
+            // (RFC-0052) Every or-pattern alternative binds the SAME names, and the
+            // arm body must see ONE renamed name per source name. So declare the
+            // bindings via the first alternative, then rewrite each remaining
+            // alternative's variables to those already-declared names (`resolve`,
+            // not `declare` — which would mint a fresh shadow on the repeat).
+            Pattern::Or(alts) => {
+                if let Some((first, rest)) = alts.split_first_mut() {
+                    self.rename_pattern(first);
+                    for alt in rest {
+                        self.resolve_pattern_vars(alt);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Rewrite an or-pattern alternative's variables to their ALREADY-declared
+    /// renamed names (the first alternative did the declaring). Used only for
+    /// non-first or-pattern alternatives, which bind the identical name set.
+    fn resolve_pattern_vars(&mut self, p: &mut Pattern) {
+        match p {
+            Pattern::Var(n) => *n = self.resolve(n),
+            Pattern::Ctor { args, .. } | Pattern::Tuple(args) => {
+                for a in args {
+                    self.resolve_pattern_vars(a);
+                }
+            }
+            Pattern::List { elems, rest } => {
+                for e in elems {
+                    self.resolve_pattern_vars(e);
+                }
+                if let Some(Some(n)) = rest {
+                    *n = self.resolve(n);
+                }
+            }
+            Pattern::Or(alts) => {
+                for alt in alts {
+                    self.resolve_pattern_vars(alt);
+                }
+            }
             _ => {}
         }
     }
@@ -335,7 +374,7 @@ pub(crate) fn flip_string_add_module(m: &mut Module, table: &witchy_types::typec
             match st {
                 Stmt::Let { value, .. }
                 | Stmt::Assign { value, .. }
-                | Stmt::LetTuple { value, .. }
+                | Stmt::LetPattern { value, .. }
                 | Stmt::Return(Some(value))
                 | Stmt::Expr(value)
                 | Stmt::Yield(value) => walk_expr(value, table),
@@ -520,7 +559,7 @@ pub(crate) fn rewrite_try_ctx_module(m: &mut Module, table: &witchy_types::typec
             match st {
                 Stmt::Let { value, .. }
                 | Stmt::Assign { value, .. }
-                | Stmt::LetTuple { value, .. }
+                | Stmt::LetPattern { value, .. }
                 | Stmt::Return(Some(value))
                 | Stmt::Expr(value)
                 | Stmt::Yield(value) => walk_expr(value, table, changed),

@@ -183,7 +183,7 @@ fn resolve_in_block(block: &mut Block, map: &HashMap<String, Type>) {
     for stmt in &mut block.stmts {
         match stmt {
             Stmt::Let { value, .. }
-            | Stmt::LetTuple { value, .. }
+            | Stmt::LetPattern { value, .. }
             | Stmt::Assign { value, .. }
             | Stmt::Yield(value)
             | Stmt::Expr(value) => resolve_in_expr(value, map),

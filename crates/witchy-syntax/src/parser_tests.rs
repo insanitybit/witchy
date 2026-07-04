@@ -142,9 +142,10 @@ fn f(o: Option(Int)):
     }
 
     #[test]
-    fn range_pattern_desugars_to_guarded_binding() {
-        // `lo..hi` becomes a fresh binding guarded by `>= lo && < hi`; `..=`
-        // uses `<=` for the upper bound.
+    fn range_pattern_parses_to_real_int_range_node() {
+        // (RFC-0052) `lo..hi` / `lo..=hi` parse to a real `Pattern::IntRange`
+        // node — no longer a fresh binding + synthesized bounds guard — so
+        // exhaustiveness can reason about them and they nest anywhere.
         let stmts = fn_body(
             r#"
 fn f(n: Int) -> Int:
@@ -156,13 +157,12 @@ fn f(n: Int) -> Int:
         let Stmt::Expr(Expr::Match { arms, .. }) = &stmts[0] else {
             panic!("expected a match");
         };
-        // First arm: a fresh var bound, with an inclusive bounds guard.
-        assert!(matches!(arms[0].pattern, Pattern::Var(_)));
-        let Some(Expr::Binary { op: BinOp::And, lhs, rhs }) = &arms[0].guard else {
-            panic!("range arm should carry an `&&` bounds guard");
-        };
-        assert!(matches!(**lhs, Expr::Binary { op: BinOp::GtEq, .. }));
-        assert!(matches!(**rhs, Expr::Binary { op: BinOp::LtEq, .. }));
+        assert!(
+            matches!(arms[0].pattern, Pattern::IntRange { lo: 1, hi: 3, inclusive: true }),
+            "range arm should be an inclusive IntRange node, got {:?}",
+            arms[0].pattern
+        );
+        assert!(arms[0].guard.is_none(), "range is a pattern, not a guard");
         // The wildcard arm is untouched.
         assert_eq!(arms[1].pattern, Pattern::Wildcard);
         assert!(arms[1].guard.is_none());

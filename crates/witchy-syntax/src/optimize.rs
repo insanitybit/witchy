@@ -92,9 +92,11 @@ fn opt_stmt(s: &mut Stmt, consts: &mut Consts) {
             opt_expr(value, consts);
             consts.remove(name); // reassigned: no longer its old constant
         }
-        Stmt::LetTuple { names, value } => {
+        Stmt::LetPattern { pattern, value } => {
             opt_expr(value, consts);
-            for n in names.iter() {
+            let mut names = Vec::new();
+            crate::ast::pattern_binds(pattern, &mut names);
+            for n in &names {
                 consts.remove(n);
             }
         }

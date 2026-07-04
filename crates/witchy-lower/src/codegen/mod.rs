@@ -1410,56 +1410,76 @@ impl Codegen {
                     }
                     self.infer_locals_expr(value);
                 }
-                Stmt::LetTuple { names, value } => {
-                    // The value type of each binding: from a tuple literal's
-                    // elements, or a tuple-typed variable's tracked slot types,
-                    // else Other. This drives both the binding's value type (for
-                    // `to_string`, Dict keys, ...) and its WASM kind (Int->i64).
-                    let vts: Vec<ValType> = if let Expr::Tuple(items) = value {
-                        if items.len() == names.len() {
-                            items.iter().map(|it| self.val_type_of(it)).collect()
-                        } else {
-                            vec![ValType::Other; names.len()]
-                        }
-                    } else if let Expr::Var(p) = value {
-                        self.local_tuple_slots
-                            .get(p)
-                            .filter(|s| s.len() == names.len())
-                            .cloned()
-                            .unwrap_or_else(|| vec![ValType::Other; names.len()])
-                    } else if let Expr::Call { name: fname, args } = value {
-                        if fname == "list.at" && args.len() == 2 {
-                            // `let (a, b) = at(list_of_tuples, i)`: the element-tuple
-                            // slot types of the list (variable or literal).
-                            self.list_elem_tuple_slots(&args[0])
-                                .filter(|s| s.len() == names.len())
-                                .unwrap_or_else(|| vec![ValType::Other; names.len()])
-                        } else {
-                            // A tuple-returning call: destructure at its slot types.
-                            self.fn_ret_tuple_slots
-                                .get(fname)
-                                .filter(|s| s.len() == names.len())
-                                .cloned()
-                                .unwrap_or_else(|| vec![ValType::Other; names.len()])
-                        }
-                    } else {
-                        vec![ValType::Other; names.len()]
-                    };
-                    for (n, vt) in names.iter().zip(&vts) {
-                        self.local_val_types.insert(n.clone(), *vt);
-                        self.locals.insert(n.clone(), valtype_kind(*vt));
-                    }
-                    // `let (xs, ys) = f(...)` where f returns `(List(T), List(U))`:
-                    // record each destructured list var's element type, so a later
-                    // `at(xs, i)` recovers an Int element as i64.
-                    if let Expr::Call { name: fname, .. } = value {
-                        if let Some(elems) = self.fn_ret_tuple_slot_list_elem.get(fname) {
-                            for (n, elem) in names.iter().zip(elems) {
-                                if let Some(vt) = elem {
-                                    self.local_list_elem_valtype.insert(n.clone(), *vt);
+                Stmt::LetPattern { pattern, value } => {
+                    // The common `let (a, b, …) = e` shape — a flat tuple of plain
+                    // variables — gets precise per-slot value types (driving
+                    // `to_string`, Dict keys, and the WASM kind Int->i64). Any other
+                    // (nested / ctor / list) irrefutable pattern degrades to Other
+                    // for its bindings: still correct (the values lower via
+                    // `lower_pattern`), just without the slot-type refinement.
+                    if let Pattern::Tuple(subs) = pattern {
+                        let flat_names: Option<Vec<&String>> = subs
+                            .iter()
+                            .map(|p| match p {
+                                Pattern::Var(n) => Some(n),
+                                Pattern::Wildcard => None, // placeholder handled below
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>()
+                            .filter(|_| subs.iter().all(|p| matches!(p, Pattern::Var(_))));
+                        if let Some(names) = flat_names {
+                            let vts: Vec<ValType> = if let Expr::Tuple(items) = value {
+                                if items.len() == names.len() {
+                                    items.iter().map(|it| self.val_type_of(it)).collect()
+                                } else {
+                                    vec![ValType::Other; names.len()]
+                                }
+                            } else if let Expr::Var(p) = value {
+                                self.local_tuple_slots
+                                    .get(p)
+                                    .filter(|s| s.len() == names.len())
+                                    .cloned()
+                                    .unwrap_or_else(|| vec![ValType::Other; names.len()])
+                            } else if let Expr::Call { name: fname, args } = value {
+                                if fname == "list.at" && args.len() == 2 {
+                                    self.list_elem_tuple_slots(&args[0])
+                                        .filter(|s| s.len() == names.len())
+                                        .unwrap_or_else(|| vec![ValType::Other; names.len()])
+                                } else {
+                                    self.fn_ret_tuple_slots
+                                        .get(fname)
+                                        .filter(|s| s.len() == names.len())
+                                        .cloned()
+                                        .unwrap_or_else(|| vec![ValType::Other; names.len()])
+                                }
+                            } else {
+                                vec![ValType::Other; names.len()]
+                            };
+                            for (n, vt) in names.iter().zip(&vts) {
+                                self.local_val_types.insert((*n).clone(), *vt);
+                                self.locals.insert((*n).clone(), valtype_kind(*vt));
+                            }
+                            // `let (xs, ys) = f(...)` returning `(List(T), List(U))`:
+                            // record each destructured list var's element type.
+                            if let Expr::Call { name: fname, .. } = value {
+                                if let Some(elems) = self.fn_ret_tuple_slot_list_elem.get(fname) {
+                                    for (n, elem) in names.iter().zip(elems) {
+                                        if let Some(vt) = elem {
+                                            self.local_list_elem_valtype.insert((*n).clone(), *vt);
+                                        }
+                                    }
                                 }
                             }
+                            self.infer_locals_expr(value);
+                            continue;
                         }
+                    }
+                    // General irrefutable pattern: bind every name as Other.
+                    let mut names = Vec::new();
+                    witchy_syntax::ast::pattern_binds(pattern, &mut names);
+                    for n in &names {
+                        self.local_val_types.insert(n.clone(), ValType::Other);
+                        self.locals.insert(n.clone(), Kind::I32);
                     }
                     self.infer_locals_expr(value);
                 }
@@ -1532,12 +1552,22 @@ impl Codegen {
             Expr::Match { scrutinee, arms } => {
                 // The record an Option/Result scrutinee's Some/Ok carries, if known.
                 let payload = self.match_payload_record(scrutinee);
+                // (RFC-0052) A TOP-LEVEL variable/wildcard pattern binds the WHOLE
+                // scrutinee, so it takes the scrutinee's kind — crucially F64 for a
+                // `match <float>: x -> …`, which otherwise defaulted to i32 and made
+                // the WIR ill-typed (the check-passes/codegen-fails Float hole).
+                let scrut_kind = self.kind_of(scrutinee);
                 for arm in arms {
-                    // Pattern-bound vars are i32 (floats aren't stored in records).
+                    // Pattern-bound vars are i32 (floats aren't stored in records),
+                    // except a top-level whole-scrutinee binding (handled below).
                     let mut pvars = Vec::new();
                     collect_pattern_vars(&arm.pattern, &mut pvars);
                     for v in pvars {
                         self.locals.insert(v, Kind::I32);
+                    }
+                    if let Pattern::Var(v) = &arm.pattern {
+                        self.locals.insert(v.clone(), scrut_kind);
+                        self.local_val_types.insert(v.clone(), self.val_type_of(scrutinee));
                     }
                     // A var bound to a record-typed constructor field resolves
                     // `.field` in the arm body (concrete field types only).
@@ -2367,30 +2397,25 @@ impl Codegen {
                     }
                     tail_is_value = false;
                 }
-                // `let (a, b, ..) = tuple`: store once, then load each 8-byte slot.
-                Stmt::LetTuple { names, value } => {
+                // `let PAT = e` (RFC-0052): store the value once as an i64 SLOT in
+                // MATCH_TMP, then emit the pattern's BINDINGS via the shared
+                // `lower_pattern` — the same machinery `match` uses (a `let`
+                // pattern is irrefutable, so its test condition is discarded; only
+                // the binds run). `lower_pattern` reads the value as an i64 slot
+                // (it `FromSlot`s to a pointer for tuples/ctors), so store via
+                // `ToSlot` at the value's kind — exactly as `lower_match` does.
+                // Handles nested tuples, ctor/record destructures, and list heads
+                // uniformly, superseding the old flat-slot-only loop.
+                Stmt::LetPattern { pattern, value } => {
+                    let vk = self.kind_of(value);
                     let v = self.lower_expr(value)?;
-                    seq.push(N::SetLocal { local: TUPLE_TMP.to_string(), value: v });
-                    for (i, name) in names.iter().enumerate() {
-                        let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
-                        let addr = W::Binary {
-                            op: witchy_wir::wir::BinOp::Add,
-                            kind: witchy_wir::wir::Kind::I32,
-                            lhs: Box::new(W::GetLocal(TUPLE_TMP.to_string())),
-                            rhs: Box::new(W::ConstI32((4 + 8 * i) as i32)),
-                        };
-                        seq.push(N::SetLocal {
-                            local: name.clone(),
-                            value: W::FromSlot(
-                                Box::new(W::Load {
-                                    ptr: Box::new(addr),
-                                    kind: witchy_wir::wir::Kind::I64,
-                                    offset: 0,
-                                }),
-                                Self::wir_kind(k),
-                            ),
-                        });
-                    }
+                    seq.push(N::SetLocal {
+                        local: MATCH_TMP.to_string(),
+                        value: W::ToSlot(Box::new(v), Self::wir_kind(vk)),
+                    });
+                    let (_cond, binds) =
+                        self.lower_pattern(&W::GetLocal(MATCH_TMP.to_string()), pattern)?;
+                    seq.extend(binds);
                     tail_is_value = false;
                 }
                 // `break`/`continue` -> a `br` to the enclosing loop's exit/continue
@@ -3479,6 +3504,58 @@ impl Codegen {
                 };
                 (cond, binds)
             }
+            // (RFC-0052) A Duration literal is whole milliseconds and a Duration
+            // value is an i64 slot of ms, so it is exact i64 equality — identical
+            // to an Int literal (and to the interpreter's `Pattern::Duration` arm).
+            Pattern::Duration(ms) => (eq_i64(*ms), vec![]),
+            // (RFC-0052) `lo..hi` (half-open) / `lo..=hi` (inclusive):
+            // `v >= lo && v (< | <=) hi` on the i64 scrutinee, mirroring the
+            // interpreter's IntRange arm. No bindings.
+            Pattern::IntRange { lo, hi, inclusive } => {
+                let ge_lo = W::Binary {
+                    op: witchy_wir::wir::BinOp::Ge,
+                    kind: witchy_wir::wir::Kind::I64,
+                    lhs: Box::new(value.clone()),
+                    rhs: Box::new(W::ConstI64(*lo)),
+                };
+                let below_hi = W::Binary {
+                    op: if *inclusive {
+                        witchy_wir::wir::BinOp::Le
+                    } else {
+                        witchy_wir::wir::BinOp::Lt
+                    },
+                    kind: witchy_wir::wir::Kind::I64,
+                    lhs: Box::new(value.clone()),
+                    rhs: Box::new(W::ConstI64(*hi)),
+                };
+                (wir_and_chain(&[ge_lo, below_hi]), vec![])
+            }
+            // (RFC-0052) `p1 | p2 | …`: OR the alternative conditions. A binding
+            // alternative (e.g. `Some(a) | Wrap(a)`) contributes its binds GUARDED
+            // by its own re-tested condition (`if ci: binds_i`) — every alternative
+            // binds the SAME names (checker-enforced), so exactly one guard fires
+            // and the arm body sees the matched alternative's values, matching the
+            // interpreter, which binds through the first matching alternative.
+            Pattern::Or(alts) => {
+                let mut conds: Vec<W> = Vec::new();
+                let mut binds: witchy_wir::wir::WirSeq = Vec::new();
+                for alt in alts {
+                    let (c, b) = self.lower_pattern(value, alt)?;
+                    if !b.is_empty() {
+                        binds.push(N::If {
+                            cond: c.clone(),
+                            then_: b,
+                            els: vec![],
+                            result: None,
+                        });
+                    }
+                    conds.push(c);
+                }
+                if conds.is_empty() {
+                    return None;
+                }
+                (wir_or_chain(&conds), binds)
+            }
         })
     }
 
@@ -4401,49 +4478,6 @@ impl Codegen {
                 //   a && b  ->  if a { b } else { 0 }
                 //   a || b  ->  if a { 1 } else { b }
                 if matches!(op, BinOp::And | BinOp::Or) {
-                    // Non-Bool `||` is the truthy fallback `a || b` ≡ `if truthy(a):
-                    // a else: b`, evaluating `a` once. Every emptyable value is a
-                    // pointer whose first word is a length (String/List) or variant
-                    // tag (Option); "" / [] / None all have a zero first word, so
-                    // "truthy" is a single `load i32` — no per-type branching.
-                    if *op == BinOp::Or && self.val_type_of(lhs) != ValType::Bool {
-                        use witchy_wir::wir::WirNode as N;
-                        // Option is truthy when present: `Some` is the tag-0 (success)
-                        // variant and `None` is non-zero — the inverse of String/List,
-                        // whose first word is a length that is zero only when empty. So
-                        // the Option predicate is `header == 0`, the rest `header != 0`.
-                        let is_option = matches!(lhs.as_ref(), Expr::Ctor { name, .. } if name == "None" || name == "Some")
-                            || matches!(
-                                self.type_table.type_of(lhs).and_then(witchy_types::typeck::ty_to_ast),
-                                Some(witchy_syntax::ast::Type::Named(ref n, _)) if n == "Option"
-                            );
-                        let tmp = TRY_TMP.to_string();
-                        let lhs_w = self.lower_expr(lhs)?;
-                        let rhs_w = self.lower_expr(rhs)?;
-                        let header = W::Load {
-                            ptr: Box::new(W::GetLocal(tmp.clone())),
-                            kind: witchy_wir::wir::Kind::I32,
-                            offset: 0,
-                        };
-                        let cond = if is_option {
-                            W::Unary {
-                                op: witchy_wir::wir::UnOp::Not,
-                                kind: witchy_wir::wir::Kind::I32,
-                                arg: Box::new(header),
-                            }
-                        } else {
-                            header
-                        };
-                        return Some(W::Seq(vec![
-                            N::SetLocal { local: tmp.clone(), value: lhs_w },
-                            N::If {
-                                cond,
-                                then_: vec![N::Push(W::GetLocal(tmp.clone()))],
-                                els: vec![N::Push(rhs_w)],
-                                result: Some(witchy_wir::wir::WirTy::Bool),
-                            },
-                        ]));
-                    }
                     let cond = self.lower_expr(lhs)?;
                     let other = self.lower_expr(rhs)?;
                     let (then_, els) = if matches!(op, BinOp::And) {
@@ -4461,6 +4495,51 @@ impl Codegen {
                         els,
                         result: Some(witchy_wir::wir::WirTy::Bool),
                     })));
+                }
+                // `a ?? b` (RFC-0048): unwrap `Some`/`Ok` (tag 0, payload at
+                // `tmp+4`) or evaluate the fallback — the same store-once/tag-test
+                // shape as `?`, minus the early return. The fallback is lowered
+                // inside the else branch, so it runs only on `None`/`Err`.
+                if *op == BinOp::Coalesce {
+                    use witchy_wir::wir::WirNode as N;
+                    let k = self
+                        .match_payload_valtype(lhs)
+                        .map(valtype_kind)
+                        .unwrap_or_else(|| self.kind_of(rhs));
+                    let lhs_w = self.lower_expr(lhs)?;
+                    let rhs_w = Self::wir_convert(self.lower_expr(rhs)?, self.kind_of(rhs), k);
+                    let tmp = TRY_TMP.to_string();
+                    let cond = W::Unary {
+                        op: witchy_wir::wir::UnOp::Not,
+                        kind: witchy_wir::wir::Kind::I32,
+                        arg: Box::new(W::Load {
+                            ptr: Box::new(W::GetLocal(tmp.clone())),
+                            kind: witchy_wir::wir::Kind::I32,
+                            offset: 0,
+                        }),
+                    };
+                    let payload = W::FromSlot(
+                        Box::new(W::Load {
+                            ptr: Box::new(W::Binary {
+                                op: witchy_wir::wir::BinOp::Add,
+                                kind: witchy_wir::wir::Kind::I32,
+                                lhs: Box::new(W::GetLocal(tmp.clone())),
+                                rhs: Box::new(W::ConstI32(4)),
+                            }),
+                            kind: witchy_wir::wir::Kind::I64,
+                            offset: 0,
+                        }),
+                        Self::wir_kind(k),
+                    );
+                    return Some(W::Seq(vec![
+                        N::SetLocal { local: tmp.clone(), value: lhs_w },
+                        N::If {
+                            cond,
+                            then_: vec![N::Push(payload)],
+                            els: vec![N::Push(rhs_w)],
+                            result: Some(Self::wir_ty_for_kind(k)),
+                        },
+                    ]));
                 }
                 // String concatenation (`+` flipped to `Concat`) lowers to
                 // `$concat` (only in a WIR-collecting scope; otherwise this falls
@@ -5413,7 +5492,7 @@ impl Codegen {
                     }
                     self.scan_escapes_expr(value, inner, ok);
                 }
-                Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => {
+                Stmt::Let { value, .. } | Stmt::LetPattern { value, .. } => {
                     self.scan_escapes_expr(value, inner, ok)
                 }
                 Stmt::Yield(_) => *ok = false,
@@ -6031,9 +6110,11 @@ impl DevirtScan {
                     self.reassigned.insert(name.clone());
                     self.walk_expr(value);
                 }
-                Stmt::LetTuple { names, value } => {
+                Stmt::LetPattern { pattern, value } => {
+                    let mut names = Vec::new();
+                    witchy_syntax::ast::pattern_binds(pattern, &mut names);
                     for n in names {
-                        self.other_bind.insert(n.clone());
+                        self.other_bind.insert(n);
                     }
                     self.walk_expr(value);
                 }
@@ -6180,7 +6261,7 @@ fn bounds_elide_pair(var: &str, lo: &Expr, hi: &Expr, inclusive: bool, body: &Bl
 fn collect_fn_refs_block(b: &Block, out: &mut HashSet<String>) {
     for stmt in &b.stmts {
         match stmt {
-            Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetTuple { value, .. } => {
+            Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetPattern { value, .. } => {
                 collect_fn_refs_expr(value, out)
             }
             Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => collect_fn_refs_expr(e, out),
@@ -6343,6 +6424,21 @@ fn wir_and_chain(conds: &[witchy_wir::wir::WirExpr]) -> witchy_wir::wir::WirExpr
     }
 }
 
+/// Short-circuit OR of i32 boolean conditions — `if first: 1 else: (rest…)`.
+/// The dual of `wir_and_chain`; used for or-patterns (`1 | 2 | 3`).
+fn wir_or_chain(conds: &[witchy_wir::wir::WirExpr]) -> witchy_wir::wir::WirExpr {
+    use witchy_wir::wir::{WirExpr as W, WirNode as N};
+    match conds.split_first() {
+        None => W::ConstI32(0),
+        Some((first, rest)) => W::Control(Box::new(N::If {
+            cond: first.clone(),
+            then_: vec![N::Push(W::ConstI32(1))],
+            els: vec![N::Push(wir_or_chain(rest))],
+            result: Some(witchy_wir::wir::WirTy::Bool),
+        })),
+    }
+}
+
 /// The fields of an aggregate literal (record `Ctor` or tuple), positionally, for
 /// scalar replacement — `None` for any other expression.
 fn sroa_fields(e: &Expr) -> Option<&[Expr]> {
@@ -6391,10 +6487,8 @@ fn collect_let_names(block: &Block, out: &mut Vec<String>) {
                 collect_let_names_expr(value, out);
             }
             Stmt::Assign { value, .. } => collect_let_names_expr(value, out),
-            Stmt::LetTuple { names, value } => {
-                for n in names {
-                    out.push(n.clone());
-                }
+            Stmt::LetPattern { pattern, value } => {
+                witchy_syntax::ast::pattern_binds(pattern, out);
                 collect_let_names_expr(value, out);
             }
             Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => collect_let_names_expr(e, out),

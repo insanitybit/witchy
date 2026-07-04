@@ -748,8 +748,10 @@ fn rewrite_mut_block(
             Stmt::Let { name, mutable: false, .. } => {
                 mutables.remove(name);
             }
-            Stmt::LetTuple { names, .. } => {
-                for n in names {
+            Stmt::LetPattern { pattern, .. } => {
+                let mut names = Vec::new();
+                crate::ast::pattern_binds(pattern, &mut names);
+                for n in &names {
                     mutables.remove(n);
                 }
             }
@@ -770,7 +772,7 @@ fn rewrite_mut_stmt_children(
         Stmt::Expr(value) => rewrite_mut_expr(value, eligible, mutables, value_used),
         Stmt::Let { value, .. }
         | Stmt::Assign { value, .. }
-        | Stmt::LetTuple { value, .. }
+        | Stmt::LetPattern { value, .. }
         | Stmt::Yield(value) => rewrite_mut_expr(value, eligible, mutables, true),
         Stmt::Return(Some(e)) => rewrite_mut_expr(e, eligible, mutables, true),
         Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
@@ -1001,7 +1003,7 @@ fn resolve_in_block(
                     }
                 }
             }
-            Stmt::LetTuple { value, .. } => resolve_in_expr(value, sig, by_base, vars),
+            Stmt::LetPattern { value, .. } => resolve_in_expr(value, sig, by_base, vars),
             Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => resolve_in_expr(e, sig, by_base, vars),
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
@@ -1140,9 +1142,11 @@ fn collect_bound_block(b: &Block, out: &mut HashSet<String>) {
                 out.insert(name.clone());
                 collect_bound_expr(value, out);
             }
-            Stmt::LetTuple { names, value } => {
+            Stmt::LetPattern { pattern, value } => {
+                let mut names = Vec::new();
+                crate::ast::pattern_binds(pattern, &mut names);
                 for n in names {
-                    out.insert(n.clone());
+                    out.insert(n);
                 }
                 collect_bound_expr(value, out);
             }
@@ -1257,7 +1261,7 @@ fn rewrite_block(
         match stmt {
             Stmt::Let { value, .. }
             | Stmt::Assign { value, .. }
-            | Stmt::LetTuple { value, .. } => rewrite_expr(value, m, imps, fns, bound)?,
+            | Stmt::LetPattern { value, .. } => rewrite_expr(value, m, imps, fns, bound)?,
             Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => rewrite_expr(e, m, imps, fns, bound)?,
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
@@ -1435,7 +1439,7 @@ fn seal_use(
 fn seal_block(b: &Block, sealed: &HashMap<String, String>, home: &str) -> Result<(), LinkError> {
     for stmt in &b.stmts {
         match stmt {
-            Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetTuple { value, .. } => {
+            Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetPattern { value, .. } => {
                 seal_expr(value, sealed, home)?
             }
             Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => seal_expr(e, sealed, home)?,
@@ -1463,7 +1467,18 @@ fn seal_pattern(p: &Pattern, sealed: &HashMap<String, String>, home: &str) -> Re
                 seal_pattern(q, sealed, home)?;
             }
         }
-        Pattern::Wildcard | Pattern::Var(_) | Pattern::Int(_) | Pattern::Str(_) | Pattern::Bool(_) => {}
+        Pattern::Or(alts) => {
+            for q in alts {
+                seal_pattern(q, sealed, home)?;
+            }
+        }
+        Pattern::Wildcard
+        | Pattern::Var(_)
+        | Pattern::Int(_)
+        | Pattern::Str(_)
+        | Pattern::Bool(_)
+        | Pattern::Duration(_)
+        | Pattern::IntRange { .. } => {}
     }
     Ok(())
 }

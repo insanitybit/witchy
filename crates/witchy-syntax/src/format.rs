@@ -58,7 +58,7 @@ fn stmt_max_line(st: &Stmt, default: u32) -> u32 {
     match st {
         Stmt::Let { value, .. }
         | Stmt::Assign { value, .. }
-        | Stmt::LetTuple { value, .. }
+        | Stmt::LetPattern { value, .. }
         | Stmt::Return(Some(value))
         | Stmt::Expr(value) => expr_max_line(value, default),
         _ => default,
@@ -522,11 +522,11 @@ fn stmt(s: &mut String, st: &Stmt, depth: usize, c: &mut Comments) {
             s.push_str(" = ");
             value_or_block(s, value, depth, c);
         }
-        Stmt::LetTuple { names, value } => {
+        Stmt::LetPattern { pattern: pat, value } => {
             pad(s, depth);
-            s.push_str("let (");
-            s.push_str(&names.join(", "));
-            s.push_str(") = ");
+            s.push_str("let ");
+            s.push_str(&pattern(pat));
+            s.push_str(" = ");
             value_or_block(s, value, depth, c);
         }
         Stmt::Return(Some(e)) => {
@@ -758,7 +758,7 @@ fn multiline(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
             // plus a leading destructure; print the sugar back (unparenthesized —
             // the canonical Python-style form; `for (a, b) in e:` also parses).
             if var.starts_with("__fortuple") {
-                if let Some(Stmt::LetTuple { names, value: Expr::Var(v) }) = body.stmts.first() {
+                if let Some(Stmt::LetPattern { pattern: pat, value: Expr::Var(v) }) = body.stmts.first() {
                     if v == var {
                         let inner = Block {
                             stmts: body.stmts[1..].to_vec(),
@@ -766,7 +766,17 @@ fn multiline(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
                             region: body.region.clone(),
                         };
                         s.push_str("for ");
-                        s.push_str(&names.join(", "));
+                        // A tuple header prints in the canonical unparenthesized
+                        // comma form (`for a, b in e:`); any other pattern prints
+                        // as itself.
+                        match pat {
+                            Pattern::Tuple(ps) => {
+                                s.push_str(
+                                    &ps.iter().map(pattern).collect::<Vec<_>>().join(", "),
+                                );
+                            }
+                            other => s.push_str(&pattern(other)),
+                        }
                         s.push_str(" in ");
                         s.push_str(&expr(iter));
                         s.push_str(":\n");
@@ -1026,6 +1036,13 @@ fn expr(e: &Expr) -> String {
                 }
             }
             let p = binop_prec(*op);
+            // `??` is RIGHT-associative: the natural chain `a ?? b ?? c` nests to
+            // the right, so the RIGHT child at equal precedence needs no parens
+            // and the LEFT one does — the mirror image of every other binary op.
+            // Swapping the `is_right` flags encodes exactly that.
+            if matches!(op, BinOp::Coalesce) {
+                return format!("{} ?? {}", operand(lhs, p, true), operand(rhs, p, false));
+            }
             format!("{} {} {}", operand(lhs, p, false), binop(*op), operand(rhs, p, true))
         }
         Expr::Range { lo, hi, inclusive } => {
@@ -1245,6 +1262,7 @@ fn binop(op: BinOp) -> &'static str {
         BinOp::GtEq => ">=",
         BinOp::And => "&&",
         BinOp::Or => "||",
+        BinOp::Coalesce => "??",
         BinOp::BitAnd => "&",
         BinOp::BitOr => "|",
         BinOp::BitXor => "^",
@@ -1258,15 +1276,19 @@ fn binop(op: BinOp) -> &'static str {
 /// redundant. Higher binds tighter.
 fn binop_prec(op: BinOp) -> u8 {
     match op {
-        BinOp::Or => 3,
-        BinOp::And => 5,
-        BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => 7,
-        BinOp::BitOr => 9,
-        BinOp::BitXor => 11,
-        BinOp::BitAnd => 13,
-        BinOp::Shl | BinOp::Shr => 15,
-        BinOp::Add | BinOp::Sub | BinOp::Concat => 17,
-        BinOp::Mul | BinOp::Div | BinOp::Mod => 19,
+        // `??` is RIGHT-associative; the `Expr::Binary` printer swaps the
+        // `operand` flags so the natural right-nested chain prints as
+        // `a ?? b ?? c` and a left-nested one keeps its parens.
+        BinOp::Coalesce => 4,
+        BinOp::Or => 6,
+        BinOp::And => 8,
+        BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => 10,
+        BinOp::BitOr => 12,
+        BinOp::BitXor => 14,
+        BinOp::BitAnd => 16,
+        BinOp::Shl | BinOp::Shr => 18,
+        BinOp::Add | BinOp::Sub | BinOp::Concat => 20,
+        BinOp::Mul | BinOp::Div | BinOp::Mod => 22,
     }
 }
 
@@ -1467,6 +1489,11 @@ fn pattern(p: &Pattern) -> String {
             }
             format!("[{}]", parts.join(", "))
         }
+        Pattern::Duration(ms) => duration_literal(*ms),
+        Pattern::IntRange { lo, hi, inclusive } => {
+            format!("{lo}{}{hi}", if *inclusive { "..=" } else { ".." })
+        }
+        Pattern::Or(alts) => alts.iter().map(pattern).collect::<Vec<_>>().join(" | "),
     }
 }
 
@@ -1550,7 +1577,7 @@ fn canon_block(b: &mut Block) {
 
 fn canon_stmt(s: &mut Stmt) {
     match s {
-        Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetTuple { value, .. } => {
+        Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetPattern { value, .. } => {
             canon_expr(value)
         }
         Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => canon_expr(e),
