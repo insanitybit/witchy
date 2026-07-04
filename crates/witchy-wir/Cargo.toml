@@ -9,6 +9,10 @@ description = "witchy compiler — the WIR intermediate representation, peephole
 # Pure-Rust; available on every target including the wasm playground.
 wasm-encoder = "0.251"
 wasmparser = "0.251"
+# The shared runtime-abort message templates (RFC-0045): the abort helpers bake
+# `DiagTemplate::id()` into their `__witchy_abort` calls, so the template ids
+# stay single-sourced. `witchy-syntax` is dependency-free, so no cycle.
+witchy-syntax = { path = "../witchy-syntax" }
 # The validation/test helpers that execute an emitted module under wasmtime
 # (native-only — off in the wasm build).
 wasmtime = { version = "45.0.0", optional = true }

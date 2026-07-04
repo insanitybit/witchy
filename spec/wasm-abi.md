@@ -138,6 +138,7 @@ than enumerate each half of a pair.
 | `print` | `(i32 ptr, i32 len)` | write a UTF-8 buffer to output (capturable; output is not authority) |
 | `print_int` | `(i64)` | write an integer result |
 | `print_float` | `(f64)` | write a float result (canonical `render_float` form) |
+| `__witchy_abort` | `(i32 template, i64 a, i64 b, i32 str_ptr)` | render a runtime-abort message and trap (RFC-0045; see *Runtime aborts* below) |
 | `fill_pending` | `(i32 out_ptr)` | drain the staged String into guest memory |
 | `write_pending_list` | `(i32 base_ptr)` | lay a staged List(String) into guest memory |
 | `float_to_str` | `(f64, i32 out_ptr) -> i32` | format a float; write bytes, return length |
@@ -201,3 +202,37 @@ The spike `web/witchy-runtime/spike.mjs` (driven by the Rust test
 `tests/browser_shim.rs`) compiles a pure rune, runs it under the JS host, asserts
 its output equals the native interpreter run byte-for-byte, and confirms a
 capability rune is refused with a `LinkError`.
+
+## Runtime aborts (RFC-0045)
+
+Every runtime abort on the compiled backend — an out-of-bounds `list`/`bytes`
+index, `string.to_int` on junk or overflow, ordering a `NaN`, or a user
+`fail(msg)` — carries the interpreter's exact message out before it traps, so the
+two backends agree on the abort *text*, not merely on the fact of erroring.
+
+- **`__witchy_abort(template, a, b, str_ptr)` is always linked** and grants no
+  authority: it reads only the witchy string at `str_ptr`, returns nothing to the
+  guest, and its only effect is to terminate execution with a diagnostic label —
+  an ability the guest already has via `unreachable`. Like the checked-heap
+  imports (`heap_register`, RFC-0023), it is therefore defined unconditionally on
+  every host (the pure-compute shim included) and is **excluded from the
+  capability footprint** (`witchy caps` and the coven widening gate never see it).
+- **The message text is single-sourced** in `crates/witchy-syntax/src/diag.rs`
+  (`DiagTemplate`). `template` is the stable `DiagTemplate::id()` (part of the
+  compiled ABI — do not renumber); `a`/`b` are the integer holes (index, length),
+  `str_ptr` the string hole (the junk input or `fail` message, or `0` when the
+  template has none). The interpreter constructs its errors through the same
+  `render`, so divergence is a code change, not a silent drift. Both hosts render
+  the template and surface `runtime error: <message>`.
+- **Message parity is enforced** by the differential harness (`witchy verify`):
+  when the interpreter aborts, the compiled backend must abort with the same
+  message *core* (`src/main.rs::abort_core`), so a compiled trap at the wrong site
+  or for the wrong reason diverges loudly.
+- **Location prefix (deferred).** The interpreter prefixes its message with
+  `` `func`, line N: ``; the compiled backend does not yet reproduce it (the
+  RFC-0045 (c) `witchy.sites` table + `$witchy_site` global are future work), so
+  the compiled core carries no source location and the harness compares cores.
+- **`WITCHY_WASM_BACKTRACE`** — set this environment variable to also dump the
+  full named-frame wasm backtrace beneath the message (the emitted name section
+  makes frames readable). It is a debugging add-on for *frames*; the message
+  itself now always prints regardless.

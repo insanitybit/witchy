@@ -1,7 +1,7 @@
 ---
 rfc: 0045
 title: Aborts carry their message on the compiled backend
-status: proposed
+status: implemented
 created: 2026-07-03
 predecessors:
   - "0023 (checked heap — the precedent for always-linked, authority-free diagnostic imports)"
@@ -9,6 +9,30 @@ predecessors:
   - "0044 (std error policy — rule 3 requires 'legibly on both backends'; this is 'legibly')"
 tracking:
 ---
+
+> **Implementation status (2026-07-04, branch `impl/rfc-0045c`).** The core is
+> shipped: the always-linked authority-free `__witchy_abort(template, a, b,
+> str_ptr)` import (§a) carries the interpreter's exact message out before the
+> trap; the message text is single-sourced in `witchy-syntax/src/diag.rs`
+> (`DiagTemplate`), rendered host-side by the wasmtime host and the browser shim
+> (§b, §e); every static abort class (list/bytes index OOB, view OOB, parse-int
+> junk/overflow, NaN ordering) and `fail(msg)` is routed (§b); the differential
+> harness compares the abort message **core** (§d, lenient notch); and
+> `WITCHY_WASM_BACKTRACE` is documented in `spec/wasm-abi.md` + `CONTRIBUTING.md`
+> (§f). The gate's first catch was a real latent bug: `list.at` truncated its
+> index to i32, so a huge index wrapped instead of aborting with its true value —
+> now checked in i64.
+>
+> **Deferred:** the source-**location** channel of §c (the `witchy.sites` custom
+> section + the hot-path `$witchy_site` global that reproduce the interpreter's
+> `` `func`, line N: `` prefix). The compiled core carries no location yet, so
+> the harness compares cores rather than the full prefixed string, and no
+> hot-path global is added (so the §"Binary-size cost" benchmark gate did not
+> need to run). The **strict** notch of §d (a bare `unreachable` reaching the
+> host is itself a failure) is likewise future work — the lenient notch is live.
+> The template-format `witchy.templates` custom section of §e is deferred with
+> it; the JS shim mirrors `DiagTemplate::render` by hand in the interim (a small,
+> comment-flagged duplication).
 
 # RFC-0045: Aborts carry their message on the compiled backend
 

@@ -30,6 +30,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use witchy_syntax::ast::*;
+use witchy_syntax::diag::DiagTemplate;
 use witchy_syntax::parser::parse_module;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1216,7 +1217,7 @@ impl Interpreter {
             "__bytes_at" => match args {
                 [Value::Bytes(b), Value::Int(i)] => match b.get(*i as usize) {
                     Some(byte) => Ok(Some(Value::Int(*byte as i64))),
-                    None => err(format!("bytes index {i} out of bounds (length {})", b.len())),
+                    None => err(DiagTemplate::BytesIndexOob.render(*i, b.len() as i64, "")),
                 },
                 _ => err("bytes.at expects Bytes and an Int index"),
             },
@@ -1381,7 +1382,7 @@ impl Interpreter {
             "string.to_int" => match one(args)? {
                 Value::Str(s) => match s.trim().parse::<i64>() {
                     Ok(n) => Ok(Some(Value::Int(n))),
-                    Err(_) => err(format!("cannot parse `{s}` as an Int")),
+                    Err(_) => err(DiagTemplate::ParseInt.render(0, 0, &s)),
                 },
                 other => err(format!("string_to_int expects a String, got `{other}`")),
             },
@@ -1392,7 +1393,7 @@ impl Interpreter {
             "list.at" => match args {
                 [Value::List(items), Value::Int(i)] => match items.get(*i as usize) {
                     Some(v) => Ok(Some(v.clone())),
-                    None => err(format!("list index {i} out of bounds (length {})", items.len())),
+                    None => err(DiagTemplate::ListIndexOob.render(*i, items.len() as i64, "")),
                 },
                 _ => err("at expects a list and an Int index"),
             },
@@ -2821,7 +2822,7 @@ fn compare(l: &Value, r: &Value) -> Result<std::cmp::Ordering, RuntimeError> {
         (Int(a), Int(b)) => Ok(a.cmp(b)),
         (Float(a), Float(b)) => a
             .partial_cmp(b)
-            .ok_or_else(|| RuntimeError { message: "cannot compare NaN".into() }),
+            .ok_or_else(|| RuntimeError { message: DiagTemplate::NanOrder.render(0, 0, "") }),
         (Str(a), Str(b)) => Ok(a.cmp(b)),
         _ => err(format!("cannot order `{l}` and `{r}`")),
     }

@@ -16,6 +16,7 @@ pub mod async_lower;
 pub mod build_entry;
 pub mod consts;
 pub mod derive;
+pub mod diag;
 pub mod doc;
 pub mod fmt;
 pub mod format;

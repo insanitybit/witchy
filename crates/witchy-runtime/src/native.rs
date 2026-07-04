@@ -44,6 +44,7 @@ pub fn lookup(qualified: &str) -> Option<NativeFn> {
         "compiler.footprint" => Some(compiler::footprint),
         "compiler.diff" => Some(compiler::diff),
         "compiler.doc" => Some(compiler::doc),
+        "encoding.utf8_lossy" => Some(encoding::utf8_lossy),
         "encoding.hex_encode" => Some(encoding::hex_encode),
         "encoding.hex_decode" => Some(encoding::hex_decode),
         "encoding.base64_encode" => Some(encoding::base64_encode),
@@ -505,6 +506,20 @@ mod compiler {
 mod encoding {
     use super::{type_error, Value};
     use crate::value::NativeError as RuntimeError;
+
+    /// (bytes parity) `bytes.to_string`'s lossy UTF-8 normalization. The host has
+    /// already read the input buffer through `String::from_utf8_lossy` (the SAME
+    /// decode the interpreter's `bytes.to_string` applies — invalid sequences ->
+    /// U+FFFD), so this is the identity on the decoded String; the effect is
+    /// entirely the host read plus the `3*len` worst-case guest buffer the
+    /// `$bytes_to_string` helper reserves. Compiled `bytes.to_string` used to be a
+    /// raw identity that returned invalid bytes verbatim, diverging.
+    pub fn utf8_lossy(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::Str(s)] = args else {
+            return Err(type_error("encoding.utf8_lossy expects a String"));
+        };
+        Ok(Value::Str(s.clone()))
+    }
 
     /// Lowercase hex of the input's UTF-8 bytes.
     pub fn hex_encode(args: &[Value]) -> Result<Value, RuntimeError> {

@@ -3,6 +3,22 @@
     use std::sync::{Arc, Mutex};
     use wasmtime::{Caller, Engine, Linker, Module as WtModule, Store};
 
+    /// (RFC-0045) Define the always-linked, authority-free `__witchy_abort` import
+    /// so a module that routes an abort through it (float ordering, list/bytes OOB,
+    /// str_to_int, `fail`) instantiates in these minimal test linkers. The body
+    /// traps, matching the real host's `bail!` contract (the call never returns).
+    fn define_abort<T: 'static>(linker: &mut Linker<T>) {
+        linker
+            .func_wrap(
+                "witchy",
+                "__witchy_abort",
+                |_: Caller<'_, T>, _t: i32, _a: i64, _b: i64, _s: i32| -> wasmtime::Result<()> {
+                    wasmtime::bail!("runtime error (test harness abort)")
+                },
+            )
+            .unwrap();
+    }
+
     #[test]
     fn build_module_is_zero_ambient() {
         // A compiled build step imports ONLY its build host functions — none of
@@ -48,6 +64,7 @@
         let wt = WtModule::new(&engine, &bytes).expect("valid wasm");
         let captured = Arc::new(Mutex::new(None));
         let mut linker = Linker::new(&engine);
+        define_abort(&mut linker);
         let sink = Arc::clone(&captured);
         linker
             .func_wrap("witchy", "print_int", move |n: i64| {
@@ -74,6 +91,7 @@
         let wt = WtModule::new(&engine, &bytes).expect("valid wasm");
         let captured = Arc::new(Mutex::new(None));
         let mut linker = Linker::new(&engine);
+        define_abort(&mut linker);
         let sink = Arc::clone(&captured);
         linker
             .func_wrap("witchy", "print_float", move |x: f64| {
@@ -281,6 +299,7 @@ fn main() -> Int:
         let wt = WtModule::new(&engine, bytes).expect("valid wasm");
         let captured: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let mut linker = Linker::new(&engine);
+        define_abort(&mut linker);
         let sink = Arc::clone(&captured);
         linker
             .func_wrap(

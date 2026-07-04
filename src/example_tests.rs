@@ -280,6 +280,44 @@
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
+    /// (parity, SEC-040) `bytes.slice` is BYTE-indexed and `bytes.to_string` is
+    /// LOSSY on BOTH backends. The compiled `bytes.slice` used to route through the
+    /// CHAR-indexed `$str_substring` (so slicing a multibyte payload returned the
+    /// wrong byte count — a binary-corruption primitive) and `bytes.to_string` was
+    /// a raw identity (so invalid UTF-8 came back verbatim instead of the U+FFFD
+    /// the interpreter's `from_utf8_lossy` produces). Both now match the byte-exact
+    /// interpreter oracle. Same family as SEC-038 (the `bytes.at` OOB read).
+    #[test]
+    fn bytes_slice_is_byte_indexed_and_to_string_is_lossy() {
+        // `é` is 2 UTF-8 bytes (0xC3 0xA9). Byte-slicing [0,1) yields ONE byte
+        // (the interpreter's answer); the old char-indexed slice returned 2.
+        let slice_src = "import bytes\n\nfn main(console: Console):\n    let b = bytes.from_string(\"héllo\")\n    print(console, __render(bytes.length(bytes.slice(b, 0, 1))))\n    print(console, __render(bytes.length(bytes.slice(b, 1, 3))))\n    print(console, __render(bytes.length(bytes.slice(b, 0, 100))))\n    print(console, __render(bytes.length(bytes.slice(b, 3, 1))))\n";
+        // "héllo" = h(1) é(2) l(1) l(1) o(1) = 6 bytes. slice(0,1)=1, slice(1,3)=2
+        // (the two bytes of é), slice(0,100) clamps to 6, slice(3,1) empty -> 0.
+        let want_slice = ["1", "2", "6", "0"];
+        assert_eq!(link_run(slice_src), want_slice, "interp bytes.slice is byte-indexed");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", slice_src)], "main"),
+            want_slice,
+            "compiled bytes.slice must be byte-indexed too"
+        );
+
+        // Slicing `é` at [0,1) leaves a lone 0xC3 — invalid UTF-8. `to_string` must
+        // lossily decode it to U+FFFD (3 bytes) on both backends, not return the
+        // raw invalid byte.
+        let lossy_src = "import bytes\nimport string\n\nfn main(console: Console):\n    let half = bytes.slice(bytes.from_string(\"é\"), 0, 1)\n    let s = bytes.to_string(half)\n    print(console, __render(string.length(s)))\n    print(console, __render(bytes.length(bytes.from_string(s))))\n";
+        // The lossy decode replaces the lone invalid byte with U+FFFD, which is 3
+        // UTF-8 bytes (`string.length` is a BYTE count). The old buggy compiled
+        // identity returned the single raw byte, so both readings would be "1".
+        let want_lossy = ["3", "3"];
+        assert_eq!(link_run(lossy_src), want_lossy, "interp bytes.to_string is lossy");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", lossy_src)], "main"),
+            want_lossy,
+            "compiled bytes.to_string must lossily decode to U+FFFD too"
+        );
+    }
+
     /// (SEC-038) `bytes.at` out of bounds must FAIL on both backends, not silently
     /// read adjacent heap on WASM. The compiled `$bytes_at` bounds-checks and traps
     /// (like `$list_at`), matching the interpreter's "bytes index out of bounds"
@@ -3946,11 +3984,83 @@ fn yn(b: Bool) -> String:
         let err = interpreter::run(src).expect_err("interpreter must abort");
         assert!(err.message.contains("boom"));
         let module = parser::parse_module(src).expect("parse");
-        // `fail()` lowers on the binary path: drop the message, then `unreachable`.
+        // `fail()` lowers on the binary path: route the message through
+        // `__witchy_abort`, then `unreachable`.
         let bytes = codegen::compile_module_binary(&module)
             .expect("compile")
             .expect("fail() lowers on the binary path");
         assert!(crate::run_wasm_bytes(&bytes).is_err(), "WASM must trap on fail()");
+    }
+
+    /// (RFC-0045) The message parity property: when the interpreter aborts, the
+    /// compiled backend must abort with the SAME message CORE — not merely "both
+    /// error". Covers each routed abort class: `fail(msg)` (dynamic), list-index
+    /// OOB and `string.to_int` junk (static + dynamic data), and NaN ordering
+    /// (static). This is the differential gate's semantics made a unit test: a
+    /// compiled trap at the wrong site or for the wrong reason would diverge here.
+    #[test]
+    fn abort_messages_match_across_backends() {
+        // Each case: (program, expected message core the interpreter produces).
+        let cases: &[(&str, &str)] = &[
+            (
+                "fn main(console: Console):\n    fail(\"the reason\")\n",
+                "the reason",
+            ),
+            (
+                "import list\nfn main(console: Console):\n    let xs = [1, 2]\n    print(console, __render(list.at(xs, 5)))\n",
+                "list index 5 out of bounds (length 2)",
+            ),
+            (
+                "import string\nfn main(console: Console):\n    print(console, __render(string.to_int(\"junk\")))\n",
+                "cannot parse `junk` as an Int",
+            ),
+            (
+                "fn main(console: Console):\n    let nan = 0.0 / 0.0\n    print(console, __render(nan < 1.0))\n",
+                "cannot compare NaN",
+            ),
+        ];
+        // (RFC-0045 / latent i32-wrap hole) A list index beyond i32 range must
+        // still abort with its TRUE value on both backends — `$list_at` now checks
+        // in i64, so a huge index can't wrap to an in-range i32 and read a bogus
+        // slot. `4294967297` = 2^32 + 1 (wraps to 1 as i32) is the regression seed.
+        let wrap_src = "import list\nfn main(console: Console):\n    let xs = [10, 20]\n    print(console, __render(list.at(xs, 4294967297)))\n";
+        {
+            let ierr = interpreter::run(wrap_src).expect_err("interpreter must abort on the huge index");
+            assert!(
+                ierr.message.ends_with("list index 4294967297 out of bounds (length 2)"),
+                "interpreter: {}",
+                ierr.message
+            );
+            let linked = resolve_std_src(wrap_src);
+            let bytes = codegen::compile_module_binary(&linked).expect("compile").expect("binary");
+            let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort on the huge index");
+            assert_eq!(
+                cerr.strip_prefix("runtime error: "),
+                Some("list index 4294967297 out of bounds (length 2)"),
+                "compiled must report the TRUE index, not a wrapped one"
+            );
+        }
+
+        for (src, want_core) in cases {
+            // Interpreter (the oracle): its full message ends with the core.
+            let ierr = interpreter::run(src).expect_err("interpreter must abort");
+            assert!(
+                ierr.message.ends_with(want_core),
+                "interpreter core mismatch: got `{}`, want suffix `{want_core}`",
+                ierr.message
+            );
+            // Compiled: the routed abort surfaces `runtime error: <core>` via the
+            // host `bail!` (root cause). It must equal the interpreter's core.
+            let linked = resolve_std_src(src);
+            let bytes = codegen::compile_module_binary(&linked)
+                .expect("compile")
+                .expect("the binary path lowers this program");
+            let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort");
+            let ccore = cerr
+                .strip_prefix("runtime error: ")
+                .unwrap_or_else(|| panic!("compiled abort not routed: `{cerr}`"));
+            assert_eq!(ccore, *want_core, "compiled abort core mismatch for src:\n{src}");
+        }
     }
 
     /// `now` (Clock) and `get_env` (Env) compile to capability-gated host
@@ -8020,6 +8130,52 @@ fn main(console: Console):
         )
         .unwrap();
         crate::verify_file(path.to_str().unwrap()).expect("backends should agree");
+    }
+
+    /// (RFC-0045) `witchy verify` on an ABORTING program passes: both backends
+    /// abort AND their message cores match (the interpreter's `` `main`, line N:
+    /// list index … `` core equals the compiled `runtime error: list index …`).
+    /// This exercises the differential harness's message-parity arm end to end.
+    #[test]
+    fn verify_file_agrees_on_matching_aborts() {
+        let path = std::env::temp_dir().join("witchy_verify_abort.witchy");
+        std::fs::write(
+            &path,
+            "import list\nfn main(console: Console):\n    let xs = [1, 2]\n    print(console, __render(list.at(xs, 9)))\n",
+        )
+        .unwrap();
+        crate::verify_file(path.to_str().unwrap())
+            .expect("both backends must abort with the same message core");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// (RFC-0045) `abort_core` strips the interpreter's exact `rt_at_line` location
+    /// prefix (both the `` `func`, line N: `` and the func-less `line N: ` shapes)
+    /// while leaving the compiled `runtime error:` core untouched, and returns
+    /// `None` for non-routed messages — so the parity gate compares like with like.
+    #[test]
+    fn abort_core_strips_location_prefix() {
+        assert_eq!(
+            crate::abort_core("runtime error: `p20.test_fail`, line 4: the reason").as_deref(),
+            Some("the reason")
+        );
+        assert_eq!(
+            crate::abort_core("runtime error: line 4: boom").as_deref(),
+            Some("boom")
+        );
+        // Compiled side (no location prefix): the core is the whole body.
+        assert_eq!(
+            crate::abort_core("runtime error: list index 5 out of bounds (length 2)").as_deref(),
+            Some("list index 5 out of bounds (length 2)")
+        );
+        // A `fail` message containing backticks and `: ` must NOT be mis-stripped.
+        assert_eq!(
+            crate::abort_core("runtime error: `weird`: value").as_deref(),
+            Some("`weird`: value")
+        );
+        // Non-routed errors (bare trap, capability refusal) are not compared.
+        assert_eq!(crate::abort_core("wasm trap: unreachable"), None);
+        assert_eq!(crate::abort_core("`..` escapes the Dir capability"), None);
     }
 
     #[test]
@@ -17422,4 +17578,3 @@ pub fn serve(console: Console, net: Net) -> Int:
              hole lives), got: {msg}"
         );
     }
-

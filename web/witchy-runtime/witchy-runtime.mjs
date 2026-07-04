@@ -297,6 +297,11 @@ function encodingOp(op, input /* Uint8Array */) {
       }
       return out;
     }
+    case 7: { // utf8_lossy (bytes.to_string): lossy UTF-8 decode, invalid -> U+FFFD.
+      // `input` was read raw (readWstr); decode it lossily here so the JS host
+      // matches the interpreter's `String::from_utf8_lossy` byte-for-byte.
+      return decodeLossy(input);
+    }
     default:
       throw new Error(`witchy-runtime: unknown encoding op ${op}`);
   }
@@ -438,6 +443,24 @@ export async function instantiate(wasmBytes, opts = {}) {
   // `build_*`, `compiler_*`, `crypto.sign`, `crypto.public_key`: those are
   // capabilities (or interpreter-only host services) and are DELIBERATELY ABSENT,
   // so a module importing one cannot instantiate here.
+  // (RFC-0045) Render a runtime-abort message from a `DiagTemplate` id + its
+  // holes — a byte-for-byte mirror of `DiagTemplate::render` in
+  // crates/witchy-syntax/src/diag.rs (the single source of truth). The template
+  // ids are the compiled ABI (`DiagTemplate::id`); do not renumber. `a`/`b` are
+  // i64 holes (BigInt), `s` the string hole. (When the compiler emits the deferred
+  // `witchy.templates` custom section, this table becomes a decode of that section
+  // instead of a hand-mirror — see RFC-0045 (e).)
+  const renderDiag = (template, a, b, s) => {
+    switch (template) {
+      case 1: return `list index ${a} out of bounds (length ${b})`;
+      case 2: return `bytes index ${a} out of bounds (length ${b})`;
+      case 3: return `cannot parse \`${s}\` as an Int`;
+      case 4: return "cannot compare NaN";
+      case 5: return s;
+      default: return `abort with unknown diagnostic template id ${template}`;
+    }
+  };
+
   const witchy = {
     // --- output (capturable; output is not authority) ---
     print(ptr, len) {
@@ -451,6 +474,21 @@ export async function instantiate(wasmBytes, opts = {}) {
     },
     print_float(x) {
       onPrint(renderFloat(x));
+    },
+
+    // --- (RFC-0045) the always-present, authority-free abort channel ---
+    // `__witchy_abort(template, a, b, str_ptr)`: render the shared DiagTemplate
+    // and throw a JS Error whose `.message` is the same `runtime error: <core>`
+    // string the wasmtime host produces (host_witchy_abort in src/runtime.rs), so
+    // an abort surfaces identically here. It grants NO authority (it reads only the
+    // string it is handed, returns nothing, and only terminates execution — an
+    // ability the guest already has via `unreachable`), so, like `print`, the
+    // pure/deny-by-omission host may provide it; it MUST be present or every
+    // footprint-empty module that can abort would fail to instantiate.
+    __witchy_abort(template, a, b, strPtr) {
+      const s = strPtr !== 0 ? readWstrText(strPtr) : "";
+      const core = renderDiag(Number(template), a, b, s);
+      throw new Error(`runtime error: ${core}`);
     },
 
     // --- the pending-buffer string-bridge (pure mechanics, no authority) ---

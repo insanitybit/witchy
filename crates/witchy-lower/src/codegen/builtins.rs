@@ -29,7 +29,9 @@ impl Codegen {
                     W::GetLocal(format!("{w}$src")),
                     W::GetLocal(format!("{w}$lo")),
                     W::GetLocal(format!("{w}$hi")),
-                    Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I32),
+                    // i64 index — `$list_at_view` checks in i64 (same i32-wrap fix
+                    // as `$list_at`).
+                    Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I64),
                 ];
                 W::FromSlot(Box::new(call("list_at_view", inner)), Self::wir_kind(ek))
             }
@@ -355,16 +357,22 @@ impl Codegen {
                 }
             }
             // `get_env(env, name)`: only the name travels (the Env grant is the host).
-            // `fail(msg)`: a deliberate, loud abort — evaluate (and drop) the
-            // message, then `unreachable` traps. The trailing `i32.const 0` is dead
-            // code after the trap, present only so the Seq is stack-typed.
+            // `fail(msg)`: a deliberate, loud abort. (RFC-0045) The message is no
+            // longer dropped — it is handed to the always-linked, authority-free
+            // `__witchy_abort` host import (the `Fail` template passes the string
+            // through verbatim), which renders `runtime error: <msg>` and traps.
+            // The `unreachable` after keeps the Seq stack-typed (the call never
+            // returns); the trailing `i32.const 0` is dead code satisfying the type.
             ("fail", 1) => {
                 let msg = self.lower_expr(&args[0])?;
-                W::Seq(vec![
-                    witchy_wir::wir::WirNode::Drop(msg),
-                    witchy_wir::wir::WirNode::Unreachable,
-                    witchy_wir::wir::WirNode::Push(W::ConstI32(0)),
-                ])
+                let mut nodes = witchy_wir::wir_helpers::abort_nodes(
+                    witchy_syntax::diag::DiagTemplate::Fail,
+                    W::ConstI64(0),
+                    W::ConstI64(0),
+                    msg,
+                );
+                nodes.push(witchy_wir::wir::WirNode::Push(W::ConstI32(0)));
+                W::Seq(nodes)
             }
             ("get_env", 2) => {
                 self.uses_get_env = true;
@@ -726,9 +734,19 @@ impl Codegen {
                     Self::wir_convert(self.lower_expr(&args[2])?, ek, Kind::I32),
                 ])
             }
-            // (Bytes) `Bytes` shares `String`'s flat `[len][bytes]` layout, so the
-            // primitive ops are identity / a reuse of the String machinery.
-            ("__bytes_from_string", 1) | ("__bytes_to_string", 1) => self.lower_expr(&args[0])?,
+            // (Bytes) `Bytes` shares `String`'s flat `[len][bytes]` layout, so
+            // `from_string` is identity — every witchy `String` is already valid
+            // UTF-8, so its bytes are the buffer verbatim.
+            ("__bytes_from_string", 1) => self.lower_expr(&args[0])?,
+            // (parity, SEC-042) `to_string` is NOT identity: `Bytes` has no UTF-8
+            // contract, so invalid sequences must be lossily normalized to U+FFFD to
+            // match the interpreter's `String::from_utf8_lossy`. Route through the
+            // byte-exact `$bytes_to_string` helper (an identity return diverged on
+            // bad bytes).
+            ("__bytes_to_string", 1) => {
+                self.uses_encoding = true;
+                call("bytes_to_string", vec![self.lower_expr(&args[0])?])
+            }
             // (RFC-0055) Channel message erasure. A message already rides the
             // universal slot on the compiled backend (every buffer element, record
             // field, and closure argument is an untyped 8-byte slot), so erasing to
@@ -751,18 +769,24 @@ impl Codegen {
                 // read adjacent heap — a parity/OOB bug, SEC-038.)
                 let b = self.lower_expr(&args[0])?;
                 let ik = self.kind_of(&args[1]);
-                let i = Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I32);
+                // i64 index — checked in i64 by `$bytes_at` (matches the
+                // interpreter's `i as usize`; closes the same i32-wrap hole as list.at).
+                let i = Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I64);
                 call("bytes_at", vec![b, i])
             }
             ("__bytes_concat", 2) => {
                 call("concat", vec![self.lower_expr(&args[0])?, self.lower_expr(&args[1])?])
             }
             ("__bytes_slice", 3) => {
-                self.uses_substring = true;
+                // (parity) `Bytes` is BYTE-indexed with no UTF-8 contract, so this
+                // must route through the byte-indexed `$bytes_slice` — NOT the
+                // char-indexed `$str_substring`, which mangled multibyte payloads
+                // (the backends diverged: interpreter byte-indexed, compiled
+                // char-indexed). `$bytes_slice` clamps exactly like the interpreter.
                 self.uses_substr = true;
                 let sk = self.kind_of(&args[1]);
                 let ek = self.kind_of(&args[2]);
-                call("str_substring", vec![
+                call("bytes_slice", vec![
                     self.lower_expr(&args[0])?,
                     Self::wir_convert(self.lower_expr(&args[1])?, sk, Kind::I32),
                     Self::wir_convert(self.lower_expr(&args[2])?, ek, Kind::I32),
@@ -787,7 +811,14 @@ impl Codegen {
                 let elide = matches!((&args[0], &args[1]), (Expr::Var(lv), Expr::Var(iv))
                     if self.elide_index_list.iter().any(|(i, l)| i == iv && l == lv));
                 let list_w = self.lower_expr(&args[0])?;
-                let idx_w = Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I32);
+                // Lower the index ONCE (it may be a side-effecting call), then widen
+                // to the kind the chosen path needs. The elide path does i32 address
+                // math directly; the checked `$list_at` now takes the index as i64
+                // (so an out-of-i32-range index traps + reports its true value,
+                // matching the interpreter's `i as usize` — RFC-0045 message parity
+                // and a latent i32-wrap hole this closes).
+                let idx_target = if elide { Kind::I32 } else { Kind::I64 };
+                let idx_w = Self::wir_convert(self.lower_expr(&args[1])?, ik, idx_target);
                 let read = if elide {
                     let wi32 = witchy_wir::wir::Kind::I32;
                     let add = witchy_wir::wir::BinOp::Add;
