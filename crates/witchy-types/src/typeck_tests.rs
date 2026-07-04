@@ -1145,3 +1145,116 @@ fn main():
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
+
+    // (BUG-009 / RFC-0005 hardening #4) Attenuation proof for `Net` — mirrors
+    // `file_capability_rights_and_narrowing`. Under the `externref` model these
+    // typeck assertions ARE the runtime defense for rights/narrowing, so they are
+    // load-bearing. Rejection happens at the shared check stage, upstream of both
+    // the interpreter and the WASM codegen, so a rejected program fails identically
+    // on both backends — the check_str assertion is the two-backend proof.
+    #[test]
+    fn net_capability_rights_and_narrowing() {
+        // RFC-0003: a `Net`'s verbs split `Connect` (dial out) from `Listen`
+        // (accept in) — a client is not a server. A connect-only handle dials.
+        check_str("fn f(console: Console, net: Net[Connect]):\n    let s = connect(net, \"example.com:443\")\n    print(console, \"ok\")\n")
+            .expect("Net[Connect] can connect");
+        // ... but it cannot `listen`.
+        let err = check_str("fn f(net: Net[Connect]):\n    listen(net, \"0.0.0.0:80\")\n")
+            .expect_err("Net[Connect] must not listen");
+        assert!(err.contains("`listen` needs `Listen`") && err.contains("Net[Connect]"), "got: {err}");
+        // A listen-only handle accepts inbound.
+        check_str("fn f(console: Console, net: Net[Listen]):\n    let l = listen(net, \"0.0.0.0:80\")\n    print(console, \"ok\")\n")
+            .expect("Net[Listen] can listen");
+        // ... but it cannot dial out (`connect` or its total sibling `try_connect`).
+        let err = check_str("fn f(net: Net[Listen]):\n    connect(net, \"example.com:443\")\n")
+            .expect_err("Net[Listen] must not connect");
+        assert!(err.contains("`connect` needs `Connect`") && err.contains("Net[Listen]"), "got: {err}");
+        let err = check_str("fn f(net: Net[Listen]):\n    try_connect(net, \"example.com:443\")\n")
+            .expect_err("Net[Listen] must not try_connect");
+        assert!(err.contains("`try_connect` needs `Connect`") && err.contains("Net[Listen]"), "got: {err}");
+        // The transport axis attenuates independently: `connect`/`listen` are TCP-only,
+        // so a UDP-only handle (full verbs, no TCP) cannot dial.
+        let err = check_str("fn f(net: Net[Udp]):\n    connect(net, \"example.com:443\")\n")
+            .expect_err("Net[Udp] must not connect (TCP-only op)");
+        assert!(err.contains("only implemented over `Tcp`") && err.contains("Net[Udp]"), "got: {err}");
+        // `as` drops `Net` verbs but can never add them (mirrors the File slice).
+        check_str("fn main(console: Console, net: Net):\n    let dial = net as Net[Connect]\n    print(console, \"ok\")\n")
+            .expect("`as` can drop Net to Connect-only");
+        let err = check_str("fn main(console: Console, net: Net[Connect]):\n    let l = net as Net[Listen]\n    print(console, \"no\")\n")
+            .expect_err("`as` cannot add the Listen verb");
+        assert!(err.contains("can only drop rights"), "got: {err}");
+        // ... and a narrowed handle cannot be re-widened back to the full `Net`.
+        let err = check_str("fn main(console: Console, net: Net[Connect]):\n    let full = net as Net\n    print(console, \"no\")\n")
+            .expect_err("`as` cannot re-widen Net[Connect] to full Net");
+        assert!(err.contains("can only drop rights"), "got: {err}");
+    }
+
+    // (BUG-009 / RFC-0005 hardening #4) Attenuation proof for `Dir` — the Read/Write
+    // lattice and one-way `as` narrowing, mirroring the File slice.
+    #[test]
+    fn dir_capability_rights_and_narrowing() {
+        // RFC-0012: a `Dir`'s rights split `Read` from `Write` on independent axes.
+        // A read-only handle reads (and lists/exists).
+        check_str("fn f(console: Console, d: Dir[Read]):\n    let s = read(d, \"a.txt\")\n    print(console, s)\n")
+            .expect("Dir[Read] can read");
+        // ... but it cannot `write`, `append`, or `make_dir` (all `Write` verbs).
+        let err = check_str("fn f(d: Dir[Read]):\n    write(d, \"a.txt\", \"x\")\n")
+            .expect_err("Dir[Read] must not write");
+        assert!(err.contains("`write` needs `Write`") && err.contains("Dir[Read]"), "got: {err}");
+        let err = check_str("fn f(d: Dir[Read]):\n    make_dir(d, \"sub\")\n")
+            .expect_err("Dir[Read] must not make_dir");
+        assert!(err.contains("`make_dir` needs `Write`") && err.contains("Dir[Read]"), "got: {err}");
+        // A write-only handle writes ...
+        check_str("fn f(d: Dir[Write]):\n    write(d, \"a.txt\", \"x\")\n")
+            .expect("Dir[Write] can write");
+        // ... but cannot `read` or `list` (both `Read` verbs). This is the converse
+        // the File slice never asserted.
+        let err = check_str("fn f(d: Dir[Write]):\n    read(d, \"a.txt\")\n")
+            .expect_err("Dir[Write] must not read");
+        assert!(err.contains("`read` needs `Read`") && err.contains("Dir[Write]"), "got: {err}");
+        let err = check_str("fn f(d: Dir[Write]):\n    list(d)\n")
+            .expect_err("Dir[Write] must not list");
+        assert!(err.contains("`list` needs `Read`") && err.contains("Dir[Write]"), "got: {err}");
+        // `as` drops Dir rights but never adds them.
+        check_str("fn main(console: Console, d: Dir):\n    let ro = d as Dir[Read]\n    print(console, \"ok\")\n")
+            .expect("`as` can drop Dir to Read-only");
+        let err = check_str("fn main(console: Console, d: Dir[Read]):\n    let w = d as Dir[Write]\n    print(console, \"no\")\n")
+            .expect_err("`as` cannot add the Write right");
+        assert!(err.contains("can only drop rights"), "got: {err}");
+        // ... and cannot re-widen a narrowed handle back to the full `Dir`.
+        let err = check_str("fn main(console: Console, d: Dir[Read]):\n    let full = d as Dir\n    print(console, \"no\")\n")
+            .expect_err("`as` cannot re-widen Dir[Read] to full Dir");
+        assert!(err.contains("can only drop rights"), "got: {err}");
+    }
+
+    // (BUG-009 / RFC-0011 + RFC-0005 hardening #4) Policy narrowing preserves the
+    // rights set at the type level, and a handle carrying narrowed rights cannot be
+    // re-widened by a cast after passing through `net.only` / `dir.only`.
+    //
+    // NOTE: the *address/entry policy* that `only`/`deny` apply is enforced only at
+    // runtime (host-side) and has NO type-level representation — the return type is
+    // `Net[rights]` / `Dir[rights]` with the same rights, no policy component. So the
+    // only type-level re-widening surface is the rights axis, which is what these
+    // assertions cover; the address-set policy itself cannot be "re-widened at the
+    // type level" because it is not in the type at all. (`NetPolicy`/`DirPolicy` are
+    // declared locally here because `check_str` type-checks a single module without
+    // linking `std/confine`; they unify by name with the builtin op expectations.)
+    #[test]
+    fn policy_narrowing_preserves_rights_and_cannot_rewiden() {
+        // `net.only(policy)` keeps the receiver's rights: the result is still
+        // connect-capable, so `connect` on it type-checks.
+        check_str("type NetPolicy:\n    NetPolicy(String)\nfn f(console: Console, net: Net[Connect]):\n    let scoped = only(net, NetPolicy(\"example.com:443\"))\n    let s = connect(scoped, \"example.com:443\")\n    print(console, \"ok\")\n")
+            .expect("net.only preserves the Connect right");
+        // ... and because the rights are preserved (still connect-only, not full),
+        // the narrowed handle cannot be re-widened to a full `Net` by a cast.
+        let err = check_str("type NetPolicy:\n    NetPolicy(String)\nfn f(console: Console, net: Net[Connect]):\n    let scoped = only(net, NetPolicy(\"example.com:443\"))\n    let wide = scoped as Net\n    print(console, \"no\")\n")
+            .expect_err("a policy-narrowed Net[Connect] must not re-widen to full Net");
+        assert!(err.contains("can only drop rights"), "got: {err}");
+        // `dir.only(policy)` likewise keeps `Read` ...
+        check_str("type DirPolicy:\n    DirPolicy(String)\nfn f(console: Console, d: Dir[Read]):\n    let scoped = only(d, DirPolicy(\"ext:txt\"))\n    let s = read(scoped, \"a.txt\")\n    print(console, s)\n")
+            .expect("dir.only preserves the Read right");
+        // ... and the narrowed `Dir[Read]` cannot be re-widened to a full `Dir`.
+        let err = check_str("type DirPolicy:\n    DirPolicy(String)\nfn f(console: Console, d: Dir[Read]):\n    let scoped = only(d, DirPolicy(\"ext:txt\"))\n    let wide = scoped as Dir\n    print(console, \"no\")\n")
+            .expect_err("a policy-narrowed Dir[Read] must not re-widen to full Dir");
+        assert!(err.contains("can only drop rights"), "got: {err}");
+    }
