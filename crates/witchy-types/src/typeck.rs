@@ -3716,6 +3716,19 @@ fn pattern_dup_binding(p: &Pattern) -> Option<String> {
                     }
                 }
             }
+            // (RFC-0052) Each or-pattern alternative is an INDEPENDENT binding set
+            // (they bind the same names by the consistency rule), so a name reused
+            // ACROSS alternatives is not a duplicate — check each alternative with
+            // its own `seen`, catching only a within-alternative repeat.
+            Pattern::Or(alts) => {
+                for alt in alts {
+                    let mut alt_seen = HashSet::new();
+                    walk(alt, &mut alt_seen, dup);
+                    if dup.is_some() {
+                        return;
+                    }
+                }
+            }
             _ => {}
         }
     }
