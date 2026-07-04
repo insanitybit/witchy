@@ -82,6 +82,35 @@ impl Facts {
 // place; the analysis decides WHETHER the token is live. (Owned here so the
 // shape definitions and their soundness analysis live together; codegen and
 // the interpreter import them.)
+//
+// (RFC-0051 I3 — REJECTED-IN-PART, retention justified by measurement 2026-07-03)
+// CLAUDE.md's thesis is to DELETE this `self_*` + `*_cap` family via the general
+// ownership path. RFC-0051 tested the precondition it claimed had flipped (the RC
+// floor is now default-on) and found the deletion still fails, for TWO recorded
+// reasons — so the family is retained, and this is the evidence:
+//
+//   1. The in-place mechanism is LOAD-BEARING, not an over-fit. Compiling the same
+//      programs through the general value-semantics rebind (`WITCHY_OPT=-inplace`,
+//      the closest thing to "no per-op path") measured (kernel-clock, release):
+//        word_count / dict_count / list_sum / knucleotide → OOM TRAP (the O(n²)
+//          rebuild-per-iteration the RFC's Alternatives section predicts);
+//        list_index 2.70x, binary_trees 1.27x, expr_eval 1.31x SLOWER.
+//      The 5%/2% acceptance gate is not close; deletion of the mechanism regresses
+//      hard. So the WIR-level in-place emission (append-at-len / store-at-slot /
+//      hash-probe-insert / byte-append / closure-at-slot) must survive in SOME form.
+//   2. The RFC's ONLY rung that deletes these RECOGNIZERS — rung 2, the runtime
+//      `rc == 1` in-place branch — is HARD-GATED on TOTAL dup coverage (a missed dup
+//      makes `rc == 1` a lie, and an in-place mutation observed through an alias is a
+//      silently-wrong answer, strictly worse than a leak). RFC-0051 I1's own
+//      `WITCHY_RC_ASSERT` fire-and-report probe DISPROVES totality: the SEC-037
+//      view/slice dup residual still reaches a dup site under the `views` lever
+//      (`WITCHY_RC_ASSERT=1 WITCHY_OPT=all` fires on minigrep). Until I1's typed
+//      emission closes SEC-037 at its source, rung 2's precondition is unmet.
+//   Rung 1 (a signature-table replacing these matchers) deletes only the cheap
+//   `self_*` shape-matchers, NOT the six `*_cap` helper BODIES — those are genuinely
+//   distinct algorithms (a hash-probe upsert is not "list-append with different
+//   constants"), so rung 1 does not achieve CLAUDE.md's "delete the zoo" either.
+//   Net: I1 + I2 shipped; I3 is a decided, evidenced RETENTION, not silent drift.
 // ---------------------------------------------------------------------------
 
 /// `xs = push(xs, e)`: the appended element.
