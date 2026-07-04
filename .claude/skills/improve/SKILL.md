@@ -13,6 +13,21 @@ You are a **senior advisor, not an implementer**. Your job is to deeply understa
 
 The economics of this skill: an expensive, high-ceiling model does the part where intelligence compounds (understanding, judging, specifying). Cheaper models do the execution. The plan is the product — its quality determines whether the executor succeeds.
 
+## Witchy conventions (local override)
+
+> Local adaptation for the `witchy` repo (this copy is otherwise upstream shadcn/improve, MIT).
+> Where these conflict with the defaults below, **these win.**
+
+- **Output routing replaces `plans/`.** This repo already splits write-ups (see `CLAUDE.md` → "Where write-ups go"). Hard Rule 1's "only write under `plans/`" becomes **"only write under `bugs/`, `security-eval/`, or `rfcs/`"** — still never source:
+  - a **defect** finding → `bugs/BUG-NNN-slug.md` (symptom · repro · root cause · fix). Inline the full executable handoff **as the fix section** — do NOT create a separate `plans/` file; the bug report *is* the plan. Keep `BUG-NNN` monotonic; reconcile with `bugs/README.md`, don't duplicate.
+  - a **security** finding → `security-eval/SEC-NNN-slug.md` (gitignored). Reference `file:line` + credential type only, never the value (Hard Rule 4).
+  - a **direction / design** finding → an `rfcs/NNNN-slug.md` proposal (`status: proposed`; lifecycle per RFC-0001; check the highest existing number first — a concurrent effort has reserved a range).
+- **Reconcile before auditing.** Read `scratch/deep-eval/MERGED-TRIAGE.md`, `bugs/README.md` (incl. its "Fixed since the eval" list), and `security-eval/` first; skip anything already reported or fixed. Two prior full evaluations exist — don't re-report them.
+- **The verification gate is `./scripts/check.sh`** — `--fast` to iterate, no flag before a commit, `--full` before a push — NOT `cargo test` / `npm test`. Every plan's machine-checkable done-criteria run through it.
+- **Parity is the prime directive → a first-class audit category.** Twin backends (interpreter oracle vs compiled WASM) must agree, or loudly error, *identically*. Every finding states its parity impact; every user-visible fix plan requires a **`witchy parity` differential test in `src/example_tests.rs`** plus a runnable `book/` example. In each plan, note: `witchy <file>` runs the **compiled** backend only — verify divergence with `witchy parity` / the interp oracle, never a single-backend run.
+- **Witchy landmines** — copy verbatim into every subagent prompt and every plan's boundaries: never `cargo fmt` (Rust is hand-formatted; the only fmt gate is `witchy fmt` over `std/` + `examples/`); `spec/stdlib.md` is GENERATED from `std/*.witchy` doc-comments (never hand-edit); never add per-method optimization fast paths (`*_cap` / `self_*`) — the general ownership mechanism must absorb every new op.
+- **Shared tree.** A concurrent agent may be editing in parallel: `execute`'s isolated worktree is ideal; for any direct write use targeted `git add` only — never `git stash` / `reset` / `clean`, and don't touch `.claude/worktrees/`.
+
 ## Hard Rules
 
 1. **Never modify source code yourself.** No edits, no fixes, no "quick wins while you're in there." The ONLY files you may create or modify live under `plans/` in the repo root — or under `advisor-plans/` when `plans/` already exists for an unrelated purpose (create the chosen directory if absent). The `execute` variant dispatches a *separate executor subagent* that edits code in an isolated git worktree — you review its diff and render a verdict; you still never edit code directly, and you never merge, push, or commit to the user's branch.

@@ -33,6 +33,9 @@ Don't file a bug as an RFC or an ad-hoc design doc as a bug; security findings s
   the doc-comments in `std/*.witchy`; a test (`stdlib_docs_are_current`)
   fails if it drifts. Edit the `std/*.witchy` comment, then regenerate:
   `witchy doc std/*.witchy > spec/stdlib.md`.
+- **Never `cargo fmt`.** The Rust here is HAND-FORMATTED on purpose — `cargo fmt`
+  reformats ~70 files. The only formatting gate is `witchy fmt` over `std/*.witchy`
+  + `examples/*/src/*.witchy` (`projects/**` is not swept).
 - **`book/` and `README`/`spec` ` ```witchy ` blocks are executed tests.** A
   fenced `witchy` example must be a complete, correct program (it is parsed,
   type-checked, and run on both backends). Use an untagged or ` ```sh ` fence
