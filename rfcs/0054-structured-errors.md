@@ -1,7 +1,7 @@
 ---
 rfc: 0054
 title: Structured errors (design-first)
-status: proposed
+status: accepted-direction (implementation deferred behind ecosystem demand)
 created: 2026-07-03
 tracking:
 ---

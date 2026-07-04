@@ -1,7 +1,7 @@
 ---
 rfc: 0044
 title: A written error and return-shape policy for std
-status: proposed
+status: implemented
 created: 2026-07-03
 predecessors:
   - "0021 (Option || T unwrap — the ergonomic floor that makes Option cheap)"

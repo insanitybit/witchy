@@ -1,7 +1,7 @@
 ---
 rfc: 0043
 title: "Declared mutation: write-back by declaration, not inference"
-status: proposed
+status: implemented
 created: 2026-07-03
 predecessors:
   - "0028 (ergonomic mutable value semantics — the statement write-back this re-grounds)"

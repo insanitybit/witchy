@@ -1,7 +1,7 @@
 ---
 rfc: 0049
 title: "The naming lexicon: conventions and the rename cut"
-status: proposed
+status: implemented
 created: 2026-07-03
 predecessors:
   - "feedback: readable names (spell out identifiers; terse only for synthetics)"
