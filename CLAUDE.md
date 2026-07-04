@@ -14,6 +14,12 @@ plus the `witchy` binary. Build/lint/test the whole thing with `--workspace`
 root lib re-exports every crate's modules, so `crate::{ast,typeck,codegen,…}::…`
 paths still resolve from the binary — but new code belongs in the owning crate.
 
+**Where write-ups go:** **bug reports → `bugs/`** (a gitignored local backlog — one
+`BUG-NNN-slug.md` per defect: symptom, repro, root cause, fix). **Design decisions and
+proposals → `rfcs/`** (tracked, numbered `NNNN-slug.md`, status lifecycle per RFC-0001).
+Don't file a bug as an RFC or an ad-hoc design doc as a bug; security findings still go to
+`security-eval/` (SEC-NNN, also gitignored).
+
 ## Gotchas
 
 - **The `witchy` on your PATH is the RELEASE binary; `cargo build` produces
@@ -57,10 +63,12 @@ per-operation hack does not generalize — every new method would need its own c
 and the ones that don't get it silently regress (that is exactly why `dict.remove`
 leaked: it had no `dict_remove_cap`). The conventions already express the ownership
 fact (a unique `var` may be mutated/reclaimed in place; a `let` may not escape);
-consume that fact uniformly. The existing `*_cap` + `self_*` family is **technical
-debt to delete** once the general mechanism subsumes it — removing it with the
-suite still green is the proof the generalization works. (RFC-0016 is the general
-reclamation floor; this is its thesis.)
+consume that fact uniformly. The existing `*_cap` + `self_*` family is **retained,
+not deleted**: RFC-0051 (I3) measured removing it and found the general path
+perf-negative — it OOM-traps several benchmarks — so the family is load-bearing.
+The forward rule still stands: add **no new** per-method fast paths; the general
+mechanism must absorb every *new* operation. (RFC-0016 is the general reclamation
+floor; RFC-0051 is why the existing zoo stays.)
 
 ## Trait-method dispatch (recently extended)
 
