@@ -1,4 +1,8 @@
-/target
+# cargo build output — root workspace AND the per-example-project targets
+# (examples/projects/*/*/target/) that `witchy build` leaves behind
+target/
+# run artifact of the convert example project
+/examples/projects/convert/convert/output.json
 /benchmarks/.build
 /web/witchy.wasm
 .playwright-mcp/
