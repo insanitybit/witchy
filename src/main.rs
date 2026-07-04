@@ -1592,6 +1592,55 @@ fn run_tests(path: &str) -> Result<bool, String> {
     Ok(total_fail == 0)
 }
 
+/// (RFC-0045) Extract the *core* of a routed runtime-abort message for message
+/// parity: the text after the `runtime error: ` marker, with the interpreter's
+/// `` `func`, line N: `` location prefix (which the compiled backend does not yet
+/// reproduce — the site table is a deferred channel) stripped. Returns `None` for
+/// a message that is not a `runtime error: …` (a bare wasm trap, a capability
+/// refusal, a parse/type error), so only genuinely routed aborts are compared.
+fn abort_core(msg: &str) -> Option<String> {
+    let rest = msg.strip_prefix("runtime error: ")?;
+    Some(strip_location_prefix(rest).to_string())
+}
+
+/// Strip the interpreter's EXACT `rt_at_line` location prefix — `` `<func>`, line
+/// <N>: `` (func nonempty) or `line <N>: ` (func empty) — from the front of a
+/// runtime-error body, leaving the message core. The match is precise (a
+/// backtick-delimited name, the literal `, line `, one-or-more digits, then `: `)
+/// so a `fail` message that itself contains backticks or `": "` is never
+/// mis-stripped. Returns the input unchanged when no such prefix is present (the
+/// compiled backend does not yet emit one — the site table is deferred).
+fn strip_location_prefix(rest: &str) -> &str {
+    // `` `<func>`, line <N>: ``
+    if let Some(after_tick) = rest.strip_prefix('`') {
+        if let Some((_func, tail)) = after_tick.split_once('`') {
+            if let Some(after_line) = tail.strip_prefix(", line ") {
+                if let Some(core) = split_after_line_number(after_line) {
+                    return core;
+                }
+            }
+        }
+    }
+    // `line <N>: `
+    if let Some(after_line) = rest.strip_prefix("line ") {
+        if let Some(core) = split_after_line_number(after_line) {
+            return core;
+        }
+    }
+    rest
+}
+
+/// Given the text right after `line ` (i.e. starting with the line number),
+/// consume the digits and a following `: `, returning the remaining core. `None`
+/// if the shape doesn't match (no digit, or no `: ` after the number).
+fn split_after_line_number(s: &str) -> Option<&str> {
+    let ndigits = s.bytes().take_while(u8::is_ascii_digit).count();
+    if ndigits == 0 {
+        return None;
+    }
+    s[ndigits..].strip_prefix(": ")
+}
+
 fn verify_file(path: &str) -> Result<(), String> {
     use std::path::Path;
     let (linked, _stem) = link_file(path)?;
@@ -1654,9 +1703,23 @@ fn verify_file(path: &str) -> Result<(), String> {
         (Ok(i), Ok(c)) => Err(format!(
             "\u{2717} {path}: the two backends DIVERGE\n  interpreter: {i:?}\n  compiled:    {c:?}"
         )),
-        // Both fail: they agree on rejecting this input (the messages differ — a
-        // readable interpreter error vs. a WASM trap — but the behavior matches).
-        (Err(_), Err(_)) => {
+        // Both fail: they agree on rejecting this input. (RFC-0045, message parity
+        // — lenient notch) When the compiled backend surfaced a ROUTED abort
+        // (`runtime error: <core>` via `__witchy_abort`), its message core must
+        // MATCH the interpreter's core (same abort class, same dynamic data) — a
+        // compiled trap at the wrong site or for the wrong reason now diverges
+        // loudly, closing the occurrence-vs-semantics gap. An unrouted site (a bare
+        // wasm `unreachable` trap, or a non-`runtime error:` message) still passes,
+        // so sites become load-bearing as they are routed.
+        (Err(i), Err(c)) => {
+            if let (Some(ic), Some(cc)) = (abort_core(&i), abort_core(&c)) {
+                if ic != cc {
+                    return Err(format!(
+                        "\u{2717} {path}: the two backends DIVERGE on the abort message\n  \
+                         interpreter core: {ic:?}\n  compiled core:    {cc:?}"
+                    ));
+                }
+            }
             println!("\u{2713} {path}: interpreter and compiled WASM agree (both error)");
             Ok(())
         }

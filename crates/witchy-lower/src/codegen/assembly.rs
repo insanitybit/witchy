@@ -558,6 +558,12 @@ pub fn assemble_wir_module(
         for f in &cg.lambda_wir_funcs {
             collect_called_funcs(&f.body, &mut called);
         }
+        // (RFC-0045) `__witchy_abort` is authority-free and always linked (like the
+        // checked-heap `heap_register`/`heap_frontier`), so a direct `fail(msg)` in
+        // user code calling it does NOT disqualify the capability-minimal pruned
+        // path. Pull it out of the direct-host set before the gate, but remember to
+        // declare the import below.
+        let user_calls_abort = user_host_imports.remove("__witchy_abort");
         // A direct host call in user code (e.g. `now`, `dir.subdir`, `recv_*`)
         // needs authority the capability-minimal helper registry can't account
         // for — give up on such programs (`Ok(None)`). (Host access that goes
@@ -641,6 +647,12 @@ pub fn assemble_wir_module(
                 import_names.insert("print_int");
             } else if main_returns_float {
                 import_names.insert("print_float");
+            }
+            // (RFC-0045) A user `fail(msg)` calls `__witchy_abort` directly (its
+            // import_deps aren't consulted because it's not a registry helper), so
+            // declare the import when user code reaches it.
+            if user_calls_abort {
+                import_names.insert("__witchy_abort");
             }
             let pruned_imports: Vec<WirImport> = import_names
                 .iter()

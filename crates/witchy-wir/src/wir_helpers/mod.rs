@@ -11,11 +11,38 @@
 //! how `codegen` resolves a module's reachable helper set.
 
 use crate::wir::*;
+use witchy_syntax::diag::DiagTemplate;
 
 mod dict;
 pub use dict::*;
 mod vm;
 pub use vm::*;
+
+/// (RFC-0045) Build the node sequence that routes a runtime abort through the
+/// always-linked, authority-free `__witchy_abort(template, a, b, str_ptr)` host
+/// import, then traps. `a`/`b` are the i64 message holes (index, length — pass
+/// `ConstI64(0)` when unused); `str_ptr` is a witchy string pointer (the junk
+/// input / `fail` message, or `ConstI32(0)` when the template has no string
+/// hole). The host renders the shared [`DiagTemplate`] and bails, so the
+/// trailing `Unreachable` only keeps the site stack-typed (matching the
+/// contract in `codegen`: the call never returns).
+pub fn abort_nodes(template: DiagTemplate, a: WirExpr, b: WirExpr, str_ptr: WirExpr) -> Vec<WirNode> {
+    vec![
+        WirNode::Do(WirExpr::CallHost {
+            import: "__witchy_abort".into(),
+            args: vec![WirExpr::ConstI32(template.id()), a, b, str_ptr],
+        }),
+        WirNode::Unreachable,
+    ]
+}
+
+/// The i64 message-hole arguments for the two index-out-of-bounds templates: the
+/// signed index `i` and the container length, each an i32 sign-extended to i64.
+/// `len` is the i32 element-count / byte-count header loaded from `base`.
+fn oob_holes(idx: WirExpr, len: WirExpr) -> (WirExpr, WirExpr) {
+    let ext = |e: WirExpr| WirExpr::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) };
+    (ext(idx), ext(len))
+}
 
 /// `$print_str(s: i32)` — write a witchy string (a `[i32 len][utf-8]` record at
 /// `s`) to the host `print` import: `print(s + 4, [s])`. The ONLY authority it
@@ -740,7 +767,16 @@ pub fn list_at_helper() -> WirFunc {
                         WirExpr::Load { ptr: Box::new(getl("list")), kind: Kind::I32, offset: 0 },
                     ),
                 ),
-                then_: vec![WirNode::Unreachable],
+                // (RFC-0045) Route the OOB abort through `__witchy_abort` with the
+                // signed index and the list length, so the compiled trap carries the
+                // interpreter's `list index {i} out of bounds (length {len})`.
+                then_: {
+                    let (a, b) = oob_holes(
+                        getl("i"),
+                        WirExpr::Load { ptr: Box::new(getl("list")), kind: Kind::I32, offset: 0 },
+                    );
+                    abort_nodes(DiagTemplate::ListIndexOob, a, b, i32c(0))
+                },
                 els: vec![],
                 result: None,
             },
@@ -790,7 +826,14 @@ pub fn bytes_at_helper() -> WirFunc {
                         WirExpr::Load { ptr: Box::new(getl("b")), kind: Kind::I32, offset: 0 },
                     ),
                 ),
-                then_: vec![WirNode::Unreachable],
+                // (RFC-0045) `bytes index {i} out of bounds (length {len})`.
+                then_: {
+                    let (a, len) = oob_holes(
+                        getl("i"),
+                        WirExpr::Load { ptr: Box::new(getl("b")), kind: Kind::I32, offset: 0 },
+                    );
+                    abort_nodes(DiagTemplate::BytesIndexOob, a, len, i32c(0))
+                },
                 els: vec![],
                 result: None,
             },
@@ -871,7 +914,22 @@ pub fn list_at_view_helper() -> WirFunc {
             bin(BinOp::Lt, getl("j"), i32c(0)),
             bin(BinOp::Ge, getl("j"), getl("len")),
         ),
-        then_: vec![WirNode::Unreachable],
+        // (RFC-0045) A view read past its clamped window is an out-of-range read of
+        // the materialized copy the interpreter holds: `list index {j} out of
+        // bounds (length {len})`. A negative `len` (empty window) prints as `0` to
+        // match the interpreter's `.len()` on the empty slice.
+        then_: {
+            let len_nonneg = WirNode::If {
+                cond: bin(BinOp::Lt, getl("len"), i32c(0)),
+                then_: vec![WirNode::SetLocal { local: "len".into(), value: i32c(0) }],
+                els: vec![],
+                result: None,
+            };
+            let (a, blen) = oob_holes(getl("j"), getl("len"));
+            let mut ns = vec![len_nonneg];
+            ns.extend(abort_nodes(DiagTemplate::ListIndexOob, a, blen, i32c(0)));
+            ns
+        },
         els: vec![],
         result: None,
     });
@@ -1211,7 +1269,8 @@ pub fn float_cmp_helper(name: &str, op: BinOp) -> WirFunc {
         ret: vec![WirTy::Bool], // i32
         locals: vec![],
         body: vec![
-            // NaN on either side → trap (matches the interpreter).
+            // NaN on either side → abort (matches the interpreter's
+            // `cannot compare NaN`, routed through `__witchy_abort`, RFC-0045).
             N::If {
                 cond: E::Binary {
                     op: BinOp::Or,
@@ -1219,7 +1278,7 @@ pub fn float_cmp_helper(name: &str, op: BinOp) -> WirFunc {
                     lhs: Box::new(is_nan("a")),
                     rhs: Box::new(is_nan("b")),
                 },
-                then_: vec![N::Unreachable],
+                then_: abort_nodes(DiagTemplate::NanOrder, E::ConstI64(0), E::ConstI64(0), E::ConstI32(0)),
                 els: vec![],
                 result: None,
             },
@@ -2781,14 +2840,15 @@ pub fn str_to_int_helper() -> WirFunc {
                     target: "digdone".into(),
                     cond: Some(b32(BinOp::Or, b32(BinOp::LtU, getl("b"), i32c(48)), b32(BinOp::GtU, getl("b"), i32c(57)))),
                 },
-                // overflow: acc >u (limit - d) / 10  ->  trap.
+                // overflow: acc >u (limit - d) / 10  ->  abort (RFC-0045:
+                // `cannot parse `{s}` as an Int`, carrying the string pointer).
                 N::If {
                     cond: b64(
                         BinOp::GtU,
                         getl("acc"),
                         b64(BinOp::DivU, b64(BinOp::Sub, getl("limit"), digit()), i64c(10)),
                     ),
-                    then_: vec![N::Unreachable],
+                    then_: abort_nodes(DiagTemplate::ParseInt, i64c(0), i64c(0), getl("s")),
                     els: vec![],
                     result: None,
                 },
@@ -2851,7 +2911,7 @@ pub fn str_to_int_helper() -> WirFunc {
             // must have consumed at least one digit and reached the end.
             N::If {
                 cond: b32(BinOp::Or, not(getl("got")), b32(BinOp::Lt, getl("i"), getl("len"))),
-                then_: vec![N::Unreachable],
+                then_: abort_nodes(DiagTemplate::ParseInt, i64c(0), i64c(0), getl("s")),
                 els: vec![],
                 result: None,
             },
@@ -3893,21 +3953,22 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         "list_at" => Some(WirHelperSpec {
             func: list_at_helper(),
             helper_deps: &[],
-            import_deps: &[],
+            // (RFC-0045) routes its OOB abort through `__witchy_abort`.
+            import_deps: &["__witchy_abort"],
             uses_heap: false,
             uses_table: false,
         }),
         "list_at_view" => Some(WirHelperSpec {
             func: list_at_view_helper(),
             helper_deps: &[],
-            import_deps: &[],
+            import_deps: &["__witchy_abort"],
             uses_heap: false,
             uses_table: false,
         }),
         "bytes_at" => Some(WirHelperSpec {
             func: bytes_at_helper(),
             helper_deps: &[],
-            import_deps: &[],
+            import_deps: &["__witchy_abort"],
             uses_heap: false,
             uses_table: false,
         }),
@@ -4570,7 +4631,8 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         "str_to_int" => Some(WirHelperSpec {
             func: str_to_int_helper(),
             helper_deps: &["is_ws"],
-            import_deps: &[],
+            // (RFC-0045) routes its parse-failure aborts through `__witchy_abort`.
+            import_deps: &["__witchy_abort"],
             uses_heap: false,
             uses_table: false,
         }),
@@ -4703,28 +4765,29 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         "f_lt" => Some(WirHelperSpec {
             func: float_cmp_helper("f_lt", BinOp::Lt),
             helper_deps: &[],
-            import_deps: &[],
+            // (RFC-0045) routes its NaN-ordering abort through `__witchy_abort`.
+            import_deps: &["__witchy_abort"],
             uses_heap: false,
             uses_table: false,
         }),
         "f_le" => Some(WirHelperSpec {
             func: float_cmp_helper("f_le", BinOp::Le),
             helper_deps: &[],
-            import_deps: &[],
+            import_deps: &["__witchy_abort"],
             uses_heap: false,
             uses_table: false,
         }),
         "f_gt" => Some(WirHelperSpec {
             func: float_cmp_helper("f_gt", BinOp::Gt),
             helper_deps: &[],
-            import_deps: &[],
+            import_deps: &["__witchy_abort"],
             uses_heap: false,
             uses_table: false,
         }),
         "f_ge" => Some(WirHelperSpec {
             func: float_cmp_helper("f_ge", BinOp::Ge),
             helper_deps: &[],
-            import_deps: &[],
+            import_deps: &["__witchy_abort"],
             uses_heap: false,
             uses_table: false,
         }),

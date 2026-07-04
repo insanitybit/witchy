@@ -567,6 +567,14 @@ pub(crate) fn link_capability_imports(
     linker.func_wrap("witchy", "heap_register", host_heap_register)?;
     linker.func_wrap("witchy", "heap_frontier", host_heap_frontier)?;
 
+    // (RFC-0045) `__witchy_abort` is not a capability — it grants no authority (it
+    // reads only the `(str_ptr)` string the guest hands it, returns nothing to the
+    // guest, and its only effect is to terminate execution with a diagnostic label,
+    // an ability the guest already has via `unreachable`). So, like the checked-heap
+    // imports above, it is ALWAYS defined; codegen calls it right before the trap so
+    // the compiled abort carries the interpreter's exact message.
+    linker.func_wrap("witchy", "__witchy_abort", host_witchy_abort)?;
+
     // --- capability wiring: only granted host functions are defined ---
     if caps.print {
         linker.func_wrap("witchy", "print", host_print)?;
@@ -728,6 +736,41 @@ pub(crate) fn link_capability_imports(
     // interpreter uses (byte-for-byte parity, no byte-level work in WAT).
     linker.func_wrap("witchy", "encoding", host_encoding)?;
     Ok(())
+}
+
+/// (RFC-0045) `__witchy_abort(template, a, b, str_ptr)` — the always-linked,
+/// authority-free abort channel. Renders the shared [`DiagTemplate`] (the SAME
+/// wording the interpreter constructs) from the integer holes `a`/`b` and, when
+/// the template has a string hole, the witchy string at `str_ptr`, then traps
+/// with the interpreter's `runtime error: <core>` text so the compiled backend's
+/// surfaced message matches byte-for-byte. It never returns (codegen still emits
+/// `unreachable` after the call). `str_ptr == 0` means "no string hole".
+fn host_witchy_abort(
+    mut caller: Caller<'_, VmState>,
+    template: i32,
+    a: i64,
+    b: i64,
+    str_ptr: i32,
+) -> Result<()> {
+    use witchy_syntax::diag::{runtime_error, DiagTemplate};
+    let Some(tmpl) = DiagTemplate::from_id(template) else {
+        bail!("runtime error: abort with unknown diagnostic template id {template}");
+    };
+    // Read the string hole only for a template that carries one, and only for a
+    // non-null pointer (a defensive read: a crafted module could pass junk, but
+    // `read_wstr` fails closed on an out-of-bounds slice).
+    let s = if str_ptr != 0 {
+        let mem = memory_of(&mut caller)?;
+        read_wstr(mem.data(&caller), str_ptr).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let core = tmpl.render(a, b, &s);
+    // The compiled backend has no per-abort source line/function yet (the site
+    // table is a deferred RFC-0045 (c) channel), so surface the bare core message
+    // — the differential gate compares the message *core*, which is what
+    // distinguishes an abort class and carries its dynamic data.
+    bail!("{}", runtime_error("", 0, &core));
 }
 
 fn host_print(mut caller: Caller<'_, VmState>, ptr: i32, len: i32) -> Result<()> {

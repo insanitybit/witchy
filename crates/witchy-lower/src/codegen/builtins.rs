@@ -355,16 +355,22 @@ impl Codegen {
                 }
             }
             // `get_env(env, name)`: only the name travels (the Env grant is the host).
-            // `fail(msg)`: a deliberate, loud abort — evaluate (and drop) the
-            // message, then `unreachable` traps. The trailing `i32.const 0` is dead
-            // code after the trap, present only so the Seq is stack-typed.
+            // `fail(msg)`: a deliberate, loud abort. (RFC-0045) The message is no
+            // longer dropped — it is handed to the always-linked, authority-free
+            // `__witchy_abort` host import (the `Fail` template passes the string
+            // through verbatim), which renders `runtime error: <msg>` and traps.
+            // The `unreachable` after keeps the Seq stack-typed (the call never
+            // returns); the trailing `i32.const 0` is dead code satisfying the type.
             ("fail", 1) => {
                 let msg = self.lower_expr(&args[0])?;
-                W::Seq(vec![
-                    witchy_wir::wir::WirNode::Drop(msg),
-                    witchy_wir::wir::WirNode::Unreachable,
-                    witchy_wir::wir::WirNode::Push(W::ConstI32(0)),
-                ])
+                let mut nodes = witchy_wir::wir_helpers::abort_nodes(
+                    witchy_syntax::diag::DiagTemplate::Fail,
+                    W::ConstI64(0),
+                    W::ConstI64(0),
+                    msg,
+                );
+                nodes.push(witchy_wir::wir::WirNode::Push(W::ConstI32(0)));
+                W::Seq(nodes)
             }
             ("get_env", 2) => {
                 self.uses_get_env = true;
