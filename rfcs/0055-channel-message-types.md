@@ -1,7 +1,7 @@
 ---
 rfc: 0055
 title: Beyond one message type per program (design-first)
-status: proposed
+status: implemented (option (b): erased messages, typed endpoints)
 created: 2026-07-03
 predecessors:
   - "concurrency-design.md (the executor this lifts a documented limit of)"
@@ -200,6 +200,30 @@ one executor in `task`, re-exported by `chan` — but that consolidation is
   recommendation rests on).
 
 ---
+
+> 2026-07-04: implemented as option (b). The executor (`std/task` +
+> `std/chan`, still duplicated pending RFC-0042) is now monomorphic over an
+> opaque erased message type — `Task`/`Step`/`Slot` and the channel buffers
+> dropped the `m` parameter and carry `__Msg` (a reserved double-underscore
+> spelling, since `Msg` is already a user type in `examples/request_reply`).
+> The typed endpoints `Sender(m)`/`Receiver(m)`/`Selected(m)` stay
+> parameterized and bridge at the boundary via the `__erase`/`__unerase`
+> intrinsic pair, added across all three backends as the identity (mirroring
+> the `Bytes`↔`String` representation-neutral bridge): `send` erases into the
+> buffer, `recv`/`select` unerase on the way out. The realization was
+> largely std-witchy as anticipated; the only compiler support is the opaque
+> `Ty::Msg` type + the two intrinsics (typeck signatures, identity lowering
+> on both backends). Byte-identical determinism confirmed: every concurrency
+> example passes `witchy parity`, and the two headline acceptance cases —
+> two independent modules with private channels of different types, and one
+> task pulling `Job`s while pushing `Answer`s — run and agree on both
+> backends (`rfc0055_*` in `src/example_tests.rs`). Acceptance test #2
+> (`import chan` + `import iter`) still awaits RFC-0042's namespaces, as this
+> RFC noted; it is out of scope here. The type-system hole is confined but,
+> consistent with the existing `__bytes_*`/`__render` intrinsics, is a naming
+> convention rather than an enforced non-export — `==`/`show` on a forged
+> `__Msg` agree on both backends (no divergence), and users never obtain one
+> in normal use.
 
 <!--
   Once this RFC is implemented/rejected/superseded it is FROZEN.

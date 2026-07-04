@@ -75,6 +75,15 @@ impl Codegen {
             Expr::Call { name, args } if name == "dict.get_or" && args.len() == 3 => {
                 self.kind_of(&args[2])
             }
+            // (RFC-0055) `__erase`/`__unerase` are the identity on both value and
+            // kind: the message passes through unchanged, so the ctor/slot that
+            // stores it uses the ARGUMENT's real kind (a `send`'d `Int` stays i64
+            // in its 8-byte slot). The executor then reads the opaque `__Msg` field
+            // at the universal i32 width — the same truncation the former generic
+            // `m` field took, so both backends stay byte-identical.
+            Expr::Call { name, args } if (name == "__erase" || name == "__unerase") && args.len() == 1 => {
+                self.kind_of(&args[0])
+            }
             Expr::Call { name, .. } => match name.as_str() {
                 "math.to_float" => Kind::F64,
                 "math.to_int" | "string.length" | "string.char_count" | "string.index_of"

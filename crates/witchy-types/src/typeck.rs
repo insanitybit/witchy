@@ -214,6 +214,15 @@ pub enum Ty {
     Duration,
     String,
     Bytes,
+    /// (RFC-0055) The erased message type of the concurrency executor. Opaque and
+    /// representationally the universal slot (like a generic type variable, and
+    /// like `Bytes` shares `String`'s layout): the `std/chan`/`std/task` executor
+    /// buffers, `Step`, and `Slot` are monomorphic over it, while typed channel
+    /// endpoints (`Sender(m)`/`Receiver(m)`) erase/unerase at the boundary via the
+    /// non-inferable `__erase`/`__unerase` intrinsics, confined to `std/chan`. The
+    /// spelling `__Msg` is reserved (double-underscore) so it never collides with a
+    /// user `type Msg`.
+    Msg,
     Bool,
     Nil,
     Console,
@@ -258,6 +267,7 @@ impl fmt::Display for Ty {
             Ty::Duration => write!(f, "Duration"),
             Ty::String => write!(f, "String"),
             Ty::Bytes => write!(f, "Bytes"),
+            Ty::Msg => write!(f, "__Msg"),
             Ty::Bool => write!(f, "Bool"),
             Ty::Nil => write!(f, "Nil"),
             Ty::Console => write!(f, "Console"),
@@ -387,7 +397,7 @@ fn check_unique_functions(module: &Module) -> Result<(), TypeError> {
 /// (`Option`/`Result`/`Dict`). Any other named type must be declared (a `type`
 /// or be a lowercase generic parameter.
 const BUILTIN_TYPE_NAMES: &[&str] = &[
-    "Int", "Float", "Duration", "String", "Bytes", "Bool", "Nil", "Console", "Clock", "Rand", "Env", "Secret",
+    "Int", "Float", "Duration", "String", "Bytes", "__Msg", "Bool", "Nil", "Console", "Clock", "Rand", "Env", "Secret",
     "SecretStore", "Dir", "File", "Net", "Exec", "Socket", "Listener", "List", "Option", "Result",
     "Dict", "BuildOut", "BuildRead", "BuildEnv", "BuildNet", "BuildExec",
 ];
@@ -1151,6 +1161,7 @@ impl Checker {
             "Duration" => Ty::Duration,
             "String" => Ty::String,
             "Bytes" => Ty::Bytes,
+            "__Msg" => Ty::Msg,
             "Bool" => Ty::Bool,
             "Nil" => Ty::Nil,
             "Console" => Ty::Console,
@@ -1199,6 +1210,7 @@ impl Checker {
                 "Duration" => Ty::Duration,
                 "String" => Ty::String,
             "Bytes" => Ty::Bytes,
+            "__Msg" => Ty::Msg,
                 "Bool" => Ty::Bool,
                 "Nil" => Ty::Nil,
                 "Console" => Ty::Console,
@@ -1419,6 +1431,22 @@ impl Checker {
             // ops are identity/reuse on the compiled backend.
             "__bytes_from_string" => Some((vec![Ty::String], Ty::Bytes)),
             "__bytes_to_string" => Some((vec![Ty::Bytes], Ty::String)),
+            // (RFC-0055) The channel-endpoint erasure bridge. `__erase` casts any
+            // typed message to the executor's opaque `__Msg`; `__unerase` recovers
+            // it at the endpoint's type. Representationally the identity on both
+            // backends (a message already rides the universal slot); the pairing of
+            // a `Sender(m)`/`Receiver(m)` to one channel id is what makes every
+            // `__unerase` see a value erased at the same `m`. Deliberately NOT
+            // inferable end-to-end — `__unerase`'s result type `m` is a fresh var
+            // fixed only by its use site — and confined to `std/chan`/`std/task`.
+            "__erase" => {
+                let m = self.fresh();
+                Some((vec![m], Ty::Msg))
+            }
+            "__unerase" => {
+                let m = self.fresh();
+                Some((vec![Ty::Msg], m))
+            }
             "__bytes_length" => Some((vec![Ty::Bytes], Ty::Int)),
             "__bytes_at" => Some((vec![Ty::Bytes, Ty::Int], Ty::Int)),
             "__bytes_concat" => Some((vec![Ty::Bytes, Ty::Bytes], Ty::Bytes)),
@@ -3477,6 +3505,7 @@ pub fn ty_to_ast(t: &Ty) -> Option<witchy_syntax::ast::Type> {
         Ty::Duration => T::Named("Duration".into(), Vec::new()),
         Ty::String => T::Named("String".into(), Vec::new()),
         Ty::Bytes => T::Named("Bytes".into(), Vec::new()),
+        Ty::Msg => T::Named("__Msg".into(), Vec::new()),
         Ty::Bool => T::Named("Bool".into(), Vec::new()),
         Ty::Nil => T::Named("Nil".into(), Vec::new()),
         Ty::Console => T::Named("Console".into(), Vec::new()),

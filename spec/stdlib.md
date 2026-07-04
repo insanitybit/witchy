@@ -68,25 +68,25 @@ The bytes as a list of Ints in `0..=255`.
 
 std/chan — decoupled concurrency: `spawn` concurrent tasks, communicate over first-class `channel`s. Spawning and channels are independent — you can spawn without a channel, and a channel is a value you create and pass around, not a task's mailbox. Built on a pure-witchy cooperative executor with a deterministic round-robin schedule, so a concurrent run is byte-identical on the interpreter and the compiled WebAssembly — no scheduler state in the runtime, no `Pin`.
 
-Model: one message type `m` per program (a single `run`'s channels all carry `m`; union into a sum type if you need several shapes). Spawned tasks return `Nil`; a task reports a result by sending it on a channel, not by returning it (a typed `JoinHandle(T)` would force a native runtime and break the parity contract). `send`/`recv` are always `await`ed because messaging is an effect on the executor-owned buffer; a *bounded* channel additionally blocks the sender when full (backpressure), an unbounded one never does.
+Messages: channels are per-type generic (RFC-0055). A `Sender(m)`/`Receiver(m)` pair carries values of ITS OWN type `m`, and independent channels in one program may carry different types — a library may pipeline work through a private channel without forcing its message type on the whole program. Under the hood the executor is ERASED: its buffers, `Step`, and `Slot` carry the opaque `__Msg`; the typed endpoints erase a message on `send` and recover it on `recv`. The erasure is representationally the identity on both backends (a message already rides the universal slot), so interleavings stay byte-identical. Spawned tasks return `Nil`; a task reports a result by sending it on a channel, not by returning it (a typed `JoinHandle(T)` would force a native runtime and break the parity contract). `send`/`recv` are always `await`ed because messaging is an effect on the executor-owned buffer; a *bounded* channel additionally blocks the sender when full (backpressure), an unbounded one never does.
 
 The `async`/`await` CPS transform lowers onto the `std/task` executor (task.lazy/and_then/done/run); channel ops (`await chan.recv(rx)` / `await chan.send(tx, x)`) run on the same protocol.
 
 #### `type Step`
 
 - `Done(a)`
-- `Yield(Task(m, a))`
-- `Fork(Task(m, Nil), fn(Int) -> Task(m, a))`
-- `Open(Int, fn(Int) -> Task(m, a))`
-- `Push(Int, m, fn(Nil) -> Task(m, a))`
-- `Pull(Int, fn(Option(m)) -> Task(m, a))`
-- `PullAny(List(Int), fn(Option((Int, m))) -> Task(m, a))`
-- `Wait(Int, fn(Nil) -> Task(m, a))`
-- `Cancel(Int, fn(Nil) -> Task(m, a))`
+- `Yield(Task(a))`
+- `Fork(Task(Nil), fn(Int) -> Task(a))`
+- `Open(Int, fn(Int) -> Task(a))`
+- `Push(Int, __Msg, fn(Nil) -> Task(a))`
+- `Pull(Int, fn(Option(__Msg)) -> Task(a))`
+- `PullAny(List(Int), fn(Option((Int, __Msg))) -> Task(a))`
+- `Wait(Int, fn(Nil) -> Task(a))`
+- `Cancel(Int, fn(Nil) -> Task(a))`
 
 #### `type Task`
 
-- `Task(fn() -> Step(m, a))`
+- `Task(fn() -> Step(a))`
 
 #### `type Sender`
 
@@ -108,118 +108,120 @@ The `async`/`await` CPS transform lowers onto the `std/task` executor (task.lazy
 
 #### `type Slot`
 
-- `Active(Task(m, Nil))`
-- `WaitRecv(Int, fn(Option(m)) -> Task(m, Nil))`
-- `WaitSend(Int, m, fn(Nil) -> Task(m, Nil))`
-- `WaitAny(List(Int), fn(Option((Int, m))) -> Task(m, Nil))`
-- `WaitJoin(Int, fn(Nil) -> Task(m, Nil))`
+A scheduling slot: running, parked on a channel recv/send or on a join, or done. Parked messages are the erased `__Msg` (RFC-0055).
+
+- `Active(Task(Nil))`
+- `WaitRecv(Int, fn(Option(__Msg)) -> Task(Nil))`
+- `WaitSend(Int, __Msg, fn(Nil) -> Task(Nil))`
+- `WaitAny(List(Int), fn(Option((Int, __Msg))) -> Task(Nil))`
+- `WaitJoin(Int, fn(Nil) -> Task(Nil))`
 - `Ended`
 
-#### `fn done(x: a) -> Task(m, a)`
+#### `fn done(x: a) -> Task(a)`
 
 A finished task.
 
-#### `fn ready_unit() -> Task(m, Nil)`
+#### `fn ready_unit() -> Task(Nil)`
 
-An already-complete `Task(m, Nil)` — the async/await lowering target for a body that falls off its end.
+An already-complete `Task(Nil)` — the async/await lowering target for a body that falls off its end.
 
-#### `fn yield_now() -> Task(m, Nil)`
+#### `fn yield_now() -> Task(Nil)`
 
 Hand control back to the executor once, then continue.
 
-#### `fn and_then(t: Task(m, a), k: fn(a) -> Task(m, b)) -> Task(m, b)`
+#### `fn and_then(t: Task(a), k: fn(a) -> Task(b)) -> Task(b)`
 
 Sequence: run `t`, then continue with `k` applied to its result. This is what `await` lowers to — the continuation `k` is the rest of the body.
 
-#### `fn map(t: Task(m, a), f: fn(a) -> b) -> Task(m, b)`
+#### `fn map(t: Task(a), f: fn(a) -> b) -> Task(b)`
 
 Transform a task's result.
 
-#### `fn lazy(thunk: fn() -> Task(m, a)) -> Task(m, a)`
+#### `fn lazy(thunk: fn() -> Task(a)) -> Task(a)`
 
 Build the task `thunk()` lazily: nothing runs until the first poll. This is what makes an `async fn` LAZY — calling it yields a task that does no work until driven (by `run`, or by being `spawn`ed, or `await`ed).
 
-#### `fn for_each(xs: List(a), f: fn(a) -> Task(m, Nil)) -> Task(m, Nil)`
+#### `fn for_each(xs: List(a), f: fn(a) -> Task(Nil)) -> Task(Nil)`
 
 Run `f(x)` as a task for each `x` in `xs`, in order — the lowering target for an `await` inside a `for x in xs:` loop.
 
-#### `fn channel(capacity: Int) -> Task(m, (Sender(m), Receiver(m)))`
+#### `fn channel(capacity: Int) -> Task((Sender(m), Receiver(m)))`
 
 A bounded channel of `capacity` (the sender blocks when it is full); pass 0 for an unbounded channel that never blocks the sender.
 
-#### `fn unbounded() -> Task(m, (Sender(m), Receiver(m)))`
+#### `fn unbounded() -> Task((Sender(m), Receiver(m)))`
 
 An unbounded channel — `send` never blocks (the buffer grows without limit).
 
-#### `fn send(tx: Sender(m), msg: m) -> Task(m, Nil)`
+#### `fn send(tx: Sender(m), msg: m) -> Task(Nil)`
 
-Send `msg`; on a bounded channel this blocks until there is room. Always awaited.
+Send `msg`; on a bounded channel this blocks until there is room. Always awaited. The message is erased to the executor's opaque slot at this boundary.
 
-#### `fn recv(rx: Receiver(m)) -> Task(m, Option(m))`
+#### `fn recv(rx: Receiver(m)) -> Task(Option(m))`
 
-Receive the next message, or `None` once the channel is closed — i.e. once no task can send to it anymore. `for await x in rx:` loops until this `None`.
+Receive the next message, or `None` once the channel is closed — i.e. once no task can send to it anymore. `for await x in rx:` loops until this `None`. The erased value is recovered at `m` at this boundary.
 
-#### `fn spawn(child: Task(m, Nil)) -> Task(m, Handle)`
+#### `fn spawn(child: Task(Nil)) -> Task(Handle)`
 
 Start `child` as a concurrent task; the returned handle completes when it does.
 
-#### `fn join(h: Handle) -> Task(m, Nil)`
+#### `fn join(h: Handle) -> Task(Nil)`
 
 Block until the spawned task behind `h` finishes.
 
-#### `fn cancel(h: Handle) -> Task(m, Nil)`
+#### `fn cancel(h: Handle) -> Task(Nil)`
 
 Cancel the spawned task behind `h`: it is stepped no further and is treated as finished, so anyone `join`ing it unblocks immediately. Cancellation is shallow — it stops this one task, not any tasks it itself spawned — and idempotent (already finished or already cancelled is a no-op). Deterministic on the cooperative schedule, hence byte-identical on both backends. Used by `race` to drop the loser.
 
-#### `fn spawn_all(children: List(Task(m, Nil))) -> Task(m, List(Handle))`
+#### `fn spawn_all(children: List(Task(Nil))) -> Task(List(Handle))`
 
 Spawn every task in `children` concurrently, returning their handles. The children begin running on the next executor turns; nothing is joined yet.
 
-#### `fn join_all(hs: List(Handle)) -> Task(m, Nil)`
+#### `fn join_all(hs: List(Handle)) -> Task(Nil)`
 
 Join every handle in `hs` — block until they have all finished.
 
-#### `fn cancel_all(hs: List(Handle)) -> Task(m, Nil)`
+#### `fn cancel_all(hs: List(Handle)) -> Task(Nil)`
 
 Cancel every handle in `hs` — the companion to `spawn_all`/`join_all`. Each is stopped and treated as finished; idempotent, so cancelling an already-finished handle is a no-op. Used by `race_n` to drop the losers.
 
-#### `fn scope(children: List(Task(m, Nil))) -> Task(m, Nil)`
+#### `fn scope(children: List(Task(Nil))) -> Task(Nil)`
 
 STRUCTURED concurrency (a "nursery"): run every task in `children` concurrently and return only once they have ALL finished. No handle escapes the call, so a child cannot outlive the scope and there are no leaked tasks — prefer this over a bare `spawn` whose handle you must remember to `join`. The children interleave on the cooperative executor, so a concurrent run is byte-identical on both backends (the parity contract). Results flow out over channels, as with any task (a child returns `Nil`).
 
-#### `fn gather(jobs: List(Task(m, m))) -> Task(m, List(m))`
+#### `fn gather(jobs: List(Task(m))) -> Task(List(m))`
 
 STRUCTURED fan-out-and-collect: run every task in `jobs` concurrently and return all of their results once they have ALL finished. Each job produces a value of the message type `m` (results ride the same channels), so `gather` is the typed companion to `scope` — the same leak-free, no-escaping-handle guarantee, with the results handed back. Results are in COMPLETION order (deterministic on the cooperative executor, hence byte-identical on both backends), not input order.
 
-#### `fn par_map(items: List(a), f: fn(a) -> Task(m, m)) -> Task(m, List(m))`
+#### `fn par_map(items: List(a), f: fn(a) -> Task(m)) -> Task(List(m))`
 
 STRUCTURED parallel map (the level-1 combinator): run `f` over every item of `items` concurrently and return the results in INPUT order. The tasks are never visible — spawn and join happen inside — so this cannot leak a handle, cannot deadlock on a forgotten join, and is the ergonomic default for data parallelism. Each item's result rides its own channel, so the returned order is the input order regardless of completion order: the result is a pure function of `items` and `f`, hence DETERMINISTIC by construction and byte-identical on both backends. That determinism is exactly what lets a future parallel backend run the items on separate cores without changing the observable result (see RFC-0032). Results are of the message type `m` (they ride channels), as with `gather`.
 
-#### `fn par_reduce(items: List(a), f: fn(a) -> Task(m, m), init: m, combine: fn(m, m) -> m) -> Task(m, m)`
+#### `fn par_reduce(items: List(a), f: fn(a) -> Task(m), init: m, combine: fn(m, m) -> m) -> Task(m)`
 
 STRUCTURED parallel reduce: `par_map` the items, then fold the results with `combine` starting from `init`. `combine` should be associative for the fold to be meaningful independent of evaluation order; the map runs concurrently while the fold is a deterministic left fold over the input-ordered results.
 
-#### `fn race(a: Task(m, m), b: Task(m, m)) -> Task(m, Option(m))`
+#### `fn race(a: Task(m), b: Task(m)) -> Task(Option(m))`
 
 Run `a` and `b` concurrently and return the FIRST result, cancelling the loser. `None` only if neither ever produces a value. The winner is decided by the deterministic round-robin schedule (a tie favours `a`), so the outcome is byte-identical on both backends — and under a future parallel backend the cancel genuinely stops the loser's remaining work. This is the cancellation-enabled combinator of RFC-0032's ladder; build `timeout` by racing a task against one that yields a sentinel.
 
-#### `fn race_n(tasks: List(Task(m, m))) -> Task(m, Option(m))`
+#### `fn race_n(tasks: List(Task(m))) -> Task(Option(m))`
 
 `race` generalized to a pool: run every task in `tasks` concurrently and return the FIRST result, cancelling all the others. `None` only if none ever produces a value (e.g. an empty list). The winner is fixed by the deterministic schedule, so the outcome is byte-identical on both backends.
 
-#### `fn select(a: Receiver(m), b: Receiver(m)) -> Task(m, Selected(m))`
+#### `fn select(a: Receiver(m), b: Receiver(m)) -> Task(Selected(m))`
 
 Receive from whichever of `a` or `b` has a message first; a tie favours `a`. Yields `Closed` once both channels are closed.
 
-#### `fn consume(rx: Receiver(m), f: fn(m) -> Task(m, Nil)) -> Task(m, Nil)`
+#### `fn consume(rx: Receiver(m), f: fn(m) -> Task(Nil)) -> Task(Nil)`
 
 Receive from `rx`, run `f` on each message, until the channel closes. The stateless server loop; `for await x in rx:` lowers to this.
 
-#### `fn serve(rx: Receiver(m), state: s, handler: fn(s, m) -> Task(m, s)) -> Task(m, Nil)`
+#### `fn serve(rx: Receiver(m), state: s, handler: fn(s, m) -> Task(s)) -> Task(Nil)`
 
 The stateful server loop: receive a message, run `handler` with the current `state` to get the next state, and repeat until the channel closes. State threads through every message with no hand-written recursion.
 
-#### `fn run(root: Task(m, Nil))`
+#### `fn run(root: Task(Nil))`
 
 Drive `root` (and everything it spawns) to completion on a deterministic round-robin schedule. An async `main` lowers to a single `run` of its body.
 
@@ -2304,29 +2306,29 @@ Remove trailing whitespace.
 
 std/task — the cooperative task substrate and its executor.
 
-A `Task(m, a)` is a CPS-over-closures computation that, when stepped, either completes (`Done`) or yields an effect back to the executor: cooperate (`Yield`), `spawn` a child (`Fork`), `join` one (`Wait`), or a channel op (`Open`/`Push`/`Pull`/`PullAny`, produced by `std/chan`). `run` drives a task (and everything it spawns) to completion on a deterministic round-robin schedule, so a concurrent run is byte-identical on the interpreter and the compiled WebAssembly — no scheduler state in the runtime, no `Pin`.
+A `Task(a)` is a CPS-over-closures computation that, when stepped, either completes (`Done`) or yields an effect back to the executor: cooperate (`Yield`), `spawn` a child (`Fork`), `join` one (`Wait`), or a channel op (`Open`/`Push`/`Pull`/`PullAny`, produced by `std/chan`). `run` drives a task (and everything it spawns) to completion on a deterministic round-robin schedule, so a concurrent run is byte-identical on the interpreter and the compiled WebAssembly — no scheduler state in the runtime, no `Pin`.
 
 This module is the scheduling core: the `Task` monad, `spawn`/`join`/ `yield_now`, and the executor. First-class channels are layered on top in `std/chan`; lightweight value-returning structured concurrency (`join_all`/ `select` over independent futures) lives in `std/future`.
 
-Model: one message type `m` per program (a single `run`'s channels all carry `m`; union into a sum type if you need several shapes). Spawned tasks return `Nil`; a task reports a result by sending it on a channel, not by returning it (a typed `JoinHandle(T)` would force a native runtime and break the parity contract).
+Messages: the executor is ERASED (RFC-0055). Its buffers, `Step`, and `Slot` carry the opaque `__Msg`, so ONE program can run channels of many different message types — a library may use channels privately without forcing its type on the whole program. The typed channel endpoints (`Sender(m)`/`Receiver(m)` in `std/chan`) erase a message on `send` and recover it on `recv`; the erasure is representationally the identity on both backends (a message already rides the universal slot), so interleavings stay byte-identical. Spawned tasks return `Nil`; a task reports a result by sending it on a channel, not by returning it (a typed `JoinHandle(T)` would force a native runtime and break the parity contract).
 
 The `async`/`await` CPS transform lowers onto this substrate (`task.lazy`/ `and_then`/`done`/`run`), so `chan.recv(rx).await` / `chan.send(tx, x).await` work in async fns.
 
 #### `type Step`
 
 - `Done(a)`
-- `Yield(Task(m, a))`
-- `Fork(Task(m, Nil), fn(Int) -> Task(m, a))`
-- `Open(Int, fn(Int) -> Task(m, a))`
-- `Push(Int, m, fn(Nil) -> Task(m, a))`
-- `Pull(Int, fn(Option(m)) -> Task(m, a))`
-- `PullAny(List(Int), fn(Option((Int, m))) -> Task(m, a))`
-- `Wait(Int, fn(Nil) -> Task(m, a))`
-- `Cancel(Int, fn(Nil) -> Task(m, a))`
+- `Yield(Task(a))`
+- `Fork(Task(Nil), fn(Int) -> Task(a))`
+- `Open(Int, fn(Int) -> Task(a))`
+- `Push(Int, __Msg, fn(Nil) -> Task(a))`
+- `Pull(Int, fn(Option(__Msg)) -> Task(a))`
+- `PullAny(List(Int), fn(Option((Int, __Msg))) -> Task(a))`
+- `Wait(Int, fn(Nil) -> Task(a))`
+- `Cancel(Int, fn(Nil) -> Task(a))`
 
 #### `type Task`
 
-- `Task(fn() -> Step(m, a))`
+- `Task(fn() -> Step(a))`
 
 #### `type Handle`
 
@@ -2336,56 +2338,58 @@ The `async`/`await` CPS transform lowers onto this substrate (`task.lazy`/ `and_
 
 #### `type Slot`
 
-- `Active(Task(m, Nil))`
-- `WaitRecv(Int, fn(Option(m)) -> Task(m, Nil))`
-- `WaitSend(Int, m, fn(Nil) -> Task(m, Nil))`
-- `WaitAny(List(Int), fn(Option((Int, m))) -> Task(m, Nil))`
-- `WaitJoin(Int, fn(Nil) -> Task(m, Nil))`
+A scheduling slot: running, parked on a channel recv/send or on a join, or done. Parked messages are the erased `__Msg` (RFC-0055).
+
+- `Active(Task(Nil))`
+- `WaitRecv(Int, fn(Option(__Msg)) -> Task(Nil))`
+- `WaitSend(Int, __Msg, fn(Nil) -> Task(Nil))`
+- `WaitAny(List(Int), fn(Option((Int, __Msg))) -> Task(Nil))`
+- `WaitJoin(Int, fn(Nil) -> Task(Nil))`
 - `Ended`
 
-#### `fn poll(t: Task(m, a)) -> Step(m, a)`
+#### `fn poll(t: Task(a)) -> Step(a)`
 
-#### `fn done(x: a) -> Task(m, a)`
+#### `fn done(x: a) -> Task(a)`
 
 A finished task.
 
-#### `fn ready_unit() -> Task(m, Nil)`
+#### `fn ready_unit() -> Task(Nil)`
 
-An already-complete `Task(m, Nil)` — the async/await lowering target for a body that falls off its end.
+An already-complete `Task(Nil)` — the async/await lowering target for a body that falls off its end.
 
-#### `fn yield_now() -> Task(m, Nil)`
+#### `fn yield_now() -> Task(Nil)`
 
 Hand control back to the executor once, then continue.
 
-#### `fn and_then(t: Task(m, a), k: fn(a) -> Task(m, b)) -> Task(m, b)`
+#### `fn and_then(t: Task(a), k: fn(a) -> Task(b)) -> Task(b)`
 
 Sequence: run `t`, then continue with `k` applied to its result. This is what `await` lowers to — the continuation `k` is the rest of the body.
 
-#### `fn map(t: Task(m, a), f: fn(a) -> b) -> Task(m, b)`
+#### `fn map(t: Task(a), f: fn(a) -> b) -> Task(b)`
 
 Transform a task's result.
 
-#### `fn lazy(thunk: fn() -> Task(m, a)) -> Task(m, a)`
+#### `fn lazy(thunk: fn() -> Task(a)) -> Task(a)`
 
 Build the task `thunk()` lazily: nothing runs until the first poll. This is what makes an `async fn` LAZY — calling it yields a task that does no work until driven (by `run`, or by being `spawn`ed, or `await`ed).
 
-#### `fn for_each(xs: List(a), f: fn(a) -> Task(m, Nil)) -> Task(m, Nil)`
+#### `fn for_each(xs: List(a), f: fn(a) -> Task(Nil)) -> Task(Nil)`
 
 Run `f(x)` as a task for each `x` in `xs`, in order — the lowering target for an `await` inside a `for x in xs:` loop.
 
-#### `fn spawn(child: Task(m, Nil)) -> Task(m, Handle)`
+#### `fn spawn(child: Task(Nil)) -> Task(Handle)`
 
 Start `child` as a concurrent task; the returned handle completes when it does.
 
-#### `fn join(h: Handle) -> Task(m, Nil)`
+#### `fn join(h: Handle) -> Task(Nil)`
 
 Block until the spawned task behind `h` finishes.
 
-#### `fn cancel(h: Handle) -> Task(m, Nil)`
+#### `fn cancel(h: Handle) -> Task(Nil)`
 
 Cancel the spawned task behind `h`: it is stepped no further and is treated as finished, so anyone `join`ing it unblocks. Shallow (stops this one task, not its descendants) and idempotent (already-finished is a no-op). Deterministic on the round-robin schedule, hence byte-identical on both backends.
 
-#### `fn run(root: Task(m, Nil))`
+#### `fn run(root: Task(Nil))`
 
 Drive `root` (and everything it spawns) to completion on a deterministic round-robin schedule. An async `main` lowers to a single `run` of its body.
 

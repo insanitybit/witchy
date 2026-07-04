@@ -15332,6 +15332,137 @@ async fn main(console: Console):
         assert_eq!(interp_out, vec!["log 100", "log 200"]);
     }
 
+    // (RFC-0055 acceptance #1) Two INDEPENDENT modules, each with a PRIVATE channel
+    // of a DIFFERENT message type — one `Int`, one record `Note` — linked into one
+    // program. This is the case that was IMPOSSIBLE before erasure: the executor
+    // was monomorphic over one program-wide message type, so a second channel of a
+    // different type failed with "expected Int, found String"-style unification.
+    // Now the executor is erased and each `Sender(m)`/`Receiver(m)` carries its own
+    // `m`; a library can pipeline work through a channel privately. Byte-identical
+    // on both backends.
+    #[test]
+    fn rfc0055_two_modules_private_channels_of_different_types() {
+        // Module A: a private Int channel behind a public `run` entry.
+        let counter = r#"import chan
+
+async fn feed(tx: Sender(Int)) -> Nil:
+    chan.send(tx, 7).await
+    chan.send(tx, 35).await
+
+pub async fn total(console: Console) -> Nil:
+    let (tx, rx) = chan.channel(4).await
+    chan.spawn(feed(tx)).await
+    let a = chan.recv(rx).await
+    let b = chan.recv(rx).await
+    match a:
+        Some(x) -> match b:
+            Some(y) -> print(console, "sum ${x + y}")
+            None -> print(console, "sum none")
+        None -> print(console, "sum none")
+"#;
+        // Module B: a private RECORD channel — a different message type entirely.
+        let notes = r#"import chan
+
+type Note:
+    Note(String)
+
+async fn emit(tx: Sender(Note)) -> Nil:
+    chan.send(tx, Note("hi")).await
+
+pub async fn announce(console: Console) -> Nil:
+    let (tx, rx) = chan.channel(4).await
+    chan.spawn(emit(tx)).await
+    let o = chan.recv(rx).await
+    match o:
+        Some(Note(s)) -> print(console, "note ${s}")
+        None -> print(console, "note none")
+"#;
+        // The entry drives both private pipelines in ONE run — one erased executor,
+        // two different message types coexisting.
+        let app = r#"import counter
+import notes
+
+async fn main(console: Console):
+    counter.total(console).await
+    notes.announce(console).await
+"#;
+        let want = vec!["sum 42".to_string(), "note hi".to_string()];
+        let link = || {
+            let app_m = parser::parse_module(app).expect("parse app");
+            let counter_m = parser::parse_module(counter).expect("parse counter");
+            let notes_m = parser::parse_module(notes).expect("parse notes");
+            crate::pipeline::link(
+                vec![
+                    ("main".into(), app_m),
+                    ("counter".into(), counter_m),
+                    ("notes".into(), notes_m),
+                ],
+                "main",
+            )
+            .expect("link")
+        };
+        let linked = link();
+        typeck::check(&linked).expect("typecheck");
+        let interp_out = interpreter::run_module(linked, ".", Vec::new()).expect("interp");
+        assert_eq!(interp_out, want, "interpreter");
+
+        let linked = link();
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers this multi-type program");
+        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
+        assert_eq!(interp_out, wasm_out, "multi-type channels diverged across backends");
+        assert_eq!(wasm_out, want, "compiled WASM");
+    }
+
+    // (RFC-0055 acceptance) A single TASK that pulls `Job`s and pushes `Answer`s —
+    // two DIFFERENT message types touched by one task. Design (a) (per-type
+    // executor islands) structurally could not express this (a `Task` belonged to
+    // one instantiation); erasure makes it ordinary. Both backends agree.
+    #[test]
+    fn rfc0055_one_task_two_message_types_job_answer() {
+        let src = r#"
+import chan
+
+type Job:
+    Job(Int)
+
+type Answer:
+    Answer(Int)
+
+async fn worker(jobs: Receiver(Job), out: Sender(Answer)) -> Nil:
+    for await j in jobs:
+        match j:
+            Job(n) -> chan.send(out, Answer(n * n)).await
+
+async fn main(console: Console):
+    let (jtx, jrx) = chan.channel(4).await
+    let (atx, arx) = chan.channel(4).await
+    chan.spawn(worker(jrx, atx)).await
+    chan.send(jtx, Job(3)).await
+    chan.send(jtx, Job(5)).await
+    let a1 = chan.recv(arx).await
+    let a2 = chan.recv(arx).await
+    match a1:
+        Some(Answer(v)) -> print(console, "answer ${v}")
+        None -> print(console, "none")
+    match a2:
+        Some(Answer(v)) -> print(console, "answer ${v}")
+        None -> print(console, "none")
+"#;
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let interp_out =
+            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
+        assert_eq!(interp_out, wasm_out, "job/answer schedule diverged across backends");
+        assert_eq!(interp_out, vec!["answer 9", "answer 25"]);
+    }
+
     // Phase 4 of the concurrency redesign: channels. `std/chan` is a cooperative
     // message-passing executor written in pure witchy via an effect protocol
     // (a task yields `Emit`/`Recv` requests; the executor owns the one FIFO buffer

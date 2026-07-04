@@ -729,6 +729,13 @@ impl Codegen {
             // (Bytes) `Bytes` shares `String`'s flat `[len][bytes]` layout, so the
             // primitive ops are identity / a reuse of the String machinery.
             ("__bytes_from_string", 1) | ("__bytes_to_string", 1) => self.lower_expr(&args[0])?,
+            // (RFC-0055) Channel message erasure. A message already rides the
+            // universal slot on the compiled backend (every buffer element, record
+            // field, and closure argument is an untyped 8-byte slot), so erasing to
+            // `__Msg` and recovering the endpoint's type are both the identity — the
+            // value passes through unchanged, exactly as the executor's former
+            // generic `m` did.
+            ("__erase", 1) | ("__unerase", 1) => self.lower_expr(&args[0])?,
             ("__bytes_length", 1) => {
                 let arg = self.lower_expr(&args[0])?;
                 Self::wir_convert(
