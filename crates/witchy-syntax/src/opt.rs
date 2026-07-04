@@ -100,7 +100,8 @@ pub enum Opt {
     // (RFC-0030's contract). For a MEMORY lever that proof is a `witchy stats`
     // counter (heap/reowns); for a call-SHAPE lever like `direct-call`, which moves
     // no bytes, the firing proof is a codegen-shape assertion (the emitted `call`
-    // vs `call_indirect`, see `codegen_tests::devirtualizes_*`). A planned lever
+    // vs `call_indirect`, see `codegen_tests::devirtualizes_single_bound_closure_call`
+    // and `codegen_tests::elides_bounds_check_in_counted_loop`). A planned lever
     // with no consumer is still NOT registered (a phantom lever toggles a no-op,
     // passing the sweep trivially and lying about coverage).
 }
@@ -146,13 +147,15 @@ impl Opt {
     /// In the `release` (production default) set? This is the single promotion
     /// point: an optimization joins `release` — and thus the default users get —
     /// by being removed from this opt-in list once it has cleared its hardening
-    /// bar. The end-state is `release == all` (nothing opt-in). `unbox` (layout
-    /// reinterpretation → type-confusion surface) has been PROMOTED: its bar is met
-    /// (the `WITCHY_TYPE_CHECK` sanitizer covers its boxed + packed reads and is
-    /// teeth-tested + false-positive-free over the fuzzer and examples, plus the
-    /// cross-lever and heap-checked example sweeps are clean). The one still held
-    /// back is `rc-floor` (reclamation → use-after-free surface, cf. SEC-036), which
-    /// needs the executor bound (RFC-0036) before it can ship on by default.
+    /// bar. The end-state — now REACHED — is `release == all` (nothing opt-in):
+    /// both former opt-in levers have been PROMOTED, so this returns `true`
+    /// unconditionally. `unbox` (layout reinterpretation → type-confusion surface)
+    /// cleared its bar via the `WITCHY_TYPE_CHECK` sanitizer (teeth-tested +
+    /// false-positive-free over the fuzzer and examples, with the cross-lever and
+    /// heap-checked example sweeps clean); `rc-floor` (reclamation → use-after-free
+    /// surface, cf. SEC-036) cleared its bar via the SEC-037 `$rc_dup` object-base
+    /// guard and was promoted in 974ccee. A FUTURE not-yet-hardened lever would be
+    /// gated back off here.
     fn default_on(self) -> bool {
         // release == all: both levers promoted (unbox type-tag sanitized; rc-floor SEC-037-guarded).
         true
