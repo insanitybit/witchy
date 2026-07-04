@@ -53,7 +53,7 @@ type Sample derive(Reflect, Deserialize):
 
 fn test_json_roundtrip():
     let s = Sample("acme/json", ["1.0.0", "1.1.0"], Some("hi"), 2)
-    match Sample.from_json(json.value_of(s)):
+    match Sample.from_json(json.from_value(s)):
         Ok(b) ->
             testing.assert_eq(b.name, "acme/json")
             testing.assert_int_eq(b.count, 2)
@@ -68,6 +68,6 @@ fn test_json_missing_field_errors():
 
 fn test_json_null_optional_is_none():
     let s = Sample("a/b", [], None, 0)
-    match Sample.from_json(json.value_of(s)):
+    match Sample.from_json(json.from_value(s)):
         Ok(b) -> testing.assert(option.is_none(b.note), "an absent optional decodes to None")
         Err(e) -> testing.assert(false, "round-trip failed: " + e)

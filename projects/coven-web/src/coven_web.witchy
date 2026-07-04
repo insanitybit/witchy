@@ -219,7 +219,7 @@ fn h_wa_challenge(store: Dir, rand: Rand) -> fn(Request) -> Response:
         // SEC-011: a fresh 32-byte CSPRNG challenge (not a key-derived, time-predictable
         // value). Stored single-use; the assertion handler clears it after one verify.
         let ch_hex = rand.hex(rand, 32)
-        let ch_b64 = encoding.base64url_of_hex(ch_hex)
+        let ch_b64 = encoding.hex_to_base64url(ch_hex)
         write(store, "_wa_challenge.json", json.encode(JsonObject([("b64", JsonString(ch_b64))])))
         server.json(200, json.encode(JsonObject([("challengeHex", JsonString(ch_hex))])))
 

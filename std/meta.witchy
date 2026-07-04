@@ -207,7 +207,7 @@ fn json_decode_field(ty: String, key: String) -> String:
 
 // `derive(Deserialize)` generates `from_json` for a record (the caller validates the
 // shape). It decodes and coerces each field, returning on the first error. There is
-// no matching `Serialize` derive, because reflection (`json.value_of`, `stringify`,
+// no matching `Serialize` derive, because reflection (`json.from_value`, `stringify`,
 // `Into(Json)`) already encodes any value, so only this reconstruction is per-type.
 // The generated code uses only json/result/list/option.
 pub fn derive_deserialize(t: TypeInfo) -> String:

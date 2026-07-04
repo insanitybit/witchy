@@ -372,7 +372,7 @@ fn parse_msg(j: Json) -> Msg:
         None -> Route("/")
 
 fn msg_to_json(m: Msg) -> Json:
-    json.value_of(m)
+    json.from_value(m)
 
 pub fn export_step(ui: UiRoot, input: String) -> String:
     // (RFC-0039/0040) the host mints `UiRoot` at this browser root; Glamour narrows it

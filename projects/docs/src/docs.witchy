@@ -298,7 +298,7 @@ fn model_to_json(m: Model) -> Json:
             JsonObject([("route", JsonString(route)), ("summary", JsonString(summary)), ("content", JsonString(content))])
 
 fn msg_to_json(m: Msg) -> Json:
-    json.value_of(m)
+    json.from_value(m)
 
 pub fn export_step(ui: UiRoot, input: String) -> String:
     // (RFC-0039/0040) narrow the host-minted `UiRoot` into a GET-only `UiFetch` (confined

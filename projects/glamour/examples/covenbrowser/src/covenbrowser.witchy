@@ -463,7 +463,7 @@ fn parse_model(j: Json) -> Model:
 
 fn model_to_json(model: Model) -> Json:
     match model:
-        Model(_runes, selected) -> json.value_of(selected)
+        Model(_runes, selected) -> json.from_value(selected)
 
 fn parse_msg(j: Json) -> Msg:
     match json.get_string(j, "$variant"):
@@ -490,7 +490,7 @@ fn first_int(vals: Json) -> Int:
         _ -> no_selection()
 
 fn msg_to_json(m: Msg) -> Json:
-    json.value_of(m)
+    json.from_value(m)
 
 // The single JS-callable export — glamour's reusable MVU engine wired to this
 // app's view/update and its model/msg parsers + serializers.

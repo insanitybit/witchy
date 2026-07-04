@@ -735,7 +735,7 @@ fn latest_version(versions: List(Version)) -> Option(Version):
     for v in versions:
         let take = match best:
             None -> true
-            Some(b) -> semver.lt(b, v)
+            Some(b) -> semver.less(b, v)
         if take:
             best = Some(v)
     best
@@ -1192,7 +1192,7 @@ fn gate_contributors(root: Dir, dir: String, manifest: String, cap: String) -> L
     for pair in toml.table(manifest, "dependencies"):
         let (name, inline) = pair
         if let Some(rel) = toml.inline_get(inline, "path"):
-            if rights.covered(rune_footprint(root, normalize_path(join_path(dir, rel))), cap):
+            if rights.any_covers(rune_footprint(root, normalize_path(join_path(dir, rel))), cap):
                 who = list.push(who, name)
     who
 

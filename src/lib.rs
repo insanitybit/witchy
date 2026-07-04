@@ -123,7 +123,7 @@ pub fn encoding(op: i32, input: &str) -> Result<String, String> {
         1 => "encoding.hex_decode",
         2 => "encoding.base64_encode",
         3 => "encoding.base64_decode",
-        4 => "encoding.base64url_of_hex",
+        4 => "encoding.hex_to_base64url",
         _ => return Err(format!("unknown encoding op {op}")),
     };
     native_str(name, crate::value::NativeValue::Str(input.to_string()))

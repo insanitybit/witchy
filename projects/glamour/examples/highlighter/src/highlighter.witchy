@@ -25,7 +25,7 @@ import list
 // still wants a `msg_to_json: fn(msg) -> Json`, so a trivial `Msg` with one unit
 // variant and a HAND-WRITTEN serializer satisfy the signature — no `on` binding
 // ever carries a `Msg`, so the serializer is never actually reached. (No
-// `derive(Reflect)` needed: the serializer is explicit, not `json.value_of`.)
+// `derive(Reflect)` needed: the serializer is explicit, not `json.from_value`.)
 type Msg:
     NoMsg
 

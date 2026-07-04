@@ -45,10 +45,10 @@ fn parse_msg(j: Json) -> Msg:
     Noop
 
 fn model_to_json(model: Int) -> Json:
-    json.value_of(model)
+    json.from_value(model)
 
 fn msg_to_json(m: Msg) -> Json:
-    json.value_of(m)
+    json.from_value(m)
 
 pub fn export_step(input: String) -> String:
     step_with(input, view, update, parse_model, parse_msg, model_to_json, msg_to_json)

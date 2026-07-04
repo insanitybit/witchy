@@ -619,7 +619,7 @@ Standard base64 (with `=` padding) of `data`'s UTF-8 bytes.
 
 Decode standard base64 back to text (lossy UTF-8); padding/whitespace tolerated.
 
-#### `fn base64url_of_hex(hex: String) -> String`
+#### `fn hex_to_base64url(hex: String) -> String`
 
 base64url (no padding; `-`/`_`) of the bytes given as a HEX string. The hex indirection lets binary round-trip through UTF-8 strings — e.g. a WebAuthn `clientDataJSON.challenge` is base64url of the raw challenge bytes.
 
@@ -1136,9 +1136,9 @@ Follow a dotted path of object keys, e.g. `get_path(resp, "user.name")`. Any mis
 
 Encode an `Option` as payload-or-`null` — `Some(x)` through `each`, `None` as `JsonNull`. Keeps a derived `to_json`'s Option field a single-line call. (The param is `each`, not `encode`, so it doesn't shadow `json.encode`.)
 
-#### `fn value_of(x: a) -> Json where a: Reflect`
+#### `fn from_value(x: a) -> Json where a: Reflect`
 
---- reflective encoding (no derive) ----------------------------------------- `value_of(x)` encodes a value to `Json` by reflecting over its structure, so it works for any type with no derive. `stringify(x)` returns the encoded string.
+--- reflective encoding (no derive) ----------------------------------------- `from_value(x)` encodes a value to `Json` by reflecting over its structure, so it works for any type with no derive. `stringify(x)` returns the encoded string.
 
 #### `fn stringify(x: a) -> String where a: Reflect`
 
@@ -1314,7 +1314,7 @@ Map each element to a list, then concatenate the results.
 
 Turn a list of rows into a list of columns. Rows are read only up to the length of the SHORTEST row, so a ragged tail is dropped and the result stays rectangular: `transpose([[1, 2, 3], [4, 5, 6]])` is `[[1, 4], [2, 5], [3, 6]]`.
 
-#### `fn count(xs: List(a), pred: fn(a) -> Bool) -> Int`
+#### `fn count_where(xs: List(a), pred: fn(a) -> Bool) -> Int`
 
 How many elements satisfy `pred`.
 
@@ -1576,7 +1576,7 @@ A type's structure. `kind` is "record" (one constructor with named fields), "sum
 
 #### `fn derive_deserialize(t: TypeInfo) -> String`
 
-`derive(Deserialize)` generates `from_json` for a record (the caller validates the shape). It decodes and coerces each field, returning on the first error. There is no matching `Serialize` derive, because reflection (`json.value_of`, `stringify`, `Into(Json)`) already encodes any value, so only this reconstruction is per-type. The generated code uses only json/result/list/option.
+`derive(Deserialize)` generates `from_json` for a record (the caller validates the shape). It decodes and coerces each field, returning on the first error. There is no matching `Serialize` derive, because reflection (`json.from_value`, `stringify`, `Into(Json)`) already encodes any value, so only this reconstruction is per-type. The generated code uses only json/result/list/option.
 
 ## `oauth`
 
@@ -1896,7 +1896,7 @@ A capability is rendered the way the compiler's footprint prints it: "Console", 
 
 Whether `declared` covers `demanded` (same kind, broad enough rights).
 
-#### `fn covered(declared: List(String), demanded: String) -> Bool`
+#### `fn any_covers(declared: List(String), demanded: String) -> Bool`
 
 Whether any capability in `declared` covers `demanded`.
 
@@ -1962,7 +1962,7 @@ Parse `major.minor.patch` (missing trailing components default to 0). Errors on 
 
 -1 if a < b, 0 if equal, 1 if a > b. `Version` derives `Ord`, so callers that only need a Bool can compare with `<` / `>` / `==` directly.
 
-#### `fn lt(a: Version, b: Version) -> Bool`
+#### `fn less(a: Version, b: Version) -> Bool`
 
 #### `fn parse_req(s: String) -> Result(Req, String)`
 

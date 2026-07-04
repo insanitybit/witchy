@@ -66,13 +66,13 @@ fn parse_msg(j: Json) -> Msg:
                 Start
         None -> Start
 
-// The outbound boundary: encode the model / msg to JSON. `json.value_of` works for
+// The outbound boundary: encode the model / msg to JSON. `json.from_value` works for
 // any `Reflect` type, so these are one-liners (passed to `step_with` as values).
 fn model_to_json(count: Int) -> Json:
-    json.value_of(count)
+    json.from_value(count)
 
 fn msg_to_json(m: Msg) -> Json:
-    json.value_of(m)
+    json.from_value(m)
 
 // The single JS-callable export. `step_with` is glamour's reusable MVU engine: it
 // parses the input, runs `update` when a `msg` is present, then `view`, and returns

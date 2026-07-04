@@ -334,7 +334,7 @@ fn min_len(xss: List(List(a))) -> Int:
     m
 
 // How many elements satisfy `pred`.
-pub fn count(xs: List(a), pred: fn(a) -> Bool) -> Int:
+pub fn count_where(xs: List(a), pred: fn(a) -> Bool) -> Int:
     var n = 0
     for x in xs:
         if pred(x):

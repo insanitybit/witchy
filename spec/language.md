@@ -611,12 +611,12 @@ the module before type-checking, so both backends and the footprint analysis tre
 it like handwritten code. The supported derives are `Show`, `Eq`, `Ord`, `Reflect`,
 and `Deserialize`. `Reflect` needs `import reflect` and makes a user type
 reflectable (scalars and the built-in containers already are); it is what lets
-`json.stringify` / `json.value_of` encode the type with no per-type code.
+`json.stringify` / `json.from_value` encode the type with no per-type code.
 `Deserialize` generates `from_json(j) -> Result(Self, String)` for scalars,
 lists, options, and nested records, and — because the generated body names them
 like handwritten code — needs `import json` **and `import result`** (plus
 `import option` when any field is an `Option`). There is no `Serialize` derive,
-because reflection already encodes any value (`json.value_of`, `json.stringify`,
+because reflection already encodes any value (`json.from_value`, `json.stringify`,
 `Into(Json)`); only decoding has to be generated per type.
 
 ```witchy
