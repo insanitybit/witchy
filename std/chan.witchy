@@ -477,11 +477,11 @@ pub fn run(root: Task(Nil)):
                                     prog = true
                                 None -> slots = list.set_at(slots, i, WaitAny(chs, cont))
                         Wait(t, cont) ->
-                            match list.at(slots, t):
-                                Ended ->
-                                    slots = list.set_at(slots, i, Active(cont(unit())))
-                                    prog = true
-                                _ -> slots = list.set_at(slots, i, WaitJoin(t, cont))
+                            if let Ended = list.at(slots, t):
+                                slots = list.set_at(slots, i, Active(cont(unit())))
+                                prog = true
+                            else:
+                                slots = list.set_at(slots, i, WaitJoin(t, cont))
                         Cancel(target, cont) ->
                             slots = list.set_at(slots, target, Ended)
                             slots = list.set_at(slots, i, Active(cont(unit())))
@@ -502,6 +502,7 @@ pub fn run(root: Task(Nil)):
                     WaitAny(_chs, cont) -> slots = list.set_at(slots, j, Active(cont(None)))
                     WaitJoin(_t, cont) -> slots = list.set_at(slots, j, Active(cont(unit())))
                     _ -> unit()
+
                 j = j + 1
             go = true
         else:
