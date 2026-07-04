@@ -900,7 +900,7 @@ program ask for exactly one file instead of a whole `Dir`. A **grant document**
 (`--grants app.grants.toml`) enumerates the whole grant as reviewable TOML and is
 cross-checked against the computed footprint — see
 [capabilities.md](capabilities.md) and
-[0013-grant-documents.md](../rfcs/0013-grant-documents.md).
+[0013-capability-grant-documents.md](../rfcs/0013-capability-grant-documents.md).
 
 ### 13.1 The build entrypoint
 

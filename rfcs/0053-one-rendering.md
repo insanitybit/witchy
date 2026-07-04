@@ -121,7 +121,7 @@ interpolation errors. Rationale: rejecting at check time breaks
 debug-printing ergonomics — `"${x}"` inside a generic or exploratory context
 must never be the thing that won't compile; an opaque form is useless to
 *parse* but harmless to *print*. This deliberately differs from
-[RFC-0047](0047-equality-coherence.md), which **rejects** `==` on functions
+[RFC-0047](0047-one-equality.md), which **rejects** `==` on functions
 and capabilities: equality is a semantic judgment programs branch on (a wrong
 or backend-dependent answer corrupts behavior — the probed `f == f`
 interp-true/compiled-false divergence), while rendering is a human-facing
