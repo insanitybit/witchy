@@ -317,6 +317,72 @@
         assert_eq!(run_linked_on_wasm(&[("main", ok)], "main"), expected, "wasm");
     }
 
+    /// (SEC-043) The HTTP CRLF / header-injection validators trap LOUDLY and
+    /// IDENTICALLY on both backends when a header value / request field carries a
+    /// `\r`/`\n` (response/request splitting) or a header name is not an RFC 7230
+    /// token — rather than emitting a corrupted, attacker-shaped wire message.
+    /// A clean value passes on both backends.
+    #[test]
+    fn http_crlf_header_validators_trap_on_both_backends() {
+        let prog = |call: &str| {
+            format!("import http\n\nfn main(console: Console):\n    {call}\n    print(console, \"ok\")\n")
+        };
+        // A header VALUE with an embedded CRLF must error on both backends.
+        let crlf_value = prog("http.check_header(\"x-test\", \"a\\r\\nInjected: 1\")");
+        let linked = resolve_std_src(&crlf_value);
+        assert!(
+            interpreter::run_module(linked, ".", Vec::new()).is_err(),
+            "interpreter must trap on a CRLF header value"
+        );
+        let bytes = codegen::compile_module_binary(&resolve_std_src(&crlf_value))
+            .expect("compile")
+            .expect("lowers");
+        assert!(crate::run_wasm_bytes(&bytes).is_err(), "WASM must trap on a CRLF header value");
+
+        // A header NAME with a space (not a token) must error on both backends.
+        let bad_name = prog("http.check_header(\"bad name\", \"ok\")");
+        assert!(
+            interpreter::run_module(resolve_std_src(&bad_name), ".", Vec::new()).is_err(),
+            "interpreter must trap on an invalid header name"
+        );
+        let bn = codegen::compile_module_binary(&resolve_std_src(&bad_name))
+            .expect("compile")
+            .expect("lowers");
+        assert!(crate::run_wasm_bytes(&bn).is_err(), "WASM must trap on an invalid header name");
+
+        // A CR/LF in a request field (path/host/method) errors on both backends.
+        let crlf_path = prog("http.check_field(\"request path\", \"/a\\nHost: evil\")");
+        assert!(
+            interpreter::run_module(resolve_std_src(&crlf_path), ".", Vec::new()).is_err(),
+            "interpreter must trap on a CRLF path"
+        );
+        let cp = codegen::compile_module_binary(&resolve_std_src(&crlf_path))
+            .expect("compile")
+            .expect("lowers");
+        assert!(crate::run_wasm_bytes(&cp).is_err(), "WASM must trap on a CRLF path");
+
+        // A clean header + field passes on both backends (no false positives).
+        let clean = prog("http.check_header(\"content-type\", \"application/json\")\n    http.check_field(\"request path\", \"/api/v1/users\")");
+        assert_eq!(link_run(&clean), ["ok"], "interp accepts a clean header/path");
+        assert_eq!(run_linked_on_wasm(&[("main", &clean)], "main"), ["ok"], "wasm accepts a clean header/path");
+    }
+
+    /// (SEC-042) `has_crlf` agrees on both backends for a control-bearing vs a
+    /// clean value — the primitive the CRLF validators are built on.
+    #[test]
+    fn http_has_crlf_agrees_on_both_backends() {
+        let prog = |v: &str| {
+            format!(
+                "import http\n\nfn main(console: Console):\n    print(console, __render(http.has_crlf(\"{v}\")))\n"
+            )
+        };
+        for (value, want) in [("a\\r\\nb", "true"), ("plain", "false"), ("tab\\ttab", "false")] {
+            let src = prog(value);
+            assert_eq!(link_run(&src), [want], "interp has_crlf({value})");
+            assert_eq!(run_linked_on_wasm(&[("main", &src)], "main"), [want], "wasm has_crlf({value})");
+        }
+    }
+
     /// (RFC-0047) `==` on a function type is a compile-time error — there is no
     /// stable equality for functions (identity is a monomorphization/inlining
     /// accident), and comparing them was a confirmed backend parity divergence

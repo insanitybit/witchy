@@ -382,6 +382,11 @@ fn render_response(resp: Response) -> String:
             var out = "HTTP/1.1 ${code} " + reason(code) + "\r\n"
             for h in headers:
                 let (k, v) = h
+                // (SEC-043) A handler-set header name/value (e.g. a `location` from
+                // `redirect`, a `set-cookie`) may carry attacker-derived data; a
+                // `\r`/`\n` here would inject a header or split the response. Validate
+                // before concatenating — trap loudly rather than emit a split response.
+                http.check_header(k, v)
                 out = out + k + ": " + v + "\r\n"
             out = out + "Content-Length: " + "${string.length(b)}" + "\r\n"
             out = out + "Connection: close\r\n\r\n"
