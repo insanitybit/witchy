@@ -367,6 +367,32 @@
         assert_eq!(run_linked_on_wasm(&[("main", &clean)], "main"), ["ok"], "wasm accepts a clean header/path");
     }
 
+    /// (SEC-042) An overflowing `Content-Length` must NOT crash the server. The old
+    /// `content_length` guarded with `ascii.all_digits` (which passes an arbitrarily
+    /// long digit string) then called `string.to_int`, which TRAPS on i64 overflow —
+    /// an unauthenticated remote crash. The fix parses totally with `string.parse_int`
+    /// (returns None on overflow) and treats a rejected value as no body (0). This
+    /// mirrors `server.content_length` and must agree + not trap on both backends.
+    #[test]
+    fn overflowing_content_length_does_not_trap_on_either_backend() {
+        // `ascii.all_digits` accepts the overflowing string (the old trap trigger),
+        // but the total parse yields 0 (no body) rather than aborting the VM.
+        let src = "import string\nimport ascii\nimport option\n\n\
+                   fn content_length_val(v: String) -> Int:\n\
+                   \x20   match string.parse_int(v):\n\
+                   \x20       Some(n) -> if n > 0: n else: 0\n\
+                   \x20       None -> 0\n\n\
+                   fn main(console: Console):\n\
+                   \x20   let big = \"99999999999999999999999999\"\n\
+                   \x20   print(console, __render(ascii.all_digits(big)))\n\
+                   \x20   print(console, __render(content_length_val(big)))\n\
+                   \x20   print(console, __render(content_length_val(\"42\")))\n\
+                   \x20   print(console, __render(content_length_val(\"abc\")))\n";
+        let want = ["true", "0", "42", "0"];
+        assert_eq!(link_run(src), want, "interp: overflow -> 0, valid -> value, junk -> 0");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), want, "wasm must agree and not trap");
+    }
+
     /// (SEC-042) `has_crlf` agrees on both backends for a control-bearing vs a
     /// clean value — the primitive the CRLF validators are built on.
     #[test]

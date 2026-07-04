@@ -18,7 +18,6 @@ import http
 import option
 import json
 import reflect
-import ascii
 
 // ---- Request accessors ----
 pub fn method(req: Request) -> String:
@@ -323,10 +322,16 @@ fn read_headers(sock: Socket) -> List((String, String)):
     hdrs
 
 fn content_length(headers: List((String, String))) -> Int:
-    // The header is attacker-controlled; a non-numeric value must not trap
-    // `string_to_int` and take down the server — treat it as no body.
+    // The header is attacker-controlled; a non-numeric OR out-of-range value must
+    // not trap and take down the server. `ascii.all_digits` accepts arbitrarily
+    // long digit strings, and `string.to_int` then TRAPS on i64 overflow (SEC-042),
+    // so parse totally with `string.parse_int` (returns None on non-digit, empty,
+    // OR overflow) and treat any rejection as no body.
     match http.find_header(headers, "content-length"):
-        Some(v) -> if ascii.all_digits(v): string.to_int(v) else: 0
+        Some(v) ->
+            match string.parse_int(v):
+                Some(n) -> if n > 0: n else: 0
+                None -> 0
         None -> 0
 
 fn parse_query(q: String) -> List((String, String)):
