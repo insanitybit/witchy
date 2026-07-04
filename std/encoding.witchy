@@ -99,12 +99,11 @@ fn valid_symbols(data: String, alphabet: String) -> Bool:
                 count = count + 1
             else:
                 ok = false
-    ok && (count % 4 != 1)
+    ok && count % 4 != 1
 
 // --- raw byte-level codecs (native; intercepted by qualified name) ----------
 // These bodies never run: each call is dispatched to the Rust `encoding` registry
 // on the interpreter and to the `$encoding` host import on the compiled backend.
-
 fn hex_decode_lossy(data: String) -> String:
     data
 
