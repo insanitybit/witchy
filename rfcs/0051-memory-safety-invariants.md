@@ -1,7 +1,7 @@
 ---
 rfc: 0051
 title: Memory safety by construction — rc invariants, one allocator, and deleting the per-method zoo
-status: proposed
+status: implemented (I1 + I2); I3 rejected-in-part
 created: 2026-07-03
 predecessors:
   - "0035 (completing the RC floor — this RFC carries forward its 'remaining' section and the SEC-037 guard's rigorous follow-up)"
@@ -369,3 +369,47 @@ two projections of the same static-type discipline. Neither blocks the other.
     appending dated change-notes below (e.g. "> 2026-07-01: clarified X").
   - The current behavior lives in spec/ and the code — NOT here.
 -->
+
+> 2026-07-03: implemented. **I2 (one allocator)** shipped: `$bump_alloc` is the
+> sole ensure-prefixed `$heap`-advancing construct; the dict index rebuild, the
+> worker-VM `$__galloc`, the string-export wrapper, and `$rc_alloc`'s bump-miss
+> path all route through it; the watermark rewinds are shape-exempted. Enforced
+> STRUCTURALLY by `heap_write_violations` (witchy-wir) walking every assembled
+> function — `single_allocator_invariant_holds_across_helper_registry` (helper
+> library) + `single_allocator_invariant_holds_on_lowered_programs` (user code).
+>
+> **I1 (typed dup/drop)** shipped: `$rc_free` gained the categorical
+> `ptr >= heap_base` floor it was missing (the direct free-at-overwrite caller made
+> its absence exploitable — this KILLS SEC-039, a `var t = "abc"; t = trim(t)`
+> heap-disclosure that freed a below-heap string LITERAL into the free-list);
+> `$rc_drop` gained the symmetric 2-factor plausibility guard matching `$rc_dup`;
+> and the plausibility heuristic is demoted to a fire-and-report debug assertion
+> under a NEW `WITCHY_RC_ASSERT` flag (kept separate from the hard-gated
+> `WITCHY_HEAP_CHECK` on purpose — see below). The type predicates
+> (`list_elem_is_offset0_rc` / `expr_is_offset0_rc`) remain the emission gate;
+> the release heuristic stays as the leak-safe interim backstop, to be deleted
+> only after a zero-fires release (RFC Design I1 step 3). Regression: the SEC-039
+> repro across the full opt sweep + a `rc_assert_dup_drop_is_false_positive_free`
+> fuzz sweep wired into `check.sh --full`. NOTE: I1's typed emission is NOT yet
+> airtight — `WITCHY_RC_ASSERT=1 WITCHY_OPT=all` still fires on minigrep (the
+> SEC-037 view/slice dup residual under the `views` lever), which is exactly why
+> the assertion is a separate, non-gating diagnostic and why I3 rung 2 (below)
+> cannot ship.
+>
+> **I3 (delete the zoo) — REJECTED-IN-PART, with the number.** The deletion does
+> not ship; the six `*_cap` helpers and the `self_*` recognizers are RETAINED, and
+> the measurement is recorded at their definition (`witchy-lower/src/analysis.rs`,
+> above the shape matchers). Two reasons, both required by this RFC's own gates:
+> (1) the in-place mechanism is load-bearing — compiling its programs through the
+> general value-semantics rebind (`WITCHY_OPT=-inplace`) OOM-traps word_count /
+> dict_count / list_sum / knucleotide (the O(n²) rebuild the Alternatives section
+> predicts) and regresses list_index 2.70x / binary_trees 1.27x / expr_eval 1.31x
+> on the kernel clock — nowhere near the 5%/2% gate; (2) the ONLY rung that deletes
+> the *recognizers* (rung 2, the runtime `rc == 1` branch) is hard-gated on TOTAL
+> dup coverage, which I1's `WITCHY_RC_ASSERT` probe disproves (the SEC-037 residual
+> above). Rung 1 (signature-table) deletes only the cheap shape-matchers, not the
+> six genuinely-distinct helper bodies, so it does not achieve the thesis either.
+> Per the RFC's fallback position this is a valid, evidenced outcome. **CLAUDE.md's
+> "delete the zoo" rule is NOT amended by this RFC** — flagged for the maintainer:
+> the rule and the retained code are now reconciled by the recorded measurement,
+> not by rewriting the rule.

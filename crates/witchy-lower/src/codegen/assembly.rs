@@ -579,12 +579,12 @@ pub fn assemble_wir_module(
             called.insert("build_user_cap_field".to_string());
             called.insert(format!("mk{nfields}"));
         }
-        // The `__galloc` allocator the string-export wrappers expose calls `$ensure`
-        // and bumps `$heap`, so pull `ensure` into the reached set (it brings the
-        // `$heap` global via `uses_heap` below). Harmless if a string-export body
-        // already reaches it.
+        // The `__galloc` allocator the string-export wrappers expose delegates to
+        // `$bump_alloc` (RFC-0051 I2 — the single ensure-prefixed allocator), so pull
+        // it into the reached set (it brings `ensure` + the `$heap` global via its
+        // registry deps). Harmless if a string-export body already reaches it.
         if !string_exports.is_empty() {
-            called.insert("ensure".to_string());
+            called.insert("bump_alloc".to_string());
         }
         // Resolve every reached helper through the registry (transitively).
         let mut resolved: std::collections::BTreeMap<String, witchy_wir::wir_helpers::WirHelperSpec> =
@@ -757,40 +757,10 @@ pub fn assemble_wir_module(
             // single `String` param IS that header) and returns the result String
             // pointer. No import, no authority — only guest-memory reads/writes.
             if !string_exports.is_empty() {
-                // __galloc(len) -> ptr : ensure(len); p = heap; heap = heap + len; p
-                pruned_funcs.push(WirFunc {
-                    name: "__galloc".into(),
-                    params: vec![witchy_wir::wir::WirLocal {
-                        name: "len".into(),
-                        ty: witchy_wir::wir::WirTy::Bool, // i32
-                    }],
-                    ret: vec![witchy_wir::wir::WirTy::Bool], // i32 pointer
-                    locals: vec![witchy_wir::wir::WirLocal {
-                        name: "p".into(),
-                        ty: witchy_wir::wir::WirTy::Bool,
-                    }],
-                    body: vec![
-                        WirNode::Do(WirExpr::Call {
-                            func: "ensure".into(),
-                            args: vec![WirExpr::GetLocal("len".into())],
-                        }),
-                        WirNode::SetLocal {
-                            local: "p".into(),
-                            value: WirExpr::GetGlobal("heap".into()),
-                        },
-                        WirNode::SetGlobal {
-                            global: "heap".into(),
-                            value: WirExpr::Binary {
-                                op: witchy_wir::wir::BinOp::Add,
-                                kind: WK::I32,
-                                lhs: Box::new(WirExpr::GetGlobal("heap".into())),
-                                rhs: Box::new(WirExpr::GetLocal("len".into())),
-                            },
-                        },
-                        WirNode::Push(WirExpr::GetLocal("p".into())),
-                    ],
-                    raw_body: None,
-                });
+                // __galloc(len) -> ptr — (RFC-0051 I2) the shared WIR `$__galloc`
+                // (which delegates to `$bump_alloc`, the single ensure-prefixed
+                // allocator) rather than an inline ensure+bump twin.
+                pruned_funcs.push(witchy_wir::wir_helpers::galloc_helper());
                 // One `__export_f(in_ptr, in_len) -> out_ptr` per string export. The
                 // `in_len` param is accepted for ABI symmetry (and a future bounds
                 // check) but the String header is self-describing, so the wrapper

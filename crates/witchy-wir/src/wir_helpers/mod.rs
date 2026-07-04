@@ -166,6 +166,24 @@ pub fn type_check_enabled() -> bool {
     std::env::var_os("WITCHY_TYPE_CHECK").is_some_and(|v| v == "1")
 }
 
+/// (RFC-0051 I1 step 3) Whether the dup/drop plausibility heuristic is compiled as a
+/// FIRE-AND-REPORT debug assertion rather than a silent skip. When set, a pointer that
+/// reaches `$rc_dup`/`$rc_drop` at/above `heap_base` but with an IMPLAUSIBLE header
+/// (size ∉ [1,2^20) or rc ∉ [1,2^24)) is exactly an I1 emission-invariant violation —
+/// codegen dup'd/dropped a value whose static type is NOT an owning object reference
+/// (a view/slice/scalar). Instead of silently skipping (which leaks but hides the bug),
+/// the guest TRAPS there, so the `WITCHY_WASM_BACKTRACE` name section names the offending
+/// function. This is a SEPARATE flag from `WITCHY_HEAP_CHECK` on purpose: the checked-heap
+/// fuzz is a HARD gate, and I1's typed emission is not yet airtight (the SEC-037 view-dup
+/// residual still reaches a dup site under `rc-floor` — minigrep fires this assertion),
+/// so folding the hard trap into the always-gated flag would red the gate on a
+/// leak-safe, heuristic-masked residual. Once I1's typed emission closes SEC-037 at its
+/// source and this fires zero times across the fuzzer + examples + e2e, the whole
+/// `header_ok` check is deleted and this flag with it (RFC-0051 Design I1 step 3).
+pub fn rc_assert_enabled() -> bool {
+    std::env::var_os("WITCHY_RC_ASSERT").is_some_and(|v| v == "1")
+}
+
 /// The alloc-size header word (`ptr-4`, written by `$rc_alloc`) holds the allocated size in its
 /// low 24 bits; the high 8 bits are reserved for the [`type_check_enabled`] debug type tag.
 /// Every reader of the size masks with this so the tag is invisible to size arithmetic.
@@ -278,6 +296,41 @@ pub fn mk_helper(n: usize, checked: bool) -> WirFunc {
     }
 }
 
+/// (RFC-0051 I2) `$bump_alloc(size: i32) -> i32` — THE single allocator: the only
+/// construct in the entire compiled module that advances `$heap`, and it is
+/// `$ensure`-prefixed by construction. Everything that needs fresh bytes calls it —
+/// `$rc_alloc`'s bump-miss path, the worker-VM `$__galloc`, and the dict index
+/// rebuild — so the "remember to call ensure()" convention (the `int_to_string`
+/// OOB class) is closed structurally: a workspace test walks every assembled WIR
+/// function and fails on any other `$heap` write (the codegen watermark REWINDS,
+/// which reset `$heap` to a previously captured `__witchy_wm_*` value and never
+/// advance it, are the one shape-exempted case). Returns the old frontier.
+pub fn bump_alloc_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    WirFunc {
+        name: "bump_alloc".into(),
+        params: vec![WirLocal { name: "size".into(), ty: WirTy::Bool }],
+        ret: vec![WirTy::Bool],
+        locals: vec![WirLocal { name: "p".into(), ty: WirTy::Bool }],
+        body: vec![
+            N::Do(E::Call { func: "ensure".into(), args: vec![E::GetLocal("size".into())] }),
+            N::SetLocal { local: "p".into(), value: E::GetGlobal("heap".into()) },
+            N::SetGlobal {
+                global: "heap".into(),
+                value: E::Binary {
+                    op: BinOp::Add,
+                    kind: Kind::I32,
+                    lhs: Box::new(E::GetLocal("p".into())),
+                    rhs: Box::new(E::GetLocal("size".into())),
+                },
+            },
+            N::Push(E::GetLocal("p".into())),
+        ],
+        raw_body: None,
+    }
+}
+
 /// (RFC-0016) `$rc_alloc(size: i32) -> i32` — the central heap allocator: reuse a
 /// freed block from the size-classed free-list (first-fit: the first block whose
 /// stored byte-size ≥ `size`), else bump `$heap` like the inline allocators did.
@@ -373,21 +426,18 @@ pub fn rc_alloc_helper() -> WirFunc {
             setl("cur", E::GetGlobal("rc_freelist".into())),
             setl("prev", i32c(0)),
             scan,
-            // miss: bump the arena, reserving an 8-byte `[rc:i32][size:i32]` header
-            // BEFORE the object. `size` stays at object-4 (so `$rc_free`, the reuse
-            // scan, and the reused-bytes counter are byte-for-byte unchanged); the new
-            // refcount word sits at object-8, initialized to 1 (the allocating owner).
-            // The returned object pointer is `base+8`; every in-object reader is
-            // relative to it and so is unaffected. Off the RC path (`$dup`/`$drop` not
-            // emitted) the refcount is written but never read — inert, +4 bytes/object.
-            N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, getl("size"), i32c(8))] }),
-            setl("base", E::GetGlobal("heap".into())),
+            // miss: bump the arena via `$bump_alloc` (RFC-0051 I2: the ONE construct
+            // that advances `$heap`, ensure-prefixed by construction), reserving an
+            // 8-byte `[rc:i32][size:i32]` header BEFORE the object. `size` stays at
+            // object-4 (so `$rc_free`, the reuse scan, and the reused-bytes counter
+            // are byte-for-byte unchanged); the new refcount word sits at object-8,
+            // initialized to 1 (the allocating owner). The returned object pointer is
+            // `base+8`; every in-object reader is relative to it and so is unaffected.
+            // Off the RC path (`$dup`/`$drop` not emitted) the refcount is written but
+            // never read — inert, +4 bytes/object.
+            setl("base", E::Call { func: "bump_alloc".into(), args: vec![b(BinOp::Add, getl("size"), i32c(8))] }),
             N::Store { ptr: getl("base"), value: i32c(1), kind: Kind::I32, offset: 0 },
             N::Store { ptr: getl("base"), value: getl("size"), kind: Kind::I32, offset: 4 },
-            N::SetGlobal {
-                global: "heap".into(),
-                value: b(BinOp::Add, getl("base"), b(BinOp::Add, i32c(8), getl("size"))),
-            },
             N::Push(b(BinOp::Add, getl("base"), i32c(8))),
         ],
         raw_body: None,
@@ -463,36 +513,61 @@ pub fn rc_free_helper() -> WirFunc {
             params: vec![WirLocal { name: "ptr".into(), ty: WirTy::Bool }],
             ret: vec![],
             locals: ["size", "i"].iter().map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool }).collect(),
-            body: vec![
-                N::SetLocal { local: "size".into(), value: b(BinOp::And, load(b(BinOp::Sub, getl("ptr"), i32c(4)), 0), i32c(RC_SIZE_MASK)) },
-                // Poison only a sane-sized payload; `LeU` also rejects a negative (→ huge
-                // unsigned) bogus size. size==0 makes the loop a no-op.
-                N::If {
-                    cond: b(BinOp::LeU, getl("size"), i32c(POISON_LIMIT)),
-                    then_: vec![N::SetLocal { local: "i".into(), value: i32c(0) }, poison_loop],
-                    els: vec![],
-                    result: None,
-                },
-                // Relink for reuse (identical to the normal path). The freelist link occupies
-                // word 0, overwriting the poison there; words 4.. stay poisoned until reuse.
-                N::Store { ptr: getl("ptr"), value: E::GetGlobal("rc_freelist".into()), kind: Kind::I32, offset: 0 },
-                N::SetGlobal { global: "rc_freelist".into(), value: getl("ptr") },
-                dec_live,
-            ],
+            // (RFC-0051 I1) The same categorical `ptr >= heap_base` floor as the release
+            // path: a below-`heap_base` pointer is a literal/immediate/handle, never an
+            // `$rc_alloc` object, so neither poison nor relink applies (its `[ptr-4]` is
+            // not a real size header). Guarding here keeps the sanitizer honest — it
+            // never poisons the static data segment.
+            body: vec![N::If {
+                cond: b(BinOp::GeU, getl("ptr"), E::GetGlobal("heap_base".into())),
+                then_: vec![
+                    N::SetLocal { local: "size".into(), value: b(BinOp::And, load(b(BinOp::Sub, getl("ptr"), i32c(4)), 0), i32c(RC_SIZE_MASK)) },
+                    // Poison only a sane-sized payload; `LeU` also rejects a negative (→ huge
+                    // unsigned) bogus size. size==0 makes the loop a no-op.
+                    N::If {
+                        cond: b(BinOp::LeU, getl("size"), i32c(POISON_LIMIT)),
+                        then_: vec![N::SetLocal { local: "i".into(), value: i32c(0) }, poison_loop],
+                        els: vec![],
+                        result: None,
+                    },
+                    // Relink for reuse (identical to the normal path). The freelist link occupies
+                    // word 0, overwriting the poison there; words 4.. stay poisoned until reuse.
+                    N::Store { ptr: getl("ptr"), value: E::GetGlobal("rc_freelist".into()), kind: Kind::I32, offset: 0 },
+                    N::SetGlobal { global: "rc_freelist".into(), value: getl("ptr") },
+                    dec_live,
+                ],
+                els: vec![],
+                result: None,
+            }],
             raw_body: None,
         };
     }
 
+    // (RFC-0051 I1) `$rc_free` is called directly by the free-at-overwrite path
+    // (codegen `x = f(x)`), NOT only via `$rc_drop` — so it needs the SAME categorical
+    // `ptr >= heap_base` floor that `$dup`/`$drop` carry. A below-`heap_base` pointer is
+    // NEVER an `$rc_alloc` object: it is a string/data-segment LITERAL, an immediate, or
+    // a capability handle. Freeing one (the SEC-039 leak: `var t = "abc"; t = trim(t)`
+    // freed the literal into the free-list, corrupting its length word → a later reuse
+    // handed out the poisoned pointer → megabytes of heap disclosed) is unsound. The
+    // guard makes it a no-op; `__witchy_live_cells` is only incremented by `$rc_alloc`,
+    // so a skipped free of a non-object is correct bookkeeping, not a lost decrement.
+    let bin = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     WirFunc {
         name: "rc_free".into(),
         params: vec![WirLocal { name: "ptr".into(), ty: WirTy::Bool }],
         ret: vec![],
         locals: vec![],
-        body: vec![
-            N::Store { ptr: getl("ptr"), value: E::GetGlobal("rc_freelist".into()), kind: Kind::I32, offset: 0 },
-            N::SetGlobal { global: "rc_freelist".into(), value: getl("ptr") },
-            dec_live,
-        ],
+        body: vec![N::If {
+            cond: bin(BinOp::GeU, getl("ptr"), E::GetGlobal("heap_base".into())),
+            then_: vec![
+                N::Store { ptr: getl("ptr"), value: E::GetGlobal("rc_freelist".into()), kind: Kind::I32, offset: 0 },
+                N::SetGlobal { global: "rc_freelist".into(), value: getl("ptr") },
+                dec_live,
+            ],
+            els: vec![],
+            result: None,
+        }],
         raw_body: None,
     }
 }
@@ -520,11 +595,31 @@ pub fn rc_dup_helper() -> WirFunc {
     // a view's/parent's data (the minigrep/pm OOB). A real object always passes, so no dup is lost.
     // `(v-1) <=U (hi-2)` ⇔ `1 <= v <= hi-1` (also rejects v==0, which underflows to a huge unsigned).
     let in_1_to = |v: E, hi: i32| b(BinOp::LeU, b(BinOp::Sub, v, i32c(1)), i32c(hi - 2));
-    let size_load = || b(BinOp::And, E::Load { ptr: Box::new(b(BinOp::Sub, getl("ptr"), i32c(4))), kind: Kind::I32, offset: 0 }, i32c(0x00FF_FFFF));
+    let size_load = || b(BinOp::And, E::Load { ptr: Box::new(b(BinOp::Sub, getl("ptr"), i32c(4))), kind: Kind::I32, offset: 0 }, i32c(RC_SIZE_MASK));
     // Two-factor plausibility: a genuine object always has size ∈ [1, 2^20) at ptr-4 AND rc ∈
     // [1, 2^24) at ptr-8, so it ALWAYS passes (no dup lost). A view/scalar must have BOTH words
     // coincidentally in range to slip through — vanishingly unlikely, and it only ever SKIPS a dup.
     let header_ok = || b(BinOp::And, in_1_to(size_load(), 1 << 20), in_1_to(rc_load(), 1 << 24));
+    // (RFC-0051 I1 step 3) Demote the runtime plausibility heuristic to a debug assertion.
+    // Under WITCHY_RC_ASSERT the else-branch — a pointer at/above `heap_base` whose header
+    // is IMPLAUSIBLE — is exactly an I1 emission-invariant violation (codegen dup'd a
+    // non-owning value: a view/slice/scalar). The assertion TRAPS there (fire-and-report:
+    // the WITCHY_WASM_BACKTRACE name section names the offending guest function) instead of
+    // silently skipping, so a violation surfaces at the site rather than leaking quietly.
+    // In release the else stays EMPTY (the leak-safe interim backstop): once I1's typed
+    // emission is proven — zero fires across the fuzzer + examples + e2e — the whole
+    // `header_ok` check is deleted and only `ptr >= heap_base` remains.
+    let dup_store = N::Store {
+        ptr: rc_addr(),
+        value: b(BinOp::Add, rc_load(), i32c(1)),
+        kind: Kind::I32,
+        offset: 0,
+    };
+    let dup_body = if rc_assert_enabled() {
+        N::If { cond: header_ok(), then_: vec![dup_store], els: vec![N::Unreachable], result: None }
+    } else {
+        N::If { cond: header_ok(), then_: vec![dup_store], els: vec![], result: None }
+    };
     WirFunc {
         name: "rc_dup".into(),
         params: vec![WirLocal { name: "ptr".into(), ty: WirTy::Bool }],
@@ -537,17 +632,7 @@ pub fn rc_dup_helper() -> WirFunc {
             // out of bounds and trap. Only inside the heap-pointer guard do we read the header.
             N::If {
                 cond: b(BinOp::GeU, getl("ptr"), E::GetGlobal("heap_base".into())),
-                then_: vec![N::If {
-                    cond: header_ok(),
-                    then_: vec![N::Store {
-                        ptr: rc_addr(),
-                        value: b(BinOp::Add, rc_load(), i32c(1)),
-                        kind: Kind::I32,
-                        offset: 0,
-                    }],
-                    els: vec![],
-                    result: None,
-                }],
+                then_: vec![dup_body],
                 els: vec![],
                 result: None,
             },
@@ -575,24 +660,48 @@ pub fn rc_drop_helper() -> WirFunc {
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let rc_addr = || b(BinOp::Sub, getl("ptr"), i32c(8));
     let rc_load = || E::Load { ptr: Box::new(rc_addr()), kind: Kind::I32, offset: 0 };
+    // (RFC-0051 I1) The SYMMETRIC interim guard: the same 2-factor plausibility check
+    // `$rc_dup` carries. A genuine `$rc_alloc` object always has size ∈ [1, 2^20) at
+    // `ptr-4` AND rc ∈ [1, 2^24) at `ptr-8`, so it ALWAYS passes (no drop is ever lost).
+    // A view/slice/mis-typed pointer above `heap_base` that reaches a drop site must have
+    // BOTH header words coincidentally in range to slip through — and the direction of
+    // error is the SAFE one: a skipped drop LEAKS, it never frees live data or underflows
+    // a neighbor's count (which a raw `[ptr-8]--` on a non-object would do). This is the
+    // drop-side of the SEC-037 mitigation; I1's typed emission makes it dead code, at
+    // which point it is demoted to the `WITCHY_HEAP_CHECK` trap-and-report assertion.
+    // `(v-1) <=U (hi-2)` ⇔ `1 <= v <= hi-1` (also rejects v==0, which underflows huge).
+    let in_1_to = |v: E, hi: i32| b(BinOp::LeU, b(BinOp::Sub, v, i32c(1)), i32c(hi - 2));
+    let size_load = || b(BinOp::And, E::Load { ptr: Box::new(b(BinOp::Sub, getl("ptr"), i32c(4))), kind: Kind::I32, offset: 0 }, i32c(RC_SIZE_MASK));
+    let header_ok = || b(BinOp::And, in_1_to(size_load(), 1 << 20), in_1_to(rc_load(), 1 << 24));
+    let dec_or_free = N::If {
+        cond: b(BinOp::Le, rc_load(), i32c(1)),
+        then_: vec![N::Do(E::Call { func: "rc_free".into(), args: vec![getl("ptr")] })],
+        els: vec![N::Store {
+            ptr: rc_addr(),
+            value: b(BinOp::Sub, rc_load(), i32c(1)),
+            kind: Kind::I32,
+            offset: 0,
+        }],
+        result: None,
+    };
+    // (RFC-0051 I1 step 3) Same demotion as `$rc_dup`: under WITCHY_RC_ASSERT an implausible
+    // header at a drop site (an I1 violation — codegen dropped a non-owning value) TRAPS and
+    // reports; in release the else is empty (skip = leak, the safe interim direction).
+    let drop_body = if rc_assert_enabled() {
+        N::If { cond: header_ok(), then_: vec![dec_or_free], els: vec![N::Unreachable], result: None }
+    } else {
+        N::If { cond: header_ok(), then_: vec![dec_or_free], els: vec![], result: None }
+    };
     WirFunc {
         name: "rc_drop".into(),
         params: vec![WirLocal { name: "ptr".into(), ty: WirTy::Bool }],
         ret: vec![],
         locals: vec![],
         body: vec![N::If {
+            // NESTED (not `&&`): the header loads must be guarded by `ptr >= heap_base`
+            // first, else a small scalar `ptr` reads `[ptr-8]`/`[ptr-4]` out of bounds.
             cond: b(BinOp::GeU, getl("ptr"), E::GetGlobal("heap_base".into())),
-            then_: vec![N::If {
-                cond: b(BinOp::Le, rc_load(), i32c(1)),
-                then_: vec![N::Do(E::Call { func: "rc_free".into(), args: vec![getl("ptr")] })],
-                els: vec![N::Store {
-                    ptr: rc_addr(),
-                    value: b(BinOp::Sub, rc_load(), i32c(1)),
-                    kind: Kind::I32,
-                    offset: 0,
-                }],
-                result: None,
-            }],
+            then_: vec![drop_body],
             els: vec![],
             result: None,
         }],
@@ -3746,9 +3855,16 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
+        "bump_alloc" => Some(WirHelperSpec {
+            func: bump_alloc_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
         "rc_alloc" => Some(WirHelperSpec {
             func: rc_alloc_helper(),
-            helper_deps: &["ensure"],
+            helper_deps: &["ensure", "bump_alloc"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,
@@ -4509,7 +4625,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dict_insert_cap" => Some(WirHelperSpec {
             func: dict_insert_cap_helper(),
-            helper_deps: &["rc_alloc", "dict_find", "ensure", "dict_index_put"],
+            helper_deps: &["rc_alloc", "dict_find", "bump_alloc", "dict_index_put"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,

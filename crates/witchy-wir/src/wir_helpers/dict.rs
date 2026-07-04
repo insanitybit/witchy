@@ -503,9 +503,17 @@ pub fn dict_insert_cap_helper() -> WirFunc {
                 ],
             }],
         },
-        N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("islots"), i32c(4)))] }),
-        N::SetLocal { local: "iptr".into(), value: E::GetGlobal("heap".into()) },
-        N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("iptr"), b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("islots"), i32c(4)))) },
+        // (RFC-0051 I2) Allocate the index block through `$bump_alloc` — the single
+        // ensure-prefixed allocator — instead of a raw ensure+bump pair here. The
+        // index block is header-less scratch (rebuilt on every grow), so it takes
+        // the bump core, not `$rc_alloc`.
+        N::SetLocal {
+            local: "iptr".into(),
+            value: E::Call {
+                func: "bump_alloc".into(),
+                args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("islots"), i32c(4)))],
+            },
+        },
         N::Store { ptr: getl("iptr"), value: getl("islots"), kind: Kind::I32, offset: 0 },
         N::MemoryFill { dest: b(BinOp::Add, getl("iptr"), i32c(4)), value: i32c(0), len: b(BinOp::Mul, getl("islots"), i32c(4)) },
         N::Store { ptr: b(BinOp::Sub, getl("new"), i32c(4)), value: getl("iptr"), kind: Kind::I32, offset: 0 },

@@ -325,3 +325,72 @@
         };
         assert_eq!(run_capture(&m), vec!["hi"]);
     }
+
+    /// (RFC-0051 I2) The single-allocator invariant, enforced STRUCTURALLY over the
+    /// whole runtime-helper library: assemble every registered WIR helper (all of
+    /// `HELPER_NAMES` plus the registry-only names, plus the `$mk{n}` allocator
+    /// family and the sanitizer variants) into one module and walk every body —
+    /// any `SetGlobal { global: "heap" }` outside `$bump_alloc` fails, named. A
+    /// future helper that hand-bumps `$heap` (the `int_to_string` OOB class: a
+    /// forgotten `ensure()`) breaks this test rather than shipping. The codegen
+    /// watermark REWINDS (which move `$heap` down to a captured value) live in
+    /// lowered user code, not helpers, and are covered by the codegen-side twin
+    /// (`single_allocator_invariant_holds_on_lowered_programs`).
+    #[test]
+    fn single_allocator_invariant_holds_across_helper_registry() {
+        // Every name the registry resolves: probe the known lists. (`wir_helper`
+        // is a by-name match, so enumerate from the prelude + the registry-only
+        // helpers named in this crate; a new helper is reachable only through
+        // `wir_helper`, so probing its name covers it.)
+        let mut names: Vec<String> = crate::wir_prelude::prelude()
+            .funcs
+            .iter()
+            .map(|f| f.name.clone())
+            .collect();
+        for extra in [
+            "__heap_reclaim", "bump_alloc", "char_count", "crypto_ecdsa_p256_verify",
+            "crypto_ecdsa_p256_verify_hex", "crypto_ed25519_verify", "crypto_hmac_sha256",
+            "crypto_rsa_pkcs1_sha256_verify", "crypto_sha3_256", "crypto_sha512",
+            "dir_append", "dir_create", "dir_exists", "dir_is_dir", "dir_make_dir",
+            "dir_only", "dir_open", "dir_subdir", "dir_write", "exec", "file_write",
+            "list_at_view", "list_len_view", "list_set_cap", "list_update_cap",
+            "net_accept", "net_close", "net_connect", "net_connect_pinned", "net_deny",
+            "net_listen", "net_restrict", "net_send_bytes", "net_send_line",
+            "net_try_connect", "net_try_connect_pinned", "now", "now_monotonic",
+            "rand_u64", "rc_alloc", "rc_drop", "rc_dup", "rc_free", "rcopy_str",
+            "regex_match_spans", "serve_pool", "string_from_code", "vm_par_map",
+            "vm_par_map_bytes", "vm_serve", "vm_with_dir", "__galloc",
+        ] {
+            names.push(extra.to_string());
+        }
+        let mut funcs: Vec<WirFunc> = names
+            .iter()
+            .filter_map(|n| crate::wir_helpers::wir_helper(n).map(|s| s.func))
+            .collect();
+        // `$__galloc` has no registry entry (it is pushed by the assembler); include
+        // it directly, plus a representative slice of the `$mk{n}` family.
+        funcs.push(crate::wir_helpers::galloc_helper());
+        for n in [0usize, 1, 2, 3, 4, 8, 16] {
+            funcs.push(crate::wir_helpers::mk_helper(n, false));
+            funcs.push(crate::wir_helpers::mk_helper(n, true));
+        }
+        // The sanitizer variants rebuild several helpers with different bodies;
+        // cover the checked `ensure` too.
+        funcs.push(crate::wir_helpers::ensure_helper(true));
+        assert!(funcs.len() > 100, "expected to resolve the whole helper library, got {}", funcs.len());
+        let module = WirModule {
+            imports: vec![],
+            funcs,
+            memory_pages: 1,
+            data: vec![],
+            globals: vec![],
+            table: None,
+            exports: vec![],
+        };
+        let violations = heap_write_violations(&module);
+        assert!(
+            violations.is_empty(),
+            "RFC-0051 I2 violated — these helpers write `$heap` outside `$bump_alloc` \
+             (route them through the single ensure-prefixed allocator): {violations:?}"
+        );
+    }

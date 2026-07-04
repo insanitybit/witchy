@@ -2211,6 +2211,39 @@ fn main(console: Console):
         assert_rc_corpus_stable(src, &["Console,Dir[Read],Net[Connect]"]);
     }
 
+    /// (RFC-0051 I1 / SEC-039) Regression: the free-at-overwrite path must not free a
+    /// non-owning-object pointer. The 7-line repro — `var t = "abc"; t = string.trim(t)`
+    /// — reassigns a `var` whose FIRST buffer is a string LITERAL (a data-segment pointer
+    /// BELOW `heap_base`, not an `$rc_alloc` object). Under `inplace + rc-floor` the
+    /// free-at-overwrite emitted `$rc_free(old)` directly on that literal; `$rc_free` had
+    /// NO `heap_base` guard (only `$dup`/`$drop` did), so it linked the literal into the
+    /// free-list and corrupted its length word — a later `$rc_alloc` reuse handed out the
+    /// poisoned pointer and `string.trim`'s result rendered MEGABYTES of raw heap
+    /// (an in-guest disclosure). I1's categorical `ptr >= heap_base` floor on `$rc_free`
+    /// (matching `$dup`/`$drop`) kills the class. Assert byte-identical output across the
+    /// FULL opt sweep — the leak fired under `rc-floor` alone, so the sweep is the net.
+    #[test]
+    fn rc_free_at_overwrite_does_not_free_a_literal_sec_039() {
+        use crate::opt::{self, Opt, OptSet};
+        let src = "fn main(console: Console):\n    var xs = [3, 1, 2]\n    xs = list.sort(xs)\n    print(console, \"${xs}\")\n    var t = \"abc\"\n    t = string.trim(t)\n    print(console, \"[${t}]\")\n";
+        let oracle = link_run(src);
+        assert_eq!(oracle, vec!["[1, 2, 3]", "[abc]"], "oracle shape changed");
+        let mut settings: Vec<(String, OptSet)> = vec![
+            ("none".into(), OptSet::none()),
+            ("all".into(), OptSet::all()),
+            ("default".into(), OptSet::default_set()),
+        ];
+        for o in Opt::ALL {
+            settings.push((format!("-{}", o.name()), OptSet::default_set().without(o)));
+        }
+        for (label, set) in settings {
+            opt::set_for_tests(Some(set));
+            let out = wasm_run(src);
+            opt::set_for_tests(None);
+            assert_eq!(out, oracle, "SEC-039: WITCHY_OPT={label} leaked/diverged (freed a non-object literal)");
+        }
+    }
+
     /// `crypto.rune_hash` produces the same store hash (`src/pm/store.rs`
     /// format) on both backends — the host walks the guest's string lists.
     #[test]
@@ -8638,6 +8671,45 @@ fn main(console: Console):
             .expect("the WIR binary path should lower an var fn with an early return");
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
         assert_eq!(link_run(src), want, "interpreter oracle");
+    }
+
+    /// (RFC-0051 I2) The single-allocator invariant on LOWERED PROGRAMS: assemble
+    /// full WIR modules (helpers + user code) for representative programs that
+    /// exercise the heap-touching lowering shapes — accumulation (`list.push`/
+    /// dict insert self-assigns → the `*_cap` in-place paths), string building,
+    /// a scalar `region:` reclaim, a pointer `region:` copy-out, and a loop-arena
+    /// reset — and walk every function body: any `SetGlobal { global: "heap" }`
+    /// outside `$bump_alloc` and the named watermark REWINDS
+    /// (`heap = __witchy_wm_*` / `heap = wm + copied_len`, which move `$heap`
+    /// down to or below an already-ensured frontier) fails with the offending
+    /// function's name. Because all WIR construction funnels through
+    /// `assemble_wir_module`, the walk sees everything — including future
+    /// helpers — so the `ensure()` convention cannot be silently forgotten
+    /// (the `int_to_string` OOB class). Registry-wide helper coverage lives in
+    /// witchy-wir's `single_allocator_invariant_holds_across_helper_registry`.
+    #[test]
+    fn single_allocator_invariant_holds_on_lowered_programs() {
+        let progs = [
+            // accumulators: list push / dict insert / string concat self-assigns
+            "fn main(console: Console):\n    var xs = []\n    var d = dict.new()\n    var s = \"\"\n    for i in 0..50:\n        xs = list.push(xs, i)\n        d = dict.insert(d, \"k${i}\", i)\n        s = s + \"x\"\n    xs = list.set_at(xs, 0, 9)\n    print(console, \"${list.length(xs)} ${dict.length(d)} ${string.length(s)}\")\n",
+            // scalar region reclaim (the watermark rewind exemption)
+            "import string\n\nfn main(console: Console):\n    let n = region -> Int:\n        var parts = []\n        for i in 0..20:\n            parts = list.push(parts, \"p${i}\")\n        list.length(parts)\n    print(console, \"${n}\")\n",
+            // pointer region copy-out (the `heap = wm + copied_len` advance-rewind)
+            "import string\n\nfn main(console: Console):\n    let summary = region:\n        var parts = []\n        for i in 0..20:\n            parts = list.push(parts, \"p${i}\")\n        list.join(parts, \",\")\n    print(console, \"${string.length(summary)}\")\n",
+        ];
+        for src in progs {
+            let linked = resolve_std_src(src);
+            typeck::check(&linked).expect("typecheck");
+            let m = codegen::assemble_wir_module(&linked)
+                .expect("assemble")
+                .unwrap_or_else(|| panic!("expected the WIR binary path to handle:\n{src}"));
+            let violations = witchy_wir::wir::heap_write_violations(&m);
+            assert!(
+                violations.is_empty(),
+                "RFC-0051 I2 violated — these functions write `$heap` outside \
+                 `$bump_alloc`/the watermark rewinds: {violations:?}\nprogram:\n{src}"
+            );
+        }
     }
 
     /// Criterion-2: the slot-elimination pass shows a MEASURABLE improvement on a

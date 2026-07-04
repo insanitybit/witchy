@@ -21,6 +21,9 @@ pub fn vm_par_map_bytes_helper() -> WirFunc {
 /// bytes (e.g. a `vm.par_map` input string) into a worker VM's memory: grow if needed,
 /// return the old heap top, advance. Mirrors the inline `__galloc` the string-export
 /// wrappers expose; emitted for a worker when the `String` `vm.par_map` path is linked.
+/// (RFC-0051 I2) Delegates to `$bump_alloc` — the single ensure-prefixed allocator —
+/// rather than bumping `$heap` itself. The worker's whole-heap-drop model wants no
+/// `[rc][size]` header, so it takes the shared bump core, not `$rc_alloc`.
 pub fn galloc_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
@@ -28,21 +31,11 @@ pub fn galloc_helper() -> WirFunc {
         name: "__galloc".into(),
         params: vec![WirLocal { name: "len".into(), ty: WirTy::Bool }],
         ret: vec![WirTy::Bool],
-        locals: vec![WirLocal { name: "p".into(), ty: WirTy::Bool }],
-        body: vec![
-            N::Do(E::Call { func: "ensure".into(), args: vec![E::GetLocal("len".into())] }),
-            N::SetLocal { local: "p".into(), value: E::GetGlobal("heap".into()) },
-            N::SetGlobal {
-                global: "heap".into(),
-                value: E::Binary {
-                    op: BinOp::Add,
-                    kind: Kind::I32,
-                    lhs: Box::new(E::GetGlobal("heap".into())),
-                    rhs: Box::new(E::GetLocal("len".into())),
-                },
-            },
-            N::Push(E::GetLocal("p".into())),
-        ],
+        locals: vec![],
+        body: vec![N::Push(E::Call {
+            func: "bump_alloc".into(),
+            args: vec![E::GetLocal("len".into())],
+        })],
         raw_body: None,
     }
 }

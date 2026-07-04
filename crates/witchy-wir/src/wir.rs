@@ -954,6 +954,139 @@ fn collect_clos_arities_seq(seq: &WirSeq, out: &mut Vec<usize>) {
     }
 }
 
+/// (RFC-0051 I2) The single-allocator structural invariant: exactly ONE construct
+/// may ADVANCE the `$heap` global — `$bump_alloc`, which is `$ensure`-prefixed by
+/// construction. Walk every function body of `module` and return the names of
+/// functions containing a `SetGlobal { global: "heap" }` outside the allowed set:
+///
+/// - `bump_alloc` itself (the one allocator), and
+/// - watermark REWINDS: a `SetGlobal("heap", ...)` whose value is a plain
+///   `GetLocal`/`GetLocal+expr` restore of a previously captured watermark
+///   (`__witchy_wm_*` locals — the RFC-0016 region reclaim resets, which move
+///   `$heap` DOWN to a value it already held, never past unensured memory). The
+///   codegen region copy-out's `heap = wm + copied_len` advance is also a rewind
+///   in this sense: `copied_len <= heap - wm` (the copy slides finished data DOWN
+///   below the old, already-ensured frontier).
+///
+/// Everything else — a raw ensure+bump pair, an unensured bump, any hand-written
+/// helper writing `$heap` — is a violation: it either forgot `ensure()` (the
+/// `int_to_string` OOB class) or will forget it on the next edit. The test that
+/// wraps this fn is the enforcement; it cannot be forgotten the way `ensure()` can.
+pub fn heap_write_violations(module: &WirModule) -> Vec<String> {
+    fn value_is_watermark_rewind(e: &WirExpr) -> bool {
+        // The rewind shapes codegen emits: `heap = wm` and `heap = wm + delta`
+        // where `wm` is a `__witchy_wm_*` watermark local captured from `$heap`.
+        match e {
+            WirExpr::GetLocal(n) => n.starts_with("__witchy_wm_"),
+            WirExpr::Binary { lhs, .. } => value_is_watermark_rewind(lhs),
+            _ => false,
+        }
+    }
+    fn node_violates(n: &WirNode, hits: &mut bool) {
+        match n {
+            WirNode::SetGlobal { global, value } => {
+                if global == "heap" && !value_is_watermark_rewind(value) {
+                    *hits = true;
+                }
+                expr_violates(value, hits);
+            }
+            WirNode::SetLocal { value, .. } => expr_violates(value, hits),
+            WirNode::Store { ptr, value, .. } | WirNode::Store8 { ptr, value, .. } => {
+                expr_violates(ptr, hits);
+                expr_violates(value, hits);
+            }
+            WirNode::CallStoreMulti { args, .. } => {
+                for a in args {
+                    expr_violates(a, hits);
+                }
+            }
+            WirNode::MemoryCopy { dest, src, len } => {
+                expr_violates(dest, hits);
+                expr_violates(src, hits);
+                expr_violates(len, hits);
+            }
+            WirNode::MemoryFill { dest, value, len } => {
+                expr_violates(dest, hits);
+                expr_violates(value, hits);
+                expr_violates(len, hits);
+            }
+            WirNode::If { cond, then_, els, .. } => {
+                expr_violates(cond, hits);
+                for x in then_.iter().chain(els.iter()) {
+                    node_violates(x, hits);
+                }
+            }
+            WirNode::Block { body, .. } | WirNode::Loop { body, .. } => {
+                for x in body {
+                    node_violates(x, hits);
+                }
+            }
+            WirNode::Br { cond, .. } => {
+                if let Some(c) = cond {
+                    expr_violates(c, hits);
+                }
+            }
+            WirNode::Drop(e) | WirNode::Do(e) | WirNode::Push(e) | WirNode::Return(Some(e)) => {
+                expr_violates(e, hits);
+            }
+            WirNode::Return(None) | WirNode::Unreachable => {}
+        }
+    }
+    fn expr_violates(e: &WirExpr, hits: &mut bool) {
+        match e {
+            WirExpr::ToSlot(i, _)
+            | WirExpr::FromSlot(i, _)
+            | WirExpr::Unary { arg: i, .. }
+            | WirExpr::Convert { arg: i, .. }
+            | WirExpr::Load { ptr: i, .. }
+            | WirExpr::Load8U { ptr: i, .. }
+            | WirExpr::MemoryGrow(i) => expr_violates(i, hits),
+            WirExpr::Binary { lhs, rhs, .. } => {
+                expr_violates(lhs, hits);
+                expr_violates(rhs, hits);
+            }
+            WirExpr::Call { args, .. } | WirExpr::CallHost { args, .. } => {
+                for a in args {
+                    expr_violates(a, hits);
+                }
+            }
+            WirExpr::CallIndirect { args, index, .. } => {
+                for a in args {
+                    expr_violates(a, hits);
+                }
+                expr_violates(index, hits);
+            }
+            WirExpr::Control(n) => node_violates(n, hits),
+            WirExpr::Seq(s) => {
+                for x in s {
+                    node_violates(x, hits);
+                }
+            }
+            WirExpr::ConstI64(_)
+            | WirExpr::ConstF64(_)
+            | WirExpr::ConstI32(_)
+            | WirExpr::StrPtr(_)
+            | WirExpr::GetLocal(_)
+            | WirExpr::GetGlobal(_)
+            | WirExpr::MemorySize => {}
+        }
+    }
+    let mut out = Vec::new();
+    for f in &module.funcs {
+        if f.name == "bump_alloc" {
+            continue; // the one allocator
+        }
+        let mut hits = false;
+        for n in &f.body {
+            node_violates(n, &mut hits);
+        }
+        if hits {
+            out.push(f.name.clone());
+        }
+    }
+    out
+}
+
 /// Escape data-segment bytes for a WAT string literal.
 fn escape_data(bytes: &[u8]) -> String {
     let mut s = String::new();
