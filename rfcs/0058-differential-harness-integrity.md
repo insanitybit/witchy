@@ -134,3 +134,102 @@ std modules.
 **Verdict.** Implement-now after light revision; the guard-first rollout order
 is exactly right. Priority: high — cheap, and it gates confidence in everything
 after it.
+
+## Revision (2026-07-04)
+
+Coordinator design decisions taken while implementing the contract. These resolve
+the five "required revisions" (a)–(e) above and pin the wire formats the gate
+scripts and the fuzzer agree on. Status: implemented.
+
+### Positive control — the seeded-divergence lever (a)
+`WITCHY_SEEDED_DIVERGENCE=1` is an env-gated fault injector read **only** on the
+`witchy parity` code path (`parity_check` in `src/main.rs`). When set, it appends a
+control-char-delimited sentinel line (`\u{1}witchy-seeded-divergence\u{1}` — a line no
+real program can print) to the *compiled* backend's result before comparison, forcing a
+guaranteed `diverge` regardless of the program (an `Ok` gains a line; an `Err` becomes an
+`Ok`-with-sentinel, so the empty/both-error and value cases all report DIVERGE). It is
+**inert in release**: the program-run path (`witchy <file>` / `sandbox`) never reads it,
+so injected divergence is invisible to actual execution. Two tests pin this — a behavioral
+one (a normal run is byte-identical with the var set vs unset; `witchy parity` on the same
+file returns `agree` unset and `diverge` set) and a static one (the var name appears in
+`src/` only, never in the codegen/runtime/interp crates). No divergent fixture files exist
+in-repo; the divergence is synthesized at compare time.
+
+### Machine-readable classification + exit-code taxonomy (b)
+`witchy parity` prints a final machine-parseable line to stdout:
+
+    parity-stats outcome=<agree|both-error-agree|diverge|unexpected-error> compared=<N> file=<path>
+
+`compared` is the count of output lines actually compared (`0` for both-error-agree and
+unexpected-error; the matched-prefix length for a value diverge). Exit codes are distinct
+so no consumer greps human text: **0** = agree or both-error-agree (a pass), **2** =
+unexpected-error (compile/link/lower failure, missing `main`, missing file — a real
+regression for the known-good example corpus; a tolerated generator miss for the fuzzer),
+**3** = diverge. The human `✓ … agree` / `✗ … DIVERGE` lines are retained for people and
+for the legacy `contains("agree")` assertions, but gates branch on the exit code and the
+`outcome=`/`compared=` tokens. **"Intended trap" is not parity's judgment** — parity only
+reports the four mechanical outcomes; whether a both-error-agree or an unexpected-error is
+acceptable is decided generator-side (the fuzzer tolerates them within its skip budget; the
+example sweep treats any non-zero exit as failure, which is the BUG-002 fix).
+
+### Timeout class (c)
+The timeout is enforced **harness-side**, around the `witchy parity` child process in the
+fuzzer (`run_with_timeout`, `WITCHY_FUZZ_TIMEOUT_SECS`, default 30s), not inside `witchy
+parity` itself (a single program-run has no natural wall-clock budget). A child that
+exceeds the budget is killed and classified as a distinct `TimedOut` outcome — never
+silently counted as agree — and shrink probes inherit a smaller budget.
+
+### Total generators + vacuity guards mapped onto the existing partials (d, §1)
+`gen_int` is made total: the `list.at` arm now indexes a freshly-generated list literal of
+known length `n` with an index in `0..n` (in-bounds by construction), and the `/`/`%` arms
+draw their divisor from `gen_pos_int` — a strictly-positive, small, non-overflowing
+expression (`1 + below(1000)`, `1 + list.length(...)`, `1 + string.length(...)`), which is
+never `0` and never `-1`, so it dodges both div-by-zero and the `INT_MIN / -1` trap.
+(`string.substring` already clamps on both backends, so it was already total.) The two
+pre-existing partial guards are **kept and extended, not replaced**: the grammar-coverage
+bitmask (every statement kind must appear) and `NLAWS` (every law line must be observed)
+stay; added on top is an **execution-volume guard** — the median compared-line count across
+the run must be `≥ 1`, so a corpus that traps before its first observable effect now fails
+loudly rather than passing vacuously.
+
+### Per-configuration accounting (§5)
+The fuzzer accumulates a full outcome matrix **per optimizer config** (agree /
+both-error-agree / skip / diverge / timeout / summed compared-lines), not just agree/skip
+for the empty default. Cross-config consistency is asserted: if the default config produced
+compared output for a seed, no lever config may `skip` or `timeout` it (a lever changing
+compilability is a failure to explain). The median-compared and grammar guards run against
+the default config's tallies.
+
+### Temp-file uniquification (BUG-010, d)
+All harness temp files route through one `unique_temp_path(prefix)` helper: `pid +
+monotonic atomic counter + nanos`, so every invocation and every probe — including each
+shrink probe (previously the constant tag `"shrink"`) — gets a distinct path. Concurrent
+fuzz jobs and a dev run beside a fuzz job can no longer cross-talk.
+
+### Gate-script inventory + fixes (BUG-002, d, §2/§4)
+Fixed: the `|| true` + `grep -qi DIVERGE` classification in **both** `justfile`
+(`parity-sweep`) and `.github/workflows/ci.yml` (parity job) — now exit-code + stats-line
+classified, fail-closed on any non-zero exit, with a `compared > 0` **vacuity guard** and a
+**seeded-divergence positive-control step** (run one example under
+`WITCHY_SEEDED_DIVERGENCE=1`, assert it diverges). `scripts/e2e-full.sh`'s
+`expect_contains "agree"` substring check is replaced with an exit-code + `outcome=agree`
+assertion. `scripts/validate_book_examples.mjs` gains a vacuity guard (fail if zero runnable
+blocks were validated). The `check.sh | tail` exit-mask is a *usage* footgun (a caller
+piping `check.sh` to `tail` drops its status under a non-pipefail shell), documented as a
+banned invocation; `check.sh` itself is `set -euo pipefail` and unaffected. Swept and clean:
+`pg_validate.mjs`, `local-registry-demo.sh`, `run-witchy-coven.sh` (their `|| true` uses are
+on process teardown / log-poll, not on classification).
+
+### Metamorphic laws with teeth + law-growth policy (§6, e)
+`gen_law_program` gains, on top of the retained idempotence + length laws: a **sortedness**
+law (`is_sorted(list.sort(xs))`) and a **permutation-by-element-counts** law
+(`is_perm(list.sort(xs), xs)` via per-element occurrence counts) — the pair is *not*
+satisfiable by `list.sort = identity` (identity fails sortedness on any unsorted input),
+which the old idempotence+length pair was; and a **dict round-trip** law
+(`remove → reinsert → get` returns the value and `pairs`/`length` stay consistent). `NLAWS`
+is bumped to match. **Law-growth policy:** every new std module that ships an algebraic or
+structural invariant (a reversible transform, a container round-trip, an ordering) must add
+at least one law to `gen_law_program` that a plausible *wrong* implementation would falsify
+— identity-satisfiable "laws" do not count. New reversible encoders carry a round-trip law;
+new ordered containers carry a sortedness+permutation law; new maps carry a
+remove/reinsert/iterate law.
