@@ -93,6 +93,12 @@ if [ "$full" -eq 1 ]; then
     # output-preserving, so a DIVERGE here is a real reclamation bug under `rc-floor`. Wider
     # than the in-suite default so more freed-then-read shapes are exercised.
     run "fuzz (uaf sanitizer)" env WITCHY_UAF_FUZZ_PROGRAMS=40 cargo nextest run --test differential_fuzz -E 'test(uaf_sanitizer)'
+    # RFC-0051 I1 dup/drop assertion sweep: WITCHY_RC_ASSERT traps (fire-and-report) when a
+    # value with an implausible header reaches $rc_dup/$rc_drop — an I1 emission-invariant
+    # violation (a view/slice/scalar dup'd/dropped). Zero fires across this + examples + e2e is
+    # the RFC's precondition for deleting the release-path plausibility heuristic. A DIVERGE
+    # here names a real type-predicate gap (the SEC-037 class), not a false positive.
+    run "fuzz (rc assertion)"  env WITCHY_RC_ASSERT_PROGRAMS=40 cargo nextest run --test differential_fuzz -E 'test(rc_assert_dup_drop_is_false_positive_free)'
     # RFC-0037 §3 type-confusion sweep: WITCHY_TYPE_CHECK tags every $rc_alloc object and asserts
     # the tag at typed reads (boxed .field + packed unbox at().field). On a correct compiler it is
     # output-preserving, so a DIVERGE/trap is a real layout/unbox confusion. Runs the whole fuzz

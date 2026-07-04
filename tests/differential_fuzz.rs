@@ -806,3 +806,43 @@ fn uaf_sanitizer_is_false_positive_free() {
         }
     }
 }
+
+/// (RFC-0051 I1 step 3) The dup/drop assertion sweep — the fire-and-report backstop's
+/// zero-fires tracking gate. Under `WITCHY_RC_ASSERT=1` a value that reaches
+/// `$rc_dup`/`$rc_drop` at/above `heap_base` with an IMPLAUSIBLE header traps instead of
+/// silently skipping — exactly an I1 emission-invariant violation (codegen dup'd/dropped
+/// a NON-owning value: a view/slice/scalar). The type predicates
+/// (`list_elem_is_offset0_rc` / `expr_is_offset0_rc`) are meant to be the sole gate; this
+/// sweep is the evidence they hold across the random corpus. A trap here (DIVERGE: the
+/// interp succeeds, the compiled backend hits `unreachable`) names a real predicate gap —
+/// the SEC-037 class. Zero fires across this + examples + e2e is the RFC's precondition
+/// for deleting the release-path `header_ok` heuristic entirely. Runs under `rc-floor`
+/// (the only lever that emits dup/drop).
+#[test]
+fn rc_assert_dup_drop_is_false_positive_free() {
+    let programs = env_usize("WITCHY_RC_ASSERT_PROGRAMS", 12);
+    let statements = env_usize("WITCHY_RC_ASSERT_STATEMENTS", 100);
+    for seed in 0..programs as u64 {
+        let (src, _) = gen_program(seed.wrapping_mul(0x0F1E_2D3C_4B5A_6978).wrapping_add(7), statements);
+        let path = std::env::temp_dir().join(format!("witchy_rcassert_{seed}.witchy"));
+        std::fs::File::create(&path).unwrap().write_all(src.as_bytes()).unwrap();
+        let out = Command::new(BIN)
+            .args(["parity", path.to_str().unwrap()])
+            .env("WITCHY_OPT", "rc-floor")
+            .env("WITCHY_RC_ASSERT", "1")
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_file(&path);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.code().is_some(),
+            "witchy crashed (signal) on seed {seed} under the RC assertion.\n--- program ---\n{src}\n--- stderr ---\n{stderr}"
+        );
+        if stdout.contains("DIVERGE") || stderr.contains("DIVERGE") {
+            panic!(
+                "RC-ASSERT I1 VIOLATION on seed {seed}: codegen emitted a dup/drop on a value with an implausible header (a view/slice/scalar reached a count op) under WITCHY_RC_ASSERT=1 — the type predicate is not airtight for this shape.\n--- program ---\n{src}\n--- output ---\n{stdout}{stderr}"
+            );
+        }
+    }
+}
