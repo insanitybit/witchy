@@ -275,7 +275,7 @@ How many elements equal `x` (by the element type's `Eq`).
 
 #### `fn unique(xs: List(a)) -> List(a) where a: Eq`
 
-The list with duplicates removed, keeping the first occurrence of each element (by the element type's `Eq`), in original order. The content-correct counterpart to `list.unique`, which compares pointers in compiled code.
+The list with duplicates removed, keeping the first occurrence of each element (by the element type's `Eq`), in original order. Equivalent to `list.unique`, which is also `Eq`-bound and content-correct on both backends.
 
 ## `compiler`
 

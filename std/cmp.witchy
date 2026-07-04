@@ -251,8 +251,8 @@ pub fn count(xs: List(a), x: a) -> Int where a: Eq:
     n
 
 // The list with duplicates removed, keeping the first occurrence of each element
-// (by the element type's `Eq`), in original order. The content-correct
-// counterpart to `list.unique`, which compares pointers in compiled code.
+// (by the element type's `Eq`), in original order. Equivalent to `list.unique`,
+// which is also `Eq`-bound and content-correct on both backends.
 pub fn unique(xs: List(a)) -> List(a) where a: Eq:
     var out = []
     for x in xs:
