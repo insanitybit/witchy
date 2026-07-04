@@ -2,8 +2,9 @@
 // value equality (a `where a: Eq` bound on every operation that compares), so
 // sets of Ints, Strings, tuples, or your own `Eq` types all work. Build one with
 // `set.new()` / `set.from_list(xs)`, test membership with `set.contains`, and
-// reach for `union`/`intersection`/`difference` for the algebra. `set.show(s)`
-// renders the members; `set.to_list(s)` returns them in insertion order.
+// reach for `union`/`intersection`/`difference` for the algebra. A `Set` whose
+// members are `Show` renders as `{a, b, c}` through `show`/`say` (import `show`);
+// `set.to_list(s)` returns the members in insertion order.
 
 import cmp
 import list
@@ -56,15 +57,6 @@ pub fn is_empty(s: Set(a)) -> Bool:
 // The members as a list, in insertion order.
 pub fn to_list(s: Set(a)) -> List(a):
     s.items
-
-// Render the set as `{a, b, c}` (members in insertion order). Use this rather
-// than interpolating a `Set` directly: `${s}` falls back to the structural form
-// `Set([...])`, which the compiled backend can't render for a generic record.
-pub fn show(s: Set(a)) -> String:
-    var parts = []
-    for x in s.items:
-        parts = list.push(parts, "${x}")
-    "{" + list.join(parts, ", ") + "}"
 
 // Every member of either set.
 pub fn union(s: Set(a), t: Set(a)) -> Set(a) where a: Eq:
