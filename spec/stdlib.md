@@ -2114,7 +2114,7 @@ Serve exactly `n` requests then return — for tests and one-shot servers.
 
 ## `set`
 
-Set(a) — an unordered collection of distinct values. Members are compared by value equality (a `where a: Eq` bound on every operation that compares), so sets of Ints, Strings, tuples, or your own `Eq` types all work. Build one with `set.new()` / `set.from_list(xs)`, test membership with `set.contains`, and reach for `union`/`intersection`/`difference` for the algebra. `set.show(s)` renders the members; `set.to_list(s)` returns them in insertion order.
+Set(a) — an unordered collection of distinct values. Members are compared by value equality (a `where a: Eq` bound on every operation that compares), so sets of Ints, Strings, tuples, or your own `Eq` types all work. Build one with `set.new()` / `set.from_list(xs)`, test membership with `set.contains`, and reach for `union`/`intersection`/`difference` for the algebra. A `Set` whose members are `Show` renders as `{a, b, c}` through `show`/`say` (import `show`); `set.to_list(s)` returns the members in insertion order.
 
 #### `type Set`
 
@@ -2152,10 +2152,6 @@ Whether the set has no members.
 
 The members as a list, in insertion order.
 
-#### `fn show(s: Set(a)) -> String`
-
-Render the set as `{a, b, c}` (members in insertion order). Use this rather than interpolating a `Set` directly: `${s}` falls back to the structural form `Set([...])`, which the compiled backend can't render for a generic record.
-
 #### `fn union(s: Set(a), t: Set(a)) -> Set(a) where a: Eq`
 
 Every member of either set.
@@ -2182,15 +2178,11 @@ Whether the two sets share no members.
 
 ## `show`
 
-The witchy standard `Show` trait: render a value as a `String`. Built-in impls cover the scalars — `Int`, `Float`, `Bool`, `String`, and `Duration` (which shows in its human form, `1m30s`, not raw milliseconds); implement `Show` for your own types to give them a *custom* readable form. (The built-in `to_string` already renders any value structurally — `Point(1, 2)`, `[Circle(2), Dot]` — on every backend; reach for `Show` when you want a different rendering than that default.) Pure except `say`, which takes the `Console` it prints to.
-
-#### `fn show_list(xs: List(a)) -> String where a: Show`
-
-Render a list as "[a, b, c]" using each element's Show impl — reach for this when your element type has a *custom* `Show` you want applied (the built-in `to_string` renders lists structurally on every backend already). Correct on both backends (the Show dispatch is monomorphized per element type).
+The witchy standard `Show` trait: render a value as a `String`. Built-in impls cover the scalars — `Int`, `Float`, `Bool`, `String`, and `Duration` (which shows in its human form, `1m30s`, not raw milliseconds) — and the built-in containers: a `List`, `Dict`, `Set`, `Option`, `Result`, or tuple whose elements are themselves `Show` renders structurally through each element's `Show` (`[a, b]`, `{k: v}`, `Some(x)`), so `say(console, [1, 2, 3])` and `say(console, someSet)` just work — and a custom element `Show` is honored (`[P<1,2>, P<3,4>]`). Implement `Show` for your own types to give them a *custom* readable form. (The built-in `to_string` already renders any value structurally — `Point(1, 2)`, `[Circle(2), Dot]` — on every backend; reach for `Show` when you want a different rendering than that default.) Pure except `say`, which takes the `Console` it prints to.
 
 #### `fn say(console: Console, x: impl Show)`
 
-Print any `Show` value without converting it by hand — `say(console, 42)`, `say(console, point)`. The Show-accepting `print` you reach for instead of `print(console, "${n}")`. (A thin wrapper kept out of the `print` builtin so a builtin never depends on a std trait.)
+Print any `Show` value without converting it by hand — `say(console, 42)`, `say(console, point)`, `say(console, [1, 2, 3])`. The Show-accepting `print` you reach for instead of `print(console, "${n}")`. (A thin wrapper kept out of the `print` builtin so a builtin never depends on a std trait.)
 
 ## `string`
 
