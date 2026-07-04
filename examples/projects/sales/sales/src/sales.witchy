@@ -9,8 +9,11 @@ import list
 import string
 
 fn main(console: Console, root: Dir[Read]):
-    let totals = salelib.revenue_by_product(read(root, "sales.csv"))
-    print(console, "Revenue by product:")
-    for product in list.sort_by(dict.keys(totals), fn(a: String, b: String): a < b):
-        print(console, "  " + string.pad_right(product, 16, " ") + "$" + "${dict.get_or(totals, product, 0)}")
-    print(console, "Total: $" + "${salelib.grand_total(totals)}")
+    match salelib.revenue_by_product(read(root, "sales.csv")):
+        Ok(totals) ->
+            print(console, "Revenue by product:")
+            for product in list.sort_by(dict.keys(totals), fn(a: String, b: String): a < b):
+                print(console, "  " + string.pad_right(product, 16, " ") + "$" + "${dict.get_or(totals, product, 0)}")
+            print(console, "Total: $" + "${salelib.grand_total(totals)}")
+        Err(msg) ->
+            print(console, "could not read sales.csv: ${msg}")

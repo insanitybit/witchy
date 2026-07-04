@@ -51,7 +51,7 @@ pub fn dir(p: String) -> String:
 // (".bashrc") has no extension.
 pub fn ext(p: String) -> String:
     let b = base(p)
-    let i = string.last_index_of(b, ".")
+    let i = string.last_index_of(b, ".") ?? -1
     if i > 0:
         string.substring(b, i + 1, string.char_count(b))
     else:

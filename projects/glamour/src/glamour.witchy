@@ -432,7 +432,7 @@ fn escape_attr(s: String) -> String:
 // The `On` binding embeds the message value as JSON via a caller-supplied
 // `msg_to_json: fn(msg) -> Json` (symmetric with `parse_msg` on the way back in).
 // Passing the serializer as a value — rather than reflecting a still-generic type
-// var inside this function — keeps monomorphization happy; `json.value_of(msg)` is
+// var inside this function — keeps monomorphization happy; `json.from_value(msg)` is
 // the obvious `msg_to_json` an app hands in (it works for any `Reflect` msg).
 // ===========================================================================
 
@@ -501,7 +501,7 @@ fn node_json(node: VNode(msg), msg_to_json: fn(msg) -> Json) -> Json:
 //   * `parse_model: fn(Json) -> model` / `parse_msg: fn(Json) -> msg` (a small
 //     match over its own JSON shape — the inbound boundary), and
 //   * `model_to_json: fn(model) -> Json` / `msg_to_json: fn(msg) -> Json` (the
-//     outbound boundary; `json.value_of` is the obvious choice for a `Reflect`
+//     outbound boundary; `json.from_value` is the obvious choice for a `Reflect`
 //     type).
 // `update` returns `(model, Cmd(msg))`; this engine THREADS the `Cmd` through and
 // serializes it into the returned JSON (`cmd_to_json`), so the shell — which alone

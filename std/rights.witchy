@@ -22,7 +22,7 @@ pub fn covers(declared: String, demanded: String) -> Bool:
         subset(rights_of(demanded), rights_of(declared))
 
 // Whether any capability in `declared` covers `demanded`.
-pub fn covered(declared: List(String), demanded: String) -> Bool:
+pub fn any_covers(declared: List(String), demanded: String) -> Bool:
     var ok = false
     for d in declared:
         if covers(d, demanded):
@@ -34,7 +34,7 @@ pub fn covered(declared: List(String), demanded: String) -> Bool:
 pub fn uncovered(declared: List(String), demanded: List(String)) -> List(String):
     var missing = []
     for cap in demanded:
-        if !covered(declared, cap):
+        if !any_covers(declared, cap):
             missing = list.push(missing, cap)
     missing
 

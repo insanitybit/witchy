@@ -6,8 +6,6 @@ ASCII character predicates over single-character strings (such as those `string.
 
 #### `fn is_digit(c: String) -> Bool`
 
-ASCII character predicates over single-character strings (such as those `string.char_at` returns). Pure and capability-free, like every std module. Classification is by code point in the ASCII range; the comparisons use the standard string ordering, so every function here is correct on both the interpreter and the compiled backend. The rough equivalent of Go's `unicode` helpers for the ASCII subset.
-
 #### `fn is_upper(c: String) -> Bool`
 
 #### `fn is_lower(c: String) -> Bool`
@@ -18,9 +16,9 @@ ASCII character predicates over single-character strings (such as those `string.
 
 #### `fn is_space(c: String) -> Bool`
 
-#### `fn to_digit(c: String) -> Int`
+#### `fn to_digit(c: String) -> Option(Int)`
 
-The numeric value of a single decimal digit, or -1 when `c` is not a digit.
+The numeric value of a single decimal digit as `Some`, or `None` when `c` is not a digit (RFC-0044 rule 1: absence is `Option`, never a -1 sentinel).
 
 #### `fn all_digits(s: String) -> Bool`
 
@@ -421,21 +419,21 @@ HMAC-SHA256 (FIPS 198-1). `key` is hex (so binary keys are representable); `mess
 
 ## `csv`
 
-csv — comma-separated values, parse and encode (RFC 4180-ish).
+csv — comma-separated values, decode and encode (RFC 4180-ish).
 
-Fields are separated by commas and rows by newlines. A field that contains a comma, a quote, or a newline is wrapped in double quotes, and a literal quote inside such a field is doubled (`""`). The parser is a small character state machine, so embedded commas/newlines/quotes round-trip through `encode`.
+Fields are separated by commas and rows by newlines. A field that contains a comma, a quote, or a newline is wrapped in double quotes, and a literal quote inside such a field is doubled (`""`). The decoder is a small character state machine, so embedded commas/newlines/quotes round-trip through `encode`.
 
-#### `fn parse(text: String) -> List(List(String))`
+#### `fn decode(text: String) -> Result(List(List(String)), String)`
 
-Parse CSV text into rows of fields. A trailing newline is ignored; `\r\n` and `\n` line endings both work.
+Decode CSV text into rows of fields. A trailing newline is ignored; `\r\n` and `\n` line endings both work. Genuinely fallible (RFC-0044 rule 2): a field that opens a quote and never closes it is structurally malformed input, so decoding returns `Err` naming the fault rather than silently absorbing it. Paired with `encode`, and aligned with `json`/`toml` (serialization formats `decode`).
 
 #### `fn encode(rows: List(List(String))) -> String`
 
 Encode rows back to CSV text (each row newline-terminated), quoting any field that needs it.
 
-#### `fn parse_records(text: String) -> List(Dict(String, String))`
+#### `fn decode_records(text: String) -> Result(List(Dict(String, String)), String)`
 
-Parse with the first row as a header: each remaining row becomes a Dict keyed by the header columns (a short row's missing columns read as "").
+Decode with the first row as a header: each remaining row becomes a Dict keyed by the header columns (a short row's missing columns read as ""). Fallible for the same reason as `decode` (it decodes first), so it returns `Result`.
 
 ## `dict`
 
@@ -449,11 +447,7 @@ An empty Dict.
 
 #### `fn insert(var d: Dict(k, v), key: k, val: v) -> Dict(k, v)`
 
-A new dict with `key` set to `val` (replacing any existing entry). Insertion order of first appearance is preserved.
-
-#### `fn set_at(var d: Dict(k, v), key: k, val: v) -> Dict(k, v)`
-
-Set `key` to `val` — the `insert` upsert under the name the `d[key] = val` sugar desugars to (RFC-0022), uniform with `list.set_at`.
+A new dict with `key` set to `val` (replacing any existing entry). Insertion order of first appearance is preserved. The `d[key] = val` sugar (RFC-0022) desugars to this: the shared `set_at` place-assign is retargeted to `insert` once the receiver is known to be a Dict (RFC-0049).
 
 #### `fn get_or(d: Dict(k, v), key: k, default: v) -> v`
 
@@ -593,9 +587,9 @@ A clock string "H:MM:SS": minutes and seconds zero-padded, hours in full (so a l
 
 A compact label that omits leading zero units: `1h1m1s`, `1m30s`, `5s`, and `500ms` for a pure sub-second span.
 
-#### `fn parse(s: String) -> Option(Duration)`
+#### `fn parse(s: String) -> Result(Duration, String)`
 
-Parse a duration string to a `Duration` — the inverse of `human`. Accepts unit-tagged input ("1h2m3s", "500ms", "2hr", any subset) using ms/s/m/h/hr/d/w, and a bare number as plain milliseconds. None on a stray character or a dangling unit-less number after units were given ("1h30").
+Parse a duration string to a `Duration` — the inverse of `human`. Accepts unit-tagged input ("1h2m3s", "500ms", "2hr", any subset) using ms/s/m/h/hr/d/w, and a bare number as plain milliseconds. `Err` on a stray character or a dangling unit-less number after units were given ("1h30"). Returns `Result` to align with `semver.parse`/`time.parse`/`url.parse` (RFC-0044 rule 2: invalid input is a reachable `Result`, not `Option`).
 
 ## `encoding`
 
@@ -619,7 +613,7 @@ Standard base64 (with `=` padding) of `data`'s UTF-8 bytes.
 
 Decode standard base64 back to text (lossy UTF-8); padding/whitespace tolerated.
 
-#### `fn base64url_of_hex(hex: String) -> String`
+#### `fn hex_to_base64url(hex: String) -> String`
 
 base64url (no padding; `-`/`_`) of the bytes given as a HEX string. The hex indirection lets binary round-trip through UTF-8 strings — e.g. a WebAuthn `clientDataJSON.challenge` is base64url of the raw challenge bytes.
 
@@ -1136,9 +1130,9 @@ Follow a dotted path of object keys, e.g. `get_path(resp, "user.name")`. Any mis
 
 Encode an `Option` as payload-or-`null` — `Some(x)` through `each`, `None` as `JsonNull`. Keeps a derived `to_json`'s Option field a single-line call. (The param is `each`, not `encode`, so it doesn't shadow `json.encode`.)
 
-#### `fn value_of(x: a) -> Json where a: Reflect`
+#### `fn from_value(x: a) -> Json where a: Reflect`
 
---- reflective encoding (no derive) ----------------------------------------- `value_of(x)` encodes a value to `Json` by reflecting over its structure, so it works for any type with no derive. `stringify(x)` returns the encoded string.
+--- reflective encoding (no derive) ----------------------------------------- `from_value(x)` encodes a value to `Json` by reflecting over its structure, so it works for any type with no derive. `stringify(x)` returns the encoded string.
 
 #### `fn stringify(x: a) -> String where a: Reflect`
 
@@ -1298,9 +1292,9 @@ The maximum element under a caller-supplied "is-less-than" comparator, as `Some`
 
 The minimum element under `less`, as `Some`; `None` for the empty list.
 
-#### `fn position(xs: List(a), target: a) -> Option(Int) where a: Eq`
+#### `fn position(xs: List(a), pred: fn(a) -> Bool) -> Option(Int)`
 
-The index of the first element equal to `target` as `Some`, or `None` — the Option-returning companion to `index_of` (which uses a -1 sentinel). The `where a: Eq` bound makes the equality content-correct on both backends.
+The index of the first element satisfying `pred` as `Some`, or `None` if none do — the by-predicate search (`index_of` is the by-value search). One name per axis, both `Option`, no sentinel (RFC-0044/0049).
 
 #### `fn flatten(xss: List(List(a))) -> List(a)`
 
@@ -1314,7 +1308,7 @@ Map each element to a list, then concatenate the results.
 
 Turn a list of rows into a list of columns. Rows are read only up to the length of the SHORTEST row, so a ragged tail is dropped and the result stays rectangular: `transpose([[1, 2, 3], [4, 5, 6]])` is `[[1, 4], [2, 5], [3, 6]]`.
 
-#### `fn count(xs: List(a), pred: fn(a) -> Bool) -> Int`
+#### `fn count_where(xs: List(a), pred: fn(a) -> Bool) -> Int`
 
 How many elements satisfy `pred`.
 
@@ -1329,10 +1323,6 @@ Drop the longest leading run satisfying `pred`, keeping the rest.
 #### `fn repeat(x: a, n: Int) -> List(a)`
 
 A list of `n` copies of `x` (empty when `n <= 0`).
-
-#### `fn find_index(xs: List(a), pred: fn(a) -> Bool) -> Int`
-
-Index of the first element satisfying `pred`, or -1 if none do. (Like `index_of`, but matching by predicate rather than value equality.)
 
 #### `fn zip_with(xs: List(a), ys: List(b), f: fn(a, b) -> c) -> List(c)`
 
@@ -1370,9 +1360,9 @@ Whether at least one element satisfies `pred`.
 
 Whether every element satisfies `pred` (true for the empty list).
 
-#### `fn index_of(xs: List(a), target: a) -> Int where a: Eq`
+#### `fn index_of(xs: List(a), target: a) -> Option(Int) where a: Eq`
 
-Index of the first element equal to `target`, or -1 if absent. The `where a: Eq` bound makes the equality content-correct on both backends.
+The index of the first element equal to `target` as `Some`, or `None` if absent (RFC-0044 rule 1: absence is `Option`, never a -1 sentinel). The `where a: Eq` bound makes the equality content-correct on both backends.
 
 #### `fn take(xs: List(a), n: Int) -> List(a)`
 
@@ -1458,7 +1448,7 @@ Constrain `x` to the inclusive range [lo, hi].
 
 #### `fn pow(base: Int, exp: Int) -> Int`
 
-`base` raised to a non-negative `exp` (exp <= 0 gives 1).
+`base` raised to a non-negative `exp` (`pow(base, 0)` is 1). A negative `exp` has no integer answer, so it is a contract violation (RFC-0044 rule 3): abort naming the bad argument rather than silently returning 1.
 
 #### `fn ceil_div(a: Int, b: Int) -> Int`
 
@@ -1486,7 +1476,7 @@ Whether `n` is odd.
 
 #### `fn factorial(n: Int) -> Int`
 
-`n!` — the product 1*2*...*n (1 for n <= 1). Watch the 32-bit range: factorial grows past it quickly (13! already overflows).
+`n!` — the product 1*2*...*n (1 for n in {0, 1}). Watch the 32-bit range: factorial grows past it quickly (13! already overflows). `n < 0` has no factorial, so it is a contract violation (RFC-0044 rule 3): abort naming the bad argument rather than silently returning 1.
 
 #### `fn is_prime(n: Int) -> Bool`
 
@@ -1494,7 +1484,7 @@ Whether `n` is prime (trial division up to math.sqrt(n); n < 2 is not prime).
 
 #### `fn isqrt(n: Int) -> Int`
 
-Integer square root: the largest `r` with `r*r <= n`. A negative `n` yields 0. Uses `mid <= n / mid` instead of `mid * mid <= n` so it never overflows.
+Integer square root: the largest `r` with `r*r <= n` (`isqrt(0)` is 0). A negative `n` has no real square root, so it is a contract violation (RFC-0044 rule 3): abort naming the bad argument rather than silently returning 0. Uses `mid <= n / mid` instead of `mid * mid <= n` so it never overflows.
 
 #### `fn is_perfect_square(n: Int) -> Bool`
 
@@ -1576,7 +1566,7 @@ A type's structure. `kind` is "record" (one constructor with named fields), "sum
 
 #### `fn derive_deserialize(t: TypeInfo) -> String`
 
-`derive(Deserialize)` generates `from_json` for a record (the caller validates the shape). It decodes and coerces each field, returning on the first error. There is no matching `Serialize` derive, because reflection (`json.value_of`, `stringify`, `Into(Json)`) already encodes any value, so only this reconstruction is per-type. The generated code uses only json/result/list/option.
+`derive(Deserialize)` generates `from_json` for a record (the caller validates the shape). It decodes and coerces each field, returning on the first error. There is no matching `Serialize` derive, because reflection (`json.from_value`, `stringify`, `Into(Json)`) already encodes any value, so only this reconstruction is per-type. The generated code uses only json/result/list/option.
 
 ## `oauth`
 
@@ -1896,7 +1886,7 @@ A capability is rendered the way the compiler's footprint prints it: "Console", 
 
 Whether `declared` covers `demanded` (same kind, broad enough rights).
 
-#### `fn covered(declared: List(String), demanded: String) -> Bool`
+#### `fn any_covers(declared: List(String), demanded: String) -> Bool`
 
 Whether any capability in `declared` covers `demanded`.
 
@@ -1962,7 +1952,7 @@ Parse `major.minor.patch` (missing trailing components default to 0). Errors on 
 
 -1 if a < b, 0 if equal, 1 if a > b. `Version` derives `Ord`, so callers that only need a Bool can compare with `<` / `>` / `==` directly.
 
-#### `fn lt(a: Version, b: Version) -> Bool`
+#### `fn less(a: Version, b: Version) -> Bool`
 
 #### `fn parse_req(s: String) -> Result(Req, String)`
 
@@ -2208,9 +2198,9 @@ Whether `needle` occurs in `s`.
 
 #### `fn ends_with(s: String, suffix: String) -> Bool`
 
-#### `fn index_of(s: String, needle: String) -> Int`
+#### `fn index_of(s: String, needle: String) -> Option(Int)`
 
-The character index (counted by Unicode scalar) of the first occurrence of `needle`, or -1.
+The character index (counted by Unicode scalar) of the first occurrence of `needle` as `Some`, or `None` when `needle` does not occur (RFC-0044 rule 1: absence is `Option`, never a -1 sentinel). For a bare yes/no, use `contains`.
 
 #### `fn replace(var s: String, from: String, to: String) -> String`
 
@@ -2258,9 +2248,9 @@ Remove `prefix` from the front of `s` when present; otherwise return `s` unchang
 
 Remove `suffix` from the end of `s` when present; otherwise return `s` unchanged. The complement of the `ends_with` builtin.
 
-#### `fn char_at(s: String, i: Int) -> String`
+#### `fn char_at(s: String, i: Int) -> Option(String)`
 
-The single character at character index `i` (counted by Unicode scalar), or "" when `i` is out of range. A readable shorthand over `substring`.
+The single character (as a String) at character index `i` (counted by Unicode scalar) as `Some`, or `None` when `i` is out of range (RFC-0044 rule 1: absence is `Option`, never a "" sentinel). For a clamping view use `substring`.
 
 #### `fn is_empty(s: String) -> Bool`
 
@@ -2294,9 +2284,9 @@ Replace only the first occurrence of `from` with `to`; return `s` unchanged when
 
 Split at the first occurrence of `sep` into `(before, after)`, with `sep` itself dropped. When `sep` is absent, returns `(s, "")`. Handy for parsing `key=value` or `host:port`. Counted by Unicode scalar.
 
-#### `fn last_index_of(s: String, sep: String) -> Int`
+#### `fn last_index_of(s: String, sep: String) -> Option(Int)`
 
-The index of the LAST occurrence of `sep` in `s`, or -1 when absent (and -1 for an empty `sep`). The right-to-left companion of the `index_of` builtin.
+The character index of the LAST occurrence of `sep` in `s` as `Some`, or `None` when absent or `sep` is empty (RFC-0044 rule 1: absence is `Option`, never -1). The right-to-left companion of `index_of`.
 
 #### `fn rsplit_once(s: String, sep: String) -> (String, String)`
 
@@ -2479,7 +2469,7 @@ A DateTime from civil UTC components, validated — `civil(2026, 2, 30, ...)` is
 
 #### `fn days_in_month(y: Int, mo: Int) -> Int`
 
-Days in a month, honoring leap February.
+Days in a month, honoring leap February. A month outside 1..12 is a contract violation (RFC-0044 rule 3): abort naming the bad argument rather than silently returning 31 (the old `_ -> 31` catch-all).
 
 #### `fn parse_iso8601(text: String) -> Result(DateTime, String)`
 
@@ -2529,7 +2519,7 @@ A decoded TOML value (`toml.decode`), the structured counterpart of the string-q
 
 #### `fn decode(text: String) -> Result(Toml, String)`
 
-Parse a whole TOML document into a `Toml` tree (always a `TomlTable`). Supports top-level keys, `[section]` and dotted `[a.b]` tables, `#` comments, and `string`/`int`/`bool`/array values. Always succeeds — malformed lines are skipped — so the result is `Ok`; the `Result` shape mirrors `json.decode`.
+Parse a whole TOML document into a `Toml` tree (always a `TomlTable`). Supports top-level keys, `[section]` and dotted `[a.b]` tables, `#` comments, and `string`/`int`/`bool`/array values. Genuinely fallible (RFC-0044 rule 2): a non-blank, non-comment line that is neither a `[section]` header nor a `key = value` pair is structurally malformed, so decoding returns `Err` naming the offending line. The `Result` shape mirrors `json.decode`.
 
 #### `fn get(text: String, path: String) -> Option(String)`
 

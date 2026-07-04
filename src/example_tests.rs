@@ -1147,12 +1147,13 @@
                 prop_assert_eq!(link_run(&src), vec!["y".to_string()]);
             }
 
-            /// A single CSV field round-trips through encode/parse — including
+            /// A single CSV field round-trips through encode/decode — including
             /// embedded commas, quotes, and newlines (the cases that need quoting).
+            /// `csv.encode` never emits an unterminated quote, so `decode` is `Ok`.
             #[test]
             fn csv_field_roundtrips(s in "[a-zA-Z0-9 ,\"\n]{0,24}") {
                 let src = format!(
-                    "import csv\nfn main(console: Console):\n    let s = \"{}\"\n    let rows = csv.parse(csv.encode([[s]]))\n    print(console, yn(list.length(rows) == 1 && list.length(list.at(rows, 0)) == 1 && list.at(list.at(rows, 0), 0) == s))\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n",
+                    "import csv\nfn ok_rows(r: Result(List(List(String)), String)) -> List(List(String)):\n    match r:\n        Ok(rows) -> rows\n        Err(_) -> []\nfn main(console: Console):\n    let s = \"{}\"\n    let rows = ok_rows(csv.decode(csv.encode([[s]])))\n    print(console, yn(list.length(rows) == 1 && list.length(list.at(rows, 0)) == 1 && list.at(list.at(rows, 0), 0) == s))\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n",
                     esc(&s)
                 );
                 prop_assert_eq!(link_run(&src), vec!["y".to_string()]);
@@ -1187,7 +1188,7 @@
             #[test]
             fn rle_round_trips_over_digit_free_text(s in "[a-zA-Z ]{0,40}") {
                 let src = format!(
-                    "import string\nimport ascii\n\nfn encode(t: String) -> String:\n    let cs = string.chars(t)\n    let n = list.length(cs)\n    var out = \"\"\n    var i = 0\n    while i < n:\n        let c = list.at(cs, i)\n        var k = 0\n        while i < n && list.at(cs, i) == c:\n            k = k + 1\n            i = i + 1\n        out = out + __render(k) + c\n    out\n\nfn decode(e: String) -> String:\n    let cs = string.chars(e)\n    let n = list.length(cs)\n    var out = \"\"\n    var i = 0\n    while i < n:\n        var k = 0\n        while i < n && ascii.is_digit(list.at(cs, i)):\n            k = k * 10 + ascii.to_digit(list.at(cs, i))\n            i = i + 1\n        if i < n:\n            out = out + string.repeat(list.at(cs, i), k)\n            i = i + 1\n    out\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n\nfn main(console: Console):\n    let s = \"{}\"\n    print(console, yn(decode(encode(s)) == s))\n",
+                    "import string\nimport ascii\n\nfn encode(t: String) -> String:\n    let cs = string.chars(t)\n    let n = list.length(cs)\n    var out = \"\"\n    var i = 0\n    while i < n:\n        let c = list.at(cs, i)\n        var k = 0\n        while i < n && list.at(cs, i) == c:\n            k = k + 1\n            i = i + 1\n        out = out + __render(k) + c\n    out\n\nfn decode(e: String) -> String:\n    let cs = string.chars(e)\n    let n = list.length(cs)\n    var out = \"\"\n    var i = 0\n    while i < n:\n        var k = 0\n        while i < n && ascii.is_digit(list.at(cs, i)):\n            k = k * 10 + (ascii.to_digit(list.at(cs, i)) ?? 0)\n            i = i + 1\n        if i < n:\n            out = out + string.repeat(list.at(cs, i), k)\n            i = i + 1\n    out\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n\nfn main(console: Console):\n    let s = \"{}\"\n    print(console, yn(decode(encode(s)) == s))\n",
                     esc(&s)
                 );
                 prop_assert_eq!(link_run(&src), vec!["y".to_string()]);
@@ -1371,11 +1372,11 @@ fn main(console: Console):
         );
     }
 
-    /// `encoding.base64url_of_hex` — base64url (no padding) of bytes given as hex.
+    /// `encoding.hex_to_base64url` — base64url (no padding) of bytes given as hex.
     #[test]
     fn encoding_base64url_of_hex_matches() {
         // hex("test-challenge") -> base64url "dGVzdC1jaGFsbGVuZ2U" (WebAuthn challenge form).
-        let p = "import encoding\nfn main(console: Console):\n    print(console, encoding.base64url_of_hex(\"746573742d6368616c6c656e6765\"))\n";
+        let p = "import encoding\nfn main(console: Console):\n    print(console, encoding.hex_to_base64url(\"746573742d6368616c6c656e6765\"))\n";
         assert_eq!(link_run(p), vec!["dGVzdC1jaGFsbGVuZ2U"]);
     }
 
@@ -2032,7 +2033,7 @@ fn main(console: Console):
     /// use them — which is exactly what makes them monomorphize on WASM.
     #[test]
     fn generic_equality_on_records_is_structural() {
-        let src = "import list\nimport cmp\n\ntype Point derive(PartialEq, Eq):\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let pts = [Point(1, 2), Point(3, 4)]\n    let probe = Point(1 + 2, 4)\n    print(console, \"${list.contains(pts, probe)}\")\n    print(console, \"${list.index_of(pts, Point(1, 2))}\")\n";
+        let src = "import list\nimport cmp\n\ntype Point derive(PartialEq, Eq):\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let pts = [Point(1, 2), Point(3, 4)]\n    let probe = Point(1 + 2, 4)\n    print(console, \"${list.contains(pts, probe)}\")\n    print(console, \"${list.index_of(pts, Point(1, 2)) ?? -1}\")\n";
         let want: Vec<String> = ["true", "0"].iter().map(|s| s.to_string()).collect();
         assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
@@ -2648,6 +2649,24 @@ fn main(console: Console):
         Err(e) -> print(console, e)
 "#;
         let want = vec!["TomlTable([(title, TomlString(demo)), (port, TomlInt(8080)), (enabled, TomlBool(true)), (tags, TomlArray([TomlString(a), TomlString(b)])), (server, TomlTable([(host, TomlString(localhost)), (workers, TomlInt(4)), (tls, TomlTable([(enabled, TomlBool(false))]))]))])".to_string()];
+        assert_eq!(link_run(src), want.clone(), "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// (RFC-0044 rule 2) `toml.decode`'s `Err` is reachable: a non-blank,
+    /// non-comment line that is neither a `[section]` header nor a `key = value`
+    /// pair is malformed, and decoding errors naming the offending line — the
+    /// always-`Ok` mimicry the RFC banned. Both backends agree.
+    #[test]
+    fn toml_decode_errors_on_a_malformed_line() {
+        let src = r#"import toml
+
+fn main(console: Console):
+    match toml.decode("title = \"ok\"\nthis line has no equals\n"):
+        Ok(_) -> print(console, "unexpected-ok")
+        Err(e) -> print(console, e)
+"#;
+        let want = vec!["`this line has no equals` is not a TOML line (expected `key = value`, a `[section]` header, or a `#` comment)".to_string()];
         assert_eq!(link_run(src), want.clone(), "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
     }
@@ -4077,6 +4096,58 @@ fn yn(b: Bool) -> String:
         }
     }
 
+    /// (RFC-0044 rule 3) The pure-witchy std contract-violation aborts: a bad
+    /// argument that used to silently default now aborts, with the SAME message
+    /// on both backends (they run the identical std source; RFC-0045 routes the
+    /// message). Each case pairs a program with its message core.
+    #[test]
+    fn std_contract_violations_abort_on_both_backends() {
+        let cases: &[(&str, &str)] = &[
+            (
+                "import math\nfn main(console: Console):\n    print(console, __render(math.factorial(-5)))\n",
+                "math.factorial: `-5` is negative (expected n >= 0)",
+            ),
+            (
+                "import math\nfn main(console: Console):\n    print(console, __render(math.pow(2, -1)))\n",
+                "math.pow: exponent `-1` is negative (expected exp >= 0)",
+            ),
+            (
+                "import math\nfn main(console: Console):\n    print(console, __render(math.isqrt(-5)))\n",
+                "math.isqrt: `-5` is negative (expected n >= 0)",
+            ),
+            (
+                "import time\nfn main(console: Console):\n    print(console, __render(time.days_in_month(2026, 13)))\n",
+                "time.days_in_month: month `13` is out of range (expected 1..12)",
+            ),
+        ];
+        for (src, want_core) in cases {
+            // The interpreter resolves the std bodies at run time only when they are
+            // linked in (these are real fn bodies, not builtins), so link first.
+            let linked = resolve_std_src(src);
+            let ierr = interpreter::run_module(linked.clone(), ".", Vec::new())
+                .expect_err("interpreter must abort");
+            assert!(
+                ierr.message.ends_with(want_core),
+                "interpreter core mismatch: got `{}`, want suffix `{want_core}`",
+                ierr.message
+            );
+            let bytes = codegen::compile_module_binary(&linked)
+                .expect("compile")
+                .expect("the binary path lowers this program");
+            let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort");
+            let ccore = cerr
+                .strip_prefix("runtime error: ")
+                .unwrap_or_else(|| panic!("compiled abort not routed: `{cerr}`"));
+            assert_eq!(ccore, *want_core, "compiled abort core mismatch for src:\n{src}");
+        }
+        // The valid-boundary values still work (no over-eager abort): factorial(0),
+        // pow(x, 0), isqrt(0), days_in_month for every month 1..12.
+        let ok = "import math\nimport time\nfn main(console: Console):\n    print(console, __render(math.factorial(0)))\n    print(console, __render(math.pow(2, 0)))\n    print(console, __render(math.isqrt(0)))\n    print(console, __render(time.days_in_month(2024, 2)))\n    print(console, __render(time.days_in_month(2026, 2)))\n    print(console, __render(time.days_in_month(2026, 12)))\n";
+        let want = vec!["1", "1", "0", "29", "28", "31"];
+        assert_eq!(link_run(ok), want, "interpreter boundary");
+        assert_eq!(wasm_run(ok), want, "compiled boundary");
+    }
+
     /// `now` (Clock) and `get_env` (Env) compile to capability-gated host
     /// imports. `get_env` is deterministic given the process env, so both
     /// backends must agree exactly; `now` is wall-clock, so each backend is
@@ -5498,29 +5569,40 @@ fn yn(b: Bool) -> String:
 
     /// `std/csv` round-trips RFC-4180-ish CSV: quoted fields with embedded commas,
     /// doubled quotes (`""`), proper re-quoting on encode, and header records.
+    /// `decode`/`decode_records` return `Result` (RFC-0044 rule 2) — the last two
+    /// lines exercise the reachable `Err` on an unterminated quoted field.
     #[test]
     fn csv_module_parses_quotes_and_encodes() {
         let src = r#"import csv
 import string
 
+fn ok_rows(r: Result(List(List(String)), String)) -> List(List(String)):
+    match r:
+        Ok(rows) -> rows
+        Err(_) -> []
+
 fn main(console: Console):
     let text = "name,city\nAda,\"London, UK\"\nGrace,\"NY\"\"C\"\"\"\n"
-    let rows = csv.parse(text)
+    let rows = ok_rows(csv.decode(text))
     print(console, __render(list.length(rows)))
     print(console, list.at(list.at(rows, 1), 1))
     print(console, list.at(list.at(rows, 2), 1))
     let enc = csv.encode([["a", "b,c"], ["d\"e", "f"]])
     print(console, bs(enc == "a,\"b,c\"\n\"d\"\"e\",f\n"))
-    print(console, bs(csv.encode(csv.parse(enc)) == enc))
-    let recs = csv.parse_records(text)
-    print(console, __render(list.length(recs)) + ":" + dict.get_or(list.at(recs, 0), "city", "?"))
+    print(console, bs(csv.encode(ok_rows(csv.decode(enc))) == enc))
+    match csv.decode_records(text):
+        Ok(recs) -> print(console, __render(list.length(recs)) + ":" + dict.get_or(list.at(recs, 0), "city", "?"))
+        Err(msg) -> print(console, "err:" + msg)
+    match csv.decode("a,\"unterminated\n"):
+        Ok(_) -> print(console, "unexpected-ok")
+        Err(_) -> print(console, "err")
 
 fn bs(b: Bool) -> String:
     if b: "y" else: "n"
 "#;
         assert_eq!(
             link_run(src),
-            vec!["3", "London, UK", "NY\"C\"", "y", "y", "2:London, UK"]
+            vec!["3", "London, UK", "NY\"C\"", "y", "y", "2:London, UK", "err"]
         );
     }
 
@@ -5612,7 +5694,7 @@ fn main(console: Console):
     print(console, yes(rights.covers("Net[Connect]", "Net")))
     print(console, yes(rights.covers("Net[Connect, Tcp]", "Net[Connect]")))
     print(console, yes(rights.covers("Dir", "Console")))
-    print(console, yes(rights.covered(["Console", "Dir[Read]"], "Dir[Read]")))
+    print(console, yes(rights.any_covers(["Console", "Dir[Read]"], "Dir[Read]")))
     print(console, list.join(rights.uncovered(["Net[Connect]"], ["Net", "Console"]), "|"))
 
 fn yes(b: Bool) -> String:
@@ -5842,7 +5924,7 @@ fn main(console: Console):
                 r#"
 fn main(console: Console):
     print(console, string.replace("a,b,c", ",", "-"))
-    print(console, __render(string.index_of("hello", "l")))
+    print(console, __render(string.find("hello", "l")))
     print(console, string.substring("hello", 1, 4))
     for w in string.split("the cat sat", " "):
         print(console, w)
@@ -5950,7 +6032,7 @@ fn main(console: Console):
     print(console, __render(list.sum(xs)))
     print(console, __render(list.is_empty(xs)))
     print(console, __render(list.is_empty(list.filter(xs, fn(n: Int): (n > 100)))))
-    print(console, __render(list.count(xs, fn(n: Int): ((n % 2) == 0))))
+    print(console, __render(list.count_where(xs, fn(n: Int): ((n % 2) == 0))))
 "#;
         let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -6107,20 +6189,22 @@ fn main(console: Console):
 
     #[test]
     fn std_list_find_index_backends_agree() {
-        // find_index returns the position of the first predicate match, or -1.
+        // RFC-0049: `find_index` is deleted; `position` is the by-PREDICATE
+        // Option-index form (it took over the role find_index vacated).
+        // `?? -1` (RFC-0048) recovers the old sentinel for a compact assertion.
         let client = r#"
 import list
 
 fn main(console: Console):
     let xs = [3, 8, 1, 9, 4]
-    print(console, __render(list.find_index(xs, fn(n: Int): (n > 5))))
-    print(console, __render(list.find_index(xs, fn(n: Int): (n > 100))))
-    print(console, __render(list.find_index(xs, fn(n: Int): (n == 1))))
+    print(console, __render(list.position(xs, fn(n: Int): (n > 5)) ?? -1))
+    print(console, __render(list.position(xs, fn(n: Int): (n > 100)) ?? -1))
+    print(console, __render(list.position(xs, fn(n: Int): (n == 1)) ?? -1))
 "#;
         let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "find_index diverged");
+        assert_eq!(interpreted, compiled, "position diverged");
         assert_eq!(compiled, vec!["1", "-1", "2"]);
     }
 
@@ -6491,9 +6575,9 @@ fn digit_sum(s: String) -> Int:
     var total = 0
     var i = 0
     while (i < string.char_count(s)):
-        let c = string.char_at(s, i)
+        let c = string.char_at(s, i) ?? ""
         if ascii.is_digit(c):
-            total = (total + ascii.to_digit(c))
+            total = (total + (ascii.to_digit(c) ?? 0))
         i = (i + 1)
     total
 
@@ -6503,8 +6587,8 @@ fn main(console: Console):
     print(console, __render(ascii.is_alpha("Q")))
     print(console, __render(ascii.is_alnum("_")))
     print(console, __render(ascii.is_space("\t")))
-    print(console, __render(ascii.to_digit("4")))
-    print(console, __render(ascii.to_digit("z")))
+    print(console, __render(ascii.to_digit("4") ?? -1))
+    print(console, __render(ascii.to_digit("z") ?? -1))
     print(console, __render(digit_sum("a1b2c3")))
     print(console, __render(ascii.all_digits("12345")))
     print(console, __render(ascii.all_digits("12a45")))
@@ -6866,7 +6950,10 @@ fn main(console: Console):
     #[test]
     fn math_isqrt_and_perfect_square_backends_agree() {
         // isqrt floors the square root (overflow-safe); is_perfect_square is
-        // true exactly on 0,1,4,9,... and false for negatives.
+        // true exactly on 0,1,4,9,... and false for negatives. A negative isqrt
+        // argument is a rule-3 abort (RFC-0044), covered by
+        // std_contract_violations_abort_on_both_backends; is_perfect_square
+        // short-circuits negatives to false without calling isqrt.
         let client = r#"
 import math
 import list
@@ -6876,7 +6963,6 @@ fn main(console: Console):
     print(console, list.join(list.map(roots, fn(n: Int): __render(n)), ","))
     let flags = list.map([0, 1, 2, 4, 9, 10, 16, 17], fn(n: Int): if math.is_perfect_square(n): "T" else: "F")
     print(console, list.join(flags, ""))
-    print(console, __render(math.isqrt(-5)))
     print(console, if math.is_perfect_square(-4): "T" else: "F")
 "#;
         let sources = [
@@ -6889,7 +6975,7 @@ fn main(console: Console):
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
         assert_eq!(interpreted, compiled, "isqrt/is_perfect_square diverged");
-        assert_eq!(compiled, vec!["0,1,1,1,2,2,3,3,4,10,9", "TTFTTFTF", "0", "F"]);
+        assert_eq!(compiled, vec!["0,1,1,1,2,2,3,3,4,10,9", "TTFTTFTF", "F"]);
     }
 
     #[test]
@@ -7171,8 +7257,8 @@ fn main(console: Console):
     print(console, show2(string.split_once("a.b.c", ".")))
     print(console, show2(string.rsplit_once("nodot", ".")))
     print(console, show2(string.rsplit_once("file.tar.gz", ".")))
-    print(console, __render(string.last_index_of("a.b.c", ".")))
-    print(console, __render(string.last_index_of("nodot", ".")))
+    print(console, __render(string.last_index_of("a.b.c", ".") ?? -1))
+    print(console, __render(string.last_index_of("nodot", ".") ?? -1))
 "#;
         let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -7505,19 +7591,18 @@ fn main(console: Console):
     #[test]
     fn duration_parse_backends_agree() {
         // parse is the inverse of human, returning a Duration (ms): unit-tagged
-        // (incl. ms/hr) or bare-ms input, None on junk/dangling, and
-        // parse(human(d)) round-trips.
+        // (incl. ms/hr) or bare-ms input, Err on junk/dangling (RFC-0044 rule 2),
+        // and parse(human(d)) round-trips.
         let client = r#"
 import duration
-import option
-fn show(o: Option(Duration)) -> String:
+fn show(o: Result(Duration, String)) -> String:
     match o:
-        Some(d) -> __render(duration.to_milliseconds(d))
-        None -> "none"
+        Ok(d) -> __render(duration.to_milliseconds(d))
+        Err(_) -> "none"
 fn roundtrip(d: Duration) -> String:
     match duration.parse(duration.human(d)):
-        Some(p) -> if p == d: "ok" else: "bad"
-        None -> "none"
+        Ok(p) -> if p == d: "ok" else: "bad"
+        Err(_) -> "none"
 fn main(console: Console):
     print(console, show(duration.parse("1h2m3s")))
     print(console, show(duration.parse("500ms")))
@@ -9122,10 +9207,13 @@ fn main(console: Console):
                 "fn main(console: Console):\n    print(console, __render(string.ends_with(\"hello\", \"llo\")))\n    print(console, __render(string.ends_with(\"hello\", \"hel\")))\n    print(console, __render(string.ends_with(\"hello\", \"\")))\n",
                 vec!["true".to_string(), "false".to_string(), "true".to_string()],
             ),
-            // string.index_of ($str_index_of → $find_byte + $byte_to_char, the
-            // byte-offset → char-index conversion) on the binary path.
+            // string.find ($str_index_of → $find_byte + $byte_to_char, the
+            // byte-offset → char-index conversion) on the binary path. `find` is
+            // the raw -1-sentinel intrinsic behind the public `index_of` (which
+            // RFC-0044 rule 1 made return Option); this corpus links only `main`
+            // (no std), so it exercises the builtin directly.
             (
-                "fn main(console: Console):\n    print(console, __render(string.index_of(\"hello\", \"ll\")))\n    print(console, __render(string.index_of(\"hello\", \"xyz\")))\n",
+                "fn main(console: Console):\n    print(console, __render(string.find(\"hello\", \"ll\")))\n    print(console, __render(string.find(\"hello\", \"xyz\")))\n",
                 vec!["2".to_string(), "-1".to_string()],
             ),
             // string.substring ($str_substring → $char_to_byte + $substr, a
@@ -10275,7 +10363,7 @@ fn main(console: Console):
     /// for reading `iss` to select the verification key before `verify_oidc`. Both backends.
     #[test]
     fn jwt_claims_unverified_reads_routing_fields() {
-        let src = "import jwt\nimport json\nimport encoding\nfn main(console: Console):\n    let payload = encoding.base64url_of_hex(encoding.hex_encode(\"{\\\"iss\\\":\\\"acme\\\",\\\"sub\\\":\\\"x\\\"}\"))\n    match jwt.claims_unverified(\"aaa.\" + payload + \".bbb\"):\n        Err(e) -> print(console, e)\n        Ok(claims) -> print(console, json.get_string(claims, \"iss\").unwrap_or(\"?\"))\n";
+        let src = "import jwt\nimport json\nimport encoding\nfn main(console: Console):\n    let payload = encoding.hex_to_base64url(encoding.hex_encode(\"{\\\"iss\\\":\\\"acme\\\",\\\"sub\\\":\\\"x\\\"}\"))\n    match jwt.claims_unverified(\"aaa.\" + payload + \".bbb\"):\n        Err(e) -> print(console, e)\n        Ok(claims) -> print(console, json.get_string(claims, \"iss\").unwrap_or(\"?\"))\n";
         let expected = vec!["acme".to_string()];
         assert_eq!(link_run(src), expected, "interp");
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
@@ -10778,7 +10866,7 @@ fn main(console: Console):
     /// `base64url_decode` yields the text; identical on both backends.
     #[test]
     fn base64url_decode_backends_agree() {
-        let src = "import encoding\nfn main(console: Console):\n    let e = encoding.base64url_of_hex(\"7b2274223a317d\")\n    print(console, encoding.base64url_to_hex(e))\n    print(console, encoding.base64url_decode(e))\n";
+        let src = "import encoding\nfn main(console: Console):\n    let e = encoding.hex_to_base64url(\"7b2274223a317d\")\n    print(console, encoding.base64url_to_hex(e))\n    print(console, encoding.base64url_decode(e))\n";
         let expected = vec!["7b2274223a317d".to_string(), "{\"t\":1}".to_string()];
         assert_eq!(link_run(src), expected, "interp");
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
@@ -11209,12 +11297,12 @@ fn main(console: Console):
     print(console, __render(if string.contains("hello world", "world"): 1 else: 0))
     print(console, __render(if string.contains("abc", "xyz"): 1 else: 0))
     print(console, __render(if string.contains("abc", ""): 1 else: 0))
-    print(console, __render(string.index_of("hello", "l")))
-    print(console, __render(string.index_of("hello", "z")))
+    print(console, __render(string.find("hello", "l")))
+    print(console, __render(string.find("hello", "z")))
     print(console, string.substring("hello", 1, 4))
     print(console, string.substring("hi", 0, 100))
     print(console, string.substring("hi", 5, 10))
-    print(console, __render(string.index_of("café!", "!")))
+    print(console, __render(string.find("café!", "!")))
     print(console, string.substring("café!", 3, 5))
 "#;
         assert_eq!(
@@ -11225,11 +11313,12 @@ fn main(console: Console):
 
     #[test]
     fn parse_kv_example_runs_on_wasm() {
-        // The `key=value` parser example now compiles end-to-end: index_of +
+        // The `key=value` parser example compiles end-to-end: index_of +
         // substring + string_length + ends_with + __render(Bool), matching the
-        // interpreter.
+        // interpreter. `.index_of` resolves to the std `string.index_of`
+        // (Option-returning, RFC-0044), so it needs the std-linking `wasm_run`.
         assert_eq!(
-            run_on_wasm(include_str!("../examples/parse_kv/src/parse_kv.witchy")),
+            wasm_run(include_str!("../examples/parse_kv/src/parse_kv.witchy")),
             vec!["timeout", "30", "true"]
         );
     }
@@ -13232,7 +13321,7 @@ import list
 fn main(console: Console):
     let words = ["a", "bb", "ccc"]
     print(console, __render(list.contains(words, "bb")))
-    print(console, __render(list.index_of(words, "ccc")))
+    print(console, __render(list.index_of(words, "ccc") ?? -1))
 "#;
         let out = interpreter::run_program(
             &[("list", crate::bundled_module("list").unwrap()), ("main", client)],
@@ -14268,15 +14357,16 @@ fn main(console: Console):
 
     #[test]
     fn std_string_char_at_backends_agree() {
-        // char_at returns the single character at an index, or "" out of range.
+        // RFC-0044 rule 1: char_at returns `Some(c)` in range, `None` out of range
+        // (no more "" sentinel). `?? "?"` recovers a display char for the miss.
         let client = r#"
 import string
 
 fn main(console: Console):
-    print(console, string.char_at("witchy", 0))
-    print(console, string.char_at("witchy", 5))
-    print(console, (("[" + string.char_at("witchy", 10)) + "]"))
-    print(console, (("[" + string.char_at("", 0)) + "]"))
+    print(console, string.char_at("witchy", 0) ?? "?")
+    print(console, string.char_at("witchy", 5) ?? "?")
+    print(console, (("[" + (string.char_at("witchy", 10) ?? "")) + "]"))
+    print(console, (("[" + (string.char_at("", 0) ?? "")) + "]"))
 "#;
         let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -14860,13 +14950,13 @@ fn main(console: Console):
     print(console, __render(option.unwrap_or(list.min([3, 1, 4, 1, 5]), 0)))
     print(console, __render(option.unwrap_or(list.max([3, 1, 4, 1, 5]), 0)))
     print(console, __render(option.is_none(list.min([]))))
-    print(console, __render(option.unwrap_or(list.position([10, 20, 30], 20), (0 - 1))))
-    print(console, __render(option.is_none(list.position([10, 20], 99))))
+    print(console, __render(option.unwrap_or(list.index_of([10, 20, 30], 20), (0 - 1))))
+    print(console, __render(option.is_none(list.index_of([10, 20], 99))))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "list min/max/position diverged");
+        assert_eq!(interpreted, compiled, "list min/max/index_of diverged");
         assert_eq!(compiled, vec!["1", "5", "true", "1", "true"]);
     }
 
@@ -15202,8 +15292,8 @@ fn main(console: Console):
     print(console, (("[" + string.substring("", 0, 5)) + "]"))
     print(console, (("[" + string.substring("hello", 3, 1)) + "]"))
     print(console, string.substring("hello", 2, 100))
-    print(console, __render(string.index_of("hello", "")))
-    print(console, __render(string.index_of("hello", "z")))
+    print(console, __render(string.find("hello", "")))
+    print(console, __render(string.find("hello", "z")))
     print(console, (("[" + (("" + "x") + "")) + "]"))
     print(console, __render(string.length("")))
 "#;
@@ -15440,7 +15530,7 @@ fn main(console: Console):
     /// bound discharges to that impl, and both backends agree.
     #[test]
     fn rfc0046_eq_bounded_list_search_compiles_for_records_on_wasm() {
-        let src = "import list\nimport cmp\n\ntype Point derive(PartialEq, Eq):\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let ps = [Point(1, 2), Point(1, 2), Point(3, 4)]\n    let u = list.unique(ps)\n    print(console, \"${list.length(u)}\")\n    print(console, \"${list.contains(ps, Point(3, 4))}\")\n    print(console, \"${list.index_of(ps, Point(3, 4))}\")\n";
+        let src = "import list\nimport cmp\n\ntype Point derive(PartialEq, Eq):\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let ps = [Point(1, 2), Point(1, 2), Point(3, 4)]\n    let u = list.unique(ps)\n    print(console, \"${list.length(u)}\")\n    print(console, \"${list.contains(ps, Point(3, 4))}\")\n    print(console, \"${list.index_of(ps, Point(3, 4)) ?? -1}\")\n";
         let want = vec!["2".to_string(), "true".to_string(), "2".to_string()];
         assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
@@ -17174,8 +17264,11 @@ pub fn serve(console: Console, net: Net) -> Int:
 
     #[test]
     fn parse_kv_example() {
+        // Uses `setting.index_of("=")` → std `string.index_of` (now Option-returning,
+        // RFC-0044), so it must link std — `link_run` pulls in the `string` prelude,
+        // where the plain `interp` (builtins only) cannot resolve the std function.
         assert_eq!(
-            interp(include_str!("../examples/parse_kv/src/parse_kv.witchy")),
+            link_run(include_str!("../examples/parse_kv/src/parse_kv.witchy")),
             vec!["timeout", "30", "true"]
         );
     }
@@ -17463,7 +17556,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     /// JS DOM host shell (`web/witchy-runtime/glamour-dom.mjs`) consumes —
     /// `{"el":tag,"attrs":[["prop",k,v]|["on",evt,<msg-json>]],"kids":[...]}` /
     /// `{"text":"..."}`. The `On` binding embeds the msg via a caller-supplied
-    /// `msg_to_json` (here `json.value_of`), so an event handler round-trips as its
+    /// `msg_to_json` (here `json.from_value`), so an event handler round-trips as its
     /// message value. The serialized string must be IDENTICAL on both backends.
     #[test]
     fn glamour_to_json_serializes_the_wire_format_on_both_backends() {
@@ -17476,7 +17569,7 @@ pub fn serve(console: Console, net: Net) -> Int:
                    \x20   Dec\n\
                    \n\
                    fn msg_to_json(m: Msg) -> Json:\n\
-                   \x20   json.value_of(m)\n\
+                   \x20   json.from_value(m)\n\
                    \n\
                    fn main(console: Console):\n\
                    \x20   let view = element(\"div\", [prop(\"class\", \"c\")], [\n\
@@ -17765,4 +17858,77 @@ pub fn serve(console: Console, net: Net) -> Int:
             err.contains("mutates its receiver") && err.contains("mutable place"),
             "the immutable-place error must explain the fix, got: {err}"
         );
+    }
+
+    /// (RFC-0049) `dict.set_at` is deleted; the `d[k] = v` place-assign sugar is
+    /// retargeted to `dict.insert` once the receiver's type is known (Dict), while
+    /// `xs[i] = v` on a list still lowers to `list.set_at`. Both backends agree.
+    #[test]
+    fn rfc0049_dict_place_assign_retargets_to_insert() {
+        let src = "import dict\n\
+                   fn main(console: Console):\n\
+                   \x20   var d = dict.new()\n\
+                   \x20   d[\"a\"] = 1\n\
+                   \x20   d[\"b\"] = 2\n\
+                   \x20   d[\"a\"] = 9\n\
+                   \x20   var xs = [1, 2, 3]\n\
+                   \x20   xs[1] = 99\n\
+                   \x20   print(console, \"${dict.get_or(d, \"a\", 0)}\")\n\
+                   \x20   print(console, \"${dict.length(d)}\")\n\
+                   \x20   print(console, \"${list.at(xs, 1)}\")\n";
+        let expected = ["9", "2", "99"];
+        let linked = resolve_std_src(src);
+        assert_eq!(
+            interpreter::run_module(linked, ".", Vec::new()).expect("interp"),
+            expected
+        );
+        assert_eq!(wasm_run(src), expected, "wasm");
+    }
+
+    /// (RFC-0044 rule 1) `list.index_of` returns `Option(Int)` — `Some(i)` on a
+    /// hit, `None` on a miss — never a -1 sentinel; `list.position` is the
+    /// by-predicate Option search. `ascii.to_digit` is `Option(Int)` too. Both
+    /// backends agree on the Option shape and the `??` fallback.
+    #[test]
+    fn rfc0044_lookup_absence_is_option() {
+        let src = "import list\n\
+                   import ascii\n\
+                   fn main(console: Console):\n\
+                   \x20   let xs = [10, 20, 30]\n\
+                   \x20   print(console, \"${list.index_of(xs, 20) ?? -1}\")\n\
+                   \x20   print(console, \"${list.index_of(xs, 99) ?? -1}\")\n\
+                   \x20   print(console, \"${list.position(xs, fn(x: Int): x > 15) ?? -1}\")\n\
+                   \x20   print(console, \"${ascii.to_digit(\"7\") ?? -1}\")\n\
+                   \x20   print(console, \"${ascii.to_digit(\"z\") ?? -1}\")\n";
+        let expected = ["1", "-1", "1", "7", "-1"];
+        let linked = resolve_std_src(src);
+        assert_eq!(
+            interpreter::run_module(linked, ".", Vec::new()).expect("interp"),
+            expected
+        );
+        assert_eq!(wasm_run(src), expected, "wasm");
+    }
+
+    /// (RFC-0044 rule 1) The `string` search/index family returns `Option`, not a
+    /// `-1`/`""` sentinel: `index_of`/`last_index_of` -> `Option(Int)`, `char_at`
+    /// -> `Option(String)`. The private raw scan intrinsic (`string.find`, keyed
+    /// on the -1 ABI) still powers the tight std loops. Both backends agree.
+    #[test]
+    fn rfc0044_string_search_absence_is_option() {
+        let src = "import string\n\
+                   fn main(console: Console):\n\
+                   \x20   print(console, \"${string.index_of(\"hello\", \"ll\") ?? -1}\")\n\
+                   \x20   print(console, \"${string.index_of(\"hello\", \"z\") ?? -1}\")\n\
+                   \x20   print(console, \"${string.last_index_of(\"a.b.c\", \".\") ?? -1}\")\n\
+                   \x20   print(console, \"${string.last_index_of(\"abc\", \".\") ?? -1}\")\n\
+                   \x20   print(console, \"${string.char_at(\"hi\", 1) ?? \"?\"}\")\n\
+                   \x20   print(console, \"${string.char_at(\"hi\", 9) ?? \"?\"}\")\n\
+                   \x20   print(console, \"${string.count(\"banana\", \"a\")}\")\n";
+        let expected = ["2", "-1", "3", "-1", "i", "?", "3"];
+        let linked = resolve_std_src(src);
+        assert_eq!(
+            interpreter::run_module(linked, ".", Vec::new()).expect("interp"),
+            expected
+        );
+        assert_eq!(wasm_run(src), expected, "wasm");
     }

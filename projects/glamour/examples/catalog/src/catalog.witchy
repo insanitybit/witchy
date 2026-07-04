@@ -99,10 +99,10 @@ fn parse_msg(j: Json) -> Msg:
         None -> Search("")
 
 fn model_to_json(query: String) -> Json:
-    json.value_of(query)
+    json.from_value(query)
 
 fn msg_to_json(m: Msg) -> Json:
-    json.value_of(m)
+    json.from_value(m)
 
 pub fn export_step(ui: UiRoot, input: String) -> String:
     // (RFC-0039/0040) narrow the app-root token into a `UiRoute` (push under `/p`),

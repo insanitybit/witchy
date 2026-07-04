@@ -1,6 +1,6 @@
 // coven_record — a published version's signed metadata, and the canonical signing
 // payload it is verified against. `derive(Reflect)` encodes the record to JSON via
-// reflection (`json.value_of`) and `derive(Deserialize)` reconstructs it from JSON;
+// reflection (`json.from_value`) and `derive(Deserialize)` reconstructs it from JSON;
 // field order matches the Rust `Record`, so the bytes are identical. Records are
 // signed over `signing_payload` (a fixed line format byte-identical to
 // src/pm/registry.rs), not over the JSON, so a record signed here verifies under
@@ -65,7 +65,7 @@ pub fn sign_record(key: Secret, name: String, version: String, state: State, has
     let sw = state_wire(state)
     let sig = crypto.sign(key, signing_payload(name, version, sw, hash, rt, uploaded_by, promoted_by, factor, provenance, released_at))
     let rec = Record(name, version, sw, hash, rt, [], "guaranteed", uploaded_by, opt_str(promoted_by), opt_str(factor), opt_str(provenance), released_at, sig)
-    json.encode(json.value_of(rec))
+    json.encode(json.from_value(rec))
 
 // Decode a stored coven.json into a typed `Record` (or a parse-error message).
 pub fn parse(text: String) -> Result(Record, String):

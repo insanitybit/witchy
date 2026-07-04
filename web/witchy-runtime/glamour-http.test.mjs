@@ -157,10 +157,10 @@ fn parse_msg(j: Json) -> Msg:
         None -> Fetch
 
 fn model_to_json(model: String) -> Json:
-    json.value_of(model)
+    json.from_value(model)
 
 fn msg_to_json(m: Msg) -> Json:
-    json.value_of(m)
+    json.from_value(m)
 
 pub fn export_step(ui: UiRoot, input: String) -> String:
     let fetch = glamour.fetch_scope(ui, "fetcher", "GET", "/")

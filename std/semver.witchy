@@ -68,7 +68,7 @@ pub fn compare(a: Version, b: Version) -> Int:
     else:
         0
 
-pub fn lt(a: Version, b: Version) -> Bool:
+pub fn less(a: Version, b: Version) -> Bool:
     a < b
 
 // --- constraints -------------------------------------------------------------

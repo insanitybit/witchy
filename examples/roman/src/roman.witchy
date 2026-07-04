@@ -35,9 +35,9 @@ pub fn from_roman(s: String) -> Int:
     var total = 0
     var i = 0
     while i < s.length():
-        let cur = char_value(s.char_at(i))
+        let cur = char_value((s.char_at(i) ?? ""))
         // A value smaller than the one after it is subtracted (IV = 4, IX = 9).
-        if i + 1 < s.length() && cur < char_value(s.char_at(i + 1)):
+        if i + 1 < s.length() && cur < char_value((s.char_at(i + 1) ?? "")):
             total = total - cur
         else:
             total = total + cur

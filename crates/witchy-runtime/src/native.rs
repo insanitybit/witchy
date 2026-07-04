@@ -48,7 +48,7 @@ pub fn lookup(qualified: &str) -> Option<NativeFn> {
         "encoding.hex_encode" => Some(encoding::hex_encode),
         "encoding.hex_decode" => Some(encoding::hex_decode),
         "encoding.base64_encode" => Some(encoding::base64_encode),
-        "encoding.base64url_of_hex" => Some(encoding::base64url_of_hex),
+        "encoding.hex_to_base64url" => Some(encoding::hex_to_base64url),
         "encoding.base64_decode" => Some(encoding::base64_decode),
         "encoding.base64url_decode" => Some(encoding::base64url_decode),
         "encoding.base64url_to_hex" => Some(encoding::base64url_to_hex),
@@ -572,9 +572,9 @@ mod encoding {
     /// base64url (no padding; `-`/`_`) of the bytes given as a HEX string. The hex
     /// indirection lets binary round-trip through witchy's UTF-8 strings — e.g. a
     /// WebAuthn `clientDataJSON.challenge` is base64url of the raw challenge bytes.
-    pub fn base64url_of_hex(args: &[Value]) -> Result<Value, RuntimeError> {
+    pub fn hex_to_base64url(args: &[Value]) -> Result<Value, RuntimeError> {
         let [Value::Str(hexs)] = args else {
-            return Err(type_error("encoding.base64url_of_hex expects a hex String"));
+            return Err(type_error("encoding.hex_to_base64url expects a hex String"));
         };
         let bytes = hex_to_bytes(hexs);
         let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);

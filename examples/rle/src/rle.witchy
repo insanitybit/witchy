@@ -38,7 +38,7 @@ pub fn decode(encoded: String) -> String:
     while i < n:
         var count = 0
         while i < n && ascii.is_digit(chars.at(i)):
-            count = count * 10 + ascii.to_digit(chars.at(i))
+            count = count * 10 + (ascii.to_digit(chars.at(i)) ?? 0)
             i = i + 1
         if i < n:
             out = out + string.repeat(chars.at(i), count)

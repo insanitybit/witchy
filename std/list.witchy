@@ -280,13 +280,13 @@ pub fn min_by(xs: List(a), less: fn(a, a) -> Bool) -> Option(a):
                 best = x
         Some(best)
 
-// The index of the first element equal to `target` as `Some`, or `None` — the
-// Option-returning companion to `index_of` (which uses a -1 sentinel). The
-// `where a: Eq` bound makes the equality content-correct on both backends.
-pub fn position(xs: List(a), target: a) -> Option(Int) where a: Eq:
+// The index of the first element satisfying `pred` as `Some`, or `None` if none
+// do — the by-predicate search (`index_of` is the by-value search). One name per
+// axis, both `Option`, no sentinel (RFC-0044/0049).
+pub fn position(xs: List(a), pred: fn(a) -> Bool) -> Option(Int):
     var i = 0
     for x in xs:
-        if x == target:
+        if pred(x):
             return Some(i)
         i = i + 1
     None
@@ -334,7 +334,7 @@ fn min_len(xss: List(List(a))) -> Int:
     m
 
 // How many elements satisfy `pred`.
-pub fn count(xs: List(a), pred: fn(a) -> Bool) -> Int:
+pub fn count_where(xs: List(a), pred: fn(a) -> Bool) -> Int:
     var n = 0
     for x in xs:
         if pred(x):
@@ -374,16 +374,6 @@ pub fn repeat(x: a, n: Int) -> List(a):
         out = list.push(out, x)
         i = i + 1
     out
-
-// Index of the first element satisfying `pred`, or -1 if none do. (Like
-// `index_of`, but matching by predicate rather than value equality.)
-pub fn find_index(xs: List(a), pred: fn(a) -> Bool) -> Int:
-    var i = 0
-    for x in xs:
-        if pred(x):
-            return i
-        i = i + 1
-    0 - 1
 
 // Combine two lists element-wise with `f`, stopping at the shorter one.
 pub fn zip_with(xs: List(a), ys: List(b), f: fn(a, b) -> c) -> List(c):
@@ -491,15 +481,16 @@ pub fn all(xs: List(a), pred: fn(a) -> Bool) -> Bool:
             return false
     true
 
-// Index of the first element equal to `target`, or -1 if absent. The
+// The index of the first element equal to `target` as `Some`, or `None` if
+// absent (RFC-0044 rule 1: absence is `Option`, never a -1 sentinel). The
 // `where a: Eq` bound makes the equality content-correct on both backends.
-pub fn index_of(xs: List(a), target: a) -> Int where a: Eq:
+pub fn index_of(xs: List(a), target: a) -> Option(Int) where a: Eq:
     var i = 0
     for x in xs:
         if x == target:
-            return i
+            return Some(i)
         i = i + 1
-    0 - 1
+    None
 
 // The first `n` elements (fewer if the list is shorter).
 pub fn take(xs: List(a), n: Int) -> List(a):

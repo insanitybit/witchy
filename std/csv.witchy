@@ -1,16 +1,19 @@
-// csv — comma-separated values, parse and encode (RFC 4180-ish).
+// csv — comma-separated values, decode and encode (RFC 4180-ish).
 //
 // Fields are separated by commas and rows by newlines. A field that contains a
 // comma, a quote, or a newline is wrapped in double quotes, and a literal quote
-// inside such a field is doubled (`""`). The parser is a small character state
+// inside such a field is doubled (`""`). The decoder is a small character state
 // machine, so embedded commas/newlines/quotes round-trip through `encode`.
 
 import string
 import dict
 
-// Parse CSV text into rows of fields. A trailing newline is ignored; `\r\n` and
-// `\n` line endings both work.
-pub fn parse(text: String) -> List(List(String)):
+// Decode CSV text into rows of fields. A trailing newline is ignored; `\r\n` and
+// `\n` line endings both work. Genuinely fallible (RFC-0044 rule 2): a field that
+// opens a quote and never closes it is structurally malformed input, so decoding
+// returns `Err` naming the fault rather than silently absorbing it. Paired with
+// `encode`, and aligned with `json`/`toml` (serialization formats `decode`).
+pub fn decode(text: String) -> Result(List(List(String)), String):
     let chars = string.chars(text)
     let n = list.length(chars)
     var rows = []
@@ -49,10 +52,12 @@ pub fn parse(text: String) -> List(List(String)):
         else:
             field = field + ch
             i = i + 1
+    if in_quotes:
+        return Err("`" + text + "` has an unterminated quoted field (expected a closing `\"`)")
     // Flush a final row that had no trailing newline.
     if !string.is_empty(field) || list.length(row) > 0:
         rows = list.push(rows, list.push(row, field))
-    rows
+    Ok(rows)
 
 // Encode rows back to CSV text (each row newline-terminated), quoting any field
 // that needs it.
@@ -77,19 +82,20 @@ fn encode_field(f: String) -> String:
 fn needs_quoting(f: String) -> Bool:
     string.contains(f, ",") || string.contains(f, "\"") || string.contains(f, "\n") || string.contains(f, "\r")
 
-// Parse with the first row as a header: each remaining row becomes a Dict keyed
-// by the header columns (a short row's missing columns read as "").
-pub fn parse_records(text: String) -> List(Dict(String, String)):
+// Decode with the first row as a header: each remaining row becomes a Dict keyed
+// by the header columns (a short row's missing columns read as ""). Fallible for
+// the same reason as `decode` (it decodes first), so it returns `Result`.
+pub fn decode_records(text: String) -> Result(List(Dict(String, String)), String):
     var out = []
     var i = 0
     var header = []
-    for row in parse(text):
+    for row in decode(text)?:
         if i == 0:
             header = row
         else:
             out = list.push(out, zip_record(header, row))
         i = i + 1
-    out
+    Ok(out)
 
 fn zip_record(header: List(String), row: List(String)) -> Dict(String, String):
     var d = dict.new()

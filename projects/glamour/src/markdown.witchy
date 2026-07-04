@@ -100,14 +100,14 @@ fn is_table_row(line: String) -> Bool:
 // at least one dash. Alignment colons are tolerated but not (yet) applied as a text-align.
 fn is_table_separator(line: String) -> Bool:
     let t = string.trim(line)
-    string.starts_with(t, "|") && string.index_of(t, "-") >= 0 && only_chars(t, "|-: ")
+    string.starts_with(t, "|") && string.contains(t, "-") && only_chars(t, "|-: ")
 
 fn only_chars(s: String, allowed: String) -> Bool:
     var ok = true
     var i = 0
     let n = string.length(s)
     while i < n:
-        if string.index_of(allowed, string.char_at(s, i)) < 0:
+        if !string.contains(allowed, string.char_at(s, i) ?? ""):
             ok = false
         i = i + 1
     ok
@@ -135,9 +135,9 @@ fn inline(s: String) -> List(VNode(msg)):
     if string.is_empty(s):
         []
     else:
-        let ci = string.index_of(s, "`")
-        let bi = string.index_of(s, "**")
-        let ki = string.index_of(s, "[")
+        let ci = (string.index_of(s, "`") ?? -1)
+        let bi = (string.index_of(s, "**") ?? -1)
+        let ki = (string.index_of(s, "[") ?? -1)
         let first = min3(ci, bi, ki)
         if first < 0:
             [glamour.text(s)]
@@ -156,7 +156,7 @@ fn inline(s: String) -> List(VNode(msg)):
 fn span(s: String, at: Int, dlen: Int, marker: String, tag: String, head: List(VNode(msg))) -> List(VNode(msg)):
     let body_start = at + dlen
     let rest_from_body = string.substring(s, body_start, string.length(s))
-    let close = string.index_of(rest_from_body, marker)
+    let close = (string.index_of(rest_from_body, marker) ?? -1)
     if close < 0:
         list.concat(head, [glamour.text(string.substring(s, at, string.length(s)))])
     else:
@@ -170,14 +170,14 @@ fn span(s: String, at: Int, dlen: Int, marker: String, tag: String, head: List(V
 // `[` as a literal character and continues.
 fn link(s: String, at: Int, head: List(VNode(msg))) -> List(VNode(msg)):
     let tail = string.substring(s, at, string.length(s))
-    let close_br = string.index_of(tail, "](")
+    let close_br = string.index_of(tail, "](") ?? -1
     if close_br < 0:
         as_text_bracket(s, at, head)
     else:
         let label = string.substring(tail, 1, close_br)
         let url_start = close_br + 2
         let rest_tail = string.substring(tail, url_start, string.length(tail))
-        let close_par = string.index_of(rest_tail, ")")
+        let close_par = string.index_of(rest_tail, ")") ?? -1
         if close_par < 0:
             as_text_bracket(s, at, head)
         else:

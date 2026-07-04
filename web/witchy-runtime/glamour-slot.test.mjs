@@ -73,10 +73,10 @@ fn parse_msg(j: Json) -> Msg:
     Bump
 
 fn model_to_json(n: Int) -> Json:
-    json.value_of(n)
+    json.from_value(n)
 
 fn msg_to_json(m: Msg) -> Json:
-    json.value_of(m)
+    json.from_value(m)
 
 pub fn export_step(input: String) -> String:
     step_with(input, view, update, parse_model, parse_msg, model_to_json, msg_to_json)

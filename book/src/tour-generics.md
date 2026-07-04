@@ -175,7 +175,7 @@ Score(12, beta)
 - `derive(Reflect)` (with `import reflect`) makes the record *reflectable*, so
   the reflection-based encoders serialize it with no per-type code:
   `json.stringify(score)` returns `{"points":12,"label":"beta"}` and
-  `json.value_of(score)` the `Json` value. Scalars, lists, options, and nested
+  `json.from_value(score)` the `Json` value. Scalars, lists, options, and nested
   `derive(Reflect)` records all map. (There is **no** `derive(Json)` /
   `to_json`; serialization is reflective, only decoding is generated — next.)
   When you don't even want a named type, an [anonymous record](tour-data.md)

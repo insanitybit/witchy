@@ -231,7 +231,7 @@ function hexToBytes(s) {
 }
 
 // encoding(op, input) -> string. op: 0 hex_encode, 1 hex_decode, 2 base64_encode,
-// 3 base64_decode, 4 base64url_of_hex. Mirrors src/native.rs::encoding exactly.
+// 3 base64_decode, 4 hex_to_base64url. Mirrors src/native.rs::encoding exactly.
 function encodingOp(op, input /* Uint8Array */) {
   switch (op) {
     case 0: { // hex_encode of the UTF-8 bytes

@@ -1,5 +1,5 @@
 // salelib — aggregate a CSV of sales into per-product revenue. A pure library
-// rune (a path dependency of `sales`) showcasing std `csv` + `dict`: it parses
+// rune (a path dependency of `sales`) showcasing std `csv` + `dict`: it decodes
 // header-keyed records and folds them into a Dict keyed by product.
 
 import csv
@@ -7,14 +7,15 @@ import dict
 import string
 
 // Total revenue per product, from CSV text with a `date,product,amount` header.
-// A row's `amount` that isn't an integer contributes 0.
-pub fn revenue_by_product(text: String) -> Dict(String, Int):
+// A row's `amount` that isn't an integer contributes 0. `csv.decode_records` is
+// fallible (RFC-0044), so malformed CSV propagates as an `Err` via `?`.
+pub fn revenue_by_product(text: String) -> Result(Dict(String, Int), String):
     var totals = dict.new()
-    for record in csv.parse_records(text):
+    for record in csv.decode_records(text)?:
         let product = dict.get_or(record, "product", "(unknown)")
         let amount = parse_amount(dict.get_or(record, "amount", "0"))
         totals = dict.update(totals, product, 0, fn(running: Int): running + amount)
-    totals
+    Ok(totals)
 
 // The grand total across every product.
 pub fn grand_total(totals: Dict(String, Int)) -> Int:

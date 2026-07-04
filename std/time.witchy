@@ -67,8 +67,12 @@ pub fn civil(y: Int, mo: Int, da: Int, h: Int, mi: Int, s: Int) -> Result(DateTi
         return Err("time ${h}:${mi}:${s} is out of range")
     Ok(DateTime(y, mo, da, h, mi, s))
 
-// Days in a month, honoring leap February.
+// Days in a month, honoring leap February. A month outside 1..12 is a contract
+// violation (RFC-0044 rule 3): abort naming the bad argument rather than
+// silently returning 31 (the old `_ -> 31` catch-all).
 pub fn days_in_month(y: Int, mo: Int) -> Int:
+    if mo < 1 || mo > 12:
+        fail("time.days_in_month: month `${mo}` is out of range (expected 1..12)")
     match mo:
         2 -> if is_leap(y): 29 else: 28
         4 -> 30

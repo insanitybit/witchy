@@ -122,7 +122,7 @@ fn byte_hex(b: Int) -> String:
 
 // Is the top bit of the first byte set (first hex digit in `8`..`f`)? Empty hex is not.
 fn high_bit_set(value_hex: String) -> Bool:
-    !string.is_empty(value_hex) && string.contains("89abcdef", string.char_at(value_hex, 0))
+    !string.is_empty(value_hex) && string.contains("89abcdef", string.char_at(value_hex, 0) ?? "")
 
 // The `kid` (key id) from a compact JWT's header — used to pick the right JWKS key when a
 // provider publishes several (key rotation). `None` if the token or header is malformed.

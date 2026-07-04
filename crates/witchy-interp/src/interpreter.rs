@@ -1338,7 +1338,7 @@ impl Interpreter {
                 _ => err("ends_with expects two Strings"),
             },
             // Char index of the first occurrence of `sub`, or -1 if absent.
-            "string.index_of" => match args {
+            "string.find" => match args {
                 [Value::Str(s), Value::Str(sub)] => {
                     let idx = s
                         .find(sub.as_str())

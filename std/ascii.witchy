@@ -4,6 +4,9 @@
 // standard string ordering, so every function here is correct on both the
 // interpreter and the compiled backend. The rough equivalent of Go's `unicode`
 // helpers for the ASCII subset.
+
+import option
+
 pub fn is_digit(c: String) -> Bool:
     "0" <= c && c <= "9"
 
@@ -22,12 +25,13 @@ pub fn is_alnum(c: String) -> Bool:
 pub fn is_space(c: String) -> Bool:
     c == " " || c == "\t" || c == "\n" || c == "\r"
 
-// The numeric value of a single decimal digit, or -1 when `c` is not a digit.
-pub fn to_digit(c: String) -> Int:
+// The numeric value of a single decimal digit as `Some`, or `None` when `c` is
+// not a digit (RFC-0044 rule 1: absence is `Option`, never a -1 sentinel).
+pub fn to_digit(c: String) -> Option(Int):
     if is_digit(c):
-        string.to_int(c)
+        Some(string.to_int(c))
     else:
-        0 - 1
+        None
 
 // True when `s` is non-empty and every character is an ASCII digit — a safe
 // guard before `string_to_int`, which traps on non-numeric input.
