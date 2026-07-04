@@ -15478,6 +15478,35 @@ fn main(console: Console):
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
+    /// RFC-0046 acceptance (a): `iter.collect` infers through a GENERIC helper.
+    /// `firsts` is unbounded-generic over `a`; its tail `iter.collect(...)` is a
+    /// bounded `FromIterator` template whose result type is the helper's own
+    /// generic return `List(a)` — unresolvable while `firsts` stays generic. The
+    /// fixpoint monomorphizes `firsts` at its concrete call site, re-annotates so
+    /// `firsts__Int`'s `iter.collect` types as `List(Int)`, then resolves it — with
+    /// no ascription at EITHER site, identically on both backends. This is the
+    /// primary acceptance test and failed ("cannot infer the result type for
+    /// `iter.collect`") before the fixpoint landed.
+    #[test]
+    fn rfc0046_accept_a_iter_collect_infers_through_generic_helper() {
+        let src = "import iter\n\nfn firsts(xs: List(a)) -> List(a):\n    iter.collect(iter.take(iter.from_list(xs), 2))\n\nfn main(console: Console):\n    let ys = firsts([1, 2, 3])\n    print(console, \"${ys}\")\n";
+        let want = vec!["[1, 2]".to_string()];
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// RFC-0046 acceptance (a), reused at two element types: the same generic
+    /// helper is monomorphized once per concrete instantiation (a record type and
+    /// `String`), each re-annotated and resolved independently — the transitive-
+    /// monomorphization fixpoint is not single-shot.
+    #[test]
+    fn rfc0046_accept_a_generic_helper_specializes_per_element_type() {
+        let src = "import iter\n\ntype Point derive(Show):\n    Point(Int, Int)\n\nfn firsts(xs: List(a)) -> List(a):\n    iter.collect(iter.take(iter.from_list(xs), 2))\n\nfn main(console: Console):\n    let ps = firsts([Point(1, 2), Point(3, 4), Point(5, 6)])\n    print(console, \"${ps}\")\n    let ss = firsts([\"a\", \"b\", \"c\"])\n    print(console, \"${ss}\")\n";
+        let want = vec!["[Point(1, 2), Point(3, 4)]".to_string(), "[a, b]".to_string()];
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
     // Phase 2 of the concurrency redesign: an `async fn` lowers (CPS over closures,
     // `crate::async_lower`) to a cooperative `chan` task, and `await` chains
     // continuations. An async `main` is the executor entry (lowers to `task.run`).
