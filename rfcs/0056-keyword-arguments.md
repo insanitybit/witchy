@@ -258,3 +258,23 @@ rules when this ships).
     appending dated change-notes below (e.g. "> 2026-07-01: clarified X").
   - The current behavior lives in spec/ and the code — NOT here.
 -->
+
+## Review note (2026-07-04)
+
+From the full open-RFC review (scratch/rfc-review-2026-07-04.md, verified against
+HEAD 789f2e9).
+
+**Status-accuracy corrections.** The grammar claim checks out: `ident: expr`
+inside call parens is unambiguous.
+
+**Required revisions — three design gaps.** (1) Argument evaluation order is
+unstated: labels permit reordering, so declared-order vs written-order must be
+pinned (record literals already silently reorder — the same decision applies).
+(2) Layer contradiction: rule 4 grants labels to method calls "post-resolution",
+but the sketch does everything at desugar/link time. Recommended: direct calls
+at link; method-call labels at the traits.rs resolution point RFC-0043 just
+established (or exclude method-call labels in v1). (3) Defaults × var/own
+parameter conventions are unspecified — `var` + default should be an error.
+
+**Verdict.** Needs-revision; implement after RFC-0043. Keep the `_or` family (no
+triple churn). Priority: medium.

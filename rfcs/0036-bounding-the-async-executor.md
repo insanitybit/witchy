@@ -169,3 +169,29 @@ the decision the maintainer owns.
 - Bounding executor *time* (Design C leaves it O(n²)); the DoD is memory (`live_cells`).
 - Flipping rc-floor on by default (a separate decision, after both residuals bound + a
   full differential sweep proves parity with every other lever).
+
+## Review note (2026-07-04)
+
+From the full open-RFC review (scratch/rfc-review-2026-07-04.md, verified against
+HEAD 789f2e9).
+
+**Status-accuracy corrections.** Diagnosis verified in full: the step_one shape
+at std/task.witchy:208; the N=8000 benchmark cap; the #[ignore]d DoD test at
+stats.rs:646; shell-only drop at wir_helpers/mod.rs:673; single own-param ABI at
+codegen/mod.rs:543. The correction header is accurate — rc-floor IS default-on —
+but the comment at opt.rs:150-155 still contradicts the code one line above it,
+and a DoD bullet still describes rc-floor as OFF. One structural omission:
+RFC-0055's erased-executor work left full scheduler copies in BOTH
+std/task.witchy AND std/chan.witchy.
+
+**Required revisions.** (1) Fix the stale "rc-floor OFF" DoD bullet. (2) Design B
+must cover both executor copies (task + chan) — or sequence after a task/chan
+dedup — otherwise one copy silently keeps the OOM ceiling. (3) Update the
+analysis.rs citation.
+
+**Verdict.** Small revision, then implement. The plan (B first → recursive
+$rdrop → A as north star) is right and respects the generality rule. Priority:
+medium-high — elevated to high the same day by RFC-0059, which adopts Design B
+as its Stage 0. The OOM at ~9k messages is a functional ceiling on the
+concurrency substrate, i.e. language surface, and the highest-value performance
+remainder.

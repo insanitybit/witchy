@@ -301,3 +301,32 @@ say so:
   table fallback sites in traits.rs are its proof of concept.
 - CLAUDE.md's no-special-casing rule (and rfcs/0016's thesis): one general
   mechanism, per-case tables are debt whose deletion-while-green is the proof.
+
+## Review note (2026-07-04)
+
+From the full open-RFC review (scratch/rfc-review-2026-07-04.md, verified against
+HEAD 789f2e9).
+
+**Status-accuracy corrections — this note corrects a FALSE tracking claim.** The
+RFC's tracking note asserts acceptance criterion (a) — `iter.collect` inferring
+through generic `from_list` chains — is met. It is not: it FAILS on the
+2026-07-04 binary, probed both with and without caller ascription. Ledger against
+the plan: step 2 DONE (table-first dispatch, traits.rs:592-608); step 3 DONE
+(Eq-bounded list.*); step 1 NOT done (`bind_type_var` still handles only 3
+shapes; `fn_rets` is still a lossy head-only map); step 4 NOT done (the entire
+shadow zoo is alive and grew — traits.rs went 2,566 → 2,642 lines, and
+`recover_generic_call` gained a new `list.at` special case since the RFC was
+written); step 5 barely started (only iter.any/all; zero std imports of iter).
+The §2 fixpoint re-annotate is not implemented — which is exactly why
+acceptance (a) fails.
+
+**Required revisions / actions.** (1) This dated note replaces the false
+acceptance claim. (2) Schedule steps 1 → 4 → 5 as the next compiler item — this
+RFC is the keystone of the dependency spine, and RFC-0043 is landing on its
+resolution point now. (3) Reconcile CLAUDE.md: its trait-dispatch section
+directs new fixes INTO `recover_generic_call` — the very function step 4
+deletes. The RFC, CLAUDE.md, and the code currently tell three different
+stories.
+
+**Verdict.** Fix the false tracking note; finish steps 1/4/5. Priority: high —
+the highest of the review.

@@ -195,3 +195,26 @@ for the shape change itself.
   migration beats freezing it.
 - `book/src/tour-errors.md` — the policy's rules 1–2 were already user-facing
   promises; this RFC makes std keep them.
+
+## Review note (2026-07-04)
+
+From the full open-RFC review (scratch/rfc-review-2026-07-04.md, verified against
+HEAD 789f2e9).
+
+**Status-accuracy corrections.** Every factual claim verified true: all sentinel
+citations; the regex module-header claim vs the empty-return at native.rs:710-718
+(plus the admitted parity gap); crypto verify returning a total Bool; toml
+always-Ok; `set_at` silent no-op vs `at` trap. Every stale part favors readiness:
+RFC-0048 shipped (drawback 2 moot); RFC-0045 shipped (drawback 3 moot); the
+cmp-quadruplet freeze is obsolete (the RFC-0046 gate landed — delete the
+quadruplet in the same cut).
+
+**Required revisions.** (1) The three staleness fixes above. (2) Add a
+`csv.parse_records` row. (3) Call out that the `xs[i] = v` out-of-bounds
+behavior change (silent no-op → trap) is syntax-level. Note: the crypto-verify
+and set_at rows are correctness/security defects, not style. Blast radius was
+measured one-sitting-sized.
+
+**Verdict.** Implement-now after small revision — as ONE coordinated release cut
+with RFC-0049 (shapes and names touch the same 20+ files); regenerate
+spec/stdlib.md in that cut. Priority: high.

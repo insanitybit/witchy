@@ -70,11 +70,14 @@ The forward rule still stands: add **no new** per-method fast paths; the general
 mechanism must absorb every *new* operation. (RFC-0016 is the general reclamation
 floor; RFC-0051 is why the existing zoo stays.)
 
-## Trait-method dispatch (recently extended)
+## Trait-method dispatch (RFC-0046, mid-migration)
 
-`show(x)` / `less(x, y)` etc. resolve by recovering the receiver's concrete type
-from the argument's shape (`head_type_name` / `recover_generic_call` in
-`crates/witchy-types/src/traits.rs`). This now includes call results — `list.at(xs,i)`, `xs[i]`, and
-generic functions whose return is a type var. If a fresh trait call still won't
-resolve, the type error guides you (`${x}` / `say` / a typed param), and the
-fix belongs in `recover_generic_call`, not a workaround.
+`show(x)` / `less(x, y)` etc. resolve **table-first**: typeck's real `TypeTable`
+is the primary dispatch source (`table_scope_name` in
+`crates/witchy-types/src/traits.rs`), with the older string-shape recovery
+(`head_type_name` / `recover_generic_call`) as fallback. That fallback is the
+"shadow type system" RFC-0046 step 4 **deletes** — do not grow it. If a fresh
+trait call won't resolve, the fix belongs in the typed path (the table /
+`bind_type_var` binding, per RFC-0046 steps 1–2), not in a new
+`recover_generic_call` special case and not in a call-site workaround. See the
+2026-07-04 review note on RFC-0046 for what remains (steps 1, 4, 5).

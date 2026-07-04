@@ -220,7 +220,7 @@ the principal open question and the main implementation cost of this RFC. The
 concrete migration for (A) — the `carries_cap` classification, the WIR/codegen GC
 surface, the host boundary, and a staged, per-capability-type landing order that
 keeps `check.sh` green at each step — is worked out in the companion design doc
-`rfcs/0005-externref-implementation-plan.md`.
+`rfcs/externref-implementation-plan.md`.
 
 ### Host-side resolution
 
@@ -418,3 +418,32 @@ built.
     appending dated change-notes below.
   - The current behavior lives in spec/ and the code — NOT here.
 -->
+
+## Review note (2026-07-04)
+
+From the full open-RFC review (scratch/rfc-review-2026-07-04.md, verified against
+HEAD 789f2e9).
+
+**Status-accuracy corrections.** The core premise is still accurate: caps are
+forgeable i32 indices into dense tables (`VmState.dirs`/`nets`/`files`/`secrets`),
+and the run wrapper bakes `ConstI32` handles. But the RFC was not updated as its
+own hardening items shipped: #1 (signing@0 deleted, runtime.rs:2403), #2
+(unconditional in-place bound traps, wir_helpers/mod.rs:1493-1510), #3 (fuzz
+coverage via RFC-0037), and #7 (engine Config lockdown, runtime.rs:451-470) are
+all in master. Hardening #4 is NOT done: the attenuation suite exists only for
+File (rights/narrowing tests, typeck_tests.rs:215-233) — no
+Net[Connect]-cannot-listen, no Dir[Read]-cannot-write (BUG-009). The
+retain/without (firewall) row is obsolete — RFC-0014 removed the firewall. The
+RFC is silent on Socket/Listener, which carry guest-indexed authority too
+(runtime.rs:280-283). Several file citations predate the workspace split.
+
+**Required revisions.** (1) Dated change-note recording that hardening
+#1/#2/#3/#7 shipped; re-weight the motivation around the residual primitives
+($rc_dup-class). (2) Delete the firewall row. (3) Fix the stale pre-workspace
+paths. (4) Add File/Socket/Listener to the authority table. (5) The companion
+plan is now `rfcs/externref-implementation-plan.md` (renamed from the numbered
+name per rfcs/README.md numbering rules); cross-link updated.
+
+**Verdict.** Needs-revision (keep as accepted direction). Priority: medium
+overall; extracting hardening #4 (the Net/Dir attenuation tests, BUG-009) is
+high priority — ~1 day, load-bearing for the externref design and useful today.

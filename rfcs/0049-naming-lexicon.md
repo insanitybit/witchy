@@ -208,3 +208,22 @@ Recommendation adopted: rename the pure seeded module `random` → `prng`, keep
 - The audit's finding that witchy's *system-level* conventions already beat
   both parents in spots (receiver-first: zero violations) — this RFC exists
   to keep that true at the edges.
+
+## Review note (2026-07-04)
+
+From the full open-RFC review (scratch/rfc-review-2026-07-04.md, verified against
+HEAD 789f2e9).
+
+**Status-accuracy corrections.** Spot checks all true: 4 meanings of `count`;
+4 meanings of `_of`; `semver.lt`; the `dict.set_at` alias; `random` = LCG with
+exactly 1 importer; the `position` by-value edge.
+
+**Required revisions.** (1) One hidden compiler dependency: deleting
+`dict.set_at` requires a receiver-type-directed desugar retarget (a slice of the
+0043/0050 machinery) — either commit to it in-cut or mark the row severable.
+(2) Replace the §4 cmp-quadruplet freeze with deletion-in-cut (the RFC-0046 gate
+landed). Minor: the i/index nit.
+
+**Verdict.** Implement-now with the two revisions — MUST ship in the SAME
+release cut as RFC-0044 (the shapes and names touch the same 20+ files).
+Priority: high.

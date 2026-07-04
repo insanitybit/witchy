@@ -240,3 +240,28 @@ change with capability-security weight. Implementation, once approved, is: parse
 resolve associated functions per §3), the `std/confine` → `impl Net:`/`impl Dir:`
 move, and the `fmt`-driven call-site migration — each a separate, tested commit,
 parity-checked on both backends.
+
+## Review note (2026-07-04)
+
+From the full open-RFC review (scratch/rfc-review-2026-07-04.md, verified against
+HEAD 789f2e9).
+
+**Status-accuracy corrections.** The central factual claim is wrong: the
+proposed core mechanism — type-associated functions via inherent `impl Type:`
+blocks — ALREADY SHIPPED in commit 9066eff (2026-06-12), three weeks before this
+RFC was written. Probed end-to-end: `impl Net: fn tcp2(...)` called as
+`Net.tcp2(...)` runs and passes `witchy parity` today. The RFC's "does not
+parse" verification misread a method-resolution error. The migration inventory
+is also off: there is zero live `import confine` in code — only book/spec fences
+plus 2 interpreter tests; the cited example test exists only in agent worktrees.
+
+**Required revisions.** The real remaining work: (a) `pub` inside impl blocks is
+a parse error (the RFC assumes it works); (b) the home-module/prelude decision —
+the prelude is a fixed list (linker.rs:407), so where do `impl Net:` blocks live
+such that `Net.tcp` resolves without an import?; (c) fix the migration
+inventory. Reconcile resolution rules with RFC-0050 into ONE normative statement
+of dotted-name resolution.
+
+**Verdict.** Needs-revision — the mechanism shipped; what remains is a small,
+parity-safe delete-std/confine migration cut, after the prelude and pub-in-impl
+decisions. Priority: medium.

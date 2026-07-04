@@ -8,7 +8,7 @@ tracking:
 
 # RFC-0054: Structured errors (design-first)
 
-> Design-first, in the manner of `rfcs/0005-externref-implementation-plan.md`:
+> Design-first, in the manner of `rfcs/externref-implementation-plan.md`:
 > this RFC decides the *direction* for error types; implementation is a
 > separate, later decision with its own sequencing. No code ships from it.
 
@@ -177,3 +177,24 @@ tour-errors.md`) explicitly forbids.
     appending dated change-notes below (e.g. "> 2026-07-01: clarified X").
   - The current behavior lives in spec/ and the code — NOT here.
 -->
+
+## Review note (2026-07-04)
+
+From the full open-RFC review (scratch/rfc-review-2026-07-04.md, verified against
+HEAD 789f2e9).
+
+**Status-accuracy corrections.** The direction is right — errors as enums + an
+Error trait + From in `?`, with `? "msg"` as the typed→string boundary — and the
+rejection of a universal ErrorValue is well-argued. Status quo verified: 33
+`Result(T, String)` signatures in std, zero typed errors. The gate language is
+stale: the named prerequisite (RFC-0046 TypeTable dispatch) has merged; the real
+gate is now DEMAND — a coven ecosystem reacting to failure modes — which hasn't
+materialized.
+
+**Required revisions.** Update the gate language (demand-gated, no longer
+capability-gated). Answer before any implementation: `? "msg"` semantics inside
+typed-E functions; the Option operand under typed E; `source()` stability. Do
+not start `json.DecodeError` yet.
+
+**Verdict.** Accept as direction; defer implementation. Priority: medium
+(acceptance) / low (implementation).

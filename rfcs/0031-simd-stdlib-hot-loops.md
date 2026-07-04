@@ -1,7 +1,7 @@
 ---
 rfc: 0031
 title: SIMD acceleration for stdlib hot loops
-status: proposed
+status: deferred
 created: 2026-06-29
 tracking:
 ---
@@ -114,3 +114,23 @@ portable 128-bit form. The constraint that matters here — *deterministic* SIMD
 only, to preserve a scalar oracle's agreement — mirrors how the
 `packed`/`unbox` work kept representation changes output-invariant under the
 differential sweep ([0027](0027-packed-layouts-sroa.md)).
+
+## Review note (2026-07-04)
+
+From the full open-RFC review (scratch/rfc-review-2026-07-04.md, verified against
+HEAD 789f2e9).
+
+**Status-accuracy corrections.** Dead as written: the RFC predates the shipped
+RFC-0005 step-7 engine hardening, which explicitly disables SIMD
+(`wasm_simd(false)`, runtime.rs:466-467) — and never mentions it. Its string/list
+stdlib-helper targets sit where measured performance already meets the tier
+targets; the real remaining gap is tight scalar user loops, which needs the
+auto-vectorization the RFC itself concedes is unavailable. Its cmp.* targets are
+slated for dedup into list.*.
+
+**Required revisions.** Status changed `proposed` → `deferred` (this edit).
+Re-scope conditions for reviving it: a numeric-kernel target (not the
+string/list helpers), and an explicit negotiation of the `wasm_simd(false)`
+hardening decision with RFC-0005.
+
+**Verdict.** Mark deferred. Priority: low.

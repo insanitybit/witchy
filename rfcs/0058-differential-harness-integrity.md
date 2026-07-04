@@ -103,3 +103,34 @@ still fail.
 ## References
 - `bugs/BUG-002-parity-sweep-swallows-failures.md`, `bugs/BUG-003-differential-fuzzer-traps-early.md`
 - `scratch/deep-eval/MERGED-TRIAGE.md` §Tier-2 (both evaluations, cross-verified)
+
+## Review note (2026-07-04)
+
+From the full open-RFC review (scratch/rfc-review-2026-07-04.md, verified against
+HEAD 789f2e9) — this review served as the pending design review.
+
+**Status-accuracy corrections.** All six contract points verified real: BUG-002's
+`grep -qi "DIVERGE"` + `|| true` classification in BOTH justfile:81-83 and
+ci.yml; BUG-003's fuzzer counting both-trap as Agree (the guard is satisfiable by
+a corpus of 100%-trapping programs); per-config outcome invisibility (:565-575);
+identity-satisfiable sort laws. Two overstatements: partial vacuity guards DO
+exist (NLAWS, the grammar-coverage bitmask); and §3 half-exists for routed aborts
+via RFC-0045 abort-core matching — the genuinely missing piece (the pre-trap
+output prefix) requires API changes to both run harnesses (`Err(String)` carries
+no partial lines).
+
+**Required revisions before implementing.** (a) Specify the positive-control
+mechanism — a genuinely-divergent fixture can't live in-repo; it needs an
+env-gated fault-injection lever, provably inert in release. (b) A
+machine-readable parity-stats channel + an exit-code taxonomy
+(agree / diverge / both-error-agree / unexpected-error) + a `timed-out` class.
+(c) Map the contract onto the existing partial guards. (d) Extend scope:
+inventory ALL gate scripts (e2e-full.sh `expect_contains` substring matching,
+check.sh `| tail` exit-code masking, validate_book_examples.mjs) and fix the
+run_parity temp-file race — fixed file names in a shared temp dir mean the
+harness can test the wrong program (BUG-010). (e) A law-growth policy for new
+std modules.
+
+**Verdict.** Implement-now after light revision; the guard-first rollout order
+is exactly right. Priority: high — cheap, and it gates confidence in everything
+after it.

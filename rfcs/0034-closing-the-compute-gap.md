@@ -1,6 +1,6 @@
 # RFC-0034 — Closing the compute gap: codegen & runtime performance levers
 
-- Status: partially-implemented
+- Status: implemented (L1-L4; L5/L6 deferred)
 - Predecessors: [RFC-0029](0029-performance-tier-contract.md) (perf tier contract),
   [RFC-0033](0033-place-based-uniqueness.md) (in-place through user types),
   [spec/performance.md](../spec/performance.md) (the perf thesis)
@@ -252,3 +252,28 @@ RFC's two proving workloads.
   check-removing levers (L2) and the ABI-changing ones (L1/L3).
 - **Counters, not vibes** — each lever ships a `stats`/`bench` number proving it
   fired and didn't regress.
+
+## Review note (2026-07-04)
+
+From the full open-RFC review (scratch/rfc-review-2026-07-04.md, verified against
+HEAD 789f2e9).
+
+**Status-accuracy corrections.** L1 (Binaryen AOT via PATH shell-out — note the
+cache key omits the wasm-opt version), L2 (BoundsElide), L3a (DirectCall), and
+L4 (pooling, opt-in) all verified shipped. L5 (par_map worker pool) is NOT —
+still a fresh VM per chunk (runtime.rs:1494). L6 is contradicted by the shipped
+RFC-0005 engine lockdown (SIMD and tail calls disabled). Status line updated to
+`implemented (L1-L4; L5/L6 deferred)` (this edit). Two stale claims: the named
+firing-proof tests `devirtualizes_single_bound_closure_call` /
+`elides_bounds_check_in_counted_loop` (also cited at opt.rs:103) do not exist
+anywhere in the repo — likely lost in the codegen.rs decomposition — so only
+output-invariance is tested, and the default-on DirectCall/BoundsElide levers
+could silently stop firing (BUG-008). The executor postscript says the fix is in
+RFC-0035; it should point at RFC-0036.
+
+**Required revisions.** Restore the two shape tests (BUG-008); fix the
+opt.rs:103 pointer; retitle status (done in this edit); fix the RFC-0035 →
+RFC-0036 pointer.
+
+**Verdict.** Doc revision + restore the missing shape tests (the real gap).
+Priority: medium (tests) / low (doc).

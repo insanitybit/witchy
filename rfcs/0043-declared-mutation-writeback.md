@@ -311,3 +311,24 @@ now correctly write back.
   distinction is subtle" and the linker comment (:624) admits the type-blind
   compromise ("whose overload would need the receiver type we don't infer
   here"). This RFC pays that debt.
+
+## Review note (2026-07-04)
+
+From the full open-RFC review (scratch/rfc-review-2026-07-04.md, verified against
+HEAD 789f2e9).
+
+**Status-accuracy corrections.** The `proposed` status is stale: implementation
+is in flight on branch `impl/rfc-0043d` (locked worktree, 5 commits — the
+classifier, the both-backend ABI exemption, std migration to var receivers, and
+the census deleted with write-back moved to traits.rs). Both motivating silent
+failure modes were probed live on the shipped binary: an impl-shadowed push loses
+writes; a filter statement mutates while a map statement no-ops.
+
+**Required revisions.** None to the design — the strongest of the reviewed set:
+declaration-based (var first param + self-typed return), a checkable boundary,
+parity by construction. Update the status when the branch merges. One migration
+consequence to note: unresolvable statement-position method calls become hard
+errors, so RFC-0046's remaining dispatch gaps convert into new compile errors
+during migration.
+
+**Verdict.** Implement-now — already in flight; let it land. Priority: high.

@@ -219,3 +219,28 @@ their type names for free where a header tag exists.
 - RFC-0037's differential harness — the render table lands as one more
   oracle-checked corpus, which is what makes "byte-identical on both
   backends" enforceable rather than aspirational.
+
+## Review note (2026-07-04)
+
+From the full open-RFC review (scratch/rfc-review-2026-07-04.md, verified against
+HEAD 789f2e9).
+
+**Status-accuracy corrections.** All motivation probes reproduce: the custom-Show
+split; check-passes-but-codegen-fails for sets/closures; the say holes.
+Materially stale in the favorable direction: blanket
+`impl Show for List(a) where a: Show` ALREADY WORKS (probed, parity green) — so
+the non-breaking say-holes slice is landable now, independent of the
+interpolation flip.
+
+**Required revisions.** (a) Add a rule + differential-table rows for user code
+trapping / recursing / exhausting the stack inside render — divergence-prone
+between the interpreter's native stack and the WASM engine's limits, i.e.
+currently a fresh parity hole inside the feature meant to be byte-identical.
+(b) Name the interpreter Display → fallible-evaluator-method refactor honestly.
+(c) Make BUG-004 (address-keyed TypeTable) re-verification a precondition — a
+stale table hit would silently swap renderings identically on both backends,
+invisible to the harness. (d) Release-note `to_string`-as-data (dict keys)
+beyond golden output.
+
+**Verdict.** Needs-revision; the blanket container-Show slice is landable now.
+Priority: medium. Sequencing: after RFC-0046's shadow deletion + BUG-004.

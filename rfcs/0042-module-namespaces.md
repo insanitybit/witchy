@@ -308,3 +308,24 @@ to introduce per-module error types without global name games.
     dated change-notes below.
   - The current behavior lives in spec/ and the code — NOT here.
 -->
+
+## Review note (2026-07-04)
+
+From the full open-RFC review (scratch/rfc-review-2026-07-04.md, verified against
+HEAD 789f2e9).
+
+**Status-accuracy corrections.** The Step collision reproduces verbatim, and
+task+future STILL collide (Slot, Task/Poll) despite partial piecemeal renames —
+i.e. the rejected alternative has already started burning churn. Design verified
+sound: a plain import binds no unqualified types; from-import collisions error at
+the import line; the linker entry point (linker.rs:556) is correctly identified.
+Stale detail: "unblocks 0055" — RFC-0055 shipped without it.
+
+**Required revisions.** (1) Enumerate the FULL written-type position set (impl
+heads, where-clauses, ascriptions, as-casts, alias targets — the uncommitted
+aliases.rs work is the checklist). (2) State sequencing with RFC-0046's shadow
+deletion: dotted type names will flow through the shape-string parsers while the
+shadow lives. (3) Refresh the stale details (including the 0055 claim).
+
+**Verdict.** Implement-now after small revision. Priority: high — a breaking
+change whose cost grows daily.

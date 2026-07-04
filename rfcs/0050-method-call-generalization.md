@@ -272,3 +272,22 @@ cannot diverge on them. Differential tests pin: each newly-methoded type
 - D/Nim UFCS: fully general receiver-first call rewriting; witchy's version
   is deliberately narrower (owning module only, impls win) to keep "where
   can this method come from" a one-sentence answer.
+
+## Review note (2026-07-04)
+
+From the full open-RFC review (scratch/rfc-review-2026-07-04.md, verified against
+HEAD 789f2e9).
+
+**Status-accuracy corrections.** All three motivating probes reproduce:
+`Bytes.length`, `Duration.human`, and the `unbound variable list` error.
+
+**Required revisions.** Split the RFC. Part 1 (the derived type→module ownership
+map) is hard-gated on RFC-0042 — defer until it lands. Part 2 (eta-expand
+`module.fn` as a value) is implementable now with two revisions: (1) exclude
+post-0043 var-procedures from eta-expansion (or name the real cause in the
+error); (2) note that inference quality gates on RFC-0046 step 1 — unannotated
+lambdas with free type vars land in exactly the territory where 0046's
+acceptance (a) currently fails.
+
+**Verdict.** Split: Part 2 implement-now (after the revisions); Part 1 defer
+until 0042 lands. Priority: medium-high (Part 2) / medium (Part 1).

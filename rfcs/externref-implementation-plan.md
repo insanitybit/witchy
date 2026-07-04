@@ -211,3 +211,41 @@ the thesis of RFC-0005.
   implementation of RFC-0005's already-chosen approach (A). Edit freely until the
   cut begins; then it tracks the actual migration.
 -->
+
+## Review note (2026-07-04)
+
+From the full open-RFC review (scratch/rfc-review-2026-07-04.md, verified against
+HEAD 789f2e9) — this review served as the pending design review.
+
+**Status-accuracy corrections / gaps.** The staging strategy — per-cap-type
+migration, two-mode mint, green at each stage — is right. Four substantive gaps
+block approval:
+1. **Stage 2 (Console) has a wrong premise:** print/Clock have NO runtime handle
+   today — `host_print` takes ptr/len and codegen drops the Console arg
+   (builtins.rs:383-391); zero-representation caps are already unforgeable.
+   Rescope to the handle-bearing caps (Dir/Net/File/Secret/Exec) and prove the
+   mechanism on Exec or File.
+2. **The i64 Slot boundary is unaddressed:** externref cannot round-trip through
+   ToSlot/FromSlot (generic calls, closure envs, Option payloads, grantable-cap
+   fields widened to slots at assembly.rs:721-731). Needs an explicit
+   reject-or-represent rule.
+3. Socket/Listener migration is undecided.
+4. **§5 misdescribes minting:** the run wrapper embeds ConstI32 handles
+   internally, so externref changes the `run`/`__export_*` signatures — reaching
+   the browser shim and glamour (RFC-0040) — which the plan does not acknowledge.
+
+Also to enumerate: equality/render/reflect over GC structs; caps crossing
+`chan.spawn` (externrefs can't cross Stores); wasmtime `Rooted<ExternRef>`
+lifecycle means the host still needs an ownership anchor after "delete the
+tables." The claim that the attenuation suite is "already comprehensive" is
+false — coverage is File-only (typeck_tests.rs:215-233; BUG-009).
+
+**Filename.** The former name `0005-externref-implementation-plan.md` violated
+the numbering rules (rfcs/README.md:51-54: numbers allocated in order,
+single-decision docs only); renamed to this un-numbered companion form, matching
+the `identity-stack-implementation-plan.md` precedent. Cross-links updated.
+
+**Verdict.** Needs-revision before approval. Priority: medium — the revision is
+cheap, but the cut itself is Size-L and queues behind the language-surface work.
+Do not begin Stage 1 until the revision lands and the Net/Dir attenuation suite
+(BUG-009) exists.
