@@ -7,8 +7,7 @@
 // rune renders via glamour-dom.mjs (createElement/textContent only — no HTML-string sink).
 import { mount } from "glamour-dom";
 import { authHeader, setToken, isSignedIn } from "./session";
-import { login as passkeyLogin, register as passkeyRegister, promote2fa } from "./webauthn";
-import { yank } from "./api";
+import { login as passkeyLogin, register as passkeyRegister, promote2fa, yank2fa } from "./webauthn";
 
 // The compiled glamour app, base64. build.sh replaces this placeholder with the bytes of
 // `coven_web_app.wasm` (witchy's Dir `read` is UTF-8-only and cannot serve binary, so — as
@@ -87,12 +86,13 @@ async function boot(): Promise<void> {
       },
       yank: async (route: string) => {
         const [name, version] = nameVer(route);
-        try {
-          await yank(name, version);
-          return "yanked ✓";
-        } catch (e) {
-          return "refused: " + (e as Error).message;
-        }
+        // Yank is a destructive state change, so — like promote — it runs the WebAuthn
+        // 2FA ceremony HERE (credential/token stay in the host) and the server re-verifies
+        // the assertion before forwarding to coven. A session bearer alone can't yank.
+        const r = await yank2fa(location.hostname, name, version);
+        if (r.ok) return "yanked ✓";
+        const d = (await r.json().catch(() => ({}))) as { error?: string };
+        return "refused: " + (d.error ?? r.status);
       },
     },
   });

@@ -83,17 +83,20 @@ fn main(console: Console, net: Net, assets: Dir, secrets: SecretStore, clock: Cl
     app = app.get("/api/coven/snapshot", h_proxy(net, upstream, "/coven/snapshot"))
     app = app.get("/api/coven/timestamp", h_proxy(net, upstream, "/coven/timestamp"))
     // Write endpoints (the only state-changing surface): the two-phase promote and
-    // yank. POST, behind the Sec-Fetch CSRF layer below AND a passkey session — a
-    // signed-in maintainer's bearer token is required before either reaches coven.
-    app = app.post("/api/coven/promote", require_session(key, clock)(h_proxy_post(net, upstream, "/coven/promote")))
-    app = app.post("/api/coven/yank", require_session(key, clock)(h_proxy_post(net, upstream, "/coven/yank")))
+    // yank. There is NO plain, session-only write route — a bearer session (mintable
+    // by any social login) is not sufficient authority to change registry state, and
+    // an anonymous upstream coven trusts a client-chosen promoter/yanker verbatim. So
+    // EVERY state-changing route below verifies a fresh, single-use WebAuthn assertion
+    // server-side (h_wa_promote / h_wa_yank) before forwarding to coven — a human at a
+    // passkey, not just a session. They still sit behind the Sec-Fetch CSRF layer.
     // WebAuthn: register a credential, fetch a single-use challenge, sign IN (an
-    // assertion the server verifies, minting a session token), and a second-factor
-    // promote that verifies the assertion server-side before forwarding.
+    // assertion the server verifies, minting a session token), and the second-factor
+    // promote + yank that verify the assertion server-side before forwarding.
     app = app.post("/api/webauthn/register", h_wa_register(assets))
     app = app.get("/api/webauthn/challenge", h_wa_challenge(assets, rand))
     app = app.post("/api/webauthn/login", h_wa_login(assets, key, clock, origin, rp_id))
     app = app.post("/api/coven/promote-2fa", h_wa_promote(assets, net, upstream, origin, rp_id))
+    app = app.post("/api/coven/yank-2fa", h_wa_yank(assets, net, upstream, origin, rp_id))
     // "Log in with GitHub" (OAuth2 Authorization Code) — registered only when a client
     // id is configured. `/login` redirects to GitHub with a signed anti-CSRF state;
     // `/callback` verifies the state, trades the code for a token, reads the user, and
@@ -174,16 +177,6 @@ fn query_has_control(pairs: List((String, String))) -> Bool:
             bad = true
     bad
 
-// POST proxy for the write endpoints. The whole request is in the body, so no
-// query forwarding is needed. (Like h_proxy, this captures Net deliberately.)
-fn h_proxy_post(net: Net, upstream: String, base: String) -> fn(Request) -> Response:
-    fn(req: Request):
-        let body = server.request_body(req)
-        let (host, port) = split_host_port(upstream)
-        match http.try_post(net, host, port, base, body):
-            Ok(resp) -> server.json(http.status(resp), http.body(resp))
-            Err(_e) -> server.json(502, "{\"error\":\"coven registry unreachable\"}")
-
 // ---- WebAuthn 2FA for promote -----------------------------------------------
 // Credential + challenge state live in UNROUTED `_wa_*` files in the served Dir
 // (no route serves a `_wa_*` file). A challenge is derived from the Secret (so it
@@ -252,10 +245,41 @@ fn wa_do_promote(store: Dir, net: Net, upstream: String, origin: String, rp_id: 
                     Ok(resp) -> server.json(http.status(resp), http.body(resp))
                     Err(_e) -> server.json(502, "{\"error\":\"coven registry unreachable\"}")
 
-// ---- Session auth (passkey sign-in) -----------------------------------------
-// A signed-in maintainer holds a short-lived BEARER token. The server mints it
-// only after a passkey assertion verifies (h_wa_login), signing it with the
-// server Secret over an expiry; every write re-checks that signature. There is no
+// ---- WebAuthn 2FA for yank --------------------------------------------------
+// Yank is a destructive state change (exclude a version from resolutions), so — like
+// promote — it requires a fresh, single-use WebAuthn assertion verified server-side,
+// NOT merely a session. Mirrors h_wa_promote exactly (same credential + challenge +
+// single-use semantics), then forwards `{name, version}` to coven's yank.
+
+fn h_wa_yank(store: Dir, net: Net, upstream: String, origin: String, rp_id: String) -> fn(Request) -> Response:
+    fn(req: Request):
+        match server.json_body(req):
+            Err(_e) -> server.bad_request("{\"error\":\"bad body\"}")
+            Ok(doc) -> wa_do_yank(store, net, upstream, origin, rp_id, doc)
+
+fn wa_do_yank(store: Dir, net: Net, upstream: String, origin: String, rp_id: String, doc: Json) -> Response:
+    if !exists(store, "_wa_cred.json") || !exists(store, "_wa_challenge.json"):
+        server.json(403, "{\"error\":\"no registered credential or outstanding challenge\"}")
+    else:
+        let pk = wa_field(decode_or_empty(read(store, "_wa_cred.json")), "publicKey")
+        let ch_b64 = wa_field(decode_or_empty(read(store, "_wa_challenge.json")), "b64")
+        match webauthn.verify_assertion(pk, wa_field(doc, "authData"), wa_field(doc, "clientData"), wa_field(doc, "signature"), ch_b64, origin, rp_id, true):
+            Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("2FA failed: " + reason))])))
+            Ok(_) ->
+                write(store, "_wa_challenge.json", "{}")
+                let body = json.encode(JsonObject([("name", JsonString(wa_field(doc, "name"))), ("version", JsonString(wa_field(doc, "version")))]))
+                let (host, port) = split_host_port(upstream)
+                match http.try_post(net, host, port, "/coven/yank", body):
+                    Ok(resp) -> server.json(http.status(resp), http.body(resp))
+                    Err(_e) -> server.json(502, "{\"error\":\"coven registry unreachable\"}")
+
+// ---- Session (passkey / social sign-in) -------------------------------------
+// A signed-in maintainer holds a short-lived BEARER token, minted only after a
+// passkey assertion (h_wa_login) or a verified social login. It is a client-side
+// "you are signed in" marker the SPA uses to reveal the promote/yank controls — it
+// is NOT the write-authorization gate. Every state-changing route re-runs a fresh,
+// single-use WebAuthn assertion (h_wa_promote / h_wa_yank), which is strictly stronger
+// than a bearer, so a session alone can never change registry state. There is no
 // server-side session store — the token is self-authenticating (a mini-JWT), so
 // nothing to steal at rest and `--signing-key` rotation invalidates all sessions.
 
@@ -264,8 +288,7 @@ fn session_ttl_ms() -> Int:
 
 // SEC-019: the session bearer is bound to the authenticated subject. The MAC covers
 // `exp:sub`, and `sub` (hex-encoded so it carries no `.` delimiter) travels in the token,
-// so a token minted for one identity cannot be presented as another, and a holder's
-// identity is recoverable (`valid_session` returns it) for per-subject authorization.
+// so a token minted for one identity cannot be presented as another.
 fn issue_session(key: Secret, clock: Clock, sub: String) -> (String, Int):
     let exp = now(clock) + session_ttl_ms()
     let sub_hex = encoding.hex_encode(sub)
@@ -288,39 +311,6 @@ fn ct_eq(a: String, b: String) -> Bool:
                 same = false
             i = i + 1
         same
-
-// Verify a bearer and, on success, return its bound subject (SEC-019). A token is
-// `exp.hex(sub).sig`; recompute the MAC over `exp:sub` and check expiry.
-fn valid_session(key: Secret, clock: Clock, token: String) -> Option(String):
-    let parts = string.split(token, ".")
-    if list.length(parts) != 3:
-        None
-    else:
-        let exp_s = list.at(parts, 0)
-        let sub = encoding.hex_decode(list.at(parts, 1))
-        let sig = list.at(parts, 2)
-        // SEC-024: guard `to_int` (it traps on non-numeric input) before parsing the
-        // attacker-supplied expiry half — an `Authorization: Bearer abc.x.y` would
-        // otherwise abort the server VM. `&&` short-circuits, so a bad token is just invalid.
-        if ascii.all_digits(exp_s) && ct_eq(sig, crypto.sign(key, "session:" + exp_s + ":" + sub)) && string.to_int(exp_s) > now(clock):
-            Some(sub)
-        else:
-            None
-
-fn bearer_of(req: Request) -> Option(String):
-    match server.request_header(req, "authorization"):
-        Some(h) -> if string.starts_with(h, "Bearer "): Some(string.substring(h, 7, string.length(h))) else: None
-        None -> None
-
-// Wrap a write handler so it runs only for a request carrying a valid session.
-fn require_session(key: Secret, clock: Clock) -> fn(fn(Request) -> Response) -> fn(Request) -> Response:
-    fn(inner: fn(Request) -> Response):
-        fn(req: Request):
-            match bearer_of(req):
-                Some(tok) -> match valid_session(key, clock, tok):
-                    Some(_sub) -> inner(req)
-                    None -> server.json(403, "{\"error\":\"invalid or expired session — sign in again\"}")
-                None -> server.json(401, "{\"error\":\"sign in with a passkey to manage releases\"}")
 
 fn h_wa_login(store: Dir, key: Secret, clock: Clock, origin: String, rp_id: String) -> fn(Request) -> Response:
     fn(req: Request):
@@ -390,7 +380,8 @@ fn valid_state(key: Secret, clock: Clock, state: String, expected_nonce: String)
         let exp_s = list.at(parts, 0)
         let nonce = list.at(parts, 1)
         let sig = list.at(parts, 2)
-        // SEC-024: guard `to_int` against the attacker-supplied expiry half (see valid_session).
+        // SEC-024: guard `to_int` (it traps on non-numeric input) against the attacker-supplied
+        // expiry half — `&&` short-circuits, so a malformed state is just invalid, never a VM abort.
         // SEC-007: the nonce must be non-empty AND equal the issuing session's cookie.
         ascii.all_digits(exp_s) && ct_eq(sig, crypto.sign(key, "oauth-state:" + exp_s + ":" + nonce)) && string.to_int(exp_s) > now(clock) && nonce != "" && ct_eq(nonce, expected_nonce)
 

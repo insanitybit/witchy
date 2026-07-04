@@ -6,7 +6,10 @@ published rune, and asserts the full security + functional contract:
   - Perfect Types CSP + strict COOP/COEP/CORP on every route class
   - correct MIME types; the sandbox-frame's own CSP (connect-src 'none')
   - the reverse proxy returns coven data; non-allowlisted /api paths 404 (anti-SSRF)
-  - the Sec-Fetch CSRF layer: cross-site/same-site writes 403, same-origin 200
+  - the Sec-Fetch CSRF layer: cross-site/same-site writes 403
+  - the ONLY state-changing routes are the WebAuthn-2FA promote + yank; the old plain,
+    session-only /api/coven/promote and /api/coven/yank routes are gone (404)
+  - a real ES256 assertion drives promote-2fa AND yank-2fa end-to-end (200)
   - a publish -> /api/coven/source round-trip
 
 Run from the repo root:  python3 projects/coven-web/verify.py
@@ -138,17 +141,17 @@ def main():
         _, _, body = req(WEB_URL + "/api/coven/source?name=demo~verify&version=1.0.0")
         check("proxy /source returns the source", "pub fn id" in body)
 
-        # Two-phase promote ("2FA to publish") through the write proxy + CSRF layer,
-        # with coven enforcing a non-empty second factor and separation of duties.
-        pr = WEB_URL + "/api/coven/promote"
+        # SECURITY (finding #6): the plain, session-only write routes are GONE. Promotion and
+        # yank are reachable ONLY through the WebAuthn-2FA handlers (exercised below). A
+        # same-origin POST — past the Sec-Fetch CSRF layer — to the OLD plain paths must now 404:
+        # a bearer session (mintable by any social login) can no longer change registry state.
         so = {"sec-fetch-site": "same-origin"}
-        st, _, _ = req(pr, "POST", {"name": "demo/verify", "version": "1.0.0", "second_factor": "", "promoted_by": "rel"}, so)
-        check("promote: empty second factor refused (400)", st == 400, f"status {st}")
-        st, _, _ = req(pr, "POST", {"name": "demo/verify", "version": "1.0.0", "second_factor": "totp", "promoted_by": "ci"}, so)
-        check("promote: self-promote refused — separation of duties (403)", st == 403, f"status {st}")
-        st, _, body = req(pr, "POST", {"name": "demo/verify", "version": "1.0.0", "second_factor": "totp", "promoted_by": "rel"}, so)
-        check("promote: staged -> released with a distinct promoter (200)",
-              st == 200 and '"state":"released"' in body, f"status {st}")
+        st, _, _ = req(WEB_URL + "/api/coven/promote", "POST",
+                       {"name": "demo/verify", "version": "1.0.0", "second_factor": "x", "promoted_by": "rel"}, so)
+        check("plain session-only /api/coven/promote route removed (404)", st == 404, f"status {st}")
+        st, _, _ = req(WEB_URL + "/api/coven/yank", "POST",
+                       {"name": "demo/verify", "version": "1.0.0"}, so)
+        check("plain session-only /api/coven/yank route removed (404)", st == 404, f"status {st}")
 
         # Unicode source survives the round-trip when published as raw UTF-8 (the
         # `\u`-escaped path is a separate known std/json decoder bug — see PLAN.md).
@@ -167,15 +170,16 @@ def main():
         st, _, _ = req(WEB_URL + "/api/coven/secrets")
         check("non-allowlisted /api path 404 (SSRF allowlist)", st == 404, f"status {st}")
 
-        # Sec-Fetch CSRF layer.
-        yk = WEB_URL + "/api/coven/yank"
+        # Sec-Fetch CSRF layer — it fronts every state-changing route (here the 2FA yank) and
+        # runs BEFORE the handler, so cross-site/same-site writes are refused independent of the
+        # WebAuthn assertion. Same-origin admission is proven by the 2FA e2e below (promote/yank
+        # both return 200 with the `so` same-origin header).
+        yk = WEB_URL + "/api/coven/yank-2fa"
         bdy = {"name": "demo/verify", "version": "1.0.0"}
         st, _, _ = req(yk, "POST", bdy, {"sec-fetch-site": "cross-site"})
         check("CSRF: cross-site write 403", st == 403, f"status {st}")
         st, _, _ = req(yk, "POST", bdy, {"sec-fetch-site": "same-site"})
         check("CSRF: same-site write 403", st == 403, f"status {st}")
-        st, _, _ = req(yk, "POST", bdy, {"sec-fetch-site": "same-origin"})
-        check("CSRF: same-origin write allowed", st == 200, f"status {st}")
 
         # WebAuthn 2FA promote: register a P-256 credential, fetch a challenge, sign a
         # real ES256 assertion, and drive /api/coven/promote-2fa end-to-end (the server
@@ -215,6 +219,23 @@ def main():
                 {"name": "demo/wav", "version": "1.0.0", "promotedBy": "maintainer",
                  "credentialId": "c1", "authData": ad2, "clientData": cd2, "signature": sg2}, so)
             check("webauthn 2FA: tampered signature rejected (403)", st == 403, f"status {st}")
+
+            # WebAuthn 2FA yank: the SPA's yank button drives /api/coven/yank-2fa exactly like
+            # promote. A fresh valid assertion yanks the just-released version; a tampered one is
+            # refused — proving yank, too, is WebAuthn-gated (not session-only).
+            _, _, cby = req(WEB_URL + "/api/webauthn/challenge")
+            ady, cdy, sgy = wa_assert(json.loads(cby)["challengeHex"], "http://" + WEB)
+            st, _, body = req(WEB_URL + "/api/coven/yank-2fa", "POST",
+                {"name": "demo/wav", "version": "1.0.0",
+                 "credentialId": "c1", "authData": ady, "clientData": cdy, "signature": sgy}, so)
+            check("webauthn 2FA: valid assertion yanks (released->yanked)",
+                  st == 200 and '"ok":true' in body, f"status {st} body {body[:120]}")
+            _, _, cbz = req(WEB_URL + "/api/webauthn/challenge")
+            adz, cdz, sgz = wa_assert(json.loads(cbz)["challengeHex"], "http://" + WEB, lambda s: "00" + s)
+            st, _, _ = req(WEB_URL + "/api/coven/yank-2fa", "POST",
+                {"name": "demo/wav", "version": "1.0.0",
+                 "credentialId": "c1", "authData": adz, "clientData": cdz, "signature": sgz}, so)
+            check("webauthn 2FA: tampered yank signature rejected (403)", st == 403, f"status {st}")
         except ImportError:
             print("[SKIP] webauthn 2FA (python `cryptography` not installed)")
 

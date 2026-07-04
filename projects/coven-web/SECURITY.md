@@ -42,8 +42,10 @@ isolated, into an opaque-origin compartment iframe.
    'self'`); **strict COOP `same-origin` + COEP `require-corp` + CORP `same-origin`** on *every*
    response (hard invariant — own-process, cross-origin-isolated document, anti-Spectre);
    `X-Frame-Options: DENY` (SAMEORIGIN only for `/sandbox-frame`); deny-all `Permissions-Policy`;
-   `nosniff`; `no-referrer`; `no-store`. State-changing requests (v2) use `__Host-` `SameSite=Strict`
-   cookies + a Sec-Fetch CSRF check.
+   `nosniff`; `no-referrer`; `no-store`. State-changing requests use a Sec-Fetch CSRF check **and**
+   a fresh, single-use **WebAuthn assertion verified server-side** — never a session bearer alone
+   (see "every write is a verified assertion" below). There is **no** plain, session-only write
+   route: the only state-changing endpoints are `/api/coven/promote-2fa` and `/api/coven/yank-2fa`.
 4. **Zero runtime dependencies.** The frontend is a witchy rune we author + a thin host shell;
    there is no third-party runtime code in the trusted surface (`web/package.json` deps `{}`).
    Build tools (esbuild/tsc/oxlint) are vendored + pinned under `web/tools/`. The only third-party
@@ -55,9 +57,9 @@ isolated, into an opaque-origin compartment iframe.
 Session state, cookies, tokens, and authenticated responses **never enter a compartment, and never
 enter the rune**. The host shell makes every authenticated fetch — attaching the bearer session
 itself — and the rune only ever receives rendering *data*; the WebAuthn ceremony (register, login,
-2FA promote) runs entirely in the host, so `navigator.credentials` and the token stay at the edge.
-A compartment receives only a non-sensitive JSON grant over a `MessageChannel`, and only a narrow
-tagged event comes back.
+2FA promote, 2FA yank) runs entirely in the host, so `navigator.credentials` and the token stay at
+the edge. A compartment receives only a non-sensitive JSON grant over a `MessageChannel`, and only a
+narrow tagged event comes back.
 
 ## Trust rule
 
@@ -97,6 +99,26 @@ further narrowed by single-use enforcement on the token's `jti`.
 
 **Do not collapse this boundary.** Accepting a CI token for promote, dropping the second factor, or
 relaxing separation of duties would each let a CI compromise release packages directly.
+
+## Every state-changing web route is a verified WebAuthn assertion (not a session)
+
+coven-web's write surface is deliberately narrow: the **only** state-changing routes are
+`POST /api/coven/promote-2fa` and `POST /api/coven/yank-2fa`, and each one **verifies a fresh,
+single-use WebAuthn assertion server-side** (`webauthn.verify_assertion` against the registered
+credential + a CSPRNG challenge) before it forwards anything to the upstream coven. A bearer
+**session is never sufficient authority** to change registry state — it is only a client-side
+"you are signed in" marker the SPA uses to reveal the promote/yank controls.
+
+This matters most against an **anonymous upstream coven** (the dev/e2e default), where coven trusts
+a client-chosen `promoted_by`/yanker verbatim: there, the web edge's passkey gate *is* the human
+check. A plain, session-only `POST /api/coven/promote` (or `/yank`) would bypass it — any session,
+mintable by any social login, could flip `Staged → Released` or yank a version with no passkey. Such
+routes therefore **do not exist**; there is no session-only write path. The Sec-Fetch CSRF layer
+still fronts every write, but it is a second line, not the authorization gate.
+
+**Do not add a session-only write route.** Any new state-changing endpoint must mirror
+`h_wa_promote`/`h_wa_yank` and verify a WebAuthn assertion; gating it on `require_session` alone
+would reintroduce exactly the bypass removed here.
 
 ## Accepted residual risk
 

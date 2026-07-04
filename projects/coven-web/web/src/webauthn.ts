@@ -83,12 +83,14 @@ export async function login(rpId: string): Promise<string> {
   return data.token;
 }
 
-// Run the assertion ceremony and POST the (hex-encoded) assertion to the 2FA promote.
-export async function promote2fa(
+// Run the assertion ceremony and POST the (hex-encoded) assertion to a 2FA write route.
+// Both state-changing writes (promote, yank) go through a fresh, single-use WebAuthn
+// assertion the server verifies before forwarding to coven — a session bearer alone is
+// never sufficient authority. `extra` carries the route-specific body fields.
+async function wa_write(
+  route: string,
   rpId: string,
-  name: string,
-  version: string,
-  promotedBy: string,
+  extra: Record<string, string>,
 ): Promise<Response> {
   const assertion = (await navigator.credentials.get({
     publicKey: {
@@ -99,18 +101,31 @@ export async function promote2fa(
     },
   })) as PublicKeyCredential;
   const resp = assertion.response as AuthenticatorAssertionResponse;
-  return fetch("/api/coven/promote-2fa", {
+  return fetch(route, {
     method: "POST",
     credentials: "omit",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      name,
-      version,
-      promotedBy,
+      ...extra,
       credentialId: b64url(assertion.rawId),
       authData: hex(resp.authenticatorData),
       clientData: new TextDecoder().decode(resp.clientDataJSON),
       signature: hex(resp.signature),
     }),
   });
+}
+
+// Promote a staged version to released — verified by a WebAuthn 2FA assertion server-side.
+export function promote2fa(
+  rpId: string,
+  name: string,
+  version: string,
+  promotedBy: string,
+): Promise<Response> {
+  return wa_write("/api/coven/promote-2fa", rpId, { name, version, promotedBy });
+}
+
+// Yank a version — like promote, a destructive state change gated by a WebAuthn 2FA assertion.
+export function yank2fa(rpId: string, name: string, version: string): Promise<Response> {
+  return wa_write("/api/coven/yank-2fa", rpId, { name, version });
 }
