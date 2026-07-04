@@ -34,12 +34,23 @@ fn compilation_cache() -> Option<Cache> {
 /// loads an already-compiled artifact directly, skipping wasm parse/validate AND
 /// the cache lookup — the cold-start lever from spec/performance.md Phase 3.
 fn aot_cache_dir() -> Option<std::path::PathBuf> {
+    // Trusted, owner-private base ONLY. `build_module` loads artifacts from here via
+    // `unsafe Module::deserialize` (native code), so a directory another local user can
+    // write is a native-code-execution vector OUTSIDE the wasm sandbox. Never fall back
+    // to a world-writable temp dir: with no trusted base, return `None` and the caller
+    // just compiles fresh (it already treats `None` as "no AOT fast-path").
     let base = std::env::var_os("XDG_CACHE_HOME")
         .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))
-        .unwrap_or_else(std::env::temp_dir);
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))?;
     let dir = base.join("witchy").join("aot");
     std::fs::create_dir_all(&dir).ok()?;
+    // Owner-only (0700): even under a trusted HOME, deny group/other write so a
+    // shared-account co-tenant cannot plant a `.cwasm` for `deserialize` to trust.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    }
     Some(dir)
 }
 
@@ -1360,6 +1371,10 @@ fn host_exec_run(
     let path = read_wstr(data, path_ptr)?;
     let joined = read_wstr(data, args_ptr)?;
     let stdin = read_wstr(data, stdin_ptr)?;
+    // (RFC-0011) exec is the sharpest right, so it takes the SAME entry-policy gate as
+    // every other Dir op: a `Dir[...].only(...)` may only run a file it admits — "you
+    // can only run a file you can read" was false while this was skipped.
+    dir_guard(&caller, h, &path, false)?;
     let base = dir_base(&caller, h)?;
     let prog = confine(crate::confine::resolve(&base, &path))?;
     let argv: Vec<&str> = if joined.is_empty() { Vec::new() } else { joined.split('\0').collect() };

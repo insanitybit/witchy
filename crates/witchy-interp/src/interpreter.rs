@@ -1523,7 +1523,12 @@ impl Interpreter {
             // `(Int, String)` over a `List(String)`. (One staged-string result, so
             // the compiled backend mirrors `dir_read` exactly — see rfcs/0004.)
             "exec" => match args {
-                [Value::Cap(Capability::Exec), Value::Dir(base, _), Value::Str(path), Value::Str(joined), Value::Str(stdin)] => {
+                [Value::Cap(Capability::Exec), Value::Dir(base, pol), Value::Str(path), Value::Str(joined), Value::Str(stdin)] => {
+                    // (RFC-0011) exec is the sharpest right, so it takes the SAME entry-policy
+                    // gate as read/write: a `Dir[...].only(...)` may only run a file it admits.
+                    if !witchy_caps::capabilities::dir_admits(pol, path, false) {
+                        return err(format!("`{path}` is not permitted by this Dir capability's entry policy"));
+                    }
                     let prog = resolve(base, path)?;
                     let argv: Vec<&str> =
                         if joined.is_empty() { Vec::new() } else { joined.split('\0').collect() };
