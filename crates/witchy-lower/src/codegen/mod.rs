@@ -3487,11 +3487,13 @@ impl Codegen {
                 };
                 (cond, binds)
             }
-            // (RFC-0052) A duration literal — the scrutinee is an i64 of ms, so
-            // exact i64 equality, identical to an Int literal.
+            // (RFC-0052) A Duration literal is whole milliseconds and a Duration
+            // value is an i64 slot of ms, so it is exact i64 equality — identical
+            // to an Int literal (and to the interpreter's `Pattern::Duration` arm).
             Pattern::Duration(ms) => (eq_i64(*ms), vec![]),
-            // (RFC-0052) An integer range `lo..hi` / `lo..=hi`: `lo <= x && x (< | <=) hi`
-            // on the i64 scrutinee. No bindings.
+            // (RFC-0052) `lo..hi` (half-open) / `lo..=hi` (inclusive):
+            // `v >= lo && v (< | <=) hi` on the i64 scrutinee, mirroring the
+            // interpreter's IntRange arm. No bindings.
             Pattern::IntRange { lo, hi, inclusive } => {
                 let ge_lo = W::Binary {
                     op: witchy_wir::wir::BinOp::Ge,
@@ -3499,7 +3501,7 @@ impl Codegen {
                     lhs: Box::new(value.clone()),
                     rhs: Box::new(W::ConstI64(*lo)),
                 };
-                let hi_cmp = W::Binary {
+                let below_hi = W::Binary {
                     op: if *inclusive {
                         witchy_wir::wir::BinOp::Le
                     } else {
@@ -3509,16 +3511,16 @@ impl Codegen {
                     lhs: Box::new(value.clone()),
                     rhs: Box::new(W::ConstI64(*hi)),
                 };
-                (wir_and_chain(&[ge_lo, hi_cmp]), vec![])
+                (wir_and_chain(&[ge_lo, below_hi]), vec![])
             }
-            // (RFC-0052) An or-pattern `p1 | p2 | …`: the condition is the OR of the
-            // alternatives' conditions. Bindings are per-alternative and only valid
-            // for the matching alternative, so each alternative's binds are guarded
-            // by re-testing its own condition (`if ci: binds_i`) — every alternative
+            // (RFC-0052) `p1 | p2 | …`: OR the alternative conditions. A binding
+            // alternative (e.g. `Some(a) | Wrap(a)`) contributes its binds GUARDED
+            // by its own re-tested condition (`if ci: binds_i`) — every alternative
             // binds the SAME names (checker-enforced), so exactly one guard fires
-            // and the arm body sees the matched alternative's values.
+            // and the arm body sees the matched alternative's values, matching the
+            // interpreter, which binds through the first matching alternative.
             Pattern::Or(alts) => {
-                let mut alt_conds: Vec<W> = Vec::with_capacity(alts.len());
+                let mut conds: Vec<W> = Vec::new();
                 let mut binds: witchy_wir::wir::WirSeq = Vec::new();
                 for alt in alts {
                     let (c, b) = self.lower_pattern(value, alt)?;
@@ -3530,9 +3532,12 @@ impl Codegen {
                             result: None,
                         });
                     }
-                    alt_conds.push(c);
+                    conds.push(c);
                 }
-                (wir_or_chain(&alt_conds), binds)
+                if conds.is_empty() {
+                    return None;
+                }
+                (wir_or_chain(&conds), binds)
             }
         })
     }
