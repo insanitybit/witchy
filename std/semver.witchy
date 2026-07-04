@@ -7,6 +7,7 @@
 
 import cmp
 import string
+import iter
 
 // A version orders by major, then minor, then patch — exactly the lexicographic
 // order `derive(Ord)` gives the fields in declaration order, so `<`, `>`, and
@@ -127,12 +128,10 @@ fn caret_matches(r: Version, v: Version) -> Bool:
         v.major == 0 && v.minor == 0 && v.patch == r.patch
 
 // The highest version in `versions` that satisfies `req`, or None if none do.
+// Keep the matching versions and fold to the highest — dogfoods std/iter.
 pub fn best(versions: List(Version), req: Req) -> Option(Version):
-    var chosen = None
-    for v in versions:
-        if matches(req, v) && higher_than(v, chosen):
-            chosen = Some(v)
-    chosen
+    let ok = iter.filter(iter.from_list(versions), fn(v: Version): matches(req, v))
+    iter.fold(ok, None, fn(chosen: Option(Version), v: Version): if higher_than(v, chosen): Some(v) else: chosen)
 
 fn higher_than(v: Version, current: Option(Version)) -> Bool:
     match current:

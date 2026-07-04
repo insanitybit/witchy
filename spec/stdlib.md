@@ -1998,7 +1998,7 @@ Whether `v` satisfies the constraint `req`.
 
 #### `fn best(versions: List(Version), req: Req) -> Option(Version)`
 
-The highest version in `versions` that satisfies `req`, or None if none do.
+The highest version in `versions` that satisfies `req`, or None if none do. Keep the matching versions and fold to the highest — dogfoods std/iter.
 
 ## `server`
 

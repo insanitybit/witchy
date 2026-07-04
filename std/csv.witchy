@@ -7,6 +7,7 @@
 
 import string
 import dict
+import iter
 
 // Parse CSV text into rows of fields. A trailing newline is ignored; `\r\n` and
 // `\n` line endings both work.
@@ -63,9 +64,8 @@ pub fn encode(rows: List(List(String))) -> String:
     out
 
 fn encode_row(row: List(String)) -> String:
-    var parts = []
-    for f in row:
-        parts = list.push(parts, encode_field(f))
+    // Quote each field, then join with commas — dogfoods std/iter.
+    let parts: List(String) = iter.collect(iter.map(iter.from_list(row), fn(f: String): encode_field(f)))
     list.join(parts, ",")
 
 fn encode_field(f: String) -> String:

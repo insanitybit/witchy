@@ -15530,6 +15530,21 @@ fn main(console: Console):
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
+    /// RFC-0046 step 5 (acceptance d, second clause): three std modules now use
+    /// `Iter` internally — `path` (`drop_last` via `iter.take`), `csv`
+    /// (`encode_row` via `iter.map`), and `semver` (`best` via `iter.filter` +
+    /// `iter.fold`) — proving the stdlib can consume its own lazy layer. The
+    /// observable output is unchanged AND identical on both backends (the generic
+    /// iter pipelines monomorphize for the compiled path). Before RFC-0046, no std
+    /// module imported iter because inference through it was unreliable.
+    #[test]
+    fn rfc0046_std_dogfoods_iter_in_path_csv_semver() {
+        let src = "import path\nimport csv\nimport semver\n\nfn main(console: Console):\n    print(console, path.normalize(\"a/b/c/../../d\"))\n    print(console, csv.encode([[\"a\", \"b,c\"], [\"d\", \"e\"]]))\n    let vs = [semver.version(1, 2, 0), semver.version(1, 5, 3), semver.version(2, 0, 0)]\n    match semver.parse_req(\"^1.0.0\"):\n        Ok(req) ->\n            match semver.best(vs, req):\n                Some(v) -> print(console, semver.format(v))\n                None -> print(console, \"none\")\n        Err(e) -> print(console, e)\n";
+        let want = vec!["a/d".to_string(), "a,\"b,c\"\nd,e".to_string(), "1.5.3".to_string()];
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
     // Phase 2 of the concurrency redesign: an `async fn` lowers (CPS over closures,
     // `crate::async_lower`) to a cooperative `chan` task, and `await` chains
     // continuations. An async `main` is the executor entry (lowers to `task.run`).

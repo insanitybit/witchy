@@ -5,6 +5,7 @@
 // components, and a `normalize` that collapses `.` and `..`.
 
 import string
+import iter
 
 // Whether `p` is absolute (rooted at `/`).
 pub fn is_abs(p: String) -> Bool:
@@ -102,11 +103,6 @@ fn last(xs: List(String)) -> String:
         list.at(xs, list.length(xs) - 1)
 
 fn drop_last(xs: List(String)) -> List(String):
-    var out = []
-    let keep = list.length(xs) - 1
-    var i = 0
-    for x in xs:
-        if i < keep:
-            out = list.push(out, x)
-        i = i + 1
-    out
+    // Everything but the final element — `take` of one fewer (empty when `xs`
+    // is, since `take` of a non-positive count is empty). Dogfoods std/iter.
+    iter.collect(iter.take(iter.from_list(xs), list.length(xs) - 1))
