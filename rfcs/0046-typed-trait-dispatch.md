@@ -301,3 +301,55 @@ say so:
   table fallback sites in traits.rs are its proof of concept.
 - CLAUDE.md's no-special-casing rule (and rfcs/0016's thesis): one general
   mechanism, per-case tables are debt whose deletion-while-green is the proof.
+
+## Implementation note (2026-07-04, steps 1/4/5 + BUG-001/004)
+
+Steps 1, 5, and the two coupled bugs landed; step 4 landed as a bounded,
+green-verified deletion with a precisely-scoped residual.
+
+**Step 1 (fixpoint) — DONE.** Acceptance (a) passes on both backends with no
+ascription: a generic helper's bounded `iter.collect` resolves because
+`lower_with` now runs annotate → monomorphize → **re-annotate** to a fixpoint
+(memo persisted; bounded rounds). A generic function that transitively calls a
+bounded template is itself a no-fallback template on both backends
+(`no_fallback_template_names`) — its obligation propagates to concrete call
+sites. The loud pass gets a fresh table over the final module.
+
+**Step 5 (iter) — DONE.** `min`/`max`/`last`/`position`/`scan`/`flatten` added
+(acceptance d, clause 1). Three std modules dogfood iter internally
+(`path.drop_last`, `csv.encode_row`, `semver.best` — clause 2). The collection
+core (list/set/string/cmp/option) sits UPSTREAM of iter and cannot import it, so
+the dogfooded modules are leaf-ish; noted for future work.
+
+**Step 4 (delete the shadow system) — PARTIAL, by structural necessity.**
+DELETED (cleanly subsumed by the table-first path + the step-1 fixpoint):
+`recover_generic_call`, `bind_type_var`, `builtin_ret`, and the now-dead
+`Mono.fn_sigs`. CLAUDE.md's dispatch section was corrected (it routed fixes into
+the deleted `recover_generic_call`).
+
+RESIDUAL, kept with reasons (NOT a new shape table — the existing local-judgment
+core): `head_type_name` + its string parsers (`list_elem`/`generic_arg`/
+`tuple_args`/`head_of`/`apply_subst`/`type_to_scope_name`/`SCOPE_NAME_MAX_DEPTH`)
+and `cap_op_return_type`. They remain because (1) the **quiet pre-mono pass runs
+with an empty table** and the checker HARD-ERRORS on any surviving `MethodCall`
+(typeck `Expr::MethodCall` arm), so local receiver typing is structurally
+required to resolve method syntax *before* annotate can produce a table; (2)
+mono walks freshly-generated specialization bodies (clones, not yet in any
+table) within a round via this path; (3) `head_of` also backs the architectural
+concrete-type → head → generic-impl lookup in `lookup_impl`. Full deletion needs
+a larger restructure — a **lenient-`MethodCall` annotate** to hand the quiet pass
+a table, plus extending+re-annotating generated bodies before walking them — the
+checker-adjacent change this RFC deliberately kept out of scope for blast radius.
+That restructure is the tracked follow-up; the string zoo is now dead-cited-code-
+free (nothing routes new fixes into it) even though the local-judgment core
+survives.
+
+**BUG-001 (Mono comparator hijack) — FIXED.** `rename_calls_block` threads a
+`Scope`; a call on a bound local (a `fn`-typed comparator param named like a
+trait method) is never renamed to the impl. Regression test on both backends.
+
+**BUG-004 (address-keyed TypeTable) — MITIGATED (smallest sound fix).**
+`infer_transient` stops recording throwaway desugar-temp subtrees, closing the
+free-then-reuse false-hit hole at its source. Stable node identity remains the
+architectural long-term fix (it does not fit monomorphization, which needs cloned
+nodes to have FRESH identity).
