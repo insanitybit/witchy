@@ -52,9 +52,11 @@ error paths too).
 
 ## Formatting
 
-Rust code: `cargo fmt`. witchy code (std/, examples/): `witchy fmt <file>` —
-CI runs `witchy fmt --check` over the tree. If you edit `std/`, regenerate the
-API reference: `witchy doc std/*.witchy > spec/stdlib.md` (a test asserts it
+Rust code is **hand-formatted** — do NOT run `cargo fmt` (it reformats ~71
+files and fights the intended style; the gate deliberately excludes rustfmt).
+witchy code (std/, examples/): `witchy fmt <file>` — CI runs `witchy fmt
+--check` over the tree, the only formatting gate. If you edit `std/`, regenerate
+the API reference: `witchy doc std/*.witchy > spec/stdlib.md` (a test asserts it
 is current).
 
 ## Documentation is tested

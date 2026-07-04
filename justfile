@@ -35,13 +35,10 @@ clippy:
 
 alias lint := clippy
 
-# Format Rust sources in place.
-fmt:
-    cargo fmt
-
-# Verify Rust formatting without writing (CI gate).
-fmt-check:
-    cargo fmt --check
+# NOTE: there is deliberately NO `cargo fmt` recipe. The Rust in this repo is
+# hand-formatted on purpose (see scripts/check.sh); `cargo fmt` reformats ~71
+# files and fights the intended style. The only formatting gate is `witchy fmt`
+# over std/ + examples/ — see `wfmt` / `wfmt-check` below.
 
 # --- witchy CLI passthroughs ---------------------------------------------
 
@@ -146,7 +143,7 @@ wasm:
 # --- Aggregates -----------------------------------------------------------
 
 # The full local gate — everything CI runs. Run before opening a PR.
-ci: build-all clippy test fmt-check parity-sweep wfmt-check e2e-quick
+ci: build-all clippy test parity-sweep wfmt-check e2e-quick
     @echo "✓ local CI gate passed"
 
 # Remove build artifacts.
