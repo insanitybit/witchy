@@ -1022,6 +1022,30 @@ Whether at least one element satisfies `pred` — stops (short-circuits) at the 
 
 Whether every element satisfies `pred` — stops at the first failure. `true` for the empty iterator (vacuously). Don't call on an unbounded iterator whose elements all satisfy `pred`: it never stops.
 
+#### `fn last(it: Iter(a)) -> Option(a)`
+
+The last element (drives the iterator to exhaustion), or None if it is empty. Don't call on an unbounded iterator — it never stops.
+
+#### `fn position(it: Iter(a), pred: fn(a) -> Bool) -> Option(Int)`
+
+The 0-based index of the first element satisfying `pred`, or None. Stops at the first match, so it is safe on an unbounded iterator if a match exists.
+
+#### `fn min(it: Iter(a)) -> Option(a) where a: Ord`
+
+The smallest element by the type's `Ord`, or None if the iterator is empty (drives to exhaustion; don't call on an unbounded iterator).
+
+#### `fn max(it: Iter(a)) -> Option(a) where a: Ord`
+
+The largest element by the type's `Ord`, or None if the iterator is empty (drives to exhaustion; don't call on an unbounded iterator).
+
+#### `fn scan(it: Iter(a), state: s, f: fn(s, a) -> (s, b)) -> Iter(b)`
+
+A lazy STATEFUL map: thread `state` through `f`, which returns the new state and the value to emit. `scan(xs, 0, fn(s, x): (s + x, s + x))` yields the running sums. Unlike `fold`, it produces an iterator, so it is lazy and composable, and unlike `map` it can carry state between elements.
+
+#### `fn flatten(it: Iter(Iter(a))) -> Iter(a)`
+
+Concatenate an iterator OF iterators into one flat iterator, lazily and in order — `flatten` is `flat_map` with the identity function.
+
 ## `json`
 
 A JSON library — the witchy take on Go's encoding/json. This slice is the value type and the encoder (serialization); the decoder (parsing) follows. Pure and capability-free, so — unlike networking — it compiles to WASM like the rest of the data std.

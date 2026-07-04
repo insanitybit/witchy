@@ -15507,6 +15507,29 @@ fn main(console: Console):
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
+    /// RFC-0046 step 5 (acceptance d, first clause): the new `Iter` combinators —
+    /// `min`/`max` (Ord-bounded), `last`, `position`, `scan` (lazy stateful map),
+    /// and `flatten` — exist and produce identical results on both backends,
+    /// including `min` over `String` (Ord dispatch through a `where a: Ord` iter
+    /// combinator). Each of these was previously unwritable because its bounded /
+    /// generic-return signature did not survive inference; the step-1 fixpoint is
+    /// what lets them monomorphize.
+    #[test]
+    fn rfc0046_iter_combinators_min_max_last_position_scan_flatten() {
+        let src = "import iter\nimport option\n\nfn main(console: Console):\n    print(console, \"${option.unwrap_or(iter.min(iter.from_list([3, 1, 4, 1, 5])), 0)}\")\n    print(console, \"${option.unwrap_or(iter.max(iter.from_list([3, 1, 4, 1, 5])), 0)}\")\n    print(console, \"${option.unwrap_or(iter.last(iter.from_list([10, 20, 30])), 0)}\")\n    print(console, \"${option.unwrap_or(iter.position(iter.from_list([3, 1, 4, 1, 5]), fn(n: Int): n == 4), 0 - 1)}\")\n    let sums: List(Int) = iter.collect(iter.scan(iter.from_list([1, 2, 3, 4]), 0, fn(s: Int, x: Int): (s + x, s + x)))\n    print(console, \"${sums}\")\n    let flat: List(Int) = iter.collect(iter.flatten(iter.from_list([iter.from_list([1, 2]), iter.from_list([3, 4])])))\n    print(console, \"${flat}\")\n    print(console, \"${option.unwrap_or(iter.min(iter.from_list([\"pear\", \"apple\", \"kiwi\"])), \"?\")}\")\n";
+        let want = vec![
+            "1".to_string(),
+            "5".to_string(),
+            "30".to_string(),
+            "2".to_string(),
+            "[1, 3, 6, 10]".to_string(),
+            "[1, 2, 3, 4]".to_string(),
+            "apple".to_string(),
+        ];
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
     // Phase 2 of the concurrency redesign: an `async fn` lowers (CPS over closures,
     // `crate::async_lower`) to a cooperative `chan` task, and `await` chains
     // continuations. An async `main` is the executor entry (lowers to `task.run`).
