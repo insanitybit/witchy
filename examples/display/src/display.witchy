@@ -1,7 +1,8 @@
 // The `Show` trait renders any type as a String — including your own, which the
-// built-in `to_string` cannot. `show_list` formats a whole list through each
-// element's Show impl, so it works for lists of user types too, and it produces
-// the same output whether interpreted or compiled.
+// built-in `to_string` cannot. A blanket `impl Show for List(a) where a: Show`
+// means `say` renders a whole list through each element's Show impl, so it works
+// for lists of user types too, and it produces the same output whether
+// interpreted or compiled.
 
 import show
 
@@ -14,5 +15,5 @@ impl Show for Coord:
             Coord(x, y) -> "(${x}, ${y})"
 
 fn main(console: Console):
-    print(console, show.show_list([1, 2, 3]))
-    print(console, show.show_list([Coord(0, 0), Coord(3, 4)]))
+    show.say(console, [1, 2, 3])
+    show.say(console, [Coord(0, 0), Coord(3, 4)])
