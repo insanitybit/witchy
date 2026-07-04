@@ -122,7 +122,8 @@ cannot instantiate.
 
 ## The imports
 
-ABI version 1 declares **58 imports** (`IMPORT_COUNT` in `src/wir_prelude.rs`),
+ABI version 1 declares **76 imports** (`IMPORT_COUNT` in
+`crates/witchy-wir/src/wir_prelude.rs`),
 classified below. **Infrastructure** imports carry no authority and the
 pure-compute host provides them. **Capability** imports are authority (or
 interpreter-only host services) and the pure-compute host **omits** them. The
