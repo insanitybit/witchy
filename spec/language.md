@@ -306,14 +306,51 @@ fn main(console: Console):
 
 ## 6. Pattern matching
 
-`match` is exhaustiveness-checked (missing variants are named in the error) and
-unreachable arms are rejected. Patterns: literals, `_`, variables, constructors
-with nested patterns, tuples, list shapes (`[]`, `[first, ..rest]`), and guards
-(`PAT if cond ->`, which don't count toward exhaustiveness).
+There is **one pattern grammar**, used in every binding position — `match` arms,
+`if let` / `while let`, `let`, `for`, and comprehensions. A pattern is one of:
 
-An arm body is an expression, a single inline statement (`0 -> return
-Err("zero")`, `Some(v) -> total = total + v`, `_ -> break`), or an indented
-block of statements on the lines after the `->`.
+| Pattern | Example |
+|---|---|
+| wildcard | `_` |
+| variable | `x` (binds the value) |
+| literal | `0`, `-1`, `"hi"`, `true`, `1s` (a Duration) |
+| integer range | `0..10` (half-open), `0..=10` (inclusive) |
+| tuple | `(a, b)`, nested `((a, b), c)` |
+| constructor | `Circle(r)`, `Some(x)`, a record `Point(x, y)` |
+| list shape | `[]`, `[a, b]`, `[first, ..rest]`, `[a, ..]` |
+| or-pattern | `1 \| 2 \| 3`, and nested `Some(1 \| 2)`, at any depth |
+
+Or-patterns and ranges are ordinary sub-patterns: they nest anywhere a pattern
+is allowed (`Some(1 | 2)`, `(0..10, _)`, `[1 | 2, ..rest]`). Every alternative of
+an or-pattern must bind the **same names at the same types** (checked). `Float`
+literals **cannot** be matched — exact float equality is a precision trap
+(bind and guard instead: `x if math.float_abs(x - 1.5) < eps ->`); a `Float`
+*scrutinee* bound to a variable is fine (`match f: x -> …`). `Duration` literals
+**can** be matched — a Duration is an exact millisecond count, and `-1s` is a
+negative duration literal in both expression and pattern position.
+
+**Contexts differ only by refutability.** `match` / `if let` / `while let`
+accept any pattern. `let` / `for` / comprehensions require an **irrefutable**
+pattern — one the checker proves always matches: `_`, a variable, a tuple of
+irrefutable patterns (any nesting), and a single-variant constructor/record
+whose fields are irrefutable. A refutable pattern there (a literal, a range, an
+or-pattern, a list shape, or a multi-variant constructor) is a check-time error
+pointing at `if let`:
+
+```sh
+let Circle(r) = shape
+# error: `let Circle(r) = …` — `Circle` is one of 2 variants of `Shape`, so
+#        this pattern can fail. Use `if let Circle(r) = …:` (with an else), or `match`.
+```
+
+`match` is exhaustiveness-checked (missing variants are named in the error) and
+unreachable arms are rejected; an or-pattern covers the union of its
+alternatives, while a range is treated as refutable (a range-only match still
+needs a final `_`/binding arm — witchy does no numeric-coverage analysis).
+Guards (`PAT if cond ->`) don't count toward exhaustiveness. An arm body is an
+expression, a single inline statement (`0 -> return Err("zero")`,
+`Some(v) -> total = total + v`, `_ -> break`), or an indented block of
+statements on the lines after the `->`.
 
 ```witchy
 type Shape:
@@ -323,8 +360,14 @@ type Shape:
 fn describe(s: Shape) -> String:
     match s:
         Circle(r) if r > 100 -> "big circle"
-        Circle(r) -> "circle " + "${r}"
-        Square(w) -> "square " + "${w}"
+        Circle(r) | Square(r) -> "small " + "${r}"
+
+fn size(n: Int) -> String:
+    match n:
+        0 -> "none"
+        1..10 -> "few"
+        10..=100 -> "many"
+        _ -> "lots"
 
 fn head(xs: List(Int)) -> String:
     match xs:
@@ -333,9 +376,14 @@ fn head(xs: List(Int)) -> String:
 
 fn main(console: Console):
     print(console, describe(Circle(2)))
-    print(console, describe(Square(5)))
+    print(console, size(5))
+    print(console, size(50))
     print(console, head([10, 20, 30]))
-    print(console, head([]))
+    // Irrefutable destructuring shares the same grammar:
+    let ((a, b), c) = ((1, 2), 3)
+    print(console, "${a} ${b} ${c}")
+    for (k, v) in [(1, 2), (3, 4)]:
+        print(console, "${k}=${v}")
 ```
 
 ## 7. Functions
@@ -740,18 +788,17 @@ primitive all abort (a runtime error interpreted, a trap compiled). The parity
 invariant covers these too — a program that errors on one backend errors on
 both.
 
-**Unwrapping with `||`.** For a quick value-or-default, `Option(T) || T` unwraps
-to a bare `T` (§4): `Some(x) || d` is `x`, `None || d` is `d` (with `d` evaluated
-only when absent). It is `option.unwrap_or` with operator syntax — handy on the
-`Option`-returning lookups (`dict.get`, `list.head`, …).
+**Unwrapping with `??`.** For a quick value-or-default, `Option(T) ?? T` unwraps
+to a bare `T` (§4): `Some(x) ?? d` is `x`, `None ?? d` is `d` (with `d` evaluated
+only when absent). `Result(T, e) ?? T` unwraps `Ok` likewise, discarding the
+error. It is `unwrap_or` with operator syntax — handy on the `Option`-returning
+lookups (`dict.get`, `list.head`, …).
 
 ```witchy
-import option
-
 fn main(console: Console):
     let ages = dict.new().insert("ada", 36)
-    print(console, "${dict.get(ages, "ada") || 0}")
-    print(console, "${dict.get(ages, "bob") || 0}")
+    print(console, "${dict.get(ages, "ada") ?? 0}")
+    print(console, "${dict.get(ages, "bob") ?? 0}")
 ```
 
 ## 10. Comprehensions
