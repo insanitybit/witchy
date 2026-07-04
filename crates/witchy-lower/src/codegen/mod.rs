@@ -1552,12 +1552,22 @@ impl Codegen {
             Expr::Match { scrutinee, arms } => {
                 // The record an Option/Result scrutinee's Some/Ok carries, if known.
                 let payload = self.match_payload_record(scrutinee);
+                // (RFC-0052) A TOP-LEVEL variable/wildcard pattern binds the WHOLE
+                // scrutinee, so it takes the scrutinee's kind — crucially F64 for a
+                // `match <float>: x -> …`, which otherwise defaulted to i32 and made
+                // the WIR ill-typed (the check-passes/codegen-fails Float hole).
+                let scrut_kind = self.kind_of(scrutinee);
                 for arm in arms {
-                    // Pattern-bound vars are i32 (floats aren't stored in records).
+                    // Pattern-bound vars are i32 (floats aren't stored in records),
+                    // except a top-level whole-scrutinee binding (handled below).
                     let mut pvars = Vec::new();
                     collect_pattern_vars(&arm.pattern, &mut pvars);
                     for v in pvars {
                         self.locals.insert(v, Kind::I32);
+                    }
+                    if let Pattern::Var(v) = &arm.pattern {
+                        self.locals.insert(v.clone(), scrut_kind);
+                        self.local_val_types.insert(v.clone(), self.val_type_of(scrutinee));
                     }
                     // A var bound to a record-typed constructor field resolves
                     // `.field` in the arm body (concrete field types only).
@@ -2387,17 +2397,24 @@ impl Codegen {
                     }
                     tail_is_value = false;
                 }
-                // `let PAT = e` (RFC-0052): store the value once, then emit the
-                // pattern's BINDINGS via the shared `lower_pattern` — the same
-                // machinery `match` uses (a `let` pattern is irrefutable, so its
-                // test condition is discarded; only the binds run). This handles
-                // nested tuples, ctor/record destructures, and list heads
+                // `let PAT = e` (RFC-0052): store the value once as an i64 SLOT in
+                // MATCH_TMP, then emit the pattern's BINDINGS via the shared
+                // `lower_pattern` — the same machinery `match` uses (a `let`
+                // pattern is irrefutable, so its test condition is discarded; only
+                // the binds run). `lower_pattern` reads the value as an i64 slot
+                // (it `FromSlot`s to a pointer for tuples/ctors), so store via
+                // `ToSlot` at the value's kind — exactly as `lower_match` does.
+                // Handles nested tuples, ctor/record destructures, and list heads
                 // uniformly, superseding the old flat-slot-only loop.
                 Stmt::LetPattern { pattern, value } => {
+                    let vk = self.kind_of(value);
                     let v = self.lower_expr(value)?;
-                    seq.push(N::SetLocal { local: TUPLE_TMP.to_string(), value: v });
+                    seq.push(N::SetLocal {
+                        local: MATCH_TMP.to_string(),
+                        value: W::ToSlot(Box::new(v), Self::wir_kind(vk)),
+                    });
                     let (_cond, binds) =
-                        self.lower_pattern(&W::GetLocal(TUPLE_TMP.to_string()), pattern)?;
+                        self.lower_pattern(&W::GetLocal(MATCH_TMP.to_string()), pattern)?;
                     seq.extend(binds);
                     tail_is_value = false;
                 }

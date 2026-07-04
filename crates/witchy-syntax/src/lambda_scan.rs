@@ -208,6 +208,14 @@ pub fn collect_pattern_vars<S: Extend<String>>(pat: &Pattern, out: &mut S) {
                 out.extend([name.clone()]);
             }
         }
+        // (RFC-0052) Every or-pattern alternative binds the SAME names, so the
+        // first alternative's bindings are the complete set (the checker enforces
+        // consistency). Walking just the first avoids double-counting.
+        Pattern::Or(alts) => {
+            if let Some(first) = alts.first() {
+                collect_pattern_vars(first, out);
+            }
+        }
         _ => {}
     }
 }
