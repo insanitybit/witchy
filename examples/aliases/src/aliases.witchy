@@ -3,7 +3,9 @@
 // Aliases may stand for compound types (`List(...)`, tuples, function types) and
 // may chain. They are expanded to their target before type-checking and code
 // generation, so they cost nothing at runtime and behave identically
-// interpreted, compiled, and inside the capability sandbox:
+// interpreted, compiled, and inside the capability sandbox. An alias expands in
+// EVERY written-type position — not just signatures and fields, but body-level
+// `let` ascriptions, `as` casts, lambda parameter/return types, and impl heads:
 //   witchy examples/aliases.witchy
 //   witchy parity examples/aliases.witchy
 //   witchy sandbox examples/aliases.witchy
@@ -16,6 +18,20 @@ type Fahrenheit = Int
 
 type Readings = List(Celsius)
 
+// A function-type alias, used below as a lambda's declared type.
+type Converter = fn(Celsius) -> Fahrenheit
+
+// A capability alias — `as` narrows through it exactly like a written Console.
+type Out = Console
+
+trait Describe:
+    fn describe(self) -> String
+
+// `impl Describe for Celsius` targets an alias; the head expands to `Int`.
+impl Describe for Celsius:
+    fn describe(self) -> String:
+        "${self}C"
+
 pub fn to_fahrenheit(c: Celsius) -> Fahrenheit:
     c * 9 / 5 + 32
 
@@ -27,6 +43,14 @@ pub fn average(rs: Readings) -> Celsius:
 
 fn main(console: Console):
     let week = [18, 21, 25, 23, 20, 19, 22]
-    print(console, "avg C = " + "${average(week)}")
-    print(console, "25C = ${to_fahrenheit(25)}F")
-    print(console, "0C  = ${to_fahrenheit(0)}F")
+    // A `let` ascription written with an alias.
+    let hottest: Celsius = 25
+    // A lambda with an alias-typed parameter AND return, bound at an alias-typed
+    // `let`.
+    let convert: Converter = fn(c: Celsius) -> Fahrenheit: to_fahrenheit(c)
+    // `as` narrowing through a capability alias.
+    let out: Out = console as Out
+    print(out, "avg C = " + "${average(week)}")
+    print(out, "25C = ${to_fahrenheit(25)}F")
+    print(out, "0C  = ${to_fahrenheit(0)}F")
+    print(out, "hottest = ${hottest.describe()} = ${convert(hottest)}F")

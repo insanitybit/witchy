@@ -85,6 +85,7 @@ struct Parser {
     pending_impl_bounds: Vec<(String, String, Vec<Type>)>,
     /// True while parsing the body of an `async fn`; gates the `.await` postfix.
     in_async: bool,
+    in_gen: bool,
     /// Distinct field-name sets (sorted) of the anonymous structs `.{…}` seen, in
     /// first-seen order. Each becomes a generic synthetic record `__anonN(t0, …)
     /// derive(Reflect)` prepended to the module, so `.{a: x}` is ordinary
@@ -136,6 +137,7 @@ impl Parser {
             .collect(),
             pending_impl_bounds: Vec::new(),
             in_async: false,
+            in_gen: false,
             anon_records: Vec::new(),
             depth: 0,
         }
@@ -709,10 +711,13 @@ impl Parser {
         // them (a function may use both).
         let mut bounds = std::mem::take(&mut self.pending_impl_bounds);
         bounds.extend(self.where_clause()?);
-        // `await` is only legal inside an `async fn`; the body parse consults this.
+        // `await`/`yield` are only legal inside an `async`/`gen fn`; the body parse
+        // consults these flags.
         let prev_async = std::mem::replace(&mut self.in_async, is_async);
+        let prev_gen = std::mem::replace(&mut self.in_gen, is_gen);
         let body = self.block()?;
         self.in_async = prev_async;
+        self.in_gen = prev_gen;
         Ok(Function {
             public,
             name,
@@ -950,8 +955,14 @@ impl Parser {
         if self.eat(&Tok::Continue) {
             return Ok(Stmt::Continue);
         }
-        if self.eat(&Tok::Yield) {
-            // `yield e` — produce a value from a `gen fn`.
+        if self.at(&Tok::Yield) {
+            // `yield e` produces a value from a `gen fn` — only legal there, mirroring
+            // the `.await`/`async fn` gate. Outside one it silently no-op'd on the
+            // interpreter but failed to compile: a backend divergence caught here.
+            if !self.in_gen {
+                return Err(self.error("`yield` is only allowed inside a `gen fn`".to_string()));
+            }
+            self.advance();
             return Ok(Stmt::Yield(self.expr(0)?));
         }
         if self.at(&Tok::Let) || self.at(&Tok::Var) {

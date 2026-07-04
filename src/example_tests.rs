@@ -1323,6 +1323,20 @@ fn main(console: Console):
         assert_eq!(wasm_run(src), expected, "wasm");
     }
 
+    /// `json.encode` escapes every C0 control character — RFC 8259 forbids a raw one
+    /// inside a string, and a raw byte produced invalid JSON no conformant parser
+    /// would accept. `\b`/`\f` take the short form, the rest `\u00XX` (a NUL is
+    /// ` `, not a raw byte); `json.decode` round-trips them. Identical on both
+    /// backends (the bug was parity-silent — both emitted the same invalid output).
+    #[test]
+    fn json_encodes_control_characters_backends_agree() {
+        // NUL ( ), backspace (short \b), tab (short \t), and 0x1f ().
+        let src = "import json\nfn main(console: Console):\n    let s = string.from_code(0) + string.from_code(8) + string.from_code(9) + string.from_code(31)\n    let enc = json.encode(JsonString(s))\n    print(console, enc)\n    match json.decode(enc):\n        Ok(v) -> match v:\n            JsonString(d) -> print(console, __render(d == s))\n            _ -> print(console, \"notstr\")\n        Err(e) -> print(console, \"err\")\n";
+        let expected = vec!["\"\\u0000\\b\\t\\u001f\"".to_string(), "true".to_string()];
+        assert_eq!(link_run(src), expected, "interpreter");
+        assert_eq!(wasm_run(src), expected, "wasm");
+    }
+
     /// `std/webauthn.verify_assertion` accepts a real ES256 WebAuthn assertion and
     /// rejects a tampered signature and a missing user-verification flag. Vectors
     /// generated with the `cryptography` lib (P-256, real authenticatorData).
@@ -7887,8 +7901,12 @@ fn main(console: Console):
 
     #[test]
     fn aliases_example_runs_on_wasm() {
-        // Type aliases (scalar and compound) are expanded before both backends,
-        // so the temperature conversions and averaging agree.
+        // Type aliases are expanded before both backends everywhere a type is
+        // written — signatures/fields AND body-level positions: the `let`
+        // ascription (`hottest: Celsius`), the lambda's alias-typed parameter and
+        // return (`Converter`), the `as` narrow through a capability alias
+        // (`console as Out`), and the impl head (`impl Describe for Celsius`). So the
+        // conversions, averaging, and `.describe()` all agree (RFC H1).
         let sources = [
             ("string", crate::bundled_module("string").unwrap()),
             ("main", include_str!("../examples/aliases/src/aliases.witchy")),
@@ -7896,7 +7914,7 @@ fn main(console: Console):
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
         assert_eq!(interpreted, compiled, "aliases diverged");
-        assert_eq!(compiled, vec!["avg C = 21", "25C = 77F", "0C  = 32F"]);
+        assert_eq!(compiled, vec!["avg C = 21", "25C = 77F", "0C  = 32F", "hottest = 25C = 77F"]);
     }
 
     #[test]
@@ -12283,6 +12301,23 @@ fn main(console: Console):
         );
     }
 
+    /// A bare `yield` outside a `gen fn` is a parse error. It used to pass `check`,
+    /// silently no-op on the interpreter (`Stmt::Yield` ran like `Stmt::Expr`) and
+    /// fail to compile — a backend divergence. Now gated at parse, mirroring the
+    /// `.await`/`async fn` rule. `yield` inside a `gen fn` still parses.
+    #[test]
+    fn yield_outside_gen_fn_is_rejected() {
+        assert!(
+            parser::parse_module("fn main(console: Console):\n    yield 5\n    print(console, \"hi\")\n")
+                .is_err(),
+            "bare yield in a plain fn must be a parse error",
+        );
+        assert!(
+            parser::parse_module("gen fn nums() -> Iter(Int):\n    yield 1\n    yield 2\n").is_ok(),
+            "yield inside a gen fn must still parse",
+        );
+    }
+
     /// A `gen fn` lowers to a `__gen_*` helper (yield -> counter + early return)
     /// plus a wrapper calling `iter.from_gen`, and `import iter` is injected.
     #[test]
@@ -13322,6 +13357,39 @@ fn main(console: Console):
                 "witchywitchy",
             ]
         );
+    }
+
+    /// A record SPREAD (`Point(x: 5, ..p)`) is validated exactly like plain
+    /// construction: the named type must be a record, every override field declared,
+    /// and none repeated. Skipping this let a repeated override reach the backends,
+    /// where they disagreed on which wins (interpreter last, compiled first) — a
+    /// silent divergence — and let an unknown type name through. A valid spread still
+    /// links and runs identically on both backends.
+    #[test]
+    fn record_spread_rejects_duplicate_and_unknown_fields() {
+        let link_err = |body: &str| -> String {
+            let src = format!(
+                "type Point:\n    x: Int\n    y: Int\nfn main(console: Console):\n    let p = Point(x: 1, y: 2)\n{body}"
+            );
+            let m = parser::parse_module(&src).expect("parse");
+            crate::pipeline::link(vec![("main".into(), m)], "main")
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default()
+        };
+        assert!(
+            link_err("    let q = Point(x: 7, x: 8, ..p)\n    print(console, __render(q.x))\n")
+                .contains("set twice"),
+            "a repeated override field in a spread must be rejected",
+        );
+        assert!(
+            link_err("    let q = Bogus(x: 9, ..p)\n    print(console, __render(q.x))\n")
+                .contains("not a record type"),
+            "a spread over an unknown type name must be rejected",
+        );
+        let ok = "type Point:\n    x: Int\n    y: Int\nfn main(console: Console):\n    let p = Point(x: 1, y: 2)\n    let q = Point(x: 7, ..p)\n    print(console, __render(q.x) + \" \" + __render(q.y))\n";
+        assert_eq!(link_run(ok), vec!["7 2"], "interpreter");
+        assert_eq!(wasm_run(ok), vec!["7 2"], "wasm");
     }
 
     #[test]

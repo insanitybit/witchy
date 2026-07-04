@@ -2,8 +2,10 @@
 //!
 //! A top-level `type Id = Int` (`Item::TypeAlias`) is expanded to its target
 //! everywhere a type is written — function signatures, record/variant fields,
-//! trait/impl method signatures, and lambda
-//! parameter annotations — and then dropped, so the type checker and code
+//! trait/impl method signatures, `where`-clause trait arguments, impl heads
+//! (`impl T for Id`), and every type written inside a body: `let`/`var`
+//! ascriptions (`let x: Id = …`), `as` casts (`… as Id`), and lambda
+//! parameter/return annotations — and then dropped, so the type checker and code
 //! generator only ever see concrete types. Aliases may chain (`type B = A`,
 //! resolved to a fixpoint first). Aliases are simple (non-parameterized): a name
 //! standing for one fully-written type.
@@ -102,6 +104,15 @@ pub fn resolve(mut module: Module) -> Module {
                 }
             }
             Item::Impl(im) => {
+                // The impl head is itself a written-type position: `impl Show
+                // for Id` targets an alias, and `impl FromIterator(Id) for
+                // Set(Id) where a: Bound(Id)` writes aliases in its trait/target
+                // arguments and `where` clause.
+                resolve_impl_target(&mut im.type_name, &mut im.target_args, &map);
+                for t in &mut im.trait_args {
+                    resolve_type(t, &map);
+                }
+                resolve_bounds(&mut im.bounds, &map);
                 for m in &mut im.methods {
                     resolve_function(m, &map);
                 }
@@ -160,7 +171,36 @@ fn resolve_function(f: &mut Function, map: &HashMap<String, Type>) {
     if let Some(t) = &mut f.ret {
         resolve_type(t, map);
     }
+    resolve_bounds(&mut f.bounds, map);
     resolve_in_block(&mut f.body, map);
+}
+
+/// Resolve aliases in a `where`-clause's trait type-arguments (`where c:
+/// FromIterator(Id)` → `… FromIterator(Int)`). The bound's variable and trait
+/// names are never type aliases, so only the trait arguments are rewritten.
+fn resolve_bounds(bounds: &mut [(String, String, Vec<Type>)], map: &HashMap<String, Type>) {
+    for (_, _, trait_args) in bounds.iter_mut() {
+        for t in trait_args {
+            resolve_type(t, map);
+        }
+    }
+}
+
+/// Resolve an alias used as an impl-head target (`impl Show for Id`). If the bare
+/// `name` is an alias for a named type it is rewritten to that type's head and
+/// arguments; the (already-written) `args` are then resolved in place. An alias
+/// to a non-named target (tuple/function type) is not a valid impl target, so it
+/// is left untouched for the checker to report — this stays fail-closed.
+fn resolve_impl_target(name: &mut String, args: &mut Vec<Type>, map: &HashMap<String, Type>) {
+    if args.is_empty() {
+        if let Some(Type::Named(target_name, target_args)) = map.get(name) {
+            *name = target_name.clone();
+            *args = target_args.clone();
+        }
+    }
+    for a in args.iter_mut() {
+        resolve_type(a, map);
+    }
 }
 
 fn resolve_methodsig(m: &mut MethodSig, map: &HashMap<String, Type>) {
@@ -177,13 +217,19 @@ fn resolve_methodsig(m: &mut MethodSig, map: &HashMap<String, Type>) {
     }
 }
 
-/// Walk a block to reach lambda parameter annotations buried in expressions; the
-/// only types written inside a body are on lambda parameters.
+/// Walk a block, resolving aliases in every type written inside a body: `let`/`var`
+/// ascriptions, `as`-cast targets, and lambda parameter/return annotations (the
+/// last two reached through `resolve_in_expr`).
 fn resolve_in_block(block: &mut Block, map: &HashMap<String, Type>) {
     for stmt in &mut block.stmts {
         match stmt {
-            Stmt::Let { value, .. }
-            | Stmt::LetPattern { value, .. }
+            Stmt::Let { ty, value, .. } => {
+                if let Some(t) = ty {
+                    resolve_type(t, map);
+                }
+                resolve_in_expr(value, map);
+            }
+            Stmt::LetPattern { value, .. }
             | Stmt::Assign { value, .. }
             | Stmt::Yield(value)
             | Stmt::Expr(value) => resolve_in_expr(value, map),
@@ -195,11 +241,14 @@ fn resolve_in_block(block: &mut Block, map: &HashMap<String, Type>) {
 
 fn resolve_in_expr(e: &mut Expr, map: &HashMap<String, Type>) {
     match e {
-        Expr::Lambda { params, body, .. } => {
+        Expr::Lambda { params, body, ret } => {
             for p in params.iter_mut() {
                 if let Some(t) = &mut p.ty {
                     resolve_type(t, map);
                 }
+            }
+            if let Some(t) = ret {
+                resolve_type(t, map);
             }
             resolve_in_block(body, map);
         }
@@ -227,7 +276,11 @@ fn resolve_in_expr(e: &mut Expr, map: &HashMap<String, Type>) {
                 resolve_in_expr(a, map);
             }
         }
-        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
+        Expr::As { expr, ty } => {
+            resolve_in_expr(expr, map);
+            resolve_type(ty, map);
+        }
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
             resolve_in_expr(expr, map)
         }
         Expr::RecordUpdate { base, fields } => {
@@ -359,6 +412,79 @@ mod tests {
         assert!(find_cycle(&cyclic).is_some());
         let ok = crate::parser::parse_module("type A = Int\ntype B = A\n").expect("parse");
         assert!(find_cycle(&ok).is_none());
+    }
+
+    #[test]
+    fn expands_alias_in_body_written_types() {
+        // `type Id = Int` written inside a body — a `let` ascription, a lambda
+        // parameter and return type — must all expand to `Int`, not stay `Id`
+        // (which the checker would reject as an unknown type).
+        let src = "type Id = Int\nfn main():\n    let x: Id = 5\n    let f = fn(n: Id) -> Id: n\n    x\n";
+        let m = resolve(crate::parser::parse_module(src).expect("parse"));
+        let f = m
+            .items
+            .iter()
+            .find_map(|it| match it {
+                Item::Function(f) => Some(f),
+                _ => None,
+            })
+            .expect("function");
+        let int = Type::Named("Int".into(), vec![]);
+        // `let x: Id = 5` — the ascription expands.
+        match &f.body.stmts[0] {
+            Stmt::Let { ty, .. } => assert_eq!(ty.as_ref(), Some(&int)),
+            s => panic!("expected `let x: Id`, got {s:?}"),
+        }
+        // `let f = fn(n: Id) -> Id: n` — lambda parameter and return expand.
+        match &f.body.stmts[1] {
+            Stmt::Let { value: Expr::Lambda { params, ret, .. }, .. } => {
+                assert_eq!(params[0].ty.as_ref(), Some(&int));
+                assert_eq!(ret.as_ref(), Some(&int));
+            }
+            s => panic!("expected `let f = fn ...`, got {s:?}"),
+        }
+    }
+
+    #[test]
+    fn expands_alias_in_as_cast_and_where_bound() {
+        // `x as Id` (`Expr::As`) and a `where` trait argument (`FromIterator(Id)`)
+        // are both written-type positions that must expand to the target.
+        let src = "type Id = Int\nfn each(c: Id) -> Id where c: FromIterator(Id):\n    c as Id\n";
+        let m = resolve(crate::parser::parse_module(src).expect("parse"));
+        let f = m
+            .items
+            .iter()
+            .find_map(|it| match it {
+                Item::Function(f) => Some(f),
+                _ => None,
+            })
+            .expect("function");
+        let int = Type::Named("Int".into(), vec![]);
+        // The `where c: FromIterator(Id)` bound's trait argument expands.
+        assert_eq!(f.bounds[0].2, vec![int.clone()]);
+        // `c as Id` — the cast target expands (last statement is the tail expr).
+        match f.body.stmts.last().expect("stmt") {
+            Stmt::Expr(Expr::As { ty, .. }) => assert_eq!(ty, &int),
+            s => panic!("expected `c as Id`, got {s:?}"),
+        }
+    }
+
+    #[test]
+    fn expands_alias_in_impl_head() {
+        // `impl Describe for Id` targets an alias; the head's `type_name` must
+        // expand so the impl attaches to the concrete `Int`.
+        let src = "type Id = Int\ntrait Describe:\n    fn describe(self) -> String\nimpl Describe for Id:\n    fn describe(self) -> String:\n        \"id\"\n";
+        let m = resolve(crate::parser::parse_module(src).expect("parse"));
+        let im = m
+            .items
+            .iter()
+            .find_map(|it| match it {
+                Item::Impl(im) => Some(im),
+                _ => None,
+            })
+            .expect("impl");
+        assert_eq!(im.type_name, "Int");
+        assert!(im.target_args.is_empty());
     }
 
     #[test]

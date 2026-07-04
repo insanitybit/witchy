@@ -130,8 +130,38 @@ fn escape_char(c: String) -> String:
         "\\t"
     else if c == "\r":
         "\\r"
+    else if c < " ":
+        escape_control(c)
     else:
         c
+
+// A C0 control character (`c < U+0020`, other than the `\n`/`\t`/`\r` handled
+// above) rendered as a JSON escape: `\b`/`\f` in short form, the rest as
+// `\u00XX`. RFC 8259 forbids a raw control character inside a string, so without
+// this the encoder produced invalid JSON no conformant parser would accept.
+fn escape_control(c: String) -> String:
+    let code = control_code(c)
+    if code == 8:
+        "\\b"
+    else if code == 12:
+        "\\f"
+    else:
+        "\\u00" + hex_digit(code / 16) + hex_digit(code % 16)
+
+// The Unicode scalar value of a single character — the inverse of
+// `string.from_code`, found by scanning the C0 range. Only called for
+// `c < U+0020`, so the scan never exceeds 32 iterations.
+fn control_code(c: String) -> Int:
+    var k = 0
+    while k < 32:
+        if c == string.from_code(k):
+            return k
+        k = k + 1
+    0
+
+// One lowercase hex digit for `v` in 0..15.
+fn hex_digit(v: Int) -> String:
+    string.char_at("0123456789abcdef", v)
 
 // --- Decoder (parsing) ---------------------------------------------------
 //
@@ -352,6 +382,10 @@ fn unescape(e: String) -> String:
         "\t"
     else if e == "r":
         "\r"
+    else if e == "b":
+        string.from_code(8)
+    else if e == "f":
+        string.from_code(12)
     else if e == "/":
         "/"
     else:

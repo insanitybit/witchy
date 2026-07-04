@@ -61,10 +61,11 @@ fn build(
     spread: Option<Box<Expr>>,
     orders: &Orders,
 ) -> Result<Expr, String> {
-    if let Some(base) = spread {
-        // A spread keeps only the named overrides; the base supplies the rest.
-        return Ok(Expr::RecordUpdate { base, fields });
-    }
+    // Both construction and spread must name a real record type and give each field
+    // at most once — enforced identically. Skipping this on the spread path let a
+    // repeated override (`Point(x: 7, x: 8, ..p)`) reach the backends unchecked, where
+    // interpreter and compiled disagreed on which wins (last vs first) — a silent
+    // parity divergence — and let an unknown type name (`Bogus(x: 9, ..p)`) through.
     let Some(decl) = orders.get(&name) else {
         return Err(format!(
             "`{name}(field: value, ...)` is named-field construction, but `{name}` is not a record type"
@@ -78,6 +79,10 @@ fn build(
         if !seen.insert(fname.clone()) {
             return Err(format!("field `{fname}` is set twice in `{name}(...)`"));
         }
+    }
+    if let Some(base) = spread {
+        // The base supplies every field not overridden here, so no missing-field check.
+        return Ok(Expr::RecordUpdate { base, fields });
     }
     let mut by_name: HashMap<String, Expr> = fields.into_iter().collect();
     let mut args = Vec::with_capacity(decl.len());
