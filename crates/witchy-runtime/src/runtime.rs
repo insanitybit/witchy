@@ -1119,6 +1119,7 @@ fn host_encoding(mut caller: Caller<'_, VmState>, op: i32, in_ptr: i32, out_ptr:
         4 => "encoding.base64url_of_hex",
         5 => "encoding.base64url_decode",
         6 => "encoding.base64url_to_hex",
+        7 => "encoding.utf8_lossy",
         _ => return Err(Error::msg(format!("unknown encoding op {op}"))),
     };
     let mem = memory_of(&mut caller)?;

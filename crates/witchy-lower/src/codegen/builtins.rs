@@ -732,9 +732,18 @@ impl Codegen {
                     Self::wir_convert(self.lower_expr(&args[2])?, ek, Kind::I32),
                 ])
             }
-            // (Bytes) `Bytes` shares `String`'s flat `[len][bytes]` layout, so the
-            // primitive ops are identity / a reuse of the String machinery.
-            ("__bytes_from_string", 1) | ("__bytes_to_string", 1) => self.lower_expr(&args[0])?,
+            // (Bytes) `Bytes` shares `String`'s flat `[len][bytes]` layout, so
+            // `from_string` is identity — every witchy `String` is already valid
+            // UTF-8, so its bytes are the buffer verbatim.
+            ("__bytes_from_string", 1) => self.lower_expr(&args[0])?,
+            // (parity) `to_string` is NOT identity: `Bytes` has no UTF-8 contract,
+            // so invalid sequences must be lossily normalized to U+FFFD to match the
+            // interpreter's `String::from_utf8_lossy`. Route through the byte-exact
+            // `$bytes_to_string` helper (an identity return diverged on bad bytes).
+            ("__bytes_to_string", 1) => {
+                self.uses_encoding = true;
+                call("bytes_to_string", vec![self.lower_expr(&args[0])?])
+            }
             ("__bytes_length", 1) => {
                 let arg = self.lower_expr(&args[0])?;
                 Self::wir_convert(
@@ -757,11 +766,15 @@ impl Codegen {
                 call("concat", vec![self.lower_expr(&args[0])?, self.lower_expr(&args[1])?])
             }
             ("__bytes_slice", 3) => {
-                self.uses_substring = true;
+                // (parity) `Bytes` is BYTE-indexed with no UTF-8 contract, so this
+                // must route through the byte-indexed `$bytes_slice` — NOT the
+                // char-indexed `$str_substring`, which mangled multibyte payloads
+                // (the backends diverged: interpreter byte-indexed, compiled
+                // char-indexed). `$bytes_slice` clamps exactly like the interpreter.
                 self.uses_substr = true;
                 let sk = self.kind_of(&args[1]);
                 let ek = self.kind_of(&args[2]);
-                call("str_substring", vec![
+                call("bytes_slice", vec![
                     self.lower_expr(&args[0])?,
                     Self::wir_convert(self.lower_expr(&args[1])?, sk, Kind::I32),
                     Self::wir_convert(self.lower_expr(&args[2])?, ek, Kind::I32),

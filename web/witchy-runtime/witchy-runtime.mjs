@@ -297,6 +297,11 @@ function encodingOp(op, input /* Uint8Array */) {
       }
       return out;
     }
+    case 7: { // utf8_lossy (bytes.to_string): lossy UTF-8 decode, invalid -> U+FFFD.
+      // `input` was read raw (readWstr); decode it lossily here so the JS host
+      // matches the interpreter's `String::from_utf8_lossy` byte-for-byte.
+      return decodeLossy(input);
+    }
     default:
       throw new Error(`witchy-runtime: unknown encoding op ${op}`);
   }

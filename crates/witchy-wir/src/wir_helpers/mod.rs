@@ -2239,6 +2239,113 @@ pub fn substr_helper() -> WirFunc {
     }
 }
 
+/// `$bytes_slice(src, start, end) -> i32` — a fresh `Bytes` (a `[len][bytes]`
+/// record) holding the *byte* range `[start, end)` of `src`, clamped exactly like
+/// the interpreter's `__bytes_slice` (`lo = max(start, 0)`, `hi = min(end, len)`
+/// then `hi = max(hi, lo)`), then delegating to `$substr(src, lo, hi - lo)`.
+/// `Bytes` is byte-indexed with no UTF-8 contract, so this must NOT go through the
+/// char-indexed `$str_substring` (that mangled multibyte payloads — the
+/// backends diverged: interpreter byte-indexed, compiled char-indexed).
+pub fn bytes_slice_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    WirFunc {
+        name: "bytes_slice".into(),
+        params: vec![
+            WirLocal { name: "src".into(), ty: WirTy::Str },
+            WirLocal { name: "start".into(), ty: WirTy::Bool },
+            WirLocal { name: "end".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Str],
+        locals: vec![
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "lo".into(), ty: WirTy::Bool },
+            WirLocal { name: "hi".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            setl("len", load(getl("src"))),
+            // lo = max(start, 0)
+            setl("lo", getl("start")),
+            N::If {
+                cond: b(BinOp::Lt, getl("lo"), i32c(0)),
+                then_: vec![setl("lo", i32c(0))],
+                els: vec![],
+                result: None,
+            },
+            // hi = min(end, len)
+            setl("hi", getl("end")),
+            N::If {
+                cond: b(BinOp::Gt, getl("hi"), getl("len")),
+                then_: vec![setl("hi", getl("len"))],
+                els: vec![],
+                result: None,
+            },
+            // hi = max(hi, lo)  (also covers a negative `end`)
+            N::If {
+                cond: b(BinOp::Lt, getl("hi"), getl("lo")),
+                then_: vec![setl("hi", getl("lo"))],
+                els: vec![],
+                result: None,
+            },
+            N::Push(E::Call {
+                func: "substr".into(),
+                args: vec![getl("src"), getl("lo"), b(BinOp::Sub, getl("hi"), getl("lo"))],
+            }),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$bytes_to_string(b) -> i32` — lossy UTF-8 normalization of a `Bytes`
+/// (`bytes.to_string`): allocate a `3*len + 4` worst-case buffer (each invalid
+/// byte becomes U+FFFD, 3 bytes), hand the input to the pure `encoding` host op 7
+/// (whose read applies `String::from_utf8_lossy`, byte-identical to the
+/// interpreter), and cap the length header to the bytes written. Must NOT be the
+/// raw identity: `Bytes` has no UTF-8 contract, so returning invalid bytes verbatim
+/// diverged from the interpreter (which substitutes U+FFFD).
+pub fn bytes_to_string_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    WirFunc {
+        name: "bytes_to_string".into(),
+        params: vec![WirLocal { name: "b".into(), ty: WirTy::Str }],
+        ret: vec![WirTy::Str],
+        locals: vec![
+            WirLocal { name: "res".into(), ty: WirTy::Bool },
+            WirLocal { name: "n".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            // worst case: every byte is invalid -> one U+FFFD (3 bytes) each.
+            N::SetLocal {
+                local: "res".into(),
+                value: E::Call {
+                    func: "rc_alloc".into(),
+                    args: vec![b(BinOp::Add, b(BinOp::Mul, load(getl("b")), i32c(3)), i32c(4))],
+                },
+            },
+            N::SetLocal {
+                local: "n".into(),
+                value: E::CallHost {
+                    import: "encoding".into(),
+                    args: vec![i32c(7), getl("b"), b(BinOp::Add, getl("res"), i32c(4))],
+                },
+            },
+            N::Store { ptr: getl("res"), value: getl("n"), kind: Kind::I32, offset: 0 },
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// `$char_to_byte(s, n) -> i32` — the *byte* offset of the `n`-th character of
 /// `s` (the inverse of `$byte_to_char`). Walks UTF-8 sequences, stepping the byte
 /// cursor by 1/2/3/4 per character based on the lead byte, until `n` chars (or
@@ -4052,6 +4159,20 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             helper_deps: &["char_to_byte", "substr"],
             import_deps: &[],
             uses_heap: false,
+            uses_table: false,
+        }),
+        "bytes_slice" => Some(WirHelperSpec {
+            func: bytes_slice_helper(),
+            helper_deps: &["substr"],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "bytes_to_string" => Some(WirHelperSpec {
+            func: bytes_to_string_helper(),
+            helper_deps: &["rc_alloc"],
+            import_deps: &["encoding"],
+            uses_heap: true,
             uses_table: false,
         }),
         "is_ws" => Some(WirHelperSpec {

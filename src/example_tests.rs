@@ -280,6 +280,44 @@
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
+    /// (parity, SEC-040) `bytes.slice` is BYTE-indexed and `bytes.to_string` is
+    /// LOSSY on BOTH backends. The compiled `bytes.slice` used to route through the
+    /// CHAR-indexed `$str_substring` (so slicing a multibyte payload returned the
+    /// wrong byte count — a binary-corruption primitive) and `bytes.to_string` was
+    /// a raw identity (so invalid UTF-8 came back verbatim instead of the U+FFFD
+    /// the interpreter's `from_utf8_lossy` produces). Both now match the byte-exact
+    /// interpreter oracle. Same family as SEC-038 (the `bytes.at` OOB read).
+    #[test]
+    fn bytes_slice_is_byte_indexed_and_to_string_is_lossy() {
+        // `é` is 2 UTF-8 bytes (0xC3 0xA9). Byte-slicing [0,1) yields ONE byte
+        // (the interpreter's answer); the old char-indexed slice returned 2.
+        let slice_src = "import bytes\n\nfn main(console: Console):\n    let b = bytes.from_string(\"héllo\")\n    print(console, __render(bytes.length(bytes.slice(b, 0, 1))))\n    print(console, __render(bytes.length(bytes.slice(b, 1, 3))))\n    print(console, __render(bytes.length(bytes.slice(b, 0, 100))))\n    print(console, __render(bytes.length(bytes.slice(b, 3, 1))))\n";
+        // "héllo" = h(1) é(2) l(1) l(1) o(1) = 6 bytes. slice(0,1)=1, slice(1,3)=2
+        // (the two bytes of é), slice(0,100) clamps to 6, slice(3,1) empty -> 0.
+        let want_slice = ["1", "2", "6", "0"];
+        assert_eq!(link_run(slice_src), want_slice, "interp bytes.slice is byte-indexed");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", slice_src)], "main"),
+            want_slice,
+            "compiled bytes.slice must be byte-indexed too"
+        );
+
+        // Slicing `é` at [0,1) leaves a lone 0xC3 — invalid UTF-8. `to_string` must
+        // lossily decode it to U+FFFD (3 bytes) on both backends, not return the
+        // raw invalid byte.
+        let lossy_src = "import bytes\nimport string\n\nfn main(console: Console):\n    let half = bytes.slice(bytes.from_string(\"é\"), 0, 1)\n    let s = bytes.to_string(half)\n    print(console, __render(string.length(s)))\n    print(console, __render(bytes.length(bytes.from_string(s))))\n";
+        // The lossy decode replaces the lone invalid byte with U+FFFD, which is 3
+        // UTF-8 bytes (`string.length` is a BYTE count). The old buggy compiled
+        // identity returned the single raw byte, so both readings would be "1".
+        let want_lossy = ["3", "3"];
+        assert_eq!(link_run(lossy_src), want_lossy, "interp bytes.to_string is lossy");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", lossy_src)], "main"),
+            want_lossy,
+            "compiled bytes.to_string must lossily decode to U+FFFD too"
+        );
+    }
+
     /// (SEC-038) `bytes.at` out of bounds must FAIL on both backends, not silently
     /// read adjacent heap on WASM. The compiled `$bytes_at` bounds-checks and traps
     /// (like `$list_at`), matching the interpreter's "bytes index out of bounds"
