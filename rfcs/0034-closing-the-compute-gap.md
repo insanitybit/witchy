@@ -90,7 +90,7 @@ unchecked load — which the Binaryen pass (L1) can then fold.
   trap/compute identically on both backends; the differential sweep gained an
   elision-firing case (an unsound out-of-range read would diverge from the
   always-checked interpreter oracle). Firing proof:
-  `example_tests::elides_bounds_check_in_counted_loop` (no `call $list_at` on, checked
+  `codegen_tests::elides_bounds_check_in_counted_loop` (no `call $list_at` on, checked
   off). **Measured (`benchmarks/list_index`, 10M indexed reads, release, warm):
   33.4 → 22.0 ms = 1.51×.**
 - **Honest reach:** the CLBG numeric kernels (`nsieve`, `fannkuch`) *cache* the length
@@ -119,8 +119,8 @@ implicit env arg — so this is sound for capturing *and* capture-free closures 
   recorder maps each eligible local to its `$__lamw{i}` index; the two closure-call
   arms emit a direct `call` when the local is in that map.
 - **Firing proof:** a call-SHAPE change moves no heap, so there is no `stats`
-  counter — instead `example_tests::devirtualizes_single_bound_closure_call` asserts
-  the emitted WAT is `call $__lamw` under the default and `call_indirect` under
+  counter — instead `codegen_tests::devirtualizes_single_bound_closure_call` asserts
+  the emitted wasm calls `$__lamw` directly under the default and `call_indirect` under
   `-direct-call`. Soundness: the differential sweep gained a closure case (a
   single-bound *capturing* `g` that must devirt-with-env + a *reassigned* `f` that
   must stay indirect), invariant across every `WITCHY_OPT` setting on both backends.
@@ -277,3 +277,17 @@ RFC-0036 pointer.
 
 **Verdict.** Doc revision + restore the missing shape tests (the real gap).
 Priority: medium (tests) / low (doc).
+
+## Tracking note — BUG-008 (2026-07-04): shape tests restored
+
+The two firing-proof SHAPE tests for the default-on `direct-call` (L3a) and
+`bounds-elide` (L2) levers — cited above and at `opt.rs`'s registry note but
+lost in the codegen.rs decomposition — are restored. They live in
+`crates/witchy-lower/src/codegen_tests.rs` as
+`devirtualizes_single_bound_closure_call` and `elides_bounds_check_in_counted_loop`
+(the `example_tests::` pointers above are corrected to `codegen_tests::`). Each
+compiles a program under `WITCHY_OPT` with the lever ON and again with it OFF and
+asserts the emitted-wasm call shape flips — devirt: a direct `call $__lamw{i}`
+(zero `call_indirect`) ON vs `call_indirect` OFF; bounds: no `call $list_at` ON vs
+the checked `$list_at` call OFF — so an inverse guard proves the lever itself fires,
+not incidental codegen. BUG-008 fixed.

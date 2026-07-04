@@ -585,3 +585,136 @@ fn main(console: Console):
         assert_eq!(run_str(src), vec!["0"]);
     }
 
+    /// (BUG-008) Compile `src` under the optimization set `opt` and report the two
+    /// call-SHAPE signals the `direct-call` / `bounds-elide` levers move: the set of
+    /// function names reached by a DIRECT `call` and the count of `call_indirect`
+    /// operators. Callee indices are resolved through the emitted name section
+    /// (imports first, then defined funcs — the order `wir_encode` writes), so a
+    /// devirtualized closure call shows up as a direct call to `__lamw{i}` and a
+    /// checked list access as a direct call to `list_at`. This inspects the raw
+    /// witchy-emitted wasm (`compile_module_binary` runs no Binaryen), so the shape
+    /// is the lever's own doing, not a downstream inliner's.
+    fn call_shape(
+        src: &str,
+        opt: witchy_syntax::opt::OptSet,
+    ) -> (std::collections::HashSet<String>, usize) {
+        use std::collections::{HashMap, HashSet};
+        witchy_syntax::opt::set_for_tests(Some(opt));
+        let module = parse_module(src).expect("parse");
+        let compiled = compile_module_binary(&module);
+        witchy_syntax::opt::set_for_tests(None);
+        let bytes = compiled
+            .expect("compile")
+            .expect("the binary path lowers this program");
+
+        let mut names: HashMap<u32, String> = HashMap::new();
+        let mut called: Vec<u32> = Vec::new();
+        let mut indirect = 0usize;
+        for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
+            match payload.expect("valid wasm") {
+                wasmparser::Payload::CustomSection(reader) => {
+                    if let wasmparser::KnownCustom::Name(section) = reader.as_known() {
+                        for sub in section {
+                            if let wasmparser::Name::Function(map) = sub.expect("name subsection") {
+                                for naming in map {
+                                    let naming = naming.expect("naming");
+                                    names.insert(naming.index, naming.name.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+                wasmparser::Payload::CodeSectionEntry(body) => {
+                    for op in body.get_operators_reader().expect("operators") {
+                        match op.expect("operator") {
+                            wasmparser::Operator::Call { function_index } => called.push(function_index),
+                            wasmparser::Operator::CallIndirect { .. } => indirect += 1,
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let direct: HashSet<String> = called
+            .into_iter()
+            .map(|i| names.get(&i).cloned().unwrap_or_else(|| format!("#{i}")))
+            .collect();
+        (direct, indirect)
+    }
+
+    #[test]
+    fn devirtualizes_single_bound_closure_call() {
+        // (RFC-0034 L3 / BUG-008) A closure local bound by exactly one `let` and never
+        // reassigned reaches the same lambda at every call, so the default-on
+        // `direct-call` lever lowers `g(x)` to a DIRECT `call $__lamw{i}` (recovering
+        // the lifted body's index at compile time) instead of a `call_indirect` through
+        // the closure record's runtime code-index word. `g` captures `k`, so the env
+        // still flows — the devirt is sound for capturing closures too. Asserting on the
+        // emitted call SHAPE is the firing proof: a call-shape lever moves no heap, so
+        // there is no `witchy stats` counter to check (opt.rs registry note).
+        let src = r#"
+fn main() -> Int:
+    let k = 10
+    let g = fn(x: Int): (x + k)
+    (g(5) + g(7))
+"#;
+        let default = witchy_syntax::opt::OptSet::default_set();
+        let (on, on_indirect) = call_shape(src, default);
+        assert!(
+            on.iter().any(|n| n.starts_with("__lamw")),
+            "direct-call ON: the single-bound closure call devirtualizes to `call $__lamw` (got {on:?})",
+        );
+        assert_eq!(
+            on_indirect, 0,
+            "direct-call ON: no `call_indirect` remains for the sole closure call",
+        );
+
+        // Inverse guard: remove ONLY `direct-call` and the SAME program must revert to
+        // an indirect call — proving the shape is this lever's doing, not incidental
+        // codegen (an always-`__lamw` emitter would pass the ON case and lie here).
+        let off_set = default.without(witchy_syntax::opt::Opt::DirectCall);
+        let (off, off_indirect) = call_shape(src, off_set);
+        assert!(
+            !off.iter().any(|n| n.starts_with("__lamw")),
+            "-direct-call: the closure call is NOT devirtualized (got {off:?})",
+        );
+        assert!(
+            off_indirect >= 1,
+            "-direct-call: the closure call stays `call_indirect` (indirect={off_indirect})",
+        );
+    }
+
+    #[test]
+    fn elides_bounds_check_in_counted_loop() {
+        // (RFC-0034 L2 / BUG-008) Inside `for i in 0..list.length(xs)` over an
+        // unreassigned `xs`, the compiler-managed counter satisfies `0 <= i < length(xs)`
+        // by construction, so the default-on `bounds-elide` lever lowers `list.at(xs, i)`
+        // to a direct UNCHECKED load — dropping the `call $list_at` helper that carries
+        // the `i < 0 || i >= len` trap guard. With the lever off, every access keeps its
+        // checked `$list_at` call (the de-opt reference the differential sweep compares).
+        let src = r#"
+fn main() -> Int:
+    let xs = [3, 1, 4, 1, 5]
+    var t = 0
+    for i in 0..list.length(xs):
+        t = (t + list.at(xs, i))
+    t
+"#;
+        let default = witchy_syntax::opt::OptSet::default_set();
+        let (on, _) = call_shape(src, default);
+        assert!(
+            !on.contains("list_at"),
+            "bounds-elide ON: the counted-loop access is an unchecked load, no `call $list_at` (got {on:?})",
+        );
+
+        // Inverse guard: remove ONLY `bounds-elide` and the checked `$list_at` helper
+        // call returns — proving the elision is this lever's doing.
+        let off_set = default.without(witchy_syntax::opt::Opt::BoundsElide);
+        let (off, _) = call_shape(src, off_set);
+        assert!(
+            off.contains("list_at"),
+            "-bounds-elide: the access keeps its checked `call $list_at` guard (got {off:?})",
+        );
+    }
+
