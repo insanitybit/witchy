@@ -323,6 +323,10 @@ pub fn std_source(name: &str) -> Option<&'static str> {
         // filesystem to resolve the rune. Authority-neutral: importing it only exposes types;
         // a `UiRoot`/`UiFetch` can still be minted only by the host, never obtained in a cell.
         "glamour" => Some(include_str!("../../../projects/glamour/src/glamour.witchy")),
+        // `markdown` rides on glamour's bundling rationale above: a glamour-provided PURE
+        // module (it imports only `glamour`), bundled so `import markdown` resolves in a
+        // standalone snippet and in the glamour examples / `projects/docs`.
+        "markdown" => Some(include_str!("../../../projects/glamour/src/markdown.witchy")),
         _ => None,
     }
 }
