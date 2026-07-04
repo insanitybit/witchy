@@ -112,8 +112,9 @@ list of 3
 The `Mirror` constructors (`MInt`, `MRecord`, …) come into scope unqualified once
 you `import reflect`, like any module's public constructors. `value` is taken as
 `impl Reflect` — sugar for a generic parameter with a `Reflect` bound — because
-`reflect(...)` dispatches on a parameter or loop variable, which is exactly what a
-trait method needs to resolve (see [Generics and Traits](tour-generics.md)).
+`reflect(...)` dispatches on any expression whose type the checker knows (a
+parameter, a loop variable, or a call result), which is exactly what a trait
+method needs to resolve (see [Generics and Traits](tour-generics.md)).
 
 A `MRecord` carries its fields *in declared order* and a `MVariant` names both the
 type and the variant, so a single recursive walk over `Mirror` is enough to

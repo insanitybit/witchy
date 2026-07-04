@@ -530,8 +530,9 @@ fn main(console: Console):
 Generic functions are checked once and monomorphized per concrete use for the
 compiled backends (both `where`-bounded and unbounded generics). `Self` in an
 impl refers to the implementing type. Trait method calls inside a
-`where a: Trait` function resolve on parameters and loop variables; an
-intermediate expression may need a `let` first.
+`where a: Trait` function resolve on any expression whose type the checker
+knows — parameters, loop variables, and the results of calls — so an
+intermediate expression rarely needs a `let` binding to dispatch.
 
 You can define traits and impls too:
 

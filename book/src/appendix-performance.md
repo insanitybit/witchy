@@ -124,5 +124,6 @@ stay a confined local — read via `list.length` and `list.at(_, i).field`. Usin
 one where the flat layout cannot apply — passing or returning it whole, storing it
 in a field, comparing, rendering, or `for`-iterating it — is a clean **compile
 error** that names the position, never a silent fall-back to the boxed layout you
-declared away. The flat representation is applied under `WITCHY_OPT=unbox`; the
-contract (and identical results) hold regardless.
+declared away. The flat representation is applied by the `unbox` optimization, which is on by
+default in release builds (`WITCHY_OPT=release`); the contract (and identical
+results) hold regardless of whether it fires.
