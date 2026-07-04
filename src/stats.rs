@@ -632,18 +632,22 @@ mod tests {
         );
     }
 
-    /// (RFC-0035 Phase C — DoD TARGET, currently BLOCKED) The async channel executor must reclaim
-    /// its per-message garbage to a BOUNDED live-cell count under rc-floor. It does NOT yet: the
-    /// executor (`std/task`) threads `slots`/`channels` as BORROWED params, mutating via `set_at` in
-    /// RETURN position (never a self-assign accumulator), so every set_at takes the copy path
-    /// (O(n^2)) and the displaced Slot/continuation cannot be dropped — measured ~26k live cells at
-    /// N=200, default and rc-floor near-identical. Closing it needs a uniqueness-analysis extension
-    /// (own-ABI for set_at / an `own` param's uniqueness propagated to a local — the current own-ABI
-    /// covers only the `p = f(move p)` accumulator) PLUS recursive `$rdrop` for the nested children.
-    /// Ignored until the executor reclaims; un-ignore then. This pins the goal's residual as a
-    /// concrete pass/fail. See the RFC-0035 implementation-status + project_rc_floor_devlog.
+    /// (RFC-0036 DoD TARGET, currently BLOCKED on recursive `$rdrop`) The async channel executor
+    /// must reclaim its per-message garbage to a BOUNDED live-cell count under rc-floor. RFC-0036
+    /// Design B has LANDED: the scheduler now owns `slots`/`channels` as confined-unique local
+    /// accumulators mutated in place (self-assign `slots = list.set_at(slots, …)`), so the
+    /// per-message ARRAY churn that was O(n^2) is bounded — which cut the residual from ~26569 to
+    /// ~18608 live cells at N=200. What remains is the per-message CLOSURE garbage — the `and_then`
+    /// continuation towers each `await` rebuilds — a FLAT ~93 live cells PER MESSAGE (linear in N):
+    /// shell-only drop frees the Slot/Step shells but not their `Task`→closure children, so those
+    /// leak. Closing it to `< 500` needs recursive `$rdrop` (free a container/closure's heap
+    /// children when its shell is freed). That is the highest use-after-free-risk path in the
+    /// compiler — a per-type + defunctionalized per-closure drop with MATCHED dup-at-construction —
+    /// and must land under the full heap-check gate (RFC-0036 DoD is a HARD RULE: the whole gate,
+    /// not a subset). Un-ignore when the executor reclaims. This pins the goal's residual as a
+    /// concrete pass/fail.
     #[test]
-    #[ignore = "chan_throughput not yet bounded — needs own-ABI-for-set_at uniqueness + recursive $rdrop"]
+    #[ignore = "chan_throughput closure garbage not yet reclaimed — needs recursive $rdrop (RFC-0036); Design B (owned executor) landed, ~93 live cells/message remain"]
     fn chan_throughput_bounded_by_rc_floor() {
         let src = "import chan\nasync fn producer(tx: Sender(Int), n: Int) -> Nil:\n    for i in 0..n:\n        chan.send(tx, i).await\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(8).await\n    chan.spawn(producer(tx, 200)).await\n    for await v in rx:\n        chan.done(v)\n    print(console, \"200\")\n";
         opt::set_for_tests(Some(OptSet::default_set().with(Opt::RcFloor)));
