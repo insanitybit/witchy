@@ -1188,6 +1188,11 @@ impl Interpreter {
             },
             // Pure builtins need no capability.
             "__render" => Ok(Some(Value::Str(one(args)?.to_string()))),
+            // (RFC-0055) Channel message erasure. `Value` is uniform, so erasing a
+            // typed message to the executor's opaque `__Msg` and recovering the
+            // endpoint's type are both the identity — the value passes through
+            // unchanged, exactly as the executor's former generic `m` did.
+            "__erase" | "__unerase" => Ok(Some(one(args)?)),
             // String stdlib.
             "string.length" => match one(args)? {
                 Value::Str(s) => Ok(Some(Value::Int(s.len() as i64))),
