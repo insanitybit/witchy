@@ -495,36 +495,61 @@ pub fn rc_free_helper() -> WirFunc {
             params: vec![WirLocal { name: "ptr".into(), ty: WirTy::Bool }],
             ret: vec![],
             locals: ["size", "i"].iter().map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool }).collect(),
-            body: vec![
-                N::SetLocal { local: "size".into(), value: b(BinOp::And, load(b(BinOp::Sub, getl("ptr"), i32c(4)), 0), i32c(RC_SIZE_MASK)) },
-                // Poison only a sane-sized payload; `LeU` also rejects a negative (→ huge
-                // unsigned) bogus size. size==0 makes the loop a no-op.
-                N::If {
-                    cond: b(BinOp::LeU, getl("size"), i32c(POISON_LIMIT)),
-                    then_: vec![N::SetLocal { local: "i".into(), value: i32c(0) }, poison_loop],
-                    els: vec![],
-                    result: None,
-                },
-                // Relink for reuse (identical to the normal path). The freelist link occupies
-                // word 0, overwriting the poison there; words 4.. stay poisoned until reuse.
-                N::Store { ptr: getl("ptr"), value: E::GetGlobal("rc_freelist".into()), kind: Kind::I32, offset: 0 },
-                N::SetGlobal { global: "rc_freelist".into(), value: getl("ptr") },
-                dec_live,
-            ],
+            // (RFC-0051 I1) The same categorical `ptr >= heap_base` floor as the release
+            // path: a below-`heap_base` pointer is a literal/immediate/handle, never an
+            // `$rc_alloc` object, so neither poison nor relink applies (its `[ptr-4]` is
+            // not a real size header). Guarding here keeps the sanitizer honest — it
+            // never poisons the static data segment.
+            body: vec![N::If {
+                cond: b(BinOp::GeU, getl("ptr"), E::GetGlobal("heap_base".into())),
+                then_: vec![
+                    N::SetLocal { local: "size".into(), value: b(BinOp::And, load(b(BinOp::Sub, getl("ptr"), i32c(4)), 0), i32c(RC_SIZE_MASK)) },
+                    // Poison only a sane-sized payload; `LeU` also rejects a negative (→ huge
+                    // unsigned) bogus size. size==0 makes the loop a no-op.
+                    N::If {
+                        cond: b(BinOp::LeU, getl("size"), i32c(POISON_LIMIT)),
+                        then_: vec![N::SetLocal { local: "i".into(), value: i32c(0) }, poison_loop],
+                        els: vec![],
+                        result: None,
+                    },
+                    // Relink for reuse (identical to the normal path). The freelist link occupies
+                    // word 0, overwriting the poison there; words 4.. stay poisoned until reuse.
+                    N::Store { ptr: getl("ptr"), value: E::GetGlobal("rc_freelist".into()), kind: Kind::I32, offset: 0 },
+                    N::SetGlobal { global: "rc_freelist".into(), value: getl("ptr") },
+                    dec_live,
+                ],
+                els: vec![],
+                result: None,
+            }],
             raw_body: None,
         };
     }
 
+    // (RFC-0051 I1) `$rc_free` is called directly by the free-at-overwrite path
+    // (codegen `x = f(x)`), NOT only via `$rc_drop` — so it needs the SAME categorical
+    // `ptr >= heap_base` floor that `$dup`/`$drop` carry. A below-`heap_base` pointer is
+    // NEVER an `$rc_alloc` object: it is a string/data-segment LITERAL, an immediate, or
+    // a capability handle. Freeing one (the SEC-039 leak: `var t = "abc"; t = trim(t)`
+    // freed the literal into the free-list, corrupting its length word → a later reuse
+    // handed out the poisoned pointer → megabytes of heap disclosed) is unsound. The
+    // guard makes it a no-op; `__witchy_live_cells` is only incremented by `$rc_alloc`,
+    // so a skipped free of a non-object is correct bookkeeping, not a lost decrement.
+    let bin = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     WirFunc {
         name: "rc_free".into(),
         params: vec![WirLocal { name: "ptr".into(), ty: WirTy::Bool }],
         ret: vec![],
         locals: vec![],
-        body: vec![
-            N::Store { ptr: getl("ptr"), value: E::GetGlobal("rc_freelist".into()), kind: Kind::I32, offset: 0 },
-            N::SetGlobal { global: "rc_freelist".into(), value: getl("ptr") },
-            dec_live,
-        ],
+        body: vec![N::If {
+            cond: bin(BinOp::GeU, getl("ptr"), E::GetGlobal("heap_base".into())),
+            then_: vec![
+                N::Store { ptr: getl("ptr"), value: E::GetGlobal("rc_freelist".into()), kind: Kind::I32, offset: 0 },
+                N::SetGlobal { global: "rc_freelist".into(), value: getl("ptr") },
+                dec_live,
+            ],
+            els: vec![],
+            result: None,
+        }],
         raw_body: None,
     }
 }
@@ -607,22 +632,42 @@ pub fn rc_drop_helper() -> WirFunc {
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let rc_addr = || b(BinOp::Sub, getl("ptr"), i32c(8));
     let rc_load = || E::Load { ptr: Box::new(rc_addr()), kind: Kind::I32, offset: 0 };
+    // (RFC-0051 I1) The SYMMETRIC interim guard: the same 2-factor plausibility check
+    // `$rc_dup` carries. A genuine `$rc_alloc` object always has size ∈ [1, 2^20) at
+    // `ptr-4` AND rc ∈ [1, 2^24) at `ptr-8`, so it ALWAYS passes (no drop is ever lost).
+    // A view/slice/mis-typed pointer above `heap_base` that reaches a drop site must have
+    // BOTH header words coincidentally in range to slip through — and the direction of
+    // error is the SAFE one: a skipped drop LEAKS, it never frees live data or underflows
+    // a neighbor's count (which a raw `[ptr-8]--` on a non-object would do). This is the
+    // drop-side of the SEC-037 mitigation; I1's typed emission makes it dead code, at
+    // which point it is demoted to the `WITCHY_HEAP_CHECK` trap-and-report assertion.
+    // `(v-1) <=U (hi-2)` ⇔ `1 <= v <= hi-1` (also rejects v==0, which underflows huge).
+    let in_1_to = |v: E, hi: i32| b(BinOp::LeU, b(BinOp::Sub, v, i32c(1)), i32c(hi - 2));
+    let size_load = || b(BinOp::And, E::Load { ptr: Box::new(b(BinOp::Sub, getl("ptr"), i32c(4))), kind: Kind::I32, offset: 0 }, i32c(RC_SIZE_MASK));
+    let header_ok = || b(BinOp::And, in_1_to(size_load(), 1 << 20), in_1_to(rc_load(), 1 << 24));
     WirFunc {
         name: "rc_drop".into(),
         params: vec![WirLocal { name: "ptr".into(), ty: WirTy::Bool }],
         ret: vec![],
         locals: vec![],
         body: vec![N::If {
+            // NESTED (not `&&`): the header loads must be guarded by `ptr >= heap_base`
+            // first, else a small scalar `ptr` reads `[ptr-8]`/`[ptr-4]` out of bounds.
             cond: b(BinOp::GeU, getl("ptr"), E::GetGlobal("heap_base".into())),
             then_: vec![N::If {
-                cond: b(BinOp::Le, rc_load(), i32c(1)),
-                then_: vec![N::Do(E::Call { func: "rc_free".into(), args: vec![getl("ptr")] })],
-                els: vec![N::Store {
-                    ptr: rc_addr(),
-                    value: b(BinOp::Sub, rc_load(), i32c(1)),
-                    kind: Kind::I32,
-                    offset: 0,
+                cond: header_ok(),
+                then_: vec![N::If {
+                    cond: b(BinOp::Le, rc_load(), i32c(1)),
+                    then_: vec![N::Do(E::Call { func: "rc_free".into(), args: vec![getl("ptr")] })],
+                    els: vec![N::Store {
+                        ptr: rc_addr(),
+                        value: b(BinOp::Sub, rc_load(), i32c(1)),
+                        kind: Kind::I32,
+                        offset: 0,
+                    }],
+                    result: None,
                 }],
+                els: vec![],
                 result: None,
             }],
             els: vec![],
