@@ -67,4 +67,11 @@ for (const entry of manifest) {
   }
 }
 console.log(`\nbook runnable blocks: ${pass} agree with the manifest, ${fail} diverge, ${skipped} non-runnable`);
+// Vacuity guard (RFC-0058 §4): if NO runnable block was actually validated, the gate
+// checked nothing — a broken manifest or a discovery/layout change would otherwise pass
+// silently green. A real book always has runnable blocks.
+if (pass + fail === 0) {
+  console.log("VACUOUS: zero runnable book blocks validated — the manifest has no runnable entries or discovery is broken");
+  process.exit(1);
+}
 process.exit(fail === 0 ? 0 : 1);

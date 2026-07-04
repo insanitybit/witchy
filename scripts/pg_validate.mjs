@@ -40,4 +40,10 @@ for (const path of examples) {
   }
 }
 console.log(`\nplayground vs interpreter: ${pass} agree, ${fail} diverge`);
+// Vacuity guard (RFC-0058 §4): if no example actually validated (empty argv, or every
+// one skipped), the check compared nothing — do not pass silently.
+if (pass + fail === 0) {
+  console.log("VACUOUS: zero examples validated — pass an example set (e.g. examples/*.witchy)");
+  process.exit(1);
+}
 process.exit(fail === 0 ? 0 : 1);

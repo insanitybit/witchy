@@ -86,16 +86,47 @@ jobs:
       - name: Build release binary
         run: cargo build --release
       - name: Differential check every runnable example on both backends
+        # FAIL-CLOSED on any non-zero parity exit (RFC-0058 §2, BUG-002): no `|| true`,
+        # no `grep DIVERGE`. Classify on the exit code (0 = agree/both-error-agree,
+        # 2 = unexpected-error, 3 = diverge) + the machine `parity-stats` line. Vacuity
+        # guard: compared > 0 lines. Positive control: the seeded-divergence lever MUST
+        # fail parity, proving the gate can fail.
         run: |
+          set -uo pipefail
+          bin=./target/release/witchy
           fail=0
+          files=0
+          compared=0
+          ctrl=""
           for f in examples/*/src/*.witchy; do
-            out=$(./target/release/witchy parity "$f" 2>&1) || true
-            if echo "$out" | grep -qi "DIVERGE"; then
-              echo "DIVERGENCE: $f"
+            # Runnable programs only (parity needs a `main`); libs and *_test.witchy
+            # suites are covered by `witchy test` / example_tests.
+            grep -q 'fn main' "$f" || continue
+            [ -z "$ctrl" ] && ctrl="$f"
+            files=$((files + 1))
+            out=$("$bin" parity "$f" 2>&1)
+            code=$?
+            n=$(printf '%s\n' "$out" | grep '^parity-stats ' | tail -1 | sed -n 's/.*compared=\([0-9][0-9]*\).*/\1/p')
+            compared=$((compared + ${n:-0}))
+            if [ "$code" -ne 0 ]; then
+              echo "PARITY FAIL (exit $code): $f"
               echo "$out"
               fail=1
             fi
           done
+          if [ "$files" -eq 0 ]; then
+            echo "parity-sweep VACUOUS: no runnable example files discovered (BUG-002)" >&2
+            exit 1
+          fi
+          if [ "$compared" -eq 0 ]; then
+            echo "parity-sweep VACUOUS: compared 0 output lines across $files files (BUG-002)" >&2
+            exit 1
+          fi
+          if WITCHY_SEEDED_DIVERGENCE=1 "$bin" parity "$ctrl" >/dev/null 2>&1; then
+            echo "parity-sweep POSITIVE CONTROL FAILED: seeded divergence did NOT fail parity on $ctrl" >&2
+            exit 1
+          fi
+          echo "parity-sweep: $files files, $compared compared lines, positive control OK"
           exit $fail
 
   acceptance:

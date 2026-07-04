@@ -737,13 +737,24 @@ fn main() -> wasmtime::Result<()> {
     if std::env::args().nth(1).as_deref() == Some("parity") {
         let Some(path) = std::env::args().nth(2) else {
             eprintln!("usage: witchy parity <file.witchy>");
-            std::process::exit(1);
+            std::process::exit(PARITY_EXIT_UNEXPECTED);
         };
-        if let Err(e) = verify_file(&path) {
-            eprintln!("{e}");
-            std::process::exit(1);
+        let outcome = parity_check(&path);
+        // Human-readable detail: agreements to stdout, failures to stderr.
+        if outcome.is_pass() {
+            println!("{}", outcome.message());
+        } else {
+            eprintln!("{}", outcome.message());
         }
-        return Ok(());
+        // Final MACHINE-READABLE stats line (always, stdout). Consumers (the sweep,
+        // the fuzzer) branch on `outcome=`/`compared=` and the exit code — never on
+        // human text (RFC-0058 §2).
+        println!(
+            "parity-stats outcome={} compared={} file={path}",
+            outcome.tag(),
+            outcome.compared()
+        );
+        std::process::exit(outcome.exit_code());
     }
     // `witchy sandbox [--dir <root>] [--net <host:port>]... <file> [args...]`
     // compiles the program to WASM and runs it in the capability-sandboxed VM,
@@ -1641,25 +1652,117 @@ fn split_after_line_number(s: &str) -> Option<&str> {
     s[ndigits..].strip_prefix(": ")
 }
 
-fn verify_file(path: &str) -> Result<(), String> {
+/// Exit codes for `witchy parity` — distinct so gate scripts branch on the code,
+/// never on human text (RFC-0058 §2). `0` = agree or both-error-agree (a pass);
+/// `2` = unexpected-error (a compile/link/lower failure or a missing file — a
+/// regression for the known-good example corpus, a tolerated generator miss for
+/// the fuzzer); `3` = a value/behavior divergence.
+const PARITY_EXIT_UNEXPECTED: i32 = 2;
+const PARITY_EXIT_DIVERGE: i32 = 3;
+
+/// The positive-control sentinel (RFC-0058 §1). A control-char-delimited line no
+/// real program can print; appending it to the *compiled* result under
+/// `WITCHY_SEEDED_DIVERGENCE=1` forces a guaranteed DIVERGE — the self-test that
+/// the parity gate can still fail. Read ONLY on the `witchy parity` path
+/// (`parity_check`); the program-run path never consults it, so the injected fault
+/// is inert in release execution (no divergent fixture ever lives in-repo).
+const SEEDED_DIVERGENCE_SENTINEL: &str = "\u{1}witchy-seeded-divergence\u{1}";
+
+/// Is the seeded-divergence positive control armed? The ONE reader of the env var
+/// (RFC-0058 §1) — kept here on the parity path so release execution stays inert.
+fn seeded_divergence_armed() -> bool {
+    std::env::var_os("WITCHY_SEEDED_DIVERGENCE").is_some_and(|v| v == "1")
+}
+
+/// The four mechanical outcomes of a parity check. "Intended trap" is NOT judged
+/// here (RFC-0058 §2) — parity reports only what it observed; a generator decides
+/// whether a both-error-agree or an unexpected-error is acceptable.
+enum ParityOutcome {
+    /// Both backends produced equal output. Carries the compared line count.
+    Agree { compared: usize, message: String },
+    /// Both backends errored and agree (same routed abort core, or unrouted).
+    BothErrorAgree { message: String },
+    /// The backends diverge. `compared` is the matched-prefix line count.
+    Diverge { compared: usize, message: String },
+    /// A compile/link/lower failure, a missing `main`, or a missing file.
+    Unexpected { message: String },
+}
+
+impl ParityOutcome {
+    /// The `outcome=` token of the machine-readable stats line.
+    fn tag(&self) -> &'static str {
+        match self {
+            ParityOutcome::Agree { .. } => "agree",
+            ParityOutcome::BothErrorAgree { .. } => "both-error-agree",
+            ParityOutcome::Diverge { .. } => "diverge",
+            ParityOutcome::Unexpected { .. } => "unexpected-error",
+        }
+    }
+    /// The `compared=` token: output lines actually compared (0 when none were).
+    fn compared(&self) -> usize {
+        match self {
+            ParityOutcome::Agree { compared, .. } | ParityOutcome::Diverge { compared, .. } => {
+                *compared
+            }
+            ParityOutcome::BothErrorAgree { .. } | ParityOutcome::Unexpected { .. } => 0,
+        }
+    }
+    fn exit_code(&self) -> i32 {
+        match self {
+            ParityOutcome::Agree { .. } | ParityOutcome::BothErrorAgree { .. } => 0,
+            ParityOutcome::Diverge { .. } => PARITY_EXIT_DIVERGE,
+            ParityOutcome::Unexpected { .. } => PARITY_EXIT_UNEXPECTED,
+        }
+    }
+    /// The human-readable line: agreements go to stdout, failures to stderr.
+    fn message(&self) -> &str {
+        match self {
+            ParityOutcome::Agree { message, .. }
+            | ParityOutcome::BothErrorAgree { message }
+            | ParityOutcome::Diverge { message, .. }
+            | ParityOutcome::Unexpected { message } => message,
+        }
+    }
+    fn is_pass(&self) -> bool {
+        matches!(self, ParityOutcome::Agree { .. } | ParityOutcome::BothErrorAgree { .. })
+    }
+}
+
+/// Run `path` on both backends and classify the result into one of the four
+/// `ParityOutcome`s. The compiled and interpreter runs happen regardless of either
+/// failing (a trap on one side and a value on the other is itself a divergence), and
+/// the abort-core comparison closes the routed-message gap (RFC-0045). This is the
+/// oracle the differential fuzzer and the example sweep drive as `witchy parity`.
+fn parity_check(path: &str) -> ParityOutcome {
     use std::path::Path;
-    let (linked, _stem) = link_file(path)?;
-    typeck::check(&linked).map_err(|e| e.to_string())?;
+    macro_rules! unexpected {
+        ($($arg:tt)*) => {
+            return ParityOutcome::Unexpected { message: format!($($arg)*) }
+        };
+    }
+    let (linked, _stem) = match link_file(path) {
+        Ok(v) => v,
+        Err(e) => unexpected!("{e}"),
+    };
+    if let Err(e) = typeck::check(&linked) {
+        unexpected!("{e}");
+    }
     let has_main = linked
         .items
         .iter()
         .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"));
     if !has_main {
-        return Err(format!("`{path}` has no `main` to run"));
+        unexpected!("`{path}` has no `main` to run");
     }
     // Compile first (borrows `linked`), then run the interpreter (consumes it).
-    let bytes = codegen::compile_module_binary(&linked)
-        .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?
-        .ok_or_else(|| {
+    let bytes = match codegen::compile_module_binary(&linked) {
+        Ok(Some(b)) => b,
+        Ok(None) => unexpected!(
             "cannot compile to WASM: the program reached a construct the compiled backend \
              does not support (an interpreter-only feature?)"
-                .to_string()
-        })?;
+        ),
+        Err(e) => unexpected!("cannot compile to WASM (an interpreter-only feature?): {e}"),
+    };
     // Run BOTH backends regardless of either failing: a program that errors on
     // one backend but produces a value on the other is itself a divergence (a
     // trap and a clean result are not the same behavior), so we must not return
@@ -1692,17 +1795,39 @@ fn verify_file(path: &str) -> Result<(), String> {
             lines
         }),
     };
+    // Positive control (RFC-0058 §1): when armed, deliberately perturb the COMPILED
+    // side so the oracle MUST report a divergence — proving the gate can fail. An
+    // `Ok` gains an impossible sentinel line; an `Err` becomes an `Ok` carrying only
+    // the sentinel, so the value, both-error, and one-sided cases ALL diverge. Read
+    // only here; the program-run path never applies it, so release execution is inert.
+    let compiled = if seeded_divergence_armed() {
+        match compiled {
+            Ok(mut lines) => {
+                lines.push(SEEDED_DIVERGENCE_SENTINEL.to_string());
+                Ok(lines)
+            }
+            Err(_) => Ok(vec![SEEDED_DIVERGENCE_SENTINEL.to_string()]),
+        }
+    } else {
+        compiled
+    };
     match (interp, compiled) {
-        (Ok(i), Ok(c)) if i == c => {
-            println!(
+        (Ok(i), Ok(c)) if i == c => ParityOutcome::Agree {
+            compared: i.len(),
+            message: format!(
                 "\u{2713} {path}: interpreter and compiled WASM agree ({} line(s) of output)",
                 i.len()
-            );
-            Ok(())
+            ),
+        },
+        (Ok(i), Ok(c)) => {
+            let compared = i.iter().zip(c.iter()).take_while(|(a, b)| a == b).count();
+            ParityOutcome::Diverge {
+                compared,
+                message: format!(
+                    "\u{2717} {path}: the two backends DIVERGE\n  interpreter: {i:?}\n  compiled:    {c:?}"
+                ),
+            }
         }
-        (Ok(i), Ok(c)) => Err(format!(
-            "\u{2717} {path}: the two backends DIVERGE\n  interpreter: {i:?}\n  compiled:    {c:?}"
-        )),
         // Both fail: they agree on rejecting this input. (RFC-0045, message parity
         // — lenient notch) When the compiled backend surfaced a ROUTED abort
         // (`runtime error: <core>` via `__witchy_abort`), its message core must
@@ -1714,21 +1839,31 @@ fn verify_file(path: &str) -> Result<(), String> {
         (Err(i), Err(c)) => {
             if let (Some(ic), Some(cc)) = (abort_core(&i), abort_core(&c)) {
                 if ic != cc {
-                    return Err(format!(
-                        "\u{2717} {path}: the two backends DIVERGE on the abort message\n  \
-                         interpreter core: {ic:?}\n  compiled core:    {cc:?}"
-                    ));
+                    return ParityOutcome::Diverge {
+                        compared: 0,
+                        message: format!(
+                            "\u{2717} {path}: the two backends DIVERGE on the abort message\n  \
+                             interpreter core: {ic:?}\n  compiled core:    {cc:?}"
+                        ),
+                    };
                 }
             }
-            println!("\u{2713} {path}: interpreter and compiled WASM agree (both error)");
-            Ok(())
+            ParityOutcome::BothErrorAgree {
+                message: format!("\u{2713} {path}: interpreter and compiled WASM agree (both error)"),
+            }
         }
-        (Ok(i), Err(c)) => Err(format!(
-            "\u{2717} {path}: the two backends DIVERGE\n  interpreter: Ok({i:?})\n  compiled:    Err({c})"
-        )),
-        (Err(i), Ok(c)) => Err(format!(
-            "\u{2717} {path}: the two backends DIVERGE\n  interpreter: Err({i})\n  compiled:    Ok({c:?})"
-        )),
+        (Ok(i), Err(c)) => ParityOutcome::Diverge {
+            compared: 0,
+            message: format!(
+                "\u{2717} {path}: the two backends DIVERGE\n  interpreter: Ok({i:?})\n  compiled:    Err({c})"
+            ),
+        },
+        (Err(i), Ok(c)) => ParityOutcome::Diverge {
+            compared: 0,
+            message: format!(
+                "\u{2717} {path}: the two backends DIVERGE\n  interpreter: Err({i})\n  compiled:    Ok({c:?})"
+            ),
+        },
     }
 }
 
@@ -2386,7 +2521,7 @@ fn run_wasm_bytes(bytes: &[u8]) -> Result<Vec<String>, String> {
     // (RFC-0045) Surface the ROOT CAUSE, not wasmtime's outer "error while
     // executing at wasm backtrace…" wrapper — so a routed `__witchy_abort` reads
     // as the clean `runtime error: <core>` the interpreter produces, which the
-    // differential harness (`verify_file`) compares for message parity.
+    // differential harness (`parity_check`) compares for message parity.
     vm.run().map_err(|e| e.root_cause().to_string())?;
     Ok(vm.output())
 }

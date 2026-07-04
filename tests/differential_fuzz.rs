@@ -61,6 +61,7 @@ fn alnum(r: &mut Rng) -> String {
 fn gen_int(r: &mut Rng, depth: u32) -> String {
     if depth == 0 {
         // Leaves: literals only, spread across the i64 range (renders near page edges).
+        // Int arithmetic WRAPS on overflow (never traps), so full-range leaves stay total.
         match r.below(4) {
             0 => format!("({})", r.below(200) as i64 - 100),
             1 => format!("{}", r.next() % 1_000_000),
@@ -68,13 +69,39 @@ fn gen_int(r: &mut Rng, depth: u32) -> String {
             _ => format!("({})", i64::from_le_bytes(r.next().to_le_bytes())),
         }
     } else if r.below(6) < 5 {
-        // `/` and `%` included — a zero divisor traps identically on both backends.
-        let op = ["+", "-", "*", "/", "%"][r.below(5) as usize];
-        format!("({} {} {})", gen_int(r, depth - 1), op, gen_int(r, depth - 1))
+        // Arithmetic. `+`/`-`/`*` WRAP on overflow (total). `/` and `%` are the only
+        // int ops that TRAP — on a zero divisor or `INT_MIN / -1` — so those draw a
+        // STRICTLY-POSITIVE divisor from `gen_pos_int`, keeping the generator TOTAL
+        // (RFC-0058 §1, BUG-003): an unguarded divisor used to trap the whole program
+        // before its first observable output, hiding value divergence behind agreement.
+        match r.below(5) {
+            0 => format!("({} + {})", gen_int(r, depth - 1), gen_int(r, depth - 1)),
+            1 => format!("({} - {})", gen_int(r, depth - 1), gen_int(r, depth - 1)),
+            2 => format!("({} * {})", gen_int(r, depth - 1), gen_int(r, depth - 1)),
+            3 => format!("({} / {})", gen_int(r, depth - 1), gen_pos_int(r, depth - 1)),
+            _ => format!("({} % {})", gen_int(r, depth - 1), gen_pos_int(r, depth - 1)),
+        }
     } else {
-        // `list.at` exercises indexed reads (out-of-range just traps on BOTH backends =
-        // agreement, so it's free coverage of the bounds path). depth-1 bounds recursion.
-        format!("list.at({}, {})", gen_intlist(r, depth - 1), gen_int(r, depth - 1))
+        // `list.at` exercises indexed reads, but the index is CLAMPED in-bounds: a fresh
+        // list literal of known length `n`, indexed in `0..n`. The read never traps, so
+        // it yields a comparable value rather than an early trap that would discard the
+        // rest of the program's output (RFC-0058 §1, BUG-003 — indices were unclamped).
+        let n = 1 + r.below(4);
+        let elems: Vec<String> = (0..n).map(|_| gen_int(r, depth - 1)).collect();
+        let idx = r.below(n);
+        format!("list.at([{}], {})", elems.join(", "), idx)
+    }
+}
+
+/// A STRICTLY-POSITIVE, small, non-overflowing int expression — a safe `/`/`%` divisor
+/// (never `0`, never `-1`, so neither div-by-zero nor the `INT_MIN / -1` trap can fire).
+/// The only way `gen_int`'s division stays total (RFC-0058 §1). Each form is bounded
+/// well below i64 so it cannot wrap negative through a `+`.
+fn gen_pos_int(r: &mut Rng, depth: u32) -> String {
+    match r.below(3) {
+        0 => format!("{}", 1 + r.below(1000)),
+        1 => format!("(1 + list.length({}))", gen_intlist(r, depth.min(1))),
+        _ => format!("(1 + string.length({}))", gen_str(r, depth.min(1))),
     }
 }
 
@@ -124,8 +151,16 @@ fn gen_str(r: &mut Rng, depth: u32) -> String {
         match r.below(4) {
             0 | 1 => format!("({} + {})", gen_str(r, depth - 1), gen_str(r, depth - 1)),
             2 => format!("string.to_upper({})", gen_str(r, depth - 1)),
-            // arbitrary indices: an out-of-range substring traps identically on both backends.
-            _ => format!("string.substring({}, {}, {})", gen_str(r, depth - 1), gen_int(r, 0), gen_int(r, 0)),
+            // Substring over an IN-RANGE window (start 0, end in `0..=len`). Keeping the
+            // indices valid makes the program total AND COMPARABLE: an out-of-range
+            // substring is a VALUE the two backends clamp differently (a real codegen
+            // parity divergence, tracked separately as a bug — not what this generator
+            // is here to exercise, which is the heap-copy allocation path). Before the
+            // BUG-003 totality fix this statement's divergence was masked by earlier traps.
+            _ => {
+                let s = gen_str(r, depth - 1);
+                format!("string.substring({s}, 0, ({} % (string.length({s}) + 1)))", gen_pos_int(r, 0))
+            }
         }
     }
 }
@@ -454,32 +489,119 @@ fn env_usize(key: &str, default: usize) -> usize {
     std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
-/// Outcome of running `witchy parity` on one program under one lever.
+/// A process-and-probe-unique temp path (BUG-010). Fixed names in the shared temp dir
+/// let two concurrent harness runs (two fuzz jobs, or a fuzz job next to a dev run —
+/// concurrent agents are the norm here) interleave writes and compute a verdict for a
+/// DIFFERENT program than the one the harness believes it is testing. PID + a monotonic
+/// counter + nanos makes every invocation AND every shrink probe distinct.
+fn unique_temp_path(prefix: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    std::env::temp_dir().join(format!("witchy_{prefix}_{}_{n}_{nanos}.witchy", std::process::id()))
+}
+
+/// The per-program wall-clock budget (RFC-0058 §3). A generated program that runs longer
+/// than this is a hang (or a pathological blow-up) — a bug, never silently "agree".
+fn fuzz_timeout() -> std::time::Duration {
+    std::time::Duration::from_secs(env_usize("WITCHY_FUZZ_TIMEOUT_SECS", 30) as u64)
+}
+
+/// Shrink probes inherit a SMALLER budget (RFC-0058 §3) — the minimizer runs many probes
+/// on the rare failure path, and a minimized case should reproduce fast.
+fn shrink_timeout() -> std::time::Duration {
+    fuzz_timeout().min(std::time::Duration::from_secs(10))
+}
+
+/// Run `cmd` with a wall-clock budget. Returns `Some(output)` if it finished in time,
+/// `None` if it exceeded `timeout` (the child is killed) — the distinct `timed-out`
+/// class (RFC-0058 §3) so a hung program is never miscounted as agreement. Output is
+/// bounded (a few KB), so the poll-then-collect pattern cannot deadlock on a full pipe.
+fn run_with_timeout(cmd: &mut Command, timeout: std::time::Duration) -> Option<std::process::Output> {
+    use std::process::Stdio;
+    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let start = std::time::Instant::now();
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            return Some(child.wait_with_output().unwrap());
+        }
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// Parse the machine-readable `parity-stats outcome=<...> compared=<N> ...` line
+/// (RFC-0058 §2) into `(outcome, compared)`. Consumers branch on THIS + the exit code,
+/// never on the human `DIVERGE` text — the BUG-002 fix at the source.
+fn parse_stats(stdout: &str) -> Option<(String, usize)> {
+    let line = stdout.lines().rev().find(|l| l.starts_with("parity-stats "))?;
+    let mut outcome = None;
+    let mut compared = None;
+    for tok in line.split_whitespace() {
+        if let Some(v) = tok.strip_prefix("outcome=") {
+            outcome = Some(v.to_string());
+        } else if let Some(v) = tok.strip_prefix("compared=") {
+            compared = v.parse().ok();
+        }
+    }
+    Some((outcome?, compared?))
+}
+
+/// Outcome of running `witchy parity` on one program under one lever. Mirrors the CLI's
+/// four mechanical outcomes (RFC-0058 §2) plus the harness-side `Crash`/`TimedOut` classes.
 enum ParityResult {
-    Agree,
+    /// Both backends produced equal output — carries the compared line count.
+    Agree(usize),
+    /// Both backends errored and agree (0 compared lines — pulls the median down).
+    BothErrorAgree,
+    /// `unexpected-error`: a non-compiling generated program (a tolerated generator miss).
     Skip,
     Diverge(String),
     Crash(String),
+    /// The run exceeded its wall-clock budget (RFC-0058 §3) — never counted as agreement.
+    TimedOut,
 }
 
-/// Run `witchy parity` on `src` under `WITCHY_OPT=cfg` in a fresh temp file named by `tag`.
-fn run_parity(src: &str, cfg: &str, tag: &str) -> ParityResult {
-    let path = std::env::temp_dir().join(format!("witchy_fuzz_{tag}.witchy"));
+/// Run `witchy parity` on `src` under `WITCHY_OPT=cfg`, in a unique temp file, with the
+/// default per-program timeout. Classifies by EXIT CODE + the machine-readable stats line.
+fn run_parity(src: &str, cfg: &str, prefix: &str) -> ParityResult {
+    run_parity_t(src, cfg, prefix, fuzz_timeout())
+}
+
+/// `run_parity` with an explicit timeout (shrink probes pass a smaller budget).
+fn run_parity_t(src: &str, cfg: &str, prefix: &str, timeout: std::time::Duration) -> ParityResult {
+    let path = unique_temp_path(prefix);
     std::fs::File::create(&path).unwrap().write_all(src.as_bytes()).unwrap();
-    let out = Command::new(BIN).args(["parity", path.to_str().unwrap()]).env("WITCHY_OPT", cfg).output().unwrap();
+    let mut cmd = Command::new(BIN);
+    cmd.args(["parity", path.to_str().unwrap()]).env("WITCHY_OPT", cfg);
+    let out = run_with_timeout(&mut cmd, timeout);
     let _ = std::fs::remove_file(&path);
+    let Some(out) = out else {
+        return ParityResult::TimedOut;
+    };
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    if out.status.code().is_none() {
+    // No exit code = terminated by signal = the host process itself died (memory unsafety).
+    let Some(code) = out.status.code() else {
         return ParityResult::Crash(format!("{stdout}{stderr}"));
-    }
-    if stdout.contains("DIVERGE") || stderr.contains("DIVERGE") {
-        return ParityResult::Diverge(format!("{stdout}{stderr}"));
-    }
-    if out.status.success() {
-        ParityResult::Agree
-    } else {
-        ParityResult::Skip
+    };
+    // Classify on the CLI's exit-code taxonomy (RFC-0058 §2): 0 = a pass (agree or
+    // both-error-agree, disambiguated by the stats line), 3 = diverge, 2 = a compile
+    // miss (Skip). Anything else is unexpected and treated as a host-level anomaly.
+    match code {
+        0 => match parse_stats(&stdout) {
+            Some((outcome, _)) if outcome == "both-error-agree" => ParityResult::BothErrorAgree,
+            Some((_, compared)) => ParityResult::Agree(compared),
+            None => ParityResult::Crash(format!("parity exit 0 without a stats line\n{stdout}{stderr}")),
+        },
+        3 => ParityResult::Diverge(format!("{stdout}{stderr}")),
+        2 => ParityResult::Skip,
+        other => ParityResult::Crash(format!("unexpected parity exit code {other}\n{stdout}{stderr}")),
     }
 }
 
@@ -524,6 +646,17 @@ fn shrink_reduces_to_minimal_repro() {
     assert_eq!(kept, vec!["MARKER here"], "shrink did not reduce to the minimal failing line: {min:?}");
 }
 
+/// Per-optimizer-config outcome tally (RFC-0058 §5) — the full matrix, not the old
+/// aggregate that only counted the empty default. Diverge/Crash/TimedOut are not tallied
+/// here: they panic immediately (the run has already failed).
+#[derive(Default, Debug)]
+struct ConfigTally {
+    agree: usize,
+    both_error: usize,
+    skip: usize,
+    compared_lines: usize,
+}
+
 #[test]
 fn differential_fuzz_interpreter_vs_compiled() {
     // Counts are env-overridable so the scheduled/`--full` job can scale coverage up. The
@@ -531,22 +664,27 @@ fn differential_fuzz_interpreter_vs_compiled() {
     // budget while adding per-lever coverage.
     let programs = env_usize("WITCHY_FUZZ_PROGRAMS", 30);
     let statements = env_usize("WITCHY_FUZZ_STATEMENTS", 100);
-    let mut agree = 0usize;
-    let mut compile_skipped = 0usize;
+    let default_idx = CONFIGS.iter().position(|c| c.is_empty()).unwrap();
+    let mut tallies: Vec<ConfigTally> = (0..CONFIGS.len()).map(|_| ConfigTally::default()).collect();
     let mut kinds_used: u64 = 0;
+    // Compared-line count per seed on the DEFAULT config — the execution-volume vacuity
+    // guard (RFC-0058 §1/§4, BUG-003) asserts its median is >= 1.
+    let mut default_compared: Vec<usize> = Vec::new();
     for seed in 0..programs as u64 {
         let (src, used) = gen_program(seed.wrapping_mul(0x1234_5678_9ABC_DEF1).wrapping_add(1), statements);
         kinds_used |= used;
+        // Per-config outcome for THIS seed, for the cross-config consistency check below.
+        let mut seed_outcomes: Vec<&'static str> = Vec::with_capacity(CONFIGS.len());
         // Cross-lever differential: `parity` reads `WITCHY_OPT` for its compiled side; the
         // interpreter oracle ignores it. So running parity under each config compares that
         // config's compiled output against the one constant oracle — all-agree ⇒ all compiled
         // outputs agree with each other. Any lever that changes observable behavior is a DIVERGE.
-        for &cfg in CONFIGS {
+        for (ci, &cfg) in CONFIGS.iter().enumerate() {
             let label = if cfg.is_empty() { "<default>" } else { cfg };
-            match run_parity(&src, cfg, &seed.to_string()) {
+            match run_parity(&src, cfg, &format!("s{seed}c{ci}")) {
                 // A crash (no exit code) means the host process itself died — memory unsafety.
                 ParityResult::Crash(out) => {
-                    let min = shrink(&src, |s| is_failure(&run_parity(s, cfg, "shrink")), 4000);
+                    let min = shrink(&src, |s| is_failure(&run_parity_t(s, cfg, "shrink", shrink_timeout())), 4000);
                     panic!(
                         "witchy CRASHED (signal) on seed {seed} under WITCHY_OPT={label} — host-level memory unsafety.\n--- minimal repro ({} lines, from {}) ---\n{min}--- output ---\n{out}",
                         min.lines().count(),
@@ -554,32 +692,79 @@ fn differential_fuzz_interpreter_vs_compiled() {
                     );
                 }
                 ParityResult::Diverge(out) => {
-                    let min = shrink(&src, |s| is_failure(&run_parity(s, cfg, "shrink")), 4000);
+                    let min = shrink(&src, |s| is_failure(&run_parity_t(s, cfg, "shrink", shrink_timeout())), 4000);
                     panic!(
                         "BACKENDS DIVERGE on seed {seed} under WITCHY_OPT={label} — an optimization changed observable behavior.\n--- minimal repro ({} lines, from {}) ---\n{min}--- output ---\n{out}",
                         min.lines().count(),
                         src.lines().count()
                     );
                 }
-                // Account compile/agree once, on the production-default config, to gauge the generator.
-                ParityResult::Agree => {
+                // A hang is a bug — never silently "agree" (RFC-0058 §3).
+                ParityResult::TimedOut => panic!(
+                    "witchy parity TIMED OUT on seed {seed} under WITCHY_OPT={label} after {}s — a generated program hung (a bug; or raise WITCHY_FUZZ_TIMEOUT_SECS if legitimately slow).",
+                    fuzz_timeout().as_secs()
+                ),
+                ParityResult::Agree(n) => {
+                    tallies[ci].agree += 1;
+                    tallies[ci].compared_lines += n;
+                    seed_outcomes.push("agree");
                     if cfg.is_empty() {
-                        agree += 1;
+                        default_compared.push(n);
+                    }
+                }
+                ParityResult::BothErrorAgree => {
+                    tallies[ci].both_error += 1;
+                    seed_outcomes.push("both-error");
+                    if cfg.is_empty() {
+                        default_compared.push(0);
                     }
                 }
                 ParityResult::Skip => {
+                    tallies[ci].skip += 1;
+                    seed_outcomes.push("skip");
                     if cfg.is_empty() {
-                        // Non-DIVERGE exit-1 = the generator produced a non-compiling program; tolerated.
-                        compile_skipped += 1;
+                        default_compared.push(0);
                     }
                 }
             }
         }
+        // Cross-config consistency (RFC-0058 §5): if the DEFAULT produced comparable output
+        // for this seed, no lever may SKIP it — a lever that changes compilability is a
+        // failure to explain, not silent slack. (A lever whose compiled OUTPUT differs is
+        // already a DIVERGE above; this catches a lever whose COMPILE outcome differs.)
+        if seed_outcomes[default_idx] == "agree" {
+            for (ci, &cfg) in CONFIGS.iter().enumerate() {
+                assert_ne!(
+                    seed_outcomes[ci], "skip",
+                    "config WITCHY_OPT={} SKIPPED seed {seed} that the default config AGREED on — a lever changed compilability (RFC-0058 §5).",
+                    if cfg.is_empty() { "<default>" } else { cfg }
+                );
+            }
+        }
     }
+    let labeled: Vec<(&str, &ConfigTally)> = CONFIGS
+        .iter()
+        .map(|c| if c.is_empty() { "<default>" } else { *c })
+        .zip(tallies.iter())
+        .collect();
     // Sanity: the generator must mostly produce compiling programs, or it isn't testing codegen.
+    let default_tally = &tallies[default_idx];
     assert!(
-        agree * 2 >= programs,
-        "fuzzer mostly produced non-compiling programs ({agree} agree, {compile_skipped} skipped) — fix the generator"
+        default_tally.agree * 2 >= programs,
+        "fuzzer mostly produced non-compiling programs ({} agree, {} both-error, {} skipped of {programs}) — fix the generator",
+        default_tally.agree,
+        default_tally.both_error,
+        default_tally.skip
+    );
+    // Execution-volume vacuity guard (RFC-0058 §1/§4, BUG-003): the MEDIAN compared-line
+    // count over the default config must be >= 1, so a corpus that traps before its first
+    // observable effect fails LOUDLY instead of passing vacuously — the exact failure mode
+    // that made the old both-error-counts-as-agree accounting blind to value divergence.
+    default_compared.sort_unstable();
+    let median = default_compared.get(default_compared.len() / 2).copied().unwrap_or(0);
+    assert!(
+        median >= 1,
+        "differential fuzz VACUOUS: median compared-line count is {median} (< 1) over {programs} programs — the generator traps before producing comparable output (BUG-003). Per-config tallies: {labeled:?}"
     );
     // Grammar-coverage meta-assertion (RFC-0037 §1): every statement kind the generator CAN emit
     // must actually have appeared across the run — turning "did we cover the grammar" from an
@@ -594,7 +779,7 @@ fn differential_fuzz_interpreter_vs_compiled() {
         );
     }
     eprintln!(
-        "differential fuzz: {agree} agree, {compile_skipped} compile-skipped of {programs} programs × {} configs; kinds covered {kinds_used:#034b}",
+        "differential fuzz: {programs} programs × {} configs; default median compared-lines {median}; per-config tallies {labeled:?}; kinds covered {kinds_used:#034b}",
         CONFIGS.len()
     );
 }
@@ -628,20 +813,52 @@ fn gen_law_program(seed: u64) -> String {
     let s2 = format!("\"{}\"", alnum(&mut r));
     let k = gen_dkey(&mut r);
     let v = format!("{}", r.below(1000));
+    let v2 = format!("{}", r.below(1000));
     let rep = r.below(4);
+    // Helper predicates (they print nothing). A CORRECT sort is BOTH sorted AND a
+    // permutation of its input — laws the old idempotence + length pair could NOT express
+    // (that pair is satisfied by `list.sort = identity`). `is_perm` compares element
+    // multiplicities (RFC-0058 §6), so a lossy/duplicating "sort" that stays the right
+    // length is now caught, and `is_sorted` kills identity on any unsorted input.
+    let helpers = "\
+fn count_eq(xs: List(Int), target: Int) -> Int:\n\
+\x20   var c = 0\n\
+\x20   for x in xs:\n\
+\x20       if x == target:\n\
+\x20           c = c + 1\n\
+\x20   c\n\
+fn is_perm(a: List(Int), b: List(Int)) -> Bool:\n\
+\x20   var ok = list.length(a) == list.length(b)\n\
+\x20   for v in a:\n\
+\x20       if count_eq(a, v) != count_eq(b, v):\n\
+\x20           ok = false\n\
+\x20   ok\n\
+fn is_sorted(xs: List(Int)) -> Bool:\n\
+\x20   var ok = true\n\
+\x20   var i = 1\n\
+\x20   while i < list.length(xs):\n\
+\x20       if list.at(xs, i) < list.at(xs, i - 1):\n\
+\x20           ok = false\n\
+\x20       i = i + 1\n\
+\x20   ok\n";
     format!(
-        "import list\nimport string\nimport dict\n\nfn main(console: Console):\n\
+        "import list\nimport string\nimport dict\n\n{helpers}\nfn main(console: Console):\n\
          \x20   let xs = {xs}\n\
          \x20   let a = {a}\n\
          \x20   let b = {b}\n\
          \x20   let s1 = {s1}\n\
          \x20   let s2 = {s2}\n\
          \x20   let d = dict.insert(dict.new(), \"seed\", 1)\n\
+         \x20   let d2 = dict.insert(dict.insert(dict.new(), {s1}, {v}), {s2}, {v2})\n\
+         \x20   let rt = dict.insert(dict.remove(d2, {s1}), {s1}, {v})\n\
          \x20   print(console, __render(list.reverse(list.reverse(xs)) == xs))\n\
          \x20   print(console, __render(list.length(list.concat(a, b)) == list.length(a) + list.length(b)))\n\
          \x20   print(console, __render(list.sort(list.sort(xs)) == list.sort(xs)))\n\
          \x20   print(console, __render(list.length(list.sort(xs)) == list.length(xs)))\n\
+         \x20   print(console, __render(is_sorted(list.sort(xs))))\n\
+         \x20   print(console, __render(is_perm(list.sort(xs), xs)))\n\
          \x20   print(console, __render(dict.get_or(dict.insert(d, {k}, {v}), {k}, 0 - 1) == {v}))\n\
+         \x20   print(console, __render((dict.get_or(rt, {s1}, 0 - 1) == {v}) && (dict.length(rt) == dict.length(d2)) && (list.length(dict.pairs(rt)) == dict.length(rt))))\n\
          \x20   print(console, __render(string.length(s1 + s2) == string.length(s1) + string.length(s2)))\n\
          \x20   print(console, __render(string.reverse(string.reverse(s1)) == s1))\n\
          \x20   print(console, __render(string.length(string.repeat(s1, {rep})) == string.length(s1) * {rep}))\n"
@@ -649,8 +866,9 @@ fn gen_law_program(seed: u64) -> String {
 }
 
 /// Number of algebraic laws `gen_law_program` prints — used to assert none were skipped by an
-/// early trap (which would otherwise slip through as "fewer lines, all true").
-const NLAWS: usize = 8;
+/// early trap (which would otherwise slip through as "fewer lines, all true"). The list laws
+/// now include sortedness + permutation and a dict remove/reinsert/iterate round-trip (§6).
+const NLAWS: usize = 11;
 
 /// A minimal helper library for the dead-alloc metamorphic pair: the two alias/self-ref shapes
 /// whose reclamation is sensitive to free-list state (no `type R` dependency, unlike `HELPER_LIB`).
@@ -712,7 +930,7 @@ fn gen_reclaim_pair(seed: u64) -> (String, String) {
 /// `(exit_ok, stdout)`. A trap and a value are distinguished by `exit_ok`, so a UAF that traps
 /// in one variant but succeeds in the other is a mismatch.
 fn run_compiled(src: &str, cfg: &str, tag: &str) -> (bool, String) {
-    let path = std::env::temp_dir().join(format!("witchy_reclaim_{tag}.witchy"));
+    let path = unique_temp_path(&format!("reclaim_{tag}"));
     std::fs::File::create(&path).unwrap().write_all(src.as_bytes()).unwrap();
     let out = Command::new(BIN).arg(path.to_str().unwrap()).env("WITCHY_OPT", cfg).output().unwrap();
     let _ = std::fs::remove_file(&path);
@@ -742,7 +960,7 @@ fn metamorphic_property_laws() {
     let programs = env_usize("WITCHY_LAW_PROGRAMS", 40);
     for seed in 0..programs as u64 {
         let src = gen_law_program(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(7));
-        let path = std::env::temp_dir().join(format!("witchy_law_{seed}.witchy"));
+        let path = unique_temp_path(&format!("law_{seed}"));
         std::fs::File::create(&path).unwrap().write_all(src.as_bytes()).unwrap();
         // (a) backends must agree (a law that computes differently across backends is a bug).
         let par = Command::new(BIN).args(["parity", path.to_str().unwrap()]).output().unwrap();
@@ -783,7 +1001,7 @@ fn uaf_sanitizer_is_false_positive_free() {
     let statements = env_usize("WITCHY_UAF_FUZZ_STATEMENTS", 100);
     for seed in 0..programs as u64 {
         let (src, _) = gen_program(seed.wrapping_mul(0x1234_5678_9ABC_DEF1).wrapping_add(1), statements);
-        let path = std::env::temp_dir().join(format!("witchy_uaf_{seed}.witchy"));
+        let path = unique_temp_path(&format!("uaf_{seed}"));
         std::fs::File::create(&path).unwrap().write_all(src.as_bytes()).unwrap();
         // rc-floor is the only lever that emits `$rc_free`, so it is the one the sanitizer alters.
         let out = Command::new(BIN)
@@ -824,7 +1042,7 @@ fn rc_assert_dup_drop_is_false_positive_free() {
     let statements = env_usize("WITCHY_RC_ASSERT_STATEMENTS", 100);
     for seed in 0..programs as u64 {
         let (src, _) = gen_program(seed.wrapping_mul(0x0F1E_2D3C_4B5A_6978).wrapping_add(7), statements);
-        let path = std::env::temp_dir().join(format!("witchy_rcassert_{seed}.witchy"));
+        let path = unique_temp_path(&format!("rcassert_{seed}"));
         std::fs::File::create(&path).unwrap().write_all(src.as_bytes()).unwrap();
         let out = Command::new(BIN)
             .args(["parity", path.to_str().unwrap()])
