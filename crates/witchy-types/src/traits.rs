@@ -419,7 +419,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         let mut table = first_table;
         let mut memo: HashMap<(String, Vec<String>), String> = HashMap::new();
         for round in 0..MONO_ROUNDS {
-            let (ctor_results, fn_rets, fn_sigs) = build_tables(&items);
+            let (ctor_results, fn_rets, _fn_sigs) = build_tables(&items);
             let ctor_fields = build_ctor_fields(&items);
             let record_fields = build_record_fields(&items);
             let known_fns: std::collections::HashSet<String> = items
@@ -440,7 +440,6 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                 ctor_fields: &ctor_fields,
                 record_fields: &record_fields,
                 fn_rets,
-                fn_sigs,
                 memo: std::mem::take(&mut memo),
                 generated: Vec::new(),
                 generated_subst: Vec::new(),
@@ -745,8 +744,13 @@ fn table_scope_name(table: &crate::typeck::TypeTable, e: &Expr) -> Option<String
 impl Ctx<'_> {
     fn type_name(&self, e: &Expr, scope: &Scope) -> Option<String> {
         table_scope_name(self.table, e)
-            .or_else(|| recover_generic_call(e, self.fn_sigs, &|a| self.type_name(a, scope)))
             .or_else(|| head_type_name(e, scope, self.ctor_results, self.fn_rets, self.record_fields))
+            // A host capability OP is a BARE intrinsic (`net.deny`, `dir.subtree`),
+            // so the QUIET pre-mono pass (which runs with an empty table) cannot
+            // type its result from the table — it needs this to resolve a chained
+            // method call on a cap-op result (`net.deny(...).only(...)`). The loud
+            // pass gets the same fact from the checker's table; this is the empty-
+            // table residual. See RFC-0046 step-4 note.
             .or_else(|| cap_op_return_type(e))
     }
 
@@ -1316,17 +1320,11 @@ impl Ctx<'_> {
     }
 }
 
-/// Return types of the handful of builtins common enough to want as trait-call
-/// receivers. A wrong guess only ever produces a type error (never wrong code),
-/// so the table stays conservative.
-fn builtin_ret(name: &str) -> Option<String> {
-    let t = match name {
-        "int_to_string" | "__render" => "String",
-        "string_length" | "char_count" => "Int",
-        _ => return None,
-    };
-    Some(t.into())
-}
+// (RFC-0046 step 4) `builtin_ret` — the four hardcoded intrinsic return types
+// (`int_to_string`/`__render` -> String, `string_length`/`char_count` -> Int) —
+// is DELETED. The checker's `call_sig` already types every intrinsic, so the
+// table-first path resolves them; only the empty-table quiet pass could ever have
+// reached it, and no method call takes one of these as a receiver.
 
 /// Best-effort head type name of an expression, or `None` if undeterminable
 /// without full inference. Shared by trait-call resolution and monomorphization.
@@ -1365,7 +1363,7 @@ fn head_type_name(
             Some(format!("Option<{elem}>"))
         }
         Expr::Ctor { name, .. } => ctor_results.get(name).cloned(),
-        Expr::Call { name, .. } => fn_rets.get(name).cloned().or_else(|| builtin_ret(name)),
+        Expr::Call { name, .. } => fn_rets.get(name).cloned(),
         Expr::RecordUpdate { base, .. } => head_type_name(base, scope, ctor_results, fn_rets, record_fields),
         // `!` yields Bool; `-`/`~` preserve the operand's type (so `-5` is Int).
         Expr::Unary { op, expr } => match op {
@@ -1754,65 +1752,14 @@ fn build_mutation_tables(
     (mutators, returns_nil)
 }
 
-/// Recover the concrete result type of a generic call whose declared return is a
-/// bare type variable, by binding that variable from an argument. Handles
-/// `xs[i]` (list element) and any `f(.., List(a)|Option(a)|a, ..) -> a`, so
-/// `show(xs[i])` / `say(list.at(xs, i))` dispatch on the element type. Returns
-/// `None` when undeterminable (the caller falls back to `head_type_name`); a
-/// wrong guess only ever yields a type error, never wrong code.
-fn recover_generic_call(
-    e: &Expr,
-    sigs: &HashMap<String, FnSig>,
-    type_of: &dyn Fn(&Expr) -> Option<String>,
-) -> Option<String> {
-    match e {
-        // `xs[i]` is element access: the element of the base's `List<...>` type.
-        // (typeck lowers a subscript to a `list.at` call, so the arm below also
-        // covers it after that pass.)
-        Expr::Index { base, .. } => list_elem(&type_of(base)?).map(str::to_string),
-        // `list.at(xs, i)` is an intrinsic (no `Item`, so absent from `sigs`); it
-        // yields the element of `xs`'s `List<...>` type.
-        Expr::Call { name, args } if name == "list.at" => {
-            list_elem(&type_of(args.first()?)?).map(str::to_string)
-        }
-        Expr::Call { name, args } => {
-            let (params, ret) = sigs.get(name)?;
-            // Only a bare type VARIABLE return is recoverable here; a concrete
-            // head (uppercase, or carrying its own args) is handled elsewhere.
-            let Type::Named(var, vargs) = ret else { return None };
-            if !vargs.is_empty() || !var.chars().next()?.is_lowercase() {
-                return None;
-            }
-            params
-                .iter()
-                .zip(args)
-                .find_map(|(p, arg)| bind_type_var(var, p.as_ref()?, arg, type_of))
-        }
-        _ => None,
-    }
-}
-
-/// Bind return type variable `var` from a single (param type, argument) pair:
-/// `x: a` -> the arg's type; `xs: List(a)` -> its element; `o: Option(a)` -> its
-/// element. Any other shape contributes no binding.
-fn bind_type_var(
-    var: &str,
-    pty: &Type,
-    arg: &Expr,
-    type_of: &dyn Fn(&Expr) -> Option<String>,
-) -> Option<String> {
-    let inner_is_var = |a: &[Type]| matches!(a, [Type::Named(v, va)] if v == var && va.is_empty());
-    match pty {
-        Type::Named(n, a) if n == var && a.is_empty() => type_of(arg),
-        Type::Named(n, a) if n == "List" && inner_is_var(a) => {
-            list_elem(&type_of(arg)?).map(str::to_string)
-        }
-        Type::Named(n, a) if n == "Option" && inner_is_var(a) => {
-            generic_arg(&type_of(arg)?).map(str::to_string)
-        }
-        _ => None,
-    }
-}
+// (RFC-0046 step 4) `recover_generic_call` + `bind_type_var` are DELETED. They
+// re-derived a generic call's concrete result type (`xs[i]`, `list.at`, `f(..) ->
+// a`) by hand off the string scope — the checker already types every one of these
+// exactly, and the table-first `type_name` (with the step-1 annotate/mono fixpoint
+// and the fresh loud-pass re-annotate) now subsumes them: the loud pass and mono
+// read the resolved `Ty` for the call/subscript node directly, so the shape-guess
+// is gone. The safety invariant is preserved by construction — the table is the
+// checker's answer, not a guess.
 
 /// Record type name -> its named field types, for typing `x.field` receivers.
 fn build_record_fields(items: &[Item]) -> HashMap<String, Vec<(String, Type)>> {
@@ -2560,9 +2507,6 @@ struct Mono<'a> {
     ctor_fields: &'a HashMap<String, Vec<Type>>,
     record_fields: &'a HashMap<String, Vec<(String, Type)>>,
     fn_rets: HashMap<String, String>,
-    /// Function -> (param types, return type), for recovering a generic call's
-    /// concrete result type (mirrors `Ctx::fn_sigs`).
-    fn_sigs: HashMap<String, FnSig>,
     memo: HashMap<(String, Vec<String>), String>,
     generated: Vec<Function>,
     /// Per-generated-instance type-variable substitution (var -> concrete scope
@@ -2623,7 +2567,6 @@ impl Mono<'_> {
         // checker's answer, not a guess). It only carries fully-concrete types,
         // so a generic-body expression falls through to the local recovery.
         table_scope_name(self.table, e)
-            .or_else(|| recover_generic_call(e, &self.fn_sigs, &|a| self.type_name(a, scope)))
             .or_else(|| head_type_name(e, scope, self.ctor_results, &self.fn_rets, self.record_fields))
     }
 

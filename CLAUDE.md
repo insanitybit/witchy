@@ -70,11 +70,21 @@ The forward rule still stands: add **no new** per-method fast paths; the general
 mechanism must absorb every *new* operation. (RFC-0016 is the general reclamation
 floor; RFC-0051 is why the existing zoo stays.)
 
-## Trait-method dispatch (recently extended)
+## Trait-method dispatch (RFC-0046: typed, table-first)
 
-`show(x)` / `less(x, y)` etc. resolve by recovering the receiver's concrete type
-from the argument's shape (`head_type_name` / `recover_generic_call` in
-`crates/witchy-types/src/traits.rs`). This now includes call results — `list.at(xs,i)`, `xs[i]`, and
-generic functions whose return is a type var. If a fresh trait call still won't
-resolve, the type error guides you (`${x}` / `say` / a typed param), and the
-fix belongs in `recover_generic_call`, not a workaround.
+`show(x)` / `less(x, y)` etc. resolve by reading the receiver's concrete type
+from **typeck's `TypeTable`** — the real inference judgment, not a string guess
+(`Ctx::type_name` / `Mono::type_name` in `crates/witchy-types/src/traits.rs`,
+`table_scope_name` first). RFC-0046 deleted the string "shadow type system"
+(`recover_generic_call`, `bind_type_var`, `builtin_ret`): call results
+(`list.at(xs,i)`, `xs[i]`, generic returns) are typed by the checker and the
+annotate/mono **fixpoint** (`lower_with`), which re-annotates after each round so
+a generic helper's bounded call (`iter.collect`) resolves once the helper is
+specialized. **A fresh dispatch fix belongs in the typed path** — make the
+checker type the expression (a `call_sig` entry, a signature), so the table
+carries it — never in a new string-shape table. If a trait call still won't
+resolve, the type error guides you (`${x}` / `say` / a typed param). The empty-
+table **quiet pre-mono pass** still uses `head_type_name` for local judgment
+(literals/ctors/params) and `cap_op_return_type` for chained cap-op results
+(bare intrinsics the checker types but the empty table can't surface); those are
+the documented residual, not an invitation to grow the shape tables.
