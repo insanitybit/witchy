@@ -2383,7 +2383,11 @@ fn run_wasm_bytes(bytes: &[u8]) -> Result<Vec<String>, String> {
             RUN_MEMORY_PAGES,
         )
         .map_err(|e| e.to_string())?;
-    vm.run().map_err(|e| e.to_string())?;
+    // (RFC-0045) Surface the ROOT CAUSE, not wasmtime's outer "error while
+    // executing at wasm backtrace…" wrapper — so a routed `__witchy_abort` reads
+    // as the clean `runtime error: <core>` the interpreter produces, which the
+    // differential harness (`verify_file`) compares for message parity.
+    vm.run().map_err(|e| e.root_cause().to_string())?;
     Ok(vm.output())
 }
 

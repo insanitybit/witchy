@@ -3854,11 +3854,61 @@ fn yn(b: Bool) -> String:
         let err = interpreter::run(src).expect_err("interpreter must abort");
         assert!(err.message.contains("boom"));
         let module = parser::parse_module(src).expect("parse");
-        // `fail()` lowers on the binary path: drop the message, then `unreachable`.
+        // `fail()` lowers on the binary path: route the message through
+        // `__witchy_abort`, then `unreachable`.
         let bytes = codegen::compile_module_binary(&module)
             .expect("compile")
             .expect("fail() lowers on the binary path");
         assert!(crate::run_wasm_bytes(&bytes).is_err(), "WASM must trap on fail()");
+    }
+
+    /// (RFC-0045) The message parity property: when the interpreter aborts, the
+    /// compiled backend must abort with the SAME message CORE — not merely "both
+    /// error". Covers each routed abort class: `fail(msg)` (dynamic), list-index
+    /// OOB and `string.to_int` junk (static + dynamic data), and NaN ordering
+    /// (static). This is the differential gate's semantics made a unit test: a
+    /// compiled trap at the wrong site or for the wrong reason would diverge here.
+    #[test]
+    fn abort_messages_match_across_backends() {
+        // Each case: (program, expected message core the interpreter produces).
+        let cases: &[(&str, &str)] = &[
+            (
+                "fn main(console: Console):\n    fail(\"the reason\")\n",
+                "the reason",
+            ),
+            (
+                "import list\nfn main(console: Console):\n    let xs = [1, 2]\n    print(console, __render(list.at(xs, 5)))\n",
+                "list index 5 out of bounds (length 2)",
+            ),
+            (
+                "import string\nfn main(console: Console):\n    print(console, __render(string.to_int(\"junk\")))\n",
+                "cannot parse `junk` as an Int",
+            ),
+            (
+                "fn main(console: Console):\n    let nan = 0.0 / 0.0\n    print(console, __render(nan < 1.0))\n",
+                "cannot compare NaN",
+            ),
+        ];
+        for (src, want_core) in cases {
+            // Interpreter (the oracle): its full message ends with the core.
+            let ierr = interpreter::run(src).expect_err("interpreter must abort");
+            assert!(
+                ierr.message.ends_with(want_core),
+                "interpreter core mismatch: got `{}`, want suffix `{want_core}`",
+                ierr.message
+            );
+            // Compiled: the routed abort surfaces `runtime error: <core>` via the
+            // host `bail!` (root cause). It must equal the interpreter's core.
+            let linked = resolve_std_src(src);
+            let bytes = codegen::compile_module_binary(&linked)
+                .expect("compile")
+                .expect("the binary path lowers this program");
+            let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort");
+            let ccore = cerr
+                .strip_prefix("runtime error: ")
+                .unwrap_or_else(|| panic!("compiled abort not routed: `{cerr}`"));
+            assert_eq!(ccore, *want_core, "compiled abort core mismatch for src:\n{src}");
+        }
     }
 
     /// `now` (Clock) and `get_env` (Env) compile to capability-gated host
@@ -7928,6 +7978,52 @@ fn main(console: Console):
         )
         .unwrap();
         crate::verify_file(path.to_str().unwrap()).expect("backends should agree");
+    }
+
+    /// (RFC-0045) `witchy verify` on an ABORTING program passes: both backends
+    /// abort AND their message cores match (the interpreter's `` `main`, line N:
+    /// list index … `` core equals the compiled `runtime error: list index …`).
+    /// This exercises the differential harness's message-parity arm end to end.
+    #[test]
+    fn verify_file_agrees_on_matching_aborts() {
+        let path = std::env::temp_dir().join("witchy_verify_abort.witchy");
+        std::fs::write(
+            &path,
+            "import list\nfn main(console: Console):\n    let xs = [1, 2]\n    print(console, __render(list.at(xs, 9)))\n",
+        )
+        .unwrap();
+        crate::verify_file(path.to_str().unwrap())
+            .expect("both backends must abort with the same message core");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// (RFC-0045) `abort_core` strips the interpreter's exact `rt_at_line` location
+    /// prefix (both the `` `func`, line N: `` and the func-less `line N: ` shapes)
+    /// while leaving the compiled `runtime error:` core untouched, and returns
+    /// `None` for non-routed messages — so the parity gate compares like with like.
+    #[test]
+    fn abort_core_strips_location_prefix() {
+        assert_eq!(
+            crate::abort_core("runtime error: `p20.test_fail`, line 4: the reason").as_deref(),
+            Some("the reason")
+        );
+        assert_eq!(
+            crate::abort_core("runtime error: line 4: boom").as_deref(),
+            Some("boom")
+        );
+        // Compiled side (no location prefix): the core is the whole body.
+        assert_eq!(
+            crate::abort_core("runtime error: list index 5 out of bounds (length 2)").as_deref(),
+            Some("list index 5 out of bounds (length 2)")
+        );
+        // A `fail` message containing backticks and `: ` must NOT be mis-stripped.
+        assert_eq!(
+            crate::abort_core("runtime error: `weird`: value").as_deref(),
+            Some("`weird`: value")
+        );
+        // Non-routed errors (bare trap, capability refusal) are not compared.
+        assert_eq!(crate::abort_core("wasm trap: unreachable"), None);
+        assert_eq!(crate::abort_core("`..` escapes the Dir capability"), None);
     }
 
     #[test]
@@ -17199,4 +17295,3 @@ pub fn serve(console: Console, net: Net) -> Int:
              hole lives), got: {msg}"
         );
     }
-
