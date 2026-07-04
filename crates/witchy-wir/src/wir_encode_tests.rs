@@ -41,6 +41,18 @@
                 },
             )
             .unwrap();
+        // (RFC-0045) `__witchy_abort` is always linked; a helper that routes an
+        // abort through it (e.g. `str_to_int`) declares the import, so define a
+        // trapping stub matching the real host's never-returns contract.
+        linker
+            .func_wrap(
+                "witchy",
+                "__witchy_abort",
+                |_: i32, _: i64, _: i64, _: i32| -> wasmtime::Result<()> {
+                    wasmtime::bail!("runtime error (test harness abort)")
+                },
+            )
+            .unwrap();
         let mut store = wasmtime::Store::new(&engine, ());
         store.set_fuel(500_000_000).expect("fuel"); // ~5e8 ops — ample for tests, traps runaways
         let inst = linker.instantiate(&mut store, &m).expect("instantiate");
@@ -73,6 +85,15 @@
         linker.func_wrap("witchy", "print_int", |_: i64| {}).unwrap();
         linker
             .func_wrap("witchy", "print", |_: wasmtime::Caller<'_, ()>, _: i32, _: i32| {})
+            .unwrap();
+        linker
+            .func_wrap(
+                "witchy",
+                "__witchy_abort",
+                |_: i32, _: i64, _: i64, _: i32| -> wasmtime::Result<()> {
+                    wasmtime::bail!("runtime error (test harness abort)")
+                },
+            )
             .unwrap();
         let mut store = wasmtime::Store::new(&engine, ());
         store.set_fuel(500_000_000).expect("fuel");
@@ -1431,11 +1452,16 @@
             raw_body: None,
         };
         let module = WirModule {
-            imports: vec![WirImport {
-                name: "print_int".into(),
-                params: vec![Kind::I64],
-                results: vec![],
-            }],
+            imports: vec![
+                WirImport { name: "print_int".into(), params: vec![Kind::I64], results: vec![] },
+                // (RFC-0045) `str_to_int` routes its parse-failure aborts through
+                // `__witchy_abort`, so the import must be declared for the encoder.
+                WirImport {
+                    name: "__witchy_abort".into(),
+                    params: vec![Kind::I32, Kind::I64, Kind::I64, Kind::I32],
+                    results: vec![],
+                },
+            ],
             funcs: vec![is_ws_helper(), str_to_int_helper(), run],
             memory_pages: 1,
             data,
