@@ -13,7 +13,7 @@
 pub fn run(e: Exec, dir: Dir[Read], path: String, args: List(String), stdin: String) -> (Int, String):
     let joined = list.join(args, "\0")
     let payload = exec(e, dir, path, joined, stdin)
-    let nl = (string.index_of(payload, "\n") ?? -1)
+    let nl = string.index_of(payload, "\n") ?? -1
     let code = string.to_int(string.substring(payload, 0, nl))
     let output = string.substring(payload, nl + 1, string.length(payload))
     (code, output)

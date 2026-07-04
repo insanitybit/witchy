@@ -314,7 +314,7 @@ fn read_headers(sock: Socket) -> List((String, String)):
         if line == "":
             done = true
         else:
-            let colon = (string.index_of(line, ":") ?? -1)
+            let colon = string.index_of(line, ":") ?? -1
             if colon >= 0:
                 let name = string.to_lower(string.trim(string.substring(line, 0, colon)))
                 let value = string.trim(string.substring(line, colon + 1, string.char_count(line)))
@@ -340,7 +340,7 @@ fn parse_query(q: String) -> List((String, String)):
     else:
         var out = []
         for pair in string.split(q, "&"):
-            let eq = (string.index_of(pair, "=") ?? -1)
+            let eq = string.index_of(pair, "=") ?? -1
             if eq >= 0:
                 out = list.push(out, (string.substring(pair, 0, eq), string.substring(pair, eq + 1, string.char_count(pair))))
             else:
@@ -348,33 +348,33 @@ fn parse_query(q: String) -> List((String, String)):
         out
 
 fn first_word(s: String) -> String:
-    let sp = (string.index_of(s, " ") ?? -1)
+    let sp = string.index_of(s, " ") ?? -1
     if sp < 0:
         s
     else:
         string.substring(s, 0, sp)
 
 fn second_word(s: String) -> String:
-    let sp = (string.index_of(s, " ") ?? -1)
+    let sp = string.index_of(s, " ") ?? -1
     if sp < 0:
         ""
     else:
         let r = string.substring(s, sp + 1, string.char_count(s))
-        let sp2 = (string.index_of(r, " ") ?? -1)
+        let sp2 = string.index_of(r, " ") ?? -1
         if sp2 < 0:
             r
         else:
             string.substring(r, 0, sp2)
 
 fn before(s: String, sep: String) -> String:
-    let i = (string.index_of(s, sep) ?? -1)
+    let i = string.index_of(s, sep) ?? -1
     if i < 0:
         s
     else:
         string.substring(s, 0, i)
 
 fn after(s: String, sep: String) -> String:
-    let i = (string.index_of(s, sep) ?? -1)
+    let i = string.index_of(s, sep) ?? -1
     if i < 0:
         ""
     else:

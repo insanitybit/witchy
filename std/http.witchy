@@ -314,7 +314,7 @@ pub fn check_header(name: String, value: String):
 // Split the raw response at the blank line separating headers from body, and
 // parse the header lines into (lowercased name, trimmed value) pairs.
 fn parse_response(raw: String) -> Response:
-    let sep = (string.index_of(raw, "\r\n\r\n") ?? -1)
+    let sep = string.index_of(raw, "\r\n\r\n") ?? -1
     let head = if sep < 0: raw else: string.substring(raw, 0, sep)
     let bdy = if sep < 0: "" else: string.substring(raw, sep + 4, string.char_count(raw))
     let lines = string.split(head, "\r\n")
@@ -323,7 +323,7 @@ fn parse_response(raw: String) -> Response:
     var i = 1
     while i < list.length(lines):
         let line = list.at(lines, i)
-        let colon = (string.index_of(line, ":") ?? -1)
+        let colon = string.index_of(line, ":") ?? -1
         if colon >= 0:
             let name = string.to_lower(string.substring(line, 0, colon))
             let value = string.trim(string.substring(line, colon + 1, string.char_count(line)))
@@ -333,12 +333,12 @@ fn parse_response(raw: String) -> Response:
 
 // Pull the numeric code out of a status line like "HTTP/1.1 200 OK".
 fn status_code(line: String) -> Int:
-    let sp = (string.index_of(line, " ") ?? -1)
+    let sp = string.index_of(line, " ") ?? -1
     if sp < 0:
         0
     else:
         let rest = string.substring(line, sp + 1, string.char_count(line))
-        let sp2 = (string.index_of(rest, " ") ?? -1)
+        let sp2 = string.index_of(rest, " ") ?? -1
         let code = if sp2 < 0: rest else: string.substring(rest, 0, sp2)
         // A malformed/non-HTTP response can carry a non-numeric code; don't let
         // it trap `string_to_int` and crash the client — report 0 instead.

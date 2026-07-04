@@ -23,7 +23,7 @@ fn skip(s: String, i: Int) -> Int:
 // A run of digits starting at `i`, as (value, index past it).
 fn read_number(s: String, i: Int) -> (Int, Int):
     var j = i
-    while j < s.length() && is_digit((s.char_at(j) ?? "")):
+    while j < s.length() && is_digit(s.char_at(j) ?? ""):
         j = j + 1
     (string.to_int(s.substring(i, j)), j)
 
@@ -42,7 +42,7 @@ fn term(s: String, i: Int) -> (Int, Int):
     var acc = lhs
     var p = skip(s, start)
     while p < s.length() && ((s.char_at(p) ?? "") == "*" || (s.char_at(p) ?? "") == "/"):
-        let op = (s.char_at(p) ?? "")
+        let op = s.char_at(p) ?? ""
         let (rhs, q) = factor(s, p + 1)
         if op == "*":
             acc = acc * rhs
@@ -57,7 +57,7 @@ fn expr(s: String, i: Int) -> (Int, Int):
     var acc = lhs
     var p = skip(s, start)
     while p < s.length() && ((s.char_at(p) ?? "") == "+" || (s.char_at(p) ?? "") == "-"):
-        let op = (s.char_at(p) ?? "")
+        let op = s.char_at(p) ?? ""
         let (rhs, q) = term(s, p + 1)
         if op == "+":
             acc = acc + rhs
