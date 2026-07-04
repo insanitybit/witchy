@@ -11,6 +11,13 @@
 #
 # rustfmt is deliberately NOT part of the gate: the Rust in this repo is
 # hand-formatted, so `cargo fmt` would fight the intended style.
+#
+# DO NOT pipe this script through `tail`/`head`/`grep` (e.g. `check.sh | tail`): a
+# pipeline's exit status is its LAST command's, so under a parent shell without
+# `pipefail` the gate's own non-zero exit is MASKED — a red run then looks green
+# (RFC-0058 §4). Run it bare, or redirect to a file and read that:
+# `./scripts/check.sh >check.log 2>&1; tail check.log`. (This script sets `pipefail`
+# for its OWN internal pipes; the hazard is a caller's pipe, which it cannot control.)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

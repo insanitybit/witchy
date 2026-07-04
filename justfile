@@ -73,18 +73,52 @@ lsp:
 # --- Parity sweep & witchy formatting (mirror CI) ------------------------
 
 # Differential-check every runnable example on both backends (CI parity job).
+# FAIL-CLOSED on any non-zero parity exit (RFC-0058 §2, BUG-002): 0 = agree /
+# both-error-agree, 2 = unexpected-error (a compile/lower regression), 3 = diverge.
+# No `|| true`, no `grep DIVERGE` — classify on the exit code + the machine-readable
+# `parity-stats` line. Vacuity guard: assert we compared > 0 output lines. Positive
+# control: the seeded-divergence lever MUST fail parity, proving the gate can fail.
 parity-sweep: build-release
     #!/usr/bin/env bash
     set -uo pipefail
     fail=0
+    files=0
+    compared=0
+    ctrl=""
     for f in examples/*/src/*.witchy; do
-        out=$({{bin}} parity "$f" 2>&1) || true
-        if echo "$out" | grep -qi "DIVERGE"; then
-            echo "DIVERGENCE: $f"
+        # Discover RUNNABLE programs only: `parity` needs a `main`. Libraries and
+        # in-language `*_test.witchy` suites (no `main`) are covered by `witchy test`
+        # and example_tests — sweeping them would fail-closed on a legitimate
+        # "no main to run" (a reviewed skiplist rule, BUG-002 / RFC-0058 §4).
+        grep -q 'fn main' "$f" || continue
+        [ -z "$ctrl" ] && ctrl="$f"
+        files=$((files + 1))
+        out=$({{bin}} parity "$f" 2>&1)
+        code=$?
+        n=$(printf '%s\n' "$out" | grep '^parity-stats ' | tail -1 | sed -n 's/.*compared=\([0-9][0-9]*\).*/\1/p')
+        compared=$((compared + ${n:-0}))
+        if [ "$code" -ne 0 ]; then
+            echo "PARITY FAIL (exit $code): $f"
             echo "$out"
             fail=1
         fi
     done
+    if [ "$files" -eq 0 ]; then
+        echo "parity-sweep VACUOUS: no example files discovered (BUG-002)" >&2
+        exit 1
+    fi
+    if [ "$compared" -eq 0 ]; then
+        echo "parity-sweep VACUOUS: compared 0 output lines across $files files (BUG-002)" >&2
+        exit 1
+    fi
+    # Positive control (RFC-0058 §1): `ctrl` is a known-AGREEING runnable example
+    # (it passed above with exit 0). With the seeded-divergence lever armed, parity
+    # MUST now fail — a self-test that the gate can still detect a divergence.
+    if WITCHY_SEEDED_DIVERGENCE=1 {{bin}} parity "$ctrl" >/dev/null 2>&1; then
+        echo "parity-sweep POSITIVE CONTROL FAILED: seeded divergence did NOT fail parity on $ctrl" >&2
+        exit 1
+    fi
+    echo "parity-sweep: $files files, $compared compared lines, positive control OK"
     exit $fail
 
 # Format every std + example witchy file in place.
