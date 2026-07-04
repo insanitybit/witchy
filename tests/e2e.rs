@@ -3855,3 +3855,80 @@ fn sandbox_reveal_gates_signing_key_only() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// RFC-0058 §1 positive control: the seeded-divergence lever is a fault injector for
+/// `witchy parity` that must (a) be INERT on the program-run path and (b) force a
+/// DIVERGE on the parity path when armed — the self-test proving the gate can fail.
+#[test]
+fn seeded_divergence_is_inert_on_run_but_fails_parity() {
+    let dir = unique("seeded-div");
+    let prog = dir.join("p.witchy");
+    std::fs::write(
+        &prog,
+        "fn main(console: Console):\n    print(console, \"hello\")\n    print(console, \"${1 + 2}\")\n",
+    )
+    .unwrap();
+    let p = prog.to_str().unwrap();
+
+    // (a) The program-run path is INERT: identical output + exit whether or not the
+    // lever is set. It must never touch real execution.
+    let run_off = Command::new(BIN).arg(p).output().unwrap();
+    let run_on = Command::new(BIN).arg(p).env("WITCHY_SEEDED_DIVERGENCE", "1").output().unwrap();
+    assert_eq!(run_off.status.code(), run_on.status.code(), "seeded lever changed the run-path exit code");
+    assert_eq!(stdout(&run_off), stdout(&run_on), "seeded lever perturbed the run-path output — NOT inert");
+    assert!(!stdout(&run_off).contains("seeded-divergence"), "run-path output leaked the sentinel");
+
+    // (b) Unset: parity AGREES (exit 0, machine `outcome=agree`).
+    let par_off = Command::new(BIN).args(["parity", p]).output().unwrap();
+    assert_eq!(par_off.status.code(), Some(0), "parity should agree unset: {}{}", stdout(&par_off), stderr(&par_off));
+    assert!(stdout(&par_off).contains("outcome=agree"), "missing agree stats line: {}", stdout(&par_off));
+
+    // (b) Armed: parity DIVERGES with the distinct DIVERGE exit code and `outcome=diverge`.
+    let par_on = Command::new(BIN).args(["parity", p]).env("WITCHY_SEEDED_DIVERGENCE", "1").output().unwrap();
+    assert_eq!(
+        par_on.status.code(),
+        Some(3),
+        "armed seeded divergence must fail parity with the DIVERGE code: {}{}",
+        stdout(&par_on),
+        stderr(&par_on)
+    );
+    assert!(stdout(&par_on).contains("outcome=diverge"), "missing diverge stats line: {}", stdout(&par_on));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// RFC-0058 §1: prove the lever is inert in release by STATIC inspection — the env
+/// var name must appear ONLY in the binary's parity command (`src/main.rs`), never
+/// in the compiler/runtime/interpreter crates that back the program-run path.
+#[test]
+fn seeded_divergence_var_is_absent_from_release_crates() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut hits = Vec::new();
+    find_str_in_rs(&root.join("crates"), "WITCHY_SEEDED_DIVERGENCE", &mut hits);
+    assert!(
+        hits.is_empty(),
+        "the seeded-divergence lever is referenced on a RELEASE code path (crates/): {hits:?} — it must live only on the `witchy parity` path"
+    );
+    // Sanity: it IS present in the binary's parity command (else this proves nothing).
+    let main = std::fs::read_to_string(root.join("src/main.rs")).unwrap();
+    assert!(main.contains("WITCHY_SEEDED_DIVERGENCE"), "the seeded-divergence lever vanished from src/main.rs");
+}
+
+/// Recursively collect `.rs` files under `dir` that contain `needle` (skipping
+/// `target/`). Used to statically prove an env var is off the release code path.
+fn find_str_in_rs(dir: &Path, needle: &str, hits: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if path.file_name().is_some_and(|n| n == "target") {
+                continue;
+            }
+            find_str_in_rs(&path, needle, hits);
+        } else if path.extension().is_some_and(|e| e == "rs")
+            && std::fs::read_to_string(&path).is_ok_and(|s| s.contains(needle))
+        {
+            hits.push(path);
+        }
+    }
+}

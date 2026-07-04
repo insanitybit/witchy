@@ -8232,7 +8232,12 @@ fn main(console: Console):
             "fn main(console: Console):\n    print(console, __render((2 + 3) * 4))\n    print(console, \"hi\")\n",
         )
         .unwrap();
-        crate::verify_file(path.to_str().unwrap()).expect("backends should agree");
+        let outcome = crate::parity_check(path.to_str().unwrap());
+        assert!(
+            matches!(outcome, crate::ParityOutcome::Agree { .. }),
+            "backends should agree: {}",
+            outcome.message()
+        );
     }
 
     /// (RFC-0045) `witchy verify` on an ABORTING program passes: both backends
@@ -8247,8 +8252,12 @@ fn main(console: Console):
             "import list\nfn main(console: Console):\n    let xs = [1, 2]\n    print(console, __render(list.at(xs, 9)))\n",
         )
         .unwrap();
-        crate::verify_file(path.to_str().unwrap())
-            .expect("both backends must abort with the same message core");
+        let outcome = crate::parity_check(path.to_str().unwrap());
+        assert!(
+            matches!(outcome, crate::ParityOutcome::BothErrorAgree { .. }),
+            "both backends must abort with the same message core: {}",
+            outcome.message()
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -8308,11 +8317,10 @@ fn main(console: Console):
         let mut diverged = Vec::new();
         for path in example_entries() {
             let p = path.to_str().unwrap();
-            match crate::verify_file(p) {
-                Ok(()) => {}
-                Err(e) if e.contains("DIVERGE") => diverged.push(e),
-                // Interpreter-only feature or no `main`: not comparable, skip.
-                Err(_) => {}
+            // Agree / both-error-agree, or an interpreter-only feature / no `main`
+            // (unexpected-error): not a divergence, skip. Only a real Diverge fails.
+            if let crate::ParityOutcome::Diverge { message, .. } = crate::parity_check(p) {
+                diverged.push(message);
             }
         }
         assert!(
@@ -8441,11 +8449,10 @@ fn main(console: Console):
         let mut diverged = Vec::new();
         for path in example_entries() {
             let p = path.to_str().unwrap();
-            match crate::verify_file(p) {
-                Ok(()) => {}
-                Err(e) if e.contains("DIVERGE") => diverged.push(e),
-                // Interpreter-only feature or no `main`: not comparable, skip.
-                Err(_) => {}
+            // Agree / both-error-agree, or an interpreter-only feature / no `main`
+            // (unexpected-error): not a divergence, skip. Only a real Diverge fails.
+            if let crate::ParityOutcome::Diverge { message, .. } = crate::parity_check(p) {
+                diverged.push(message);
             }
         }
         crate::opt::set_for_tests(None);
