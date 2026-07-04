@@ -419,7 +419,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         let mut table = first_table;
         let mut memo: HashMap<(String, Vec<String>), String> = HashMap::new();
         for round in 0..MONO_ROUNDS {
-            let (ctor_results, fn_rets, _fn_sigs) = build_tables(&items);
+            let (ctor_results, fn_rets, fn_sigs) = build_tables(&items);
             let ctor_fields = build_ctor_fields(&items);
             let record_fields = build_record_fields(&items);
             let known_fns: std::collections::HashSet<String> = items
@@ -440,6 +440,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                 ctor_fields: &ctor_fields,
                 record_fields: &record_fields,
                 fn_rets,
+                fn_sigs,
                 memo: std::mem::take(&mut memo),
                 generated: Vec::new(),
                 generated_subst: Vec::new(),
@@ -744,6 +745,11 @@ fn table_scope_name(table: &crate::typeck::TypeTable, e: &Expr) -> Option<String
 impl Ctx<'_> {
     fn type_name(&self, e: &Expr, scope: &Scope) -> Option<String> {
         table_scope_name(self.table, e)
+            // Declaration-driven judgment for call results — what the QUIET pass
+            // (empty table) relies on to type a let bound to a generic call
+            // (`let above = table.at(i - 1)`), so a method call on it resolves
+            // BEFORE annotate needs a fully-resolved module.
+            .or_else(|| declared_call_result(e, self.fn_sigs, &|a| self.type_name(a, scope)))
             .or_else(|| head_type_name(e, scope, self.ctor_results, self.fn_rets, self.record_fields))
             // A host capability OP is a BARE intrinsic (`net.deny`, `dir.subtree`),
             // so the QUIET pre-mono pass (which runs with an empty table) cannot
@@ -1761,14 +1767,65 @@ fn build_mutation_tables(
     (mutators, returns_nil)
 }
 
-// (RFC-0046 step 4) `recover_generic_call` + `bind_type_var` are DELETED. They
-// re-derived a generic call's concrete result type (`xs[i]`, `list.at`, `f(..) ->
-// a`) by hand off the string scope — the checker already types every one of these
-// exactly, and the table-first `type_name` (with the step-1 annotate/mono fixpoint
-// and the fresh loud-pass re-annotate) now subsumes them: the loud pass and mono
-// read the resolved `Ty` for the call/subscript node directly, so the shape-guess
-// is gone. The safety invariant is preserved by construction — the table is the
-// checker's answer, not a guess.
+// (RFC-0046 step 4) `recover_generic_call` + `bind_type_var` — the per-shape
+// string guessers (`list.at` special-cased BY NAME; exactly three bindable
+// parameter shapes) — are DELETED, replaced by `declared_call_result` below:
+// ONE general structural unification of the callee's declared signature against
+// the arguments' known types. The loud pass and mono read the checker's table
+// first; this judgment is what the EMPTY-TABLE quiet pass (and un-annotated mono
+// clones) use, and it derives everything from the declaration — no name matches,
+// no shape table.
+
+/// The result type of a call, judged from the callee's DECLARED signature — the
+/// typed declaration, not a shape table (RFC-0046 step 1: general structural
+/// binding). Each declared parameter type is unified against its argument's
+/// known type (both as structured `Type`s), binding the signature's type
+/// variables; the bindings substitute into the declared return. A concrete
+/// declared return is answered directly, with its FULL encoding — where the
+/// head-only `fn_rets` loses the arguments (`string.split`'s `List(String)`
+/// became bare `"List"`). Also types `xs[i]` as the element of the base's list
+/// type (the subscript desugars to `list.at` only inside the checker, so this
+/// pass sees the `Index` node). A failed or partial unification yields `None` —
+/// absence only ever produces a loud type error downstream, never wrong code.
+fn declared_call_result(
+    e: &Expr,
+    fn_sigs: &HashMap<String, FnSig>,
+    type_of: &dyn Fn(&Expr) -> Option<String>,
+) -> Option<String> {
+    match e {
+        Expr::Index { base, .. } => match decode_scope_type(&type_of(base)?) {
+            Type::Named(n, args) if n == "List" && args.len() == 1 => {
+                type_to_scope_name(&args[0])
+            }
+            _ => None,
+        },
+        Expr::Call { name, args } => {
+            let (params, ret) = fn_sigs.get(name)?;
+            let mut ret_vars = Vec::new();
+            collect_type_vars(ret, &mut ret_vars);
+            if ret_vars.is_empty() {
+                // Concrete declared return: the signature IS the answer.
+                return type_to_scope_name(ret);
+            }
+            let mut binds: HashMap<String, String> = HashMap::new();
+            for (p, arg) in params.iter().zip(args) {
+                let (Some(pty), Some(at)) = (p, type_of(arg)) else { continue };
+                // Structural match; a shape disagreement simply binds nothing.
+                let _ = bind_type_vars(pty, &decode_scope_type(&at), &mut binds);
+            }
+            // Sound only if EVERY return-position variable bound (a variable
+            // that appears in no argument — `collect`'s `c` — stays unresolved
+            // here; the table/fixpoint handles it).
+            if !ret_vars.iter().all(|v| binds.contains_key(v)) {
+                return None;
+            }
+            let subst: HashMap<&str, String> =
+                binds.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+            type_to_scope_name(&subst_vars(ret, &subst))
+        }
+        _ => None,
+    }
+}
 
 /// Record type name -> its named field types, for typing `x.field` receivers.
 fn build_record_fields(items: &[Item]) -> HashMap<String, Vec<(String, Type)>> {
@@ -2516,6 +2573,10 @@ struct Mono<'a> {
     ctor_fields: &'a HashMap<String, Vec<Type>>,
     record_fields: &'a HashMap<String, Vec<(String, Type)>>,
     fn_rets: HashMap<String, String>,
+    /// Function -> (param types, return type): the declared signatures behind
+    /// `declared_call_result` for expressions the table has no entry for
+    /// (freshly-generated specialization bodies within a round).
+    fn_sigs: HashMap<String, FnSig>,
     memo: HashMap<(String, Vec<String>), String>,
     generated: Vec<Function>,
     /// Per-generated-instance type-variable substitution (var -> concrete scope
@@ -2574,8 +2635,10 @@ impl Mono<'_> {
     fn type_name(&self, e: &Expr, scope: &Scope) -> Option<String> {
         // RFC-0046: typeck's resolved type is the primary source (it is the
         // checker's answer, not a guess). It only carries fully-concrete types,
-        // so a generic-body expression falls through to the local recovery.
+        // so a generic-body expression falls through to the declaration-driven
+        // judgment (freshly-generated clones have no table entries mid-round).
         table_scope_name(self.table, e)
+            .or_else(|| declared_call_result(e, &self.fn_sigs, &|a| self.type_name(a, scope)))
             .or_else(|| head_type_name(e, scope, self.ctor_results, &self.fn_rets, self.record_fields))
     }
 

@@ -351,10 +351,19 @@ core (list/set/string/cmp/option) sits UPSTREAM of iter and cannot import it, so
 the dogfooded modules are leaf-ish; noted for future work.
 
 **Step 4 (delete the shadow system) — PARTIAL, by structural necessity.**
-DELETED (cleanly subsumed by the table-first path + the step-1 fixpoint):
-`recover_generic_call`, `bind_type_var`, `builtin_ret`, and the now-dead
-`Mono.fn_sigs`. CLAUDE.md's dispatch section was corrected (it routed fixes into
-the deleted `recover_generic_call`).
+DELETED: `recover_generic_call` + `bind_type_var` (the per-shape guessers —
+`list.at` matched BY NAME, exactly three bindable parameter shapes) and
+`builtin_ret`. Their capability is NOT gone: `declared_call_result` replaces
+them with step 1's general structural binding — one unification of the callee's
+DECLARED signature against the arguments' known types (structured `Type`s, no
+string surgery), which also answers concrete declared returns with their FULL
+encoding (de-lossifying the `fn_rets` head-only failure, motivation case 2) and
+types `xs[i]` from the base's list type. The full gate proved this judgment is
+still required by the empty-table quiet pass (examples/diff + examples/life:
+a let bound to `table.at(i-1)` as a method receiver — annotate hard-errors on
+unresolved MethodCalls, so the table cannot bootstrap itself). CLAUDE.md's
+dispatch section was corrected (it routed fixes into the deleted
+`recover_generic_call`).
 
 RESIDUAL, kept with reasons (NOT a new shape table — the existing local-judgment
 core): `head_type_name` + its string parsers (`list_elem`/`generic_arg`/
