@@ -419,21 +419,21 @@ HMAC-SHA256 (FIPS 198-1). `key` is hex (so binary keys are representable); `mess
 
 ## `csv`
 
-csv — comma-separated values, parse and encode (RFC 4180-ish).
+csv — comma-separated values, decode and encode (RFC 4180-ish).
 
-Fields are separated by commas and rows by newlines. A field that contains a comma, a quote, or a newline is wrapped in double quotes, and a literal quote inside such a field is doubled (`""`). The parser is a small character state machine, so embedded commas/newlines/quotes round-trip through `encode`.
+Fields are separated by commas and rows by newlines. A field that contains a comma, a quote, or a newline is wrapped in double quotes, and a literal quote inside such a field is doubled (`""`). The decoder is a small character state machine, so embedded commas/newlines/quotes round-trip through `encode`.
 
-#### `fn parse(text: String) -> List(List(String))`
+#### `fn decode(text: String) -> Result(List(List(String)), String)`
 
-Parse CSV text into rows of fields. A trailing newline is ignored; `\r\n` and `\n` line endings both work.
+Decode CSV text into rows of fields. A trailing newline is ignored; `\r\n` and `\n` line endings both work. Genuinely fallible (RFC-0044 rule 2): a field that opens a quote and never closes it is structurally malformed input, so decoding returns `Err` naming the fault rather than silently absorbing it. Paired with `encode`, and aligned with `json`/`toml` (serialization formats `decode`).
 
 #### `fn encode(rows: List(List(String))) -> String`
 
 Encode rows back to CSV text (each row newline-terminated), quoting any field that needs it.
 
-#### `fn parse_records(text: String) -> List(Dict(String, String))`
+#### `fn decode_records(text: String) -> Result(List(Dict(String, String)), String)`
 
-Parse with the first row as a header: each remaining row becomes a Dict keyed by the header columns (a short row's missing columns read as "").
+Decode with the first row as a header: each remaining row becomes a Dict keyed by the header columns (a short row's missing columns read as ""). Fallible for the same reason as `decode` (it decodes first), so it returns `Result`.
 
 ## `dict`
 
@@ -587,9 +587,9 @@ A clock string "H:MM:SS": minutes and seconds zero-padded, hours in full (so a l
 
 A compact label that omits leading zero units: `1h1m1s`, `1m30s`, `5s`, and `500ms` for a pure sub-second span.
 
-#### `fn parse(s: String) -> Option(Duration)`
+#### `fn parse(s: String) -> Result(Duration, String)`
 
-Parse a duration string to a `Duration` — the inverse of `human`. Accepts unit-tagged input ("1h2m3s", "500ms", "2hr", any subset) using ms/s/m/h/hr/d/w, and a bare number as plain milliseconds. None on a stray character or a dangling unit-less number after units were given ("1h30").
+Parse a duration string to a `Duration` — the inverse of `human`. Accepts unit-tagged input ("1h2m3s", "500ms", "2hr", any subset) using ms/s/m/h/hr/d/w, and a bare number as plain milliseconds. `Err` on a stray character or a dangling unit-less number after units were given ("1h30"). Returns `Result` to align with `semver.parse`/`time.parse`/`url.parse` (RFC-0044 rule 2: invalid input is a reachable `Result`, not `Option`).
 
 ## `encoding`
 
@@ -2519,7 +2519,7 @@ A decoded TOML value (`toml.decode`), the structured counterpart of the string-q
 
 #### `fn decode(text: String) -> Result(Toml, String)`
 
-Parse a whole TOML document into a `Toml` tree (always a `TomlTable`). Supports top-level keys, `[section]` and dotted `[a.b]` tables, `#` comments, and `string`/`int`/`bool`/array values. Always succeeds — malformed lines are skipped — so the result is `Ok`; the `Result` shape mirrors `json.decode`.
+Parse a whole TOML document into a `Toml` tree (always a `TomlTable`). Supports top-level keys, `[section]` and dotted `[a.b]` tables, `#` comments, and `string`/`int`/`bool`/array values. Genuinely fallible (RFC-0044 rule 2): a non-blank, non-comment line that is neither a `[section]` header nor a `key = value` pair is structurally malformed, so decoding returns `Err` naming the offending line. The `Result` shape mirrors `json.decode`.
 
 #### `fn get(text: String, path: String) -> Option(String)`
 

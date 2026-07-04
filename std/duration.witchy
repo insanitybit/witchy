@@ -125,9 +125,11 @@ pub fn human(d: Duration) -> String:
 
 // Parse a duration string to a `Duration` — the inverse of `human`. Accepts
 // unit-tagged input ("1h2m3s", "500ms", "2hr", any subset) using ms/s/m/h/hr/d/w,
-// and a bare number as plain milliseconds. None on a stray character or a
-// dangling unit-less number after units were given ("1h30").
-pub fn parse(s: String) -> Option(Duration):
+// and a bare number as plain milliseconds. `Err` on a stray character or a
+// dangling unit-less number after units were given ("1h30"). Returns `Result`
+// to align with `semver.parse`/`time.parse`/`url.parse` (RFC-0044 rule 2:
+// invalid input is a reachable `Result`, not `Option`).
+pub fn parse(s: String) -> Result(Duration, String):
     var total = 0
     var cur = 0
     var seen_digit = false
@@ -184,13 +186,13 @@ pub fn parse(s: String) -> Option(Duration):
             seen_unit = true
             i = i + 1
         else:
-            return None
+            return Err("`" + s + "` is not a duration (expected e.g. `1h2m3s`, `500ms`, or a bare-ms number)")
     if seen_digit:
         if seen_unit:
-            None
+            Err("`" + s + "` has a trailing unit-less number (expected a unit like `s`/`m`/`h` after every count)")
         else:
-            Some(int_to_duration(cur))
+            Ok(int_to_duration(cur))
     else if seen_unit:
-        Some(int_to_duration(total))
+        Ok(int_to_duration(total))
     else:
-        None
+        Err("`" + s + "` is empty (expected a duration like `1h2m3s`, `500ms`, or a bare-ms number)")

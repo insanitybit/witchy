@@ -22,8 +22,10 @@ type Toml:
 
 // Parse a whole TOML document into a `Toml` tree (always a `TomlTable`).
 // Supports top-level keys, `[section]` and dotted `[a.b]` tables, `#` comments,
-// and `string`/`int`/`bool`/array values. Always succeeds — malformed lines are
-// skipped — so the result is `Ok`; the `Result` shape mirrors `json.decode`.
+// and `string`/`int`/`bool`/array values. Genuinely fallible (RFC-0044 rule 2):
+// a non-blank, non-comment line that is neither a `[section]` header nor a
+// `key = value` pair is structurally malformed, so decoding returns `Err`
+// naming the offending line. The `Result` shape mirrors `json.decode`.
 pub fn decode(text: String) -> Result(Toml, String):
     var root = TomlTable([])
     var section = []
@@ -34,7 +36,7 @@ pub fn decode(text: String) -> Result(Toml, String):
         else if !(string.is_empty(t) || string.starts_with(t, "#")):
             root = match key_value(t):
                 Some((k, v)) -> insert_kv(root, section, k, parse_value(v))
-                None -> root
+                None -> return Err("`" + t + "` is not a TOML line (expected `key = value`, a `[section]` header, or a `#` comment)")
 
     Ok(root)
 

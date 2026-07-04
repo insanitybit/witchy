@@ -1147,12 +1147,13 @@
                 prop_assert_eq!(link_run(&src), vec!["y".to_string()]);
             }
 
-            /// A single CSV field round-trips through encode/parse — including
+            /// A single CSV field round-trips through encode/decode — including
             /// embedded commas, quotes, and newlines (the cases that need quoting).
+            /// `csv.encode` never emits an unterminated quote, so `decode` is `Ok`.
             #[test]
             fn csv_field_roundtrips(s in "[a-zA-Z0-9 ,\"\n]{0,24}") {
                 let src = format!(
-                    "import csv\nfn main(console: Console):\n    let s = \"{}\"\n    let rows = csv.parse(csv.encode([[s]]))\n    print(console, yn(list.length(rows) == 1 && list.length(list.at(rows, 0)) == 1 && list.at(list.at(rows, 0), 0) == s))\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n",
+                    "import csv\nfn ok_rows(r: Result(List(List(String)), String)) -> List(List(String)):\n    match r:\n        Ok(rows) -> rows\n        Err(_) -> []\nfn main(console: Console):\n    let s = \"{}\"\n    let rows = ok_rows(csv.decode(csv.encode([[s]])))\n    print(console, yn(list.length(rows) == 1 && list.length(list.at(rows, 0)) == 1 && list.at(list.at(rows, 0), 0) == s))\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n",
                     esc(&s)
                 );
                 prop_assert_eq!(link_run(&src), vec!["y".to_string()]);
@@ -2648,6 +2649,24 @@ fn main(console: Console):
         Err(e) -> print(console, e)
 "#;
         let want = vec!["TomlTable([(title, TomlString(demo)), (port, TomlInt(8080)), (enabled, TomlBool(true)), (tags, TomlArray([TomlString(a), TomlString(b)])), (server, TomlTable([(host, TomlString(localhost)), (workers, TomlInt(4)), (tls, TomlTable([(enabled, TomlBool(false))]))]))])".to_string()];
+        assert_eq!(link_run(src), want.clone(), "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// (RFC-0044 rule 2) `toml.decode`'s `Err` is reachable: a non-blank,
+    /// non-comment line that is neither a `[section]` header nor a `key = value`
+    /// pair is malformed, and decoding errors naming the offending line — the
+    /// always-`Ok` mimicry the RFC banned. Both backends agree.
+    #[test]
+    fn toml_decode_errors_on_a_malformed_line() {
+        let src = r#"import toml
+
+fn main(console: Console):
+    match toml.decode("title = \"ok\"\nthis line has no equals\n"):
+        Ok(_) -> print(console, "unexpected-ok")
+        Err(e) -> print(console, e)
+"#;
+        let want = vec!["`this line has no equals` is not a TOML line (expected `key = value`, a `[section]` header, or a `#` comment)".to_string()];
         assert_eq!(link_run(src), want.clone(), "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
     }
@@ -5498,29 +5517,40 @@ fn yn(b: Bool) -> String:
 
     /// `std/csv` round-trips RFC-4180-ish CSV: quoted fields with embedded commas,
     /// doubled quotes (`""`), proper re-quoting on encode, and header records.
+    /// `decode`/`decode_records` return `Result` (RFC-0044 rule 2) — the last two
+    /// lines exercise the reachable `Err` on an unterminated quoted field.
     #[test]
     fn csv_module_parses_quotes_and_encodes() {
         let src = r#"import csv
 import string
 
+fn ok_rows(r: Result(List(List(String)), String)) -> List(List(String)):
+    match r:
+        Ok(rows) -> rows
+        Err(_) -> []
+
 fn main(console: Console):
     let text = "name,city\nAda,\"London, UK\"\nGrace,\"NY\"\"C\"\"\"\n"
-    let rows = csv.parse(text)
+    let rows = ok_rows(csv.decode(text))
     print(console, __render(list.length(rows)))
     print(console, list.at(list.at(rows, 1), 1))
     print(console, list.at(list.at(rows, 2), 1))
     let enc = csv.encode([["a", "b,c"], ["d\"e", "f"]])
     print(console, bs(enc == "a,\"b,c\"\n\"d\"\"e\",f\n"))
-    print(console, bs(csv.encode(csv.parse(enc)) == enc))
-    let recs = csv.parse_records(text)
-    print(console, __render(list.length(recs)) + ":" + dict.get_or(list.at(recs, 0), "city", "?"))
+    print(console, bs(csv.encode(ok_rows(csv.decode(enc))) == enc))
+    match csv.decode_records(text):
+        Ok(recs) -> print(console, __render(list.length(recs)) + ":" + dict.get_or(list.at(recs, 0), "city", "?"))
+        Err(msg) -> print(console, "err:" + msg)
+    match csv.decode("a,\"unterminated\n"):
+        Ok(_) -> print(console, "unexpected-ok")
+        Err(_) -> print(console, "err")
 
 fn bs(b: Bool) -> String:
     if b: "y" else: "n"
 "#;
         assert_eq!(
             link_run(src),
-            vec!["3", "London, UK", "NY\"C\"", "y", "y", "2:London, UK"]
+            vec!["3", "London, UK", "NY\"C\"", "y", "y", "2:London, UK", "err"]
         );
     }
 
@@ -7507,19 +7537,18 @@ fn main(console: Console):
     #[test]
     fn duration_parse_backends_agree() {
         // parse is the inverse of human, returning a Duration (ms): unit-tagged
-        // (incl. ms/hr) or bare-ms input, None on junk/dangling, and
-        // parse(human(d)) round-trips.
+        // (incl. ms/hr) or bare-ms input, Err on junk/dangling (RFC-0044 rule 2),
+        // and parse(human(d)) round-trips.
         let client = r#"
 import duration
-import option
-fn show(o: Option(Duration)) -> String:
+fn show(o: Result(Duration, String)) -> String:
     match o:
-        Some(d) -> __render(duration.to_milliseconds(d))
-        None -> "none"
+        Ok(d) -> __render(duration.to_milliseconds(d))
+        Err(_) -> "none"
 fn roundtrip(d: Duration) -> String:
     match duration.parse(duration.human(d)):
-        Some(p) -> if p == d: "ok" else: "bad"
-        None -> "none"
+        Ok(p) -> if p == d: "ok" else: "bad"
+        Err(_) -> "none"
 fn main(console: Console):
     print(console, show(duration.parse("1h2m3s")))
     print(console, show(duration.parse("500ms")))
