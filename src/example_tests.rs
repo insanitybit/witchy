@@ -15530,6 +15530,24 @@ fn main(console: Console):
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
+    /// RFC-0046 step 1/4 regression (caught by the full gate on examples/diff +
+    /// examples/life): a LOCAL bound to a GENERIC CALL RESULT is a method-call
+    /// receiver — `table: List(List(Int))`, `let above = table.at(i - 1)`, then
+    /// `above.at(j - 1)`. The deleted string `recover_generic_call` used to type
+    /// `above`; its typed replacement `declared_call_result` must judge the
+    /// binding from the callee's DECLARED signature (unify `List(a)` against
+    /// `List<List<Int>>` -> `a = List<Int>`), because the QUIET pre-mono pass has
+    /// an empty table and annotate hard-errors on any unresolved MethodCall.
+    /// Covers the nested-container `.at` chain, `.length()` on a bound result,
+    /// and a subscript receiver `xs[i]` — identical on both backends.
+    #[test]
+    fn rfc0046_method_call_on_let_bound_generic_call_result() {
+        let src = "fn main(console: Console):\n    let table = [[1, 2, 3], [4, 5, 6]]\n    let above = table.at(1)\n    print(console, \"${above.at(2)}\")\n    print(console, \"${above.length()}\")\n    let row = table[0]\n    print(console, \"${row.at(0)}\")\n";
+        let want = vec!["6".to_string(), "3".to_string(), "1".to_string()];
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
     /// RFC-0046 step 5 (acceptance d, second clause): three std modules now use
     /// `Iter` internally — `path` (`drop_last` via `iter.take`), `csv`
     /// (`encode_row` via `iter.map`), and `semver` (`best` via `iter.filter` +
