@@ -147,10 +147,11 @@ fn gen_tuple(r: &mut Rng) -> String {
     format!("({}, {})", gen_int(r, 1), gen_str(r, 1))
 }
 
-/// A `Dict(String, Int)` built by a chain of insert/remove/set_at over a SMALL key space,
+/// A `Dict(String, Int)` built by a chain of insert/remove over a SMALL key space,
 /// so inserts/removes/reinserts collide — the remove+reinsert+iterate pattern that has
 /// previously corrupted the compiled dict. (`dict.new()` alone is ambiguous like `[]`, so
-/// start from a typed insert.)
+/// start from a typed insert.) RFC-0049 deleted `dict.set_at` (the literal `insert` alias),
+/// so every upsert here is `insert`.
 fn gen_dkey(r: &mut Rng) -> String {
     format!("\"k{}\"", r.below(4))
 }
@@ -159,7 +160,6 @@ fn gen_dict(r: &mut Rng, ops: u32) -> String {
     let mut d = format!("dict.insert(dict.new(), {}, {})", gen_dkey(r), gen_int(r, 1));
     for _ in 0..ops {
         d = match r.below(4) {
-            0 => format!("dict.set_at({}, {}, {})", d, gen_dkey(r), gen_int(r, 1)),
             1 => format!("dict.remove({}, {})", d, gen_dkey(r)),
             _ => format!("dict.insert({}, {}, {})", d, gen_dkey(r), gen_int(r, 1)),
         };

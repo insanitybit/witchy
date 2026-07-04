@@ -886,7 +886,7 @@ fn glamour_markdown_renders_identically_on_both_backends() {
     }
     let prog = "import glamour\nimport markdown\nimport json\nimport reflect\n\
 type Msg derive(Reflect):\n    Noop\n\n\
-fn msg_to_json(m: Msg) -> Json:\n    json.value_of(m)\n\n\
+fn msg_to_json(m: Msg) -> Json:\n    json.from_value(m)\n\n\
 fn main(console: Console):\n    \
 print(console, glamour.to_json(markdown.to_vnode(\"# Title\\n\\nA **bold** word, `code`, a [link](https://example.com), and:\\n\\n- one\\n- two\\n\"), msg_to_json))\n";
     std::fs::write(work.join("mdparity.witchy"), prog).unwrap();

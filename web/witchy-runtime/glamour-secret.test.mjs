@@ -99,10 +99,10 @@ fn parse_msg(j: Json) -> Msg:
         None -> Submit
 
 fn model_to_json(s: String) -> Json:
-    json.value_of(s)
+    json.from_value(s)
 
 fn msg_to_json(m: Msg) -> Json:
-    json.value_of(m)
+    json.from_value(m)
 
 pub fn export_step(ui: UiRoot, raw: String) -> String:
     let input = glamour.secret_field(ui, "login", "password")
