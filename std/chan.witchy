@@ -365,25 +365,8 @@ fn is_parked(s: Slot) -> Bool:
         Active(_) -> false
         Ended -> false
 
-// Channels are `(buffer, capacity)` pairs; capacity 0 means unbounded.
-fn try_pull(i: Int, ch: Int, cont: fn(Option(__Msg)) -> Task(Nil), slots: List(Slot), channels: List((List(__Msg), Int))) -> (List(Slot), List((List(__Msg), Int)), Bool):
-    let (buf, cap) = list.at(channels, ch)
-    if list.length(buf) > 0:
-        let channels2 = list.set_at(channels, ch, (list.tail(buf), cap))
-        (list.set_at(slots, i, Active(cont(Some(list.at(buf, 0))))), channels2, true)
-    else:
-        (list.set_at(slots, i, WaitRecv(ch, cont)), channels, false)
-
-fn try_push(i: Int, ch: Int, msg: __Msg, cont: fn(Nil) -> Task(Nil), slots: List(Slot), channels: List((List(__Msg), Int))) -> (List(Slot), List((List(__Msg), Int)), Bool):
-    let (buf, cap) = list.at(channels, ch)
-    if cap == 0 || list.length(buf) < cap:
-        let channels2 = list.set_at(channels, ch, (list.push(buf, msg), cap))
-        (list.set_at(slots, i, Active(cont(unit()))), channels2, true)
-    else:
-        (list.set_at(slots, i, WaitSend(ch, msg, cont)), channels, false)
-
 // The local index (within `chs`) and global id of the first listed channel with a
-// pending message, or None if all are empty.
+// pending message, or None if all are empty. Drives the `PullAny`/`select` path.
 fn first_ready(k: Int, chs: List(Int), channels: List((List(__Msg), Int))) -> Option((Int, Int)):
     if k >= list.length(chs):
         None
@@ -395,96 +378,131 @@ fn first_ready(k: Int, chs: List(Int), channels: List((List(__Msg), Int))) -> Op
         else:
             first_ready(k + 1, chs, channels)
 
-fn try_pull_any(i: Int, chs: List(Int), cont: fn(Option((Int, __Msg))) -> Task(Nil), slots: List(Slot), channels: List((List(__Msg), Int))) -> (List(Slot), List((List(__Msg), Int)), Bool):
-    match first_ready(0, chs, channels):
-        Some(hit) ->
-            let (k, ch) = hit
-            let (buf, cap) = list.at(channels, ch)
-            let channels2 = list.set_at(channels, ch, (list.tail(buf), cap))
-            (list.set_at(slots, i, Active(cont(Some((k, list.at(buf, 0)))))), channels2, true)
-        None -> (list.set_at(slots, i, WaitAny(chs, cont)), channels, false)
-
-fn try_join(i: Int, target: Int, cont: fn(Nil) -> Task(Nil), slots: List(Slot), channels: List((List(__Msg), Int))) -> (List(Slot), List((List(__Msg), Int)), Bool):
-    match list.at(slots, target):
-        Ended -> (list.set_at(slots, i, Active(cont(unit()))), channels, true)
-        Active(_) -> (list.set_at(slots, i, WaitJoin(target, cont)), channels, false)
-        WaitRecv(_, _) -> (list.set_at(slots, i, WaitJoin(target, cont)), channels, false)
-        WaitSend(_, _, _) -> (list.set_at(slots, i, WaitJoin(target, cont)), channels, false)
-        WaitAny(_, _) -> (list.set_at(slots, i, WaitJoin(target, cont)), channels, false)
-        WaitJoin(_, _) -> (list.set_at(slots, i, WaitJoin(target, cont)), channels, false)
-
-fn step_one(i: Int, slots: List(Slot), channels: List((List(__Msg), Int))) -> (List(Slot), List((List(__Msg), Int)), Bool):
-    match list.at(slots, i):
-        Ended -> (slots, channels, false)
-        WaitRecv(ch, cont) -> try_pull(i, ch, cont, slots, channels)
-        WaitSend(ch, msg, cont) -> try_push(i, ch, msg, cont, slots, channels)
-        WaitAny(chs, cont) -> try_pull_any(i, chs, cont, slots, channels)
-        WaitJoin(t, cont) -> try_join(i, t, cont, slots, channels)
-        Active(task) ->
-            match poll(task):
-                Done(_v) -> (list.set_at(slots, i, Ended), channels, true)
-                Yield(t2) -> (list.set_at(slots, i, Active(t2)), channels, true)
-                Fork(child, cont) ->
-                    let new_id = list.length(slots)
-                    let slots2 = list.push(slots, Active(child))
-                    (list.set_at(slots2, i, Active(cont(new_id))), channels, true)
-                Open(cap, cont) ->
-                    let cid = list.length(channels)
-                    (list.set_at(slots, i, Active(cont(cid))), list.push(channels, ([], cap)), true)
-                Push(ch, msg, cont) -> try_push(i, ch, msg, cont, slots, channels)
-                Pull(ch, cont) -> try_pull(i, ch, cont, slots, channels)
-                PullAny(chs, cont) -> try_pull_any(i, chs, cont, slots, channels)
-                Wait(t, cont) -> try_join(i, t, cont, slots, channels)
-                Cancel(target, cont) ->
-                    let slots2 = list.set_at(slots, target, Ended)
-                    (list.set_at(slots2, i, Active(cont(unit()))), channels, true)
-
-fn step_round(i: Int, n: Int, slots: List(Slot), channels: List((List(__Msg), Int)), prog: Bool) -> (List(Slot), List((List(__Msg), Int)), Bool):
-    if i >= n:
-        (slots, channels, prog)
-    else:
-        let (s2, c2, p) = step_one(i, slots, channels)
-        step_round(i + 1, n, s2, c2, prog || p)
-
-// At quiescence nothing can deliver: closed receivers get `None`, blocked senders
-// and joiners are released so the run terminates instead of hanging.
-fn close_one(i: Int, slots: List(Slot), channels: List((List(__Msg), Int))) -> (List(Slot), List((List(__Msg), Int))):
-    match list.at(slots, i):
-        WaitRecv(_ch, cont) -> (list.set_at(slots, i, Active(cont(None))), channels)
-        WaitSend(ch, msg, cont) ->
-            let (buf, cap) = list.at(channels, ch)
-            (list.set_at(slots, i, Active(cont(unit()))), list.set_at(channels, ch, (list.push(buf, msg), cap)))
-        WaitAny(_chs, cont) -> (list.set_at(slots, i, Active(cont(None))), channels)
-        WaitJoin(_t, cont) -> (list.set_at(slots, i, Active(cont(unit()))), channels)
-        Active(_) -> (slots, channels)
-        Ended -> (slots, channels)
-
-fn close_round(i: Int, n: Int, slots: List(Slot), channels: List((List(__Msg), Int))) -> (List(Slot), List((List(__Msg), Int))):
-    if i >= n:
-        (slots, channels)
-    else:
-        let (s2, c2) = close_one(i, slots, channels)
-        close_round(i + 1, n, s2, c2)
-
 // Drive `root` (and everything it spawns) to completion on a deterministic
 // round-robin schedule. An async `main` lowers to a single `run` of its body.
 pub fn run(root: Task(Nil)):
+    // (RFC-0036 Design B) The scheduler OWNS its state: `slots` and `channels` are
+    // confined-unique local `var` accumulators, mutated in place with self-assign
+    // (`slots = list.set_at(slots, …)` / `list.push(…)`). Every effect is inlined
+    // here so each mutation lands on these locals — never on a borrowed param rebuilt
+    // through a tuple return — which is the shape the uniqueness + reclamation
+    // machinery reclaims per step, so the heap high-water stays flat as messages flow
+    // instead of growing per message. The schedule is unchanged and thus byte-identical
+    // on both backends: each round steps slots `0..n` with `n` fixed at the round's
+    // start (so a freshly `Fork`ed slot first runs next round), progress is the OR of
+    // the round's steps, and a quiescent round with live parked tasks runs the close
+    // pass (closed receivers get `None`; blocked senders/joiners are released).
     var slots = [Active(root)]
     var channels = []
     var go = true
     while go:
         let n = list.length(slots)
-        let (s2, c2, prog) = step_round(0, n, slots, channels, false)
+        var prog = false
+        var i = 0
+        while i < n:
+            match list.at(slots, i):
+                Ended -> unit()
+                WaitRecv(ch, cont) ->
+                    let (buf, cap) = list.at(channels, ch)
+                    if list.length(buf) > 0:
+                        channels = list.set_at(channels, ch, (list.tail(buf), cap))
+                        slots = list.set_at(slots, i, Active(cont(Some(list.at(buf, 0)))))
+                        prog = true
+                    else:
+                        unit()
+                WaitSend(ch, msg, cont) ->
+                    let (buf, cap) = list.at(channels, ch)
+                    if cap == 0 || list.length(buf) < cap:
+                        channels = list.set_at(channels, ch, (list.push(buf, msg), cap))
+                        slots = list.set_at(slots, i, Active(cont(unit())))
+                        prog = true
+                    else:
+                        unit()
+                WaitAny(chs, cont) ->
+                    match first_ready(0, chs, channels):
+                        Some(hit) ->
+                            let (k, ch) = hit
+                            let (buf, cap) = list.at(channels, ch)
+                            channels = list.set_at(channels, ch, (list.tail(buf), cap))
+                            slots = list.set_at(slots, i, Active(cont(Some((k, list.at(buf, 0))))))
+                            prog = true
+                        None -> unit()
+                WaitJoin(t, cont) ->
+                    match list.at(slots, t):
+                        Ended ->
+                            slots = list.set_at(slots, i, Active(cont(unit())))
+                            prog = true
+                        _ -> unit()
+                Active(task) ->
+                    match poll(task):
+                        Done(_v) ->
+                            slots = list.set_at(slots, i, Ended)
+                            prog = true
+                        Yield(t2) ->
+                            slots = list.set_at(slots, i, Active(t2))
+                            prog = true
+                        Fork(child, cont) ->
+                            let new_id = list.length(slots)
+                            slots = list.push(slots, Active(child))
+                            slots = list.set_at(slots, i, Active(cont(new_id)))
+                            prog = true
+                        Open(cap, cont) ->
+                            let cid = list.length(channels)
+                            slots = list.set_at(slots, i, Active(cont(cid)))
+                            channels = list.push(channels, ([], cap))
+                            prog = true
+                        Push(ch, msg, cont) ->
+                            let (buf, cap) = list.at(channels, ch)
+                            if cap == 0 || list.length(buf) < cap:
+                                channels = list.set_at(channels, ch, (list.push(buf, msg), cap))
+                                slots = list.set_at(slots, i, Active(cont(unit())))
+                                prog = true
+                            else:
+                                slots = list.set_at(slots, i, WaitSend(ch, msg, cont))
+                        Pull(ch, cont) ->
+                            let (buf, cap) = list.at(channels, ch)
+                            if list.length(buf) > 0:
+                                channels = list.set_at(channels, ch, (list.tail(buf), cap))
+                                slots = list.set_at(slots, i, Active(cont(Some(list.at(buf, 0)))))
+                                prog = true
+                            else:
+                                slots = list.set_at(slots, i, WaitRecv(ch, cont))
+                        PullAny(chs, cont) ->
+                            match first_ready(0, chs, channels):
+                                Some(hit) ->
+                                    let (k, ch) = hit
+                                    let (buf, cap) = list.at(channels, ch)
+                                    channels = list.set_at(channels, ch, (list.tail(buf), cap))
+                                    slots = list.set_at(slots, i, Active(cont(Some((k, list.at(buf, 0))))))
+                                    prog = true
+                                None -> slots = list.set_at(slots, i, WaitAny(chs, cont))
+                        Wait(t, cont) ->
+                            match list.at(slots, t):
+                                Ended ->
+                                    slots = list.set_at(slots, i, Active(cont(unit())))
+                                    prog = true
+                                _ -> slots = list.set_at(slots, i, WaitJoin(t, cont))
+                        Cancel(target, cont) ->
+                            slots = list.set_at(slots, target, Ended)
+                            slots = list.set_at(slots, i, Active(cont(unit())))
+                            prog = true
+            i = i + 1
         if prog:
-            slots = s2
-            channels = c2
-            go = list.any(s2, fn(s): is_live(s))
-        else if list.any(s2, fn(s): is_parked(s)):
-            let (s3, c3) = close_round(0, list.length(s2), s2, c2)
-            slots = s3
-            channels = c3
+            go = list.any(slots, fn(s): is_live(s))
+        else if list.any(slots, fn(s): is_parked(s)):
+            let m = list.length(slots)
+            var j = 0
+            while j < m:
+                match list.at(slots, j):
+                    WaitRecv(_ch, cont) -> slots = list.set_at(slots, j, Active(cont(None)))
+                    WaitSend(ch, msg, cont) ->
+                        let (buf, cap) = list.at(channels, ch)
+                        slots = list.set_at(slots, j, Active(cont(unit())))
+                        channels = list.set_at(channels, ch, (list.push(buf, msg), cap))
+                    WaitAny(_chs, cont) -> slots = list.set_at(slots, j, Active(cont(None)))
+                    WaitJoin(_t, cont) -> slots = list.set_at(slots, j, Active(cont(unit())))
+                    _ -> unit()
+                j = j + 1
             go = true
         else:
-            slots = s2
-            channels = c2
             go = false
