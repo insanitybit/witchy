@@ -1,7 +1,7 @@
 ---
 rfc: 0036
 title: Bounding the async executor — ownership-threaded state and recursive drop
-status: partially-implemented (NOT a blocker — premise corrected)
+status: partially-implemented (Design B landed 2026-07-04; recursive $rdrop remaining — NOT a blocker)
 created: 2026-07-01
 predecessors:
   - "0035 (completing the RC floor — the Perceus dup/drop floor this builds on)"
@@ -68,8 +68,8 @@ Four probes/attempts, all confirming the gap:
   confined *local* accumulator, never an `own`/`var` param.
 - An implementation attempt (cap-token transfer at `var s = move own_p`) was **inert**:
   `cur_fn_own_param` is `None` for a function that returns a *derived* value or a *tuple*,
-  because the own-ABI ([RFC-0033](0033-place-based-uniqueness.md), `analysis.rs`
-  `~348-364`) fires only when the function **returns the single own buffer directly** with
+  because the single own-param ABI ([RFC-0033](0033-place-based-uniqueness.md),
+  `codegen/mod.rs:543`) fires only when the function **returns the single own buffer directly** with
   **one** extra carried cap result. The executor returns `(slots, channels, Bool)` — **two**
   owned buffers threaded through a tuple — which the single-buffer/single-cap own-ABI
   **fundamentally cannot express**.
@@ -160,7 +160,8 @@ the decision the maintainer owns.
   aliasing UAF with NO oracle), the full oracle sweep under `WITCHY_OPT=rc-floor`
   (`every_example_agrees_under_rc_floor`), the `WITCHY_HEAP_CHECK` differential fuzzer under
   `all` (redzone net), and the heap-type-matrix corpus.
-- `check.sh --fast` green; rc-floor OFF by default.
+- `check.sh --fast` green. (rc-floor is default-on since 974ccee — see the correction
+  header — so the DoD gate is the full sweep *under* rc-floor, not a toggle back to off.)
 - **Never commit an unproven `dec`** — a wrong `dec` is a use-after-free. If a step can't be
   verified against the gate, commit only the verified pieces and report honestly.
 
@@ -169,3 +170,56 @@ the decision the maintainer owns.
 - Bounding executor *time* (Design C leaves it O(n²)); the DoD is memory (`live_cells`).
 - Flipping rc-floor on by default (a separate decision, after both residuals bound + a
   full differential sweep proves parity with every other lever).
+
+## Implementation note (2026-07-04) — Design B landed; recursive `$rdrop` deferred
+
+**Design B (owning iterative executor): IMPLEMENTED, both copies.** `std/task.witchy`
+and `std/chan.witchy` `run` are rewritten from the tail-recursive
+`step_round`/`step_one`/`try_*`/`close_*` chain — which threaded `slots`/`channels` as
+BORROWED params rebuilt per step through a `(slots, channels, Bool)` tuple return, so
+every `set_at` took the copy path — into a single iterative loop whose `slots`/`channels`
+are confined-unique local `var` accumulators, mutated in place with self-assign
+(`slots = list.set_at(slots, …)` / `list.push(…)`), the exact shape RFC-0035/0016 reclaim
+per step. The schedule is unchanged and verified byte-identical on both backends via
+`witchy parity` across every concurrency example (for_await/scope/worker_pool/select/
+channels/async_tasks/request_reply/conventions). The task/chan DEDUP the review note
+offered as an alternative was NOT taken: `std/chan` defines its own erased
+`Step`/`Task`/`Slot` and the async lowering selects the executor by import, so sharing
+them would touch the RFC-0055 erasure boundary; Design B was applied to each copy.
+
+Effect (chan_throughput DoD, N=200, rc-floor on): live_cells **26569 → 18608**. The
+per-message ARRAY churn (formerly O(n^2) abandoned copies) is now bounded; the compiled
+benchmark's OOM ceiling moved from ~9k to ~10k messages. The RESIDUAL is a FLAT ~93 live
+cells PER MESSAGE (measured constant across N = 50…800), i.e. the per-message CLOSURE
+garbage — the `and_then` continuation towers each `await` rebuilds. Design B does not
+touch it: shell-only drop frees the `Slot`/`Step` shells, not their `Task`→closure
+children.
+
+**Recursive `$rdrop`: NOT shipped this session (deferred, by this RFC's own DoD hard
+rule).** Reaching `< 500` live cells requires reclaiming those closure children, i.e.
+recursive drop. A SOUND implementation is a large matched-pair change:
+
+- **dup-at-construction** — every ADT/record/tuple/list/closure build that stores a
+  statically-offset-0-rc child must `$rc_dup` it, or recursive drop underflows (a wrong
+  `dec` = use-after-free). The construction surface is broad; its COMPLETENESS is exactly
+  what the full force-copy + heap-type-matrix + fuzz gate exists to prove.
+- **drop-time shape** — recursive drop must know which slots are heap children. For
+  aggregates the static type at the drop site suffices (a per-type drop). For CLOSURES it
+  does NOT: a `Task(fn() -> Step)` field's type does not describe the closure's captures,
+  so closure drop needs a DEFUNCTIONALIZED per-code-index drop — a drop table parallel to
+  the `$__lamw{i}` call table, each `$__lamdrop{i}` dropping its captures' statically-known
+  kinds. The executor's dominant leak IS closures, so this is required, not optional.
+- **erased `__Msg` (RFC-0055)** — the executor's `List(__Msg)` buffers carry values of
+  OPAQUE kind; recursive drop must LEAVE them undropped (a sound leak), never guess, or a
+  heap message payload is a UAF. Sound for the Int-message DoD (scalar); leaky-but-safe
+  for heap messages.
+
+Per this RFC's DoD ("Never commit an unproven `dec` — a wrong `dec` is a use-after-free …
+commit only the verified pieces and report honestly", and "the WHOLE gate, not a subset
+(HARD RULE)"), the recursive-`dec` change was not landed under the reduced validation
+available this session — a recursive drop is precisely the change that gate exists to
+qualify. Design B, which uses only the existing proven reclamation machinery and cannot
+introduce a UAF, is committed; recursive `$rdrop` remains the sole open item for this
+RFC's DoD and for RFC-0059 Stage 0. The DoD test
+(`stats::chan_throughput_bounded_by_rc_floor`) stays `#[ignore]`d with an updated reason
+pinning the ~93-cell/message residual.
