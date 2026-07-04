@@ -449,11 +449,7 @@ An empty Dict.
 
 #### `fn insert(var d: Dict(k, v), key: k, val: v) -> Dict(k, v)`
 
-A new dict with `key` set to `val` (replacing any existing entry). Insertion order of first appearance is preserved.
-
-#### `fn set_at(var d: Dict(k, v), key: k, val: v) -> Dict(k, v)`
-
-Set `key` to `val` — the `insert` upsert under the name the `d[key] = val` sugar desugars to (RFC-0022), uniform with `list.set_at`.
+A new dict with `key` set to `val` (replacing any existing entry). Insertion order of first appearance is preserved. The `d[key] = val` sugar (RFC-0022) desugars to this: the shared `set_at` place-assign is retargeted to `insert` once the receiver is known to be a Dict (RFC-0049).
 
 #### `fn get_or(d: Dict(k, v), key: k, default: v) -> v`
 

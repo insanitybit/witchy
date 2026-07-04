@@ -17766,3 +17766,28 @@ pub fn serve(console: Console, net: Net) -> Int:
             "the immutable-place error must explain the fix, got: {err}"
         );
     }
+
+    /// (RFC-0049) `dict.set_at` is deleted; the `d[k] = v` place-assign sugar is
+    /// retargeted to `dict.insert` once the receiver's type is known (Dict), while
+    /// `xs[i] = v` on a list still lowers to `list.set_at`. Both backends agree.
+    #[test]
+    fn rfc0049_dict_place_assign_retargets_to_insert() {
+        let src = "import dict\n\
+                   fn main(console: Console):\n\
+                   \x20   var d = dict.new()\n\
+                   \x20   d[\"a\"] = 1\n\
+                   \x20   d[\"b\"] = 2\n\
+                   \x20   d[\"a\"] = 9\n\
+                   \x20   var xs = [1, 2, 3]\n\
+                   \x20   xs[1] = 99\n\
+                   \x20   print(console, \"${dict.get_or(d, \"a\", 0)}\")\n\
+                   \x20   print(console, \"${dict.length(d)}\")\n\
+                   \x20   print(console, \"${list.at(xs, 1)}\")\n";
+        let expected = ["9", "2", "99"];
+        let linked = resolve_std_src(src);
+        assert_eq!(
+            interpreter::run_module(linked, ".", Vec::new()).expect("interp"),
+            expected
+        );
+        assert_eq!(wasm_run(src), expected, "wasm");
+    }

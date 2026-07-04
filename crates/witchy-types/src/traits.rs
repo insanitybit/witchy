@@ -1151,7 +1151,16 @@ impl Ctx<'_> {
                     let mut call_args =
                         vec![std::mem::replace(receiver.as_mut(), Expr::Bool(false))];
                     call_args.append(args);
-                    *e = Expr::Call { name: format!("{module}.{method}"), args: call_args };
+                    // (RFC-0049) `dict` keeps `insert`, not `set_at`. The `d[k] = v`
+                    // place-assign desugar emits a bare `.set_at(k, v)` for both list
+                    // and dict; now the receiver type is known, retarget the dict
+                    // case to `dict.insert` (the list case stays `list.set_at`).
+                    let func = if module == "dict" && method == "set_at" {
+                        "dict.insert".to_string()
+                    } else {
+                        format!("{module}.{method}")
+                    };
+                    *e = Expr::Call { name: func, args: call_args };
                     return;
                 }
                 // UFCS for host-capability operations, which are BARE intrinsics
