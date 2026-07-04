@@ -2211,6 +2211,39 @@ fn main(console: Console):
         assert_rc_corpus_stable(src, &["Console,Dir[Read],Net[Connect]"]);
     }
 
+    /// (RFC-0051 I1 / SEC-039) Regression: the free-at-overwrite path must not free a
+    /// non-owning-object pointer. The 7-line repro — `var t = "abc"; t = string.trim(t)`
+    /// — reassigns a `var` whose FIRST buffer is a string LITERAL (a data-segment pointer
+    /// BELOW `heap_base`, not an `$rc_alloc` object). Under `inplace + rc-floor` the
+    /// free-at-overwrite emitted `$rc_free(old)` directly on that literal; `$rc_free` had
+    /// NO `heap_base` guard (only `$dup`/`$drop` did), so it linked the literal into the
+    /// free-list and corrupted its length word — a later `$rc_alloc` reuse handed out the
+    /// poisoned pointer and `string.trim`'s result rendered MEGABYTES of raw heap
+    /// (an in-guest disclosure). I1's categorical `ptr >= heap_base` floor on `$rc_free`
+    /// (matching `$dup`/`$drop`) kills the class. Assert byte-identical output across the
+    /// FULL opt sweep — the leak fired under `rc-floor` alone, so the sweep is the net.
+    #[test]
+    fn rc_free_at_overwrite_does_not_free_a_literal_sec_039() {
+        use crate::opt::{self, Opt, OptSet};
+        let src = "fn main(console: Console):\n    var xs = [3, 1, 2]\n    xs = list.sort(xs)\n    print(console, \"${xs}\")\n    var t = \"abc\"\n    t = string.trim(t)\n    print(console, \"[${t}]\")\n";
+        let oracle = link_run(src);
+        assert_eq!(oracle, vec!["[1, 2, 3]", "[abc]"], "oracle shape changed");
+        let mut settings: Vec<(String, OptSet)> = vec![
+            ("none".into(), OptSet::none()),
+            ("all".into(), OptSet::all()),
+            ("default".into(), OptSet::default_set()),
+        ];
+        for o in Opt::ALL {
+            settings.push((format!("-{}", o.name()), OptSet::default_set().without(o)));
+        }
+        for (label, set) in settings {
+            opt::set_for_tests(Some(set));
+            let out = wasm_run(src);
+            opt::set_for_tests(None);
+            assert_eq!(out, oracle, "SEC-039: WITCHY_OPT={label} leaked/diverged (freed a non-object literal)");
+        }
+    }
+
     /// `crypto.rune_hash` produces the same store hash (`src/pm/store.rs`
     /// format) on both backends — the host walks the guest's string lists.
     #[test]
