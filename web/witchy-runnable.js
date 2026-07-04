@@ -43,6 +43,35 @@ function findWitchyCells(root, acc = []) {
 }
 
 /**
+ * A small "Copy" button that writes `getText()` to the clipboard, with brief visual feedback.
+ * Browser-only (uses `navigator.clipboard`); under the headless DOM it has no listener and is an
+ * inert affordance, so the tested build path is unchanged. `getText` is read AT CLICK TIME so a
+ * runnable cell copies the reader's current edits, not just the seed.
+ */
+function buildCopyButton(doc, getText) {
+  const btn = doc.createElement("button");
+  btn.setAttribute("class", "witchy-copy");
+  btn.setAttribute("type", "button");
+  btn.setAttribute("aria-label", "Copy code to clipboard");
+  btn.textContent = "Copy";
+  if (typeof btn.addEventListener === "function") {
+    btn.addEventListener("click", async () => {
+      try {
+        if (!(navigator && navigator.clipboard && navigator.clipboard.writeText)) {
+          throw new Error("clipboard unavailable");
+        }
+        await navigator.clipboard.writeText(getText());
+        btn.textContent = "Copied!";
+      } catch {
+        btn.textContent = "Copy failed";
+      }
+      setTimeout(() => { btn.textContent = "Copy"; }, 1200);
+    });
+  }
+  return btn;
+}
+
+/**
  * Build a runnable cell for `source`: a `<pre>` showing the code, a Run button, and an output
  * pane. On Run, compile+run `source` via `witchy-host.js` against the lazily-loaded compiler.
  *
@@ -142,6 +171,8 @@ export function buildRunnableCell(doc, source, opts = {}) {
   element.appendChild(editable);
   element.appendChild(runButton);
   element.appendChild(output);
+  // A copy affordance over the code — reads the live editor value at click time.
+  element.appendChild(buildCopyButton(doc, () => (typeof editor.value === "string" ? editor.value : source)));
   return { element, editor, runButton, output, run };
 }
 
@@ -173,6 +204,7 @@ export function staticSlot(opts = {}) {
       code.appendChild(doc.createTextNode(source));
     }
     pre.appendChild(code);
+    pre.appendChild(buildCopyButton(doc, () => source));
     return pre;
   };
 }
