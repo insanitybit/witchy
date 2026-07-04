@@ -4096,6 +4096,58 @@ fn yn(b: Bool) -> String:
         }
     }
 
+    /// (RFC-0044 rule 3) The pure-witchy std contract-violation aborts: a bad
+    /// argument that used to silently default now aborts, with the SAME message
+    /// on both backends (they run the identical std source; RFC-0045 routes the
+    /// message). Each case pairs a program with its message core.
+    #[test]
+    fn std_contract_violations_abort_on_both_backends() {
+        let cases: &[(&str, &str)] = &[
+            (
+                "import math\nfn main(console: Console):\n    print(console, __render(math.factorial(-5)))\n",
+                "math.factorial: `-5` is negative (expected n >= 0)",
+            ),
+            (
+                "import math\nfn main(console: Console):\n    print(console, __render(math.pow(2, -1)))\n",
+                "math.pow: exponent `-1` is negative (expected exp >= 0)",
+            ),
+            (
+                "import math\nfn main(console: Console):\n    print(console, __render(math.isqrt(-5)))\n",
+                "math.isqrt: `-5` is negative (expected n >= 0)",
+            ),
+            (
+                "import time\nfn main(console: Console):\n    print(console, __render(time.days_in_month(2026, 13)))\n",
+                "time.days_in_month: month `13` is out of range (expected 1..12)",
+            ),
+        ];
+        for (src, want_core) in cases {
+            // The interpreter resolves the std bodies at run time only when they are
+            // linked in (these are real fn bodies, not builtins), so link first.
+            let linked = resolve_std_src(src);
+            let ierr = interpreter::run_module(linked.clone(), ".", Vec::new())
+                .expect_err("interpreter must abort");
+            assert!(
+                ierr.message.ends_with(want_core),
+                "interpreter core mismatch: got `{}`, want suffix `{want_core}`",
+                ierr.message
+            );
+            let bytes = codegen::compile_module_binary(&linked)
+                .expect("compile")
+                .expect("the binary path lowers this program");
+            let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort");
+            let ccore = cerr
+                .strip_prefix("runtime error: ")
+                .unwrap_or_else(|| panic!("compiled abort not routed: `{cerr}`"));
+            assert_eq!(ccore, *want_core, "compiled abort core mismatch for src:\n{src}");
+        }
+        // The valid-boundary values still work (no over-eager abort): factorial(0),
+        // pow(x, 0), isqrt(0), days_in_month for every month 1..12.
+        let ok = "import math\nimport time\nfn main(console: Console):\n    print(console, __render(math.factorial(0)))\n    print(console, __render(math.pow(2, 0)))\n    print(console, __render(math.isqrt(0)))\n    print(console, __render(time.days_in_month(2024, 2)))\n    print(console, __render(time.days_in_month(2026, 2)))\n    print(console, __render(time.days_in_month(2026, 12)))\n";
+        let want = vec!["1", "1", "0", "29", "28", "31"];
+        assert_eq!(link_run(ok), want, "interpreter boundary");
+        assert_eq!(wasm_run(ok), want, "compiled boundary");
+    }
+
     /// `now` (Clock) and `get_env` (Env) compile to capability-gated host
     /// imports. `get_env` is deterministic given the process env, so both
     /// backends must agree exactly; `now` is wall-clock, so each backend is
@@ -6898,7 +6950,10 @@ fn main(console: Console):
     #[test]
     fn math_isqrt_and_perfect_square_backends_agree() {
         // isqrt floors the square root (overflow-safe); is_perfect_square is
-        // true exactly on 0,1,4,9,... and false for negatives.
+        // true exactly on 0,1,4,9,... and false for negatives. A negative isqrt
+        // argument is a rule-3 abort (RFC-0044), covered by
+        // std_contract_violations_abort_on_both_backends; is_perfect_square
+        // short-circuits negatives to false without calling isqrt.
         let client = r#"
 import math
 import list
@@ -6908,7 +6963,6 @@ fn main(console: Console):
     print(console, list.join(list.map(roots, fn(n: Int): __render(n)), ","))
     let flags = list.map([0, 1, 2, 4, 9, 10, 16, 17], fn(n: Int): if math.is_perfect_square(n): "T" else: "F")
     print(console, list.join(flags, ""))
-    print(console, __render(math.isqrt(-5)))
     print(console, if math.is_perfect_square(-4): "T" else: "F")
 "#;
         let sources = [
@@ -6921,7 +6975,7 @@ fn main(console: Console):
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
         assert_eq!(interpreted, compiled, "isqrt/is_perfect_square diverged");
-        assert_eq!(compiled, vec!["0,1,1,1,2,2,3,3,4,10,9", "TTFTTFTF", "0", "F"]);
+        assert_eq!(compiled, vec!["0,1,1,1,2,2,3,3,4,10,9", "TTFTTFTF", "F"]);
     }
 
     #[test]

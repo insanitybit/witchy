@@ -1448,7 +1448,7 @@ Constrain `x` to the inclusive range [lo, hi].
 
 #### `fn pow(base: Int, exp: Int) -> Int`
 
-`base` raised to a non-negative `exp` (exp <= 0 gives 1).
+`base` raised to a non-negative `exp` (`pow(base, 0)` is 1). A negative `exp` has no integer answer, so it is a contract violation (RFC-0044 rule 3): abort naming the bad argument rather than silently returning 1.
 
 #### `fn ceil_div(a: Int, b: Int) -> Int`
 
@@ -1476,7 +1476,7 @@ Whether `n` is odd.
 
 #### `fn factorial(n: Int) -> Int`
 
-`n!` — the product 1*2*...*n (1 for n <= 1). Watch the 32-bit range: factorial grows past it quickly (13! already overflows).
+`n!` — the product 1*2*...*n (1 for n in {0, 1}). Watch the 32-bit range: factorial grows past it quickly (13! already overflows). `n < 0` has no factorial, so it is a contract violation (RFC-0044 rule 3): abort naming the bad argument rather than silently returning 1.
 
 #### `fn is_prime(n: Int) -> Bool`
 
@@ -1484,7 +1484,7 @@ Whether `n` is prime (trial division up to math.sqrt(n); n < 2 is not prime).
 
 #### `fn isqrt(n: Int) -> Int`
 
-Integer square root: the largest `r` with `r*r <= n`. A negative `n` yields 0. Uses `mid <= n / mid` instead of `mid * mid <= n` so it never overflows.
+Integer square root: the largest `r` with `r*r <= n` (`isqrt(0)` is 0). A negative `n` has no real square root, so it is a contract violation (RFC-0044 rule 3): abort naming the bad argument rather than silently returning 0. Uses `mid <= n / mid` instead of `mid * mid <= n` so it never overflows.
 
 #### `fn is_perfect_square(n: Int) -> Bool`
 
@@ -2469,7 +2469,7 @@ A DateTime from civil UTC components, validated — `civil(2026, 2, 30, ...)` is
 
 #### `fn days_in_month(y: Int, mo: Int) -> Int`
 
-Days in a month, honoring leap February.
+Days in a month, honoring leap February. A month outside 1..12 is a contract violation (RFC-0044 rule 3): abort naming the bad argument rather than silently returning 31 (the old `_ -> 31` catch-all).
 
 #### `fn parse_iso8601(text: String) -> Result(DateTime, String)`
 

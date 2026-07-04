@@ -47,8 +47,12 @@ pub fn sign(n: Int) -> Int:
 pub fn clamp(x: Int, lo: Int, hi: Int) -> Int:
     max(lo, min(x, hi))
 
-// `base` raised to a non-negative `exp` (exp <= 0 gives 1).
+// `base` raised to a non-negative `exp` (`pow(base, 0)` is 1). A negative `exp`
+// has no integer answer, so it is a contract violation (RFC-0044 rule 3): abort
+// naming the bad argument rather than silently returning 1.
 pub fn pow(base: Int, exp: Int) -> Int:
+    if exp < 0:
+        fail("math.pow: exponent `${exp}` is negative (expected exp >= 0)")
     var r = 1
     var i = 0
     while i < exp:
@@ -100,9 +104,13 @@ pub fn is_even(n: Int) -> Bool:
 pub fn is_odd(n: Int) -> Bool:
     n % 2 != 0
 
-// `n!` — the product 1*2*...*n (1 for n <= 1). Watch the 32-bit range:
-// factorial grows past it quickly (13! already overflows).
+// `n!` — the product 1*2*...*n (1 for n in {0, 1}). Watch the 32-bit range:
+// factorial grows past it quickly (13! already overflows). `n < 0` has no
+// factorial, so it is a contract violation (RFC-0044 rule 3): abort naming the
+// bad argument rather than silently returning 1.
 pub fn factorial(n: Int) -> Int:
+    if n < 0:
+        fail("math.factorial: `${n}` is negative (expected n >= 0)")
     var r = 1
     var i = 2
     while i <= n:
@@ -123,10 +131,15 @@ pub fn is_prime(n: Int) -> Bool:
             i = i + 1
         prime
 
-// Integer square root: the largest `r` with `r*r <= n`. A negative `n` yields 0.
-// Uses `mid <= n / mid` instead of `mid * mid <= n` so it never overflows.
+// Integer square root: the largest `r` with `r*r <= n` (`isqrt(0)` is 0). A
+// negative `n` has no real square root, so it is a contract violation
+// (RFC-0044 rule 3): abort naming the bad argument rather than silently
+// returning 0. Uses `mid <= n / mid` instead of `mid * mid <= n` so it never
+// overflows.
 pub fn isqrt(n: Int) -> Int:
-    if n <= 0:
+    if n < 0:
+        fail("math.isqrt: `${n}` is negative (expected n >= 0)")
+    if n == 0:
         0
     else:
         var lo = 1
