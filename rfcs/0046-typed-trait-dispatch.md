@@ -1,14 +1,24 @@
 ---
 rfc: 0046
 title: "Typed trait dispatch: retire the string shadow type system"
-status: proposed
+status: partially-implemented
 created: 2026-07-03
+tracking: "merged to master a842068 (dispatch reads the TypeTable); string shadow system NOT yet deleted"
 predecessors:
   - "language-evolution.md Phase 0 (typed lowering — the TypeTable this completes)"
   - "0042 (module namespaces — the other half of 'facts live in declarations')"
   - "scratch/full-evaluation-2026-07-03.md Theme B (the evidence base)"
-tracking:
 ---
+
+> 2026-07-03: PARTIALLY implemented and merged (a842068). Dispatch and
+> monomorphization now read typeck's TypeTable as the primary source; the
+> acceptance criteria hold (iter.collect infers through generic chains; trait
+> calls resolve on typed expressions; Eq-bounded list search compiles for record
+> element types on WASM; bonus iter.any/iter.all). BUT the string shadow type
+> system (`head_type_name` + its parsers/shape tables in traits.rs) was NOT
+> deleted — RFC steps 1/4 remain. A follow-up pass must remove the dead shadow
+> encoder to finish the RFC (tracked separately). Verified by the two-eval
+> triage (scratch/deep-eval/MERGED-TRIAGE.md item 22).
 
 # RFC-0046: Typed trait dispatch — retire the string shadow type system
 

@@ -1,12 +1,17 @@
 ---
 rfc: 0048
 title: "A dedicated ?? fallback; || returns to Bool"
-status: proposed
+status: implemented
 created: 2026-07-03
 predecessors:
   - "0021 (Option(T) || T unwrap — the role ?? takes over)"
-tracking:
+tracking: "merged to master 2661b23"
 ---
+
+> 2026-07-03: implemented and merged (2661b23). `??` (right-associative,
+> short-circuit) unwraps Option(T)/Result(T,e); `||`/`&&` are Bool-only; the
+> truthy-fallback machinery and the RFC-0021 Option||T unwrap were deleted.
+> Behavior lives in spec/language.md.
 
 # RFC-0048: A dedicated `??` fallback; `||` returns to Bool
 

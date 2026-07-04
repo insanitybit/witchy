@@ -1,10 +1,15 @@
 ---
 rfc: 0047
 title: "One equality: == through PartialEq at every depth"
-status: proposed
+status: implemented
 created: 2026-07-03
-tracking:
+tracking: "merged to master 7ee6323"
 ---
+
+> 2026-07-03: implemented and merged (7ee6323). == desugars through PartialEq at
+> every depth; == on function/capability types is a compile error (deleting the
+> f == f parity divergence); dict/set keys require Eq; bytes.at OOB fixed (SEC-038).
+> Behavior lives in spec/language.md.
 
 # RFC-0047: One equality: `==` through PartialEq at every depth
 

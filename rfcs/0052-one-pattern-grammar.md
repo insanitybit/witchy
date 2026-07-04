@@ -1,10 +1,16 @@
 ---
 rfc: 0052
 title: "One pattern grammar; contexts differ only by refutability"
-status: proposed
+status: implemented
 created: 2026-07-03
-tracking:
+tracking: "merged to master 2661b23"
 ---
+
+> 2026-07-03: implemented and merged (2661b23). One pattern grammar across
+> match/if-let/while-let/let/for/comprehensions with a per-context refutability
+> check; Or/IntRange/Duration pattern nodes; -1s literals; Float patterns
+> rejected; the Float-scrutinee codegen hole closed. Behavior lives in
+> spec/language.md §6.
 
 # RFC-0052: One pattern grammar; contexts differ only by refutability
 
