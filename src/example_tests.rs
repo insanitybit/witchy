@@ -256,6 +256,57 @@
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
+    /// (BUG-007) A `gen fn` declared as a METHOD of an inherent `impl` lowers just
+    /// like a top-level one: it stays a method (`value.upto()` resolves by receiver
+    /// type and returns `Iter(a)`), and its hoisted helper is named per-type so two
+    /// types' identically-named generators don't collide. Both backends drive the
+    /// resulting iterator to the same list.
+    #[test]
+    fn gen_method_in_impl_backends_agree() {
+        let src = "import iter\n\ntype Counter:\n    n: Int\n\nimpl Counter:\n    gen fn upto(self) -> Iter(Int):\n        var i = 0\n        while i < self.n:\n            yield i\n            i = i + 1\n\ntype Skips:\n    step: Int\n\nimpl Skips:\n    gen fn upto(self) -> Iter(Int):\n        var i = 0\n        while i < 3:\n            yield i * self.step\n            i = i + 1\n\nfn main(console: Console):\n    let c = Counter(4)\n    let xs: List(Int) = iter.collect(c.upto())\n    print(console, __render(xs))\n    let s = Skips(10)\n    let ys: List(Int) = iter.collect(s.upto())\n    print(console, __render(ys))\n";
+        let expected = ["[0, 1, 2, 3]", "[0, 10, 20]"];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+    }
+
+    /// (BUG-007) An `async fn` declared as a METHOD of an inherent `impl` lowers in
+    /// place, staying a method that returns a `Task` — so `d.scaled(5).await` drives
+    /// it through the executor. Here the method itself `await`s a top-level async fn,
+    /// exercising the CPS lowering inside a method body. Both backends agree.
+    #[test]
+    fn async_method_in_impl_backends_agree() {
+        let src = "type Doubler:\n    base: Int\n\nasync fn step(n: Int) -> Int:\n    n + n\n\nimpl Doubler:\n    async fn scaled(self, x: Int) -> Int:\n        let doubled = step(x).await\n        self.base + doubled\n\nasync fn main(console: Console):\n    let d = Doubler(100)\n    let r = d.scaled(5).await\n    print(console, __render(r))\n";
+        let expected = ["110"];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+    }
+
+    /// (BUG-007) The trait-method edge is rejected LOUDLY at parse time rather than
+    /// half-supported: the current trait machinery can't express a `gen`/`async`
+    /// method as a trait method (async's inferred phantom-`Task` return has no
+    /// declarable trait signature; a `gen` impl emits a helper the trait can't
+    /// name). A `gen`/`async` method is supported only in an inherent `impl Type:`.
+    #[test]
+    fn gen_async_trait_methods_are_rejected() {
+        // `gen`/`async` in a trait DECLARATION.
+        let trait_decl = "trait Seq:\n    gen fn items(self) -> Iter(Int)\n\nfn main(console: Console):\n    print(console, \"x\")\n";
+        let err = parser::parse_module(trait_decl).expect_err("gen trait method must be rejected");
+        assert!(format!("{err:?}").contains("`gen`/`async` trait method"), "{err:?}");
+
+        // A `gen`/`async` method IMPLEMENTING a trait method (an `impl Trait for T`).
+        let impl_gen = "trait Seq:\n    fn items(self) -> Iter(Int)\n\ntype Nums:\n    n: Int\n\nimpl Seq for Nums:\n    gen fn items(self) -> Iter(Int):\n        yield self.n\n\nfn main(console: Console):\n    print(console, \"x\")\n";
+        let err = parser::parse_module(impl_gen).expect_err("gen trait-impl method must be rejected");
+        assert!(format!("{err:?}").contains("cannot implement a trait method"), "{err:?}");
+
+        let impl_async = "trait Fetcher:\n    fn go(self, x: Int) -> Int\n\ntype Api:\n    base: Int\n\nimpl Fetcher for Api:\n    async fn go(self, x: Int) -> Int:\n        self.base + x\n\nfn main(console: Console):\n    print(console, \"x\")\n";
+        let err = parser::parse_module(impl_async).expect_err("async trait-impl method must be rejected");
+        assert!(format!("{err:?}").contains("cannot implement a trait method"), "{err:?}");
+
+        // The inherent form (no `for`) is ACCEPTED — the supported case.
+        let inherent = "import iter\n\ntype Nums:\n    n: Int\n\nimpl Nums:\n    gen fn items(self) -> Iter(Int):\n        yield self.n\n\nfn main(console: Console):\n    let xs: List(Int) = iter.collect(Nums(7).items())\n    print(console, __render(xs))\n";
+        assert_eq!(link_run(inherent), ["[7]"], "inherent gen method is supported");
+    }
+
     /// (RFC-0032) `vm.par_map(xs, f)` maps a capture-free function over a list. On the
     /// interpreter it is the sequential oracle; on the compiled backend it runs across
     /// OS-thread VMs. Because results are collected by input index and `f` is pure, the
