@@ -17791,3 +17791,27 @@ pub fn serve(console: Console, net: Net) -> Int:
         );
         assert_eq!(wasm_run(src), expected, "wasm");
     }
+
+    /// (RFC-0044 rule 1) `list.index_of` returns `Option(Int)` — `Some(i)` on a
+    /// hit, `None` on a miss — never a -1 sentinel; `list.position` is the
+    /// by-predicate Option search. `ascii.to_digit` is `Option(Int)` too. Both
+    /// backends agree on the Option shape and the `??` fallback.
+    #[test]
+    fn rfc0044_lookup_absence_is_option() {
+        let src = "import list\n\
+                   import ascii\n\
+                   fn main(console: Console):\n\
+                   \x20   let xs = [10, 20, 30]\n\
+                   \x20   print(console, \"${list.index_of(xs, 20) ?? -1}\")\n\
+                   \x20   print(console, \"${list.index_of(xs, 99) ?? -1}\")\n\
+                   \x20   print(console, \"${list.position(xs, fn(x: Int): x > 15) ?? -1}\")\n\
+                   \x20   print(console, \"${ascii.to_digit(\"7\") ?? -1}\")\n\
+                   \x20   print(console, \"${ascii.to_digit(\"z\") ?? -1}\")\n";
+        let expected = ["1", "-1", "1", "7", "-1"];
+        let linked = resolve_std_src(src);
+        assert_eq!(
+            interpreter::run_module(linked, ".", Vec::new()).expect("interp"),
+            expected
+        );
+        assert_eq!(wasm_run(src), expected, "wasm");
+    }

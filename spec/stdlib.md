@@ -6,8 +6,6 @@ ASCII character predicates over single-character strings (such as those `string.
 
 #### `fn is_digit(c: String) -> Bool`
 
-ASCII character predicates over single-character strings (such as those `string.char_at` returns). Pure and capability-free, like every std module. Classification is by code point in the ASCII range; the comparisons use the standard string ordering, so every function here is correct on both the interpreter and the compiled backend. The rough equivalent of Go's `unicode` helpers for the ASCII subset.
-
 #### `fn is_upper(c: String) -> Bool`
 
 #### `fn is_lower(c: String) -> Bool`
@@ -18,9 +16,9 @@ ASCII character predicates over single-character strings (such as those `string.
 
 #### `fn is_space(c: String) -> Bool`
 
-#### `fn to_digit(c: String) -> Int`
+#### `fn to_digit(c: String) -> Option(Int)`
 
-The numeric value of a single decimal digit, or -1 when `c` is not a digit.
+The numeric value of a single decimal digit as `Some`, or `None` when `c` is not a digit (RFC-0044 rule 1: absence is `Option`, never a -1 sentinel).
 
 #### `fn all_digits(s: String) -> Bool`
 
@@ -1294,9 +1292,9 @@ The maximum element under a caller-supplied "is-less-than" comparator, as `Some`
 
 The minimum element under `less`, as `Some`; `None` for the empty list.
 
-#### `fn position(xs: List(a), target: a) -> Option(Int) where a: Eq`
+#### `fn position(xs: List(a), pred: fn(a) -> Bool) -> Option(Int)`
 
-The index of the first element equal to `target` as `Some`, or `None` — the Option-returning companion to `index_of` (which uses a -1 sentinel). The `where a: Eq` bound makes the equality content-correct on both backends.
+The index of the first element satisfying `pred` as `Some`, or `None` if none do — the by-predicate search (`index_of` is the by-value search). One name per axis, both `Option`, no sentinel (RFC-0044/0049).
 
 #### `fn flatten(xss: List(List(a))) -> List(a)`
 
@@ -1325,10 +1323,6 @@ Drop the longest leading run satisfying `pred`, keeping the rest.
 #### `fn repeat(x: a, n: Int) -> List(a)`
 
 A list of `n` copies of `x` (empty when `n <= 0`).
-
-#### `fn find_index(xs: List(a), pred: fn(a) -> Bool) -> Int`
-
-Index of the first element satisfying `pred`, or -1 if none do. (Like `index_of`, but matching by predicate rather than value equality.)
 
 #### `fn zip_with(xs: List(a), ys: List(b), f: fn(a, b) -> c) -> List(c)`
 
@@ -1366,9 +1360,9 @@ Whether at least one element satisfies `pred`.
 
 Whether every element satisfies `pred` (true for the empty list).
 
-#### `fn index_of(xs: List(a), target: a) -> Int where a: Eq`
+#### `fn index_of(xs: List(a), target: a) -> Option(Int) where a: Eq`
 
-Index of the first element equal to `target`, or -1 if absent. The `where a: Eq` bound makes the equality content-correct on both backends.
+The index of the first element equal to `target` as `Some`, or `None` if absent (RFC-0044 rule 1: absence is `Option`, never a -1 sentinel). The `where a: Eq` bound makes the equality content-correct on both backends.
 
 #### `fn take(xs: List(a), n: Int) -> List(a)`
 
