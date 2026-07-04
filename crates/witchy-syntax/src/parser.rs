@@ -90,7 +90,30 @@ struct Parser {
     /// derive(Reflect)` prepended to the module, so `.{a: x}` is ordinary
     /// reflectable data — `json.stringify(.{…})`, `debug(.{…})` — with no builtins.
     anon_records: Vec<Vec<String>>,
+    /// Current recursion depth of the mutually-recursive descent (expressions,
+    /// types, patterns). Guarded against `MAX_PARSE_DEPTH` so deeply-nested
+    /// untrusted source (e.g. `(((((…)))))`) returns a `ParseError` instead of
+    /// overflowing the native stack — which is uncatchable (`SIGABRT`) when the
+    /// parser runs inside a wasmtime host function (`compiler.footprint`/`doc`/
+    /// `diff` on the supply-chain gate). Mirrors the interpreter's `depth_limit`.
+    depth: u32,
 }
+
+/// Maximum nesting depth of the recursive-descent parser. Exceeding it is a clean
+/// `ParseError`, never a native-stack overflow (`SIGABRT`) — which is uncatchable
+/// when the parser runs inside a wasmtime host function (`compiler.footprint`/
+/// `doc`/`diff` on the supply-chain gate; `func_wrap`, so `StoreLimits` doesn't
+/// bound it and `catch_unwind` can't catch an abort).
+///
+/// Calibrated by measurement, not by mirroring the interpreter's much larger
+/// `depth_limit` (25 000) — the interpreter runs on a dedicated 4 GiB stack,
+/// whereas the parser runs on whatever thread calls it (the primary ~8 MiB thread,
+/// but also a 2 MiB `serve`-worker thread). The parser's per-level frame is large
+/// (a release build overflows a 1 MiB stack near depth ~240, a 2 MiB stack near
+/// ~470). 128 leaves comfortable margin on the smallest production stack while
+/// sitting far above any hand-written program's nesting (no real source nests
+/// expressions/types/patterns anywhere near this deep).
+const MAX_PARSE_DEPTH: u32 = 128;
 
 impl Parser {
     fn new(toks: Vec<Token>) -> Self {
@@ -114,7 +137,20 @@ impl Parser {
             pending_impl_bounds: Vec::new(),
             in_async: false,
             anon_records: Vec::new(),
+            depth: 0,
         }
+    }
+
+    /// Error (never overflow the native stack) if the recursive descent has nested
+    /// past `MAX_PARSE_DEPTH`. Call at the entry of each recursion step *after*
+    /// incrementing `self.depth`; the caller decrements on return. Any parse error
+    /// aborts the whole parse (there is no error recovery), so imprecise depth
+    /// accounting on an error path is harmless — only the success path must balance.
+    fn check_depth(&self) -> Result<(), ParseError> {
+        if self.depth >= MAX_PARSE_DEPTH {
+            return Err(self.error("input nests too deeply"));
+        }
+        Ok(())
     }
 
     // --- token cursor helpers ---
@@ -764,6 +800,16 @@ impl Parser {
     }
 
     fn ty(&mut self) -> Result<Type, ParseError> {
+        // Types nest independently of expressions (`((((…))))` tuples, generic
+        // args), so bound this recursion too. Balanced on the success path.
+        self.depth += 1;
+        self.check_depth()?;
+        let out = self.ty_inner();
+        self.depth -= 1;
+        out
+    }
+
+    fn ty_inner(&mut self) -> Result<Type, ParseError> {
         // Ownership/immutability qualifiers (RFC-0025/0026): `frozen T`, `unique T`,
         // `local unique T`. Contextual — only a qualifier keyword FOLLOWED BY a type
         // is one; a bare `frozen` (nothing following) stays an ordinary type variable.
@@ -1030,6 +1076,18 @@ impl Parser {
     }
 
     fn prefix(&mut self) -> Result<Expr, ParseError> {
+        // Every expression recursion passes through `prefix` (unary chains recurse
+        // `prefix`→`prefix`; parentheses recurse `atom`→`expr`→`prefix`), so
+        // bounding depth here bounds the whole expression grammar. Balanced on the
+        // success path; a depth error aborts the parse so the leak is harmless.
+        self.depth += 1;
+        self.check_depth()?;
+        let out = self.prefix_inner();
+        self.depth -= 1;
+        out
+    }
+
+    fn prefix_inner(&mut self) -> Result<Expr, ParseError> {
         if self.eat(&Tok::Minus) {
             let expr = self.prefix()?;
             return Ok(Expr::Unary {
@@ -1739,6 +1797,16 @@ impl Parser {
     }
 
     fn pattern(&mut self) -> Result<Pattern, ParseError> {
+        // Patterns nest (`Some(Some(Some(…)))`, tuple/list patterns) through
+        // `pattern`→`pattern_primary`→`pattern`, so bound this recursion too.
+        self.depth += 1;
+        self.check_depth()?;
+        let out = self.pattern_inner();
+        self.depth -= 1;
+        out
+    }
+
+    fn pattern_inner(&mut self) -> Result<Pattern, ParseError> {
         // One grammar for every binding position (RFC-0052): parse a primary
         // pattern, then fold trailing `| alt` alternatives into an or-pattern and
         // trailing `..`/`..=` into a range. Or-patterns and ranges are real AST

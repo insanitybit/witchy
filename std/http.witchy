@@ -88,9 +88,16 @@ pub fn request_with(net: Net[Connect, Tcp], secure: Bool, method: String, host: 
 // response. Shared by `request_with` (a fresh `connect`) and `send_pinned` (a pinned
 // `connect_pinned`) so the two dial paths produce byte-identical requests.
 fn send_on(sock: Socket, method: String, host: String, path: String, headers: List((String, String)), body: String) -> Response:
+    // (SEC-043) Validate everything spliced into the request line/headers BEFORE
+    // rendering: a `\r`/`\n` in the method/path/host, or a malformed header name,
+    // would inject a header or a second request. Trap loudly (both backends).
+    check_field("method", method)
+    check_field("request path", path)
+    check_field("host", host)
     var head = method + " " + path + " HTTP/1.1\r\n" + "Host: " + host + "\r\n"
     for h in headers:
         let (k, v) = h
+        check_header(k, v)
         head = head + k + ": " + v + "\r\n"
     let req = head + "Content-Length: " + "${string.length(body)}" + "\r\n" + "Connection: close\r\n\r\n" + body
 
@@ -254,6 +261,55 @@ pub fn find_header(hdrs: List((String, String)), name: String) -> Option(String)
         if k == name:
             return Some(v)
     None
+
+// ---- CRLF / header-injection defense (shared by the client and `server`) ----
+//
+// The request line and headers are built by RAW string concatenation with
+// `\r\n` separators, so a `\r` or `\n` smuggled into a method/path/host/header
+// value would inject an extra header or a whole second request/response
+// (HTTP request/response splitting). These validators are the last line before
+// bytes are rendered: they trap LOUDLY and IDENTICALLY on both backends (via
+// `fail`) rather than emitting a corrupted, attacker-shaped message. A header
+// value/path/host must never carry a control byte; a header name must be a
+// non-empty RFC 7230 token.
+
+// Whether `s` contains a CR or LF — the response/request-splitting bytes.
+pub fn has_crlf(s: String) -> Bool:
+    string.contains(s, "\r") || string.contains(s, "\n")
+
+// A valid HTTP header-name char (RFC 7230 tchar): alphanumeric or one of a small
+// punctuation set. Notably EXCLUDES `:`, space, CR, LF — so a header name can
+// never carry the `:`/CRLF that would break out of the name field.
+fn is_tchar(c: String) -> Bool:
+    ascii.is_alnum(c) || string.contains("!#\$%&'*+-.^_`|~", c)
+
+// Whether `name` is a non-empty header-name token (every char a `tchar`).
+fn is_header_name(name: String) -> Bool:
+    if string.char_count(name) == 0:
+        false
+    else:
+        var ok = true
+        for c in string.chars(name):
+            if !is_tchar(c):
+                ok = false
+        ok
+
+// Trap unless `value` (a header value, request path, or host) is free of CR/LF.
+// The single check used everywhere a value is concatenated into the wire form.
+pub fn check_field(what: String, value: String):
+    if has_crlf(value):
+        fail("HTTP " + what + " contains a CR/LF control character (request/response splitting): " + value)
+
+// Trap unless `name` is a valid header-name token (rejects `:`, space, and CR/LF).
+pub fn check_header_name(name: String):
+    if !is_header_name(name):
+        fail("invalid HTTP header name (must be a non-empty RFC 7230 token): " + name)
+
+// Validate one `(name, value)` header pair — the name is a token, the value is
+// CR/LF-free. Shared by the client request builder and the server renderer.
+pub fn check_header(name: String, value: String):
+    check_header_name(name)
+    check_field("header value", value)
 
 // Split the raw response at the blank line separating headers from body, and
 // parse the header lines into (lowercased name, trimmed value) pairs.

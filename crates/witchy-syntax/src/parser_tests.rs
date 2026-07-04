@@ -479,3 +479,57 @@ fn f(var a: Int, own b: Int, c: Int) -> Int:
             .expect("`mut` is a valid identifier on its own");
     }
 
+    // SEC-041: deeply-nested untrusted source must return a `ParseError`, never
+    // overflow the native stack (an uncatchable SIGABRT when the parser runs in a
+    // wasmtime host fn — `compiler.footprint`/`doc`/`diff` on the supply-chain gate).
+    //
+    // NOTE: the parser is exercised here on a large-stack thread. In a *debug* build
+    // the per-recursion frame is ~10x a release build's, so a debug test thread's
+    // 2 MiB stack overflows near paren-depth ~48 — below the guard at
+    // MAX_PARSE_DEPTH. That is a *test-harness* artifact; the shipped binary is
+    // release, where the guard fires with wide margin on every production stack
+    // (release overflows a 2 MiB worker stack only near depth ~470). Giving the test
+    // ample stack lets it observe the *guard* firing, which is the invariant.
+    fn parse_deep(src: String) -> Result<Module, ParseError> {
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(move || parse_module(&src))
+            .unwrap()
+            .join()
+            .expect("the parser must not overflow/abort — it must return a Result")
+    }
+
+    #[test]
+    fn deeply_nested_parens_error_instead_of_overflowing() {
+        let depth = (super::MAX_PARSE_DEPTH as usize) + 50;
+        let src = format!(
+            "fn main(console: Console):\n    let x = {}0{}\n    print(console, \"ok\")\n",
+            "(".repeat(depth),
+            ")".repeat(depth),
+        );
+        let err = parse_deep(src).expect_err("over-deep nesting must be a clean parse error");
+        assert!(err.to_string().contains("nests too deeply"), "{err}");
+    }
+
+    // The reported bug shape: many nested parens with no closing side. It must still
+    // error cleanly (via the depth guard) rather than abort the host process.
+    #[test]
+    fn unbounded_nested_parens_error_cleanly() {
+        let src = format!("fn main():\n    {}", "(".repeat(10_000));
+        let err = parse_deep(src).expect_err("must be a clean parse error, not an abort");
+        assert!(err.to_string().contains("nests too deeply"), "{err}");
+    }
+
+    // Nesting well within the limit still parses (the guard doesn't reject legitimate
+    // programs).
+    #[test]
+    fn moderately_nested_parens_still_parse() {
+        let depth = (super::MAX_PARSE_DEPTH as usize) - 20;
+        let src = format!(
+            "fn main(console: Console):\n    let x = {}0{}\n    print(console, \"ok\")\n",
+            "(".repeat(depth),
+            ")".repeat(depth),
+        );
+        parse_deep(src).expect("nesting within the limit parses");
+    }
+

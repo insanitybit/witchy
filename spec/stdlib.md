@@ -877,6 +877,22 @@ The value of a response header, looked up case-insensitively, or None.
 
 Look up a header by its (already-lowercased) name. Shared with `server`.
 
+#### `fn has_crlf(s: String) -> Bool`
+
+Whether `s` contains a CR or LF — the response/request-splitting bytes.
+
+#### `fn check_field(what: String, value: String)`
+
+Trap unless `value` (a header value, request path, or host) is free of CR/LF. The single check used everywhere a value is concatenated into the wire form.
+
+#### `fn check_header_name(name: String)`
+
+Trap unless `name` is a valid header-name token (rejects `:`, space, and CR/LF).
+
+#### `fn check_header(name: String, value: String)`
+
+Validate one `(name, value)` header pair — the name is a token, the value is CR/LF-free. Shared by the client request builder and the server renderer.
+
 ## `iter`
 
 std/iter — lazy, pull-based iterators: the witchy take on Rust's Iterator, minus the part Rust most regrets. Because witchy values are "data" (no borrowing), there is no lending-iterator / GAT complexity: an `Iter(a)` is just a thunk that produces the next `Step`. Adapters (`map`/`filter`/ `take_while`/...) are lazy and compose without building intermediate lists; consumers (`collect`/`fold`/`find`/`count`) drive the pulling. Infinite iterators are fine (`count_from`, `repeat`) as long as something bounds them (`take`/`take_while`/`find`). Pure and capability-free; runs on both backends. (The planned `gen`/`yield` syntax will de-sugar to these constructors.)

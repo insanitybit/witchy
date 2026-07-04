@@ -197,10 +197,18 @@ fn ipv6_in_cidr(ip: std::net::Ipv6Addr, base: std::net::Ipv6Addr, bits: u8) -> b
 /// no deny entry matches it (`effective = allows \ denies`). Deny is monotone — it
 /// can only subtract — so a flat allowlist with no `!` entries behaves unchanged.
 pub fn net_allows(allow: &[String], target: &str) -> bool {
-    if allow.iter().filter_map(|p| p.strip_prefix('!')).any(|d| address_admits(d, target)) {
+    if net_denied(allow, target) {
         return false;
     }
     allow.iter().filter(|p| !p.starts_with('!')).any(|p| address_admits(p, target))
+}
+
+/// Whether any `!`-DENY entry in `allow` matches `target`. Deny is monotone and
+/// applies regardless of *how* the target was admitted — by CIDR/IP or by an
+/// allowlisted hostname — so this is consulted both here and by `resolve_admitted`
+/// on the resolved IPs of a name-allowlisted destination (the SSRF/rebinding floor).
+fn net_denied(allow: &[String], target: &str) -> bool {
+    allow.iter().filter_map(|p| p.strip_prefix('!')).any(|d| address_admits(d, target))
 }
 
 /// Narrow `allow` to the `\n`-joined `patterns` of a `NetPolicy` (`net.only` /
@@ -388,8 +396,20 @@ pub fn resolve_admitted(allow: &[String], addr: &str) -> Result<Vec<std::net::So
             if !ip_ok.is_empty() {
                 Ok(ip_ok)
             } else if name_ok {
-                // A hostname allowlisted by string (not rebinding-proof): dial it.
-                Ok(resolved)
+                // A hostname allowlisted by string (not rebinding-proof): dial it,
+                // but STILL honor `!`-deny entries against the resolved IPs. A name
+                // allowlist widens *which names* may be dialed; it must never
+                // re-admit an IP a `net.deny(private())` subtracted — otherwise
+                // `localhost`/an attacker-controlled name resolving to 127.0.0.1
+                // (or any RFC-1918 / metadata address) would connect despite the
+                // deny, defeating the SSRF/rebinding floor.
+                let not_denied: Vec<std::net::SocketAddr> =
+                    resolved.into_iter().filter(|sa| !net_denied(allow, &sa.to_string())).collect();
+                if not_denied.is_empty() {
+                    Err(denied())
+                } else {
+                    Ok(not_denied)
+                }
             } else {
                 Err(denied())
             }
@@ -942,5 +962,40 @@ mod net_only_tests {
         let narrowed = net_only(&granted, "10.0.0.5:6379").expect("host is in the block");
         assert!(net_allows(&narrowed, "10.0.0.5:6379"));
         assert!(!net_allows(&narrowed, "10.0.0.6:6379"));
+    }
+}
+
+#[cfg(test)]
+mod resolve_admitted_tests {
+    use super::resolve_admitted;
+
+    // A name-allowlisted destination whose resolved IP is `!`-deny-matched must NOT
+    // be dialed: the deny floor applies to the resolved IPs even when the address
+    // STRING itself is allowlisted. Regression for the SSRF bypass where
+    // `net.deny(private())` was defeated by an allowlisted `localhost`.
+    #[test]
+    fn name_allowlisted_but_resolved_ip_denied_is_refused() {
+        // `localhost:0` is allowlisted by string but resolves to loopback, which
+        // the `!127.0.0.0/8` / `!::1/128` deny entries subtract.
+        let allow = vec![
+            "localhost:0".to_string(),
+            "!127.0.0.0/8:*".to_string(),
+            "!::1/128:*".to_string(),
+        ];
+        let err = resolve_admitted(&allow, "localhost:0")
+            .expect_err("all resolved loopback IPs are deny-matched → must be refused");
+        assert!(err.contains("not permitted"), "expected a capability denial, got: {err}");
+    }
+
+    // The deny floor only subtracts the denied IPs; if a name resolves to at least
+    // one non-denied address the connect still proceeds to that address.
+    #[test]
+    fn name_allowlisted_keeps_non_denied_resolved_ips() {
+        // A literal-IP destination that is allowlisted and NOT denied resolves to
+        // exactly itself and is admitted.
+        let allow = vec!["93.184.216.34:80".to_string(), "!127.0.0.0/8:*".to_string()];
+        let dialed = resolve_admitted(&allow, "93.184.216.34:80").expect("public IP is admitted");
+        assert!(dialed.iter().all(|sa| sa.to_string() != "127.0.0.1:80"));
+        assert!(!dialed.is_empty());
     }
 }
