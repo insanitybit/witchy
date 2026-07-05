@@ -854,9 +854,21 @@ impl Ctx<'_> {
                     let place = (**receiver).clone();
                     self.rewrite_expr_stmt_method(stmt, place, scope);
                 }
-                Stmt::Let { name, value, mutable, .. } => {
+                Stmt::Let { name, ty, value, mutable, .. } => {
                     self.rewrite_expr(value, scope);
-                    match self.type_name(value, scope) {
+                    // The declared ascription is the binding's type — a local,
+                    // typed declaration (RFC-0046) — and the value's recovered
+                    // type is the fallback (`Mono::walk_block` does the same).
+                    // Without it, `let cs: Set(Int) = iter.collect(...)` left
+                    // `cs` untyped in the QUIET pass (a bounded call's result-
+                    // position variable is unrecoverable before annotate), so a
+                    // bare trait call on `cs` (`show(cs)`) stayed unresolved and
+                    // made annotate fail — emptying the table for everyone.
+                    let resolved = ty
+                        .as_ref()
+                        .and_then(type_to_scope_name)
+                        .or_else(|| self.type_name(value, scope));
+                    match resolved {
                         // A `var` let is a mutable place — a write-back target.
                         Some(t) if *mutable => scope.insert_mut(name.clone(), t),
                         Some(t) => scope.insert(name.clone(), t),
