@@ -60,6 +60,7 @@ send to it anymore. `chan.consume` writes that receive-until-closed loop for you
 
 ```witchy
 import chan
+from chan import Sender, Receiver
 
 async fn source(tx: Sender(String)) -> Nil:
     chan.send(tx, "first").await
@@ -80,6 +81,7 @@ the caller chose, with no shared addresses.
 
 ```witchy
 import chan
+from chan import Sender, Receiver
 
 type Msg:
     Add(Int)
@@ -126,6 +128,7 @@ express. Results flow back on a second channel.
 
 ```witchy
 import chan
+from chan import Sender, Receiver
 
 async fn worker(jobs: Receiver(Int), out: Sender(Int)) -> Nil:
     chan.consume(jobs, fn(n): chan.send(out, n * n)).await
@@ -152,6 +155,7 @@ too, so a stage can receive, transform, and forward in a few plain lines:
 
 ```witchy
 import chan
+from chan import Sender, Receiver
 
 async fn producer(tx: Sender(Int)) -> Nil:
     for n in [1, 2, 3]:

@@ -54,6 +54,7 @@ witchy that needs nothing but `Console`.
 
 ```witchy
 import chan
+from chan import Sender, Receiver
 import json
 
 // This program's channels all carry one message type; a program may also use
