@@ -17910,7 +17910,9 @@ pub fn serve(console: Console, net: Net) -> Int:
     #[test]
     fn glamour_slot_wire_is_identical_on_both_backends() {
         let src = "import glamour\n\
+                   from glamour import VNode\n\
                    import json\n\
+                   from json import Json\n\
                    \n\
                    fn mj(m: Int) -> Json:\n\
                    \x20   JsonInt(0)\n\
@@ -17940,7 +17942,9 @@ pub fn serve(console: Console, net: Net) -> Int:
     fn glamour_secret_wire_is_identical_on_both_backends() {
         use crate::runtime::{Capabilities, Runtime};
         let src = "import glamour\n\
+                   from glamour import UiRoot, VNode\n\
                    import json\n\
+                   from json import Json\n\
                    \n\
                    type Msg:\n\
                    \x20   Done(String)\n\
@@ -18064,6 +18068,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     fn glamour_to_json_serializes_the_wire_format_on_both_backends() {
         let src = "import glamour\n\
                    import json\n\
+                   from json import Json\n\
                    import reflect\n\
                    \n\
                    type Msg derive(Reflect):\n\
