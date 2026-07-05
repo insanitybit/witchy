@@ -19,6 +19,7 @@ step() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 
 DEMO="$(mktemp -d "${TMPDIR:-/tmp}/witchy-registry-demo.XXXXXX")"
 export WITCHY_HOME="$DEMO/home"        # isolated store + keys (not ~/.witchy)
+export WITCHY_COOLDOWN_SECS=0          # demo: skip the staging cooldown so a fresh release resolves immediately
 SERVER_PID=""
 cleanup() {
     if [ -n "$SERVER_PID" ]; then
@@ -37,14 +38,20 @@ echo "issuer public key: $PUBHEX"
 
 step "2. Start the coven registry server on localhost"
 mkdir -p registry
-"$BIN" coven-serve --addr 127.0.0.1:0 --root "$DEMO/registry" \
+# The registry signs its records with a root signing key (the lockfile pins it).
+LC_ALL=C head -c 32 /dev/urandom | od -An -v -tx1 | tr -d ' \n\t' > "$DEMO/registry-signing.seed"
+# coven-serve binds the exact address it is given, so pre-pick a free port and
+# pass it concretely (rather than relying on :0 ephemeral-port discovery).
+PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+export COVEN_URL="http://127.0.0.1:$PORT"
+"$BIN" coven-serve --addr "127.0.0.1:$PORT" --root "$DEMO/registry" \
+    --signing-key "$DEMO/registry-signing.seed" \
     --trust-issuer "local-idp=$PUBHEX" > "$DEMO/server.log" &
 SERVER_PID=$!
-for _ in $(seq 1 50); do
-    grep -q "http://" "$DEMO/server.log" 2>/dev/null && break
+for _ in $(seq 1 100); do
+    grep -q "coven serving" "$DEMO/server.log" 2>/dev/null && break
     sleep 0.1
 done
-export COVEN_URL="$(grep -o 'http://[^ ]*' "$DEMO/server.log" | head -1)"
 echo "registry serving at $COVEN_URL"
 
 step "3. Author a library rune"
@@ -66,13 +73,13 @@ CI_TOKEN="$("$BIN" coven-mint-token --issuer-key "$DEMO/idp" --issuer local-idp 
     --sub "repo:acme/shout-repo:ref:refs/heads/main" \
     --claim repository=acme/shout-repo --claim workflow_ref=release.yml \
     --claim ref=refs/heads/main)"
-(cd lib && WITCHY_USER=ci-bot COVEN_ID_TOKEN="$CI_TOKEN" "$BIN" publish)
+(cd lib && WITCHY_USER=ci-bot COVEN_ID_TOKEN="$CI_TOKEN" "$BIN" publish .)
 echo "(the version lands STAGED — it is not yet resolvable)"
 
 step "5. Promote to RELEASED (a human, with a second factor)"
 HUMAN_TOKEN="$("$BIN" coven-mint-token --issuer-key "$DEMO/idp" --issuer local-idp --sub alice)"
 (cd lib && WITCHY_USER=alice COVEN_ID_TOKEN="$HUMAN_TOKEN" \
-    "$BIN" promote acme/shout@1.0.0 --factor webauthn)
+    "$BIN" promote acme/shout 1.0.0)
 
 step "6. Create a CONSUMER project and add the dependency"
 mkdir -p app/src
@@ -93,10 +100,10 @@ grep -E "name|sha256|ed25519" app/witchy.lock | sed 's/^/    /'
 
 step "7. Inspect the dependency's capability footprint before trusting it"
 (cd app && WITCHY_USER=dev "$BIN" tree)
-(cd app && WITCHY_USER=dev "$BIN" audit)
+(cd app && WITCHY_USER=dev "$BIN" audit src/app.witchy)
 
 step "8. Build and run the consumer"
-(cd app && WITCHY_USER=dev "$BIN" run)
+(cd app && WITCHY_USER=dev "$BIN" run .)
 
 step "9. The gate: a publish from the WRONG repository is refused"
 cat > lib/witchy.toml <<'EOF'
@@ -108,7 +115,7 @@ EVIL_TOKEN="$("$BIN" coven-mint-token --issuer-key "$DEMO/idp" --issuer local-id
     --sub "repo:evil/fork:ref:refs/heads/main" \
     --claim repository=evil/fork --claim workflow_ref=release.yml \
     --claim ref=refs/heads/main)"
-if (cd lib && WITCHY_USER=ci-bot COVEN_ID_TOKEN="$EVIL_TOKEN" "$BIN" publish 2>/dev/null); then
+if (cd lib && WITCHY_USER=ci-bot COVEN_ID_TOKEN="$EVIL_TOKEN" "$BIN" publish . 2>/dev/null); then
     echo "UNEXPECTED: the rogue publish succeeded" >&2
     exit 1
 else
