@@ -665,6 +665,48 @@ mod tests {
         );
     }
 
+    /// (RFC-0059 increment-2 step 2 — the FLAT TARGET, proven falsifiably in-tree.)
+    /// The scalar-SoA + ring representation the async transform must PRODUCE: a
+    /// producer/consumer over a bounded ring, hand-written so every per-task datum is
+    /// a scalar `Int` column (`f0 = [np, sum]`, `f1 = [i, seen]`, `status`) mutated by
+    /// `list.set_at`, the channel a fixed-capacity ring (`ring`/`head`/`tail`/`count`).
+    /// No closures, no `Task`/`Step`, no per-message allocation — so under rc-floor the
+    /// live-cell count is FLAT (measured 13, IDENTICAL at N=200 and N=20000), exactly
+    /// the shape `chan_throughput_bounded_by_rc_floor` (above, still `#[ignore]`d) needs
+    /// the executor to reach. This is the executable, re-runnable form of the RFC-0059
+    /// 2026-07-05 spike numbers (prose numbers rot; this asserts the property) and it
+    /// guards against a codegen regression silently breaking the scalar-flat property
+    /// step 2 depends on. Kernel-timed separately at ~11 ns/message flat to N=1M (under
+    /// the ≤300 ns DoD, ≤100 ns stretch); this test pins the flat-memory half.
+    #[test]
+    fn chan_throughput_scalar_soa_reference_is_flat() {
+        // The all-scalar producer/consumer kernel, parametric in N (ring cap 64).
+        let soa_src = |n: i64| {
+            format!(
+                "import list\n\nfn wrap(x: Int, m: Int) -> Int:\n    if x >= m: x - m else: x\n\nfn run(np: Int, cap: Int) -> Int:\n    var ring = list.range_between(0, cap)\n    var head = 0\n    var tail = 0\n    var count = 0\n    var status = [0, 0]\n    var f0 = [np, 0]\n    var f1 = [0, 0]\n    var go = true\n    while go:\n        var prog = false\n        if list.at(status, 0) != 3:\n            if count < cap:\n                let i = list.at(f1, 0)\n                if i < list.at(f0, 0):\n                    ring = list.set_at(ring, tail, i)\n                    tail = wrap(tail + 1, cap)\n                    count = count + 1\n                    f1 = list.set_at(f1, 0, i + 1)\n                    prog = true\n                else:\n                    status = list.set_at(status, 0, 3)\n                    prog = true\n        if list.at(status, 1) != 3:\n            if count > 0:\n                let v = list.at(ring, head)\n                head = wrap(head + 1, cap)\n                count = count - 1\n                f0 = list.set_at(f0, 1, list.at(f0, 1) + v)\n                let seen = list.at(f1, 1) + 1\n                f1 = list.set_at(f1, 1, seen)\n                if seen >= np:\n                    status = list.set_at(status, 1, 3)\n                prog = true\n        if list.at(status, 0) == 3 && list.at(status, 1) == 3:\n            go = false\n        else if prog:\n            go = true\n        else:\n            go = false\n    list.at(f0, 1)\n\nfn main(console: Console):\n    print(console, __render(run({n}, 64)))\n",
+                n = n,
+            )
+        };
+        opt::set_for_tests(Some(OptSet::default_set().with(Opt::RcFloor)));
+        // sum 0..N-1: N=200 -> 19900; N=20000 -> 199990000.
+        let small = compute(&soa_src(200)).expect("compile+run small");
+        let big = compute(&soa_src(20000)).expect("compile+run big");
+        opt::set_for_tests(None);
+        assert_eq!(small.output, vec!["19900".to_string()], "small sum wrong");
+        assert_eq!(big.output, vec!["199990000".to_string()], "big sum wrong");
+        // FLAT: a small constant, and IDENTICAL at N=200 and N=20000 (independent of N).
+        assert!(
+            small.live_cells < 100,
+            "scalar-SoA reference must be flat (bounded live cells), got {} @ N=200",
+            small.live_cells
+        );
+        assert_eq!(
+            big.live_cells, small.live_cells,
+            "scalar-SoA reference must be FLAT: live_cells must not grow with N ({} @ 20000 vs {} @ 200)",
+            big.live_cells, small.live_cells
+        );
+    }
+
     /// RFC-0027 packed DoD counter (b): a confined list literal of fixed-scalar
     /// records read only via `at(_).field`/`length` is stored as ONE flat inline
     /// buffer with `unbox` on, instead of N boxed records + an N-pointer array with
