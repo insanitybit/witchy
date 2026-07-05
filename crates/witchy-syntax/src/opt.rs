@@ -95,6 +95,17 @@ pub enum Opt {
     /// load (off ⇒ every access keeps its `i < 0 || i ≥ len` trap guard). Conservative:
     /// elides ONLY this proven pattern — a miss is a kept check, never an unsound access.
     BoundsElide,
+    /// (RFC-0062) Closure escape elision: a closure bound to a local that provably never
+    /// escapes (used ONLY as a direct-call callee in its creating scope, none of its
+    /// captured variables reassigned) allocates NO environment record — its captures are
+    /// threaded as extra arguments to a lambda-lifted `call $__lamt{i}` instead of being
+    /// boxed into a heap env and reloaded per call (off ⇒ the env is heap-allocated and
+    /// the call recovers captures through it, i.e. the tier-3 boxed closure). Keyed on the
+    /// escape/uniqueness oracle (no blessed-function list, no per-method code); default-
+    /// deny — anything the analysis cannot prove non-escaping stays boxed. Opt-in until it
+    /// clears its hardening bar (a wrong classification would be a use-after-free surface,
+    /// like `rc-floor`/`unbox` before promotion).
+    ClosureElide,
     // NOTE: the registry holds ONLY optimizations the compiler actually performs —
     // every entry must pass the differential de-opt sweep AND prove it fired
     // (RFC-0030's contract). For a MEMORY lever that proof is a `witchy stats`
@@ -109,7 +120,7 @@ pub enum Opt {
 impl Opt {
     /// Every optimization, in a stable order — drives the differential de-opt
     /// sweep and `witchy stats` reporting.
-    pub const ALL: [Opt; 11] = [
+    pub const ALL: [Opt; 12] = [
         Opt::InPlace,
         Opt::Views,
         Opt::Sroa,
@@ -121,6 +132,7 @@ impl Opt {
         Opt::WasmOpt,
         Opt::DirectCall,
         Opt::BoundsElide,
+        Opt::ClosureElide,
     ];
 
     /// The token used in `WITCHY_OPT` and reported by `witchy stats`.
@@ -137,6 +149,7 @@ impl Opt {
             Opt::WasmOpt => "wasm-opt",
             Opt::DirectCall => "direct-call",
             Opt::BoundsElide => "bounds-elide",
+            Opt::ClosureElide => "closure-elide",
         }
     }
 
@@ -147,18 +160,23 @@ impl Opt {
     /// In the `release` (production default) set? This is the single promotion
     /// point: an optimization joins `release` — and thus the default users get —
     /// by being removed from this opt-in list once it has cleared its hardening
-    /// bar. The end-state — now REACHED — is `release == all` (nothing opt-in):
-    /// both former opt-in levers have been PROMOTED, so this returns `true`
-    /// unconditionally. `unbox` (layout reinterpretation → type-confusion surface)
-    /// cleared its bar via the `WITCHY_TYPE_CHECK` sanitizer (teeth-tested +
-    /// false-positive-free over the fuzzer and examples, with the cross-lever and
-    /// heap-checked example sweeps clean); `rc-floor` (reclamation → use-after-free
-    /// surface, cf. SEC-036) cleared its bar via the SEC-037 `$rc_dup` object-base
-    /// guard and was promoted in 974ccee. A FUTURE not-yet-hardened lever would be
-    /// gated back off here.
+    /// bar. `unbox` (layout reinterpretation → type-confusion surface) cleared its
+    /// bar via the `WITCHY_TYPE_CHECK` sanitizer (teeth-tested + false-positive-free
+    /// over the fuzzer and examples, with the cross-lever and heap-checked example
+    /// sweeps clean); `rc-floor` (reclamation → use-after-free surface, cf. SEC-036)
+    /// cleared its bar via the SEC-037 `$rc_dup` object-base guard and was promoted
+    /// in 974ccee. `closure-elide` (RFC-0062) is the current OPT-IN lever: a wrong
+    /// non-escape classification would drop an env a call still reads — a use-after-
+    /// free surface — so it ships off until the differential sweep + heap-check fuzz
+    /// have hardened it, exactly as the two above did before promotion.
     fn default_on(self) -> bool {
-        // release == all: both levers promoted (unbox type-tag sanitized; rc-floor SEC-037-guarded).
-        true
+        match self {
+            // Opt-in until hardened: excluded from `release` (the production default),
+            // so `release == all MINUS closure-elide`.
+            Opt::ClosureElide => false,
+            // Every other lever has cleared its bar and ships default-on.
+            _ => true,
+        }
     }
 
     fn bit(self) -> u32 {
@@ -297,9 +315,11 @@ mod tests {
         assert!(d.contains(Opt::InPlace));
         assert!(d.contains(Opt::Region));
         assert!(d.contains(Opt::WasmOpt), "wasm-opt (AOT-cached Binaryen) is default-on");
-        assert_eq!(d, OptSet::all(), "release == all: both levers promoted");
         assert!(d.contains(Opt::Unbox) && d.contains(Opt::RcFloor), "both promoted");
         assert!(d.contains(Opt::Views) && d.contains(Opt::Sroa), "default includes shipped opts");
+        // release == all MINUS the current opt-in lever (closure-elide, RFC-0062).
+        assert!(!d.contains(Opt::ClosureElide), "closure-elide is opt-in (off in release)");
+        assert_eq!(d, OptSet::all().without(Opt::ClosureElide), "release == all minus closure-elide");
     }
 
     #[test]
@@ -315,13 +335,14 @@ mod tests {
         // `release` == the production default; `debug` == none.
         assert_eq!(parse("release").unwrap(), OptSet::default_set());
         assert_eq!(parse("debug").unwrap(), OptSet::none());
-        // release now holds back only rc-floor (unbox promoted); rc-floor needs RFC-0036.
+        // release holds back only closure-elide (RFC-0062, opt-in); everything else promoted.
         let rel = OptSet::release();
-        assert_eq!(rel, OptSet::all(), "release == all");
+        assert_eq!(rel, OptSet::all().without(Opt::ClosureElide), "release == all minus closure-elide");
         assert!(rel.contains(Opt::Unbox) && rel.contains(Opt::RcFloor), "both promoted");
         assert!(rel.contains(Opt::Region) && rel.contains(Opt::WasmOpt), "shipped opts are in release");
+        assert!(!rel.contains(Opt::ClosureElide), "closure-elide opt-in");
         // ...and release is the base for the dev grammar (release + a candidate).
-        assert!(parse("release,rc-floor").unwrap().contains(Opt::RcFloor));
+        assert!(parse("release,closure-elide").unwrap().contains(Opt::ClosureElide));
         // A mode keyword must be the first token.
         assert!(parse("region,release").is_err());
         assert!(parse("inplace,debug").is_err());

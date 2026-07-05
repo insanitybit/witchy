@@ -442,6 +442,96 @@ pub fn confined_reassigned_vars_block(body: &Block, summaries: &Summaries) -> Ha
     bound.into_iter().filter(|x| !leaked.contains(x)).collect()
 }
 
+/// (RFC-0062 tier-1) Names that are used ONLY as the callee of a DIRECT call in this
+/// scope — i.e. every occurrence is `name(..)` (an `Expr::Call` whose head is `name`,
+/// or an `Expr::Apply` whose `func` is `Var(name)`), and the name never appears as a
+/// whole value anywhere else: not passed as an argument, not stored, not returned, not
+/// captured by a nested closure. For a closure local bound to a lambda, this is exactly
+/// the non-escape fact that lets its environment be ELIDED — the captures can be
+/// threaded to the direct call as extra arguments because the closure value never leaves
+/// the frame.
+///
+/// GENERAL and default-deny: it blesses no function names; it keys purely on how the
+/// value flows. Any non-callee occurrence disqualifies the name (a reference inside a
+/// nested lambda body — a capture — disqualifies it too, so a closure captured by
+/// another closure is never elidable). Returns `called − disqualified`, so a name that
+/// only ever appears as a value (never called) is not in the set either.
+pub fn only_directly_called(body: &Block) -> HashSet<String> {
+    let mut called = HashSet::new();
+    let mut disq = HashSet::new();
+    scan_call_positions_block(body, &mut called, &mut disq);
+    called.into_iter().filter(|n| !disq.contains(n)).collect()
+}
+
+fn scan_call_positions_block(b: &Block, called: &mut HashSet<String>, disq: &mut HashSet<String>) {
+    for s in &b.stmts {
+        each_expr_in_stmt(s, &mut |e| scan_call_positions(e, called, disq));
+    }
+}
+
+fn scan_call_positions(e: &Expr, called: &mut HashSet<String>, disq: &mut HashSet<String>) {
+    match e {
+        // A bare whole-value use of a name — the escape.
+        Expr::Var(n) => {
+            disq.insert(n.clone());
+        }
+        // `name(args)`: `name` is a direct-call callee (a candidate), the args are values.
+        Expr::Call { name, args } => {
+            called.insert(name.clone());
+            for a in args {
+                scan_call_positions(a, called, disq);
+            }
+        }
+        // `f(args)` on a value: a `Var` func is a direct-call callee; any other func
+        // expression is a value use (its inner vars disqualify normally).
+        Expr::Apply { func, args } => {
+            match func.as_ref() {
+                Expr::Var(f) => {
+                    called.insert(f.clone());
+                }
+                other => scan_call_positions(other, called, disq),
+            }
+            for a in args {
+                scan_call_positions(a, called, disq);
+            }
+        }
+        // A nested closure captures every name it mentions BY POINTER — a whole-value
+        // escape, even in callee position (`name(..)` inside the lambda is a call
+        // THROUGH a captured value). Mark every reference (var reads AND call/apply
+        // callees) inside the body as disqualified.
+        Expr::Lambda { body, .. } => {
+            for s in &body.stmts {
+                each_expr_in_stmt(s, &mut |x| mark_all_refs(x, disq));
+            }
+        }
+        _ => each_subexpr(e, &mut |s| scan_call_positions(s, called, disq)),
+    }
+}
+
+/// Mark every name an expression REFERENCES — variable reads AND the callee names of
+/// `Call`/`Apply` — recursing through nested lambdas. Used for closure bodies, where any
+/// reference (a value read or a call through a captured closure) is a by-pointer capture.
+fn mark_all_refs(e: &Expr, out: &mut HashSet<String>) {
+    match e {
+        Expr::Var(n) => {
+            out.insert(n.clone());
+        }
+        Expr::Call { name, args } => {
+            out.insert(name.clone());
+            for a in args {
+                mark_all_refs(a, out);
+            }
+        }
+        Expr::Apply { func, args } => {
+            mark_all_refs(func, out);
+            for a in args {
+                mark_all_refs(a, out);
+            }
+        }
+        _ => each_subexpr(e, &mut |s| mark_all_refs(s, out)),
+    }
+}
+
 /// `let`/`var` bindings whose value ALIASES another binding — a bare variable read
 /// (`var x = y`) or a projection of one (`var x = r.field`, `var x = xs[i]`). Such a
 /// binding's first buffer is owned by that source, not by `x`, so `x` must not be
@@ -562,6 +652,19 @@ fn collect_slice_lets(b: &Block, out: &mut HashMap<String, String>) {
         }
         each_block_in_stmt(s, &mut |blk| collect_slice_lets(blk, out));
     }
+}
+
+/// (RFC-0062 tier-1) Every name reassigned anywhere in `body` (`x = …`, including the
+/// in-place `x.push`/`x[i] = …`/`x.f = …` sugar that desugars to `x = …`). A closure's
+/// captures must be in NONE of these to be elision-safe: eliding the env threads the
+/// captures at the CALL site rather than snapshotting them at the CREATION site, so a
+/// captured variable that is reassigned in between would change the closure's observed
+/// value — the interpreter (which snapshots) would then diverge. Default-deny: any
+/// reassigned capture forces the boxed (tier-3) closure.
+pub fn reassigned_names(body: &Block) -> HashSet<String> {
+    let mut out = HashSet::new();
+    collect_assigned_targets(body, &mut out);
+    out
 }
 
 /// Every name that is the target of a reassignment (`x = …`), at any block depth —
@@ -1023,5 +1126,49 @@ mod tests {
             "type P:\n    x: Int\n    y: Int\nfn d(a: Int) -> String:\n    let p = P(a, a)\n    \"${p}\"\n",
         );
         assert!(!sroa_candidates(&f).contains("p"), "rendering the whole value escapes");
+    }
+
+    // ---- RFC-0062: only_directly_called (closure-escape confinement) ----
+
+    #[test]
+    fn closure_called_directly_is_confined() {
+        // `f` is only ever `f(..)` — the sole non-escaping shape. Elidable.
+        let f = func("fn d(n: Int) -> Int:\n    let f = fn(x: Int): x + n\n    f(1) + f(2)\n");
+        assert!(only_directly_called(&f.body).contains("f"), "a directly-called closure is confined");
+    }
+
+    #[test]
+    fn closure_passed_as_argument_escapes() {
+        // `f` flows as a whole value into `list.map` — it must stay boxed.
+        let f = func("fn d(xs: List(Int)) -> List(Int):\n    let f = fn(x: Int): x + 1\n    list.map(xs, f)\n");
+        assert!(!only_directly_called(&f.body).contains("f"), "a closure passed as an arg escapes");
+    }
+
+    #[test]
+    fn closure_returned_escapes() {
+        let f = func("fn d() -> fn(Int) -> Int:\n    let f = fn(x: Int): x + 1\n    f\n");
+        assert!(!only_directly_called(&f.body).contains("f"), "a returned closure escapes");
+    }
+
+    #[test]
+    fn closure_captured_by_another_closure_escapes() {
+        // `f` is referenced (called) inside `g`'s body — a by-pointer capture, even though
+        // the reference is in callee position. Must not be elided.
+        let f = func(
+            "fn d() -> Int:\n    let f = fn(x: Int): x + 1\n    let g = fn(): f(3)\n    g()\n",
+        );
+        let confined = only_directly_called(&f.body);
+        assert!(!confined.contains("f"), "a closure captured (and called) inside another closure escapes");
+    }
+
+    #[test]
+    fn reassigned_names_sees_reassignment() {
+        // A reassigned capture is unsafe to thread at the call site. (In-place `.push`
+        // sugar reaches codegen already desugared to this `x = list.push(x, ..)` shape
+        // by the method-resolution pass, so `collect_assigned_targets` catches it too.)
+        let f = func(
+            "fn d() -> Int:\n    var xs = [1]\n    xs = list.push(xs, 2)\n    let f = fn(): list.length(xs)\n    f()\n",
+        );
+        assert!(reassigned_names(&f.body).contains("xs"), "a reassigned var is caught");
     }
 }
