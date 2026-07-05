@@ -339,3 +339,58 @@ reference programs (proto = boxed sum frames; proto3 = boxed record reuse; proto
 their numbers are inlined above so the finding is self-contained. Next session
 starts at step 1 (the low-risk `async_lower` state machine), with step 2 as the flat
 follow-on whose target is already proven.
+
+## Implementation note (2026-07-05) — Stage-1 step 1 LANDED: defunctionalized segment-function lowering
+
+Step 1 (the low-risk `async_lower` state machine, executor UNCHANGED) is
+implemented. The chosen representation is a **defunctionalized set of segment
+functions** rather than a single boxed *record* + `match frame.state` dispatcher.
+The two are isomorphic — a segment function's parameter list *is* the frame's live
+columns, and the function identity *is* the `state` tag — but the segment-function
+form is the one the pre-typeck transform can actually emit soundly. Four
+measurement probes (RFC-0058 discipline) established why:
+
+- **Pre-typeck types are unknown, and a boxed record forces them into the open.**
+  A `type Frame__f(...)` needs a field type for every carried local. Args carry
+  their declared type, but a resume-bound local (`let x = E.await`) and a
+  `for`/`for await` loop variable have inference-only types this pass never sees.
+  A single generic dispatcher `run__f(frame: Frame__f(a))` then type-checks its
+  body *generically*, so `frame.i < frame.n` / `v * v` fail the `Ord`/`Mul` bounds
+  the concrete program would satisfy — the "trait op on an un-annotated generic"
+  wall. (Measured: the record producer needs `Frame__f(Int)` spelled out to
+  compile; the transform cannot spell it.)
+- **The segment-function form keeps every value at an inference site.** A loop
+  variable / recv result stays a **lambda parameter** of the `and_then`
+  continuation (`fn(o): match o { Some(v) -> ... }`), so `v` is typed from the
+  channel exactly as today's `consume` lowering types it — `v * v` and `sum + v`
+  keep working. A resume-bound local that must cross a *further* await is passed
+  **forward as a bound parameter** of the next segment (never a `None`
+  placeholder), so no `Option`-wrapping and no bottom-value reader are needed.
+  Carried counters/accumulators are annotated where derivable (a `for i in lo..hi`
+  counter is `Int`; a `var acc = <literal>` takes the literal's type) and left to
+  inference otherwise.
+- **The tower is gone by construction.** Each suspension emits exactly one shallow
+  closure `fn(x): __async_f_N(carried…, x)` capturing only the live locals and
+  tail-calling a *named* segment — never a nested `and_then` tree. The active
+  `and_then` depth is therefore bounded by the async-call-nesting depth, not by
+  awaits-per-body or loop iterations, so `and_then_step`'s per-poll re-wrap (D2) is
+  O(1) per async frame instead of O(depth). `for`/`for await`/`while` lower to a
+  **recursive segment function** that threads its counter/accumulator through
+  parameters and iterates a list by index (no `list.tail` O(n²) rebuild), which is
+  what makes `await` in `while`, `var` across `await`, and folding `for await`
+  fall out.
+- **Interleaving is preserved for the linear/`let`/tail/`if`/`match` shapes.** The
+  emitted structure is `and_then(E, fn(x): seg(...))` — identical to today's
+  `and_then(E, fn(x): K)` except `K` is a named segment call instead of an inlined
+  nested lambda — and the segment runs its straight-line code *eagerly* at
+  `Yield(k(v))` just as the inlined `K` did, so the `Step` sequence (and thus the
+  round-robin interleaving) is byte-identical there. Loop shapes move off
+  `for_each`/`consume` onto the indexed/threaded recursion, so their interleaving
+  changes deterministically; the book output manifest (`book/examples.json`) is
+  re-blessed and both backends still agree (the parity gate is the correctness
+  proof, re-bless the sanctioned snapshot update).
+
+`Step`/`Task`/`Slot` and the `std/task` + `std/chan` executors are **unchanged**;
+the segment closures plug into the existing `and_then`/`Step` machinery. Increment
+2 (scalar SoA columns + ring channel) reifies each segment's parameter list as the
+per-task scalar columns and is where the flat DoD lands.
