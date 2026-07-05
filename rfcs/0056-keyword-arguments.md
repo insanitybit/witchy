@@ -1,7 +1,7 @@
 ---
 rfc: 0056
 title: "Keyword arguments: generalize labeled construction to every call"
-status: proposed
+status: implemented
 created: 2026-07-03
 predecessors:
   - "0043 (declared mutation — shares the call-shape surface; lands first)"
@@ -278,3 +278,63 @@ parameter conventions are unspecified — `var` + default should be an error.
 
 **Verdict.** Needs-revision; implement after RFC-0043. Keep the `_or` family (no
 triple churn). Priority: medium.
+
+## Implementation note (2026-07-05) — status: implemented
+
+Shipped as designed, with the three review gaps resolved:
+
+1. **Evaluation order = SOURCE order.** A labeled/reordered call binds each
+   *written* argument to a temp (`let __kwN = …`) in the order written, then
+   passes the temps to the callee in declared order. When the written arguments
+   already appear in declared order (the common case, `substring(s, start: 2,
+   end: 7)`), no temps are emitted — the positional call already evaluates
+   left-to-right; temps (an `Expr::Block`) appear only when labels actually
+   reorder. Constant defaults are spliced directly (no temp — a constant has no
+   effect and no order). Covered by `keyword_args_source_order_backends_agree`.
+
+2. **Method-call labels EXCLUDED in v1.** Only DIRECT free/module calls (a
+   statically-known callee at the link layer) carry labels. A label on a UFCS
+   method call is a **parse error** (the callee resolves later, by receiver type
+   in `traits.rs`, so there is no declaration to bind against yet). A label
+   through a function *value* (`Apply`) is likewise rejected. Rule 4's
+   "post-resolution method labels" is therefore deferred to a later RFC.
+
+3. **`var` + default = compile error** (parse time): a `var` writes back to a
+   caller variable, so an omitted argument has nothing to write to. `own` +
+   default is allowed. Capability-minting params are never defaultable — the
+   closed-constant rule already excludes them (a capability cannot be written as
+   a literal), so no extra check is needed.
+
+**Grammar (verified unambiguous).** `ident: expr` inside call parens has no other
+meaning: lambdas begin with `fn`, there is no ternary or slice colon, dicts are
+built by function (no `{k: v}` literal), and record/anon-record colons live in
+`.{…}`/uppercase-ctor forms. A pre-implementation probe confirmed
+`greet(name: "ada")` was previously a hard parse error, so the syntax was free.
+
+**Where it lives.** A new `Expr::LabeledCall` node is produced by the parser ONLY
+when an argument is labeled (an all-positional call stays `Expr::Call`). A new
+link pass, `crate::keyword_args::resolve`, runs after `linker::resolve_methods`
+and before folding/typeck: it validates labels against the callee's declared
+parameters (unknown / duplicate / missing — the same three diagnostics
+`records.rs::build` produces for a record), reorders to positional, and splices
+constant defaults. Defaults on plain positional `Expr::Call`s are spliced by the
+same pass. Both backends only ever see positional `Call`s (and the temp-binding
+`Block`), so parity is by construction — a `LabeledCall` reaching a backend is a
+loud `unreachable!`, never silent divergence.
+
+**Scope punts (v1).** (a) Method-call and value-call forms get neither labels nor
+default-omission — a defaulted std function must be called as `module.f(x)` (or
+`f(x)`), not `x.f()`, to omit a default. (b) A type error inside a labeled
+argument still reports the positional call the desugar produced (the label→span
+carry the RFC's Drawbacks note flags is not done). (c) The `_or` family is
+retained (RFC-0044 grandfathering).
+
+**Reconciliation with RFC-0050 Part 2 (value-erasure).** Consistent, not
+conflicting: labels/defaults are properties of the *declaration used at a direct
+call site*, never of a function type or value. They are erased at the link layer
+before any value could carry them — `Expr::LabeledCall` only ever names a
+statically-known callee, and an eta-expanded / passed function value flows
+through `Expr::Var`/`Expr::Apply`, which are positional-only (the parser rejects a
+label there). So passing `substring` as a value drops its labels and defaults by
+construction, exactly as 0050 requires; there is no point at which a label or
+default attaches to a value.
