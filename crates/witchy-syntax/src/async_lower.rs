@@ -127,6 +127,24 @@ struct Local {
     mutable: bool,
 }
 
+/// Where a statement sequence's fall-through goes.
+#[derive(Clone)]
+enum Tail {
+    /// The async fn's result: `task.done(V)` for a value, become-the-task for a
+    /// tail `await`, `task.ready_unit()` on falling off the end.
+    Return,
+    /// A loop body: run the statements for effect and then tail-call `seg` with
+    /// the current values of `carried` (the loop's live columns) — one iteration.
+    Loop { seg: String, carried: Vec<Local> },
+}
+
+/// The header of a recursive-segment loop: a `while` condition, or a `for await`
+/// receive over `src` binding `var`.
+enum LoopHeader {
+    While { cond: Expr },
+    Recv { src: Expr, var: String },
+}
+
 struct Ctx<'a> {
     fname: String,
     counter: &'a mut usize,
@@ -155,18 +173,17 @@ impl<'a> Ctx<'a> {
     /// for a value, become-the-task for a tail `await`, `task.ready_unit()` on
     /// falling off the end); a `for`/`for await`/`while` body is transformed the
     /// same way and coerced to `Task(Nil)` by its caller.
-    fn go(&mut self, stmts: &[Stmt], scope: &[Local]) -> Result<Expr, String> {
+    fn go(&mut self, stmts: &[Stmt], scope: &[Local], tail: &Tail) -> Result<Expr, String> {
         let Some((head, rest)) = stmts.split_first() else {
-            return Ok(call("task.ready_unit", vec![]));
+            return Ok(self.end(tail));
         };
-        let is_last = rest.is_empty();
         match head {
             Stmt::Let { name, value, mutable, ty } => {
                 if let Some(inner) = as_await(value) {
                     reject_await(inner, &self.fname)?;
                     // `let x = E.await` — suspend, then continue with `x` bound.
                     let bind = Local { name: name.clone(), ty: ty.clone(), mutable: *mutable };
-                    self.suspend(inner.clone(), Some(bind), rest, scope)
+                    self.suspend(inner.clone(), Some(bind), rest, scope, tail)
                 } else {
                     reject_await(value, &self.fname)?;
                     let mut scope2 = scope.to_vec();
@@ -175,7 +192,7 @@ impl<'a> Ctx<'a> {
                         ty: ty.clone().or_else(|| derive_type(value)),
                         mutable: *mutable,
                     });
-                    Ok(prefix_stmt(head.clone(), self.go(rest, &scope2)?))
+                    Ok(prefix_stmt(head.clone(), self.go(rest, &scope2, tail)?))
                 }
             }
             Stmt::LetPattern { pattern, value } if as_await(value).is_some() => {
@@ -197,7 +214,7 @@ impl<'a> Ctx<'a> {
                     value: Expr::Var(tmp),
                 });
                 new_stmts.extend_from_slice(rest);
-                self.go(&new_stmts, scope)
+                self.go(&new_stmts, scope, tail)
             }
             Stmt::LetPattern { pattern, value } => {
                 reject_await(value, &self.fname)?;
@@ -207,31 +224,35 @@ impl<'a> Ctx<'a> {
                 for b in &binds {
                     scope2.push(Local { name: b.clone(), ty: None, mutable: false });
                 }
-                if is_last {
-                    Ok(prefix_stmt(head.clone(), call("task.ready_unit", vec![])))
-                } else {
-                    Ok(prefix_stmt(head.clone(), self.go(rest, &scope2)?))
-                }
+                Ok(prefix_stmt(head.clone(), self.go(rest, &scope2, tail)?))
             }
             Stmt::Assign { value, .. } => {
                 reject_await(value, &self.fname)?;
-                // A plain reassignment of an in-scope `var`. Kept verbatim; if the
-                // var is carried across a later await it rides a segment parameter.
-                if is_last {
-                    Ok(prefix_stmt(head.clone(), call("task.ready_unit", vec![])))
-                } else {
-                    Ok(prefix_stmt(head.clone(), self.go(rest, scope)?))
-                }
+                // A plain reassignment of an in-scope `var` (a mutable local or an
+                // `own` segment/loop parameter). Kept verbatim; if the var is
+                // carried across a later await / loop-back it rides a parameter.
+                Ok(prefix_stmt(head.clone(), self.go(rest, scope, tail)?))
             }
             Stmt::Return(Some(e)) => {
-                // `return e` exits the function early with its value.
-                self.tail_value(e, scope)
+                // `return e` exits the function early with its value, regardless of
+                // any enclosing loop tail.
+                self.tail_expr(e, scope, &Tail::Return)
             }
             Stmt::Return(None) => Ok(call("task.ready_unit", vec![])),
-            Stmt::Expr(e) => self.expr_stmt(e, rest, scope, is_last),
+            Stmt::Expr(e) => self.expr_stmt(e, rest, scope, tail),
             Stmt::Yield(_) => Err(self.err("`yield` is not allowed in an async fn")),
             Stmt::Break | Stmt::Continue => {
                 Err(self.err("`break`/`continue` across `await` is not yet supported"))
+            }
+        }
+    }
+
+    /// The expression a statement sequence produces when it runs off its end.
+    fn end(&self, tail: &Tail) -> Expr {
+        match tail {
+            Tail::Return => call("task.ready_unit", vec![]),
+            Tail::Loop { seg, carried } => {
+                call(seg, carried.iter().map(|l| Expr::Var(l.name.clone())).collect())
             }
         }
     }
@@ -242,25 +263,16 @@ impl<'a> Ctx<'a> {
         e: &Expr,
         rest: &[Stmt],
         scope: &[Local],
-        is_last: bool,
+        tail: &Tail,
     ) -> Result<Expr, String> {
+        let is_last = rest.is_empty();
         // A loop whose body (or receiver) drives the executor.
         if let Expr::For { var, iter, body } = e {
-            let loop_future = if let Some(src) = as_recv_stream(iter) {
-                Some(self.lower_for_await(var, src, body, scope)?)
+            if let Some(src) = as_recv_stream(iter) {
+                return self.lower_for_await(var, src, body, rest, scope, tail);
             } else if block_contains_await(body) {
-                Some(self.lower_for(var, iter, body, scope)?)
-            } else {
-                None
-            };
-            if let Some(loop_future) = loop_future {
-                return if is_last {
-                    // In tail position a `for`/`for await` returns `Task(Nil)`.
-                    Ok(loop_future)
-                } else {
-                    // Sequence the loop with the rest via a suspension seam.
-                    self.suspend(RawTask(loop_future), None, rest, scope)
-                };
+                let loop_future = self.lower_for(var, iter, body, scope)?;
+                return self.sequence_loop(loop_future, vec![], rest, scope, tail);
             }
         }
         if let Expr::While { cond, body } = e {
@@ -268,44 +280,85 @@ impl<'a> Ctx<'a> {
                 return Err(self.err("`await` in a `while` condition is not yet supported"));
             }
             if block_contains_await(body) {
-                let loop_future = self.lower_while(cond, body, scope)?;
-                return if is_last {
-                    Ok(loop_future)
-                } else {
-                    self.suspend(RawTask(loop_future), None, rest, scope)
-                };
+                return self.lower_while(cond, body, rest, scope, tail);
             }
         }
 
         if is_last {
-            self.tail_value(e, scope)
+            self.tail_expr(e, scope, tail)
         } else if let Some(inner) = as_await(e) {
             // A non-last `await E` runs E for effect and continues.
             reject_await(inner, &self.fname)?;
-            self.suspend(inner.clone(), None, rest, scope)
+            self.suspend(inner.clone(), None, rest, scope, tail)
         } else {
             reject_await(e, &self.fname)?;
-            Ok(prefix_stmt(Stmt::Expr(e.clone()), self.go(rest, scope)?))
+            Ok(prefix_stmt(Stmt::Expr(e.clone()), self.go(rest, scope, tail)?))
         }
     }
 
-    /// The function's tail value (or a `return`'s value): `await E` -> become E;
-    /// a tail `if`/`match` -> each branch made a task; a plain value ->
-    /// `task.done(value)`.
-    fn tail_value(&mut self, e: &Expr, scope: &[Local]) -> Result<Expr, String> {
+    /// Sequence a lowered loop `Task` (whose result is the accumulator tuple named
+    /// by `accs`, or `Nil` when `accs` is empty) with `rest`: the loop's result is
+    /// rebound to the accumulators and the rest continues from there.
+    fn sequence_loop(
+        &mut self,
+        loop_future: Expr,
+        accs: Vec<Local>,
+        rest: &[Stmt],
+        scope: &[Local],
+        tail: &Tail,
+    ) -> Result<Expr, String> {
+        if accs.is_empty() {
+            // `Task(Nil)` loop. In tail-return position it IS the result.
+            if rest.is_empty() && matches!(tail, Tail::Return) {
+                return Ok(loop_future);
+            }
+            return self.suspend(RawTask(loop_future), None, rest, scope, tail);
+        }
+        // The loop yields its accumulators; rebind them, then continue.
+        let acc_bind = self.fresh_tmp();
+        let rebind = rebind_accs(&accs, &acc_bind);
+        let mut cont_scope = scope.to_vec();
+        for a in &accs {
+            // After the loop the accumulator is a fresh (mutable) local.
+            cont_scope.push(Local { name: a.name.clone(), ty: a.ty.clone(), mutable: true });
+        }
+        let mut cont_stmts = rebind;
+        let cont_expr = self.go(rest, &cont_scope, tail)?;
+        cont_stmts.push(Stmt::Expr(cont_expr));
+        let n = cont_stmts.len();
+        let cont_block = Expr::Block(Block {
+            stmts: cont_stmts,
+            lines: vec![0; n],
+            region: None,
+        });
+        let bind = Local { name: acc_bind, ty: None, mutable: false };
+        self.lift_suspend(RawTask(loop_future), Some(bind), cont_block, scope)
+    }
+
+    /// The sequence's tail expression under `tail`. For `Tail::Return`: `await E`
+    /// -> become E; a tail `if`/`match` -> each branch a task; a value ->
+    /// `task.done(value)`. For `Tail::Loop`: run `e` for effect (a tail `await` is
+    /// awaited, a value is bound to a throwaway so it is not a discarded result),
+    /// then loop back.
+    fn tail_expr(&mut self, e: &Expr, scope: &[Local], tail: &Tail) -> Result<Expr, String> {
         if let Some(inner) = as_await(e) {
             reject_await(inner, &self.fname)?;
-            return Ok(inner.clone());
+            return match tail {
+                Tail::Return => Ok(inner.clone()),
+                Tail::Loop { .. } => {
+                    Ok(and_then(inner.clone(), self.fresh_tmp(), self.end(tail)))
+                }
+            };
         }
         match e {
             Expr::If { cond, then_block, else_block } => {
                 if contains_await(cond) {
                     return Err(self.err("`await` in an `if` condition is not yet supported"));
                 }
-                let then_f = self.go(&then_block.stmts, scope)?;
+                let then_f = self.go(&then_block.stmts, scope, tail)?;
                 let else_f = match else_block {
-                    Some(b) => self.go(&b.stmts, scope)?,
-                    None => call("task.ready_unit", vec![]),
+                    Some(b) => self.go(&b.stmts, scope, tail)?,
+                    None => self.end(tail),
                 };
                 Ok(Expr::If {
                     cond: cond.clone(),
@@ -329,15 +382,30 @@ impl<'a> Ctx<'a> {
                     new_arms.push(MatchArm {
                         pattern: a.pattern.clone(),
                         guard: a.guard.clone(),
-                        body: self.tail_value(&a.body, &scope2)?,
+                        body: self.tail_expr(&a.body, &scope2, tail)?,
                     });
                 }
                 Ok(Expr::Match { scrutinee: scrutinee.clone(), arms: new_arms })
             }
-            Expr::Block(b) => self.go(&b.stmts, scope),
+            Expr::Block(b) => self.go(&b.stmts, scope, tail),
             _ => {
                 reject_await(e, &self.fname)?;
-                Ok(call("task.done", vec![e.clone()]))
+                match tail {
+                    Tail::Return => Ok(call("task.done", vec![e.clone()])),
+                    Tail::Loop { .. } => {
+                        // Run `e` for its effect (bound so the result is not a
+                        // discarded value), then loop back.
+                        Ok(prefix_stmt(
+                            Stmt::Let {
+                                name: self.fresh_tmp(),
+                                ty: None,
+                                mutable: false,
+                                value: e.clone(),
+                            },
+                            self.end(tail),
+                        ))
+                    }
+                }
             }
         }
     }
@@ -352,12 +420,13 @@ impl<'a> Ctx<'a> {
         bind: Option<Local>,
         rest: &[Stmt],
         scope: &[Local],
+        tail: &Tail,
     ) -> Result<Expr, String> {
         let mut cont_scope = scope.to_vec();
         if let Some(b) = &bind {
             cont_scope.push(b.clone());
         }
-        let cont_expr = self.go(rest, &cont_scope)?;
+        let cont_expr = self.go(rest, &cont_scope, tail)?;
         self.lift_suspend(inner, bind, cont_expr, scope)
     }
 
@@ -427,7 +496,8 @@ impl<'a> Ctx<'a> {
     /// `for x in xs:` whose body awaits — lowered to `task.for_each(xs', fn(x):
     /// <body>)`. The body is transformed (its awaits lifted to segments) and
     /// coerced to `Task(Nil)`. The loop variable stays a lambda parameter so its
-    /// element type is inferred.
+    /// element type is inferred. (A `for x in xs:` body cannot fold into an outer
+    /// var — that shape is `for await` or `while`.)
     fn lower_for(
         &mut self,
         var: &str,
@@ -439,7 +509,7 @@ impl<'a> Ctx<'a> {
         let list_expr = for_iter_list(iter);
         let mut scope2 = scope.to_vec();
         scope2.push(Local { name: var.to_string(), ty: None, mutable: false });
-        let body_future = self.go(&body.stmts, &scope2)?;
+        let body_future = self.go(&body.stmts, &scope2, &Tail::Return)?;
         let body_nil = and_then(body_future, self.fresh_tmp(), call("task.ready_unit", vec![]));
         let f = Expr::Lambda {
             params: vec![Param {
@@ -454,40 +524,213 @@ impl<'a> Ctx<'a> {
         Ok(call("task.for_each", vec![list_expr, f]))
     }
 
-    /// `for await x in rx:` — lowered to `chan.consume(rx, fn(x): <body>)`. The
-    /// body is transformed and coerced to `Task(Nil)`; the message variable stays
-    /// a lambda parameter so its type is inferred from the receiver.
+    /// `for await x in rx:` — a receive-until-closed loop. A body that does NOT
+    /// fold into an outer variable keeps the `chan.consume` lowering (its message
+    /// variable is a lambda parameter, so its type is inferred and the interleaving
+    /// is byte-identical to before). A body that DOES assign an outer, in-scope var
+    /// (a fold, RFC-0059 expressiveness) lowers to a recursive segment loop that
+    /// threads the accumulator through a parameter and yields it at close.
     fn lower_for_await(
         &mut self,
         var: &str,
         src: &Expr,
         body: &Block,
+        rest: &[Stmt],
         scope: &[Local],
+        tail: &Tail,
     ) -> Result<Expr, String> {
         reject_await(src, &self.fname)?;
-        let mut scope2 = scope.to_vec();
-        scope2.push(Local { name: var.to_string(), ty: None, mutable: false });
-        let body_future = self.go(&body.stmts, &scope2)?;
-        let body_nil = and_then(body_future, self.fresh_tmp(), call("task.ready_unit", vec![]));
-        let f = Expr::Lambda {
-            params: vec![Param {
-                name: var.to_string(),
-                ty: None,
-                convention: Convention::Let,
-                default: None,
-            }],
-            body: tail_block(body_nil),
-            ret: None,
-        };
-        Ok(call("chan.consume", vec![src.clone(), f]))
+        if !body_folds(body, scope) {
+            // Drain / effect body: keep `chan.consume` (interleaving preserved).
+            let mut scope2 = scope.to_vec();
+            scope2.push(Local { name: var.to_string(), ty: None, mutable: false });
+            let body_future = self.go(&body.stmts, &scope2, &Tail::Return)?;
+            let body_nil =
+                and_then(body_future, self.fresh_tmp(), call("task.ready_unit", vec![]));
+            let f = Expr::Lambda {
+                params: vec![Param {
+                    name: var.to_string(),
+                    ty: None,
+                    convention: Convention::Let,
+                    default: None,
+                }],
+                body: tail_block(body_nil),
+                ret: None,
+            };
+            let consume = call("chan.consume", vec![src.clone(), f]);
+            return self.sequence_loop(consume, vec![], rest, scope, tail);
+        }
+        // Folding receive loop.
+        let want_accs = !(rest.is_empty() && matches!(tail, Tail::Return));
+        let (entry, accs) = self.build_loop_seg(
+            LoopHeader::Recv { src: src.clone(), var: var.to_string() },
+            body,
+            scope,
+            want_accs,
+        )?;
+        self.sequence_loop(entry, accs, rest, scope, tail)
     }
 
-    /// `while cond:` whose body awaits — placeholder rejected in Commit 1; the
-    /// segment-based loop lands in the next increment.
-    fn lower_while(&mut self, _cond: &Expr, _body: &Block, _scope: &[Local]) -> Result<Expr, String> {
-        Err(self.err(
-            "`await` inside a `while` loop is not yet supported by this increment",
-        ))
+    /// `while cond:` whose body awaits — a recursive segment loop that threads its
+    /// carried state (counter/accumulator) through parameters. The condition may
+    /// not itself `await`.
+    fn lower_while(
+        &mut self,
+        cond: &Expr,
+        body: &Block,
+        rest: &[Stmt],
+        scope: &[Local],
+        tail: &Tail,
+    ) -> Result<Expr, String> {
+        let want_accs = !(rest.is_empty() && matches!(tail, Tail::Return));
+        let (entry, accs) =
+            self.build_loop_seg(LoopHeader::While { cond: cond.clone() }, body, scope, want_accs)?;
+        self.sequence_loop(entry, accs, rest, scope, tail)
+    }
+
+    /// The core recursive-segment loop builder shared by `while` and folding
+    /// `for await`. Returns `(entry, accs)` — a `Task` that runs the loop and
+    /// yields the accumulator tuple named by `accs` (or `Nil` when `accs` is
+    /// empty). Carried columns (live locals of the header + body) ride the loop
+    /// segment's parameters (`own` for mutable ones), so a mutation is an ordinary
+    /// reassignment and the loop-back tail-call threads the updated value.
+    fn build_loop_seg(
+        &mut self,
+        header: LoopHeader,
+        body: &Block,
+        scope: &[Local],
+        want_accs: bool,
+    ) -> Result<(Expr, Vec<Local>), String> {
+        // Live locals of the header + body, in scope order.
+        let mut probe = Vec::new();
+        let mut seen = HashSet::new();
+        let mut order = Vec::new();
+        match &header {
+            LoopHeader::While { cond } => fv_expr(cond, &HashSet::new(), &mut seen, &mut order),
+            LoopHeader::Recv { src, .. } => fv_expr(src, &HashSet::new(), &mut seen, &mut order),
+        }
+        let mut body_bound = HashSet::new();
+        if let LoopHeader::Recv { var, .. } = &header {
+            body_bound.insert(var.clone());
+        }
+        fv_block(body, &body_bound, &mut seen, &mut order);
+        for n in order {
+            probe.push(n);
+        }
+        let probe: HashSet<String> = probe.into_iter().collect();
+        let carried: Vec<Local> =
+            scope.iter().filter(|l| probe.contains(&l.name)).cloned().collect();
+
+        let accs: Vec<Local> = if want_accs {
+            carried.iter().filter(|l| l.mutable).cloned().collect()
+        } else {
+            vec![]
+        };
+
+        let seg_name = self.fresh_seg();
+        let loop_tail = Tail::Loop { seg: seg_name.clone(), carried: carried.clone() };
+        let exit = self.loop_exit(&accs);
+
+        // Loop-segment parameters: the carried columns (`own` for mutable ones).
+        let params: Vec<Param> = carried.iter().map(local_to_param).collect();
+
+        let loop_body = match &header {
+            LoopHeader::While { cond } => {
+                let body_expr = self.go(&body.stmts, &carried, &loop_tail)?;
+                Expr::If {
+                    cond: Box::new(cond.clone()),
+                    then_block: tail_block(body_expr),
+                    else_block: Some(tail_block(exit)),
+                }
+            }
+            LoopHeader::Recv { src, var } => {
+                // The received value is a lambda/`match` binding, so its type is
+                // inferred from the receiver — then dispatched to a segment where a
+                // carried mutation is a real `own`-parameter reassignment.
+                let mut body_scope = carried.clone();
+                body_scope.push(Local { name: var.clone(), ty: None, mutable: false });
+                let body_expr = self.go(&body.stmts, &body_scope, &loop_tail)?;
+                let recv_name = self.fresh_seg();
+                let o = self.fresh_tmp();
+                let recv_arms = vec![
+                    MatchArm {
+                        pattern: Pattern::Ctor {
+                            name: "Some".to_string(),
+                            args: vec![Pattern::Var(var.clone())],
+                        },
+                        guard: None,
+                        body: body_expr,
+                    },
+                    MatchArm {
+                        pattern: Pattern::Ctor { name: "None".to_string(), args: vec![] },
+                        guard: None,
+                        body: exit,
+                    },
+                ];
+                let recv_match =
+                    Expr::Match { scrutinee: Box::new(Expr::Var(o.clone())), arms: recv_arms };
+                // recv-segment: fn recv(carried…, o) = match o { Some(x)->body; None->exit }
+                let mut recv_params: Vec<Param> = carried.iter().map(local_to_param).collect();
+                recv_params.push(Param {
+                    name: o.clone(),
+                    ty: None,
+                    convention: Convention::Let,
+                    default: None,
+                });
+                self.segments.push(Function {
+                    public: false,
+                    name: recv_name.clone(),
+                    params: recv_params,
+                    ret: None,
+                    body: tail_block(recv_match),
+                    bounds: vec![],
+                    is_gen: false,
+                    is_async: false,
+                });
+                // loop-segment: and_then(chan.recv(src), fn(o): recv(carried…, o))
+                let mut recv_args: Vec<Expr> =
+                    carried.iter().map(|l| Expr::Var(l.name.clone())).collect();
+                recv_args.push(Expr::Var(o.clone()));
+                let recv_lambda = Expr::Lambda {
+                    params: vec![Param {
+                        name: o,
+                        ty: None,
+                        convention: Convention::Let,
+                        default: None,
+                    }],
+                    body: tail_block(call(&recv_name, recv_args)),
+                    ret: None,
+                };
+                call("task.and_then", vec![call("chan.recv", vec![src.clone()]), recv_lambda])
+            }
+        };
+
+        self.segments.push(Function {
+            public: false,
+            name: seg_name.clone(),
+            params,
+            ret: None,
+            body: tail_block(loop_body),
+            bounds: vec![],
+            is_gen: false,
+            is_async: false,
+        });
+
+        let entry = call(&seg_name, carried.iter().map(|l| Expr::Var(l.name.clone())).collect());
+        Ok((entry, accs))
+    }
+
+    /// The loop's exit expression: `task.done(<accumulator tuple>)`, or
+    /// `task.ready_unit()` when there is nothing to carry out.
+    fn loop_exit(&self, accs: &[Local]) -> Expr {
+        match accs.len() {
+            0 => call("task.ready_unit", vec![]),
+            1 => call("task.done", vec![Expr::Var(accs[0].name.clone())]),
+            _ => {
+                let tuple = Expr::Tuple(accs.iter().map(|l| Expr::Var(l.name.clone())).collect());
+                call("task.done", vec![tuple])
+            }
+        }
     }
 }
 
@@ -525,7 +768,7 @@ fn lower_async_fn_with(
             mutable: p.convention.binds_mutable(),
         })
         .collect();
-    let body_future = ctx.go(&f.body.stmts, &scope)?;
+    let body_future = ctx.go(&f.body.stmts, &scope, &Tail::Return)?;
     let lazy_body = call(
         "task.lazy",
         vec![Expr::Lambda { params: vec![], body: tail_block(body_future), ret: None }],
@@ -578,6 +821,57 @@ fn derive_type(value: &Expr) -> Option<Type> {
 
 fn named(n: &str) -> Type {
     Type::Named(n.to_string(), vec![])
+}
+
+/// Whether a loop body assigns to a variable that is already in scope — i.e. it
+/// *folds* into an outer accumulator (as opposed to a pure drain / effect body).
+/// Such a `for await` needs the recursive-segment loop; a non-folding one keeps
+/// the interleaving-preserving `chan.consume` lowering.
+fn body_folds(body: &Block, scope: &[Local]) -> bool {
+    fn stmt_assigns_outer(s: &Stmt, scope: &[Local]) -> bool {
+        match s {
+            Stmt::Assign { name, .. } => scope.iter().any(|l| &l.name == name),
+            Stmt::Expr(e) | Stmt::Let { value: e, .. } | Stmt::LetPattern { value: e, .. }
+            | Stmt::Yield(e) => expr_assigns_outer(e, scope),
+            Stmt::Return(v) => v.as_ref().is_some_and(|e| expr_assigns_outer(e, scope)),
+            Stmt::Break | Stmt::Continue => false,
+        }
+    }
+    fn block_assigns_outer(b: &Block, scope: &[Local]) -> bool {
+        b.stmts.iter().any(|s| stmt_assigns_outer(s, scope))
+    }
+    fn expr_assigns_outer(e: &Expr, scope: &[Local]) -> bool {
+        match e {
+            Expr::If { then_block, else_block, .. } => {
+                block_assigns_outer(then_block, scope)
+                    || else_block.as_ref().is_some_and(|b| block_assigns_outer(b, scope))
+            }
+            Expr::Match { arms, .. } => arms.iter().any(|a| expr_assigns_outer(&a.body, scope)),
+            Expr::Block(b) => block_assigns_outer(b, scope),
+            Expr::While { body, .. } | Expr::For { body, .. }
+            | Expr::WhileLet { body, .. } => block_assigns_outer(body, scope),
+            _ => false,
+        }
+    }
+    body.stmts.iter().any(|s| stmt_assigns_outer(s, scope))
+}
+
+/// Statements that rebind a loop's accumulator tuple `acc_bind` back to its named
+/// (mutable) columns after the loop yields it.
+fn rebind_accs(accs: &[Local], acc_bind: &str) -> Vec<Stmt> {
+    match accs.len() {
+        0 => vec![],
+        1 => vec![Stmt::Let {
+            name: accs[0].name.clone(),
+            ty: None,
+            mutable: true,
+            value: Expr::Var(acc_bind.to_string()),
+        }],
+        _ => vec![Stmt::LetPattern {
+            pattern: Pattern::Tuple(accs.iter().map(|l| Pattern::Var(l.name.clone())).collect()),
+            value: Expr::Var(acc_bind.to_string()),
+        }],
+    }
 }
 
 /// The live locals referenced by `expr` that are present in `scope`, in scope
