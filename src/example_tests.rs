@@ -6597,7 +6597,7 @@ fn main(console: Console):
     /// (`set.from_list(iter.collect(...))`) — identical on both backends.
     #[test]
     fn std_set_type_iteration_and_collect_agree() {
-        let client = "import set\nimport iter\n\nfn main(console: Console):\n    let s = set.from_list([3, 1, 2, 3, 1])\n    print(console, __render(set.length(s)))\n    print(console, __render(set.contains(s, 2)))\n    var total = 0\n    for x in s:\n        total = (total + x)\n    print(console, __render(total))\n    let r = set.remove(s, 2)\n    print(console, set.show(r))\n    let cs: Set(Int) = iter.collect(iter.range(1, 4))\n    print(console, set.show(cs))\n";
+        let client = "import set\nimport iter\nimport show\n\nfn main(console: Console):\n    let s = set.from_list([3, 1, 2, 3, 1])\n    print(console, __render(set.length(s)))\n    print(console, __render(set.contains(s, 2)))\n    var total = 0\n    for x in s:\n        total = (total + x)\n    print(console, __render(total))\n    let r = set.remove(s, 2)\n    print(console, show(r))\n    let cs: Set(Int) = iter.collect(iter.range(1, 4))\n    print(console, show(cs))\n";
         let sources = [
             ("cmp", crate::bundled_module("cmp").unwrap()),
             ("option", crate::bundled_module("option").unwrap()),
@@ -6605,6 +6605,7 @@ fn main(console: Console):
             ("string", crate::bundled_module("string").unwrap()),
             ("iter", crate::bundled_module("iter").unwrap()),
             ("set", crate::bundled_module("set").unwrap()),
+            ("show", crate::bundled_module("show").unwrap()),
             ("main", client),
         ];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -6665,7 +6666,7 @@ fn main(console: Console):
 
     #[test]
     fn std_show_list_backends_agree() {
-        // `show.show_list` renders a list via the element type's Show impl, so it
+        // The blanket `impl Show for List(a) where a: Show` renders via the
         // works for a user type (Coord) that the built-in to_string cannot print.
         // Monomorphized dispatch keeps it content-correct on both backends.
         let client = r#"
@@ -6680,10 +6681,10 @@ impl Show for Coord:
             Coord(x, y) -> (((("(" + __render(x)) + ",") + __render(y)) + ")")
 
 fn main(console: Console):
-    print(console, show.show_list([1, 2, 3]))
-    print(console, show.show_list(["a", "b"]))
-    print(console, show.show_list([Coord(0, 0), Coord(1, 2)]))
-    print(console, show.show_list([true, false]))
+    print(console, show([1, 2, 3]))
+    print(console, show(["a", "b"]))
+    print(console, show([Coord(0, 0), Coord(1, 2)]))
+    print(console, show([true, false]))
 "#;
         let sources = [
             ("show", crate::bundled_module("show").unwrap()),
@@ -6863,7 +6864,7 @@ impl Show for Named:
 fn main(console: Console):
     print(console, show(Coord(3, 4)))
     print(console, show(Named("p", Coord(1, 2))))
-    print(console, show.show_list([Coord(0, 0), Coord(5, 6)]))
+    print(console, show([Coord(0, 0), Coord(5, 6)]))
 "#;
         let sources = [
             ("show", crate::bundled_module("show").unwrap()),
