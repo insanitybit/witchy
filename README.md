@@ -74,7 +74,10 @@ No hidden "suddenly my dependency is pulling from ghostbin".
 The witchy package registry, `coven`, holdes packages named `runes`. This registry is
 truly a "safe by default" system;
 
-- Only supports trusted publishing, no long-lived API keys that can be compromised.
+- Two modes: an anonymous local mode for development, and trusted publishing —
+  short-lived OIDC identity tokens, no long-lived API keys to compromise —
+  enabled once at least one trusted issuer is configured (`--trust-issuer` /
+  `--trust-issuer-jwks`).
 - Full support for package signing and TUF.
 - Separation of states for "published" and "released" - your CI can handle publishing,
   but a human has to manually (2FA'd) mark packages as released.
@@ -178,7 +181,10 @@ capability footprint from source — declared metadata is never trusted**, and
 `witchy add`/`update` **block when a dependency's footprint widens** until you
 explicitly approve. Two-phase publish (stage → 2FA promote), TUF-style metadata
 against rollback/freeze, keyless OIDC trusted publishing, lockfiles, vendoring.
-Dependency code never executes at build time.
+Resolving and installing dependencies executes no dependency code; a dependency's
+build step is default-deny, running only when you grant it explicitly — under
+build-only capabilities, per-rune grants, and a post-build footprint check — and
+published runes can vendor their generated source so consumers run no build step.
 
 The package manager and registry are **self-hosted**: `projects/pm` and
 `projects/coven` are witchy programs, exercised end-to-end by the test suite.
@@ -233,8 +239,13 @@ witchy new/add/build/run/publish/...          package-manager commands
 witchy's compiler — front end, type checker, and the WIR → wasm backend —
 itself compiles to WebAssembly, so the playground runs **in the browser** with
 no server: it compiles your snippet to a wasm binary and instantiates *that* on
-the browser's own WebAssembly engine, exactly as `witchy sandbox` would. Build
-the page and open it:
+the browser's own WebAssembly engine. It is the same compiler and backend as
+native `witchy`, run under a different host: the browser uses the pure-compute,
+capability-denied host (infrastructure imports like `print` are provided;
+`Dir`/`Net`/`Clock`/`Env`/`Exec`/secrets are omitted), so a pure snippet runs
+while one that reaches for host authority fails to instantiate. Native `witchy
+sandbox`, by contrast, links the wasmtime host with the program's granted
+footprint. Build the page and open it:
 
 ```sh
 ./scripts/build-playground.sh
