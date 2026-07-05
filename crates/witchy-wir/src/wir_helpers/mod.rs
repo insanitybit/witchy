@@ -2370,12 +2370,23 @@ pub fn bytes_to_string_helper() -> WirFunc {
 /// `s` (the inverse of `$byte_to_char`). Walks UTF-8 sequences, stepping the byte
 /// cursor by 1/2/3/4 per character based on the lead byte, until `n` chars (or
 /// the end) are consumed.
+///
+/// `n` is a *full-width i64* char index, and the walk clamps it to `[0, char_count]`
+/// implicitly: a negative `n` stops the loop immediately (byte offset 0) and any `n`
+/// beyond the last character runs the cursor to the byte length. The `count >= n`
+/// guard is therefore compared in i64, so a huge index near the i64 extremes can't
+/// wrap when narrowed — that was BUG-011, where the compiled backend narrowed the
+/// index to i32 *before* clamping, so a large `end` wrapped to `< start` and yielded
+/// `""` while the interpreter clamped in i64 and returned the whole string.
 pub fn char_to_byte_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    // i64 sign-extend + i64 compare, for the full-width `count >= n` clamp guard.
+    let ext = |e: E| E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) };
+    let b64 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I64, lhs: Box::new(l), rhs: Box::new(r) };
     let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
     // seqlen = b<0x80 ? 1 : b<0xe0 ? 2 : b<0xf0 ? 3 : 4 — nested if-statements
@@ -2403,7 +2414,7 @@ pub fn char_to_byte_helper() -> WirFunc {
             label: "l".into(),
             body: vec![
                 N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("i"), getl("slen"))) },
-                N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("count"), getl("n"))) },
+                N::Br { target: "done".into(), cond: Some(b64(BinOp::Ge, ext(getl("count")), getl("n"))) },
                 setl("b", E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), getl("i"))), offset: 4 }),
                 seqlen,
                 setl("i", b(BinOp::Add, getl("i"), getl("seqlen"))),
@@ -2416,7 +2427,7 @@ pub fn char_to_byte_helper() -> WirFunc {
         name: "char_to_byte".into(),
         params: vec![
             WirLocal { name: "s".into(), ty: WirTy::Str },
-            WirLocal { name: "n".into(), ty: WirTy::Bool },
+            WirLocal { name: "n".into(), ty: WirTy::Int },
         ],
         ret: vec![WirTy::Bool],
         locals: ["slen", "i", "count", "b", "seqlen"]
@@ -2435,9 +2446,10 @@ pub fn char_to_byte_helper() -> WirFunc {
 }
 
 /// `$str_substring(s, start, end) -> i32` — the substring of `s` between the
-/// *character* indices `start` and `end`. Maps both ends to byte offsets via
-/// `$char_to_byte`, then `$substr`s the byte slice; an empty slice when the
-/// bounds cross.
+/// *character* indices `start` and `end` (both full-width i64). Maps both ends to
+/// byte offsets via `$char_to_byte`, which clamps each index to `[0, char_count]`
+/// in i64 (mirroring the interpreter's `max(0).min(len)`), then `$substr`s the byte
+/// slice; an empty slice when the bounds cross.
 pub fn str_substring_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
@@ -2450,8 +2462,8 @@ pub fn str_substring_helper() -> WirFunc {
         name: "str_substring".into(),
         params: vec![
             WirLocal { name: "s".into(), ty: WirTy::Str },
-            WirLocal { name: "start".into(), ty: WirTy::Bool },
-            WirLocal { name: "end".into(), ty: WirTy::Bool },
+            WirLocal { name: "start".into(), ty: WirTy::Int },
+            WirLocal { name: "end".into(), ty: WirTy::Int },
         ],
         ret: vec![WirTy::Str],
         locals: vec![

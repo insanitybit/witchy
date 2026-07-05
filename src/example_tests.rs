@@ -5448,6 +5448,37 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
+    /// (BUG-011) `string.substring` must clamp BOTH indices to `[0, char_count]`
+    /// in full i64 width on BOTH backends. The compiled path used to narrow the
+    /// i64 char index to i32 *before* clamping, so an index near the i64 extremes
+    /// wrapped (a huge `end` became `< start`) and the slice came back `""` while
+    /// the interpreter clamped in i64 and returned the whole string. Covers a
+    /// negative `i`, `i > len`, `j > len`, `i > j`, and both i64 extremes.
+    #[test]
+    fn wasm_substring_clamps_out_of_range_indices_in_i64() {
+        let src = r#"fn main(console: Console):
+    let s = "abcdef"
+    print(console, string.substring(s, (-2), 3))
+    print(console, string.substring(s, 2, 100))
+    print(console, string.substring(s, 4, 2))
+    print(console, string.substring(s, 0, 6))
+    print(console, string.substring(s, (-9000000000), 9000000000))
+    print(console, string.substring(s, (-9223372036854775807), 9223372036854775807))
+    print(console, string.substring("X-5166417078869286437Y", (-3261219961577993898), 5500724189412945291))
+"#;
+        let want = vec![
+            "abc".to_string(),
+            "cdef".to_string(),
+            String::new(),
+            "abcdef".to_string(),
+            "abcdef".to_string(),
+            "abcdef".to_string(),
+            "X-5166417078869286437Y".to_string(),
+        ];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
     /// `examples/rle/src/rle.witchy` — run-length encoding and its inverse — collapses
     /// runs to "<count><char>" and expands them back, verifying decode∘encode is
     /// the identity. Pure string processing; identical on both backends. (Its
