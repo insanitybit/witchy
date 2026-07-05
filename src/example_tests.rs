@@ -15721,6 +15721,30 @@ fn main(console: Console):
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
+    /// BUG-013 guard: the RFC-0046 lowering fixpoint reuses `first_table` (skips
+    /// the redundant FINAL re-annotate) whenever a `lower_with` call monomorphizes
+    /// nothing — the case for every `derive(...)` comptime block. This program
+    /// stresses BOTH branches of that decision in one module: six `derive` comptime
+    /// blocks (two enums × three derives) take the reuse path, while the Eq-bounded
+    /// generic `dedup_count` is monomorphized at two record element types (Color and
+    /// Tag), so ITS `lower_with` still takes the final re-annotate. If the reused
+    /// table were ever stale, the derived `Show`/`Eq` dispatch would render or dedup
+    /// wrong — so identical output on both backends pins the optimization to zero
+    /// behavior change. (Also a bounded-work regression tripwire: a program this
+    /// shape must compile without the fixpoint fanning out.)
+    #[test]
+    fn rfc0046_bug013_derive_and_bounded_generic_lower_without_stale_table() {
+        let src = "import cmp\n\ntype Color derive(PartialEq, Eq, Show):\n    Red\n    Green\n    Blue\n\ntype Tag derive(PartialEq, Eq, Show):\n    Tag(Int)\n\nfn dedup_count(xs: List(a), y: a) -> Int where a: Eq:\n    cmp.count(cmp.unique(xs), y)\n\nfn main(console: Console):\n    let cs = [Red, Green, Red, Blue, Green, Red]\n    print(console, \"${cmp.unique(cs)}\")\n    print(console, \"${dedup_count(cs, Red)}\")\n    let ts = [Tag(1), Tag(2), Tag(1), Tag(3)]\n    print(console, \"${cmp.unique(ts)}\")\n    print(console, \"${dedup_count(ts, Tag(1))}\")\n";
+        let want = vec![
+            "[Red, Green, Blue]".to_string(),
+            "1".to_string(),
+            "[Tag(1), Tag(2), Tag(3)]".to_string(),
+            "1".to_string(),
+        ];
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
     /// RFC-0046 step 5 (acceptance d, first clause): the new `Iter` combinators —
     /// `min`/`max` (Ord-bounded), `last`, `position`, `scan` (lazy stateful map),
     /// and `flatten` — exist and produce identical results on both backends,
