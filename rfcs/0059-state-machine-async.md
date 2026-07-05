@@ -6,9 +6,15 @@ status: partially-implemented (increment 1 SHIPPED: defunctionalized state-machi
   chan_throughput folds + 4x past OOM cliff, parity+determinism green. Increment-2 STEP 1
   SHIPPED: fixed-capacity ring channels (send = in-place set_at, recv = advance head, no
   list.tail rebuild), determinism byte-identical, all concurrency parity+heap gates green.
-  Increment-2 STEP 2 (scalar SoA frames = eliminate the CPS closure churn) REMAINS and is
-  the sole blocker for the flat DoD to N=1M — measurement (2026-07-05) proved the ring does
-  NOT reduce the ~45-48 cells/message leak; it is 100% CPS closure/Task/Step interface churn.)
+  Increment-2 STEP 2 (scalar SoA frames = eliminate the CPS closure churn) REMAINS. Its flat
+  TARGET is now PROVEN in-tree (`chan_throughput_scalar_soa_reference_is_flat`: 13 live cells
+  FLAT to N=20k, ~11 ns/msg flat to N=1M, both backends) — but analysis (2026-07-05) re-scoped
+  it from "one focused executor edit" to a whole-program scalar-executor SYNTHESIS bounded to
+  all-scalar programs (a multi-session transform): the std executor cannot upcall a program-
+  generated dispatcher (no global mutable), the generic closure combinators cannot be scalar,
+  and all 8 examples carry non-scalar state — so the scalar path is an `unbox`-style
+  specialization emitted only for provably-all-Int programs, with the closure executor RETAINED
+  for the rest. See the 2026-07-05 "Increment-2 STEP 2" note for the three blockers + staged plan.)
 created: 2026-07-04
 tracking:
 ---
@@ -494,3 +500,111 @@ channel state becomes scalar SoA columns (`chan_head`/`chan_count`/`chan_cap` as
 `(buf, head, count, cap)` tuple (the last ~4/msg of channel-side churn). The buffer-element
 write into the nested `chan_bufs[ch]` is the one subtle uniqueness site (nested-container
 in-place mutation) to get right there.
+
+## Implementation note (2026-07-05) — Increment-2 STEP 2: the flat TARGET is now proven in-tree, and the transform is re-scoped as a whole-program scalar-executor SYNTHESIS (three architectural blockers the prior handoff under-specified)
+
+A step-2 attempt began with the prior handoff's framing ("one focused executor-representation
+change"). Building out the surface established that the framing is wrong in one specific way:
+the flat DoD is reachable, but **not** by editing the existing closure executor in place. The
+change is a *whole-program scalar-executor synthesis*, bounded to all-scalar programs, and it
+is a multi-session transform, not a single focused edit. Three concrete blockers, each
+evidenced against the current tree, and the corrected staged plan follow. Nothing that changes
+the closure executor / `async_lower` protocol landed this session (an atomic half-cut would red
+every concurrency example); what landed is the durable proof + this re-scope.
+
+### What landed this session (additive, verified, green)
+
+- **The flat TARGET is now a re-runnable in-tree fact, not ephemeral scratch prose.**
+  `src/stats.rs::chan_throughput_scalar_soa_reference_is_flat` compiles+runs the all-scalar
+  producer/consumer kernel (scalar `Int` columns `f0=[np,sum]`/`f1=[i,seen]`/`status` +
+  fixed-cap ring, no closures/`Task`/`Step`) under rc-floor and asserts **live_cells = 13,
+  IDENTICAL at N=200 and N=20000** (FLAT, independent of N) — the executable form of the spike's
+  "13 cells flat". Kernel-timed on the compiled tier (`now_monotonic`, min of 8, both backends
+  agree via `witchy parity`): **11.8 ns/msg @ N=1k, 11.0 @ 64k, 11.1 @ 1M** — flat, under the
+  ≤300 ns DoD and the ≤100 ns stretch. So the target representation is confirmed reachable and
+  guarded against codegen regression; the remaining work is purely *making the transform emit
+  it for the real `async` source*.
+- **Baseline is green** (retained closure path): the 9 concurrency parity + interleaving-
+  determinism gates (`future_executor_interleaves_backends_agree`, `async_*`/`for_await_*`/
+  `chan_producer_consumer`/`rc_corpus_channel_executor_is_stable`/`async_method_in_impl`/
+  `rfc0055_two_modules_*`) pass. The `#[ignore]`d DoD test `chan_throughput_bounded_by_rc_floor`
+  still measures **18413 live cells at N=200** (drain form, cap 8, via `--run-ignored`) — i.e.
+  the transform is genuinely required; there is no shortcut to <500.
+
+### Blocker 1 — a std executor cannot reach a program-generated dispatcher (no global mutable ⇒ the columns can only travel by capture or by upcall)
+
+The handoff says "the executor resumes a task by dispatching on seg-id through a whole-program
+generated `step` dispatcher rather than calling a stored closure." But that dispatcher
+(`match seg_id: 0 -> __seg0(cols…); …`) references the program's lifted segment functions, so
+it lives in the **user module**, while `run` lives in **`std/task`**. witchy has **no global
+mutable state**, so a resumed segment can receive its carried columns by exactly two routes:
+(a) capture them in a closure — the leak we are removing — or (b) have the executor pass them
+in. Route (b) means `std/task::run` must **call the user-module dispatcher**, an upward
+`std → user` call that the linker does not provide. Therefore step 2 must FIRST pick an
+architecture, and the honest options are narrow:
+
+- **Recommended: `async_lower` SYNTHESIZES the specialized scalar scheduler into the program**
+  (replacing the `task.run(lazy_body)` it already emits for an async `main`) when the program
+  qualifies (Blocker 3), so the scheduler and the `match seg_id` dispatcher are co-generated in
+  one module and no upcall is needed. This keeps `std/task`/`std/chan`'s human-readable closure
+  executor as the fallback for non-qualifying programs — which is not "two lowerings" in the
+  forbidden sense but the `unbox`-style representation choice (one mechanism, specialized on a
+  proven fact; see Blocker 3).
+- Alternative: add a linker `std → user` upcall (a well-known generated symbol the std executor
+  imports). Rejected as first choice: it puts a program-shaped hole in a std module and widens
+  the parity surface (the executor's control flow now depends on generated code) for no gain
+  over synthesis.
+
+### Blocker 2 — the closure combinators are generic + higher-order, so they cannot become scalar segments
+
+`consume`/`serve`/`select`/`and_then`/`gather`/`par_map`/`race`/`race_n`/`scope`/`spawn_all`/
+`recv_n`/`recv_each`/`par_build` are written with `and_then` over `Task(m)`/`fn` values and are
+polymorphic in the message type. A `(seg-id, Int-column)` row cannot carry a `Task(m)` argument
+or a user closure, so "migrate every `std/chan` combinator in the same cut" **as scalar
+segments is not possible** — `request_reply` even calls `chan.and_then` in *user* source and
+sends a `Sender(Msg)` *inside* a message. These combinators must keep boxed frames (closures),
+which are "10× but not flat" (the RFC-0036 recursive-`$rdrop` path). **Flat is reachable only
+for the all-scalar `async fn` shape**, never for the generic combinator surface. The DoD's item
+6 ("delete the closure-tower `Step` arms") is therefore only achievable for the synthesized
+scalar path; the closure `Step` stays as the combinator substrate until recursive `$rdrop`.
+
+### Blocker 3 — the 8 concurrency examples carry NON-scalar state across `await`, so a scalar-only executor cannot run them
+
+Every shipped concurrency example threads non-`Int` state through carried locals: `Console`
+capabilities (`async_tasks`, `channels`, `for_await`, `select`, `worker_pool`), `String` names
+(`async_tasks`), `Receiver`/`Sender` values (`select`, `worker_pool`, `request_reply`),
+`Selected(m)` (`select`), `Msg` records with an embedded `Sender(Msg)` (`request_reply`), and
+user closures passed to `consume`/`serve` (`channels`, `worker_pool`, `request_reply`). A scalar
+`Int` slot-table **cannot represent any of these**, so the scalar executor is not a drop-in
+replacement — replacing the closure executor with a scalar one wholesale breaks all 8 examples
+(the exact atomic-half-cut failure to avoid). The resolution is the `unbox`-style choice:
+`async_lower` emits the synthesized scalar scheduler **only when the whole reachable async
+surface is provably all-`Int`** (frame columns and channel payloads), and emits today's closure
+lowering otherwise. This is ONE mechanism specialized on a proven fact — like `unbox` picking a
+flat buffer only for confined fixed-scalar records — not two hand-maintained async lowerings.
+
+### Corrected staged plan (multi-session; each stage independently green)
+
+1. **Qualification analysis** (frontend): decide, per async program, whether its entire
+   reachable async surface is all-`Int` (frame live-across-`await` locals AND every channel's
+   message type). Only the DoD benchmark/test qualify today; the 8 examples do not. This is a
+   pure predicate over the already-lifted segments + endpoint types — testable in isolation.
+2. **Synthesized scalar scheduler + `match seg_id` dispatcher** for qualifying programs
+   (Blocker 1's recommended architecture): reify each segment's carried columns as scalar `Int`
+   columns indexed by task id, the `Step` effect as scalar `(effect-tag, channel-id, next-seg-id)`
+   arms, and the channel as the step-1 ring lowered to SoA columns (`chan_head`/`chan_count`/
+   `chan_cap` + `chan_bufs`). This is where DoD items 1–3 land; the reference in
+   `chan_throughput_scalar_soa_reference_is_flat` is the exact shape to emit, so it is a codegen
+   target with a green oracle already in tree.
+3. **Retain the closure executor** for non-qualifying programs (all 8 examples + the generic
+   combinators, Blockers 2–3), unchanged, under the same parity + `future_executor_interleaves_
+   backends_agree` gate. The general (non-scalar) flat guarantee stays deferred behind recursive
+   `$rdrop` (RFC-0036) + the per-capture move/borrow oracle, exactly as previously scoped.
+
+**DoD status after this session.** Item 2 (kernel-timed ≤300/≤100 ns) and the flat-memory half
+of items 1/3 are PROVEN reachable in-tree (`chan_throughput_scalar_soa_reference_is_flat`,
+11 ns/msg flat to N=1M). Items 1/3 for the *real async source*, and item 6 (delete CPS `Step`
+arms) for the scalar path, require stage 2 above and remain open. Items 4–5 (examples,
+determinism, oracle sweep) are green on the retained closure path and must stay so through stage
+2 (they exercise the non-qualifying branch). The `#[ignore]` on `chan_throughput_bounded_by_rc_
+floor` stays until stage 2 emits the scalar scheduler for its async source.
