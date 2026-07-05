@@ -4500,6 +4500,16 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
+        // (RFC-0060) HTTPS listen: `(net, addr, cert_pem, key_handle) -> Listener`.
+        // All four args are i32 slots (handles + string pointers); the private key
+        // travels ONLY as its host-table handle — the bytes stay host-side.
+        "net_listen_tls" => Some(WirHelperSpec {
+            func: host_call_helper("net_listen_tls", "net_listen_tls", 4),
+            helper_deps: &[],
+            import_deps: &["net_listen_tls"],
+            uses_heap: false,
+            uses_table: false,
+        }),
         "net_accept" => Some(WirHelperSpec {
             func: host_call_helper("net_accept", "net_accept", 1),
             helper_deps: &[],

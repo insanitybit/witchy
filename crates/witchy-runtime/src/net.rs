@@ -41,6 +41,98 @@ impl Stream for TlsStream {
     }
 }
 
+// ---- Server-side TLS (RFC-0060) ----
+//
+// `server.serve_tls` terminates TLS HERE, host-side, exactly like the client
+// `tls:` scheme above: the guest's `accept` yields an ordinary Socket handle over
+// a decrypted stream, and — because the private key arrives as a `Secret`
+// consumed BY HANDLE — the key bytes never enter guest memory. This module is
+// the ONE implementation both backends call, so they cannot drift.
+
+/// A listener's server-side TLS state: the rustls config built once at listen
+/// time (unit on the wasm target, where TLS serving is unavailable).
+#[cfg(not(target_arch = "wasm32"))]
+pub type ServerTlsConfig = Arc<rustls::ServerConfig>;
+/// The wasm build has no rustls; the constructor below always errors there.
+#[cfg(target_arch = "wasm32")]
+pub type ServerTlsConfig = ();
+
+/// The server half of a TLS stream (mirrors the client `TlsStream` above).
+#[cfg(not(target_arch = "wasm32"))]
+type ServerTlsStream = rustls::StreamOwned<rustls::ServerConnection, TcpStream>;
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Stream for ServerTlsStream {
+    fn shutdown(&mut self) {
+        self.conn.send_close_notify();
+        let _ = self.flush();
+        let _ = self.sock.shutdown(std::net::Shutdown::Both);
+    }
+}
+
+/// Build the rustls `ServerConfig` for `serve_tls` from a PEM certificate chain
+/// and the private key's raw bytes (PEM-encoded PKCS#8, PKCS#1, or SEC1 — the
+/// on-disk formats `openssl`/`rcgen` produce). Errors are LOUD and specific:
+/// per RFC-0060's error policy a malformed cert, a malformed key, or a key that
+/// does not match the certificate fails at listen time (startup), never at first
+/// connection — `with_single_cert` verifies the key's SubjectPublicKeyInfo
+/// against the end-entity certificate's.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn server_tls_config(cert_pem: &str, key_bytes: &[u8]) -> Result<ServerTlsConfig, String> {
+    let mut cert_reader = cert_pem.as_bytes();
+    let certs: Vec<_> = rustls_pemfile::certs(&mut cert_reader)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("serve_tls: malformed certificate PEM: {e}"))?;
+    if certs.is_empty() {
+        return Err("serve_tls: no certificates found in the PEM chain".to_string());
+    }
+    let mut key_reader = key_bytes;
+    let key = rustls_pemfile::private_key(&mut key_reader)
+        .map_err(|e| format!("serve_tls: malformed private-key PEM in the granted secret: {e}"))?
+        .ok_or_else(|| {
+            "serve_tls: the granted secret holds no private key (expected a PEM-encoded PKCS#8/PKCS#1/SEC1 key)"
+                .to_string()
+        })?;
+    let config = rustls::ServerConfig::builder_with_provider(
+        rustls::crypto::aws_lc_rs::default_provider().into(),
+    )
+    .with_safe_default_protocol_versions()
+    .expect("aws-lc provider supports the default TLS protocol versions")
+    .with_no_client_auth()
+    .with_single_cert(certs, key)
+    .map_err(|e| format!("serve_tls: certificate/key rejected: {e}"))?;
+    Ok(Arc::new(config))
+}
+
+/// TLS serving is native-only (rustls/aws-lc build C); the wasm build refuses at
+/// listen time — the same loud startup-failure shape as a bad key.
+#[cfg(target_arch = "wasm32")]
+pub fn server_tls_config(_cert_pem: &str, _key_bytes: &[u8]) -> Result<ServerTlsConfig, String> {
+    Err("serve_tls is unavailable in the wasm build".to_string())
+}
+
+/// Complete a server-side TLS handshake on an accepted connection, returning the
+/// decrypted stream for the socket table. The handshake is driven EAGERLY here so
+/// a failure (a plaintext client, a bad ClientHello, an unsupported version)
+/// surfaces now — the accept loop drops that connection and keeps serving, per
+/// RFC-0060's error policy: per-connection TLS failures are the network's
+/// weather, not program errors.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn accept_tls(config: ServerTlsConfig, tcp: TcpStream) -> std::io::Result<Box<dyn Stream>> {
+    let conn = rustls::ServerConnection::new(config).map_err(std::io::Error::other)?;
+    let mut tls = rustls::StreamOwned::new(conn, tcp);
+    while tls.conn.is_handshaking() {
+        tls.conn.complete_io(&mut tls.sock)?;
+    }
+    Ok(Box::new(tls))
+}
+
+/// No TLS listener can exist on wasm (`server_tls_config` refused already).
+#[cfg(target_arch = "wasm32")]
+pub fn accept_tls(_config: ServerTlsConfig, _tcp: TcpStream) -> std::io::Result<Box<dyn Stream>> {
+    Err(std::io::Error::other("serve_tls is unavailable in the wasm build"))
+}
+
 /// Split an optional `tls:` scheme off an address: `"tls:github.com:443"` →
 /// `(true, "github.com:443")`; a bare `host:port` → `(false, "host:port")`. The scheme
 /// is a connect-time choice; the capability allowlist governs the bare `host:port` (TLS
@@ -126,17 +218,21 @@ pub fn dial(
 }
 
 /// A client config trusting the Mozilla CA roots plus any extra PEM roots named by
-/// `WITCHY_TLS_EXTRA_ROOTS` (a custom/corporate CA, or the hermetic test's self-signed
-/// cert). Built per dial — correctness over the micro-cost; the handshake dominates.
+/// `WITCHY_TLS_EXTRA_ROOTS` (a custom/corporate CA) or `WITCHY_TLS_TEST_ROOTS`
+/// (RFC-0060: the TEST-ONLY hook the `serve_tls` differential/e2e suites use to
+/// trust their self-signed fixture; consumed only when set, never for production
+/// trust). Built per dial — correctness over the micro-cost; the handshake dominates.
 #[cfg(not(target_arch = "wasm32"))]
 fn client_config() -> Arc<rustls::ClientConfig> {
     let mut roots = rustls::RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    if let Some(path) = std::env::var_os("WITCHY_TLS_EXTRA_ROOTS") {
-        if let Ok(pem) = std::fs::read(&path) {
-            let mut reader = &pem[..];
-            for cert in rustls_pemfile::certs(&mut reader).flatten() {
-                let _ = roots.add(cert);
+    for var in ["WITCHY_TLS_EXTRA_ROOTS", "WITCHY_TLS_TEST_ROOTS"] {
+        if let Some(path) = std::env::var_os(var) {
+            if let Ok(pem) = std::fs::read(&path) {
+                let mut reader = &pem[..];
+                for cert in rustls_pemfile::certs(&mut reader).flatten() {
+                    let _ = roots.add(cert);
+                }
             }
         }
     }

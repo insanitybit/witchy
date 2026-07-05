@@ -263,6 +263,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "net_connect_pinned" (func $net_connect_pinned_host (param i32 i32 i32 i64 i32) (result i32)))
   (import "witchy" "net_try_connect_pinned" (func $net_try_connect_pinned_host (param i32 i32 i32 i64 i32) (result i32)))
   (import "witchy" "net_listen" (func $net_listen_host (param i32 i32) (result i32)))
+  (import "witchy" "net_listen_tls" (func $net_listen_tls_host (param i32 i32 i32 i32) (result i32)))
   (import "witchy" "net_accept" (func $net_accept_host (param i32) (result i32)))
   (import "witchy" "serve_pool" (func $serve_pool_host (param i32)))
   (import "witchy" "net_restrict" (func $net_restrict_host (param i32 i32) (result i32)))

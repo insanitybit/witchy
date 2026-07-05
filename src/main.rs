@@ -677,7 +677,7 @@ fn main() -> wasmtime::Result<()> {
         if let Some(seed) = signing_key {
             // The signing key is the `signing` secret at handle 0 (a bare `Secret`),
             // also reachable via `SecretStore.get("signing")`.
-            caps.secrets.push(("signing".to_string(), seed.to_vec()));
+            caps.secrets.push(runtime::SecretGrant::new("signing", seed.to_vec()));
         }
         let wasm = match codegen::compile_module_binary(&module) {
             Ok(Some(bytes)) => bytes,
@@ -767,7 +767,7 @@ fn main() -> wasmtime::Result<()> {
         let mut file_grants: Vec<std::path::PathBuf> = Vec::new();
         let mut net_allow: Vec<String> = Vec::new();
         let mut signing_key: Option<[u8; 32]> = None;
-        let mut named_secrets: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut named_secrets: Vec<runtime::SecretGrant> = Vec::new();
         let mut grants_doc: Option<String> = None;
         // RFC-0013: pre-approve the grant (skip the interactive confirmation),
         // for non-interactive launches (CI, installers, scripts).
@@ -1018,7 +1018,7 @@ fn main() -> wasmtime::Result<()> {
         let mut file: Option<String> = None;
         let mut prog_args: Vec<String> = Vec::new();
         let mut signing_key: Option<[u8; 32]> = None;
-        let mut named_secrets: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut named_secrets: Vec<runtime::SecretGrant> = Vec::new();
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
             if file.is_some() {
@@ -1423,26 +1423,45 @@ fn flag_value(arg: &str, flag: &str, rest: &mut impl Iterator<Item = String>) ->
     }
 }
 
-/// Parse a `--secret name=value` spec into a named secret. The value is taken
-/// literally (UTF-8 bytes) — a token, password, or connection string. The name
-/// must be non-empty and contain no `=` (everything after the first `=` is the
-/// value, so values may contain `=`).
-fn parse_secret_inline(spec: &str) -> Result<(String, Vec<u8>), String> {
-    match spec.split_once('=') {
-        Some((name, value)) if !name.is_empty() => Ok((name.to_string(), value.as_bytes().to_vec())),
-        _ => Err(format!("`--secret` expects `name=value`, got `{spec}`")),
+/// Parse a `--secret name=value[,use-only]` spec into a named secret. The value is
+/// taken literally (UTF-8 bytes) — a token, password, or connection string. The
+/// name must be non-empty and contain no `=` (everything after the first `=`, up
+/// to any trailing `,use-only`, is the value, so values may contain `=`). A
+/// trailing `,use-only` (RFC-0060) marks the secret usable by handle but not
+/// revealable (`crypto.reveal` errors); the default is revealable.
+fn parse_secret_inline(spec: &str) -> Result<runtime::SecretGrant, String> {
+    let (body, use_only) = split_use_only(spec);
+    match body.split_once('=') {
+        Some((name, value)) if !name.is_empty() => {
+            Ok(runtime::SecretGrant { name: name.to_string(), bytes: value.as_bytes().to_vec(), use_only })
+        }
+        _ => Err(format!("`--secret` expects `name=value[,use-only]`, got `{spec}`")),
     }
 }
 
-/// Parse a `--secret-file name=path` spec, reading the secret's bytes from the
-/// file. Whitespace is NOT trimmed (a secret file holds exactly its bytes).
-fn parse_secret_file(spec: &str) -> Result<(String, Vec<u8>), String> {
-    match spec.split_once('=') {
+/// Parse a `--secret-file name=path[,use-only]` spec, reading the secret's bytes
+/// from the file. Whitespace is NOT trimmed (a secret file holds exactly its
+/// bytes). A trailing `,use-only` (RFC-0060) marks it usable by handle but not
+/// revealable — the shape a TLS private key should take.
+fn parse_secret_file(spec: &str) -> Result<runtime::SecretGrant, String> {
+    let (body, use_only) = split_use_only(spec);
+    match body.split_once('=') {
         Some((name, path)) if !name.is_empty() => {
             let bytes = std::fs::read(path).map_err(|e| format!("`--secret-file {name}`: cannot read `{path}`: {e}"))?;
-            Ok((name.to_string(), bytes))
+            Ok(runtime::SecretGrant { name: name.to_string(), bytes, use_only })
         }
-        _ => Err(format!("`--secret-file` expects `name=path`, got `{spec}`")),
+        _ => Err(format!("`--secret-file` expects `name=path[,use-only]`, got `{spec}`")),
+    }
+}
+
+/// (RFC-0060) Peel a single trailing `,use-only` grant modifier off a secret spec,
+/// returning the `name=…` body and whether use-only was requested. Only the exact
+/// trailing token is recognized, so a `name=value` whose value happens to contain
+/// commas is unaffected unless it literally ends in `,use-only`.
+fn split_use_only(spec: &str) -> (&str, bool) {
+    match spec.strip_suffix(",use-only") {
+        Some(body) => (body, true),
+        None => (spec, false),
     }
 }
 
@@ -1462,7 +1481,7 @@ fn execute_file_exit(
     net_allow: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
-    named_secrets: Vec<(String, Vec<u8>)>,
+    named_secrets: Vec<runtime::SecretGrant>,
 ) -> Result<(Vec<String>, i32), String> {
     let (linked, entry_stem) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
@@ -1918,7 +1937,7 @@ fn run_linked_compiled(
     net_allow: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
-    named_secrets: Vec<(String, Vec<u8>)>,
+    named_secrets: Vec<runtime::SecretGrant>,
     user_cap_fields: Vec<Vec<String>>,
     strict_dir: bool,
 ) -> Result<(Vec<String>, Option<i32>), String> {
@@ -2002,7 +2021,7 @@ fn run_linked_compiled(
         // The `--secret`/`--secret-file` grants follow, each a named `Secret`
         // reachable by `SecretStore.get(name)` / `.require(name)`.
         if let Some(seed) = signing_key {
-            caps.secrets.push(("signing".to_string(), seed.to_vec()));
+            caps.secrets.push(runtime::SecretGrant::new("signing", seed.to_vec()));
         }
         caps.secrets.extend(named_secrets);
     }
@@ -2145,7 +2164,7 @@ fn run_file_sandboxed(
     net_allow: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
-    named_secrets: Vec<(String, Vec<u8>)>,
+    named_secrets: Vec<runtime::SecretGrant>,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     let (linked, stem) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
@@ -2238,9 +2257,9 @@ fn run_file_grants(
     let mut net_allow: Vec<String> = doc.net.values().flatten().cloned().collect();
     net_allow.sort();
     net_allow.dedup();
-    let mut named_secrets: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut named_secrets: Vec<runtime::SecretGrant> = Vec::new();
     for (name, s) in &doc.secrets {
-        named_secrets.push((name.clone(), resolve_secret_from(&s.from)?));
+        named_secrets.push(runtime::SecretGrant::new(name.clone(), resolve_secret_from(&s.from)?));
     }
     if let Some(ast::Item::Function(main)) =
         linked.items.iter().find(|it| matches!(it, ast::Item::Function(f) if f.name == "main"))
@@ -2345,7 +2364,7 @@ fn run_wasm_file(
     net_allow: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
-    named_secrets: Vec<(String, Vec<u8>)>,
+    named_secrets: Vec<runtime::SecretGrant>,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
     run_wasm_module(&bytes, dir_roots, file_grants, net_allow, args, signing_key, named_secrets)
@@ -2360,7 +2379,7 @@ fn run_wasm_module(
     net_allow: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
-    named_secrets: Vec<(String, Vec<u8>)>,
+    named_secrets: Vec<runtime::SecretGrant>,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     use crate::runtime::{Capabilities, Runtime};
     let needs = witchy_imports(bytes)?;
@@ -2423,7 +2442,7 @@ fn run_wasm_module(
     if needs_secret {
         caps.signing_key = signing_key;
         if let Some(seed) = signing_key {
-            caps.secrets.push(("signing".to_string(), seed.to_vec()));
+            caps.secrets.push(runtime::SecretGrant::new("signing", seed.to_vec()));
         }
         caps.secrets.extend(named_secrets);
     }

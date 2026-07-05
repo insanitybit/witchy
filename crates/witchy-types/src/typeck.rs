@@ -1898,6 +1898,8 @@ impl Checker {
             "connect" | "try_connect" | "listen" | "only" | "deny" | "resolve" => 2,
             // (RFC-0020) pinned dial: (net, ip, host, port, secure).
             "connect_pinned" | "try_connect_pinned" => 5,
+            // (RFC-0060) HTTPS listen: (net, addr, cert_pem, key).
+            "listen_tls" => 4,
             _ => return Ok(None),
         };
         if args.len() != arity {
@@ -1910,6 +1912,16 @@ impl Checker {
         if name == "connect_pinned" || name == "try_connect_pinned" {
             // (RFC-0020) mixed trailing args: ip:String, host:String, port:Int, secure:Bool.
             for (arg, expected) in args[1..].iter().zip([Ty::String, Ty::String, Ty::Int, Ty::Bool]) {
+                let at = self.infer(arg)?;
+                self.unify(&expected, &at).map_err(|e| TypeError {
+                    message: format!("in call to `{name}`: {}", e.message),
+                })?;
+            }
+        } else if name == "listen_tls" {
+            // (RFC-0060) mixed trailing args: addr:String, cert_pem:String, key:Secret.
+            // The key is a `Secret` — never a String path or raw bytes — so the
+            // private key stays host-side, consumed by handle.
+            for (arg, expected) in args[1..].iter().zip([Ty::String, Ty::String, Ty::Secret]) {
                 let at = self.infer(arg)?;
                 self.unify(&expected, &at).map_err(|e| TypeError {
                     message: format!("in call to `{name}`: {}", e.message),
@@ -1970,6 +1982,21 @@ impl Checker {
                 if !rights.tcp {
                     return terr(format!(
                         "`listen` is only implemented over `Tcp`, but the capability is `{rights}`"
+                    ));
+                }
+                Ty::Listener
+            }
+            // (RFC-0060) HTTPS listen — the same rights as `listen` (the TLS layer
+            // adds no network authority; the key's authority is the Secret itself).
+            "listen_tls" => {
+                if !rights.listen {
+                    return terr(format!(
+                        "`listen_tls` needs `Listen` but the capability is `{rights}`"
+                    ));
+                }
+                if !rights.tcp {
+                    return terr(format!(
+                        "`listen_tls` is only implemented over `Tcp`, but the capability is `{rights}`"
                     ));
                 }
                 Ty::Listener

@@ -59,14 +59,17 @@ pub enum Value {
     /// A network capability: an allow-list of permitted `host:port` destinations
     /// (wasi:sockets / cap-std-net style). Attenuable via `restrict`.
     Net(Vec<String>),
-    /// A single secret's raw bytes (a signing seed, or a value secret like a token).
-    /// Unforgeable — minted only by the host or fetched from a `SecretStore`. The
-    /// ability to use it *is* authority; `.sign`/`.public_key` read it as a hex
-    /// Ed25519 seed, `.reveal` returns it verbatim.
-    Secret(Vec<u8>),
+    /// A single secret's raw bytes (a signing seed, or a value secret like a token)
+    /// plus its **use-only** flag (RFC-0060). Unforgeable — minted only by the host
+    /// or fetched from a `SecretStore`. The ability to use it *is* authority;
+    /// `.sign`/`.public_key` read it as a hex Ed25519 seed. `.reveal` returns it
+    /// verbatim UNLESS `use_only` is set (or it is the signing key), in which case
+    /// reveal errors — the key stays usable by handle only.
+    Secret(Vec<u8>, bool),
     /// The host-granted store of NAMED secrets (from `--secret`/`--secret-file`/
-    /// `--signing-key`). `secret_store.get(name)` yields a `Secret`.
-    SecretStore(std::collections::BTreeMap<String, Vec<u8>>),
+    /// `--signing-key`). Each entry is `(bytes, use_only)`; `secret_store.get(name)`
+    /// yields a `Secret` carrying both.
+    SecretStore(std::collections::BTreeMap<String, (Vec<u8>, bool)>),
     /// A connected socket — a handle into the interpreter's socket table.
     Socket(usize),
     /// A listening server socket — a handle into the interpreter's listener
@@ -169,7 +172,7 @@ impl fmt::Display for Value {
             Value::Dir(..) => write!(f, "<dir>"),
             Value::File(_) => write!(f, "<file>"),
             Value::Net(_) => write!(f, "<net>"),
-            Value::Secret(_) => write!(f, "<secret>"),
+            Value::Secret(_, _) => write!(f, "<secret>"),
             Value::SecretStore(_) => write!(f, "<secret store>"),
             Value::Socket(id) => write!(f, "<socket #{id}>"),
             Value::Listener(id) => write!(f, "<listener #{id}>"),
@@ -552,8 +555,9 @@ pub struct Interpreter {
     /// one. A `main` that declares a `Secret` parameter requires this.
     signing_key: Option<[u8; 32]>,
     /// Named secrets backing the `SecretStore` capability (from
-    /// `--secret`/`--secret-file`/`--signing-key`). `secret_store.get(name)`.
-    secrets: std::collections::BTreeMap<String, Vec<u8>>,
+    /// `--secret`/`--secret-file`/`--signing-key`), each `(bytes, use_only)`.
+    /// `secret_store.get(name)` mints a `Secret` carrying both. (RFC-0060)
+    secrets: std::collections::BTreeMap<String, (Vec<u8>, bool)>,
     /// RFC-0038: grant-document `[user_caps]` field values for a `main` that binds
     /// grantable capabilities. The grantable-cap param mints a sealed record from
     /// its entry here (empty unless launched with a `[user_caps]` grant).
@@ -562,8 +566,11 @@ pub struct Interpreter {
     /// stream behind one `dyn Stream` (RFC-0009 terminates `tls:` host-side, so
     /// `send_line`/`recv_line` operate on either without knowing which).
     sockets: Vec<BufReader<Box<dyn Stream>>>,
-    /// Listening server sockets, indexed by `Value::Listener` handle.
-    listeners: Vec<TcpListener>,
+    /// Listening server sockets, indexed by `Value::Listener` handle, each with
+    /// its server-TLS config (RFC-0060): `Some` for a `listen_tls` listener, whose
+    /// accepts handshake host-side through the SAME shared module the compiled
+    /// runtime uses (`witchy_runtime::net`); `None` for plain HTTP.
+    listeners: Vec<(TcpListener, Option<witchy_runtime::net::ServerTlsConfig>)>,
     /// Record constructor name -> ordered field names, for `value.field` access.
     record_fields: HashMap<String, Vec<String>>,
     /// (RFC-0047) Constructor name -> its declaring type name, so value equality
@@ -701,7 +708,9 @@ impl Interpreter {
             Some(Type::Named(n, _)) if n == "Net" => Ok(Value::Net(self.net_allow.clone())),
             Some(Type::Named(n, _)) if n == "Exec" => Ok(Value::Cap(Capability::Exec)),
             Some(Type::Named(n, _)) if n == "Secret" => match self.signing_key {
-                Some(seed) => Ok(Value::Secret(seed.to_vec())),
+                // The bare `Secret` is the signing key: revealable=false is enforced by
+                // the signing-key identity check, so its `use_only` flag stays false here.
+                Some(seed) => Ok(Value::Secret(seed.to_vec(), false)),
                 None => err("`main` requires a `Secret`, but the host granted none (provide `--signing-key <hex-seed-file>`)"),
             },
             Some(Type::Named(n, _)) if n == "SecretStore" => Ok(Value::SecretStore(self.secrets.clone())),
@@ -1094,9 +1103,9 @@ impl Interpreter {
         if name == "secretstore.get" {
             return match args {
                 [Value::SecretStore(map), Value::Str(key)] => Ok(Some(match map.get(key) {
-                    Some(bytes) => Value::Ctor {
+                    Some((bytes, use_only)) => Value::Ctor {
                         name: "Some".into(),
-                        fields: vec![Value::Secret(bytes.clone())],
+                        fields: vec![Value::Secret(bytes.clone(), *use_only)],
                     },
                     None => Value::Ctor { name: "None".into(), fields: Vec::new() },
                 })),
@@ -1140,7 +1149,7 @@ impl Interpreter {
         if name == "secretstore.require" {
             return match args {
                 [Value::SecretStore(map), Value::Str(key)] => match map.get(key) {
-                    Some(bytes) => Ok(Some(Value::Secret(bytes.clone()))),
+                    Some((bytes, use_only)) => Ok(Some(Value::Secret(bytes.clone(), *use_only))),
                     None => err(format!("required secret `{key}` was not granted")),
                 },
                 _ => err("secretstore.require expects (SecretStore, name)"),
@@ -1151,7 +1160,11 @@ impl Interpreter {
         // only named value-secrets are. Mirrors the WASM host (`host_crypto_reveal_len`)
         // through the one shared identity rule so the backends can't drift.
         if name == "crypto.reveal" {
-            if let [Value::Secret(bytes)] = args {
+            if let [Value::Secret(bytes, use_only)] = args {
+                // (RFC-0060) A use-only secret is consumable by handle but never revealable.
+                if *use_only {
+                    return err(witchy_caps::capabilities::USE_ONLY_SECRET_REVEAL_ERROR);
+                }
                 if witchy_caps::capabilities::secret_is_signing_key(
                     self.signing_key.as_ref().map(|s| s.as_slice()),
                     bytes,
@@ -2086,7 +2099,7 @@ impl Interpreter {
                     match TcpListener::bind(addr) {
                         Ok(listener) => {
                             let id = self.listeners.len();
-                            self.listeners.push(listener);
+                            self.listeners.push((listener, None));
                             Ok(Some(Value::Listener(id)))
                         }
                         Err(e) => err(format!("listen on `{addr}` failed: {e}")),
@@ -2094,23 +2107,69 @@ impl Interpreter {
                 }
                 _ => err("listen expects a Net and an address"),
             },
-            // Block until a client connects, returning the connection `Socket`.
+            // (RFC-0060) Bind an HTTPS listener. The rustls config is built ONCE here
+            // — through the SAME shared module the compiled runtime uses — from the
+            // certificate PEM and the key `Secret`'s host-side bytes; malformed or
+            // mismatched material is a loud listen-time error. Accepts handshake
+            // host-side and yield ordinary `Socket`s.
+            "listen_tls" => match args {
+                [Value::Net(allow), Value::Str(addr), Value::Str(cert_pem), Value::Secret(key_bytes, _)] => {
+                    if !witchy_caps::capabilities::net_allows(allow, addr) {
+                        return err(format!("listen: `{addr}` is not permitted by this Net capability"));
+                    }
+                    let config = match witchy_runtime::net::server_tls_config(cert_pem, key_bytes) {
+                        Ok(config) => config,
+                        Err(message) => return err(message),
+                    };
+                    match TcpListener::bind(addr) {
+                        Ok(listener) => {
+                            let id = self.listeners.len();
+                            self.listeners.push((listener, Some(config)));
+                            Ok(Some(Value::Listener(id)))
+                        }
+                        Err(e) => err(format!("listen on `{addr}` failed: {e}")),
+                    }
+                }
+                _ => err("listen_tls expects a Net, an address, a certificate PEM, and a Secret key"),
+            },
+            // Block until a client connects, returning the connection `Socket`. On a
+            // TLS listener the handshake completes host-side first; a failed handshake
+            // (plaintext client, bad ClientHello) drops that connection and keeps
+            // accepting — connection weather, not a program error (RFC-0060).
             "accept" => match args {
-                [Value::Listener(id)] => {
-                    let listener = self
+                [Value::Listener(id)] => loop {
+                    let (listener, tls) = self
                         .listeners
                         .get(*id)
                         .ok_or_else(|| RuntimeError { message: "invalid listener".into() })?;
                     match listener.accept() {
                         Ok((stream, _peer)) => {
+                            let stream: Box<dyn Stream> = match tls {
+                                None => Box::new(stream),
+                                Some(config) => {
+                                    match witchy_runtime::net::accept_tls(config.clone(), stream) {
+                                        Ok(tls_stream) => tls_stream,
+                                        Err(_) => continue,
+                                    }
+                                }
+                            };
                             let sid = self.sockets.len();
-                            self.sockets.push(BufReader::new(Box::new(stream) as Box<dyn Stream>));
-                            Ok(Some(Value::Socket(sid)))
+                            self.sockets.push(BufReader::new(stream));
+                            return Ok(Some(Value::Socket(sid)));
                         }
-                        Err(e) => err(format!("accept failed: {e}")),
+                        Err(e) => return err(format!("accept failed: {e}")),
                     }
-                }
+                },
                 _ => err("accept expects a Listener"),
+            },
+            // (RFC-0032) The compiled runtime's `serve_pool` spawns one worker VM per
+            // core sharing the bound listener. The interpreter is a single VM (the
+            // parity oracle), so the pool is the identity here: `serve`/`serve_tls`
+            // fall through to their own accept loop, single-core — the same observable
+            // request/response behavior, minus the scale-out.
+            "serve_pool" => match args {
+                [Value::Listener(_)] => Ok(Some(Value::Nil)),
+                _ => err("serve_pool expects a Listener"),
             },
             // Close a connected socket (e.g. after sending a `Connection: close`
             // response). Idempotent; an already-closed socket is not an error.
@@ -2862,7 +2921,9 @@ fn value_to_native(v: &Value) -> Result<witchy_runtime::value::NativeValue, Runt
         Value::List(xs) => N::List(
             xs.iter().map(value_to_native).collect::<Result<Vec<_>, RuntimeError>>()?,
         ),
-        Value::Secret(s) => N::Secret(s.clone()),
+        // The native crypto op already passed the reveal gate (use-only is checked
+        // before dispatch), so the raw bytes cross without the flag.
+        Value::Secret(s, _) => N::Secret(s.clone()),
         other => {
             return Err(RuntimeError {
                 message: format!("native function received an unsupported argument: {other}"),
@@ -2878,7 +2939,8 @@ fn native_to_value(v: witchy_runtime::value::NativeValue) -> Value {
         N::Str(s) => Value::Str(s),
         N::Bool(b) => Value::Bool(b),
         N::List(xs) => Value::List(xs.into_iter().map(native_to_value).collect()),
-        N::Secret(s) => Value::Secret(s),
+        // A secret produced by a native op (none do today) is revealable by default.
+        N::Secret(s) => Value::Secret(s, false),
     }
 }
 
@@ -2937,7 +2999,7 @@ pub fn run_module_budgeted(
     let module = witchy_types::traits::lower(module);
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || {
-        run_module_inner_limited(module, root, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, UserCapGrants::new(), step_limit)
+        run_module_inner_limited(module, root, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, Vec::new(), UserCapGrants::new(), step_limit)
     })
     .map(|(output, _)| output)
 }
@@ -2953,7 +3015,7 @@ pub fn run_module_files(
     let module = witchy_types::traits::lower(module);
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || {
-        run_module_inner_limited(module, root, Vec::new(), file_grants, Vec::new(), Vec::new(), None, UserCapGrants::new(), DEFAULT_STEP_LIMIT)
+        run_module_inner_limited(module, root, Vec::new(), file_grants, Vec::new(), Vec::new(), None, Vec::new(), UserCapGrants::new(), DEFAULT_STEP_LIMIT)
     })
     .map(|(output, _)| output)
 }
@@ -2999,6 +3061,38 @@ pub fn run_module_exit(
     let module = witchy_types::traits::lower(module);
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || run_module_inner(module, root, Vec::new(), net_allow, args, signing_key))
+}
+
+/// Like [`run_module_exit`], but also grants NAMED secrets to a `main` that binds
+/// a `SecretStore` — each `(name, bytes, use_only)`; a use-only secret (RFC-0060)
+/// is consumable by handle (`crypto.sign`, `server.serve_tls`) but `crypto.reveal`
+/// on it errors. This is the interpreter twin of the compiled runtime's
+/// `Capabilities.secrets`, for differential tests of secret-consuming servers.
+pub fn run_module_exit_secrets(
+    module: Module,
+    root: impl AsRef<Path>,
+    net_allow: Vec<String>,
+    args: Vec<String>,
+    signing_key: Option<[u8; 32]>,
+    named_secrets: Vec<(String, Vec<u8>, bool)>,
+) -> Result<(Vec<String>, i32), RuntimeError> {
+    let module = witchy_syntax::records::lower(module).map_err(|message| RuntimeError { message })?;
+    let module = witchy_types::traits::lower(module);
+    let root = root.as_ref().to_path_buf();
+    run_on_deep_stack(move || {
+        run_module_inner_limited(
+            module,
+            root,
+            Vec::new(),
+            Vec::new(),
+            net_allow,
+            args,
+            signing_key,
+            named_secrets,
+            UserCapGrants::new(),
+            DEFAULT_STEP_LIMIT,
+        )
+    })
 }
 
 /// Like [`run_module_exit`], but grants several `Dir` capabilities: `roots[0]`
@@ -3086,7 +3180,7 @@ pub fn run_module_user_caps(
     let module = witchy_types::traits::lower(module);
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || {
-        run_module_inner_limited(module, root, Vec::new(), file_grants, net_allow, args, None, user_caps, DEFAULT_STEP_LIMIT)
+        run_module_inner_limited(module, root, Vec::new(), file_grants, net_allow, args, None, Vec::new(), user_caps, DEFAULT_STEP_LIMIT)
     })
     .map(|(output, _)| output)
 }
@@ -3099,7 +3193,7 @@ fn run_module_inner(
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
 ) -> Result<(Vec<String>, i32), RuntimeError> {
-    run_module_inner_limited(module, root, dir_roots, Vec::new(), net_allow, args, signing_key, UserCapGrants::new(), DEFAULT_STEP_LIMIT)
+    run_module_inner_limited(module, root, dir_roots, Vec::new(), net_allow, args, signing_key, Vec::new(), UserCapGrants::new(), DEFAULT_STEP_LIMIT)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3111,6 +3205,7 @@ fn run_module_inner_limited(
     net_allow: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
+    named_secrets: Vec<(String, Vec<u8>, bool)>,
     user_caps: UserCapGrants,
     step_limit: u64,
 ) -> Result<(Vec<String>, i32), RuntimeError> {
@@ -3125,7 +3220,14 @@ fn run_module_inner_limited(
     // The signing key is the `signing` secret in the store, so a program may take
     // either a `Secret` (the key directly) or a `SecretStore` and `get("signing")`.
     if let Some(seed) = signing_key {
-        interp.secrets.insert("signing".to_string(), seed.to_vec());
+        // The signing key is never revealable, but its non-revealability is enforced
+        // by the signing-key identity check, so it is stored use_only=false.
+        interp.secrets.insert("signing".to_string(), (seed.to_vec(), false));
+    }
+    // Named `--secret`/`--secret-file` grants, each `(name, bytes, use_only)` —
+    // a use-only secret (RFC-0060) is consumable by handle; `crypto.reveal` errors.
+    for (name, bytes, use_only) in named_secrets {
+        interp.secrets.insert(name, (bytes, use_only));
     }
     let root_args = match interp.functions.get("main").cloned() {
         Some(f) => {

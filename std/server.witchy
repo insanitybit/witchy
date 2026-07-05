@@ -471,3 +471,32 @@ pub fn serve_n(net: Net[Listen, Tcp], addr: String, app: Router, n: Int):
     while i < n:
         handle_one(server, handler)
         i = i + 1
+
+// Serve `app` over HTTPS on `addr` forever, using ALL cores — `serve` with TLS
+// terminated by the host. `cert_pem` is the PUBLIC certificate chain (PEM text —
+// inline, or read via an ordinary `Dir` grant); `key` is the private key as a
+// `Secret` (`secretstore.require(store, "tls-key")`), consumed BY HANDLE: the key
+// bytes never enter this program's memory, so even a bug in a handler cannot
+// exfiltrate them. Grant the key use-only (`--secret-file tls-key=key.pem,use-only`)
+// and `crypto.reveal` on it errors too. A malformed or mismatched cert/key fails
+// LOUDLY here at startup; an individual failed handshake (a plaintext client, a bad
+// ClientHello) drops that connection and the server keeps serving. Handlers,
+// `Router`, and `Request`/`Response` are unchanged — TLS is transparent above the
+// accepted connection.
+pub fn serve_tls(net: Net[Listen, Tcp], addr: String, cert_pem: String, key: Secret, app: Router):
+    let server = listen_tls(net, addr, cert_pem, key)
+    serve_pool(server)
+    let handler = handler_of(app)
+    var running = true
+    while running:
+        handle_one(server, handler)
+
+// Serve exactly `n` HTTPS requests then return — `serve_tls`'s one-shot/test twin
+// (the TLS handling and key discipline of `serve_tls`, the loop shape of `serve_n`).
+pub fn serve_tls_n(net: Net[Listen, Tcp], addr: String, cert_pem: String, key: Secret, app: Router, n: Int):
+    let server = listen_tls(net, addr, cert_pem, key)
+    let handler = handler_of(app)
+    var i = 0
+    while i < n:
+        handle_one(server, handler)
+        i = i + 1
