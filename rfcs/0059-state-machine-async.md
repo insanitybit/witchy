@@ -1,7 +1,11 @@
 ---
 rfc: 0059
 title: State-machine async — frames, an owning executor, and ring channels
-status: proposed
+status: proposed (Stage-1 spike measured 2026-07-05 — design REFINED: boxed frame
+  records DO NOT reach the flat-heap DoD; the flat + ≤300 ns target is reachable
+  only with a fully-SCALAR representation — SoA frame columns + ring channel — which
+  a hand-written reference PROVES at 13 live cells flat to N=1M and 10 ns/message on
+  both backends. See the 2026-07-05 implementation note for the corrected plan.)
 created: 2026-07-04
 tracking:
 ---
@@ -228,3 +232,110 @@ part of this RFC's definition of done.
   closure towers into data + dispatch.
 - RFC-0036 (memory floor this builds on), RFC-0016/0035 (reclamation),
   RFC-0032 (the pool machinery Stage 3 would extend).
+
+## Implementation note (2026-07-05) — Stage-1 spike: the boxed-frame model does NOT reach the flat DoD; the scalar SoA + ring target is PROVEN
+
+A measurement-first spike (RFC-0058 discipline) built four hand-written
+representations of the `chan_throughput` producer/consumer and measured them on the
+**compiled** backend with reclamation on (`witchy stats`, `__witchy_live_cells`),
+plus the flat one kernel-timed at N=1,000,000. Both backends were checked to agree
+(`witchy parity`). This retires the RFC's central risk ("Stage 1's win depends on
+the in-place path applying to frame updates") — and it disproves a load-bearing
+premise of the Design section.
+
+### What was measured (compiled tier, reclamation on)
+
+| Representation | live_cells scaling | notes |
+|---|---|---|
+| **Current CPS** (RFC-0036 Design B, the real `async` lowering) | ~94 / message (18608 @ 200; 37490 @ 400; 75652 @ 800) | OOM ~10k; the closure towers |
+| State-machine **boxed sum-type frame**, reconstructed per step | ~9 / message (1819 @ 200; 180019 @ 20000) | 10× better + folds; **still leaks** |
+| **Boxed record** frame, "reused in place" (`var f = at(xs,0); f.x = …; set_at`) | ~1 / message (204 @ 200; 20004 @ 20000) | read-out/write-back forces a copy; the displaced record leaks |
+| Scalar `set_at` on a fixed-size list | **FLAT** (3, constant) | RFC-0035's reclaimed shape — scalar element only |
+| `list.push` + `list.tail` (growable buffer = today's channel) | ~1 / message (203 @ 200; 2003 @ 2000) | why channels must become rings |
+| **Scalar SoA frames + fixed-cap ring channel** (the reference target) | **FLAT** (13, constant N=200 … 1,000,000) | **10 ns/message** kernel-timed @ N=1M; both backends agree |
+
+The producer/consumer reference also **folds** the received stream into a sum
+(`sum += v`) and returns the correct `499999500000` at N=1M — i.e. the
+folding-`for await` expressiveness the current lowering cannot express falls out of
+the state-machine shape, as the RFC predicted.
+
+### The corrected finding
+
+- **Boxed frame records do NOT become flat.** The RFC's Design says Stage 1 alone
+  makes "per-message cost a small constant number of in-place record writes" and
+  "steady-state message traffic allocates nothing." Measurement contradicts this for
+  the *boxed* frame: whether a frame is a reconstructed sum value (~9/msg) or a
+  record "reused in place" (~1/msg), the displaced continuation is a **heap child of
+  the `Slot`**, and **shell-only drop cannot reclaim it** (recursive `$rdrop` is not
+  implemented — RFC-0036's open item, blocked on the per-capture move/borrow oracle).
+  This is the **same wall** RFC-0036 hit; changing closures → boxed frames slides the
+  leak from ~94 to ~1–9 cells/message (a real 10–90× win, and it moves the OOM
+  ceiling out ~10×) but does **not** remove it.
+- **Flat requires an all-scalar representation.** The only reclaimed-to-flat
+  primitives measured are (a) scalar `set_at` on a fixed-size list and (b) scalar
+  ring indices. So the flat + ns DoD is reachable only when **every** per-task datum
+  — frame fields AND channel payloads — is a scalar column mutated by `set_at`, i.e.
+  **frames become Struct-of-Arrays scalar columns** (the defunctionalized state is an
+  `Int` per column, not a boxed record) **and channels become fixed-capacity ring
+  buffers** (Stage 2 is not optional for the DoD — the `push`/`tail` buffer leaks
+  ~1/msg on its own). The reference executor that does exactly this is flat at 13
+  cells to N=1M and costs 10 ns/message — beating the DoD's ≤300 ns target and its
+  ≤100 ns stretch, in the same class as the RFC's Go twin (~24 ns).
+- **Scalar-only.** The flat result holds for **scalar** message/local types (the
+  `Int` benchmark, the DoD test). A `String`/`List` carried across an `await` or sent
+  as a message is a boxed frame field / boxed `__Msg`, which reintroduces the shell-
+  drop leak and still needs recursive `$rdrop`. The DoD programs are all scalar, so
+  the scalar path satisfies them; the general path degrades to "10× but not flat"
+  until recursive drop lands.
+
+### Consequence for the plan (what Stage 1 should actually be)
+
+The RFC's Stage 1 / Stage 2 split should be read as: **the frame transform and the
+ring channel are BOTH prerequisites of the flat DoD, and the frame representation
+must be scalar-columnar, not a boxed record.** Two landable increments, in order:
+
+1. **`async_lower.rs` → single-step state machine, executor UNCHANGED (low risk,
+   ~10× + expressiveness, no flat).** Keep the existing `Step`/`Task` shape and the
+   `std/task`/`std/chan` executor exactly as they are; only change what `async_lower`
+   emits: instead of nested `task.and_then(inner, fn(x): rest)` (the tower), compile
+   each `async fn` to a frame record + a step function, and emit each suspension's
+   continuation as a **single** closure `fn(x): __f_step(inject(frame, x))` (captures
+   the frame — one pointer — never a tower). `and_then` leaves the hot path;
+   `and_then_step`'s per-poll re-wrap (D2) is gone. This needs NO executor/Step/std
+   change (parity by construction — the executor still sees closures), so it is
+   incrementally committable behind the full oracle/fuzz/determinism gate, and it is
+   the substrate for step 2. Expressiveness (`await` in `while`, `var` across
+   `await`, folding `for await`) is authored here because the state machine, not the
+   closure, now carries the live locals. Measured ceiling for this step: ~9/msg
+   (proto), i.e. the 10× win and the OOM ceiling out to ~90k, **not** flat.
+2. **Scalar SoA frames + ring channels (the flat DoD).** Lower the frame record to
+   scalar columns (an "unbox the frame into `Int` columns indexed by task id" codegen
+   shape — a generalization of the RFC-0027 `unbox` layout to the executor's slot
+   table) and replace the channel buffer with a fixed-capacity ring (`List` + `head`/
+   `tail`/`count` scalars, `set_at`-mutated; a full ring grows amortized for the
+   `cap == 0` unbounded case). This is where the flat + 10 ns result lands, and it
+   changes the executor + `Step`/`Slot` shape (break-don't-deprecate: migrate
+   `std/task`, `std/chan`, book, examples in one cut). For heap payloads it falls back
+   to boxed frames (leaky-but-safe) until recursive `$rdrop` (RFC-0036) exists — so
+   the DoD's flat gate is met for the scalar benchmark/test, and the general
+   flat guarantee is explicitly sequenced after the move/borrow oracle.
+
+**DoD reachability, honestly stated.** DoD items 1–3 (flat @ 1M, ≤300 ns, un-ignore
+`chan_throughput_bounded_by_rc_floor` < 500) require step 2 (scalar SoA + ring) — a
+hand-written reference proves they are reachable (13 cells flat, 10 ns/msg). DoD
+item 5 (the three expressiveness examples) requires step 1. DoD item 6 (delete the
+CPS lowering + closure-tower `Step` arms) is completed by step 2 (step 1 keeps the
+closure `Step` arms as the executor interface; step 2 replaces them with scalar
+`(channel-id, task-id)` arms). The prior deferral note in RFC-0036 stands: the boxed
+general path still needs recursive `$rdrop`, which still needs the per-capture
+move/borrow oracle — so the *general* (heap-payload) flat guarantee is not in this
+Stage's scope, only the scalar DoD.
+
+**Spike status.** No transform code landed this session — the spike's job was to
+qualify the representation *before* the (multi-day) `async_lower` rewrite, and it
+found the RFC's stated boxed-frame Stage 1 cannot meet its own flat DoD. The four
+reference programs (proto = boxed sum frames; proto3 = boxed record reuse; proto4/5
+= scalar/`push`-`tail` isolation; proto6 = flat scalar SoA + ring) are the evidence;
+their numbers are inlined above so the finding is self-contained. Next session
+starts at step 1 (the low-risk `async_lower` state machine), with step 2 as the flat
+follow-on whose target is already proven.
