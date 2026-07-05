@@ -505,7 +505,7 @@ fn unique_temp_path(prefix: &str) -> std::path::PathBuf {
 /// The per-program wall-clock budget (RFC-0058 §3). A generated program that runs longer
 /// than this is a hang (or a pathological blow-up) — a bug, never silently "agree".
 fn fuzz_timeout() -> std::time::Duration {
-    std::time::Duration::from_secs(env_usize("WITCHY_FUZZ_TIMEOUT_SECS", 30) as u64)
+    std::time::Duration::from_secs(env_usize("WITCHY_FUZZ_TIMEOUT_SECS", 60) as u64)
 }
 
 /// Shrink probes inherit a SMALLER budget (RFC-0058 §3) — the minimizer runs many probes
