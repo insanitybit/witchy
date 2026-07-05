@@ -104,7 +104,9 @@ function querySelectorAll(node, tag, acc = []) {
 // --- the hostile rune: its view emits attributes an attacker would inject --------
 const RUNE = `
 import glamour
+from glamour import VNode, Attr, HAttr, HtmlTok, Cmd, UiRoot, UiFetch, UiRoute, UiTimer, SecretInput, SecretRef, CredentialPort
 import json
+from json import Json
 import reflect
 
 type Msg derive(Reflect):

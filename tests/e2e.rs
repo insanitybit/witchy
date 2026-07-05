@@ -3648,7 +3648,7 @@ fn glamour_publishes_to_coven_empty_footprint_and_renders_through_html() {
     // so the rendered output is assertable from a plain `pm run`.
     std::fs::write(
         app.join("src/app.witchy"),
-        "import glamour\n\
+        "import glamour\nfrom glamour import VNode, Attr, HAttr, HtmlTok, Cmd, UiRoot, UiFetch, UiRoute, UiTimer, SecretInput, SecretRef, CredentialPort\n\
          import reflect\n\n\
          type Msg derive(Reflect):\n\
          \x20\x20\x20\x20Tick\n\n\

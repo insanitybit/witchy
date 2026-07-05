@@ -51,7 +51,7 @@ fn glamour_http_effect_requires_a_uifetch_token() {
     // Try to build an HTTP effect WITHOUT holding a `UiFetch`.
     std::fs::write(
         work.join("bad.witchy"),
-        "import glamour\n\ntype Msg:\n    Got(Int, String)\n\npub fn go() -> Cmd(Msg):\n    glamour.http_get(\"/x\", \"Got\")\n",
+        "import glamour\nfrom glamour import VNode, Attr, HAttr, HtmlTok, Cmd, UiRoot, UiFetch, UiRoute, UiTimer, SecretInput, SecretRef, CredentialPort\n\ntype Msg:\n    Got(Int, String)\n\npub fn go() -> Cmd(Msg):\n    glamour.http_get(\"/x\", \"Got\")\n",
     )
     .unwrap();
     let out = Command::new(BIN)
@@ -93,7 +93,7 @@ fn glamour_port_effect_requires_a_credential_token() {
     // port name as a bare string the way the old ambient API allowed.
     std::fs::write(
         work.join("bad.witchy"),
-        "import glamour\n\ntype Msg:\n    Done(String)\n\npub fn go() -> Cmd(Msg):\n    glamour.port(\"promote\", \"acme/charts\", \"Done\")\n",
+        "import glamour\nfrom glamour import VNode, Attr, HAttr, HtmlTok, Cmd, UiRoot, UiFetch, UiRoute, UiTimer, SecretInput, SecretRef, CredentialPort\n\ntype Msg:\n    Done(String)\n\npub fn go() -> Cmd(Msg):\n    glamour.port(\"promote\", \"acme/charts\", \"Done\")\n",
     )
     .unwrap();
     let out = Command::new(BIN)
@@ -136,7 +136,7 @@ fn glamour_password_is_unreadable_by_a_sibling_component() {
     // sealed capability to recover the host slot.
     std::fs::write(
         work.join("bad.witchy"),
-        "import glamour\n\nfn steal(r: SecretRef) -> String:\n    match r:\n        SecretRef(slot) -> slot\n\nfn main(console: Console, ui: UiRoot):\n    let input = glamour.secret_field(ui, \"login\", \"password\")\n    print(console, steal(glamour.secret_ref(input)))\n",
+        "import glamour\nfrom glamour import VNode, Attr, HAttr, HtmlTok, Cmd, UiRoot, UiFetch, UiRoute, UiTimer, SecretInput, SecretRef, CredentialPort\n\nfn steal(r: SecretRef) -> String:\n    match r:\n        SecretRef(slot) -> slot\n\nfn main(console: Console, ui: UiRoot):\n    let input = glamour.secret_field(ui, \"login\", \"password\")\n    print(console, steal(glamour.secret_ref(input)))\n",
     )
     .unwrap();
     let out = Command::new(BIN)
@@ -884,7 +884,7 @@ fn glamour_markdown_renders_identically_on_both_backends() {
     for f in ["glamour.witchy", "markdown.witchy"] {
         std::fs::copy(manifest.join("projects/glamour/src").join(f), work.join(f)).unwrap();
     }
-    let prog = "import glamour\nimport markdown\nimport json\nimport reflect\n\
+    let prog = "import glamour\nfrom glamour import VNode, Attr, HAttr, HtmlTok, Cmd, UiRoot, UiFetch, UiRoute, UiTimer, SecretInput, SecretRef, CredentialPort\nimport markdown\nimport json\nfrom json import Json\nimport reflect\n\
 type Msg derive(Reflect):\n    Noop\n\n\
 fn msg_to_json(m: Msg) -> Json:\n    json.from_value(m)\n\n\
 fn main(console: Console):\n    \

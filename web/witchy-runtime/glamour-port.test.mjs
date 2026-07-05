@@ -50,7 +50,9 @@ function querySelector(node, tag) {
 
 const RUNE = `
 import glamour
+from glamour import VNode, Attr, HAttr, HtmlTok, Cmd, UiRoot, UiFetch, UiRoute, UiTimer, SecretInput, SecretRef, CredentialPort
 import json
+from json import Json
 import reflect
 
 type Msg derive(Reflect):

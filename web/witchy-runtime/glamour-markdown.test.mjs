@@ -102,8 +102,10 @@ function querySelectorAll(node, tag, acc = []) {
 // --- the rune: renders hostile untrusted Markdown via markdown.to_vnode ------
 const RUNE = `
 import glamour
+from glamour import VNode, Attr, HAttr, HtmlTok, Cmd, UiRoot, UiFetch, UiRoute, UiTimer, SecretInput, SecretRef, CredentialPort
 import markdown
 import json
+from json import Json
 import reflect
 
 type Msg derive(Reflect):
