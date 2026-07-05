@@ -1,9 +1,9 @@
 ---
 rfc: 0060
 title: Server-side TLS — HTTPS serving with capability-guarded keys
-status: implemented (serve_tls/serve_tls_n both backends; use-only secrets; rustls)
+status: implemented
 created: 2026-07-04
-tracking:
+tracking: "serve_tls/serve_tls_n both backends; use-only secrets; rustls"
 ---
 
 # RFC-0060: Server-side TLS — HTTPS serving with capability-guarded keys

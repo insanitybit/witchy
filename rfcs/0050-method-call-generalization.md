@@ -1,13 +1,13 @@
 ---
 rfc: 0050
 title: "Method calls from type ownership, not an allowlist; module functions as values"
-status: implemented (Part 2) / deferred (Part 1 — gated on RFC-0042)
+status: implemented
 created: 2026-07-03
 predecessors:
   - "0042 (module namespaces — the type→module ownership this derives from)"
   - "0046 (typed trait dispatch — the receiver typing this consumes)"
   - "scratch/consistency-analysis-2026-07-03.md §4 (UFCS allowlist + functions-as-values evidence)"
-tracking:
+tracking: "Part 2 (module functions as values) shipped; Part 1 (method calls from type ownership) deferred, gated on RFC-0042"
 ---
 
 # RFC-0050: Method calls from type ownership, not an allowlist; module functions as values

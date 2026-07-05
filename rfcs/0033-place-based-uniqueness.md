@@ -1,3 +1,10 @@
+---
+rfc: 0033
+title: "Place-based uniqueness: thread in-place optimization through user types"
+status: implemented
+created: 2026-06-30
+tracking:
+---
 # RFC-0033 — Place-based uniqueness: thread in-place optimization through user types
 
 - Status: implemented

@@ -1,7 +1,7 @@
 ---
 rfc: 0057
 title: "Capability policy constructors: home refinement vocabulary on the capability, retire std/confine"
-status: implemented (Net./Dir. policy constructors; std/confine deleted, std/policy home; pub-in-impl)
+status: implemented
 created: 2026-07-03
 predecessors:
   - "0011 (capability refinement — established refinement-as-methods; this finishes the job for the policy-value half)"
@@ -9,7 +9,7 @@ related:
   - "0042 (module namespaces — `Type.fn` associated calls must resolve alongside `module.member`)"
   - "0050 (method-call generalization — defines the dotted-call surface these compose with)"
   - "0056 (keyword arguments — labeled `Net.tcp(cidr: …, port: …)` composes once labels land)"
-tracking:
+tracking: "Net./Dir. policy constructors; std/confine deleted, std/policy home; pub-in-impl"
 ---
 
 # RFC-0057: Capability policy constructors
