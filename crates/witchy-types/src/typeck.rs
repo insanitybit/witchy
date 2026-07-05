@@ -391,6 +391,36 @@ fn check_unique_functions(module: &Module) -> Result<(), TypeError> {
     Ok(())
 }
 
+/// (RFC-0064 Check 1) Enforce RFC-0043's row-3 rule: a function with any `var`
+/// parameter must be EITHER a procedure channel (`is_var_procedure` — returns
+/// `Nil`/nothing) OR a mutator receiver (`is_mutator` — first parameter, returning
+/// that parameter's type). Every other `var` shape carries the abolished
+/// *combined* write-back+return semantics and is a compile error:
+///   (a) a `var` in a NON-first position with a self-typed return, and
+///   (b) a `var` FIRST parameter with an UNRELATED (non-`Nil`, non-receiver)
+///       return — the interpreter-only shape the WASM backend rejects, so this
+///       also closes a parity divergence.
+/// Scoped to free functions (`Item::Function`): all `var`-receiver code — std
+/// mutators and user procedures — is written as free functions, and an impl
+/// method's implicit `var self` has no source-level type here, so checking it
+/// would false-positive.
+fn check_var_conventions(module: &Module) -> Result<(), TypeError> {
+    for item in &module.items {
+        if let Item::Function(f) = item {
+            let has_var = f.params.iter().any(|p| p.convention == Convention::Var);
+            if has_var && !f.is_mutator() && !f.is_var_procedure() {
+                let bare = f.name.rsplit('.').next().unwrap_or(&f.name);
+                return terr(format!(
+                    "`{bare}`: a `var` parameter must be a write-back channel (return `Nil`) or a \
+                     mutator receiver (first parameter, returning its type); split the function or \
+                     return a tuple"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The type names the checker knows without a declaration: primitives, host
 /// capabilities, and the built-in generics. Mirrors the named arms of
 /// `to_ty_generic` plus the opaque generics the checker itself produces
@@ -3527,6 +3557,11 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
     // are still distinct from free functions (so overloaded methods aren't
     // mistaken for duplicates) and source lines are still available.
     check_unique_functions(module)?;
+
+    // (RFC-0064 Check 1) A `var` parameter must be a procedure channel or a
+    // mutator receiver — every other shape is the abolished combined write-back
+    // (rejected before either backend lowers, so parity holds by construction).
+    check_var_conventions(module)?;
 
     // Lower named-field record construction (a no-op once the linker has done so,
     // but covers single-module paths like `check_str`).
