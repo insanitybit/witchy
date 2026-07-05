@@ -89,7 +89,25 @@ const BUILTINS: &[&str] = &[
     "close",
 ];
 
-type FnTable = HashMap<String, HashSet<String>>;
+/// For each module, its exported function names mapped to the signature facts
+/// RFC-0050 Part-2 eta-expansion needs: the function's FULL declared arity and
+/// whether it is a Nil-returning `var`-procedure (which cannot become a value —
+/// see the `Expr::Field` arm of `rewrite_expr`). Membership (`contains_key`) is
+/// still the "does module X export `f`" question the rest of the linker asks.
+type FnTable = HashMap<String, HashMap<String, EtaSig>>;
+
+/// The per-function facts eta-expansion consumes (RFC-0050 Part 2).
+#[derive(Clone, Copy)]
+struct EtaSig {
+    /// Number of declared parameters — the arity of the eta-expanded lambda.
+    /// Includes RFC-0056 defaulted parameters: a function *value* ignores
+    /// defaults, so its value form takes every positional argument.
+    arity: usize,
+    /// A `var`-procedure (a `var` parameter, returns `Nil`): eta-expanding it
+    /// would bind a `let` lambda parameter where a `var` is demanded, so it is
+    /// excluded from value position with an error that names the real cause.
+    is_var_procedure: bool,
+}
 
 /// The source of a bundled standard-library module, if `name` is one. This is
 /// the canonical std registry: the linker treats it as a built-in search path,
@@ -490,10 +508,13 @@ pub fn link(
 
     let mut fns: FnTable = HashMap::new();
     for (name, m) in &modules {
-        let mut names = HashSet::new();
+        let mut names: HashMap<String, EtaSig> = HashMap::new();
         for item in &m.items {
             if let Item::Function(f) = item {
-                names.insert(f.name.clone());
+                names.insert(
+                    f.name.clone(),
+                    EtaSig { arity: f.params.len(), is_var_procedure: f.is_var_procedure() },
+                );
             }
         }
         fns.insert(name.clone(), names);
@@ -1055,7 +1076,7 @@ fn rewrite_expr(
         // same name (a parameter, `let`, loop variable, or pattern binding).
         Expr::Var(name) => {
             if !bound.contains(name.as_str())
-                && fns.get(m).is_some_and(|s| s.contains(name.as_str()))
+                && fns.get(m).is_some_and(|s| s.contains_key(name.as_str()))
             {
                 *name = format!("{m}.{name}");
             }
@@ -1071,8 +1092,59 @@ fn rewrite_expr(
                 rewrite_expr(a, m, imps, fns, bound)?;
             }
         }
-        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } => {
             rewrite_expr(expr, m, imps, fns, bound)?
+        }
+        // (RFC-0050 Part 2) A bare `module.fn` in value (non-call) position is a
+        // first-class function value, produced by eta-expansion: `list.length`
+        // becomes `fn(__eta0): list.length(__eta0)` at the callee's FULL declared
+        // arity. Parsed as a `Field` read; only rewritten when the base is a
+        // module name in scope (not a local shadowing it) that actually exports
+        // the function — otherwise it is an ordinary field/tuple access and the
+        // base is recursed into as before.
+        Expr::Field { base, field } => {
+            // Is the base a bare module name that is actually in scope here — a
+            // prelude module or one this module imports — and not shadowed by a
+            // local of the same name? Then `module.field` is a module-qualified
+            // *value* reference (modules are not values, so it is never an
+            // ordinary field read).
+            let module_ref = match base.as_ref() {
+                Expr::Var(modname)
+                    if !bound.contains(modname.as_str())
+                        && (is_prelude_module(modname) || imps.iter().any(|i| i == modname)) =>
+                {
+                    Some((modname.clone(), field.clone()))
+                }
+                _ => None,
+            };
+            if let Some((modname, field)) = module_ref {
+                // Validate it exactly as a *call* would be. Scope is already
+                // checked, so `resolve_call` returns the qualified callee or the
+                // precise "module `X` has no function `Y`" error — "unbound
+                // variable" never names a module again.
+                let qualified = resolve_call(&format!("{modname}.{field}"), m, imps, fns, bound)?;
+                let sig = fns
+                    .get(&modname)
+                    .and_then(|s| s.get(&field))
+                    .copied()
+                    .expect("resolve_call accepted the reference, so the function exists");
+                // A Nil-returning `var`-procedure has no value form: eta-expanding
+                // it would bind a `let` lambda parameter where a `var` is demanded
+                // (RFC-0043). Name the real cause rather than let a later pass
+                // mislead. RFC-0043 mutators (they return `self`) are fine — their
+                // value form is an ordinary pure call.
+                if sig.is_var_procedure {
+                    return lerr(format!(
+                        "`{modname}.{field}` is a `var`-procedure (it mutates its argument in \
+                         place and returns Nil), so it has no value form: an eta-expanded lambda \
+                         would bind a `let` parameter where a `var` is required. Call it directly, \
+                         or wrap it in your own `fn(var x): {modname}.{field}(x)`."
+                    ));
+                }
+                *e = eta_lambda(&qualified, sig.arity);
+                return Ok(());
+            }
+            rewrite_expr(base, m, imps, fns, bound)?;
         }
         Expr::RecordUpdate { base, fields } => {
             rewrite_expr(base, m, imps, fns, bound)?;
@@ -1144,6 +1216,41 @@ fn rewrite_expr(
         Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::TaggedLit { .. } => {}
     }
     Ok(())
+}
+
+/// The prelude modules that are importable-by-default everywhere (the link set
+/// always carries them), so a call or a `module.fn` value reference to one needs
+/// no explicit `import`.
+fn is_prelude_module(name: &str) -> bool {
+    matches!(name, "list" | "string" | "dict" | "math" | "option" | "result")
+}
+
+/// (RFC-0050 Part 2) Build the eta-expansion of a module-function reference in
+/// value position: `list.length` (arity 1) becomes `fn(__eta0): list.length(__eta0)`.
+/// The lambda captures nothing and its parameters carry no type annotation, so the
+/// ordinary checker infers them — for a generic callee, RFC-0046's annotate/mono
+/// fixpoint resolves the type-var parameters. A source-to-source rewrite on the
+/// single linked AST before either backend lowers: parity by construction. The
+/// arity is the callee's FULL declared parameter count; RFC-0056 defaults never
+/// attach to a function value, so every positional argument is present.
+fn eta_lambda(qualified: &str, arity: usize) -> Expr {
+    let names: Vec<String> = (0..arity).map(|i| format!("__eta{i}")).collect();
+    let params = names
+        .iter()
+        .map(|n| Param {
+            name: n.clone(),
+            ty: None,
+            convention: Convention::Let,
+            default: None,
+        })
+        .collect();
+    let args = names.into_iter().map(Expr::Var).collect();
+    let call = Expr::Call { name: qualified.to_string(), args };
+    Expr::Lambda {
+        params,
+        body: Block { stmts: vec![Stmt::Expr(call)], lines: vec![0], region: None },
+        ret: None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1363,14 +1470,14 @@ fn resolve_call(
     if let Some((modname, fname)) = name.split_once('.') {
         // The prelude modules are importable-by-default everywhere (the link
         // set always carries them), including from inside one another.
-        let prelude = matches!(modname, "list" | "string" | "dict" | "math" | "option" | "result");
+        let prelude = is_prelude_module(modname);
         if !prelude && !imps.iter().any(|i| i == modname) {
             return lerr(format!(
                 "module `{m}` calls `{modname}.{fname}` but does not `import {modname}`"
             ));
         }
         return match fns.get(modname) {
-            Some(s) if s.contains(fname) => Ok(name.to_string()),
+            Some(s) if s.contains_key(fname) => Ok(name.to_string()),
             _ => lerr(format!("module `{modname}` has no function `{fname}`")),
         };
     }
@@ -1378,7 +1485,7 @@ fn resolve_call(
     // e.g. `list.contains` is reachable as a bare `contains` inside `list` (a
     // builtin would otherwise shadow it). Checked before BUILTINS for that
     // reason.
-    if fns.get(m).is_some_and(|s| s.contains(name)) {
+    if fns.get(m).is_some_and(|s| s.contains_key(name)) {
         return Ok(format!("{m}.{name}"));
     }
     if BUILTINS.contains(&name) {
@@ -1390,7 +1497,7 @@ fn resolve_call(
     if !bound.contains(name) {
         let mut providers: Vec<&str> = Vec::new();
         for imp in imps {
-            if fns.get(imp).is_some_and(|s| s.contains(name)) {
+            if fns.get(imp).is_some_and(|s| s.contains_key(name)) {
                 providers.push(imp.as_str());
             }
         }
