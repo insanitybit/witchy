@@ -32,62 +32,185 @@ import coven_trust
 import coven_proto
 import coven_meta
 import compiler
-
 // --- error flow --------------------------------------------------------------
 // A handler failure as an HTTP status + message. Handlers return
 // `Result(Response, CovenError)` and use `?` to short-circuit; `guard` renders the
 // error once at the boundary, so each handler reads as a straight-line success path.
-type CovenError:
-    status: Int
-    message: String
 
 // Render a failure as its HTTP response — the single boundary where a `CovenError`
 // becomes a `Response` (a free function: witchy resolves methods on params and loop
 // vars, not on a `match` binding like `e`).
-fn fail_response(e: CovenError) -> Response:
-    err_json(e.status, e.message)
 
 // Adapt a fallible handler into the plain `fn(Request) -> Response` the router
 // stores: an `Err` renders to its response, so handlers can use `?`.
+
+// Guard a precondition: `require(cond, 400, "...")?` returns early with the error
+// when `cond` is false, and is a no-op (the `?` discards the `true`) otherwise.
+
+// The request's JSON body, or a 400 — so handlers `let doc = body(req)?`.
+
+// --- server ------------------------------------------------------------------
+// The registry's ambient context: the content store, the root signing key, the
+// clock, and the trusted issuers. Bundling these lets the handlers read as
+// `self.store` / `self.key` methods rather than threading four parameters.
+
+// The host grants a `SecretStore`; the root signing key is its `signing` secret
+// (`--signing-key <seed>` is sugar for `--secret-file signing=<path>`). Required —
+// `require` fails loudly if it was not granted rather than handing back an Option.
+
+// Trailing `issuer=pubkeyhex` args are trusted issuers (a JWKS stand-in). With
+// at least one, publish/promote require a short-lived identity token (trusted
+// publishing); with none, the registry is anonymous (local mode).
+
+// Parse trailing `issuer=pubkeyhex` args (the first arg is the listen address).
+
+// `iss=jwks:<json>` — a rotating-key issuer; the key is chosen per token `kid`.
+
+// The routes + the publish/promote/yank lifecycle, as methods on the context. Each
+// `route_*` returns the handler closure (capturing `self`); the work is in the
+// `do_*`/`*_checked` methods, speaking to the store/trust/record layers.
+
+// A browse-oriented index: every rune with its newest version, that version's
+// state, and its recomputed runtime footprint — so a UI can show authority
+// (witchy's headline) per rune in one request, without N record fetches.
+
+// GET /coven/compartments: the foreign-code renderer ids this rune embeds — the `Js`
+// audit (what third-party code it runs), scanned from the stored source. A review hint.
+
+// POST /coven/publish : stage a new immutable version. Server-side enforcement —
+// recompute the footprint from source, reject an under-declared manifest,
+// content-address the bytes, land it STAGED. Re-publishing a version is refused.
+
+// The publisher identity comes from a verified token (401) that satisfies the
+// namespace's bound policy (403), never from a client-asserted field. The
+// verified `claims` (None when anonymous) build the SLSA provenance attestation.
+
+// Trusted (claims present): a SLSA provenance attestation bound to the verified
+// identity + digest. Anonymous: the uploader/hash fallback.
+
+// SEC-013: a free-form field with an embedded newline could inject a sibling
+// `key=` line into the canonical signing payload — refuse rather than sign it.
+
+// POST /coven/promote : second-factor release (separation of duties).
+//
+// SECURITY INVARIANT — promotion is an isolated HUMAN operation, by design.
+// Publishing (POST /coven/publish) is a machine/CI action authorized by an OIDC
+// identity token; it can only ever produce a `Staged` version — never a released,
+// consumable one (`promote_checked` rejects any non-`Staged` state). Releasing a
+// version is a SEPARATE step that requires (a) a human-presented second factor —
+// a fresh, single-use WebAuthn 2FA assertion, NOT a replayable CI token — and
+// (b) separation of duties: the promoter identity must differ from the publisher.
+//
+// The consequence is the whole point: a FULL CI compromise (stolen OIDC token,
+// malicious workflow, supply-chain attack on the build) can publish a poisoned
+// version, but it CANNOT promote it to a released package consumers resolve. That
+// gate is a human at a distinct system with a passkey. Do not "streamline" promote
+// to accept a CI token, drop the second factor, or relax separation of duties —
+// each of those collapses the isolation boundary that contains a CI compromise.
+
+// SEC-013: keep the canonical signing payload unambiguous (see publish_checked).
+
+// `delta_build` is always empty (coven never has build footprints — `build=` is
+// hard-empty); present for wire-shape parity with the Rust PromoteResp.
+
+// POST /coven/yank : exclude from new resolutions (re-sign the same fields yanked).
+
+// SEC-018: yank is a destructive maintainer action, so a trusted registry requires
+// an existing maintainer of the namespace — not just any client.
+
+// GET /coven/snapshot, /coven/timestamp : the TUF roles (regenerated on demand).
+
+// Regenerate + re-sign the TUF snapshot + timestamp (rollback + freeze
+// protection); the role construction + canonical signing lives in coven_meta.
+
+// --- authorization: bind identity tokens to the namespace's trust state ------
+// The authorized publisher (claims.sub) plus the verified claims (for the SLSA
+// attestation). Anonymous (no trusted issuers): fall back to the client-asserted
+// `uploaded_by`, no claims. Trusted: the token must verify (401) AND satisfy the
+// namespace's policy (403); the first trusted publish binds it.
+
+// SEC-022: a publish token is single-use. Consuming the `jti` only after the
+// namespace policy passes means a rejected publish doesn't burn the token, but a
+// REPLAY of an accepted one is refused — shrinking the staging-replay window the
+// (intentionally human-gated, see route_promote) promote step already contains.
+
+// SEC-022: mark a token's `jti` consumed so it cannot publish twice (replay defense).
+// The marker is keyed by sha256(jti) so an issuer-chosen id can never escape `_policy/`
+// via path traversal. A token with no `jti` (a non-GitHub issuer, or a legacy token) is
+// not single-use-checked — the namespace↔repo-org binding still gates it.
+
+// SEC-012: bind only on a token that carries the CI identity claims. Binding with
+// an empty repository/workflow_ref would later be satisfied by ANY token from the
+// same issuer lacking those claims (""==""), letting an unrelated identity squat
+// and publish to the namespace.
+
+// SEC-023: the first publisher must own the namespace. A real CI `repository` is
+// `org/repo`; require its org to equal the namespace, so `evilorg/fork` cannot
+// land-grab `victim`. (A `/`-less repository — a non-GitHub issuer or a test —
+// can't express an org, so it is not org-checked; an attacker can't forge the
+// signed claim, and every GitHub Actions token is `org/repo`.)
+
+// The authorized promoter. Trusted: the token must verify (401) and be a
+// registered maintainer of the namespace (403). First promoter becomes a
+// maintainer (TOFU); machines stage, humans release.
+
+// SEC-018: yank requires an EXISTING maintainer of the namespace. Unlike promote it
+// never bootstraps maintainership (you must not be able to become a maintainer by
+// yanking). Anonymous mode (no trusted issuers) stays open for local registries.
+
+// The stored record as a typed `Record` — 404 if absent, 500 if corrupt.
+
+// GET /coven/source: the stored files, refusing to serve them if they no longer
+// hash to the signed record (tamper detection).
+
+// GET /coven/doc: Markdown API docs generated from the (hash-verified) stored source.
+// `compiler.doc` only PARSES the source — it never runs it — so this is safe on
+// untrusted published code; the output is witchy-rendered derived content.
+
+// --- authorization helpers (CovenError-returning bridges over coven_trust) ----
+// Verify a request's identity token, lifting a (401, reason) on failure.
+
+// A trusted publish must match the namespace's first-bound policy on every field.
+
+// SEC-012: a policy bound before the bind-time guard (empty repository/workflow_ref)
+// must not be matchable by a claimless token via ""==""; refuse and require a rebind.
+
+// --- response shaping --------------------------------------------------------
+import reflect
+
+type CovenError:
+    status: Int
+    message: String
+
+fn fail_response(e: CovenError) -> Response:
+    err_json(e.status, e.message)
+
 fn guard(h: fn(Request) -> Result(Response, CovenError)) -> fn(Request) -> Response:
     fn(req: Request):
         match h(req):
             Ok(resp) -> resp
             Err(e) -> fail_response(e)
 
-// Guard a precondition: `require(cond, 400, "...")?` returns early with the error
-// when `cond` is false, and is a no-op (the `?` discards the `true`) otherwise.
 fn require(cond: Bool, status: Int, message: String) -> Result(Bool, CovenError):
     return Ok(true) if cond
     Err(CovenError(status, message))
 
-// The request's JSON body, or a 400 — so handlers `let doc = body(req)?`.
 fn body(req: Request) -> Result(Json, CovenError):
     match server.json_body(req):
         Ok(doc) -> Ok(doc)
         Err(e) -> Err(CovenError(400, "bad request body: " + e))
 
-// --- server ------------------------------------------------------------------
-// The registry's ambient context: the content store, the root signing key, the
-// clock, and the trusted issuers. Bundling these lets the handlers read as
-// `self.store` / `self.key` methods rather than threading four parameters.
 type Coven:
     store: Dir
     key: Secret
     clock: Clock
     issuers: List(Issuer)
 
-// The host grants a `SecretStore`; the root signing key is its `signing` secret
-// (`--signing-key <seed>` is sugar for `--secret-file signing=<path>`). Required —
-// `require` fails loudly if it was not granted rather than handing back an Option.
 fn main(console: Console, net: Net, root: Dir, secrets: SecretStore, clock: Clock, args: List(String)):
     serve(console, net, root, secrets.require("signing"), clock, args)
 
 fn serve(console: Console, net: Net, root: Dir, key: Secret, clock: Clock, args: List(String)):
     let addr = if list.length(args) > 0: list.at(args, 0) else: "127.0.0.1:8787"
-    // Trailing `issuer=pubkeyhex` args are trusted issuers (a JWKS stand-in). With
-    // at least one, publish/promote require a short-lived identity token (trusted
-    // publishing); with none, the registry is anonymous (local mode).
     let issuers = parse_issuers(args)
     fs.ensure_dir(root, "registry")
     let c = Coven(subtree(root, "registry"), key, clock, issuers)
@@ -105,19 +228,10 @@ fn serve(console: Console, net: Net, root: Dir, key: Secret, clock: Clock, args:
         .post("/coven/publish", c.route_publish())
         .post("/coven/promote", c.route_promote())
         .post("/coven/yank", c.route_yank())
-    print(
-        console,
-        "coven serving at http://" +
-        addr +
-        "  (root key " +
-        crypto.public_key(key) +
-        "; " +
-        "${list.length(issuers)}" +
-        " trusted issuer(s))"
-    )
+    print(console, "coven serving at http://" + addr + "  (root key " + crypto.public_key(key) + "; " + "${list.length(issuers)}" + " trusted issuer(s))")
+
     server.serve(net, addr, app)
 
-// Parse trailing `issuer=pubkeyhex` args (the first arg is the listen address).
 fn parse_issuers(args: List(String)) -> List(Issuer):
     var out = []
     for a in list.drop(args, 1):
@@ -129,7 +243,6 @@ fn parse_issuer_arg(a: String) -> Option(Issuer):
     if string.contains(a, "="):
         let (id, value) = string.split_once(a, "=")
         if string.starts_with(value, "jwks:"):
-            // `iss=jwks:<json>` — a rotating-key issuer; the key is chosen per token `kid`.
             let (_tag, jwks_json) = string.split_once(value, ":")
             match json.decode(jwks_json):
                 Ok(jwks) -> Some(Issuer(id, "", Some(jwks)))
@@ -139,9 +252,6 @@ fn parse_issuer_arg(a: String) -> Option(Issuer):
     else:
         None
 
-// The routes + the publish/promote/yank lifecycle, as methods on the context. Each
-// `route_*` returns the handler closure (capturing `self`); the work is in the
-// `do_*`/`*_checked` methods, speaking to the store/trust/record layers.
 impl Coven:
     fn route_rootpub(self) -> fn(Request) -> Response:
         fn(req: Request): server.text(200, crypto.public_key(self.key))
@@ -149,9 +259,6 @@ impl Coven:
     fn route_index(self) -> fn(Request) -> Response:
         fn(req: Request): server.send(200, .{names: coven_store.all_names(self.store)})
 
-    // A browse-oriented index: every rune with its newest version, that version's
-    // state, and its recomputed runtime footprint — so a UI can show authority
-    // (witchy's headline) per rune in one request, without N record fetches.
     fn route_catalog(self) -> fn(Request) -> Response:
         fn(req: Request):
             var runes = []
@@ -194,8 +301,6 @@ impl Coven:
             self.doc_response(name, version)
         )
 
-    // GET /coven/compartments: the foreign-code renderer ids this rune embeds — the `Js`
-    // audit (what third-party code it runs), scanned from the stored source. A review hint.
     fn route_compartments(self) -> fn(Request) -> Response:
         guard(fn(req: Request) -> Result(Response, CovenError):
             let name = coven_validate.unwire(server.query(req, "name"))
@@ -206,9 +311,6 @@ impl Coven:
         )
 
     fn route_publish(self) -> fn(Request) -> Response:
-        // POST /coven/publish : stage a new immutable version. Server-side enforcement —
-        // recompute the footprint from source, reject an under-declared manifest,
-        // content-address the bytes, land it STAGED. Re-publishing a version is refused.
         guard(fn(req: Request) -> Result(Response, CovenError): self.do_publish(body(req)?))
 
     fn do_publish(self, doc: Json) -> Result(Response, CovenError):
@@ -218,9 +320,6 @@ impl Coven:
         require(coven_validate.valid_name(name), 400, "invalid rune name `" + name + "` (need lowercase `namespace/name`, no traversal)")?
         require(coven_validate.valid_version(version), 400, "invalid version `" + version + "`")?
         require(!coven_store.record_exists(self.store, name, version), 409, name + "@" + version + " already published — versions are immutable, bump the version")?
-        // The publisher identity comes from a verified token (401) that satisfies the
-        // namespace's bound policy (403), never from a client-asserted field. The
-        // verified `claims` (None when anonymous) build the SLSA provenance attestation.
         let (uploaded_by, claims) = self.authorized_publisher(req, now(self.clock) / 1000, name)?
         self.publish_checked(req.manifest, name, version, uploaded_by, claims, req.files)
 
@@ -230,13 +329,10 @@ impl Coven:
         require(string.is_empty(list.join(gap, ", ")), 400, "declared [capabilities] does not cover what the source demands (" + list.join(gap, ", ") + ") — coven recomputes and will not publish an under-declared rune")?
         let hash = coven_store.content_hash(files)
         coven_store.store_source(self.store, name, version, files)
-        // Trusted (claims present): a SLSA provenance attestation bound to the verified
-        // identity + digest. Anonymous: the uploader/hash fallback.
         let provenance = match claims:
             Some(c) -> coven_trust.attestation(c, hash, now(self.clock) / 1000)
             None -> "uploader=" + uploaded_by + "|hash=" + hash
-        // SEC-013: a free-form field with an embedded newline could inject a sibling
-        // `key=` line into the canonical signing payload — refuse rather than sign it.
+
         require(coven_validate.single_line(uploaded_by) && coven_validate.single_line(provenance), 400, "record fields must not contain newlines")?
         let rec = coven_record.sign_record(self.key, name, version, Staged, hash, computed, uploaded_by, "", "", provenance, 0)
         coven_store.write_record(self.store, name, version, rec)
@@ -244,22 +340,6 @@ impl Coven:
         Ok(server.json(200, rec))
 
     fn route_promote(self) -> fn(Request) -> Response:
-        // POST /coven/promote : second-factor release (separation of duties).
-        //
-        // SECURITY INVARIANT — promotion is an isolated HUMAN operation, by design.
-        // Publishing (POST /coven/publish) is a machine/CI action authorized by an OIDC
-        // identity token; it can only ever produce a `Staged` version — never a released,
-        // consumable one (`promote_checked` rejects any non-`Staged` state). Releasing a
-        // version is a SEPARATE step that requires (a) a human-presented second factor —
-        // a fresh, single-use WebAuthn 2FA assertion, NOT a replayable CI token — and
-        // (b) separation of duties: the promoter identity must differ from the publisher.
-        //
-        // The consequence is the whole point: a FULL CI compromise (stolen OIDC token,
-        // malicious workflow, supply-chain attack on the build) can publish a poisoned
-        // version, but it CANNOT promote it to a released package consumers resolve. That
-        // gate is a human at a distinct system with a passkey. Do not "streamline" promote
-        // to accept a CI token, drop the second factor, or relax separation of duties —
-        // each of those collapses the isolation boundary that contains a CI compromise.
         guard(fn(req: Request) -> Result(Response, CovenError): self.do_promote(body(req)?))
 
     fn do_promote(self, doc: Json) -> Result(Response, CovenError):
@@ -274,26 +354,20 @@ impl Coven:
         let rec = self.load_record(name, version)?
         require(coven_record.state_of(rec.state) == Staged, 400, name + "@" + version + " is " + rec.state + "; only a staged version can be promoted")?
         require(promoter != rec.uploaded_by, 403, "separation of duties: the identity that published a version may not promote it")?
-        // SEC-013: keep the canonical signing payload unambiguous (see publish_checked).
         require(coven_validate.single_line(promoter) && coven_validate.single_line(factor), 400, "record fields must not contain newlines")?
         let signed = coven_record.sign_record(self.key, name, version, Released, rec.hash, rec.runtime_footprint, rec.uploaded_by, promoter, factor, coven_record.str_or_empty(rec.provenance), now(self.clock) / 1000)
         coven_store.write_record(self.store, name, version, signed)
         self.rebuild_metadata()
         let delta = rights.uncovered(coven_store.latest_released_footprint(self.store, name, version), rec.runtime_footprint)
-        // `delta_build` is always empty (coven never has build footprints — `build=` is
-        // hard-empty); present for wire-shape parity with the Rust PromoteResp.
         let delta_build: List(String) = []
         Ok(server.send(200, .{record: coven_json.or_null(signed), separation_of_duties: true, delta_runtime: delta, delta_build: delta_build}))
 
     fn route_yank(self) -> fn(Request) -> Response:
-        // POST /coven/yank : exclude from new resolutions (re-sign the same fields yanked).
         guard(fn(req: Request) -> Result(Response, CovenError): self.do_yank(body(req)?))
 
     fn do_yank(self, doc: Json) -> Result(Response, CovenError):
         let req = coven_proto.yank_of(doc)
         let rec = self.load_record(req.name, req.version)?
-        // SEC-018: yank is a destructive maintainer action, so a trusted registry requires
-        // an existing maintainer of the namespace — not just any client.
         let _yanker = self.authorized_yanker(req.name, req.id_token, now(self.clock) / 1000)?
         let signed = coven_record.sign_record(self.key, req.name, req.version, Yanked, rec.hash, rec.runtime_footprint, rec.uploaded_by, coven_record.str_or_empty(rec.promoted_by), coven_record.str_or_empty(rec.second_factor), coven_record.str_or_empty(rec.provenance), rec.released_at)
         coven_store.write_record(self.store, req.name, req.version, signed)
@@ -301,7 +375,6 @@ impl Coven:
         Ok(server.send(200, .{ok: true}))
 
     fn route_snapshot(self) -> fn(Request) -> Response:
-        // GET /coven/snapshot, /coven/timestamp : the TUF roles (regenerated on demand).
         fn(req: Request):
             if !exists(self.store, "snapshot.json"):
                 self.rebuild_metadata()
@@ -314,32 +387,17 @@ impl Coven:
             server.json(200, read(self.store, "timestamp.json"))
 
     fn rebuild_metadata(self):
-        // Regenerate + re-sign the TUF snapshot + timestamp (rollback + freeze
-        // protection); the role construction + canonical signing lives in coven_meta.
         coven_meta.rebuild(self.store, self.key, now(self.clock) / 1000)
 
     fn authorized_publisher(self, req: PublishRequest, now: Int, name: String) -> Result((String, Option(Json)), CovenError):
-        // --- authorization: bind identity tokens to the namespace's trust state ------
-        // The authorized publisher (claims.sub) plus the verified claims (for the SLSA
-        // attestation). Anonymous (no trusted issuers): fall back to the client-asserted
-        // `uploaded_by`, no claims. Trusted: the token must verify (401) AND satisfy the
-        // namespace's policy (403); the first trusted publish binds it.
         if list.length(self.issuers) == 0:
             Ok((if req.uploaded_by.is_empty(): "anonymous" else: req.uploaded_by, None))
         else:
             let claims = verified_claims(self.issuers, req.id_token, now, "publishing to a trusted registry requires a short-lived identity token (long-lived API tokens are not accepted)")?
             let sub = self.authorize_publish(name, claims)?
-            // SEC-022: a publish token is single-use. Consuming the `jti` only after the
-            // namespace policy passes means a rejected publish doesn't burn the token, but a
-            // REPLAY of an accepted one is refused — shrinking the staging-replay window the
-            // (intentionally human-gated, see route_promote) promote step already contains.
             let _used = self.consume_jti(claims)?
             Ok((sub, Some(claims)))
 
-    // SEC-022: mark a token's `jti` consumed so it cannot publish twice (replay defense).
-    // The marker is keyed by sha256(jti) so an issuer-chosen id can never escape `_policy/`
-    // via path traversal. A token with no `jti` (a non-GitHub issuer, or a legacy token) is
-    // not single-use-checked — the namespace↔repo-org binding still gates it.
     fn consume_jti(self, claims: Json) -> Result(String, CovenError):
         let jti = coven_trust.claim(claims, "jti")
         if string.is_empty(jti):
@@ -357,16 +415,7 @@ impl Coven:
         if !exists(self.store, pubfile):
             let repo = coven_trust.claim(claims, "repository")
             let wf = coven_trust.claim(claims, "workflow_ref")
-            // SEC-012: bind only on a token that carries the CI identity claims. Binding with
-            // an empty repository/workflow_ref would later be satisfied by ANY token from the
-            // same issuer lacking those claims (""==""), letting an unrelated identity squat
-            // and publish to the namespace.
             require(!string.is_empty(repo) && !string.is_empty(wf), 403, "cannot bind `" + ns + "`: the identity token carries no repository/workflow_ref claims (trusted publishing requires a CI identity)")?
-            // SEC-023: the first publisher must own the namespace. A real CI `repository` is
-            // `org/repo`; require its org to equal the namespace, so `evilorg/fork` cannot
-            // land-grab `victim`. (A `/`-less repository — a non-GitHub issuer or a test —
-            // can't express an org, so it is not org-checked; an attacker can't forge the
-            // signed claim, and every GitHub Actions token is `org/repo`.)
             require(!string.contains(repo, "/") || ns == coven_trust.namespace_of(repo), 403, "namespace `" + ns + "` does not match the token's repository org `" + coven_trust.namespace_of(repo) + "`")?
             fs.ensure_dir(self.store, "_policy/" + ns)
             write(self.store, pubfile, json.encode(JsonObject([("issuer", JsonString(coven_json.str(claims, "iss"))), ("repository", JsonString(repo)), ("workflow_ref", JsonString(wf))])))
@@ -375,9 +424,6 @@ impl Coven:
             enforce_publish_policy(coven_json.or_null(read(self.store, pubfile)), claims, ns)
 
     fn authorized_promoter(self, req: PromoteRequest, now: Int) -> Result(String, CovenError):
-        // The authorized promoter. Trusted: the token must verify (401) and be a
-        // registered maintainer of the namespace (403). First promoter becomes a
-        // maintainer (TOFU); machines stage, humans release.
         if list.length(self.issuers) == 0:
             Ok(req.promoted_by)
         else:
@@ -398,9 +444,6 @@ impl Coven:
             Err(CovenError(403, "`" + coven_json.str(claims, "sub") + "` is not a maintainer of namespace `" + ns + "`"))
 
     fn authorized_yanker(self, name: String, id_token: Option(String), now: Int) -> Result(String, CovenError):
-        // SEC-018: yank requires an EXISTING maintainer of the namespace. Unlike promote it
-        // never bootstraps maintainership (you must not be able to become a maintainer by
-        // yanking). Anonymous mode (no trusted issuers) stays open for local registries.
         if list.length(self.issuers) == 0:
             Ok("anonymous")
         else:
@@ -413,7 +456,6 @@ impl Coven:
             Ok(coven_json.str(claims, "sub"))
 
     fn load_record(self, name: String, version: String) -> Result(Record, CovenError):
-        // The stored record as a typed `Record` — 404 if absent, 500 if corrupt.
         match coven_store.read_record(self.store, name, version):
             None -> Err(CovenError(404, name + "@" + version + " not found"))
             Some(text) ->
@@ -422,16 +464,11 @@ impl Coven:
                     Err(e) -> Err(CovenError(500, "corrupt record `" + name + "@" + version + "`: " + e))
 
     fn source_response(self, name: String, version: String) -> Result(Response, CovenError):
-        // GET /coven/source: the stored files, refusing to serve them if they no longer
-        // hash to the signed record (tamper detection).
         let files = coven_store.read_source(self.store, name, version)
         let rec = self.load_record(name, version)?
         require(coven_store.content_hash(files) == rec.hash, 500, "integrity failure: source no longer matches the signed hash")?
         Ok(server.send(200, .{files: files}))
 
-    // GET /coven/doc: Markdown API docs generated from the (hash-verified) stored source.
-    // `compiler.doc` only PARSES the source — it never runs it — so this is safe on
-    // untrusted published code; the output is witchy-rendered derived content.
     fn doc_response(self, name: String, version: String) -> Result(Response, CovenError):
         let files = coven_store.read_source(self.store, name, version)
         let rec = self.load_record(name, version)?
@@ -443,17 +480,12 @@ impl Coven:
                 md = md + compiler.doc(name, text) + "\n"
         Ok(server.send(200, .{markdown: md}))
 
-// --- authorization helpers (CovenError-returning bridges over coven_trust) ----
-// Verify a request's identity token, lifting a (401, reason) on failure.
 fn verified_claims(issuers: List(Issuer), id_token: Option(String), now: Int, missing: String) -> Result(Json, CovenError):
     let token = id_token.ok_or(CovenError(401, missing))?
     coven_trust.verify_token(issuers, token, now).map_err(fn(e: String): CovenError(401, e))
 
-// A trusted publish must match the namespace's first-bound policy on every field.
 fn enforce_publish_policy(policy: Json, claims: Json, ns: String) -> Result(String, CovenError):
     if string.is_empty(coven_json.str(policy, "repository")) || string.is_empty(coven_json.str(policy, "workflow_ref")):
-        // SEC-012: a policy bound before the bind-time guard (empty repository/workflow_ref)
-        // must not be matchable by a claimless token via ""==""; refuse and require a rebind.
         Err(CovenError(403, "namespace `" + ns + "` has an incomplete trust policy; rebind it from a CI identity"))
     else if coven_json.str(policy, "issuer") != coven_json.str(claims, "iss"):
         Err(CovenError(403, "namespace `" + ns + "` trusts issuer `" + coven_json.str(policy, "issuer") + "`, not `" + coven_json.str(claims, "iss") + "`"))
@@ -464,7 +496,6 @@ fn enforce_publish_policy(policy: Json, claims: Json, ns: String) -> Result(Stri
     else:
         Ok(coven_json.str(claims, "sub"))
 
-// --- response shaping --------------------------------------------------------
 fn err_json(code: Int, msg: String) -> Response:
     server.send(code, .{error: msg})
 

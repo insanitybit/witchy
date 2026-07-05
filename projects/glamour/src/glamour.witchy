@@ -13,8 +13,9 @@
 // `json`/`reflect` are PURE (capability-free) too — they serialize the VNode tree
 // and reflect a `msg` value to JSON the host shell consumes. Importing them keeps
 // the empty footprint (they touch no Net/Dir/Clock); see `to_json`/the run loop.
-from json import Json
+
 import reflect
+from json import Json
 
 // ---------------------------------------------------------------------------
 // UI capabilities (RFC-0039) — Glamour's own authority vocabulary. `UiRoot` is a
@@ -90,47 +91,52 @@ pub fn secret_field(root: UiRoot, form: String, field: String) -> SecretInput:
 // ALWAYS a leaf carrying a plain String — there is no `string -> markup` variant,
 // so a `${userInput}` routed here (see the `html` tag) can only ever be inert
 // text. That is the XSS-immunity-by-construction guarantee, made structural.
-pub type VNode(msg):
+type VNode(msg):
     Element(String, List(Attr(msg)), List(VNode(msg)))
     Text(String)
-    // An isolated FOREIGN-CODE compartment (RFC-0015): `renderer` names a sealed bundle
-    // the host shell loads into a locked-down iframe (opaque origin, `connect-src 'none'`);
-    // `grant` is the ONLY data that crosses in (a JSON string); `on_event` is the msg-tag
-    // the narrow channel may send back. The witchy rune holds no authority over it — the
-    // capability model expressed at the browser boundary.
     Compartment(String, String, String)
-    // A child with a STABLE KEY (RFC-0015): in a list, the host diffs by key instead of
-    // by position, so reordering/inserting/removing items reuses the matching DOM node
-    // (preserving its identity — and an `<input>`'s focus/caret) instead of rebuilding.
     Keyed(String, VNode(msg))
-    // (RFC-0039) A host-owned SECRET input field. `SecretInput` is the unforgeable
-    // authority to render it, and NAMES the host slot (`form`/`field`); the second field
-    // is the msg-tag the shell dispatches — carrying only a NON-sensitive status
-    // ("Empty"/"NonEmpty") — when the field changes. The typed value stays in host
-    // custody: it NEVER crosses into the rune as a msg or model String, so a sibling
-    // component cannot observe another component's password. To act on the value, the
-    // rune passes an opaque `SecretRef` to `submit_secret` — it holds the handle, never
-    // the bytes.
     SecretField(SecretInput, String)
-    // (RFC-0041) A HOST SLOT: a subtree the host renders ONCE via a registered renderer named
-    // `kind`, and that glamour NEVER diffs into — the framework-owns-the-DOM escape hatch for a
-    // host-managed widget (e.g. a runnable code cell). `data` is the payload the renderer
-    // receives (for `"witchy-runnable"`, the cell's source). Unlike `Compartment` this is NOT a
-    // sandboxed iframe — the host mounts it in the MAIN frame; the rune only names the slot and
-    // supplies its data, while what goes inside is entirely the host's (see `glamour-dom.mjs`).
     Slot(String, String)
+
+// An isolated FOREIGN-CODE compartment (RFC-0015): `renderer` names a sealed bundle
+// the host shell loads into a locked-down iframe (opaque origin, `connect-src 'none'`);
+// `grant` is the ONLY data that crosses in (a JSON string); `on_event` is the msg-tag
+// the narrow channel may send back. The witchy rune holds no authority over it — the
+// capability model expressed at the browser boundary.
+
+// A child with a STABLE KEY (RFC-0015): in a list, the host diffs by key instead of
+// by position, so reordering/inserting/removing items reuses the matching DOM node
+// (preserving its identity — and an `<input>`'s focus/caret) instead of rebuilding.
+
+// (RFC-0039) A host-owned SECRET input field. `SecretInput` is the unforgeable
+// authority to render it, and NAMES the host slot (`form`/`field`); the second field
+// is the msg-tag the shell dispatches — carrying only a NON-sensitive status
+// ("Empty"/"NonEmpty") — when the field changes. The typed value stays in host
+// custody: it NEVER crosses into the rune as a msg or model String, so a sibling
+// component cannot observe another component's password. To act on the value, the
+// rune passes an opaque `SecretRef` to `submit_secret` — it holds the handle, never
+// the bytes.
+
+// (RFC-0041) A HOST SLOT: a subtree the host renders ONCE via a registered renderer named
+// `kind`, and that glamour NEVER diffs into — the framework-owns-the-DOM escape hatch for a
+// host-managed widget (e.g. a runnable code cell). `data` is the payload the renderer
+// receives (for `"witchy-runnable"`, the cell's source). Unlike `Compartment` this is NOT a
+// sandboxed iframe — the host mounts it in the MAIN frame; the rune only names the slot and
+// supplies its data, while what goes inside is entirely the host's (see `glamour-dom.mjs`).
 
 // A DOM property/attribute (`class="card"`, `href=…`), OR an event→msg binding.
 // `On` carries a `msg` VALUE, not a closure — the whole MVU model: events are
 // DATA the shell hands back to `update`, never live handlers wired into the view.
-pub type Attr(msg):
+type Attr(msg):
     Prop(String, String)
     On(String, msg)
-    // An input-VALUE handler: on `event`, the shell dispatches the 1-arg msg variant named
-    // `tag` carrying the target's current value — the forms/controlled-input path the
-    // fixed-msg `On` can't express (a keystroke's text isn't known at view time). The value
-    // is delivered as data into `update`, so the rune still performs no DOM reads.
     OnInput(String, String)
+
+// An input-VALUE handler: on `event`, the shell dispatches the 1-arg msg variant named
+// `tag` carrying the target's current value — the forms/controlled-input path the
+// fixed-msg `On` can't express (a keystroke's text isn't known at view time). The value
+// is delivered as data into `update`, so the rune still performs no DOM reads.
 
 // ---- constructors / helpers (the names the `html` tag emits) ----
 // The `html` tag emits these QUALIFIED (`glamour.element`/`glamour.text`/
@@ -140,7 +146,6 @@ pub type Attr(msg):
 // still `import glamour` so the qualifier resolves. The hole values are spliced as
 // already-parsed AST at the tag's markers (see the `html` tag below), so a hole
 // expression resolves at the CALL site — the other half of the hygiene split.
-
 pub fn element(tag: String, attrs: List(Attr(msg)), children: List(VNode(msg))) -> VNode(msg):
     Element(tag, attrs, children)
 
@@ -206,42 +211,46 @@ pub fn on_input(event: String, tag: String) -> Attr(msg):
 // a timer, confined to `min_ms`; a component without one cannot schedule work.
 // `Batch(cmds)` runs several commands; it lets one `update` request more than one
 // effect.
-pub type Cmd(msg):
+type Cmd(msg):
     NoCmd
     After(UiTimer, Int, msg)
     Batch(List(Cmd(msg)))
-    // An async HTTP request (RFC-0015): method, url, body, and the Reflect VARIANT NAME
-    // the shell wraps the `(status, body)` response into and dispatches back. The rune
-    // holds no `Net` — it only DESCRIBES the request; the capability-holding host shell
-    // performs the fetch (attaching any session credential ITSELF) and feeds the result
-    // back as that msg, exactly like the `After` timer. So `update` stays pure and the
-    // footprint stays empty, while the app still talks to a server.
-    // (RFC-0039) The leading `UiFetch` is the unforgeable authority to construct
-    // this fetch: a component without one CANNOT emit an HTTP effect. The token is
-    // NOT serialized (it gates construction, not the wire) — see `cmd_to_json`.
     Http(UiFetch, String, String, String, String)
-    // Push a new URL onto history (client-side routing); the shell mirrors it back as
-    // the app's route msg so `view` re-renders for the new path.
-    // (RFC-0039) The leading `UiRoute` is the unforgeable authority to navigate,
-    // confined to a `base` path; a component without one cannot redirect the app.
     Nav(UiRoute, String)
-    // A host-shell PORT (RFC-0015): run a named host capability (session login, a
-    // WebAuthn passkey ceremony, storage) with `arg`, dispatching the 1-arg msg `tag(result)`
-    // back. The port — and any credential or browser-native API it touches
-    // (`navigator.credentials`, the session token) — lives entirely in the host; the rune
-    // emits only the description and receives only the result, holding no authority itself.
-    // (RFC-0039) The leading `CredentialPort` is the unforgeable authority AND it NAMES
-    // the port: the name is read out of the token (see `cmd_to_json`), never passed as a
-    // free argument, so a component holding a `promote` port can ONLY ever emit a promote
-    // call — it cannot invoke `yank` or any other port it was not granted.
     Port(CredentialPort, String, String)
-    // (RFC-0039) Submit a host-held SECRET (named by the opaque `SecretRef`) to a host
-    // credential port, dispatching `on_done(result)` back. The rune never holds the secret
-    // bytes — only the opaque handle — and the shell reads the value out of its OWN custody
-    // and hands it to the port. Both the secret slot and the port name ride their tokens,
-    // so neither is a forgeable free argument. This is how a password is used without ever
-    // becoming rune-visible data.
     SubmitSecret(SecretRef, CredentialPort, String)
+
+// An async HTTP request (RFC-0015): method, url, body, and the Reflect VARIANT NAME
+// the shell wraps the `(status, body)` response into and dispatches back. The rune
+// holds no `Net` — it only DESCRIBES the request; the capability-holding host shell
+// performs the fetch (attaching any session credential ITSELF) and feeds the result
+// back as that msg, exactly like the `After` timer. So `update` stays pure and the
+// footprint stays empty, while the app still talks to a server.
+// (RFC-0039) The leading `UiFetch` is the unforgeable authority to construct
+// this fetch: a component without one CANNOT emit an HTTP effect. The token is
+// NOT serialized (it gates construction, not the wire) — see `cmd_to_json`.
+
+// Push a new URL onto history (client-side routing); the shell mirrors it back as
+// the app's route msg so `view` re-renders for the new path.
+// (RFC-0039) The leading `UiRoute` is the unforgeable authority to navigate,
+// confined to a `base` path; a component without one cannot redirect the app.
+
+// A host-shell PORT (RFC-0015): run a named host capability (session login, a
+// WebAuthn passkey ceremony, storage) with `arg`, dispatching the 1-arg msg `tag(result)`
+// back. The port — and any credential or browser-native API it touches
+// (`navigator.credentials`, the session token) — lives entirely in the host; the rune
+// emits only the description and receives only the result, holding no authority itself.
+// (RFC-0039) The leading `CredentialPort` is the unforgeable authority AND it NAMES
+// the port: the name is read out of the token (see `cmd_to_json`), never passed as a
+// free argument, so a component holding a `promote` port can ONLY ever emit a promote
+// call — it cannot invoke `yank` or any other port it was not granted.
+
+// (RFC-0039) Submit a host-held SECRET (named by the opaque `SecretRef`) to a host
+// credential port, dispatching `on_done(result)` back. The rune never holds the secret
+// bytes — only the opaque handle — and the shell reads the value out of its OWN custody
+// and hands it to the port. Both the secret slot and the port name ride their tokens,
+// so neither is a forgeable free argument. This is how a password is used without ever
+// becoming rune-visible data.
 
 // ---------------------------------------------------------------------------
 // Cmd WIRE FORMAT — serialize a `Cmd(msg)` to the JSON shape the host shell
@@ -257,52 +266,38 @@ pub type Cmd(msg):
 // the VNode `on` bindings use, so a `Cmd`'s deferred msg round-trips back into
 // `update` exactly as a click-sourced msg would. Events AND effects are data.
 // ---------------------------------------------------------------------------
-
 pub fn cmd_to_json(cmd: Cmd(msg), msg_to_json: fn(msg) -> Json) -> Json:
     match cmd:
         NoCmd -> JsonObject([("cmd", JsonString("none"))])
-        // The `UiTimer` token gated construction; it is NOT serialized (the shell
-        // holds the real timer authority and re-checks `min_ms` itself).
         After(_timer, ms, msg) ->
+            // The `UiTimer` token gated construction; it is NOT serialized (the shell
+            // holds the real timer authority and re-checks `min_ms` itself).
             let mj: Json = msg_to_json(msg)
-            JsonObject([
-                ("cmd", JsonString("after")),
-                ("ms", JsonInt(ms)),
-                ("msg", mj),
-            ])
+            JsonObject([("cmd", JsonString("after")), ("ms", JsonInt(ms)), ("msg", mj)])
         Batch(cmds) ->
             var cjs: List(Json) = []
             for c in cmds:
                 let cj: Json = cmd_to_json(c, msg_to_json)
                 cjs = list.push(cjs, cj)
-            JsonObject([
-                ("cmd", JsonString("batch")),
-                ("cmds", JsonArray(cjs)),
-            ])
-        // `tag` is a literal variant NAME (not routed through msg_to_json): the shell
-        // reconstructs `{"$variant": tag, "$values": [status, body]}` once the response
-        // arrives, so the response carries data the rune did not have at emit time.
+            JsonObject([("cmd", JsonString("batch")), ("cmds", JsonArray(cjs))])
         Http(_fetch, method, url, body, tag) ->
-            JsonObject([
-                ("cmd", JsonString("http")),
-                ("method", JsonString(method)),
-                ("url", JsonString(url)),
-                ("body", JsonString(body)),
-                ("tag", JsonString(tag)),
-            ])
-        // The `UiRoute` token gated construction; only the path crosses the wire.
+            // `tag` is a literal variant NAME (not routed through msg_to_json): the shell
+            // reconstructs `{"$variant": tag, "$values": [status, body]}` once the response
+            // arrives, so the response carries data the rune did not have at emit time.
+            JsonObject([("cmd", JsonString("http")), ("method", JsonString(method)), ("url", JsonString(url)), ("body", JsonString(body)), ("tag", JsonString(tag))])
         Nav(_route, path) ->
+            // The `UiRoute` token gated construction; only the path crosses the wire.
             JsonObject([("cmd", JsonString("nav")), ("path", JsonString(path))])
-        // The port NAME is read out of the `CredentialPort` token (not a free arg), so
-        // the wire can only ever name the port the component was actually granted.
         Port(cred, arg, tag) ->
+            // The port NAME is read out of the `CredentialPort` token (not a free arg), so
+            // the wire can only ever name the port the component was actually granted.
             match cred:
                 CredentialPort(name) ->
                     JsonObject([("cmd", JsonString("port")), ("port", JsonString(name)), ("arg", JsonString(arg)), ("tag", JsonString(tag))])
-        // A secret submit carries the host-slot name (from the `SecretRef`) and the port
-        // name (from the `CredentialPort`) — both from tokens, neither forgeable — plus the
-        // reply tag. The secret VALUE is NOT here: the shell reads it from its own custody.
         SubmitSecret(secret, cred, tag) ->
+            // A secret submit carries the host-slot name (from the `SecretRef`) and the port
+            // name (from the `CredentialPort`) — both from tokens, neither forgeable — plus the
+            // reply tag. The secret VALUE is NOT here: the shell reads it from its own custody.
             match secret:
                 SecretRef(slot) ->
                     match cred:
@@ -357,24 +352,26 @@ pub fn submit_secret(secret: SecretRef, cred: CredentialPort, on_done: String) -
 // is escaped, so a text-node hole containing `<script>` renders as the literal
 // characters `&lt;script&gt;`, never executable markup.
 // ---------------------------------------------------------------------------
-
 pub fn to_html(node: VNode(msg)) -> String:
     match node:
         Text(s) -> escape_text(s)
-        // A foreign-code compartment renders as a locked-down iframe; the grant/event
-        // channel is wired by the JS host at runtime (it never enters the HTML).
         Compartment(renderer, _grant, _on) -> "<iframe sandbox=\"allow-scripts\" class=\"glamour-compartment\" src=\"/compartments/" + escape_attr(renderer) + "/\"></iframe>"
-        // The key is a diff hint only — render the inner node.
         Keyed(_key, inner) -> to_html(inner)
-        // A secret field renders as an INERT password input carrying no value — the typed
-        // bytes live only in host custody, never in this (or any) rune-produced string.
         SecretField(_input, _on_ready) -> "<input type=\"password\" class=\"glamour-secret\"></input>"
-        // A host slot has no static HTML (the host mounts its widget at runtime); the
-        // fallback shows the payload as an inert, escaped code block so a no-JS render still
-        // presents the source.
         Slot(_kind, data) -> "<pre class=\"glamour-slot\"><code>" + escape_text(data) + "</code></pre>"
         Element(tag, attrs, children) -> render_element(tag, attrs, children)
 
+// A foreign-code compartment renders as a locked-down iframe; the grant/event
+// channel is wired by the JS host at runtime (it never enters the HTML).
+
+// The key is a diff hint only — render the inner node.
+
+// A secret field renders as an INERT password input carrying no value — the typed
+// bytes live only in host custody, never in this (or any) rune-produced string.
+
+// A host slot has no static HTML (the host mounts its widget at runtime); the
+// fallback shows the payload as an inert, escaped code block so a no-JS render still
+// presents the source.
 fn render_element(tag: String, attrs: List(Attr(msg)), children: List(VNode(msg))) -> String:
     var out = "<" + tag
     for a in attrs:
@@ -389,14 +386,16 @@ fn render_element(tag: String, attrs: List(Attr(msg)), children: List(VNode(msg)
 
 fn render_attr(a: Attr(msg)) -> String:
     match a:
-        // A static/property attribute. The value is attribute-escaped so a `"`
-        // can't break out of the quoted value.
         Prop(name, value) -> " " + name + "=\"" + escape_attr(value) + "\""
-        // An event binding is data for the host shell; it has no HTML rendering
-        // surface, so the serializer marks it inertly (the shell reads the live
-        // `On` value out of the VNode, not out of this string).
         On(event, msg) -> " data-on-" + event + "=\"[msg]\""
         OnInput(event, _tag) -> " data-on-" + event + "=\"[input]\""
+
+// A static/property attribute. The value is attribute-escaped so a `"`
+// can't break out of the quoted value.
+
+// An event binding is data for the host shell; it has no HTML rendering
+// surface, so the serializer marks it inertly (the shell reads the live
+// `On` value out of the VNode, not out of this string).
 
 // Escape text content: the four characters that could otherwise be parsed as
 // markup. This is the load-bearing line for XSS-immunity being observable.
@@ -435,7 +434,6 @@ fn escape_attr(s: String) -> String:
 // var inside this function — keeps monomorphization happy; `json.from_value(msg)` is
 // the obvious `msg_to_json` an app hands in (it works for any `Reflect` msg).
 // ===========================================================================
-
 pub fn to_json(node: VNode(msg), msg_to_json: fn(msg) -> Json) -> String:
     json.encode(node_json(node, msg_to_json))
 
@@ -446,44 +444,37 @@ fn node_json(node: VNode(msg), msg_to_json: fn(msg) -> Json) -> Json:
             JsonObject([("compartment", JsonString(renderer)), ("grant", JsonString(grant)), ("on", JsonString(on_event))])
         Keyed(key, inner) ->
             JsonObject([("key", JsonString(key)), ("node", node_json(inner, msg_to_json))])
-        // A secret field carries only its host-slot coordinates (`form`/`field`, read out
-        // of the `SecretInput` token) and the non-sensitive `on_ready` msg-tag. No value —
-        // the shell owns the bytes; the rune never emitted them.
         SecretField(input, on_ready) ->
+            // A secret field carries only its host-slot coordinates (`form`/`field`, read out
+            // of the `SecretInput` token) and the non-sensitive `on_ready` msg-tag. No value —
+            // the shell owns the bytes; the rune never emitted them.
             match input:
                 SecretInput(form, field) ->
-                    JsonObject([
-                        ("secret", JsonObject([("form", JsonString(form)), ("field", JsonString(field))])),
-                        ("on_ready", JsonString(on_ready)),
-                    ])
-        // A host slot names its `kind` renderer and carries its `data` payload; the host
-        // mounts the widget (glamour never diffs into it).
+                    JsonObject([("secret", JsonObject([("form", JsonString(form)), ("field", JsonString(field))])), ("on_ready", JsonString(on_ready))])
         Slot(kind, data) ->
+            // A host slot names its `kind` renderer and carries its `data` payload; the host
+            // mounts the widget (glamour never diffs into it).
             JsonObject([("slot", JsonString(kind)), ("data", JsonString(data))])
         Element(tag, attrs, children) ->
             var ajs: List(Json) = []
             for a in attrs:
                 let aj: Json = match a:
                     Prop(name, value) -> JsonArray([JsonString("prop"), JsonString(name), JsonString(value)])
-                    // The msg VALUE serialized to JSON — the host sends it back
-                    // unchanged, so a `${Inc}` event handler round-trips as the
-                    // `Inc` message into `update`. Events are data.
                     On(event, msg) ->
+                        // The msg VALUE serialized to JSON — the host sends it back
+                        // unchanged, so a `${Inc}` event handler round-trips as the
+                        // `Inc` message into `update`. Events are data.
                         let mj: Json = msg_to_json(msg)
                         JsonArray([JsonString("on"), JsonString(event), mj])
-                    // The shell fills the target's value into a `tag(value)` msg on `event`.
                     OnInput(event, tag) ->
+                        // The shell fills the target's value into a `tag(value)` msg on `event`.
                         JsonArray([JsonString("oninput"), JsonString(event), JsonString(tag)])
                 ajs = list.push(ajs, aj)
             var kjs: List(Json) = []
             for c in children:
                 let cj: Json = node_json(c, msg_to_json)
                 kjs = list.push(kjs, cj)
-            JsonObject([
-                ("el", JsonString(tag)),
-                ("attrs", JsonArray(ajs)),
-                ("kids", JsonArray(kjs)),
-            ])
+            JsonObject([("el", JsonString(tag)), ("attrs", JsonArray(ajs)), ("kids", JsonArray(kjs))])
 
 // ===========================================================================
 // The RUN-LOOP glue (RFC-0008's MVU loop, host-driven). The app author writes a
@@ -510,16 +501,7 @@ fn node_json(node: VNode(msg), msg_to_json: fn(msg) -> Json) -> Json:
 // `where _: Reflect` bound here) keeps the generic monomorphization tractable —
 // the unproven part RFC-0008 flagged.
 // ===========================================================================
-
-pub fn step_with(
-    input: String,
-    view: fn(model) -> VNode(msg),
-    update: fn(model, msg) -> (model, Cmd(msg)),
-    parse_model: fn(Json) -> model,
-    parse_msg: fn(Json) -> msg,
-    model_to_json: fn(model) -> Json,
-    msg_to_json: fn(msg) -> Json,
-) -> String:
+pub fn step_with(input: String, view: fn(model) -> VNode(msg), update: fn(model, msg) -> (model, Cmd(msg)), parse_model: fn(Json) -> model, parse_msg: fn(Json) -> msg, model_to_json: fn(model) -> Json, msg_to_json: fn(msg) -> Json) -> String:
     let parsed = json.decode(input)
     match parsed:
         Err(e) -> json.encode(JsonObject([("error", JsonString(e))]))
@@ -534,10 +516,11 @@ pub fn step_with(
                     // Kept inline (not a helper) so the `model`/`msg` type vars
                     // thread without a cross-function inference hop.
                     let stepped = match json.get(doc, "msg"):
-                        // Initial render: model-only input, no msg, so no effect.
                         None -> (model0, NoCmd)
-                        // Event step: fold the msg in and carry its command out.
                         Some(msg_json) ->
+                            // Initial render: model-only input, no msg, so no effect.
+
+                            // Event step: fold the msg in and carry its command out.
                             let msg = parse_msg(msg_json)
                             update(model0, msg)
                     let (model1, cmd) = stepped
@@ -548,11 +531,7 @@ pub fn step_with(
                     // the shell holds the authority (e.g. the timer); the rune only
                     // described the effect here.
                     let cmd_j = cmd_to_json(cmd, msg_to_json)
-                    json.encode(JsonObject([
-                        ("model", model_j),
-                        ("vnode", vnode_j),
-                        ("cmd", cmd_j),
-                    ]))
+                    json.encode(JsonObject([("model", model_j), ("vnode", vnode_j), ("cmd", cmd_j)]))
 
 // ===========================================================================
 // The `html` tag — a COMPILE-TIME tagged literal (RFC-0006). `html"<div…>"`
@@ -584,7 +563,6 @@ pub fn step_with(
 // HTML comments, entities beyond the escape set, boolean attributes without a
 // value, and namespaced/SVG tags.
 // ===========================================================================
-
 pub fn html(parts: List(String), holes: List(String)) -> String:
     // Reconstruct the full template, replacing each hole with a sentinel marker
     // `<NUL>N<NUL>` (NUL cannot appear in HTML source), so the parser can walk a
@@ -614,29 +592,34 @@ fn weave(parts: List(String)) -> String:
 // ---- a tiny HTML lexer over the woven template ----
 // Tokens are encoded as strings for simplicity (no extra type leaks into the
 // rune's public surface): a tag-open marker, attributes, text runs, and holes.
-
 type HtmlTok:
-    // `<tag` open (the tag name; "" if the name was a forbidden hole — caught
-    // later) with the parsed attributes and whether it self-closed (`/>`).
     Open(String, List(HAttr), Bool)
-    // `</tag>` close.
     Close(String)
-    // A run of literal text (already de-woven: holes inside text are separate).
     TextRun(String)
-    // A `${N}` hole appearing in TEXT position (child of an element).
     HoleNode(Int)
 
+// `<tag` open (the tag name; "" if the name was a forbidden hole — caught
+// later) with the parsed attributes and whether it self-closed (`/>`).
+
+// `</tag>` close.
+
+// A run of literal text (already de-woven: holes inside text are separate).
+
+// A `${N}` hole appearing in TEXT position (child of an element).
 type HAttr:
-    // `name="value"` / `name=value` — a static attribute.
     SProp(String, String)
-    // `name=${N}` — an attribute whose value is hole `N`.
     HProp(String, Int)
-    // `on:event=${N}` — an event binding to hole `N` (a `msg` value).
     HOn(String, Int)
-    // `on:event=${N}` written with a static literal is rejected at parse time;
-    // a forbidden attribute shape becomes `Bad(message)`.
     Bad(String)
 
+// `name="value"` / `name=value` — a static attribute.
+
+// `name=${N}` — an attribute whose value is hole `N`.
+
+// `on:event=${N}` — an event binding to hole `N` (a `msg` value).
+
+// `on:event=${N}` written with a static literal is rejected at parse time;
+// a forbidden attribute shape becomes `Bad(message)`.
 fn lex_html(s: String) -> List(HtmlTok):
     let cs = string.chars(s)
     let n = list.length(cs)
@@ -654,17 +637,16 @@ fn lex_html(s: String) -> List(HtmlTok):
             let (idx, j) = read_marker(cs, i, nul)
             out = list.push(out, HoleNode(idx))
             i = j
+        else if c == "<":
+            if string.length(text) > 0:
+                out = list.push(out, TextRun(text))
+                text = ""
+            let (tok, j) = lex_tag(cs, i, nul)
+            out = list.push(out, tok)
+            i = j
         else:
-            if c == "<":
-                if string.length(text) > 0:
-                    out = list.push(out, TextRun(text))
-                    text = ""
-                let (tok, j) = lex_tag(cs, i, nul)
-                out = list.push(out, tok)
-                i = j
-            else:
-                text = text + c
-                i = i + 1
+            text = text + c
+            i = i + 1
     if string.length(text) > 0:
         out = list.push(out, TextRun(text))
     out
@@ -724,17 +706,15 @@ fn lex_attrs(cs: List(String), start: Int, nul: String) -> (List(HAttr), Int, Bo
         let c = list.at(cs, i)
         if is_ws(c):
             i = i + 1
+        else if c == ">":
+            return (attrs, i + 1, false)
+        else if c == "/":
+            // `/>` self-close.
+            return (attrs, i + 2, true)
         else:
-            if c == ">":
-                return (attrs, i + 1, false)
-            else:
-                if c == "/":
-                    // `/>` self-close.
-                    return (attrs, i + 2, true)
-                else:
-                    let (attr, j) = lex_one_attr(cs, i, nul)
-                    attrs = list.push(attrs, attr)
-                    i = j
+            let (attr, j) = lex_one_attr(cs, i, nul)
+            attrs = list.push(attrs, attr)
+            i = j
     (attrs, i, false)
 
 // Lex a single `name=value` (or `on:event=value`) attribute.
@@ -807,14 +787,7 @@ fn parse_node(toks: List(HtmlTok), at: Int, holes: List(String)) -> (String, Int
                 ("", at + 1)
             Open(name, attrs, self_close) -> parse_element(toks, at, name, attrs, self_close, holes)
 
-fn parse_element(
-    toks: List(HtmlTok),
-    at: Int,
-    name: String,
-    attrs: List(HAttr),
-    self_close: Bool,
-    holes: List(String),
-) -> (String, Int):
+fn parse_element(toks: List(HtmlTok), at: Int, name: String, attrs: List(HAttr), self_close: Bool, holes: List(String)) -> (String, Int):
     if string.length(name) == 0:
         let _bad = fail("glamour html: a tag NAME may not be a \${hole} — the element name must be static")
         ("", at + 1)
@@ -834,14 +807,13 @@ fn parse_children(toks: List(HtmlTok), at: Int, name: String, holes: List(String
     var kids = []
     var done = false
     while i < n && !done:
-        match list.at(toks, i):
-            Close(close_name) ->
-                done = true
-                i = i + 1
-            _ ->
-                let (src, j) = parse_node(toks, i, holes)
-                kids = list.push(kids, src)
-                i = j
+        if let Close(close_name) = list.at(toks, i):
+            done = true
+            i = i + 1
+        else:
+            let (src, j) = parse_node(toks, i, holes)
+            kids = list.push(kids, src)
+            i = j
     (list.join(kids, ", "), i)
 
 // ---- emitters: produce witchy expression SOURCE ----

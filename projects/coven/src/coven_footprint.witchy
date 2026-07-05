@@ -57,12 +57,12 @@ pub fn compartments_in(files: List((String, String))) -> List(String):
 
 fn scan_compartments(s: String) -> List(String):
     let marker = "compartment(\""
-    let i = (string.index_of(s, marker) ?? -1)
+    let i = string.index_of(s, marker) ?? -1
     if i < 0:
         []
     else:
         let after = string.substring(s, i + string.length(marker), string.length(s))
-        let close = (string.index_of(after, "\"") ?? -1)
+        let close = string.index_of(after, "\"") ?? -1
         if close < 0:
             []
         else:

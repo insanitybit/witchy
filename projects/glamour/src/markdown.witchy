@@ -9,12 +9,12 @@
 // footprint stays empty, exactly like the rest of glamour.)
 
 from glamour import VNode
+
 // Render a Markdown document to a single container VNode.
 pub fn to_vnode(md: String) -> VNode(msg):
     glamour.element("div", [glamour.prop("class", "markdown")], blocks(string.split(md, "\n")))
 
 // --- block level (line-driven) ----------------------------------------------
-
 fn blocks(lines: List(String)) -> List(VNode(msg)):
     var acc = []
     var i = 0
@@ -77,13 +77,20 @@ fn block_break(line: String) -> Bool:
     string.is_empty(string.trim(line)) || heading_level(line) > 0 || string.starts_with(line, "```") || is_list_item(line)
 
 fn heading_level(line: String) -> Int:
-    if string.starts_with(line, "###### "): 6
-    else if string.starts_with(line, "##### "): 5
-    else if string.starts_with(line, "#### "): 4
-    else if string.starts_with(line, "### "): 3
-    else if string.starts_with(line, "## "): 2
-    else if string.starts_with(line, "# "): 1
-    else: 0
+    if string.starts_with(line, "###### "):
+        6
+    else if string.starts_with(line, "##### "):
+        5
+    else if string.starts_with(line, "#### "):
+        4
+    else if string.starts_with(line, "### "):
+        3
+    else if string.starts_with(line, "## "):
+        2
+    else if string.starts_with(line, "# "):
+        1
+    else:
+        0
 
 fn is_list_item(line: String) -> Bool:
     string.starts_with(line, "- ") || string.starts_with(line, "* ")
@@ -91,7 +98,6 @@ fn is_list_item(line: String) -> Bool:
 // --- GFM tables (leading-pipe rows + a `|---|` separator) --------------------
 // Only the leading-pipe form is recognized (every table in our docs uses it), which keeps a
 // prose line that merely contains a `|` from ever being mistaken for a table.
-
 fn is_table_row(line: String) -> Bool:
     string.starts_with(string.trim(line), "|")
 
@@ -129,14 +135,13 @@ fn table_row_cells(line: String, tag: String) -> List(VNode(msg)):
 // --- inline (recursive, earliest-marker) ------------------------------------
 // Handles `code`, **bold**, and [text](url). Everything else is a plain text node,
 // so stray Markdown and raw HTML render as their literal characters.
-
 fn inline(s: String) -> List(VNode(msg)):
     if string.is_empty(s):
         []
     else:
-        let ci = (string.index_of(s, "`") ?? -1)
-        let bi = (string.index_of(s, "**") ?? -1)
-        let ki = (string.index_of(s, "[") ?? -1)
+        let ci = string.index_of(s, "`") ?? -1
+        let bi = string.index_of(s, "**") ?? -1
+        let ki = string.index_of(s, "[") ?? -1
         let first = min3(ci, bi, ki)
         if first < 0:
             [glamour.text(s)]
@@ -155,7 +160,7 @@ fn inline(s: String) -> List(VNode(msg)):
 fn span(s: String, at: Int, dlen: Int, marker: String, tag: String, head: List(VNode(msg))) -> List(VNode(msg)):
     let body_start = at + dlen
     let rest_from_body = string.substring(s, body_start, string.length(s))
-    let close = (string.index_of(rest_from_body, marker) ?? -1)
+    let close = string.index_of(rest_from_body, marker) ?? -1
     if close < 0:
         list.concat(head, [glamour.text(string.substring(s, at, string.length(s)))])
     else:
@@ -201,7 +206,11 @@ fn min3(a: Int, b: Int, c: Int) -> Int:
     min2(min2(a, b), c)
 
 fn min2(a: Int, b: Int) -> Int:
-    if a < 0: b
-    else if b < 0: a
-    else if a < b: a
-    else: b
+    if a < 0:
+        b
+    else if b < 0:
+        a
+    else if a < b:
+        a
+    else:
+        b

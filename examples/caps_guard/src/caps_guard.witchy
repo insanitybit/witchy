@@ -7,7 +7,6 @@
 //   witchy examples/caps_guard.witchy
 
 import compiler
-import json
 import string
 from json import Json
 

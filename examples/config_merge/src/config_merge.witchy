@@ -5,7 +5,6 @@
 // the compiled WASM backend.
 // Run: witchy examples/config_merge.witchy
 
-import json
 from json import Json
 
 fn base() -> Json:

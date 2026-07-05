@@ -6,7 +6,6 @@
 // Run:  witchy examples/for_await.witchy
 //       witchy parity examples/for_await.witchy
 
-import chan
 from chan import Receiver, Sender
 
 async fn producer(tx: Sender(Int)) -> Nil:

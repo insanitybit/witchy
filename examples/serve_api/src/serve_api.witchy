@@ -7,8 +7,6 @@
 // Run: witchy --net 127.0.0.1:8080 examples/serve_api.witchy
 
 from http import Request, Response
-import server
-import json
 from json import Json
 from server import Router
 

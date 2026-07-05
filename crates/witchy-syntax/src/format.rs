@@ -985,28 +985,29 @@ fn expr(e: &Expr) -> String {
         Expr::List(xs) => format!("[{}]", comma(xs)),
         Expr::Tuple(xs) => format!("({})", comma(xs)),
         Expr::Call { name, args } => {
-            // The one-shot migration vehicle: a retired global builtin prints
-            // as its module-qualified spelling, so `witchy fmt` rewrites a
-            // pre-migration tree in place (rfcs/language-evolution.md Phase 2).
-            // A function the module DEFINES under that name is the user's own
-            // and keeps its spelling.
+            // `to_string`/`int_to_string` were retired in favor of string
+            // interpolation, whose only surface spelling is `"${x}"`; rewrite a
+            // single-argument render call to that form (unless the module defines
+            // its own function by that name). This is render-EQUIVALENT — the
+            // three spellings desugar to the same `__render(x)` tree — and is the
+            // printer's only tree-changing rewrite.
+            //
+            // The formatter does NOT rewrite a call to a module-qualified stdlib
+            // path (BUG-014): a bare `foo(...)` prints verbatim, so a parameter
+            // or `let` that shadows a stdlib function name (e.g. an `update`
+            // callback) can never be silently re-pointed at `dict.update`. The
+            // formatter must never change which function a call resolves to.
             if !local_fn(name)
                 && matches!(name.as_str(), "to_string" | "int_to_string")
                 && args.len() == 1
             {
-                // Rendering's only surface spelling is interpolation. Inline
-                // arguments only; anything multiline falls through and the
+                // Inline arguments only; anything multiline falls through and the
                 // round-trip guard skips the file rather than mangle it.
                 let inner = expr(&args[0]);
                 if !inner.contains('\n') {
                     return format!("\"${{{inner}}}\"");
                 }
             }
-            let name = if local_fn(name) {
-                name
-            } else {
-                crate::aliases::moved_builtin(name).unwrap_or(name)
-            };
             format!("{name}({})", comma(args))
         }
         // (RFC-0056) A labeled direct call — print each argument as written,
@@ -1563,8 +1564,9 @@ fn local_fn(name: &str) -> bool {
 //
 // The semantic guard in `reformat` compares the input AST to the output's,
 // after canonicalizing BOTH: source-line metadata is cleared (layout shifts
-// freely), and the formatter's one tree-changing rewrite — the moved-builtin
-// rename — is applied, so it doesn't read as a difference. Everything else
+// freely), and the formatter's one tree-changing rewrite — the render-call
+// (`to_string`/`int_to_string`) → interpolation desugar — is applied, so it
+// doesn't read as a difference. Everything else
 // the printer does (re-sugaring comprehensions/interpolation/if-let, inline
 // arms, bare nullary constructors) parses back to an identical tree and needs
 // no allowance here.
@@ -1646,12 +1648,9 @@ fn canon_expr(e: &mut Expr) {
         }
     }
     match e {
-        Expr::Call { name, args } => {
-            if !name.contains('.') && !local_fn(name) {
-                if let Some(q) = crate::aliases::moved_builtin(name) {
-                    *name = q.to_string();
-                }
-            }
+        Expr::Call { name: _, args } => {
+            // The printer prints a call target verbatim (BUG-014), so there is
+            // no target rewrite to mirror here — just recurse into arguments.
             for x in args {
                 canon_expr(x);
             }
