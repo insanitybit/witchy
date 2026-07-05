@@ -368,7 +368,11 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             import_lines: Vec::new(),
             item_lines: Vec::new(),
         };
+        let __t = std::time::Instant::now();
         let t = crate::typeck::annotate(&probe);
+        if std::env::var_os("WITCHY_DEBUG_MONO_TIMING").is_some() {
+            eprintln!("annotate first_table: items={} took={:?}", probe.items.len(), __t.elapsed());
+        }
         (probe.items, t)
     };
     let mut items = items_back;
@@ -418,6 +422,16 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         const MONO_ROUNDS: usize = 4;
         let mut table = first_table;
         let mut memo: HashMap<(String, Vec<String>), String> = HashMap::new();
+        // Did any round actually monomorphize something? The ONLY mutation
+        // `Mono::walk_*` performs is a call-name rewrite to a specialization, and
+        // every such rewrite pushes to `generated` — so `generated` empty across
+        // ALL rounds means the module is byte-for-byte the one `first_table` was
+        // computed over. In that (very common) case — every derive/comptime block,
+        // and any module whose generics are never instantiated concretely — the
+        // separate FINAL re-annotate below is pure redundant work: `first_table`
+        // is already the exact final table. Skipping it halves the annotate cost
+        // of the derive-heavy comptime path (RFC-0046 regression, BUG-013).
+        let mut any_generated = false;
         for round in 0..MONO_ROUNDS {
             let (ctor_results, fn_rets, fn_sigs) = build_tables(&items);
             let ctor_fields = build_ctor_fields(&items);
@@ -448,12 +462,20 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                 table: &table,
                 skip_walk: &no_fallback,
             };
+            let __t_mono = std::time::Instant::now();
             mono.run(&mut items);
             memo = std::mem::take(&mut mono.memo);
             mono_diags = std::mem::take(&mut mono.diagnostics);
             let generated = std::mem::take(&mut mono.generated);
             drop(mono);
             let progressed = !generated.is_empty();
+            any_generated |= progressed;
+            if std::env::var_os("WITCHY_DEBUG_MONO_TIMING").is_some() {
+                eprintln!(
+                    "mono round {round}: items={} generated={} mono_walk={:?}",
+                    items.len(), generated.len(), __t_mono.elapsed()
+                );
+            }
             items.extend(generated.into_iter().map(Item::Function));
             if !progressed || round + 1 == MONO_ROUNDS {
                 break;
@@ -469,24 +491,47 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                 import_lines: Vec::new(),
                 item_lines: Vec::new(),
             };
+            let __t = std::time::Instant::now();
             table = crate::typeck::annotate(&probe);
+            if std::env::var_os("WITCHY_DEBUG_MONO_TIMING").is_some() {
+                eprintln!("annotate round {round}: items={} took={:?}", probe.items.len(), __t.elapsed());
+            }
             items = probe.items;
         }
         // The no-fallback generic originals were kept only for the re-annotate;
         // drop them now that their concrete specializations exist. (An unresolved
         // call to one is a genuine error the loud pass reports.)
         items.retain(|it| !matches!(it, Item::Function(f) if no_fallback.contains(&f.name)));
-        // A fresh table over the FINAL module for the loud dispatch pass: node
-        // addresses now match after the retain, and every specialization is typed.
-        let probe = Module {
-            modes: Vec::new(),
-            imports: imports.clone(),
-            items,
-            import_lines: Vec::new(),
-            item_lines: Vec::new(),
-        };
-        type_table = crate::typeck::annotate(&probe);
-        items = probe.items;
+        if any_generated {
+            // A fresh table over the FINAL module for the loud dispatch pass: node
+            // addresses now match after the retain, and every specialization is typed.
+            let probe = Module {
+                modes: Vec::new(),
+                imports: imports.clone(),
+                items,
+                import_lines: Vec::new(),
+                item_lines: Vec::new(),
+            };
+            let __t = std::time::Instant::now();
+            type_table = crate::typeck::annotate(&probe);
+            if std::env::var_os("WITCHY_DEBUG_MONO_TIMING").is_some() {
+                eprintln!("annotate final: items={} took={:?}", probe.items.len(), __t.elapsed());
+            }
+            items = probe.items;
+        } else {
+            // Nothing was monomorphized: `items` is exactly what `first_table`
+            // (moved into `table` and never reassigned — the loop broke at round 0)
+            // was computed over. The only difference is the `retain` above, which
+            // dropped bounded/no-fallback templates; those are skipped by pass 2 of
+            // the checker, so `first_table` never held entries for their bodies —
+            // and any stale key it does hold is for a node no longer in `items`, so
+            // the loud pass (which only looks up live nodes) never reads it. Reuse
+            // it and skip the redundant whole-module re-annotate.
+            if std::env::var_os("WITCHY_DEBUG_MONO_TIMING").is_some() {
+                eprintln!("annotate final: SKIPPED (no monomorphization; reusing first_table)");
+            }
+            type_table = table;
+        }
     } else {
         // No generics to specialize: the first table already matches `items`.
         type_table = first_table;
