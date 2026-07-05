@@ -87,7 +87,6 @@ fn dispatch_more(console: Console, root: Dir, args: List(String), cmd: String) -
         0
     else if cmd == "init":
         cmd_init(console, root, arg(args, 1))
-        0
     else if cmd == "why":
         cmd_why(console, root, arg(args, 1), arg(args, 2))
     else if cmd == "why-cap":
@@ -104,7 +103,6 @@ fn dispatch_more(console: Console, root: Dir, args: List(String), cmd: String) -
         cmd_verify_vendor(console, root, arg(args, 1), arg(args, 2))
     else if cmd == "new":
         cmd_new(console, root, arg(args, 1))
-        0
     else if cmd == "" || cmd == "help":
         usage(console)
         0
@@ -922,18 +920,24 @@ fn cmd_why_cap(console: Console, root: Dir, dir: String, cap: String) -> Int:
 
 // init [name] — add a manifest + src stub to the CURRENT directory (vs `new`,
 // which creates a new subdirectory). No-op if it is already a rune.
-fn cmd_init(console: Console, root: Dir, dir: String):
+fn cmd_init(console: Console, root: Dir, dir: String) -> Int:
     let name = if string.is_empty(dir): "app" else: dir
-    if exists(root, "witchy.toml"):
+    if !valid_scaffold_name(name):
+        // BUG-200: same up-front validation as `pm new`.
+        print(console, scaffold_name_error(name))
+        1
+    else if exists(root, "witchy.toml"):
         print(console, "already a rune: witchy.toml")
+        0
     else:
         if !exists(root, "src"):
             make_dir(root, "src")
         write(root, "witchy.toml", manifest_stub(name))
-        let stub = join_path("src", name + ".witchy")
+        let stub = join_path("src", module_name(name) + ".witchy")
         if !exists(root, stub):
             write(root, stub, src_stub(name))
         print(console, "initialized rune `" + name + "` in the current directory")
+        0
 
 fn dep_source(let inline: String) -> String:
     match toml.inline_get(inline, "path"):
@@ -2199,17 +2203,68 @@ fn json_index_str(j: Json, i: Int) -> String:
         None -> ""
 
 // --- new: scaffold a rune ----------------------------------------------------
-fn cmd_new(console: Console, root: Dir, name: String):
+fn cmd_new(console: Console, root: Dir, name: String) -> Int:
     if string.is_empty(name):
         print(console, "usage: pm new <name>")
+        1
+    else if !valid_scaffold_name(name):
+        // BUG-200: reject a name that would be spliced unescaped into the generated
+        // TOML + source (a `"`, space, newline, ...) BEFORE writing any files, so
+        // `pm new` never produces a project that cannot parse.
+        print(console, scaffold_name_error(name))
+        1
     else:
-        make_dir(root, name)
-        make_dir(root, join_path(name, "src"))
+        let srcdir = join_path(name, "src")
+        fs.ensure_dir(root, srcdir)
+        let srcfile = join_path(srcdir, module_name(name) + ".witchy")
         write(root, join_path(name, "witchy.toml"), manifest_stub(name))
-        write(root, join_path(join_path(name, "src"), name + ".witchy"), src_stub(name))
+        write(root, srcfile, src_stub(name))
         print(console, "created rune `" + name + "`:")
         print(console, "  " + join_path(name, "witchy.toml"))
-        print(console, "  " + join_path(join_path(name, "src"), name + ".witchy"))
+        print(console, "  " + srcfile)
+        0
+
+// The module identifier for a rune's entry source: the name's basename with `-`
+// mapped to `_` (a module name is an identifier), matching the launcher's
+// `project_entry_file` mapping. `acme/http` -> `http`, `my-rune` -> `my_rune`.
+fn module_name(name: String) -> String:
+    string.replace(basename(name), "-", "_")
+
+// A local scaffold-name grammar (BUG-200): a bare `name` or a `namespace/name`,
+// each segment non-empty and made of lowercase ASCII letters, digits, `-`, or `_`,
+// with at most one `/` and no `..` traversal. This is the same shape coven accepts
+// for registry names, minus the mandatory namespace (a local rune may be bare). It
+// admits the documented valid names and rejects any character that would break the
+// generated `witchy.toml` or `src/<name>.witchy`.
+fn valid_scaffold_name(name: String) -> Bool:
+    if string.is_empty(name) || string.contains(name, "..") || string.starts_with(name, "/") || string.ends_with(name, "/"):
+        false
+    else:
+        let parts = string.split(name, "/")
+        if list.length(parts) > 2:
+            false
+        else:
+            var ok = true
+            for p in parts:
+                if !valid_name_segment(p):
+                    ok = false
+            ok
+
+fn valid_name_segment(s: String) -> Bool:
+    if string.is_empty(s):
+        false
+    else:
+        var ok = true
+        for ch in string.chars(s):
+            if !name_char_ok(ch):
+                ok = false
+        ok
+
+fn name_char_ok(ch: String) -> Bool:
+    (ch >= "a" && ch <= "z") || (ch >= "0" && ch <= "9") || ch == "-" || ch == "_"
+
+fn scaffold_name_error(name: String) -> String:
+    "invalid rune name `" + name + "`: use lowercase letters, digits, `-`, `_`, and at most one `/` for a namespace (e.g. `myrune` or `acme/myrune`)"
 
 fn manifest_stub(let name: String) -> String:
     "[rune]\nname = \"" + name + "\"\nversion = \"0.1.0\"\n\n[capabilities]\nruntime = [\"Console\"]\n\n[dependencies]\n"
