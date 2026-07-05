@@ -5,6 +5,7 @@
 
 import json
 import option
+from json import Json
 
 // A string field, or "" when absent / not a string.
 pub fn str(doc: Json, key: String) -> String:

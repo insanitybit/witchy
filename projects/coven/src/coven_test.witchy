@@ -10,6 +10,7 @@ import json
 import reflect
 import result
 import option
+from json import Json
 
 // --- name + version validation -----------------------------------------------
 fn test_valid_name_accepts_namespaced():

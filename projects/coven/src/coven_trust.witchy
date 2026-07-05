@@ -9,6 +9,7 @@ import json
 import jwt
 import string
 import coven_json
+from json import Json
 
 // A trusted issuer: a provider id (the token's `iss`) plus the key(s) that sign its
 // tokens. Either a single pinned RSA key (`pubkey`, DER PKCS#1 hex) for a static issuer,

@@ -177,6 +177,8 @@ import compiler
 
 // --- response shaping --------------------------------------------------------
 import reflect
+from http import Request, Response
+from json import Json
 
 type CovenError:
     status: Int

@@ -7,6 +7,7 @@
 import json
 import coven_json
 import coven_validate
+from json import Json
 
 // A publish: the manifest, the full source tree, and the claimed identity — a
 // trusted-publishing token when present (`id_token`), otherwise the client-asserted
