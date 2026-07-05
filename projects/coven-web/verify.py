@@ -17,6 +17,7 @@ Exits non-zero on the first failed assertion.
 """
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -26,10 +27,19 @@ import urllib.request
 import urllib.error
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-# Prefer the debug binary if it's newer (dev builds land there); else release.
+# BUG-029: accept whichever witchy is available instead of assuming a debug build exists.
+# Precedence: $WITCHY, then the release build, then debug, then whatever is on PATH (the
+# installed release binary). The worktree may have no local target/ at all.
 _dbg = os.path.join(REPO, "target", "debug", "witchy")
 _rel = os.path.join(REPO, "target", "release", "witchy")
-BIN = _dbg if (os.path.exists(_dbg) and (not os.path.exists(_rel) or os.path.getmtime(_dbg) >= os.path.getmtime(_rel))) else _rel
+BIN = (os.environ.get("WITCHY")
+       or (_rel if os.path.exists(_rel) else None)
+       or (_dbg if os.path.exists(_dbg) else None)
+       or shutil.which("witchy"))
+if not BIN or not os.path.exists(BIN):
+    print("verify.py: no witchy binary found (set $WITCHY, build target/{release,debug}/witchy, "
+          "or install witchy on PATH)")
+    sys.exit(2)
 COVEN = "127.0.0.1:18799"
 WEB = "127.0.0.1:18080"
 WEB_URL = "http://" + WEB
@@ -74,6 +84,24 @@ def main():
         f.write("11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff\n")
     os.makedirs(os.path.join(tmp, "registry"), exist_ok=True)
 
+    # BUG-029: the real dist/ is gitignored and typically empty (the JS build is a separate,
+    # node-dependent step). This harness verifies the SERVER's security + behavior contract, for
+    # which the assets are just fixtures, so synthesize a minimal, writable served-assets dir
+    # rather than depending on an ignored dir that may not exist. The webauthn/oauth handlers
+    # write their `_wa_*`/`_oauth_*` state files here, so it must be writable.
+    dist = os.path.join(tmp, "dist")
+    os.makedirs(dist, exist_ok=True)
+    with open(os.path.join(dist, "index.html"), "w") as f:
+        f.write('<!doctype html><html lang="en"><head><meta charset="utf-8">'
+                '<link rel="stylesheet" href="/styles.css"><title>Coven Web</title></head>'
+                '<body><main id="app"></main><script src="/app.js"></script></body></html>')
+    with open(os.path.join(dist, "app.js"), "w") as f:
+        f.write("// coven-web app fixture\n")
+    with open(os.path.join(dist, "styles.css"), "w") as f:
+        f.write("/* coven-web styles fixture */\n")
+    with open(os.path.join(dist, "source-sandbox.js"), "w") as f:
+        f.write("// source-sandbox fixture\n")
+
     coven = subprocess.Popen(
         [BIN, "sandbox", "--dir", tmp, "--net", COVEN, "--signing-key", seed,
          os.path.join(REPO, "projects/coven/src/coven.witchy"), COVEN],
@@ -84,7 +112,7 @@ def main():
     # bridged to host imports, so nothing is interpreter-only. `--dir` roots the
     # served-assets Dir at dist (the sandbox does not derive it from cwd).
     web = subprocess.Popen(
-        [BIN, "sandbox", "--dir", os.path.join(REPO, "projects/coven-web/web/dist"),
+        [BIN, "sandbox", "--dir", dist,
          "--net", WEB, "--net", COVEN, "--signing-key", seed,
          os.path.join(REPO, "projects/coven-web/src/coven_web.witchy"), WEB, COVEN,
          "http://" + WEB, "localhost"],
@@ -181,12 +209,30 @@ def main():
         st, _, _ = req(yk, "POST", bdy, {"sec-fetch-site": "same-site"})
         check("CSRF: same-site write 403", st == 403, f"status {st}")
 
-        # WebAuthn 2FA promote: register a P-256 credential, fetch a challenge, sign a
-        # real ES256 assertion, and drive /api/coven/promote-2fa end-to-end (the server
-        # verifies it via std/webauthn before forwarding to coven's promote).
+        # BUG-372: minting a challenge WRITES server state, so it is now a POST behind the CSRF
+        # layer — never a state-changing GET (which would be CSRF-exempt). The old GET is gone,
+        # and a cross-site POST is refused before the handler.
+        st, _, _ = req(WEB_URL + "/api/webauthn/challenge")  # GET
+        check("BUG-372: challenge rejects a state-changing GET (405/404)", st in (405, 404), f"status {st}")
+        st, _, _ = req(WEB_URL + "/api/webauthn/challenge", "POST", {"op": "login"},
+                       {"sec-fetch-site": "cross-site"})
+        check("BUG-372: cross-site challenge POST refused by CSRF layer (403)", st == 403, f"status {st}")
+
+        # WebAuthn 2FA: register a P-256 credential, sign IN for a bearer session, then drive
+        # promote-2fa AND yank-2fa end-to-end. The server verifies each real ES256 assertion via
+        # std/webauthn (challenge bound to the operation) before forwarding to coven.
+        #
+        # BUG-142: a missing `cryptography` is a HARD FAILURE, not a silent [SKIP]. The 2FA e2e is
+        # a core part of the contract; an unrunnable prerequisite must fail the run, not pass it.
         try:
             from cryptography.hazmat.primitives.asymmetric import ec
             from cryptography.hazmat.primitives import hashes, serialization
+            have_crypto = True
+        except ImportError:
+            have_crypto = False
+        check("prerequisite: python `cryptography` is installed (2FA e2e)", have_crypto,
+              "pip install cryptography")
+        if have_crypto:
             import hashlib as _h, struct as _s, base64 as _b
             sk = ec.generate_private_key(ec.SECP256R1())
             pubpt = sk.public_key().public_bytes(
@@ -198,6 +244,12 @@ def main():
                            {"credentialId": "c1", "publicKey": pubpt.hex()}, so)
             check("webauthn: register credential", st == 200, f"status {st}")
 
+            def challenge(op, name="", version=""):
+                # BUG-365/372: the challenge POST body binds it (hence the assertion) to op+params.
+                _, _, cb = req(WEB_URL + "/api/webauthn/challenge", "POST",
+                               {"op": op, "name": name, "version": version}, so)
+                return json.loads(cb)["challengeHex"]
+
             def wa_assert(chal_hex, origin, mut=lambda s: s):
                 chal = bytes.fromhex(chal_hex)
                 cd = '{"type":"webauthn.get","challenge":"%s","origin":"%s"}' % (
@@ -206,38 +258,68 @@ def main():
                 sig = sk.sign(ad + _h.sha256(cd.encode()).digest(), ec.ECDSA(hashes.SHA256()))
                 return ad.hex(), cd, mut(sig.hex())
 
-            _, _, cb = req(WEB_URL + "/api/webauthn/challenge")
-            ad, cd, sg = wa_assert(json.loads(cb)["challengeHex"], "http://" + WEB)
-            st, _, body = req(WEB_URL + "/api/coven/promote-2fa", "POST",
-                {"name": "demo/wav", "version": "1.0.0", "promotedBy": "maintainer",
-                 "credentialId": "c1", "authData": ad, "clientData": cd, "signature": sg}, so)
-            check("webauthn 2FA: valid assertion promotes (staged->released)",
-                  st == 200 and '"state":"released"' in body, f"status {st}")
-            _, _, cb2 = req(WEB_URL + "/api/webauthn/challenge")
-            ad2, cd2, sg2 = wa_assert(json.loads(cb2)["challengeHex"], "http://" + WEB, lambda s: "00" + s)
+            # Sign in with the passkey to mint a bearer session; promote binds `promoted_by` to it.
+            ad, cd, sg = wa_assert(challenge("login"), "http://" + WEB)
+            st, _, tb = req(WEB_URL + "/api/webauthn/login", "POST",
+                {"credentialId": "c1", "authData": ad, "clientData": cd, "signature": sg}, so)
+            check("webauthn: passkey sign-in mints a session", st == 200, f"status {st}")
+            token = (json.loads(tb) if st == 200 else {}).get("token", "")
+            check("webauthn: session token issued", token != "")
+            auth = dict(so); auth["authorization"] = "Bearer " + token
+
+            # BUG-278: a promote with NO session is refused — the promoter identity must be an
+            # authenticated subject, never a client body field (fail closed).
+            ad, cd, sg = wa_assert(challenge("promote", "demo/wav", "1.0.0"), "http://" + WEB)
             st, _, _ = req(WEB_URL + "/api/coven/promote-2fa", "POST",
-                {"name": "demo/wav", "version": "1.0.0", "promotedBy": "maintainer",
-                 "credentialId": "c1", "authData": ad2, "clientData": cd2, "signature": sg2}, so)
+                {"name": "demo/wav", "version": "1.0.0",
+                 "credentialId": "c1", "authData": ad, "clientData": cd, "signature": sg}, so)
+            check("BUG-278: promote without a session is refused (403)", st == 403, f"status {st}")
+
+            # BUG-365: an assertion whose challenge was minted for a DIFFERENT rune is not accepted.
+            ad, cd, sg = wa_assert(challenge("promote", "demo/other", "1.0.0"), "http://" + WEB)
+            st, _, _ = req(WEB_URL + "/api/coven/promote-2fa", "POST",
+                {"name": "demo/wav", "version": "1.0.0",
+                 "credentialId": "c1", "authData": ad, "clientData": cd, "signature": sg}, auth)
+            check("BUG-365: challenge bound to a different rune is refused (403)", st == 403, f"status {st}")
+
+            # Valid, session-authenticated, operation-bound promote: staged -> released. The
+            # recorded promoter is the session subject ("passkey"), which differs from the
+            # publisher ("ci"), satisfying coven's separation of duties.
+            ad, cd, sg = wa_assert(challenge("promote", "demo/wav", "1.0.0"), "http://" + WEB)
+            st, _, body = req(WEB_URL + "/api/coven/promote-2fa", "POST",
+                {"name": "demo/wav", "version": "1.0.0",
+                 "credentialId": "c1", "authData": ad, "clientData": cd, "signature": sg}, auth)
+            check("webauthn 2FA: valid assertion promotes (staged->released)",
+                  st == 200 and '"state":"released"' in body, f"status {st} body {body[:160]}")
+
+            # BUG-421: that promote CONSUMED the challenge (cleared to `{}`). Replaying the SAME
+            # assertion without minting a fresh challenge is refused — single-use enforced by
+            # content, not mere file existence.
+            st, _, _ = req(WEB_URL + "/api/coven/promote-2fa", "POST",
+                {"name": "demo/wav", "version": "1.0.0",
+                 "credentialId": "c1", "authData": ad, "clientData": cd, "signature": sg}, auth)
+            check("BUG-421: replayed (consumed) challenge is refused (403)", st == 403, f"status {st}")
+
+            # Tampered signature is rejected even with a fresh, correctly-bound challenge.
+            ad, cd, sg = wa_assert(challenge("promote", "demo/wav", "1.0.0"), "http://" + WEB, lambda s: "00" + s)
+            st, _, _ = req(WEB_URL + "/api/coven/promote-2fa", "POST",
+                {"name": "demo/wav", "version": "1.0.0",
+                 "credentialId": "c1", "authData": ad, "clientData": cd, "signature": sg}, auth)
             check("webauthn 2FA: tampered signature rejected (403)", st == 403, f"status {st}")
 
-            # WebAuthn 2FA yank: the SPA's yank button drives /api/coven/yank-2fa exactly like
-            # promote. A fresh valid assertion yanks the just-released version; a tampered one is
-            # refused — proving yank, too, is WebAuthn-gated (not session-only).
-            _, _, cby = req(WEB_URL + "/api/webauthn/challenge")
-            ady, cdy, sgy = wa_assert(json.loads(cby)["challengeHex"], "http://" + WEB)
+            # WebAuthn 2FA yank: a fresh valid assertion yanks the just-released version; a tampered
+            # one is refused — proving yank, too, is WebAuthn-gated (not session-only).
+            ad, cd, sg = wa_assert(challenge("yank", "demo/wav", "1.0.0"), "http://" + WEB)
             st, _, body = req(WEB_URL + "/api/coven/yank-2fa", "POST",
                 {"name": "demo/wav", "version": "1.0.0",
-                 "credentialId": "c1", "authData": ady, "clientData": cdy, "signature": sgy}, so)
+                 "credentialId": "c1", "authData": ad, "clientData": cd, "signature": sg}, auth)
             check("webauthn 2FA: valid assertion yanks (released->yanked)",
                   st == 200 and '"ok":true' in body, f"status {st} body {body[:120]}")
-            _, _, cbz = req(WEB_URL + "/api/webauthn/challenge")
-            adz, cdz, sgz = wa_assert(json.loads(cbz)["challengeHex"], "http://" + WEB, lambda s: "00" + s)
+            ad, cd, sg = wa_assert(challenge("yank", "demo/wav", "1.0.0"), "http://" + WEB, lambda s: "00" + s)
             st, _, _ = req(WEB_URL + "/api/coven/yank-2fa", "POST",
                 {"name": "demo/wav", "version": "1.0.0",
-                 "credentialId": "c1", "authData": adz, "clientData": cdz, "signature": sgz}, so)
+                 "credentialId": "c1", "authData": ad, "clientData": cd, "signature": sg}, auth)
             check("webauthn 2FA: tampered yank signature rejected (403)", st == 403, f"status {st}")
-        except ImportError:
-            print("[SKIP] webauthn 2FA (python `cryptography` not installed)")
 
         # B6 (proxy resilience): a down upstream yields 502, not a crash. Kill coven
         # (must be the last check — it leaves the upstream down), then probe.
