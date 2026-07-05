@@ -280,3 +280,19 @@
         assert!(!out.contains('{'), "still has braces: {out}");
         assert_eq!(reformat(&out).unwrap(), out, "not idempotent");
     }
+
+    #[test]
+    fn call_to_shadowing_param_keeps_its_target() {
+        // BUG-014 corruption guard: `update` here is a PARAMETER (a callback),
+        // not the retired `dict.update` builtin. `witchy fmt` must print the
+        // call target verbatim — rewriting `update(x)` to `dict.update(x)`
+        // would silently change which function the call resolves to (and, as it
+        // happens, type-error, since `dict.update` is 4-arg). The name-blind
+        // guard inside `reformat` cannot catch this on its own (it applied the
+        // same rewrite to both sides), so assert the OUTPUT stays unqualified.
+        let src = "fn f(update: fn(Int) -> Int, x: Int) -> Int:\n    update(x)\n";
+        let out = reformat(src).expect("shadowing param round-trips");
+        assert!(out.contains("update(x)"), "call target must stay `update`: {out}");
+        assert!(!out.contains("dict.update"), "a shadowing param must not be qualified: {out}");
+        assert_eq!(out, src, "already canonical — fmt must be a no-op here");
+    }
