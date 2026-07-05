@@ -3,16 +3,17 @@ package main
 import "fmt"
 
 func main() {
+	const n = 64000
 	ch := make(chan int, 64)
 	go func() {
-		for i := 0; i < 8000; i++ {
+		for i := 0; i < n; i++ {
 			ch <- i
 		}
 		close(ch)
 	}()
-	n := 0
-	for range ch {
-		n++
+	sum := 0
+	for v := range ch {
+		sum += v
 	}
-	fmt.Println(n)
+	fmt.Println(sum)
 }

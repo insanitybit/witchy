@@ -1155,6 +1155,19 @@
       "Console"
     ],
     "output": [
+      "sum is 10"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 8,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-async.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
       "110"
     ],
     "runnable": true
