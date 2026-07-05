@@ -3679,7 +3679,7 @@ fn yn(b: Bool) -> String:
                     signing_key: Some(seed),
                     // (RFC-0005) the signing key is a real granted "signing" secret,
                     // not a magic handle-0 fallback — populate it as production does.
-                    secrets: vec![("signing".to_string(), seed.to_vec())],
+                    secrets: vec![crate::runtime::SecretGrant::new("signing", seed.to_vec())],
                     ..Default::default()
                 },
                 64,
@@ -3731,7 +3731,7 @@ fn yn(b: Bool) -> String:
                     signing_key: Some(seed),
                     // (RFC-0005) the signing key is a real granted "signing" secret,
                     // not a magic handle-0 fallback — populate it as production does.
-                    secrets: vec![("signing".to_string(), seed.to_vec())],
+                    secrets: vec![crate::runtime::SecretGrant::new("signing", seed.to_vec())],
                     ..Default::default()
                 },
                 64,
@@ -3779,7 +3779,7 @@ fn yn(b: Bool) -> String:
                     signing_key: Some(seed),
                     // (RFC-0005) the signing key is a real granted "signing" secret,
                     // not a magic handle-0 fallback — populate it as production does.
-                    secrets: vec![("signing".to_string(), seed.to_vec())],
+                    secrets: vec![crate::runtime::SecretGrant::new("signing", seed.to_vec())],
                     ..Default::default()
                 },
                 64,
@@ -9857,7 +9857,7 @@ fn main(console: Console):
         let caps = || Capabilities {
             print: true,
             signing_key: Some([7u8; 32]),
-            secrets: vec![("signing".to_string(), vec![7u8; 32])],
+            secrets: vec![crate::runtime::SecretGrant::new("signing", vec![7u8; 32])],
             quiet: true,
             ..Default::default()
         };
@@ -9891,7 +9891,7 @@ fn main(console: Console):
                 Capabilities {
                     print: true,
                     signing_key: Some([7u8; 32]),
-                    secrets: vec![("signing".to_string(), vec![7u8; 32])],
+                    secrets: vec![crate::runtime::SecretGrant::new("signing", vec![7u8; 32])],
                     quiet: true,
                     ..Default::default()
                 },
