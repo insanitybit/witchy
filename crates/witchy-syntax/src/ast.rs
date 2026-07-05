@@ -725,6 +725,7 @@ pub fn collect_type_vars(t: &Type, out: &mut Vec<String>) {
         Type::Named(name, args) => {
             if args.is_empty()
                 && name.chars().next().is_some_and(char::is_lowercase)
+                && !name.contains('.')
                 && !out.iter().any(|v| v == name)
             {
                 out.push(name.clone());

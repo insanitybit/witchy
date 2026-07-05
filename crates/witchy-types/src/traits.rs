@@ -866,7 +866,7 @@ impl Ctx<'_> {
         if is_specializable_type_arg(head) {
             return false;
         }
-        let is_type_var = head.chars().next().is_some_and(char::is_lowercase);
+        let is_type_var = head.chars().next().is_some_and(char::is_lowercase) && !head.contains('.');
         if matches!(op, BinOp::Eq | BinOp::NotEq) {
             if head.starts_with("Tuple") {
                 return false;
@@ -1099,7 +1099,7 @@ impl Ctx<'_> {
                                 // a bounded generic: dispatch resolves after
                                 // monomorphization, never an error here.
                                 None if !self.free_fns.contains(name.as_str())
-                                    && !tn.chars().next().is_some_and(|c| c.is_lowercase()) => {
+                                    && !(tn.chars().next().is_some_and(|c| c.is_lowercase()) && !tn.contains('.')) => {
                                     self.missing_impls.borrow_mut().push(format!(
                                         "`{tn}` does not implement `{trait_name}` \
                                          (no `impl {trait_name} for {tn}`) — required by a call to `{name}`"
@@ -1181,7 +1181,7 @@ impl Ctx<'_> {
                         // generic trait call for monomorphization to specialize.
                         let resolved = head
                             .as_deref()
-                            .filter(|h| !h.chars().next().is_some_and(char::is_lowercase))
+                            .filter(|h| !(h.chars().next().is_some_and(char::is_lowercase) && !h.contains('.')))
                             .and_then(|h| self.lookup_impl(method, h));
                         *e = Expr::Call {
                             name: resolved.unwrap_or_else(|| method.to_string()),
@@ -1266,7 +1266,7 @@ impl Ctx<'_> {
                 // the type itself, resolved through the bound at mono — so only the
                 // explicit arguments are passed; an instance method prepends `self`.
                 let receiver_is_generic =
-                    tn.as_deref().is_none_or(|n| n.chars().next().is_some_and(char::is_lowercase));
+                    tn.as_deref().is_none_or(|n| n.chars().next().is_some_and(char::is_lowercase) && !n.contains('.'));
                 if self.trait_methods.contains_key(method.as_str()) && receiver_is_generic {
                     let mut call_args = if self.static_trait_methods.contains(method.as_str()) {
                         Vec::new()
@@ -1974,7 +1974,7 @@ fn bind_ctor_pattern(pat: &Pattern, ctor_fields: &HashMap<String, Vec<Type>>, sc
 fn encode_scope_type(t: &Type) -> Option<String> {
     match t {
         Type::Named(n, args) if args.is_empty() => {
-            if n.chars().next().is_some_and(char::is_lowercase) {
+            if n.chars().next().is_some_and(char::is_lowercase) && !n.contains('.') {
                 None // a type variable, not a concrete type
             } else {
                 Some(n.clone())
@@ -1997,7 +1997,7 @@ fn encode_scope_type(t: &Type) -> Option<String> {
 /// encodings. False when the shapes disagree or a leaf can't encode.
 fn bind_type_vars(pattern: &Type, concrete: &Type, out: &mut HashMap<String, String>) -> bool {
     match (pattern, concrete) {
-        (Type::Named(v, a), c) if a.is_empty() && v.chars().next().is_some_and(char::is_lowercase) => {
+        (Type::Named(v, a), c) if a.is_empty() && v.chars().next().is_some_and(char::is_lowercase) && !v.contains('.') => {
             match encode_scope_type(c) {
                 Some(enc) => match out.get(v) {
                     Some(prev) => prev == &enc,

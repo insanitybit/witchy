@@ -39,12 +39,19 @@ const AMBIENT_TYPES: &[&str] = &[
     "Rand", "Env", "Secret", "SecretStore", "Dir", "File", "Net", "Exec", "Socket", "Listener",
     "List", "Option", "Result", "Dict", "BuildOut", "BuildRead", "BuildEnv", "BuildNet",
     "BuildExec",
+    // `cmp.Ordering` is the comparison hierarchy's result type: derive- and
+    // operator-generated code references it (and its variants) pervasively, and
+    // `cmp` is its sole declarer, so it collides with nothing. Keeping it ambient
+    // (like `Option`/`Result`) means every `derive(Ord)` / `match o: Less ->`
+    // keeps working bare — no forced `import cmp`.
+    "Ordering",
 ];
 
-/// Constructors that stay bare everywhere — the prelude `Option`/`Result` ones.
-/// They are ambient language surface (`?`, main-signature checking), so a bare
-/// `Some`/`None`/`Ok`/`Err` never module-qualifies and never needs an import.
-const AMBIENT_CTORS: &[&str] = &["Some", "None", "Ok", "Err"];
+/// Constructors that stay bare everywhere — the prelude `Option`/`Result` ones,
+/// plus `cmp.Ordering`'s `Less`/`Equal`/`Greater` (see `AMBIENT_TYPES`). They are
+/// ambient language surface (`?`, main-signature checking, comparison), so a bare
+/// one never module-qualifies and never needs an import.
+const AMBIENT_CTORS: &[&str] = &["Some", "None", "Ok", "Err", "Less", "Equal", "Greater"];
 
 fn is_ambient_type(name: &str) -> bool {
     AMBIENT_TYPES.contains(&name)
@@ -52,6 +59,14 @@ fn is_ambient_type(name: &str) -> bool {
 
 fn is_ambient_ctor(name: &str) -> bool {
     AMBIENT_CTORS.contains(&name)
+}
+
+/// Compiler-synthesized type heads that name no module and stay bare: the
+/// `TupleN` head a tuple `impl` dispatches under, and the `__anonN` record a
+/// `.{…}` literal desugars to.
+fn is_synthetic_type(name: &str) -> bool {
+    name.starts_with("__")
+        || (name.strip_prefix("Tuple").is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())))
 }
 
 /// The types (and their constructors) one module declares, in their BARE spelling
@@ -219,7 +234,10 @@ impl<'a> Scope<'a> {
             }
             return Ok(name.to_string());
         }
-        if is_ambient_type(name) {
+        if is_ambient_type(name) || name == "Self" || is_synthetic_type(name) {
+            // `Self` is the impl/trait's own type, substituted during trait
+            // lowering; `TupleN` is the synthetic head a tuple impl dispatches
+            // under; `__anonN` is a `.{…}` record — all name no module, stay bare.
             return Ok(name.to_string());
         }
         if name.chars().next().is_some_and(|c| c.is_lowercase()) {
@@ -230,8 +248,9 @@ impl<'a> Scope<'a> {
             return Ok(canon.clone());
         }
         lerr(format!(
-            "unknown type `{name}` — it is not declared here, not a built-in, and not imported. \
-             Qualify it (`module.{name}`) or add `from module import {name}`"
+            "unknown type `{name}` (in module `{}`) — it is not declared here, not a built-in, \
+             and not imported. Qualify it (`module.{name}`) or add `from module import {name}`",
+            self.home
         ))
     }
 
@@ -261,6 +280,10 @@ impl<'a> Scope<'a> {
     // ---- expression constructors ----------------------------------------
 
     /// Canonicalize a constructor NAME in expression position (bare or qualified).
+    /// A nullary "constructor" whose name is actually a TYPE (`Net.tcp(…)`,
+    /// `Set.new()`) is a type-as-value static-method receiver: it resolves like a
+    /// type name (bare if ambient, canonical otherwise), so static dispatch keys
+    /// on the same name as the `impl` head.
     fn resolve_ctor_expr_name(&self, name: &str) -> Result<String, LinkError> {
         if let Some((module, ctor)) = name.split_once('.') {
             if !self.in_scope(module) {
@@ -268,15 +291,25 @@ impl<'a> Scope<'a> {
                     "constructor `{name}`: module `{module}` is not imported"
                 ));
             }
-            if !self.world.types.get(module).is_some_and(|mt| mt.ctors.contains_key(ctor)) {
+            let known = self.world.types.get(module).is_some_and(|mt| {
+                mt.ctors.contains_key(ctor) || mt.types.contains(ctor)
+            });
+            if !known {
                 return lerr(format!("module `{module}` has no constructor `{ctor}`"));
             }
             return Ok(name.to_string());
         }
-        if is_ambient_ctor(name) {
+        if is_ambient_ctor(name) || is_synthetic_type(name) {
             return Ok(name.to_string());
         }
         if let Some(canon) = self.ctor_map.get(name) {
+            return Ok(canon.clone());
+        }
+        // Not a constructor — a bare TYPE used as a static-method receiver.
+        if is_ambient_type(name) {
+            return Ok(name.to_string());
+        }
+        if let Some(canon) = self.type_map.get(name) {
             return Ok(canon.clone());
         }
         lerr(format!(
@@ -382,7 +415,11 @@ impl<'a> Scope<'a> {
                 }
                 Item::Const { value, .. } => self.resolve_expr(value)?,
                 Item::TypeAlias { ty, .. } => self.resolve_type(ty)?,
-                Item::Comptime(b) => self.resolve_block(b)?,
+                // A `comptime:` block runs as its OWN pruned program (comptime
+                // auto-imports `meta`), where it is linked — and so type-resolved —
+                // in that program's scope, not this module's. Leftover blocks are
+                // dropped at merge. Resolving them here would use the wrong imports.
+                Item::Comptime(_) => {}
             }
         }
         Ok(())

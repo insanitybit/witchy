@@ -432,9 +432,26 @@ impl Parser {
     /// `impl Trait for Type { <fn ...> }` (trait impl), or the inherent form
     /// `impl Type { <fn ...> }` (no `for`) whose methods belong to no trait but
     /// still dispatch by receiver type.
+    /// Consume a trailing `.Type` on a module-qualified type head (`set.Set`),
+    /// forming the canonical dotted name. Only a lowercase segment followed by an
+    /// uppercase one qualifies — a trait name (`FromIterator`) is never dotted.
+    fn maybe_qualify_head(&mut self, name: String) -> Result<String, ParseError> {
+        if self.at(&Tok::Dot)
+            && name.chars().next().is_some_and(|c| c.is_lowercase())
+            && matches!(self.toks.get(self.pos + 1).map(|t| &t.kind),
+                Some(Tok::Ident(n)) if n.chars().next().is_some_and(|c| c.is_uppercase()))
+        {
+            self.advance(); // `.`
+            let ty = self.ident()?;
+            return Ok(format!("{name}.{ty}"));
+        }
+        Ok(name)
+    }
+
     fn impl_def(&mut self) -> Result<ImplDef, ParseError> {
         self.expect(&Tok::Impl)?;
         let first = self.ident()?;
+        let first = self.maybe_qualify_head(first)?;
         // `impl FromIterator(a) for List(a):` — trait type-arguments, and a
         // possibly-generic target whose HEAD names the impl.
         let mut trait_args = Vec::new();
@@ -468,6 +485,7 @@ impl Parser {
                 (Some(first), format!("Tuple{}", args.len()), args)
             } else {
                 let head = self.ident()?;
+                let head = self.maybe_qualify_head(head)?;
                 let mut args = Vec::new();
                 if self.at(&Tok::LParen) {
                     self.advance();

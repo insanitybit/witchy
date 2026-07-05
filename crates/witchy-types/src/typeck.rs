@@ -442,7 +442,7 @@ fn validate_type(t: &ast::Type, known: &HashSet<&str>) -> Result<(), TypeError> 
             }
             if known.contains(n.as_str()) {
                 args.iter().try_for_each(|a| validate_type(a, known))
-            } else if args.is_empty() && n.chars().next().is_some_and(|c| c.is_lowercase()) {
+            } else if args.is_empty() && n.chars().next().is_some_and(|c| c.is_lowercase()) && !n.contains('.') {
                 // A lowercase, argument-less name is a generic type parameter.
                 Ok(())
             } else {
@@ -1069,7 +1069,7 @@ fn collect_type_params(t: &ast::Type, acc: &mut Vec<String>) {
             collect_type_params(ret, acc);
         }
         ast::Type::Named(name, args) => {
-            if args.is_empty() && name.chars().next().is_some_and(|c| c.is_lowercase()) {
+            if args.is_empty() && name.chars().next().is_some_and(|c| c.is_lowercase()) && !name.contains('.') {
                 if !acc.contains(name) {
                     acc.push(name.clone());
                 }
@@ -1245,7 +1245,8 @@ impl Checker {
                 }
                 other
                     if args.is_empty()
-                        && other.chars().next().is_some_and(|c| c.is_lowercase()) =>
+                        && other.chars().next().is_some_and(|c| c.is_lowercase())
+                        && !other.contains('.') =>
                 {
                     if let Some(v) = vars.get(other) {
                         v.clone()
