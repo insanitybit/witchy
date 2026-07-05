@@ -107,7 +107,7 @@ impl World {
             let fset = fns.entry(name.clone()).or_default();
             for item in &m.items {
                 match item {
-                    Item::Type(t) if !is_ambient_type(&t.name) => {
+                    Item::Type(t) if !is_ambient_type(&t.name) && !is_synthetic_type(&t.name) => {
                         mt.types.insert(t.name.clone());
                         for v in &t.variants {
                             mt.ctors.insert(v.name.clone(), t.name.clone());
@@ -392,8 +392,10 @@ impl<'a> Scope<'a> {
         for item in &mut m.items {
             match item {
                 Item::Type(t) => {
-                    // Canonicalize the declaration itself (unless ambient).
-                    if !is_ambient_type(&t.name) {
+                    // Canonicalize the declaration itself (unless ambient or a
+                    // compiler synthetic like `__anonN`, whose constructions stay
+                    // bare — canonicalizing the def would strand them).
+                    if !is_ambient_type(&t.name) && !is_synthetic_type(&t.name) {
                         let qual = format!("{}.{}", self.home, t.name);
                         for v in &mut t.variants {
                             v.name = format!("{}.{}", self.home, v.name);
