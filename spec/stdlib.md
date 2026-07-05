@@ -1685,39 +1685,21 @@ A typed `Dir` ENTRY policy (RFC-0011): which entries the Dir may read/write/open
 
 #### `Net.tcp(host: String, port: Int) -> NetPolicy`
 
-A plaintext TCP endpoint: `<host>:<port>`.
-
 #### `Net.any_port(host: String) -> NetPolicy`
-
-Any port on a host: `<host>:*`.
 
 #### `Net.cidr(block: String, port: Int) -> NetPolicy`
 
-An IPv4 CIDR block (rebinding-proof — matched against the resolved IP): `<a.b.c.d/bits>:<port>`.
-
 #### `Net.cidr_any(block: String) -> NetPolicy`
-
-An IPv4 CIDR block, any port: `<a.b.c.d/bits>:*`.
 
 #### `Net.union(a: NetPolicy, b: NetPolicy) -> NetPolicy`
 
-The UNION of two policies — `net.only(Net.union(a, b))` admits either (e.g. an OAuth host plus an API host: `Net.union(Net.tcp("github.com", 443), Net.tcp("api.github.com", 443))`). The patterns are carried together (newline-joined internally) and the host narrows to the whole set at once.
-
 #### `Net.private() -> NetPolicy`
-
-The non-public IP ranges — loopback, RFC-1918, link-local (incl. the `169.254.169.254` cloud-metadata IP), CGNAT, "this host", and the IPv6 equivalents. `net.deny(Net.private())` confines a `Net` so it can never dial an internal address: the CIDR forms are matched against the RESOLVED IP, so a hostname that rebinds to an internal address is refused at connect time (the one-line SSRF / DNS-rebinding defense, RFC-0020).
 
 #### `Dir.ext(suffix: String) -> DirPolicy`
 
-A Dir entry policy admitting only files whose name ends with `suffix` (include the dot, e.g. `".txt"`). Compose with `dir.only` to confine a `Dir`'s reach.
-
 #### `Dir.files() -> DirPolicy`
 
-A Dir entry policy admitting only FILE entries: `dir.only(Dir.files())` confines a `Dir` so it can read/write files but can neither open, list, nor create sub-directories. AND-composes with `ext` — `dir.only(Dir.files()).only(Dir.ext(".txt"))` admits only `.txt` files.
-
 #### `Dir.dirs() -> DirPolicy`
-
-A Dir entry policy admitting only DIRECTORY entries: `dir.only(Dir.dirs())` confines a `Dir` to traversal (open/list/create sub-directories) with no file read/write. The mirror of `files()`.
 
 ## `rand`
 
@@ -2111,6 +2093,14 @@ Serve `app` on `addr` forever on a SINGLE core (one accept loop, no worker pool)
 #### `fn serve_n(net: Net[Listen, Tcp], addr: String, app: Router, n: Int)`
 
 Serve exactly `n` requests then return — for tests and one-shot servers.
+
+#### `fn serve_tls(net: Net[Listen, Tcp], addr: String, cert_pem: String, key: Secret, app: Router)`
+
+Serve `app` over HTTPS on `addr` forever, using ALL cores — `serve` with TLS terminated by the host. `cert_pem` is the PUBLIC certificate chain (PEM text — inline, or read via an ordinary `Dir` grant); `key` is the private key as a `Secret` (`secretstore.require(store, "tls-key")`), consumed BY HANDLE: the key bytes never enter this program's memory, so even a bug in a handler cannot exfiltrate them. Grant the key use-only (`--secret-file tls-key=key.pem,use-only`) and `crypto.reveal` on it errors too. A malformed or mismatched cert/key fails LOUDLY here at startup; an individual failed handshake (a plaintext client, a bad ClientHello) drops that connection and the server keeps serving. Handlers, `Router`, and `Request`/`Response` are unchanged — TLS is transparent above the accepted connection.
+
+#### `fn serve_tls_n(net: Net[Listen, Tcp], addr: String, cert_pem: String, key: Secret, app: Router, n: Int)`
+
+Serve exactly `n` HTTPS requests then return — `serve_tls`'s one-shot/test twin (the TLS handling and key discipline of `serve_tls`, the loop shape of `serve_n`).
 
 ## `set`
 

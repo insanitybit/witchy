@@ -386,7 +386,7 @@ pub fn serve(console: Console) -> Int:
         let pure = [
             "list", "string", "math", "option", "result", "func", "cmp", "ascii", "set",
             "json", "url", "duration", "random", "regex", "compiler", "toml", "semver",
-            "rights", "dict", "csv", "time", "encoding", "path", "confine",
+            "rights", "dict", "csv", "time", "encoding", "path", "policy",
         ];
         for name in pure {
             let src = crate::linker::std_source(name).expect("bundled module");
@@ -415,18 +415,23 @@ pub fn serve(console: Console) -> Int:
             vec!["Console"],
             "show's only capability demand is Console (for say)",
         );
-        // The networking modules take a bare `Net` (full verbs) for now — they
-        // are not yet tightened to `Net[Connect]`/`Net[Listen]`.
-        let net_only = ["http", "server"];
-        for name in net_only {
-            let src = crate::linker::std_source(name).expect("bundled module");
-            let fp = footprint(src);
-            assert_eq!(
-                fp.total.keys().copied().collect::<Vec<_>>(),
-                vec!["Net"],
-                "networking module `{name}` should require only Net",
-            );
-        }
+        // `http` takes a bare `Net` (full verbs) for now — not yet tightened to
+        // `Net[Connect]`/`Net[Listen]`.
+        let http_fp = footprint(crate::linker::std_source("http").expect("bundled module"));
+        assert_eq!(
+            http_fp.total.keys().copied().collect::<Vec<_>>(),
+            vec!["Net"],
+            "networking module `http` should require only Net",
+        );
+        // `server` takes `Net` plus `Secret` (RFC-0060: `serve_tls` accepts a
+        // private key as a use-only `Secret`) — authority is visible, as it
+        // should be for a module that can serve HTTPS.
+        let server_fp = footprint(crate::linker::std_source("server").expect("bundled module"));
+        assert_eq!(
+            server_fp.total.keys().copied().collect::<Vec<_>>(),
+            vec!["Net", "Secret"],
+            "server should require Net + Secret (serve_tls key)",
+        );
         // `exec` takes an `Exec` (to spawn) plus a `Dir[Read]` (to name and
         // confine the executable) — exactly those two, nothing ambient.
         let exec_fp = footprint(crate::linker::std_source("exec").expect("bundled module"));
