@@ -1,7 +1,7 @@
 ---
 rfc: 0057
 title: "Capability policy constructors: home refinement vocabulary on the capability, retire std/confine"
-status: proposed
+status: implemented (Net./Dir. policy constructors; std/confine deleted, std/policy home; pub-in-impl)
 created: 2026-07-03
 predecessors:
   - "0011 (capability refinement — established refinement-as-methods; this finishes the job for the policy-value half)"
