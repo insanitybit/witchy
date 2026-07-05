@@ -585,13 +585,13 @@
         // both backends by `net_only_refinement_verb_backends_agree` below.
     }
 
-    /// RFC-0011: `std/confine` builds a typed `NetPolicy` (`confine.tcp(host, port)`)
+    /// RFC-0011: `std/policy` builds a typed `NetPolicy` (`Net.tcp(host, port)`)
     /// instead of a hand-written string, and `net.only(policy)` narrows the `Net` to it.
     /// The typed policy carries the same `host:port` pattern the host enforces, so both
     /// backends agree. The grant must admit the pattern.
     #[test]
-    fn confine_typed_net_policies_backends_agree() {
-        let src = "import confine\nfn main(net: Net, console: Console):\n    let db = net.only(confine.tcp(\"10.0.0.5\", 6379))\n    print(console, \"confined\")\n";
+    fn net_tcp_policy_narrows_on_both_backends() {
+        let src = "fn main(net: Net, console: Console):\n    let db = net.only(Net.tcp(\"10.0.0.5\", 6379))\n    print(console, \"confined\")\n";
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
         let expected = vec!["confined".to_string()];
@@ -608,12 +608,12 @@
     }
 
     #[test]
-    fn confine_private_denies_internal_addresses_backends_agree() {
-        // RFC-0020: `net.deny(confine.private())` is the one-line SSRF/rebinding
+    fn net_private_denies_internal_addresses_on_both_backends() {
+        // RFC-0020: `net.deny(Net.private())` is the one-line SSRF/rebinding
         // defense — a connect to a private IP (here loopback) is refused at the
         // capability layer, identically on both backends. `connect` aborts on a
         // denied address, so a successful run means the deny held.
-        let src = "import confine\nfn main(net: Net, console: Console):\n    let safe = net.deny(confine.private())\n    print(console, \"denied private ranges\")\n";
+        let src = "fn main(net: Net, console: Console):\n    let safe = net.deny(Net.private())\n    print(console, \"denied private ranges\")\n";
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
         let expected = vec!["denied private ranges".to_string()];
@@ -630,12 +630,12 @@
     }
 
     /// RFC-0011: `net.only(policy)` is the typed refinement verb — it narrows a `Net`'s
-    /// address set to a `NetPolicy` built by `confine`. It narrows identically on both
+    /// address set to a `NetPolicy` built by `policy`. It narrows identically on both
     /// backends. (The raw-string form survives only as a `--net`/config grant, not a
     /// language builtin — see `retired_restrict_builtin_is_rejected`.)
     #[test]
     fn net_only_refinement_verb_backends_agree() {
-        let src = "import confine\nfn main(net: Net, console: Console):\n    let m = net.only(confine.tcp(\"10.0.0.5\", 6379))\n    print(console, \"only\")\n";
+        let src = "fn main(net: Net, console: Console):\n    let m = net.only(Net.tcp(\"10.0.0.5\", 6379))\n    print(console, \"only\")\n";
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
         let expected = vec!["only".to_string()];
@@ -652,7 +652,7 @@
     }
 
     /// RFC-0011: the raw-string `restrict` builtin is RETIRED. Address narrowing now goes
-    /// only through the typed `net.only(confine...)` verb; a raw `host:port` string survives
+    /// only through the typed `net.only(Net...)` verb; a raw `host:port` string survives
     /// solely as a `--net`/config grant, not a language builtin. Both the free `restrict(net,
     /// …)` and the method `net.restrict(…)` forms are rejected — there is no such verb.
     #[test]
@@ -668,16 +668,16 @@
     }
 
     /// RFC-0020 step 1: the IPv6 SSRF/rebinding defense, end to end. A program granted `[::1]:80`
-    /// that `net.deny(confine.private())` CANNOT connect to `[::1]:80` — the loopback is now
-    /// CIDR-matched by the deny (before this, `confine.private()`'s IPv6 ranges only ever
+    /// that `net.deny(Net.private())` CANNOT connect to `[::1]:80` — the loopback is now
+    /// CIDR-matched by the deny (before this, `Net.private()`'s IPv6 ranges only ever
     /// exact-matched, so an internal IPv6 slipped through). Refused identically on both backends
     /// (the allow-list check is the shared `net_allows`).
     #[test]
     fn net_deny_private_blocks_internal_ipv6_on_both_backends() {
         use crate::runtime::{Capabilities, Runtime};
-        let src = "import confine\n\
+        let src = "\
                    fn main(console: Console, net: Net):\n\
-                   \x20   let safe = net.deny(confine.private())\n\
+                   \x20   let safe = net.deny(Net.private())\n\
                    \x20   let s = connect(safe, \"[::1]:80\")\n\
                    \x20   send_line(s, \"x\")\n";
         let linked = resolve_std_src(src);
@@ -712,12 +712,12 @@
         );
     }
 
-    /// RFC-0011: `confine.union(a, b)` builds a multi-endpoint `NetPolicy`, and
+    /// RFC-0011: `Net.union(a, b)` builds a multi-endpoint `NetPolicy`, and
     /// `net.only(union(...))` narrows to the WHOLE set — so a further refinement to EITHER
     /// endpoint still succeeds (both are admitted). On both backends.
     #[test]
     fn net_only_union_admits_each_endpoint_backends_agree() {
-        let src = "import confine\nfn main(net: Net, console: Console):\n    let pair = net.only(confine.union(confine.tcp(\"10.0.0.5\", 6379), confine.tcp(\"10.0.0.6\", 6379)))\n    let a = pair.only(confine.tcp(\"10.0.0.5\", 6379))\n    let b = pair.only(confine.tcp(\"10.0.0.6\", 6379))\n    print(console, \"both\")\n";
+        let src = "fn main(net: Net, console: Console):\n    let pair = net.only(Net.union(Net.tcp(\"10.0.0.5\", 6379), Net.tcp(\"10.0.0.6\", 6379)))\n    let a = pair.only(Net.tcp(\"10.0.0.5\", 6379))\n    let b = pair.only(Net.tcp(\"10.0.0.6\", 6379))\n    print(console, \"both\")\n";
         let expected = vec!["both".to_string()];
         assert_eq!(link_run_net(src, &["10.0.0.5:6379", "10.0.0.6:6379"]), expected, "interp");
         assert_eq!(
@@ -4183,7 +4183,7 @@ fn yn(b: Bool) -> String:
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// RFC-0011: `dir.only(confine.ext(...))` confines a `Dir` to an ENTRY policy —
+    /// RFC-0011: `dir.only(Dir.ext(...))` confines a `Dir` to an ENTRY policy —
     /// reading a matching extension is allowed, a non-matching one is refused at the
     /// policy check — identically on both backends.
     #[test]
@@ -4206,7 +4206,7 @@ fn yn(b: Bool) -> String:
         };
 
         // Allowed: read a `.txt` through a Dir narrowed to `ext(".txt")`.
-        let ok_src = "import confine\nfn main(console: Console, dir: Dir):\n    let txt = dir.only(confine.ext(\".txt\"))\n    print(console, read(txt, \"ok.txt\"))\n";
+        let ok_src = "fn main(console: Console, dir: Dir):\n    let txt = dir.only(Dir.ext(\".txt\"))\n    print(console, read(txt, \"ok.txt\"))\n";
         let want = vec!["hello".to_string()];
         assert_eq!(
             interpreter::run_module(resolve_std_src(ok_src), &root_str, Vec::new()).expect("interp"),
@@ -4222,7 +4222,7 @@ fn yn(b: Bool) -> String:
         assert_eq!(actor.output(), want, "compiled WASM must agree");
 
         // Denied: a `.key` through the same narrowed Dir is refused on both backends.
-        let bad_src = "import confine\nfn main(console: Console, dir: Dir):\n    let txt = dir.only(confine.ext(\".txt\"))\n    print(console, read(txt, \"secret.key\"))\n";
+        let bad_src = "fn main(console: Console, dir: Dir):\n    let txt = dir.only(Dir.ext(\".txt\"))\n    print(console, read(txt, \"secret.key\"))\n";
         assert!(
             interpreter::run_module(resolve_std_src(bad_src), &root_str, Vec::new()).is_err(),
             "interp must refuse a .key",
@@ -4236,8 +4236,8 @@ fn yn(b: Bool) -> String:
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// RFC-0011: the `kind:` Dir entry policy. `dir.only(confine.files())` admits a file
-    /// read but DENIES opening a sub-directory; `dir.only(confine.dirs())` is the mirror.
+    /// RFC-0011: the `kind:` Dir entry policy. `dir.only(Dir.files())` admits a file
+    /// read but DENIES opening a sub-directory; `dir.only(Dir.dirs())` is the mirror.
     /// An `ext`-only policy still traverses (kind gates directories, ext gates file names),
     /// so `kind` is additive and backward-compatible — all identical on both backends.
     #[test]
@@ -4288,21 +4288,21 @@ fn yn(b: Bool) -> String:
 
         // `files()`: read a file OK; opening a sub-directory DENIED (the DoD headline).
         ok_both(
-            "import confine\nfn main(console: Console, dir: Dir):\n    let d = dir.only(confine.files())\n    print(console, read(d, \"ok.txt\"))\n",
+            "fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.files())\n    print(console, read(d, \"ok.txt\"))\n",
             vec!["hello".to_string()],
         );
-        err_both("import confine\nfn main(console: Console, dir: Dir):\n    let d = dir.only(confine.files())\n    let s = d.subtree(\"sub\")\n    print(console, \"unreached\")\n");
+        err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.files())\n    let s = d.subtree(\"sub\")\n    print(console, \"unreached\")\n");
 
         // `dirs()`: open a sub-directory OK; reading a file DENIED (the mirror).
         ok_both(
-            "import confine\nfn main(console: Console, dir: Dir):\n    let d = dir.only(confine.dirs())\n    let s = d.subtree(\"sub\")\n    print(console, \"traversed\")\n",
+            "fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.dirs())\n    let s = d.subtree(\"sub\")\n    print(console, \"traversed\")\n",
             vec!["traversed".to_string()],
         );
-        err_both("import confine\nfn main(console: Console, dir: Dir):\n    let d = dir.only(confine.dirs())\n    print(console, read(d, \"ok.txt\"))\n");
+        err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.dirs())\n    print(console, read(d, \"ok.txt\"))\n");
 
         // An `ext`-only policy still traverses — kind gates directories, ext gates files.
         ok_both(
-            "import confine\nfn main(console: Console, dir: Dir):\n    let d = dir.only(confine.ext(\".txt\"))\n    let s = d.subtree(\"sub\")\n    print(console, \"traversed\")\n",
+            "fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    let s = d.subtree(\"sub\")\n    print(console, \"traversed\")\n",
             vec!["traversed".to_string()],
         );
 
@@ -9880,7 +9880,7 @@ fn main(console: Console):
     /// address still narrows on both backends; a denied one is refused.
     #[test]
     fn net_deny_subtracts_addresses_backends_agree() {
-        let src = "import confine\nfn main(net: Net, console: Console):\n    let d = net.deny(confine.cidr_any(\"10.0.0.0/8\"))\n    let ok = only(d, confine.tcp(\"192.168.1.1\", 80))\n    print(console, \"denied\")\n";
+        let src = "fn main(net: Net, console: Console):\n    let d = net.deny(Net.cidr_any(\"10.0.0.0/8\"))\n    let ok = only(d, Net.tcp(\"192.168.1.1\", 80))\n    print(console, \"denied\")\n";
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
         let grant = vec!["10.0.0.0/8:*".to_string(), "192.168.1.1:80".to_string()];
@@ -9896,7 +9896,7 @@ fn main(console: Console):
             "wasm",
         );
         // A denied address (inside the denied block) is refused — the exclusion bites.
-        let bad = "import confine\nfn main(net: Net, console: Console):\n    let d = net.deny(confine.cidr_any(\"10.0.0.0/8\"))\n    let x = only(d, confine.tcp(\"10.0.0.5\", 6379))\n    print(console, \"unreached\")\n";
+        let bad = "fn main(net: Net, console: Console):\n    let d = net.deny(Net.cidr_any(\"10.0.0.0/8\"))\n    let x = only(d, Net.tcp(\"10.0.0.5\", 6379))\n    print(console, \"unreached\")\n";
         let bad_linked = resolve_std_src(bad);
         typeck::check(&bad_linked).expect("typecheck");
         assert!(
@@ -9911,7 +9911,7 @@ fn main(console: Console):
     /// agree, so chained refinement (`net.deny(...).only(...)`) is usable.
     #[test]
     fn cap_method_chaining_on_let_bindings_backends_agree() {
-        let src = "import confine\nfn main(net: Net, console: Console):\n    let d = net.deny(confine.cidr_any(\"10.0.0.0/8\"))\n    let ok = d.only(confine.tcp(\"192.168.1.1\", 80))\n    print(console, \"chained\")\n";
+        let src = "fn main(net: Net, console: Console):\n    let d = net.deny(Net.cidr_any(\"10.0.0.0/8\"))\n    let ok = d.only(Net.tcp(\"192.168.1.1\", 80))\n    print(console, \"chained\")\n";
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
         let expected = vec!["chained".to_string()];
@@ -12009,11 +12009,10 @@ fn main(console: Console, net: Net):
 
         // narrowing to an address not already held is denied (can't widen).
         let restrict_denied = r#"
-import confine
 fn main(console: Console, net: Net):
-    send_line(connect(net.only(confine.tcp("evil.test", 80)), "evil.test:80"), "x")
+    send_line(connect(net.only(Net.tcp("evil.test", 80)), "evil.test:80"), "x")
 "#;
-        // `resolve_std_src` links `confine`; `run_module` grants the Net allow-list.
+        // `resolve_std_src` links `policy`; `run_module` grants the Net allow-list.
         let e = interpreter::run_module(resolve_std_src(restrict_denied), ".", vec!["allowed.test:80".into()])
             .unwrap_err()
             .to_string();
@@ -12022,9 +12021,8 @@ fn main(console: Console, net: Net):
         // Attenuation is real: after narrowing to one address, a sibling that
         // was in the original grant is no longer reachable.
         let attenuated = r#"
-import confine
 fn main(console: Console, net: Net):
-    let narrow = net.only(confine.tcp("a.test", 80))
+    let narrow = net.only(Net.tcp("a.test", 80))
     send_line(connect(narrow, "b.test:80"), "x")
 "#;
         let e = interpreter::run_module(resolve_std_src(attenuated), ".", vec!["a.test:80".into(), "b.test:80".into()])
