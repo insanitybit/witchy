@@ -10,11 +10,9 @@
 // they can reach the upstream coven; nothing else can phone home.
 
 import server
-import http
 import string
 import ascii
 import list
-import json
 import crypto
 import encoding
 import webauthn
@@ -25,6 +23,8 @@ import secretstore
 import url
 import result
 import option
+from http import Request, Response
+from json import Json
 
 fn main(console: Console, net: Net, assets: Dir, secrets: SecretStore, clock: Clock, rand: Rand, args: List(String)):
     // The root signing key is the store's `signing` secret (`--signing-key <seed>` is

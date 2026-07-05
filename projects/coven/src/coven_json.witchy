@@ -3,7 +3,6 @@
 // read as its empty value, not throw. These thin helpers express that, and are
 // shared by the server (coven) and the trust layer (coven_trust).
 
-import json
 import option
 from json import Json
 

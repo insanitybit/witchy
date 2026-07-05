@@ -5,11 +5,11 @@
 // the whole docs site is XSS-immune by construction and its host footprint is empty. This
 // is the dogfood: the language's own front door is a witchy program, a sibling of coven-web.
 
-import glamour
 import markdown
-import json
 import list
 import reflect
+from glamour import VNode, Attr, Cmd, UiFetch, UiRoute, UiRoot
+from json import Json
 
 // The current path, the book's `SUMMARY.md` source (for the nav), and the current page's
 // raw Markdown. The host fetches both; the app parses the nav from the summary itself.

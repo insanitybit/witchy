@@ -5,7 +5,6 @@
 // audience, and the expiry (via `std/jwt`), and derives identity from the VERIFIED claims.
 // Pure (no HTTP, no store): the server maps these results to status codes.
 
-import json
 import jwt
 import string
 import coven_json

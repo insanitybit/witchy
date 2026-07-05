@@ -16,7 +16,6 @@
 //   coven_json      JSON read/build conveniences for untrusted input
 
 import server
-import json
 import crypto
 import secretstore
 import fs
@@ -25,11 +24,8 @@ import string
 import rights
 import coven_validate
 import coven_footprint
-import coven_record
 import coven_json
 import coven_store
-import coven_trust
-import coven_proto
 import coven_meta
 import compiler
 // --- error flow --------------------------------------------------------------
@@ -179,6 +175,9 @@ import compiler
 import reflect
 from http import Request, Response
 from json import Json
+from coven_trust import Issuer
+from coven_record import Record, State
+from coven_proto import PublishRequest, PromoteRequest, YankRequest
 
 type CovenError:
     status: Int
