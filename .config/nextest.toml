@@ -27,3 +27,21 @@ slow-timeout = { period = "90s", terminate-after = 2 }
 
 [profile.ci.junit]
 path = "junit.xml"
+
+# The registry/coven e2e tests each bind a TCP port and spawn a `witchy` server
+# subprocess, then poll for readiness. Run concurrently across the whole suite,
+# many servers compile + start under heavy CPU contention and a few overrun
+# their readiness window — false failures that always pass in isolation (the
+# long-standing "don't run two suites at once" flakiness). Serialize them into
+# one group so at most one registry server spawns at a time; the rest of the
+# suite still parallelizes fully.
+[test-groups]
+registry-serial = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'binary_id(witchy::e2e) & test(/coven|publish|promote|resolv|lifecycle|release|widening|glamour_publishes|pm_add|yank|trusted|api_docs|diamond|cool_down|consent|serves/)'
+test-group = 'registry-serial'
+
+[[profile.ci.overrides]]
+filter = 'binary_id(witchy::e2e) & test(/coven|publish|promote|resolv|lifecycle|release|widening|glamour_publishes|pm_add|yank|trusted|api_docs|diamond|cool_down|consent|serves/)'
+test-group = 'registry-serial'
