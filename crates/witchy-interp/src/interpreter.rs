@@ -155,7 +155,11 @@ impl fmt::Display for Value {
                 write!(f, ")")
             }
             Value::Ctor { name, fields } => {
-                write!(f, "{name}")?;
+                // (RFC-0042) Constructor names are canonical `module.Ctor`; render
+                // the unqualified variant name a reader wrote (`Item`, not
+                // `iter.Item`). Both backends strip identically (parity).
+                let shown = name.rsplit_once('.').map_or(name.as_str(), |(_, c)| c);
+                write!(f, "{shown}")?;
                 if !fields.is_empty() {
                     write!(f, "(")?;
                     for (i, v) in fields.iter().enumerate() {

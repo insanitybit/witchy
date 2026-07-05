@@ -30,3 +30,4 @@ pub mod optimize;
 pub mod parser;
 pub mod records;
 pub mod reflect;
+pub mod type_resolve;

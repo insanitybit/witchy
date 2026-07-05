@@ -764,7 +764,11 @@ impl Codegen {
         let (open, close, comma) = (self.intern("("), self.intern(")"), self.intern(", "));
         let mut b: witchy_wir::wir::WirSeq = vec![setl("t", load_i32(getl("p")))];
         for (tag, fields) in all.iter().enumerate() {
-            let label = self.intern(ctor_names.get(tag).map(|s| s.as_str()).unwrap_or("?"));
+            // (RFC-0042) Render the unqualified variant name (`Item`), not the
+            // canonical `module.Ctor` the tag table carries — matching the
+            // interpreter's `Value::Ctor` Display so both backends print alike.
+            let raw = ctor_names.get(tag).map(|s| s.as_str()).unwrap_or("?");
+            let label = self.intern(raw.rsplit_once('.').map_or(raw, |(_, c)| c));
             if fields.is_empty() {
                 b.push(N::If {
                     cond: eqi(getl("t"), i32c(tag as i32)),

@@ -249,14 +249,49 @@ impl Parser {
             }
         }
         // Imports come next: `import name` — declarations only, no code runs.
+        // `from X import Y, Z` (RFC-0042) additionally binds the listed TYPE or
+        // function names unqualified; it implies `import X`.
         let mut imports = Vec::new();
         let mut import_lines = Vec::new();
-        while self.at(&Tok::Import) {
-            import_lines.push(self.cur().line);
-            self.advance();
-            let name = self.ident()?;
-            self.imports.insert(name.clone());
-            imports.push(name);
+        let mut from_imports: Vec<(String, Vec<String>)> = Vec::new();
+        loop {
+            if self.at(&Tok::Import) {
+                import_lines.push(self.cur().line);
+                self.advance();
+                let name = self.ident()?;
+                self.imports.insert(name.clone());
+                imports.push(name);
+            } else if self.at_ident("from") {
+                // `from X import Y, Z` — deny-by-omission: no `from X import *`
+                // (an unbounded import would let a dependency inject names) and no
+                // `from X import Y as Z` (aliasing is out of scope per RFC-0042).
+                let line = self.cur().line;
+                self.advance();
+                let module = self.ident()?;
+                self.expect(&Tok::Import)?;
+                let mut names = Vec::new();
+                loop {
+                    if self.at(&Tok::Star) {
+                        return Err(self.error(
+                            "`from X import *` is not supported: every unqualified name must \
+                             be written down (deny-by-omission). List the names explicitly, or \
+                             use `import X` and qualify (`X.Name`)",
+                        ));
+                    }
+                    names.push(self.ident()?);
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
+                }
+                self.imports.insert(module.clone());
+                if !imports.iter().any(|i| i == &module) {
+                    imports.push(module.clone());
+                    import_lines.push(line);
+                }
+                from_imports.push((module, names));
+            } else {
+                break;
+            }
         }
         let mut items = Vec::new();
         let mut item_lines = Vec::new();
@@ -267,6 +302,7 @@ impl Parser {
         Ok(Module {
             modes,
             imports,
+            from_imports,
             items,
             import_lines,
             item_lines,
@@ -913,7 +949,21 @@ impl Parser {
             self.expect(&Tok::RParen)?;
             return Ok(Type::Tuple(types));
         }
-        let name = self.ident()?;
+        let mut name = self.ident()?;
+        // (RFC-0042) A module-qualified type: `iter.Step`, `json.Json`. A lowercase
+        // first segment (a module name) followed by `.` and an uppercase segment (a
+        // type name) is a qualified type reference; the linker validates and keeps
+        // it as the canonical `module.Type` name. A dot after an uppercase name, or
+        // before a lowercase one, is never a type — leave the `.` for the caller.
+        if self.at(&Tok::Dot)
+            && name.chars().next().is_some_and(|c| c.is_lowercase())
+            && matches!(self.toks.get(self.pos + 1).map(|t| &t.kind),
+                Some(Tok::Ident(n)) if n.chars().next().is_some_and(|c| c.is_uppercase()))
+        {
+            self.advance(); // `.`
+            let ty = self.ident()?;
+            name = format!("{name}.{ty}");
+        }
         if self.at(&Tok::Lt) {
             // `List<Int>` is the Rust/TS spelling; witchy writes type arguments in
             // parentheses. Catch the `<` here and suggest the right form, instead
@@ -2072,7 +2122,27 @@ impl Parser {
             }
             Tok::Ident(name) => {
                 self.advance();
-                let is_ctor = name.chars().next().is_some_and(|c| c.is_uppercase());
+                // (RFC-0042) A module-qualified constructor pattern: `iter.Item(x)`.
+                // A lowercase first segment (module) followed by `.` and an
+                // uppercase segment (constructor) — the linker keeps the canonical
+                // `module.Ctor` name. Bare variant names still resolve against the
+                // scrutinee's type in the checker (§4), so this qualified form is
+                // only needed to disambiguate.
+                let mut name = name;
+                if self.at(&Tok::Dot)
+                    && name.chars().next().is_some_and(|c| c.is_lowercase())
+                    && matches!(self.toks.get(self.pos + 1).map(|t| &t.kind),
+                        Some(Tok::Ident(n)) if n.chars().next().is_some_and(|c| c.is_uppercase()))
+                {
+                    self.advance(); // `.`
+                    let ctor = self.ident()?;
+                    name = format!("{name}.{ctor}");
+                }
+                let is_ctor = name
+                    .rsplit('.')
+                    .next()
+                    .and_then(|s| s.chars().next())
+                    .is_some_and(|c| c.is_uppercase());
                 if is_ctor {
                     let mut args = Vec::new();
                     if self.eat(&Tok::LParen) {

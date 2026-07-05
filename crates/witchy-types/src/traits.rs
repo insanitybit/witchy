@@ -364,6 +364,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         let probe = Module {
             modes: Vec::new(),
             imports: imports.clone(),
+            from_imports: Vec::new(),
             items,
             import_lines: Vec::new(),
             item_lines: Vec::new(),
@@ -487,6 +488,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             let probe = Module {
                 modes: Vec::new(),
                 imports: imports.clone(),
+                from_imports: Vec::new(),
                 items,
                 import_lines: Vec::new(),
                 item_lines: Vec::new(),
@@ -508,6 +510,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             let probe = Module {
                 modes: Vec::new(),
                 imports: imports.clone(),
+                from_imports: Vec::new(),
                 items,
                 import_lines: Vec::new(),
                 item_lines: Vec::new(),
@@ -579,7 +582,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     }
 
     (
-        Module { modes: Vec::new(), imports, items, import_lines: Vec::new(), item_lines: Vec::new() },
+        Module { modes: Vec::new(), imports, from_imports: Vec::new(), items, import_lines: Vec::new(), item_lines: Vec::new() },
         {
             let mut d = supertrait_diags;
             // (RFC-0043) A discarded-result error is a definitive diagnostic on a

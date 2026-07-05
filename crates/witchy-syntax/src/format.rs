@@ -128,20 +128,37 @@ pub fn module(m: &Module, comments: &[(u32, String)]) -> String {
         s.push('\n');
     }
 
-    if !m.imports.is_empty() {
+    if !m.imports.is_empty() || !m.from_imports.is_empty() {
         // The comments before the first import are the file header.
         c.before(&mut s, 0, m.import_lines.first().copied().unwrap_or(u32::MAX));
         if !s.is_empty() {
             s.push('\n');
         }
+        // A module that appears in a `from X import …` is rendered as that line,
+        // not a bare `import X` (the `from` form implies the plain import).
+        let from_mods: std::collections::HashSet<&str> =
+            m.from_imports.iter().map(|(x, _)| x.as_str()).collect();
+        let mut first = true;
         for (i, imp) in m.imports.iter().enumerate() {
+            if from_mods.contains(imp.as_str()) {
+                continue;
+            }
             // A comment sitting between two imports stays with the import below
             // it (rather than being relocated past the whole import block).
-            if i > 0 {
+            if !first {
                 c.before(&mut s, 0, m.import_lines.get(i).copied().unwrap_or(u32::MAX));
             }
+            first = false;
             s.push_str("import ");
             s.push_str(imp);
+            s.push('\n');
+        }
+        // (RFC-0042) `from X import Y, Z` — rendered after the plain imports.
+        for (module, names) in &m.from_imports {
+            s.push_str("from ");
+            s.push_str(module);
+            s.push_str(" import ");
+            s.push_str(&names.join(", "));
             s.push('\n');
         }
     }
