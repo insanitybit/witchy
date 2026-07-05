@@ -3533,6 +3533,29 @@ impl Checker {
         self.coerce_arg(&ret, &body).map_err(|e| TypeError {
             message: format!("function `{}` body: {}", func.name, e.message),
         })?;
+        // (RFC-0064 Check 2) The one new rule: a `var` FIRST parameter with an
+        // ELIDED return whose INFERRED tail type equals that parameter's type is
+        // ambiguous — an elided mutator (`-> T`, statement form writes back) and a
+        // procedure (`-> Nil`) are indistinguishable by inference. RFC-0043's
+        // thesis is that write-back is DECLARED, not inferred, and this is the one
+        // property whose inferred value changes call-site semantics; so the author
+        // must annotate the intent. An EXPLICIT self-typed return (`func.ret`
+        // Some) already declares a mutator with no extra ceremony, so it is exempt.
+        if func.ret.is_none() {
+            if let Some(first) = func.params.first() {
+                if first.convention == Convention::Var {
+                    let recv_ty = self.resolve(&params[0]);
+                    if recv_ty == self.resolve(&body) {
+                        let bare = func.name.rsplit('.').next().unwrap_or(&func.name);
+                        return terr(format!(
+                            "`{bare}` has a `var` receiver and its body's tail is the receiver's type — \
+                             annotate the intent: `-> {recv_ty}` declares a mutator (statement form \
+                             writes back); `-> Nil` (or add `return`) declares a procedure"
+                        ));
+                    }
+                }
+            }
+        }
         // Soundness: a declared type parameter must stay free (truly generic).
         // If the body pinned it to a concrete type, the signature is misleading.
         if let Some(typarams) = self.fn_typarams.get(&func.name).cloned() {
