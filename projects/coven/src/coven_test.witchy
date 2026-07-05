@@ -6,6 +6,7 @@
 import testing
 import coven_validate
 import coven_proto
+import coven_footprint
 import string
 import reflect
 import result
@@ -91,6 +92,20 @@ fn test_yank_body_carries_id_token():
                 Some(t) -> testing.assert_eq(t, "ytok")
                 None -> testing.assert(false, "yank_body id_token should round-trip as Some")
         Err(e) -> testing.assert(false, "decode failed: " + e)
+
+// --- footprint recompute fails closed (BUG-422) ------------------------------
+// A source whose footprint cannot be computed (it does not compile) must be a hard
+// error, never a silently-empty footprint that trivially passes the under-declaration
+// gate. A valid pure library computes an empty footprint.
+fn test_computed_footprint_fails_closed_on_bad_source():
+    match coven_footprint.computed_footprint([("src/x.witchy", "fn broken( ->")]):
+        Ok(_caps) -> testing.assert(false, "a non-compiling source must not yield a footprint")
+        Err(_e) -> testing.assert(true, "an uncomputable footprint is a hard error")
+
+fn test_computed_footprint_ok_for_pure_source():
+    match coven_footprint.computed_footprint([("src/x.witchy", "pub fn f(n: Int) -> Int:\n    n\n")]):
+        Ok(caps) -> testing.assert(list.length(caps) == 0, "a pure library has an empty footprint")
+        Err(e) -> testing.assert(false, "a valid pure source should compute: " + e)
 
 // --- encode (reflection) + derive(Deserialize) round-trip ------
 type Sample derive(Reflect, Deserialize):

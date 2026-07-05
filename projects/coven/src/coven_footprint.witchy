@@ -8,22 +8,31 @@ import compiler
 import string
 
 // The capabilities the uploaded source actually demands — the union over its
-// `src/**/*.witchy` modules, computed via `compiler.footprint`.
-pub fn computed_footprint(files: List((String, String))) -> List(String):
+// `src/**/*.witchy` modules, computed via `compiler.footprint`. A module whose footprint
+// cannot be computed (the source does not compile, or the report does not parse) is a
+// HARD failure: returning an empty footprint would let an uncomputable rune slip past the
+// under-declaration gate (empty is trivially covered), so the publish is refused instead.
+pub fn computed_footprint(files: List((String, String))) -> Result(List(String), String):
     var out = []
     for path, text in files:
         if is_src_module(path):
-            for cap in footprint_total(compiler.footprint(text)):
+            let caps = footprint_total(compiler.footprint(text))?
+            for cap in caps:
                 out = add_unique(out, cap)
-    out
+    Ok(out)
 
 fn is_src_module(path: String) -> Bool:
     string.starts_with(path, "src/") && string.ends_with(path, ".witchy")
 
-fn footprint_total(report: String) -> List(String):
+// The `total` array of a `compiler.footprint` report, or an Err if the report does not
+// parse or is an `{"error":..}` report (the source did not compile). Never silently [].
+fn footprint_total(report: String) -> Result(List(String), String):
     match json.decode(report):
-        Ok(doc) -> json.get_strings(doc, "total")
-        Err(_e) -> []
+        Err(_e) -> Err("the compiler footprint report did not parse")
+        Ok(doc) ->
+            match json.get(doc, "error"):
+                Some(_e) -> Err("the rune source does not compile — its capability footprint is uncomputable")
+                None -> Ok(json.get_strings(doc, "total"))
 
 // Append `x` to `xs` only if absent (a small ordered set over strings).
 pub fn add_unique(xs: List(String), x: String) -> List(String):
