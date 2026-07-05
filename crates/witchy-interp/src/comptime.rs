@@ -128,6 +128,7 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
         let prog = Module {
             modes: Vec::new(),
             imports: prog_imports,
+            from_imports: Vec::new(),
             items: vec![Item::Function(Function {
                 public: false,
                 name: "main".into(),

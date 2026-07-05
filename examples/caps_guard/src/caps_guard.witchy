@@ -9,6 +9,7 @@
 import compiler
 import json
 import string
+from json import Json
 
 fn main(console: Console, root: Dir[Read]) -> Int:
     let old = read(root, "examples/data/sample_rune.witchy")

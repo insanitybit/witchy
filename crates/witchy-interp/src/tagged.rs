@@ -414,6 +414,7 @@ fn expand_one(
     let prog = Module {
         modes: Vec::new(),
         imports: ctx.imports.clone(),
+        from_imports: Vec::new(),
         items,
         import_lines: Vec::new(),
         item_lines: Vec::new(),

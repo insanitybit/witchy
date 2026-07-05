@@ -6,9 +6,11 @@
 // a dependency wrote it. `serve` holds the Net; handlers never do.
 // Run: witchy --net 127.0.0.1:8080 examples/serve_api.witchy
 
-import http
+from http import Request, Response
 import server
 import json
+from json import Json
+from server import Router
 
 // A request logger (a tower Layer: fn(Handler) -> Handler). The inner closure
 // runs before-and-after work around `next`, all captured in the closure.

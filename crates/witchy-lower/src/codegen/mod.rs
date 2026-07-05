@@ -1754,7 +1754,7 @@ impl Codegen {
         self.cur_fn_name = f.name.clone();
         self.cur_fn_has_type_vars = f.params.iter().any(|p| {
             matches!(&p.ty, Some(Type::Named(n, args))
-                if args.is_empty() && n.chars().next().is_some_and(|c| c.is_lowercase()))
+                if args.is_empty() && n.chars().next().is_some_and(|c| c.is_lowercase()) && !n.contains('.'))
                 || matches!(&p.ty, Some(Type::Named(_, args))
                     if args.iter().any(type_has_var))
         });
@@ -5976,7 +5976,7 @@ fn unify_type_vars(ty: &Type, shape: &EqShape, subst: &mut HashMap<String, EqSha
 fn bare_type_var(ty: &Type) -> Option<String> {
     match ty {
         Type::Named(n, args)
-            if args.is_empty() && n.chars().next().is_some_and(|c| c.is_lowercase()) =>
+            if args.is_empty() && n.chars().next().is_some_and(|c| c.is_lowercase()) && !n.contains('.') =>
         {
             Some(n.clone())
         }
@@ -6047,7 +6047,7 @@ fn type_has_var(t: &Type) -> bool {
     match t {
         Type::Qualified(_, inner) => type_has_var(inner),
         Type::Named(n, args) => {
-            (args.is_empty() && n.chars().next().is_some_and(|c| c.is_lowercase()))
+            (args.is_empty() && n.chars().next().is_some_and(|c| c.is_lowercase()) && !n.contains('.'))
                 || args.iter().any(type_has_var)
         }
         Type::Tuple(ts) => ts.iter().any(type_has_var),

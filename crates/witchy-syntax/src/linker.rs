@@ -506,6 +506,14 @@ pub fn link(
         .map(|(n, m)| (n, crate::aliases::resolve(crate::consts::inline(m))))
         .collect();
 
+    // (RFC-0042) Canonicalize every user TYPE and CONSTRUCTOR name to
+    // `module.Name`, per module — the type-side twin of the function
+    // qualification below. Runs after alias expansion (so `type Id = iter.Step`
+    // is already a concrete reference) and before the merge, while each item
+    // still knows its home module and imports. Dissolves the flat-type-namespace
+    // collisions (iter+chan's `Step`, task+future's `Step`/`Task`).
+    crate::type_resolve::resolve(&mut modules)?;
+
     let mut fns: FnTable = HashMap::new();
     for (name, m) in &modules {
         let mut names: HashMap<String, EtaSig> = HashMap::new();
@@ -624,11 +632,18 @@ pub fn link(
             .map(|(_, m)| m.modes.clone())
             .unwrap_or_default(),
         imports: Vec::new(),
+        from_imports: Vec::new(),
         items,
         import_lines: Vec::new(),
         item_lines: Vec::new(),
     };
     resolve_methods(&mut module);
+    // (RFC-0042) Fix up residual bare constructor PATTERNS — a plain `import iter`
+    // + `match … Item(x)`, where the per-module pass could not see the scrutinee's
+    // module. Now that every type is merged, a bare variant whose unqualified name
+    // is unique across the program resolves to it; an ambiguous one is a loud
+    // error asking for a qualifier (never a silent runtime tag mismatch).
+    crate::type_resolve::resolve_residual_patterns(&mut module)?;
     // (RFC-0056) Resolve keyword-labeled direct calls and splice constant
     // parameter defaults, using each callee's now-qualified declaration. Runs
     // AFTER method resolution (so every direct callee is statically known) and

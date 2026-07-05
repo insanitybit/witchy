@@ -28,7 +28,7 @@ pub fn type_info_expr(t: &TypeDef) -> Expr {
             .iter()
             .zip(&v.fields)
             .map(|(name, ty)| Expr::Ctor {
-                name: "FieldInfo".into(),
+                name: "meta.FieldInfo".into(),
                 args: vec![s(name), s(&type_to_string(ty))],
             })
             .collect()
@@ -41,7 +41,7 @@ pub fn type_info_expr(t: &TypeDef) -> Expr {
         t.variants
             .iter()
             .map(|v| Expr::Ctor {
-                name: "VariantInfo".into(),
+                name: "meta.VariantInfo".into(),
                 args: vec![
                     s(&v.name),
                     Expr::List(v.fields.iter().map(|ty| s(&type_to_string(ty))).collect()),
@@ -50,7 +50,7 @@ pub fn type_info_expr(t: &TypeDef) -> Expr {
             .collect()
     };
     Expr::Ctor {
-        name: "TypeInfo".into(),
+        name: "meta.TypeInfo".into(),
         args: vec![
             s(&t.name),
             s(kind),

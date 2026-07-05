@@ -7,6 +7,7 @@
 import stats
 import json
 import string
+from json import Json
 
 fn main(console: Console, root: Dir[Read]):
     print(console, report(read(root, "scores.json")))

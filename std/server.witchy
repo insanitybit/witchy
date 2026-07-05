@@ -14,9 +14,9 @@
 //       .layer(logging(console))
 //   server.serve(net, "127.0.0.1:8080", app)
 
-import http
+from http import Request, Response
 import option
-import json
+from json import Json
 import reflect
 
 // ---- Request accessors ----

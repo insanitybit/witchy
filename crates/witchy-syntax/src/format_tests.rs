@@ -56,6 +56,7 @@
         let m = Module {
             modes: Vec::new(),
             imports: vec![],
+            from_imports: vec![],
             items: vec![Item::Function(Function {
                 public: false,
                 name: "main".into(),

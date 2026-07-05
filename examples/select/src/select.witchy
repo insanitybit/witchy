@@ -7,6 +7,7 @@
 //       witchy parity examples/select.witchy
 
 import chan
+from chan import Receiver, Selected, Sender
 
 async fn ticks(tx: Sender(Int)) -> Nil:
     for n in [1, 2, 3]:

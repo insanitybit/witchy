@@ -8,8 +8,7 @@
 // compartment. (`string`/`list` are prelude — pure, capability-free — so this module's
 // footprint stays empty, exactly like the rest of glamour.)
 
-import glamour
-
+from glamour import VNode
 // Render a Markdown document to a single container VNode.
 pub fn to_vnode(md: String) -> VNode(msg):
     glamour.element("div", [glamour.prop("class", "markdown")], blocks(string.split(md, "\n")))

@@ -8,6 +8,7 @@
 import compiler
 import json
 import string
+from json import Json
 
 fn main(console: Console, root: Dir[Read]):
     let target = "examples/data/sample_rune.witchy"

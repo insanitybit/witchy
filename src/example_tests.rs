@@ -1458,7 +1458,7 @@ fn main(console: Console):
     #[test]
     fn json_encodes_control_characters_backends_agree() {
         // NUL ( ), backspace (short \b), tab (short \t), and 0x1f ().
-        let src = "import json\nfn main(console: Console):\n    let s = string.from_code(0) + string.from_code(8) + string.from_code(9) + string.from_code(31)\n    let enc = json.encode(JsonString(s))\n    print(console, enc)\n    match json.decode(enc):\n        Ok(v) -> match v:\n            JsonString(d) -> print(console, __render(d == s))\n            _ -> print(console, \"notstr\")\n        Err(e) -> print(console, \"err\")\n";
+        let src = "import json\nfrom json import Json\nfn main(console: Console):\n    let s = string.from_code(0) + string.from_code(8) + string.from_code(9) + string.from_code(31)\n    let enc = json.encode(JsonString(s))\n    print(console, enc)\n    match json.decode(enc):\n        Ok(v) -> match v:\n            JsonString(d) -> print(console, __render(d == s))\n            _ -> print(console, \"notstr\")\n        Err(e) -> print(console, \"err\")";
         let expected = vec!["\"\\u0000\\b\\t\\u001f\"".to_string(), "true".to_string()];
         assert_eq!(link_run(src), expected, "interpreter");
         assert_eq!(wasm_run(src), expected, "wasm");
@@ -1862,7 +1862,7 @@ fn main(console: Console):
     /// serializes any reflectable response. Both backends.
     #[test]
     fn into_json_via_from() {
-        let src = "import json\n\nfn main(console: Console):\n    let j: Json = [1, 2, 3].into()\n    print(console, json.encode(j))\n    print(console, json.encode(Json.from((\"x\", 5))))\n";
+        let src = "import json\nfrom json import Json\n\nfn main(console: Console):\n    let j: Json = [1, 2, 3].into()\n    print(console, json.encode(j))\n    print(console, json.encode(Json.from((\"x\", 5))))";
         let want = vec!["[1,2,3]".to_string(), "[\"x\",5]".to_string()];
         assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
@@ -1930,7 +1930,7 @@ fn main(console: Console):
         assert_eq!(link_run(tree), tw, "interpreter (tree)");
         assert_eq!(wasm_run(tree), tw, "wasm (tree)");
         // An already-built Json embeds verbatim in an anonymous struct.
-        let embed = "import json\n\nfn main(console: Console):\n    let rec: Json = json.decode(\"{\\\"a\\\":1}\").unwrap_or(JsonNull)\n    print(console, json.stringify(.{record: rec, ok: true}))\n";
+        let embed = "import json\nfrom json import Json\n\nfn main(console: Console):\n    let rec: Json = json.decode(\"{\\\"a\\\":1}\").unwrap_or(JsonNull)\n    print(console, json.stringify(.{record: rec, ok: true}))";
         let ew = vec!["{\"ok\":true,\"record\":{\"a\":1}}".to_string()];
         assert_eq!(link_run(embed), ew, "interpreter (embed)");
         assert_eq!(wasm_run(embed), ew, "wasm (embed)");
@@ -2119,7 +2119,7 @@ fn main(console: Console):
     /// backends (comptime runs at link time, so the generated code is identical).
     #[test]
     fn comptime_typeinfo_generates_specialized_to_json() {
-        let src = "import meta\nimport json\nimport string\n\ntype Point:\n    x: Int\n    y: Int\n\ntype User:\n    name: String\n    age: Int\n    active: Bool\n\ncomptime:\n    let ctor = fn(ty: String) -> String:\n        if ty == \"Int\": \"JsonInt\"\n        else if ty == \"String\": \"JsonString\"\n        else if ty == \"Bool\": \"JsonBool\"\n        else: \"JsonNull\"\n    for t in module_types:\n        if t.kind == \"record\":\n            emit(\"fn to_json_${t.name}(v: ${t.name}) -> Json:\")\n            var pairs = []\n            for f in t.fields:\n                pairs = list.push(pairs, \"(\\\"\" + f.name + \"\\\", \" + ctor(f.type_name) + \"(v.\" + f.name + \"))\")\n            emit(\"    JsonObject([\" + list.join(pairs, \", \") + \"])\")\n            emit(\"\")\n\nfn main(console: Console):\n    print(console, json.encode(to_json_Point(Point(1, 2))))\n    print(console, json.encode(to_json_User(User(\"ann\", 30, true))))\n";
+        let src = "import meta\nimport json\nimport string\nfrom json import Json\n\ntype Point:\n    x: Int\n    y: Int\n\ntype User:\n    name: String\n    age: Int\n    active: Bool\n\ncomptime:\n    let ctor = fn(ty: String) -> String:\n        if ty == \"Int\": \"JsonInt\"\n        else if ty == \"String\": \"JsonString\"\n        else if ty == \"Bool\": \"JsonBool\"\n        else: \"JsonNull\"\n    for t in module_types:\n        if t.kind == \"record\":\n            emit(\"fn to_json_${t.name}(v: ${t.name}) -> Json:\")\n            var pairs = []\n            for f in t.fields:\n                pairs = list.push(pairs, \"(\\\"\" + f.name + \"\\\", \" + ctor(f.type_name) + \"(v.\" + f.name + \"))\")\n            emit(\"    JsonObject([\" + list.join(pairs, \", \") + \"])\")\n            emit(\"\")\n\nfn main(console: Console):\n    print(console, json.encode(to_json_Point(Point(1, 2))))\n    print(console, json.encode(to_json_User(User(\"ann\", 30, true))))";
         let want: Vec<String> = [
             "{\"x\":1,\"y\":2}",
             "{\"name\":\"ann\",\"age\":30,\"active\":true}",
@@ -2445,7 +2445,7 @@ fn main(console: Console):
     /// which the record-only corpus + fuzzer MISSED. This is why the executor is in the gate.
     #[test]
     fn rc_corpus_channel_executor_is_stable() {
-        let src = "import chan\nasync fn producer(tx: Sender(Int), n: Int) -> Nil:\n    for i in 0..n:\n        chan.send(tx, i).await\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(8).await\n    chan.spawn(producer(tx, 100)).await\n    for await v in rx:\n        chan.done(v)\n    print(console, \"100\")\n";
+        let src = "import chan\nfrom chan import Sender\nasync fn producer(tx: Sender(Int), n: Int) -> Nil:\n    for i in 0..n:\n        chan.send(tx, i).await\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(8).await\n    chan.spawn(producer(tx, 100)).await\n    for await v in rx:\n        chan.done(v)\n    print(console, \"100\")";
         assert_rc_corpus_stable(src, &["100"]);
     }
 
@@ -6987,10 +6987,10 @@ fn main(console: Console):
     fn json_encode_pretty_backends_agree() {
         let client = r#"
 import json
+from json import Json
 fn main(console: Console):
     let doc = JsonObject([("name", JsonString("witchy")), ("tags", JsonArray([JsonInt(1), JsonInt(2)])), ("empty", JsonArray([]))])
-    print(console, json.encode_pretty(doc))
-"#;
+    print(console, json.encode_pretty(doc))"#;
         let sources = [("json", crate::bundled_module("json").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
@@ -7021,6 +7021,7 @@ fn main(console: Console):
         let client = r#"
 import json
 import option
+from json import Json
 fn main(console: Console):
     match json.decode("{\"a\": 1, \"b\": 2}"):
         Ok(doc) ->
@@ -7031,8 +7032,7 @@ fn main(console: Console):
                         print(console, k)
                 None -> print(console, "not object")
         Err(_e) -> print(console, "err")
-    print(console, if option.is_none(json.as_object(JsonInt(5))): "none" else: "some")
-"#;
+    print(console, if option.is_none(json.as_object(JsonInt(5))): "none" else: "some")"#;
         let sources = [
             ("json", crate::bundled_module("json").unwrap()),
             ("option", crate::bundled_module("option").unwrap()),
@@ -7306,6 +7306,7 @@ fn main(console: Console):
         // non-object b replaces wholesale); has_key checks top-level presence.
         let client = r#"
 import json
+from json import Json
 fn main(console: Console):
     let a = JsonObject([("name", JsonString("a")), ("x", JsonInt(1))])
     let b = JsonObject([("x", JsonInt(2)), ("y", JsonInt(3))])
@@ -7313,8 +7314,7 @@ fn main(console: Console):
     print(console, json.encode(json.merge(a, JsonInt(9))))
     print(console, if json.contains_key(a, "x"): "T" else: "F")
     print(console, if json.contains_key(a, "z"): "T" else: "F")
-    print(console, if json.contains_key(JsonInt(5), "x"): "T" else: "F")
-"#;
+    print(console, if json.contains_key(JsonInt(5), "x"): "T" else: "F")"#;
         let sources = [("json", crate::bundled_module("json").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
@@ -15635,6 +15635,7 @@ fn main(console: Console):
         let client = r#"
 import json
 import option
+from json import Json
 fn str_at(j: Json, path: String) -> String:
     match json.get_path(j, path):
         Some(v) -> option.unwrap_or(json.as_string(v), "?")
@@ -15649,8 +15650,7 @@ fn main(console: Console):
             print(console, str_at(j, "user.name"))
             print(console, __render(int_at(j, "user.age")))
             print(console, str_at(j, "user.missing"))
-        Err(e) -> print(console, e)
-"#;
+        Err(e) -> print(console, e)"#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
@@ -16033,6 +16033,7 @@ async fn main(console: Console):
     fn async_with_channels_backends_agree() {
         let src = r#"
 import chan
+from chan import Receiver, Sender
 
 async fn producer(tx: Sender(Int)) -> Nil:
     chan.send(tx, 1).await
@@ -16044,8 +16045,7 @@ async fn consumer(console: Console, rx: Receiver(Int)) -> Nil:
 async fn main(console: Console):
     let (tx, rx) = chan.channel(4).await
     task.spawn(producer(tx)).await
-    consumer(console, rx).await
-"#;
+    consumer(console, rx).await"#;
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
@@ -16066,6 +16066,7 @@ async fn main(console: Console):
     fn for_await_loop_backends_agree() {
         let src = r#"
 import chan
+from chan import Receiver, Sender
 
 async fn producer(tx: Sender(Int)) -> Nil:
     for x in [1, 2, 3]:
@@ -16081,8 +16082,7 @@ async fn consumer(console: Console, rx: Receiver(Int)) -> Nil:
 async fn main(console: Console):
     let (tx, rx) = chan.channel(4).await
     task.spawn(producer(tx)).await
-    consumer(console, rx).await
-"#;
+    consumer(console, rx).await"#;
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
@@ -16103,6 +16103,7 @@ async fn main(console: Console):
     fn for_await_over_receiver_backends_agree() {
         let src = r#"
 import chan
+from chan import Receiver, Sender
 
 async fn producer(tx: Sender(Int)) -> Nil:
     for n in [1, 2, 3]:
@@ -16117,8 +16118,7 @@ async fn main(console: Console):
     let (otx, orx) = chan.channel(4).await
     task.spawn(producer(tx)).await
     task.spawn(relay(rx, otx)).await
-    chan.consume(orx, fn(v): task.done(print(console, "got ${v}"))).await
-"#;
+    chan.consume(orx, fn(v): task.done(print(console, "got ${v}"))).await"#;
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
@@ -16142,6 +16142,7 @@ async fn main(console: Console):
     fn chan_multi_actor_separate_inboxes_backends_agree() {
         let src = r#"
 import chan
+from chan import Receiver, Sender
 
 async fn logger(console: Console, rx: Receiver(Int)) -> Nil:
     chan.consume(rx, fn(a): task.done(print(console, "log ${a}"))).await
@@ -16160,8 +16161,7 @@ async fn main(console: Console):
     let fh = task.spawn(forwarder(fwd_rx, log_tx)).await
     driver(log_tx, fwd_tx).await
     task.join(fh).await
-    task.join(lh).await
-"#;
+    task.join(lh).await"#;
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
@@ -16187,6 +16187,7 @@ async fn main(console: Console):
     fn rfc0055_two_modules_private_channels_of_different_types() {
         // Module A: a private Int channel behind a public `run` entry.
         let counter = r#"import chan
+from chan import Sender
 
 async fn feed(tx: Sender(Int)) -> Nil:
     chan.send(tx, 7).await
@@ -16201,10 +16202,10 @@ pub async fn total(console: Console) -> Nil:
         Some(x) -> match b:
             Some(y) -> print(console, "sum ${x + y}")
             None -> print(console, "sum none")
-        None -> print(console, "sum none")
-"#;
+        None -> print(console, "sum none")"#;
         // Module B: a private RECORD channel — a different message type entirely.
         let notes = r#"import chan
+from chan import Sender
 
 type Note:
     Note(String)
@@ -16218,8 +16219,7 @@ pub async fn announce(console: Console) -> Nil:
     let o = chan.recv(rx).await
     match o:
         Some(Note(s)) -> print(console, "note ${s}")
-        None -> print(console, "note none")
-"#;
+        None -> print(console, "note none")"#;
         // The entry drives both private pipelines in ONE run — one erased executor,
         // two different message types coexisting.
         let app = r#"import counter
@@ -16266,6 +16266,7 @@ async fn main(console: Console):
     fn rfc0055_one_task_two_message_types_job_answer() {
         let src = r#"
 import chan
+from chan import Receiver, Sender
 
 type Job:
     Job(Int)
@@ -16291,8 +16292,7 @@ async fn main(console: Console):
         None -> print(console, "none")
     match a2:
         Some(Answer(v)) -> print(console, "answer ${v}")
-        None -> print(console, "none")
-"#;
+        None -> print(console, "none")"#;
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
@@ -16316,6 +16316,7 @@ async fn main(console: Console):
     fn chan_producer_consumer_backends_agree() {
         let src = r#"
 import chan
+from chan import Receiver, Sender
 
 async fn producer(tx: Sender(Int)) -> Nil:
     chan.send(tx, 1).await
@@ -16328,8 +16329,7 @@ async fn main(console: Console):
     let (tx, rx) = chan.channel(1).await
     task.spawn(producer(tx)).await
     consumer(console, rx).await
-    print(console, "drained")
-"#;
+    print(console, "drained")"#;
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
@@ -16343,6 +16343,71 @@ async fn main(console: Console):
         assert_eq!(interp_out, vec!["got 1", "got 2", "drained"]);
     }
 
+    // (RFC-0042) THE headline acceptance test: `import iter` + `import chan` in ONE
+    // program. Both std modules declare a `type Step`; under the old flat type
+    // namespace their variant sets merged and the program failed to compile inside
+    // std internals — the two flagship modules were mutually exclusive. Module-
+    // scoped types make them `iter.Step` and `chan.Step`, so the two coexist and
+    // the program runs byte-identically on both backends. The iter side computes a
+    // value; the chan side drives a channel round-trip — exercising both `Step`s.
+    #[test]
+    fn iter_and_chan_coexist_backends_agree() {
+        let src = r#"
+import iter
+import chan
+from chan import Sender, Receiver
+
+fn doubled(xs: List(Int)) -> List(Int):
+    iter.collect(iter.map(iter.from_list(xs), fn(x): x * 2))
+
+async fn producer(tx: Sender(Int)) -> Nil:
+    chan.send(tx, 41).await
+
+async fn main(console: Console):
+    print(console, "${doubled([1, 2, 3])}")
+    let (tx, rx) = chan.channel(1).await
+    task.spawn(producer(tx)).await
+    chan.consume(rx, fn(v): task.done(print(console, "recv ${v}"))).await
+    print(console, "done")
+"#;
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main")
+            .expect("iter+chan link (RFC-0042: the Step collision must be gone)");
+        typeck::check(&linked).expect("typecheck");
+        let interp_out = interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
+        assert_eq!(interp_out, wasm_out, "iter+chan diverged across backends");
+        assert_eq!(interp_out, vec!["[2, 4, 6]", "recv 41", "done"]);
+    }
+
+    // Its twin: `import task` + `import future` — both declare `Step`/`Slot`/`Task`/
+    // `Poll`, the second collision cluster RFC-0042 dissolves. Importing both must
+    // simply compile and run identically on both backends.
+    #[test]
+    fn task_and_future_coexist_backends_agree() {
+        let src = r#"
+import task
+import future
+
+fn main(console: Console):
+    print(console, "task+future coexist")
+"#;
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main")
+            .expect("task+future link (RFC-0042: the Step/Task/Slot/Poll collision must be gone)");
+        typeck::check(&linked).expect("typecheck");
+        let interp_out = interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
+        assert_eq!(interp_out, wasm_out, "task+future diverged across backends");
+        assert_eq!(interp_out, vec!["task+future coexist"]);
+    }
+
     // The channel message type is GENERIC (here `String`), proving the explicit
     // type-parameter fix to the monomorphizer: a multi-param ADT whose constructor
     // omits a param (`Done(a)` for `Step(m, a)`) now keeps that param generic
@@ -16351,6 +16416,7 @@ async fn main(console: Console):
     fn chan_generic_message_type_backends_agree() {
         let src = r#"
 import chan
+from chan import Receiver, Sender
 
 async fn producer(tx: Sender(String)) -> Nil:
     chan.send(tx, "alice").await
@@ -16362,8 +16428,7 @@ async fn consumer(console: Console, rx: Receiver(String)) -> Nil:
 async fn main(console: Console):
     let (tx, rx) = chan.channel(4).await
     task.spawn(producer(tx)).await
-    consumer(console, rx).await
-"#;
+    consumer(console, rx).await"#;
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
@@ -16384,6 +16449,7 @@ async fn main(console: Console):
     fn chan_select_backends_agree() {
         let src = r#"
 import chan
+from chan import Receiver, Sender
 
 async fn pa(tx: Sender(Int)) -> Nil:
     chan.send(tx, 1).await
@@ -16408,8 +16474,7 @@ async fn main(console: Console):
     let (btx, brx) = chan.channel(4).await
     task.spawn(pa(atx)).await
     task.spawn(pb(btx)).await
-    collector(console, arx, brx).await
-"#;
+    collector(console, arx, brx).await"#;
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
@@ -16430,6 +16495,7 @@ async fn main(console: Console):
     fn future_select_first_wins_backends_agree() {
         let src = r#"
 import future
+from future import Future
 
 fn counter(label: Int, steps: Int) -> Future(Int):
     if steps <= 0:
@@ -16439,8 +16505,7 @@ fn counter(label: Int, steps: Int) -> Future(Int):
 
 fn main(console: Console):
     let (idx, val) = future.select([counter(10, 5), counter(20, 2), counter(30, 8)])
-    print(console, "winner ${idx} ${val}")
-"#;
+    print(console, "winner ${idx} ${val}")"#;
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
@@ -16478,6 +16543,7 @@ fn main(console: Console):
     fn future_executor_interleaves_backends_agree() {
         let src = r#"
 import future
+from future import Future
 
 fn ticker(console: Console, name: String, n: Int) -> Future(Int):
     if n <= 0:
@@ -16489,8 +16555,7 @@ fn ticker(console: Console, name: String, n: Int) -> Future(Int):
 
 fn main(console: Console):
     let results = future.join_all([ticker(console, "A", 2), ticker(console, "B", 2)])
-    print(console, "done ${results}")
-"#;
+    print(console, "done ${results}")"#;
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
@@ -17164,6 +17229,7 @@ fn main(console: Console, net: Net):
     fn std_json_encode_backends_agree() {
         let client = r#"
 import json
+from json import Json
 fn main(console: Console):
     let j = JsonObject([
         ("name", JsonString("witchy")),
@@ -17172,8 +17238,7 @@ fn main(console: Console):
         ("stable", JsonBool(false)),
         ("extra", JsonNull)
     ])
-    print(console, json.encode(j))
-"#;
+    print(console, json.encode(j))"#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
@@ -17221,6 +17286,7 @@ fn main(console: Console):
         let client = r#"
 import json
 import option
+from json import Json
 fn field(j: Json, k: String) -> Json:
     match json.get(j, k):
         Some(v) -> v
@@ -17237,8 +17303,7 @@ fn main(console: Console):
             print(console, option.unwrap_or(json.as_string(field(j, "name")), "?"))
             print(console, __render(option.unwrap_or(json.as_int(field(j, "version")), 0)))
             print(console, __render(elem_int(j, "items", 1)))
-        Err(e) -> print(console, e)
-"#;
+        Err(e) -> print(console, e)"#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
@@ -17845,7 +17910,9 @@ pub fn serve(console: Console, net: Net) -> Int:
     #[test]
     fn glamour_slot_wire_is_identical_on_both_backends() {
         let src = "import glamour\n\
+                   from glamour import VNode\n\
                    import json\n\
+                   from json import Json\n\
                    \n\
                    fn mj(m: Int) -> Json:\n\
                    \x20   JsonInt(0)\n\
@@ -17875,7 +17942,9 @@ pub fn serve(console: Console, net: Net) -> Int:
     fn glamour_secret_wire_is_identical_on_both_backends() {
         use crate::runtime::{Capabilities, Runtime};
         let src = "import glamour\n\
+                   from glamour import UiRoot, VNode\n\
                    import json\n\
+                   from json import Json\n\
                    \n\
                    type Msg:\n\
                    \x20   Done(String)\n\
@@ -17999,6 +18068,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     fn glamour_to_json_serializes_the_wire_format_on_both_backends() {
         let src = "import glamour\n\
                    import json\n\
+                   from json import Json\n\
                    import reflect\n\
                    \n\
                    type Msg derive(Reflect):\n\

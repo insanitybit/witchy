@@ -1052,6 +1052,7 @@ deterministic — identical output on the interpreter and the compiled WebAssemb
 
 ```witchy
 import chan
+from chan import Sender
 
 async fn producer(tx: Sender(Int)) -> Nil:
     for n in [1, 2, 3]:

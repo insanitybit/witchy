@@ -70,22 +70,6 @@ Messages: channels are per-type generic (RFC-0055). A `Sender(m)`/`Receiver(m)` 
 
 The `async`/`await` CPS transform lowers onto the `std/task` executor (task.lazy/and_then/done/run); channel ops (`await chan.recv(rx)` / `await chan.send(tx, x)`) run on the same protocol.
 
-#### `type Step`
-
-- `Done(a)`
-- `Yield(Task(a))`
-- `Fork(Task(Nil), fn(Int) -> Task(a))`
-- `Open(Int, fn(Int) -> Task(a))`
-- `Push(Int, __Msg, fn(Nil) -> Task(a))`
-- `Pull(Int, fn(Option(__Msg)) -> Task(a))`
-- `PullAny(List(Int), fn(Option((Int, __Msg))) -> Task(a))`
-- `Wait(Int, fn(Nil) -> Task(a))`
-- `Cancel(Int, fn(Nil) -> Task(a))`
-
-#### `type Task`
-
-- `Task(fn() -> Step(a))`
-
 #### `type Sender`
 
 - `Sender(Int)`
@@ -94,26 +78,11 @@ The `async`/`await` CPS transform lowers onto the `std/task` executor (task.lazy
 
 - `Receiver(Int)`
 
-#### `type Handle`
-
-- `Handle(Int)`
-
 #### `type Selected`
 
 - `First(m)`
 - `Second(m)`
 - `Closed`
-
-#### `type Slot`
-
-A scheduling slot: running, parked on a channel recv/send or on a join, or done. Parked messages are the erased `__Msg` (RFC-0055).
-
-- `Active(Task(Nil))`
-- `WaitRecv(Int, fn(Option(__Msg)) -> Task(Nil))`
-- `WaitSend(Int, __Msg, fn(Nil) -> Task(Nil))`
-- `WaitAny(List(Int), fn(Option((Int, __Msg))) -> Task(Nil))`
-- `WaitJoin(Int, fn(Nil) -> Task(Nil))`
-- `Ended`
 
 #### `fn done(x: a) -> Task(a)`
 

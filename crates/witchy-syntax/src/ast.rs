@@ -13,8 +13,16 @@ pub struct Module {
     /// modules. See rfcs/performance-modes.md.
     pub modes: Vec<String>,
     /// Names of modules imported (side-effect-free: brings declarations into
-    /// scope, runs no code, grants no authority).
+    /// scope, runs no code, grants no authority). A `from X import Y` also lists
+    /// `X` here (it implies `import X`), so all linker logic keyed on `imports`
+    /// sees every imported module.
     pub imports: Vec<String>,
+    /// (RFC-0042) `from X import Y, Z` — unqualified bindings of TYPE or function
+    /// names into this module: `(module, [name, ...])`. Each listed name becomes
+    /// usable bare (a type in annotations, a constructor bare, a function by its
+    /// short name); two unqualified bindings of one name are a link-time error.
+    /// Plain `import X` contributes nothing here — it binds no unqualified types.
+    pub from_imports: Vec<(String, Vec<String>)>,
     pub items: Vec<Item>,
     /// Source line of each import and each top-level item, parallel to `imports`
     /// and `items` — used by the formatter to place comments. Empty when unknown
@@ -717,6 +725,7 @@ pub fn collect_type_vars(t: &Type, out: &mut Vec<String>) {
         Type::Named(name, args) => {
             if args.is_empty()
                 && name.chars().next().is_some_and(char::is_lowercase)
+                && !name.contains('.')
                 && !out.iter().any(|v| v == name)
             {
                 out.push(name.clone());

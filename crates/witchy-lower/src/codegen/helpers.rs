@@ -637,7 +637,10 @@ impl Codegen {
             // name as the opening token (matching the single ctor it lowers to).
             EqShape::Record(tyname) => {
                 let fields = self.record_field_types.get(tyname).cloned()?;
-                let header = self.intern(&format!("{tyname}("));
+                // (RFC-0042) Render the unqualified type name (`P`), not the
+                // canonical `main.P` — matching the interpreter's Display.
+                let shown = tyname.rsplit_once('.').map_or(tyname.as_str(), |(_, c)| c);
+                let header = self.intern(&format!("{shown}("));
                 let (close, comma) = (self.intern(")"), self.intern(", "));
                 let mut body: witchy_wir::wir::WirSeq = vec![setl("acc", W::StrPtr(header))];
                 for (i, fty) in fields.iter().enumerate() {
@@ -764,7 +767,11 @@ impl Codegen {
         let (open, close, comma) = (self.intern("("), self.intern(")"), self.intern(", "));
         let mut b: witchy_wir::wir::WirSeq = vec![setl("t", load_i32(getl("p")))];
         for (tag, fields) in all.iter().enumerate() {
-            let label = self.intern(ctor_names.get(tag).map(|s| s.as_str()).unwrap_or("?"));
+            // (RFC-0042) Render the unqualified variant name (`Item`), not the
+            // canonical `module.Ctor` the tag table carries — matching the
+            // interpreter's `Value::Ctor` Display so both backends print alike.
+            let raw = ctor_names.get(tag).map(|s| s.as_str()).unwrap_or("?");
+            let label = self.intern(raw.rsplit_once('.').map_or(raw, |(_, c)| c));
             if fields.is_empty() {
                 b.push(N::If {
                     cond: eqi(getl("t"), i32c(tag as i32)),
