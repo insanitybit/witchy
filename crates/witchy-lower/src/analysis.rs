@@ -585,6 +585,9 @@ fn collect_accumulators_expr(
                 collect_accumulators_expr(v, summaries, accs, loop_ptrs, loop_sites);
             }
         }
+        Expr::LabeledCall { .. } => {
+            unreachable!("RFC-0056: labeled calls are lowered to positional Call before codegen")
+        }
         Expr::Record { fields, spread, .. } => {
             for (_, v) in fields {
                 collect_accumulators_expr(v, summaries, accs, loop_ptrs, loop_sites);
@@ -909,6 +912,9 @@ impl<'a> Walker<'a> {
                     self.scan(a, live, "stored into a constructor", out);
                 }
             }
+            Expr::LabeledCall { .. } => {
+                unreachable!("RFC-0056: labeled calls are lowered to positional Call before codegen")
+            }
             Expr::Record { fields, spread, .. } => {
                 for (_, v) in fields {
                     self.scan(v, live, "stored into a record", out);
@@ -1076,6 +1082,9 @@ fn expr(e: &Expr, accs: &HashSet<String>, out: &mut HashSet<String>) {
                     expr(v, accs, out);
                 }
             }
+            Expr::LabeledCall { .. } => {
+                unreachable!("RFC-0056: labeled calls are lowered to positional Call before codegen")
+            }
             Expr::Record { fields, spread, .. } => {
                 for (_, v) in fields {
                     expr(v, accs, out);
@@ -1234,6 +1243,9 @@ fn collect_candidates_in_expr(e: &Expr, out: &mut std::collections::HashSet<(Str
                 collect_candidates_in_expr(v, out);
             }
         }
+        Expr::LabeledCall { .. } => {
+            unreachable!("RFC-0056: labeled calls are lowered to positional Call before codegen")
+        }
         Expr::Record { fields, spread, .. } => {
             for (_, v) in fields {
                 collect_candidates_in_expr(v, out);
@@ -1314,6 +1326,9 @@ fn field_escapes_expr(e: &Expr, var: &str, field: &str) -> bool {
         Expr::RecordUpdate { base, fields } => {
             field_escapes_expr(base, var, field)
                 || fields.iter().any(|(_, v)| field_escapes_expr(v, var, field))
+        }
+        Expr::LabeledCall { .. } => {
+            unreachable!("RFC-0056: labeled calls are lowered to positional Call before codegen")
         }
         Expr::Record { fields, spread, .. } => {
             fields.iter().any(|(_, v)| field_escapes_expr(v, var, field))
@@ -1428,6 +1443,9 @@ fn collect_moved_accs(e: &Expr, accs: &HashSet<String>, out: &mut Vec<String>) {
             for (_, v) in fields {
                 collect_moved_accs(v, accs, out);
             }
+        }
+        Expr::LabeledCall { .. } => {
+            unreachable!("RFC-0056: labeled calls are lowered to positional Call before codegen")
         }
         Expr::Record { fields, spread, .. } => {
             for (_, v) in fields {
@@ -1754,6 +1772,9 @@ fn rc_lets_expr(e: &Expr, confined: bool, out: &mut HashSet<String>) {
             rc_lets_expr(base, confined, out);
             fields.iter().for_each(|(_, v)| rc_lets_expr(v, confined, out));
         }
+        Expr::LabeledCall { .. } => {
+            unreachable!("RFC-0056: labeled calls are lowered to positional Call before codegen")
+        }
         Expr::Record { fields, spread, .. } => {
             fields.iter().for_each(|(_, v)| rc_lets_expr(v, confined, out));
             if let Some(sp) = spread {
@@ -1902,6 +1923,9 @@ fn each_value_child(e: &Expr, f: &mut impl FnMut(&Expr)) {
             f(base);
             fields.iter().for_each(|(_, v)| f(v));
         }
+        Expr::LabeledCall { .. } => {
+            unreachable!("RFC-0056: labeled calls are lowered to positional Call before codegen")
+        }
         Expr::Record { fields, spread, .. } => {
             fields.iter().for_each(|(_, v)| f(v));
             if let Some(sp) = spread {
@@ -2008,6 +2032,9 @@ fn expr_read_count(e: &Expr, name: &str) -> usize {
             for (_, v) in fields {
                 n += expr_read_count(v, name);
             }
+        }
+        Expr::LabeledCall { .. } => {
+            unreachable!("RFC-0056: labeled calls are lowered to positional Call before codegen")
         }
         Expr::Record { fields, spread, .. } => {
             for (_, v) in fields {
@@ -2147,6 +2174,9 @@ fn each_block_in_expr(e: &Expr, f: &mut impl FnMut(&Block)) {
         Expr::RecordUpdate { base, fields } => {
             each_block_in_expr(base, f);
             fields.iter().for_each(|(_, v)| each_block_in_expr(v, f));
+        }
+        Expr::LabeledCall { .. } => {
+            unreachable!("RFC-0056: labeled calls are lowered to positional Call before codegen")
         }
         Expr::Record { fields, spread, .. } => {
             fields.iter().for_each(|(_, v)| each_block_in_expr(v, f));

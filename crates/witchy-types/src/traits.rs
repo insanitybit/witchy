@@ -1130,6 +1130,13 @@ impl Ctx<'_> {
                     self.rewrite_expr(v, scope);
                 }
             }
+            // (RFC-0056) Lowered to positional `Call` at the link layer; recurse
+            // defensively over argument values (mirrors `Record` above).
+            Expr::LabeledCall { args, .. } => {
+                for (_, a) in args.iter_mut() {
+                    self.rewrite_expr(a, scope);
+                }
+            }
             Expr::Record { fields, spread, .. } => {
                 for (_, v) in fields.iter_mut() {
                     self.rewrite_expr(v, scope);
@@ -1629,6 +1636,7 @@ fn expr_needs_lowering(e: &Expr) -> bool {
         Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
             args.iter().any(expr_needs_lowering)
         }
+        Expr::LabeledCall { args, .. } => args.iter().any(|(_, a)| expr_needs_lowering(a)),
         Expr::Apply { func, args } => {
             expr_needs_lowering(func) || args.iter().any(expr_needs_lowering)
         }
@@ -2179,6 +2187,11 @@ fn subst_expr_types(e: &mut Expr, subst: &HashMap<&str, String>) {
                 subst_expr_types(v, subst);
             }
         }
+        Expr::LabeledCall { args, .. } => {
+            for (_, a) in args {
+                subst_expr_types(a, subst);
+            }
+        }
         Expr::Record { fields, spread, .. } => {
             for (_, v) in fields {
                 subst_expr_types(v, subst);
@@ -2307,6 +2320,12 @@ fn collect_call_names(b: &Block, out: &mut HashSet<String>) {
             Expr::Call { name, args } => {
                 out.insert(name.clone());
                 for a in args {
+                    walk(a, out);
+                }
+            }
+            Expr::LabeledCall { name, args } => {
+                out.insert(name.clone());
+                for (_, a) in args {
                     walk(a, out);
                 }
             }
@@ -2473,6 +2492,16 @@ fn rename_calls_block(b: &mut Block, renames: &HashMap<String, String>, scope: &
                     }
                 }
                 for a in args {
+                    walk_expr(a, renames, scope);
+                }
+            }
+            Expr::LabeledCall { name, args } => {
+                if !scope.is_local(name) {
+                    if let Some(to) = renames.get(name.as_str()) {
+                        *name = to.clone();
+                    }
+                }
+                for (_, a) in args {
                     walk_expr(a, renames, scope);
                 }
             }
@@ -3141,6 +3170,11 @@ impl Mono<'_> {
                 self.walk_expr(base, scope);
                 for (_, v) in fields.iter_mut() {
                     self.walk_expr(v, scope);
+                }
+            }
+            Expr::LabeledCall { args, .. } => {
+                for (_, a) in args.iter_mut() {
+                    self.walk_expr(a, scope);
                 }
             }
             Expr::Record { fields, spread, .. } => {

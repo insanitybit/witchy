@@ -2324,6 +2324,11 @@ impl Checker {
             Expr::Record { .. } => {
                 unreachable!("Expr::Record is lowered by witchy_syntax::records before typeck")
             }
+            // (RFC-0056) Labeled calls are resolved to positional `Call`s by
+            // `witchy_syntax::keyword_args` at the link layer, before type-checking.
+            Expr::LabeledCall { .. } => {
+                unreachable!("Expr::LabeledCall is lowered by witchy_syntax::keyword_args before typeck")
+            }
             // `while let` lowers to a `while true` over a match; type that.
             Expr::WhileLet { pattern, scrutinee, body } => {
                 let d = witchy_syntax::parser::desugar_while_let(

@@ -189,6 +189,14 @@ fn walk_children(expr: &mut Expr, ctx: &Context, depth: u32) -> Result<(), Strin
                 recur(a)?;
             }
         }
+        // (RFC-0056) Tagged-literal expansion runs during linking, BEFORE keyword
+        // args are resolved, so a labeled call may still be present here — recurse
+        // into its argument values to expand any tagged literal nested inside.
+        Expr::LabeledCall { args, .. } => {
+            for (_, a) in args {
+                recur(a)?;
+            }
+        }
         Expr::MethodCall { receiver, args, .. } => {
             recur(receiver)?;
             for a in args {
@@ -324,6 +332,7 @@ fn expand_one(
                 name: "line".into(),
                 ty: Some(Type::Named("String".into(), Vec::new())),
                 convention: Default::default(),
+                default: None,
             }],
             body: Block {
                 stmts: vec![Stmt::Expr(Expr::Call {
@@ -350,6 +359,7 @@ fn expand_one(
             name: "console".into(),
             ty: Some(Type::Named("Console".into(), Vec::new())),
             convention: Default::default(),
+            default: None,
         }],
         ret: None,
         body: Block {
@@ -554,6 +564,11 @@ fn substitute_holes_children(
         }
         Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
             for a in args {
+                substitute_holes(a, holes, where_)?;
+            }
+        }
+        Expr::LabeledCall { args, .. } => {
+            for (_, a) in args {
                 substitute_holes(a, holes, where_)?;
             }
         }
@@ -802,6 +817,12 @@ fn collect_refs_expr(e: &Expr, out: &mut HashSet<String>) {
         Expr::Call { name, args } | Expr::Ctor { name, args } => {
             out.insert(name.clone());
             for a in args {
+                collect_refs_expr(a, out);
+            }
+        }
+        Expr::LabeledCall { name, args } => {
+            out.insert(name.clone());
+            for (_, a) in args {
                 collect_refs_expr(a, out);
             }
         }

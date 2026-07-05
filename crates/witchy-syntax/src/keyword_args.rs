@@ -265,8 +265,7 @@ impl Resolver {
         // to a temp in written order and pass the temps in declared order.
         let in_declared_order = written.windows(2).all(|w| w[0].0 < w[1].0);
         if in_declared_order {
-            let mut by_index: HashMap<usize, Expr> =
-                written.into_iter().map(|(d, v)| (d, v)).collect();
+            let mut by_index: HashMap<usize, Expr> = written.into_iter().collect();
             let call_args = (0..n)
                 .map(|d| match by_index.remove(&d) {
                     Some(v) => v,

@@ -392,6 +392,14 @@ fn idents_in_expr(e: &Expr, f: &mut dyn FnMut(&str)) {
                 idents_in_expr(a, f);
             }
         }
+        // (RFC-0056) Lowered before evaluation; recurse defensively (this scan
+        // over-approximates, so a stray traversal here is harmless).
+        Expr::LabeledCall { name, args } => {
+            f(name);
+            for (_, a) in args {
+                idents_in_expr(a, f);
+            }
+        }
         Expr::MethodCall { receiver, method, args } => {
             f(method);
             idents_in_expr(receiver, f);
@@ -2420,6 +2428,11 @@ impl Interpreter {
             // Expanded away by `crate::tagged` during linking, before evaluation.
             Expr::TaggedLit { tag, .. } => {
                 unreachable!("unexpanded tagged literal `{tag}` reached the interpreter")
+            }
+            // (RFC-0056) Resolved to a positional `Call`/`Block` by
+            // `witchy_syntax::keyword_args` at the link layer, before evaluation.
+            Expr::LabeledCall { name, .. } => {
+                unreachable!("unresolved labeled call `{name}` reached the interpreter")
             }
             Expr::Int(n) | Expr::Duration(n) => Ok(Value::Int(*n)),
             Expr::Float(x) => Ok(Value::Float(*x)),
