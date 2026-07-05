@@ -227,13 +227,13 @@
         };
 
         // Encodes before optimization.
-        let before = crate::wir_encode::encode(&m);
+        let before = crate::wir_encode::encode(&m, &[]);
         assert!(!before.is_empty(), "pre-opt encode produced no bytes");
 
         let stats = optimize(&mut m);
         assert_eq!(stats.eliminated, 2, "{stats:?}");
 
         // Still encodes after optimization.
-        let after = crate::wir_encode::encode(&m);
+        let after = crate::wir_encode::encode(&m, &[]);
         assert!(!after.is_empty(), "post-opt encode produced no bytes");
     }

@@ -110,6 +110,10 @@ fn simplify_node(node: &mut WirNode, changed: &mut bool) {
         WirNode::Block { body, .. } | WirNode::Loop { body, .. } => {
             simplify_seq(body, changed);
         }
+        WirNode::StructSet { base, value, .. } => {
+            simplify_expr(base, changed);
+            simplify_expr(value, changed);
+        }
         WirNode::Br { cond: Some(c), .. } => simplify_expr(c, changed),
         WirNode::Drop(e) | WirNode::Do(e) | WirNode::Push(e) | WirNode::Return(Some(e)) => {
             simplify_expr(e, changed);
@@ -148,13 +152,20 @@ fn simplify_expr(expr: &mut WirExpr, changed: &mut bool) {
         WirExpr::MemoryGrow(pages) => simplify_expr(pages, changed),
         WirExpr::Control(node) => simplify_node(node, changed),
         WirExpr::Seq(nodes) => simplify_seq(nodes, changed),
+        WirExpr::StructNew { args, .. } => {
+            for a in args.iter_mut() {
+                simplify_expr(a, changed);
+            }
+        }
+        WirExpr::StructGet { base, .. } => simplify_expr(base, changed),
         WirExpr::ConstI64(_)
         | WirExpr::ConstF64(_)
         | WirExpr::ConstI32(_)
         | WirExpr::StrPtr(_)
         | WirExpr::MemorySize
         | WirExpr::GetLocal(_)
-        | WirExpr::GetGlobal(_) => {}
+        | WirExpr::GetGlobal(_)
+        | WirExpr::RefNull(_) => {}
     }
 
     // 2. Apply cancellation rules at this node, repeating while one fires so a
@@ -234,6 +245,7 @@ fn node_size(node: &WirNode) -> usize {
             expr_size(cond) + seq_size(then_) + seq_size(els)
         }
         WirNode::Block { body, .. } | WirNode::Loop { body, .. } => seq_size(body),
+        WirNode::StructSet { base, value, .. } => expr_size(base) + expr_size(value),
         WirNode::Br { cond: Some(c), .. } => expr_size(c),
         WirNode::Drop(e) | WirNode::Do(e) | WirNode::Push(e) | WirNode::Return(Some(e)) => {
             expr_size(e)
@@ -260,13 +272,16 @@ fn expr_size(expr: &WirExpr) -> usize {
         WirExpr::MemoryGrow(pages) => expr_size(pages),
         WirExpr::Control(node) => node_size(node),
         WirExpr::Seq(nodes) => seq_size(nodes),
+        WirExpr::StructNew { args, .. } => args.iter().map(expr_size).sum(),
+        WirExpr::StructGet { base, .. } => expr_size(base),
         WirExpr::ConstI64(_)
         | WirExpr::ConstF64(_)
         | WirExpr::ConstI32(_)
         | WirExpr::StrPtr(_)
         | WirExpr::MemorySize
         | WirExpr::GetLocal(_)
-        | WirExpr::GetGlobal(_) => 0,
+        | WirExpr::GetGlobal(_)
+        | WirExpr::RefNull(_) => 0,
     }
 }
 

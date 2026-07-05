@@ -9,7 +9,7 @@
     /// the codegen path emits — `wir_encode::encode` — not the `to_wat` display.)
     fn run_capture(module: &WirModule) -> Vec<String> {
         use std::sync::{Arc, Mutex};
-        let binary = crate::wir_encode::encode(module);
+        let binary = crate::wir_encode::encode(module, &[]);
         let engine = wasmtime::Engine::default();
         let m = wasmtime::Module::new(&engine, &binary)
             .unwrap_or_else(|e| panic!("encoded module invalid: {e}"));

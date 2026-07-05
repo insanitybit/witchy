@@ -488,9 +488,13 @@ fn validate_type(t: &ast::Type, known: &HashSet<&str>) -> Result<(), TypeError> 
 fn check_type_names(module: &Module) -> Result<(), TypeError> {
     let mut known: HashSet<&str> = BUILTIN_TYPE_NAMES.iter().copied().collect();
     let mut packed_names: HashSet<&str> = HashSet::new();
+    // (RFC-0005) User `type`/`capability` declarations, so `carries_externref_cap`
+    // can resolve whether a `Named` type transitively holds a migrated capability.
+    let mut type_defs: HashMap<&str, &ast::TypeDef> = HashMap::new();
     for item in &module.items {
         if let Item::Type(t) = item {
             known.insert(t.name.as_str());
+            type_defs.insert(t.name.as_str(), t);
             if t.packed {
                 packed_names.insert(t.name.as_str());
             }
@@ -506,11 +510,13 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                     if let Some(t) = &p.ty {
                         validate_type(t, &known).map_err(|e| in_ctx(e, &f.name))?;
                         reject_packed_list_boundary(t, &packed_names, &f.name, "a parameter")?;
+                        reject_cap_slot_boundary(t, &type_defs, &f.name, "a parameter")?;
                     }
                 }
                 if let Some(t) = &f.ret {
                     validate_type(t, &known).map_err(|e| in_ctx(e, &f.name))?;
                     reject_packed_list_boundary(t, &packed_names, &f.name, "a return type")?;
+                    reject_cap_slot_boundary(t, &type_defs, &f.name, "a return type")?;
                     // (RFC-0026) `local unique` is valid only WITHIN the call — it may
                     // not escape — so it cannot be a return type (a return escapes).
                     if is_local_unique_type(t) {
@@ -531,6 +537,7 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                     for field in &variant.fields {
                         validate_type(field, &known).map_err(|e| in_ctx(e, &t.name))?;
                         reject_packed_list_boundary(field, &packed_names, &t.name, "a field")?;
+                        reject_cap_slot_boundary(field, &type_defs, &t.name, "a field")?;
                     }
                 }
                 // (RFC-0027) A `packed` type's every field must be packable — a
@@ -624,6 +631,103 @@ fn packed_list_in_type(t: &ast::Type, packed_names: &HashSet<&str>) -> Option<St
             .find_map(|a| packed_list_in_type(a, packed_names))
             .or_else(|| packed_list_in_type(ret, packed_names)),
         ast::Type::Qualified(_, inner) => packed_list_in_type(inner, packed_names),
+    }
+}
+
+/// (RFC-0005) Names of the capabilities represented as an unforgeable `externref`
+/// on the compiled backend at the CURRENT migration stage — the caps with NO boxed
+/// i64-slot representation. Stage 2 migrates `File` (the proving capability); the
+/// remaining handle-bearing caps (`Dir`/`Net`/`Secret`/`SecretStore`/`Exec`/
+/// `Socket`/`Listener`) keep their i32-handle representation until their own stage,
+/// so they may still (for now) cross a slot — e.g. `std/secretstore.get` returns
+/// `Option(Secret)`. `Console`/`Clock`/`Rand`/`Env` are zero-representation (no
+/// runtime handle) and never migrate. Widen this set as each capability migrates.
+fn is_externref_cap(name: &str) -> bool {
+    name == "File"
+}
+
+/// (RFC-0005 §3) The `carries_cap` classification, scoped to the migrated
+/// `externref` subset (`is_externref_cap`): the name of the first such capability
+/// that `t` transitively carries, or `None`. Recurses through user `type`/
+/// `capability` declarations (`defs`) with a cycle guard (`seen`), and through
+/// tuples, function types, and type arguments. These are exactly the caps that
+/// have no i64 bit-pattern, so they cannot round-trip the universal slot.
+fn carries_externref_cap(
+    t: &ast::Type,
+    defs: &HashMap<&str, &ast::TypeDef>,
+    seen: &mut HashSet<String>,
+) -> Option<String> {
+    match t {
+        ast::Type::Qualified(_, inner) => carries_externref_cap(inner, defs, seen),
+        ast::Type::Tuple(items) => items.iter().find_map(|a| carries_externref_cap(a, defs, seen)),
+        ast::Type::Fn(args, ret) => args
+            .iter()
+            .find_map(|a| carries_externref_cap(a, defs, seen))
+            .or_else(|| carries_externref_cap(ret, defs, seen)),
+        ast::Type::Named(n, args) => {
+            if is_externref_cap(n) {
+                return Some(n.clone());
+            }
+            if let Some(hit) = args.iter().find_map(|a| carries_externref_cap(a, defs, seen)) {
+                return Some(hit);
+            }
+            // A user `type`/`capability`: scan its variants' field types. `seen`
+            // guards recursive/mutually-recursive declarations and is kept
+            // monotonic (a shared declaration is only worth scanning once).
+            if let Some(def) = defs.get(n.as_str()) {
+                if seen.insert(n.clone()) {
+                    return def
+                        .variants
+                        .iter()
+                        .flat_map(|v| v.fields.iter())
+                        .find_map(|f| carries_externref_cap(f, defs, seen));
+                }
+            }
+            None
+        }
+    }
+}
+
+/// (RFC-0005 §4.4/§7) Reject `t` if it wraps an `externref` capability in a value
+/// that is boxed into the universal i64 slot — an `Option`/`Result` payload or a
+/// `List`/`Dict` element (the containers whose payload crosses `ToSlot`/`FromSlot`).
+/// An `externref` has no i64 bit-pattern — that unforgeability is the whole point —
+/// so it cannot survive a slot round-trip; this is a hard representational fact, not
+/// a policy. A bare capability parameter/return is fine (it stays an `externref`);
+/// a capability held in a record/tuple field is fine too (that is the GC-struct
+/// aggregate path, RFC-0005 §4.2) — only the slot-boxed container forms are refused.
+fn reject_cap_slot_boundary(
+    t: &ast::Type,
+    defs: &HashMap<&str, &ast::TypeDef>,
+    ctx: &str,
+    position: &str,
+) -> Result<(), TypeError> {
+    match t {
+        ast::Type::Qualified(_, inner) => reject_cap_slot_boundary(inner, defs, ctx, position),
+        ast::Type::Tuple(items) => {
+            items.iter().try_for_each(|a| reject_cap_slot_boundary(a, defs, ctx, position))
+        }
+        ast::Type::Fn(args, ret) => {
+            args.iter().try_for_each(|a| reject_cap_slot_boundary(a, defs, ctx, position))?;
+            reject_cap_slot_boundary(ret, defs, ctx, position)
+        }
+        ast::Type::Named(n, args) => {
+            if matches!(n.as_str(), "Option" | "Result" | "List" | "Dict") {
+                for a in args {
+                    if let Some(cap) = carries_externref_cap(a, defs, &mut HashSet::new()) {
+                        return Err(TypeError {
+                            message: format!(
+                                "`{ctx}`: a `{cap}` capability cannot be wrapped in `{n}` in {position} — \
+                                 it is an unforgeable reference with no boxed representation; hold it in a \
+                                 record field or pass it directly"
+                            ),
+                        });
+                    }
+                }
+            }
+            // Recurse into arguments for a nested container (`List(Option(File))`).
+            args.iter().try_for_each(|a| reject_cap_slot_boundary(a, defs, ctx, position))
+        }
     }
 }
 

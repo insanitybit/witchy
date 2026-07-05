@@ -11,19 +11,28 @@ use std::collections::HashMap;
 
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, DataSection, ElementSection, Elements, EntityType,
-    ExportKind, ExportSection, Function, FunctionSection, GlobalSection, GlobalType, ImportSection,
-    Instruction, MemArg, MemorySection, MemoryType, Module, NameMap, NameSection, RefType,
-    TableSection, TableType, TypeSection, ValType,
+    ExportKind, ExportSection, FieldType, Function, FunctionSection, GlobalSection, GlobalType,
+    HeapType, ImportSection, Instruction, MemArg, MemorySection, MemoryType, Module, NameMap,
+    NameSection, RefType, StorageType, TableSection, TableType, TypeSection, ValType,
 };
 
-use crate::wir::{BinOp, GlobalInit, Kind, UnOp, WirExpr, WirModule, WirNode, WirSeq};
+use crate::wir::{BinOp, GlobalInit, Kind, UnOp, WirExpr, WirModule, WirNode, WirSeq, WirStructDef};
 
-/// Map a WIR `Kind` to a wasm-encoder `ValType`.
-fn val_type(kind: Kind) -> ValType {
+/// Map a WIR `Kind` to a wasm-encoder `ValType`. `struct_base` is the type-section
+/// index where GC struct types begin (they follow the function signatures), so a
+/// `Kind::GcRef(i)` resolves to the concrete struct type `struct_base + i`.
+fn val_type(kind: Kind, struct_base: u32) -> ValType {
     match kind {
         Kind::I32 => ValType::I32,
         Kind::I64 => ValType::I64,
         Kind::F64 => ValType::F64,
+        // (RFC-0005) An unforgeable, nullable host reference.
+        Kind::ExternRef => ValType::EXTERNREF,
+        // (RFC-0005) A nullable reference to the concrete GC struct type.
+        Kind::GcRef(id) => ValType::Ref(RefType {
+            nullable: true,
+            heap_type: HeapType::Concrete(struct_base + id),
+        }),
     }
 }
 
@@ -33,11 +42,19 @@ fn load_align(kind: Kind) -> u32 {
         Kind::I32 => 2, // 4 bytes
         Kind::I64 => 3, // 8 bytes
         Kind::F64 => 3, // 8 bytes
+        // (RFC-0005) Reference kinds are never a linear-memory load/store.
+        Kind::ExternRef | Kind::GcRef(_) => {
+            unreachable!("reference-typed values are not linear-memory loads")
+        }
     }
 }
 
-/// Encode a [`WirModule`] into a wasm binary.
-pub fn encode(module: &WirModule) -> Vec<u8> {
+/// Encode a [`WirModule`] into a wasm binary. `structs` are the module's
+/// cap-carrying GC struct definitions (RFC-0005); they are laid in the type
+/// section after the function signatures, so a `Kind::GcRef(i)` / a struct opcode's
+/// `struct_id` resolves to type index `struct_base + i`. Pass `&[]` when the module
+/// lowers no cap-carrying aggregates (the current production path — Stage 1/2).
+pub fn encode(module: &WirModule, structs: &[WirStructDef]) -> Vec<u8> {
     // --- Type section: collect unique (params, results) signatures ---------
     // Imports carry their param/result `Kind`s directly. Funcs derive params
     // from `params[*].ty.kind()` and results from `ret[*].kind()`. `Kind` is not
@@ -100,11 +117,47 @@ pub fn encode(module: &WirModule) -> Vec<u8> {
         });
     }
 
+    // (RFC-0005) GC struct types sit immediately AFTER the reserved `$clos{N}`
+    // band (type indices `0..=MAX_CLOS`) and BEFORE every other function signature.
+    // Reason: a function type that takes a `GcRef` param references its struct by
+    // type index, and GC recursion-group scoping forbids a *forward* reference
+    // across singleton type defs — so the struct must precede any function type
+    // that names it. `struct_base` is that first post-clos index; the non-clos
+    // function signatures are therefore shifted up by `struct_shift = structs.len()`.
+    // (Reserved clos indices stay put — raw prelude bodies bake `call_indirect
+    // (type $closN)` for `N <= MAX_CLOS`, and those types never take a `GcRef`.)
+    let clos_band = crate::wir::MAX_CLOS as u32 + 1;
+    let struct_shift = structs.len() as u32;
+    let struct_base = clos_band;
+    // sig-position -> emitted type-section index.
+    let type_idx = |pos: u32| -> u32 {
+        if pos < clos_band { pos } else { pos + struct_shift }
+    };
+    let split = (clos_band as usize).min(sigs.len());
+
     let mut type_section = TypeSection::new();
-    for (params, results) in &sigs {
+    // 1) The reserved clos band (indices `0..split`).
+    for (params, results) in &sigs[..split] {
         type_section.ty().function(
-            params.iter().map(|k| val_type(*k)),
-            results.iter().map(|k| val_type(*k)),
+            params.iter().map(|k| val_type(*k, struct_base)),
+            results.iter().map(|k| val_type(*k, struct_base)),
+        );
+    }
+    // 2) Struct type defs, at indices `struct_base..struct_base + struct_shift`.
+    // Fields are mutable so `struct.set` (grantable-cap field mint, Stage 4) is
+    // legal; a `GcRef` field references another struct via the same base offset.
+    for def in structs {
+        let fields = def.fields.iter().map(|k| FieldType {
+            element_type: StorageType::Val(val_type(*k, struct_base)),
+            mutable: true,
+        });
+        type_section.ty().struct_(fields);
+    }
+    // 3) The remaining function signatures, shifted past the struct types.
+    for (params, results) in &sigs[split..] {
+        type_section.ty().function(
+            params.iter().map(|k| val_type(*k, struct_base)),
+            results.iter().map(|k| val_type(*k, struct_base)),
         );
     }
 
@@ -129,13 +182,13 @@ pub fn encode(module: &WirModule) -> Vec<u8> {
     // --- Import section -----------------------------------------------------
     let mut import_section = ImportSection::new();
     for (imp, &ty_idx) in module.imports.iter().zip(&import_type_idx) {
-        import_section.import("witchy", &imp.name, EntityType::Function(ty_idx));
+        import_section.import("witchy", &imp.name, EntityType::Function(type_idx(ty_idx)));
     }
 
     // --- Function section (declares each defined func's type) ---------------
     let mut function_section = FunctionSection::new();
     for &ty_idx in &func_type_idx {
-        function_section.function(ty_idx);
+        function_section.function(type_idx(ty_idx));
     }
 
     // --- Memory section -----------------------------------------------------
@@ -170,7 +223,7 @@ pub fn encode(module: &WirModule) -> Vec<u8> {
             GlobalInit::I64(n) => ConstExpr::i64_const(n),
         };
         global_section.global(
-            GlobalType { val_type: val_type(g.kind), mutable: g.mutable, shared: false },
+            GlobalType { val_type: val_type(g.kind, struct_base), mutable: g.mutable, shared: false },
             &init,
         );
     }
@@ -244,7 +297,7 @@ pub fn encode(module: &WirModule) -> Vec<u8> {
         for l in &f.locals {
             local_index.insert(l.name.as_str(), next);
             next += 1;
-            body_local_types.push(val_type(l.ty.kind()));
+            body_local_types.push(val_type(l.ty.kind(), struct_base));
         }
 
         let mut function = Function::new_with_locals_types(body_local_types);
@@ -254,6 +307,8 @@ pub fn encode(module: &WirModule) -> Vec<u8> {
             import_index: &import_index,
             global_index: &global_index,
             clos_type_idx: &clos_type_idx,
+            struct_base,
+            struct_shift,
             label_stack: Vec::new(),
         };
         ctx.encode_seq(&mut function, &f.body);
@@ -346,6 +401,12 @@ fn collect_clos_arities(seq: &WirSeq, out: &mut Vec<usize>) {
             }
             WirExpr::Control(node) => walk_node(node, out),
             WirExpr::Seq(nodes) => collect_clos_arities(nodes, out),
+            WirExpr::StructNew { args, .. } => {
+                for a in args {
+                    walk_expr(a, out);
+                }
+            }
+            WirExpr::StructGet { base, .. } => walk_expr(base, out),
             // Leaves: no nested closure-arity references.
             WirExpr::ConstI64(_)
             | WirExpr::ConstF64(_)
@@ -353,13 +414,18 @@ fn collect_clos_arities(seq: &WirSeq, out: &mut Vec<usize>) {
             | WirExpr::StrPtr(_)
             | WirExpr::MemorySize
             | WirExpr::GetLocal(_)
-            | WirExpr::GetGlobal(_) => {}
+            | WirExpr::GetGlobal(_)
+            | WirExpr::RefNull(_) => {}
         }
     }
     fn walk_node(node: &WirNode, out: &mut Vec<usize>) {
         match node {
             WirNode::SetLocal { value, .. } | WirNode::SetGlobal { value, .. } => {
                 walk_expr(value, out)
+            }
+            WirNode::StructSet { base, value, .. } => {
+                walk_expr(base, out);
+                walk_expr(value, out);
             }
             WirNode::Store { ptr, value, .. } | WirNode::Store8 { ptr, value, .. } => {
                 walk_expr(ptr, out);
@@ -409,6 +475,15 @@ struct EncodeCtx<'a> {
     global_index: &'a HashMap<&'a str, u32>,
     /// Closure arity -> `$clos{N}` type index (for `call_indirect`).
     clos_type_idx: &'a HashMap<usize, u32>,
+    /// (RFC-0005) Type-section index where GC struct types begin; a struct opcode's
+    /// `struct_id` resolves to `struct_base + struct_id`. Also the boundary below
+    /// which type indices are unshifted (the reserved clos band).
+    struct_base: u32,
+    /// (RFC-0005) How far the non-clos function-signature indices are shifted up to
+    /// make room for the struct types (`= structs.len()`). A `call_indirect` type
+    /// index at sig-position `pos` resolves to `pos` if `pos < struct_base`, else
+    /// `pos + struct_shift`.
+    struct_shift: u32,
     /// Names of enclosing Block/Loop frames, innermost LAST.
     label_stack: Vec<String>,
 }
@@ -466,6 +541,9 @@ impl EncodeCtx<'_> {
                     Kind::I32 => Instruction::I32Store(mem),
                     Kind::I64 => Instruction::I64Store(mem),
                     Kind::F64 => Instruction::F64Store(mem),
+                    Kind::ExternRef | Kind::GcRef(_) => {
+                        unreachable!("reference-typed values are not stored to linear memory")
+                    }
                 };
                 func.instruction(&instr);
             }
@@ -513,7 +591,7 @@ impl EncodeCtx<'_> {
             } => {
                 self.encode_expr(func, cond);
                 let bt = match result {
-                    Some(t) => BlockType::Result(val_type(t.kind())),
+                    Some(t) => BlockType::Result(val_type(t.kind(), self.struct_base)),
                     None => BlockType::Empty,
                 };
                 func.instruction(&Instruction::If(bt));
@@ -535,7 +613,7 @@ impl EncodeCtx<'_> {
                 body,
             } => {
                 let bt = match result {
-                    Some(t) => BlockType::Result(val_type(t.kind())),
+                    Some(t) => BlockType::Result(val_type(t.kind(), self.struct_base)),
                     None => BlockType::Empty,
                 };
                 func.instruction(&Instruction::Block(bt));
@@ -577,6 +655,14 @@ impl EncodeCtx<'_> {
             }
             WirNode::Unreachable => {
                 func.instruction(&Instruction::Unreachable);
+            }
+            WirNode::StructSet { struct_id, field, base, value } => {
+                self.encode_expr(func, base);
+                self.encode_expr(func, value);
+                func.instruction(&Instruction::StructSet {
+                    struct_type_index: self.struct_base + struct_id,
+                    field_index: *field,
+                });
             }
         }
     }
@@ -680,6 +766,9 @@ impl EncodeCtx<'_> {
                     Kind::I32 => Instruction::I32Load(mem),
                     Kind::I64 => Instruction::I64Load(mem),
                     Kind::F64 => Instruction::F64Load(mem),
+                    Kind::ExternRef | Kind::GcRef(_) => {
+                        unreachable!("reference-typed values are not loaded from linear memory")
+                    }
                 };
                 func.instruction(&instr);
             }
@@ -726,13 +815,37 @@ impl EncodeCtx<'_> {
                     self.encode_expr(func, a);
                 }
                 self.encode_expr(func, index);
-                let type_index = *self.clos_type_idx.get(type_arity).unwrap_or_else(|| {
+                let pos = *self.clos_type_idx.get(type_arity).unwrap_or_else(|| {
                     panic!("call_indirect references unsynthesized $clos{type_arity}")
                 });
+                // Shift past the struct types for a sig outside the reserved band.
+                let type_index =
+                    if pos < self.struct_base { pos } else { pos + self.struct_shift };
                 func.instruction(&Instruction::CallIndirect { type_index, table_index: 0 });
             }
             WirExpr::Control(node) => self.encode_node(func, node),
             WirExpr::Seq(nodes) => self.encode_seq(func, nodes),
+            WirExpr::StructNew { struct_id, args } => {
+                for a in args {
+                    self.encode_expr(func, a);
+                }
+                func.instruction(&Instruction::StructNew(self.struct_base + struct_id));
+            }
+            WirExpr::StructGet { struct_id, field, base } => {
+                self.encode_expr(func, base);
+                func.instruction(&Instruction::StructGet {
+                    struct_type_index: self.struct_base + struct_id,
+                    field_index: *field,
+                });
+            }
+            WirExpr::RefNull(kind) => {
+                let heap = match kind {
+                    Kind::ExternRef => HeapType::EXTERN,
+                    Kind::GcRef(id) => HeapType::Concrete(self.struct_base + id),
+                    _ => unreachable!("RefNull of a non-reference kind {kind:?}"),
+                };
+                func.instruction(&Instruction::RefNull(heap));
+            }
         }
     }
 }
@@ -744,6 +857,11 @@ fn to_slot_instr(kind: Kind) -> Option<Instruction<'static>> {
         Kind::I64 => None,
         Kind::I32 => Some(Instruction::I64ExtendI32S),
         Kind::F64 => Some(Instruction::I64ReinterpretF64),
+        // (RFC-0005) A reference cannot be boxed into the i64 slot (no bit-pattern);
+        // the crossing is a `typeck` reject (§4.4), so this is unreachable.
+        Kind::ExternRef | Kind::GcRef(_) => {
+            unreachable!("cannot box a reference-typed value (a capability) into the i64 slot")
+        }
     }
 }
 
@@ -754,6 +872,9 @@ fn from_slot_instr(kind: Kind) -> Option<Instruction<'static>> {
         Kind::I64 => None,
         Kind::I32 => Some(Instruction::I32WrapI64),
         Kind::F64 => Some(Instruction::F64ReinterpretI64),
+        Kind::ExternRef | Kind::GcRef(_) => {
+            unreachable!("cannot recover a reference-typed value (a capability) from the i64 slot")
+        }
     }
 }
 
@@ -763,6 +884,7 @@ fn const_zero(kind: Kind) -> Instruction<'static> {
         Kind::I32 => Instruction::I32Const(0),
         Kind::I64 => Instruction::I64Const(0),
         Kind::F64 => Instruction::F64Const(0.0.into()),
+        Kind::ExternRef | Kind::GcRef(_) => unreachable!("no `.const 0` for a reference kind"),
     }
 }
 
@@ -772,6 +894,7 @@ fn const_neg_one(kind: Kind) -> Instruction<'static> {
         Kind::I32 => Instruction::I32Const(-1),
         Kind::I64 => Instruction::I64Const(-1),
         Kind::F64 => Instruction::F64Const((-1.0).into()),
+        Kind::ExternRef | Kind::GcRef(_) => unreachable!("no `.const -1` for a reference kind"),
     }
 }
 

@@ -1,7 +1,7 @@
 ---
 rfc: 0005-impl
 title: Externref capability core — implementation design (companion to RFC-0005)
-status: planned
+status: in-progress
 created: 2026-07-03
 tracking: rfcs/0005-unforgeable-capabilities.md
 ---
@@ -431,3 +431,58 @@ body; `status: design → planned`.
 **Post-revision verdict.** Approvable. Stage 1 (infra, no behavior change) may
 begin now that BUG-009 has landed; the cut still queues behind the
 language-surface work by priority, not by any missing prerequisite.
+
+## Implementation status (2026-07-05)
+
+`status: planned → in-progress`. Stage 1 (infra) and the §4.4 Slot-boundary reject
+have LANDED, green on both backends (728 differential tests + the crate suites).
+Stage 2 (File end-to-end) is scoped and de-risked but NOT started — it is a single
+coordinated ABI cut with no safe partial (see below).
+
+**Landed (branch `rfc-0005-externref-stage1`):**
+- **WIR infra (§4.1), no behavior change.** `Kind::ExternRef` / `Kind::GcRef(u32)`
+  and `WirTy::Extern` / `WirTy::GcRef`; `WirStructDef` + `StructNew`/`StructGet`
+  (WirExpr), `StructSet` (WirNode), `RefNull(Kind)`; a `wir_encode` type section
+  that emits GC struct defs and wires `struct.new`/`get`/`set` + `ref.null`. The
+  encoder lays struct types right after the reserved `$clos{N}` band (indices
+  `0..=MAX_CLOS`) and before the other function signatures, shifting non-clos sig
+  indices up by `structs.len()` — GC recursion-group scoping forbids a *forward*
+  reference across singleton type defs, so a `GcRef`-param function must follow
+  its struct. `encode` gained a `structs: &[WirStructDef]` argument; every current
+  caller passes `&[]`, so struct-free modules (the whole production path) encode
+  byte-identically. A round-trip test builds a `{externref, i64}` struct + a
+  function carrying both `externref` and `(ref null $0)` params + all four opcodes
+  and validates/executes it in wasmtime (GC + function-references enabled).
+- **`carries_cap` classification (§3) + i64 Slot-boundary reject (§4.4/§7).**
+  `carries_externref_cap` (typeck) resolves whether a type transitively holds a
+  migrated-to-externref capability, recursing through user `type`/`capability`
+  declarations with a cycle guard. `reject_cap_slot_boundary` refuses a migrated
+  capability wrapped in `Option`/`Result`/`List`/`Dict` (the slot-boxed forms),
+  wired into `check_type_names` over params, returns, and record fields. A bare
+  capability param/return is allowed (stays an `externref`); a capability in a
+  record/tuple field is allowed (the GC-struct aggregate path, §4.2). The migrated
+  set is a single seam, `is_externref_cap` — currently `{File}` — that widens per
+  stage; sibling caps on the i32 path (e.g. `std/secretstore.get -> Option(Secret)`)
+  still type-check.
+
+**Not started — Stage 2 (File end-to-end) and why it is one atomic cut.** The
+File ABI cannot be half-i32-half-externref: a File value originates from a `--file`
+`main` param (baked as `ConstI32` in the run wrapper, `assembly.rs`) AND from
+`dir.open`/`dir.create` (i32-returning imports), and is consumed by `file_read`/
+`file_write` — all naming the same representation. Migrating File therefore means,
+in lockstep: (a) `file_read`/`file_write` host imports + their WIR helpers take an
+`externref` and downcast to the backing `PathBuf` grant; (b) `dir_open`/`dir_create`
+return an `externref`; (c) the `run` wrapper takes File params as `externref`
+parameters instead of `ConstI32` — which **changes the `run` export signature**,
+reaching `Vm::run` and the second run site (`crates/witchy-runtime/src/runtime.rs`
+lines 347 and 2380, both `get_typed_func::<(), ()>`), which must mint the
+externrefs from `VmState.files` and pass them positionally via `Func::call`/
+`Val::ExternRef`; (d) any File that flows into an RFC-0040 cap-gated `__export_*`
+wrapper changes that export's signature too, reaching the browser shim
+(`projects/coven-web/web/sandbox-src/source-sandbox.js`, which binds
+`__export_export_render`) and glamour's export glue. (e) The host keeps an
+**identity-keyed ownership anchor** — a `ManuallyRooted<ExternRef>` per minted File
+(§8.9) — so the grant does not dangle once its `RootScope` ends. Dir/Net/Secret/
+Exec/Socket/Listener stay on the i32 path (temporary two-mode mint) until Stage 3.
+Verified (2026-07-05) that the export-surface change (c/d) is real; there is no
+additive slice, so it is deferred to a dedicated run rather than landed half-cut.
