@@ -45,7 +45,10 @@ pub fn yank_of(doc: Json) -> YankRequest:
 
 // The wire source is {"source":{"files":[[path,text],...]}} (matches SourceDto).
 fn source_files(doc: Json) -> List((String, String)):
-    let files = json.get(doc, "source").and_then(fn(src: Json): json.get(src, "files")).and_then(fn(a: Json): json.as_array(a)).unwrap_or([])
+    let files = json.get(doc, "source")
+        .and_then(fn(src: Json): json.get(src, "files"))
+        .and_then(fn(a: Json): json.as_array(a))
+        .unwrap_or([])
     list.map(files, file_pair)
 
 fn file_pair(it: Json) -> (String, String):

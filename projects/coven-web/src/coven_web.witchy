@@ -121,20 +121,11 @@ fn main(console: Console, net: Net, assets: Dir, secrets: SecretStore, clock: Cl
     server.serve(net, listen_addr, app)
 
 // ---- Static assets ----------------------------------------------------------
-
 fn h_index_html(assets: Dir) -> fn(Request) -> Response:
-    fn(req: Request):
-        if exists(assets, "index.html"):
-            server.html(200, read(assets, "index.html"))
-        else:
-            server.not_found()
+    fn(req: Request): if exists(assets, "index.html"): server.html(200, read(assets, "index.html")) else: server.not_found()
 
 fn h_asset(assets: Dir, file: String, ctype: String) -> fn(Request) -> Response:
-    fn(req: Request):
-        if exists(assets, file):
-            Response(200, [("content-type", ctype)], read(assets, file))
-        else:
-            server.not_found()
+    fn(req: Request): if exists(assets, file): Response(200, [("content-type", ctype)], read(assets, file)) else: server.not_found()
 
 // ---- The double-iframe sandbox bootstrap ------------------------------------
 // Served from a real same-origin URL so it gets its OWN CSP (sandbox CSP with
@@ -149,7 +140,6 @@ fn sandbox_bootstrap() -> String:
     "<!doctype html><html><head><meta charset='utf-8'></head><body><script>if(window.origin!=='null'){document.body.textContent='This page must be loaded inside a sandboxed iframe.';}else{var d=document.documentElement.style;d.margin='0';d.height='100%';d.background='#0f0b16';document.body.style.margin='0';document.body.style.height='100%';window.addEventListener('message',function h(e){if(e.source!==window.parent)return;if(!e.data||e.data.type!=='init'||!e.ports.length)return;window.removeEventListener('message',h);var port=e.ports[0];var f=document.createElement('iframe');f.setAttribute('sandbox','allow-scripts');f.style.cssText='width:100%;height:100%;border:0;display:block';f.addEventListener('load',function(){f.contentWindow.postMessage({type:'port'},'*',[port]);});f.srcdoc=e.data.html;document.body.appendChild(f);});}</script></body></html>"
 
 // ---- Reverse proxy ----------------------------------------------------------
-
 fn h_proxy(net: Net, upstream: String, base: String) -> fn(Request) -> Response:
     fn(req: Request):
         match req:
@@ -183,7 +173,6 @@ fn query_has_control(pairs: List((String, String))) -> Bool:
 // is unforgeable without it) over a Clock reading, and is single-use. The browser
 // hex-encodes the assertion's ArrayBuffers; the server re-derives and verifies
 // everything via `webauthn.verify_assertion` — trusting nothing from the client.
-
 fn wa_field(doc: Json, name: String) -> String:
     match json.get_string(doc, name):
         Some(s) -> s
@@ -250,7 +239,6 @@ fn wa_do_promote(store: Dir, net: Net, upstream: String, origin: String, rp_id: 
 // promote — it requires a fresh, single-use WebAuthn assertion verified server-side,
 // NOT merely a session. Mirrors h_wa_promote exactly (same credential + challenge +
 // single-use semantics), then forwards `{name, version}` to coven's yank.
-
 fn h_wa_yank(store: Dir, net: Net, upstream: String, origin: String, rp_id: String) -> fn(Request) -> Response:
     fn(req: Request):
         match server.json_body(req):
@@ -282,7 +270,6 @@ fn wa_do_yank(store: Dir, net: Net, upstream: String, origin: String, rp_id: Str
 // than a bearer, so a session alone can never change registry state. There is no
 // server-side session store — the token is self-authenticating (a mini-JWT), so
 // nothing to steal at rest and `--signing-key` rotation invalidates all sessions.
-
 fn session_ttl_ms() -> Int:
     1800000
 
@@ -336,7 +323,6 @@ fn wa_do_login(store: Dir, key: Secret, clock: Clock, origin: String, rp_id: Str
 // re-checks it, exchanges the code for an access token (std/oauth, over HTTPS), reads
 // the GitHub user, and mints the same self-authenticating bearer session a passkey
 // sign-in issues. The OAuth client secret is the store's `github_client_secret`.
-
 fn state_ttl_ms() -> Int:
     600000
 
@@ -393,8 +379,7 @@ fn h_github_login(key: Secret, clock: Clock, rand: Rand, gh_base: String, client
         server.with_header(server.redirect(url), "set-cookie", nonce_cookie(nonce))
 
 fn h_github_callback(net: Net, key: Secret, clock: Clock, secrets: SecretStore, gh_base: String, gh_api: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
-    fn(req: Request):
-        github_callback(net, key, clock, secrets, gh_base, gh_api, client_id, redirect_uri, server.query(req, "code"), server.query(req, "state"), cookie_nonce(req))
+    fn(req: Request): github_callback(net, key, clock, secrets, gh_base, gh_api, client_id, redirect_uri, server.query(req, "code"), server.query(req, "state"), cookie_nonce(req))
 
 fn github_callback(net: Net, key: Secret, clock: Clock, secrets: SecretStore, gh_base: String, gh_api: String, client_id: String, redirect_uri: String, code: String, state: String, expected_nonce: String) -> Response:
     if code == "" || !valid_state(key, clock, state, expected_nonce):
@@ -418,7 +403,6 @@ fn github_finish(net: Net, key: Secret, clock: Clock, gh_api: String, token: Str
 // Like GitHub, but the token endpoint returns an OIDC `id_token` (a JWT) whose signature
 // we verify against Google's published JWKS — read the user's `email` from the VERIFIED
 // claims, never from anything client-supplied. The issuer is the fixed well-known value.
-
 fn h_google_login(key: Secret, clock: Clock, rand: Rand, authorize_url: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
     fn(req: Request):
         let nonce = login_nonce(rand)
@@ -429,8 +413,7 @@ fn h_google_login(key: Secret, clock: Clock, rand: Rand, authorize_url: String, 
         server.with_header(server.redirect(url), "set-cookie", nonce_cookie(nonce))
 
 fn h_google_callback(net: Net, key: Secret, clock: Clock, secrets: SecretStore, token_url: String, jwks_url: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
-    fn(req: Request):
-        google_callback(net, key, clock, secrets, token_url, jwks_url, client_id, redirect_uri, server.query(req, "code"), server.query(req, "state"), cookie_nonce(req))
+    fn(req: Request): google_callback(net, key, clock, secrets, token_url, jwks_url, client_id, redirect_uri, server.query(req, "code"), server.query(req, "state"), cookie_nonce(req))
 
 fn google_callback(net: Net, key: Secret, clock: Clock, secrets: SecretStore, token_url: String, jwks_url: String, client_id: String, redirect_uri: String, code: String, state: String, expected_nonce: String) -> Response:
     if code == "" || !valid_state(key, clock, state, expected_nonce):
@@ -505,7 +488,6 @@ fn encode_query(pairs: List((String, String))) -> String:
     s
 
 // ---- Security headers (the `.layer()` middleware) ---------------------------
-
 fn security_headers() -> fn(fn(Request) -> Response) -> fn(Request) -> Response:
     fn(inner: fn(Request) -> Response):
         fn(req: Request):
@@ -542,11 +524,11 @@ fn sec_fetch_csrf() -> fn(fn(Request) -> Response) -> fn(Request) -> Response:
             if is_state_changing(server.method(req)):
                 match server.request_header(req, "sec-fetch-site"):
                     Some(site) -> if site == "same-origin": inner(req) else: server.forbidden("cross-site request refused")
-                    // Fail closed when absent (SEC-020): a browser always sends sec-fetch-site,
-                    // so a missing header is a non-browser client — which must opt in explicitly
-                    // (`Sec-Fetch-Site: same-origin`) rather than silently bypassing CSRF defense.
                     None -> server.forbidden("missing sec-fetch-site on a state-changing request")
             else:
+                // Fail closed when absent (SEC-020): a browser always sends sec-fetch-site,
+                // so a missing header is a non-browser client — which must opt in explicitly
+                // (`Sec-Fetch-Site: same-origin`) rather than silently bypassing CSRF defense.
                 inner(req)
 
 fn is_state_changing(method: String) -> Bool:
@@ -561,25 +543,15 @@ fn with_headers(resp: Response, hs: List((String, String))) -> Response:
 
 fn headers_for(p: String) -> List((String, String)):
     let xfo = if p == "/sandbox-frame": "SAMEORIGIN" else: "DENY"
-    [("content-security-policy", csp_for(p)),
-     ("x-content-type-options", "nosniff"),
-     ("x-frame-options", xfo),
-     ("referrer-policy", "no-referrer"),
-     // HARD INVARIANT — strict cross-origin isolation on EVERY response, never relax:
-     // COOP same-origin + COEP require-corp + CORP same-origin (the strictest standard
-     // values) => a cross-origin-isolated, own-process document (anti-Spectre) and the
-     // strongest iframe isolation. DIP isolate-and-require-corp reinforces it.
-     ("cross-origin-opener-policy", "same-origin"),
-     ("cross-origin-embedder-policy", "require-corp"),
-     ("cross-origin-resource-policy", "same-origin"),
-     ("document-isolation-policy", "isolate-and-require-corp"),
-     ("permissions-policy", permissions_policy()),
-     ("x-permitted-cross-domain-policies", "none"),
-     // SEC-014: pin this origin to HTTPS (the fronting TLS proxy terminates it). Browsers
-     // ignore HSTS over plain HTTP, so sending it always is safe and upgrades the rest.
-     ("strict-transport-security", "max-age=31536000; includeSubDomains; preload"),
-     ("cache-control", "no-store")]
+    [("content-security-policy", csp_for(p)), ("x-content-type-options", "nosniff"), ("x-frame-options", xfo), ("referrer-policy", "no-referrer"), ("cross-origin-opener-policy", "same-origin"), ("cross-origin-embedder-policy", "require-corp"), ("cross-origin-resource-policy", "same-origin"), ("document-isolation-policy", "isolate-and-require-corp"), ("permissions-policy", permissions_policy()), ("x-permitted-cross-domain-policies", "none"), ("strict-transport-security", "max-age=31536000; includeSubDomains; preload"), ("cache-control", "no-store")]
 
+// HARD INVARIANT — strict cross-origin isolation on EVERY response, never relax:
+// COOP same-origin + COEP require-corp + CORP same-origin (the strictest standard
+// values) => a cross-origin-isolated, own-process document (anti-Spectre) and the
+// strongest iframe isolation. DIP isolate-and-require-corp reinforces it.
+
+// SEC-014: pin this origin to HTTPS (the fronting TLS proxy terminates it). Browsers
+// ignore HSTS over plain HTTP, so sending it always is safe and upgrades the rest.
 fn csp_for(p: String) -> String:
     if p == "/sandbox-frame":
         sandbox_csp()
