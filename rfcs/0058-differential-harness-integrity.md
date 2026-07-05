@@ -1,7 +1,7 @@
 ---
 rfc: 0058
 title: "Differential-testing harness integrity: make the parity gate able to fail"
-status: proposed
+status: implemented
 created: 2026-07-04
 related:
   - "0001 (the parity prime directive this harness exists to enforce)"

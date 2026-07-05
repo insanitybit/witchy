@@ -1,7 +1,7 @@
 ---
 rfc: 0053
 title: "One rendering system: interpolation and say through Show"
-status: proposed
+status: partially-implemented (blanket-Show slice shipped; interpolation flip pending)
 created: 2026-07-03
 predecessors:
   - "0046 (typed trait dispatch — the bounded-impl and site-typing machinery this consumes)"
