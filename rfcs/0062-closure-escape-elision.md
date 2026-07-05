@@ -1,9 +1,9 @@
 ---
 rfc: 0062
 title: Closure escape elision — closures that don't escape don't allocate
-status: proposed
+status: accepted
 created: 2026-07-04
-tracking:
+tracking: tier-1 implemented (WITCHY_OPT=closure-elide, opt-in); tiers 2/3 unchanged
 ---
 
 # RFC-0062: Closure escape elision — closures that don't escape don't allocate
@@ -130,3 +130,79 @@ Constraints and properties:
   analysis as used by GC'd languages to stack-allocate non-escaping closures.
 - RFC-0059 (removes the executor's manufactured escaping closures; the
   complement of this RFC), RFC-0050 Part 2 (eta-expansion, tier-1 consumer).
+
+## Implementation status (tier 1 shipped)
+
+Tier 1 is implemented behind `WITCHY_OPT=closure-elide` (opt-in, `release ==
+all` minus this lever, mirroring how `rc-floor`/`unbox` began before their
+hardening bars). Tiers 2 (escaping-but-unique reuse) and 3 (escaping shared)
+are today's behavior, unchanged.
+
+**Classification (general, default-deny).** Two facts, both keyed on the
+escape/uniqueness oracle — no blessed-function list, no per-method code:
+
+- `escape::only_directly_called(body)` — the non-escape fact: names used ONLY
+  as a direct-call callee (`Call` head / `Apply` `Var` func), never as a whole
+  value (arg, store, return), never referenced inside a nested closure body (a
+  capture). Any other occurrence disqualifies the name.
+- `escape::reassigned_names(body)` — the capture-stability guard: eliding the
+  env threads captures at the CALL site, not the creation site, so a capture
+  reassigned in between (the interpreter snapshots at creation) forces the
+  boxed closure.
+
+A `let f = <lambda>` is tier-1 iff it is single-bound (`devirt_ok`, the
+existing DirectCall census), in `only_directly_called`, and no capture is
+reassigned. Anything unprovable → boxed (tiers 2/3).
+
+**Lowering (three tiers).**
+
+1. *Non-escaping* (tier 1): `lower_lambda_threaded` registers a THREADED lifted
+   body `$__lamt{i}` (`CapMode::Threaded`: captures are leading value params, no
+   env pointer) and records the capture list in `thread_index`. The `let`
+   emits NOTHING — no `mk{n}` env allocation. Each call site (both the
+   closure-local `Call` arm and the `Apply` arm) threads the captures from
+   their locals into a direct `call $__lamt{i}(cap0.., args)`.
+2. *Escaping, unique*: unchanged (RC-floor already reclaims a confined env at
+   last use); no new per-case helper added.
+3. *Escaping, shared*: unchanged — `mk{n}` env + `call_indirect`/`$__lamw`.
+
+**Firing proof (shape tests, `codegen_tests`).** `elides_nonescaping_closure_env`
+asserts the canonical tier-1 site emits NO `mk{n}` and a `$__lamt` direct call
+(and, with the lever off, reverts to `mk1` + `$__lamw`); `keeps_env_for_escaping_closure`
+asserts a closure passed as an argument KEEPS its `mk1` env under the lever
+(default-deny); `elided_closure_matches_boxed_output` asserts identical output
+elided vs boxed.
+
+**Benchmarks (kernel-timed, best of 7, release binary).** The win scales with
+allocation frequency:
+
+| benchmark | shape | shipping (wasm-opt on) OFF→ON | raw codegen (wasm-opt off) OFF→ON |
+|---|---|---|---|
+| `closure_capture` | capturing closure created PER ITERATION (5M) | 11.45ms → 3.77ms (**3.0×**) | 23.65ms → 5.10ms (**4.6×**) |
+| `closure_calls` | non-capturing, created once | 3.50ms → 3.54ms (~noise) | 4.45ms → 4.31ms (~3%) |
+| `closure_pipeline` | map/filter/reduce over 200k, closures created once | 0.19ms → 0.18ms (~noise) | — |
+
+Heap proof (`witchy stats`, region off so allocations accumulate): a 100k-iter
+per-iteration-closure loop drops `heap_bytes` from **2,000,069 → 69** with the
+lever on — the environment allocation is gone entirely.
+
+The loop-invariant cases (`closure_calls`, `closure_pipeline`) show only a
+marginal win because their single env allocation is hoisted out of the loop and
+Binaryen's inliner already dissolves the per-call env load in the shipping
+pipeline. The dramatic win is the *per-iteration* closure, exactly the
+ephemeral shape the RFC targets ("an environment whose entire life is one
+callee invocation").
+
+**Parity.** The interpreter is unchanged; allocation strategy is unobservable.
+The differential sweep runs `closure-elide` both alone and in the union
+(`CONFIGS` in `differential_fuzz.rs`); the heap-checked fuzz (60 programs × 6
+configs) is green, exercising escaping closures under the lever (they stay
+boxed, matching the interpreter).
+
+**Punted.** Tier-1 does not reach closures that cross a function boundary into
+a non-inlined stdlib combinator (`list.map`, `iter.map`/`filter`/`fold`): the
+call happens inside the callee via `call_indirect`, and `iter`'s stage closures
+are stored into `Iter`/`Step` records (escaping by construction). Eliding those
+needs closure specialization / a general inliner, out of scope here (see
+*Alternatives*). Tier-2 in-place env reuse is left to the existing RC-floor
+reclamation rather than a new closure-specific path.
