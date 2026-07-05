@@ -224,6 +224,15 @@ pub struct Param {
     pub name: String,
     pub ty: Option<Type>,
     pub convention: Convention,
+    /// (RFC-0056) A closed-constant default value: `port: Int = 443`. Omitting
+    /// this argument at a *direct* call site splices the default in. `None` for a
+    /// required parameter. Defaults never enter the function's type or value — a
+    /// function value ignores them — so `crate::keyword_args::resolve` erases them
+    /// (splices the constant) before typeck or either backend sees the call
+    /// (parity by construction). A `var` parameter may not carry one (there is no
+    /// caller variable to write back), and a defaulted parameter must be a suffix
+    /// of the list.
+    pub default: Option<Expr>,
 }
 
 /// Hylo-style parameter passing conventions (mutable value semantics).
@@ -379,6 +388,19 @@ pub enum Expr {
     Var(String),
     /// A call to a named function: `f(a, b)`.
     Call { name: String, args: Vec<Expr> },
+    /// (RFC-0056) A *direct* call whose arguments carry keyword labels:
+    /// `substring(s, start: 2, end: 7)`. A positional argument has label `None`;
+    /// a labeled one carries `Some(param_name)`. Produced by the parser ONLY when
+    /// at least one argument is labeled (an all-positional call stays `Call`).
+    /// `crate::keyword_args::resolve` rewrites it — validating and reordering the
+    /// arguments against the callee's declared parameter list, binding each written
+    /// argument to a temp in SOURCE order to preserve evaluation order, and
+    /// splicing any defaults — into a positional `Call` (optionally wrapped in a
+    /// temp-binding `Block`), so labels never reach typeck or either backend
+    /// (parity by construction). Labels are a property of the *declaration*, not of
+    /// a function value: only calls with a statically-known callee may carry them
+    /// (method calls and value calls may not — the parser rejects those).
+    LabeledCall { name: String, args: Vec<(Option<String>, Expr)> },
     /// `receiver.method(args)` — UFCS method-call sugar for `method(receiver,
     /// args)`. Kept as a node (rather than flattened at parse time) so the
     /// formatter can print it back; every other consumer lowers it via

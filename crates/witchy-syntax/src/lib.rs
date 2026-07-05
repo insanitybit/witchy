@@ -21,6 +21,7 @@ pub mod doc;
 pub mod fmt;
 pub mod format;
 pub mod generators;
+pub mod keyword_args;
 pub mod lambda_scan;
 pub mod lexer;
 pub mod linker;

@@ -151,6 +151,7 @@ fn lower_gen(f: Function, method: Option<&MethodCtx>) -> (Function, Function) {
         name: TARGET.to_string(),
         ty: Some(Type::Named("Int".to_string(), vec![])),
         convention: Convention::Let,
+        default: None,
     });
     // For an impl method the receiver `self` is unannotated after parsing (the
     // trait/impl pass types it later, but that pass never sees this hoisted
@@ -197,6 +198,7 @@ fn lower_gen(f: Function, method: Option<&MethodCtx>) -> (Function, Function) {
             name: TARGET.to_string(),
             ty: Some(Type::Named("Int".to_string(), vec![])),
             convention: Convention::Let,
+            default: None,
         }],
         body: Block {
             stmts: vec![Stmt::Expr(Expr::Call { name: helper_name, args: forwarded })],

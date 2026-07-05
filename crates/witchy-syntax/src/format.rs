@@ -992,6 +992,19 @@ fn expr(e: &Expr) -> String {
             };
             format!("{name}({})", comma(args))
         }
+        // (RFC-0056) A labeled direct call — print each argument as written,
+        // `label: value` for the labeled ones (unlowered; the formatter never
+        // links, so it keeps the source shape like it does for `Expr::Record`).
+        Expr::LabeledCall { name, args } => {
+            let parts: Vec<String> = args
+                .iter()
+                .map(|(label, v)| match label {
+                    Some(l) => format!("{l}: {}", expr(v)),
+                    None => expr(v),
+                })
+                .collect();
+            format!("{name}({})", parts.join(", "))
+        }
         Expr::MethodCall { receiver, method, args } => {
             format!("{}.{method}({})", operand(receiver, POSTFIX_PREC, false), comma(args))
         }
