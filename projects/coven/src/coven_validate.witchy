@@ -9,16 +9,36 @@ import string
 pub fn unwire(n: String) -> String:
     list.join(string.split(n, "~"), "/")
 
-// `namespace/name`, lowercase, exactly one `/`, no `..` traversal.
+// `namespace/name`: exactly one `/`, each segment a non-empty run of the URL-safe
+// charset `[a-z0-9-]` (lowercase ASCII letters, digits, hyphen). The charset alone
+// forbids `..` traversal, an embedded `/`, uppercase, and any URL-unsafe byte — a name
+// is a path segment and a URL path component, so it must be safe as both.
 pub fn valid_name(name: String) -> Bool:
-    if string.contains(name, "..") || string.starts_with(name, "/"):
+    match split_once_opt(name, "/"):
+        Some(parts) ->
+            let (ns, nm) = parts
+            valid_segment(ns) && valid_segment(nm)
+        None -> false
+
+// A single name segment: non-empty and every character in the safe charset `[a-z0-9-]`.
+fn valid_segment(s: String) -> Bool:
+    if string.is_empty(s):
         false
     else:
-        match split_once_opt(name, "/"):
-            Some(parts) ->
-                let (ns, nm) = parts
-                !string.is_empty(ns) && !string.is_empty(nm) && !string.contains(nm, "/")
-            None -> false
+        var ok = true
+        for ch in string.chars(s):
+            if !is_name_char(ch):
+                ok = false
+        ok
+
+fn is_name_char(ch: String) -> Bool:
+    ch == "-" || is_digit(ch) || is_lower(ch)
+
+// A single ASCII lowercase letter: it lowercases to itself yet is changed by
+// uppercasing (which digits, `-`, and non-ASCII bytes are not). ASCII-only, matching
+// the byte-wise case folding of `string.to_upper`/`to_lower`.
+fn is_lower(ch: String) -> Bool:
+    string.to_lower(ch) == ch && string.to_upper(ch) != ch
 
 fn split_once_opt(s: String, sep: String) -> Option((String, String)):
     if string.contains(s, sep):
@@ -34,7 +54,9 @@ fn split_once_opt(s: String, sep: String) -> Option((String, String)):
 pub fn single_line(s: String) -> Bool:
     !string.contains(s, "\n")
 
-// A version is strict `major.minor.patch` — digits and dots only (no traversal).
+// A version is strict `major.minor.patch` — exactly three digit-only components, each
+// non-empty and without a redundant leading zero (`0` is fine, `01` is not), so a
+// version has one canonical form and `01.2.3` cannot masquerade as `1.2.3`.
 pub fn valid_version(version: String) -> Bool:
     let parts = string.split(version, ".")
     if list.length(parts) != 3:
@@ -42,9 +64,13 @@ pub fn valid_version(version: String) -> Bool:
     else:
         var ok = true
         for p in parts:
-            if string.is_empty(p) || !all_digits(p):
+            if string.is_empty(p) || !all_digits(p) || has_leading_zero(p):
                 ok = false
         ok
+
+// A numeric component with a redundant leading zero (`0` alone is allowed).
+fn has_leading_zero(p: String) -> Bool:
+    string.length(p) > 1 && string.starts_with(p, "0")
 
 fn all_digits(s: String) -> Bool:
     var ok = !string.is_empty(s)
