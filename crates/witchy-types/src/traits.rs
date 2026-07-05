@@ -136,6 +136,17 @@ pub fn lower_for_wasm(module: Module) -> Module {
     lower_with(module, true).0
 }
 
+/// Start a mono-phase profiling timer, but ONLY when `WITCHY_DEBUG_MONO_TIMING`
+/// is set (the same gate the matching `eprintln!`s use). Returns `None`
+/// otherwise, so the timestamp is never taken on the hot path — and, crucially,
+/// never on `wasm32-unknown-unknown`, where `std::time::Instant::now()` panics
+/// ("time not implemented on this platform"). The in-browser playground compiles
+/// through `lower_with`, so an unconditional timer there traps compilation of
+/// every program (BUG-015).
+fn mono_timing_start() -> Option<std::time::Instant> {
+    std::env::var_os("WITCHY_DEBUG_MONO_TIMING").map(|_| std::time::Instant::now())
+}
+
 fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     // Expand type aliases and inline module-level constants first (a no-op once
     // the linker has done so, but covers single-module paths like `check_str`).
@@ -369,9 +380,9 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             import_lines: Vec::new(),
             item_lines: Vec::new(),
         };
-        let __t = std::time::Instant::now();
+        let __t = mono_timing_start();
         let t = crate::typeck::annotate(&probe);
-        if std::env::var_os("WITCHY_DEBUG_MONO_TIMING").is_some() {
+        if let Some(__t) = __t {
             eprintln!("annotate first_table: items={} took={:?}", probe.items.len(), __t.elapsed());
         }
         (probe.items, t)
@@ -463,7 +474,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                 table: &table,
                 skip_walk: &no_fallback,
             };
-            let __t_mono = std::time::Instant::now();
+            let __t_mono = mono_timing_start();
             mono.run(&mut items);
             memo = std::mem::take(&mut mono.memo);
             mono_diags = std::mem::take(&mut mono.diagnostics);
@@ -471,7 +482,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             drop(mono);
             let progressed = !generated.is_empty();
             any_generated |= progressed;
-            if std::env::var_os("WITCHY_DEBUG_MONO_TIMING").is_some() {
+            if let Some(__t_mono) = __t_mono {
                 eprintln!(
                     "mono round {round}: items={} generated={} mono_walk={:?}",
                     items.len(), generated.len(), __t_mono.elapsed()
@@ -493,9 +504,9 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                 import_lines: Vec::new(),
                 item_lines: Vec::new(),
             };
-            let __t = std::time::Instant::now();
+            let __t = mono_timing_start();
             table = crate::typeck::annotate(&probe);
-            if std::env::var_os("WITCHY_DEBUG_MONO_TIMING").is_some() {
+            if let Some(__t) = __t {
                 eprintln!("annotate round {round}: items={} took={:?}", probe.items.len(), __t.elapsed());
             }
             items = probe.items;
@@ -515,9 +526,9 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                 import_lines: Vec::new(),
                 item_lines: Vec::new(),
             };
-            let __t = std::time::Instant::now();
+            let __t = mono_timing_start();
             type_table = crate::typeck::annotate(&probe);
-            if std::env::var_os("WITCHY_DEBUG_MONO_TIMING").is_some() {
+            if let Some(__t) = __t {
                 eprintln!("annotate final: items={} took={:?}", probe.items.len(), __t.elapsed());
             }
             items = probe.items;
