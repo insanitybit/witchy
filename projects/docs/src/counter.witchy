@@ -2,7 +2,6 @@
 // no capability and emits no effect, so it needs no network and no timer. The docs page mounts
 // it with the SAME `glamour-dom` runtime that drives the book itself, with `UiFetch` denied —
 // proof that a live glamour app runs in the docs with authority withheld by construction.
-
 import glamour
 import json
 
@@ -17,7 +16,12 @@ type Msg:
 fn view(m: Model) -> VNode(Msg):
     match m:
         Model(n) ->
-            glamour.element("div", [glamour.prop("class", "counter-demo")], [glamour.element("button", [glamour.prop("class", "counter-btn"), glamour.on("click", Dec)], [glamour.text("−")]), glamour.element("span", [glamour.prop("class", "counter-value")], [glamour.text("${n}")]), glamour.element("button", [glamour.prop("class", "counter-btn"), glamour.on("click", Inc)], [glamour.text("+")]), glamour.element("button", [glamour.prop("class", "counter-reset"), glamour.on("click", Reset)], [glamour.text("reset")])])
+            glamour.element("div", [glamour.prop("class", "counter-demo")], [
+                glamour.element("button", [glamour.prop("class", "counter-btn"), glamour.on("click", Dec)], [glamour.text("−")]),
+                glamour.element("span", [glamour.prop("class", "counter-value")], [glamour.text("${n}")]),
+                glamour.element("button", [glamour.prop("class", "counter-btn"), glamour.on("click", Inc)], [glamour.text("+")]),
+                glamour.element("button", [glamour.prop("class", "counter-reset"), glamour.on("click", Reset)], [glamour.text("reset")]),
+            ])
 
 fn update(m: Model, msg: Msg) -> (Model, Cmd(Msg)):
     match m:

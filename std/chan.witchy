@@ -24,14 +24,14 @@
 // `await chan.send(tx, x)`) run on the same protocol.
 
 import option
-from task import Task, Step, Slot, Handle
-
 // (RFC-0042) The async effect (`Step`), the `Task` monad, and the executor's
 // `Slot`/`Handle` are ONE type each, owned by `std/task` (the executor lives
 // there). `chan` produces the channel effects (`Open`/`Push`/`Pull`) as values of
 // task's `Step`, so a channel `Task` and an `async fn`'s `Task` are the SAME type
 // and interoperate. Previously each module re-declared these identically and the
 // flat namespace merged them; module-scoped types make that reuse explicit.
+from task import Task, Step, Slot, Handle
+
 fn poll(t: Task(a)) -> Step(a):
     match t:
         Task(th) -> th()
@@ -328,6 +328,7 @@ pub fn serve(rx: Receiver(m), state: s, handler: fn(s, m) -> Task(s)) -> Task(Ni
 
 // A scheduling slot is task's `Slot` (from-imported above): running, parked on a
 // channel recv/send or on a join, or done.
+
 fn is_live(s: Slot) -> Bool:
     match s:
         Ended -> false

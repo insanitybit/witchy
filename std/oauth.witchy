@@ -8,10 +8,10 @@
 // signs before the redirect and re-checks on the callback — bind it to the session.
 
 import http
+from json import Json
 import url
 import option
 import result
-from json import Json
 
 // The provider authorization-endpoint URL to redirect the user to. After the user
 // approves, the provider redirects to `redirect_uri?code=...&state=...`. `scope` is the

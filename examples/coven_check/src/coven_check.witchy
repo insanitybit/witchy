@@ -9,6 +9,7 @@
 
 import toml
 import compiler
+import json
 import string
 import rights
 from json import Json

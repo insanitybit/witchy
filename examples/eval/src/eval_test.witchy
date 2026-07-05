@@ -2,8 +2,8 @@
 // returning, and fails by aborting (the `testing` assertions do that with a
 // message). Run them with `witchy test examples/eval`.
 
-import testing
 from eval import Expr
+import testing
 
 fn test_literal():
     testing.assert_int_eq(eval.eval(Num(7)), 7)

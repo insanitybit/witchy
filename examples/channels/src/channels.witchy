@@ -6,6 +6,7 @@
 // Run:  witchy examples/channels.witchy
 //       witchy parity examples/channels.witchy
 
+import chan
 from chan import Receiver, Sender
 
 async fn producer(tx: Sender(Int)) -> Nil:

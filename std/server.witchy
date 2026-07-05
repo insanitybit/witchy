@@ -14,10 +14,10 @@
 //       .layer(logging(console))
 //   server.serve(net, "127.0.0.1:8080", app)
 
-import option
-import reflect
 from http import Request, Response
+import option
 from json import Json
+import reflect
 
 // ---- Request accessors ----
 pub fn method(req: Request) -> String:

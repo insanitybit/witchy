@@ -8,6 +8,7 @@
 // Run: witchy --net 127.0.0.1:8080 examples/serve_static.witchy
 
 from http import Request, Response
+import server
 from server import Router
 
 fn file_server(dir: Dir) -> fn(Request) -> Response:

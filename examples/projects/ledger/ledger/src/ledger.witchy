@@ -1,4 +1,5 @@
 import money
+import chan
 from chan import Receiver, Sender
 
 // A bank account as a server task: its balance threads through `chan.serve`,

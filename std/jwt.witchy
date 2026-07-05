@@ -10,11 +10,11 @@
 
 import string
 import list
+from json import Json
 import crypto
 import encoding
 import option
 import math
-from json import Json
 
 // Verify an RS256 (RSASSA-PKCS1-v1_5 / SHA-256) compact JWT against a DER PKCS#1 RSA
 // public key (hex), checking the signature, `exp > now` (unix seconds), and

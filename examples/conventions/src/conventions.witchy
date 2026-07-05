@@ -1,4 +1,5 @@
 import list
+import chan
 from chan import Receiver, Sender
 
 fn bump(var n: Int):

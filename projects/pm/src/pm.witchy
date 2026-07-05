@@ -643,10 +643,7 @@ fn publish_checked(console: Console, net: Net, root: Dir, dir: String, manifest:
     let token = id_token_from_env(env)
     let resp = http.post(net, host, port, "/coven/publish", publish_body(manifest, files, identity, token))
     print(console, "publish: ${http.status(resp)} state=" + resp_field(http.body(resp), "state"))
-    if http.status(resp) >= 200 && http.status(resp) < 300:
-        0
-    else:
-        1
+    if http.status(resp) >= 200 && http.status(resp) < 300: 0 else: 1
 
 // Whether the manifest declares any path dependency (`{ path = ... }`). A published
 // rune must be self-contained / registry-only, so publish refuses these.
@@ -698,10 +695,7 @@ fn cmd_promote(console: Console, net: Net, env: Env, args: List(String)) -> Int:
         let body = promote_body(name, version, "webauthn", identity, id_token_from_env(env))
         let resp = http.post(net, host, port, "/coven/promote", body)
         print(console, "promote: ${http.status(resp)}")
-        if http.status(resp) >= 200 && http.status(resp) < 300:
-            0
-        else:
-            1
+        if http.status(resp) >= 200 && http.status(resp) < 300: 0 else: 1
 
 // outdated <dir> <coven-host:port> — for each registry dependency, show its
 // requirement and the latest released version available. Flattened into shallow
@@ -742,7 +736,6 @@ fn latest_version(versions: List(Version)) -> Option(Version):
         let take = match best:
             None -> true
             Some(b) -> semver.less(b, v)
-
         if take:
             best = Some(v)
     best
@@ -760,10 +753,7 @@ fn cmd_yank(console: Console, net: Net, env: Env, args: List(String)) -> Int:
         let (host, port) = hostport(addr)
         let resp = http.post(net, host, port, "/coven/yank", yank_body(name, version, id_token_from_env(env)))
         print(console, "yank: ${http.status(resp)}")
-        if http.status(resp) >= 200 && http.status(resp) < 300:
-            0
-        else:
-            1
+        if http.status(resp) >= 200 && http.status(resp) < 300: 0 else: 1
 
 // SEC-018: carry the trusted-publishing token (COVEN_ID_TOKEN) so a trusted registry can
 // authorize the yank as an existing maintainer, mirroring promote.
@@ -772,7 +762,6 @@ fn yank_body(name: String, version: String, id_token: Option(String)) -> String:
     let fields = match id_token:
         Some(tok) -> list.push(base, ("id_token", JsonString(tok)))
         None -> base
-
     json.encode(JsonObject(fields))
 
 // list <name> [host:port] — every version of a rune the registry knows, with its
@@ -828,7 +817,6 @@ fn publish_body(manifest: String, files: List((String, String)), identity: Strin
     let fields = match id_token:
         Some(tok) -> list.push(base, ("id_token", JsonString(tok)))
         None -> base
-
     json.encode(JsonObject(fields))
 
 fn promote_body(name: String, version: String, factor: String, promoter: String, id_token: Option(String)) -> String:
@@ -836,7 +824,6 @@ fn promote_body(name: String, version: String, factor: String, promoter: String,
     let fields = match id_token:
         Some(tok) -> list.push(base, ("id_token", JsonString(tok)))
         None -> base
-
     json.encode(JsonObject(fields))
 
 fn file_jsons(files: List((String, String))) -> List(Json):
@@ -944,10 +931,7 @@ fn cmd_verify(console: Console, net: Net, root: Dir, env: Env, clock: Clock, arg
         let manifest = read(root, join_path(dir, "witchy.toml"))
         let hash_code = report_verify(console, hash_mismatches(root, dir, manifest, lock))
         let tuf_code = verify_tuf(console, net, root, env, clock, dir, lock)
-        if hash_code != 0:
-            hash_code
-        else:
-            tuf_code
+        if hash_code != 0: hash_code else: tuf_code
 
 fn report_verify(console: Console, bad: List(String)) -> Int:
     if list.length(bad) == 0:
@@ -1567,10 +1551,7 @@ fn project_baseline(root: Dir) -> List(String):
 fn split_spec(spec: String) -> (String, String):
     if string.contains(spec, "@"):
         let (name, ver) = string.rsplit_once(spec, "@")
-        if string.is_empty(name):
-            (spec, "*")
-        else:
-            (name, ver)
+        if string.is_empty(name): (spec, "*") else: (name, ver)
     else:
         (spec, "*")
 

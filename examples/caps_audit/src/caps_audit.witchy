@@ -6,6 +6,7 @@
 //   witchy examples/caps_audit.witchy
 
 import compiler
+import json
 import string
 from json import Json
 

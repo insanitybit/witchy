@@ -14,13 +14,13 @@ import reflect
 // The current path, the book's `SUMMARY.md` source (for the nav), and the current page's
 // raw Markdown. The host fetches both; the app parses the nav from the summary itself.
 type Model:
-    Model(String, String, String)
+    Model(String, String, String)   // route, summary, content
 
 type Msg derive(Reflect):
-    Route(String)
-    Visit(String)
-    GotNav(Int, String)
-    GotPage(Int, String)
+    Route(String)        // the URL changed (initial, popstate, or after a Nav) -> fetch it
+    Visit(String)        // a sidebar click -> navigate to a page
+    GotNav(Int, String)  // SUMMARY.md arrived (status, body) -> the nav source
+    GotPage(Int, String) // the page's Markdown arrived (status, body)
 
 // The slug for a route: `/p/<slug>` -> `<slug>`; anything else is the home page.
 fn slug_of(route: String) -> String:
@@ -32,7 +32,7 @@ fn slug_of(route: String) -> String:
 // A parsed `SUMMARY.md` entry: a page link at some nesting depth, or the `---` rule that
 // separates the appendices from the main chapters.
 type Nav:
-    Item(Int, String, String)
+    Item(Int, String, String)   // depth (0 = chapter/part, 1 = sub-page), title, slug
     Divider
 
 // Parse `SUMMARY.md` into nav entries, PRESERVING its two-level structure: every
@@ -64,22 +64,23 @@ fn nav_pages(nav: List(Nav)) -> List((String, String)):
         out = match entry:
             Item(_depth, title, slug) -> list.push(out, (title, slug))
             Divider -> out
-
     out
 
 fn update(m: Model, msg: Msg, fetch: UiFetch, route_cap: UiRoute) -> (Model, Cmd(Msg)):
     match m:
         Model(route, summary, content) ->
             match msg:
+                // A sidebar click is a real navigation; the shell echoes it back as `Route`.
                 Visit(path) -> (m, glamour.navigate(route_cap, path))
+                // The route changed: fetch that page. On the FIRST route (no nav yet) also
+                // fetch SUMMARY.md, batched — the host performs both (it holds the Net).
                 Route(path) ->
-                    // A sidebar click is a real navigation; the shell echoes it back as `Route`.
-
-                    // The route changed: fetch that page. On the FIRST route (no nav yet) also
-                    // fetch SUMMARY.md, batched — the host performs both (it holds the Net).
                     let slug = slug_of(path)
                     let page = glamour.http_get(fetch, "/content/" + slug + ".md", "GotPage")
-                    let cmd = if string.is_empty(summary): Batch([glamour.http_get(fetch, "/content/SUMMARY.md", "GotNav"), page]) else: page
+                    let cmd = if string.is_empty(summary):
+                        Batch([glamour.http_get(fetch, "/content/SUMMARY.md", "GotNav"), page])
+                    else:
+                        page
                     (Model(path, summary, content), cmd)
                 GotNav(_status, body) -> (Model(route, body, content), NoCmd)
                 GotPage(_status, body) -> (Model(route, summary, body), NoCmd)
@@ -87,11 +88,16 @@ fn update(m: Model, msg: Msg, fetch: UiFetch, route_cap: UiRoute) -> (Model, Cmd
 fn view(m: Model) -> VNode(Msg):
     match m:
         Model(route, summary, content) ->
-            glamour.element("div", [glamour.prop("class", "book")], [sidebar(route, summary), glamour.element("main", [glamour.prop("class", "page")], [runnable_markdown(content), nav_chapters(route, summary)])])
-
-// Untrusted Markdown renders INLINE as data (never an HTML sink) — safe by
-// construction (std/markdown): raw HTML shows as literal text, hrefs are
-// scheme-checked. No compartment needed for content.
+            glamour.element("div", [glamour.prop("class", "book")], [
+                sidebar(route, summary),
+                // Untrusted Markdown renders INLINE as data (never an HTML sink) — safe by
+                // construction (std/markdown): raw HTML shows as literal text, hrefs are
+                // scheme-checked. No compartment needed for content.
+                glamour.element("main", [glamour.prop("class", "page")], [
+                    runnable_markdown(content),
+                    nav_chapters(route, summary),
+                ]),
+            ])
 
 // Prev/next chapter links at the foot of the page (mdBook-style), from the current route's
 // position in the SUMMARY-derived nav. A missing edge (first/last page) renders a spacer so the
@@ -99,7 +105,10 @@ fn view(m: Model) -> VNode(Msg):
 fn nav_chapters(route: String, summary: String) -> VNode(Msg):
     let entries = nav_pages(parse_nav(summary))
     let idx = index_of_route(entries, route)
-    glamour.element("div", [glamour.prop("class", "nav-chapters")], [edge_link(entries, idx - 1, "prev", "Previous"), edge_link(entries, idx + 1, "next", "Next")])
+    glamour.element("div", [glamour.prop("class", "nav-chapters")], [
+        edge_link(entries, idx - 1, "prev", "Previous"),
+        edge_link(entries, idx + 1, "next", "Next"),
+    ])
 
 fn index_of_route(entries: List((String, String)), route: String) -> Int:
     var idx = 0 - 1
@@ -114,7 +123,10 @@ fn index_of_route(entries: List((String, String)), route: String) -> Int:
 fn edge_link(entries: List((String, String)), i: Int, cls: String, label: String) -> VNode(Msg):
     if i >= 0 && i < list.length(entries):
         let (title, slug) = list.at(entries, i)
-        glamour.element("button", [glamour.prop("class", "nav-chapter " + cls), glamour.on("click", Visit("/p/" + slug))], [glamour.element("span", [glamour.prop("class", "dir")], [glamour.text(label)]), glamour.element("span", [glamour.prop("class", "title")], [glamour.text(title)])])
+        glamour.element("button", [glamour.prop("class", "nav-chapter " + cls), glamour.on("click", Visit("/p/" + slug))], [
+            glamour.element("span", [glamour.prop("class", "dir")], [glamour.text(label)]),
+            glamour.element("span", [glamour.prop("class", "title")], [glamour.text(title)]),
+        ])
     else:
         glamour.element("span", [glamour.prop("class", "nav-spacer")], [])
 
@@ -128,7 +140,10 @@ fn sidebar(route: String, summary: String) -> VNode(Msg):
         if idx > 0:
             items = list.push(items, nav_node(entry, route))
         idx = idx + 1
-    glamour.element("nav", [glamour.prop("class", "sidebar")], [glamour.element("button", [glamour.prop("class", "sidebar-brand"), glamour.on("click", Visit(cover_path(nav)))], [glamour.text("The witchy Book")]), glamour.element("ul", [], items)])
+    glamour.element("nav", [glamour.prop("class", "sidebar")], [
+        glamour.element("button", [glamour.prop("class", "sidebar-brand"), glamour.on("click", Visit(cover_path(nav)))], [glamour.text("The witchy Book")]),
+        glamour.element("ul", [], items),
+    ])
 
 // The route of the cover page (the first nav entry), so the sidebar header links to it.
 fn cover_path(nav: List(Nav)) -> String:
@@ -148,7 +163,9 @@ fn nav_node(entry: Nav, route: String) -> VNode(Msg):
             let path = "/p/" + slug
             let active = if path == route: " active" else: ""
             let cls = "nav-item nav-depth-${depth}" + active
-            glamour.element("li", [], [glamour.element("button", [glamour.prop("class", cls), glamour.on("click", Visit(path))], [glamour.text(title)])])
+            glamour.element("li", [], [
+                glamour.element("button", [glamour.prop("class", cls), glamour.on("click", Visit(path))], [glamour.text(title)]),
+            ])
 
 // (RFC-0041 P2) Render the page's Markdown, then replace each `witchy` code block with a host
 // `Slot` — the DOM shell mounts a RUNNABLE cell there, in a subtree glamour never diffs into,
@@ -247,7 +264,7 @@ fn parse_model(j: Json) -> Model:
     Model(route, summary, content)
 
 fn arg_int(j: Json, i: Int) -> Int:
-    match json.get(j, "\$values"):
+    match json.get(j, "$values"):
         Some(arr) ->
             match json.index(arr, i):
                 Some(v) -> json.as_int(v).unwrap_or(0)
@@ -255,7 +272,7 @@ fn arg_int(j: Json, i: Int) -> Int:
         None -> 0
 
 fn arg_str(j: Json, i: Int) -> String:
-    match json.get(j, "\$values"):
+    match json.get(j, "$values"):
         Some(arr) ->
             match json.index(arr, i):
                 Some(v) -> json.as_string(v).unwrap_or("")
@@ -263,7 +280,7 @@ fn arg_str(j: Json, i: Int) -> String:
         None -> ""
 
 fn parse_msg(j: Json) -> Msg:
-    match json.get_string(j, "\$variant"):
+    match json.get_string(j, "$variant"):
         Some(v) ->
             if v == "Visit":
                 Visit(arg_str(j, 0))

@@ -7,6 +7,7 @@
 // Run:  witchy examples/worker_pool.witchy
 //       witchy parity examples/worker_pool.witchy
 
+import chan
 from chan import Receiver, Sender
 
 async fn worker(jobs: Receiver(Int), results: Sender(Int)) -> Nil:

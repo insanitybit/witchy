@@ -2,8 +2,8 @@
 // passes by returning, and fails by aborting (the `testing` assertions do that
 // with a message). Run them with `witchy test examples/generic_stack`.
 
-import testing
 from generic_stack import Stack
+import testing
 
 fn test_size():
     let s = Push(1, Push(2, Push(3, Empty)))
