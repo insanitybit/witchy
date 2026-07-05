@@ -28,7 +28,7 @@ together — each dogfooding the language and its capability model.
 | [`coven/`](coven/) | The package **registry** — signed records, source-recomputed capability footprints, block-on-widening, two-phase stage→2FA-promote, TUF. Pure witchy. | witchy `compiler.footprint`, crypto, Dir | [rfcs/package-manager.md](../rfcs/package-manager.md), [spec/local-registry.md](../spec/local-registry.md) |
 | [`glamour/`](glamour/) | A capability-pure **MVU frontend framework** — the app computes `VNode` data and emits effects as inert `Cmd` data; a capability-holding host interprets them. | witchy-WASM browser target | [rfcs/0006](../rfcs/0006-tagged-literals.md), [0007](../rfcs/0007-witchy-wasm-browser.md), [0008](../rfcs/0008-frontend-framework.md), [0039](../rfcs/0039-glamour-capability-safe-effects.md) |
 | [`coven-web/`](coven-web/) | The **web console** for coven — a pure-witchy server + a thin host shell holding browser authority; serves a glamour app same-origin. | coven (proxied), glamour, witchy server (std/server) | [projects/coven-web/SECURITY.md](coven-web/SECURITY.md), RFC-0015 |
-| [`docs/`](docs/) | The documentation site — the book rendered as a glamour app. Pure witchy. | glamour | [rfcs/0041](../rfcs/0041-docs-as-a-glamour-app.md) |
+| [`docs/`](docs/) | The documentation site — the book rendered as a glamour app. Pure witchy, but a deliberate **static-site build target**, not a package-manager rune: it has no `witchy.toml`, and `scripts/build-docs.sh` compiles it against the glamour/markdown sources directly rather than through manifest/lockfile dependency resolution. | glamour, markdown (compiled from source, not a manifested dependency) | [rfcs/0041](../rfcs/0041-docs-as-a-glamour-app.md) |
 
 ## How this differs from `examples/`
 
