@@ -3,8 +3,12 @@ rfc: 0059
 title: State-machine async — frames, an owning executor, and ring channels
 status: partially-implemented (increment 1 SHIPPED: defunctionalized state-machine
   lowering — closure tower gone, await-in-while/var-across-await/folding-for-await work,
-  chan_throughput folds + 4x past OOM cliff, parity+determinism green. Increment 2
-  (scalar SoA + ring = flat DoD to N=1M) remains for the flat-heap target.)
+  chan_throughput folds + 4x past OOM cliff, parity+determinism green. Increment-2 STEP 1
+  SHIPPED: fixed-capacity ring channels (send = in-place set_at, recv = advance head, no
+  list.tail rebuild), determinism byte-identical, all concurrency parity+heap gates green.
+  Increment-2 STEP 2 (scalar SoA frames = eliminate the CPS closure churn) REMAINS and is
+  the sole blocker for the flat DoD to N=1M — measurement (2026-07-05) proved the ring does
+  NOT reduce the ~45-48 cells/message leak; it is 100% CPS closure/Task/Step interface churn.)
 created: 2026-07-04
 tracking:
 ---
@@ -393,3 +397,100 @@ measurement probes (RFC-0058 discipline) established why:
 the segment closures plug into the existing `and_then`/`Step` machinery. Increment
 2 (scalar SoA columns + ring channel) reifies each segment's parameter list as the
 per-task scalar columns and is where the flat DoD lands.
+
+## Implementation note (2026-07-05) — Increment-2 STEP 1 LANDED: fixed-capacity ring channels; and the CORRECTED finding that the ring is NOT where the leak is
+
+Step 1 of increment 2 — **fixed-capacity ring channels** — is implemented in both
+executor copies (`std/task.witchy`, `std/chan.witchy`). A channel's state changed from
+the growable `(buf, cap)` (mutated by `list.push` on send / `list.tail` on recv) to a
+**fixed-capacity ring** `(buf, head, count, cap)`: `buf` is a physical list of `physcap`
+slots, the `count` live messages are `buf[(head + i) % physcap]` for `i in 0..count` in
+FIFO order, `cap` is the logical capacity (`0` = unbounded). **Send** writes the tail slot
+with `list.set_at` **in place** — no allocation, no growth; **recv** just advances `head`
+— so the `O(occupancy)` `list.tail` rebuild the growable buffer did on *every* recv is
+gone. Unbounded channels (`cap == 0`) start as a 1-slot ring and grow amortized (`ring_grow`
+relayouts the live elements FIFO into a doubled buffer). FIFO order and the ready
+(`count > 0`) / room (`count < cap`) predicates are byte-identical to the old length-based
+ones, so the **deterministic round-robin schedule and every interleaving are unchanged** —
+verified green: `future_executor_interleaves_backends_agree`, all `chan_*`/`async_*`/
+`for_await_*`/`vm_par_map`/`vm_serve` parity tests, `every_compilable_example_agrees_on_both_backends`,
+`every_example_agrees_under_rc_floor`/`unbox`, the full `rc_corpus` + `rc_floor` heap-safety
+corpus, `clippy -D warnings`, `witchy fmt`, `stdlib_docs_are_current`.
+
+### The corrected finding (measurement-first, RFC-0058) — the ring gives ZERO leak reduction here
+
+The spike (note above) modelled the growable buffer in isolation as leaking `~1/msg` and
+listed the ring as a prerequisite of flat. Measured against the **real** executor with
+rc-floor on, that `~1/msg` was already being reclaimed, so the ring does **not** move the
+per-message leak at all. `chan_throughput` (producer while-loop + folding `for await`,
+`witchy stats` / `__witchy_live_cells`, compiled tier, rc-floor):
+
+| N | live_cells (cap 8) before ring | live_cells (cap 8) after ring | heap high-water after (cap 64) |
+|---|---|---|---|
+| 200 | 9112 | 9113 | 9716 cells / 455 KB |
+| 400 | 18112 | 18113 | 19316 / 906 KB |
+| 800 | 36112 | 36113 | 38516 / 1.81 MB |
+| 1600 | 72112 | 72113 | 76916 / 3.61 MB |
+| 64000 | — | — | 3,072,116 / 144 MB |
+| 1,000,000 | — | — | **OOM trap** (out-of-bounds memory access) |
+
+Slope ≈ **45 cells/message (cap 8), ~48 (cap 64)**, FLAT per message but **LINEAR in N** —
+identical before and after the ring (the cap-64 pre-allocated buffer adds a one-time
+`O(cap)` constant, correctly, matching Go's `make(chan int, cap)`). Kernel-timed (compiled
+`witchy sandbox`, best of 5, full executor run incl. setup/teardown): **N=200 ≈ 559 ns/msg,
+N=1000 ≈ 496, N=64000 ≈ 519** — i.e. per-message cost stays ~500 ns and does not fall with
+N, above the `≤ 300 ns` DoD, because the linear leak keeps allocation pressure up. N=1M
+OOM-traps (~48M cells ≈ 2.3 GB).
+
+**Conclusion, falsified against measurement:** the entire per-message leak is
+closure/`Task`/`Step` churn from the **CPS-over-closures executor INTERFACE** — the segment
+continuation `fn(x): __seg(carried, x)`, its `Task`/`Step`/`and_then` wrappers, and the
+erased `__Msg` — none of which shell-only drop can reclaim (their heap children survive the
+shell free). The round-robin schedule keeps buffer occupancy at ~1, so the channel
+representation is simply not on the leak path for this workload. **The ring is correct,
+mandated substrate and a real throughput win at occupancy > 1, but it is neither necessary
+nor sufficient for the flat DoD on `chan_throughput`.** DoD items 1–3 (flat @ 1M, ≤300 ns,
+un-ignore `chan_throughput_bounded_by_rc_floor` < 500) all reduce to a single remaining
+task: **eliminate the per-resume closure allocation.**
+
+### Handoff — Increment-2 STEP 2 (scalar SoA frames), the sole flat-DoD blocker
+
+The reference spike (13 cells FLAT to N=1M, 10 ns/msg, both backends) is program-specific;
+generalising it is the remaining work, and it is genuinely the largest transform in this
+RFC — it changes the executor protocol, so it must land as ONE cut across `async_lower.rs`,
+both executors, every `std/chan` combinator, the book chapter, and the concurrency examples,
+under the full parity + interleaving-determinism + heap-check gate. Concretely:
+
+1. **Defunctionalize the continuation to data, not a closure.** Today `async_lower` emits
+   `task.and_then(inner, fn(x): __seg(carried…, x))` — the closure IS the boxed frame.
+   Replace it with a `(seg-id, task-id)` pair: each lifted segment function gets a global
+   integer `seg-id`, and the executor resumes a task by dispatching on `seg-id` through a
+   **whole-program generated `step` dispatcher** (`match seg_id: 0 -> __seg0(cols…); …`)
+   rather than calling a stored closure. This is Reynolds defunctionalization carried one
+   step past increment 1 (which already named the segments; step 2 removes the closure that
+   *calls* them).
+2. **Reify `carried` as scalar columns indexed by task id.** The executor's slot table holds
+   a fixed-width table of `Int` columns (`col0…colK`, `K` = max frame width across all
+   segments) plus a `seg-id` column, instead of `Active(Task(closure))`. A resumed segment
+   reads its columns from the task's row, runs straight-line code, writes columns back with
+   scalar `list.set_at` (the RFC-0035 reclaimed-to-flat shape — measured flat in the spike),
+   and returns the next effect + next `seg-id`. No `Task`, no `Step` closure, no `and_then`
+   — nothing allocates per resume. `Step` collapses to scalar arms `(channel-id, task-id)`
+   (DoD item 6: delete the closure-tower `Step` arms) carried in the same columns.
+3. **Scalar-only, documented.** Every column is `Int` (the `Sender(Int)`/`Receiver(Int)`
+   endpoints are 1-field Int wrappers, `unbox`-able to their inner id). A `String`/`List`
+   frame field or message reintroduces a boxed child and still needs recursive `$rdrop`
+   (RFC-0036) — out of scope; the DoD programs are all scalar, so the scalar path satisfies
+   them, and the general path stays "10× but not flat" until the move/borrow oracle lands.
+4. **Migrate the surface in the same cut** (break-don't-deprecate): `std/task` + `std/chan`
+   executors, every combinator (`spawn`/`join`/`race`/`gather`/`par_map`/`select`/`serve`/
+   `consume`), `book/src/tour-async.md`, and the eight concurrency examples. The parity +
+   `future_executor_interleaves_backends_agree` gates are the correctness proof that the
+   scalar schedule stays byte-identical.
+
+The ring representation from step 1 is the channel half of step 2's flat target; step 2's
+channel state becomes scalar SoA columns (`chan_head`/`chan_count`/`chan_cap` as parallel
+`Int` lists + a `chan_bufs` list) mutated by scalar `set_at`, removing even the per-op
+`(buf, head, count, cap)` tuple (the last ~4/msg of channel-side churn). The buffer-element
+write into the nested `chan_bufs[ch]` is the one subtle uniqueness site (nested-container
+in-place mutation) to get right there.
