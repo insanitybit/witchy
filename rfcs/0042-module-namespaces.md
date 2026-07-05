@@ -1,7 +1,7 @@
 ---
 rfc: 0042
 title: Module namespaces and Python-style imports
-status: proposed
+status: implemented (module-scoped types + from-imports; iter+chan coexist. fmt canonicalization pending BUG-014 formatter fix)
 created: 2026-07-03
 tracking:
 ---
