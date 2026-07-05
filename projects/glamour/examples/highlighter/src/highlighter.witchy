@@ -20,6 +20,8 @@ import glamour
 import json
 import string
 import list
+from glamour import VNode
+from json import Json
 
 // The highlighter is render-only: no DOM events, so no app message. `to_json`
 // still wants a `msg_to_json: fn(msg) -> Json`, so a trivial `Msg` with one unit
