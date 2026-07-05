@@ -10,7 +10,7 @@
 
 import string
 import list
-import json
+from json import Json
 import crypto
 import encoding
 import option

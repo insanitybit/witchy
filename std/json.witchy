@@ -11,7 +11,7 @@ import result
 import option
 // Reflection backs `from_value`/`stringify`: encode ANY value to JSON with no
 // `derive(Json)` — `reflect(x)` gives the structure, and we walk the `Mirror`.
-import reflect
+from reflect import Mirror
 // `impl From(a) for Json` gives `Json.from(x)` / `x.into()` for reflectable values.
 import convert
 

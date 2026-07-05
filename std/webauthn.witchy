@@ -14,7 +14,7 @@
 // A forged or replayed assertion fails one of these and is rejected here.
 
 import crypto
-import json
+from json import Json
 import string
 
 // One lowercase hex digit -> 0..15, or -1. (Inputs are lowercase hex: that is what

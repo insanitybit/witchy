@@ -8,7 +8,7 @@
 // signs before the redirect and re-checks on the callback — bind it to the session.
 
 import http
-import json
+from json import Json
 import url
 import option
 import result
