@@ -345,7 +345,7 @@ pub fn compile_module_binary(
             return Ok(None);
         }
     }
-    let bytes = witchy_wir::wir_encode::encode(&wir_module);
+    let bytes = witchy_wir::wir_encode::encode(&wir_module, &[]);
     // Validate before committing; a malformed assembly returns `Ok(None)`.
     if let Err(e) = wasmparser::validate(&bytes) {
         if std::env::var_os("WIRDIAG").is_some() {
@@ -1055,8 +1055,14 @@ fn collect_called_funcs(seq: &witchy_wir::wir::WirSeq, out: &mut std::collection
             }
             E::Control(n) => node(n, out),
             E::Seq(s) => collect_called_funcs(s, out),
+            E::StructNew { args, .. } => {
+                for a in args {
+                    expr(a, out);
+                }
+            }
+            E::StructGet { base, .. } => expr(base, out),
             E::ConstI64(_) | E::ConstF64(_) | E::ConstI32(_) | E::StrPtr(_) | E::MemorySize
-            | E::GetLocal(_) | E::GetGlobal(_) => {}
+            | E::GetLocal(_) | E::GetGlobal(_) | E::RefNull(_) => {}
         }
     }
     fn node(n: &N, out: &mut std::collections::HashSet<String>) {
@@ -1088,6 +1094,10 @@ fn collect_called_funcs(seq: &witchy_wir::wir::WirSeq, out: &mut std::collection
                 collect_called_funcs(els, out);
             }
             N::Block { body, .. } | N::Loop { body, .. } => collect_called_funcs(body, out),
+            N::StructSet { base, value, .. } => {
+                expr(base, out);
+                expr(value, out);
+            }
             N::Br { cond: Some(c), .. } => expr(c, out),
             N::Drop(e) | N::Do(e) | N::Push(e) | N::Return(Some(e)) => expr(e, out),
             N::Br { cond: None, .. } | N::Return(None) | N::Unreachable => {}
@@ -1137,8 +1147,14 @@ fn collect_called_host_imports(seq: &witchy_wir::wir::WirSeq, out: &mut std::col
             }
             E::Control(n) => node(n, out),
             E::Seq(s) => collect_called_host_imports(s, out),
+            E::StructNew { args, .. } => {
+                for a in args {
+                    expr(a, out);
+                }
+            }
+            E::StructGet { base, .. } => expr(base, out),
             E::ConstI64(_) | E::ConstF64(_) | E::ConstI32(_) | E::StrPtr(_) | E::MemorySize
-            | E::GetLocal(_) | E::GetGlobal(_) => {}
+            | E::GetLocal(_) | E::GetGlobal(_) | E::RefNull(_) => {}
         }
     }
     fn node(n: &N, out: &mut std::collections::HashSet<String>) {
@@ -1169,6 +1185,10 @@ fn collect_called_host_imports(seq: &witchy_wir::wir::WirSeq, out: &mut std::col
                 collect_called_host_imports(els, out);
             }
             N::Block { body, .. } | N::Loop { body, .. } => collect_called_host_imports(body, out),
+            N::StructSet { base, value, .. } => {
+                expr(base, out);
+                expr(value, out);
+            }
             N::Br { cond: Some(c), .. } => expr(c, out),
             N::Drop(e) | N::Do(e) | N::Push(e) | N::Return(Some(e)) => expr(e, out),
             N::Br { cond: None, .. } | N::Return(None) | N::Unreachable => {}

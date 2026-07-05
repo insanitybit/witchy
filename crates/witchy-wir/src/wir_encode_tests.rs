@@ -63,7 +63,7 @@
 
     /// Run a module via the binary encoder.
     fn run_encoded(module: &WirModule) -> Vec<String> {
-        run_binary(&encode(module))
+        run_binary(&encode(module, &[]))
     }
 
     /// Assert the encoder output runs identically to the expected lines. (Was
@@ -76,7 +76,7 @@
 
     /// Assert the module TRAPS when run (e.g. the RFC-0005 in-place bounds check fires).
     fn assert_traps(module: &WirModule) {
-        let binary = encode(&with_rc_floor(module));
+        let binary = encode(&with_rc_floor(module), &[]);
         let mut config = wasmtime::Config::new();
         config.consume_fuel(true);
         let engine = wasmtime::Engine::new(&config).expect("engine");
@@ -2140,4 +2140,108 @@
         let m = int_demo(magic, WirExpr::Call { func: "magic".into(), args: vec![] });
         // No WAT path for a raw-body func, so assert on the encoder output only.
         assert_eq!(run_encoded(&m), vec!["99".to_string()]);
+    }
+
+    /// (RFC-0005 Stage 1) The encoder round-trips a hand-built module that uses the
+    /// new GC-struct + externref infrastructure end to end: a struct type
+    /// `{externref, i64}`, a function whose signature carries an `externref` param
+    /// AND a `(ref null $0)` param, and the `StructNew`/`StructGet`/`StructSet`/
+    /// `RefNull` opcodes. Instantiating it in wasmtime with GC + function-references
+    /// enabled (as the real runtime keeps reference types / GC on) proves the emitted
+    /// bytes VALIDATE; running `run` proves the struct field write-then-read executes.
+    /// This is the mechanism the cap-carrying-aggregate lowering (Stage 4) will use;
+    /// nothing in the production path emits these yet.
+    #[test]
+    fn gc_struct_and_externref_round_trip() {
+        use crate::wir::WirStructDef;
+
+        // struct $0 { field0: externref (a capability), field1: i64 (a scalar) }.
+        let structs = vec![WirStructDef { fields: vec![Kind::ExternRef, Kind::I64] }];
+
+        // fn takes_cap(cap: externref, agg: (ref null $0)) -> ()  — present but
+        // uncalled, so its reference-typed SIGNATURE must still validate.
+        let takes_cap = WirFunc {
+            name: "takes_cap".into(),
+            params: vec![local("cap", WirTy::Extern), local("agg", WirTy::GcRef(0))],
+            ret: vec![],
+            locals: vec![],
+            body: vec![WirNode::Drop(WirExpr::StructGet {
+                struct_id: 0,
+                field: 1,
+                base: Box::new(WirExpr::GetLocal("agg".into())),
+            })],
+            raw_body: None,
+        };
+
+        // fn run() -> ():
+        //   s = struct.new $0 (ref.null extern, i64.const 42)   // a null cap + 42
+        //   struct.set $0 1 s 99                                 // overwrite the scalar
+        //   print_int (struct.get $0 1 s)                        // -> 99
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![local("s", WirTy::GcRef(0))],
+            body: vec![
+                WirNode::SetLocal {
+                    local: "s".into(),
+                    value: WirExpr::StructNew {
+                        struct_id: 0,
+                        args: vec![WirExpr::RefNull(Kind::ExternRef), WirExpr::ConstI64(42)],
+                    },
+                },
+                WirNode::StructSet {
+                    struct_id: 0,
+                    field: 1,
+                    base: WirExpr::GetLocal("s".into()),
+                    value: WirExpr::ConstI64(99),
+                },
+                WirNode::Do(WirExpr::CallHost {
+                    import: "print_int".into(),
+                    args: vec![WirExpr::StructGet {
+                        struct_id: 0,
+                        field: 1,
+                        base: Box::new(WirExpr::GetLocal("s".into())),
+                    }],
+                }),
+            ],
+            raw_body: None,
+        };
+
+        let module = WirModule {
+            imports: vec![WirImport {
+                name: "print_int".into(),
+                params: vec![Kind::I64],
+                results: vec![],
+            }],
+            funcs: vec![takes_cap, run],
+            memory_pages: 1,
+            data: vec![],
+            globals: vec![],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+
+        let binary = encode(&module, &structs);
+
+        let mut config = wasmtime::Config::new();
+        config.wasm_reference_types(true);
+        config.wasm_function_references(true);
+        config.wasm_gc(true);
+        let engine = wasmtime::Engine::new(&config).expect("engine");
+        let m = wasmtime::Module::new(&engine, &binary)
+            .unwrap_or_else(|e| panic!("GC-struct module invalid: {e:#}"));
+        let out: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut linker = wasmtime::Linker::new(&engine);
+        let o = out.clone();
+        linker
+            .func_wrap("witchy", "print_int", move |n: i64| {
+                o.lock().unwrap().push(n.to_string());
+            })
+            .unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let inst = linker.instantiate(&mut store, &m).expect("instantiate");
+        let run = inst.get_typed_func::<(), ()>(&mut store, "run").expect("run export");
+        run.call(&mut store, ()).expect("run");
+        assert_eq!(*out.lock().unwrap(), vec!["99".to_string()]);
     }

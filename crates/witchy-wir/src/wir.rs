@@ -27,15 +27,43 @@ pub enum Kind {
     I32,
     I64,
     F64,
+    /// (RFC-0005) A wasm `externref`: an unforgeable, opaque host reference. It
+    /// lives ONLY in locals/params/results/globals/tables and GC struct fields —
+    /// never in linear memory, and there is no `i32 -> externref` cast — so a
+    /// capability carried as an `externref` cannot be forged or swapped by a
+    /// linear-memory corruption. This is the representation the capability core
+    /// moves grants onto (File first; see `rfcs/externref-implementation-plan.md`).
+    ExternRef,
+    /// (RFC-0005) A typed GC-struct reference `(ref null $s)`, where the `u32` is
+    /// the module's struct-definition index (resolved to a type-section index by
+    /// the encoder, which lays struct types after the function signatures). This
+    /// is the representation of a *cap-carrying aggregate* — a record/closure-env
+    /// that transitively holds a capability, so the `externref` stays a reference
+    /// throughout instead of decaying to an `i32` field in linear memory.
+    GcRef(u32),
 }
 
 impl Kind {
+    /// The WAT spelling. Reference kinds are approximate here — the WAT printer is
+    /// debug-only and never round-trips the GC type section (the binary encoder in
+    /// `wir_encode` is authoritative for reference/GC-struct types).
     pub fn wat(self) -> &'static str {
         match self {
             Kind::I32 => "i32",
             Kind::I64 => "i64",
             Kind::F64 => "f64",
+            Kind::ExternRef => "externref",
+            Kind::GcRef(_) => "(ref null $gc)",
         }
+    }
+
+    /// True for the reference kinds (`externref`, GC struct refs) — the values
+    /// that are NOT in linear memory and cannot be arithmetic'd, loaded/stored, or
+    /// boxed into the i64 slot. Callers use this to assert a value never reaches a
+    /// scalar-only path (the i64 Slot boundary is a `typeck` reject, so hitting one
+    /// of those paths at runtime is a compiler bug, not a program error).
+    pub fn is_ref(self) -> bool {
+        matches!(self, Kind::ExternRef | Kind::GcRef(_))
     }
 }
 
@@ -52,6 +80,15 @@ pub enum WirTy {
     List(Box<WirTy>),
     /// The universal untyped i64 slot (generic/monomorphized boundaries).
     Slot,
+    /// (RFC-0005) A capability carried as a bare `externref` — the unforgeable
+    /// representation a migrated capability (File first) takes in a local, param,
+    /// result, or host-import argument. Distinct from the legacy `Capability`
+    /// (an i32 handle in linear memory), which stays until its capability's stage.
+    Extern,
+    /// (RFC-0005) A cap-carrying aggregate lowered to a GC struct, referenced by
+    /// its struct-definition index. Unused by the current lowering (Stage 4); the
+    /// infra exists so the encoder can round-trip GC-struct modules.
+    GcRef(u32),
 }
 
 impl WirTy {
@@ -61,10 +98,22 @@ impl WirTy {
             WirTy::Int => Kind::I64,
             WirTy::Float => Kind::F64,
             WirTy::Slot => Kind::I64,
+            WirTy::Extern => Kind::ExternRef,
+            WirTy::GcRef(id) => Kind::GcRef(*id),
             // Bool, Str (ptr), Nil, Capability (handle/placeholder), List (ptr).
             _ => Kind::I32,
         }
     }
+}
+
+/// (RFC-0005) A GC struct type declaration for a cap-carrying aggregate. Fields
+/// are ordered; each field's `Kind` is its wasm representation (a scalar, an
+/// `externref` for a nested capability, or a `GcRef` for a nested aggregate). The
+/// encoder lays these in the type section AFTER the function signatures, so a
+/// `Kind::GcRef(i)` / struct opcode's `struct_id` resolves to `struct_base + i`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WirStructDef {
+    pub fields: Vec<Kind>,
 }
 
 /// A binary operator, abstract over the operand `Kind` (the printer picks the
@@ -235,6 +284,25 @@ pub enum WirExpr {
     /// side-effect before it — e.g. `?` stores its operand in a scratch local,
     /// then a value-`if` extracts the payload or early-returns.
     Seq(WirSeq),
+
+    /// (RFC-0005) `struct.new $s` — allocate a cap-carrying GC struct. `args` are
+    /// pushed in field order (each already the field's `Kind`), leaving a
+    /// `(ref $s)` on the stack. `struct_id` is the module struct-definition index.
+    StructNew {
+        struct_id: u32,
+        args: Vec<WirExpr>,
+    },
+    /// (RFC-0005) `struct.get $s $field` — read field `field` of the GC struct
+    /// `base` (a `(ref null $s)`), leaving the field's value. Replaces a linear
+    /// `Load` (byte offset) with a GC field index for cap-carrying aggregates.
+    StructGet {
+        struct_id: u32,
+        field: u32,
+        base: Box<WirExpr>,
+    },
+    /// (RFC-0005) `ref.null` of a reference kind (`externref` or a concrete GC
+    /// struct ref). The null initializer for a not-yet-populated cap slot.
+    RefNull(Kind),
 }
 
 /// A statement-level node: executes for effect and/or leaves a typed value.
@@ -325,6 +393,14 @@ pub enum WirNode {
     /// `unreachable` — a trap. Used as the fall-through after an exhaustive
     /// `match`'s arms (satisfies the result type of a value-producing block).
     Unreachable,
+    /// (RFC-0005) `struct.set $s $field` — write `value` into field `field` of the
+    /// GC struct `base` (a `(ref null $s)`). The GC-field analogue of `Store`.
+    StructSet {
+        struct_id: u32,
+        field: u32,
+        base: WirExpr,
+        value: WirExpr,
+    },
 }
 
 pub type WirSeq = Vec<WirNode>;
@@ -713,6 +789,12 @@ fn print_node(s: &mut String, node: &WirNode, depth: usize) {
             indent(s, depth);
             s.push_str("unreachable\n");
         }
+        WirNode::StructSet { struct_id, field, base, value } => {
+            print_expr(s, base, depth);
+            print_expr(s, value, depth);
+            indent(s, depth);
+            let _ = writeln!(s, "struct.set {struct_id} {field}");
+        }
     }
 }
 
@@ -836,6 +918,26 @@ fn print_expr(s: &mut String, e: &WirExpr, depth: usize) {
         }
         WirExpr::Control(node) => print_node(s, node, depth),
         WirExpr::Seq(nodes) => print_seq(s, nodes, depth),
+        WirExpr::StructNew { struct_id, args } => {
+            for a in args {
+                print_expr(s, a, depth);
+            }
+            indent(s, depth);
+            let _ = writeln!(s, "struct.new {struct_id}");
+        }
+        WirExpr::StructGet { struct_id, field, base } => {
+            print_expr(s, base, depth);
+            indent(s, depth);
+            let _ = writeln!(s, "struct.get {struct_id} {field}");
+        }
+        WirExpr::RefNull(kind) => {
+            let heap = match kind {
+                Kind::ExternRef => "extern".to_string(),
+                Kind::GcRef(id) => format!("{id}"),
+                _ => "extern".to_string(),
+            };
+            emit(s, depth, &format!("ref.null {heap}"));
+        }
     }
 }
 
@@ -854,6 +956,12 @@ fn to_slot_op(kind: Kind) -> Option<&'static str> {
         // Bools have the high bit clear, so sign-extension leaves them unchanged.
         Kind::I32 => Some("i64.extend_i32_s"),
         Kind::F64 => Some("i64.reinterpret_f64"),
+        // (RFC-0005) A reference has no i64 bit-pattern, so it cannot enter the
+        // universal slot. Reaching here means the i64 Slot-boundary `typeck`
+        // reject (§4.4) was bypassed — a compiler bug, not a program error.
+        Kind::ExternRef | Kind::GcRef(_) => {
+            panic!("cannot box a reference-typed value (a capability) into the i64 slot")
+        }
     }
 }
 
@@ -863,6 +971,9 @@ fn from_slot_op(kind: Kind) -> Option<&'static str> {
         Kind::I64 => None,
         Kind::I32 => Some("i32.wrap_i64"),
         Kind::F64 => Some("f64.reinterpret_i64"),
+        Kind::ExternRef | Kind::GcRef(_) => {
+            panic!("cannot recover a reference-typed value (a capability) from the i64 slot")
+        }
     }
 }
 
@@ -901,19 +1012,30 @@ fn collect_clos_arities_seq(seq: &WirSeq, out: &mut Vec<usize>) {
             }
             WirExpr::Control(node) => walk_node(node, out),
             WirExpr::Seq(nodes) => collect_clos_arities_seq(nodes, out),
+            WirExpr::StructNew { args, .. } => {
+                for a in args {
+                    walk_expr(a, out);
+                }
+            }
+            WirExpr::StructGet { base, .. } => walk_expr(base, out),
             WirExpr::ConstI64(_)
             | WirExpr::ConstF64(_)
             | WirExpr::ConstI32(_)
             | WirExpr::StrPtr(_)
             | WirExpr::MemorySize
             | WirExpr::GetLocal(_)
-            | WirExpr::GetGlobal(_) => {}
+            | WirExpr::GetGlobal(_)
+            | WirExpr::RefNull(_) => {}
         }
     }
     fn walk_node(node: &WirNode, out: &mut Vec<usize>) {
         match node {
             WirNode::SetLocal { value, .. } | WirNode::SetGlobal { value, .. } => {
                 walk_expr(value, out)
+            }
+            WirNode::StructSet { base, value, .. } => {
+                walk_expr(base, out);
+                walk_expr(value, out);
             }
             WirNode::Store { ptr, value, .. } | WirNode::Store8 { ptr, value, .. } => {
                 walk_expr(ptr, out);
@@ -991,6 +1113,12 @@ pub fn heap_write_violations(module: &WirModule) -> Vec<String> {
                 expr_violates(value, hits);
             }
             WirNode::SetLocal { value, .. } => expr_violates(value, hits),
+            // StructSet writes a GC field, not the `$heap` bump pointer — it can
+            // never advance `$heap`, so only its subexpressions are scanned.
+            WirNode::StructSet { base, value, .. } => {
+                expr_violates(base, hits);
+                expr_violates(value, hits);
+            }
             WirNode::Store { ptr, value, .. } | WirNode::Store8 { ptr, value, .. } => {
                 expr_violates(ptr, hits);
                 expr_violates(value, hits);
@@ -1062,13 +1190,20 @@ pub fn heap_write_violations(module: &WirModule) -> Vec<String> {
                     node_violates(x, hits);
                 }
             }
+            WirExpr::StructNew { args, .. } => {
+                for a in args {
+                    expr_violates(a, hits);
+                }
+            }
+            WirExpr::StructGet { base, .. } => expr_violates(base, hits),
             WirExpr::ConstI64(_)
             | WirExpr::ConstF64(_)
             | WirExpr::ConstI32(_)
             | WirExpr::StrPtr(_)
             | WirExpr::GetLocal(_)
             | WirExpr::GetGlobal(_)
-            | WirExpr::MemorySize => {}
+            | WirExpr::MemorySize
+            | WirExpr::RefNull(_) => {}
         }
     }
     let mut out = Vec::new();
