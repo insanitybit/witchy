@@ -111,8 +111,10 @@
         .unwrap_err();
         assert!(var_let.contains("frozen") && var_let.contains("var"), "{var_let}");
 
+        // A mutator shape (`var` first + self-typed return) so RFC-0064's row-3
+        // check passes and the frozen/convention conflict is what surfaces.
         let var_param =
-            check_str("fn f(var xs: frozen List(Int)) -> Int:\n    list.length(xs)\n").unwrap_err();
+            check_str("fn f(var xs: frozen List(Int)) -> List(Int):\n    xs\n").unwrap_err();
         assert!(var_param.contains("frozen") && var_param.contains("mutable"), "{var_param}");
 
         let own_param =
@@ -124,8 +126,10 @@
             .expect("a read-only frozen parameter is valid");
         check_str("fn main(console: Console):\n    let x: frozen List(Int) = [1, 2]\n    print(console, __render(list.length(x)))\n")
             .expect("a let-bound frozen value is valid");
-        // `unique`/`local unique` are compatible with mutation (FBIP) — `var` is fine.
-        check_str("fn f(var xs: unique List(Int)) -> Int:\n    list.length(xs)\n")
+        // `unique`/`local unique` are compatible with mutation (FBIP) — `var` is
+        // fine. A mutator shape (self-typed return) satisfies RFC-0064's row-3
+        // rule (a `var` receiver must be a mutator or a procedure).
+        check_str("fn f(var xs: unique List(Int)) -> List(Int):\n    xs\n")
             .expect("a unique var is valid (in-place reuse is the point)");
     }
 
