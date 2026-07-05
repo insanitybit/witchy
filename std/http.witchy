@@ -31,7 +31,7 @@ type Request:
 // EXACTLY `ip`, carrying `host` for TLS SNI and the `Host` header, and never re-resolves
 // — closing the DNS-rebinding TOCTOU by construction. The `Net` allowlist stays the hard
 // floor underneath: `connect_pinned` re-checks `ip`, so even a buggy pin policy cannot
-// dial past `net.deny(confine.private())`.
+// dial past `net.deny(Net.private())`.
 capability PinnedUrl:
     host: String
     port: Int
@@ -133,7 +133,7 @@ pub fn try_post(net: Net[Connect, Tcp], host: String, port: Int, path: String, b
 // it. The safe shape for fetching an untrusted URL — pair it with a confined `Net` for
 // defense in depth, so the capability floor rejects an internal address even if the
 // predicate is wrong:
-//     let safe = net.deny(confine.private())
+//     let safe = net.deny(Net.private())
 //     match http.pin(safe, user_url, allow_ip):
 //         Ok(p) -> http.get_pinned(safe, p)
 //         Err(e) -> Err(e)
