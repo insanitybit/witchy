@@ -144,6 +144,7 @@ struct Scope<'a> {
 pub fn resolve(modules: &mut [(String, Module)]) -> Result<(), LinkError> {
     let world = World::build(modules);
     // Split the borrow: build each scope from `world`, then rewrite that module.
+    #[allow(clippy::needless_range_loop)] // index needed: read modules[idx] then mutate modules[idx].1
     for idx in 0..modules.len() {
         let (home, imports, from_imports) = {
             let (n, m) = &modules[idx];
@@ -169,7 +170,7 @@ impl<'a> Scope<'a> {
             for t in &mt.types {
                 type_map.insert(t.clone(), format!("{home}.{t}"));
             }
-            for (c, _) in &mt.ctors {
+            for c in mt.ctors.keys() {
                 ctor_map.insert(c.clone(), format!("{home}.{c}"));
             }
         }
