@@ -27,6 +27,7 @@
 - [Sharing Code: Runes and the Registry](packages.md)
   - [The Manifest, the Lockfile, and the CLI](packages-cli.md)
   - [Build Steps: `build.witchy`](packages-build.md)
+- [Frontend Apps with Glamour](frontend.md)
 - [Under the Hood: Two Backends, One Meaning](backends.md)
 - [Testing](testing.md)
 
