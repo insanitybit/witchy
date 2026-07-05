@@ -76,7 +76,7 @@ impl RegistryServer {
 
         // Wait for the listener to come up.
         let mut up = false;
-        for _ in 0..200 {
+        for _ in 0..600 {
             if std::net::TcpStream::connect(&addr).is_ok() {
                 up = true;
                 break;
@@ -184,7 +184,7 @@ impl RegistryServer {
             .spawn()
             .expect("spawn coven-serve");
         let mut up = false;
-        for _ in 0..200 {
+        for _ in 0..600 {
             if std::net::TcpStream::connect(&addr).is_ok() {
                 up = true;
                 break;
@@ -1919,7 +1919,7 @@ fn witchy_coven_full_lifecycle_self_hosted() {
 
     // Wait for the listener to come up.
     let mut up = false;
-    for _ in 0..80 {
+    for _ in 0..600 {
         if std::net::TcpStream::connect(&addr).is_ok() {
             up = true;
             break;
@@ -2075,7 +2075,7 @@ fn witchy_coven_trusted_publishing_verifies_a_rust_minted_token() {
         .expect("spawn witchy coven (trusted)");
 
     let mut up = false;
-    for _ in 0..80 {
+    for _ in 0..600 {
         if std::net::TcpStream::connect(&addr).is_ok() {
             up = true;
             break;
@@ -2370,7 +2370,7 @@ fn coven_web_github_login_completes_a_session() {
         .expect("spawn coven-web");
 
     let mut up = false;
-    for _ in 0..200 {
+    for _ in 0..600 {
         if std::net::TcpStream::connect(&web_addr).is_ok() {
             up = true;
             break;
@@ -2588,7 +2588,7 @@ fn coven_web_google_login_verifies_id_token_and_completes_a_session() {
         .expect("spawn coven-web");
 
     let mut up = false;
-    for _ in 0..200 {
+    for _ in 0..600 {
         if std::net::TcpStream::connect(&web_addr).is_ok() {
             up = true;
             break;
@@ -2679,7 +2679,7 @@ fn witchy_pm_add_resolves_and_fetches_from_coven() {
         .spawn()
         .expect("spawn witchy coven");
     let mut up = false;
-    for _ in 0..80 {
+    for _ in 0..600 {
         if std::net::TcpStream::connect(&addr).is_ok() {
             up = true;
             break;
@@ -2841,7 +2841,7 @@ fn witchy_coven_yank_excludes_from_resolution() {
         .spawn()
         .expect("spawn witchy coven");
     let mut up = false;
-    for _ in 0..80 {
+    for _ in 0..600 {
         if std::net::TcpStream::connect(&addr).is_ok() {
             up = true;
             break;
@@ -2953,7 +2953,7 @@ fn witchy_pm_add_resolves_transitive_dependencies() {
         .spawn()
         .expect("spawn witchy coven");
     let mut up = false;
-    for _ in 0..80 {
+    for _ in 0..600 {
         if std::net::TcpStream::connect(&addr).is_ok() {
             up = true;
             break;
@@ -3194,7 +3194,7 @@ fn witchy_coven_promote_delta_immutability_and_error_paths() {
         .spawn()
         .expect("spawn witchy coven");
     let mut up = false;
-    for _ in 0..80 {
+    for _ in 0..600 {
         if std::net::TcpStream::connect(&addr).is_ok() {
             up = true;
             break;
