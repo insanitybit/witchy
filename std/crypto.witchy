@@ -34,9 +34,11 @@ pub fn sign(key: Secret, message: String) -> String:
 pub fn public_key(key: Secret) -> String:
     ""
 
-// Reveal a `Secret`'s raw bytes as a string — for value secrets (tokens,
-// passwords) that must be handed to an external sink. Signing keys are used via
-// `sign`/`public_key`, not revealed.
+// Reveal a `Secret`'s raw bytes as a string — for revealable value secrets
+// (tokens, passwords) that must be handed to an external sink. Errors on secrets
+// that are not revealable: signing keys (granted with `--signing-key`, used via
+// `sign`/`public_key`) and any secret granted use-only (`--secret-file
+// name=path,use-only`, e.g. a TLS private key).
 pub fn reveal(key: Secret) -> String:
     ""
 
