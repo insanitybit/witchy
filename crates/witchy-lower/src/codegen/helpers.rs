@@ -637,7 +637,10 @@ impl Codegen {
             // name as the opening token (matching the single ctor it lowers to).
             EqShape::Record(tyname) => {
                 let fields = self.record_field_types.get(tyname).cloned()?;
-                let header = self.intern(&format!("{tyname}("));
+                // (RFC-0042) Render the unqualified type name (`P`), not the
+                // canonical `main.P` — matching the interpreter's Display.
+                let shown = tyname.rsplit_once('.').map_or(tyname.as_str(), |(_, c)| c);
+                let header = self.intern(&format!("{shown}("));
                 let (close, comma) = (self.intern(")"), self.intern(", "));
                 let mut body: witchy_wir::wir::WirSeq = vec![setl("acc", W::StrPtr(header))];
                 for (i, fty) in fields.iter().enumerate() {
