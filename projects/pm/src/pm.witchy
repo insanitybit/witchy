@@ -243,10 +243,13 @@ fn collect_deps(root: Dir, dir: String, flags: List(String)) -> List(String):
     if exists(root, lockpath):
         let lock = read(root, lockpath)
         for block in toml.array_tables(lock, "rune"):
-            let name = entry_name(block)
-            if !string.is_empty(name) && !has_dep(acc, name):
-                if let Some(src) = vendored_module(root, dir, name):
-                    acc = dep_flag(acc, name, src)
+            // The import key is the local alias (basename), distinct from the lock's
+            // registry identity `name` (BUG-099). Old-format locks have no `alias`,
+            // so fall back to the basename of `name`.
+            let alias = entry_alias(block)
+            if !string.is_empty(alias) && !has_dep(acc, alias):
+                if let Some(src) = vendored_module(root, dir, alias):
+                    acc = dep_flag(acc, alias, src)
     acc
 
 // Append a `--dep <name>=<path>` for a manifest path dependency (no-op otherwise),
@@ -1312,6 +1315,14 @@ fn entry_name(block: String) -> String:
         Some(n) -> n
         None -> ""
 
+// The local import alias (basename) of a `[[rune]]` lock entry: the explicit
+// `alias` field written by `pm add` (BUG-099), or — for older locks / path
+// entries that carry no `alias` — the basename of the registry `name`.
+fn entry_alias(block: String) -> String:
+    match toml.get(block, "alias"):
+        Some(a) -> a
+        None -> basename(entry_name(block))
+
 fn entry_hash(block: String) -> String:
     match toml.get(block, "hash"):
         Some(h) -> h
@@ -1554,9 +1565,14 @@ fn update_vendored(console: Console, net: Net, root: Dir, host: String, port: In
         // supply-chain attack the gate exists to stop.
         2
     else:
-        write(root, "witchy.lock", vendor_lock(root, snapshot_pin(net, host, port) + rootpub_pin(net, host, port)))
-        print(console, "updated ${changed} dependencies -> witchy.lock")
-        0
+        match snapshot_pin(net, root, host, port):
+            Err(m) ->
+                print(console, "BLOCK: cannot pin registry metadata — " + m)
+                2
+            Ok(snapline) ->
+                write(root, "witchy.lock", vendor_lock(root, snapline + rootpub_pin(net, host, port)))
+                print(console, "updated ${changed} dependencies -> witchy.lock")
+                0
 
 // Re-fetch one vendored rune if the registry has a newer released version than the
 // one currently vendored. Returns (changed, blocked): `changed` is 1 if it moved,
@@ -1760,21 +1776,58 @@ fn split_spec(spec: String) -> (String, String):
 // source and `verify`/`gate` can re-check it. Idempotently rewrites the lock from
 // every currently-vendored rune so repeated `add`s accumulate, not clobber.
 fn pin_lock(console: Console, net: Net, root: Dir, host: String, port: Int, name: String) -> Int:
-    write(root, "witchy.lock", vendor_lock(root, snapshot_pin(net, host, port) + rootpub_pin(net, host, port)))
-    print(console, "locked " + basename(name) + " -> witchy.lock")
-    0
+    match snapshot_pin(net, root, host, port):
+        Err(m) ->
+            print(console, "BLOCK: cannot pin registry metadata for " + basename(name) + " — " + m)
+            2
+        Ok(snapline) ->
+            write(root, "witchy.lock", vendor_lock(root, snapline + rootpub_pin(net, host, port)))
+            print(console, "locked " + basename(name) + " -> witchy.lock")
+            0
 
 // The `registry_snapshot_version = N` top-level line pinning the registry's current
-// TUF snapshot version into the lock — the rollback baseline `verify` enforces. The
-// snapshot role is signed; we record the version the `add` resolved against. An
-// empty string when the registry serves no snapshot (nothing to pin).
-fn snapshot_pin(net: Net, host: String, port: Int) -> String:
-    let resp = http.get(net, host, port, "/coven/snapshot")
-    if http.status(resp) != 200:
-        ""
+// TUF snapshot version into the lock — the rollback baseline `verify` enforces.
+// BUG-233: the version is pinned ONLY from a VERIFIED snapshot role — the snapshot
+// and timestamp must be validly signed by the registry root key (bound to any key
+// already pinned in the lock), structurally well-formed, hash-bound, and in version
+// agreement — so a malformed/unsigned/split response cannot under- or over-pin the
+// rollback floor. `Ok("")` when the registry serves no snapshot (nothing to pin);
+// `Err` aborts the add/update rather than writing an unverified pin.
+fn snapshot_pin(net: Net, root: Dir, host: String, port: Int) -> Result(String, String):
+    let snap_resp = http.get(net, host, port, "/coven/snapshot")
+    if http.status(snap_resp) != 200:
+        Ok("")
     else:
-        let v = signed_field_int(http.body(resp), "version")
-        "registry_snapshot_version = ${v}\n"
+        let rootpub = http.body(http.get(net, host, port, "/coven/rootpub"))
+        let pinned_pub = if exists(root, "witchy.lock"): pinned_rootpub(read(root, "witchy.lock")) else: ""
+        if pinned_pub != "" && pinned_pub != rootpub:
+            Err("registry root key does not match the key pinned in witchy.lock (possible MITM / hostile mirror)")
+        else:
+            let ts_resp = http.get(net, host, port, "/coven/timestamp")
+            if http.status(ts_resp) != 200:
+                Err("registry served a snapshot but no timestamp role — cannot verify the TUF chain")
+            else:
+                verified_snapshot_line(rootpub, http.body(snap_resp), http.body(ts_resp))
+
+// Run the signature + schema + hash-binding + version-agreement checks over a
+// snapshot/timestamp pair (the same gate `verify`/`check_chain` applies) and, only
+// if they all pass, produce the `registry_snapshot_version` line for the verified
+// snapshot version. Freshness (`expires`) is enforced at `verify` time, not pinned.
+fn verified_snapshot_line(rootpub: String, snap_env: String, ts_env: String) -> Result(String, String):
+    if !signed_valid(rootpub, ts_env):
+        Err("the timestamp role is not validly signed by the registry root key")
+    else if !signed_valid(rootpub, snap_env):
+        Err("the snapshot role is not validly signed by the registry root key")
+    else if !snapshot_schema_ok(snap_env):
+        Err("the snapshot role is structurally malformed (needs an integer `version` and an object `targets`)")
+    else if !timestamp_schema_ok(ts_env):
+        Err("the timestamp role is structurally malformed (needs an integer `snapshot_version`, a string `snapshot_hash`, and an integer `expires`)")
+    else if "sha256:" + crypto.sha256(signed_canonical(snap_env)) != signed_field_str(ts_env, "snapshot_hash"):
+        Err("the snapshot does not match the timestamp's pinned hash")
+    else if signed_field_int(snap_env, "version") != signed_field_int(ts_env, "snapshot_version"):
+        Err("the snapshot and timestamp disagree on the snapshot version")
+    else:
+        Ok("registry_snapshot_version = ${signed_field_int(snap_env, "version")}\n")
 
 // The `registry_rootpub = "<hex>"` line pinning the registry's Ed25519 root public key
 // into the lock (trust-on-first-use). `verify` re-fetches the key and refuses a chain
@@ -1800,12 +1853,18 @@ fn vendor_lock(root: Dir, snapshot_line: String) -> String:
                 out = out + vendor_lock_entry(root, entry, rune_dir)
     out
 
+// `name` is the vendor directory basename (the local import alias); the signed
+// record carries the FULL registry package identity (e.g. `acme/http`). BUG-099:
+// the lock `name` is the registry identity from the signed record, and `alias`
+// records the basename import key separately — the two are no longer collapsed.
 fn vendor_lock_entry(root: Dir, name: String, rune_dir: String) -> String:
     let record = read(root, join_path(rune_dir, "coven.json"))
+    let full = recorded_field(record, "name")
+    let ident = if string.is_empty(full): name else: full
     let version = recorded_field(record, "version")
     let hash = recorded_field(record, "hash")
     let fp = footprint_toml(recorded_footprint(record))
-    "\n[[rune]]\nname = \"" + name + "\"\nversion = \"" + version + "\"\nsource = \"coven\"\nhash = \"" + hash + "\"\nruntime_footprint = [" + fp + "]\n"
+    "\n[[rune]]\nname = \"" + ident + "\"\nalias = \"" + name + "\"\nversion = \"" + version + "\"\nsource = \"coven\"\nhash = \"" + hash + "\"\nruntime_footprint = [" + fp + "]\n"
 
 fn recorded_field(record: String, key: String) -> String:
     match json.decode(record):
