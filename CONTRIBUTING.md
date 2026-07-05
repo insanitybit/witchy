@@ -69,14 +69,20 @@ is current).
 
 ## Documentation is tested
 
-Every ` ```witchy ` fenced block in the markdown docs (`README.md`, `docs/*.md`,
-…) is verified by the `documentation_examples_are_valid` test: it must parse,
-link, and type-check, and a `Console`-only `main` is run on both backends with
-the outputs compared. So examples in the docs must be **complete, correct
-programs** — when you change the language, the docs that demonstrate it fail the
-build until updated. Genuinely partial snippets (signatures with `...`, shell
-commands, sample output) use a different fence (untagged, or ` ```sh `) and are
-not executed.
+Runnable ` ```witchy ` examples in the markdown docs (`README.md`, `spec/*.md`,
+`book/src/*.md`) are exercised by the runnable-book gate,
+`scripts/validate_book_examples.mjs` (run in CI). It loads the compiled
+playground engine (`web/witchy.wasm` + `web/witchy-host.js` — the same engine a
+reader's Run button uses), and for each entry in the `book/examples.json`
+manifest it locates the referenced ` ```witchy ` block, runs the ones marked
+`runnable`, and asserts the block's output equals the interpreter output the
+manifest recorded — so an in-book run can never diverge from the toolchain that
+produced the manifest. A divergence, or a manifest block that no longer exists,
+fails the gate. So a runnable example in the docs must be a **complete, correct
+program** — when you change the language, the examples that demonstrate it fail
+the build until updated. Genuinely partial snippets (signatures with `...`, shell
+commands, sample output) use a different fence (untagged, or ` ```sh `); blocks
+the manifest marks non-runnable are recorded but not executed.
 
 ## Where things live
 
