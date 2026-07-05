@@ -467,15 +467,14 @@ fn main(console: Console, root: Dir):
         let (host, port) = addr.rsplit_once(':').expect("addr is host:port");
         let ok = format!(
             r#"
-import confine
 fn main(console: Console, net: Net):
-    let only = net.only(confine.tcp("{host}", {port}))
+    let only = net.only(Net.tcp("{host}", {port}))
     let s = connect(only, "{addr}")
     send_line(s, "ping")
     print(console, recv_line(s))
 "#
         );
-        // Link in the bundled std (`confine`), then run.
+        // Link in the bundled std (`policy` is preluded), then run.
         let linked_ok = crate::pipeline::link(
             vec![("main".to_string(), witchy_syntax::parser::parse_module(&ok).expect("parse"))],
             "main",
@@ -494,9 +493,8 @@ fn main(console: Console, net: Net):
 
         // Denied: cannot attenuate to an address not already held.
         let bad_restrict = r#"
-import confine
 fn main(console: Console, net: Net):
-    let bad = net.only(confine.tcp("10.255.255.1", 80))
+    let bad = net.only(Net.tcp("10.255.255.1", 80))
     print(console, "unreachable")
 "#;
         let linked_bad = crate::pipeline::link(

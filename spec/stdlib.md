@@ -295,62 +295,6 @@ Compare two sources by capability footprint, as JSON:   {"widened":bool,"added":
 
 Render `source` to Markdown API documentation (the same output as `witchy doc`): the module's public types and functions with their signatures and doc-comments, under a heading titled `name`. This only PARSES the source — it never runs it — so a registry can safely generate browsable docs from a rune's stored source on either backend. A parse error comes back as an HTML comment, never a trap.
 
-## `confine`
-
-confine — typed `Net` address policies (RFC-0011). A `NetPolicy` is a typed value built by the constructors below instead of a hand-written string, so a policy is constructed, not spelled; `net.only(policy)` narrows a `Net` to it and `net.deny(policy)` subtracts it:
-
-    let db  = net.only(confine.tcp("10.0.0.5", 6379))     // one plaintext host     let lan = net.deny(confine.cidr_any("10.0.0.0/8"))    // hold everything EXCEPT this block
-
-These are pure value builders (empty capability footprint). The policy wraps the same `host:port` allowlist pattern the host enforces (RFC-0003); the `tls:` HTTPS scheme is a connect-time choice on the address, not a property of the policy (RFC-0009).
-
-#### `type NetPolicy`
-
-A typed `Net` address policy — one allowlist pattern (`host:port`, with `:*` / CIDR forms).
-
-- `NetPolicy { pattern: String }`
-
-#### `type DirPolicy`
-
-A typed `Dir` ENTRY policy (RFC-0011): which entries the Dir may read/write/open. `dir.only(confine.ext(".txt"))` confines a `Dir` so it can only touch `.txt` files (enforced at read/write/open on both backends, the filesystem analog of `net.only`). Refinement only ever shrinks the set.
-
-- `DirPolicy { pattern: String }`
-
-#### `fn ext(suffix: String) -> DirPolicy`
-
-A Dir entry policy admitting only files whose name ends with `suffix` (include the dot, e.g. `".txt"`). Compose with `dir.only` to confine a `Dir`'s reach.
-
-#### `fn files() -> DirPolicy`
-
-A Dir entry policy admitting only FILE entries: `dir.only(confine.files())` confines a `Dir` so it can read/write files but can neither open, list, nor create sub-directories. AND-composes with `ext` — `dir.only(files()).only(ext(".txt"))` admits only `.txt` files.
-
-#### `fn dirs() -> DirPolicy`
-
-A Dir entry policy admitting only DIRECTORY entries: `dir.only(confine.dirs())` confines a `Dir` to traversal (open/list/create sub-directories) with no file read/write. The mirror of `files()`.
-
-#### `fn tcp(host: String, port: Int) -> NetPolicy`
-
-A plaintext TCP endpoint: `<host>:<port>`.
-
-#### `fn any_port(host: String) -> NetPolicy`
-
-Any port on a host: `<host>:*`.
-
-#### `fn cidr(block: String, port: Int) -> NetPolicy`
-
-An IPv4 CIDR block (rebinding-proof — matched against the resolved IP): `<a.b.c.d/bits>:<port>`.
-
-#### `fn cidr_any(block: String) -> NetPolicy`
-
-An IPv4 CIDR block, any port: `<a.b.c.d/bits>:*`.
-
-#### `fn union(a: NetPolicy, b: NetPolicy) -> NetPolicy`
-
-The UNION of two policies — `net.only(union(a, b))` admits either (e.g. an OAuth host plus an API host: `union(tcp("github.com", 443), tcp("api.github.com", 443))`). The patterns are carried together (newline-joined internally) and the host narrows to the whole set at once.
-
-#### `fn private() -> NetPolicy`
-
-The non-public IP ranges — loopback, RFC-1918, link-local (incl. the `169.254.169.254` cloud-metadata IP), CGNAT, "this host", and the IPv6 equivalents. `net.deny(confine.private())` confines a `Net` so it can never dial an internal address: the CIDR forms are matched against the RESOLVED IP, so a hostname that rebinds to an internal address is refused at connect time (the one-line SSRF / DNS-rebinding defense, RFC-0020).
-
 ## `convert`
 
 Conversion traits, following Rust's `std::convert`. `From(a)` builds the implementing type from an `a`; `Into(b)` consumes `self` into a `b`. Implementing `From` is enough, since the blanket impl below derives the matching `Into`:
@@ -825,7 +769,7 @@ Fallible POST: `Ok(response)` on success, `Err(reason)` if the host is unreachab
 
 #### `fn pin(net: Net[Connect, Tcp], raw: String, allow_ip: fn(String) -> Bool) -> Result(PinnedUrl, String)`
 
-Resolve `raw`'s host ONCE, keep the first resolved IP the predicate approves, and pin it. The safe shape for fetching an untrusted URL — pair it with a confined `Net` for defense in depth, so the capability floor rejects an internal address even if the predicate is wrong:     let safe = net.deny(confine.private())     match http.pin(safe, user_url, allow_ip):         Ok(p) -> http.get_pinned(safe, p)         Err(e) -> Err(e)
+Resolve `raw`'s host ONCE, keep the first resolved IP the predicate approves, and pin it. The safe shape for fetching an untrusted URL — pair it with a confined `Net` for defense in depth, so the capability floor rejects an internal address even if the predicate is wrong:     let safe = net.deny(Net.private())     match http.pin(safe, user_url, allow_ip):         Ok(p) -> http.get_pinned(safe, p)         Err(e) -> Err(e)
 
 #### `fn unpinned(net: Net[Connect, Tcp], raw: String) -> Result(PinnedUrl, String)`
 
@@ -1718,6 +1662,62 @@ The base name without its extension (".bashrc" -> ".bashrc"; "a.b.c" -> "a.b").
 #### `fn normalize(p: String) -> String`
 
 Collapse `.` and `..` segments and redundant slashes. A relative path that backs out past its start keeps the leading `..`s; an absolute one cannot escape its root. An empty result is "." (relative) or "/" (absolute).
+
+## `policy`
+
+policy — typed capability refinement policies (RFC-0011, RFC-0057). A policy is a pure value built by a type-associated constructor on the capability it belongs to, then handed to that capability's refinement verb: `net.only(policy)` narrows a `Net`, `net.deny(policy)` subtracts it, `dir.only(policy)` confines a `Dir`. The constructors live under the capability's OWN type — `Net.tcp(…)`, `Dir.ext(…)` — so a reader finds a capability's whole refinement vocabulary (verbs and policy values) in one place, with no shared grab-bag reaching across capabilities:
+
+    let db  = net.only(Net.tcp("10.0.0.5", 6379))     // one plaintext host     let lan = net.deny(Net.cidr_any("10.0.0.0/8"))    // hold everything EXCEPT this block     let log = dir.only(Dir.ext(".log"))               // only `.log` files
+
+These are pure value builders (empty capability footprint). A `NetPolicy` wraps the same `host:port` allowlist pattern the host enforces (RFC-0003); the `tls:` HTTPS scheme is a connect-time choice on the address, not a property of the policy (RFC-0009). The module is preluded, so `Net.tcp(…)` / `Dir.ext(…)` resolve without an import.
+
+#### `type NetPolicy`
+
+A typed `Net` address policy — one allowlist pattern (`host:port`, with `:*` / CIDR forms).
+
+- `NetPolicy { pattern: String }`
+
+#### `type DirPolicy`
+
+A typed `Dir` ENTRY policy (RFC-0011): which entries the Dir may read/write/open. `dir.only(Dir.ext(".txt"))` confines a `Dir` so it can only touch `.txt` files (enforced at read/write/open on both backends, the filesystem analog of `net.only`). Refinement only ever shrinks the set.
+
+- `DirPolicy { pattern: String }`
+
+#### `Net.tcp(host: String, port: Int) -> NetPolicy`
+
+A plaintext TCP endpoint: `<host>:<port>`.
+
+#### `Net.any_port(host: String) -> NetPolicy`
+
+Any port on a host: `<host>:*`.
+
+#### `Net.cidr(block: String, port: Int) -> NetPolicy`
+
+An IPv4 CIDR block (rebinding-proof — matched against the resolved IP): `<a.b.c.d/bits>:<port>`.
+
+#### `Net.cidr_any(block: String) -> NetPolicy`
+
+An IPv4 CIDR block, any port: `<a.b.c.d/bits>:*`.
+
+#### `Net.union(a: NetPolicy, b: NetPolicy) -> NetPolicy`
+
+The UNION of two policies — `net.only(Net.union(a, b))` admits either (e.g. an OAuth host plus an API host: `Net.union(Net.tcp("github.com", 443), Net.tcp("api.github.com", 443))`). The patterns are carried together (newline-joined internally) and the host narrows to the whole set at once.
+
+#### `Net.private() -> NetPolicy`
+
+The non-public IP ranges — loopback, RFC-1918, link-local (incl. the `169.254.169.254` cloud-metadata IP), CGNAT, "this host", and the IPv6 equivalents. `net.deny(Net.private())` confines a `Net` so it can never dial an internal address: the CIDR forms are matched against the RESOLVED IP, so a hostname that rebinds to an internal address is refused at connect time (the one-line SSRF / DNS-rebinding defense, RFC-0020).
+
+#### `Dir.ext(suffix: String) -> DirPolicy`
+
+A Dir entry policy admitting only files whose name ends with `suffix` (include the dot, e.g. `".txt"`). Compose with `dir.only` to confine a `Dir`'s reach.
+
+#### `Dir.files() -> DirPolicy`
+
+A Dir entry policy admitting only FILE entries: `dir.only(Dir.files())` confines a `Dir` so it can read/write files but can neither open, list, nor create sub-directories. AND-composes with `ext` — `dir.only(Dir.files()).only(Dir.ext(".txt"))` admits only `.txt` files.
+
+#### `Dir.dirs() -> DirPolicy`
+
+A Dir entry policy admitting only DIRECTORY entries: `dir.only(Dir.dirs())` confines a `Dir` to traversal (open/list/create sub-directories) with no file read/write. The mirror of `files()`.
 
 ## `rand`
 

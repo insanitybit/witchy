@@ -462,7 +462,11 @@ impl Parser {
         let mut methods = Vec::new();
         if self.eat(&Tok::LBrace) {
             while !self.at(&Tok::RBrace) && !self.at(&Tok::Eof) {
-                methods.push(self.function(false)?);
+                // A method may declare its visibility (`pub fn …`). This matters
+                // for type-associated (self-less) constructors — `Net.tcp(…)` —
+                // that a module exports as public API (RFC-0057).
+                let public = self.eat(&Tok::Pub);
+                methods.push(self.function(public)?);
             }
             self.expect(&Tok::RBrace)?;
         }

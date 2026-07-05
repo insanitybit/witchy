@@ -50,6 +50,35 @@ pub fn render(module_name: &str, source: &str) -> Result<String, String> {
             let _ = writeln!(out, "{doc}\n");
         }
     }
+    // Inherent-impl associated (self-less) functions — `Net.tcp(…)` (RFC-0057).
+    // These are namespaced under a type, not free functions, so render them
+    // qualified: `Type.name(...)`. Trait impls carry no new public surface.
+    for item in &module.items {
+        let Item::Impl(im) = item else { continue };
+        if im.trait_name.is_some() {
+            continue;
+        }
+        for m in &im.methods {
+            if !m.public {
+                continue;
+            }
+            // A `self`-less method is a static (`Type.name(…)`); an instance
+            // method drops `self` and reads as `value.name(…)`.
+            let is_static = m.params.first().is_none_or(|p| p.name != "self");
+            let params: &[Param] = if is_static { &m.params } else { &m.params[1..] };
+            let sig = signature(&m.name, params, &m.ret, &m.bounds);
+            let sig = sig
+                .strip_prefix("fn ")
+                .map(|s| format!("{}.{s}", im.type_name))
+                .unwrap_or(sig);
+            any = true;
+            let _ = writeln!(out, "#### `{sig}`\n");
+            let doc = doc_above(&lines, &format!("pub fn {}(", m.name));
+            if !doc.is_empty() {
+                let _ = writeln!(out, "{doc}\n");
+            }
+        }
+    }
     if !any {
         let _ = writeln!(out, "_No public API._\n");
     }

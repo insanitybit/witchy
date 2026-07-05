@@ -1,0 +1,78 @@
+// policy — typed capability refinement policies (RFC-0011, RFC-0057). A policy is a
+// pure value built by a type-associated constructor on the capability it belongs to,
+// then handed to that capability's refinement verb: `net.only(policy)` narrows a
+// `Net`, `net.deny(policy)` subtracts it, `dir.only(policy)` confines a `Dir`. The
+// constructors live under the capability's OWN type — `Net.tcp(…)`, `Dir.ext(…)` — so
+// a reader finds a capability's whole refinement vocabulary (verbs and policy values)
+// in one place, with no shared grab-bag reaching across capabilities:
+//
+//     let db  = net.only(Net.tcp("10.0.0.5", 6379))     // one plaintext host
+//     let lan = net.deny(Net.cidr_any("10.0.0.0/8"))    // hold everything EXCEPT this block
+//     let log = dir.only(Dir.ext(".log"))               // only `.log` files
+//
+// These are pure value builders (empty capability footprint). A `NetPolicy` wraps the
+// same `host:port` allowlist pattern the host enforces (RFC-0003); the `tls:` HTTPS
+// scheme is a connect-time choice on the address, not a property of the policy (RFC-0009).
+// The module is preluded, so `Net.tcp(…)` / `Dir.ext(…)` resolve without an import.
+
+// A typed `Net` address policy — one allowlist pattern (`host:port`, with `:*` / CIDR forms).
+type NetPolicy:
+    pattern: String
+
+// A typed `Dir` ENTRY policy (RFC-0011): which entries the Dir may read/write/open.
+// `dir.only(Dir.ext(".txt"))` confines a `Dir` so it can only touch `.txt` files
+// (enforced at read/write/open on both backends, the filesystem analog of
+// `net.only`). Refinement only ever shrinks the set.
+type DirPolicy:
+    pattern: String
+
+impl Net:
+    // A plaintext TCP endpoint: `<host>:<port>`.
+    pub fn tcp(host: String, port: Int) -> NetPolicy:
+        NetPolicy(host + ":" + "${port}")
+
+    // Any port on a host: `<host>:*`.
+    pub fn any_port(host: String) -> NetPolicy:
+        NetPolicy(host + ":*")
+
+    // An IPv4 CIDR block (rebinding-proof — matched against the resolved IP): `<a.b.c.d/bits>:<port>`.
+    pub fn cidr(block: String, port: Int) -> NetPolicy:
+        NetPolicy(block + ":" + "${port}")
+
+    // An IPv4 CIDR block, any port: `<a.b.c.d/bits>:*`.
+    pub fn cidr_any(block: String) -> NetPolicy:
+        NetPolicy(block + ":*")
+
+    // The UNION of two policies — `net.only(Net.union(a, b))` admits either (e.g. an OAuth
+    // host plus an API host: `Net.union(Net.tcp("github.com", 443), Net.tcp("api.github.com",
+    // 443))`). The patterns are carried together (newline-joined internally) and the host
+    // narrows to the whole set at once.
+    pub fn union(a: NetPolicy, b: NetPolicy) -> NetPolicy:
+        NetPolicy(a.pattern + "\n" + b.pattern)
+
+    // The non-public IP ranges — loopback, RFC-1918, link-local (incl. the
+    // `169.254.169.254` cloud-metadata IP), CGNAT, "this host", and the IPv6
+    // equivalents. `net.deny(Net.private())` confines a `Net` so it can never dial
+    // an internal address: the CIDR forms are matched against the RESOLVED IP, so a
+    // hostname that rebinds to an internal address is refused at connect time
+    // (the one-line SSRF / DNS-rebinding defense, RFC-0020).
+    pub fn private() -> NetPolicy:
+        Net.union(Net.cidr_any("127.0.0.0/8"), Net.union(Net.cidr_any("10.0.0.0/8"), Net.union(Net.cidr_any("172.16.0.0/12"), Net.union(Net.cidr_any("192.168.0.0/16"), Net.union(Net.cidr_any("169.254.0.0/16"), Net.union(Net.cidr_any("100.64.0.0/10"), Net.union(Net.cidr_any("0.0.0.0/8"), Net.union(Net.cidr_any("::1/128"), Net.union(Net.cidr_any("fe80::/10"), Net.cidr_any("fc00::/7"))))))))))
+
+impl Dir:
+    // A Dir entry policy admitting only files whose name ends with `suffix` (include
+    // the dot, e.g. `".txt"`). Compose with `dir.only` to confine a `Dir`'s reach.
+    pub fn ext(suffix: String) -> DirPolicy:
+        DirPolicy("ext:" + suffix)
+
+    // A Dir entry policy admitting only FILE entries: `dir.only(Dir.files())` confines a
+    // `Dir` so it can read/write files but can neither open, list, nor create sub-directories.
+    // AND-composes with `ext` — `dir.only(Dir.files()).only(Dir.ext(".txt"))` admits only `.txt` files.
+    pub fn files() -> DirPolicy:
+        DirPolicy("kind:file")
+
+    // A Dir entry policy admitting only DIRECTORY entries: `dir.only(Dir.dirs())` confines a
+    // `Dir` to traversal (open/list/create sub-directories) with no file read/write. The mirror
+    // of `files()`.
+    pub fn dirs() -> DirPolicy:
+        DirPolicy("kind:dir")

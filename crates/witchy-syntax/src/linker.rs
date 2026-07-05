@@ -100,7 +100,7 @@ pub const STD_MODULES: &[&str] = &[
     "show", "http", "json", "url", "duration", "random", "regex", "crypto", "compiler", "toml",
     "iter", "semver", "rights", "fs", "dict", "csv", "time", "encoding", "path", "testing",
     "future", "task", "chan", "webauthn", "secretstore", "reflect", "meta", "convert", "exec",
-    "confine", "jwt", "oauth", "rand", "vm", "bytes",
+    "policy", "jwt", "oauth", "rand", "vm", "bytes",
 ];
 
 /// The bundled std modules that export a `pub fn` of the given name — used to
@@ -310,7 +310,7 @@ pub fn std_source(name: &str) -> Option<&'static str> {
         "reflect" => Some(include_str!("../../../std/reflect.witchy")),
         "meta" => Some(include_str!("../../../std/meta.witchy")),
         "exec" => Some(include_str!("../../../std/exec.witchy")),
-        "confine" => Some(include_str!("../../../std/confine.witchy")),
+        "policy" => Some(include_str!("../../../std/policy.witchy")),
         "jwt" => Some(include_str!("../../../std/jwt.witchy")),
         "oauth" => Some(include_str!("../../../std/oauth.witchy")),
         "vm" => Some(include_str!("../../../std/vm.witchy")),
@@ -404,7 +404,7 @@ pub fn link(
     // module-qualified spellings (`list.push`, `string.split`, `dict.insert`,
     // `math.sqrt`) resolve without an import line. Locally provided modules
     // still take precedence; dead-code elimination strips what goes unused.
-    for prelude in ["list", "string", "dict", "math", "option", "result"] {
+    for prelude in ["list", "string", "dict", "math", "option", "result", "policy"] {
         if !modules.iter().any(|(n, _)| n == prelude) {
             if let Some(src) = std_source(prelude) {
                 if let Ok(m) = crate::parser::parse_module(src) {
