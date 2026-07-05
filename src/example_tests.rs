@@ -16029,6 +16029,57 @@ async fn main(console: Console):
         assert_eq!(interp_out, vec!["18", "20"]);
     }
 
+    // (RFC-0059 Stage-1 step 1) The state-machine lowering's expressiveness: a
+    // mutable `var` local crosses an `await` (mutated on both sides), an `await`
+    // appears inside a `while` loop, and a `for await` body FOLDS into an outer
+    // accumulator (not just drains). All three the old CPS lowering rejected; here
+    // both backends agree AND the folded result is correct.
+    #[test]
+    fn async_state_machine_expressiveness_backends_agree() {
+        let src = r#"
+import chan
+from chan import Sender, Receiver
+
+async fn counter(tx: Sender(Int), n: Int) -> Nil:
+    var i = 0
+    while i < n:
+        chan.send(tx, i).await
+        i = i + 1
+
+async fn total(console: Console, rx: Receiver(Int)) -> Nil:
+    var sum = 0
+    for await v in rx:
+        sum = sum + v
+    print(console, "sum ${sum}")
+
+async fn var_across(console: Console) -> Nil:
+    var acc = 10
+    acc = acc + 5
+    chan.yield_now().await
+    acc = acc + 100
+    chan.yield_now().await
+    print(console, "acc ${acc}")
+
+async fn main(console: Console):
+    var_across(console).await
+    let (tx, rx) = chan.channel(4).await
+    chan.spawn(counter(tx, 5)).await
+    total(console, rx).await
+"#;
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let interp_out =
+            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
+        assert_eq!(interp_out, wasm_out, "state-machine async lowering diverged across backends");
+        // var_across: 10+5+100 = 115.  while sends 0..5, folded sum = 0+1+2+3+4 = 10.
+        assert_eq!(interp_out, vec!["acc 115", "sum 10"]);
+    }
+
     // The headline of the unification: `async`/`await` and channels are ONE
     // substrate. A producer and a consumer, both written as straight-line
     // `async fn`s using `await chan.send`/`await chan.recv`, run concurrently under

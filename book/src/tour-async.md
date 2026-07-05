@@ -173,13 +173,40 @@ async fn main(console: Console):
     chan.consume(out_rx, fn(v): chan.done(print(console, "got ${v}"))).await
 ```
 
-The list form lowers to `task.for_each`, the receiver form to `chan.consume`. A
-`while` loop cannot `await` (it would need mutable state carried across the point, which captured-by-value closures can't express) — for an open-ended loop,
-recurse with an async fn, or use `for await`. The same rule explains a subtler
-limit: the code *after* an `await` becomes a captured-by-value continuation, so a
-`var` declared before an `await` can't be mutated after it. Carry evolving state by
-recursing with an `async fn`, or thread it through a channel (`chan.serve`), rather
-than in a `var`.
+A `while` loop may `await` in its body too, and a `var` local may cross an
+`await` — the compiler lowers each `async fn` to a resumable state machine, so
+evolving state rides the machine rather than a captured-by-value closure. That
+also lets a `for await` loop **fold**: mutate an accumulator each message and read
+the total once the channel closes.
+
+```witchy
+import chan
+from chan import Sender, Receiver
+
+async fn counter(tx: Sender(Int), n: Int) -> Nil:
+    var i = 0
+    while i < n:
+        chan.send(tx, i).await
+        i = i + 1
+
+async fn total(console: Console, rx: Receiver(Int)) -> Nil:
+    var sum = 0
+    for await v in rx:
+        sum = sum + v
+    print(console, "sum is ${sum}")
+
+async fn main(console: Console):
+    let (tx, rx) = chan.channel(4).await
+    chan.spawn(counter(tx, 5)).await
+    total(console, rx).await
+```
+
+```text
+sum is 10
+```
+
+`counter` drives its `while` with a `var i` that it mutates after each `await`,
+and `total` folds the stream into `var sum` (0 + 1 + 2 + 3 + 4 = 10).
 
 ## Async methods
 
