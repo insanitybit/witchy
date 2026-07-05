@@ -93,7 +93,11 @@ impl Renamer {
                 self.rename_expr(lo);
                 self.rename_expr(hi);
             }
-            Expr::Index { .. } | Expr::WhileLet { .. } | Expr::MethodCall { .. } | Expr::Record { .. } => {
+            Expr::Index { .. }
+            | Expr::WhileLet { .. }
+            | Expr::MethodCall { .. }
+            | Expr::Record { .. }
+            | Expr::LabeledCall { .. } => {
                 unreachable!("range/index sugar is lowered before codegen (parser::lower_sugar_module)")
             }
             Expr::Var(n) => *n = self.resolve(n),
@@ -321,6 +325,9 @@ pub(crate) fn flip_string_add_module(m: &mut Module, table: &witchy_types::typec
                 walk_expr(base, table);
                 walk_expr(index, table);
             }
+            Expr::LabeledCall { .. } => {
+                unreachable!("RFC-0056: labeled calls are lowered to positional Call before codegen")
+            }
             Expr::Record { fields, spread, .. } => {
                 for (_, v) in fields {
                     walk_expr(v, table);
@@ -431,6 +438,7 @@ pub(crate) fn rewrite_try_ctx_module(m: &mut Module, table: &witchy_types::typec
                         name: "__ctx_err".into(),
                         ty: None,
                         convention: Convention::default(),
+                        default: None,
                     }],
                     body: Block {
                         stmts: vec![Stmt::Expr(Expr::Binary {
@@ -485,6 +493,9 @@ pub(crate) fn rewrite_try_ctx_module(m: &mut Module, table: &witchy_types::typec
             Expr::Index { base, index } => {
                 walk_expr(base, table, changed);
                 walk_expr(index, table, changed);
+            }
+            Expr::LabeledCall { .. } => {
+                unreachable!("RFC-0056: labeled calls are lowered to positional Call before codegen")
             }
             Expr::Record { fields, spread, .. } => {
                 for (_, v) in fields {

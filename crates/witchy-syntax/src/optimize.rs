@@ -120,6 +120,11 @@ fn opt_expr(e: &mut Expr, consts: &mut Consts) {
         Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
             args.iter_mut().for_each(|a| opt_expr(a, consts))
         }
+        // Normally already lowered to `Call` by `keyword_args::resolve` before
+        // folding; recurse defensively so this stays correct if reordered.
+        Expr::LabeledCall { args, .. } => {
+            args.iter_mut().for_each(|(_, a)| opt_expr(a, consts))
+        }
         Expr::MethodCall { receiver, args, .. } => {
             opt_expr(receiver, consts);
             args.iter_mut().for_each(|a| opt_expr(a, consts));

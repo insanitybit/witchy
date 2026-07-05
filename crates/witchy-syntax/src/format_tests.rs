@@ -63,6 +63,7 @@
                     name: "console".into(),
                     ty: Some(Type::Named("Console".into(), vec![])),
                     convention: Default::default(),
+                    default: None,
                 }],
                 ret: None,
                 body: Block {

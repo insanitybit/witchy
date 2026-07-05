@@ -5573,6 +5573,7 @@ impl Codegen {
             | Expr::WhileLet { .. }
             | Expr::MethodCall { .. }
             | Expr::Record { .. }
+            | Expr::LabeledCall { .. }
             | Expr::Var(_)
             | Expr::Int(_)
             | Expr::Duration(_)
@@ -6144,6 +6145,9 @@ impl DevirtScan {
             Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
                 args.iter().for_each(|a| self.walk_expr(a))
             }
+            Expr::LabeledCall { args, .. } => {
+                args.iter().for_each(|(_, a)| self.walk_expr(a))
+            }
             Expr::MethodCall { receiver, args, .. } => {
                 self.walk_expr(receiver);
                 args.iter().for_each(|a| self.walk_expr(a));
@@ -6286,7 +6290,11 @@ fn collect_fn_refs_expr(e: &Expr, out: &mut HashSet<String>) {
             collect_fn_refs_expr(lo, out);
             collect_fn_refs_expr(hi, out);
         }
-        Expr::Index { .. } | Expr::WhileLet { .. } | Expr::MethodCall { .. } | Expr::Record { .. } => {
+        Expr::Index { .. }
+        | Expr::WhileLet { .. }
+        | Expr::MethodCall { .. }
+        | Expr::Record { .. }
+        | Expr::LabeledCall { .. } => {
             unreachable!("range/index sugar is lowered before codegen (parser::lower_sugar_module)")
         }
         Expr::Call { name, args } => {
@@ -6513,7 +6521,11 @@ fn collect_let_names_expr(expr: &Expr, out: &mut Vec<String>) {
             collect_let_names_expr(lo, out);
             collect_let_names_expr(hi, out);
         }
-        Expr::Index { .. } | Expr::WhileLet { .. } | Expr::MethodCall { .. } | Expr::Record { .. } => {
+        Expr::Index { .. }
+        | Expr::WhileLet { .. }
+        | Expr::MethodCall { .. }
+        | Expr::Record { .. }
+        | Expr::LabeledCall { .. } => {
             unreachable!("range/index sugar is lowered before codegen (parser::lower_sugar_module)")
         }
         Expr::If {

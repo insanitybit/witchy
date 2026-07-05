@@ -55,6 +55,11 @@ fn collect_names(e: &Expr, out: &mut Vec<String>) {
                 collect_names(x, out);
             }
         }
+        Expr::LabeledCall { args, .. } => {
+            for (_, a) in args {
+                collect_names(a, out);
+            }
+        }
         Expr::MethodCall { receiver, args, .. } => {
             collect_names(receiver, out);
             for a in args {
@@ -297,6 +302,13 @@ fn subst_expr(
         Expr::Call { args, .. } => {
             let mut changed = false;
             for a in args {
+                changed |= subst_expr(a, consts, cnames, scope);
+            }
+            changed
+        }
+        Expr::LabeledCall { args, .. } => {
+            let mut changed = false;
+            for (_, a) in args {
                 changed |= subst_expr(a, consts, cnames, scope);
             }
             changed

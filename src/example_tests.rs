@@ -256,6 +256,81 @@
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
+    /// (RFC-0056) Keyword arguments at a direct call site reorder to the callee's
+    /// declared parameter order — resolved at the link layer, so both backends see
+    /// the same positional call and agree. `label(n: 7, name: "ada")` binds `name`
+    /// and `n` correctly despite the reversed written order.
+    #[test]
+    fn keyword_args_reorder_backends_agree() {
+        let src = "fn label(name: String, n: Int) -> String:\n    \"${name}#${n}\"\n\nfn main(console: Console):\n    print(console, label(n: 7, name: \"ada\"))\n    print(console, label(\"bob\", n: 3))\n";
+        let expected = ["ada#7", "bob#3"];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+    }
+
+    /// (RFC-0056) A labeled call evaluates its arguments in SOURCE order, not
+    /// declared order: the desugar binds each written argument to a temp in the
+    /// order written, then passes the temps in declared order. Here `b:` is written
+    /// before `a:` but binds to the later parameter — the two effectful `side`
+    /// calls must still print "first" before "second", identically on both backends.
+    #[test]
+    fn keyword_args_source_order_backends_agree() {
+        let src = "fn record(console: Console, a: String, b: String) -> Nil:\n    print(console, \"a=${a} b=${b}\")\n\nfn side(console: Console, tag: String, ret: String) -> String:\n    print(console, \"eval ${tag}\")\n    ret\n\nfn main(console: Console):\n    record(console, b: side(console, \"first\", \"B\"), a: side(console, \"second\", \"A\"))\n";
+        let expected = ["eval first", "eval second", "a=A b=B"];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+    }
+
+    /// (RFC-0056) A closed-constant default parameter is spliced in for an omitted
+    /// argument at a direct call site. `connect("h", tls: false)` keeps the default
+    /// `port = 443`; `connect("h", 8080)` overrides it positionally. Both backends
+    /// see the fully-applied positional call and agree.
+    #[test]
+    fn keyword_args_default_backends_agree() {
+        let src = "fn connect(host: String, port: Int = 443, tls: Bool = true) -> String:\n    \"${host}:${port} tls=${tls}\"\n\nfn main(console: Console):\n    print(console, connect(\"example.com\"))\n    print(console, connect(\"h\", tls: false))\n    print(console, connect(\"h\", 8080))\n";
+        let expected = ["example.com:443 tls=true", "h:443 tls=false", "h:8080 tls=true"];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+    }
+
+    /// (RFC-0056) A `var` parameter cannot carry a default — there is no caller
+    /// variable to write back to. Rejected loudly at parse time, identically for
+    /// every consumer (both backends parse the same source).
+    #[test]
+    fn keyword_args_var_default_is_error() {
+        let src = "fn inc(var n: Int = 0) -> Nil:\n    n = n + 1\n\nfn main(console: Console):\n    print(console, \"x\")\n";
+        let err = parser::parse_module(src).expect_err("var + default must be rejected");
+        assert!(
+            format!("{err:?}").contains("`var` parameter cannot have a default"),
+            "{err:?}"
+        );
+    }
+
+    /// (RFC-0056 v1) Keyword labels are excluded on UFCS method calls — the method
+    /// callee resolves later (by receiver type, in traits.rs), so labels have no
+    /// declaration to bind against yet. Rejected at parse time.
+    #[test]
+    fn keyword_args_method_label_is_error() {
+        let src = "fn main(console: Console):\n    let s = \"hello\"\n    print(console, s.substring(start: 1))\n";
+        let err = parser::parse_module(src).expect_err("method-call label must be rejected");
+        assert!(
+            format!("{err:?}").contains("not supported on method calls"),
+            "{err:?}"
+        );
+    }
+
+    /// (RFC-0056) A missing argument with no default is a link error naming the
+    /// unbound parameter (the same shape record construction already reports for a
+    /// missing field).
+    #[test]
+    fn keyword_args_missing_argument_is_link_error() {
+        let src = "fn f(a: Int, b: Int) -> Int:\n    a + b\n\nfn main(console: Console):\n    print_int(f(a: 1))\n";
+        let module = parser::parse_module(src).expect("parse");
+        let err = crate::pipeline::link(vec![("main".into(), module)], "main")
+            .expect_err("missing argument must be a link error");
+        assert!(format!("{err}").contains("missing argument `b`"), "{err}");
+    }
+
     /// (BUG-007) A `gen fn` declared as a METHOD of an inherent `impl` lowers just
     /// like a top-level one: it stays a method (`value.upto()` resolves by receiver
     /// type and returns `Iter(a)`), and its hoisted helper is named per-type so two

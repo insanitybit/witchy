@@ -70,6 +70,7 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
                         name: "line".into(),
                         ty: Some(Type::Named("String".into(), Vec::new())),
                         convention: Default::default(),
+                        default: None,
                     }],
                     body: Block {
                         stmts: vec![witchy_syntax::ast::Stmt::Expr(witchy_syntax::ast::Expr::Call {
@@ -134,6 +135,7 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
                     name: "console".into(),
                     ty: Some(Type::Named("Console".into(), Vec::new())),
                     convention: Default::default(),
+                    default: None,
                 }],
                 ret: None,
                 body,

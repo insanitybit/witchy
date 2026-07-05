@@ -133,6 +133,11 @@ fn lower_expr(e: &mut Expr, orders: &Orders) -> Result<(), String> {
                 lower_expr(x, orders)?;
             }
         }
+        Expr::LabeledCall { args, .. } => {
+            for (_, x) in args {
+                lower_expr(x, orders)?;
+            }
+        }
         Expr::MethodCall { receiver, args, .. } => {
             lower_expr(receiver, orders)?;
             for a in args {

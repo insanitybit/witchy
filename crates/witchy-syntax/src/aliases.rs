@@ -264,6 +264,11 @@ fn resolve_in_expr(e: &mut Expr, map: &HashMap<String, Type>) {
                 resolve_in_expr(a, map);
             }
         }
+        Expr::LabeledCall { args, .. } => {
+            for (_, a) in args {
+                resolve_in_expr(a, map);
+            }
+        }
         Expr::MethodCall { receiver, args, .. } => {
             resolve_in_expr(receiver, map);
             for a in args {

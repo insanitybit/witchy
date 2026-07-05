@@ -608,6 +608,12 @@ pub fn link(
         item_lines: Vec::new(),
     };
     resolve_methods(&mut module);
+    // (RFC-0056) Resolve keyword-labeled direct calls and splice constant
+    // parameter defaults, using each callee's now-qualified declaration. Runs
+    // AFTER method resolution (so every direct callee is statically known) and
+    // BEFORE folding/typeck, which only ever see the positional calls it emits —
+    // labels and defaults never reach either backend (parity by construction).
+    crate::keyword_args::resolve(&mut module).map_err(|message| LinkError { message })?;
     // Semantics-preserving constant folding over the single linked module both
     // backends consume (parity-free by construction). See src/optimize.rs. Gated
     // on the `fold` lever (RFC-0030) so the differential de-opt sweep covers it:
@@ -782,6 +788,14 @@ fn resolve_in_expr(
                 }
             }
         }
+        // (RFC-0056) A labeled direct call names its callee statically (the parser
+        // only labels a direct call), so no overload resolution is needed — just
+        // recurse into the argument values.
+        Expr::LabeledCall { args, .. } => {
+            for (_, a) in args.iter_mut() {
+                resolve_in_expr(a, sig, by_base, vars);
+            }
+        }
         Expr::Apply { func, args } => {
             resolve_in_expr(func, sig, by_base, vars);
             for a in args.iter_mut() {
@@ -939,6 +953,11 @@ fn collect_bound_expr(e: &Expr, out: &mut HashSet<String>) {
                 collect_bound_expr(a, out);
             }
         }
+        Expr::LabeledCall { args, .. } => {
+            for (_, a) in args {
+                collect_bound_expr(a, out);
+            }
+        }
         Expr::Apply { func, args } => {
             collect_bound_expr(func, out);
             for a in args {
@@ -1019,6 +1038,15 @@ fn rewrite_expr(
         Expr::Call { name, args } => {
             *name = resolve_call(name, m, imps, fns, bound)?;
             for a in args {
+                rewrite_expr(a, m, imps, fns, bound)?;
+            }
+        }
+        // (RFC-0056) A labeled direct call: qualify the callee exactly like a plain
+        // call so `keyword_args::resolve` can look up its declaration, and rewrite
+        // the argument values. The labels ride along untouched until then.
+        Expr::LabeledCall { name, args } => {
+            *name = resolve_call(name, m, imps, fns, bound)?;
+            for (_, a) in args {
                 rewrite_expr(a, m, imps, fns, bound)?;
             }
         }
@@ -1232,6 +1260,11 @@ fn seal_expr(e: &Expr, sealed: &HashMap<String, String>, home: &str) -> Result<(
         }
         Expr::Call { args, .. } | Expr::List(args) | Expr::Tuple(args) => {
             for a in args {
+                seal_expr(a, sealed, home)?;
+            }
+        }
+        Expr::LabeledCall { args, .. } => {
+            for (_, a) in args {
                 seal_expr(a, sealed, home)?;
             }
         }

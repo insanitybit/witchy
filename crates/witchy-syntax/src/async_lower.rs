@@ -285,7 +285,7 @@ impl Ctx {
         let discard = self.fresh();
         let body_nil = and_then(body_future, discard, call("task.ready_unit", vec![]));
         let f = Expr::Lambda {
-            params: vec![Param { name: var.to_string(), ty: None, convention: Convention::Let }],
+            params: vec![Param { name: var.to_string(), ty: None, convention: Convention::Let, default: None }],
             body: tail_block(body_nil),
             ret: None,
         };
@@ -303,7 +303,7 @@ impl Ctx {
         let discard = self.fresh();
         let body_nil = and_then(body_future, discard, call("task.ready_unit", vec![]));
         let f = Expr::Lambda {
-            params: vec![Param { name: var.to_string(), ty: None, convention: Convention::Let }],
+            params: vec![Param { name: var.to_string(), ty: None, convention: Convention::Let, default: None }],
             body: tail_block(body_nil),
             ret: None,
         };
@@ -429,6 +429,7 @@ fn contains_await(e: &Expr) -> bool {
         Expr::Range { lo, hi, .. } => contains_await(lo) || contains_await(hi),
         Expr::List(xs) | Expr::Tuple(xs) => xs.iter().any(contains_await),
         Expr::Call { args, .. } | Expr::Ctor { args, .. } => args.iter().any(contains_await),
+        Expr::LabeledCall { args, .. } => args.iter().any(|(_, a)| contains_await(a)),
         Expr::MethodCall { receiver, args, .. } => {
             contains_await(receiver) || args.iter().any(contains_await)
         }
@@ -480,7 +481,7 @@ fn stmt_contains_await(s: &Stmt) -> bool {
 /// `task.and_then(inner, fn(bind): k)`.
 fn and_then(inner: Expr, bind: String, k: Expr) -> Expr {
     let lambda = Expr::Lambda {
-        params: vec![Param { name: bind, ty: None, convention: Convention::Let }],
+        params: vec![Param { name: bind, ty: None, convention: Convention::Let, default: None }],
         body: tail_block(k),
         ret: None,
     };

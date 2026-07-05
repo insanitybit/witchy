@@ -94,7 +94,11 @@ fn fv_expr(e: &Expr, s: &mut LambdaScan) {
             fv_expr(lo, s);
             fv_expr(hi, s);
         }
-        Expr::Index { .. } | Expr::WhileLet { .. } | Expr::MethodCall { .. } | Expr::Record { .. } => {
+        Expr::Index { .. }
+        | Expr::WhileLet { .. }
+        | Expr::MethodCall { .. }
+        | Expr::Record { .. }
+        | Expr::LabeledCall { .. } => {
             unreachable!("range/index sugar is lowered before codegen (parser::lower_sugar_module)")
         }
         Expr::Var(n) => {

@@ -373,7 +373,7 @@ impl Parser {
         self.expect(&Tok::Fn)?;
         let name = self.ident()?;
         self.expect(&Tok::LParen)?;
-        let params = self.params()?;
+        let params = self.params(true)?;
         self.expect(&Tok::RParen)?;
         let ret = if self.eat(&Tok::RArrow) {
             Some(self.ty()?)
@@ -733,7 +733,7 @@ impl Parser {
         let name = self.ident()?;
         self.expect(&Tok::LParen)?;
         self.pending_impl_bounds.clear();
-        let params = self.params()?;
+        let params = self.params(true)?;
         self.expect(&Tok::RParen)?;
         let ret = if self.eat(&Tok::RArrow) {
             Some(self.ty()?)
@@ -792,8 +792,12 @@ impl Parser {
         Ok(bounds)
     }
 
-    fn params(&mut self) -> Result<Vec<Param>, ParseError> {
+    /// Parse a declaration parameter list. `allow_defaults` gates the RFC-0056
+    /// `= <constant>` default syntax: permitted on a function/method declaration,
+    /// rejected on a lambda (a function *value*, which never carries defaults).
+    fn params(&mut self, allow_defaults: bool) -> Result<Vec<Param>, ParseError> {
         let mut params = Vec::new();
+        let mut seen_default = false;
         while !self.at(&Tok::RParen) {
             // `var` mutates in place and writes back; `own` consumes (takes
             // ownership).
@@ -825,10 +829,39 @@ impl Parser {
             } else {
                 None
             };
+            // (RFC-0056) An optional closed-constant default: `port: Int = 443`.
+            let default = if allow_defaults && self.eat(&Tok::Eq) {
+                let d = self.expr(0)?;
+                if !is_closed_const(&d) {
+                    return Err(self.error(format!(
+                        "the default for parameter `{name}` must be a closed constant \
+                         (a literal, `None`, `true`/`false`, `[]`, or a constructor of \
+                         constants) — no calls, no references to other parameters or state"
+                    )));
+                }
+                if convention == Convention::Var {
+                    return Err(self.error(format!(
+                        "a `var` parameter cannot have a default: `{name}` writes back to a \
+                         caller variable, so an omitted argument has nothing to write to"
+                    )));
+                }
+                seen_default = true;
+                Some(d)
+            } else {
+                if seen_default {
+                    return Err(self.error(format!(
+                        "parameter `{name}` has no default but follows one — a defaulted \
+                         parameter must be a suffix of the list (all later parameters must \
+                         also have defaults)"
+                    )));
+                }
+                None
+            };
             params.push(Param {
                 name,
                 ty,
                 convention,
+                default,
             });
             if !self.eat(&Tok::Comma) {
                 break;
@@ -1218,10 +1251,18 @@ impl Parser {
                 // Requiring the `(` on the same line as the callee avoids
                 // swallowing a parenthesized expression that begins the next
                 // statement (witchy has no statement terminators).
-                let args = self.call_args()?;
+                let args = self.call_args_labeled()?;
+                if args.iter().any(|(l, _)| l.is_some()) {
+                    // A call through a function *value* has no declared parameter
+                    // names to label against (RFC-0056 rule 4/5).
+                    return Err(self.error(
+                        "labels need the callee's declaration — this is a call through a \
+                         function value, which is positional-only",
+                    ));
+                }
                 e = Expr::Apply {
                     func: Box::new(e),
-                    args,
+                    args: unlabel(args),
                 };
             } else if self.eat(&Tok::Dot) {
                 // Tuple element access: `pair.0` (the lexer guarantees digits
@@ -1250,25 +1291,38 @@ impl Parser {
                 }
                 let member = self.ident()?;
                 if self.at(&Tok::LParen) {
-                    let args = self.call_args()?;
+                    let args = self.call_args_labeled()?;
                     match e {
                         // `mod.func(args)` — a module-qualified call on a bare
-                        // imported module name.
+                        // imported module name. This is a DIRECT call (statically
+                        // known callee), so it may carry keyword labels (RFC-0056).
                         Expr::Var(name) if self.imports.contains(&name) => {
-                            e = Expr::Call {
-                                name: format!("{name}.{member}"),
-                                args,
+                            let name = format!("{name}.{member}");
+                            e = if args.iter().any(|(l, _)| l.is_some()) {
+                                Expr::LabeledCall { name, args }
+                            } else {
+                                Expr::Call { name, args: unlabel(args) }
                             };
                         }
                         // `receiver.method(args)` — UFCS method call: sugar for
                         // `method(receiver, args)` (the method name resolves to a
                         // same-module or imported function in the linker). Kept as
-                        // a node so the formatter can print it back.
+                        // a node so the formatter can print it back. Method callees
+                        // resolve LATER (traits.rs), so keyword labels are excluded
+                        // here in v1 (RFC-0056): a label on one is a compile error.
                         receiver => {
+                            if args.iter().any(|(l, _)| l.is_some()) {
+                                return Err(self.error(format!(
+                                    "keyword labels are not supported on method calls yet \
+                                     (RFC-0056 v1): `{member}` is resolved by the receiver's \
+                                     type after linking. Write it as a direct call, e.g. \
+                                     `module.{member}(...)`, to label its arguments"
+                                )));
+                            }
                             e = Expr::MethodCall {
                                 receiver: Box::new(receiver),
                                 method: member,
-                                args,
+                                args: unlabel(args),
                             };
                         }
                     }
@@ -1446,7 +1500,8 @@ impl Parser {
                 // off-side layout is suppressed), or an indented/`{ }` block body.
                 self.advance();
                 self.expect(&Tok::LParen)?;
-                let params = self.params()?;
+                // A lambda is a function VALUE — no keyword-argument defaults.
+                let params = self.params(false)?;
                 self.expect(&Tok::RParen)?;
                 // Optional declared return type: `fn(x: Int) -> Bool: ...`. Makes
                 // the closure a `?` boundary with that exact type.
@@ -1553,11 +1608,24 @@ impl Parser {
             if is_ctor && self.peek_named_record() {
                 return self.record_literal(name);
             }
-            let args = self.call_args()?;
+            let args = self.call_args_labeled()?;
             if is_ctor {
-                Ok(Expr::Ctor { name, args })
+                // Constructors take positional args here (uppercase named-field
+                // construction went through `record_literal` above); a stray label
+                // on a positional ctor call is not meaningful.
+                if args.iter().any(|(l, _)| l.is_some()) {
+                    return Err(self.error(format!(
+                        "`{name}(...)` is a constructor call — use named-field \
+                         construction `{name}(field: value, ...)` for a record type, not \
+                         labeled positional arguments"
+                    )));
+                }
+                Ok(Expr::Ctor { name, args: unlabel(args) })
+            } else if args.iter().any(|(l, _)| l.is_some()) {
+                // A DIRECT free call with keyword labels (RFC-0056).
+                Ok(Expr::LabeledCall { name, args })
             } else {
-                Ok(Expr::Call { name, args })
+                Ok(Expr::Call { name, args: unlabel(args) })
             }
         } else if is_ctor {
             Ok(Expr::Ctor { name, args: vec![] })
@@ -1566,11 +1634,35 @@ impl Parser {
         }
     }
 
-    fn call_args(&mut self) -> Result<Vec<Expr>, ParseError> {
+    /// Parse a call's argument list, allowing RFC-0056 keyword labels: an
+    /// argument is either positional (`expr`) or labeled (`ident: expr`). A
+    /// positional argument after a labeled one is a parse error (rule 2: positional
+    /// prefix, labeled suffix). The caller decides whether labels are meaningful
+    /// for the callee shape (direct call vs value/method call). `ident: expr` is
+    /// unambiguous inside call parens: lambdas begin with `fn`, there is no ternary
+    /// or slice colon, and dict/record colons live in braces / `.{…}`.
+    fn call_args_labeled(&mut self) -> Result<Vec<(Option<String>, Expr)>, ParseError> {
         self.expect(&Tok::LParen)?;
-        let mut args = Vec::new();
+        let mut args: Vec<(Option<String>, Expr)> = Vec::new();
+        let mut seen_label = false;
         while !self.at(&Tok::RParen) {
-            args.push(self.expr(0)?);
+            // A label is a bare identifier immediately followed by `:`.
+            let is_label = matches!(self.kind(), Tok::Ident(_))
+                && matches!(self.toks.get(self.pos + 1).map(|t| &t.kind), Some(Tok::Colon));
+            if is_label {
+                let label = self.ident()?;
+                self.expect(&Tok::Colon)?;
+                args.push((Some(label), self.expr(0)?));
+                seen_label = true;
+            } else {
+                if seen_label {
+                    return Err(self.error(
+                        "a positional argument may not follow a labeled one — labeled \
+                         arguments must come last (RFC-0056)",
+                    ));
+                }
+                args.push((None, self.expr(0)?));
+            }
             if !self.eat(&Tok::Comma) {
                 break;
             }
@@ -2327,6 +2419,30 @@ pub fn desugar_method(receiver: Expr, method: String, args: Vec<Expr>) -> Expr {
     Expr::Call { name: method, args: all }
 }
 
+/// Drop the (all-`None`) labels from a positional argument list — used where a
+/// callee shape does not carry keyword labels (a constructor, an `Apply` through a
+/// value, or a method call). The caller has already verified no label is present.
+fn unlabel(args: Vec<(Option<String>, Expr)>) -> Vec<Expr> {
+    args.into_iter().map(|(_, e)| e).collect()
+}
+
+/// (RFC-0056) Whether `e` is a *closed constant*: a literal (int/float/duration/
+/// string/bool), `None`/`[]`, a list/tuple of closed constants, a constructor
+/// whose arguments are all closed constants, or a unary op over one (so `-1`
+/// works). Deliberately the smallest useful set — no calls, no variable/parameter
+/// references, no module state — which keeps a default splice hygienic (nothing to
+/// capture) and evaluation-order-free. This also excludes capability values: a
+/// capability cannot be minted from a literal, so it can never be a default.
+fn is_closed_const(e: &Expr) -> bool {
+    match e {
+        Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_) => true,
+        Expr::List(xs) | Expr::Tuple(xs) => xs.iter().all(is_closed_const),
+        Expr::Ctor { args, .. } => args.iter().all(is_closed_const),
+        Expr::Unary { expr, .. } => is_closed_const(expr),
+        _ => false,
+    }
+}
+
 /// Lower `while let PAT = SCRUT: body` to `while true` over a match whose
 /// wildcard arm breaks the loop. A free function for the same reason as
 /// [`desugar_range`]: the parser keeps `Expr::WhileLet` for the formatter, and
@@ -2414,6 +2530,13 @@ fn lower_sugar_expr(e: &mut Expr) {
         | Expr::Call { args: xs, .. }
         | Expr::Ctor { args: xs, .. } => {
             for x in xs {
+                lower_sugar_expr(x);
+            }
+        }
+        // Normally already lowered to `Call`/`Block` by `keyword_args::resolve`
+        // during linking; recurse defensively over the argument values.
+        Expr::LabeledCall { args, .. } => {
+            for (_, x) in args {
                 lower_sugar_expr(x);
             }
         }
