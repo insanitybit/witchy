@@ -921,36 +921,47 @@ fn main() -> wasmtime::Result<()> {
     }
     // `witchy fmt <file>` rewrites a source file in canonical brace-free form.
     if std::env::args().nth(1).as_deref() == Some("fmt") {
-        // `witchy fmt --check <file>` verifies formatting without rewriting (for
-        // CI): exit 0 if already canonical, 1 if it would change.
+        // `witchy fmt [--check] <file.witchy>...` formats (or, with `--check`,
+        // verifies) EVERY file argument — a shell glob like `witchy fmt std/*.witchy`
+        // expands to many paths, and silently dropping all but the first was a
+        // no-op that made callers believe files were formatted (BUG-012).
+        // `--check` verifies without rewriting (for CI): exit 1 if any file would
+        // change; otherwise 0. Every file is processed even if an earlier one
+        // fails, and the exit code is 1 iff any file failed.
         let check = std::env::args().nth(2).as_deref() == Some("--check");
-        let path = std::env::args().nth(if check { 3 } else { 2 });
-        let Some(path) = path else {
-            eprintln!("usage: witchy fmt [--check] <file.witchy>");
+        let paths: Vec<String> = std::env::args().skip(if check { 3 } else { 2 }).collect();
+        if paths.is_empty() {
+            eprintln!("usage: witchy fmt [--check] <file.witchy>...");
             std::process::exit(1);
-        };
-        match std::fs::read_to_string(&path) {
-            Ok(src) => match format::reformat(&src) {
-                Some(out) => {
-                    if check {
-                        if out != src {
-                            eprintln!("witchy fmt: `{path}` is not formatted");
-                            std::process::exit(1);
+        }
+        let mut failed = false;
+        for path in &paths {
+            match std::fs::read_to_string(path) {
+                Ok(src) => match format::reformat(&src) {
+                    Some(out) => {
+                        if check {
+                            if out != src {
+                                eprintln!("witchy fmt: `{path}` is not formatted");
+                                failed = true;
+                            }
+                        } else if let Err(e) = std::fs::write(path, out) {
+                            eprintln!("witchy fmt: `{path}`: {e}");
+                            failed = true;
                         }
-                    } else if let Err(e) = std::fs::write(&path, out) {
-                        eprintln!("witchy fmt: {e}");
-                        std::process::exit(1);
                     }
+                    None => {
+                        eprintln!("witchy fmt: cannot format `{path}` (parse error or unsupported construct)");
+                        failed = true;
+                    }
+                },
+                Err(e) => {
+                    eprintln!("witchy fmt: cannot read `{path}`: {e}");
+                    failed = true;
                 }
-                None => {
-                    eprintln!("witchy fmt: cannot format `{path}` (parse error or unsupported construct)");
-                    std::process::exit(1);
-                }
-            },
-            Err(e) => {
-                eprintln!("witchy fmt: cannot read `{path}`: {e}");
-                std::process::exit(1);
             }
+        }
+        if failed {
+            std::process::exit(1);
         }
         return Ok(());
     }
