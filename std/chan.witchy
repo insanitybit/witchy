@@ -348,13 +348,44 @@ fn is_parked(s: Slot) -> Bool:
 
 // The local index (within `chs`) and global id of the first listed channel with a
 // pending message, or None if all are empty. Drives the `PullAny`/`select` path.
-fn first_ready(k: Int, chs: List(Int), channels: List((List(__Msg), Int))) -> Option((Int, Int)):
+//
+// (RFC-0059 Stage 2) A channel is a FIXED-capacity ring buffer, not a growable list.
+// Its state is `(buf, head, count, cap)`: `buf` is a physical list of `physcap` slots;
+// the `count` live messages are `buf[(head + i) % physcap]` for `i in 0..count`, in
+// FIFO order; `cap` is the logical capacity (0 = unbounded). Send writes the tail slot
+// with `list.set_at` (in place — no growth), recv advances `head` — so the O(occupancy)
+// `list.tail` rebuild the growable buffer did on every recv is gone, and FIFO order +
+// the ready/room predicates are byte-identical, preserving the deterministic schedule.
+// (Duplicated here rather than imported from `std/task`, matching the existing executor
+// duplication — `first_ready`/`is_live` are private copies in both files.)
+
+// A fresh channel of logical capacity `cap`: bounded (`cap > 0`) is a fixed ring of
+// `cap` slots; unbounded (`cap == 0`) is a 1-slot ring that grows amortized. The
+// pre-filled slots are erased Int sentinels, never delivered.
+fn ring_new(cap: Int) -> (List(__Msg), Int, Int, Int):
+    let physcap = if cap > 0: cap else: 1
+    (list.repeat(__erase(0), physcap), 0, 0, cap)
+
+// Grow a physically-full ring: relayout its `count` live messages to the front of a
+// doubled buffer (FIFO preserved), append `msg`, return the new `(buf, head, count, cap)`.
+fn ring_grow(buf: List(__Msg), head: Int, count: Int, msg: __Msg, cap: Int) -> (List(__Msg), Int, Int, Int):
+    let physcap = list.length(buf)
+    let newcap = if physcap == 0: 1 else: physcap * 2
+    var nb = list.repeat(msg, newcap)
+    var k = 0
+    while k < count:
+        nb = list.set_at(nb, k, list.at(buf, (head + k) % physcap))
+        k = k + 1
+    nb = list.set_at(nb, count, msg)
+    (nb, 0, count + 1, cap)
+
+fn first_ready(k: Int, chs: List(Int), channels: List((List(__Msg), Int, Int, Int))) -> Option((Int, Int)):
     if k >= list.length(chs):
         None
     else:
         let ch = list.at(chs, k)
-        let (buf, _cap) = list.at(channels, ch)
-        if list.length(buf) > 0:
+        let (_buf, _head, count, _cap) = list.at(channels, ch)
+        if count > 0:
             Some((k, ch))
         else:
             first_ready(k + 1, chs, channels)
@@ -384,17 +415,23 @@ pub fn run(root: Task(Nil)):
             match list.at(slots, i):
                 Ended -> unit()
                 WaitRecv(ch, cont) ->
-                    let (buf, cap) = list.at(channels, ch)
-                    if list.length(buf) > 0:
-                        channels = list.set_at(channels, ch, (list.tail(buf), cap))
-                        slots = list.set_at(slots, i, Active(cont(Some(list.at(buf, 0)))))
+                    let (buf, head, count, cap) = list.at(channels, ch)
+                    if count > 0:
+                        let msg = list.at(buf, head)
+                        let physcap = list.length(buf)
+                        channels = list.set_at(channels, ch, (buf, (head + 1) % physcap, count - 1, cap))
+                        slots = list.set_at(slots, i, Active(cont(Some(msg))))
                         prog = true
                     else:
                         unit()
                 WaitSend(ch, msg, cont) ->
-                    let (buf, cap) = list.at(channels, ch)
-                    if cap == 0 || list.length(buf) < cap:
-                        channels = list.set_at(channels, ch, (list.push(buf, msg), cap))
+                    let (buf, head, count, cap) = list.at(channels, ch)
+                    if cap == 0 || count < cap:
+                        let physcap = list.length(buf)
+                        if count < physcap:
+                            channels = list.set_at(channels, ch, (list.set_at(buf, (head + count) % physcap, msg), head, count + 1, cap))
+                        else:
+                            channels = list.set_at(channels, ch, ring_grow(buf, head, count, msg, cap))
                         slots = list.set_at(slots, i, Active(cont(unit())))
                         prog = true
                     else:
@@ -403,9 +440,11 @@ pub fn run(root: Task(Nil)):
                     match first_ready(0, chs, channels):
                         Some(hit) ->
                             let (k, ch) = hit
-                            let (buf, cap) = list.at(channels, ch)
-                            channels = list.set_at(channels, ch, (list.tail(buf), cap))
-                            slots = list.set_at(slots, i, Active(cont(Some((k, list.at(buf, 0))))))
+                            let (buf, head, count, cap) = list.at(channels, ch)
+                            let msg = list.at(buf, head)
+                            let physcap = list.length(buf)
+                            channels = list.set_at(channels, ch, (buf, (head + 1) % physcap, count - 1, cap))
+                            slots = list.set_at(slots, i, Active(cont(Some((k, msg)))))
                             prog = true
                         None -> unit()
                 WaitJoin(t, cont) ->
@@ -430,21 +469,27 @@ pub fn run(root: Task(Nil)):
                         Open(cap, cont) ->
                             let cid = list.length(channels)
                             slots = list.set_at(slots, i, Active(cont(cid)))
-                            channels = list.push(channels, ([], cap))
+                            channels = list.push(channels, ring_new(cap))
                             prog = true
                         Push(ch, msg, cont) ->
-                            let (buf, cap) = list.at(channels, ch)
-                            if cap == 0 || list.length(buf) < cap:
-                                channels = list.set_at(channels, ch, (list.push(buf, msg), cap))
+                            let (buf, head, count, cap) = list.at(channels, ch)
+                            if cap == 0 || count < cap:
+                                let physcap = list.length(buf)
+                                if count < physcap:
+                                    channels = list.set_at(channels, ch, (list.set_at(buf, (head + count) % physcap, msg), head, count + 1, cap))
+                                else:
+                                    channels = list.set_at(channels, ch, ring_grow(buf, head, count, msg, cap))
                                 slots = list.set_at(slots, i, Active(cont(unit())))
                                 prog = true
                             else:
                                 slots = list.set_at(slots, i, WaitSend(ch, msg, cont))
                         Pull(ch, cont) ->
-                            let (buf, cap) = list.at(channels, ch)
-                            if list.length(buf) > 0:
-                                channels = list.set_at(channels, ch, (list.tail(buf), cap))
-                                slots = list.set_at(slots, i, Active(cont(Some(list.at(buf, 0)))))
+                            let (buf, head, count, cap) = list.at(channels, ch)
+                            if count > 0:
+                                let msg = list.at(buf, head)
+                                let physcap = list.length(buf)
+                                channels = list.set_at(channels, ch, (buf, (head + 1) % physcap, count - 1, cap))
+                                slots = list.set_at(slots, i, Active(cont(Some(msg))))
                                 prog = true
                             else:
                                 slots = list.set_at(slots, i, WaitRecv(ch, cont))
@@ -452,9 +497,11 @@ pub fn run(root: Task(Nil)):
                             match first_ready(0, chs, channels):
                                 Some(hit) ->
                                     let (k, ch) = hit
-                                    let (buf, cap) = list.at(channels, ch)
-                                    channels = list.set_at(channels, ch, (list.tail(buf), cap))
-                                    slots = list.set_at(slots, i, Active(cont(Some((k, list.at(buf, 0))))))
+                                    let (buf, head, count, cap) = list.at(channels, ch)
+                                    let msg = list.at(buf, head)
+                                    let physcap = list.length(buf)
+                                    channels = list.set_at(channels, ch, (buf, (head + 1) % physcap, count - 1, cap))
+                                    slots = list.set_at(slots, i, Active(cont(Some((k, msg)))))
                                     prog = true
                                 None -> slots = list.set_at(slots, i, WaitAny(chs, cont))
                         Wait(t, cont) ->
@@ -477,9 +524,13 @@ pub fn run(root: Task(Nil)):
                 match list.at(slots, j):
                     WaitRecv(_ch, cont) -> slots = list.set_at(slots, j, Active(cont(None)))
                     WaitSend(ch, msg, cont) ->
-                        let (buf, cap) = list.at(channels, ch)
+                        let (buf, head, count, cap) = list.at(channels, ch)
                         slots = list.set_at(slots, j, Active(cont(unit())))
-                        channels = list.set_at(channels, ch, (list.push(buf, msg), cap))
+                        let physcap = list.length(buf)
+                        if count < physcap:
+                            channels = list.set_at(channels, ch, (list.set_at(buf, (head + count) % physcap, msg), head, count + 1, cap))
+                        else:
+                            channels = list.set_at(channels, ch, ring_grow(buf, head, count, msg, cap))
                     WaitAny(_chs, cont) -> slots = list.set_at(slots, j, Active(cont(None)))
                     WaitJoin(_t, cont) -> slots = list.set_at(slots, j, Active(cont(unit())))
                     _ -> unit()
