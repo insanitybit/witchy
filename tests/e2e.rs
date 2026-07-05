@@ -3853,6 +3853,26 @@ fn sandbox_reveal_gates_signing_key_only() {
         stdout(&out),
         stderr(&out)
     );
+
+    // RFC-0060: a NAMED secret granted `,use-only` is usable by handle but
+    // NOT revealable — the same `token` program that reveals fine above must
+    // abort when the grant carries the use-only modifier.
+    let out = Command::new(BIN)
+        .args(["sandbox", "--secret", "token=s3cr3t,use-only", named.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "revealing a use-only secret must abort: {}\n{}",
+        stderr(&out),
+        stdout(&out)
+    );
+    assert!(
+        stderr(&out).contains("use-only") || stdout(&out).contains("use-only"),
+        "expected a use-only-not-revealable error for the use-only secret: out={} err={}",
+        stdout(&out),
+        stderr(&out)
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
