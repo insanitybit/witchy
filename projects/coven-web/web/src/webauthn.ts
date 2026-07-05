@@ -1,6 +1,7 @@
 // Browser-side WebAuthn ceremony. The credential API yields binary ArrayBuffers;
 // we hex-encode them at the boundary so coven-web verifies with text/hex ops. The
 // public key comes from getPublicKey() (SPKI DER) → SEC1 uncompressed point — no CBOR.
+import { authHeader } from "./session";
 
 function hex(buf: ArrayBuffer): string {
   return Array.from(new Uint8Array(buf))
@@ -28,8 +29,19 @@ function spkiToSec1Hex(spki: ArrayBuffer): string {
   return hex(b.slice(b.length - 65).buffer);
 }
 
-async function challengeBytes(): Promise<Uint8Array<ArrayBuffer>> {
-  const r = await fetch("/api/webauthn/challenge", { credentials: "omit" });
+// Mint a fresh single-use challenge for a specific operation. It is a POST (state-changing:
+// it writes the server's outstanding challenge, so it must sit behind the Sec-Fetch CSRF
+// layer, never GET). The {op, name, version} body BINDS the challenge — and thus the assertion
+// the authenticator signs over it — to that exact operation, so the server rejects an assertion
+// minted for anything else (coven_web.witchy h_wa_challenge / wa_do_promote / wa_do_yank).
+async function challengeBytes(op: string, name = "", version = ""): Promise<Uint8Array<ArrayBuffer>> {
+  const r = await fetch("/api/webauthn/challenge", {
+    method: "POST",
+    credentials: "omit",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ op, name, version }),
+  });
+  if (!r.ok) throw new Error("challenge request failed (" + r.status + ")");
   const { challengeHex } = (await r.json()) as { challengeHex: string };
   return hexToBytes(challengeHex);
 }
@@ -38,7 +50,7 @@ async function challengeBytes(): Promise<Uint8Array<ArrayBuffer>> {
 export async function register(rpId: string): Promise<void> {
   const cred = (await navigator.credentials.create({
     publicKey: {
-      challenge: await challengeBytes(),
+      challenge: await challengeBytes("register"),
       rp: { id: rpId, name: "coven" },
       user: { id: new Uint8Array([1]), name: "maintainer", displayName: "maintainer" },
       pubKeyCredParams: [{ type: "public-key", alg: -7 }],
@@ -51,12 +63,19 @@ export async function register(rpId: string): Promise<void> {
   const resp = cred.response as AuthenticatorAttestationResponse;
   const spki = resp.getPublicKey();
   if (!spki) throw new Error("authenticator returned no public key");
-  await fetch("/api/webauthn/register", {
+  // BUG-018: check r.ok. Registration can be REFUSED server-side (e.g. a passkey is already
+  // registered → 403). Ignoring the response let a rejected register silently look like success;
+  // the caller would then flip the UI to a "registered" state that the server never granted.
+  const r = await fetch("/api/webauthn/register", {
     method: "POST",
     credentials: "omit",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ credentialId: b64url(cred.rawId), publicKey: spkiToSec1Hex(spki) }),
   });
+  if (!r.ok) {
+    const d = (await r.json().catch(() => ({}))) as { error?: string };
+    throw new Error(d.error ?? "registration failed (" + r.status + ")");
+  }
 }
 
 // Sign in: run the assertion ceremony and exchange it for a session token. The
@@ -64,7 +83,7 @@ export async function register(rpId: string): Promise<void> {
 // challenge (h_wa_login) and, only then, mints the signed bearer token.
 export async function login(rpId: string): Promise<string> {
   const assertion = (await navigator.credentials.get({
-    publicKey: { challenge: await challengeBytes(), rpId, userVerification: "required", timeout: 60000 },
+    publicKey: { challenge: await challengeBytes("login"), rpId, userVerification: "required", timeout: 60000 },
   })) as PublicKeyCredential;
   const resp = assertion.response as AuthenticatorAssertionResponse;
   const r = await fetch("/api/webauthn/login", {
@@ -90,11 +109,14 @@ export async function login(rpId: string): Promise<string> {
 async function wa_write(
   route: string,
   rpId: string,
-  extra: Record<string, string>,
+  op: string,
+  name: string,
+  version: string,
 ): Promise<Response> {
   const assertion = (await navigator.credentials.get({
     publicKey: {
-      challenge: await challengeBytes(),
+      // Bind the challenge (hence the assertion) to THIS operation + name@version.
+      challenge: await challengeBytes(op, name, version),
       rpId,
       userVerification: "required",
       timeout: 60000,
@@ -104,9 +126,12 @@ async function wa_write(
   return fetch(route, {
     method: "POST",
     credentials: "omit",
-    headers: { "content-type": "application/json" },
+    // Attach the bearer session: the server binds `promoted_by` to the authenticated subject
+    // (never a client-supplied field), so a write must carry a valid session (BUG-278).
+    headers: { "content-type": "application/json", ...authHeader() },
     body: JSON.stringify({
-      ...extra,
+      name,
+      version,
       credentialId: b64url(assertion.rawId),
       authData: hex(resp.authenticatorData),
       clientData: new TextDecoder().decode(resp.clientDataJSON),
@@ -115,17 +140,13 @@ async function wa_write(
   });
 }
 
-// Promote a staged version to released — verified by a WebAuthn 2FA assertion server-side.
-export function promote2fa(
-  rpId: string,
-  name: string,
-  version: string,
-  promotedBy: string,
-): Promise<Response> {
-  return wa_write("/api/coven/promote-2fa", rpId, { name, version, promotedBy });
+// Promote a staged version to released — verified by a WebAuthn 2FA assertion server-side. The
+// promoter identity is derived from the bearer session server-side, NOT sent from here.
+export function promote2fa(rpId: string, name: string, version: string): Promise<Response> {
+  return wa_write("/api/coven/promote-2fa", rpId, "promote", name, version);
 }
 
 // Yank a version — like promote, a destructive state change gated by a WebAuthn 2FA assertion.
 export function yank2fa(rpId: string, name: string, version: string): Promise<Response> {
-  return wa_write("/api/coven/yank-2fa", rpId, { name, version });
+  return wa_write("/api/coven/yank-2fa", rpId, "yank", name, version);
 }

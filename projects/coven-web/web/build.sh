@@ -14,11 +14,33 @@ cd "$(dirname "$0")"
 BIN="tools/node_modules/.bin"
 # web/ -> coven-web/ -> projects/ -> repo root.
 REPO="$(cd ../../.. && pwd)"
-WITCHY="$REPO/target/debug/witchy"
 
-if [[ ! -x "$WITCHY" ]]; then
-  echo "build.sh: debug witchy binary not found at $WITCHY (run: cargo build)" >&2
+# BUG-029: accept whichever witchy is available rather than hardcoding the debug build.
+# Precedence: $WITCHY override, then the release build, then debug, then PATH.
+WITCHY="${WITCHY:-}"
+if [[ -z "$WITCHY" ]]; then
+  if [[ -x "$REPO/target/release/witchy" ]]; then WITCHY="$REPO/target/release/witchy"
+  elif [[ -x "$REPO/target/debug/witchy" ]]; then WITCHY="$REPO/target/debug/witchy"
+  elif command -v witchy >/dev/null 2>&1; then WITCHY="$(command -v witchy)"
+  fi
+fi
+if [[ -z "$WITCHY" || ! -x "$WITCHY" ]]; then
+  echo "build.sh: no witchy binary found. Set \$WITCHY, run 'cargo build [--release]', or put witchy on PATH." >&2
   exit 1
+fi
+
+# BUG-164: the vendored build tools live under tools/node_modules, which is gitignored and may be
+# absent on a fresh checkout. Under 'set -e' a missing tool would fail cryptically, so bootstrap
+# it (npm ci from the pinned tools/package-lock.json) or fail with a clear, actionable message.
+if [[ ! -x "$BIN/esbuild" || ! -x "$BIN/tsc" || ! -x "$BIN/oxlint" ]]; then
+  if command -v npm >/dev/null 2>&1; then
+    echo "[0/6] bootstrapping vendored build tools (tools/ via npm ci)"
+    ( cd tools && npm ci --no-audit --no-fund )
+  else
+    echo "build.sh: build tools missing (tools/node_modules) and 'npm' not found on PATH." >&2
+    echo "         Install Node/npm and re-run, or run 'npm ci' in $(pwd)/tools yourself." >&2
+    exit 1
+  fi
 fi
 
 echo "[1/6] oxlint (non-blocking)"
@@ -36,6 +58,10 @@ echo "[3/6] esbuild bundle host shell -> dist/app.js"
   --alias:glamour-dom="$REPO/web/witchy-runtime/glamour-dom.mjs" \
   --outfile=dist/app.js
 
+# BUG-046: emit the stylesheet link AND the file it points at. The server registers a
+# /styles.css route (coven_web.witchy) under `style-src 'self'`, but index.html never linked
+# it and dist/styles.css was never written, so the app rendered unstyled and /styles.css 404'd.
+# The stylesheet source is checked in at src/styles.css (unlike gitignored dist/), so copy it.
 cat > dist/index.html <<'HTML'
 <!doctype html>
 <html lang="en">
@@ -43,6 +69,7 @@ cat > dist/index.html <<'HTML'
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Coven Web</title>
+  <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <main id="app" aria-label="Coven registry browser"></main>
@@ -50,6 +77,8 @@ cat > dist/index.html <<'HTML'
 </body>
 </html>
 HTML
+
+cp src/styles.css dist/styles.css
 
 # Compile the glamour coven-web APP rune to footprint-empty WASM and base64-INLINE it into
 # the bootstrap bundle (replacing `__APP_WASM_B64__`). Same rationale as the highlighter

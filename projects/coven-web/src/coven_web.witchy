@@ -93,9 +93,13 @@ fn main(console: Console, net: Net, assets: Dir, secrets: SecretStore, clock: Cl
     // assertion the server verifies, minting a session token), and the second-factor
     // promote + yank that verify the assertion server-side before forwarding.
     app = app.post("/api/webauthn/register", h_wa_register(assets))
-    app = app.get("/api/webauthn/challenge", h_wa_challenge(assets, rand))
+    // BUG-372: minting a challenge WRITES `_wa_challenge.json` (server state), so it must be a
+    // POST — a GET is CSRF-exempt (`is_state_changing` only flags unsafe methods), which would
+    // let a cross-site page silently rotate the outstanding challenge. As a POST it sits behind
+    // the Sec-Fetch CSRF layer like every other state change. The body binds it to an operation.
+    app = app.post("/api/webauthn/challenge", h_wa_challenge(assets, rand))
     app = app.post("/api/webauthn/login", h_wa_login(assets, key, clock, origin, rp_id))
-    app = app.post("/api/coven/promote-2fa", h_wa_promote(assets, net, upstream, origin, rp_id))
+    app = app.post("/api/coven/promote-2fa", h_wa_promote(assets, net, key, clock, upstream, origin, rp_id))
     app = app.post("/api/coven/yank-2fa", h_wa_yank(assets, net, upstream, origin, rp_id))
     // "Log in with GitHub" (OAuth2 Authorization Code) — registered only when a client
     // id is configured. `/login` redirects to GitHub with a signed anti-CSRF state;
@@ -103,12 +107,12 @@ fn main(console: Console, net: Net, assets: Dir, secrets: SecretStore, clock: Cl
     // mints the same bearer session a passkey sign-in would (composition over std/oauth).
     if gh_client_id != "":
         app = app.get("/auth/github/login", h_github_login(key, clock, rand, gh_base, gh_client_id, gh_redirect))
-        app = app.get("/auth/github/callback", h_github_callback(net, key, clock, secrets, gh_base, gh_api, gh_client_id, gh_redirect))
+        app = app.get("/auth/github/callback", h_github_callback(assets, net, key, clock, secrets, gh_base, gh_api, gh_client_id, gh_redirect))
     // "Log in with Google" (OIDC) — same shape, but the callback VERIFIES the id_token (a
     // JWT) against Google's JWKS rather than fetching a user endpoint.
     if google_client_id != "":
         app = app.get("/auth/google/login", h_google_login(key, clock, rand, google_authorize, google_client_id, google_redirect))
-        app = app.get("/auth/google/callback", h_google_callback(net, key, clock, secrets, google_token, google_jwks, google_client_id, google_redirect))
+        app = app.get("/auth/google/callback", h_google_callback(assets, net, key, clock, secrets, google_token, google_jwks, google_client_id, google_redirect))
     // Layer order (innermost -> outermost): spa_fallback rewrites a router 404 on a CLIENT
     // route to the SPA shell (so a deep link / reload of /v/… loads the app, then the glamour
     // rune routes from the URL), sec_fetch_csrf rejects cross-site writes before the handler,
@@ -207,32 +211,65 @@ fn h_wa_challenge(store: Dir, rand: Rand) -> fn(Request) -> Response:
     fn(req: Request):
         // SEC-011: a fresh 32-byte CSPRNG challenge (not a key-derived, time-predictable
         // value). Stored single-use; the assertion handler clears it after one verify.
+        //
+        // BUG-365: bind the challenge to the OPERATION it is minted for (`op`) and, for
+        // promote/yank, the exact `name@version`. The assertion the browser produces signs
+        // over this challenge, so re-checking the stored op+params in the promote/yank handler
+        // means an assertion minted for one operation can never be redirected to another.
+        let doc = challenge_request(req)
+        let op = wa_field(doc, "op")
+        let name = wa_field(doc, "name")
+        let version = wa_field(doc, "version")
         let ch_hex = rand.hex(rand, 32)
         let ch_b64 = encoding.hex_to_base64url(ch_hex)
-        write(store, "_wa_challenge.json", json.encode(JsonObject([("b64", JsonString(ch_b64))])))
+        write(store, "_wa_challenge.json", json.encode(JsonObject([("b64", JsonString(ch_b64)), ("op", JsonString(op)), ("name", JsonString(name)), ("version", JsonString(version))])))
         server.json(200, json.encode(JsonObject([("challengeHex", JsonString(ch_hex))])))
 
-fn h_wa_promote(store: Dir, net: Net, upstream: String, origin: String, rp_id: String) -> fn(Request) -> Response:
+fn challenge_request(req: Request) -> Json:
+    match server.json_body(req):
+        Ok(d) -> d
+        Err(_e) -> JsonObject([])
+
+fn h_wa_promote(store: Dir, net: Net, key: Secret, clock: Clock, upstream: String, origin: String, rp_id: String) -> fn(Request) -> Response:
     fn(req: Request):
         match server.json_body(req):
             Err(_e) -> server.bad_request("{\"error\":\"bad body\"}")
-            Ok(doc) -> wa_do_promote(store, net, upstream, origin, rp_id, doc)
+            Ok(doc) -> wa_do_promote(store, net, upstream, origin, rp_id, doc, session_subject(key, clock, req))
 
-fn wa_do_promote(store: Dir, net: Net, upstream: String, origin: String, rp_id: String, doc: Json) -> Response:
+fn wa_do_promote(store: Dir, net: Net, upstream: String, origin: String, rp_id: String, doc: Json, promoter: String) -> Response:
+    let name = wa_field(doc, "name")
+    let version = wa_field(doc, "version")
     if !exists(store, "_wa_cred.json") || !exists(store, "_wa_challenge.json"):
         server.json(403, "{\"error\":\"no registered credential or outstanding challenge\"}")
+    else if promoter == "":
+        // BUG-278: the promoter identity is the AUTHENTICATED session subject (the signed-in
+        // maintainer), never a client-supplied `promotedBy` body field. No valid session bearer
+        // => no authority to record a promotion (fail closed). coven enforces separation of
+        // duties on this identity, so it must not be attacker-chosen.
+        server.json(403, "{\"error\":\"promote requires a signed-in session\"}")
     else:
+        let ch = decode_or_empty(read(store, "_wa_challenge.json"))
         let pk = wa_field(decode_or_empty(read(store, "_wa_cred.json")), "publicKey")
-        let ch_b64 = wa_field(decode_or_empty(read(store, "_wa_challenge.json")), "b64")
-        match webauthn.verify_assertion(pk, wa_field(doc, "authData"), wa_field(doc, "clientData"), wa_field(doc, "signature"), ch_b64, origin, rp_id, true):
-            Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("2FA failed: " + reason))])))
-            Ok(_) ->
-                write(store, "_wa_challenge.json", "{}")
-                let body = json.encode(JsonObject([("name", JsonString(wa_field(doc, "name"))), ("version", JsonString(wa_field(doc, "version"))), ("second_factor", JsonString("webauthn")), ("promoted_by", JsonString(wa_field(doc, "promotedBy")))]))
-                let (host, port) = split_host_port(upstream)
-                match http.try_post(net, host, port, "/coven/promote", body):
-                    Ok(resp) -> server.json(http.status(resp), http.body(resp))
-                    Err(_e) -> server.json(502, "{\"error\":\"coven registry unreachable\"}")
+        let ch_b64 = wa_field(ch, "b64")
+        if ch_b64 == "":
+            // BUG-421: a consumed challenge is cleared to `{}` (no `b64`); the previous code only
+            // checked file existence, so a cleared challenge was still accepted. Treat a missing
+            // `b64` as no outstanding challenge (single-use enforced by content, not existence).
+            server.json(403, "{\"error\":\"no outstanding challenge\"}")
+        else if wa_field(ch, "op") != "promote" || wa_field(ch, "name") != name || wa_field(ch, "version") != version:
+            // BUG-365: the assertion is only valid for the operation + name@version the challenge
+            // was minted for; refuse one bound to anything else.
+            server.json(403, "{\"error\":\"challenge is not bound to this promote\"}")
+        else:
+            match webauthn.verify_assertion(pk, wa_field(doc, "authData"), wa_field(doc, "clientData"), wa_field(doc, "signature"), ch_b64, origin, rp_id, true):
+                Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("2FA failed: " + reason))])))
+                Ok(_) ->
+                    write(store, "_wa_challenge.json", "{}")
+                    let body = json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version)), ("second_factor", JsonString("webauthn")), ("promoted_by", JsonString(promoter))]))
+                    let (host, port) = split_host_port(upstream)
+                    match http.try_post(net, host, port, "/coven/promote", body):
+                        Ok(resp) -> server.json(http.status(resp), http.body(resp))
+                        Err(_e) -> server.json(502, "{\"error\":\"coven registry unreachable\"}")
 
 // ---- WebAuthn 2FA for yank --------------------------------------------------
 // Yank is a destructive state change (exclude a version from resolutions), so — like
@@ -246,20 +283,30 @@ fn h_wa_yank(store: Dir, net: Net, upstream: String, origin: String, rp_id: Stri
             Ok(doc) -> wa_do_yank(store, net, upstream, origin, rp_id, doc)
 
 fn wa_do_yank(store: Dir, net: Net, upstream: String, origin: String, rp_id: String, doc: Json) -> Response:
+    let name = wa_field(doc, "name")
+    let version = wa_field(doc, "version")
     if !exists(store, "_wa_cred.json") || !exists(store, "_wa_challenge.json"):
         server.json(403, "{\"error\":\"no registered credential or outstanding challenge\"}")
     else:
+        let ch = decode_or_empty(read(store, "_wa_challenge.json"))
         let pk = wa_field(decode_or_empty(read(store, "_wa_cred.json")), "publicKey")
-        let ch_b64 = wa_field(decode_or_empty(read(store, "_wa_challenge.json")), "b64")
-        match webauthn.verify_assertion(pk, wa_field(doc, "authData"), wa_field(doc, "clientData"), wa_field(doc, "signature"), ch_b64, origin, rp_id, true):
-            Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("2FA failed: " + reason))])))
-            Ok(_) ->
-                write(store, "_wa_challenge.json", "{}")
-                let body = json.encode(JsonObject([("name", JsonString(wa_field(doc, "name"))), ("version", JsonString(wa_field(doc, "version")))]))
-                let (host, port) = split_host_port(upstream)
-                match http.try_post(net, host, port, "/coven/yank", body):
-                    Ok(resp) -> server.json(http.status(resp), http.body(resp))
-                    Err(_e) -> server.json(502, "{\"error\":\"coven registry unreachable\"}")
+        let ch_b64 = wa_field(ch, "b64")
+        if ch_b64 == "":
+            // BUG-421: a consumed/cleared challenge (`{}`) has no `b64`; reject by content.
+            server.json(403, "{\"error\":\"no outstanding challenge\"}")
+        else if wa_field(ch, "op") != "yank" || wa_field(ch, "name") != name || wa_field(ch, "version") != version:
+            // BUG-365: bind the assertion to this specific yank.
+            server.json(403, "{\"error\":\"challenge is not bound to this yank\"}")
+        else:
+            match webauthn.verify_assertion(pk, wa_field(doc, "authData"), wa_field(doc, "clientData"), wa_field(doc, "signature"), ch_b64, origin, rp_id, true):
+                Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("2FA failed: " + reason))])))
+                Ok(_) ->
+                    write(store, "_wa_challenge.json", "{}")
+                    let body = json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version))]))
+                    let (host, port) = split_host_port(upstream)
+                    match http.try_post(net, host, port, "/coven/yank", body):
+                        Ok(resp) -> server.json(http.status(resp), http.body(resp))
+                        Err(_e) -> server.json(502, "{\"error\":\"coven registry unreachable\"}")
 
 // ---- Session (passkey / social sign-in) -------------------------------------
 // A signed-in maintainer holds a short-lived BEARER token, minted only after a
@@ -299,6 +346,33 @@ fn ct_eq(a: String, b: String) -> Bool:
             i = i + 1
         same
 
+// BUG-278: verify a request's bearer session and return its authenticated subject ("" when
+// absent/invalid/expired). A session token is `exp.sub_hex.sig` with sig = MAC over
+// `session:exp:sub` (see issue_session); we recompute the MAC in constant time and check the
+// expiry. This is the SAME self-authenticating token minted by passkey/social sign-in, so the
+// promoter identity is bound to who is signed in — never to a client-chosen body field.
+fn session_subject(key: Secret, clock: Clock, req: Request) -> String:
+    match server.request_header(req, "authorization"):
+        None -> ""
+        Some(h) -> verify_bearer(key, clock, h)
+
+fn verify_bearer(key: Secret, clock: Clock, header: String) -> String:
+    let bearer = if string.starts_with(header, "Bearer "): string.substring(header, 7, string.length(header)) else: ""
+    let parts = string.split(bearer, ".")
+    if list.length(parts) != 3:
+        ""
+    else:
+        let exp_s = list.at(parts, 0)
+        let sub_hex = list.at(parts, 1)
+        let sig = list.at(parts, 2)
+        match encoding.hex_decode(sub_hex):
+            Err(_e) -> ""
+            Ok(sub) ->
+                if ascii.all_digits(exp_s) && ct_eq(sig, crypto.sign(key, "session:" + exp_s + ":" + sub)) && string.to_int(exp_s) > now(clock):
+                    sub
+                else:
+                    ""
+
 fn h_wa_login(store: Dir, key: Secret, clock: Clock, origin: String, rp_id: String) -> fn(Request) -> Response:
     fn(req: Request):
         match server.json_body(req):
@@ -309,14 +383,22 @@ fn wa_do_login(store: Dir, key: Secret, clock: Clock, origin: String, rp_id: Str
     if !exists(store, "_wa_cred.json") || !exists(store, "_wa_challenge.json"):
         server.json(403, "{\"error\":\"no registered passkey or outstanding challenge\"}")
     else:
+        let ch = decode_or_empty(read(store, "_wa_challenge.json"))
         let pk = wa_field(decode_or_empty(read(store, "_wa_cred.json")), "publicKey")
-        let ch_b64 = wa_field(decode_or_empty(read(store, "_wa_challenge.json")), "b64")
-        match webauthn.verify_assertion(pk, wa_field(doc, "authData"), wa_field(doc, "clientData"), wa_field(doc, "signature"), ch_b64, origin, rp_id, true):
-            Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("sign-in failed: " + reason))])))
-            Ok(_) ->
-                write(store, "_wa_challenge.json", "{}")
-                let (tok, exp) = issue_session(key, clock, "passkey")
-                server.json(200, json.encode(JsonObject([("token", JsonString(tok)), ("expires", JsonString("${exp}"))])))
+        let ch_b64 = wa_field(ch, "b64")
+        if ch_b64 == "":
+            // BUG-421: reject a consumed/cleared challenge by content, not existence.
+            server.json(403, "{\"error\":\"no outstanding challenge\"}")
+        else if wa_field(ch, "op") != "login":
+            // BUG-365: a challenge minted for a promote/yank cannot be spent to mint a session.
+            server.json(403, "{\"error\":\"challenge is not bound to sign-in\"}")
+        else:
+            match webauthn.verify_assertion(pk, wa_field(doc, "authData"), wa_field(doc, "clientData"), wa_field(doc, "signature"), ch_b64, origin, rp_id, true):
+                Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("sign-in failed: " + reason))])))
+                Ok(_) ->
+                    write(store, "_wa_challenge.json", "{}")
+                    let (tok, exp) = issue_session(key, clock, "passkey")
+                    server.json(200, json.encode(JsonObject([("token", JsonString(tok)), ("expires", JsonString("${exp}"))])))
 
 // ---- "Log in with GitHub" (OAuth2) ------------------------------------------
 // `/login` redirects to GitHub with a signed, expiring anti-CSRF `state`; `/callback`
@@ -371,6 +453,19 @@ fn valid_state(key: Secret, clock: Clock, state: String, expected_nonce: String)
         // SEC-007: the nonce must be non-empty AND equal the issuing session's cookie.
         ascii.all_digits(exp_s) && ct_eq(sig, crypto.sign(key, "oauth-state:" + exp_s + ":" + nonce)) && string.to_int(exp_s) > now(clock) && nonce != "" && ct_eq(nonce, expected_nonce)
 
+// BUG-424: server-side single-use of a login nonce. `valid_state` has already proven the nonce
+// is one WE signed and equals the caller's cookie, so it is a server-minted hex string (a safe,
+// unrouted `_oauth_used_*` filename — no route serves `_oauth_*`). The first callback to present
+// it writes the marker and returns true; any replay finds the marker and returns false. An empty
+// nonce fails closed.
+fn consume_nonce(store: Dir, nonce: String) -> Bool:
+    let marker = "_oauth_used_" + nonce + ".json"
+    if nonce == "" || exists(store, marker):
+        false
+    else:
+        write(store, marker, "{\"used\":true}")
+        true
+
 fn h_github_login(key: Secret, clock: Clock, rand: Rand, gh_base: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
     fn(req: Request):
         let nonce = login_nonce(rand)
@@ -378,12 +473,17 @@ fn h_github_login(key: Secret, clock: Clock, rand: Rand, gh_base: String, client
         let url = oauth.authorize_url(gh_base + "/login/oauth/authorize", client_id, redirect_uri, "read:user", state)
         server.with_header(server.redirect(url), "set-cookie", nonce_cookie(nonce))
 
-fn h_github_callback(net: Net, key: Secret, clock: Clock, secrets: SecretStore, gh_base: String, gh_api: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
-    fn(req: Request): github_callback(net, key, clock, secrets, gh_base, gh_api, client_id, redirect_uri, server.query(req, "code"), server.query(req, "state"), cookie_nonce(req))
+fn h_github_callback(store: Dir, net: Net, key: Secret, clock: Clock, secrets: SecretStore, gh_base: String, gh_api: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
+    fn(req: Request): github_callback(store, net, key, clock, secrets, gh_base, gh_api, client_id, redirect_uri, server.query(req, "code"), server.query(req, "state"), cookie_nonce(req))
 
-fn github_callback(net: Net, key: Secret, clock: Clock, secrets: SecretStore, gh_base: String, gh_api: String, client_id: String, redirect_uri: String, code: String, state: String, expected_nonce: String) -> Response:
+fn github_callback(store: Dir, net: Net, key: Secret, clock: Clock, secrets: SecretStore, gh_base: String, gh_api: String, client_id: String, redirect_uri: String, code: String, state: String, expected_nonce: String) -> Response:
     if code == "" || !valid_state(key, clock, state, expected_nonce):
         server.json(403, "{\"error\":\"invalid OAuth state or missing code\"}")
+    else if !consume_nonce(store, expected_nonce):
+        // BUG-424: single-use consumption of the login nonce. A signed state is otherwise valid
+        // until its expiry, so a captured (state, cookie) pair is replayable for the whole TTL;
+        // recording + refusing the nonce makes each login state usable exactly once.
+        server.json(403, "{\"error\":\"OAuth state already used\"}")
     else:
         match secretstore.get(secrets, "github_client_secret"):
             None -> server.json(500, "{\"error\":\"github login is misconfigured (no client secret)\"}")
@@ -396,8 +496,14 @@ fn github_finish(net: Net, key: Secret, clock: Clock, gh_api: String, token: Str
     match oauth.bearer_get_json(net, gh_api + "/user", token):
         Err(_) -> server.json(502, json.encode(JsonObject([("error", JsonString("user fetch failed"))])))
         Ok(user) ->
+            // BUG-410: require a non-empty verified provider identity before minting a session.
+            // An empty `login` (a malformed/mock `/user` response) must NOT become a signed-in
+            // session with an empty subject — fail closed.
             let login = wa_field(user, "login")
-            session_redirect(key, clock, login)
+            if login == "":
+                server.json(403, json.encode(JsonObject([("error", JsonString("GitHub identity missing"))])))
+            else:
+                session_redirect(key, clock, login)
 
 // ---- "Log in with Google" (OIDC) --------------------------------------------
 // Like GitHub, but the token endpoint returns an OIDC `id_token` (a JWT) whose signature
@@ -412,12 +518,16 @@ fn h_google_login(key: Secret, clock: Clock, rand: Rand, authorize_url: String, 
         let url = oauth.authorize_url(authorize_url, client_id, redirect_uri, "openid email", state) + "&nonce=" + nonce
         server.with_header(server.redirect(url), "set-cookie", nonce_cookie(nonce))
 
-fn h_google_callback(net: Net, key: Secret, clock: Clock, secrets: SecretStore, token_url: String, jwks_url: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
-    fn(req: Request): google_callback(net, key, clock, secrets, token_url, jwks_url, client_id, redirect_uri, server.query(req, "code"), server.query(req, "state"), cookie_nonce(req))
+fn h_google_callback(store: Dir, net: Net, key: Secret, clock: Clock, secrets: SecretStore, token_url: String, jwks_url: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
+    fn(req: Request): google_callback(store, net, key, clock, secrets, token_url, jwks_url, client_id, redirect_uri, server.query(req, "code"), server.query(req, "state"), cookie_nonce(req))
 
-fn google_callback(net: Net, key: Secret, clock: Clock, secrets: SecretStore, token_url: String, jwks_url: String, client_id: String, redirect_uri: String, code: String, state: String, expected_nonce: String) -> Response:
+fn google_callback(store: Dir, net: Net, key: Secret, clock: Clock, secrets: SecretStore, token_url: String, jwks_url: String, client_id: String, redirect_uri: String, code: String, state: String, expected_nonce: String) -> Response:
     if code == "" || !valid_state(key, clock, state, expected_nonce):
         server.json(403, "{\"error\":\"invalid OAuth state or missing code\"}")
+    else if !consume_nonce(store, expected_nonce):
+        // BUG-424: single-use consumption of the login nonce (see github_callback). The id_token
+        // `nonce` claim is still verified in google_finish; this adds server-side replay defense.
+        server.json(403, "{\"error\":\"OAuth state already used\"}")
     else:
         match secretstore.get(secrets, "google_client_secret"):
             None -> server.json(500, "{\"error\":\"google login is misconfigured (no client secret)\"}")
@@ -471,8 +581,13 @@ fn session_redirect(key: Secret, clock: Clock, who: String) -> Response:
     server.redirect("/#token=" + url.encode(sess) + "&login=" + url.encode(who))
 
 fn split_host_port(hp: String) -> (String, Int):
+    // BUG-226: `string.to_int` traps on non-numeric input. A malformed upstream
+    // authority (config typo, or an upstream string that lost its port) must never
+    // abort a request handler mid-flight — fall back to port 0, which fails the dial
+    // and surfaces as a clean 502 rather than a VM trap.
     let (h, p) = string.split_once(hp, ":")
-    (h, string.to_int(p))
+    let port = if ascii.all_digits(p): string.to_int(p) else: 0
+    (h, port)
 
 fn encode_query(pairs: List((String, String))) -> String:
     var s = ""

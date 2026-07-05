@@ -109,6 +109,15 @@ credential + a CSPRNG challenge) before it forwards anything to the upstream cov
 **session is never sufficient authority** to change registry state — it is only a client-side
 "you are signed in" marker the SPA uses to reveal the promote/yank controls.
 
+Two further bindings make the assertion unambiguous. **The challenge is bound to the operation.**
+`POST /api/webauthn/challenge` records the `op` (`login`/`promote`/`yank`) and, for a write, the
+exact `name@version`; the write handler re-checks them, so an assertion minted for one operation
+can never be redirected to another. A used challenge is **consumed by content** (cleared to `{}`
+with no `b64`), and a missing `b64` is treated as no outstanding challenge, so an assertion is
+single-use. **The recorded promoter is the authenticated session subject** — `promoted_by` is read
+from the signed bearer, never from the request body, so the separation-of-duties identity coven
+enforces cannot be attacker-chosen.
+
 This matters most against an **anonymous upstream coven** (the dev/e2e default), where coven trusts
 a client-chosen `promoted_by`/yanker verbatim: there, the web edge's passkey gate *is* the human
 check. A plain, session-only `POST /api/coven/promote` (or `/yank`) would bypass it — any session,
@@ -129,9 +138,10 @@ anything that matters, which the opaque origin + `connect-src 'none'` enforce.
 
 ## Browser floor
 
-The Perfect Types model depends on the native HTML Sanitizer / Trusted Types and modern CSP. There
-is no safe down-level polyfill (a polyfill would reintroduce the fallible sanitizer-policy code the
-model deletes), so older browsers are **unsupported**, not degraded.
+The Perfect Types model depends on native Trusted Types (`require-trusted-types-for 'script'` +
+`trusted-types 'none'`) and modern CSP. There is no safe down-level polyfill (a polyfill would
+reintroduce the fallible sink-guarding code the model deletes), so older browsers are
+**unsupported**, not degraded.
 
 ## witchy-WASM in the browser (shipped)
 
@@ -148,15 +158,22 @@ optional source highlighter is a second one. Full threat model:
   and is permitted only as a deliberate, documented decision, never by drift.
 - **VNode, not HTML.** The renderer builds DOM via `createElement`/`textContent`/`setAttribute` and
   never forms a string→DOM sink, so it *strengthens* Perfect Types rather than competing with it.
-  `html`/`VNode` is for trusted app structure only — untrusted publisher content still goes through
-  the sandbox + Sanitizer.
+  Untrusted publisher content (package source, metadata) is *data*: it renders inline through the
+  same `textContent`/`createElement` path — there is no sanitizer and no sandbox for data, because
+  glamour cannot turn data into markup. Only foreign *code* is isolated (into a compartment iframe).
 - **Trust shift (accept consciously).** A WASM renderer moves trust from "audit hand-written
   zero-dep TS" to "audit the witchy source + trust the compiler (already the TCB) + a reproducible
   build + a provable empty footprint." The parent's executable artifact grows; that is the trade.
 
 ## Known gaps (tracked in PLAN.md)
 
-- **B6:** if the upstream coven is unreachable, the proxy currently crashes the server (`connect`
-  raises a fatal, unrecoverable error). Fix = a fallible `connect` returning 502. Shared-tree.
 - **TLS:** the witchy server is plain HTTP; production terminates TLS at a fronting proxy (needed
-  for the `__Host-`/`Secure` cookie).
+  for the `__Host-`/`Secure` cookie). `Strict-Transport-Security` is always sent so the browser
+  upgrades every subsequent request.
+
+## Proxy resilience
+
+The reverse proxy dials the upstream coven with a **fallible** connect (`http.try_get` /
+`http.try_post`): an unreachable or mid-request-failed upstream yields a clean **502**, never a
+crashed server. The rest of the site (static assets, the SPA shell) stays available while coven is
+down.
