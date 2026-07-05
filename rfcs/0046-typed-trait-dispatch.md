@@ -1,9 +1,9 @@
 ---
 rfc: 0046
 title: "Typed trait dispatch: retire the string shadow type system"
-status: implemented (typed-path core; head_type_name residual tracked in the step-4 note)
+status: implemented
 created: 2026-07-03
-tracking: "merged to master a842068 (dispatch reads the TypeTable); string shadow system NOT yet deleted"
+tracking: "typed-path core; head_type_name residual tracked in the step-4 note; merged to master a842068 (dispatch reads the TypeTable); string shadow system NOT yet deleted"
 predecessors:
   - "language-evolution.md Phase 0 (typed lowering — the TypeTable this completes)"
   - "0042 (module namespaces — the other half of 'facts live in declarations')"

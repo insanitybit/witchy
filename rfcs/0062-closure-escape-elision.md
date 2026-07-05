@@ -1,7 +1,7 @@
 ---
 rfc: 0062
 title: Closure escape elision — closures that don't escape don't allocate
-status: accepted
+status: planned
 created: 2026-07-04
 tracking: tier-1 implemented (WITCHY_OPT=closure-elide, opt-in); tiers 2/3 unchanged
 ---

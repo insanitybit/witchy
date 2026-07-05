@@ -1,3 +1,10 @@
+---
+rfc: 0034
+title: "Closing the compute gap: codegen & runtime performance levers"
+status: implemented
+created: 2026-06-30
+tracking: "L1–L4 shipped; L5/L6 deferred"
+---
 # RFC-0034 — Closing the compute gap: codegen & runtime performance levers
 
 - Status: implemented (L1-L4; L5/L6 deferred)

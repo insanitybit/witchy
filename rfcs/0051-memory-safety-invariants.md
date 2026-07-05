@@ -1,13 +1,13 @@
 ---
 rfc: 0051
 title: Memory safety by construction — rc invariants, one allocator, and deleting the per-method zoo
-status: implemented (I1 + I2); I3 rejected-in-part
+status: implemented
 created: 2026-07-03
 predecessors:
   - "0035 (completing the RC floor — this RFC carries forward its 'remaining' section and the SEC-037 guard's rigorous follow-up)"
   - "0016 (reference-counted memory — the reclamation design whose thesis this closes out)"
   - "0023 (checked heap — the ensure()/redzone discipline this makes structural)"
-tracking:
+tracking: "I1 + I2 shipped; I3 rejected-in-part"
 ---
 
 # RFC-0051: Memory safety by construction — rc invariants, one allocator, and deleting the per-method zoo

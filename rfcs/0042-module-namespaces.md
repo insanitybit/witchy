@@ -1,9 +1,9 @@
 ---
 rfc: 0042
 title: Module namespaces and Python-style imports
-status: implemented (module-scoped types + from-imports; iter+chan coexist; full migration incl. projects + test fixtures)
+status: implemented
 created: 2026-07-03
-tracking:
+tracking: "module-scoped types + from-imports; iter+chan coexist; full migration incl. projects + test fixtures"
 ---
 
 # RFC-0042: Module namespaces and Python-style imports

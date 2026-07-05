@@ -1,22 +1,21 @@
 ---
 rfc: 0059
 title: State-machine async — frames, an owning executor, and ring channels
-status: partially-implemented (increment 1 SHIPPED: defunctionalized state-machine
-  lowering — closure tower gone, await-in-while/var-across-await/folding-for-await work,
-  chan_throughput folds + 4x past OOM cliff, parity+determinism green. Increment-2 STEP 1
-  SHIPPED: fixed-capacity ring channels (send = in-place set_at, recv = advance head, no
-  list.tail rebuild), determinism byte-identical, all concurrency parity+heap gates green.
-  Increment-2 STEP 2 (scalar SoA frames = eliminate the CPS closure churn) REMAINS. Its flat
-  TARGET is now PROVEN in-tree (`chan_throughput_scalar_soa_reference_is_flat`: 13 live cells
-  FLAT to N=20k, ~11 ns/msg flat to N=1M, both backends) — but analysis (2026-07-05) re-scoped
-  it from "one focused executor edit" to a whole-program scalar-executor SYNTHESIS bounded to
-  all-scalar programs (a multi-session transform): the std executor cannot upcall a program-
-  generated dispatcher (no global mutable), the generic closure combinators cannot be scalar,
-  and all 8 examples carry non-scalar state — so the scalar path is an `unbox`-style
-  specialization emitted only for provably-all-Int programs, with the closure executor RETAINED
-  for the rest. See the 2026-07-05 "Increment-2 STEP 2" note for the three blockers + staged plan.)
+status: planned
 created: 2026-07-04
-tracking:
+tracking: >
+  Increment 1 SHIPPED: defunctionalized state-machine lowering — closure tower gone,
+  await-in-while/var-across-await/folding-for-await work, chan_throughput folds + 4x
+  past the OOM cliff, parity+determinism green. Increment-2 STEP 1 SHIPPED:
+  fixed-capacity ring channels (send = in-place set_at, recv = advance head, no
+  list.tail rebuild), determinism byte-identical, all concurrency parity+heap gates
+  green. Increment-2 STEP 2 (scalar SoA frames = eliminate the CPS closure churn)
+  REMAINS — its flat target is proven in-tree
+  (chan_throughput_scalar_soa_reference_is_flat: 13 live cells flat to N=20k, ~11
+  ns/msg flat to N=1M, both backends), re-scoped 2026-07-05 to a whole-program
+  scalar-executor synthesis bounded to all-scalar programs (a multi-session
+  transform); see the 2026-07-05 "Increment-2 STEP 2" note for the three blockers +
+  staged plan.
 ---
 
 # RFC-0059: State-machine async — frames, an owning executor, and ring channels

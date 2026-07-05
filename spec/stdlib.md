@@ -304,7 +304,7 @@ The hex Ed25519 public key for a `Secret` — what verifiers check against.
 
 #### `fn reveal(key: Secret) -> String`
 
-Reveal a `Secret`'s raw bytes as a string — for value secrets (tokens, passwords) that must be handed to an external sink. Signing keys are used via `sign`/`public_key`, not revealed.
+Reveal a `Secret`'s raw bytes as a string — for revealable value secrets (tokens, passwords) that must be handed to an external sink. Errors on secrets that are not revealable: signing keys (granted with `--signing-key`, used via `sign`/`public_key`) and any secret granted use-only (`--secret-file name=path,use-only`, e.g. a TLS private key).
 
 #### `fn ecdsa_p256_verify(public_key: String, message: String, signature: String) -> Bool`
 
@@ -1885,7 +1885,7 @@ The rights inside "Kind[A, B]" as ["A", "B"] (trimmed, blanks dropped).
 
 ## `secretstore`
 
-secretstore — read named secrets from the host-granted `SecretStore`. The secrets come from `--secret name=value` / `--secret-file name=path` (and `--signing-key` as sugar for `--secret-file signing=<path>`); their bytes stay host-side. `get` is intercepted by the runtime, since a `SecretStore` is a capability, not plain data. Each `Secret` then supports `crypto.sign` / `crypto.public_key` (as a hex Ed25519 seed) and `crypto.reveal` (value secrets).
+secretstore — read named secrets from the host-granted `SecretStore`. The secrets come from `--secret name=value` / `--secret-file name=path` (append `,use-only` to forbid `crypto.reveal`). `--signing-key <path>` grants the `signing` secret as a protected, non-revealable signing key — it is NOT the same as `--secret-file signing=<path>`, which grants an ordinary revealable named secret. Their bytes stay host-side. `get` is intercepted by the runtime, since a `SecretStore` is a capability, not plain data. A `Secret` is opaque host-held material consumed by specific operations: `crypto.sign` / `crypto.public_key` (Ed25519 signing keys), `server.serve_tls` / `serve_tls_n` (a TLS private key, by handle), and `crypto.reveal` — which succeeds only for revealable value secrets, and errors on signing keys and use-only secrets.
 
 #### `fn get(store: SecretStore, name: String) -> Option(Secret)`
 

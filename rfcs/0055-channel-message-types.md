@@ -1,11 +1,11 @@
 ---
 rfc: 0055
 title: Beyond one message type per program (design-first)
-status: implemented (option (b): erased messages, typed endpoints)
+status: implemented
 created: 2026-07-03
 predecessors:
   - "concurrency-design.md (the executor this lifts a documented limit of)"
-tracking:
+tracking: "option (b): erased messages, typed endpoints"
 ---
 
 # RFC-0055: Beyond one message type per program (design-first)

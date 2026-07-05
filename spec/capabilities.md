@@ -44,7 +44,7 @@ audit witchy code by reading signatures, not by tracing call graphs.
 | `Exec` | spawn a confined native subprocess | `exec.run(e, dir, path, args, stdin) -> (Int, String)` (std `exec`) |
 | `Net`, `Net[Connect]`, `Net[Listen]` (+ `Tcp`/`Udp`/`Uds` transport markers) | the network | `connect`, `listen`, `accept`, `send_line`, `recv_line`, `recv_all`, `only`, `deny`, … |
 | `SecretStore` | named secrets provisioned by the host (`--secret`/`--secret-file`/`--signing-key`) | `require(store, name) -> Secret`, `get(store, name) -> Option(Secret)` |
-| `Secret` | an Ed25519 seed obtained from a `SecretStore` | `crypto.sign`, `crypto.public_key`, `crypto.reveal` |
+| `Secret` | opaque host-held secret material obtained from a `SecretStore` | `crypto.sign`, `crypto.public_key` (Ed25519 signing keys); `server.serve_tls`/`serve_tls_n` consume a TLS private key by handle; `crypto.reveal` (revealable value secrets only — signing keys and use-only secrets are not revealable) |
 
 A `Dir` is not "the filesystem" — it is one subtree. `read(dir, path)` resolves
 `path` relative to the capability and rejects `..`, absolute paths, and
@@ -365,7 +365,7 @@ Static checking keeps *your* code honest. To run code you don't trust, compile
 it to WebAssembly and let the VM boundary enforce the grant:
 
 ```sh
-witchy sandbox program.witchy [--dir <root>] [--net <host:port>]...
+witchy sandbox [--dir <root>] [--net <host:port>]... program.witchy
 ```
 
 The sandbox computes the program's footprint, shows it, and instantiates the
@@ -387,9 +387,15 @@ call**. The enforcement is structural, not a runtime permission check:
   capability grant. There is no per-task sandbox boundary — isolating untrusted
   code means running it as its own sandboxed program, not as a task.
 
-The interpreter (`witchy program.witchy`) enforces capabilities at the type
-level and confines `Dir` paths identically, but it is a development runtime,
-not a security boundary — untrusted code belongs in the sandbox.
+A bare `witchy program.witchy` (and `witchy run`) compiles the program to
+WebAssembly and executes it under the same wasmtime runtime, granting the
+footprint its `main` demands from the ambient environment — a convenience run
+for code you trust, not a boundary for code you don't. `witchy sandbox` is the
+explicit untrusted-code boundary: it grants nothing by default and links only the
+host functions named on its command line. The tree-walking interpreter is not a
+user run path — it is the parity oracle, the `comptime` evaluator, the
+in-language test runner, and the build-step executor; it confines `Dir` paths
+through the same checks so its oracle runs match.
 
 ## What capabilities do NOT defend against
 

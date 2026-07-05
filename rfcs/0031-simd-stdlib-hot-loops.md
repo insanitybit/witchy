@@ -1,9 +1,9 @@
 ---
 rfc: 0031
 title: SIMD acceleration for stdlib hot loops
-status: deferred
+status: proposed
 created: 2026-06-29
-tracking:
+tracking: "deferred — accepted in principle but not scheduled (SIMD stdlib hot loops)"
 ---
 
 # RFC-0031: SIMD acceleration for stdlib hot loops
