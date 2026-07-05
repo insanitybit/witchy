@@ -15427,6 +15427,119 @@ fn main(console: Console):
     }
 
     #[test]
+    fn module_function_as_value_via_eta_backends_agree() {
+        // (RFC-0050 Part 2) A bare `module.fn` in value position is a first-class
+        // function value: the linker eta-expands `list.length` to a lambda of its
+        // full declared arity. Exercised three ways the RFC's parity clause pins —
+        // passed to `map`, bound with `let`, and stored in a record field — all
+        // through the ordinary lambda path so both backends materialize the same
+        // closure. `list.length` is generic (`List(a) -> Int`), so this also proves
+        // RFC-0046's fixpoint infers the eta-lambda's type-var parameter.
+        let client = r#"
+import list
+
+type Box:
+    op: fn(List(Int)) -> Int
+
+fn main(console: Console):
+    let xs = [[1, 2], [3], [4, 5, 6]]
+    let ys = list.map(xs, list.length)
+    print(console, __render(ys))
+    let f = list.length
+    print(console, __render(f([9, 9, 9, 9])))
+    let b = Box(list.length)
+    print(console, __render((b.op)([7, 7])))
+"#;
+        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "module-function-value diverged");
+        assert_eq!(compiled, vec!["[2, 1, 3]", "4", "2"]);
+    }
+
+    #[test]
+    fn module_function_fold_and_generic_mutator_eta_backends_agree() {
+        // (RFC-0050 Part 2) A 2-arity module function as a `fold` reducer, both a
+        // concrete one (`math.max`) and a GENERIC RFC-0043 mutator (`list.concat`,
+        // whose `var` first parameter returns `self`, so it is NOT excluded — its
+        // value form is a pure call). Confirms the arity-2 eta-lambda infers and
+        // runs identically on both backends.
+        let client = r#"
+import list
+import math
+
+fn main(console: Console):
+    let nums = [3, 7, 2, 9, 4]
+    print(console, __render(list.fold(nums, 0, math.max)))
+    let xss = [[1, 2], [3], [4, 5, 6]]
+    print(console, __render(list.fold(xss, [], list.concat)))
+"#;
+        let sources = [
+            ("list", crate::bundled_module("list").unwrap()),
+            ("math", crate::bundled_module("math").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "fold-with-module-function diverged");
+        assert_eq!(compiled, vec!["9", "[1, 2, 3, 4, 5, 6]"]);
+    }
+
+    #[test]
+    fn module_function_value_uses_full_declared_arity_backends_agree() {
+        // (RFC-0050 Part 2 × RFC-0056) A function VALUE ignores keyword-argument
+        // defaults, so eta-expansion uses the FULL declared arity: `greeter.greet`
+        // (whose second parameter has a constant default) becomes a two-parameter
+        // lambda, and every positional argument must be supplied. A cross-module
+        // reference, so it also exercises the imported-module value path.
+        let greeter = "pub fn greet(name: String, greeting: String = \"Hello\") -> String:\n    \"${greeting}, ${name}\"\n";
+        let client = r#"
+import greeter
+import list
+
+fn main(console: Console):
+    let g = greeter.greet
+    let out = list.map(["Ada", "Bel"], fn(nm): g(nm, "Hi"))
+    for s in out:
+        print(console, s)
+"#;
+        let sources = [("greeter", greeter), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "default-arity module-function value diverged");
+        assert_eq!(compiled, vec!["Hi, Ada", "Hi, Bel"]);
+    }
+
+    #[test]
+    fn module_var_procedure_has_no_value_form_is_link_error() {
+        // (RFC-0050 Part 2) A Nil-returning `var`-procedure (RFC-0043) is EXCLUDED
+        // from eta-expansion: a `let` lambda parameter cannot satisfy the `var`
+        // demand. The linker rejects it up front with an error that names the real
+        // cause, rather than letting a later pass mislead.
+        let helper = "pub fn scale(var n: Int):\n    n = n * 2\n";
+        let client = "import helper\n\nfn main():\n    let f = helper.scale\n    f\n";
+        let modules = vec![
+            ("helper".to_string(), parser::parse_module(helper).expect("parse helper")),
+            ("main".to_string(), parser::parse_module(client).expect("parse main")),
+        ];
+        let err = crate::pipeline::link(modules, "main")
+            .expect_err("a var-procedure has no value form");
+        assert!(format!("{err}").contains("has no value form"), "{err}");
+    }
+
+    #[test]
+    fn module_function_typo_in_value_position_names_the_module() {
+        // (RFC-0050 Part 2) When the base of a `module.fn` value reference names an
+        // in-scope module (here the `list` prelude), a wrong function name reuses
+        // the call-position diagnostic — "unbound variable `list`" never appears.
+        let src = "import list\n\nfn main():\n    let f = list.lenght\n    f\n";
+        let module = parser::parse_module(src).expect("parse");
+        let err = crate::pipeline::link(vec![("main".into(), module)], "main")
+            .expect_err("typo'd module function must be a link error");
+        assert!(format!("{err}").contains("module `list` has no function `lenght`"), "{err}");
+    }
+
+    #[test]
     fn immediate_application_backends_agree() {
         let src = r#"
 fn twice(f: fn(Int) -> Int, x: Int) -> Int:
