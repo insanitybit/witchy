@@ -989,9 +989,10 @@
             DataSegment { offset: 200, bytes: mk_str("hello world") },
             DataSegment { offset: 220, bytes: mk_str("héllo") },
         ];
-        let ss = |s: i32, a: i32, b: i32| WirExpr::Call {
+        // `start`/`end` ride the full-width i64 index path (BUG-011); `s` is the i32 ptr.
+        let ss = |s: i32, a: i64, b: i64| WirExpr::Call {
             func: "str_substring".into(),
-            args: vec![WirExpr::ConstI32(s), WirExpr::ConstI32(a), WirExpr::ConstI32(b)],
+            args: vec![WirExpr::ConstI32(s), WirExpr::ConstI64(a), WirExpr::ConstI64(b)],
         };
         let load_i32 = |p: WirExpr| WirExpr::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
         let byte0 = |p: WirExpr| WirExpr::Load8U { ptr: Box::new(p), offset: 4 };

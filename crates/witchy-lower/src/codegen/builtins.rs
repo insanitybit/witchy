@@ -731,10 +731,14 @@ impl Codegen {
                 self.uses_substr = true;
                 let sk = self.kind_of(&args[1]);
                 let ek = self.kind_of(&args[2]);
+                // (BUG-011) Pass the char indices at full i64 width — `$str_substring`
+                // clamps them to `[0, char_count]` before narrowing to byte offsets,
+                // exactly like the interpreter. A prior narrow-to-i32 here wrapped huge
+                // indices (near the i64 extremes), diverging from the interpreter.
                 call("str_substring", vec![
                     self.lower_expr(&args[0])?,
-                    Self::wir_convert(self.lower_expr(&args[1])?, sk, Kind::I32),
-                    Self::wir_convert(self.lower_expr(&args[2])?, ek, Kind::I32),
+                    Self::wir_convert(self.lower_expr(&args[1])?, sk, Kind::I64),
+                    Self::wir_convert(self.lower_expr(&args[2])?, ek, Kind::I64),
                 ])
             }
             // (Bytes) `Bytes` shares `String`'s flat `[len][bytes]` layout, so
