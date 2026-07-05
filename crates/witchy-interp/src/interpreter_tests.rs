@@ -556,6 +556,7 @@ fn main(console: Console, net: Net):
             r#"
 import http
 import server
+from http import Request, Response
 fn main(console: Console, net: Net):
     let app = server.router()
         .get("/", fn(req: Request): server.text(200, "home"))
@@ -660,6 +661,7 @@ fn main(console: Console, net: Net):
             r#"
 import http
 import server
+from http import Request, Response
 fn main(console: Console, net: Net):
     let app = server.router().post("/make", fn(req: Request): server.created("made")).get("/bad", fn(req: Request): server.bad_request("nope")).get("/secret", fn(req: Request): server.unauthorized("auth")).delete("/item", fn(req: Request): server.no_content())
     server.serve_n(net, "{addr}", app, 4)
@@ -707,6 +709,7 @@ fn main(console: Console, net: Net):
             r#"
 import http
 import server
+from http import Request, Response
 fn main(console: Console, net: Net):
     let app = server.router().post("/items", fn(req: Request): server.created("ok"))
     server.serve_n(net, "{addr}", app, 3)
@@ -755,6 +758,7 @@ fn main(console: Console, net: Net):
 import http
 import server
 import json
+from http import Request, Response
 fn main(console: Console, net: Net):
     var app = server.router()
     app = app.get("/", fn(req: Request): server.ok("home"))
@@ -800,6 +804,7 @@ fn main(console: Console, net: Net):
             r#"
 import http
 import server
+from http import Request, Response
 fn main(console: Console, net: Net):
     let app = server.router().any("/ping", fn(req: Request): server.ok(server.method(req)))
     server.serve_n(net, "{addr}", app, 2)
@@ -842,6 +847,7 @@ fn main(console: Console, net: Net):
             r#"
 import http
 import server
+from http import Request, Response
 
 // A tower-style Layer that tags every response with a header.
 fn tagger(next: fn(Request) -> Response) -> fn(Request) -> Response:
@@ -899,6 +905,8 @@ fn main(console: Console, net: Net):
 import http
 import server
 import json
+from http import Request, Response
+from json import Json
 fn greet(req: Request) -> Response:
     server.json_value(200, JsonObject([("hello", JsonString(server.param(req, "name")))]))
 fn main(console: Console, net: Net):
@@ -942,6 +950,8 @@ import http
 import server
 import json
 import option
+from http import Request, Response
+from json import Json
 fn name_of(doc: Json) -> String:
     match json.get(doc, "name"):
         Some(v) -> option.unwrap_or(json.as_string(v), "?")
@@ -994,6 +1004,7 @@ fn main(console: Console, net: Net):
             r#"
 import http
 import server
+from http import Request, Response
 fn main(console: Console, net: Net):
     let app = server.router().post("/", fn(req: Request): server.text(200, server.form_field(req, "name")))
     server.serve_n(net, "{addr}", app, 1)
@@ -1039,6 +1050,7 @@ fn main(console: Console, net: Net):
             r#"
 import http
 import server
+from http import Request, Response
 fn file_server(dir: Dir) -> fn(Request) -> Response:
     fn(req: Request): serve_file(dir, server.param(req, "path"))
 fn serve_file(dir: Dir, p: String) -> Response:
@@ -1086,6 +1098,7 @@ fn main(console: Console, net: Net, root: Dir):
         // open a socket is a compile-time (type) error — it can't be written.
         let src = r#"
 import server
+from http import Request, Response
 fn evil(req: Request) -> Response:
     let s = connect(net, "10.0.0.1:80")
     server.text(200, "leaked")
