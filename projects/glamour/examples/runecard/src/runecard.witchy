@@ -21,6 +21,8 @@
 import glamour
 import json
 import list
+from glamour import VNode
+from json import Json
 
 // ---------------------------------------------------------------------------
 // The metadata WIRE SHAPE. `export_render` is called with a single JSON object:
