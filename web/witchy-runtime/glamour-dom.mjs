@@ -39,13 +39,54 @@ const isCompartment = (v) => v != null && typeof v.compartment === "string";
 const isKeyed = (v) => v != null && typeof v.key === "string" && v.node != null;
 // A host-owned SECRET input (RFC-0039): {"secret": {"form","field"}, "on_ready": msg-tag}.
 // The rune emitted NO value — the typed bytes live only in this shell's custody (the real
-// <input> + `dispatch.__secrets`), never crossing back into the rune.
-const isSecret = (v) => v != null && v.secret != null && typeof v.on_ready === "string";
-// The host-custody slot name for a secret node (matches `secret_ref`'s `form + "/" + field`).
-const secretSlot = (v) => `${v.secret.form}/${v.secret.field}`;
+// <input> + `dispatch.__secrets`), never crossing back into the rune. (BUG-357) The shape is
+// checked STRICTLY — `form`/`field`/`on_ready` must all be strings — so a malformed/forged
+// vnode can never coax the shell into mounting a host password field.
+const isSecret = (v) =>
+  v != null &&
+  v.secret != null &&
+  typeof v.secret.form === "string" &&
+  typeof v.secret.field === "string" &&
+  typeof v.on_ready === "string";
+// (BUG-273) Collision-free host-custody slot key. A raw `form + "/" + field` join lets
+// `("a/b","c")` and `("a","b/c")` collapse to one key; percent-escaping `%` then `/` in each
+// component makes the `/` separator unambiguous (injective). MUST match glamour's `slot_encode`.
+const escSlot = (s) => String(s).replace(/%/g, "%25").replace(/\//g, "%2F");
+const secretSlot = (v) => `${escSlot(v.secret.form)}/${escSlot(v.secret.field)}`;
 // A host SLOT (RFC-0041): {"slot": kind, "data": payload}. The host's `kind` renderer mounts
 // a widget here (main frame); glamour renders it once and NEVER diffs into it.
 const isSlot = (v) => v != null && typeof v.slot === "string" && typeof v.data === "string";
+
+// (BUG-260) The DOM element ALLOWLIST — the structural XSS boundary for the live sink. A pure
+// rune emits an arbitrary `element(tag, …)`, so `createElement` on an unvalidated name would
+// let it mint `<script>`, an unsandboxed `<iframe srcdoc=…>`, `<object>`, `<link>`, `<meta>`,
+// etc. — trusted-page script/resource execution WITHOUT holding a browser capability. Only
+// inert/presentation elements below are built as themselves; anything else is FAIL CLOSED to an
+// inert `<span data-glamour-blocked-tag>` (its safe children still render). Sandboxed
+// compartments use `mountCompartment` (their own path), never this element sink.
+const SAFE_ELEMENTS = new Set([
+  // flow / sections
+  "a", "abbr", "address", "article", "aside", "b", "bdi", "bdo", "blockquote", "br",
+  "caption", "cite", "code", "col", "colgroup", "data", "datalist", "dd", "del", "details",
+  "dfn", "dialog", "div", "dl", "dt", "em", "fieldset", "figcaption", "figure", "footer",
+  "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hgroup", "hr", "i", "img", "input",
+  "ins", "kbd", "label", "legend", "li", "main", "mark", "menu", "meter", "nav", "ol",
+  "optgroup", "option", "output", "p", "picture", "pre", "progress", "q", "rp", "rt", "ruby",
+  "s", "samp", "section", "select", "small", "source", "span", "strong", "sub", "summary",
+  "sup", "table", "tbody", "td", "textarea", "tfoot", "th", "thead", "time", "tr", "u", "ul",
+  "var", "wbr",
+]);
+const isSafeElement = (tag) => SAFE_ELEMENTS.has(String(tag).toLowerCase());
+
+// (BUG-260) Attribute names that are HTML/script sinks even on a structural element and are
+// NOT plain URL attributes (those go through `safeUrl`). `srcdoc` embeds a whole HTML document
+// into an iframe, so it is never written.
+const DANGEROUS_ATTRS = new Set(["srcdoc"]);
+
+// (BUG-272) A compartment renderer id is a REGISTRY KEY, never URL path material. Same grammar
+// as glamour's `valid_renderer_id`: lowercase ASCII alnum / `-` / `_`, leading alnum, non-empty.
+// Excludes `/ . % ? #` so a crafted id can't escape the `/compartments/<id>/` namespace.
+const isValidRendererId = (id) => typeof id === "string" && /^[a-z0-9][a-z0-9_-]*$/.test(id);
 
 /**
  * Mount a glamour rune into `root`. Returns `{ dispatch, getModel, unmount }`.
@@ -103,6 +144,15 @@ export async function mount(wasmBytes, root, opts = {}) {
   // The single mounted DOM node (the app is single-rooted, matching glamour's
   // `html`/serializer). Replaced wholesale only on a tag change.
   let domRoot = null;
+  // (BUG-377) Explicit lifecycle state. Once `unmount()` sets `disposed`, `dispatch` and
+  // `interpretCmd` become no-ops, so a late timer/fetch/port callback can no longer run the
+  // rune, patch the (removed) DOM, or arm more effects. Pending timers are tracked so they can
+  // be cancelled, and the popstate listener is removed, on unmount.
+  let disposed = false;
+  const timers = new Set();
+  const clearTimer =
+    opts.clearTimeout || (typeof clearTimeout !== "undefined" ? clearTimeout : null);
+  let removeRouteListener = null;
 
   // interpretCmd(cmd) — PERFORM the effect the rune merely described. The rune
   // cannot do any of this (it holds no capability); the shell does, because the
@@ -111,12 +161,29 @@ export async function mount(wasmBytes, root, opts = {}) {
   //   * after -> arm the (injected) timer; when it fires, dispatch the deferred
   //              msg back into the loop (which re-renders and may arm the next);
   //   * batch -> interpret each sub-command.
+  // (BUG-357) A port is invocable only if it passes the app's port policy. `opts.allowedPorts`
+  // (array or Set of names) is an explicit allowlist for the mounted app; when absent, the set
+  // of registered `opts.ports`/`opts.secretPorts` keys is the effective allowlist (an unlisted
+  // port still fails the registration check below). Either way an unknown name is refused.
+  const allowedPortSet = opts.allowedPorts ? new Set(opts.allowedPorts) : null;
+  const portAllowed = (name) => !allowedPortSet || allowedPortSet.has(name);
+
   const interpretCmd = (cmd) => {
+    if (disposed) return;                          // (BUG-377) no effects after unmount
     if (!cmd || typeof cmd.cmd !== "string") return;
     if (cmd.cmd === "none") return;
     if (cmd.cmd === "after") {
       if (!setTimer) throw new Error("glamour-dom: an `after` Cmd needs a timer (pass opts.setTimeout)");
-      setTimer(() => dispatch(cmd.msg), cmd.ms);
+      // (BUG-017) The host is the real authority on the timer floor: re-clamp the delay to the
+      // token's `min_ms` carried on the wire, rather than trusting the emitted `ms` blindly.
+      const ms = Math.max(Number(cmd.ms) || 0, Number(cmd.min_ms) || 0);
+      // (BUG-377) Track the id so unmount can cancel a still-pending timer.
+      let id;
+      id = setTimer(() => {
+        timers.delete(id);
+        dispatch(cmd.msg);
+      }, ms);
+      timers.add(id);
       return;
     }
     if (cmd.cmd === "batch") {
@@ -125,6 +192,12 @@ export async function mount(wasmBytes, root, opts = {}) {
     }
     if (cmd.cmd === "http") {
       if (!doFetch) throw new Error("glamour-dom: an `http` Cmd needs fetch (pass opts.fetch)");
+      // (BUG-017) Re-enforce the `UiFetch` policy carried on the wire — the host is the real
+      // authority boundary. A method outside the token's set, or a URL outside its prefix, is
+      // FAIL CLOSED (dropped) so a forged/off-policy command never reaches the network.
+      if (typeof cmd.url !== "string" || typeof cmd.method !== "string") return;
+      if (cmd.methods != null && !methodAllowed(cmd.methods, cmd.method)) return;
+      if (cmd.prefix != null && !cmd.url.startsWith(cmd.prefix)) return;
       // The SHELL attaches credentials — the rune never holds the session token.
       const headers = opts.authHeaders ? opts.authHeaders() : {};
       const init = { method: cmd.method, headers };
@@ -137,6 +210,10 @@ export async function mount(wasmBytes, root, opts = {}) {
       return;
     }
     if (cmd.cmd === "nav") {
+      // (BUG-017) Re-enforce the `UiRoute` `base` carried on the wire — a path outside the
+      // authorized base is FAIL CLOSED (no pushState, no route msg).
+      if (typeof cmd.path !== "string") return;
+      if (cmd.base != null && !cmd.path.startsWith(cmd.base)) return;
       if (history) history.pushState({}, "", cmd.path);
       if (opts.routeTag) dispatch({ $variant: opts.routeTag, $values: [cmd.path] });
       return;
@@ -144,7 +221,12 @@ export async function mount(wasmBytes, root, opts = {}) {
     if (cmd.cmd === "port") {
       // A host capability the rune cannot perform (a session/WebAuthn ceremony, storage):
       // run it HERE — the credential/`navigator.credentials`/token never enters the rune —
-      // and hand only the result back as a msg.
+      // and hand only the result back as a msg. (BUG-357) Validate the command SHAPE and the
+      // port IDENTITY before invoking: a forged/malformed `port` command is refused. The
+      // registered `opts.ports` keys ARE the port allowlist; an optional `opts.allowedPorts`
+      // narrows it further for the mounted app.
+      if (typeof cmd.port !== "string" || typeof cmd.tag !== "string") throw new Error("glamour-dom: malformed `port` cmd");
+      if (!portAllowed(cmd.port)) throw new Error(`glamour-dom: port \`${cmd.port}\` is not in the allowed-port policy`);
       const fn = opts.ports && opts.ports[cmd.port];
       if (!fn) throw new Error(`glamour-dom: no port \`${cmd.port}\` (pass opts.ports.${cmd.port})`);
       Promise.resolve(fn(cmd.arg))
@@ -156,6 +238,13 @@ export async function mount(wasmBytes, root, opts = {}) {
       // Read the secret from the shell's OWN custody (the rune never held it) and hand it to
       // the host credential port. Only the port's result returns, as an ordinary msg — the
       // password bytes go host -> port and stop there. A missing/empty field submits "".
+      // (BUG-357) Validate the SHAPE, the port IDENTITY, and that `slot` names a CURRENTLY
+      // RENDERED host-owned secret — so a forged command cannot exfiltrate an arbitrary slot
+      // or invoke an un-granted port.
+      if (typeof cmd.slot !== "string" || typeof cmd.port !== "string" || typeof cmd.tag !== "string") throw new Error("glamour-dom: malformed `submit_secret` cmd");
+      const renderedSlots = dispatch.__secretSlots || new Set();
+      if (!renderedSlots.has(cmd.slot)) throw new Error("glamour-dom: submit_secret for a slot that is not a rendered host-owned secret");
+      if (!portAllowed(cmd.port)) throw new Error(`glamour-dom: port \`${cmd.port}\` is not in the allowed-port policy`);
       const store = dispatch.__secrets || {};
       const secret = typeof store[cmd.slot] === "string" ? store[cmd.slot] : "";
       const fn = (opts.secretPorts && opts.secretPorts[cmd.port]) || (opts.ports && opts.ports[cmd.port]);
@@ -173,6 +262,7 @@ export async function mount(wasmBytes, root, opts = {}) {
   // the command the rune returned. `msg` is a wire-format msg value (the exact
   // JSON `to_json` embedded in an `on` attr, or carried by an `after` Cmd).
   const dispatch = (msg) => {
+    if (disposed) return;                          // (BUG-377) a late callback is a no-op
     const { model: nextModel, vnode, cmd } = step(model, { msg });
     domRoot = patch(doc, root, domRoot, lastVNode, vnode, dispatch);
     model = nextModel;
@@ -183,6 +273,9 @@ export async function mount(wasmBytes, root, opts = {}) {
   // `dispatch` so the module-level `mountSlot` (which only receives `dispatch`) can reach them,
   // mirroring the secret store.
   dispatch.__slots = opts.slots || {};
+  // (BUG-357) The set of host-owned secret slots that have actually been RENDERED. A
+  // `submit_secret` command is honored only for a slot in this set (see `interpretCmd`).
+  dispatch.__secretSlots = new Set();
 
   // Initial render: model-only input, then build the DOM fresh and interpret the
   // command (the initial step emits `none`, but interpreting it keeps the loop
@@ -199,15 +292,34 @@ export async function mount(wasmBytes, root, opts = {}) {
   if (opts.routeTag) {
     const fireRoute = () =>
       dispatch({ $variant: opts.routeTag, $values: [location ? location.pathname : "/"] });
-    if (opts.onPopState) opts.onPopState(fireRoute);
-    else if (typeof window !== "undefined") window.addEventListener("popstate", fireRoute);
+    // (BUG-377) Keep an unsubscribe so `unmount()` can drop the popstate listener. `onPopState`
+    // may return its own unsubscribe (contract extension); otherwise the default window path
+    // removes the exact listener it added.
+    if (opts.onPopState) {
+      const maybeUnsub = opts.onPopState(fireRoute);
+      if (typeof maybeUnsub === "function") removeRouteListener = maybeUnsub;
+    } else if (typeof window !== "undefined") {
+      window.addEventListener("popstate", fireRoute);
+      removeRouteListener = () => window.removeEventListener("popstate", fireRoute);
+    }
     fireRoute();
   }
 
   return {
     dispatch,
     getModel: () => model,
+    // (BUG-377) Fully dispose: after this, no pending timer/fetch/port callback can run the
+    // rune or touch the DOM (the `disposed` guard), the popstate listener is removed, and
+    // pending timers are cancelled. Idempotent.
     unmount() {
+      if (disposed) return;
+      disposed = true;
+      if (clearTimer) for (const id of timers) clearTimer(id);
+      timers.clear();
+      if (removeRouteListener) {
+        removeRouteListener();
+        removeRouteListener = null;
+      }
       if (domRoot && domRoot.parentNode === root) root.removeChild(domRoot);
       domRoot = null;
       lastVNode = null;
@@ -251,8 +363,10 @@ function patch(doc, parent, dom, oldV, newV, dispatch) {
   }
 
   if (isCompartment(newV)) {
-    // Same renderer (a different one would have been rebuilt by kindOrTagChanged): keep
-    // the live iframe. (Re-posting an updated grant is a later refinement.)
+    // Same renderer (a different one would have been rebuilt by kindOrTagChanged): keep the
+    // live iframe but APPLY a changed grant/event (BUG-387) — repost the grant over the channel
+    // and adopt the new `on` tag, so the foreign widget never drifts from the trusted tree.
+    updateCompartment(dom, newV);
     return dom;
   }
 
@@ -365,7 +479,14 @@ function createNode(doc, v, dispatch) {
   if (!isElement(v)) {
     throw new Error(`glamour-dom: malformed vnode: ${JSON.stringify(v)}`);
   }
-  const el = doc.createElement(v.el);
+  // (BUG-260) FAIL CLOSED at the element sink: only allowlisted inert/presentation tags are
+  // built as themselves. A disallowed tag (`script`, unsandboxed `iframe`, `object`, `link`,
+  // `meta`, …) — or a name `createElement` would reject — becomes an inert `<span>` recording
+  // the blocked tag, so its (still-sanitized) children render but no executable element is
+  // created in the trusted page.
+  const safe = isSafeElement(v.el);
+  const el = doc.createElement(safe ? v.el : "span");
+  if (!safe) el.setAttribute("data-glamour-blocked-tag", String(v.el));
   for (const a of v.attrs || []) applyAttr(el, a, dispatch);
   for (const k of v.kids || []) el.appendChild(createNode(doc, k, dispatch));
   return el;
@@ -385,27 +506,55 @@ function mountCompartment(doc, node, dispatch) {
   const frame = doc.createElement("iframe");
   frame.setAttribute("sandbox", "allow-scripts");
   frame.setAttribute("class", "glamour-compartment");
-  frame.setAttribute("src", `/compartments/${node.compartment}/`);
+  // (BUG-272) The renderer id is a REGISTRY KEY, not URL path material. A value carrying
+  // `/`/`.`/`%`/`?`/`#` (which URL resolution could normalize out of the `/compartments/<id>/`
+  // namespace) is FAIL CLOSED to an inert `about:blank` frame, and its channel is not wired.
+  const validId = isValidRendererId(node.compartment);
+  frame.setAttribute("src", validId ? `/compartments/${node.compartment}/` : "about:blank");
+  // (BUG-387) Keep mutable per-frame state so a same-renderer re-render can repost a changed
+  // grant and route later iframe events to the CURRENT `on` tag (see `updateCompartment`).
+  const state = { node, channel: null };
+  frame.__glamourCompartment = state;
   // The grant/event channel is wired only where a real iframe + MessageChannel exist
-  // (a browser); the isolation CONFIG above is what actually contains the renderer.
-  if (typeof MessageChannel !== "undefined" && typeof frame.addEventListener === "function") {
+  // (a browser) AND the renderer id is valid; the isolation CONFIG above is what actually
+  // contains the renderer.
+  if (validId && typeof MessageChannel !== "undefined" && typeof frame.addEventListener === "function") {
     const channel = new MessageChannel();
+    state.channel = channel;
     frame.addEventListener("load", () => {
       try {
         frame.contentWindow.postMessage({ kind: "init" }, "*", [channel.port2]);
-        channel.port1.postMessage({ kind: "grant", data: node.grant }); // the only data IN
+        channel.port1.postMessage({ kind: "grant", data: state.node.grant }); // the only data IN
       } catch (_e) {
         /* an opaque-origin frame may reject; the grant is non-sensitive either way */
       }
     });
     channel.port1.onmessage = (ev) => {
-      // The only thing the compartment may say back: a tagged, schema-checked event.
+      // The only thing the compartment may say back: a tagged, schema-checked event, routed to
+      // the CURRENT on-event tag (BUG-387).
       if (ev.data && ev.data.kind === "event" && Array.isArray(ev.data.values)) {
-        dispatch({ $variant: node.on, $values: ev.data.values });
+        dispatch({ $variant: state.node.on, $values: ev.data.values });
       }
     };
   }
   return frame;
+}
+
+// (BUG-387) Apply a same-renderer compartment re-render: repost a changed grant over the live
+// channel and adopt the new `on` tag for subsequent events. A changed RENDERER is not handled
+// here — `kindOrTagChanged` already rebuilds the iframe for that.
+function updateCompartment(frame, newNode) {
+  const state = frame && frame.__glamourCompartment;
+  if (!state) return;
+  const grantChanged = state.node.grant !== newNode.grant;
+  state.node = newNode; // later events dispatch the new `on`; a repost reads the new grant
+  if (grantChanged && state.channel) {
+    try {
+      state.channel.port1.postMessage({ kind: "grant", data: newNode.grant });
+    } catch (_e) {
+      /* opaque-origin frame may reject; the grant is non-sensitive either way */
+    }
+  }
 }
 
 // Mount a host-owned SECRET input (RFC-0039). The typed value lives ONLY in host custody —
@@ -421,6 +570,9 @@ function mountSecretInput(doc, node, dispatch) {
   el.setAttribute("type", "password");
   el.setAttribute("class", "glamour-secret");
   const slot = secretSlot(node);
+  // (BUG-357) Record that this slot is a genuinely rendered host-owned secret, so a
+  // `submit_secret` command naming it can be honored (and a forged slot cannot).
+  (dispatch.__secretSlots = dispatch.__secretSlots || new Set()).add(slot);
   const store = (dispatch.__secrets = dispatch.__secrets || {});
   if (typeof el.addEventListener === "function") {
     el.addEventListener("input", (ev) => {
@@ -450,6 +602,14 @@ function mountSlot(doc, node, dispatch) {
   return pre;
 }
 
+// (BUG-017) Membership test for a `UiFetch` method-set carried on the `http` wire cmd.
+// `methods` is spelled with any of `,`/space/`|` separators; a method is allowed only as a
+// whole, case-insensitive token — mirroring glamour's `method_allowed`.
+function methodAllowed(methods, method) {
+  const norm = String(methods).toUpperCase().replace(/[ |]/g, ",");
+  return ("," + norm + ",").includes("," + String(method).toUpperCase() + ",");
+}
+
 // URL-bearing attributes whose value is a navigation/fetch target: a `javascript:`
 // (or `data:text/html`) URL here is a script sink, so the value is scheme-checked.
 const URL_ATTRS = new Set(["href", "src", "action", "formaction", "poster", "xlink:href"]);
@@ -458,6 +618,11 @@ const URL_ATTRS = new Set(["href", "src", "action", "formaction", "poster", "xli
 // `javascript:`) to an inert `#`. `data:` is allowed only for inline images.
 function safeUrl(value) {
   const s = String(value).trim();
+  // (BUG-283) Reject on any ASCII C0 control or DEL BEFORE scheme detection. Browsers strip
+  // TAB/LF/CR from URLs during canonicalization, so `java\nscript:alert(1)` becomes
+  // `javascript:` only after the shell has already written it. Release-facing URLs have no
+  // legitimate raw controls — fail closed to `#`.
+  if (/[\u0000-\u001F\u007F]/.test(s)) return "#";
   // A single leading slash is a same-origin relative path; `//host` is protocol-relative
   // (off-origin navigation) — SEC-025 — so the slash branch rejects a second slash.
   if (/^(https?:|mailto:|tel:|\.|#|\?|\/(?!\/))/i.test(s)) return s; // relative or known-safe scheme
@@ -476,6 +641,7 @@ function applyAttr(el, attr, dispatch) {
   const [kind, a, b] = attr;
   if (kind === "prop") {
     if (/^on/i.test(a)) return;                              // no string event handlers, ever
+    if (DANGEROUS_ATTRS.has(String(a).toLowerCase())) return; // (BUG-260) srcdoc is an HTML sink
     if (URL_ATTRS.has(a.toLowerCase())) el.setAttribute(a, safeUrl(b));
     else el.setAttribute(a, b);
   } else if (kind === "on") {
