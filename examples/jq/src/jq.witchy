@@ -6,6 +6,7 @@
 
 import json
 import string
+from json import Json
 
 fn main(console: Console):
     let document = "{\"user\":{\"name\":\"Ada\",\"roles\":[\"admin\",\"dev\"]},\"active\":true,\"count\":42}"

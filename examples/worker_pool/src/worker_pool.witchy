@@ -8,6 +8,7 @@
 //       witchy parity examples/worker_pool.witchy
 
 import chan
+from chan import Receiver, Sender
 
 async fn worker(jobs: Receiver(Int), results: Sender(Int)) -> Nil:
     chan.consume(jobs, fn(n): chan.send(results, n * n)).await

@@ -5,6 +5,7 @@
 
 import iter
 import string
+from iter import Iter
 
 gen fn pascal() -> Iter(List(Int)):
     var row = [1]

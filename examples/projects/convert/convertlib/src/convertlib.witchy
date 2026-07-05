@@ -8,6 +8,7 @@
 import csv
 import json
 import string
+from json import Json
 
 // CSV (with a header row) as pretty-printed JSON: one object per data row.
 pub fn csv_to_json(csv_text: String) -> Result(String, String):

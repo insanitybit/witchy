@@ -21,11 +21,11 @@ import crypto
 import exec
 import fs
 import http
-import json
 import rights
-import semver
 import string
-import toml
+from json import Json
+from semver import Version, Req
+from toml import Toml
 
 // `main` takes two `Dir` grants positionally: `root` (handle 0) is the project
 // tree the PM reads/writes; `bin` (handle 1) is where the compiler lives, used

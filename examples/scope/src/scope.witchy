@@ -9,6 +9,7 @@
 import chan
 import list
 import option
+from chan import Sender
 
 async fn square(n: Int) -> Int:
     n * n

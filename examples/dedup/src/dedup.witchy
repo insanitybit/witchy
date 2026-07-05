@@ -1,5 +1,6 @@
 import iter
 import string
+from iter import Iter
 
 // Remove consecutive duplicates — a user-defined iterator transform built from
 // split_first (peek the head) and drop_while (skip the equal run after it).

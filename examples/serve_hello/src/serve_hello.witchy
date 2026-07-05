@@ -9,8 +9,9 @@
 // the handlers; the parallelism is automatic. (Use `server.serve_one` for one core.)
 // Run: witchy --net 127.0.0.1:8080 examples/serve_hello.witchy
 
-import http
+from http import Request, Response
 import server
+from server import Router
 
 fn home(req: Request) -> Response:
     server.text(200, "hello, witchy")
