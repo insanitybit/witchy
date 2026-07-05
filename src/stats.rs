@@ -632,22 +632,26 @@ mod tests {
         );
     }
 
-    /// (RFC-0036 DoD TARGET, currently BLOCKED on recursive `$rdrop`) The async channel executor
-    /// must reclaim its per-message garbage to a BOUNDED live-cell count under rc-floor. RFC-0036
-    /// Design B has LANDED: the scheduler now owns `slots`/`channels` as confined-unique local
-    /// accumulators mutated in place (self-assign `slots = list.set_at(slots, …)`), so the
-    /// per-message ARRAY churn that was O(n^2) is bounded — which cut the residual from ~26569 to
-    /// ~18608 live cells at N=200. What remains is the per-message CLOSURE garbage — the `and_then`
-    /// continuation towers each `await` rebuilds — a FLAT ~93 live cells PER MESSAGE (linear in N):
-    /// shell-only drop frees the Slot/Step shells but not their `Task`→closure children, so those
-    /// leak. Closing it to `< 500` needs recursive `$rdrop` (free a container/closure's heap
-    /// children when its shell is freed). That is the highest use-after-free-risk path in the
-    /// compiler — a per-type + defunctionalized per-closure drop with MATCHED dup-at-construction —
-    /// and must land under the full heap-check gate (RFC-0036 DoD is a HARD RULE: the whole gate,
-    /// not a subset). Un-ignore when the executor reclaims. This pins the goal's residual as a
-    /// concrete pass/fail.
+    /// (RFC-0059 DoD item 3, BLOCKED on the scalar-SoA executor — increment-2 step 2) The async
+    /// channel executor must reclaim its per-message garbage to a BOUNDED live-cell count under
+    /// rc-floor. Progress so far: RFC-0036 Design B (owned executor) bounded the O(n^2) array churn;
+    /// RFC-0059 increment 1 (defunctionalized state-machine lowering) removed the `and_then` closure
+    /// TOWER (one shallow continuation per resume, not O(depth)); RFC-0059 increment-2 step 1 made
+    /// channels fixed-capacity RINGS (send = in-place `set_at`, recv = advance `head`, no `list.tail`
+    /// rebuild). What REMAINS is per-message CLOSURE/Task/Step garbage from the CPS-over-closures
+    /// executor INTERFACE — measured (2026-07-05, post-ring) at ~45–48 live cells PER MESSAGE, FLAT
+    /// per message but LINEAR in N (N=200 → ~9.1k cells; N=64000 → ~3.07M; N=1M OOM-traps). The ring
+    /// does NOT move this: the round-robin schedule keeps buffer occupancy at ~1, so the buffer churn
+    /// was already reclaimed — the leak is the segment closures `fn(x): __seg(carried, x)`, their
+    /// `Task`/`Step` wrappers, and the erased `__Msg`, whose heap children shell-only drop cannot
+    /// free. Closing it to `< 500` requires increment-2 step 2 (scalar SoA frames): reify each
+    /// segment's carried columns as scalar `Int` columns indexed by task id + defunctionalize the
+    /// continuation to a `(seg-id, task-id)` dispatch, so a resume allocates NOTHING (the reference
+    /// spike proved 13 cells FLAT to N=1M, 10 ns/msg). The alternative — recursive `$rdrop` for the
+    /// closure shapes — is the highest use-after-free-risk path and stays blocked on the per-capture
+    /// move/borrow oracle. Un-ignore when the executor reclaims. See rfcs/0059.
     #[test]
-    #[ignore = "chan_throughput closure garbage not yet reclaimed — needs recursive $rdrop (RFC-0036); Design B (owned executor) landed, ~93 live cells/message remain (measures live_cells=18608 at N=200 via --run-ignored). Blocked on the per-capture move/borrow oracle (analysis.rs last_use bulk): the `and_then` tower captures shared closures `cont`/`k` + erased `__Msg`, so an unconditional $__lamdrop would UAF — see RFC-0036 note 2026-07-05"]
+    #[ignore = "chan_throughput closure garbage not yet reclaimed — needs the scalar-SoA executor (RFC-0059 increment-2 step 2). Increment 1 (state-machine lowering) + increment-2 step 1 (ring channels) landed; ~45–48 live cells/message remain (measures live_cells≈9.1k at N=200, cap8, via --run-ignored — the CPS closure/Task/Step interface churn, unaffected by the ring). See rfcs/0059 note 2026-07-05"]
     fn chan_throughput_bounded_by_rc_floor() {
         let src = "from chan import Receiver, Sender\nasync fn producer(tx: Sender(Int), n: Int) -> Nil:\n    for i in 0..n:\n        chan.send(tx, i).await\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(8).await\n    chan.spawn(producer(tx, 200)).await\n    for await v in rx:\n        chan.done(v)\n    print(console, \"200\")\n";
         opt::set_for_tests(Some(OptSet::default_set().with(Opt::RcFloor)));

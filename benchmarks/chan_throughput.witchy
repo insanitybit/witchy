@@ -8,11 +8,13 @@
 // TOWER rebuilt per poll, and the loops carry their state in parameters (a `while`
 // counter, a folded `var sum`) instead of the old `for_each`/`consume` closures.
 // The old drain form (a `for i in 0..n` producer + a draining `for await`) grew
-// superlinearly and OOM-trapped past ~10k messages; this form is FLAT at a few
-// hundred ns/message and un-capped (measured well past 100k). It is NOT yet flat
-// to N = 1,000,000 — the general boxed-frame path still leaks a bounded amount per
-// message until the scalar-SoA + ring-channel follow-on (RFC-0059 step 2, which
-// needs recursive `$rdrop`, RFC-0036).
+// superlinearly and OOM-trapped past ~10k messages; this form runs at ~500 ns/message
+// and un-capped (measured well past 100k). Channels are now fixed-capacity RINGS
+// (RFC-0059 increment-2 step 1). It is NOT yet FLAT to N = 1,000,000 (still ~48 live
+// cells/message, linear in N — N=1M OOM-traps): measurement (2026-07-05) showed the
+// ring does NOT reduce this leak, which is entirely the CPS closure/`Task`/`Step`
+// churn from the executor interface. Flat + <=300 ns needs increment-2 step 2 (scalar
+// SoA frames — eliminate the per-resume closure), the sole remaining DoD blocker.
 //
 // N = 64,000 is 4x past the old ~16k OOM cliff (proving the un-cap), and its sum
 // 2,047,968,000 stays under 2^32 on purpose: a message / channel value above 2^32
