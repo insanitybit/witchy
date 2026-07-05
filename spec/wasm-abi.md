@@ -7,9 +7,10 @@ verified: 0783c22
 witchyc-compiled modules reach the outside world through a single WASM import
 module named `"witchy"`. Each import is a host function the runtime must supply;
 **a granted host function is a capability** (or a piece of pure infrastructure).
-This is the handshake between the compiler
-(`crates/witchy-lower/src/codegen.rs` emits the imports) and a host that
-satisfies them (`crates/witchy-runtime/src/runtime.rs` is the wasmtime host;
+This is the handshake between the compiler (the import declarations live in
+`crates/witchy-wir/src/wir_prelude.rs`, and the codegen path in
+`crates/witchy-lower/src/codegen/` selects which a module reaches) and a host
+that satisfies them (`crates/witchy-runtime/src/runtime.rs` is the wasmtime host;
 `web/witchy-runtime/witchy-runtime.mjs` is the JavaScript pure-compute host).
 
 This document is that import surface as a **stable public contract**. A host —
@@ -28,8 +29,9 @@ pending-buffer protocol. Bump it in lockstep with any change to those.
 ## Import inclusion is tree-shaken
 
 A compiled module declares **only the imports it actually reaches**, not the full
-set. The codegen path (`assemble_wir_module` in `src/codegen.rs`) prunes the
-import list to the host functions the reachable code calls. A footprint-empty
+set. The codegen path (`assemble_wir_module` in
+`crates/witchy-lower/src/codegen/assembly.rs`) prunes the import list to the host
+functions the reachable code calls. A footprint-empty
 ("pure") rune therefore imports only the non-capability functions it uses; a rune
 that touches the filesystem/network/clock additionally imports the corresponding
 capability function.
@@ -122,15 +124,15 @@ cannot instantiate.
 
 ## The imports
 
-ABI version 1 declares **76 imports** (`IMPORT_COUNT` in
+ABI version 1 declares **77 imports** (`IMPORT_COUNT` in
 `crates/witchy-wir/src/wir_prelude.rs`),
 classified below. **Infrastructure** imports carry no authority and the
 pure-compute host provides them. **Capability** imports are authority (or
 interpreter-only host services) and the pure-compute host **omits** them. The
 tables group imports by family and, for a *staged* result, list the representative
 `…_len`/`…_size` import (its paired drain — `dir_read`, `dir_list`,
-`net_recv_*`, `file_read`, … — is implied), so the rows classify the 58 rather
-than enumerate each half of a pair.
+`net_recv_*`, `file_read`, … — is implied), so the rows classify each family's
+representative rather than enumerate each half of a pair.
 
 ### Infrastructure — provided by the pure-compute host
 
@@ -159,8 +161,9 @@ than enumerate each half of a pair.
 | `field_strlist_size` | `(i32 h) -> i32` | reflection field length |
 
 The crypto digests, encoding transforms, float formatting, and code-point
-encoding are pure functions; the pure-compute host mirrors `src/native.rs` /
-`src/runtime.rs` **byte-for-byte**, so a browser run and a native run agree on
+encoding are pure functions; the pure-compute host mirrors
+`crates/witchy-runtime/src/native.rs` / `crates/witchy-runtime/src/runtime.rs`
+**byte-for-byte**, so a browser run and a native run agree on
 every observable byte (the parity rule). The ed25519/p256 verifies need a platform
 crypto backend; the SHA-256 core (and HMAC and `rune_hash`, which build on it) is
 a self-contained synchronous implementation needing none.
@@ -191,7 +194,7 @@ instantiate.
 
 ## Hosts
 
-- **`src/runtime.rs`** — the wasmtime host. Links only the granted capability
+- **`crates/witchy-runtime/src/runtime.rs`** — the wasmtime host. Links only the granted capability
   imports plus the pure infrastructure; the reference implementation of every
   signature and the pending-buffer protocol above.
 - **`web/witchy-runtime/witchy-runtime.mjs`** — the JavaScript pure-compute host
