@@ -3,8 +3,8 @@
 // it with the SAME `glamour-dom` runtime that drives the book itself, with `UiFetch` denied —
 // proof that a live glamour app runs in the docs with authority withheld by construction.
 
-import glamour
-import json
+from glamour import VNode, Cmd, UiRoot
+from json import Json
 
 type Model:
     Model(Int)
