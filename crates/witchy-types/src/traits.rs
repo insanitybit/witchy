@@ -979,7 +979,29 @@ impl Ctx<'_> {
                 // block's tail (`if cond: xs.push(1)` as a statement) is a
                 // write-back / discard site, not a value.
                 Stmt::Return(Some(e)) | Stmt::Yield(e) => self.rewrite_expr_vp(e, scope, true),
-                Stmt::Expr(e) => self.rewrite_expr_vp(e, scope, value_used),
+                Stmt::Expr(e) => {
+                    self.rewrite_expr_vp(e, scope, value_used);
+                    // (RFC-0064 Check 3) A discarded, non-Nil FREE call in
+                    // statement position — a bare `list.push(xs, 2)`, a user
+                    // mutator called free-form, or ANY non-Nil free call whose
+                    // result is thrown away — is a discard error too, exactly like
+                    // the method form (RFC-0043:192-195). A free call does NOT
+                    // write back (the receiver of a method call is the target; the
+                    // first ARGUMENT of a free call is not), so the fix is the
+                    // method form (or `let _ = …`). A callee absent from the table
+                    // (a bare intrinsic / cap-op) has no declared return here and
+                    // is treated as Nil — no false positive, matching
+                    // `rewrite_expr_stmt_method`.
+                    if !value_used {
+                        if let Expr::Call { name, .. } = e {
+                            let returns_nil = self.returns_nil.get(name).copied().unwrap_or(true);
+                            if !returns_nil {
+                                let bare = name.rsplit('.').next().unwrap_or(name);
+                                self.discard_errors.borrow_mut().push(discarded_result_msg(bare));
+                            }
+                        }
+                    }
+                }
                 Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
             }
         }

@@ -5384,25 +5384,30 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
-    /// The `?` operator inside an `var` function must agree on both backends.
-    /// `?` early-returns the Err, and (like the interpreter's `Flow::Return`) the
-    /// var param is still written back at its value on the error path — so WASM
-    /// pushes the var params before the `?`-return too. (Regression for the
-    /// interpreter-only `?`-in-var gap.)
+    /// (RFC-0043 §2 / RFC-0064 Check 1) A `var`-first parameter with a value
+    /// return UNRELATED to that parameter is the abolished *combined*
+    /// write-back+return form: the var param written back through the parameter
+    /// AND a separate value returned (the old `?`-early-return carried the var
+    /// params out via a multi-result tuple). RFC-0043 declared this a row-3
+    /// compile error; RFC-0064 enforces it at the shared type-check gate, so both
+    /// backends now reject it identically — before either lowers. A `?` inside a
+    /// var-writeback function is exactly this shape (a procedure returns `Nil`, so
+    /// it cannot `?`; a mutator writes back via self-assign, not the tuple
+    /// epilogue), so no legal program reaches the old path. Var write-back on an
+    /// early return survives for the legal PROCEDURE form — see
+    /// `return_in_var_fn_agrees_on_both_backends`.
     #[test]
-    fn try_in_var_fn_agrees_on_both_backends() {
-        let src = "import result\n\nfn step(var n: Int, r: Result(Int, String)) -> Result(Int, String):\n    n = n + 100\n    let got = r?\n    n = n + got\n    Ok(n)\n\nfn describe(r: Result(Int, String)) -> String:\n    match r:\n        Ok(v) -> \"ok:\" + __render(v)\n        Err(e) -> \"err:\" + e\n\nfn main(console: Console):\n    var a = 1\n    let ok = step(a, Ok(5))\n    print(console, __render(a))\n    print(console, describe(ok))\n    var b = 1\n    let bad = step(b, Err(\"nope\"))\n    print(console, __render(b))\n    print(console, describe(bad))\n";
-        let want = vec![
-            "106".to_string(),
-            "ok:106".to_string(),
-            "101".to_string(),
-            "err:nope".to_string(),
-        ];
-        // `?` inside an `var` fn now lowers on the binary path: the Err
-        // early-return carries the multi-result tuple (the Err value + each var
-        // param), so the var writeback still happens on the error path.
-        assert_eq!(link_run(src), want.clone(), "interpreter");
-        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    fn combined_writeback_and_return_var_fn_is_rejected() {
+        let src = "import result\n\nfn step(var n: Int, r: Result(Int, String)) -> Result(Int, String):\n    n = n + 100\n    let got = r?\n    n = n + got\n    Ok(n)\n\nfn main(console: Console):\n    var a = 1\n    let ok = step(a, Ok(5))\n    print(console, __render(a))\n    print(console, __render(ok.unwrap_or(0)))\n";
+        let linked = resolve_std_src(src);
+        let err = typeck::check(&linked)
+            .expect_err("the combined write-back+return `var` form must be a compile error")
+            .to_string();
+        assert!(
+            err.contains("a `var` parameter must be a write-back channel")
+                && err.contains("mutator receiver"),
+            "the row-3 error must name the rule, got: {err}"
+        );
     }
 
     /// The `encoding` module (hex/base64) must agree on both backends. WASM
@@ -18365,6 +18370,139 @@ pub fn serve(console: Console, net: Net) -> Int:
             err.contains("mutates its receiver") && err.contains("mutable place"),
             "the immutable-place error must explain the fix, got: {err}"
         );
+    }
+
+    // ---- RFC-0064: finish enforcing RFC-0043's mutation classification ----
+
+    /// (RFC-0064 Check 1) The two row-3 shapes — a `var` in a NON-first position
+    /// with a self-typed return, and a `var` FIRST parameter with an UNRELATED
+    /// return — carried the abolished *combined* write-back+return semantics. Both
+    /// are now compile errors at the shared type-check gate (so both backends
+    /// reject identically). The second shape used to RUN on the interpreter while
+    /// the WASM backend rejected it — a parity divergence this closes.
+    #[test]
+    fn rfc0064_row3_var_shapes_are_compile_errors() {
+        // (a) `var` non-first + self-typed return.
+        let non_first = "import list\n\
+                         fn foo(x: Int, var xs: List(Int)) -> List(Int):\n\
+                         \x20   xs.push(x)\n\
+                         fn main(console: Console):\n\
+                         \x20   var xs = [1]\n\
+                         \x20   let ys = foo(9, xs)\n\
+                         \x20   print(console, \"${ys}\")\n";
+        // (b) `var` first + unrelated return type (the parity-divergence shape).
+        let unrelated = "import list\n\
+                         fn foo(var xs: List(Int)) -> Int:\n\
+                         \x20   list.length(xs)\n\
+                         fn main(console: Console):\n\
+                         \x20   var xs = [1]\n\
+                         \x20   let n = foo(xs)\n\
+                         \x20   print(console, \"${n}\")\n";
+        for src in [non_first, unrelated] {
+            let linked = resolve_std_src(src);
+            let err = typeck::check(&linked)
+                .expect_err("a row-3 `var` shape must be a compile error")
+                .to_string();
+            assert!(
+                err.contains("a `var` parameter must be a write-back channel")
+                    && err.contains("mutator receiver"),
+                "the row-3 error must state the rule, got: {err}"
+            );
+        }
+    }
+
+    /// (RFC-0064 Check 2) The acceptance gauntlet. `fn bump(var xs: List(Int),
+    /// by): xs.push(by)` (elided return, tail = `List(Int)` = receiver type) used
+    /// to silently no-op; now it is a compile error demanding the author annotate
+    /// intent — write-back is DECLARED, not inferred. Annotating `-> List(Int)`
+    /// makes it a mutator whose EXPRESSION form runs and agrees on both backends;
+    /// annotating `-> Nil` (via `return`) makes it a procedure that writes back.
+    #[test]
+    fn rfc0064_ambiguous_elided_var_receiver_must_annotate() {
+        let elided = "import list\n\
+                      fn bump(var xs: List(Int), by: Int):\n\
+                      \x20   xs.push(by)\n\
+                      fn main(console: Console):\n\
+                      \x20   var xs = [1, 2, 3]\n\
+                      \x20   let ys = bump(xs, 5)\n\
+                      \x20   print(console, \"${ys}\")\n";
+        let linked = resolve_std_src(elided);
+        let err = typeck::check(&linked)
+            .expect_err("an ambiguous elided `var` receiver must demand annotation")
+            .to_string();
+        assert!(
+            err.contains("has a `var` receiver and its body's tail is the receiver's type")
+                && err.contains("-> List(Int)")
+                && err.contains("-> Nil"),
+            "the annotate error must name both intents, got: {err}"
+        );
+
+        // Annotated `-> List(Int)`: a mutator; its EXPRESSION form runs on both.
+        let mutator = "import list\n\
+                       fn bump(var xs: List(Int), by: Int) -> List(Int):\n\
+                       \x20   xs.push(by)\n\
+                       fn main(console: Console):\n\
+                       \x20   var xs = [1, 2, 3]\n\
+                       \x20   let ys = bump(xs, 5)\n\
+                       \x20   print(console, \"${ys}\")\n";
+        let want = vec!["[1, 2, 3, 5]".to_string()];
+        assert_eq!(link_run(mutator), want, "interpreter: annotated mutator expr form");
+        assert_eq!(wasm_run(mutator), want, "compiled: annotated mutator expr form");
+
+        // Annotated as a procedure (`return` → Nil): writes back through the var.
+        let procedure = "import list\n\
+                         fn bump(var xs: List(Int), by: Int):\n\
+                         \x20   xs.push(by)\n\
+                         \x20   return\n\
+                         fn main(console: Console):\n\
+                         \x20   var xs = [1, 2, 3]\n\
+                         \x20   bump(xs, 5)\n\
+                         \x20   print(console, \"${xs}\")\n";
+        assert_eq!(link_run(procedure), want, "interpreter: procedure writes back");
+        assert_eq!(wasm_run(procedure), want, "compiled: procedure writes back");
+    }
+
+    /// (RFC-0064 Check 3) A discarded non-Nil FREE call in statement position is a
+    /// discard error too — `list.push(xs, 2)` as a statement (a free call does not
+    /// write back), and a user mutator called free-form. `let _ =` remains the
+    /// explicit-discard escape (the call runs, the receiver is untouched). The
+    /// discard error is surfaced at the shared gate, so both backends reject.
+    #[test]
+    fn rfc0064_discarded_free_call_is_an_error() {
+        // `list.push(xs, 2)` free-form as a statement.
+        let free_std = "import list\n\
+                        fn main(console: Console):\n\
+                        \x20   var xs = [1, 2, 3]\n\
+                        \x20   list.push(xs, 2)\n\
+                        \x20   print(console, \"${xs}\")\n";
+        // A user mutator called free-form as a statement.
+        let free_user = "import list\n\
+                         fn bump(var xs: List(Int), by: Int) -> List(Int):\n\
+                         \x20   xs.push(by)\n\
+                         fn main(console: Console):\n\
+                         \x20   var xs = [1, 2, 3]\n\
+                         \x20   bump(xs, 5)\n\
+                         \x20   print(console, \"${xs}\")\n";
+        for (src, method) in [(free_std, "push"), (free_user, "bump")] {
+            let linked = resolve_std_src(src);
+            let err = typeck::check(&linked)
+                .expect_err("a discarded non-Nil free call must be a compile error")
+                .to_string();
+            assert!(
+                err.contains(&format!("result of `{method}` is discarded")),
+                "the free-call discard error must name the callee, got: {err}"
+            );
+        }
+
+        // `let _ =` escapes: the free call runs, but does NOT write back.
+        let escaped = "import list\n\
+                       fn main(console: Console):\n\
+                       \x20   var xs = [1, 2, 3]\n\
+                       \x20   let _ = list.push(xs, 2)\n\
+                       \x20   print(console, \"${xs}\")\n";
+        let want = vec!["[1, 2, 3]".to_string()];
+        assert_eq!(link_run(escaped), want, "interpreter: free call does not write back");
+        assert_eq!(wasm_run(escaped), want, "compiled: free call does not write back");
     }
 
     /// (RFC-0049) `dict.set_at` is deleted; the `d[k] = v` place-assign sugar is
