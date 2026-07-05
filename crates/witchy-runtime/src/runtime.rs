@@ -300,15 +300,19 @@ pub struct VmState {
     /// Open sockets, indexed by the guest's i32 Socket handles. Each is a plain or
     /// TLS byte stream behind one `dyn Stream` (see `Stream`).
     sockets: Vec<std::io::BufReader<Box<dyn Stream>>>,
-    /// Listening server sockets, indexed by the guest's i32 Listener handles. `Arc`
-    /// so a `server.serve` worker pool (RFC-0032) can share ONE bound listener across
+    /// Listening server sockets, indexed by the guest's i32 Listener handles, each
+    /// with its server-TLS config (RFC-0060): `Some` for a `listen_tls` listener,
+    /// whose accepts handshake host-side; `None` for plain HTTP. `Arc` so a
+    /// `server.serve` worker pool (RFC-0032) can share ONE bound listener across
     /// worker VMs — `TcpListener::accept` is thread-safe, and the kernel load-balances
-    /// connections across the workers' accept calls.
-    listeners: Vec<std::sync::Arc<std::net::TcpListener>>,
-    /// (RFC-0032) When this VM is a `serve` POOL WORKER, the shared listener it must
-    /// reuse instead of binding its own. `listen` returns this; `serve_pool` sees it set
-    /// and does NOT spawn another pool (only the primary spawns workers).
-    worker_listener: Option<std::sync::Arc<std::net::TcpListener>>,
+    /// connections across the workers' accept calls (TLS state is per-connection,
+    /// so each worker handshakes its own accepts).
+    listeners: Vec<(std::sync::Arc<std::net::TcpListener>, Option<crate::net::ServerTlsConfig>)>,
+    /// (RFC-0032) When this VM is a `serve` POOL WORKER, the shared listener (plus
+    /// its TLS config) it must reuse instead of binding its own. `listen` returns
+    /// this; `serve_pool` sees it set and does NOT spawn another pool (only the
+    /// primary spawns workers).
+    worker_listener: Option<(std::sync::Arc<std::net::TcpListener>, Option<crate::net::ServerTlsConfig>)>,
     /// A build step's confined output directory (`BuildOut`) and read roots
     /// (`BuildRead`) — host-side, so a guest holds only an opaque handle.
     build_out: Option<std::path::PathBuf>,
@@ -678,6 +682,10 @@ pub(crate) fn link_capability_imports(
     }
     if net && caps.net_listen {
         linker.func_wrap("witchy", "net_listen", host_net_listen)?;
+        // (RFC-0060) HTTPS listen: same Listen right, plus a Secret key handle
+        // resolved host-side — an ungranted handle fails loudly in
+        // `secret_seed_bytes` at listen time, so no extra linking condition.
+        linker.func_wrap("witchy", "net_listen_tls", host_net_listen_tls)?;
         linker.func_wrap("witchy", "net_accept", host_net_accept)?;
         // (RFC-0032) The `server.serve` worker pool: spawn one worker VM per core, all
         // sharing the bound listener. No authority of its own — workers get the same
@@ -1614,7 +1622,7 @@ fn vmstate_from_caps(
     id: VmId,
     caps: &Capabilities,
     limits: StoreLimits,
-    worker_listener: Option<std::sync::Arc<std::net::TcpListener>>,
+    worker_listener: Option<(std::sync::Arc<std::net::TcpListener>, Option<crate::net::ServerTlsConfig>)>,
     engine: &Engine,
     module: &Module,
     preempt: bool,
@@ -1667,7 +1675,7 @@ fn spawn_worker(
     preempt: bool,
     caps: &Capabilities,
     sandboxed: bool,
-    worker_listener: Option<std::sync::Arc<std::net::TcpListener>>,
+    worker_listener: Option<(std::sync::Arc<std::net::TcpListener>, Option<crate::net::ServerTlsConfig>)>,
     limits: StoreLimits,
 ) -> Result<(Store<VmState>, Instance)> {
     let state = vmstate_from_caps(0, caps, limits, worker_listener, engine, module, preempt);
@@ -2229,36 +2237,92 @@ fn host_net_listen(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) -> Re
     // A `serve` pool worker reuses the primary's already-bound listener (so all
     // workers `accept` from one socket) instead of binding the address again.
     let shared = caller.data().worker_listener.clone();
-    let listener = match shared {
-        Some(l) => l,
-        None => std::sync::Arc::new(
-            std::net::TcpListener::bind(&addr)
-                .map_err(|e| Error::msg(format!("listen on `{addr}` failed: {e}")))?,
+    let entry = match shared {
+        Some(entry) => entry,
+        None => (
+            std::sync::Arc::new(
+                std::net::TcpListener::bind(&addr)
+                    .map_err(|e| Error::msg(format!("listen on `{addr}` failed: {e}")))?,
+            ),
+            None,
         ),
     };
     let listeners = &mut caller.data_mut().listeners;
-    listeners.push(listener);
+    listeners.push(entry);
     Ok((listeners.len() - 1) as i32)
 }
 
-/// `net_accept(listener) -> Socket handle`: block for a client connection.
+/// (RFC-0060) `net_listen_tls(h, addr, cert_pem, key_handle) -> Listener handle`:
+/// bind an allowlisted address for HTTPS. The rustls `ServerConfig` is built ONCE
+/// here, from the certificate-chain PEM (public, guest-supplied text) and the
+/// private key resolved BY HANDLE from the host secret table — the key bytes
+/// never cross into guest memory (the signing-key pattern, `secret_seed_bytes`).
+/// Malformed or mismatched cert/key is a loud listen-time error; accepts on the
+/// returned listener handshake host-side and yield ordinary Socket handles.
+fn host_net_listen_tls(
+    mut caller: Caller<'_, VmState>,
+    h: i32,
+    addr_ptr: i32,
+    cert_ptr: i32,
+    key_handle: i32,
+) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let addr = read_wstr(mem.data(&caller), addr_ptr)?;
+    let cert_pem = read_wstr(mem.data(&caller), cert_ptr)?;
+    let allow = net_allow(&caller, h)?;
+    if !witchy_caps::capabilities::net_allows(&allow, &addr) {
+        bail!("listen: `{addr}` is not permitted by this Net capability");
+    }
+    let key_bytes = secret_seed_bytes(&caller.data().caps, key_handle)?;
+    // A pool worker reuses the primary's bound listener + its TLS config wholesale;
+    // the primary builds the config (loud startup failure on bad key material).
+    let shared = caller.data().worker_listener.clone();
+    let entry = match shared {
+        Some(entry) => entry,
+        None => {
+            let config = crate::net::server_tls_config(&cert_pem, &key_bytes).map_err(Error::msg)?;
+            (
+                std::sync::Arc::new(
+                    std::net::TcpListener::bind(&addr)
+                        .map_err(|e| Error::msg(format!("listen on `{addr}` failed: {e}")))?,
+                ),
+                Some(config),
+            )
+        }
+    };
+    let listeners = &mut caller.data_mut().listeners;
+    listeners.push(entry);
+    Ok((listeners.len() - 1) as i32)
+}
+
+/// `net_accept(listener) -> Socket handle`: block for a client connection. On a
+/// TLS listener (RFC-0060) the handshake is completed host-side before the Socket
+/// is minted; a failed handshake (plaintext client, bad ClientHello) drops that
+/// connection and keeps accepting — connection weather, not a program error.
 fn host_net_accept(mut caller: Caller<'_, VmState>, lid: i32) -> Result<i32> {
     // Clone the `Arc` out so the blocking `accept` doesn't hold a borrow of the VM
     // state — and so a shared (pool) listener is accepted concurrently by every worker.
-    let listener = caller
+    let (listener, tls) = caller
         .data()
         .listeners
         .get(lid as usize)
         .cloned()
         .ok_or_else(|| Error::msg("invalid listener"))?;
-    let (stream, _peer) = listener
-        .accept()
-        .map_err(|e| Error::msg(format!("accept failed: {e}")))?;
-    let state = caller.data_mut();
-    state
-        .sockets
-        .push(std::io::BufReader::new(Box::new(stream) as Box<dyn Stream>));
-    Ok((state.sockets.len() - 1) as i32)
+    loop {
+        let (stream, _peer) = listener
+            .accept()
+            .map_err(|e| Error::msg(format!("accept failed: {e}")))?;
+        let stream: Box<dyn Stream> = match &tls {
+            None => Box::new(stream),
+            Some(config) => match crate::net::accept_tls(config.clone(), stream) {
+                Ok(tls_stream) => tls_stream,
+                Err(_) => continue,
+            },
+        };
+        let state = caller.data_mut();
+        state.sockets.push(std::io::BufReader::new(stream));
+        return Ok((state.sockets.len() - 1) as i32);
+    }
 }
 
 /// (RFC-0032) `serve_pool(listener_handle)`: the `server.serve` worker pool. On the
@@ -2292,14 +2356,15 @@ fn host_serve_pool(caller: Caller<'_, VmState>, listener_handle: i32) -> Result<
 }
 
 /// Run one `server.serve` pool worker: a fresh VM of the same program + capabilities,
-/// marked with the shared listener, re-running `run` (main) so it rebuilds the routes
-/// and enters the accept loop on the shared socket. Runs until the process exits.
+/// marked with the shared listener (and its TLS config, RFC-0060), re-running `run`
+/// (main) so it rebuilds the routes and enters the accept loop on the shared socket.
+/// Runs until the process exits.
 fn run_server_worker(
     engine: &Engine,
     module: &Module,
     caps: &Capabilities,
     preempt: bool,
-    listener: std::sync::Arc<std::net::TcpListener>,
+    listener: (std::sync::Arc<std::net::TcpListener>, Option<crate::net::ServerTlsConfig>),
 ) -> Result<()> {
     // Full capabilities (NOT sandboxed — a server worker is a full copy of the program,
     // like the primary), a generous memory budget, and the shared listener.

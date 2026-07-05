@@ -677,6 +677,14 @@ impl Codegen {
                 let a = self.lower_args(&[&args[0], &args[1]])?;
                 if self.collect_wir { call("net_listen", a) } else { host("net_listen_host", a) }
             }
+            // (RFC-0060) HTTPS listen: `(net, addr, cert_pem, key) -> Listener`. The
+            // `key` argument is a Secret, whose guest value IS its host-table handle,
+            // so it lowers like any i32 — the key bytes never enter guest memory.
+            ("listen_tls", 4) => {
+                self.used_net_ops.insert("listen");
+                let a = self.lower_args(&[&args[0], &args[1], &args[2], &args[3]])?;
+                if self.collect_wir { call("net_listen_tls", a) } else { host("net_listen_tls_host", a) }
+            }
             // --- void effects yielding Nil: `{args} call $h ... i32.const 0` ---
             ("send_line", 2) => {
                 self.used_net_ops.insert("send_line");
