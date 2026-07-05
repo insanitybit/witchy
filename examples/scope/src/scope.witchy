@@ -6,7 +6,6 @@
 // The cooperative executor schedules deterministically, so the run is
 // byte-identical on both backends.
 
-import chan
 import list
 import option
 from chan import Sender

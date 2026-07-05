@@ -6,7 +6,6 @@
 // Run:  witchy examples/request_reply.witchy
 //       witchy parity examples/request_reply.witchy
 
-import chan
 from chan import Receiver, Sender
 
 type Msg:

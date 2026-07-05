@@ -14,8 +14,8 @@
 // A forged or replayed assertion fails one of these and is rejected here.
 
 import crypto
-from json import Json
 import string
+from json import Json
 
 // One lowercase hex digit -> 0..15, or -1. (Inputs are lowercase hex: that is what
 // `crypto.sha256` emits and what standard encoders/`toString(16)` produce.)

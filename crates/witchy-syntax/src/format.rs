@@ -1572,6 +1572,13 @@ fn local_fn(name: &str) -> bool {
 fn canon_module(m: &mut Module) {
     m.import_lines.clear();
     m.item_lines.clear();
+    // Import ORDER is semantically irrelevant, and the printer emits `from X
+    // import Y` lines after the plain `import X` block (RFC-0042) — so a source
+    // that interleaves them reparses with a different `imports` order. Normalize
+    // both lists for the round-trip comparison; the emitted text is unaffected.
+    m.imports.sort();
+    m.imports.dedup();
+    m.from_imports.sort();
     for it in &mut m.items {
         canon_item(it);
     }
