@@ -718,3 +718,119 @@ fn main() -> Int:
         );
     }
 
+    /// Run `src` on the COMPILED backend under a specific optimization set (for value-
+    /// parity checks across the `closure-elide` lever).
+    fn run_str_opt(src: &str, opt: witchy_syntax::opt::OptSet) -> Vec<String> {
+        witchy_syntax::opt::set_for_tests(Some(opt));
+        let module = parse_module(src).expect("parse");
+        let bytes = compile_module_binary(&module)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        witchy_syntax::opt::set_for_tests(None);
+        let (mut store, instance, captured) = instantiate_with_print(&bytes);
+        instance
+            .get_typed_func::<(), ()>(&mut store, "run")
+            .unwrap()
+            .call(&mut store, ())
+            .unwrap();
+        captured.lock().unwrap().clone()
+    }
+
+    #[test]
+    fn elides_nonescaping_closure_env() {
+        // (RFC-0062 tier-1) `g` is bound by exactly one `let`, captures `k`, and is used
+        // ONLY as a direct-call callee (`g(5)`, `g(7)`) — it never escapes. Under the
+        // `closure-elide` lever its heap environment is ELIDED: NO `mk{n}` allocation, and
+        // the call becomes a direct `call $__lamt{i}` that threads the capture `k` as a
+        // leading argument (no env pointer, no per-call env load). The firing proof is the
+        // emitted call SHAPE: `mk1` gone, `__lamt` present, `__lamw` (the boxed-devirt body)
+        // absent.
+        let src = r#"
+fn main() -> Int:
+    let k = 10
+    let g = fn(x: Int): (x + k)
+    (g(5) + g(7))
+"#;
+        let base = witchy_syntax::opt::OptSet::default_set();
+        let on = base.with(witchy_syntax::opt::Opt::ClosureElide);
+        let (on_calls, on_indirect) = call_shape(src, on);
+        assert!(
+            !on_calls.iter().any(|n| n.starts_with("mk")),
+            "closure-elide ON: no env allocation — no `call $mk{{n}}` for the closure (got {on_calls:?})",
+        );
+        assert!(
+            on_calls.iter().any(|n| n.starts_with("__lamt")),
+            "closure-elide ON: the closure body is called directly, captures threaded (`__lamt`) (got {on_calls:?})",
+        );
+        assert!(
+            !on_calls.iter().any(|n| n.starts_with("__lamw")),
+            "closure-elide ON: no boxed env-devirt body (`__lamw`) remains (got {on_calls:?})",
+        );
+        assert_eq!(on_indirect, 0, "closure-elide ON: no `call_indirect` for an elided closure");
+
+        // Inverse guard: remove ONLY `closure-elide` and the SAME program reverts to the
+        // boxed closure — a `mk1` env allocation and a devirtualized `call $__lamw` — proving
+        // the elision is this lever's doing (a phantom emitter would pass the ON case and lie).
+        let (off_calls, _) = call_shape(src, base);
+        assert!(
+            off_calls.iter().any(|n| n.starts_with("mk")),
+            "-closure-elide: the closure env is heap-allocated (`mk1`) (got {off_calls:?})",
+        );
+        assert!(
+            off_calls.iter().any(|n| n.starts_with("__lamw"))
+                && !off_calls.iter().any(|n| n.starts_with("__lamt")),
+            "-closure-elide: the closure stays boxed (`__lamw`, no `__lamt`) (got {off_calls:?})",
+        );
+    }
+
+    #[test]
+    fn keeps_env_for_escaping_closure() {
+        // (RFC-0062 default-deny) `g` is passed WHOLE into `apply_it` — it escapes the
+        // frame, so even under `closure-elide` its environment MUST stay heap-allocated
+        // (`mk1`) and no `__lamt` threaded body is emitted. This is the firing proof's
+        // negative half: the lever fires ONLY when the escape oracle proves confinement.
+        let src = r#"
+fn apply_it(f: fn(Int) -> Int, x: Int) -> Int:
+    f(x)
+
+fn main() -> Int:
+    let k = 10
+    let g = fn(x: Int): (x + k)
+    apply_it(g, 5)
+"#;
+        let on = witchy_syntax::opt::OptSet::default_set().with(witchy_syntax::opt::Opt::ClosureElide);
+        let (calls, _) = call_shape(src, on);
+        assert!(
+            calls.iter().any(|n| n.starts_with("mk")),
+            "closure-elide ON but ESCAPING: the env is still heap-allocated (`mk1`) (got {calls:?})",
+        );
+        assert!(
+            !calls.iter().any(|n| n.starts_with("__lamt")),
+            "closure-elide ON but ESCAPING: no threaded body — the closure stays boxed (got {calls:?})",
+        );
+    }
+
+    #[test]
+    fn elided_closure_matches_boxed_output() {
+        // (RFC-0062 parity) The allocation strategy is unobservable: an elided closure and
+        // a boxed one must produce identical output. Covers a capture that is read AND a
+        // closure invoked many times in a loop (the hot-path shape the lever targets).
+        let src = r#"
+fn main(console: Console):
+    let base = 100
+    let f = fn(x: Int): (x + base)
+    var total = 0
+    var i = 0
+    while (i < 5):
+        total = (total + f(i))
+        i = (i + 1)
+    print(console, "${total}")
+"#;
+        let base = witchy_syntax::opt::OptSet::default_set();
+        let on = run_str_opt(src, base.with(witchy_syntax::opt::Opt::ClosureElide));
+        let off = run_str_opt(src, base);
+        // 100+0 + 101+... => (100*5) + (0+1+2+3+4) = 500 + 10 = 510.
+        assert_eq!(on, vec!["510".to_string()], "elided closure computes the right value");
+        assert_eq!(on, off, "elided and boxed closures produce identical output (parity)");
+    }
+

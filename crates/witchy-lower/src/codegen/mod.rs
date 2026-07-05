@@ -77,6 +77,21 @@ const TUPLE_TMP: &str = "__witchy_tuple_tmp";
 /// list-element-type-name, slot kind).
 type CaptureInfo = (String, Option<String>, Option<String>, Kind);
 
+/// (RFC-0062) A tier-1 elided closure: its lifted THREADED body index (a `$__lamt{i}`
+/// taking captures as leading arguments, NO env pointer) plus its ordered captures —
+/// each `(local name, slot kind)` — read at every direct call site into i64 argument
+/// slots. No heap environment record is ever allocated for such a closure.
+type ThreadedClosure = (usize, Vec<(String, Kind)>);
+
+/// (RFC-0062) How a lifted lambda body receives its captures: boxed into a heap
+/// environment (the tier-3 default, an env pointer as the implicit first param) or
+/// threaded as leading value parameters (the tier-1 elided closure, no env).
+#[derive(Clone, Copy, PartialEq)]
+enum CapMode {
+    Env,
+    Threaded,
+}
+
 /// Scratch local holding the Result/Option being unwrapped by `?`.
 const TRY_TMP: &str = "__witchy_try_tmp";
 
@@ -387,6 +402,9 @@ struct SavedScope {
     rc_owned_bindings: HashSet<String>,
     devirt_ok: HashSet<String>,
     devirt_index: HashMap<String, usize>,
+    thread_index: HashMap<String, ThreadedClosure>,
+    closure_elide_called: HashSet<String>,
+    closure_elide_reassigned: HashSet<String>,
     elide_index_list: Vec<(String, String)>,
 }
 
@@ -484,6 +502,18 @@ struct Codegen {
     /// lambda — mapping the local to that lifted `$__lamw{i}` table index. A call site
     /// `f(x)` with `f` here emits a direct `call $__lamw{i}` instead of `call_indirect`.
     devirt_index: HashMap<String, usize>,
+    /// (RFC-0062) Closure locals whose environment is ELIDED: bound once to a lambda,
+    /// used ONLY as a direct-call callee (`closure_elide_called`), with every capture
+    /// reassignment-free. Maps the local to its threaded lifted body + ordered captures;
+    /// a call `f(x)` here becomes a direct `call $__lamt{i}(cap0, .., x)` with NO env
+    /// allocation. Checked BEFORE `devirt_index` at every call site.
+    thread_index: HashMap<String, ThreadedClosure>,
+    /// (RFC-0062) Names `only_directly_called` proved non-escaping this unit (env-elision
+    /// candidates), and the names reassigned this unit (a capture in the latter is unsafe
+    /// to thread — the interpreter snapshots captures at creation). Both computed in
+    /// `begin_unit` only under the `closure-elide` lever; empty otherwise.
+    closure_elide_called: HashSet<String>,
+    closure_elide_reassigned: HashSet<String>,
     /// (RFC-0034 L2) Active `(index-var, list-var)` pairs whose `list.at(list, index)`
     /// is provably in range — pushed while lowering the body of an eligible
     /// `for index in 0..list.length(list)` loop (see `bounds_elide_pair`), so the
@@ -833,6 +863,11 @@ struct Codegen {
     /// Maps a lambda's content hash to its index in `lambda_wir_funcs`, so the
     /// many lowering passes register each lambda exactly once (idempotent).
     lambda_wir_index: std::collections::HashMap<u64, usize>,
+    /// (RFC-0062) Maps an ELIDED closure lambda's content hash to its THREADED lifted
+    /// body index (a `$__lamt{i}` in `lambda_wir_funcs`), so an identical tier-1 lambda
+    /// registers one threaded body across the many lowering passes. A global registry
+    /// like `lambda_wir_index` (NOT scope-saved).
+    lambda_threaded_index: std::collections::HashMap<u64, usize>,
     /// Generated per-shape `to_string` renderers, keyed by `EqShape::id` (a
     /// `ts_` prefix on the function name). Parallels `eq_helpers`: each compound
     /// shape that flows into `to_string` (or string interpolation) gets one
@@ -918,6 +953,9 @@ impl Codegen {
             sroa_active: HashMap::new(),
             devirt_ok: HashSet::new(),
             devirt_index: HashMap::new(),
+            thread_index: HashMap::new(),
+            closure_elide_called: HashSet::new(),
+            closure_elide_reassigned: HashSet::new(),
             elide_index_list: Vec::new(),
             view_candidates: HashSet::new(),
             view_active: HashSet::new(),
@@ -985,6 +1023,7 @@ impl Codegen {
             rcopy_building: std::collections::HashSet::new(),
             lambda_wir_funcs: Vec::new(),
             lambda_wir_index: std::collections::HashMap::new(),
+            lambda_threaded_index: std::collections::HashMap::new(),
             ts_helpers: std::collections::BTreeMap::new(),
             adt_variant_names: HashMap::new(),
             clos_arities: HashSet::new(),
@@ -2098,6 +2137,22 @@ impl Codegen {
         } else {
             HashSet::new()
         };
+        // (RFC-0062) Closure escape elision: the tier-1 candidate facts. `closure_elide_called`
+        // is the general, default-deny non-escape fact (names used ONLY as a direct-call
+        // callee this unit); `closure_elide_reassigned` gives the capture-stability guard (a
+        // capture reassigned before its call cannot be threaded — the interpreter snapshots
+        // captures at creation). A `let f = <lambda>` is elided only when it is in BOTH
+        // `devirt_ok` and `closure_elide_called` and none of its captures is reassigned (see
+        // the `Stmt::Let` closure-elide branch). Gated on `closure-elide`; empty ⇒ every
+        // closure keeps its heap environment (the de-opt reference the differential sweep uses).
+        self.thread_index.clear();
+        if witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::ClosureElide) {
+            self.closure_elide_called = crate::escape::only_directly_called(body);
+            self.closure_elide_reassigned = crate::escape::reassigned_names(body);
+        } else {
+            self.closure_elide_called = HashSet::new();
+            self.closure_elide_reassigned = HashSet::new();
+        }
         // (RFC-0035) last_use drop points: values proven dead AND freeable (bound to a
         // known heap allocator, never read-again / never aliased / escaped / returned /
         // reassigned / region-confined) get an `$rc_free` after their last use. Gated on
@@ -2322,7 +2377,31 @@ impl Codegen {
                             }
                         }
                     }
-                    if !packed_done && !view_done && !sroa_done {
+                    // (RFC-0062 tier-1) Closure escape elision: `let f = <lambda>` where `f`
+                    // is bound once (`devirt_ok`) and never escapes (`closure_elide_called`,
+                    // i.e. used ONLY as a direct-call callee this unit). `lower_lambda_threaded`
+                    // additionally rejects (→ boxed fallback) any lambda whose captures are
+                    // reassigned. On success it registers the threaded lifted body and records
+                    // the capture list in `thread_index`, and NOTHING is emitted for the binding
+                    // — no `mk{n}` env allocation, no `SetLocal name`. The captures stay in their
+                    // existing locals and are threaded to each `call $__lamt{i}` (see the call
+                    // arms). Comes before the default `SetLocal` and suppresses it.
+                    let mut closure_elide_done = false;
+                    if !packed_done
+                        && !view_done
+                        && !sroa_done
+                        && self.collect_wir
+                        && self.devirt_ok.contains(name)
+                        && self.closure_elide_called.contains(name)
+                    {
+                        if let Expr::Lambda { params, body: lbody, .. } = value {
+                            if let Some(caps) = self.lower_lambda_threaded(params, lbody) {
+                                self.thread_index.insert(name.clone(), caps);
+                                closure_elide_done = true;
+                            }
+                        }
+                    }
+                    if !packed_done && !view_done && !sroa_done && !closure_elide_done {
                         let v = self.lower_expr(value)?;
                         seq.push(N::SetLocal { local: name.clone(), value: v });
                         // An accumulator binding starts with a zero ownership token
@@ -4064,6 +4143,27 @@ impl Codegen {
                 if level >= APPLY_POOL {
                     return None;
                 }
+                // (RFC-0062 tier-1) An ELIDED closure applied by name: no closure pointer to
+                // stash — thread captures (from their locals) as leading arg slots to a direct
+                // `call $__lamt{i}`.
+                if let Expr::Var(fname) = func.as_ref() {
+                    if let Some((idx, caps)) = self.thread_index.get(fname).cloned() {
+                        self.apply_level = level + 1;
+                        let mut call_args: Vec<W> = caps
+                            .iter()
+                            .map(|(cn, ck)| W::ToSlot(Box::new(W::GetLocal(cn.clone())), Self::wir_kind(*ck)))
+                            .collect();
+                        for a in args {
+                            let ak = self.kind_of(a);
+                            let av = self.lower_expr(a)?;
+                            call_args.push(W::ToSlot(Box::new(av), Self::wir_kind(ak)));
+                        }
+                        self.apply_level = level;
+                        let recover_kind = self.apply_ret_kind(func);
+                        let call = W::Call { func: format!("__lamt{idx}"), args: call_args };
+                        return Some(W::FromSlot(Box::new(call), Self::wir_kind(recover_kind)));
+                    }
+                }
                 let n = args.len();
                 let tmp = format!("__witchy_call_{level}");
                 let fcode = self.lower_expr(func)?;
@@ -4997,6 +5097,24 @@ impl Codegen {
                 if let Some(w) = self.lower_call(name, args) {
                     return Some(w);
                 }
+                // (RFC-0062 tier-1) An ELIDED closure local `f(x)`: no env exists — thread
+                // the captures (from their current locals) as leading i64 arg slots, then
+                // the value args, to a direct `call $__lamt{i}`. Checked BEFORE the boxed
+                // closure paths.
+                if let Some((idx, caps)) = self.thread_index.get(name).cloned() {
+                    let mut call_args: Vec<W> = caps
+                        .iter()
+                        .map(|(cn, ck)| W::ToSlot(Box::new(W::GetLocal(cn.clone())), Self::wir_kind(*ck)))
+                        .collect();
+                    for a in args {
+                        let ak = self.kind_of(a);
+                        let av = self.lower_expr(a)?;
+                        call_args.push(W::ToSlot(Box::new(av), Self::wir_kind(ak)));
+                    }
+                    let rk = self.local_fn_ret_kind.get(name).copied().unwrap_or(Kind::I32);
+                    let call = W::Call { func: format!("__lamt{idx}"), args: call_args };
+                    return Some(W::FromSlot(Box::new(call), Self::wir_kind(rk)));
+                }
                 // A closure-typed local `f(x)`: pass the closure pointer as the env,
                 // the i64-slot args, and `call_indirect` on the code index (the
                 // closure record's first word). The pointer is a bare `GetLocal`,
@@ -5129,7 +5247,7 @@ impl Codegen {
         let index = if let Some(&i) = self.lambda_wir_index.get(&key) {
             i
         } else {
-            let mut func = self.build_lambda_wir_func(params, body, &cap_info)?;
+            let mut func = self.build_lambda_wir_func(params, body, &cap_info, CapMode::Env)?;
             // `build_lambda_wir_func` names itself `__lamw{len}` from the length at
             // its START, but a NESTED lambda lowered during the build pushes to
             // `lambda_wir_funcs` and shifts the length — so the actual push index
@@ -5152,17 +5270,79 @@ impl Codegen {
         Some(W::Call { func: format!("mk{ncaps}"), args })
     }
 
-    /// Build the lifted `WirFunc $__lamw{i}` for a lambda: env-pointer param then
-    /// one i64 value param per lambda param, a prologue recovering each value
-    /// param from its slot and each capture from the env record, the lowered body,
-    /// and the tail stored back into the universal i64 result slot. `None` if the
-    /// body doesn't lower. Saves the enclosing scope on entry and restores it on
-    /// exit so the lifted body lowers in its own local environment.
+    /// (RFC-0062 tier-1) Register the THREADED lifted body of an ELIDED closure and
+    /// return its ordered captures — NOTHING is emitted at the creation site (no `mk`
+    /// env allocation), because the captures are threaded to each `call $__lamt{i}` from
+    /// their existing locals. `None` (→ the caller falls back to the boxed `lower_lambda`)
+    /// when the lambda assigns a captured var (can't thread a write-back), when any
+    /// capture is REASSIGNED this unit (the interpreter snapshots captures at creation, so
+    /// threading a mutated capture would diverge), or when the body doesn't lower. The
+    /// caller has already checked `devirt_ok`/`closure_elide_called` (the escape fact).
+    fn lower_lambda_threaded(&mut self, params: &[Param], body: &Block) -> Option<ThreadedClosure> {
+        if !self.collect_wir {
+            return None;
+        }
+        let scan = scan_lambda(params, body);
+        // A closure assigning a captured var needs the write-back the boxed path rejects;
+        // let the boxed fallback raise that diagnostic rather than silently threading.
+        if !scan.assigns_outer().is_empty() {
+            return None;
+        }
+        let captures: Vec<String> = scan
+            .captures()
+            .into_iter()
+            .filter(|c| self.locals.contains_key(c))
+            .collect();
+        // Capture-stability: a reassigned capture is unsafe to thread (parity guard).
+        if captures.iter().any(|c| self.closure_elide_reassigned.contains(c)) {
+            return None;
+        }
+        let mut cap_info: Vec<CaptureInfo> = Vec::new();
+        for c in &captures {
+            let kind = self.locals.get(c).copied().unwrap_or(Kind::I32);
+            cap_info.push((
+                c.clone(),
+                self.local_records.get(c).cloned(),
+                self.local_list_elem.get(c).cloned(),
+                kind,
+            ));
+        }
+        // Idempotent registration: an identical elided lambda shares one `$__lamt{i}`.
+        let key = Self::lambda_content_key(params, body);
+        let index = if let Some(&i) = self.lambda_threaded_index.get(&key) {
+            i
+        } else {
+            let mut func = self.build_lambda_wir_func(params, body, &cap_info, CapMode::Threaded)?;
+            // Rename to the real push index (a nested lambda lowered during the build may
+            // have shifted the length), mirroring `lower_lambda`.
+            let i = self.lambda_wir_funcs.len();
+            func.name = format!("__lamt{i}");
+            self.lambda_wir_funcs.push(func);
+            self.lambda_threaded_index.insert(key, i);
+            i
+        };
+        Some((index, cap_info.into_iter().map(|(n, _, _, k)| (n, k)).collect()))
+    }
+
+    /// Build the lifted `WirFunc` for a lambda: the capture-passing prefix (per
+    /// `cap_mode`) then one i64 value param per lambda param, a prologue recovering each
+    /// value param from its slot and each capture, the lowered body, and the tail stored
+    /// back into the universal i64 result slot. `None` if the body doesn't lower. Saves
+    /// the enclosing scope on entry and restores it on exit so the lifted body lowers in
+    /// its own local environment.
+    ///
+    /// (RFC-0062) `cap_mode` selects how captures reach the body:
+    /// - `CapMode::Env` (tier-3, the default): an env-pointer first param `$__lamw{i}`;
+    ///   the prologue loads each capture from the heap env record.
+    /// - `CapMode::Threaded` (tier-1, elided closure): captures are LEADING value params
+    ///   `$__lamt{i}`; the prologue recovers each from its i64 param slot — no env, so the
+    ///   creating site allocates nothing.
     fn build_lambda_wir_func(
         &mut self,
         params: &[Param],
         body: &Block,
         cap_info: &[CaptureInfo],
+        cap_mode: CapMode,
     ) -> Option<witchy_wir::wir::WirFunc> {
         use witchy_wir::wir::{WirExpr as W, WirFunc, WirLocal, WirNode as N, WirTy};
         let index = self.lambda_wir_funcs.len();
@@ -5241,7 +5421,15 @@ impl Codegen {
         let func = match (body_res, fin) {
             (Some(seq), Ok(())) => {
                 let i32t = || WirTy::Bool;
-                let mut func_params = vec![WirLocal { name: ENV_PARAM.into(), ty: i32t() }];
+                // (RFC-0062) Env mode: a closure-pointer first param. Threaded mode: one
+                // i64 capture param per capture (no env pointer), leading the value params.
+                let mut func_params = match cap_mode {
+                    CapMode::Env => vec![WirLocal { name: ENV_PARAM.into(), ty: i32t() }],
+                    CapMode::Threaded => cap_info
+                        .iter()
+                        .map(|(name, _, _, _)| WirLocal { name: format!("__cap_{name}"), ty: WirTy::Int })
+                        .collect(),
+                };
                 for p in params {
                     func_params.push(WirLocal { name: format!("__lp_{}", p.name), ty: WirTy::Int });
                 }
@@ -5295,8 +5483,9 @@ impl Codegen {
                 for i in 0..REUSE_POOL {
                     locals.push(WirLocal { name: format!("__witchy_reuse_{i}"), ty: WirTy::Int });
                 }
-                // Prologue: recover each value param from its i64 slot, then each
-                // capture from the env record (slot j at offset 4 + 8*j).
+                // Prologue: recover each value param from its i64 slot, then each capture
+                // — from the env record (`CapMode::Env`, slot j at offset 4 + 8*j) or from
+                // its threaded i64 param slot (`CapMode::Threaded`, no env load, RFC-0062).
                 let mut nodes: witchy_wir::wir::WirSeq = Vec::new();
                 for p in params {
                     let k = self.locals.get(&p.name).copied().unwrap_or(Kind::I32);
@@ -5306,16 +5495,22 @@ impl Codegen {
                     });
                 }
                 for (j, (name, _, _, kind)) in cap_info.iter().enumerate() {
-                    let off = (4 + 8 * j) as i32;
-                    let addr = W::Binary {
-                        op: witchy_wir::wir::BinOp::Add,
-                        kind: witchy_wir::wir::Kind::I32,
-                        lhs: Box::new(W::GetLocal(ENV_PARAM.into())),
-                        rhs: Box::new(W::ConstI32(off)),
+                    let cap_slot = match cap_mode {
+                        CapMode::Env => {
+                            let off = (4 + 8 * j) as i32;
+                            let addr = W::Binary {
+                                op: witchy_wir::wir::BinOp::Add,
+                                kind: witchy_wir::wir::Kind::I32,
+                                lhs: Box::new(W::GetLocal(ENV_PARAM.into())),
+                                rhs: Box::new(W::ConstI32(off)),
+                            };
+                            W::Load { ptr: Box::new(addr), kind: witchy_wir::wir::Kind::I64, offset: 0 }
+                        }
+                        CapMode::Threaded => W::GetLocal(format!("__cap_{name}")),
                     };
                     nodes.push(N::SetLocal {
                         local: name.clone(),
-                        value: W::FromSlot(Box::new(W::Load { ptr: Box::new(addr), kind: witchy_wir::wir::Kind::I64, offset: 0 }), Self::wir_kind(*kind)),
+                        value: W::FromSlot(Box::new(cap_slot), Self::wir_kind(*kind)),
                     });
                 }
                 // Body, with the tail value stored into the i64 result slot.
@@ -5324,8 +5519,12 @@ impl Codegen {
                     seq.push(N::Push(W::ToSlot(Box::new(v), Self::wir_kind(block_kind))));
                 }
                 nodes.extend(seq);
+                let name = match cap_mode {
+                    CapMode::Env => format!("__lamw{index}"),
+                    CapMode::Threaded => format!("__lamt{index}"),
+                };
                 Some(WirFunc {
-                    name: format!("__lamw{index}"),
+                    name,
                     params: func_params,
                     ret: vec![WirTy::Int],
                     locals,
@@ -5369,6 +5568,9 @@ impl Codegen {
             rc_owned_bindings: std::mem::take(&mut self.rc_owned_bindings),
             devirt_ok: std::mem::take(&mut self.devirt_ok),
             devirt_index: std::mem::take(&mut self.devirt_index),
+            thread_index: std::mem::take(&mut self.thread_index),
+            closure_elide_called: std::mem::take(&mut self.closure_elide_called),
+            closure_elide_reassigned: std::mem::take(&mut self.closure_elide_reassigned),
             elide_index_list: std::mem::take(&mut self.elide_index_list),
         }
     }
@@ -5401,6 +5603,9 @@ impl Codegen {
         self.rc_owned_bindings = s.rc_owned_bindings;
         self.devirt_ok = s.devirt_ok;
         self.devirt_index = s.devirt_index;
+        self.thread_index = s.thread_index;
+        self.closure_elide_called = s.closure_elide_called;
+        self.closure_elide_reassigned = s.closure_elide_reassigned;
         self.elide_index_list = s.elide_index_list;
     }
 
