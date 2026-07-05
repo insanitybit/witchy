@@ -8,10 +8,9 @@ import crypto
 import fs
 import semver
 import string
-import json
 import vm
-import coven_record
 from json import Json
+from coven_record import Record, State
 
 // --- record IO ---------------------------------------------------------------
 fn meta_path(name: String, version: String) -> String:

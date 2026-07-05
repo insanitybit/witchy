@@ -5,9 +5,9 @@
 // Rust roles — the snapshot's targets are key-sorted to match the Rust BTreeMap.
 
 import crypto
-import json
 import coven_store
 import coven_json
+from json import Json
 
 // Rebuild + re-sign both roles. `created` is the unix-seconds timestamp to stamp them
 // with (the caller's clock); the snapshot version monotonically increments.

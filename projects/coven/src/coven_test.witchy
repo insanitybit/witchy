@@ -5,12 +5,11 @@
 
 import testing
 import coven_validate
-import coven_record
-import json
 import reflect
 import result
 import option
 from json import Json
+from coven_record import State
 
 // --- name + version validation -----------------------------------------------
 fn test_valid_name_accepts_namespaced():

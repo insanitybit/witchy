@@ -4,7 +4,6 @@
 // (unsigned) wire protocol, so the readers are deliberately lenient: an absent or
 // wrong-typed field on untrusted input reads as its empty value, never a hard error.
 
-import json
 import coven_json
 import coven_validate
 from json import Json
