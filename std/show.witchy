@@ -115,7 +115,7 @@ impl Show for Dict(k, v) where k: Show, v: Show:
 
 // A set renders as `{a, b, c}` (members in insertion order), each through its
 // `Show`.
-impl Show for set.Set(a) where a: Show:
+impl Show for Set(a) where a: Show:
     fn show(self) -> String:
         let elems: List(a) = set.to_list(self)
         "{" + list.join(show_each(elems), ", ") + "}"

@@ -45,13 +45,25 @@ const AMBIENT_TYPES: &[&str] = &[
     // (like `Option`/`Result`) means every `derive(Ord)` / `match o: Less ->`
     // keeps working bare — no forced `import cmp`.
     "Ordering",
+    // `policy.NetPolicy`/`policy.DirPolicy` (RFC-0011): the cap-refinement verbs
+    // `only`/`deny` are BUILT-IN and type their policy argument by the bare name
+    // `NetPolicy`/`DirPolicy` (typeck.rs), and a program may declare its own
+    // policy record for them — so these names, like `Ordering`, stay ambient.
+    "NetPolicy", "DirPolicy",
+    // `set.Set` / `iter.Iter`: the method-dispatch and for-loop machinery is
+    // hard-wired to these bare names (`builtin_method_module`, the `for x in set`
+    // -> `set.to_list` view, the `Set`-member `Eq` check). Each has a single
+    // declarer, so keeping it ambient collides with nothing and keeps `xs.map()`
+    // / `for x in aSet` / `collect` working without an import.
+    "Set", "Iter",
 ];
 
 /// Constructors that stay bare everywhere — the prelude `Option`/`Result` ones,
 /// plus `cmp.Ordering`'s `Less`/`Equal`/`Greater` (see `AMBIENT_TYPES`). They are
 /// ambient language surface (`?`, main-signature checking, comparison), so a bare
 /// one never module-qualifies and never needs an import.
-const AMBIENT_CTORS: &[&str] = &["Some", "None", "Ok", "Err", "Less", "Equal", "Greater"];
+const AMBIENT_CTORS: &[&str] =
+    &["Some", "None", "Ok", "Err", "Less", "Equal", "Greater", "NetPolicy", "DirPolicy"];
 
 fn is_ambient_type(name: &str) -> bool {
     AMBIENT_TYPES.contains(&name)

@@ -1107,9 +1107,12 @@ impl Ctx<'_> {
                                 // monomorphization, never an error here.
                                 None if !self.free_fns.contains(name.as_str())
                                     && !(tn.chars().next().is_some_and(|c| c.is_lowercase()) && !tn.contains('.')) => {
+                                    // Render the unqualified type name a reader wrote
+                                    // (`Blob`, not the canonical `main.Blob`) (RFC-0042).
+                                    let disp = tn.rsplit_once('.').map_or(tn.as_str(), |(_, s)| s);
                                     self.missing_impls.borrow_mut().push(format!(
-                                        "`{tn}` does not implement `{trait_name}` \
-                                         (no `impl {trait_name} for {tn}`) — required by a call to `{name}`"
+                                        "`{disp}` does not implement `{trait_name}` \
+                                         (no `impl {trait_name} for {disp}`) — required by a call to `{name}`"
                                     ));
                                 }
                                 None => {}

@@ -8,7 +8,6 @@
 
 import iter
 import string
-from iter import Iter
 
 // Fibonacci, written the way most people reach for — an imperative loop that
 // yields. (Infinite; the caller takes a prefix.)

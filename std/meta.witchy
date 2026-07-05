@@ -124,12 +124,12 @@ fn reflect_call(type_name: String, value: String) -> String:
 // record to `MRecord("T", [(field, reflect field)…])`, a sum type to a `match`
 // over variants to `MVariant`. (The module must `import reflect`; caller checks.)
 pub fn derive_reflect(t: TypeInfo) -> String:
-    let head = "impl Reflect for " + target_with_params(t) + where_each(t.params, "Reflect") + ":\n    fn reflect(self) -> Mirror:\n"
+    let head = "import reflect\n\nimpl Reflect for " + target_with_params(t) + where_each(t.params, "Reflect") + ":\n    fn reflect(self) -> reflect.Mirror:\n"
     if t.kind == "record":
         var pairs = []
         for f in t.fields:
             pairs = list.push(pairs, "(\"" + f.name + "\", " + reflect_call(f.type_name, "self." + f.name) + ")")
-        head + "        MRecord(\"" + t.name + "\", [" + list.join(pairs, ", ") + "])\n"
+        head + "        reflect.MRecord(\"" + t.name + "\", [" + list.join(pairs, ", ") + "])\n"
     else:
         var arms = []
         for v in t.variants:
@@ -144,7 +144,7 @@ pub fn derive_reflect(t: TypeInfo) -> String:
             var pat = v.name
             if list.length(pats) > 0:
                 pat = v.name + "(" + list.join(pats, ", ") + ")"
-            arms = list.push(arms, "            " + pat + " -> MVariant(\"" + t.name + "\", \"" + v.name + "\", [" + list.join(refls, ", ") + "])")
+            arms = list.push(arms, "            " + pat + " -> reflect.MVariant(\"" + t.name + "\", \"" + v.name + "\", [" + list.join(refls, ", ") + "])")
         head + "        match self:\n" + list.join(arms, "\n") + "\n"
 
 // The lexicographic if/else chain shared by `derive(Ord)` and `derive(PartialOrd)`:
@@ -192,7 +192,7 @@ fn json_decode_value(ty: String, value: String) -> String:
         "json.string_of(" + value + ")"
     else if string.starts_with(ty, "List("):
         let elem = after_prefix(ty, "List(")
-        "result.all(list.map(json.array_of(" + value + ")?, fn(__e: Json): " + json_decode_value(elem, "__e") + "))"
+        "result.all(list.map(json.array_of(" + value + ")?, fn(__e: json.Json): " + json_decode_value(elem, "__e") + "))"
     else:
         ty + ".from_json(" + value + ")"
 
@@ -201,7 +201,7 @@ fn json_decode_value(ty: String, value: String) -> String:
 fn json_decode_field(ty: String, key: String) -> String:
     if string.starts_with(ty, "Option("):
         let elem = after_prefix(ty, "Option(")
-        "json.optional(json.get(j, \"" + key + "\"), fn(__e: Json): " + json_decode_value(elem, "__e") + ")?"
+        "json.optional(json.get(j, \"" + key + "\"), fn(__e: json.Json): " + json_decode_value(elem, "__e") + ")?"
     else:
         json_decode_value(ty, "json.require(j, \"" + key + "\")?") + "?"
 
@@ -216,7 +216,7 @@ pub fn derive_deserialize(t: TypeInfo) -> String:
     for f in t.fields:
         lets = list.push(lets, "        let " + f.name + " = " + json_decode_field(f.type_name, f.name) + "\n")
         names = list.push(names, f.name)
-    let from_json = "    fn from_json(j: Json) -> Result(Self, String):\n" + list.join(lets, "") + "        Ok(" + t.name + "(" + list.join(names, ", ") + "))\n"
+    let from_json = "    fn from_json(j: json.Json) -> Result(Self, String):\n" + list.join(lets, "") + "        Ok(" + t.name + "(" + list.join(names, ", ") + "))\n"
     // The generated body makes module-qualified calls (json.*, list.map, result.all);
     // emitted source is parsed on its own, so it must carry those imports for the
     // parser to qualify them (comptime merges them into the module).

@@ -255,8 +255,8 @@ impl FromIterator((k, v)) for Dict(k, v):
 
 // A conditional impl: collecting into a `Set` needs `Eq` to deduplicate, so the
 // `where a: Eq` rides on the impl head (the trait method itself stays bound-free).
-impl FromIterator(a) for set.Set(a) where a: Eq:
-    fn from_iter(it: Iter(a)) -> set.Set(a):
+impl FromIterator(a) for Set(a) where a: Eq:
+    fn from_iter(it: Iter(a)) -> Set(a):
         var items: List(a) = []
         var cur = it
         var more = true
