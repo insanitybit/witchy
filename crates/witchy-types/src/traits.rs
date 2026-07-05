@@ -821,10 +821,17 @@ impl Ctx<'_> {
             .get(&(method.to_string(), tn.to_string()))
             .or_else(|| self.impl_table.get(&(method.to_string(), head_of(tn).to_string())))
             .or_else(|| {
+                // A BLANKET impl is registered under a type-VARIABLE head (a bare
+                // lowercase name like `a`). A module-qualified concrete head
+                // (`geometry.Coord`) also starts lowercase but is NOT a variable —
+                // exclude it, or every qualified impl would masquerade as blanket
+                // and a generic receiver would dispatch to an arbitrary one (RFC-0042).
                 self.impl_table
                     .iter()
                     .find(|((m, k), _)| {
-                        m == method && k.chars().next().is_some_and(char::is_lowercase)
+                        m == method
+                            && k.chars().next().is_some_and(char::is_lowercase)
+                            && !k.contains('.')
                     })
                     .map(|(_, v)| v)
             })
@@ -1935,8 +1942,12 @@ fn build_ctor_fields(items: &[Item]) -> HashMap<String, Vec<Type>> {
 /// stays untyped rather than risk a wrong dispatch.
 fn concrete_scope_name(t: &Type) -> Option<String> {
     match t {
+        // A concrete nominal type: an uppercase head (`Coord`), or a module-
+        // qualified name (`geometry.Coord`) whose lowercase first segment is the
+        // module, not a type variable (RFC-0042).
         Type::Named(n, args)
-            if args.is_empty() && n.chars().next().is_some_and(|c| c.is_uppercase()) =>
+            if args.is_empty()
+                && (n.chars().next().is_some_and(|c| c.is_uppercase()) || n.contains('.')) =>
         {
             Some(n.clone())
         }
@@ -3254,3 +3265,4 @@ impl Mono<'_> {
         }
     }
 }
+
