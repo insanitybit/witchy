@@ -1106,7 +1106,7 @@ impl Ctx<'_> {
                                 // a bounded generic: dispatch resolves after
                                 // monomorphization, never an error here.
                                 None if !self.free_fns.contains(name.as_str())
-                                    && !(tn.chars().next().is_some_and(|c| c.is_lowercase()) && !tn.contains('.')) => {
+                                    && (!tn.chars().next().is_some_and(|c| c.is_lowercase()) || tn.contains('.')) => {
                                     // Render the unqualified type name a reader wrote
                                     // (`Blob`, not the canonical `main.Blob`) (RFC-0042).
                                     let disp = tn.rsplit_once('.').map_or(tn.as_str(), |(_, s)| s);
@@ -1191,7 +1191,7 @@ impl Ctx<'_> {
                         // generic trait call for monomorphization to specialize.
                         let resolved = head
                             .as_deref()
-                            .filter(|h| !(h.chars().next().is_some_and(char::is_lowercase) && !h.contains('.')))
+                            .filter(|h| !h.chars().next().is_some_and(char::is_lowercase) || h.contains('.'))
                             .and_then(|h| self.lookup_impl(method, h));
                         *e = Expr::Call {
                             name: resolved.unwrap_or_else(|| method.to_string()),
