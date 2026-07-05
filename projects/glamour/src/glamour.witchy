@@ -13,7 +13,7 @@
 // `json`/`reflect` are PURE (capability-free) too — they serialize the VNode tree
 // and reflect a `msg` value to JSON the host shell consumes. Importing them keeps
 // the empty footprint (they touch no Net/Dir/Clock); see `to_json`/the run loop.
-import json
+from json import Json
 import reflect
 
 // ---------------------------------------------------------------------------

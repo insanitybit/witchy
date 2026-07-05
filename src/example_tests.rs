@@ -1458,7 +1458,7 @@ fn main(console: Console):
     #[test]
     fn json_encodes_control_characters_backends_agree() {
         // NUL ( ), backspace (short \b), tab (short \t), and 0x1f ().
-        let src = "import json\nfn main(console: Console):\n    let s = string.from_code(0) + string.from_code(8) + string.from_code(9) + string.from_code(31)\n    let enc = json.encode(JsonString(s))\n    print(console, enc)\n    match json.decode(enc):\n        Ok(v) -> match v:\n            JsonString(d) -> print(console, __render(d == s))\n            _ -> print(console, \"notstr\")\n        Err(e) -> print(console, \"err\")\n";
+        let src = "import json\nfrom json import Json\nfn main(console: Console):\n    let s = string.from_code(0) + string.from_code(8) + string.from_code(9) + string.from_code(31)\n    let enc = json.encode(JsonString(s))\n    print(console, enc)\n    match json.decode(enc):\n        Ok(v) -> match v:\n            JsonString(d) -> print(console, __render(d == s))\n            _ -> print(console, \"notstr\")\n        Err(e) -> print(console, \"err\")";
         let expected = vec!["\"\\u0000\\b\\t\\u001f\"".to_string(), "true".to_string()];
         assert_eq!(link_run(src), expected, "interpreter");
         assert_eq!(wasm_run(src), expected, "wasm");
@@ -1862,7 +1862,7 @@ fn main(console: Console):
     /// serializes any reflectable response. Both backends.
     #[test]
     fn into_json_via_from() {
-        let src = "import json\n\nfn main(console: Console):\n    let j: Json = [1, 2, 3].into()\n    print(console, json.encode(j))\n    print(console, json.encode(Json.from((\"x\", 5))))\n";
+        let src = "import json\nfrom json import Json\n\nfn main(console: Console):\n    let j: Json = [1, 2, 3].into()\n    print(console, json.encode(j))\n    print(console, json.encode(Json.from((\"x\", 5))))";
         let want = vec!["[1,2,3]".to_string(), "[\"x\",5]".to_string()];
         assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
@@ -1930,7 +1930,7 @@ fn main(console: Console):
         assert_eq!(link_run(tree), tw, "interpreter (tree)");
         assert_eq!(wasm_run(tree), tw, "wasm (tree)");
         // An already-built Json embeds verbatim in an anonymous struct.
-        let embed = "import json\n\nfn main(console: Console):\n    let rec: Json = json.decode(\"{\\\"a\\\":1}\").unwrap_or(JsonNull)\n    print(console, json.stringify(.{record: rec, ok: true}))\n";
+        let embed = "import json\nfrom json import Json\n\nfn main(console: Console):\n    let rec: Json = json.decode(\"{\\\"a\\\":1}\").unwrap_or(JsonNull)\n    print(console, json.stringify(.{record: rec, ok: true}))";
         let ew = vec!["{\"ok\":true,\"record\":{\"a\":1}}".to_string()];
         assert_eq!(link_run(embed), ew, "interpreter (embed)");
         assert_eq!(wasm_run(embed), ew, "wasm (embed)");
@@ -2119,7 +2119,7 @@ fn main(console: Console):
     /// backends (comptime runs at link time, so the generated code is identical).
     #[test]
     fn comptime_typeinfo_generates_specialized_to_json() {
-        let src = "import meta\nimport json\nimport string\n\ntype Point:\n    x: Int\n    y: Int\n\ntype User:\n    name: String\n    age: Int\n    active: Bool\n\ncomptime:\n    let ctor = fn(ty: String) -> String:\n        if ty == \"Int\": \"JsonInt\"\n        else if ty == \"String\": \"JsonString\"\n        else if ty == \"Bool\": \"JsonBool\"\n        else: \"JsonNull\"\n    for t in module_types:\n        if t.kind == \"record\":\n            emit(\"fn to_json_${t.name}(v: ${t.name}) -> Json:\")\n            var pairs = []\n            for f in t.fields:\n                pairs = list.push(pairs, \"(\\\"\" + f.name + \"\\\", \" + ctor(f.type_name) + \"(v.\" + f.name + \"))\")\n            emit(\"    JsonObject([\" + list.join(pairs, \", \") + \"])\")\n            emit(\"\")\n\nfn main(console: Console):\n    print(console, json.encode(to_json_Point(Point(1, 2))))\n    print(console, json.encode(to_json_User(User(\"ann\", 30, true))))\n";
+        let src = "import meta\nimport json\nimport string\nfrom json import Json\n\ntype Point:\n    x: Int\n    y: Int\n\ntype User:\n    name: String\n    age: Int\n    active: Bool\n\ncomptime:\n    let ctor = fn(ty: String) -> String:\n        if ty == \"Int\": \"JsonInt\"\n        else if ty == \"String\": \"JsonString\"\n        else if ty == \"Bool\": \"JsonBool\"\n        else: \"JsonNull\"\n    for t in module_types:\n        if t.kind == \"record\":\n            emit(\"fn to_json_${t.name}(v: ${t.name}) -> Json:\")\n            var pairs = []\n            for f in t.fields:\n                pairs = list.push(pairs, \"(\\\"\" + f.name + \"\\\", \" + ctor(f.type_name) + \"(v.\" + f.name + \"))\")\n            emit(\"    JsonObject([\" + list.join(pairs, \", \") + \"])\")\n            emit(\"\")\n\nfn main(console: Console):\n    print(console, json.encode(to_json_Point(Point(1, 2))))\n    print(console, json.encode(to_json_User(User(\"ann\", 30, true))))";
         let want: Vec<String> = [
             "{\"x\":1,\"y\":2}",
             "{\"name\":\"ann\",\"age\":30,\"active\":true}",
@@ -2445,7 +2445,7 @@ fn main(console: Console):
     /// which the record-only corpus + fuzzer MISSED. This is why the executor is in the gate.
     #[test]
     fn rc_corpus_channel_executor_is_stable() {
-        let src = "import chan\nasync fn producer(tx: Sender(Int), n: Int) -> Nil:\n    for i in 0..n:\n        chan.send(tx, i).await\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(8).await\n    chan.spawn(producer(tx, 100)).await\n    for await v in rx:\n        chan.done(v)\n    print(console, \"100\")\n";
+        let src = "import chan\nfrom chan import Sender\nasync fn producer(tx: Sender(Int), n: Int) -> Nil:\n    for i in 0..n:\n        chan.send(tx, i).await\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(8).await\n    chan.spawn(producer(tx, 100)).await\n    for await v in rx:\n        chan.done(v)\n    print(console, \"100\")";
         assert_rc_corpus_stable(src, &["100"]);
     }
 
