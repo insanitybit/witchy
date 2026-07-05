@@ -135,10 +135,9 @@ capability itself is the hard floor even if the policy is wrong:
 
 ```witchy
 import http
-import confine
 
 fn main(console: Console, net: Net[Connect, Tcp]):
-    let safe = net.deny(confine.private())
+    let safe = net.deny(Net.private())
     match http.pin(safe, "http://example.com/status", public_ok):
         Err(e) -> print(console, "blocked: " + e)
         Ok(target) ->

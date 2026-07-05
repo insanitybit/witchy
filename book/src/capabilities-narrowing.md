@@ -100,20 +100,18 @@ cannot escape.
 
 A `Dir` also carries an **entry policy** that narrows *which entries* it may
 touch, the third axis alongside rights (verbs) and subtree (scope).
-`dir.only(confine.ext(".log"))` confines a `Dir` so `read`/`write`/`open` only
+`dir.only(Dir.ext(".log"))` confines a `Dir` so `read`/`write`/`open` only
 admit matching files — a non-matching name is refused at the access check, and a
 subtree inherits the policy. It is the `Dir` analog of `net.only` below:
 
 ```witchy
-import confine
-
 // `read_logs` is handed a Dir that can only touch `.log` files — even though its
 // caller holds the whole directory, it cannot read a `.key` or a `.env`.
 fn read_logs(logs: Dir[Read], name: String) -> String:
     read(logs, name)
 
 fn main(console: Console, dir: Dir):
-    let logs = dir.only(confine.ext(".log"))   // entry policy: only `.log` files
+    let logs = dir.only(Dir.ext(".log"))       // entry policy: only `.log` files
     print(console, read_logs(logs, "app.log"))
 ```
 
@@ -152,12 +150,10 @@ the separate `Exec` capability, below).
 
 Rights narrow the *verbs* a `Net` permits (`Connect` vs `Listen`); to narrow its
 *reach* — which hosts it may dial — confine its **address-set**. This is the
-network counterpart of `dir.subtree`, and it uses typed policy values from
-`std/confine` rather than ad-hoc strings:
+network counterpart of `dir.subtree`, and it uses typed policy values built on
+the capability itself (`Net.tcp(…)`) rather than ad-hoc strings:
 
 ```witchy
-import confine
-
 // `talk_to_db` is handed a Net that can reach exactly one server. Even though
 // `main` holds the whole network, the dependency cannot dial anywhere else.
 fn talk_to_db(db: Net[Connect, Tcp]):
@@ -165,7 +161,7 @@ fn talk_to_db(db: Net[Connect, Tcp]):
     send_line(sock, "PING")
 
 fn main(console: Console, net: Net):
-    let db = net.only(confine.tcp("10.0.0.5", 6379))   // intersect down to one endpoint
+    let db = net.only(Net.tcp("10.0.0.5", 6379))       // intersect down to one endpoint
     talk_to_db(db)
     print(console, "done")
 ```
@@ -173,15 +169,15 @@ fn main(console: Console, net: Net):
 `net.only(policy)` *intersects* the carried address-set with `policy`; an endpoint
 survives only if it was already admitted, so refinement can only ever shrink the
 set. `net.deny(policy)` does the opposite — subtracts a slice — and the two chain:
-`net.deny(confine.cidr_any("10.0.0.0/8")).only(confine.tcp("192.168.1.1", 80))`
+`net.deny(Net.cidr_any("10.0.0.0/8")).only(Net.tcp("192.168.1.1", 80))`
 removes a private block, then keeps a single host. The policy constructors are
-`confine.tcp(host, port)`, `any_port(host)`, `cidr(block, port)`, `cidr_any(block)`,
-and `union(a, b)` for a multi-endpoint set. The host enforces the set **at the
+`Net.tcp(host, port)`, `Net.any_port(host)`, `Net.cidr(block, port)`,
+`Net.cidr_any(block)`, and `Net.union(a, b)` for a multi-endpoint set. The host enforces the set **at the
 syscall** on both backends, so a narrowed `Net` structurally cannot reach
 elsewhere. (HTTPS isn't a separate right: ask for TLS at connect time with a
 `tls:` prefix on the address you dial — `connect(net, "tls:example.com:443")`.)
 
-For the common SSRF / DNS-rebinding guard, `net.deny(confine.private())` excludes
+For the common SSRF / DNS-rebinding guard, `net.deny(Net.private())` excludes
 the internal ranges in one line — loopback, RFC-1918, link-local (including the
 `169.254.169.254` cloud-metadata address), CGNAT, and "this host". It is matched
 against the **resolved** IP, so a hostname that rebinds to an internal address is

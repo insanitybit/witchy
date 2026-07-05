@@ -52,11 +52,11 @@ symlinks that point outside the subtree. `dir.subtree("sub")` mints a new,
 smaller capability — handing a callee `dir.subtree("uploads")` gives it that
 folder and nothing else. (`subtree(dir, "sub")` is the equivalent free-function
 form.) A `Dir` also carries an **entry policy** (RFC-0011) in two dimensions:
-name-suffix (`dir.only(confine.ext(".txt"))` — only `.txt` entries) and entry-kind
-(`dir.only(confine.files())` — only file access, no sub-directory open/create;
-`confine.dirs()` — the mirror). They AND-compose: `dir.only(files()).only(ext(".txt"))`
+name-suffix (`dir.only(Dir.ext(".txt"))` — only `.txt` entries) and entry-kind
+(`dir.only(Dir.files())` — only file access, no sub-directory open/create;
+`Dir.dirs()` — the mirror). They AND-compose: `dir.only(Dir.files()).only(Dir.ext(".txt"))`
 touches only `.txt` files. A non-admitted entry is refused at the access check —
-including opening a sub-directory, so `files()` genuinely confines traversal — and a
+including opening a sub-directory, so `Dir.files()` genuinely confines traversal — and a
 subtree inherits the policy. An `ext`-only policy still traverses freely (ext gates
 file names, not directories), so `kind` is additive. This is the filesystem analog of
 `net.only`/`net.deny`; like `Net`, the raw-string form is a `--net`/config grant, not
@@ -74,8 +74,8 @@ also receive a `File` **directly**: each `--file <path>` grant fills `main`'s
 `main(config: File[Read])` audits as `Console, File[Read]` with no `Dir` at all.
 
 A `Net` likewise carries an **address-set**, narrowed with typed policy values
-from `std/confine`: `confine.tcp(host, port)`, `any_port(host)`, `cidr(block,
-port)`, `cidr_any(block)`, and `union(a, b)` for a multi-endpoint set.
+built on the capability itself: `Net.tcp(host, port)`, `Net.any_port(host)`, `Net.cidr(block,
+port)`, `Net.cidr_any(block)`, and `Net.union(a, b)` for a multi-endpoint set.
 `net.only(policy)` intersects the carried set with `policy` (each endpoint must
 already be admitted); `net.deny(policy)` subtracts one (set difference). Both are
 **monotone** — refinement can only ever shrink the set — and enforced **at the
@@ -92,7 +92,7 @@ address underneath the check (DNS-rebinding / SSRF). CIDR and IP allowlist entri
 are matched against the **resolved IP** (rebinding-proof); a bare-hostname entry is
 matched by name and dials all of the name's resolved addresses (an ergonomic
 convenience, *not* rebinding-proof). For the common "deny the internal ranges"
-guard, `net.deny(confine.private())` excludes loopback, RFC-1918, link-local
+guard, `net.deny(Net.private())` excludes loopback, RFC-1918, link-local
 (including the `169.254.169.254` cloud-metadata IP), CGNAT, and "this host" —
 enforced on the resolved IP, so a name that rebinds to an internal address is
 refused at connect time.
@@ -111,7 +111,7 @@ pairs the two with a confined `Net`, so the capability floor holds even if the p
 is wrong:
 
 ```sh
-let safe = net.deny(confine.private())
+let safe = net.deny(Net.private())
 match http.pin(safe, user_url, public_ok):
     Ok(target) -> http.get_pinned(safe, target)
     Err(e) -> Err(e)
@@ -152,17 +152,15 @@ fn main(console: Console, dir: Dir):
     print(console, read(uploads, "latest.bin"))
 ```
 
-`Net` narrows the same way, with typed `std/confine` policies instead of strings:
+`Net` narrows the same way, with typed policy values on the `Net` type itself instead of strings:
 
 ```witchy
-import confine
-
 fn main(console: Console, net: Net):
     // Address-set attenuation: confine Net to one endpoint (scheme-agnostic).
-    let db = net.only(confine.tcp("10.0.0.5", 6379))
+    let db = net.only(Net.tcp("10.0.0.5", 6379))
 
     // `deny` subtracts a block; refinement only ever shrinks. Chains, too.
-    let safe = net.deny(confine.cidr_any("10.0.0.0/8")).only(confine.tcp("192.168.1.1", 80))
+    let safe = net.deny(Net.cidr_any("10.0.0.0/8")).only(Net.tcp("192.168.1.1", 80))
 
     print(console, "net confined")
 ```

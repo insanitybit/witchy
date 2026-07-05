@@ -1009,26 +1009,25 @@ nothing hidden (the hard, runtime-enforced `Net` plus a soft, library-enforced
 ### 13.3 Narrowing a `Net`'s reach: `only` / `deny`
 
 Rights (§13.1) narrow which *verbs* a `Net` permits; to narrow which *hosts* it may
-dial, confine its **address-set** with typed policy values from `std/confine`.
+dial, confine its **address-set** with typed policy values built on the capability
+itself (`Net.tcp(…)`).
 `net.only(policy)` intersects the carried set with `policy` (an endpoint survives
 only if already admitted); `net.deny(policy)` subtracts a slice. Both are monotone —
 refinement only ever shrinks — and host-enforced **at the syscall** on both
 backends, the address analog of `dir.subtree` for `Dir`.
 
 ```witchy
-import confine
-
 fn main(console: Console, net: Net):
-    let db = net.only(confine.tcp("10.0.0.5", 6379))
-    let safe = net.deny(confine.cidr_any("10.0.0.0/8")).only(confine.tcp("192.168.1.1", 80))
+    let db = net.only(Net.tcp("10.0.0.5", 6379))
+    let safe = net.deny(Net.cidr_any("10.0.0.0/8")).only(Net.tcp("192.168.1.1", 80))
     print(console, "net confined")
 ```
 
-The policy constructors are `confine.tcp(host, port)`, `any_port(host)`,
-`cidr(block, port)`, `cidr_any(block)`, `union(a, b)`, and `private()` — the
+The policy constructors are `Net.tcp(host, port)`, `Net.any_port(host)`,
+`Net.cidr(block, port)`, `Net.cidr_any(block)`, `Net.union(a, b)`, and `Net.private()` — the
 internal IP ranges (loopback, RFC-1918, link-local incl. the `169.254.169.254`
 metadata IP, CGNAT) for the one-line SSRF/rebinding guard
-`net.deny(confine.private())`. A CIDR/IP policy is
+`net.deny(Net.private())`. A CIDR/IP policy is
 checked against the *resolved* IP, so it is rebinding-safe. TLS is not a right or a
 policy scheme but a connect-time `tls:` prefix on the address you dial
 (`connect(net, "tls:host:443")`); see
@@ -1036,7 +1035,7 @@ policy scheme but a connect-time `tls:` prefix on the address you dial
 [0009-https-tls-client.md](../rfcs/0009-https-tls-client.md).
 
 A `Dir` likewise carries an **entry policy** narrowing which entries it may touch:
-`dir.only(confine.ext(".txt"))` confines it so `read`/`write`/`open` admit only
+`dir.only(Dir.ext(".txt"))` confines it so `read`/`write`/`open` admit only
 matching files (a non-matching name is refused at the access check; a subtree
 inherits the policy) — the filesystem analog of `net.only`. See
 [0011-capability-refinement.md](../rfcs/0011-capability-refinement.md).
