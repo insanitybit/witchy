@@ -1,7 +1,7 @@
 ---
 rfc: 0050
 title: "Method calls from type ownership, not an allowlist; module functions as values"
-status: proposed
+status: implemented (Part 2) / deferred (Part 1 — gated on RFC-0042)
 created: 2026-07-03
 predecessors:
   - "0042 (module namespaces — the type→module ownership this derives from)"
@@ -291,3 +291,49 @@ acceptance (a) currently fails.
 
 **Verdict.** Split: Part 2 implement-now (after the revisions); Part 1 defer
 until 0042 lands. Priority: medium-high (Part 2) / medium (Part 1).
+
+## Implementation note (2026-07-05, Part 2)
+
+Part 2 is implemented; Part 1 remains deferred (it is hard-gated on RFC-0042's
+module-scoped type ownership, and the `builtin_method_module` allowlist is
+untouched).
+
+**Where.** All in the linker, `crates/witchy-syntax/src/linker.rs` — a
+source-to-source rewrite on the single linked AST before either backend lowers,
+so parity holds by construction:
+
+- `FnTable`'s inner value carries, per exported function, an `EtaSig {arity,
+  is_var_procedure}` (built alongside the existing name set; membership stays
+  `contains_key`).
+- `rewrite_expr`'s `Expr::Field` arm: when the base is a bare module name in
+  scope here (a prelude module or one this module imports) and not shadowed by a
+  local, `module.field` is a module-qualified *value* reference. It is validated
+  exactly as a call (`resolve_call`) and rewritten by `eta_lambda` into
+  `fn(__eta0, …): module.field(__eta0, …)` at the callee's full declared arity.
+
+**Inference (the review's revision 2).** The eta-lambda's parameters carry no
+type annotation, so a generic callee (`list.length : List(a) -> Int`) yields a
+lambda with free type vars — exactly the shape the review flagged. Post-merge
+RFC-0046 resolves it: the annotate/mono fixpoint types the lambda from its use
+site. Verified running on both backends — `xs.map(list.length)`, a two-argument
+`fold` reducer (`math.max` and the generic mutator `list.concat`), a `let`
+binding, and a function value stored in a record field.
+
+**Exclusions (the review's revision 1).** A Nil-returning `var`-procedure
+(RFC-0043) is rejected up front with a link error that names the real cause (a
+`let` lambda parameter cannot satisfy the `var` demand); RFC-0043 mutators
+(return self) are *not* excluded — their value form is a pure call. Capability
+intrinsics and trait methods are bare names, not `module.fn`, so they are
+naturally out of scope and keep their current errors.
+
+**RFC-0056 reconciliation.** Labels and constant defaults never attach to a
+function *value*: eta-expansion uses the full positional arity, so a
+defaulted-parameter function becomes a lambda taking every argument. Pinned by
+`module_function_value_uses_full_declared_arity_backends_agree`.
+
+**Error quality.** A wrong function name on an in-scope module now reuses the
+call-position diagnostic (``module `list` has no function `lenght` ``); ``unbound
+variable `list` `` no longer appears for a module base.
+
+**Tests.** Five differential tests in `src/example_tests.rs`
+(`module_function_*` / `module_var_procedure_*`).
