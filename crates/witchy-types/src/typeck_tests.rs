@@ -216,6 +216,50 @@
     }
 
     #[test]
+    fn file_capability_cannot_cross_i64_slot_boundary() {
+        // (RFC-0005 §4.4/§7) `File` is (to be) an unforgeable `externref` with no
+        // boxed i64-slot representation, so it cannot be wrapped in `Option`/
+        // `Result`/`List`/`Dict` — the containers whose payload crosses the slot.
+        // A bare `File` param/return stays an `externref` and is fine.
+        check_str("fn ok(console: Console, f: File):\n    print(console, \"ok\")\nfn main(console: Console, f: File):\n    ok(console, f)\n")
+            .expect("a bare File param/return is a plain externref — allowed");
+
+        // Option(File) — the payload is slot-boxed. (The reject fires on the
+        // signature, so a trivial body suffices.)
+        let err = check_str("fn find(console: Console, o: Option(File)):\n    print(console, \"x\")\n")
+            .expect_err("Option(File) slot-boxes an externref");
+        assert!(err.contains("File") && err.contains("Option"), "got: {err}");
+
+        // List(File) — the collection stores externref elements (§7).
+        let err = check_str("fn collect(console: Console, xs: List(File)):\n    print(console, \"x\")\n")
+            .expect_err("List(File) stores externref elements");
+        assert!(err.contains("File") && err.contains("List"), "got: {err}");
+
+        // Result(File, String) — the Ok payload is slot-boxed.
+        let err = check_str("fn open(console: Console, r: Result(File, String)):\n    print(console, \"x\")\n")
+            .expect_err("Result(File, _) slot-boxes an externref");
+        assert!(err.contains("File") && err.contains("Result"), "got: {err}");
+
+        // Dict(String, File) — the value is slot-boxed.
+        let err = check_str("fn table(console: Console, d: Dict(String, File)):\n    print(console, \"x\")\n")
+            .expect_err("Dict(_, File) slot-boxes an externref value");
+        assert!(err.contains("File") && err.contains("Dict"), "got: {err}");
+
+        // A File held in a RECORD field is the GC-struct aggregate path (§4.2), NOT a
+        // slot crossing — allowed. But wrapping that record in an `Option` is not.
+        check_str("type Handle:\n    f: File\nfn take(console: Console, h: Handle):\n    print(console, \"ok\")\nfn main(console: Console, f: File):\n    take(console, Handle(f))\n")
+            .expect("a File in a record field is the aggregate path, not a slot box");
+        let err = check_str("type Handle:\n    f: File\nfn find(console: Console, o: Option(Handle)):\n    print(console, \"x\")\n")
+            .expect_err("Option(record-carrying-File) slot-boxes a cap-carrying payload");
+        assert!(err.contains("File") && err.contains("Option"), "got: {err}");
+
+        // Sibling caps still on the i32 path may cross a slot until their own stage:
+        // `std/secretstore.get -> Option(Secret)` must keep type-checking.
+        check_str("fn get(console: Console, o: Option(Secret)):\n    print(console, \"x\")\n")
+            .expect("Secret is still an i32 handle this stage — Option(Secret) allowed");
+    }
+
+    #[test]
     fn file_capability_rights_and_narrowing() {
         // RFC-0012: `File` is a host capability `main` may receive, the leaf of the
         // Dir/File hierarchy, right-typed like `Dir`.
