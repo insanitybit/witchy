@@ -293,12 +293,27 @@
       "Console"
     ],
     "output": [
-      "60"
+      "tcp://localhost:8080",
+      "tls://example.com:443",
+      "tls://db.internal:5432"
     ],
     "runnable": true
   },
   {
     "block": 16,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "60"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 17,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -312,7 +327,7 @@
     "runnable": true
   },
   {
-    "block": 17,
+    "block": 18,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -325,7 +340,7 @@
     "runnable": true
   },
   {
-    "block": 18,
+    "block": 19,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -338,7 +353,7 @@
     "runnable": true
   },
   {
-    "block": 19,
+    "block": 20,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -352,7 +367,7 @@
     "runnable": true
   },
   {
-    "block": 20,
+    "block": 21,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -365,7 +380,7 @@
     "runnable": true
   },
   {
-    "block": 21,
+    "block": 22,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -378,7 +393,7 @@
     "runnable": true
   },
   {
-    "block": 22,
+    "block": 23,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -391,7 +406,7 @@
     "runnable": true
   },
   {
-    "block": 23,
+    "block": 24,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -404,7 +419,7 @@
     "runnable": true
   },
   {
-    "block": 24,
+    "block": 25,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -418,7 +433,7 @@
     "runnable": true
   },
   {
-    "block": 25,
+    "block": 26,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -431,7 +446,7 @@
     "runnable": true
   },
   {
-    "block": 26,
+    "block": 27,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -445,7 +460,7 @@
     "runnable": true
   },
   {
-    "block": 27,
+    "block": 28,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -459,7 +474,7 @@
     "runnable": true
   },
   {
-    "block": 28,
+    "block": 29,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -472,7 +487,7 @@
     "runnable": true
   },
   {
-    "block": 29,
+    "block": 30,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -485,7 +500,7 @@
     "runnable": true
   },
   {
-    "block": 30,
+    "block": 31,
     "console_only": false,
     "expect_error": false,
     "file": "spec/language.md",
@@ -497,22 +512,11 @@
     "runnable": false
   },
   {
-    "block": 31,
+    "block": 32,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [],
-    "output": [],
-    "runnable": false
-  },
-  {
-    "block": 32,
-    "console_only": false,
-    "expect_error": false,
-    "file": "spec/language.md",
-    "footprint": [
-      "Net[Connect,Tcp]"
-    ],
     "output": [],
     "runnable": false
   },
@@ -533,6 +537,17 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
+      "Net[Connect,Tcp]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 35,
+    "console_only": false,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
       "Console",
       "Net[Connect,Listen,Tcp,Udp,Uds]"
     ],
@@ -540,7 +555,7 @@
     "runnable": false
   },
   {
-    "block": 35,
+    "block": 36,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -555,7 +570,7 @@
     "runnable": true
   },
   {
-    "block": 36,
+    "block": 37,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",

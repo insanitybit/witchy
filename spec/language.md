@@ -479,6 +479,31 @@ fn main(console: Console):
     print(console, "${apply(add10, 5)}")
 ```
 
+**Keyword arguments and default parameters.** A direct call to a free or
+module-qualified function may pass arguments by parameter **name**: a positional
+prefix followed by labeled arguments (`connect(host: "x", port: 443)`). Labels
+bind to the declaration's parameter names and may appear in any order, but every
+argument still evaluates in **source order** (left to right as written, not in
+parameter order). A suffix parameter may declare a **closed-constant default**
+(`port: Int = 443` — a literal or other compile-time-constant expression); a call
+that omits it splices the default in. Defaults live at the declaration site: they
+do **not** attach to a function *value*, and labels and defaults are erased before
+either backend runs, so they cost nothing at runtime. Two limits hold: method
+calls and calls through a function value are positional-only (so
+`string.substring(s, start: 1, end: 3)` accepts labels but `s.substring(start: 1)`
+does not), and a `var` (write-back) parameter cannot have a default.
+
+```witchy
+fn connect(host: String, port: Int = 443, tls: Bool = true) -> String:
+    let scheme = if tls: "tls" else: "tcp"
+    "${scheme}://${host}:${port}"
+
+fn main(console: Console):
+    print(console, connect(port: 8080, host: "localhost", tls: false))
+    print(console, connect("example.com"))
+    print(console, connect("db.internal", port: 5432))
+```
+
 **Where a mutation reaches.** A `var` is a *local* mutable binding, nothing more.
 witchy has value semantics: every boundary that carries a value out of a scope —
 a default call argument, a closure capture, a task message — carries a **copy**,
