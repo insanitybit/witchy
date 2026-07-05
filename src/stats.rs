@@ -647,9 +647,9 @@ mod tests {
     /// not a subset). Un-ignore when the executor reclaims. This pins the goal's residual as a
     /// concrete pass/fail.
     #[test]
-    #[ignore = "chan_throughput closure garbage not yet reclaimed — needs recursive $rdrop (RFC-0036); Design B (owned executor) landed, ~93 live cells/message remain"]
+    #[ignore = "chan_throughput closure garbage not yet reclaimed — needs recursive $rdrop (RFC-0036); Design B (owned executor) landed, ~93 live cells/message remain (measures live_cells=18608 at N=200 via --run-ignored). Blocked on the per-capture move/borrow oracle (analysis.rs last_use bulk): the `and_then` tower captures shared closures `cont`/`k` + erased `__Msg`, so an unconditional $__lamdrop would UAF — see RFC-0036 note 2026-07-05"]
     fn chan_throughput_bounded_by_rc_floor() {
-        let src = "import chan\nasync fn producer(tx: Sender(Int), n: Int) -> Nil:\n    for i in 0..n:\n        chan.send(tx, i).await\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(8).await\n    chan.spawn(producer(tx, 200)).await\n    for await v in rx:\n        chan.done(v)\n    print(console, \"200\")\n";
+        let src = "from chan import Receiver, Sender\nasync fn producer(tx: Sender(Int), n: Int) -> Nil:\n    for i in 0..n:\n        chan.send(tx, i).await\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(8).await\n    chan.spawn(producer(tx, 200)).await\n    for await v in rx:\n        chan.done(v)\n    print(console, \"200\")\n";
         opt::set_for_tests(Some(OptSet::default_set().with(Opt::RcFloor)));
         let on = compute(src).expect("compile+run executor");
         opt::set_for_tests(None);

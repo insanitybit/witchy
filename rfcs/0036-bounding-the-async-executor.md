@@ -1,7 +1,7 @@
 ---
 rfc: 0036
 title: Bounding the async executor — ownership-threaded state and recursive drop
-status: partially-implemented (Design B landed 2026-07-04; recursive $rdrop remaining — NOT a blocker)
+status: partially-implemented (Design B landed 2026-07-04; recursive $rdrop remaining — NOT a blocker; blocker precisely located 2026-07-05 = the per-capture move/borrow oracle, see final note)
 created: 2026-07-01
 predecessors:
   - "0035 (completing the RC floor — the Perceus dup/drop floor this builds on)"
@@ -249,3 +249,71 @@ introduce a UAF, is committed; recursive `$rdrop` remains the sole open item for
 RFC's DoD and for RFC-0059 Stage 0. The DoD test
 (`stats::chan_throughput_bounded_by_rc_floor`) stays `#[ignore]`d with an updated reason
 pinning the ~93-cell/message residual.
+
+## Implementation note (2026-07-05) — blocker located precisely; deferral upheld under the full gate
+
+A full-gate session confirmed and DEEPENED the 2026-07-04 deferral. Two safe fixes
+landed; the reclaiming `dec` did not (it would be an unproven use-after-free).
+
+**Drift repaired (safe, verified).** Both `benchmarks/chan_throughput.witchy` and the DoD
+test source had drifted to a bare `import chan`, which no longer brings the `Sender` /
+`Receiver` TYPES into scope — every working concurrency example uses
+`from chan import Receiver, Sender`. The benchmark did not compile ("unknown type
+`Sender`") and the DoD test errored before it could measure. Both now use
+`from chan import Receiver, Sender`: the benchmark compiles and runs (prints `8000`, both
+backends) and the DoD test measures again — **`live_cells` = 18608 at N=200** with rc-floor
+on, matching the ~93-cell/message residual. N stays at 8000; the ~10k OOM ceiling is
+unchanged (it is the very thing recursive drop would lift, so it cannot move until the
+`dec` lands).
+
+**Why the reclaiming `dec` is still blocked — sharper than "matched-pair".** A per-type /
+`$__lamdrop{i}` recursive drop plus dup-at-construction is NOT sufficient on its own,
+because the two dup policies trade off against each other:
+
+- **always-dup** every heap child at construction is SAFE (never under-counts) but does
+  NOT reclaim — the constructor temporaries' `rc=1` is never released, so a recursive drop
+  can never reach 0. It is memory-neutral pure overhead (this is the direction that cannot
+  UAF, and it is also the direction that fails the DoD).
+- **move (no dup) on last use** is what actually reclaims, but it requires proving, per
+  construction argument AND per closure capture, that the occurrence is a genuine last use
+  (a transfer of ownership) rather than a still-live alias. A wrong move = a shared value
+  freed while live = a use-after-free.
+
+The executor's dominant garbage is the `and_then` continuation tower
+(`std/chan.witchy` `and_then_step`): each step rebuilds `fn(u): and_then(cont(u), k)`
+capturing the params `cont` and `k` — both **closures threaded through a recursive chain**
+(single-consumer, linear) — alongside the **erased `__erase(msg)`** payload. An
+unconditional `$__lamdrop{i}` that drops every i32 capture would drop the shared
+`cont`/`k` (double-free along the chain) and the opaque `__Msg` (a heap-message UAF). So
+each capture drop must be conditioned on a **per-capture move/borrow decision**, which is
+exactly the **inter-procedural ownership** question: are `and_then` / `and_then_step`'s
+params CONSUMED (move — the callee may drop) or BORROWED (the caller retains)? Under
+witchy's default `let` (borrow) convention a borrowed param must NOT be dropped by the
+callee; only an `own` / last-use-move param may be.
+
+This is precisely the piece the `last_use` oracle (`crates/witchy-lower/src/analysis.rs`,
+~lines 1610-1616) **deliberately does not ship unverified**: "the full backward-liveness
+drop-at-last-use … MUST discharge two soundness obligations before it can place a drop on
+a *used* value — the Perceus dup/move discipline … and inter-procedural escape via
+`Summaries::arg_leaks`." Recursive `$rdrop` inherits BOTH obligations, at every child and
+every capture. Per this RFC's HARD DoD rule ("Never commit an unproven `dec`"), the
+reclaiming `dec` is not landed: `$__lamdrop{i}` cannot be soundly wired until the
+move/borrow oracle for construction arguments and closure captures exists.
+
+**Precise scope for the next increment** (same shape, sharper gate). The construction
+surface is now mapped and centralized: `lower_aggregate`
+(`crates/witchy-lower/src/codegen/mod.rs` ~3349-3368) covers ADT/record/tuple/list, and
+`lower_lambda` (~5197-5270) covers closures; the closure code-index registry is
+`lambda_wir_funcs` (index = code index) with per-capture kinds in `cap_info`; the drop
+sites are mod.rs ~2811 (set_at displaced), ~3295 (read-binding last use), ~3766 (match
+scrutinee); the drop-time field kinds come from `adt_variants` / `record_field_types` and
+`type_is_offset0_rc`; `__Msg` is `Type::Named("__Msg", …)` (skip — leak-safe).
+1. Build the per-argument / per-capture **move-vs-dup oracle** (the deferred `last_use`
+   bulk + `Summaries::arg_leaks` for callee-retains, extended to closure captures). This
+   is the keystone both dup-at-construction and recursive drop consume.
+2. `$__lamdrop{i}` drops ONLY captures the oracle marks owned-by-this-closure; borrowed /
+   opaque (`__Msg`) / scalar captures are skipped (leak-safe).
+3. Per-type recursive drop for aggregates keyed on the same oracle for their fields.
+4. Prove under the WHOLE gate (force-copy metamorphic + heap-type-matrix +
+   `WITCHY_HEAP_CHECK` redzone fuzz at substantial seed count + full concurrency parity).
+   The DoD test stays `#[ignore]`d (source now compiles; residual 18608) until green.

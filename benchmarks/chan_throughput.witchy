@@ -13,7 +13,7 @@
 // throughput regime needs recursive `$rdrop` (RFC-0036, to free those closure
 // children) and then the state-machine lowering that stops rebuilding them
 // (RFC-0059). As-is this is a small but real send/recv throughput probe.
-import chan
+from chan import Receiver, Sender
 
 async fn producer(tx: Sender(Int), n: Int) -> Nil:
     for i in 0..n:
