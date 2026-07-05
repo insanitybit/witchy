@@ -1,11 +1,10 @@
 ---
 rfc: 0059
 title: State-machine async — frames, an owning executor, and ring channels
-status: proposed (Stage-1 spike measured 2026-07-05 — design REFINED: boxed frame
-  records DO NOT reach the flat-heap DoD; the flat + ≤300 ns target is reachable
-  only with a fully-SCALAR representation — SoA frame columns + ring channel — which
-  a hand-written reference PROVES at 13 live cells flat to N=1M and 10 ns/message on
-  both backends. See the 2026-07-05 implementation note for the corrected plan.)
+status: partially-implemented (increment 1 SHIPPED: defunctionalized state-machine
+  lowering — closure tower gone, await-in-while/var-across-await/folding-for-await work,
+  chan_throughput folds + 4x past OOM cliff, parity+determinism green. Increment 2
+  (scalar SoA + ring = flat DoD to N=1M) remains for the flat-heap target.)
 created: 2026-07-04
 tracking:
 ---
