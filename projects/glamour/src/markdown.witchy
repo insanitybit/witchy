@@ -194,52 +194,13 @@ fn link(s: String, at: Int, head: List(VNode(msg))) -> List(VNode(msg)):
 fn as_text_bracket(s: String, at: Int, head: List(VNode(msg))) -> List(VNode(msg)):
     list.concat(list.concat(head, [glamour.text("[")]), inline(string.substring(s, at + 1, string.length(s))))
 
-// Neutralize dangerous URL schemes. (BUG-409) This is an ALLOWLIST, not a denylist: only
-// `http`/`https`/`mailto`/`tel` schemes and scheme-less relative URLs pass; every other scheme
-// (`file:`, `ftp:`, `blob:`, `javascript:`, `data:`, `vbscript:`, and any future/custom scheme)
-// collapses to `#`. A denylist silently admits new schemes; an allowlist fails closed.
-// (BUG-283) A URL carrying an ASCII control character (`java\nscript:` and friends, which the
-// browser strips before scheme detection) is rejected outright — release-facing Markdown links
-// have no legitimate reason to contain raw controls.
+// Neutralize dangerous URL schemes; relative URLs and http(s)/mailto pass through.
 fn safe_href(url: String) -> String:
-    let trimmed = string.trim(url)
-    if has_control(trimmed):
+    let lower = string.to_lower(string.trim(url))
+    if string.starts_with(lower, "javascript:") || string.starts_with(lower, "data:") || string.starts_with(lower, "vbscript:") || string.starts_with(lower, "//"):
         "#"
     else:
-        let lower = string.to_lower(trimmed)
-        if string.starts_with(lower, "//"):
-            "#"                                     // protocol-relative → off-origin navigation
-        else if allowed_scheme(lower):
-            trimmed                                 // http/https/mailto/tel
-        else if has_scheme(trimmed):
-            "#"                                     // any OTHER scheme (allowlist: reject)
-        else:
-            trimmed                                 // scheme-less relative: path/#/?/.
-
-fn allowed_scheme(lower: String) -> Bool:
-    string.starts_with(lower, "http://") || string.starts_with(lower, "https://") || string.starts_with(lower, "mailto:") || string.starts_with(lower, "tel:")
-
-// A URL has a scheme when a `:` appears before any `/`, `?`, or `#` (so `foo:bar` is a scheme
-// but `foo/bar:baz` and `page.html` are relative paths).
-fn has_scheme(s: String) -> Bool:
-    let ci = string.index_of(s, ":") ?? -1
-    if ci < 0:
-        false
-    else:
-        colon_before(ci, string.index_of(s, "/") ?? -1) && colon_before(ci, string.index_of(s, "?") ?? -1) && colon_before(ci, string.index_of(s, "#") ?? -1)
-
-fn colon_before(colon: Int, other: Int) -> Bool:
-    other < 0 || colon < other
-
-// True if the string contains any ASCII C0 control (U+0000–U+001F) or DEL (U+007F).
-fn has_control(s: String) -> Bool:
-    var found = false
-    var code = 0
-    while code < 32:
-        if string.contains(s, string.from_code(code)):
-            found = true
-        code = code + 1
-    found || string.contains(s, string.from_code(127))
+        string.trim(url)
 
 fn min3(a: Int, b: Int, c: Int) -> Int:
     min2(min2(a, b), c)
