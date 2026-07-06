@@ -24,7 +24,8 @@ fi
 echo "building the witchy interpreter for wasm32-unknown-unknown..."
 "${RUN[@]}" build --release --lib --no-default-features --target wasm32-unknown-unknown
 
-WASM="target/wasm32-unknown-unknown/release/witchy.wasm"
+# Honor a custom CARGO_TARGET_DIR — the cargo build above wrote the module there.
+WASM="${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/release/witchy.wasm"
 mkdir -p web
 if command -v wasm-opt >/dev/null; then
     echo "optimizing with wasm-opt..."

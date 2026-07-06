@@ -158,13 +158,15 @@ e2e-quick:
 
 # --- Book & playground ----------------------------------------------------
 
-# Build "The witchy Book" into ./book-html.
-book:
-    ./scripts/build-book.sh
+# Build "The witchy Book" — the RFC-0041 docs bundle (glamour app + book content
+# compiled to a bag of static files) into ./dist. For working Run buttons, build
+# the browser compiler first with `just playground`.
+book: build-release
+    ./scripts/build-docs.sh dist
 
-# Build the book and serve it with live reload.
-book-serve:
-    ./scripts/build-book.sh --serve
+# Build the book, then serve the bundle locally at http://localhost:8000.
+book-serve: book
+    python3 -m http.server -d dist 8000
 
 # Build the in-browser playground (wasm) into web/.
 playground:

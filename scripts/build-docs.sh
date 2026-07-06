@@ -10,7 +10,9 @@ cd "$(dirname "$0")/.."
 OUT="${1:-dist}"
 BIN="${WITCHY:-}"
 if [ -z "$BIN" ]; then
-  if [ -x ./target/release/witchy ]; then BIN=./target/release/witchy; else BIN=./target/debug/witchy; fi
+  # Honor a custom CARGO_TARGET_DIR (concurrent agents build into per-agent dirs).
+  td="${CARGO_TARGET_DIR:-target}"
+  if [ -x "$td/release/witchy" ]; then BIN="$td/release/witchy"; else BIN="$td/debug/witchy"; fi
 fi
 
 rm -rf "$OUT"

@@ -49,7 +49,12 @@ trap cleanup EXIT
 
 stage "0. Build from scratch"
 cargo build --release --quiet
-BIN="$REPO/target/release/witchy"
+# Honor a custom CARGO_TARGET_DIR (concurrent agents build into per-agent target
+# dirs). A relative override resolves under $REPO (cargo ran from here); an
+# absolute one is used as-is.
+TARGET_DIR="${CARGO_TARGET_DIR:-target}"
+case "$TARGET_DIR" in /*) ;; *) TARGET_DIR="$REPO/$TARGET_DIR" ;; esac
+BIN="$TARGET_DIR/release/witchy"
 ok "release build"
 
 if [ "$QUICK" = 0 ]; then

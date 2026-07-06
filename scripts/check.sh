@@ -32,6 +32,11 @@ for arg in "$@"; do
     esac
 done
 
+# Honor a custom CARGO_TARGET_DIR (concurrent agents run with per-agent target
+# dirs, e.g. CARGO_TARGET_DIR=target-claude): the cargo build below writes the
+# binary there, not under ./target, so the fmt check must look there too.
+target_dir="${CARGO_TARGET_DIR:-target}"
+
 # The wasm build needs the rustup toolchain's std: a Homebrew rustc/cargo first on
 # PATH can't supply wasm `core`, and `rustup run` alone does not fix it. Force the
 # toolchain's bin dir to the front and clear any RUSTC/RUSTFLAGS override (the same
@@ -63,7 +68,7 @@ witchy_fmt_check() {
     local fail=0
     for f in std/*.witchy examples/*/src/*.witchy; do
         [ -f "$f" ] || continue
-        target/debug/witchy fmt --check "$f" >/dev/null 2>&1 || { echo "needs formatting: $f"; fail=1; }
+        "$target_dir/debug/witchy" fmt --check "$f" >/dev/null 2>&1 || { echo "needs formatting: $f"; fail=1; }
     done
     return "$fail"
 }
