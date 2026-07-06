@@ -197,15 +197,34 @@ fn run_embedded_pm(raw: Vec<String>) -> ! {
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_else(|| std::path::PathBuf::from("."));
-    match interpreter::run_module_exit_dirs(module, vec![cwd, bin], net_allow, pm_args, None) {
+    // (RFC-0004/BUG-550) Run the front-end on the COMPILED WASM tier — the
+    // production tier, exactly like `coven-serve` above. The interpreter is the
+    // differential-testing oracle ONLY; running the self-hosted pm through the
+    // tree-walker made every command pay it (e.g. `pm add` of a glamour dep took
+    // ~170s). All of pm's deps — `compiler.footprint`/`diff`/`doc`, `Exec`,
+    // `Dir`/`Net`/`Env`/`Clock` — have host functions, so it lowers cleanly.
+    // `run_wasm_module` grants exactly the same authority (handle 0 = cwd, handle
+    // 1 = bin so `Exec` finds the compiler) and surfaces `main`'s `Int` exit code.
+    let wasm = match codegen::compile_module_binary(&module) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => {
+            eprintln!("the pm front-end does not lower to the compiled backend");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+    match run_wasm_module(&wasm, vec![cwd, bin], Vec::new(), net_allow, pm_args, None, Vec::new(), false) {
         Ok((lines, code)) => {
             for l in &lines {
                 println!("{l}");
             }
-            std::process::exit(code);
+            std::process::exit(code.unwrap_or(0));
         }
         Err(e) => {
-            eprintln!("{}", e.message);
+            eprintln!("{e}");
             std::process::exit(1);
         }
     }
