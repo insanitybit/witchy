@@ -1633,23 +1633,44 @@ fn update_one(console: Console, net: Net, root: Dir, host: String, port: Int, en
 // Only on a clean (non-widening) upgrade do we re-fetch.
 fn gated_refetch(console: Console, net: Net, root: Dir, host: String, port: Int, fullname: String, current: String, latest: String, baseline_record: String, allowed: List(String)) -> (Int, Bool):
     let baseline = union_all(recorded_footprint(baseline_record), allowed)
-    let incoming = incoming_footprint(net, host, port, fullname, latest)
-    let widened = rights.uncovered(baseline, incoming)
-    if list.length(widened) > 0:
-        print(console, "BLOCK: upgrading " + fullname + " " + current + " -> " + latest + " widens authority: " + list.join(widened, ", "))
-        print(console, "  re-run with --allow-cap " + list.join(widened, " --allow-cap ") + " to consent")
-        (0, true)
-    else:
-        (refetch(console, net, root, host, port, fullname, latest, current), false)
+    // BUG-232: the widening gate must diff against a VERIFIED footprint, not a raw
+    // `/coven/record` body. A hostile mirror could otherwise serve an under-declared
+    // (or wrong-coordinate) record to sneak the gate, then serve matching malicious
+    // source. Verify the signed record against the pinned root key and bind its
+    // coordinate before trusting its footprint; a verification failure blocks.
+    match verified_incoming_footprint(net, root, host, port, fullname, latest):
+        Err(msg) ->
+            print(console, "BLOCK: cannot verify the registry record for " + fullname + "@" + latest + " — " + msg)
+            (0, true)
+        Ok(incoming) ->
+            let widened = rights.uncovered(baseline, incoming)
+            if list.length(widened) > 0:
+                print(console, "BLOCK: upgrading " + fullname + " " + current + " -> " + latest + " widens authority: " + list.join(widened, ", "))
+                print(console, "  re-run with --allow-cap " + list.join(widened, " --allow-cap ") + " to consent")
+                (0, true)
+            else:
+                (refetch(console, net, root, host, port, fullname, latest, current), false)
 
-// The runtime footprint a registry version declares, from its signed record at
-// `/coven/record` — the incoming authority the gate diffs against the baseline.
-fn incoming_footprint(net: Net, host: String, port: Int, name: String, version: String) -> List(String):
-    let resp = http.get(net, host, port, "/coven/record?name=" + wire(name) + "&version=" + version)
-    if http.status(resp) != 200:
-        []
+// The runtime footprint a registry version declares, read from its signed record at
+// `/coven/record` ONLY AFTER the record is verified against the registry root key
+// (bound to any key pinned in the lock) and its identity is bound to the requested
+// coordinate (BUG-232/266). `Err` on any failure so the gate blocks rather than
+// trusting an unverified/under-declared footprint.
+fn verified_incoming_footprint(net: Net, root: Dir, host: String, port: Int, name: String, version: String) -> Result(List(String), String):
+    let rootpub = http.body(http.get(net, host, port, "/coven/rootpub"))
+    let pinned_pub = if exists(root, "witchy.lock"): pinned_rootpub(read(root, "witchy.lock")) else: ""
+    if pinned_pub != "" && pinned_pub != rootpub:
+        Err("registry root key does not match the key pinned in witchy.lock (possible MITM / hostile mirror)")
     else:
-        recorded_footprint(http.body(resp))
+        let resp = http.get(net, host, port, "/coven/record?name=" + wire(name) + "&version=" + version)
+        if http.status(resp) != 200:
+            Err("registry has no record")
+        else if !record_signature_valid(rootpub, http.body(resp)):
+            Err("the record is not validly signed by the registry root key")
+        else if !record_matches_coordinate(http.body(resp), name, version):
+            Err("the record identity does not match the requested coordinate")
+        else:
+            Ok(recorded_footprint(http.body(resp)))
 
 // The `runtime_footprint` array of a signed coven record (JSON), as capability strings.
 fn recorded_footprint(record: String) -> List(String):
@@ -1757,28 +1778,35 @@ fn add_pkg_gated(console: Console, net: Net, root: Dir, host: String, port: Int,
             1
         Ok(chosen) ->
             let baseline = union_all(project_baseline(root), allowed)
-            let incoming = incoming_footprint(net, host, port, name, chosen)
-            let widened = rights.uncovered(baseline, incoming)
-            if list.length(widened) > 0:
-                print(console, "BLOCKED: adding `" + name + "` would widen your project's capability footprint: " + list.join(widened, ", "))
-                print(console, "  re-run with --allow-cap " + list.join(widened, " --allow-cap ") + " to consent")
+            // BUG-232: gate on a VERIFIED, coordinate-bound record footprint.
+            match verified_incoming_footprint(net, root, host, port, name, chosen):
+                Err(msg) ->
+                    print(console, "BLOCK: cannot verify the registry record for " + name + "@" + chosen + " — " + msg)
+                    2
+                Ok(incoming) ->
+                    add_pkg_gate_widen(console, net, root, host, port, name, req, cooldown, baseline, rights.uncovered(baseline, incoming))
+
+fn add_pkg_gate_widen(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, req: String, cooldown: (Int, Int, Bool), baseline: List(String), widened: List(String)) -> Int:
+    if list.length(widened) > 0:
+        print(console, "BLOCKED: adding `" + name + "` would widen your project's capability footprint: " + list.join(widened, ", "))
+        print(console, "  re-run with --allow-cap " + list.join(widened, " --allow-cap ") + " to consent")
+        2
+    else:
+        let code = add_rune(console, net, root, host, port, name, req, "vendor", cooldown, [])
+        if code != 0:
+            code
+        else:
+            // SEC-006: re-gate on the FULL vendored closure now on disk — a
+            // transitive dep can carry a capability the direct rune's footprint
+            // never showed. Blocked here, the files stay vendored but unpinned;
+            // re-running with `--allow-cap` consents and completes the add.
+            let closure_widened = rights.uncovered(baseline, vendored_closure_footprint(root))
+            if list.length(closure_widened) > 0:
+                print(console, "BLOCKED: a dependency of `" + name + "` would widen your project's capability footprint: " + list.join(closure_widened, ", "))
+                print(console, "  re-run with --allow-cap " + list.join(closure_widened, " --allow-cap ") + " to consent to the whole dependency tree")
                 2
             else:
-                let code = add_rune(console, net, root, host, port, name, req, "vendor", cooldown, [])
-                if code != 0:
-                    code
-                else:
-                    // SEC-006: re-gate on the FULL vendored closure now on disk — a
-                    // transitive dep can carry a capability the direct rune's footprint
-                    // never showed. Blocked here, the files stay vendored but unpinned;
-                    // re-running with `--allow-cap` consents and completes the add.
-                    let closure_widened = rights.uncovered(baseline, vendored_closure_footprint(root))
-                    if list.length(closure_widened) > 0:
-                        print(console, "BLOCKED: a dependency of `" + name + "` would widen your project's capability footprint: " + list.join(closure_widened, ", "))
-                        print(console, "  re-run with --allow-cap " + list.join(closure_widened, " --allow-cap ") + " to consent to the whole dependency tree")
-                        2
-                    else:
-                        pin_lock(console, net, root, host, port, name)
+                pin_lock(console, net, root, host, port, name)
 
 // The capability authority the project already admits: its own declared runtime
 // caps (from witchy.toml, if any) plus every capability the lockfile already
@@ -2100,8 +2128,21 @@ fn fetch_source(console: Console, net: Net, root: Dir, host: String, port: Int, 
         else if !record_signature_valid(rootpub, http.body(record)):
             print(console, "BLOCK: registry record for " + name + "@" + version + " has an invalid signature — refusing to trust it")
             1
+        else if !record_matches_coordinate(http.body(record), name, version):
+            // BUG-266: the signature proves the record is authentic, not that it is the
+            // record we ASKED for. Bind the record's own `name`/`version` to the requested
+            // coordinate, so a registry/mirror cannot answer a request for `good@1.0.0`
+            // with a validly-signed record for a DIFFERENT coordinate (a mix-up/substitution
+            // that would vendor the wrong rune under this basename).
+            print(console, "BLOCK: registry returned a record for `" + recorded_field(http.body(record), "name") + "@" + recorded_field(http.body(record), "version") + "` when `" + name + "@" + version + "` was requested — refusing (coordinate mismatch)")
+            1
         else:
             fetch_verified(console, net, root, host, port, name, version, dest, http.body(record))
+
+// Whether a signed record's own identity fields match the coordinate it was fetched
+// for — the anti-substitution binding for BUG-266.
+fn record_matches_coordinate(record: String, name: String, version: String) -> Bool:
+    recorded_field(record, "name") == name && recorded_field(record, "version") == version
 
 fn fetch_verified(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, version: String, dest: String, record: String) -> Int:
     let resp = http.get(net, host, port, "/coven/source?name=" + wire(name) + "&version=" + version)
