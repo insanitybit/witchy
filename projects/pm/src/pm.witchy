@@ -147,9 +147,9 @@ fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, args
     let dir = if string.is_empty(target): "." else: target
     if exists(root, join_path(dir, "witchy.toml")):
         match lock_integrity_error(root, dir):
+            // BUG-094: refuse to link a vendored dependency whose on-disk source
+            // no longer matches its signed record — before any compile.
             Some(msg) ->
-                // BUG-094: refuse to link a vendored dependency whose on-disk source
-                // no longer matches its signed record — before any compile.
                 print(console, msg)
                 2
             None ->
@@ -183,9 +183,9 @@ fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, args
 // workspace root, and missing the project's data files (e.g. `tasks.md`).
 fn run_project(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, app_args: List(String)) -> Int:
     match lock_integrity_error(root, dir):
+        // BUG-094: verify vendored sources against their signed records before
+        // linking + running, so a tampered vendored rune never executes.
         Some(msg) ->
-            // BUG-094: verify vendored sources against their signed records before
-            // linking + running, so a tampered vendored rune never executes.
             print(console, msg)
             2
         None ->
@@ -235,8 +235,40 @@ fn compile_then_run(console: Console, runner: Exec, root: Dir, bin: Dir, dir: St
         print(console, built.1)
         built.0
     else:
-        // BUG-102: forward the program's own argv after the sandboxed wasm.
-        run_compiler(console, runner, bin, "run", flatten_argv(["sandbox", "--dir", project_data_dir(dir), wasm], app_args))
+        // BUG-406: runtime `--net <addr>` grants (forwarded by the front-end as trailing
+        // args) must sit in the sandbox-flags position (before the wasm), not as the app's
+        // own argv. BUG-102: the program's remaining argv still follows the sandboxed wasm.
+        let net_flags = runtime_net_flags(app_args)
+        let real_args = strip_net_flags(app_args)
+        let sandbox_head = flatten_argv(["sandbox", "--dir", project_data_dir(dir)], flatten_argv(net_flags, [wasm]))
+        run_compiler(console, runner, bin, "run", flatten_argv(sandbox_head, real_args))
+
+// BUG-406: extract the runtime `--net <addr>` grants from the front-end argv as a flat
+// `["--net", addr, ...]` list, so the inner sandbox run keeps the Net authority the user
+// granted (the front-end forwards them as trailing args precisely so they can be spliced back).
+fn runtime_net_flags(args: List(String)) -> List(String):
+    var out = []
+    var take = false
+    for a in args:
+        if take:
+            out = list.push(list.push(out, "--net"), a)
+            take = false
+        else if a == "--net":
+            take = true
+    out
+
+// The app's own argv with the `--net <addr>` grant pairs removed (they become sandbox flags).
+fn strip_net_flags(args: List(String)) -> List(String):
+    var out = []
+    var skip = false
+    for a in args:
+        if skip:
+            skip = false
+        else if a == "--net":
+            skip = true
+        else:
+            out = list.push(out, a)
+    out
 
 // The directory backing the program's runtime `Dir` grant — the project itself
 // (`.` when pm is run from inside the project, `<dir>` when run from a workspace
@@ -298,17 +330,17 @@ fn push_path_dep(root: Dir, dir: String, flags: List(String), pair: (String, Str
         flags
     else:
         match toml.inline_get(inline, "path"):
+            // BUG-415: a declared path dependency whose `src/` has no
+            // module is broken. Don't silently drop the `--dep` — that
+            // lets `import <name>` mis-resolve to `<consumer>/src/<name>.witchy`
+            // and fail naming the CONSUMER's tree. Point the compiler at the
+            // dependency's own conventional entry (which is missing) so the
+            // error names the actual broken dependency directory.
             Some(rel) ->
                 let dep_dir = normalize_path(join_path(dir, rel))
                 match module_in_src(root, dep_dir):
                     Some(src) -> collect_deps(root, dep_dir, dep_flag(flags, name, src))
                     None ->
-                        // BUG-415: a declared path dependency whose `src/` has no
-                        // module is broken. Don't silently drop the `--dep` — that
-                        // lets `import <name>` mis-resolve to `<consumer>/src/<name>.witchy`
-                        // and fail naming the CONSUMER's tree. Point the compiler at the
-                        // dependency's own conventional entry (which is missing) so the
-                        // error names the actual broken dependency directory.
                         dep_flag(flags, name, conventional_entry(dep_dir, name))
             None -> flags
 
@@ -1059,6 +1091,7 @@ fn cmd_why(console: Console, root: Dir, dir: String, name: String) -> Int:
             match why_path(root, dir, name, []):
                 Some(chain) -> print(console, name + " — transitive dependency (" + chain + ")")
                 None -> print(console, name + " is not a dependency of this rune (directly or transitively)")
+
         0
 
 // The dependency path from `dir` down to `target` (import names joined by ` -> `),
@@ -1258,14 +1291,15 @@ fn report_verify(console: Console, bad: List(String)) -> Int:
 //   6. each vendored registry dep's record digest is the snapshot's target digest
 fn verify_tuf(console: Console, net: Net, root: Dir, env: Env, clock: Clock, dir: String, lock: String) -> Int:
     match pinned_snapshot_version(lock):
+        // BUG-204: a malformed/hand-edited pin is a lockfile diagnostic, not an
+        // internal `string.to_int` runtime abort.
+
+        // No registry deps were added (no pinned snapshot) — nothing to verify.
         Err(msg) ->
-            // BUG-204: a malformed/hand-edited pin is a lockfile diagnostic, not an
-            // internal `string.to_int` runtime abort.
             print(console, "BLOCK: " + msg)
             2
         Ok(pinned) ->
             if pinned < 0:
-                // No registry deps were added (no pinned snapshot) — nothing to verify.
                 0
             else:
                 match parse_hostport(coven_addr(env, "")):
@@ -1708,6 +1742,9 @@ fn cmd_update(console: Console, net: Net, root: Dir, env: Env, clock: Clock, arg
     let only = list.at(positional, 0)
     let addr = coven_addr(env, list.at(positional, 1))
     match parse_hostport(addr):
+        // BUG-090: honor the staging cooldown on re-resolution (a fresh
+        // release inside its cooldown is not resolvable without --allow-fresh),
+        // the same compromised-release protection `add` applies.
         Err(m) ->
             print(console, "invalid registry address: " + m)
             1
@@ -1717,9 +1754,6 @@ fn cmd_update(console: Console, net: Net, root: Dir, env: Env, clock: Clock, arg
                 print(console, "no vendored dependencies to update")
                 0
             else:
-                // BUG-090: honor the staging cooldown on re-resolution (a fresh
-                // release inside its cooldown is not resolvable without --allow-fresh),
-                // the same compromised-release protection `add` applies.
                 let cooldown = cooldown_now(env, clock, args)
                 let manifest = if exists(root, "witchy.toml"): read(root, "witchy.toml") else: ""
                 update_vendored(console, net, root, host, port, only, allowed, cooldown, manifest)
@@ -1979,12 +2013,12 @@ fn cmd_add_pkg(console: Console, net: Net, root: Dir, env: Env, clock: Clock, ar
 // alone would miss a transitive dep's capabilities; we re-gate the whole vendored closure.
 fn add_pkg_gated(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, req: String, cooldown: (Int, Int, Bool), allowed: List(String)) -> Int:
     match resolve_version(net, host, port, name, req, cooldown):
+        // BUG-232: gate on a VERIFIED, coordinate-bound record footprint.
         Err(msg) ->
             print(console, name + ": " + msg)
             1
         Ok(chosen) ->
             let baseline = union_all(project_baseline(root), allowed)
-            // BUG-232: gate on a VERIFIED, coordinate-bound record footprint.
             match verified_incoming_footprint(net, root, host, port, name, chosen):
                 Err(msg) ->
                     print(console, "BLOCK: cannot verify the registry record for " + name + "@" + chosen + " — " + msg)
@@ -2378,6 +2412,8 @@ fn fetch_verified(console: Console, net: Net, root: Dir, host: String, port: Int
 // (coven's publish contract) are accepted.
 fn write_vendored_source(console: Console, root: Dir, dest: String, name: String, version: String, files: List((String, String)), record: String) -> Int:
     match source_files_valid(files):
+        // Keep the signed record next to the source, so the vendored rune
+        // carries its own provenance and can be re-verified offline.
         Some(msg) ->
             print(console, msg)
             1
@@ -2388,8 +2424,6 @@ fn write_vendored_source(console: Console, root: Dir, dest: String, name: String
                 let full = join_path(base, path)
                 fs.ensure_dir(root, fs.parent_dir(full))
                 write(root, full, text)
-            // Keep the signed record next to the source, so the vendored rune
-            // carries its own provenance and can be re-verified offline.
             write(root, join_path(base, "coven.json"), record)
             print(console, "added " + name + "@" + version + " -> " + base)
             0
@@ -2417,7 +2451,7 @@ fn path_shape_ok(path: String) -> Bool:
     if string.is_empty(path) || string.starts_with(path, "/") || string.contains(path, ".."):
         false
     else:
-        path == "witchy.toml" || (string.starts_with(path, "src/") && string.ends_with(path, ".witchy"))
+        path == "witchy.toml" || string.starts_with(path, "src/") && string.ends_with(path, ".witchy")
 
 fn source_files(body: String) -> List((String, String)):
     var out = []
@@ -2641,7 +2675,7 @@ fn valid_name_segment(s: String) -> Bool:
         ok
 
 fn name_char_ok(ch: String) -> Bool:
-    (ch >= "a" && ch <= "z") || (ch >= "0" && ch <= "9") || ch == "-" || ch == "_"
+    ch >= "a" && ch <= "z" || ch >= "0" && ch <= "9" || ch == "-" || ch == "_"
 
 fn scaffold_name_error(name: String) -> String:
     "invalid rune name `" + name + "`: use lowercase letters, digits, `-`, `_`, and at most one `/` for a namespace (e.g. `myrune` or `acme/myrune`)"
