@@ -204,17 +204,10 @@ fn main() -> wasmtime::Result<()> {
     // neither flag is present. The user-facing run/sandbox arg loops skip these tokens so they
     // aren't mistaken for the program file.
     {
-        let a: Vec<String> = std::env::args().collect();
-        let mode = if a.iter().any(|s| s == "--debug") {
-            Some("debug")
-        } else if a.iter().any(|s| s == "--release") {
-            Some("release")
-        } else {
-            None
-        };
+        let a: Vec<String> = std::env::args().skip(1).collect();
         // SAFETY: this runs at the very top of `main`, before any thread is spawned, so there is
         // no concurrent env access to race with (the requirement `set_var` is unsafe for).
-        if let Some(m) = mode {
+        if let Some(m) = leading_opt_mode(&a) {
             unsafe { std::env::set_var("WITCHY_OPT", m) };
         }
     }
@@ -308,6 +301,20 @@ fn main() -> wasmtime::Result<()> {
                 std::process::exit(1);
             }
         };
+        // BUG-177: honor `mode opt` like `check`/`run`/`emit` — a copy-cliff or a
+        // missing ownership convention is an error, not a silently-measured stat.
+        match link_file(&path) {
+            Ok((linked, stem)) => {
+                if let Err(e) = enforce_performance_modes(&linked, &stem) {
+                    eprintln!("witchy stats: {e}");
+                    std::process::exit(1);
+                }
+            }
+            Err(e) => {
+                eprintln!("witchy stats: {e}");
+                std::process::exit(1);
+            }
+        }
         match witchy::stats::compute(&src) {
             Ok(s) => {
                 println!("heap_bytes {}", s.heap_bytes);
@@ -859,7 +866,9 @@ fn main() -> wasmtime::Result<()> {
             }
             run_file_grants(&path, &doc, accept_grants, prog_args)
         } else if path.ends_with(".wasm") {
-            run_wasm_file(&path, dir_roots, file_grants, net_allow, prog_args, signing_key, named_secrets)
+            // `sandbox` is the strict path: a `Dir`-importing artifact needs an
+            // explicit `--dir` (BUG-106), just like the source form.
+            run_wasm_file(&path, dir_roots, file_grants, net_allow, prog_args, signing_key, named_secrets, true)
         } else {
             run_file_sandboxed(&path, dir_roots, file_grants, net_allow, prog_args, signing_key, named_secrets)
         };
@@ -1089,7 +1098,9 @@ fn main() -> wasmtime::Result<()> {
             // A precompiled program module (`witchy app.wasm`): run it directly,
             // granted exactly the authority its imports declare (Dir rooted at cwd).
             Some(path) if path.ends_with(".wasm") => {
-                match run_wasm_file(path, Vec::new(), Vec::new(), net_allow, prog_args, signing_key, named_secrets) {
+                // Dev run: default a `Dir` to the cwd (not strict) — the convenience
+                // the source `witchy <file>` run keeps.
+                match run_wasm_file(path, Vec::new(), Vec::new(), net_allow, prog_args, signing_key, named_secrets, false) {
                     Ok((lines, code)) => {
                         for line in lines {
                             println!("{line}");
@@ -1408,6 +1419,37 @@ fn load_signing_seed(path: &str) -> Result<[u8; 32], String> {
     Ok(seed)
 }
 
+/// (RFC-0037) The optimization mode a LEADING global flag selects (`--release` /
+/// `--debug`), or `None`. `args` is the argv WITHOUT the program name. Only the
+/// flags BEFORE the program file — the first `.witchy`/`.wasm` token, which is where
+/// the guest's own argv begins — are consulted: a mode flag sitting in the guest's
+/// argv must neither flip the compiler's optimization mode nor be double-consumed
+/// (BUG-108 / BUG-114). Every other global flag already obeys this "before the file"
+/// rule via the per-command arg loops; the top-of-`main` mode scan is the one that
+/// used to read the whole argv, guest args included. `--debug` wins over `--release`
+/// when both lead (maximal debuggability), matching the prior precedence.
+fn leading_opt_mode(args: &[String]) -> Option<&'static str> {
+    let mut debug = false;
+    let mut release = false;
+    for a in args {
+        if a.ends_with(".witchy") || a.ends_with(".wasm") {
+            break;
+        }
+        match a.as_str() {
+            "--debug" => debug = true,
+            "--release" => release = true,
+            _ => {}
+        }
+    }
+    if debug {
+        Some("debug")
+    } else if release {
+        Some("release")
+    } else {
+        None
+    }
+}
+
 /// The value of a `--flag value` / `--flag=value` option: the inline form if
 /// present, else the next argument. Exits with a usage error if neither is given.
 fn flag_value(arg: &str, flag: &str, rest: &mut impl Iterator<Item = String>) -> String {
@@ -1515,48 +1557,136 @@ fn execute_file_exit(
 /// A failed in-language test: its (qualified) name and the abort message.
 type TestFailure = (String, String);
 
-/// Discover and run the tests in a source file: every ZERO-parameter function
-/// named `test_*`, each invoked through a synthesized `main` in a fresh
-/// interpreter. A test passes by returning and fails by aborting (which
-/// `std/testing`'s assertions do, with a message). Tests take no capabilities,
-/// so a suite provably has no effects. Returns the failures as (name, message).
-fn run_tests_in_file(path: &str) -> Result<(Vec<String>, Vec<TestFailure>), String> {
-    use std::path::Path;
-    let (linked, _stem) = link_file(path)?;
-    typeck::check(&linked).map_err(|e| e.to_string())?;
-    // Post-link names are module-qualified (`suite.test_x`); match on the bare
-    // name, call the qualified one.
-    let tests: Vec<String> = linked
+/// Rewrite the placeholder call `witchy_test_target()` in a synthesized test-driver
+/// expression to the real (linker-qualified) test name — so the parser never has to
+/// re-read `mod.fn` as a method call. The placeholder may sit anywhere in the driver
+/// body: bare (`witchy_test_target()`), or as an argument (`task.run(
+/// witchy_test_target())`, the async driver), so this recurses through calls,
+/// method calls, and unary ops.
+fn patch_test_target(expr: &mut ast::Expr, name: &str) {
+    match expr {
+        ast::Expr::Call { name: n, args } => {
+            if n == "witchy_test_target" {
+                *n = name.to_string();
+            } else {
+                for a in args {
+                    patch_test_target(a, name);
+                }
+            }
+        }
+        ast::Expr::MethodCall { receiver, args, .. } => {
+            patch_test_target(receiver, name);
+            for a in args {
+                patch_test_target(a, name);
+            }
+        }
+        ast::Expr::Unary { expr, .. } => patch_test_target(expr, name),
+        _ => {}
+    }
+}
+
+/// The bare names of every zero-parameter `test_*` function in the UNLOWERED source,
+/// split into `(async, gen)` sets. Async lowering (`generators` too) runs during
+/// `link`, erasing `is_async`/`is_gen` and rewriting the bodies, so the linked module
+/// can no longer tell an async or generator test from a plain one — this recovers
+/// that shape from the raw parse. A parse/read failure yields empty sets (the linked
+/// module still fails to compile and is reported separately).
+fn raw_test_shapes(path: &str) -> (std::collections::HashSet<String>, std::collections::HashSet<String>) {
+    let mut async_tests = std::collections::HashSet::new();
+    let mut gen_tests = std::collections::HashSet::new();
+    if let Ok(src) = std::fs::read_to_string(path) {
+        if let Ok(module) = parser::parse_module(&src) {
+            for it in &module.items {
+                if let ast::Item::Function(f) = it {
+                    if f.name.starts_with("test_") && f.params.is_empty() {
+                        if f.is_async {
+                            async_tests.insert(f.name.clone());
+                        } else if f.is_gen {
+                            gen_tests.insert(f.name.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    (async_tests, gen_tests)
+}
+
+/// Discover and run the tests in an already-linked module (`stem` = the entry file's
+/// stem). Every ZERO-parameter function named `test_*` that the ENTRY file itself
+/// declares is invoked through a synthesized `main` in a fresh interpreter. A test
+/// passes by returning and fails by aborting (which `std/testing`'s assertions do,
+/// with a message). Tests take no capabilities, so a suite provably has no effects.
+/// `async_tests`/`gen_tests` are the bare names of the entry file's async/gen tests
+/// (from `raw_test_shapes`, since lowering erased the AST flags). Returns
+/// `(passed, failures)` where each failure is `(name, message)`.
+fn run_tests_in_module(
+    linked: &ast::Module,
+    stem: &str,
+    root: &std::path::Path,
+    async_tests: &std::collections::HashSet<String>,
+    gen_tests: &std::collections::HashSet<String>,
+) -> Result<(Vec<String>, Vec<TestFailure>), String> {
+    typeck::check(linked).map_err(|e| e.to_string())?;
+    // BUG-177: a test run honors `mode opt` like `check`/`run` — a copy-cliff or a
+    // missing ownership convention fails the run, it is not silently ignored.
+    enforce_performance_modes(linked, stem)?;
+    // Post-link names are module-qualified (`suite.test_x`); match on the bare name.
+    // BUG-185: run only the ENTRY file's OWN tests. Linking pulls an imported
+    // module's `test_*` functions into `linked` too (as `othermod.test_x`); running
+    // them here would DOUBLE-count them — they run again when that module's own file
+    // is swept. `is_entry_function` keeps just `main` + the `{stem}.`-prefixed items.
+    let tests: Vec<(String, bool, bool)> = linked
         .items
         .iter()
         .filter_map(|it| match it {
             ast::Item::Function(f)
-                if f.name.rsplit('.').next().unwrap_or(&f.name).starts_with("test_")
+                if is_entry_function(&f.name, stem)
+                    && f.name.rsplit('.').next().unwrap_or(&f.name).starts_with("test_")
                     && f.params.is_empty() =>
             {
-                Some(f.name.clone())
+                let bare = f.name.rsplit('.').next().unwrap_or(&f.name);
+                Some((f.name.clone(), async_tests.contains(bare), gen_tests.contains(bare)))
             }
             _ => None,
         })
         .collect();
-    let root = Path::new(path).parent().unwrap_or(Path::new("."));
     let mut passed = Vec::new();
     let mut failed = Vec::new();
-    for test in tests {
-        // Synthesize `fn main(): <test>()` (replacing any real main) and run.
-        // The test name is already linker-qualified (`suite.test_x`), which the
-        // parser would read as a method call — so parse a placeholder and patch
-        // the call name in the AST.
+    for (test, is_async, is_gen) in tests {
+        // BUG-184: an async/gen test's body does NOT run when the function is merely
+        // CALLED — calling an `async fn` yields a `Task` and a `gen fn` yields an
+        // iterator, both discarded, so a `fail_with` inside never fires and the test
+        // FALSELY passes. An `async fn test_*()` is already lowered (when the file was
+        // linked) to a `Task(Nil)`-returning function, so DRIVE it to completion with
+        // `task.run` — which surfaces the abort. A `gen fn` yields a sequence rather
+        // than running to completion, so it cannot be a test; report it as a failure
+        // rather than a silent pass.
+        if is_gen {
+            failed.push((
+                test,
+                "a `gen fn` cannot be run as a test — it yields a sequence instead of running to completion".to_string(),
+            ));
+            continue;
+        }
+        // Synthesize a `main` (replacing any real one) that runs the test, and run it.
+        // The test name is linker-qualified (`suite.test_x`), which the parser would
+        // read as a method call — so parse a placeholder and patch the call in the AST.
+        // `task.run` is in scope: async lowering imported `task` into a file with any
+        // `async fn`, which is exactly the case an async test needs it.
         let mut m = linked.clone();
         m.items
             .retain(|it| !matches!(it, ast::Item::Function(f) if f.name == "main"));
-        let mut driver = parser::parse_module("fn main():\n    witchy_test_target()\n")
-            .map_err(|e| e.to_string())?;
+        let driver_src = if is_async {
+            "fn main():\n    task.run(witchy_test_target())\n"
+        } else {
+            "fn main():\n    witchy_test_target()\n"
+        };
+        let mut driver = parser::parse_module(driver_src).map_err(|e| e.to_string())?;
         for it in &mut driver.items {
             if let ast::Item::Function(f) = it {
-                if let Some(ast::Stmt::Expr(ast::Expr::Call { name, .. })) = f.body.stmts.first_mut()
-                {
-                    *name = test.clone();
+                if let Some(ast::Stmt::Expr(e)) = f.body.stmts.first_mut() {
+                    patch_test_target(e, &test);
                 }
             }
         }
@@ -1567,6 +1697,20 @@ fn run_tests_in_file(path: &str) -> Result<(Vec<String>, Vec<TestFailure>), Stri
         }
     }
     Ok((passed, failed))
+}
+
+/// Link `path` and run its own tests — the single-file convenience the test suite
+/// drives. Mirrors what `run_tests` does per file (link, recover async/gen shapes,
+/// dispatch to `run_tests_in_module`).
+#[cfg(test)]
+fn run_tests_in_file(path: &str) -> Result<(Vec<String>, Vec<TestFailure>), String> {
+    let (linked, stem) = link_file(path)?;
+    let root = std::path::Path::new(path)
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .to_path_buf();
+    let (async_tests, gen_tests) = raw_test_shapes(path);
+    run_tests_in_module(&linked, &stem, &root, &async_tests, &gen_tests)
 }
 
 /// `witchy test <file|dir>`: run in-language tests, print a cargo-style
@@ -1601,17 +1745,36 @@ fn run_tests(path: &str) -> Result<bool, String> {
     let mut total_pass = 0usize;
     let mut total_fail = 0usize;
     for file in &files {
-        let (passed, failed) = match run_tests_in_file(file) {
-            Ok(r) => r,
-            // In a directory sweep, a file that can't link standalone — e.g. a
-            // module of a multi-rune project that imports a sibling rune via a
-            // path dependency — is skipped, not fatal. An explicit single file
-            // still surfaces the error.
+        // Distinguish a LINK failure from a post-link (compile) failure (BUG-120).
+        // In a directory sweep, a file that can't LINK standalone — a module of a
+        // multi-rune project that imports a sibling rune via a path dependency, which
+        // resolves no local `<import>.witchy` — is skipped, not fatal. But a file
+        // that links yet fails to TYPE-CHECK (or violates `mode opt`) is a genuinely
+        // BROKEN test file: it must FAIL the run, never be silently skipped as
+        // "ok. 0 passed". An explicit single file surfaces even a link error.
+        let (linked, stem) = match link_file(file) {
+            Ok(v) => v,
             Err(e) if meta.is_dir() => {
                 eprintln!("  skipped {file}: {e}");
                 continue;
             }
             Err(e) => return Err(e),
+        };
+        let root = std::path::Path::new(file)
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .to_path_buf();
+        let (async_tests, gen_tests) = raw_test_shapes(file);
+        let (passed, failed) = match run_tests_in_module(&linked, &stem, &root, &async_tests, &gen_tests) {
+            Ok(r) => r,
+            Err(e) => {
+                // Linked OK but broken (a type error or a `mode opt` violation): count
+                // it as a failure so the run exits non-zero (BUG-120).
+                println!("running test(s) in {file}");
+                println!("test {file} ... FAILED to compile: {e}");
+                total_fail += 1;
+                continue;
+            }
         };
         if passed.is_empty() && failed.is_empty() {
             continue;
@@ -1770,11 +1933,18 @@ fn parity_check(path: &str) -> ParityOutcome {
             return ParityOutcome::Unexpected { message: format!($($arg)*) }
         };
     }
-    let (linked, _stem) = match link_file(path) {
+    let (linked, stem) = match link_file(path) {
         Ok(v) => v,
         Err(e) => unexpected!("{e}"),
     };
     if let Err(e) = typeck::check(&linked) {
+        unexpected!("{e}");
+    }
+    // Honor `mode opt` here too (BUG-119): a copy-cliff or a missing ownership
+    // convention is a hard error under `mode opt` on every other path
+    // (check/run/sandbox/emit) — a program `check` rejects must not slip through
+    // `parity` as an "unexpected error" masquerading as a compile miss.
+    if let Err(e) = enforce_performance_modes(&linked, &stem) {
         unexpected!("{e}");
     }
     let has_main = linked
@@ -1905,8 +2075,12 @@ fn parity_check(path: &str) -> ParityOutcome {
 /// Compile a program to WebAssembly text (WAT) and return it — the same module
 /// `sandbox` would run. For inspecting and optimizing the generated code.
 fn emit_wat_file(path: &str) -> Result<String, String> {
-    let (linked, _stem) = link_file(path)?;
+    let (linked, stem) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
+    // Honor `mode opt` (BUG-163): `emit-wat` renders the SAME module `sandbox` runs,
+    // so a copy-cliff / missing-convention that `check`, `emit-wasm`, and `sandbox`
+    // reject must not be quietly rendered here (exit 0 with a copy-cliff file).
+    enforce_performance_modes(&linked, &stem)?;
     // The WIR-as-WAT: the actual module the backend encodes and runs
     // (optimization passes included), rendered back to text for inspection —
     // a display of the real WIR, not a separately generated WAT string.
@@ -1949,10 +2123,13 @@ fn run_linked_compiled(
     // (the supply-chain surface the package gate diffs); a run wants only main's row
     // — which also means a `Secret` in some unreached signing path needs no key here.
     let grant = capabilities::run_grant(linked);
-    if (grant.contains_key("Secret") || grant.contains_key("SecretStore"))
-        && signing_key.is_none()
-        && named_secrets.is_empty()
-    {
+    // Only a BARE `Secret` is unmintable without a key — a `Secret` *is* its key, so
+    // there is no empty one to hand over. A `SecretStore` with no secrets is a real,
+    // mintable capability (the interpreter mints an empty store; see
+    // `capabilities::unmintable_main_cap`), so binding one must NOT force a
+    // `--secret`. This keeps `run`/`sandbox` aligned with `parity` and both backends,
+    // which run a `main(…, SecretStore)` fine with an empty store (BUG-112).
+    if grant.contains_key("Secret") && signing_key.is_none() && named_secrets.is_empty() {
         return Err(
             "this program needs a Secret, but the host granted none (provide `--signing-key <seed-file>`, `--secret name=value`, or `--secret-file name=path`)".to_string(),
         );
@@ -2222,9 +2399,14 @@ fn run_file_grants(
         .map_err(|e| format!("cannot read `{grants_path}`: {e}"))?;
     let doc = grants::GrantDoc::parse(&doc_src)?;
 
-    // Cross-check the grant against what the code actually exercises.
-    let footprint = capabilities::analyze(&linked);
-    let check = grants::cross_check(&doc.cap_set(), &footprint.total);
+    // Cross-check the grant against what a RUN actually exercises — `main`'s own
+    // parameter row (`run_grant`), not `analyze().total` (the whole-program union
+    // over every public entry point). `total` includes a linked library's `pub fn`s
+    // (a dep's `pub fn fetch(net)`, std `crypto.sign`'s `Secret`) that this run never
+    // reaches, so cross-checking against it can reject a launch grant that is in fact
+    // exactly what `main` receives — a wrongly-refused, valid grant (BUG-016).
+    let needed = capabilities::run_grant(&linked);
+    let check = grants::cross_check(&doc.cap_set(), &needed);
     if !check.over_grant.is_empty() {
         eprintln!(
             "warning: grant `{grants_path}` over-requests {} \u{2014} the code never exercises it",
@@ -2259,7 +2441,14 @@ fn run_file_grants(
     net_allow.dedup();
     let mut named_secrets: Vec<runtime::SecretGrant> = Vec::new();
     for (name, s) in &doc.secrets {
-        named_secrets.push(runtime::SecretGrant::new(name.clone(), resolve_secret_from(&s.from)?));
+        // BUG-146: carry the document's `use-only` modifier through to the runtime
+        // grant — otherwise a grant that declares a signing/TLS key as unrevealable
+        // was silently lowered to a revealable secret (`crypto.reveal` would leak it).
+        named_secrets.push(runtime::SecretGrant {
+            name: name.clone(),
+            bytes: resolve_secret_from(&s.from)?,
+            use_only: s.use_only,
+        });
     }
     if let Some(ast::Item::Function(main)) =
         linked.items.iter().find(|it| matches!(it, ast::Item::Function(f) if f.name == "main"))
@@ -2357,6 +2546,7 @@ fn witchy_imports(bytes: &[u8]) -> Result<Vec<String>, String> {
 /// concrete roots; a module that imports a host op it is not granted simply fails
 /// to instantiate. This is the Tier-1 distribution runner: ship the `.wasm`, run
 /// it with `witchy`.
+#[allow(clippy::too_many_arguments)]
 fn run_wasm_file(
     path: &str,
     dir_roots: Vec<std::path::PathBuf>,
@@ -2365,13 +2555,78 @@ fn run_wasm_file(
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<runtime::SecretGrant>,
+    strict_dir: bool,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
-    run_wasm_module(&bytes, dir_roots, file_grants, net_allow, args, signing_key, named_secrets)
+    run_wasm_module(&bytes, dir_roots, file_grants, net_allow, args, signing_key, named_secrets, strict_dir)
+}
+
+/// Detect, from a compiled wasm program, whether its `main` returns an `Int` — so
+/// the process boundary can turn the value into the EXIT CODE rather than printing
+/// it (BUG-104). The `run` wrapper codegen emits for an Int-returning `main` is
+/// `call $main; call $print_int`; no other `run` shape calls the `print_int` import
+/// (a program that itself prints an int does so inside `$main`, a different
+/// function). So: the `run` export's body calls the `witchy.print_int` import iff
+/// `main` returns `Int`. A malformed module (never produced by our codegen) reads as
+/// "no" — the value simply stays a trailing line, the pre-fix behavior.
+fn wasm_main_returns_int(bytes: &[u8]) -> bool {
+    use wasmparser::{ExternalKind, Operator, Parser, Payload, TypeRef};
+    let mut func_imports = 0u32;
+    let mut print_int_index: Option<u32> = None;
+    let mut run_index: Option<u32> = None;
+    let mut code_pos = 0u32;
+    for payload in Parser::new(0).parse_all(bytes) {
+        let Ok(payload) = payload else { return false };
+        match payload {
+            Payload::ImportSection(reader) => {
+                for imp in reader.into_imports() {
+                    let Ok(imp) = imp else { return false };
+                    if let TypeRef::Func(_) = imp.ty {
+                        if imp.module == "witchy" && imp.name == "print_int" {
+                            print_int_index = Some(func_imports);
+                        }
+                        func_imports += 1;
+                    }
+                }
+            }
+            Payload::ExportSection(reader) => {
+                for ex in reader {
+                    let Ok(ex) = ex else { return false };
+                    if ex.kind == ExternalKind::Func && ex.name == "run" {
+                        run_index = Some(ex.index);
+                    }
+                }
+            }
+            Payload::CodeSectionEntry(body) => {
+                // Code entries stream in order; the i-th is defined function index
+                // `func_imports + i`. Only the `run` wrapper's body is inspected.
+                let this_func = func_imports + code_pos;
+                code_pos += 1;
+                if Some(this_func) == run_index {
+                    let (Some(pi), Ok(reader)) = (print_int_index, body.get_operators_reader()) else {
+                        continue;
+                    };
+                    for op in reader {
+                        if let Ok(Operator::Call { function_index }) = op {
+                            if function_index == pi {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Run a precompiled wasm program from in-memory bytes under the capability
-/// sandbox — the byte-level core of [`run_wasm_file`].
+/// sandbox — the byte-level core of [`run_wasm_file`]. `strict_dir` mirrors the
+/// source path: an announced/strict launch (`witchy sandbox`) requires an explicit
+/// `--dir` when the module imports a `Dir` host op, while the dev `witchy <app.wasm>`
+/// path defaults a `Dir` to the cwd.
+#[allow(clippy::too_many_arguments)]
 fn run_wasm_module(
     bytes: &[u8],
     dir_roots: Vec<std::path::PathBuf>,
@@ -2380,6 +2635,7 @@ fn run_wasm_module(
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<runtime::SecretGrant>,
+    strict_dir: bool,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     use crate::runtime::{Capabilities, Runtime};
     let needs = witchy_imports(bytes)?;
@@ -2424,6 +2680,15 @@ fn run_wasm_module(
     if dir_read || dir_write {
         let mut roots = dir_roots;
         if roots.is_empty() {
+            // Deny by omission (BUG-106): a strict/announced launch (`witchy sandbox
+            // app.wasm`) must NOT silently hand a `Dir`-importing module the whole
+            // cwd — require an explicit `--dir`, exactly as the source `sandbox` path
+            // does. Only the dev `witchy <app.wasm>` path keeps the cwd default.
+            if strict_dir {
+                return Err(
+                    "this module requires a `Dir`, but no subtree was granted (use `--dir <root>`)".to_string(),
+                );
+            }
             roots.push(std::path::PathBuf::from("."));
         }
         caps.dir_root = Some(roots.remove(0));
@@ -2451,10 +2716,18 @@ fn run_wasm_module(
         .spawn(bytes, caps, RUN_MEMORY_PAGES)
         .map_err(|e| e.to_string())?;
     vm.run().map_err(|e| e.root_cause().to_string())?;
-    // We can't see `main`'s return type from a bare binary, so an Int `main`'s
-    // value surfaces as a trailing output line rather than the process exit code
-    // (the source runners pop it because they have the AST). Acceptable for Tier 1.
-    Ok((vm.output(), None))
+    // An Int-returning `main` surfaces its value as the final `print_int` line of the
+    // `run` wrapper. We can't read the AST here, but we CAN see that shape in the
+    // wasm itself (`wasm_main_returns_int`), so pop the trailing line and use it as
+    // the process EXIT CODE — matching the source runners (BUG-104). A non-Int `main`
+    // leaves its output untouched.
+    let mut lines = vm.output();
+    let exit_code = if wasm_main_returns_int(bytes) {
+        lines.pop().and_then(|s| s.parse::<i32>().ok())
+    } else {
+        None
+    };
+    Ok((lines, exit_code))
 }
 
 /// Compile a `.witchy` program to a wasm binary and write it to `out`. The
@@ -2558,8 +2831,25 @@ fn run_wasm_bytes(bytes: &[u8]) -> Result<Vec<String>, String> {
 
 /// Read, parse, and compute the host-capability footprint of a source file.
 fn analyze_file(path: &str) -> Result<capabilities::Footprint, String> {
+    // BUG-179: a footprint computed over code that doesn't type-check is meaningless
+    // (an undefined-function call, a type error). Link + type-check the whole program
+    // first, so `caps`/`caps-diff` refuse a source that `check` would reject rather
+    // than reporting a footprint for it.
+    let (linked, _stem) = link_file(path)?;
+    typeck::check(&linked).map_err(|e| e.to_string())?;
+    // Report the footprint of the ENTRY file's own items (unprefixed names, matching
+    // the existing per-function output) — but with its `comptime:` blocks EXPANDED
+    // (BUG-178). A `comptime:` block that `emit`s `pub fn generated(net: Net)` adds a
+    // real capability-bearing API; `capabilities::analyze` treats generated code
+    // exactly like handwritten code, so it must see the expanded items. This is the
+    // same additive per-module pass the linker runs, applied to the single module.
     let src = std::fs::read_to_string(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
-    let module = parser::parse_module(&src).map_err(|e| e.to_string())?;
+    let mut module = parser::parse_module(&src).map_err(|e| e.to_string())?;
+    let stem = std::path::Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(path);
+    comptime::expand(stem, &mut module).map_err(|e| format!("{path}: {e}"))?;
     Ok(capabilities::analyze(&module))
 }
 
@@ -2678,7 +2968,24 @@ fn report_capability_diff(old_path: &str, new_path: &str) -> Result<bool, String
             join(&d.refinements_gained)
         );
     }
+    if !old.user_caps.is_empty() || !new.user_caps.is_empty() {
+        println!("  user caps +: {}", join(&d.user_caps_added));
+        println!("  user caps -: {}", join(&d.user_caps_removed));
+    }
     let mut flagged = false;
+    if !d.user_caps_added.is_empty() {
+        // A new grantable (user) capability carries no host authority, but it IS a
+        // widening: `main` now receives a policy token it did not before, expanding
+        // the policy TCB — and `FootprintDiff::widened` counts it, so the exit code
+        // is 2. Surface it in the message too, so the two agree (BUG-314): previously
+        // this printed "OK: no widening" yet exited 2.
+        println!(
+            "USER-CAP WIDENING: the newer version's `main` receives new grantable capabilities ({}). \
+             They confer no host authority but widen the policy TCB — review before trusting.",
+            join(&d.user_caps_added)
+        );
+        flagged = true;
+    }
     if d.build_widened() {
         // The high-signal supply-chain event: build-time execution is outside the
         // consumer's type-checked call graph, so a new build cap is the thing the
@@ -2743,6 +3050,34 @@ fn report_grant_check(prog_path: &str, grants_path: &str) -> Result<bool, String
         );
     }
     Ok(!check.sufficient())
+}
+
+/// BUG-108 / BUG-114: the global mode selector (`--release`/`--debug`) is a LEADING
+/// flag; a mode flag in the guest's argv (after the program file) must not flip the
+/// compiler's optimization mode nor be double-consumed.
+#[cfg(test)]
+mod cli_flag_tests {
+    use super::leading_opt_mode;
+
+    fn argv(args: &[&str]) -> Vec<String> {
+        args.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn mode_flags_before_the_file_are_global() {
+        assert_eq!(leading_opt_mode(&argv(&["--release", "foo.witchy"])), Some("release"));
+        assert_eq!(leading_opt_mode(&argv(&["--debug", "sandbox", "foo.witchy"])), Some("debug"));
+        // `--debug` wins over `--release` when both lead (maximal debuggability).
+        assert_eq!(leading_opt_mode(&argv(&["--release", "--debug", "foo.witchy"])), Some("debug"));
+    }
+
+    #[test]
+    fn mode_flags_in_guest_argv_are_ignored() {
+        assert_eq!(leading_opt_mode(&argv(&["foo.witchy", "--release"])), None);
+        assert_eq!(leading_opt_mode(&argv(&["app.wasm", "--debug", "hello"])), None);
+        assert_eq!(leading_opt_mode(&argv(&["foo.witchy"])), None);
+        assert_eq!(leading_opt_mode(&argv(&[])), None);
+    }
 }
 
 /// End-to-end coverage: every shipped example must type-check and produce the
