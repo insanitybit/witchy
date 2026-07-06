@@ -205,7 +205,7 @@ fn runs_in_browser(code: String) -> Bool:
 
 fn names_denied_capability(code: String) -> Bool:
     var found = false
-    for cap in ["Dir", "Net", "File", "Secret", "Clock", "Exec", "UiRoot", "UiFetch", "UiRoute", "UiTimer", "CredentialPort", "SecretInput", "SecretRef"]:
+    for cap in ["Dir", "Net", "File", "Secret", "SecretStore", "Clock", "Rand", "Env", "Exec", "UiRoot", "UiFetch", "UiRoute", "UiTimer", "CredentialPort", "SecretInput", "SecretRef"]:
         if string.contains(code, cap):
             found = true
     found
