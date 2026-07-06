@@ -480,14 +480,14 @@ impl Codegen {
             }
             // RFC-0012 File ops. `read(File)` is arity 1 (a leaf, no path) and goes
             // through the `file_read` WIR helper; `write(File, data)` is arity 2.
-            // `open`/`create` navigate a Dir to a confined File handle.
+            // `open`/`create` navigate a Dir to a confined File externref.
             ("read", 1) => call("file_read", self.lower_args(&[&args[0]])?),
             ("write", 2) => {
                 let a = self.lower_args(&[&args[0], &args[1]])?;
                 if self.collect_wir { call("file_write", a) } else { nil0(host("file_write_host", a)) }
             }
             // RFC-0012 `dir.read_file`/`dir.write_file` navigate a Dir to a confined
-            // File handle (the internal host ops keep their `dir_open`/`dir_create` names).
+            // File externref (the internal host ops keep their `dir_open`/`dir_create` names).
             ("read_file", 2) => {
                 let a = self.lower_args(&[&args[0], &args[1]])?;
                 if self.collect_wir { call("dir_open", a) } else { host("dir_open_host", a) }

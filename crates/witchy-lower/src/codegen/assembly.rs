@@ -694,6 +694,9 @@ pub fn assemble_wir_module(
             } else if main_returns_float {
                 import_names.insert("print_float");
             }
+            if main_param_is_file.iter().any(|is_file| *is_file) {
+                import_names.insert("mint_file");
+            }
             // (RFC-0045) A user `fail(msg)` calls `__witchy_abort` directly (its
             // import_deps aren't consulted because it's not a registry helper), so
             // declare the import when user code reaches it.
@@ -742,10 +745,10 @@ pub fn assemble_wir_module(
                 pruned_funcs.push(cg.wir_funcs.get(name).expect("lowered above").clone());
             }
             // Each `Dir` param maps to a distinct host handle in declaration order
-            // (0, 1, 2, …) so a `main` taking several `Dir`s gets several grants;
-            // each `File` param maps to a file handle in declaration order (the host
-            // pre-populates the files table from `--file` grants, RFC-0012); every
-            // other cap is a right-less placeholder (handle 0).
+            // (0, 1, 2, …) so a `main` taking several `Dir`s gets several grants.
+            // Each `File` param is minted from the corresponding direct `--file`
+            // grant as an unforgeable externref (RFC-0005 Stage 2); every other cap
+            // is a right-less placeholder (handle 0).
             let mut dir_handle = 0i32;
             let mut file_handle = 0i32;
             let mut user_cap_ord = 0i32;
@@ -757,7 +760,10 @@ pub fn assemble_wir_module(
                     main_args.push(WirExpr::ConstI32(dir_handle));
                     dir_handle += 1;
                 } else if main_param_is_file.get(i).copied().unwrap_or(false) {
-                    main_args.push(WirExpr::ConstI32(file_handle));
+                    main_args.push(WirExpr::CallHost {
+                        import: "mint_file".into(),
+                        args: vec![WirExpr::ConstI32(file_handle)],
+                    });
                     file_handle += 1;
                 } else if let Some((tn, nfields)) = main_param_user_cap.get(i).cloned().flatten() {
                     // RFC-0038: mint the sealed record from the grant —

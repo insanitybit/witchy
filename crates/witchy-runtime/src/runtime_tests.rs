@@ -23,6 +23,13 @@
         (module (memory (export "memory") 4) (func (export "run")))
     "#;
 
+    const NULL_FILE_READ: &str = r#"
+        (module
+          (import "witchy" "file_read_len" (func $file_read_len (param externref) (result i32)))
+          (func (export "run")
+            (drop (call $file_read_len (ref.null extern)))))
+    "#;
+
     /// The core thesis: a capability that was not granted simply does not exist
     /// for the VM, so it cannot even be instantiated.
     #[test]
@@ -71,6 +78,38 @@
         assert!(
             err.to_string().contains("memory"),
             "expected a memory-limit error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn null_file_externref_is_rejected() {
+        let path = std::env::temp_dir().join(format!(
+            "witchy-null-file-externref-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, "host-owned").unwrap();
+
+        let mut rt = Runtime::new().unwrap();
+        let mut vm = rt
+            .spawn(
+                NULL_FILE_READ,
+                Capabilities {
+                    file_grants: vec![path.clone()],
+                    ..Default::default()
+                },
+                4,
+            )
+            .unwrap();
+        let err = vm.run().unwrap_err();
+        let _ = std::fs::remove_file(path);
+        let detail = format!("{err:?}");
+        assert!(
+            detail.contains("File externref is null"),
+            "expected null File externref rejection, got: {detail}"
         );
     }
 

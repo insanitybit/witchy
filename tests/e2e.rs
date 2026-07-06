@@ -3790,6 +3790,55 @@ fn grant_document_run_binds_by_name_and_cross_checks() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// RFC-0005 Stage 2 / RFC-0012: direct `--file` grants are minted as File
+/// externrefs in the compiled sandbox path, for both read and write leaf ops.
+#[test]
+fn sandbox_direct_file_grants_read_and_write() {
+    let dir = unique("filegrant");
+    let input = dir.join("input.txt");
+    let output = dir.join("output.txt");
+    std::fs::write(&input, "direct-read").unwrap();
+
+    let read_prog = dir.join("read.witchy");
+    std::fs::write(
+        &read_prog,
+        "fn main(console: Console, config: File[Read]):\n    print(console, read(config))\n",
+    )
+    .unwrap();
+    let out = Command::new(BIN)
+        .args(["sandbox", "--file", input.to_str().unwrap(), read_prog.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "direct --file read failed: {}\n{}",
+        stderr(&out),
+        stdout(&out)
+    );
+    assert!(stdout(&out).contains("direct-read"), "got: {}", stdout(&out));
+
+    let write_prog = dir.join("write.witchy");
+    std::fs::write(
+        &write_prog,
+        "fn main(console: Console, log: File[Write]):\n    write(log, \"direct-write\")\n    print(console, \"wrote\")\n",
+    )
+    .unwrap();
+    let out = Command::new(BIN)
+        .args(["sandbox", "--file", output.to_str().unwrap(), write_prog.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "direct --file write failed: {}\n{}",
+        stderr(&out),
+        stdout(&out)
+    );
+    assert!(stdout(&out).contains("wrote"), "got: {}", stdout(&out));
+    assert_eq!(std::fs::read_to_string(&output).unwrap(), "direct-write");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// SEC-009 regression: `witchy sandbox` for a `Dir`-binding `main` must FAIL CLOSED
 /// when no `--dir` is granted (deny by omission) rather than silently defaulting to
 /// the cwd — exactly as a `File`-binding `main` requires `--file`. An explicit

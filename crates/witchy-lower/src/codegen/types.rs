@@ -84,6 +84,11 @@ impl Codegen {
             Expr::Call { name, args } if (name == "__erase" || name == "__unerase") && args.len() == 1 => {
                 self.kind_of(&args[0])
             }
+            // RFC-0012/RFC-0005 Stage 2: Dir navigation yields an unforgeable File
+            // externref, not an integer handle.
+            Expr::Call { name, args } if (name == "read_file" || name == "write_file") && args.len() == 2 => {
+                Kind::ExternRef
+            }
             Expr::Call { name, .. } => match name.as_str() {
                 "math.to_float" => Kind::F64,
                 "math.to_int" | "string.length" | "string.char_count" | "string.find"

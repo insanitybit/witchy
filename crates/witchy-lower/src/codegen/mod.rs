@@ -162,11 +162,14 @@ const ENV_PARAM: &str = "__witchy_env";
 ///   * `F64` — `Float`.
 ///   * `I32` — concrete pointers (strings/lists/records/closures/capabilities)
 ///     and `Bool`. These are the wasm32 address width.
+///   * `ExternRef` — migrated unforgeable capabilities (`File` in RFC-0005 Stage
+///     2). These must not cross the universal slot or linear-memory heap.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     I32,
     I64,
     F64,
+    ExternRef,
 }
 
 fn ty_kind(t: &Type) -> Kind {
@@ -179,6 +182,7 @@ fn ty_kind(t: &Type) -> Kind {
     match t {
         Type::Named(n, _) if n == "Float" => Kind::F64,
         Type::Named(n, _) if n == "Int" || n == "Duration" => Kind::I64,
+        Type::Named(n, _) if n == "File" => Kind::ExternRef,
         _ => Kind::I32,
     }
 }
@@ -317,9 +321,12 @@ impl EqShape {
 }
 
 /// The common kind two numeric operands/branches promote to: f64 if either is
-/// Float, else i64 if either is i64 (a concrete Int), else i32.
+/// Float, else i64 if either is i64 (a concrete Int), else i32. An externref can
+/// only merge with another externref; typeck should prevent mixed scalar/ref arms.
 fn promote_kind(a: Kind, b: Kind) -> Kind {
-    if a == Kind::F64 || b == Kind::F64 {
+    if a == Kind::ExternRef && b == Kind::ExternRef {
+        Kind::ExternRef
+    } else if a == Kind::F64 || b == Kind::F64 {
         Kind::F64
     } else if a == Kind::I64 || b == Kind::I64 {
         Kind::I64
@@ -2480,6 +2487,7 @@ impl Codegen {
                             Kind::I64 => W::ConstI64(0),
                             Kind::F64 => W::ConstF64(0.0),
                             Kind::I32 => W::ConstI32(0),
+                            Kind::ExternRef => W::RefNull(witchy_wir::wir::Kind::ExternRef),
                         },
                     };
                     if self.cur_fn_var_params.is_empty() && self.cur_fn_own_param.is_none() {
@@ -3396,6 +3404,7 @@ impl Codegen {
             Kind::I32 => witchy_wir::wir::Kind::I32,
             Kind::I64 => witchy_wir::wir::Kind::I64,
             Kind::F64 => witchy_wir::wir::Kind::F64,
+            Kind::ExternRef => witchy_wir::wir::Kind::ExternRef,
         }
     }
 
@@ -3406,6 +3415,7 @@ impl Codegen {
             Kind::I64 => witchy_wir::wir::WirTy::Int,
             Kind::F64 => witchy_wir::wir::WirTy::Float,
             Kind::I32 => witchy_wir::wir::WirTy::Bool,
+            Kind::ExternRef => witchy_wir::wir::WirTy::Extern,
         }
     }
 
@@ -5117,6 +5127,7 @@ impl Codegen {
                     Kind::I64 => W::ConstI64(0),
                     Kind::F64 => W::ConstF64(0.0),
                     Kind::I32 => W::ConstI32(0),
+                    Kind::ExternRef => W::RefNull(witchy_wir::wir::Kind::ExternRef),
                 };
                 // The Err path early-returns the Err Result. In an var/own-ABI
                 // fn the return must carry the full multi-result tuple (the Err

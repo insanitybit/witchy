@@ -639,14 +639,16 @@ pub(crate) fn link_capability_imports(
         linker.func_wrap("witchy", "dir_exists", host_dir_exists)?;
         linker.func_wrap("witchy", "dir_is_dir", host_dir_is_dir)?;
         linker.func_wrap("witchy", "dir_list_size", host_dir_list_size)?;
-        // RFC-0012: `dir.open` navigates a readable Dir to a File handle.
+        // RFC-0012/RFC-0005 Stage 2: `dir.open` navigates a readable Dir to a
+        // File externref.
         linker.func_wrap("witchy", "dir_open", host_dir_open)?;
     }
     if caps.dir_root.is_some() && caps.dir_write {
         linker.func_wrap("witchy", "dir_write", host_dir_write)?;
         linker.func_wrap("witchy", "dir_append", host_dir_append)?;
         linker.func_wrap("witchy", "dir_make_dir", host_dir_make_dir)?;
-        // RFC-0012: `dir.create` navigates a writable Dir to a File handle.
+        // RFC-0012/RFC-0005 Stage 2: `dir.create` navigates a writable Dir to a
+        // File externref.
         linker.func_wrap("witchy", "dir_create", host_dir_create)?;
     }
     // RFC-0012 File leaf ops: usable on a File obtained by navigation (above) OR
@@ -1315,14 +1317,27 @@ fn host_dir_only(mut caller: Caller<'_, VmState>, h: i32, policy_ptr: i32) -> Re
     Ok((dirs.len() - 1) as i32)
 }
 
-/// Look up a `File` handle's confined path (trap on a forged/out-of-range handle).
+/// Look up a direct `--file` grant by ordinal while minting the root `File`
+/// externref for `main`. This ordinal never crosses into guest code.
 fn file_path(caller: &Caller<'_, VmState>, f: i32) -> Result<std::path::PathBuf> {
     caller
         .data()
         .files
         .get(f as usize)
         .cloned()
-        .ok_or_else(|| Error::msg(format!("invalid File handle {f}")))
+        .ok_or_else(|| Error::msg(format!("invalid File grant index {f}")))
+}
+
+/// Recover the confined host path carried by a guest `File` value. A valid guest
+/// value is an opaque `externref` minted by `mint_file` or `dir_open/create`; there
+/// is no guest-side integer handle to forge or swap.
+fn file_path_ref(caller: &Caller<'_, VmState>, f: Option<Rooted<ExternRef>>) -> Result<std::path::PathBuf> {
+    let f = f.ok_or_else(|| Error::msg("File externref is null"))?;
+    f.data(caller)?
+        .ok_or_else(|| Error::msg("File externref has no host data"))?
+        .downcast_ref::<std::path::PathBuf>()
+        .cloned()
+        .ok_or_else(|| Error::msg("File externref has wrong host data"))
 }
 
 /// (RFC-0005 Stage 2) `mint_file(i) -> externref` — mint an unforgeable `File`
@@ -1333,43 +1348,39 @@ fn file_path(caller: &Caller<'_, VmState>, f: i32) -> Result<std::path::PathBuf>
 /// the backing grant for as long as the guest holds it (the GC keeps host data
 /// alive while a live wasm frame references the `externref`), so no separate
 /// index table survives it (§8.9).
-fn host_mint_file(mut caller: Caller<'_, VmState>, i: i32) -> Result<Rooted<ExternRef>> {
+fn host_mint_file(mut caller: Caller<'_, VmState>, i: i32) -> Result<Option<Rooted<ExternRef>>> {
     let path = file_path(&caller, i)?;
-    ExternRef::new(&mut caller, path)
+    ExternRef::new(&mut caller, path).map(Some)
 }
 
-/// `dir_open(h, rel) -> file handle` (RFC-0012): open an existing file confined to
-/// Dir handle `h`, minting a `File` handle. `dir_create` is the write counterpart
-/// (the target need not exist yet).
-fn host_dir_open(mut caller: Caller<'_, VmState>, h: i32, rel_ptr: i32) -> Result<i32> {
+/// `dir_open(h, rel) -> File` (RFC-0012/RFC-0005 Stage 2): open an existing file
+/// confined to Dir handle `h`, minting an unforgeable `File` externref.
+/// `dir_create` is the write counterpart (the target need not exist yet).
+fn host_dir_open(mut caller: Caller<'_, VmState>, h: i32, rel_ptr: i32) -> Result<Option<Rooted<ExternRef>>> {
     let mem = memory_of(&mut caller)?;
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
     dir_guard(&caller, h, &rel, false)?;
     let base = dir_base(&caller, h)?;
     let path = confine(crate::confine::resolve(&base, &rel))?;
-    let files = &mut caller.data_mut().files;
-    files.push(path);
-    Ok((files.len() - 1) as i32)
+    ExternRef::new(&mut caller, path).map(Some)
 }
 
-/// `dir_create(h, rel) -> file handle`: like `dir_open` but for a not-yet-existing
-/// target (confined via its parent, like `dir_write`).
-fn host_dir_create(mut caller: Caller<'_, VmState>, h: i32, rel_ptr: i32) -> Result<i32> {
+/// `dir_create(h, rel) -> File`: like `dir_open` but for a not-yet-existing target
+/// (confined via its parent, like `dir_write`).
+fn host_dir_create(mut caller: Caller<'_, VmState>, h: i32, rel_ptr: i32) -> Result<Option<Rooted<ExternRef>>> {
     let mem = memory_of(&mut caller)?;
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
     dir_guard(&caller, h, &rel, false)?;
     let base = dir_base(&caller, h)?;
     let path = confine(crate::confine::resolve_write(&base, &rel))?;
-    let files = &mut caller.data_mut().files;
-    files.push(path);
-    Ok((files.len() - 1) as i32)
+    ExternRef::new(&mut caller, path).map(Some)
 }
 
-/// `file_read_len(f) -> byte length`: read the confined file handle NOW, stage its
+/// `file_read_len(f) -> byte length`: read the confined File externref NOW, stage its
 /// bytes, and report the length; the guest allocates and calls `fill_pending`.
 /// Mirrors `dir_read_len`, but a `File` is a leaf so there is no path argument.
-fn host_file_read_len(mut caller: Caller<'_, VmState>, f: i32) -> Result<i32> {
-    let path = file_path(&caller, f)?;
+fn host_file_read_len(mut caller: Caller<'_, VmState>, f: Option<Rooted<ExternRef>>) -> Result<i32> {
+    let path = file_path_ref(&caller, f)?;
     let contents = std::fs::read_to_string(&path)
         .map_err(|e| Error::msg(format!("read failed for `{}`: {e}", path.display())))?;
     let len = contents.len() as i32;
@@ -1377,11 +1388,16 @@ fn host_file_read_len(mut caller: Caller<'_, VmState>, f: i32) -> Result<i32> {
     Ok(len)
 }
 
-/// `file_write(f, contents)`: write a confined file handle (RFC-0012).
-fn host_file_write(mut caller: Caller<'_, VmState>, f: i32, contents_ptr: i32) -> Result<()> {
+/// `file_write(f, contents)`: write a confined File externref
+/// (RFC-0012/RFC-0005 Stage 2).
+fn host_file_write(
+    mut caller: Caller<'_, VmState>,
+    f: Option<Rooted<ExternRef>>,
+    contents_ptr: i32,
+) -> Result<()> {
     let mem = memory_of(&mut caller)?;
     let contents = read_wstr(mem.data(&caller), contents_ptr)?;
-    let path = file_path(&caller, f)?;
+    let path = file_path_ref(&caller, f)?;
     std::fs::write(&path, contents)
         .map_err(|e| Error::msg(format!("write failed for `{}`: {e}", path.display())))
 }

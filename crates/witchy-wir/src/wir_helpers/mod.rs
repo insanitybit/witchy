@@ -3441,8 +3441,9 @@ pub fn dir_read_helper() -> WirFunc {
     }
 }
 
-/// `$file_read(f) -> i32` — the contents of file handle `f` as a String (RFC-0012).
-/// A `File` is a leaf (no path), so this takes only the handle. Two-phase host
+/// `$file_read(f) -> i32` — the contents of file capability `f` as a String
+/// (RFC-0012/RFC-0005 Stage 2). A `File` is a leaf (no path), so this takes only
+/// the unforgeable externref. Two-phase host
 /// protocol identical to [`dir_read_helper`]: `file_read_len` reads the file and
 /// reports its byte length (staging the bytes host-side), then `fill_pending`
 /// copies the staged bytes into `res+4`. Needs a `File[Read]` capability.
@@ -3454,7 +3455,7 @@ pub fn file_read_helper() -> WirFunc {
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     WirFunc {
         name: "file_read".into(),
-        params: vec![WirLocal { name: "f".into(), ty: WirTy::Bool }],
+        params: vec![WirLocal { name: "f".into(), ty: WirTy::Extern }],
         ret: vec![WirTy::Str],
         locals: vec![
             WirLocal { name: "len".into(), ty: WirTy::Bool },
@@ -3948,6 +3949,29 @@ fn host_void_helper(name: &str, import: &str, nargs: usize) -> WirFunc {
     }
 }
 
+/// Like [`host_void_helper`] but with explicit per-parameter types.
+fn host_void_helper_typed(name: &str, import: &str, param_tys: &[WirTy]) -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let params: Vec<WirLocal> = param_tys
+        .iter()
+        .enumerate()
+        .map(|(i, ty)| WirLocal { name: format!("a{i}"), ty: ty.clone() })
+        .collect();
+    let host_args: Vec<E> = (0..param_tys.len()).map(|i| E::GetLocal(format!("a{i}"))).collect();
+    WirFunc {
+        name: name.into(),
+        params,
+        ret: vec![WirTy::Bool],
+        locals: vec![],
+        body: vec![
+            N::Do(E::CallHost { import: import.into(), args: host_args }),
+            N::Push(E::ConstI32(0)),
+        ],
+        raw_body: None,
+    }
+}
+
 /// `$net_recv_<kind>(s: i32 [, n: i64]) -> i32` — read a length-prefixed string off
 /// socket `s`: ask the host for the byte count (`$<len_import>`), `$ensure` room, write
 /// the `[len]` header, `$fill_pending` the bytes into the buffer, bump `$heap` past the
@@ -4411,25 +4435,25 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
-        // RFC-0012: `dir.open`/`dir.create` navigate a Dir to a confined File
-        // handle (i32); `file_write` writes a File handle (void). Each wraps its
-        // host import so user code stays free of direct CallHosts.
+        // RFC-0012/RFC-0005 Stage 2: `dir.open`/`dir.create` navigate a Dir to a
+        // confined File externref; `file_write` consumes that externref. Each wraps
+        // its host import so user code stays free of direct CallHosts.
         "dir_open" => Some(WirHelperSpec {
-            func: host_call_helper("dir_open", "dir_open", 2),
+            func: host_call_helper_typed("dir_open", "dir_open", &[WirTy::Bool, WirTy::Str], WirTy::Extern),
             helper_deps: &[],
             import_deps: &["dir_open"],
             uses_heap: false,
             uses_table: false,
         }),
         "dir_create" => Some(WirHelperSpec {
-            func: host_call_helper("dir_create", "dir_create", 2),
+            func: host_call_helper_typed("dir_create", "dir_create", &[WirTy::Bool, WirTy::Str], WirTy::Extern),
             helper_deps: &[],
             import_deps: &["dir_create"],
             uses_heap: false,
             uses_table: false,
         }),
         "file_write" => Some(WirHelperSpec {
-            func: host_void_helper("file_write", "file_write", 2),
+            func: host_void_helper_typed("file_write", "file_write", &[WirTy::Extern, WirTy::Str]),
             helper_deps: &[],
             import_deps: &["file_write"],
             uses_heap: false,
@@ -5021,4 +5045,3 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }
     }
 }
-

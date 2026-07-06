@@ -79,6 +79,13 @@
         )
         .unwrap_err();
         assert!(err.contains("export_step") && err.contains("grantable"), "{err}");
+        // A migrated host capability such as `File` is not a grantable UI cap and
+        // has no export-wrapper minting ABI in RFC-0005 Stage 2.
+        let file = check_str(
+            "pub fn export_step(f: File, input: String) -> String:\n    input\n"
+        )
+        .unwrap_err();
+        assert!(file.contains("export_step") && file.contains("File") && file.contains("grantable"), "{file}");
         // A plain single-String export is unaffected.
         assert!(check_str("pub fn export_step(input: String) -> String:\n    input\n").is_ok());
     }
@@ -245,13 +252,39 @@
             .expect_err("Dict(_, File) slot-boxes an externref value");
         assert!(err.contains("File") && err.contains("Dict"), "got: {err}");
 
-        // A File held in a RECORD field is the GC-struct aggregate path (§4.2), NOT a
-        // slot crossing — allowed. But wrapping that record in an `Option` is not.
-        check_str("type Handle:\n    f: File\nfn take(console: Console, h: Handle):\n    print(console, \"ok\")\nfn main(console: Console, f: File):\n    take(console, Handle(f))\n")
-            .expect("a File in a record field is the aggregate path, not a slot box");
-        let err = check_str("type Handle:\n    f: File\nfn find(console: Console, o: Option(Handle)):\n    print(console, \"x\")\n")
-            .expect_err("Option(record-carrying-File) slot-boxes a cap-carrying payload");
-        assert!(err.contains("File") && err.contains("Option"), "got: {err}");
+        // Cap-carrying aggregates are the later GC-struct path, not part of the
+        // bare-File cut. Reject them instead of silently lowering a File through
+        // `$mkN`/the i64 slot.
+        let err = check_str("type Handle:\n    f: File\nfn take(console: Console, h: Handle):\n    print(console, \"ok\")\n")
+            .expect_err("a File record field needs the GC-struct aggregate path");
+        assert!(err.contains("File") && err.contains("GC-struct"), "got: {err}");
+
+        let err = check_str("fn tupled(console: Console, pair: (File, Int)):\n    print(console, \"x\")\n")
+            .expect_err("a File tuple element needs the GC-struct aggregate path");
+        assert!(err.contains("File") && err.contains("tuple"), "got: {err}");
+
+        let err = check_str("fn main(console: Console, f: File[Read]):\n    let read_later = fn() -> String: read(f)\n    print(console, \"x\")\n")
+            .expect_err("a closure capture of File needs the GC-struct aggregate path");
+        assert!(
+            err.contains("closure") && err.contains("f") && err.contains("File") && err.contains("GC-struct"),
+            "got: {err}"
+        );
+
+        let err = check_str("fn main(console: Console, f: File):\n    let xs = [f]\n    print(console, \"x\")\n")
+            .expect_err("an inferred List(File) literal needs the GC-struct aggregate path");
+        assert!(err.contains("List") && err.contains("File"), "got: {err}");
+
+        let err = check_str("fn main(console: Console, f: File):\n    let pair = (f, 1)\n    print(console, \"x\")\n")
+            .expect_err("an inferred tuple carrying File needs the GC-struct aggregate path");
+        assert!(err.contains("tuple") && err.contains("File"), "got: {err}");
+
+        let err = check_str("fn main(console: Console, f: File):\n    let d = dict.insert(dict.new(), \"cfg\", f)\n    print(console, \"x\")\n")
+            .expect_err("an inferred Dict(String, File) needs the GC-struct aggregate path");
+        assert!(err.contains("Dict") && err.contains("File"), "got: {err}");
+
+        let err = check_str("type Box(a):\n    Box(a)\nfn main(console: Console, f: File):\n    let b = Box(f)\n    print(console, \"x\")\n")
+            .expect_err("a generic user aggregate instantiated with File needs the GC-struct aggregate path");
+        assert!(err.contains("Box") && err.contains("File"), "got: {err}");
 
         // Sibling caps still on the i32 path may cross a slot until their own stage:
         // `std/secretstore.get -> Option(Secret)` must keep type-checking.

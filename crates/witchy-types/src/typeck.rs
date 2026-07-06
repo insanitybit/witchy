@@ -822,14 +822,14 @@ fn carries_externref_cap(
     }
 }
 
-/// (RFC-0005 §4.4/§7) Reject `t` if it wraps an `externref` capability in a value
-/// that is boxed into the universal i64 slot — an `Option`/`Result` payload or a
-/// `List`/`Dict` element (the containers whose payload crosses `ToSlot`/`FromSlot`).
-/// An `externref` has no i64 bit-pattern — that unforgeability is the whole point —
-/// so it cannot survive a slot round-trip; this is a hard representational fact, not
-/// a policy. A bare capability parameter/return is fine (it stays an `externref`);
-/// a capability held in a record/tuple field is fine too (that is the GC-struct
-/// aggregate path, RFC-0005 §4.2) — only the slot-boxed container forms are refused.
+/// (RFC-0005 §4.4/§7) Reject `t` when it would carry a migrated externref capability
+/// through a representation the current lowering cannot preserve.
+///
+/// A bare capability parameter/return is fine: it stays an `externref`. Slot-boxed
+/// containers (`Option`/`Result`/`List`/`Dict`) are impossible because an externref has
+/// no i64 bit-pattern. Cap-carrying tuples/user records are also rejected until the
+/// planned GC-struct aggregate stage lands; otherwise lowering would still send their
+/// fields through `$mkN`/`ToSlot`.
 fn reject_cap_slot_boundary(
     t: &ast::Type,
     defs: &HashMap<&str, &ast::TypeDef>,
@@ -839,6 +839,14 @@ fn reject_cap_slot_boundary(
     match t {
         ast::Type::Qualified(_, inner) => reject_cap_slot_boundary(inner, defs, ctx, position),
         ast::Type::Tuple(items) => {
+            if let Some(cap) = items.iter().find_map(|a| carries_externref_cap(a, defs, &mut HashSet::new())) {
+                return Err(TypeError {
+                    message: format!(
+                        "`{ctx}`: a `{cap}` capability cannot be held in a tuple in {position} until \
+                         RFC-0005's GC-struct aggregate lowering lands — pass it directly"
+                    ),
+                });
+            }
             items.iter().try_for_each(|a| reject_cap_slot_boundary(a, defs, ctx, position))
         }
         ast::Type::Fn(args, ret) => {
@@ -852,11 +860,19 @@ fn reject_cap_slot_boundary(
                         return Err(TypeError {
                             message: format!(
                                 "`{ctx}`: a `{cap}` capability cannot be wrapped in `{n}` in {position} — \
-                                 it is an unforgeable reference with no boxed representation; hold it in a \
-                                 record field or pass it directly"
+                                 it is an unforgeable reference with no boxed representation; pass it directly"
                             ),
                         });
                     }
+                }
+            } else if !is_externref_cap(n) {
+                if let Some(cap) = carries_externref_cap(t, defs, &mut HashSet::new()) {
+                    return Err(TypeError {
+                        message: format!(
+                            "`{ctx}`: `{n}` carries a `{cap}` capability in {position}, but cap-carrying \
+                             aggregates require RFC-0005's GC-struct lowering — pass the capability directly"
+                        ),
+                    });
                 }
             }
             // Recurse into arguments for a nested container (`List(Option(File))`).
@@ -1688,6 +1704,87 @@ impl Checker {
                 Box::new(self.resolve(ret)),
             ),
             _ => t.clone(),
+        }
+    }
+
+    /// The first migrated externref capability carried by `t`, if any. Kept in
+    /// lockstep with `is_externref_cap`; today only `File` has moved off the i32
+    /// handle path. This is used for expression-level shapes (not just annotated
+    /// `ast::Type`s), such as closure captures inferred from local bindings.
+    fn ty_carries_externref_cap(&self, t: &Ty) -> Option<&'static str> {
+        fn go(c: &Checker, t: &Ty, seen: &mut HashSet<String>) -> Option<&'static str> {
+            match c.resolve(t) {
+                Ty::File(_) => Some("File"),
+                Ty::List(inner) => go(c, &inner, seen),
+                Ty::Tuple(items) => items.iter().find_map(|i| go(c, i, seen)),
+                Ty::Fn(params, ret) => params
+                    .iter()
+                    .find_map(|p| go(c, p, seen))
+                    .or_else(|| go(c, &ret, seen)),
+                Ty::Named(n, args) => {
+                    if args.iter().any(|a| go(c, a, seen).is_some()) {
+                        return Some("File");
+                    }
+                    if !seen.insert(n.clone()) {
+                        return None;
+                    }
+                    let fields = c.record_fields.get(&n).map(|(_, fields)| fields.clone());
+                    let hit = fields
+                        .into_iter()
+                        .flatten()
+                        .find_map(|(_, field)| go(c, &field, seen));
+                    seen.remove(&n);
+                    hit
+                }
+                _ => None,
+            }
+        }
+        go(self, t, &mut HashSet::new())
+    }
+
+    fn reject_externref_cap_aggregate_ty(&self, t: &Ty, ctx: &str) -> Result<(), TypeError> {
+        match self.resolve(t) {
+            Ty::List(inner) => {
+                if let Some(cap) = self.ty_carries_externref_cap(&inner) {
+                    return terr(format!(
+                        "`{ctx}` builds a `List` containing a `{cap}` capability; \
+                         cap-carrying collections require RFC-0005's GC-struct aggregate lowering — \
+                         pass the capability directly"
+                    ));
+                }
+                Ok(())
+            }
+            Ty::Tuple(items) => {
+                if let Some(cap) = items.iter().find_map(|i| self.ty_carries_externref_cap(i)) {
+                    return terr(format!(
+                        "`{ctx}` builds a tuple containing a `{cap}` capability; \
+                         cap-carrying tuples require RFC-0005's GC-struct aggregate lowering — \
+                         pass the capability directly"
+                    ));
+                }
+                Ok(())
+            }
+            Ty::Named(n, args) if matches!(n.as_str(), "Option" | "Result" | "Dict") => {
+                if let Some(cap) = args.iter().find_map(|a| self.ty_carries_externref_cap(a)) {
+                    return terr(format!(
+                        "`{ctx}` wraps a `{cap}` capability in `{n}`; \
+                         an externref capability has no boxed i64-slot representation — \
+                         pass it directly"
+                    ));
+                }
+                Ok(())
+            }
+            Ty::Named(n, args) if !is_externref_cap(&n) => {
+                if let Some(cap) = self.ty_carries_externref_cap(&Ty::Named(n.clone(), args)) {
+                    return terr(format!(
+                        "`{ctx}` builds `{n}` carrying a `{cap}` capability; \
+                         cap-carrying aggregates require RFC-0005's GC-struct lowering — \
+                         pass the capability directly"
+                    ));
+                }
+                Ok(())
+            }
+            _ => Ok(()),
         }
     }
 
@@ -2785,14 +2882,18 @@ impl Checker {
                     let t = self.infer(it)?;
                     self.unify(&elem, &t)?;
                 }
-                Ok(Ty::List(Box::new(elem)))
+                let ty = Ty::List(Box::new(elem));
+                self.reject_externref_cap_aggregate_ty(&ty, "list literal")?;
+                Ok(ty)
             }
             Expr::Tuple(items) => {
                 let tys = items
                     .iter()
                     .map(|e| self.infer(e))
                     .collect::<Result<Vec<_>, _>>()?;
-                Ok(Ty::Tuple(tys))
+                let ty = Ty::Tuple(tys);
+                self.reject_externref_cap_aggregate_ty(&ty, "tuple literal")?;
+                Ok(ty)
             }
             Expr::Var(name) => {
                 if self.consumed.contains(name) {
@@ -2832,11 +2933,25 @@ impl Checker {
                 // silently mutate a private copy while the compiled backends can't
                 // express it at all. Reject it uniformly here (using the shared
                 // AST capture/assignment scan) so every backend agrees.
-                let outer = witchy_syntax::lambda_scan::lambda_outer_assigns(params, body);
+                let scan = witchy_syntax::lambda_scan::scan_lambda(params, body);
+                let outer = scan.assigns_outer();
                 if !outer.is_empty() {
                     return terr(format!(
                         "a closure cannot assign to the captured variable `{}` (captures are by value, so the write would be lost) — return the new value or use a `var` parameter instead",
                         outer.join("`, `")
+                    ));
+                }
+                for cap_name in scan.captures() {
+                    let Some(ty) = self.lookup(&cap_name) else {
+                        continue;
+                    };
+                    let Some(cap) = self.ty_carries_externref_cap(&ty) else {
+                        continue;
+                    };
+                    return terr(format!(
+                        "a closure cannot capture `{cap_name}` because it carries a `{cap}` capability; \
+                         cap-carrying closure environments require RFC-0005's GC-struct aggregate lowering — \
+                         pass the capability directly"
                     ));
                 }
                 self.push();
@@ -3050,6 +3165,7 @@ impl Checker {
                         }
                     }
                 }
+                self.reject_externref_cap_aggregate_ty(&ret, &format!("call to `{name}`"))?;
                 Ok(ret)
             }
             Expr::Apply { func, args } => {
@@ -3086,6 +3202,7 @@ impl Checker {
                             message: format!("in constructor `{name}`: {}", e.message),
                         })?;
                     }
+                    self.reject_externref_cap_aggregate_ty(&result, &format!("constructor `{name}`"))?;
                     Ok(result)
                 } else {
                     // Unknown constructor: still check its arguments, but don't
