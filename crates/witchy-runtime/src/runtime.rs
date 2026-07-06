@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use wasmtime::{
-    bail, Cache, CacheConfig, Caller, Config, Engine, Error, Extern, Instance, Linker, Memory,
-    Module, Result, Store, StoreLimits, StoreLimitsBuilder,
+    bail, Cache, CacheConfig, Caller, Config, Engine, Error, Extern, ExternRef, Instance, Linker,
+    Memory, Module, Result, Rooted, Store, StoreLimits, StoreLimitsBuilder,
 };
 
 /// An on-disk Cranelift compilation cache so re-running the same program skips
@@ -658,6 +658,11 @@ pub(crate) fn link_capability_imports(
     }
     if (caps.dir_root.is_some() && caps.dir_write) || has_file_grants {
         linker.func_wrap("witchy", "file_write", host_file_write)?;
+    }
+    // (RFC-0005 Stage 2) The `run` wrapper mints each `--file` `main` param as an
+    // `externref` via `mint_file`; only reachable when a direct File grant exists.
+    if has_file_grants {
+        linker.func_wrap("witchy", "mint_file", host_mint_file)?;
     }
     // The Exec capability: spawn a confined subprocess. The executable is named
     // through a `Dir[Read]` handle, so `exec_run` reuses `dir_base`/`confine`.
@@ -1318,6 +1323,19 @@ fn file_path(caller: &Caller<'_, VmState>, f: i32) -> Result<std::path::PathBuf>
         .get(f as usize)
         .cloned()
         .ok_or_else(|| Error::msg(format!("invalid File handle {f}")))
+}
+
+/// (RFC-0005 Stage 2) `mint_file(i) -> externref` — mint an unforgeable `File`
+/// capability for `--file` grant index `i`, wrapping the confined `PathBuf` in a
+/// wasmtime `externref` the guest cannot fabricate or corrupt (unlike the old i32
+/// handle a linear-memory overwrite could swap). The `run` wrapper calls this in
+/// declaration order to fill `main`'s `File` params. The returned reference roots
+/// the backing grant for as long as the guest holds it (the GC keeps host data
+/// alive while a live wasm frame references the `externref`), so no separate
+/// index table survives it (§8.9).
+fn host_mint_file(mut caller: Caller<'_, VmState>, i: i32) -> Result<Rooted<ExternRef>> {
+    let path = file_path(&caller, i)?;
+    ExternRef::new(&mut caller, path)
 }
 
 /// `dir_open(h, rel) -> file handle` (RFC-0012): open an existing file confined to

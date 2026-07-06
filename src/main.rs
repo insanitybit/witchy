@@ -2747,7 +2747,15 @@ fn run_wasm_module(
         caps.dir_write = dir_write;
     }
     // RFC-0012 direct `File` grants — fills `main`'s `File` params positionally and
-    // pre-populates the files table (the run-wrapper pushes the handles).
+    // pre-populates the files table. (RFC-0005 Stage 2) The run-wrapper mints each
+    // as an `externref` via the `mint_file` host import, so a module importing
+    // `mint_file` needs at least one `--file` grant, exactly as a `Dir` importer
+    // needs `--dir`.
+    if has("mint_file") && file_grants.is_empty() {
+        return Err(
+            "this program's `main` requires a `File`, but none was granted (use `--file <path>`)".to_string(),
+        );
+    }
     caps.file_grants = file_grants;
     if net_connect || net_listen {
         caps.net_allow = Some(net_allow);

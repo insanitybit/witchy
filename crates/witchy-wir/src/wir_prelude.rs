@@ -146,14 +146,17 @@ pub const MAX_CLOS: usize = 4;
 /// pre-baked. Arities above this are emitted per-module by the encoder.
 pub const MAX_MK: usize = 8;
 
-/// A single value type in a prelude signature, mirrored from wasm core valtypes
-/// (the prelude only ever uses the four numeric types).
+/// A single value type in a prelude signature, mirrored from wasm core valtypes.
+/// Beyond the four numerics, `ExternRef` names the wasm `externref` — the
+/// unforgeable representation a migrated capability import takes (RFC-0005:
+/// `mint_file`/`file_read_len`/`file_write`/`dir_open`/`dir_create`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WasmTy {
     I32,
     I64,
     F32,
     F64,
+    ExternRef,
 }
 
 /// An imported host function the prelude depends on.
@@ -255,6 +258,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "dir_make_dir" (func $dir_make_dir_host (param i32 i32)))
   (import "witchy" "dir_open" (func $dir_open_host (param i32 i32) (result i32)))
   (import "witchy" "dir_create" (func $dir_create_host (param i32 i32) (result i32)))
+  (import "witchy" "mint_file" (func $mint_file_host (param i32) (result externref)))
   (import "witchy" "file_read_len" (func $file_read_len_host (param i32) (result i32)))
   (import "witchy" "file_write" (func $file_write_host (param i32 i32)))
   (import "witchy" "net_connect" (func $net_connect_host (param i32 i32) (result i32)))
@@ -287,7 +291,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 77;
+pub const IMPORT_COUNT: usize = 78;
 
 /// The full ordered name list for the funcs section: `$mk0..$mk{MAX_MK}` then
 /// the static helper names. Matches the order the prelude emits bodies, so
@@ -311,6 +315,7 @@ fn parse_prelude_imports(wat: &str) -> Vec<PreludeImport> {
             "i64" => WasmTy::I64,
             "f32" => WasmTy::F32,
             "f64" => WasmTy::F64,
+            "externref" => WasmTy::ExternRef,
             other => panic!("prelude import uses an unexpected valtype `{other}`"),
         }
     }

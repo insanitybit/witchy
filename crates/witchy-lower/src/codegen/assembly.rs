@@ -557,6 +557,9 @@ pub fn assemble_wir_module(
             WasmTy::I32 => WK::I32,
             WasmTy::I64 => WK::I64,
             WasmTy::F64 | WasmTy::F32 => WK::F64,
+            // (RFC-0005) A migrated capability import (mint_file, file_*, dir_open/create)
+            // takes/returns an unforgeable `externref`.
+            WasmTy::ExternRef => WK::ExternRef,
         }
     };
 
