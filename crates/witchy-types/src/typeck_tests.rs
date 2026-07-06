@@ -1446,6 +1446,8 @@ fn main():
         // A concrete key needs no bound.
         check_str("fn f(d: Dict(String, Int), key: String) -> Int:\n    dict.get_or(d, key, 0)\n")
             .expect("a concrete String key needs no bound");
+    
+    #[test]
     fn dequalify_home_strips_only_the_home_module() {
         // BUG-292: a home-module name renders bare; a cross-module name keeps its
         // qualifier (it disambiguates a same-named type from another module).
@@ -1454,7 +1456,6 @@ fn main():
         assert_eq!(dequalify_home("Bool", "t_file"), "Bool");
         assert_eq!(dequalify_home("t_file.Color", ""), "t_file.Color");
     }
-
     #[test]
     fn strip_home_qualifiers_keeps_cross_module_names() {
         // Home-module type in a mismatch renders bare...
@@ -1473,3 +1474,4 @@ fn main():
         // An unknown home is a no-op.
         assert_eq!(strip_home_qualifiers("found `app.Point`", ""), "found `app.Point`");
     }
+}
