@@ -218,11 +218,11 @@ Flip an ordering — `Less` <-> `Greater`, `Equal` unchanged — for reverse sor
 
 #### `fn maximum(xs: List(a), default: a) -> a where a: Ord`
 
-The largest element of `xs`, or `default` when `xs` is empty.
+The largest element of `xs`, or `default` when `xs` is empty. `default` is only the empty fallback — it never participates in the comparison, so it is returned unchanged only for an empty list (a small `default` no longer wins over the elements, nor a large one lose to them).
 
 #### `fn minimum(xs: List(a), default: a) -> a where a: Ord`
 
-The smallest element of `xs`, or `default` when `xs` is empty.
+The smallest element of `xs`, or `default` when `xs` is empty. As with `maximum`, `default` is the empty fallback only, never a competing bound.
 
 #### `fn sort(var xs: List(a)) -> List(a) where a: Ord`
 
@@ -1453,7 +1453,7 @@ Render `n` in `base` (2..16) with lowercase digits; a negative `n` gets a leadin
 
 #### `fn format_float(x: Float, decimals: Int) -> String`
 
-Format `x` with `decimals` digits after the decimal point, rounded half-up: format_float(3.14159, 2) = "3.14", format_float(-0.5, 1) = "-0.5", format_float(2.0, 0) = "2". Built from float arithmetic, so unlike the `to_string` builtin it works on the compiled WASM backend too (which has no float formatting). Best for a fixed number of places; very large magnitudes lose precision to the Float itself.
+Format `x` with `decimals` digits after the decimal point, rounded half-up: format_float(3.14159, 2) = "3.14", format_float(-0.5, 1) = "-0.5", format_float(2.0, 0) = "2". Built from float arithmetic, so unlike the `to_string` builtin it works on the compiled WASM backend too (which has no float formatting). Best for a fixed number of places; very large magnitudes lose precision to the Float itself. `decimals` is capped at 18 — the most places the `Int` scale `pow(10, decimals)` can hold without overflowing.
 
 ## `meta`
 
@@ -1704,11 +1704,11 @@ A generator from seed `s` (any Int is mapped into the valid range 1..modulus).
 
 #### `fn next(r: Rng) -> (Int, Rng)`
 
-Advance the generator: a pseudo-random Int in [1, 2^31-1) and the next state.
+Advance the generator: a pseudo-random Int in [1, 2^31-1) and the next state. The incoming state is normalized first, so a hand-built `Rng(0)` / `Rng(-5)` (which bypasses `seed`) still yields an in-range draw instead of sticking at 0 or going negative.
 
 #### `fn next_below(r: Rng, bound: Int) -> (Int, Rng)`
 
-A pseudo-random Int in [0, bound) (bound must be positive) and the next state.
+A pseudo-random Int in [0, bound) and the next state. `bound` must be positive (RFC-0044 rule 3): a non-positive bound has no valid range, so it fails loudly naming the bad argument rather than dividing by zero.
 
 #### `fn next_bool(r: Rng) -> (Bool, Rng)`
 
@@ -1749,6 +1749,10 @@ Reflect an `Option` to a `Some`/`None` `MVariant`. The payload reflects through 
 #### `fn reflect_list(xs: List(a)) -> Mirror where a: Reflect`
 
 Reflect a list of `Reflect` elements. This is a free function rather than an `impl Reflect for List(a)` because method dispatch on a `List` receiver binds to the `list` module, so the generated `reflect` for a record's List field calls this.
+
+#### `fn reflect_dict(d: Dict(k, v)) -> Mirror where k: Reflect, v: Reflect`
+
+A `Dict` reflects to an `MRecord` — the same shape a record uses, so `json` encodes it as an object and `debug` renders it record-style. Each key is rendered to a string (an object/record key is always a string), each value reflects through the `v: Reflect` bound. A free function for the same reason `reflect_list` is: a `Dict` receiver's `.reflect()` would bind to the `dict` module, so the generated `reflect` for a `Dict` field routes here.
 
 #### `fn debug(x: a) -> String where a: Reflect`
 
@@ -1858,6 +1862,8 @@ Split a list of Results into the Ok values and the Err values, each in order —
 rights — rights-precise reasoning over capability footprints.
 
 A capability is rendered the way the compiler's footprint prints it: "Console", "Dir[Read]", "Net[Connect, Tcp]". A *declared* capability covers a *demanded* one when they share a base kind AND the declared authority is at least as broad: a bare "Net" admits any rights of that kind, while "Net[Connect]" admits only a subset — so Net[Connect] does NOT cover full Net. This rights-precision is what the package manager's declared-vs-actual check and the block-on-widening gate both rely on, so it lives in one tested place.
+
+`Net` has TWO independent axes — verbs {Connect, Listen} and transports {Tcp, Udp, Uds} — and (mirroring the compiler) an axis named by NO marker in the bracket means that whole axis is granted. So "Net[Connect]" is Connect over ANY transport ({Connect, Tcp, Udp, Uds}) and therefore covers the narrower "Net[Connect, Tcp]". Comparison expands each side's omitted axes to full before testing subset; other kinds have flat rights and are compared literally.
 
 #### `fn covers(declared: String, demanded: String) -> Bool`
 
