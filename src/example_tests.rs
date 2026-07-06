@@ -18646,3 +18646,25 @@ pub fn serve(console: Console, net: Net) -> Int:
         let err = typeck::check(&linked).expect_err("broken body must fail").to_string();
         assert!(err.contains("broken") && err.contains("expected `Int`"), "{err}");
     }
+
+    #[test]
+    fn bug181_tagged_literals_in_impls_and_consts_expand() {
+        // (BUG-181) a `tag"…"` in an impl method OR a top-level `let` constant must
+        // be expanded before type-checking — it must not survive as an
+        // `Expr::TaggedLit` (which the type checker `unreachable!`s on). The `lit`
+        // tag here emits the source `"ok"`, so both sites render `ok`.
+        let src = "fn lit(parts: List(String), holes: List(String)) -> String:\n\
+                   \x20   \"\\\"ok\\\"\"\n\
+                   type Box:\n\
+                   \x20   value: Int\n\
+                   impl Box:\n\
+                   \x20   pub fn label(self) -> String:\n\
+                   \x20       lit\"ignored\"\n\
+                   let LABEL = lit\"ignored\"\n\
+                   fn main(console: Console):\n\
+                   \x20   print(console, Box(1).label())\n\
+                   \x20   print(console, LABEL)\n";
+        let expected = ["ok", "ok"];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(wasm_run(src), expected, "wasm");
+    }

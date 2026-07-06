@@ -122,9 +122,30 @@ pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) ->
         imports: std_imports,
         qualifiers,
     };
+    // Expand tagged literals in EVERY expression-bearing item position, not just
+    // free-function bodies (BUG-181): an inherent/trait `impl` method body, a
+    // trait's DEFAULT method body, and a top-level `let` constant value can all
+    // contain a `tag"…"`. Missing any of them let an `Expr::TaggedLit` survive to
+    // the type checker, which `unreachable!`s on it.
     for item in &mut module.items {
-        if let Item::Function(f) = item {
-            walk_block(&mut f.body, &ctx)?;
+        match item {
+            Item::Function(f) => walk_block(&mut f.body, &ctx)?,
+            Item::Impl(im) => {
+                for m in &mut im.methods {
+                    walk_block(&mut m.body, &ctx)?;
+                }
+            }
+            Item::Trait(t) => {
+                for m in &mut t.methods {
+                    if let Some(body) = &mut m.default {
+                        walk_block(body, &ctx)?;
+                    }
+                }
+            }
+            Item::Const { value, .. } => walk_expr_depth(value, &ctx, 0)?,
+            // `comptime:` blocks are already expanded (and consumed) by
+            // `comptime::expand`, which runs before this pass.
+            Item::Type(_) | Item::TypeAlias { .. } | Item::Comptime(_) => {}
         }
     }
     Ok(())
