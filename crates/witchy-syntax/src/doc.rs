@@ -7,7 +7,7 @@
 
 use std::fmt::Write;
 
-use crate::ast::{Item, Param, Type, Variant};
+use crate::ast::{Expr, Item, MethodSig, Param, TraitDef, Type, UnOp, Variant};
 use crate::format::type_str;
 
 /// Render Markdown documentation for one module (named `module_name`) from its
@@ -38,14 +38,44 @@ pub fn render(module_name: &str, source: &str) -> Result<String, String> {
         }
         let _ = writeln!(out);
     }
+    // Type aliases — `type Id = Int` — are part of the vocabulary too (BUG-170).
+    for item in &module.items {
+        let Item::TypeAlias { name, ty } = item else { continue };
+        any = true;
+        let _ = writeln!(out, "#### `type {name} = {}`\n", type_str(ty));
+        let doc = doc_above(&lines, &format!("type {name} ="));
+        if !doc.is_empty() {
+            let _ = writeln!(out, "{doc}\n");
+        }
+    }
+    // Traits — the interface vocabulary (BUG-073). Traits carry no visibility
+    // gate; a module-level `trait` is public API. Render the header (name, type
+    // parameters, supertraits) and each method signature.
+    for item in &module.items {
+        let Item::Trait(t) = item else { continue };
+        any = true;
+        let _ = writeln!(out, "#### `{}`\n", trait_header(t));
+        let doc = doc_above(&lines, &format!("trait {}", t.name));
+        if !doc.is_empty() {
+            let _ = writeln!(out, "{doc}\n");
+        }
+        for m in &t.methods {
+            let _ = writeln!(out, "- `{}`", method_sig_str(m));
+        }
+        let _ = writeln!(out);
+    }
     for item in &module.items {
         let Item::Function(f) = item else { continue };
         if !f.public {
             continue;
         }
         any = true;
-        let _ = writeln!(out, "#### `{}`\n", signature(&f.name, &f.params, &f.ret, &f.bounds));
-        let doc = doc_above(&lines, &format!("pub fn {}(", f.name));
+        let sig = format!("{}{}", fn_qualifier(f.is_async, f.is_gen), signature(&f.name, &f.params, &f.ret, &f.bounds));
+        let _ = writeln!(out, "#### `{sig}`\n");
+        // The source line carries the same `async`/`gen` qualifier before `fn`,
+        // so the doc-comment marker must reconstruct it to find the block.
+        let marker = format!("pub {}fn {}(", fn_qualifier(f.is_async, f.is_gen), f.name);
+        let doc = doc_above(&lines, &marker);
         if !doc.is_empty() {
             let _ = writeln!(out, "{doc}\n");
         }
@@ -69,11 +99,12 @@ pub fn render(module_name: &str, source: &str) -> Result<String, String> {
             let sig = signature(&m.name, params, &m.ret, &m.bounds);
             let sig = sig
                 .strip_prefix("fn ")
-                .map(|s| format!("{}.{s}", im.type_name))
+                .map(|s| format!("{}{}.{s}", fn_qualifier(m.is_async, m.is_gen), im.type_name))
                 .unwrap_or(sig);
             any = true;
             let _ = writeln!(out, "#### `{sig}`\n");
-            let doc = doc_above(&lines, &format!("pub fn {}(", m.name));
+            let marker = format!("pub {}fn {}(", fn_qualifier(m.is_async, m.is_gen), m.name);
+            let doc = doc_above(&lines, &marker);
             if !doc.is_empty() {
                 let _ = writeln!(out, "{doc}\n");
             }
@@ -149,6 +180,13 @@ fn param_str(p: &Param, bounds: &[(String, String, Vec<Type>)]) -> String {
         crate::ast::Convention::Var => "var ",
         crate::ast::Convention::Own => "own ",
     };
+    // (RFC-0056) A closed-constant default (`punct: String = "!"`) is part of the
+    // signature's meaning — render it, matching the declaration (BUG-207).
+    let def = p
+        .default
+        .as_ref()
+        .map(|e| format!(" = {}", default_str(e)))
+        .unwrap_or_default();
     match &p.ty {
         // An `impl Trait` param is stored desugared (a fresh `impltrait_N` type
         // var plus a bound); render it back to the surface `impl Trait`.
@@ -158,11 +196,104 @@ fn param_str(p: &Param, bounds: &[(String, String, Vec<Type>)]) -> String {
                 .find(|(bv, _, _)| bv == v)
                 .map(|(_, t, _)| t.as_str())
                 .unwrap_or("?");
-            format!("{conv}{}: impl {trait_name}", p.name)
+            format!("{conv}{}: impl {trait_name}{def}", p.name)
         }
-        Some(t) => format!("{conv}{}: {}", p.name, type_str(t)),
-        None => format!("{conv}{}", p.name),
+        Some(t) => format!("{conv}{}: {}{def}", p.name, type_str(t)),
+        None => format!("{conv}{}{def}", p.name),
     }
+}
+
+/// Render a closed-constant parameter default (RFC-0056) — a literal, `None`,
+/// `true`/`false`, `[]`/`()`, a constructor of constants, or a unary application
+/// thereof (`-1`) — back to its surface form (BUG-207). Anything outside that set
+/// can't be a default (the parser rejects it), so a bare fallback suffices.
+fn default_str(e: &Expr) -> String {
+    match e {
+        Expr::Int(n) => n.to_string(),
+        Expr::Duration(ms) => format!("{ms}ms"),
+        Expr::Float(x) => {
+            let t = x.to_string();
+            if t.contains('.') || t.contains('e') || t.contains("inf") || t.contains("NaN") {
+                t
+            } else {
+                format!("{t}.0")
+            }
+        }
+        Expr::Str(v) => str_lit(v),
+        Expr::Bool(b) => b.to_string(),
+        Expr::List(xs) => format!("[{}]", xs.iter().map(default_str).collect::<Vec<_>>().join(", ")),
+        Expr::Tuple(xs) => format!("({})", xs.iter().map(default_str).collect::<Vec<_>>().join(", ")),
+        Expr::Ctor { name, args } if args.is_empty() => name.clone(),
+        Expr::Ctor { name, args } => {
+            format!("{name}({})", args.iter().map(default_str).collect::<Vec<_>>().join(", "))
+        }
+        Expr::Unary { op, expr } => format!("{}{}", unop_str(*op), default_str(expr)),
+        _ => "…".to_string(),
+    }
+}
+
+/// The prefix form of a unary operator, for rendering a defaulted `-1`.
+fn unop_str(op: UnOp) -> &'static str {
+    match op {
+        UnOp::Neg => "-",
+        UnOp::Not => "!",
+        UnOp::BitNot => "~",
+        UnOp::Move => "move ",
+        UnOp::Await => "await ",
+    }
+}
+
+/// A witchy string literal, escaping the characters `witchy fmt` escapes, so the
+/// rendered default round-trips.
+fn str_lit(v: &str) -> String {
+    let mut s = String::from("\"");
+    for c in v.chars() {
+        match c {
+            '"' => s.push_str("\\\""),
+            '\\' => s.push_str("\\\\"),
+            '\n' => s.push_str("\\n"),
+            '\t' => s.push_str("\\t"),
+            '\r' => s.push_str("\\r"),
+            '\0' => s.push_str("\\0"),
+            '$' => s.push_str("\\$"),
+            _ => s.push(c),
+        }
+    }
+    s.push('"');
+    s
+}
+
+/// The `async`/`gen` prefix a function or method carries before `fn`, matching
+/// `witchy fmt`'s order (`async gen fn`). Empty for a plain function (BUG-167).
+fn fn_qualifier(is_async: bool, is_gen: bool) -> String {
+    let mut q = String::new();
+    if is_async {
+        q.push_str("async ");
+    }
+    if is_gen {
+        q.push_str("gen ");
+    }
+    q
+}
+
+/// A trait's declaration head: `trait Name`, plus type parameters
+/// (`trait From(a)`) and supertraits (`trait Ord: Eq + PartialOrd`), matching the
+/// source form (BUG-073).
+fn trait_header(t: &TraitDef) -> String {
+    let mut h = format!("trait {}", t.name);
+    if !t.typarams.is_empty() {
+        h.push_str(&format!("({})", t.typarams.join(", ")));
+    }
+    if !t.supertraits.is_empty() {
+        h.push_str(&format!(": {}", t.supertraits.join(" + ")));
+    }
+    h
+}
+
+/// A trait method signature (`fn from(value: a) -> Self`). A trait method has no
+/// `where` bounds of its own here, so render with an empty bound set (BUG-073).
+fn method_sig_str(m: &MethodSig) -> String {
+    signature(&m.name, &m.params, &m.ret, &[])
 }
 
 /// The contiguous `//` block at the top of the file (the module description).
@@ -240,5 +371,53 @@ mod tests {
         assert!(md.contains("#### `fn hello(name: String) -> String`"), "signature: {md}");
         assert!(md.contains("Say hello to `name`."), "fn doc: {md}");
         assert!(!md.contains("private_helper"), "private fn must be omitted: {md}");
+    }
+
+    // BUG-073: public traits (name, type params, supertraits, methods) render.
+    #[test]
+    fn renders_traits() {
+        let src = "// A conversion trait.\ntrait From(a):\n    fn from(value: a) -> Self\n";
+        let md = render("convert", src).unwrap();
+        assert!(md.contains("#### `trait From(a)`"), "trait header: {md}");
+        assert!(md.contains("`fn from(value: a) -> Self`"), "trait method: {md}");
+        assert!(md.contains("A conversion trait."), "trait doc: {md}");
+        assert!(!md.contains("_No public API._"), "trait is public API: {md}");
+    }
+
+    #[test]
+    fn renders_trait_supertraits() {
+        let src = "trait Ord: Eq + PartialOrd:\n    fn cmp(self, other: Self) -> Int\n";
+        let md = render("cmp", src).unwrap();
+        assert!(md.contains("#### `trait Ord: Eq + PartialOrd`"), "supertraits: {md}");
+    }
+
+    // BUG-170: `type X = ...` aliases render (heading + doc + target).
+    #[test]
+    fn renders_type_aliases() {
+        let src = "// A user identifier.\ntype UserId = Int\n";
+        let md = render("ids", src).unwrap();
+        assert!(md.contains("#### `type UserId = Int`"), "alias: {md}");
+        assert!(md.contains("A user identifier."), "alias doc: {md}");
+        assert!(!md.contains("_No public API._"), "alias is public API: {md}");
+    }
+
+    // BUG-207: RFC-0056 default values appear in the rendered signature.
+    #[test]
+    fn renders_default_values() {
+        let src = "pub fn greet(name: String, punct: String = \"!\") -> String:\n    name + punct\n";
+        let md = render("greet", src).unwrap();
+        assert!(md.contains("punct: String = \"!\""), "default value: {md}");
+    }
+
+    // BUG-167: the `async`/`gen` qualifier is part of the rendered signature, and
+    // the doc comment is still found despite the qualifier on the source line.
+    #[test]
+    fn renders_async_and_gen_qualifiers() {
+        let src = "// Fetches data.\npub async fn fetch(url: String) -> String:\n    url\n\n// Streams numbers.\npub gen fn counter(n: Int) -> Int:\n    yield n\n";
+        let md = render("net", src).unwrap();
+        assert!(md.contains("#### `async fn fetch(url: String) -> String`"), "async: {md}");
+        assert!(md.contains("#### `gen fn counter(n: Int) -> Int`"), "gen: {md}");
+        assert!(md.contains("Fetches data."), "async doc: {md}");
+        assert!(md.contains("Streams numbers."), "gen doc: {md}");
     }
 }

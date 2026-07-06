@@ -204,6 +204,34 @@ The result of a comparison: `a` is `Less` than, `Equal` to, or `Greater` than `b
 - `Equal`
 - `Greater`
 
+#### `trait PartialEq`
+
+`==` and `!=`. The minimal equality trait: implement `eq` and `ne` comes free. `Float` is `PartialEq` but NOT `Eq` — `NaN != NaN`, so equality is not reflexive.
+
+- `fn eq(self, other: Self) -> Bool`
+- `fn ne(self, other: Self) -> Bool`
+
+#### `trait Eq: PartialEq`
+
+Total equality: a marker refining `PartialEq` with reflexivity (no `NaN`). Types usable as `Set` / `Dict` keys are `Eq`.
+
+
+#### `trait PartialOrd: PartialEq`
+
+`<` `>` `<=` `>=`. `partial_compare` returns `None` for incomparable values (a `NaN`); the four ordering operators are then all false, as in Rust. Implement `partial_compare`; the rest come free.
+
+- `fn partial_compare(self, other: Self) -> Option(Ordering)`
+- `fn less(self, other: Self) -> Bool`
+- `fn greater(self, other: Self) -> Bool`
+- `fn less_equal(self, other: Self) -> Bool`
+- `fn greater_equal(self, other: Self) -> Bool`
+
+#### `trait Ord: Eq + PartialOrd`
+
+A total order: `compare` never reports "incomparable". Sorting and the `min`/ `max` helpers require `Ord`. Implement `compare`; the companion `PartialOrd` impl's `partial_compare` is `Some` of it.
+
+- `fn compare(self, other: Self) -> Ordering`
+
 #### `fn reverse(o: Ordering) -> Ordering`
 
 Flip an ordering — `Less` <-> `Greater`, `Equal` unchanged — for reverse sorts.
@@ -272,7 +300,19 @@ Conversion traits, following Rust's `std::convert`. `From(a)` builds the impleme
 
 `from` takes no `self`, so the blanket impl calls it on the target type as `b.from(self)`. The `where` bound decides which `from` to call when the use site is monomorphized.
 
-_No public API._
+#### `trait From(a)`
+
+Conversion traits, following Rust's `std::convert`. `From(a)` builds the implementing type from an `a`; `Into(b)` consumes `self` into a `b`. Implementing `From` is enough, since the blanket impl below derives the matching `Into`:
+
+  Celsius.from(deg)   build via From   value.into()        convert via the derived Into
+
+`from` takes no `self`, so the blanket impl calls it on the target type as `b.from(self)`. The `where` bound decides which `from` to call when the use site is monomorphized.
+
+- `fn from(value: a) -> Self`
+
+#### `trait Into(b)`
+
+- `fn into(self) -> b`
 
 ## `crypto`
 
@@ -831,6 +871,12 @@ An iterator is a thunk producing its next Step. Pull it with `next`.
 
 - `Iter(fn() -> Step(a))`
 
+#### `trait FromIterator(e)`
+
+A type an iterator can be collected INTO. `from_iter` mentions the implementing type only in its result, so a call dispatches on the EXPECTED type — an ascribed binding, a typed parameter, a for-loop — not on any argument.
+
+- `fn from_iter(it: Iter(e)) -> Self`
+
 #### `fn empty() -> Iter(a)`
 
 The empty iterator.
@@ -980,6 +1026,12 @@ A JSON library — the witchy take on Go's encoding/json. This slice is the valu
 - `JsonString(String)`
 - `JsonArray(List(Json))`
 - `JsonObject(List((String, Json)))`
+
+#### `trait Deserialize`
+
+Reconstruct a value from a `Json`. Reflection can read a value's structure but not rebuild a value from structure, so `derive(Deserialize)` generates `from_json` per type. Encoding needs no trait: `from_value`, `stringify`, and `x.into()` already serialize any `Reflect` value.
+
+- `fn from_json(j: Json) -> Result(Self, String)`
 
 #### `fn encode(j: Json) -> String`
 
@@ -1754,6 +1806,12 @@ The reflected shape of a value.
 - `MVariant(String, String, List(Mirror))`
 - `MNil`
 
+#### `trait Reflect`
+
+The unit/`Nil` value.
+
+- `fn reflect(self) -> Mirror`
+
 #### `fn reflect_one(x: a) -> Mirror where a: Reflect`
 
 Reflect a single value through a free function. The generated `reflect` calls this rather than the trait method directly, because trait dispatch resolves on params and loop vars but not on `match` bindings (so an Option field's `Some(x)` arm could not call `reflect(x)`). Here `x` is a parameter, which always resolves.
@@ -2172,6 +2230,10 @@ Whether the two sets share no members.
 ## `show`
 
 The witchy standard `Show` trait: render a value as a `String`. Built-in impls cover the scalars — `Int`, `Float`, `Bool`, `String`, and `Duration` (which shows in its human form, `1m30s`, not raw milliseconds) — and the built-in containers: a `List`, `Dict`, `Set`, `Option`, `Result`, or tuple whose elements are themselves `Show` renders structurally through each element's `Show` (`[a, b]`, `{k: v}`, `Some(x)`), so `say(console, [1, 2, 3])` and `say(console, someSet)` just work — and a custom element `Show` is honored (`[P<1,2>, P<3,4>]`). Implement `Show` for your own types to give them a *custom* readable form. (The built-in `to_string` already renders any value structurally — `Point(1, 2)`, `[Circle(2), Dot]` — on every backend; reach for `Show` when you want a different rendering than that default.) Pure except `say`, which takes the `Console` it prints to.
+
+#### `trait Show`
+
+- `fn show(self) -> String`
 
 #### `fn say(console: Console, x: impl Show)`
 
