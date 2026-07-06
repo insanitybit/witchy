@@ -358,23 +358,23 @@ The core operations are native primitives (intercepted by both backends; the bod
 
 An empty Dict.
 
-#### `fn insert(var d: Dict(k, v), key: k, val: v) -> Dict(k, v)`
+#### `fn insert(var d: Dict(k, v), key: k, val: v) -> Dict(k, v) where k: Eq`
 
 A new dict with `key` set to `val` (replacing any existing entry). Insertion order of first appearance is preserved. The `d[key] = val` sugar (RFC-0022) desugars to this: the shared `set_at` place-assign is retargeted to `insert` once the receiver is known to be a Dict (RFC-0049).
 
-#### `fn get_or(d: Dict(k, v), key: k, default: v) -> v`
+#### `fn get_or(d: Dict(k, v), key: k, default: v) -> v where k: Eq`
 
 The value for `key`, or `default` when absent.
 
-#### `fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) -> Dict(k, v)`
+#### `fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) -> Dict(k, v) where k: Eq`
 
 Single-lookup upsert: apply `f` to the current value (or `default` when `key` is absent) and store the result under `key`.
 
-#### `fn contains_key(d: Dict(k, v), key: k) -> Bool`
+#### `fn contains_key(d: Dict(k, v), key: k) -> Bool where k: Eq`
 
 Whether `key` is present.
 
-#### `fn remove(var d: Dict(k, v), key: k) -> Dict(k, v)`
+#### `fn remove(var d: Dict(k, v), key: k) -> Dict(k, v) where k: Eq`
 
 A new dict with `key` (and its value) removed; unchanged when absent.
 
