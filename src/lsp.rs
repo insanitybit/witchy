@@ -74,6 +74,12 @@ const BUILTINS: &[&str] = &[
     "recv_all", "recv_bytes", "close", "send", "fail",
 ];
 
+/// The modules the linker always bundles (importable without an `import` line):
+/// their functions are offered and hover-resolvable everywhere, and a bare
+/// method call resolves against them (`xs.push` → `list.push`).
+const PRELUDE_MODULES: &[&str] =
+    &["list", "string", "dict", "math", "option", "result", "policy"];
+
 /// The prelude's module-qualified core operations, completed without an
 /// import line (the linker always bundles these modules).
 const PRELUDE_FNS: &[&str] = &[
@@ -147,30 +153,32 @@ fn hover_response(docs: &HashMap<String, String>, params: &Value) -> Value {
     let Some(word) = word_at(text, line, character) else {
         return Value::Null;
     };
-    // Where to look: `mod.name` looks in the imported module, a bare name in
-    // this document, then in every imported module.
-    let mut sources: Vec<(&str, String)> = Vec::new();
+    // Where to look: `mod.name` looks in the named module; a receiver method
+    // (`xs.push`) or a bare name looks in this document and every module the
+    // document can see (prelude + imports).
+    let mut sources: Vec<(String, String)> = Vec::new();
     let bare = match word.split_once('.') {
-        Some((module, name)) => {
-            if let Some(src) = crate::linker::std_source(module) {
-                sources.push((src, format!("{module}.")));
+        Some((head, tail)) => {
+            // `head.tail`: `head` is a module (`string.repeat`) or a receiver
+            // value (`xs.push`). When it names a module, look there; otherwise
+            // treat `tail`'s final segment as a method and resolve it against
+            // every visible module (`xs.push` → `list.push`).
+            let name = tail.rsplit_once('.').map_or(tail, |(_, n)| n).to_string();
+            if let Some(src) = crate::linker::std_source(head) {
+                sources.push((src.to_string(), format!("{head}.")));
+            } else {
+                sources.extend(visible_module_sources(text));
             }
-            name.to_string()
+            name
         }
         None => {
-            sources.push((text.as_str(), String::new()));
-            for l in text.lines() {
-                if let Some(module) = l.trim_start().strip_prefix("import ") {
-                    if let Some(src) = crate::linker::std_source(module.trim()) {
-                        sources.push((src, format!("{}.", module.trim())));
-                    }
-                }
-            }
+            sources.push((text.to_string(), String::new()));
+            sources.extend(visible_module_sources(text));
             word.clone()
         }
     };
     for (src, prefix) in sources {
-        if let Some((sig, doc)) = signature_doc(src, &bare) {
+        if let Some((sig, doc)) = signature_doc(&src, &bare) {
             let contents = format!("```witchy\n{}\n```\n{}", qualify_signature(&sig, &prefix), doc);
             return json!({ "contents": { "kind": "markdown", "value": contents } });
         }
@@ -242,6 +250,29 @@ fn signature_doc(src: &str, name: &str) -> Option<(String, String)> {
         }
     }
     None
+}
+
+/// Module sources visible to this document without qualification at a use site:
+/// the always-present prelude modules plus every `import`ed std module, each
+/// paired with its `module.` display prefix. Lets hover resolve a bare method
+/// (`xs.push` → `list.push`) or an imported function.
+fn visible_module_sources(text: &str) -> Vec<(String, String)> {
+    let mut names: Vec<String> = PRELUDE_MODULES.iter().map(|s| s.to_string()).collect();
+    for l in text.lines() {
+        if let Some(module) = l.trim_start().strip_prefix("import ") {
+            names.push(module.trim().to_string());
+        }
+    }
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out = Vec::new();
+    for name in names {
+        if seen.insert(name.clone()) {
+            if let Some(src) = crate::linker::std_source(&name) {
+                out.push((src.to_string(), format!("{name}.")));
+            }
+        }
+    }
+    out
 }
 
 fn handle_notification(

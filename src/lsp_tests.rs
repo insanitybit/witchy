@@ -110,6 +110,44 @@
     }
 
     #[test]
+    fn hover_resolves_receiver_method_calls() {
+        // BUG-174: `xs.push(1)` — word_at reads `xs.push`; treating `xs` as a
+        // module used to return null. The method must resolve against the prelude
+        // data modules (`list.push`).
+        let mut docs = HashMap::new();
+        let src = "fn main(console: Console):\n    var xs = [1]\n    xs.push(2)\n";
+        docs.insert("file:///t.witchy".to_string(), src.to_string());
+        let col = src.lines().nth(2).unwrap().find("push").unwrap() as u64;
+        let resp = hover_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": "file:///t.witchy" },
+                "position": { "line": 2, "character": col },
+            }),
+        );
+        let contents = resp["contents"]["value"].as_str().expect("hover text");
+        assert!(contents.contains("fn list.push("), "{contents}");
+
+        // `xs.length` (no call) must resolve too.
+        let src2 = "fn main(console: Console):\n    let xs = [1]\n    let n = xs.length\n";
+        docs.insert("file:///t2.witchy".to_string(), src2.to_string());
+        let col2 = src2.lines().nth(2).unwrap().find("length").unwrap() as u64;
+        let resp2 = hover_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": "file:///t2.witchy" },
+                "position": { "line": 2, "character": col2 },
+            }),
+        );
+        assert!(
+            resp2["contents"]["value"]
+                .as_str()
+                .is_some_and(|c| c.contains("fn list.length(")),
+            "{resp2}"
+        );
+    }
+
+    #[test]
     fn clean_program_has_no_diagnostics() {
         let src = r#"
 fn main(console: Console):
