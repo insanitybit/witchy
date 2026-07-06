@@ -768,6 +768,25 @@
         );
     }
 
+    /// (RFC-0053, parity) Interpolation (`"${x}"`) honors a CUSTOM `Show` impl, exactly
+    /// as `say` does — the typed lowering rewrites `__render(x)` to `show(x)` when x's
+    /// type renders differently than its structural form (a hand-written `impl Show`,
+    /// `Duration`, or a container of those), while derived-`Show` and primitive types
+    /// keep the structural render unchanged. Both backends must agree byte-for-byte.
+    #[test]
+    fn rfc0053_interpolation_honors_custom_show_on_both_backends() {
+        let src = "import show\nimport duration\n\ntype P:\n    P(Int)\n\nimpl Show for P:\n    fn show(self) -> String:\n        match self:\n            P(n) -> \"P<${n}>\"\n\ntype Q derive(Show):\n    Q(Int)\n\nfn main(console: Console):\n    print(console, \"${P(5)}\")\n    print(console, \"${[P(1), P(2)]}\")\n    print(console, \"${90000ms}\")\n    print(console, \"${Q(7)}\")\n    print(console, \"${42}\")\n";
+        // custom Show honored; container recurses; Duration -> human; derived/primitive
+        // unchanged.
+        let expected = ["P<5>", "[P<1>, P<2>]", "1m30s", "Q(7)", "42"];
+        assert_eq!(link_run(src), expected, "interp: interpolation honors custom Show");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: interpolation must honor custom Show identically",
+        );
+    }
+
     /// (BUG-240, parity) `math.abs(Int.MIN)` has no positive `Int`, so both backends
     /// must ABORT rather than silently wrap back to the negative `Int.MIN`. Ordinary
     /// magnitudes still agree. (Was a stable wrong answer: `-Int.MIN == Int.MIN`.)
