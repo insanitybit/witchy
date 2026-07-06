@@ -41,6 +41,20 @@ implementation-notes: |
         monomorphizes the renderer for a shape whose type has a Show impl, emit a CALL to
         that impl instead of the structural walk.
   Both must use the identical "type has Show impl" predicate so they agree -> parity.
+  DESIGN CRUX (the real decision, found 2026-07-06): interp dispatches via mangled
+  `Show__{tyname}__show` (mirror interpreter.rs:681's `PartialEq__{name}__eq` +
+  contains_key check; get tyname from `ctor_type_name` for a Value::Ctor / the Ty for
+  primitives). BUT primitives (Int/Bool/String) AND containers already have Show impls
+  that ARE the structural form — so "flip whenever a Show impl exists" routes EVERY
+  `${int}` through show-dispatch: a perf hit AND a large codegen change (ts_helpers
+  would emit a show call for primitives too). The clean cut: flip ONLY for types with a
+  CUSTOM (non-derived) Show — add a `show_derived: bool` to TypeDef exactly like the
+  existing `partial_eq_derived` (set by derive::expand when it generates the Show impl),
+  and flip `__render(x)` to `show(x)` only when x's type has a Show impl that is NOT
+  derived (Duration's hand-written impl, user `impl Show for P`, and containers whose
+  ELEMENT has a custom Show). Everything else keeps today's structural __render — zero
+  perf/behavior change for the common case. THIS is why it's deep: it needs the
+  derived-vs-custom Show distinction plumbed through derive + typeck + both renderers.
   The `show(x)` dispatch already works (say uses it), so reuse it; only impl-LESS types
   keep the structural __render (the smaller cut — no need for "every type gets derived
   Show"). Then blast radius (Duration + custom-Show in examples/durations, examples/
