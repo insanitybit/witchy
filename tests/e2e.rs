@@ -844,9 +844,10 @@ fn full_lifecycle_publish_promote_add_use() {
     assert!(out.status.success(), "run failed: {}", stderr(&out));
     assert!(stdout(&out).contains("HEY witchy"), "got: {}", stdout(&out));
 
-    // The lockfile pins the dependency by content hash.
+    // The lockfile pins the dependency by content hash. BUG-193: the lock identity
+    // is the manifest name `acme/strkit`; the import alias `strkit` is recorded too.
     let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
-    assert!(lock.contains("name = \"strkit\""), "lock: {lock}");
+    assert!(lock.contains("name = \"acme/strkit\"") && lock.contains("alias = \"strkit\""), "lock: {lock}");
     assert!(lock.contains("sha256:"), "lock: {lock}");
 }
 
@@ -1031,8 +1032,16 @@ fn transitive_dependency_add_pulls_the_closure() {
     assert!(app.join("vendor/http/src/http.witchy").exists(), "http must vendor");
     assert!(app.join("vendor/url/src/url.witchy").exists(), "the transitive url must vendor");
     let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
-    assert!(lock.contains("name = \"http\""), "lock must pin http: {lock}");
-    assert!(lock.contains("name = \"url\""), "lock must pin the transitive url: {lock}");
+    // BUG-193: lock identity binds to the dependency's MANIFEST name (`acme/http`),
+    // not its spoofable import alias (`http`); the alias is recorded separately.
+    assert!(
+        lock.contains("name = \"acme/http\"") && lock.contains("alias = \"http\""),
+        "lock must pin http by its manifest identity: {lock}"
+    );
+    assert!(
+        lock.contains("name = \"acme/url\"") && lock.contains("alias = \"url\""),
+        "lock must pin the transitive url by its manifest identity: {lock}"
+    );
 }
 
 /// The supply-chain gate on a registry upgrade: `pm update` re-resolves a vendored
@@ -1112,9 +1121,11 @@ fn diamond_dependency_resolves_shared_base_once() {
     let out = fe.pm(&app, &["add", "acme/right"], None);
     assert!(out.status.success(), "add right failed: {}\n{}", stderr(&out), stdout(&out));
 
-    // base appears exactly once in the lock despite two paths to it.
+    // base appears exactly once in the lock despite two paths to it. BUG-193: the
+    // lock pins it by its manifest identity `acme/base` (alias `base`), so match on
+    // the identity key.
     let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
-    let occurrences = lock.matches("name = \"base\"").count();
+    let occurrences = lock.matches("name = \"acme/base\"").count();
     assert_eq!(occurrences, 1, "shared base must resolve once; lock:\n{lock}");
     assert!(app.join("vendor/base/src/base.witchy").exists(), "base must vendor once");
 }
@@ -3507,8 +3518,10 @@ fn witchy_pm_add_build_run_consumes_a_fetched_rune() {
         "the fetched rune must be vendored into the project's vendor/ tree"
     );
     let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
+    // BUG-193: the lock pins the dependency by its manifest identity `acme/lib`
+    // (import alias `lib` recorded separately), not the spoofable alias key.
     assert!(
-        lock.contains("name = \"lib\"") && lock.contains("version = \"1.0.0\"") && lock.contains("hash = \"sha256:"),
+        lock.contains("name = \"acme/lib\"") && lock.contains("alias = \"lib\"") && lock.contains("version = \"1.0.0\"") && lock.contains("hash = \"sha256:"),
         "witchy.lock must pin the resolved dependency: {lock:?}"
     );
 
