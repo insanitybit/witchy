@@ -130,9 +130,10 @@ pub fn human(d: Duration) -> String:
 
 // Parse a duration string to a `Duration` — the inverse of `human`. Accepts
 // unit-tagged input ("1h2m3s", "500ms", "2hr", any subset) using ms/s/m/h/hr/d/w,
-// and a bare number as plain milliseconds. `Err` on a stray character or a
-// dangling unit-less number after units were given ("1h30"). Returns `Result`
-// to align with `semver.parse`/`time.parse`/`url.parse` (RFC-0044 rule 2:
+// and a bare number as plain milliseconds. `Err` on a stray character, a unit with
+// no preceding count ("ms", "1hms"), a dangling unit-less number after units were
+// given ("1h30"), or a value that overflows a 64-bit millisecond count. Returns
+// `Result` to align with `semver.parse`/`time.parse`/`url.parse` (RFC-0044 rule 2:
 // invalid input is a reachable `Result`, not `Option`).
 pub fn parse(s: String) -> Result(Duration, String):
     var total = 0
@@ -145,53 +146,28 @@ pub fn parse(s: String) -> Result(Duration, String):
         let c = string.substring(s, i, i + 1)
         let two = if i + 1 < n: string.substring(s, i, i + 2) else: ""
         if c >= "0" && c <= "9":
-            cur = cur * 10 + string.to_int(c)
+            match push_digit(cur, string.to_int(c)):
+                Some(v) -> cur = v
+                None -> return Err("`" + s + "` overflows a 64-bit millisecond duration")
             seen_digit = true
             i = i + 1
-        else if two == "ms":
-            total = total + cur
-            cur = 0
-            seen_digit = false
-            seen_unit = true
-            i = i + 2
-        else if two == "hr":
-            total = total + cur * 3600000
-            cur = 0
-            seen_digit = false
-            seen_unit = true
-            i = i + 2
-        else if c == "s":
-            total = total + cur * 1000
-            cur = 0
-            seen_digit = false
-            seen_unit = true
-            i = i + 1
-        else if c == "m":
-            total = total + cur * 60000
-            cur = 0
-            seen_digit = false
-            seen_unit = true
-            i = i + 1
-        else if c == "h":
-            total = total + cur * 3600000
-            cur = 0
-            seen_digit = false
-            seen_unit = true
-            i = i + 1
-        else if c == "d":
-            total = total + cur * 86400000
-            cur = 0
-            seen_digit = false
-            seen_unit = true
-            i = i + 1
-        else if c == "w":
-            total = total + cur * 604800000
-            cur = 0
-            seen_digit = false
-            seen_unit = true
-            i = i + 1
         else:
-            return Err("`" + s + "` is not a duration (expected e.g. `1h2m3s`, `500ms`, or a bare-ms number)")
+            // A unit token: read its millisecond factor and character width, then
+            // fold the pending count into `total` with the same missing-count and
+            // overflow guards for every unit.
+            match unit_factor(c, two):
+                None -> return Err("`" + s + "` is not a duration (expected e.g. `1h2m3s`, `500ms`, or a bare-ms number)")
+                Some(uf) ->
+                    let (mult, width) = uf
+                    if !seen_digit:
+                        return Err("`" + s + "` has a unit with no count (expected a number before `" + string.substring(s, i, i + width) + "`)")
+                    match scale_add(total, cur, mult):
+                        Some(v) -> total = v
+                        None -> return Err("`" + s + "` overflows a 64-bit millisecond duration")
+                    cur = 0
+                    seen_digit = false
+                    seen_unit = true
+                    i = i + width
     if seen_digit:
         if seen_unit:
             Err("`" + s + "` has a trailing unit-less number (expected a unit like `s`/`m`/`h` after every count)")
@@ -201,3 +177,44 @@ pub fn parse(s: String) -> Result(Duration, String):
         Ok(int_to_duration(total))
     else:
         Err("`" + s + "` is empty (expected a duration like `1h2m3s`, `500ms`, or a bare-ms number)")
+
+// The millisecond factor and character width of the unit token at the cursor: the
+// two-character `ms`/`hr` take precedence over the one-character `s`/`m`/`h`/`d`/`w`;
+// `None` for any other character.
+fn unit_factor(c: String, two: String) -> Option((Int, Int)):
+    if two == "ms":
+        Some((1, 2))
+    else if two == "hr":
+        Some((3600000, 2))
+    else if c == "s":
+        Some((1000, 1))
+    else if c == "m":
+        Some((60000, 1))
+    else if c == "h":
+        Some((3600000, 1))
+    else if c == "d":
+        Some((86400000, 1))
+    else if c == "w":
+        Some((604800000, 1))
+    else:
+        None
+
+// Append decimal digit `d` (0..9) to a non-negative accumulator `cur`, or `None`
+// if the result would exceed the largest 64-bit integer (9223372036854775807).
+fn push_digit(cur: Int, d: Int) -> Option(Int):
+    if cur > (9223372036854775807 - d) / 10:
+        None
+    else:
+        Some(cur * 10 + d)
+
+// Add `cur * mult` to the non-negative running `total`, or `None` if either the
+// scaling or the sum would overflow a 64-bit integer. `mult` is always positive.
+fn scale_add(total: Int, cur: Int, mult: Int) -> Option(Int):
+    if cur > 9223372036854775807 / mult:
+        None
+    else:
+        let scaled = cur * mult
+        if total > 9223372036854775807 - scaled:
+            None
+        else:
+            Some(total + scaled)
