@@ -61,7 +61,7 @@ fn main(console: Console, args: List(String), root: Dir, bin: Dir, runner: Exec,
     else if cmd == "outdated":
         cmd_outdated(console, net, root, args)
     else if cmd == "update":
-        cmd_update(console, net, root, env, args)
+        cmd_update(console, net, root, env, clock, args)
     else if cmd == "audit":
         cmd_audit(console, root, arg(args, 1))
         0
@@ -130,29 +130,39 @@ fn cmd_info(console: Console, root: Dir, dir: String):
 fn cmd_run(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, clock: Clock, args: List(String)) -> Int:
     let target = arg(args, 1)
     let dir = if string.is_empty(target): "." else: target
+    // BUG-102: everything after `run <file|dir>` is the program's own argv and must
+    // be forwarded to the sandboxed run, not dropped.
+    let app_args = args_from(args, 2)
     if exists(root, join_path(dir, "witchy.toml")):
-        run_project(console, runner, root, bin, dir)
+        run_project(console, runner, root, bin, dir, app_args)
     else if string.is_empty(target):
         print(console, "usage: pm run <file|dir>")
         1
     else:
-        run_compiler(console, runner, bin, "run", [target])
+        run_compiler(console, runner, bin, "run", flatten_argv([target], app_args))
 
 // build <file|dir> — compile a program (and its vendored deps) to verify it builds.
 fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, args: List(String)) -> Int:
     let target = arg(args, 1)
     let dir = if string.is_empty(target): "." else: target
     if exists(root, join_path(dir, "witchy.toml")):
-        match project_entry(root, dir):
-            Some(entry) ->
-                let built = build_step_flags(console, runner, root, bin, dir)
-                if built.0 != 0:
-                    built.0
-                else:
-                    run_compiler(console, runner, bin, "build", flatten_argv(["compile", entry], flatten_argv(dep_flags(root, dir), built.1)))
+        match lock_integrity_error(root, dir):
+            Some(msg) ->
+                // BUG-094: refuse to link a vendored dependency whose on-disk source
+                // no longer matches its signed record — before any compile.
+                print(console, msg)
+                2
             None ->
-                print(console, "no entry source under " + join_path(dir, "src"))
-                1
+                match project_entry(root, dir):
+                    Some(entry) ->
+                        let built = build_step_flags(console, runner, root, bin, dir)
+                        if built.0 != 0:
+                            built.0
+                        else:
+                            run_compiler(console, runner, bin, "build", flatten_argv(["compile", entry], flatten_argv(dep_flags(root, dir), built.1)))
+                    None ->
+                        print(console, "no entry source under " + join_path(dir, "src"))
+                        1
     else if string.is_empty(target):
         print(console, "usage: pm build <file|dir>")
         1
@@ -171,19 +181,49 @@ fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, args
 // that holds both the app and its siblings). Without the explicit `--dir`, the
 // program's data Dir would default to pm's cwd — too wide when pm runs from a
 // workspace root, and missing the project's data files (e.g. `tasks.md`).
-fn run_project(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String) -> Int:
-    match project_entry(root, dir):
+fn run_project(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, app_args: List(String)) -> Int:
+    match lock_integrity_error(root, dir):
+        Some(msg) ->
+            // BUG-094: verify vendored sources against their signed records before
+            // linking + running, so a tampered vendored rune never executes.
+            print(console, msg)
+            2
         None ->
-            print(console, "no entry source under " + join_path(dir, "src"))
-            1
-        Some(entry) ->
-            let steps = build_step_flags(console, runner, root, bin, dir)
-            if steps.0 != 0:
-                steps.0
-            else:
-                compile_then_run(console, runner, root, bin, dir, entry, steps.1)
+            match project_entry(root, dir):
+                None ->
+                    print(console, "no entry source under " + join_path(dir, "src"))
+                    1
+                Some(entry) ->
+                    let steps = build_step_flags(console, runner, root, bin, dir)
+                    if steps.0 != 0:
+                        steps.0
+                    else:
+                        compile_then_run(console, runner, root, bin, dir, entry, steps.1, app_args)
 
-fn compile_then_run(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, entry: String, build_flags: List(String)) -> Int:
+// BUG-094: the integrity a `build`/`run` enforces before linking — every vendored
+// registry dependency's on-disk source must still hash to its own signed
+// `coven.json`. Path dependencies are the developer's local siblings (edited in
+// place), so they are NOT gated here; `pm verify`/`pm lock` cover those. `Some(msg)`
+// names the tampered runes, `None` when the vendored tree is intact (or absent).
+fn lock_integrity_error(root: Dir, dir: String) -> Option(String):
+    let bad = tampered_vendored(root, dir)
+    if list.length(bad) == 0:
+        None
+    else:
+        Some("BLOCK: refusing to build — vendored dependency source no longer matches its signed record for: " + list.join(bad, ", ") + " (re-run `pm add` or `pm verify " + dir + "`)")
+
+fn tampered_vendored(root: Dir, dir: String) -> List(String):
+    var bad = []
+    let vendor = join_path(dir, "vendor")
+    if exists(root, vendor):
+        for entry in list(subtree(root, vendor)):
+            let rune_dir = join_path(vendor, entry)
+            if exists(root, join_path(rune_dir, "coven.json")):
+                if rune_hash(root, rune_dir) != recorded_hash(read(root, join_path(rune_dir, "coven.json"))):
+                    bad = list.push(bad, entry)
+    bad
+
+fn compile_then_run(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, entry: String, build_flags: List(String), app_args: List(String)) -> Int:
     let outdir = join_path(dir, "target")
     if !exists(root, outdir):
         make_dir(root, outdir)
@@ -195,7 +235,8 @@ fn compile_then_run(console: Console, runner: Exec, root: Dir, bin: Dir, dir: St
         print(console, built.1)
         built.0
     else:
-        run_compiler(console, runner, bin, "run", ["sandbox", "--dir", project_data_dir(dir), wasm])
+        // BUG-102: forward the program's own argv after the sandboxed wasm.
+        run_compiler(console, runner, bin, "run", flatten_argv(["sandbox", "--dir", project_data_dir(dir), wasm], app_args))
 
 // The directory backing the program's runtime `Dir` grant — the project itself
 // (`.` when pm is run from inside the project, `<dir>` when run from a workspace
@@ -206,16 +247,11 @@ fn project_data_dir(dir: String) -> String:
     else:
         dir
 
-// The project's entry source: the first `.witchy` under <dir>/src, prefixed back
-// to a path the compiler can read relative to the project Dir.
+// The project's entry source: the conventional `src/<module_name(rune.name)>.witchy`
+// (BUG-086), falling back to the first `.witchy` under <dir>/src for a rune with a
+// non-conventional layout. Identical resolution to `module_in_src`.
 fn project_entry(root: Dir, dir: String) -> Option(String):
-    let srcdir = join_path(dir, "src")
-    if !exists(root, srcdir):
-        None
-    else:
-        match first_witchy(list(subtree(root, srcdir))):
-            Some(file) -> Some(join_path(srcdir, file))
-            None -> None
+    module_in_src(root, dir)
 
 // One `--dep name=path` token per dependency (TRANSITIVELY), mapping the `import
 // <name>` any linked module uses to the source the compiler should link. The
@@ -266,7 +302,14 @@ fn push_path_dep(root: Dir, dir: String, flags: List(String), pair: (String, Str
                 let dep_dir = normalize_path(join_path(dir, rel))
                 match module_in_src(root, dep_dir):
                     Some(src) -> collect_deps(root, dep_dir, dep_flag(flags, name, src))
-                    None -> flags
+                    None ->
+                        // BUG-415: a declared path dependency whose `src/` has no
+                        // module is broken. Don't silently drop the `--dep` — that
+                        // lets `import <name>` mis-resolve to `<consumer>/src/<name>.witchy`
+                        // and fail naming the CONSUMER's tree. Point the compiler at the
+                        // dependency's own conventional entry (which is missing) so the
+                        // error names the actual broken dependency directory.
+                        dep_flag(flags, name, conventional_entry(dep_dir, name))
             None -> flags
 
 fn dep_flag(flags: List(String), name: String, src: String) -> List(String):
@@ -284,15 +327,41 @@ fn has_dep(flags: List(String), name: String) -> Bool:
 fn vendored_module(root: Dir, dir: String, name: String) -> Option(String):
     module_in_src(root, join_path(join_path(dir, "vendor"), name))
 
-// The first `.witchy` under `<base>/src`, as a path the compiler can read.
+// The entry `.witchy` under `<base>/src`, as a path the compiler can read. BUG-086:
+// prefer the conventional `src/<module_name(rune.name)>.witchy` (the launcher's
+// `project_entry_file` convention) so a rune with several modules compiles its real
+// entry, not whichever file happens to sort first. Falls back to the first `.witchy`
+// in listing order for a rune whose entry does not follow the convention.
 fn module_in_src(root: Dir, base: String) -> Option(String):
     let srcdir = join_path(base, "src")
     if !exists(root, srcdir):
         None
     else:
-        match first_witchy(list(subtree(root, srcdir))):
-            Some(file) -> Some(join_path(srcdir, file))
-            None -> None
+        let conventional = manifest_entry(root, base)
+        if !string.is_empty(conventional) && exists(root, conventional):
+            Some(conventional)
+        else:
+            match first_witchy(list(subtree(root, srcdir))):
+                Some(file) -> Some(join_path(srcdir, file))
+                None -> None
+
+// The conventional entry-source path derived from the rune's own manifest identity
+// (`<base>/src/<module_name(rune.name)>.witchy`), or "" when there is no manifest /
+// no `rune.name`. BUG-086.
+fn manifest_entry(root: Dir, base: String) -> String:
+    let manifest_path = join_path(base, "witchy.toml")
+    if !exists(root, manifest_path):
+        ""
+    else:
+        match toml.get(read(root, manifest_path), "rune.name"):
+            Some(nm) -> conventional_entry(base, nm)
+            None -> ""
+
+// The conventional entry-source path for a rune at `base` whose module stem is
+// `name`: `<base>/src/<module_name(name)>.witchy` (the launcher's
+// `project_entry_file` convention). Used to name a MISSING source (BUG-415).
+fn conventional_entry(base: String, name: String) -> String:
+    join_path(join_path(base, "src"), module_name(name) + ".witchy")
 
 // Concatenate the leading argv with the trailing `--dep` flags into one argv.
 fn flatten_argv(head: List(String), tail: List(String)) -> List(String):
@@ -360,9 +429,26 @@ fn dep_dirs(root: Dir, dir: String) -> List((String, String)):
                 out = list.push(out, (name, normalize_path(join_path(dir, rel))))
     let vendor = join_path(dir, "vendor")
     if exists(root, vendor):
+        let lockpath = join_path(dir, "witchy.lock")
+        let lock = if exists(root, lockpath): read(root, lockpath) else: ""
         for name in list(subtree(root, vendor)):
-            out = list.push(out, (name, join_path(vendor, name)))
+            let rune_dir = join_path(vendor, name)
+            // BUG-095: only treat a vendored subdir as a real dependency (and thus
+            // run its build step) when it carries provenance (coven.json) AND is
+            // pinned in witchy.lock. A stray directory dropped under vendor/, or an
+            // unpinned partial add, must not have its build step executed.
+            if exists(root, join_path(rune_dir, "coven.json")) && locked_alias(lock, name):
+                out = list.push(out, (name, rune_dir))
     out
+
+// Whether the lock records a `[[rune]]` whose local import alias is `alias` — the
+// gate for a vendored dependency to count as resolved (BUG-095).
+fn locked_alias(lock: String, alias: String) -> Bool:
+    var found = false
+    for block in toml.array_tables(lock, "rune"):
+        if entry_alias(block) == alias:
+            found = true
+    found
 
 // Whether a dependency ships a `build` step (`src/build.witchy` defining `build`).
 fn has_build_step(root: Dir, depdir: String) -> Bool:
@@ -395,7 +481,7 @@ fn run_one_build_step(console: Console, runner: Exec, root: Dir, bin: Dir, dir: 
 fn exec_build_step(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, name: String, depdir: String, manifest: String) -> (Int, List(String)):
     let gendir = join_path(join_path(dir, "build-out"), name)
     let buildfile = join_path(join_path(depdir, "src"), "build.witchy")
-    let key = build_cache_key(read(root, buildfile))
+    let key = build_cache_key(root, dir, manifest, name, read(root, buildfile))
     if !cache_hit(root, gendir, key):
         let argv = flatten_argv(["build-step", buildfile, "--out", gendir], grant_flags(manifest, name, dir))
         let result = exec.run_args(runner, bin, "witchy", argv)
@@ -426,12 +512,37 @@ fn audit_then_flags(console: Console, root: Dir, dir: String, name: String, depd
     else:
         (0, flags)
 
-// A deterministic build step is a pure function of its build source, so its output
-// is cached by a hash of that source: a re-build with an unchanged step reuses the
-// prior generated files instead of re-running. (The compiler confines the step;
-// non-deterministic steps that read env/exec/net are out of scope for these runes.)
-fn build_cache_key(build_src: String) -> String:
-    "witchy-build-cache-v1:" + crypto.sha256(build_src)
+// A deterministic build step is a pure function of its build source AND the inputs
+// it reads. BUG-082: keying the cache on the build source alone would serve stale
+// output when a granted read INPUT (not the build.witchy) changes. Key on the build
+// source, the recursive contents of every granted `--read` input, and the grant
+// surface (env keys / exec tools) — so any input change invalidates the cache. (The
+// compiler confines the step; env/exec VALUE non-determinism stays out of scope.)
+fn build_cache_key(root: Dir, dir: String, manifest: String, name: String, build_src: String) -> String:
+    var material = "build-src\n" + build_src
+    let section = "build.grants.\"" + name + "\""
+    for p in toml.get_array(manifest, section + ".read"):
+        material = material + "\nread " + p + "=" + read_input_digest(root, normalize_path(join_path(dir, p)))
+    for k in toml.get_array(manifest, section + ".env"):
+        material = material + "\nenv " + k
+    for t in toml.get_array(manifest, section + ".exec"):
+        material = material + "\nexec " + t
+    "witchy-build-cache-v2:" + crypto.sha256(material)
+
+// The content digest of a granted read input — a single file, or (a read grant is a
+// directory root) the recursive contents of a directory. Absent inputs hash to a
+// stable sentinel so a later-appearing input still flips the key.
+fn read_input_digest(root: Dir, path: String) -> String:
+    if !exists(root, path):
+        "(absent)"
+    else if is_dir(root, path):
+        var material = ""
+        for f in fs.collect_files(root, path, "", ""):
+            let (rel, contents) = f
+            material = material + rel + "=" + crypto.sha256(contents) + "\n"
+        crypto.sha256(material)
+    else:
+        crypto.sha256(read(root, path))
 
 fn cache_hit(root: Dir, gendir: String, key: String) -> Bool:
     let keyfile = join_path(gendir, ".witchy-build-cache")
@@ -481,6 +592,12 @@ fn grant_flags(manifest: String, name: String, dir: String) -> List(String):
         out = list.push(list.push(out, "--env"), k)
     for t in toml.get_array(manifest, section + ".exec"):
         out = list.push(list.push(out, "--exec"), t)
+    // BUG-081: a granted BuildNet host must be plumbed to the confined build step
+    // just like read/env/exec — one `--net <host:port>` per allowed address. (The
+    // matching consumer of this flag in the compiler's `build-step` command is the
+    // Rust TCB half; without it the grant is inert, but the policy plumbing is here.)
+    for h in toml.get_array(manifest, section + ".net"):
+        out = list.push(list.push(out, "--net"), h)
     out
 
 // The build-axis footprint of a source: the build capabilities its `build`
@@ -582,20 +699,29 @@ fn cmd_deps(console: Console, root: Dir, dir: String):
                 let (name, inline) = pair
                 print(console, name + " -> " + dep_source(inline))
 
-// tree <dir> — the rune and its direct dependencies, indented.
+// tree <dir> — the rune and its dependency tree, indented. BUG-134: recurses into
+// path dependencies (the transitive closure), not just the direct line; a registry
+// dependency is a leaf (its own subtree lives in the registry, not on disk). A
+// diamond/cycle terminates via the visited set.
 fn cmd_tree(console: Console, root: Dir, dir: String):
     if string.is_empty(dir):
         print(console, "usage: pm tree <dir>")
     else:
         let manifest = read(root, join_path(dir, "witchy.toml"))
         print(console, field(manifest, "rune.name"))
-        let deps = toml.table(manifest, "dependencies")
-        if list.length(deps) == 0:
+        if list.length(toml.table(manifest, "dependencies")) == 0:
             print(console, "  (no dependencies)")
         else:
-            for pair in deps:
-                let (name, inline) = pair
-                print(console, "  " + name + " (" + dep_source(inline) + ")")
+            tree_children(console, root, dir, "  ", [])
+
+fn tree_children(console: Console, root: Dir, dir: String, indent: String, seen: List(String)):
+    if exists(root, join_path(dir, "witchy.toml")):
+        for pair in toml.table(read(root, join_path(dir, "witchy.toml")), "dependencies"):
+            let (name, inline) = pair
+            print(console, indent + name + " (" + dep_source(inline) + ")")
+            if let Some(rel) = toml.inline_get(inline, "path"):
+                if !has(seen, name):
+                    tree_children(console, root, normalize_path(join_path(dir, rel)), indent + "  ", list.push(seen, name))
 
 // vendor <dir> — materialize path dependencies' sources into <dir>/vendor/<name>
 // for offline, auditable builds. Copies each dep's src/*.witchy and manifest.
@@ -604,28 +730,53 @@ fn cmd_vendor(console: Console, root: Dir, dir: String) -> Int:
         print(console, "usage: pm vendor <dir>")
         1
     else:
-        let manifest = read(root, join_path(dir, "witchy.toml"))
         let vendor = join_path(dir, "vendor")
         if !exists(root, vendor):
             make_dir(root, vendor)
-        var count = 0
-        for pair in toml.table(manifest, "dependencies"):
-            let (name, inline) = pair
-            if let Some(rel) = toml.inline_get(inline, "path"):
-                let dep_dir = normalize_path(join_path(dir, rel))
-                let dest = join_path(vendor, name)
-                if !exists(root, dest):
-                    make_dir(root, dest)
-                if !exists(root, join_path(dest, "src")):
-                    make_dir(root, join_path(dest, "src"))
-                for f in fs.collect_files(root, join_path(dep_dir, "src"), "src", ".witchy"):
-                    let (relpath, contents) = f
-                    write(root, join_path(dest, relpath), contents)
-                    count = count + 1
-                if exists(root, join_path(dep_dir, "witchy.toml")):
-                    write(root, join_path(dest, "witchy.toml"), read(root, join_path(dep_dir, "witchy.toml")))
+        // BUG-136: materialize the whole resolved PATH-dependency closure, not just
+        // the direct manifest entries — a transitive path dep (`app -> lib -> base`)
+        // must be vendored too, or an offline build can't resolve it. Deduplicated by
+        // vendored name so a diamond/cycle terminates.
+        let (_seen, count) = vendor_closure(root, dir, vendor, [], 0)
         print(console, "vendored ${count} file(s) into " + vendor)
         0
+
+// Vendor the path-dependency closure rooted at `base` into `vendor/<name>`, walking
+// each dep's own manifest recursively. Threads a visited set (import aliases already
+// vendored) and a running file count.
+fn vendor_closure(root: Dir, base: String, vendor: String, seen: List(String), count: Int) -> (List(String), Int):
+    var visited = seen
+    var total = count
+    if exists(root, join_path(base, "witchy.toml")):
+        for pair in toml.table(read(root, join_path(base, "witchy.toml")), "dependencies"):
+            let (name, inline) = pair
+            if let Some(rel) = toml.inline_get(inline, "path"):
+                if !has(visited, name):
+                    visited = list.push(visited, name)
+                    let dep_dir = normalize_path(join_path(base, rel))
+                    total = total + vendor_one(root, dep_dir, vendor, name)
+                    let (v2, c2) = vendor_closure(root, dep_dir, vendor, visited, total)
+                    visited = v2
+                    total = c2
+    (visited, total)
+
+// Copy one dependency's `src/**/*.witchy` (+ its manifest) into `vendor/<name>`,
+// returning the number of source files written.
+fn vendor_one(root: Dir, dep_dir: String, vendor: String, name: String) -> Int:
+    let dest = join_path(vendor, name)
+    if !exists(root, dest):
+        make_dir(root, dest)
+    if !exists(root, join_path(dest, "src")):
+        make_dir(root, join_path(dest, "src"))
+    var count = 0
+    for f in fs.collect_files(root, join_path(dep_dir, "src"), "src", ".witchy"):
+        let (relpath, contents) = f
+        fs.ensure_dir(root, join_path(dest, fs.parent_dir(relpath)))
+        write(root, join_path(dest, relpath), contents)
+        count = count + 1
+    if exists(root, join_path(dep_dir, "witchy.toml")):
+        write(root, join_path(dest, "witchy.toml"), read(root, join_path(dep_dir, "witchy.toml")))
+    count
 
 // publish <dir> [host:port] [identity] — stage a rune to a coven registry. Reads
 // the manifest + full src tree, builds the coven publish envelope, and POSTs it.
@@ -889,22 +1040,43 @@ fn resp_field(text: String, key: String) -> String:
             None -> "?"
         Err(_e) -> "?"
 
-// why <dir> <name> — explain a dependency's presence in the rune.
+// why <dir> <name> — explain a dependency's presence in the rune. BUG-134: reports
+// a transitive dependency too, tracing the path from the root to it (`app -> lib ->
+// name`), not only a direct match.
 fn cmd_why(console: Console, root: Dir, dir: String, name: String) -> Int:
     if string.is_empty(dir) || string.is_empty(name):
         print(console, "usage: pm why <dir> <name>")
         1
     else:
         let manifest = read(root, join_path(dir, "witchy.toml"))
-        var found = false
+        var direct = false
         for pair in toml.table(manifest, "dependencies"):
             let (dep, inline) = pair
             if dep == name:
-                found = true
+                direct = true
                 print(console, name + " — direct dependency (" + dep_source(inline) + ")")
-        if !found:
-            print(console, name + " is not a dependency of this rune")
+        if !direct:
+            match why_path(root, dir, name, []):
+                Some(chain) -> print(console, name + " — transitive dependency (" + chain + ")")
+                None -> print(console, name + " is not a dependency of this rune (directly or transitively)")
         0
+
+// The dependency path from `dir` down to `target` (import names joined by ` -> `),
+// or None if `target` is not reachable through the path-dependency closure.
+fn why_path(root: Dir, dir: String, target: String, seen: List(String)) -> Option(String):
+    var found = None
+    if exists(root, join_path(dir, "witchy.toml")):
+        for pair in toml.table(read(root, join_path(dir, "witchy.toml")), "dependencies"):
+            let (name, inline) = pair
+            if is_none(found):
+                if name == target:
+                    found = Some(name)
+                else:
+                    if let Some(rel) = toml.inline_get(inline, "path"):
+                        if !has(seen, name):
+                            if let Some(sub) = why_path(root, normalize_path(join_path(dir, rel)), target, list.push(seen, name)):
+                                found = Some(name + " -> " + sub)
+    found
 
 // why-cap <dir> <Cap> — which dependencies introduce a capability into the tree.
 fn cmd_why_cap(console: Console, root: Dir, dir: String, cap: String) -> Int:
@@ -912,8 +1084,7 @@ fn cmd_why_cap(console: Console, root: Dir, dir: String, cap: String) -> Int:
         print(console, "usage: pm why-cap <dir> <Cap>")
         1
     else:
-        let manifest = read(root, join_path(dir, "witchy.toml"))
-        let who = gate_contributors(root, dir, manifest, cap)
+        let who = gate_contributors(root, dir, cap)
         if list.length(who) == 0:
             print(console, "no dependency demands " + cap)
         else:
@@ -970,11 +1141,38 @@ fn cmd_lock(console: Console, root: Dir, dir: String) -> Int:
                 print(console, p)
             2
         else:
-            let n = list.length(toml.table(manifest, "dependencies"))
+            // BUG-047/101/135: pin the full transitive path-dep closure — count what
+            // was actually locked, not just the direct manifest entries.
+            let n = list.length(path_closure(root, dir))
             let lockpath = join_path(dir, "witchy.lock")
             write(root, lockpath, generate_lock(root, dir))
             print(console, "locked ${n} dependencies -> ${lockpath}")
             0
+
+// The transitive path-dependency closure of the rune at `dir`, as (import-name,
+// resolved-dir) pairs. Walks each dependency's own manifest, deduplicated by import
+// name so a diamond/cycle terminates. Resolved dirs are relative to the project Dir.
+fn path_closure(root: Dir, dir: String) -> List((String, String)):
+    path_closure_rec(root, dir, [])
+
+fn path_closure_rec(root: Dir, base: String, acc: List((String, String))) -> List((String, String)):
+    var out = acc
+    if exists(root, join_path(base, "witchy.toml")):
+        for pair in toml.table(read(root, join_path(base, "witchy.toml")), "dependencies"):
+            let (name, inline) = pair
+            if let Some(rel) = toml.inline_get(inline, "path"):
+                if !closure_has(out, name):
+                    let dep_dir = normalize_path(join_path(base, rel))
+                    out = list.push(out, (name, dep_dir))
+                    out = path_closure_rec(root, dep_dir, out)
+    out
+
+fn closure_has(xs: List((String, String)), name: String) -> Bool:
+    var found = false
+    for x in xs:
+        if x.0 == name:
+            found = true
+    found
 
 // Validate every dependency BEFORE `pm lock` turns it into lock evidence, returning
 // a `BLOCK:` diagnostic per offending dependency (empty = OK to lock):
@@ -1029,8 +1227,7 @@ fn cmd_verify(console: Console, net: Net, root: Dir, env: Env, clock: Clock, arg
         1
     else:
         let lock = read(root, join_path(dir, "witchy.lock"))
-        let manifest = read(root, join_path(dir, "witchy.toml"))
-        let hash_code = report_verify(console, hash_mismatches(root, dir, manifest, lock))
+        let hash_code = report_verify(console, hash_mismatches(root, dir, lock))
         let tuf_code = verify_tuf(console, net, root, env, clock, dir, lock)
         if hash_code != 0:
             hash_code
@@ -1292,14 +1489,16 @@ fn pinned_rootpub(lock: String) -> String:
         None -> ""
 
 // The path-dependency names whose recomputed hash differs from the lockfile's.
-fn hash_mismatches(root: Dir, dir: String, manifest: String, lock: String) -> List(String):
+// BUG-047/135: walks the full transitive path-dep closure, not just the direct
+// manifest entries — a tampered (or unpinned) transitive dep is caught too. A
+// closure member absent from the lock recomputes to a hash that can't match the
+// "(absent)" sentinel, so it is reported.
+fn hash_mismatches(root: Dir, dir: String, lock: String) -> List(String):
     var bad = []
-    for pair in toml.table(manifest, "dependencies"):
-        let (name, inline) = pair
-        if let Some(rel) = toml.inline_get(inline, "path"):
-            let dep_dir = normalize_path(join_path(dir, rel))
-            if rune_hash(root, dep_dir) != locked_hash(lock, name):
-                bad = list.push(bad, name)
+    for entry in path_closure(root, dir):
+        let (name, dep_dir) = entry
+        if rune_hash(root, dep_dir) != locked_hash(lock, name):
+            bad = list.push(bad, name)
     bad
 
 // The `hash` field of the `[[rune]]` entry named `name`, or "(absent)".
@@ -1343,20 +1542,19 @@ fn cmd_gate(console: Console, root: Dir, args: List(String)) -> Int:
         print(console, "no witchy.lock — run `pm lock " + dir + "` first")
         1
     else:
-        let manifest = read(root, join_path(dir, "witchy.toml"))
         let lock = read(root, join_path(dir, "witchy.lock"))
-        let baseline = union_all(lock_baseline(lock), allowed_from(args, 2))
-        let demanded = resolution_footprint(root, dir, manifest)
-        report_gate(console, root, dir, manifest, rights.uncovered(baseline, demanded))
+        let baseline = union_all(lock_baseline(lock), args_from(args, 2))
+        let demanded = resolution_footprint(root, dir)
+        report_gate(console, root, dir, rights.uncovered(baseline, demanded))
 
-fn report_gate(console: Console, root: Dir, dir: String, manifest: String, widened: List(String)) -> Int:
+fn report_gate(console: Console, root: Dir, dir: String, widened: List(String)) -> Int:
     if list.length(widened) == 0:
         print(console, "OK: dependencies demand no authority beyond witchy.lock")
         0
     else:
         print(console, "BLOCK: dependencies demand new authority: " + list.join(widened, ", "))
         for cap in widened:
-            print(console, "  " + cap + " <- " + list.join(gate_contributors(root, dir, manifest, cap), ", "))
+            print(console, "  " + cap + " <- " + list.join(gate_contributors(root, dir, cap), ", "))
         2
 
 // The capabilities the lockfile already records (union of every [[rune]] entry's
@@ -1368,27 +1566,33 @@ fn lock_baseline(lock: String) -> List(String):
             out = add_unique(out, cap)
     out
 
-// The aggregate authority the current dependency sources demand.
-fn resolution_footprint(root: Dir, dir: String, manifest: String) -> List(String):
+// The aggregate authority the current dependency sources demand. BUG-080: the whole
+// transitive path-dep closure (not just direct entries), each dep's footprint being
+// the union over ALL its src modules (rune_footprint, BUG-085) — matching coven's
+// computed_footprint, so the local gate can't miss a capability a transitive dep or
+// a non-entry module reaches for.
+fn resolution_footprint(root: Dir, dir: String) -> List(String):
     var out = []
-    for pair in toml.table(manifest, "dependencies"):
-        let (name, inline) = pair
-        if let Some(rel) = toml.inline_get(inline, "path"):
-            for cap in rune_footprint(root, normalize_path(join_path(dir, rel))):
-                out = add_unique(out, cap)
+    for entry in path_closure(root, dir):
+        let (_name, dep_dir) = entry
+        for cap in rune_footprint(root, dep_dir):
+            out = add_unique(out, cap)
     out
 
-// The dependencies whose own footprint covers `cap` — who introduced it.
-fn gate_contributors(root: Dir, dir: String, manifest: String, cap: String) -> List(String):
+// The dependencies whose own footprint covers `cap` — who introduced it. Walks the
+// transitive closure (BUG-080/134), so `why-cap` names a deep contributor too.
+fn gate_contributors(root: Dir, dir: String, cap: String) -> List(String):
     var who = []
-    for pair in toml.table(manifest, "dependencies"):
-        let (name, inline) = pair
-        if let Some(rel) = toml.inline_get(inline, "path"):
-            if rights.any_covers(rune_footprint(root, normalize_path(join_path(dir, rel))), cap):
-                who = list.push(who, name)
+    for entry in path_closure(root, dir):
+        let (name, dep_dir) = entry
+        if rights.any_covers(rune_footprint(root, dep_dir), cap):
+            who = list.push(who, name)
     who
 
-fn allowed_from(let args: List(String), start: Int) -> List(String):
+// The arguments at index `start` and beyond (a positional slice). Used both to
+// collect a gate's trailing accepted-cap list and to forward a program's own argv
+// after `pm run <file|dir>` (BUG-102).
+fn args_from(let args: List(String), start: Int) -> List(String):
     var out = []
     var i = 0
     for a in args:
@@ -1411,26 +1615,34 @@ fn add_unique(xs: List(String), x: String) -> List(String):
 
 // The canonical lockfile text for a rune: a `[[rune]]` block per dependency,
 // pinning its resolved version, source, content hash, and runtime footprint.
+// BUG-047/101/135: pins the FULL transitive path-dependency closure — a diamond
+// (`app -> {a,b} -> base`) locks `base` once, not never. Direct registry deps get
+// an informational placeholder (pm lock is path-only; `lock_problems` blocks them
+// before this runs, but the marker is kept for completeness).
 fn generate_lock(root: Dir, dir: String) -> String:
     let manifest = read(root, join_path(dir, "witchy.toml"))
     var out = "# witchy.lock — generated by `pm lock`. Pins every dependency by content\n# hash. Regenerate with `pm lock`; verify with `pm verify`. Do not edit by hand.\n"
     for pair in toml.table(manifest, "dependencies"):
         let (name, inline) = pair
-        out = out + lock_entry(root, dir, name, inline)
+        if is_none(toml.inline_get(inline, "path")):
+            out = out + registry_placeholder(name)
+    for entry in path_closure(root, dir):
+        let (name, dep_dir) = entry
+        out = out + closure_path_entry(root, name, dep_dir)
     out
 
-fn lock_entry(root: Dir, dir: String, name: String, inline: String) -> String:
-    match toml.inline_get(inline, "path"):
-        Some(rel) -> path_entry(root, dir, name, rel)
-        None -> "\n[[rune]]\nname = \"" + name + "\"\nsource = \"coven\"\n# unresolved: registry deps need coven (pm publish/fetch)\n"
+fn registry_placeholder(name: String) -> String:
+    "\n[[rune]]\nname = \"" + name + "\"\nsource = \"coven\"\n# unresolved: registry deps need coven (pm publish/fetch)\n"
 
-fn path_entry(root: Dir, dir: String, name: String, rel: String) -> String:
-    let dep_dir = normalize_path(join_path(dir, rel))
+// A `[[rune]]` block for a resolved path-closure member. `dep_dir` is the resolved
+// directory (relative to the project); the `source` records it so the entry is
+// self-describing. `hash`/`runtime_footprint` are recomputed from the dep's source.
+fn closure_path_entry(root: Dir, name: String, dep_dir: String) -> String:
     let dep_manifest = read(root, join_path(dep_dir, "witchy.toml"))
     let version = field(dep_manifest, "rune.version")
     let hash = rune_hash(root, dep_dir)
     let fp = footprint_toml(rune_footprint(root, dep_dir))
-    "\n[[rune]]\nname = \"" + name + "\"\nversion = \"" + version + "\"\nsource = \"path:" + rel + "\"\nhash = \"" + hash + "\"\nruntime_footprint = [" + fp + "]\n"
+    "\n[[rune]]\nname = \"" + name + "\"\nversion = \"" + version + "\"\nsource = \"path:" + dep_dir + "\"\nhash = \"" + hash + "\"\nruntime_footprint = [" + fp + "]\n"
 
 // The rune's content address: the canonical hash over `witchy.toml` plus every
 // `src/**/*.witchy` (recursively), matching coven's store byte-for-byte (so a
@@ -1490,7 +1702,7 @@ fn drop_last(xs: List(String)) -> List(String):
 // that moved (verifying signature + hash), then regenerates `witchy.lock`. With a
 // `name` argument only that rune is updated; the others stay pinned at their
 // vendored version. Run from a project directory (cwd is the project Dir).
-fn cmd_update(console: Console, net: Net, root: Dir, env: Env, args: List(String)) -> Int:
+fn cmd_update(console: Console, net: Net, root: Dir, env: Env, clock: Clock, args: List(String)) -> Int:
     let allowed = allowed_caps(args)
     let positional = update_positionals(args)
     let only = list.at(positional, 0)
@@ -1505,7 +1717,12 @@ fn cmd_update(console: Console, net: Net, root: Dir, env: Env, args: List(String
                 print(console, "no vendored dependencies to update")
                 0
             else:
-                update_vendored(console, net, root, host, port, only, allowed)
+                // BUG-090: honor the staging cooldown on re-resolution (a fresh
+                // release inside its cooldown is not resolvable without --allow-fresh),
+                // the same compromised-release protection `add` applies.
+                let cooldown = cooldown_now(env, clock, args)
+                let manifest = if exists(root, "witchy.toml"): read(root, "witchy.toml") else: ""
+                update_vendored(console, net, root, host, port, only, allowed, cooldown, manifest)
 
 // `update`'s positional args (`[only, addr]`), skipping the command word and any
 // `--allow-cap <Cap>` flag pairs. Always length 2 (absent positionals are ""), so
@@ -1551,19 +1768,28 @@ fn set_at(xs: List(String), i: Int, v: String) -> List(String):
         j = j + 1
     out
 
-fn update_vendored(console: Console, net: Net, root: Dir, host: String, port: Int, only: String, allowed: List(String)) -> Int:
+fn update_vendored(console: Console, net: Net, root: Dir, host: String, port: Int, only: String, allowed: List(String), cooldown: (Int, Int, Bool), manifest: String) -> Int:
     var changed = 0
     var blocked = false
+    var failed = false
     for entry in list(subtree(root, "vendor")):
         if string.is_empty(only) || entry == only:
-            let outcome = update_one(console, net, root, host, port, entry, allowed)
+            let outcome = update_one(console, net, root, host, port, entry, allowed, cooldown, manifest)
             changed = changed + outcome.0
             if outcome.1:
                 blocked = true
+            if outcome.2:
+                failed = true
     if blocked:
         // Leave the vendored tree + lock untouched: a widening upgrade is the
         // supply-chain attack the gate exists to stop.
         2
+    else if failed:
+        // BUG-371: a refetch failed (bad signature / integrity / missing source). Do
+        // NOT repin the registry root key or rewrite the lock as if the update
+        // succeeded — a partial/failed update must not mint fresh trust metadata.
+        print(console, "BLOCK: an update failed to fetch or verify — leaving witchy.lock and the pinned registry key untouched")
+        1
     else:
         match snapshot_pin(net, root, host, port):
             Err(m) ->
@@ -1574,47 +1800,86 @@ fn update_vendored(console: Console, net: Net, root: Dir, host: String, port: In
                 print(console, "updated ${changed} dependencies -> witchy.lock")
                 0
 
-// Re-fetch one vendored rune if the registry has a newer released version than the
-// one currently vendored. Returns (changed, blocked): `changed` is 1 if it moved,
-// `blocked` is true if the newer version WIDENS the rune's capability footprint
-// beyond the vendored baseline (the gate) — in which case nothing is re-fetched.
-fn update_one(console: Console, net: Net, root: Dir, host: String, port: Int, entry: String, allowed: List(String)) -> (Int, Bool):
+// Re-fetch one vendored rune if the registry has a newer eligible version than the
+// one currently vendored. Returns (changed, blocked, failed): `changed` is 1 if it
+// moved, `blocked` is true if the newer version WIDENS authority beyond the baseline
+// (the gate), `failed` is true if a fetch/verify was attempted and failed. The target
+// version is resolved WITHIN the consumer's declared requirement (BUG-092) and past
+// the staging cooldown (BUG-090).
+fn update_one(console: Console, net: Net, root: Dir, host: String, port: Int, entry: String, allowed: List(String), cooldown: (Int, Int, Bool), manifest: String) -> (Int, Bool, Bool):
     let rune_dir = join_path("vendor", entry)
     if !exists(root, join_path(rune_dir, "coven.json")):
-        (0, false)
+        (0, false, false)
     else:
         let record = read(root, join_path(rune_dir, "coven.json"))
         let fullname = recorded_field(record, "name")
         let current = recorded_field(record, "version")
-        let latest = latest_released(net, host, port, fullname)
-        if string.is_empty(latest) || latest == current:
-            (0, false)
-        else:
-            gated_refetch(console, net, root, host, port, fullname, current, latest, record, allowed)
+        let req = dep_req(manifest, fullname, entry)
+        match resolve_version(net, host, port, fullname, req, cooldown):
+            Err(_e) -> (0, false, false)
+            Ok(latest) ->
+                if string.is_empty(latest) || latest == current:
+                    (0, false, false)
+                else:
+                    gated_refetch(console, net, root, host, port, fullname, current, latest, record, allowed, cooldown)
+
+// The version requirement the consumer's manifest declares for a vendored dep,
+// matched by full registry identity or basename alias; `*` (latest) when the
+// manifest names no requirement (BUG-092). `update` resolves WITHIN this bound
+// rather than jumping to the absolute latest.
+fn dep_req(manifest: String, fullname: String, alias: String) -> String:
+    var req = "*"
+    for pair in toml.table(manifest, "dependencies"):
+        let (name, inline) = pair
+        if name == fullname || basename(name) == alias:
+            if let Some(v) = toml.inline_get(inline, "version"):
+                req = v
+    req
 
 // The capability gate: compare the incoming version's declared footprint (from its
 // signed registry record) against the vendored baseline ∪ the consented caps. Any
 // capability the baseline doesn't already admit is a widening of authority — BLOCK.
 // Only on a clean (non-widening) upgrade do we re-fetch.
-fn gated_refetch(console: Console, net: Net, root: Dir, host: String, port: Int, fullname: String, current: String, latest: String, baseline_record: String, allowed: List(String)) -> (Int, Bool):
+fn gated_refetch(console: Console, net: Net, root: Dir, host: String, port: Int, fullname: String, current: String, latest: String, baseline_record: String, allowed: List(String), cooldown: (Int, Int, Bool)) -> (Int, Bool, Bool):
     let baseline = union_all(recorded_footprint(baseline_record), allowed)
-    let incoming = incoming_footprint(net, host, port, fullname, latest)
-    let widened = rights.uncovered(baseline, incoming)
-    if list.length(widened) > 0:
-        print(console, "BLOCK: upgrading " + fullname + " " + current + " -> " + latest + " widens authority: " + list.join(widened, ", "))
-        print(console, "  re-run with --allow-cap " + list.join(widened, " --allow-cap ") + " to consent")
-        (0, true)
-    else:
-        (refetch(console, net, root, host, port, fullname, latest, current), false)
+    // BUG-232: the widening gate must diff against a VERIFIED footprint, not a raw
+    // `/coven/record` body. A hostile mirror could otherwise serve an under-declared
+    // (or wrong-coordinate) record to sneak the gate, then serve matching malicious
+    // source. Verify the signed record against the pinned root key and bind its
+    // coordinate before trusting its footprint; a verification failure blocks.
+    match verified_incoming_footprint(net, root, host, port, fullname, latest):
+        Err(msg) ->
+            print(console, "BLOCK: cannot verify the registry record for " + fullname + "@" + latest + " — " + msg)
+            (0, true, false)
+        Ok(incoming) ->
+            let widened = rights.uncovered(baseline, incoming)
+            if list.length(widened) > 0:
+                print(console, "BLOCK: upgrading " + fullname + " " + current + " -> " + latest + " widens authority: " + list.join(widened, ", "))
+                print(console, "  re-run with --allow-cap " + list.join(widened, " --allow-cap ") + " to consent")
+                (0, true, false)
+            else:
+                refetch(console, net, root, host, port, fullname, latest, current, cooldown, allowed)
 
-// The runtime footprint a registry version declares, from its signed record at
-// `/coven/record` — the incoming authority the gate diffs against the baseline.
-fn incoming_footprint(net: Net, host: String, port: Int, name: String, version: String) -> List(String):
-    let resp = http.get(net, host, port, "/coven/record?name=" + wire(name) + "&version=" + version)
-    if http.status(resp) != 200:
-        []
+// The runtime footprint a registry version declares, read from its signed record at
+// `/coven/record` ONLY AFTER the record is verified against the registry root key
+// (bound to any key pinned in the lock) and its identity is bound to the requested
+// coordinate (BUG-232/266). `Err` on any failure so the gate blocks rather than
+// trusting an unverified/under-declared footprint.
+fn verified_incoming_footprint(net: Net, root: Dir, host: String, port: Int, name: String, version: String) -> Result(List(String), String):
+    let rootpub = http.body(http.get(net, host, port, "/coven/rootpub"))
+    let pinned_pub = if exists(root, "witchy.lock"): pinned_rootpub(read(root, "witchy.lock")) else: ""
+    if pinned_pub != "" && pinned_pub != rootpub:
+        Err("registry root key does not match the key pinned in witchy.lock (possible MITM / hostile mirror)")
     else:
-        recorded_footprint(http.body(resp))
+        let resp = http.get(net, host, port, "/coven/record?name=" + wire(name) + "&version=" + version)
+        if http.status(resp) != 200:
+            Err("registry has no record")
+        else if !record_signature_valid(rootpub, http.body(resp)):
+            Err("the record is not validly signed by the registry root key")
+        else if !record_matches_coordinate(http.body(resp), name, version):
+            Err("the record identity does not match the requested coordinate")
+        else:
+            Ok(recorded_footprint(http.body(resp)))
 
 // The `runtime_footprint` array of a signed coven record (JSON), as capability strings.
 fn recorded_footprint(record: String) -> List(String):
@@ -1622,23 +1887,20 @@ fn recorded_footprint(record: String) -> List(String):
         Ok(doc) -> json.get_strings(doc, "runtime_footprint")
         Err(_e) -> []
 
-fn refetch(console: Console, net: Net, root: Dir, host: String, port: Int, fullname: String, latest: String, current: String) -> Int:
+// Returns (changed, blocked, failed). BUG-091: after a clean re-fetch, recurse into
+// the new version's OWN dependency closure (`add_deps`), so a release that GAINED a
+// transitive dependency has it fetched + vendored too — an update is not just the
+// single rune. BUG-371: a failed fetch/verify (or a failed transitive fetch) reports
+// `failed` so the caller does not repin registry metadata.
+fn refetch(console: Console, net: Net, root: Dir, host: String, port: Int, fullname: String, latest: String, current: String, cooldown: (Int, Int, Bool), allowed: List(String)) -> (Int, Bool, Bool):
     let code = fetch_source(console, net, root, host, port, fullname, latest, "vendor")
     if code != 0:
-        0
+        (0, false, true)
+    else if add_deps(console, net, root, host, port, fullname, "vendor", cooldown, allowed) != 0:
+        (0, false, true)
     else:
         print(console, "updated " + fullname + " " + current + " -> " + latest)
-        1
-
-// The highest released version of `name` in the registry, or "" if none.
-fn latest_released(net: Net, host: String, port: Int, name: String) -> String:
-    let resp = http.get(net, host, port, "/coven/versions?name=" + wire(name))
-    if http.status(resp) != 200:
-        ""
-    else:
-        match latest_version(released_versions(http.body(resp))):
-            Some(v) -> semver.format(v)
-            None -> ""
+        (1, false, false)
 
 // --- add: resolve + fetch a rune (and its deps) from a coven registry --------
 // Resolves a version requirement against the registry's released versions
@@ -1722,28 +1984,35 @@ fn add_pkg_gated(console: Console, net: Net, root: Dir, host: String, port: Int,
             1
         Ok(chosen) ->
             let baseline = union_all(project_baseline(root), allowed)
-            let incoming = incoming_footprint(net, host, port, name, chosen)
-            let widened = rights.uncovered(baseline, incoming)
-            if list.length(widened) > 0:
-                print(console, "BLOCKED: adding `" + name + "` would widen your project's capability footprint: " + list.join(widened, ", "))
-                print(console, "  re-run with --allow-cap " + list.join(widened, " --allow-cap ") + " to consent")
+            // BUG-232: gate on a VERIFIED, coordinate-bound record footprint.
+            match verified_incoming_footprint(net, root, host, port, name, chosen):
+                Err(msg) ->
+                    print(console, "BLOCK: cannot verify the registry record for " + name + "@" + chosen + " — " + msg)
+                    2
+                Ok(incoming) ->
+                    add_pkg_gate_widen(console, net, root, host, port, name, req, cooldown, baseline, rights.uncovered(baseline, incoming))
+
+fn add_pkg_gate_widen(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, req: String, cooldown: (Int, Int, Bool), baseline: List(String), widened: List(String)) -> Int:
+    if list.length(widened) > 0:
+        print(console, "BLOCKED: adding `" + name + "` would widen your project's capability footprint: " + list.join(widened, ", "))
+        print(console, "  re-run with --allow-cap " + list.join(widened, " --allow-cap ") + " to consent")
+        2
+    else:
+        let code = add_rune(console, net, root, host, port, name, req, "vendor", cooldown, [])
+        if code != 0:
+            code
+        else:
+            // SEC-006: re-gate on the FULL vendored closure now on disk — a
+            // transitive dep can carry a capability the direct rune's footprint
+            // never showed. Blocked here, the files stay vendored but unpinned;
+            // re-running with `--allow-cap` consents and completes the add.
+            let closure_widened = rights.uncovered(baseline, vendored_closure_footprint(root))
+            if list.length(closure_widened) > 0:
+                print(console, "BLOCKED: a dependency of `" + name + "` would widen your project's capability footprint: " + list.join(closure_widened, ", "))
+                print(console, "  re-run with --allow-cap " + list.join(closure_widened, " --allow-cap ") + " to consent to the whole dependency tree")
                 2
             else:
-                let code = add_rune(console, net, root, host, port, name, req, "vendor", cooldown, [])
-                if code != 0:
-                    code
-                else:
-                    // SEC-006: re-gate on the FULL vendored closure now on disk — a
-                    // transitive dep can carry a capability the direct rune's footprint
-                    // never showed. Blocked here, the files stay vendored but unpinned;
-                    // re-running with `--allow-cap` consents and completes the add.
-                    let closure_widened = rights.uncovered(baseline, vendored_closure_footprint(root))
-                    if list.length(closure_widened) > 0:
-                        print(console, "BLOCKED: a dependency of `" + name + "` would widen your project's capability footprint: " + list.join(closure_widened, ", "))
-                        print(console, "  re-run with --allow-cap " + list.join(closure_widened, " --allow-cap ") + " to consent to the whole dependency tree")
-                        2
-                    else:
-                        pin_lock(console, net, root, host, port, name)
+                pin_lock(console, net, root, host, port, name)
 
 // The capability authority the project already admits: its own declared runtime
 // caps (from witchy.toml, if any) plus every capability the lockfile already
@@ -2065,8 +2334,21 @@ fn fetch_source(console: Console, net: Net, root: Dir, host: String, port: Int, 
         else if !record_signature_valid(rootpub, http.body(record)):
             print(console, "BLOCK: registry record for " + name + "@" + version + " has an invalid signature — refusing to trust it")
             1
+        else if !record_matches_coordinate(http.body(record), name, version):
+            // BUG-266: the signature proves the record is authentic, not that it is the
+            // record we ASKED for. Bind the record's own `name`/`version` to the requested
+            // coordinate, so a registry/mirror cannot answer a request for `good@1.0.0`
+            // with a validly-signed record for a DIFFERENT coordinate (a mix-up/substitution
+            // that would vendor the wrong rune under this basename).
+            print(console, "BLOCK: registry returned a record for `" + recorded_field(http.body(record), "name") + "@" + recorded_field(http.body(record), "version") + "` when `" + name + "@" + version + "` was requested — refusing (coordinate mismatch)")
+            1
         else:
             fetch_verified(console, net, root, host, port, name, version, dest, http.body(record))
+
+// Whether a signed record's own identity fields match the coordinate it was fetched
+// for — the anti-substitution binding for BUG-266.
+fn record_matches_coordinate(record: String, name: String, version: String) -> Bool:
+    recorded_field(record, "name") == name && recorded_field(record, "version") == version
 
 fn fetch_verified(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, version: String, dest: String, record: String) -> Int:
     let resp = http.get(net, host, port, "/coven/source?name=" + wire(name) + "&version=" + version)
@@ -2086,6 +2368,20 @@ fn fetch_verified(console: Console, net: Net, root: Dir, host: String, port: Int
             print(console, "BLOCK: registry record for " + name + "@" + version + " is `" + recorded_field(record, "state") + "`, not `released` — refusing to vendor an unreleased version")
             1
         else:
+            write_vendored_source(console, root, dest, name, version, files, record)
+
+// Validate the fetched file set, then materialize it beside its signed record.
+// BUG-089: a registry/mirror response is untrusted structure. Even though the set
+// is content-bound to the signed hash, refuse a malformed set BEFORE writing —
+// a `..`/absolute/empty path would trap the confined Dir write (aborting pm), and
+// a duplicated path is an ambiguous rune. Only `witchy.toml` + `src/**.witchy`
+// (coven's publish contract) are accepted.
+fn write_vendored_source(console: Console, root: Dir, dest: String, name: String, version: String, files: List((String, String)), record: String) -> Int:
+    match source_files_valid(files):
+        Some(msg) ->
+            print(console, msg)
+            1
+        None ->
             let base = join_path(dest, basename(name))
             for f in files:
                 let (path, text) = f
@@ -2097,6 +2393,31 @@ fn fetch_verified(console: Console, net: Net, root: Dir, host: String, port: Int
             write(root, join_path(base, "coven.json"), record)
             print(console, "added " + name + "@" + version + " -> " + base)
             0
+
+// `Some(message)` naming the first structural problem with a fetched file set —
+// an unexpected/traversing path or a duplicated path — or `None` when the whole
+// set is well-formed and unique.
+fn source_files_valid(files: List((String, String))) -> Option(String):
+    var seen = []
+    var problem = None
+    for f in files:
+        let (path, _text) = f
+        if is_none(problem):
+            if !path_shape_ok(path):
+                problem = Some("BLOCK: fetched source carries an unexpected path `" + path + "` — a vendored rune may only ship `witchy.toml` and `src/**.witchy` (no absolute or `..` paths)")
+            else if has(seen, path):
+                problem = Some("BLOCK: fetched source lists `" + path + "` more than once — refusing an ambiguous/duplicated file set")
+            else:
+                seen = list.push(seen, path)
+    problem
+
+// Whether a fetched source path is confined and conventional: `witchy.toml`, or a
+// `src/...` file ending in `.witchy`, with no absolute prefix or `..` traversal.
+fn path_shape_ok(path: String) -> Bool:
+    if string.is_empty(path) || string.starts_with(path, "/") || string.contains(path, ".."):
+        false
+    else:
+        path == "witchy.toml" || (string.starts_with(path, "src/") && string.ends_with(path, ".witchy"))
 
 fn source_files(body: String) -> List((String, String)):
     var out = []
@@ -2333,14 +2654,18 @@ fn src_stub(let name: String) -> String:
 
 // --- footprint helpers -------------------------------------------------------
 
-// The capabilities the rune's source actually demands. The source is the first
-// `.witchy` under <dir>/src — found by listing, so the file name need not match
-// the rune name.
+// The capabilities the rune's source actually demands: the UNION over every
+// `src/**/*.witchy` module's footprint (BUG-085) — matching coven's
+// `computed_footprint`. Footprinting only the first module would miss a capability
+// a non-entry helper module reaches for (an under-report a supply-chain attacker
+// could hide behind).
 fn rune_footprint(root: Dir, dir: String) -> List(String):
-    let src = subtree(root, join_path(dir, "src"))
-    match first_witchy(list(src)):
-        Some(file) -> footprint_total(compiler.footprint(read(src, file)))
-        None -> []
+    var out = []
+    for f in fs.collect_files(root, join_path(dir, "src"), "src", ".witchy"):
+        let (_relpath, text) = f
+        for cap in footprint_total(compiler.footprint(text)):
+            out = add_unique(out, cap)
+    out
 
 // SEC-006: the union footprint of EVERY vendored rune — the full resolved closure. A
 // registry record's footprint is single-rune, so a direct add's gate never sees a
