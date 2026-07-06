@@ -6,7 +6,9 @@ created: 2026-07-06
 related:
   - "0001 (the parity prime directive: interpreter = differential-testing oracle only)"
   - "0004 (self-hosted CLI — pm/coven now run compiled; this closes the remaining holdout)"
-  - "0011/0012/0013 (capability refinement — runtime Exec/Env growing allow-lists IS this work)"
+  - "0011 (capability refinement — established the typed narrow-by-method pattern, but for
+     Net/Dir ONLY; this RFC extends it to Exec/Env, which 0011 did not cover)"
+  - "0012 (kept Exec a distinct, coarse capability — an exec allow-list is new, undecided design)"
 tracking:
 ---
 
