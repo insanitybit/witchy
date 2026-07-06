@@ -598,8 +598,9 @@ fn main(console: Console):
 
 The std comparison hierarchy `PartialEq` → `Eq` → `PartialOrd` → `Ord` (in
 `import cmp`, mirroring Rust's `std::cmp`) backs the `== != < > <= >=` operators
-and provides bounded generic algorithms (`cmp.member`, `cmp.max_of`, `cmp.sort`,
-...); `Show` (`import show`) renders.
+and provides bounded generic algorithms (`cmp.max_of`, `cmp.sort`, ...);
+`Eq`-bounded list membership/lookup live in `list` (`list.contains`,
+`list.index_of`). `Show` (`import show`) renders.
 
 **`impl Trait` arguments.** When a parameter is generic only so it can carry a
 trait bound, `impl Trait` says so directly — `x: impl Loud` is sugar for a fresh

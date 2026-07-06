@@ -825,6 +825,44 @@
         );
     }
 
+    /// (BUG-282) The canonical `Eq`-bounded list helpers — `list.contains`,
+    /// `list.index_of` (Option, no -1 sentinel), `list.count`, `list.unique` — are
+    /// content-correct on a USER RECORD element type on BOTH backends. That is why
+    /// the old `cmp.member`/`index_of`/`count`/`unique` bridge quartet (a pre-RFC-0046
+    /// workaround for generic `==` not comparing records under compilation) could be
+    /// deleted: `list.*` now carries the `Eq` bound directly.
+    #[test]
+    fn list_eq_helpers_on_user_record_on_both_backends() {
+        let src = [
+            "import list",
+            "",
+            "type Tag derive(PartialEq, Eq):",
+            "    name: String",
+            "",
+            "fn main(console: Console):",
+            "    let a = Tag(\"a\")",
+            "    let b = Tag(\"b\")",
+            "    let c = Tag(\"c\")",
+            "    let z = Tag(\"z\")",
+            "    let xs = [a, b, c, b]",
+            "    print(console, \"${list.contains(xs, b)}\")",
+            "    print(console, \"${list.contains(xs, z)}\")",
+            "    print(console, \"${list.index_of(xs, c)}\")",
+            "    print(console, \"${list.index_of(xs, z)}\")",
+            "    print(console, \"${list.count(xs, b)}\")",
+            "    print(console, \"${list.length(list.unique(xs))}\")",
+            "",
+        ]
+        .join("\n");
+        let expected = ["true", "false", "Some(2)", "None", "2", "3"];
+        assert_eq!(link_run(&src), expected, "interp: Eq list helpers on a record type");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", &src)], "main"),
+            expected,
+            "wasm: Eq list helpers on a record type"
+        );
+    }
+
     /// (BUG-276) The raw byte-level hex primitives (`encoding.hex_decode_lossy`,
     /// `encoding.hex_to_base64url_lossy`) decode STRICTLY: a non-hex character is a
     /// loud error on both backends, never the old silent-drop that could hand

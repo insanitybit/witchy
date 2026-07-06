@@ -1,11 +1,12 @@
 // The standard comparison hierarchy gives content-correct equality that holds up
-// in compiled code, not just the interpreter. `member` and `index_of` search a
-// list by the element type's `Eq` impl, so they find runtime-built strings and
-// your own types — where a generic `==` search would fall back to comparing
-// pointers. Built-in impls cover the primitives; derive your own, or implement
-// `PartialEq` (the `==`/`!=` operators dispatch through it).
+// in compiled code, not just the interpreter. `list.contains` and `list.index_of`
+// search a list by the element type's `Eq` impl, so they find runtime-built
+// strings and your own types — where a generic `==` search would fall back to
+// comparing pointers. `index_of` returns `Some(i)` for a hit and `None` for a
+// miss (no -1 sentinel). Built-in impls cover the primitives; derive your own, or
+// implement `PartialEq` (the `==`/`!=` operators dispatch through it).
 
-import cmp
+import list
 
 type Color:
     Red
@@ -32,7 +33,7 @@ impl Eq for Color
 
 fn main(console: Console):
     let palette = [Red, Green, Blue]
-    print(console, "${cmp.member(palette, Green)}")
-    print(console, "${cmp.index_of(palette, Blue)}")
-    print(console, "${cmp.member([1, 2, 3], 4)}")
+    print(console, "${list.contains(palette, Green)}")
+    print(console, "${list.index_of(palette, Blue)}")
+    print(console, "${list.contains([1, 2, 3], 4)}")
     print(console, "${Red != Blue}")
