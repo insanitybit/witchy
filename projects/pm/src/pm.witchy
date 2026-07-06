@@ -270,7 +270,14 @@ fn push_path_dep(root: Dir, dir: String, flags: List(String), pair: (String, Str
                 let dep_dir = normalize_path(join_path(dir, rel))
                 match module_in_src(root, dep_dir):
                     Some(src) -> collect_deps(root, dep_dir, dep_flag(flags, name, src))
-                    None -> flags
+                    None ->
+                        // BUG-415: a declared path dependency whose `src/` has no
+                        // module is broken. Don't silently drop the `--dep` — that
+                        // lets `import <name>` mis-resolve to `<consumer>/src/<name>.witchy`
+                        // and fail naming the CONSUMER's tree. Point the compiler at the
+                        // dependency's own conventional entry (which is missing) so the
+                        // error names the actual broken dependency directory.
+                        dep_flag(flags, name, conventional_entry(dep_dir, name))
             None -> flags
 
 fn dep_flag(flags: List(String), name: String, src: String) -> List(String):
@@ -297,6 +304,12 @@ fn module_in_src(root: Dir, base: String) -> Option(String):
         match first_witchy(list(subtree(root, srcdir))):
             Some(file) -> Some(join_path(srcdir, file))
             None -> None
+
+// The conventional entry-source path for a rune at `base` whose module stem is
+// `name`: `<base>/src/<module_name(name)>.witchy` (the launcher's
+// `project_entry_file` convention). Used to name a MISSING source (BUG-415).
+fn conventional_entry(base: String, name: String) -> String:
+    join_path(join_path(base, "src"), module_name(name) + ".witchy")
 
 // Concatenate the leading argv with the trailing `--dep` flags into one argv.
 fn flatten_argv(head: List(String), tail: List(String)) -> List(String):
