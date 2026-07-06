@@ -859,7 +859,9 @@ fn main() -> wasmtime::Result<()> {
             }
             run_file_grants(&path, &doc, accept_grants, prog_args)
         } else if path.ends_with(".wasm") {
-            run_wasm_file(&path, dir_roots, file_grants, net_allow, prog_args, signing_key, named_secrets)
+            // `sandbox` is the strict path: a `Dir`-importing artifact needs an
+            // explicit `--dir` (BUG-106), just like the source form.
+            run_wasm_file(&path, dir_roots, file_grants, net_allow, prog_args, signing_key, named_secrets, true)
         } else {
             run_file_sandboxed(&path, dir_roots, file_grants, net_allow, prog_args, signing_key, named_secrets)
         };
@@ -1089,7 +1091,9 @@ fn main() -> wasmtime::Result<()> {
             // A precompiled program module (`witchy app.wasm`): run it directly,
             // granted exactly the authority its imports declare (Dir rooted at cwd).
             Some(path) if path.ends_with(".wasm") => {
-                match run_wasm_file(path, Vec::new(), Vec::new(), net_allow, prog_args, signing_key, named_secrets) {
+                // Dev run: default a `Dir` to the cwd (not strict) — the convenience
+                // the source `witchy <file>` run keeps.
+                match run_wasm_file(path, Vec::new(), Vec::new(), net_allow, prog_args, signing_key, named_secrets, false) {
                     Ok((lines, code)) => {
                         for line in lines {
                             println!("{line}");
@@ -2376,6 +2380,7 @@ fn witchy_imports(bytes: &[u8]) -> Result<Vec<String>, String> {
 /// concrete roots; a module that imports a host op it is not granted simply fails
 /// to instantiate. This is the Tier-1 distribution runner: ship the `.wasm`, run
 /// it with `witchy`.
+#[allow(clippy::too_many_arguments)]
 fn run_wasm_file(
     path: &str,
     dir_roots: Vec<std::path::PathBuf>,
@@ -2384,13 +2389,78 @@ fn run_wasm_file(
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<runtime::SecretGrant>,
+    strict_dir: bool,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
-    run_wasm_module(&bytes, dir_roots, file_grants, net_allow, args, signing_key, named_secrets)
+    run_wasm_module(&bytes, dir_roots, file_grants, net_allow, args, signing_key, named_secrets, strict_dir)
+}
+
+/// Detect, from a compiled wasm program, whether its `main` returns an `Int` — so
+/// the process boundary can turn the value into the EXIT CODE rather than printing
+/// it (BUG-104). The `run` wrapper codegen emits for an Int-returning `main` is
+/// `call $main; call $print_int`; no other `run` shape calls the `print_int` import
+/// (a program that itself prints an int does so inside `$main`, a different
+/// function). So: the `run` export's body calls the `witchy.print_int` import iff
+/// `main` returns `Int`. A malformed module (never produced by our codegen) reads as
+/// "no" — the value simply stays a trailing line, the pre-fix behavior.
+fn wasm_main_returns_int(bytes: &[u8]) -> bool {
+    use wasmparser::{ExternalKind, Operator, Parser, Payload, TypeRef};
+    let mut func_imports = 0u32;
+    let mut print_int_index: Option<u32> = None;
+    let mut run_index: Option<u32> = None;
+    let mut code_pos = 0u32;
+    for payload in Parser::new(0).parse_all(bytes) {
+        let Ok(payload) = payload else { return false };
+        match payload {
+            Payload::ImportSection(reader) => {
+                for imp in reader.into_imports() {
+                    let Ok(imp) = imp else { return false };
+                    if let TypeRef::Func(_) = imp.ty {
+                        if imp.module == "witchy" && imp.name == "print_int" {
+                            print_int_index = Some(func_imports);
+                        }
+                        func_imports += 1;
+                    }
+                }
+            }
+            Payload::ExportSection(reader) => {
+                for ex in reader {
+                    let Ok(ex) = ex else { return false };
+                    if ex.kind == ExternalKind::Func && ex.name == "run" {
+                        run_index = Some(ex.index);
+                    }
+                }
+            }
+            Payload::CodeSectionEntry(body) => {
+                // Code entries stream in order; the i-th is defined function index
+                // `func_imports + i`. Only the `run` wrapper's body is inspected.
+                let this_func = func_imports + code_pos;
+                code_pos += 1;
+                if Some(this_func) == run_index {
+                    let (Some(pi), Ok(reader)) = (print_int_index, body.get_operators_reader()) else {
+                        continue;
+                    };
+                    for op in reader {
+                        if let Ok(Operator::Call { function_index }) = op {
+                            if function_index == pi {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Run a precompiled wasm program from in-memory bytes under the capability
-/// sandbox — the byte-level core of [`run_wasm_file`].
+/// sandbox — the byte-level core of [`run_wasm_file`]. `strict_dir` mirrors the
+/// source path: an announced/strict launch (`witchy sandbox`) requires an explicit
+/// `--dir` when the module imports a `Dir` host op, while the dev `witchy <app.wasm>`
+/// path defaults a `Dir` to the cwd.
+#[allow(clippy::too_many_arguments)]
 fn run_wasm_module(
     bytes: &[u8],
     dir_roots: Vec<std::path::PathBuf>,
@@ -2399,6 +2469,7 @@ fn run_wasm_module(
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<runtime::SecretGrant>,
+    strict_dir: bool,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     use crate::runtime::{Capabilities, Runtime};
     let needs = witchy_imports(bytes)?;
@@ -2443,6 +2514,15 @@ fn run_wasm_module(
     if dir_read || dir_write {
         let mut roots = dir_roots;
         if roots.is_empty() {
+            // Deny by omission (BUG-106): a strict/announced launch (`witchy sandbox
+            // app.wasm`) must NOT silently hand a `Dir`-importing module the whole
+            // cwd — require an explicit `--dir`, exactly as the source `sandbox` path
+            // does. Only the dev `witchy <app.wasm>` path keeps the cwd default.
+            if strict_dir {
+                return Err(
+                    "this module requires a `Dir`, but no subtree was granted (use `--dir <root>`)".to_string(),
+                );
+            }
             roots.push(std::path::PathBuf::from("."));
         }
         caps.dir_root = Some(roots.remove(0));
@@ -2470,10 +2550,18 @@ fn run_wasm_module(
         .spawn(bytes, caps, RUN_MEMORY_PAGES)
         .map_err(|e| e.to_string())?;
     vm.run().map_err(|e| e.root_cause().to_string())?;
-    // We can't see `main`'s return type from a bare binary, so an Int `main`'s
-    // value surfaces as a trailing output line rather than the process exit code
-    // (the source runners pop it because they have the AST). Acceptable for Tier 1.
-    Ok((vm.output(), None))
+    // An Int-returning `main` surfaces its value as the final `print_int` line of the
+    // `run` wrapper. We can't read the AST here, but we CAN see that shape in the
+    // wasm itself (`wasm_main_returns_int`), so pop the trailing line and use it as
+    // the process EXIT CODE — matching the source runners (BUG-104). A non-Int `main`
+    // leaves its output untouched.
+    let mut lines = vm.output();
+    let exit_code = if wasm_main_returns_int(bytes) {
+        lines.pop().and_then(|s| s.parse::<i32>().ok())
+    } else {
+        None
+    };
+    Ok((lines, exit_code))
 }
 
 /// Compile a `.witchy` program to a wasm binary and write it to `out`. The
