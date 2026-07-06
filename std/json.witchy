@@ -31,7 +31,7 @@ pub fn encode(j: Json) -> String:
         JsonNull -> "null"
         JsonBool(b) -> if b: "true" else: "false"
         JsonInt(n) -> "${n}"
-        JsonFloat(x) -> "${x}"
+        JsonFloat(x) -> encode_float(x)
         JsonString(s) -> encode_string(s)
         JsonArray(items) -> encode_array(items)
         JsonObject(pairs) -> encode_object(pairs)
@@ -46,7 +46,7 @@ fn encode_indent(j: Json, depth: Int) -> String:
         JsonNull -> "null"
         JsonBool(b) -> if b: "true" else: "false"
         JsonInt(n) -> "${n}"
-        JsonFloat(x) -> "${x}"
+        JsonFloat(x) -> encode_float(x)
         JsonString(s) -> encode_string(s)
         JsonArray(items) -> pretty_array(items, depth)
         JsonObject(pairs) -> pretty_object(pairs, depth)
@@ -112,6 +112,16 @@ fn encode_object(pairs: List((String, Json))) -> String:
             out = out + ","
         out = out + encode_string(k) + ":" + encode(v)
     out + "}"
+
+// Render a Float as a JSON number. `inf`/`-inf`/`NaN` are not JSON tokens (a
+// conformant parser rejects them), so a non-finite value serializes to `null` —
+// valid JSON, matching how mainstream encoders (e.g. serde_json) handle it —
+// rather than emitting the invalid `inf`/`NaN` the old `"${x}"` produced.
+fn encode_float(x: Float) -> String:
+    if is_finite(x):
+        "${x}"
+    else:
+        "null"
 
 // Wrap `s` in quotes, escaping the characters JSON requires.
 fn encode_string(s: String) -> String:
@@ -272,12 +282,17 @@ fn parse_number(cs: List(String), i: Int) -> Result((Json, Int), String):
     var j = i
     if j < n && list.at(cs, j) == "-":
         j = j + 1
+    let int_start = j
     var digits = 0
     while j < n && is_digit(list.at(cs, j)):
         j = j + 1
         digits = digits + 1
     if digits == 0:
         Err("invalid number at " + "${i}")
+    else if digits > 1 && list.at(cs, int_start) == "0":
+        // JSON forbids a leading zero on a multi-digit integer part (`01`, `-01`);
+        // only a lone `0` (optionally with a fraction/exponent) is allowed.
+        Err("leading zero in number at " + "${i}")
     else if j < n && is_float_tail(list.at(cs, j)):
         parse_float_tail(cs, i, j)
     else:
@@ -312,13 +327,20 @@ fn parse_float_tail(cs: List(String), start: Int, ip_end: Int) -> Result((Json, 
         else if j < n && list.at(cs, j) == "-":
             exp_neg = true
             j = j + 1
-        var exp_digits = 0
+        let exp_start = j
         while j < n && is_digit(list.at(cs, j)):
-            exp = exp * 10 + string.to_int(list.at(cs, j))
-            exp_digits = exp_digits + 1
             j = j + 1
-        if exp_digits == 0:
+        if j == exp_start:
             return Err("invalid number at " + "${start}")
+        // Parse the exponent TOTALLY. The old digit-by-digit fold overflowed i64
+        // and wrapped (`1e9223372036854775808` decoded to `1.0`); `parse_int`
+        // returns None on overflow, and a magnitude no double can represent is
+        // rejected rather than fed to `pow10` (which would loop or produce `inf`).
+        match string.parse_int(cspan(cs, exp_start, j)):
+            Some(e) -> exp = e
+            None -> return Err("exponent out of range at " + "${start}")
+        if exp > 400:
+            return Err("exponent out of range at " + "${start}")
     let negative = list.at(cs, start) == "-"
     // Fold the integer-part digits straight into a Float: a float literal with a
     // huge integer part (`99999999999999999999.5`) is valid JSON and must not
@@ -332,7 +354,17 @@ fn parse_float_tail(cs: List(String), start: Int, ip_end: Int) -> Result((Json, 
         x = x / pow10(exp)
     else:
         x = x * pow10(exp)
+    if !is_finite(x):
+        // A magnitude past the double range (`1e400`, or a huge integer part times
+        // a large exponent) overflows to `inf` — not a JSON number, so reject it.
+        return Err("number out of range at " + "${start}")
     Ok((JsonFloat(x), j))
+
+// Whether `x` is a finite Float (not `inf`/`-inf`/`NaN`). For any non-finite `x`,
+// `x - x` is `NaN`, which is not equal to `0.0`; for a finite `x` it is exactly
+// `0.0`. witchy exposes no `is_finite` primitive, so this identity stands in.
+fn is_finite(x: Float) -> Bool:
+    (x - x) == 0.0
 
 fn pow10(k: Int) -> Float:
     var out = 1.0
@@ -368,13 +400,24 @@ fn scan_string(cs: List(String), start: Int) -> Result((String, Int), String):
                 let (decoded, k) = r
                 acc = acc + decoded
                 j = k
-            else:
+            else if is_valid_escape(list.at(cs, j + 1)):
                 acc = acc + unescape(list.at(cs, j + 1))
                 j = j + 2
+            else:
+                return Err("invalid string escape `\\" + list.at(cs, j + 1) + "`")
+        else if c < " ":
+            // RFC 8259 forbids a raw control character (U+0000..U+001F) inside a
+            // string — it must be escaped (as `\n`, `\t`, `\u00XX`). The old
+            // scanner absorbed it verbatim, accepting malformed JSON.
+            return Err("raw control character in JSON string (must be escaped)")
         else:
             acc = acc + c
             j = j + 1
     Err("unterminated string")
+
+// The single-character escapes JSON permits after a backslash (besides `\u`).
+fn is_valid_escape(e: String) -> Bool:
+    e == "\"" || e == "\\" || e == "/" || e == "b" || e == "f" || e == "n" || e == "r" || e == "t"
 
 fn unescape(e: String) -> String:
     if e == "n":
@@ -468,6 +511,8 @@ fn parse_object(cs: List(String), i: Int, depth: Int) -> Result((Json, Int), Str
             return Err("expected : in object")
         let vr = parse_value(cs, skip_ws(cs, colon + 1), depth + 1)?
         let (v, k2) = vr
+        if pairs_contains_key(pairs, key):
+            return Err("duplicate object key `" + key + "`")
         pairs = list.push(pairs, (key, v))
         let m = skip_ws(cs, k2)
         if m >= n:
@@ -603,6 +648,9 @@ pub fn bool_of(j: Json) -> Result(Bool, String):
 pub fn float_of(j: Json) -> Result(Float, String):
     match j:
         JsonFloat(f) -> Ok(f)
+        // A JSON number with no fraction/exponent decodes to `JsonInt`, but it is
+        // still a valid `Float` field value (`{"ratio": 1}`), so widen it here.
+        JsonInt(n) -> Ok(math.to_float(n))
         _ -> Err("expected a number")
 
 pub fn array_of(j: Json) -> Result(List(Json), String):
