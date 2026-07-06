@@ -29,11 +29,20 @@ build-all:
 test *ARGS:
     cargo test {{ARGS}}
 
+# Checked-heap differential fuzz (CI `heap-check` job, RFC-0023): out-of-object
+# writes surface as redzone traps / a shadow-sweep failure.
+heap-check:
+    WITCHY_HEAP_CHECK=1 cargo nextest run --test differential_fuzz
+
 # Lint gate — CI runs this with -D warnings.
 clippy:
     cargo clippy --all-targets -- -D warnings
 
 alias lint := clippy
+
+# Vendored zizmor workflow security audit (CI `zizmor` job, pedantic persona).
+zizmor:
+    ./scripts/zizmor.sh --quiet --no-progress --persona=pedantic .github/workflows
 
 # NOTE: there is deliberately NO `cargo fmt` recipe. The Rust in this repo is
 # hand-formatted on purpose (see scripts/check.sh); `cargo fmt` reformats ~71
@@ -172,15 +181,31 @@ book-serve: book
 playground:
     ./scripts/build-playground.sh
 
+# Validate every runnable book block against the manifest oracle (the CI
+# `playground` job's second step) — needs the browser wasm from `playground`.
+book-validate: playground
+    node scripts/validate_book_examples.mjs
+
+# Build the deployable docs bundle into ./dist (CI `docs-build` job).
+docs-build: build-release playground
+    ./scripts/build-docs.sh dist
+
 # Build just the wasm interpreter the way CI does (no native deps).
 wasm:
     cargo build --release --lib --no-default-features --target wasm32-unknown-unknown
 
 # --- Aggregates -----------------------------------------------------------
 
-# The full local gate — everything CI runs. Run before opening a PR.
-ci: build-all clippy test parity-sweep wfmt-check e2e-quick
-    @echo "✓ local CI gate passed"
+# The full local gate — mirrors every ci.yml job EXCEPT the master-only Pages
+# deploy (`docs-deploy`), which needs GitHub Pages/OIDC and isn't locally
+# reproducible. See .github/workflows/ci.yml for the authoritative set.
+#   zizmor        -> zizmor          build/clippy/test -> build-all clippy test
+#   heap-check    -> heap-check      parity            -> parity-sweep
+#   acceptance    -> e2e-quick       fmt               -> wfmt-check
+#   playground    -> playground book-validate          docs-build -> docs-build
+# Needs node (book-validate) and the wasm32 target (playground/docs-build).
+ci: build-all clippy test heap-check parity-sweep wfmt-check zizmor playground book-validate docs-build e2e-quick
+    @echo "✓ local CI gate passed (mirrors ci.yml minus the Pages deploy)"
 
 # Remove build artifacts.
 clean:
