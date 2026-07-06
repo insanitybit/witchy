@@ -2162,6 +2162,20 @@ fn fetch_verified(console: Console, net: Net, root: Dir, host: String, port: Int
             print(console, "BLOCK: registry record for " + name + "@" + version + " is `" + recorded_field(record, "state") + "`, not `released` — refusing to vendor an unreleased version")
             1
         else:
+            write_vendored_source(console, root, dest, name, version, files, record)
+
+// Validate the fetched file set, then materialize it beside its signed record.
+// BUG-089: a registry/mirror response is untrusted structure. Even though the set
+// is content-bound to the signed hash, refuse a malformed set BEFORE writing —
+// a `..`/absolute/empty path would trap the confined Dir write (aborting pm), and
+// a duplicated path is an ambiguous rune. Only `witchy.toml` + `src/**.witchy`
+// (coven's publish contract) are accepted.
+fn write_vendored_source(console: Console, root: Dir, dest: String, name: String, version: String, files: List((String, String)), record: String) -> Int:
+    match source_files_valid(files):
+        Some(msg) ->
+            print(console, msg)
+            1
+        None ->
             let base = join_path(dest, basename(name))
             for f in files:
                 let (path, text) = f
@@ -2173,6 +2187,31 @@ fn fetch_verified(console: Console, net: Net, root: Dir, host: String, port: Int
             write(root, join_path(base, "coven.json"), record)
             print(console, "added " + name + "@" + version + " -> " + base)
             0
+
+// `Some(message)` naming the first structural problem with a fetched file set —
+// an unexpected/traversing path or a duplicated path — or `None` when the whole
+// set is well-formed and unique.
+fn source_files_valid(files: List((String, String))) -> Option(String):
+    var seen = []
+    var problem = None
+    for f in files:
+        let (path, _text) = f
+        if is_none(problem):
+            if !path_shape_ok(path):
+                problem = Some("BLOCK: fetched source carries an unexpected path `" + path + "` — a vendored rune may only ship `witchy.toml` and `src/**.witchy` (no absolute or `..` paths)")
+            else if has(seen, path):
+                problem = Some("BLOCK: fetched source lists `" + path + "` more than once — refusing an ambiguous/duplicated file set")
+            else:
+                seen = list.push(seen, path)
+    problem
+
+// Whether a fetched source path is confined and conventional: `witchy.toml`, or a
+// `src/...` file ending in `.witchy`, with no absolute prefix or `..` traversal.
+fn path_shape_ok(path: String) -> Bool:
+    if string.is_empty(path) || string.starts_with(path, "/") || string.contains(path, ".."):
+        false
+    else:
+        path == "witchy.toml" || (string.starts_with(path, "src/") && string.ends_with(path, ".witchy"))
 
 fn source_files(body: String) -> List((String, String)):
     var out = []
