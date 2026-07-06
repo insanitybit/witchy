@@ -1377,6 +1377,8 @@ The square root.
 
 #### `fn abs(n: Int) -> Int`
 
+The absolute value of `n`. `Int.MIN` (`-9223372036854775808`) is the one input with no positive `Int` counterpart, so negating it would wrap back to itself (a negative result that contradicts `abs`). That single unrepresentable case is a contract violation (RFC-0044 rule 3): abort rather than return a negative value.
+
 #### `fn sign(n: Int) -> Int`
 
 -1, 0, or 1 depending on the sign of `n`.

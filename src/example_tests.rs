@@ -465,6 +465,38 @@
         );
     }
 
+    /// (BUG-240, parity) `math.abs(Int.MIN)` has no positive `Int`, so both backends
+    /// must ABORT rather than silently wrap back to the negative `Int.MIN`. Ordinary
+    /// magnitudes still agree. (Was a stable wrong answer: `-Int.MIN == Int.MIN`.)
+    #[test]
+    fn math_abs_int_min_aborts_on_both_backends() {
+        let compile = |src: &str| -> (ast::Module, Vec<u8>) {
+            let linked = resolve_std_src(src);
+            typeck::check(&linked).expect("typecheck");
+            let bytes = codegen::compile_module_binary(&linked)
+                .expect("compile")
+                .expect("the binary path lowers this program");
+            (linked, bytes)
+        };
+        // Int.MIN: `0 - 9223372036854775807 - 1`. Both backends must error.
+        let min_src = "import math\n\nfn main(console: Console):\n    print(console, __render(math.abs(0 - 9223372036854775807 - 1)))\n";
+        let (lmod, wasm) = compile(min_src);
+        assert!(
+            interpreter::run_module(lmod, ".", Vec::new()).is_err(),
+            "interpreter must abort on math.abs(Int.MIN)"
+        );
+        assert!(crate::run_wasm_bytes(&wasm).is_err(), "WASM must abort on math.abs(Int.MIN)");
+        // Ordinary magnitudes agree (negative, zero, positive, and Int.MAX).
+        let ok_src = "import math\n\nfn main(console: Console):\n    print(console, __render(math.abs(0 - 5)))\n    print(console, __render(math.abs(0)))\n    print(console, __render(math.abs(7)))\n    print(console, __render(math.abs(9223372036854775807)))\n";
+        let expected = ["5", "0", "7", "9223372036854775807"];
+        assert_eq!(link_run(ok_src), expected, "interp math.abs of ordinary values");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", ok_src)], "main"),
+            expected,
+            "compiled math.abs of ordinary values must agree",
+        );
+    }
+
     /// (BUG-306, parity) A user `return` inside a `gen fn` is re-expressed in terms of
     /// the generator's stream contract, NOT passed untranslated into the synthesized
     /// `-> Option(a)` helper. A bare `return` ENDS the stream (both backends), where it
