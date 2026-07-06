@@ -50,7 +50,9 @@ pub fn token_response(net: Net[Connect, Tcp], token_url: String, client_id: Stri
         Err(e) -> Err("token endpoint unreachable: " + e)
         Ok(resp) ->
             if !http.is_success(resp):
-                Err("token endpoint returned HTTP " + "${http.status(resp)}")
+                // Surface the provider's error body (an OAuth error response carries
+                // `error`/`error_description`), not just the bare status (BUG-418).
+                Err("token endpoint returned HTTP " + "${http.status(resp)}" + ": " + http.body(resp))
             else:
                 json.decode(http.body(resp))
 
