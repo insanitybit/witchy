@@ -7,7 +7,7 @@
 
 use std::fmt::Write;
 
-use crate::ast::{Item, Param, Type, Variant};
+use crate::ast::{Item, MethodSig, Param, TraitDef, Type, Variant};
 use crate::format::type_str;
 
 /// Render Markdown documentation for one module (named `module_name`) from its
@@ -35,6 +35,22 @@ pub fn render(module_name: &str, source: &str) -> Result<String, String> {
         }
         for v in &t.variants {
             let _ = writeln!(out, "- `{}`", variant_str(v));
+        }
+        let _ = writeln!(out);
+    }
+    // Traits — the interface vocabulary (BUG-073). Traits carry no visibility
+    // gate; a module-level `trait` is public API. Render the header (name, type
+    // parameters, supertraits) and each method signature.
+    for item in &module.items {
+        let Item::Trait(t) = item else { continue };
+        any = true;
+        let _ = writeln!(out, "#### `{}`\n", trait_header(t));
+        let doc = doc_above(&lines, &format!("trait {}", t.name));
+        if !doc.is_empty() {
+            let _ = writeln!(out, "{doc}\n");
+        }
+        for m in &t.methods {
+            let _ = writeln!(out, "- `{}`", method_sig_str(m));
         }
         let _ = writeln!(out);
     }
@@ -165,6 +181,26 @@ fn param_str(p: &Param, bounds: &[(String, String, Vec<Type>)]) -> String {
     }
 }
 
+/// A trait's declaration head: `trait Name`, plus type parameters
+/// (`trait From(a)`) and supertraits (`trait Ord: Eq + PartialOrd`), matching the
+/// source form (BUG-073).
+fn trait_header(t: &TraitDef) -> String {
+    let mut h = format!("trait {}", t.name);
+    if !t.typarams.is_empty() {
+        h.push_str(&format!("({})", t.typarams.join(", ")));
+    }
+    if !t.supertraits.is_empty() {
+        h.push_str(&format!(": {}", t.supertraits.join(" + ")));
+    }
+    h
+}
+
+/// A trait method signature (`fn from(value: a) -> Self`). A trait method has no
+/// `where` bounds of its own here, so render with an empty bound set (BUG-073).
+fn method_sig_str(m: &MethodSig) -> String {
+    signature(&m.name, &m.params, &m.ret, &[])
+}
+
 /// The contiguous `//` block at the top of the file (the module description).
 /// Stops at the first blank or non-comment line, so it doesn't swallow the doc
 /// comment of the first function.
@@ -240,5 +276,23 @@ mod tests {
         assert!(md.contains("#### `fn hello(name: String) -> String`"), "signature: {md}");
         assert!(md.contains("Say hello to `name`."), "fn doc: {md}");
         assert!(!md.contains("private_helper"), "private fn must be omitted: {md}");
+    }
+
+    // BUG-073: public traits (name, type params, supertraits, methods) render.
+    #[test]
+    fn renders_traits() {
+        let src = "// A conversion trait.\ntrait From(a):\n    fn from(value: a) -> Self\n";
+        let md = render("convert", src).unwrap();
+        assert!(md.contains("#### `trait From(a)`"), "trait header: {md}");
+        assert!(md.contains("`fn from(value: a) -> Self`"), "trait method: {md}");
+        assert!(md.contains("A conversion trait."), "trait doc: {md}");
+        assert!(!md.contains("_No public API._"), "trait is public API: {md}");
+    }
+
+    #[test]
+    fn renders_trait_supertraits() {
+        let src = "trait Ord: Eq + PartialOrd:\n    fn cmp(self, other: Self) -> Int\n";
+        let md = render("cmp", src).unwrap();
+        assert!(md.contains("#### `trait Ord: Eq + PartialOrd`"), "supertraits: {md}");
     }
 }
