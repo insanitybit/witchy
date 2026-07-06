@@ -3732,10 +3732,11 @@ fn yn(b: Bool) -> String:
     /// slot in place (O(1)) via `$list_set_cap`, instead of rebuilding the whole
     /// list each set — which is O(n^2) memory that traps the WASM bump allocator
     /// at ~10k. An aliased list keeps the copying set_at (the alias still sees the
-    /// original), and an out-of-range index leaves the list unchanged.
+    /// original); a set does not change the length. (An out-of-range index traps —
+    /// see `oob_list_set_at_traps_on_both_backends`, BUG-315.)
     #[test]
     fn inplace_set_at_is_fast_and_alias_safe() {
-        let src = "fn main(console: Console):\n    var xs = []\n    for i in 0..5000:\n        xs = list.push(xs, 0)\n    var k = 0\n    while k < 5000:\n        xs = list.set_at(xs, k, k * 2)\n        k = k + 1\n    print(console, __render(list.at(xs, 4999)))\n    xs = list.set_at(xs, 99999, 7)\n    print(console, __render(list.length(xs)))\n    var ys = [1, 2, 3]\n    let alias = ys\n    ys = list.set_at(ys, 1, 99)\n    print(console, __render(list.at(ys, 1)))\n    print(console, __render(list.at(alias, 1)))\n";
+        let src = "fn main(console: Console):\n    var xs = []\n    for i in 0..5000:\n        xs = list.push(xs, 0)\n    var k = 0\n    while k < 5000:\n        xs = list.set_at(xs, k, k * 2)\n        k = k + 1\n    print(console, __render(list.at(xs, 4999)))\n    xs = list.set_at(xs, 4999, 7)\n    print(console, __render(list.length(xs)))\n    var ys = [1, 2, 3]\n    let alias = ys\n    ys = list.set_at(ys, 1, 99)\n    print(console, __render(list.at(ys, 1)))\n    print(console, __render(list.at(alias, 1)))\n";
         let want: Vec<String> =
             ["9998", "5000", "99", "2"].iter().map(|s| s.to_string()).collect();
         assert_eq!(link_run(src), want.clone(), "interpreter");
@@ -3745,10 +3746,11 @@ fn yn(b: Bool) -> String:
     /// IN-PLACE UPDATE_AT: `xs = list.update_at(xs, i, f)` applies the closure to
     /// the owned buffer's slot in place (O(1)) via `$list_update_cap`, instead of
     /// rebuilding the whole list each update (O(n^2), OOM-prone). Alias-safe (a
-    /// shared list keeps the copy), and an out-of-range index is a no-op.
+    /// shared list keeps the copy); an update does not change the length. (An
+    /// out-of-range index traps — see `oob_list_set_at_traps_on_both_backends`, BUG-315.)
     #[test]
     fn inplace_update_at_is_fast_and_alias_safe() {
-        let src = "fn main(console: Console):\n    var xs = []\n    for i in 0..5000:\n        xs = list.push(xs, 1)\n    var k = 0\n    while k < 5000:\n        xs = list.update_at(xs, k, fn(v: Int): v + 1)\n        k = k + 1\n    print(console, __render(list.at(xs, 4999)))\n    xs = list.update_at(xs, 99999, fn(v: Int): v + 1)\n    print(console, __render(list.length(xs)))\n    var ys = [1, 2, 3]\n    let alias = ys\n    ys = list.update_at(ys, 1, fn(v: Int): v + 100)\n    print(console, __render(list.at(ys, 1)))\n    print(console, __render(list.at(alias, 1)))\n";
+        let src = "fn main(console: Console):\n    var xs = []\n    for i in 0..5000:\n        xs = list.push(xs, 1)\n    var k = 0\n    while k < 5000:\n        xs = list.update_at(xs, k, fn(v: Int): v + 1)\n        k = k + 1\n    print(console, __render(list.at(xs, 4999)))\n    xs = list.update_at(xs, 4999, fn(v: Int): v + 1)\n    print(console, __render(list.length(xs)))\n    var ys = [1, 2, 3]\n    let alias = ys\n    ys = list.update_at(ys, 1, fn(v: Int): v + 100)\n    print(console, __render(list.at(ys, 1)))\n    print(console, __render(list.at(alias, 1)))\n";
         let want: Vec<String> =
             ["2", "5000", "102", "2"].iter().map(|s| s.to_string()).collect();
         assert_eq!(link_run(src), want.clone(), "interpreter");
