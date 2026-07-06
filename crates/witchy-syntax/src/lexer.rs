@@ -236,9 +236,10 @@ struct Lexer {
     line: u32,
     col: u32,
     /// Own-line comments (only whitespace precedes them on their line), captured
-    /// as `(line, text)` so the formatter can reproduce them. Trailing comments
-    /// on a code line are not captured.
-    comments: Vec<(u32, String)>,
+    /// as `(line, col, text)` so the formatter can reproduce them and tell a
+    /// body comment (indented) from a next-item doc comment (at the item's own
+    /// column). Trailing comments on a code line are not captured.
+    comments: Vec<(u32, u32, String)>,
 }
 
 impl Lexer {
@@ -248,7 +249,7 @@ impl Lexer {
             pos: 0,
             line: 1,
             col: 1,
-            comments: Vec::new(),
+            comments: Vec::new(), // (line, col, text)
         }
     }
 
@@ -263,6 +264,22 @@ impl Lexer {
             }
         }
         true
+    }
+
+    /// Whether the rest of the current line (from `self.pos`) reaches a
+    /// non-whitespace character before the newline — i.e. this leading whitespace
+    /// is indenting actual content. Used to reject an indentation tab (BUG-246)
+    /// without complaining about a stray tab on an otherwise-blank line.
+    fn line_has_content(&self) -> bool {
+        let mut i = self.pos;
+        while let Some(&c) = self.chars.get(i) {
+            match c {
+                '\n' => return false,
+                c if c.is_whitespace() => i += 1,
+                _ => return true,
+            }
+        }
+        false
     }
 
     fn peek(&self) -> Option<char> {
@@ -300,7 +317,7 @@ impl Lexer {
             // `"` is adjacent to a preceding `Ident` (a tagged literal) only when
             // `skip_trivia` advances nothing — i.e. no whitespace/comment between.
             let before_trivia = self.pos;
-            self.skip_trivia();
+            self.skip_trivia()?;
             let (line, col) = (self.line, self.col);
             let Some(c) = self.peek() else {
                 out.push(Token { kind: Tok::Eof, line, col });
@@ -357,37 +374,49 @@ impl Lexer {
         }
     }
 
-    /// Record an own-line comment spanning `start..self.pos` at `line`.
-    fn record_comment(&mut self, own_line: bool, line: u32, start: usize) {
+    /// Record an own-line comment spanning `start..self.pos` at `line`, `col`.
+    fn record_comment(&mut self, own_line: bool, line: u32, col: u32, start: usize) {
         if own_line {
             let text: String = self.chars[start..self.pos].iter().collect();
-            self.comments.push((line, text.trim_end().to_string()));
+            self.comments.push((line, col, text.trim_end().to_string()));
         }
     }
 
-    fn skip_trivia(&mut self) {
+    fn skip_trivia(&mut self) -> Result<(), LexError> {
         loop {
             match self.peek() {
+                // A tab in leading indentation is rejected: witchy's off-side
+                // layout counts a tab as one column, so a tab-indented line can
+                // look nested while lexing shallower — a silent block escape
+                // (BUG-246). Only flagged when it indents real content (a stray
+                // tab on a blank line is harmless).
+                Some('\t') if self.at_line_start() && self.line_has_content() => {
+                    return Err(self.err(
+                        "tab in leading indentation — witchy's layout counts a tab as one \
+                         column, making tab/space indentation visually ambiguous; indent with \
+                         spaces",
+                    ));
+                }
                 Some(c) if c.is_whitespace() => {
                     self.bump();
                 }
                 Some('/') if self.peek2() == Some('/') => {
                     let own_line = self.at_line_start();
-                    let (line, start) = (self.line, self.pos);
+                    let (line, col, start) = (self.line, self.col, self.pos);
                     while let Some(c) = self.peek() {
                         if c == '\n' {
                             break;
                         }
                         self.bump();
                     }
-                    self.record_comment(own_line, line, start);
+                    self.record_comment(own_line, line, col, start);
                 }
                 // Block comments `/* ... */`, which nest (so a block containing a
                 // block comment can itself be commented out). An unterminated
                 // block comment runs to end of input.
                 Some('/') if self.peek2() == Some('*') => {
                     let own_line = self.at_line_start();
-                    let (line, start) = (self.line, self.pos);
+                    let (line, col, start) = (self.line, self.col, self.pos);
                     self.bump();
                     self.bump();
                     let mut depth = 1u32;
@@ -409,9 +438,9 @@ impl Lexer {
                             (None, _) => break,
                         }
                     }
-                    self.record_comment(own_line, line, start);
+                    self.record_comment(own_line, line, col, start);
                 }
-                _ => return,
+                _ => return Ok(()),
             }
         }
     }
@@ -930,10 +959,12 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, LexError> {
     Lexer::new(src).tokenize()
 }
 
-/// The own-line comments in `src`, as `(line, text)` in source order — used by
-/// the formatter to reproduce comments. Trailing comments (sharing a line with
-/// code) are not captured. Returns what was lexed even if a later error occurs.
-pub fn own_line_comments(src: &str) -> Vec<(u32, String)> {
+/// The own-line comments in `src`, as `(line, col, text)` in source order — used
+/// by the formatter to reproduce comments and to tell a body comment (indented)
+/// from a next-item comment (at the item's column). Trailing comments (sharing a
+/// line with code) are not captured. Returns what was lexed even if a later error
+/// occurs.
+pub fn own_line_comments(src: &str) -> Vec<(u32, u32, String)> {
     let mut lexer = Lexer::new(src);
     let _ = lexer.tokenize();
     lexer.comments

@@ -15,7 +15,7 @@ const IND: &str = "    ";
 /// A cursor over the source's own-line comments, emitted back in order as the
 /// printer reaches each anchor line so `witchy fmt` preserves them.
 struct Comments<'a> {
-    list: &'a [(u32, String)],
+    list: &'a [(u32, u32, String)],
     cursor: usize,
 }
 
@@ -31,9 +31,32 @@ impl Comments<'_> {
                 s.push('\n');
             }
             pad(s, depth);
-            s.push_str(&self.list[self.cursor].1);
+            s.push_str(&self.list[self.cursor].2);
             s.push('\n');
             prev = Some(cl);
+            self.cursor += 1;
+        }
+    }
+
+    /// Flush the comments that belong INSIDE a construct's body (an enum's
+    /// variant list, a `match`'s arms): those before `line` that are indented
+    /// deeper than the construct's own column `header_col`. A next-item comment
+    /// sitting at the header column is left for the enclosing flush, so it is not
+    /// pulled into the body (BUG-332). Emitted at `depth`.
+    fn before_body(&mut self, s: &mut String, depth: usize, header_col: u32, line: u32) {
+        let mut prev: Option<u32> = None;
+        while self.cursor < self.list.len() {
+            let (cl, cc, _) = &self.list[self.cursor];
+            if *cl >= line || *cc <= header_col {
+                break;
+            }
+            if prev.is_some_and(|p| cl - p > 1) {
+                s.push('\n');
+            }
+            pad(s, depth);
+            s.push_str(&self.list[self.cursor].2);
+            s.push('\n');
+            prev = Some(*cl);
             self.cursor += 1;
         }
     }
@@ -46,7 +69,7 @@ impl Comments<'_> {
     /// `hi`. Used to tell an author's blank line apart from a comment in the gap
     /// between two statements.
     fn count_between(&self, lo: u32, hi: u32) -> usize {
-        self.list.iter().filter(|(l, _)| *l > lo && *l < hi).count()
+        self.list.iter().filter(|(l, _, _)| *l > lo && *l < hi).count()
     }
 }
 
@@ -108,7 +131,7 @@ fn block_max_line(b: &Block, default: u32) -> u32 {
     m
 }
 
-pub fn module(m: &Module, comments: &[(u32, String)]) -> String {
+pub fn module(m: &Module, comments: &[(u32, u32, String)]) -> String {
     let mut s = String::new();
     // Comment placement needs source lines parallel to imports and items; without
     // them (e.g. a linked module) fall back to emitting no comments.
@@ -173,7 +196,11 @@ pub fn module(m: &Module, comments: &[(u32, String)]) -> String {
             s.push('\n');
         }
         c.before(&mut s, 0, m.item_lines.get(idx).copied().unwrap_or(u32::MAX));
-        item_str(&mut s, item, &mut c);
+        // The next item's line bounds this item's body, so a comment inside an
+        // enum's variant list is flushed within the type (not relocated to the
+        // next item) while a next-item comment stays put (BUG-332).
+        let next = m.item_lines.get(idx + 1).copied().unwrap_or(u32::MAX);
+        item_str(&mut s, item, &mut c, next);
     }
 
     // Comments after the last item.
@@ -190,12 +217,12 @@ fn pad(s: &mut String, depth: usize) {
     }
 }
 
-fn item_str(s: &mut String, item: &Item, c: &mut Comments) {
+fn item_str(s: &mut String, item: &Item, c: &mut Comments, next_item_line: u32) {
     match item {
-        Item::Function(f) => function(s, f, false, c),
-        Item::Type(t) => type_def(s, t),
-        Item::Trait(t) => trait_def(s, t, c),
-        Item::Impl(im) => impl_def(s, im, c),
+        Item::Function(f) => function(s, f, false, c, next_item_line),
+        Item::Type(t) => type_def(s, t, c, next_item_line),
+        Item::Trait(t) => trait_def(s, t, c, next_item_line),
+        Item::Impl(im) => impl_def(s, im, c, next_item_line),
         Item::Const { name, value } => {
             s.push_str("let ");
             s.push_str(name);
@@ -212,7 +239,7 @@ fn item_str(s: &mut String, item: &Item, c: &mut Comments) {
         }
         Item::Comptime(b) => {
             s.push_str("comptime:\n");
-            block(s, b, 1, c);
+            block(s, b, 1, c, next_item_line);
         }
     }
 }
@@ -275,13 +302,19 @@ fn param(p: &Param) -> String {
         Convention::Var => "var ",
         Convention::Own => "own ",
     };
-    match &p.ty {
+    let base = match &p.ty {
         Some(t) => format!("{conv}{}: {}", p.name, type_str(t)),
         None => format!("{conv}{}", p.name),
+    };
+    // (RFC-0056) A closed-constant default renders back as `= <const>` so a
+    // defaulted parameter round-trips through `witchy fmt` (BUG-206).
+    match &p.default {
+        Some(d) => format!("{base} = {}", expr(d)),
+        None => base,
     }
 }
 
-fn function(s: &mut String, f: &Function, indented: bool, c: &mut Comments) {
+fn function(s: &mut String, f: &Function, indented: bool, c: &mut Comments, upper: u32) {
     let depth = if indented { 1 } else { 0 };
     pad(s, depth);
     if f.public {
@@ -296,10 +329,14 @@ fn function(s: &mut String, f: &Function, indented: bool, c: &mut Comments) {
     s.push_str("fn ");
     s.push_str(&sig(&f.name, &f.params, &f.ret, &f.bounds));
     s.push_str(":\n");
-    block(s, &f.body, depth + 1, c);
+    block(s, &f.body, depth + 1, c, upper);
 }
 
-fn type_def(s: &mut String, t: &TypeDef) {
+fn type_def(s: &mut String, t: &TypeDef, c: &mut Comments, upper: u32) {
+    // A top-level `type`/`capability` header sits at column 1; a comment in its
+    // variant/field body is indented past that (BUG-332). Flushed after the
+    // header, below.
+    const HEADER_COL: u32 = 1;
     if t.sealed {
         if t.grantable {
             s.push_str("grantable ");
@@ -310,6 +347,7 @@ fn type_def(s: &mut String, t: &TypeDef) {
         // RFC-0011 record form (`capability X:` with named fields, carried state).
         if !v.field_names.is_empty() {
             s.push_str(":\n");
+            c.before_body(s, 1, HEADER_COL, upper);
             for (n, ty) in v.field_names.iter().zip(&v.fields) {
                 pad(s, 1);
                 s.push_str(n);
@@ -355,6 +393,7 @@ fn type_def(s: &mut String, t: &TypeDef) {
         s.push(')');
     }
     s.push_str(":\n");
+    c.before_body(s, 1, HEADER_COL, upper);
     let is_record = t.variants.len() == 1 && !t.variants[0].field_names.is_empty();
     if is_record {
         let v = &t.variants[0];
@@ -384,7 +423,7 @@ fn type_def(s: &mut String, t: &TypeDef) {
     }
 }
 
-fn trait_def(s: &mut String, t: &TraitDef, c: &mut Comments) {
+fn trait_def(s: &mut String, t: &TraitDef, c: &mut Comments, upper: u32) {
     s.push_str("trait ");
     s.push_str(&t.name);
     if !t.typarams.is_empty() {
@@ -407,14 +446,14 @@ fn trait_def(s: &mut String, t: &TraitDef, c: &mut Comments) {
         match &m.default {
             Some(b) => {
                 s.push_str(":\n");
-                block(s, b, 2, c);
+                block(s, b, 2, c, upper);
             }
             None => s.push('\n'),
         }
     }
 }
 
-fn impl_def(s: &mut String, im: &ImplDef, c: &mut Comments) {
+fn impl_def(s: &mut String, im: &ImplDef, c: &mut Comments, upper: u32) {
     s.push_str("impl ");
     if let Some(t) = &im.trait_name {
         s.push_str(t);
@@ -463,7 +502,7 @@ fn impl_def(s: &mut String, im: &ImplDef, c: &mut Comments) {
         if i > 0 {
             s.push('\n');
         }
-        function(s, m, true, c);
+        function(s, m, true, c, upper);
     }
 }
 
@@ -477,23 +516,25 @@ fn region_header(s: &mut String, r: &crate::ast::RegionAnn) {
     s.push(':');
 }
 
-fn block(s: &mut String, b: &Block, depth: usize, c: &mut Comments) {
+fn block(s: &mut String, b: &Block, depth: usize, c: &mut Comments, upper: u32) {
     // A `region:` block renders its header at this depth and indents its body one
     // level deeper; an ordinary block renders its statements here.
     if let Some(r) = &b.region {
         pad(s, depth);
         region_header(s, r);
         s.push('\n');
-        block_stmts(s, b, depth + 1, c);
+        block_stmts(s, b, depth + 1, c, upper);
     } else {
-        block_stmts(s, b, depth, c);
+        block_stmts(s, b, depth, c, upper);
     }
 }
 
 /// Render just a block's statements at `depth`, ignoring any `region` header
 /// (the caller emits that). Factored out so a value-position block can place
-/// the header inline after `= ` and then reuse this for the body.
-fn block_stmts(s: &mut String, b: &Block, depth: usize, c: &mut Comments) {
+/// the header inline after `= ` and then reuse this for the body. `upper` is the
+/// source line at which this block's scope ends — the bound a nested `match`
+/// uses to flush its arm comments (BUG-332).
+fn block_stmts(s: &mut String, b: &Block, depth: usize, c: &mut Comments, upper: u32) {
     if b.stmts.is_empty() {
         // An empty block has no off-side representation; emit a no-op expression.
         pad(s, depth);
@@ -516,11 +557,118 @@ fn block_stmts(s: &mut String, b: &Block, depth: usize, c: &mut Comments) {
         if let Some(line) = b.lines.get(i) {
             c.before(s, depth, *line);
         }
-        stmt(s, st, depth, c);
+        // This statement's scope ends at the next statement's line, or at the
+        // block's `upper` for the last one.
+        let st_upper = b.lines.get(i + 1).copied().unwrap_or(upper);
+        stmt(s, st, depth, c, st_upper);
     }
 }
 
-fn stmt(s: &mut String, st: &Stmt, depth: usize, c: &mut Comments) {
+/// The surface compound-assignment operator (`+=`, …) for a binary op, or `None`
+/// for one that has no compound form.
+fn compound_op(op: BinOp) -> Option<&'static str> {
+    match op {
+        BinOp::Add => Some("+"),
+        BinOp::Sub => Some("-"),
+        BinOp::Mul => Some("*"),
+        BinOp::Div => Some("/"),
+        BinOp::Mod => Some("%"),
+        _ => None,
+    }
+}
+
+/// Re-sugar an RFC-0022 place-assignment. `desugar_place_assign` lowers `v[i] = e`
+/// to `v = v.set_at(i, e)` and `v.f = e` to `v = update v: f = e` (a
+/// `RecordUpdate`); this recovers the canonical surface form, and the compound
+/// `v[i] += e` / `v.f += e` when the RHS reads the same place. Returns `None` when
+/// `value` is not such a self-assignment, so a plain assignment prints normally.
+/// (BUG-333/BUG-330 — mirrors the while-let/UFCS/comprehension re-sugaring.)
+fn place_assign_sugar(name: &str, value: &Expr) -> Option<String> {
+    let same_var = |e: &Expr| matches!(e, Expr::Var(v) if v == name);
+    match value {
+        Expr::MethodCall { receiver, method, args }
+            if method == "set_at" && args.len() == 2 && same_var(receiver) =>
+        {
+            let idx = &args[0];
+            let val = &args[1];
+            // Compound `v[i] += e`: RHS is `v[i] <op> e` reading the same place.
+            if let Expr::Binary { op, lhs, rhs } = val {
+                if let (Expr::Index { base, index }, Some(sym)) = (lhs.as_ref(), compound_op(*op)) {
+                    if same_var(base) && index.as_ref() == idx {
+                        return Some(format!("{name}[{}] {sym}= {}", expr(idx), expr(rhs)));
+                    }
+                }
+            }
+            Some(format!("{name}[{}] = {}", expr(idx), expr(val)))
+        }
+        Expr::RecordUpdate { base, fields } if fields.len() == 1 && same_var(base) => {
+            let (f, val) = &fields[0];
+            // Compound `v.f += e`: RHS is `v.f <op> e` reading the same field.
+            if let Expr::Binary { op, lhs, rhs } = val {
+                if let (Expr::Field { base: fb, field }, Some(sym)) =
+                    (lhs.as_ref(), compound_op(*op))
+                {
+                    if same_var(fb) && field == f {
+                        return Some(format!("{name}.{f} {sym}= {}", expr(rhs)));
+                    }
+                }
+            }
+            Some(format!("{name}.{f} = {}", expr(val)))
+        }
+        _ => None,
+    }
+}
+
+/// Recognize the `for var x in xs:` desugar (an indexed `__fvN` loop that binds
+/// `var x = xs[__fvN]` first and writes `xs[__fvN] = x` back last). Returns the
+/// element name, the list variable, and the body with the bind/write-back
+/// stripped, or `None` when `body` is not that exact shape. (BUG-334.)
+fn for_var_sugar<'a>(idx: &str, iter: &'a Expr, body: &'a Block) -> Option<(&'a str, &'a str, Block)> {
+    // iter must be `0..<list>.length()`.
+    let Expr::Range { lo, hi, inclusive: false } = iter else { return None };
+    if !matches!(lo.as_ref(), Expr::Int(0)) {
+        return None;
+    }
+    let Expr::MethodCall { receiver, method, args } = hi.as_ref() else { return None };
+    if method != "length" || !args.is_empty() {
+        return None;
+    }
+    let Expr::Var(list_var) = receiver.as_ref() else { return None };
+    if body.stmts.len() < 2 {
+        return None;
+    }
+    // First stmt: `var x = list[idx]`.
+    let Stmt::Let { name: elem, ty: None, mutable: true, value: bind } = &body.stmts[0] else {
+        return None;
+    };
+    let Expr::Index { base, index } = bind else { return None };
+    if !matches!(base.as_ref(), Expr::Var(v) if v == list_var)
+        || !matches!(index.as_ref(), Expr::Var(v) if v == idx)
+    {
+        return None;
+    }
+    // Last stmt: `list[idx] = x`  (i.e. `list = list.set_at(idx, x)`).
+    let Stmt::Assign { name: wb_list, value: wb } = body.stmts.last()? else { return None };
+    if wb_list != list_var {
+        return None;
+    }
+    let Expr::MethodCall { receiver: wr, method: wm, args: wa } = wb else { return None };
+    if wm != "set_at" || wa.len() != 2 || !matches!(wr.as_ref(), Expr::Var(v) if v == list_var) {
+        return None;
+    }
+    if !matches!(&wa[0], Expr::Var(v) if v == idx) || !matches!(&wa[1], Expr::Var(v) if v == elem) {
+        return None;
+    }
+    let n = body.stmts.len();
+    let inner = Block {
+        stmts: body.stmts[1..n - 1].to_vec(),
+        lines: body.lines.get(1..n - 1).map(<[u32]>::to_vec).unwrap_or_default(),
+        region: body.region.clone(),
+    };
+    Some((elem, list_var, inner))
+}
+
+fn stmt(s: &mut String, st: &Stmt, depth: usize, c: &mut Comments, upper: u32) {
     match st {
         Stmt::Let { name, ty, mutable, value } => {
             pad(s, depth);
@@ -531,25 +679,33 @@ fn stmt(s: &mut String, st: &Stmt, depth: usize, c: &mut Comments) {
                 s.push_str(&type_str(t));
             }
             s.push_str(" = ");
-            value_or_block(s, value, depth, c);
+            value_or_block(s, value, depth, c, upper);
         }
         Stmt::Assign { name, value } => {
             pad(s, depth);
+            // (RFC-0022) Re-sugar a place-assignment that the parser lowered to a
+            // self-`set_at`/`RecordUpdate` back to `v[i] = e` / `v.f = e`
+            // (BUG-333/BUG-330); an ordinary assignment prints normally.
+            if let Some(line) = place_assign_sugar(name, value) {
+                s.push_str(&line);
+                s.push('\n');
+                return;
+            }
             s.push_str(name);
             s.push_str(" = ");
-            value_or_block(s, value, depth, c);
+            value_or_block(s, value, depth, c, upper);
         }
         Stmt::LetPattern { pattern: pat, value } => {
             pad(s, depth);
             s.push_str("let ");
             s.push_str(&pattern(pat));
             s.push_str(" = ");
-            value_or_block(s, value, depth, c);
+            value_or_block(s, value, depth, c, upper);
         }
         Stmt::Return(Some(e)) => {
             pad(s, depth);
             s.push_str("return ");
-            value_or_block(s, e, depth, c);
+            value_or_block(s, e, depth, c, upper);
         }
         Stmt::Return(None) => {
             pad(s, depth);
@@ -566,9 +722,9 @@ fn stmt(s: &mut String, st: &Stmt, depth: usize, c: &mut Comments) {
         Stmt::Yield(e) => {
             pad(s, depth);
             s.push_str("yield ");
-            value_or_block(s, e, depth, c);
+            value_or_block(s, e, depth, c, upper);
         }
-        Stmt::Expr(e) => block_stmt(s, e, depth, c),
+        Stmt::Expr(e) => block_stmt(s, e, depth, c, upper),
     }
 }
 
@@ -583,7 +739,7 @@ fn inline_form(e: &Expr) -> Option<String> {
 }
 
 /// A statement-position expression: control-flow forms expand multi-line.
-fn block_stmt(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
+fn block_stmt(s: &mut String, e: &Expr, depth: usize, c: &mut Comments, upper: u32) {
     // Postfix-guard return: the parser desugars `return X if cond` to an `if`
     // whose then-block is the lone return, tagged with the `u32::MAX` synthetic
     // line marker. Re-collapse exactly that shape — and only it, so an explicitly
@@ -615,7 +771,7 @@ fn block_stmt(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
     if let Some((prefix, call, suffix)) = unwrap_block_lambda_call(e) {
         pad(s, depth);
         s.push_str(&prefix);
-        call_block_lambda(s, &call_head(call).unwrap(), call_args(call), &suffix, depth, c);
+        call_block_lambda(s, &call_head(call).unwrap(), call_args(call), &suffix, depth, c, upper);
         return;
     }
     match e {
@@ -625,7 +781,7 @@ fn block_stmt(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
         | Expr::WhileLet { .. }
         | Expr::For { .. } => {
             pad(s, depth);
-            multiline(s, e, depth, c);
+            multiline(s, e, depth, c, upper);
         }
         Expr::Block(b) => {
             if let Some(sugar) = comprehension_sugar(b) {
@@ -633,12 +789,12 @@ fn block_stmt(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
                 s.push_str(&sugar);
                 s.push('\n');
             } else {
-                block(s, b, depth, c);
+                block(s, b, depth, c, upper);
             }
         }
         Expr::Lambda { params, body, ret } => {
             pad(s, depth);
-            lambda_at(s, params, body, ret, depth, c);
+            lambda_at(s, params, body, ret, depth, c, upper);
         }
         _ => {
             pad(s, depth);
@@ -704,24 +860,24 @@ fn chain_wrap(s: &mut String, e: &Expr, depth: usize) -> bool {
 /// The right-hand side of a `let`/`=`/`return`: use a multi-line form when the
 /// value is a `match` (no inline form) or a lambda with a block body, else an
 /// inline expr.
-fn value_or_block(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
+fn value_or_block(s: &mut String, e: &Expr, depth: usize, c: &mut Comments, upper: u32) {
     if let Some((prefix, call, suffix)) = unwrap_block_lambda_call(e) {
         s.push_str(&prefix);
-        call_block_lambda(s, &call_head(call).unwrap(), call_args(call), &suffix, depth, c);
+        call_block_lambda(s, &call_head(call).unwrap(), call_args(call), &suffix, depth, c, upper);
         return;
     }
     match e {
         Expr::Match { .. } => {
-            multiline(s, e, depth, c);
+            multiline(s, e, depth, c, upper);
         }
         Expr::Lambda { params, body, ret } => {
-            lambda_at(s, params, body, ret, depth, c);
+            lambda_at(s, params, body, ret, depth, c, upper);
         }
         // A `region:` block used as a value: header after `= `, body below.
         Expr::Block(b) if b.region.is_some() => {
             region_header(s, b.region.as_ref().unwrap());
             s.push('\n');
-            block_stmts(s, b, depth + 1, c);
+            block_stmts(s, b, depth + 1, c, upper);
         }
         _ => {
             if !chain_wrap(s, e, depth) {
@@ -735,32 +891,32 @@ fn value_or_block(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
 /// Emit a control-flow expression across multiple lines. `s` is already padded to
 /// the header position for `if`/`while`/`for`; for `match` it is positioned after
 /// `= ` so we do not pre-pad.
-fn multiline(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
+fn multiline(s: &mut String, e: &Expr, depth: usize, c: &mut Comments, upper: u32) {
     match e {
         Expr::If { cond, then_block, else_block } => {
             s.push_str("if ");
             s.push_str(&expr(cond));
             s.push_str(":\n");
-            block(s, then_block, depth + 1, c);
+            block(s, then_block, depth + 1, c, upper);
             if let Some(eb) = else_block {
                 pad(s, depth);
                 // `else if` chain: a single nested if statement.
                 if eb.stmts.len() == 1 {
                     if let Stmt::Expr(inner @ Expr::If { .. }) = &eb.stmts[0] {
                         s.push_str("else ");
-                        multiline(s, inner, depth, c);
+                        multiline(s, inner, depth, c, upper);
                         return;
                     }
                 }
                 s.push_str("else:\n");
-                block(s, eb, depth + 1, c);
+                block(s, eb, depth + 1, c, upper);
             }
         }
         Expr::While { cond, body } => {
             s.push_str("while ");
             s.push_str(&expr(cond));
             s.push_str(":\n");
-            block(s, body, depth + 1, c);
+            block(s, body, depth + 1, c, upper);
         }
         Expr::WhileLet { pattern: pat, scrutinee, body } => {
             s.push_str("while let ");
@@ -768,9 +924,25 @@ fn multiline(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
             s.push_str(" = ");
             s.push_str(&expr(scrutinee));
             s.push_str(":\n");
-            block(s, body, depth + 1, c);
+            block(s, body, depth + 1, c, upper);
         }
         Expr::For { var, iter, body } => {
+            // `for var x in xs:` (RFC-0028) desugars to an indexed loop with a
+            // synthetic `__fvN` counter, a leading `var x = xs[__fvN]` bind, and a
+            // trailing `xs[__fvN] = x` write-back. Recognize exactly that shape and
+            // print the surface form back (BUG-334) — leaking the internal counter
+            // into formatted source is a de-sugar defect, like while-let.
+            if var.starts_with("__fv") {
+                if let Some((elem, list_var, inner)) = for_var_sugar(var, iter, body) {
+                    s.push_str("for var ");
+                    s.push_str(elem);
+                    s.push_str(" in ");
+                    s.push_str(list_var);
+                    s.push_str(":\n");
+                    block(s, &inner, depth + 1, c, upper);
+                    return;
+                }
+            }
             // `for a, b in e:` desugars at parse to a synthetic element variable
             // plus a leading destructure; print the sugar back (unparenthesized —
             // the canonical Python-style form; `for (a, b) in e:` also parses).
@@ -797,7 +969,7 @@ fn multiline(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
                         s.push_str(" in ");
                         s.push_str(&expr(iter));
                         s.push_str(":\n");
-                        block(s, &inner, depth + 1, c);
+                        block(s, &inner, depth + 1, c, upper);
                         return;
                     }
                 }
@@ -811,7 +983,7 @@ fn multiline(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
                     s.push_str(" in ");
                     s.push_str(&expr(&args[0]));
                     s.push_str(":\n");
-                    block(s, body, depth + 1, c);
+                    block(s, body, depth + 1, c, upper);
                     return;
                 }
             }
@@ -820,7 +992,7 @@ fn multiline(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
             s.push_str(" in ");
             s.push_str(&expr(iter));
             s.push_str(":\n");
-            block(s, body, depth + 1, c);
+            block(s, body, depth + 1, c, upper);
         }
         Expr::Match { scrutinee, arms } => {
             // A two-arm match of `pattern -> block` plus an unguarded wildcard
@@ -842,11 +1014,11 @@ fn multiline(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
                             s.push_str(" = ");
                             s.push_str(&expr(scrutinee));
                             s.push_str(":\n");
-                            block(s, tb, depth + 1, c);
+                            block(s, tb, depth + 1, c, upper);
                             if !eb.stmts.is_empty() {
                                 pad(s, depth);
                                 s.push_str("else:\n");
-                                block(s, eb, depth + 1, c);
+                                block(s, eb, depth + 1, c, upper);
                             }
                             return;
                         }
@@ -856,6 +1028,11 @@ fn multiline(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
             s.push_str("match ");
             s.push_str(&expr(scrutinee));
             s.push_str(":\n");
+            // A comment written inside the match (above an arm) is indented past
+            // the `match` header column; flush it here so it stays with the match
+            // rather than being relocated to the next statement/item (BUG-332).
+            let header_col = depth as u32 * 4 + 1;
+            c.before_body(s, depth + 1, header_col, upper);
             for a in arms {
                 pad(s, depth + 1);
                 s.push_str(&pattern(&a.pattern));
@@ -864,7 +1041,7 @@ fn multiline(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
                     s.push_str(&expr(g));
                 }
                 s.push_str(" ->");
-                arm_body(s, &a.body, depth + 1, c);
+                arm_body(s, &a.body, depth + 1, c, upper);
             }
         }
         _ => {
@@ -878,7 +1055,7 @@ fn multiline(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
 /// block after the `->`; otherwise the body stays a bare expression — a `match`
 /// continues multi-line on the same line as `->`, everything else is inline (so
 /// the re-parsed arm body has the same shape, not a `Block` wrapper).
-fn arm_body(s: &mut String, body: &Expr, depth: usize, c: &mut Comments) {
+fn arm_body(s: &mut String, body: &Expr, depth: usize, c: &mut Comments, upper: u32) {
     // A one-statement block whose statement fits on a line prints inline
     // (`-> return e`, `-> x = e`, `-> break`) — the same source shape it
     // parses from. `return` with no value must stay in block form: inline it
@@ -894,9 +1071,9 @@ fn arm_body(s: &mut String, body: &Expr, depth: usize, c: &mut Comments) {
         Expr::Block(b) if b.stmts.len() == 1 && b.region.is_none() => {
             let inline = match &b.stmts[0] {
                 Stmt::Return(Some(e)) => inline_value(e).map(|v| format!("return {v}")),
-                Stmt::Assign { name, value } => {
-                    inline_value(value).map(|v| format!("{name} = {v}"))
-                }
+                Stmt::Assign { name, value } => place_assign_sugar(name, value)
+                    .filter(|l| !l.contains('\n'))
+                    .or_else(|| inline_value(value).map(|v| format!("{name} = {v}"))),
                 Stmt::Break => Some("break".into()),
                 Stmt::Continue => Some("continue".into()),
                 _ => None,
@@ -909,21 +1086,21 @@ fn arm_body(s: &mut String, body: &Expr, depth: usize, c: &mut Comments) {
                 }
                 None => {
                     s.push('\n');
-                    block(s, b, depth + 1, c);
+                    block(s, b, depth + 1, c, upper);
                 }
             }
         }
         Expr::Block(b) => {
             s.push('\n');
-            block(s, b, depth + 1, c);
+            block(s, b, depth + 1, c, upper);
         }
         Expr::Match { .. } => {
             s.push(' ');
-            multiline(s, body, depth, c);
+            multiline(s, body, depth, c, upper);
         }
         Expr::Lambda { params, body, ret } => {
             s.push(' ');
-            lambda_at(s, params, body, ret, depth, c);
+            lambda_at(s, params, body, ret, depth, c, upper);
         }
         _ => {
             s.push(' ');
@@ -1169,7 +1346,7 @@ fn block_value(b: &Block) -> String {
 /// inline `fn(p): expr` when the body is a single inline expression, otherwise
 /// `fn(p):` followed by an indented block. `s` is positioned where the `fn`
 /// begins.
-fn lambda_at(s: &mut String, params: &[Param], body: &Block, ret: &Option<Type>, depth: usize, c: &mut Comments) {
+fn lambda_at(s: &mut String, params: &[Param], body: &Block, ret: &Option<Type>, depth: usize, c: &mut Comments, upper: u32) {
     let ps: Vec<String> = params.iter().map(param).collect();
     s.push_str("fn(");
     s.push_str(&ps.join(", "));
@@ -1186,7 +1363,7 @@ fn lambda_at(s: &mut String, params: &[Param], body: &Block, ret: &Option<Type>,
         }
         None => {
             s.push_str(":\n");
-            block(s, body, depth + 1, c);
+            block(s, body, depth + 1, c, upper);
         }
     }
 }
@@ -1244,7 +1421,7 @@ fn call_args(e: &Expr) -> &[Expr] {
 /// Render a call whose last argument is a block-bodied lambda multi-line:
 /// `head(lead.., fn(p):` then the indented body, then a dedented `)`. `s` is
 /// positioned where the call head begins.
-fn call_block_lambda(s: &mut String, head: &str, args: &[Expr], suffix: &str, depth: usize, c: &mut Comments) {
+fn call_block_lambda(s: &mut String, head: &str, args: &[Expr], suffix: &str, depth: usize, c: &mut Comments, upper: u32) {
     s.push_str(head);
     s.push('(');
     let (lead, last) = args.split_at(args.len() - 1);
@@ -1253,7 +1430,7 @@ fn call_block_lambda(s: &mut String, head: &str, args: &[Expr], suffix: &str, de
         s.push_str(", ");
     }
     if let Expr::Lambda { params, body, ret } = &last[0] {
-        lambda_at(s, params, body, ret, depth, c);
+        lambda_at(s, params, body, ret, depth, c, upper);
     }
     pad(s, depth);
     s.push(')');

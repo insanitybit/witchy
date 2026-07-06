@@ -386,7 +386,7 @@ pub fn link(
     // constructors / record updates, so later stages never see `Expr::Record`.
     modules = modules
         .into_iter()
-        .map(|(n, m)| crate::records::lower(m).map(|m| (n, m)))
+        .map(|(n, m)| crate::records::lower_lenient(m).map(|m| (n, m)))
         .collect::<Result<_, _>>()
         .map_err(|message| LinkError { message })?;
 
@@ -465,7 +465,7 @@ pub fn link(
     // restrict to `pulled_std_start..` to avoid re-running comptime expansion
     // (which, unlike derive desugaring, is not idempotent).
     for (_, m) in modules[pulled_std_start..].iter_mut() {
-        *m = crate::records::lower(m.clone()).map_err(|message| LinkError { message })?;
+        *m = crate::records::lower_lenient(m.clone()).map_err(|message| LinkError { message })?;
     }
     for k in pulled_std_start..modules.len() {
         let name = modules[k].0.clone();
@@ -493,11 +493,6 @@ pub fn link(
         }
     }
 
-    // RFC-0002 sealing: a `capability` (a sealed type) may be CONSTRUCTED or
-    // DESTRUCTURED only inside the module that declares it. Run here, while each
-    // item still knows its home module (before merge flattens the namespace).
-    check_sealing(&modules)?;
-
     // Expand type aliases and inline top-level constants per module before
     // merging, so their use sites (and any function calls inside constant values)
     // are qualified along with the bodies they expand into — no `Item::TypeAlias`
@@ -514,6 +509,15 @@ pub fn link(
     // still knows its home module and imports. Dissolves the flat-type-namespace
     // collisions (iter+chan's `Step`, task+future's `Step`/`Task`).
     crate::type_resolve::resolve(&mut modules)?;
+
+    // RFC-0002 sealing: a `capability` (a sealed type) may be CONSTRUCTED or
+    // DESTRUCTURED only inside the module that declares it. Run AFTER
+    // `type_resolve` canonicalizes every constructor and pattern — bare,
+    // module-qualified (`lib.Vault(…)`), and from-imported alike — to a single
+    // `Expr::Ctor { name: "module.Ctor" }`, so a qualified spelling can no longer
+    // slip past the name-keyed check (BUG-313, fail-closed). Modules are still
+    // unmerged here, so each item knows its home module.
+    check_sealing(&modules)?;
 
     let mut fns: FnTable = HashMap::new();
     for (name, m) in &modules {
@@ -1073,6 +1077,26 @@ fn rewrite_expr(
 ) -> Result<(), LinkError> {
     match e {
         Expr::Call { name, args } => {
+            // `local.method(args)` where `local` is a bound variable is a METHOD
+            // CALL on the local, not a module-qualified function call — the local
+            // shadows any prelude/imported module of the same name (BUG-216).
+            // Rewrite to a `MethodCall` so trait/UFCS lowering resolves it by the
+            // local's type, matching the value-position rule for `local.field`
+            // (the `Expr::Field` arm below). The module stays reachable while
+            // shadowed via an alias or by renaming the local.
+            if let Some((base, method)) = name.split_once('.') {
+                if bound.contains(base) && !method.contains('.') {
+                    let receiver = Box::new(Expr::Var(base.to_string()));
+                    let method = method.to_string();
+                    let mut call_args = Vec::new();
+                    std::mem::swap(args, &mut call_args);
+                    for a in &mut call_args {
+                        rewrite_expr(a, m, imps, fns, bound)?;
+                    }
+                    *e = Expr::MethodCall { receiver, method, args: call_args };
+                    return Ok(());
+                }
+            }
             *name = resolve_call(name, m, imps, fns, bound)?;
             for a in args {
                 rewrite_expr(a, m, imps, fns, bound)?;
@@ -1159,6 +1183,19 @@ fn rewrite_expr(
                 }
                 *e = eta_lambda(&qualified, sig.arity);
                 return Ok(());
+            }
+            // (BUG-303) A value-position `iter.count` whose base is a KNOWN std
+            // module that is simply not imported would otherwise fall through to
+            // an ordinary field read and die as "unbound variable `iter`". Emit
+            // the same missing-import teaching diagnostic the call position gives,
+            // so "unbound variable" never names a module.
+            if let Expr::Var(modname) = base.as_ref() {
+                if !bound.contains(modname.as_str()) && STD_MODULES.contains(&modname.as_str()) {
+                    return lerr(format!(
+                        "`{modname}.{field}` looks like a module-qualified reference, but \
+                         `{modname}` is not imported — add `import {modname}`"
+                    ));
+                }
             }
             rewrite_expr(base, m, imps, fns, bound)?;
         }
@@ -1316,9 +1353,11 @@ fn seal_use(
 ) -> Result<(), LinkError> {
     if let Some(decl) = sealed.get(name) {
         if decl != home {
+            // Names are canonical `module.Ctor` here; show the bare ctor.
+            let bare = name.rsplit('.').next().unwrap_or(name);
             return lerr(format!(
-                "`{name}` is a sealed capability declared in module `{decl}`; module \
-                 `{home}` may hold and pass a `{name}` but cannot {verb} one — only \
+                "`{bare}` is a sealed capability declared in module `{decl}`; module \
+                 `{home}` may hold and pass a `{bare}` but cannot {verb} one — only \
                  `{decl}` can mint or unwrap it (use the functions `{decl}` exports)"
             ));
         }
@@ -1544,6 +1583,168 @@ mod tests {
         // `map` lives in list (and option); a near miss resolves to a real name.
         assert!(closest_std_function("mep").is_some());
         assert_eq!(closest_std_function("zzzzzz"), None);
+    }
+
+    fn noop_expand(_: &str, _: &mut Module, _: &[(String, Module)]) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Link `lib` (module `sealed_lib`) with `user` (module `user`, the entry) and
+    /// return the link error message, if any.
+    fn link_lib_user(lib: &str, user: &str) -> Result<(), String> {
+        let libm = crate::parser::parse_module(lib).expect("lib parses");
+        let userm = crate::parser::parse_module(user).expect("user parses");
+        link(
+            vec![("sealed_lib".to_string(), libm), ("user".to_string(), userm)],
+            "user",
+            noop_expand,
+        )
+        .map(|_| ())
+        .map_err(|e| e.message)
+    }
+
+    #[test]
+    fn sealing_rejects_module_qualified_constructor_and_pattern() {
+        // BUG-313: a module-qualified constructor/pattern must not evade the RFC-0002
+        // seal check — a sealed capability may be minted/destructured only in its
+        // declaring module, on EVERY spelling (fail-closed).
+        let lib = "capability Vault from Net\n\n\
+                   pub fn make(net: Net) -> Vault:\n    Vault(net)\n\n\
+                   pub fn zone(v: Vault) -> String:\n    match v:\n        Vault(n) -> \"z\"\n";
+
+        // CONSTRUCT via `lib.Vault(...)` — rejected.
+        let forge = "import sealed_lib\n\n\
+                     fn main(console: Console, net: Net):\n    \
+                     let forged = sealed_lib.Vault(net)\n    print(console, \"x\")\n";
+        let err = link_lib_user(lib, forge).expect_err("qualified construct must be rejected");
+        assert!(err.contains("sealed capability") && err.contains("Vault"), "{err}");
+
+        // DESTRUCTURE via `match v: lib.Vault(...)` — rejected.
+        let destr = "import sealed_lib\n\n\
+                     fn main(console: Console, net: Net):\n    \
+                     let v = sealed_lib.make(net)\n    \
+                     match v:\n        sealed_lib.Vault(inner) -> print(console, \"leak\")\n";
+        let err = link_lib_user(lib, destr).expect_err("qualified destructure must be rejected");
+        assert!(err.contains("sealed capability") && err.contains("destructure"), "{err}");
+
+        // Legit: hold and pass a Vault through the lib's exported functions — allowed.
+        let holder = "from sealed_lib import Vault\nimport sealed_lib\n\n\
+                      fn use_it(v: Vault, console: Console):\n    print(console, sealed_lib.zone(v))\n\n\
+                      fn main(console: Console, net: Net):\n    \
+                      let v = sealed_lib.make(net)\n    use_it(v, console)\n";
+        assert!(link_lib_user(lib, holder).is_ok(), "hold+pass must be allowed");
+    }
+
+    #[test]
+    fn sealing_rejects_grantable_mint_from_paramless_main() {
+        // BUG-313: a grantable root capability minted by `lib.RootCap(...)` from a
+        // param-less main forges authority from nothing — rejected.
+        let lib = "grantable capability UiRoot:\n    policy: String\n";
+        let forge = "import sealed_lib\n\n\
+                     fn main(console: Console):\n    \
+                     let forged = sealed_lib.UiRoot(\"admin\")\n    print(console, \"x\")\n";
+        let err = link_lib_user(lib, forge).expect_err("grantable mint must be rejected");
+        assert!(err.contains("sealed capability") && err.contains("UiRoot"), "{err}");
+    }
+
+    /// Find the first `MethodCall` whose receiver is `Var(recv)` and method is
+    /// `method`, anywhere in the linked entry module.
+    fn has_method_call_on(m: &Module, recv: &str, method: &str) -> bool {
+        fn in_expr(e: &Expr, recv: &str, method: &str) -> bool {
+            match e {
+                Expr::MethodCall { receiver, method: mm, args } => {
+                    (matches!(receiver.as_ref(), Expr::Var(v) if v == recv) && mm == method)
+                        || in_expr(receiver, recv, method)
+                        || args.iter().any(|a| in_expr(a, recv, method))
+                }
+                Expr::Call { args, .. } | Expr::List(args) | Expr::Tuple(args) | Expr::Ctor { args, .. } => {
+                    args.iter().any(|a| in_expr(a, recv, method))
+                }
+                Expr::Binary { lhs, rhs, .. } => in_expr(lhs, recv, method) || in_expr(rhs, recv, method),
+                Expr::Block(b) => in_block(b, recv, method),
+                _ => false,
+            }
+        }
+        fn in_block(b: &Block, recv: &str, method: &str) -> bool {
+            b.stmts.iter().any(|s| match s {
+                Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetPattern { value, .. } => {
+                    in_expr(value, recv, method)
+                }
+                Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => in_expr(e, recv, method),
+                _ => false,
+            })
+        }
+        m.items.iter().any(|it| matches!(it, Item::Function(f) if in_block(&f.body, recv, method)))
+    }
+
+    #[test]
+    fn local_named_after_prelude_module_keeps_its_method_call() {
+        // BUG-216: `x.f(a)` where `x` is a local named after a prelude module
+        // (`list`, `string`, …) is a METHOD CALL on the local, not a hijacked
+        // module call — the call position must agree with the value position.
+        let src = "type R:\n    x: Int\n\n\
+                   impl R:\n    fn get(self, n: Int) -> Int:\n        self.x + n\n\n\
+                   fn main(console: Console):\n    \
+                   let list = R(x: 1)\n    print(console, __render(list.get(2)))\n";
+        let parsed = crate::parser::parse_module(src).expect("parses");
+        let linked = link(vec![("main".to_string(), parsed)], "main", noop_expand)
+            .expect("links");
+        assert!(
+            has_method_call_on(&linked, "list", "get"),
+            "`list.get(2)` on a shadowing local must stay a method call, not a `list.get` module call"
+        );
+    }
+
+    #[test]
+    fn named_field_construction_of_imported_record_resolves() {
+        // BUG-342: `from lib import FieldInfo; FieldInfo(name: ..)` used to fail at
+        // link ("not a record type") because the per-module records pass ran
+        // before the imported type was visible. It now leaves the construction for
+        // the merged pass, which resolves it.
+        let lib = "type FieldInfo:\n    name: String\n    type_name: String\n";
+        let user = "from rec_lib import FieldInfo\n\n\
+                    fn main(console: Console):\n    \
+                    let fi = FieldInfo(name: \"x\", type_name: \"Int\")\n    print(console, fi.name)\n";
+        let libm = crate::parser::parse_module(lib).expect("lib parses");
+        let userm = crate::parser::parse_module(user).expect("user parses");
+        let linked = link(
+            vec![("rec_lib".to_string(), libm), ("user".to_string(), userm)],
+            "user",
+            noop_expand,
+        )
+        .expect("links without a false 'not a record type' error");
+        // The merged strict pass (run by typeck/backends) must resolve the leftover
+        // `Expr::Record` to a positional constructor.
+        let lowered = crate::records::lower(linked).expect("merged records pass lowers it");
+        fn has_record(m: &Module) -> bool {
+            fn e(x: &Expr) -> bool {
+                match x {
+                    Expr::Record { .. } => true,
+                    Expr::Call { args, .. } | Expr::Ctor { args, .. } => args.iter().any(e),
+                    Expr::Block(b) => b.stmts.iter().any(|s| matches!(s,
+                        Stmt::Let { value, .. } | Stmt::Expr(value) if e(value))),
+                    _ => false,
+                }
+            }
+            m.items.iter().any(|it| matches!(it, Item::Function(f)
+                if f.body.stmts.iter().any(|s| matches!(s,
+                    Stmt::Let { value, .. } | Stmt::Expr(value) if e(value)))))
+        }
+        assert!(!has_record(&lowered), "imported named-field construction must lower to a Ctor");
+    }
+
+    #[test]
+    fn unimported_std_module_value_gives_missing_import_diagnostic() {
+        // BUG-303: `let f = iter.count` without `import iter` must give the
+        // missing-import teaching diagnostic (like the call position), not a bare
+        // "unbound variable `iter`".
+        let src = "fn main(console: Console):\n    let f = iter.count\n    print(console, \"x\")\n";
+        let parsed = crate::parser::parse_module(src).expect("parses");
+        let err = link(vec![("main".to_string(), parsed)], "main", noop_expand)
+            .expect_err("must be a link error")
+            .message;
+        assert!(err.contains("`iter` is not imported") && err.contains("import iter"), "{err}");
+        assert!(!err.contains("unbound variable"), "must not fall through to unbound: {err}");
     }
 
     #[test]
