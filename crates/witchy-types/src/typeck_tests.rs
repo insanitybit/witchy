@@ -1425,3 +1425,25 @@ fn main():
         )
         .expect("distinct declarations are accepted");
     }
+
+    #[test]
+    fn generic_dict_key_operation_requires_eq_bound() {
+        // (BUG-395 / RFC-0047) A generic helper performing a `Dict` key operation
+        // must carry a `where k: Eq` bound — the key is hashed and compared.
+        for op in [
+            "dict.get_or(d, key, fallback)",
+            "dict.insert(d, key, fallback)",
+            "dict.contains_key(d, key)",
+            "dict.remove(d, key)",
+        ] {
+            let src = format!("fn f(d: Dict(k, v), key: k, fallback: v) -> v:\n    {op}\n    fallback\n");
+            let err = check_str(&src).unwrap_err();
+            assert!(err.contains("generic `Dict` key must be `Eq`"), "{op}: {err}");
+        }
+        // With the bound it type-checks (checked through monomorphization).
+        check_str("fn f(d: Dict(k, v), key: k, fallback: v) -> v where k: Eq:\n    dict.get_or(d, key, fallback)\n")
+            .expect("a `where k: Eq` generic dict helper is accepted");
+        // A concrete key needs no bound.
+        check_str("fn f(d: Dict(String, Int), key: String) -> Int:\n    dict.get_or(d, key, 0)\n")
+            .expect("a concrete String key needs no bound");
+    }

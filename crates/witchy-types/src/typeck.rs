@@ -918,6 +918,31 @@ fn float_key_position(t: &Ty) -> Option<FloatKeyKind> {
     }
 }
 
+/// (BUG-395) The argument index of the KEY of a generic `Dict` key operation (the
+/// ones that hash/compare the key), or `None` for a non-key-op. Key operations
+/// require an `Eq` key; the position lets the checker read the key's type after
+/// argument unification.
+fn dict_key_op_index(name: &str) -> Option<usize> {
+    match name {
+        "dict.insert" | "dict.get_or" | "dict.update" | "dict.contains_key" | "dict.remove" => {
+            Some(1)
+        }
+        _ => None,
+    }
+}
+
+/// The first type variable appearing anywhere in `t`, if any.
+fn first_type_var(t: &Ty) -> Option<u32> {
+    match t {
+        Ty::Var(v) => Some(*v),
+        Ty::List(e) => first_type_var(e),
+        Ty::Tuple(ts) => ts.iter().find_map(first_type_var),
+        Ty::Named(_, args) => args.iter().find_map(first_type_var),
+        Ty::Fn(ps, r) => ps.iter().chain(std::iter::once(r.as_ref())).find_map(first_type_var),
+        _ => None,
+    }
+}
+
 fn float_key_reject_message(kind: FloatKeyKind) -> String {
     match kind {
         FloatKeyKind::DictKey =>
@@ -1381,6 +1406,13 @@ struct Checker {
     /// The declared return type of the function currently being checked, so `?`
     /// can require the enclosing function to return a matching Result/Option.
     current_ret: Option<Ty>,
+    /// (BUG-395 / RFC-0047) The key types of the generic `Dict` key operations
+    /// (`dict.insert`/`get_or`/`update`/`contains_key`/`remove`) invoked in the
+    /// body currently being checked, with the source line. A dict key is hashed and
+    /// compared, so it must be `Eq`; validated once the body is fully inferred so
+    /// an unbounded generic key (a type parameter with no `where k: Eq` bound)
+    /// is rejected rather than silently accepted.
+    dict_key_ops: Vec<(Ty, u32)>,
     /// Source line of the statement currently being checked, attached to errors
     /// so diagnostics point at a location. 0 means "no line known".
     cur_line: u32,
@@ -2882,6 +2914,14 @@ impl Checker {
                     self.coerce_arg(param_ty, &at)
                         .map_err(|e| TypeError { message: format!("in call to `{name}`: {}", e.message) })?;
                 }
+                // (BUG-395) A generic `Dict` key operation's key must be `Eq` — record
+                // the (post-unification) key type and its line; validated once the
+                // whole body is inferred (so a key var pinned later is seen concrete).
+                if let Some(i) = dict_key_op_index(name) {
+                    if let Some(key_ty) = params.get(i) {
+                        self.dict_key_ops.push((key_ty.clone(), self.cur_line));
+                    }
+                }
                 // Enforce conventions: a `var` parameter needs a mutable variable;
                 // `own` consumes its argument (use-after-move becomes an error).
                 if let Some(convs) = self.fn_conventions.get(name).cloned() {
@@ -3942,6 +3982,19 @@ impl Checker {
         true
     }
 
+    /// The source name of the type parameter appearing in a (rejected) `Dict` key
+    /// type, for the "add a `where <k>: Eq`" hint — falls back to `k`.
+    fn key_var_name(&self, ty: &Ty) -> String {
+        if let Some(id) = first_type_var(ty) {
+            for (name, v) in &self.current_typarams {
+                if *v == id {
+                    return name.clone();
+                }
+            }
+        }
+        "k".to_string()
+    }
+
     fn check_function(&mut self, func: &Function) -> Result<(), TypeError> {
         borrow_escape_check(func)?;
         let (params, ret) = self.fn_sigs.get(&func.name).cloned().unwrap();
@@ -3955,6 +4008,7 @@ impl Checker {
             .get(&func.name)
             .map(|ps| ps.iter().map(|(n, v)| (n.clone(), *v)).collect())
             .unwrap_or_default();
+        self.dict_key_ops.clear();
         self.cur_line = 0;
         for (param, ty) in func.params.iter().zip(&params) {
             // (RFC-0025) A `frozen` parameter is deeply immutable, so a mutable
@@ -4002,6 +4056,40 @@ impl Checker {
                         ));
                     }
                 }
+            }
+        }
+        // (BUG-395 / RFC-0047) A generic `Dict` key operation performed in this
+        // (unbounded) body must have an `Eq` key. Now that the body is fully
+        // inferred, a key type that still carries a type variable is an UNBOUNDED
+        // generic key — the function needs a `where <k>: Eq` bound (a bounded
+        // function is checked through monomorphization instead, where the key is
+        // concrete). Concrete keys (Int/String/records that derive Eq) are already
+        // fine; `Float` is caught separately by `float_key_position`.
+        // The std `dict` module's own compositional helpers (`map_values`, `filter`,
+        // `merge`, …) key their output dicts with keys drawn from an INPUT `Dict`
+        // parameter — whose existence already guarantees the key is `Eq` (a dict
+        // can only be built through the bounded insert wrappers). Exempting the
+        // trusted std API layer keeps those helpers unbounded (bounding them makes
+        // them templates that regress result inference), while USER code that does a
+        // generic key op is still enforced.
+        let is_std = func
+            .name
+            .rsplit_once('.')
+            .is_some_and(|(m, _)| witchy_syntax::linker::STD_MODULES.contains(&m));
+        for (key_ty, line) in std::mem::take(&mut self.dict_key_ops) {
+            if is_std {
+                continue;
+            }
+            let resolved = self.resolve(&key_ty);
+            if ty_has_var(&resolved) {
+                self.cur_line = line;
+                return terr(format!(
+                    "`{}`: a generic `Dict` key must be `Eq` — the key type is used to hash \
+                     and compare entries, so an unbounded type parameter can't be a key. Add a \
+                     `where {}: Eq` bound (or use a concrete key type)",
+                    func.name.rsplit('.').next().unwrap_or(&func.name),
+                    self.key_var_name(&resolved)
+                ));
             }
         }
         // Soundness: a declared type parameter must stay free (truly generic).
@@ -4180,6 +4268,7 @@ fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeErr
         consumed: HashSet::new(),
         region_locals: Vec::new(),
         current_ret: None,
+        dict_key_ops: Vec::new(),
         cur_line: 0,
     };
 
