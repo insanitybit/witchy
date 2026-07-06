@@ -789,6 +789,80 @@
         assert_eq!(run_linked_on_wasm(&[("main", &clean)], "main"), ["ok"], "wasm accepts a clean header/path");
     }
 
+    /// (BUG-186) An invalid regex pattern is a LOUD error on both backends, not a
+    /// silent non-match — the `std/regex` contract promises exactly that. Before the
+    /// fix, `regex.match_spans` caught the parse failure and returned the same empty
+    /// string used for "no match", so `matches`/`find`/`find_all` could not tell an
+    /// unparseable pattern from a valid regex that matched nothing. A valid pattern
+    /// with zero matches still returns a clean `false`/`None`/`[]` (no false trap).
+    #[test]
+    fn regex_invalid_pattern_errors_on_both_backends() {
+        let prog = |call: &str| {
+            format!("import regex\n\nfn main(console: Console):\n    print(console, \"${{{call}}}\")\n")
+        };
+        // An unclosed group `(` is a syntax error → both backends must abort.
+        for call in ["regex.matches(\"(\", \"abc\")", "regex.find(\"[\", \"abc\")"] {
+            let bad = prog(call);
+            assert!(
+                interpreter::run_module(resolve_std_src(&bad), ".", Vec::new()).is_err(),
+                "interpreter must abort on an invalid regex pattern: {call}"
+            );
+            let bytes = codegen::compile_module_binary(&resolve_std_src(&bad))
+                .expect("compile")
+                .expect("lowers");
+            assert!(
+                crate::run_wasm_bytes(&bytes).is_err(),
+                "WASM must trap on an invalid regex pattern: {call}"
+            );
+        }
+        // A VALID pattern with no match is not an error: false, on both backends.
+        let nomatch = prog("regex.matches(\"xyz\", \"abc\")");
+        assert_eq!(link_run(&nomatch), ["false"], "interp: valid pattern, zero match");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", &nomatch)], "main"),
+            ["false"],
+            "wasm: valid pattern, zero match"
+        );
+    }
+
+    /// (BUG-282) The canonical `Eq`-bounded list helpers — `list.contains`,
+    /// `list.index_of` (Option, no -1 sentinel), `list.count`, `list.unique` — are
+    /// content-correct on a USER RECORD element type on BOTH backends. That is why
+    /// the old `cmp.member`/`index_of`/`count`/`unique` bridge quartet (a pre-RFC-0046
+    /// workaround for generic `==` not comparing records under compilation) could be
+    /// deleted: `list.*` now carries the `Eq` bound directly.
+    #[test]
+    fn list_eq_helpers_on_user_record_on_both_backends() {
+        let src = [
+            "import list",
+            "",
+            "type Tag derive(PartialEq, Eq):",
+            "    name: String",
+            "",
+            "fn main(console: Console):",
+            "    let a = Tag(\"a\")",
+            "    let b = Tag(\"b\")",
+            "    let c = Tag(\"c\")",
+            "    let z = Tag(\"z\")",
+            "    let xs = [a, b, c, b]",
+            "    print(console, \"${list.contains(xs, b)}\")",
+            "    print(console, \"${list.contains(xs, z)}\")",
+            "    print(console, \"${list.index_of(xs, c)}\")",
+            "    print(console, \"${list.index_of(xs, z)}\")",
+            "    print(console, \"${list.count(xs, b)}\")",
+            "    print(console, \"${list.length(list.unique(xs))}\")",
+            "",
+        ]
+        .join("\n");
+        let expected = ["true", "false", "Some(2)", "None", "2", "3"];
+        assert_eq!(link_run(&src), expected, "interp: Eq list helpers on a record type");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", &src)], "main"),
+            expected,
+            "wasm: Eq list helpers on a record type"
+        );
+    }
+
     /// (BUG-276) The raw byte-level hex primitives (`encoding.hex_decode_lossy`,
     /// `encoding.hex_to_base64url_lossy`) decode STRICTLY: a non-hex character is a
     /// loud error on both backends, never the old silent-drop that could hand
@@ -7864,6 +7938,52 @@ fn main(console: Console):
         let compiled = run_linked_on_wasm(&sources, "main");
         assert_eq!(interpreted, compiled, "url bad-port diverged");
         assert_eq!(compiled, vec!["ok:8443", "none", "none", "none", "ok:443"]);
+    }
+
+    /// (BUG-351) A bracketed IPv6 authority keeps every colon inside the brackets
+    /// as part of the host — only a `:port` after the matching `]` is a port. The
+    /// old parser split on the first colon (inside the literal), so `[::1]:8080`
+    /// became host `[` with an invalid port. The Net capability layer already
+    /// understands `[host]:port`; the URL helper now agrees. Malformed brackets
+    /// return a structured Err on both backends, never a trap.
+    #[test]
+    fn url_parse_bracketed_ipv6_backends_agree() {
+        let client = r#"
+import url
+import result
+fn p(s: String) -> String:
+    match url.parse(s):
+        Ok(u) -> url.host(u) + "|" + __render(url.port(u)) + "|" + url.path(u)
+        Err(_e) -> "err"
+fn main(console: Console):
+    print(console, p("http://[::1]:8080/p"))
+    print(console, p("http://[::1]/p"))
+    print(console, p("https://[2001:4860:4860::8888]:443/dns-query"))
+    print(console, p("http://[::1"))
+    print(console, p("http://[::1]bad/p"))
+    print(console, p("http://[::1]:abc/p"))
+    print(console, p("http://example.com:9000/x"))
+"#;
+        let sources = [
+            ("option", crate::bundled_module("option").unwrap()),
+            ("url", crate::bundled_module("url").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "url IPv6 diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                "[::1]|8080|/p",
+                "[::1]|80|/p",
+                "[2001:4860:4860::8888]|443|/dns-query",
+                "err",
+                "err",
+                "err",
+                "example.com|9000|/x",
+            ]
+        );
     }
 
     #[test]
