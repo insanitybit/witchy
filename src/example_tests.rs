@@ -763,6 +763,36 @@
         assert_eq!(run_linked_on_wasm(&[("main", &clean)], "main"), ["ok"], "wasm accepts a clean header/path");
     }
 
+    /// (BUG-276) The raw byte-level hex primitives (`encoding.hex_decode_lossy`,
+    /// `encoding.hex_to_base64url_lossy`) decode STRICTLY: a non-hex character is a
+    /// loud error on both backends, never the old silent-drop that could hand
+    /// mangled crypto material to a signature check. Valid hex still round-trips.
+    #[test]
+    fn hex_primitives_reject_non_hex_strictly_on_both_backends() {
+        let prog = |call: &str| {
+            format!("import encoding\n\nfn main(console: Console):\n    print(console, {call})\n")
+        };
+        for bad in [
+            "encoding.hex_decode_lossy(\"68zz69\")",
+            "encoding.hex_to_base64url_lossy(\"zz6869\")",
+            "encoding.hex_decode_lossy(\"abc\")", // odd length
+        ] {
+            let src = prog(bad);
+            assert!(
+                interpreter::run_module(resolve_std_src(&src), ".", Vec::new()).is_err(),
+                "interpreter must reject non-hex: {bad}"
+            );
+            let bytes = codegen::compile_module_binary(&resolve_std_src(&src))
+                .expect("compile")
+                .expect("lowers");
+            assert!(crate::run_wasm_bytes(&bytes).is_err(), "WASM must reject non-hex: {bad}");
+        }
+        // Valid hex still decodes identically on both backends.
+        let ok = prog("encoding.hex_decode_lossy(\"6869\")");
+        assert_eq!(link_run(&ok), ["hi"], "interp decodes valid hex");
+        assert_eq!(run_linked_on_wasm(&[("main", &ok)], "main"), ["hi"], "wasm decodes valid hex");
+    }
+
     /// (SEC-045) An overflowing `Content-Length` must NOT crash the server. The old
     /// `content_length` guarded with `ascii.all_digits` (which passes an arbitrarily
     /// long digit string) then called `string.to_int`, which TRAPS on i64 overflow —

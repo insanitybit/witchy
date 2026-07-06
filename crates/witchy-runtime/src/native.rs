@@ -538,51 +538,49 @@ mod encoding {
         Ok(Value::Str(out))
     }
 
-    /// Raw hex decode to text (lossy UTF-8). Whitespace is skipped; an odd or
-    /// non-hex tail is ignored. This is the byte-level primitive behind
-    /// `encoding.hex_decode`, which validates the alphabet first and returns
-    /// `Result` — so this is only ever reached with already-valid input.
+    /// Strict hex → bytes: an even count of `0-9a-fA-F` digits, or `None` for any
+    /// odd length or non-hex character. The ONE hex-to-bytes decoder for the
+    /// encoding module — it never silently drops or truncates on bad input, so a
+    /// caller reaching a raw byte-level primitive with malformed hex fails closed
+    /// rather than receiving mangled crypto material. (BUG-276)
+    fn hex_bytes(s: &str) -> Option<Vec<u8>> {
+        if !s.len().is_multiple_of(2) {
+            return None;
+        }
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
+            .collect()
+    }
+
+    /// Raw hex decode to text (lossy UTF-8 only for the *decoded* bytes, which may
+    /// be arbitrary binary). The alphabet is decoded STRICTLY — a non-hex character
+    /// or odd length is a loud error, never a silent drop. This is the byte-level
+    /// primitive behind `encoding.hex_decode`, which validates first, so valid
+    /// input is unaffected; a direct malformed call now fails closed. (BUG-276)
     pub fn hex_decode_lossy(args: &[Value]) -> Result<Value, RuntimeError> {
         let [Value::Str(s)] = args else {
             return Err(type_error("encoding.hex_decode_lossy expects a String"));
         };
-        let digits: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
-        let mut bytes = Vec::with_capacity(digits.len() / 2);
-        for pair in digits.chunks_exact(2) {
-            let hi = (pair[0] as char).to_digit(16);
-            let lo = (pair[1] as char).to_digit(16);
-            match (hi, lo) {
-                (Some(h), Some(l)) => bytes.push((h * 16 + l) as u8),
-                _ => break,
-            }
-        }
+        let bytes = hex_bytes(s)
+            .ok_or_else(|| type_error("encoding.hex_decode: input is not valid hex"))?;
         Ok(Value::Str(String::from_utf8_lossy(&bytes).into_owned()))
     }
 
     const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     const B64URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-    fn hex_to_bytes(s: &str) -> Vec<u8> {
-        let nib = |c: u8| -> Option<u8> {
-            match c {
-                b'0'..=b'9' => Some(c - b'0'),
-                b'a'..=b'f' => Some(c - b'a' + 10),
-                b'A'..=b'F' => Some(c - b'A' + 10),
-                _ => None,
-            }
-        };
-        let cs: Vec<u8> = s.bytes().filter_map(nib).collect();
-        cs.chunks(2).filter(|p| p.len() == 2).map(|p| p[0] * 16 + p[1]).collect()
-    }
-
     /// base64url (no padding; `-`/`_`) of the bytes given as a HEX string. The hex
     /// indirection lets binary round-trip through witchy's UTF-8 strings — e.g. a
     /// WebAuthn `clientDataJSON.challenge` is base64url of the raw challenge bytes.
+    /// The hex is decoded STRICTLY (BUG-276): a non-hex character or odd length is a
+    /// loud error, never the silent-drop the old `filter_map` codec did.
     pub fn hex_to_base64url(args: &[Value]) -> Result<Value, RuntimeError> {
         let [Value::Str(hexs)] = args else {
             return Err(type_error("encoding.hex_to_base64url_lossy expects a hex String"));
         };
-        let bytes = hex_to_bytes(hexs);
+        let bytes = hex_bytes(hexs)
+            .ok_or_else(|| type_error("encoding.hex_to_base64url: input is not valid hex"))?;
         let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
         for chunk in bytes.chunks(3) {
             let b0 = chunk[0] as u32;
