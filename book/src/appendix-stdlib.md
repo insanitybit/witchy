@@ -2,8 +2,10 @@
 
 witchy ships ~40 standard-library modules. Bring one in with `import name` and
 call its functions module-qualified (`list.map`, `list.join`). A module's
-*types and their constructors* come in unqualified, though — after `import json`
-you write `JsonInt(1)`, not `json.JsonInt(1)`.
+*types and their constructors* are module-scoped the same way — after
+`import json` you write `json.JsonInt(1)`. Name a type explicitly with
+`from json import Json` to use it and its variant constructors unqualified
+(`JsonInt(1)`).
 
 Six modules form **the prelude** and never need an import line: `list`,
 `string`, `dict`, `math`, `option`, and `result`. Every program can write
