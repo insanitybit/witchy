@@ -108,11 +108,10 @@ type Receiver(m):
 
 // `Handle` is task's (from-imported above) — a spawned child's join handle.
 
-// A bounded channel of `capacity` (the sender blocks when it is full); pass 0 —
-// or any non-positive value — for an unbounded channel that never blocks the
-// sender. A negative capacity is treated as unbounded rather than the
-// permanently-full channel a raw negative once produced (BUG-280), matching the
-// convention that a non-positive bound means "no bound".
+// A channel of logical `capacity`: a positive capacity is bounded (the sender
+// blocks when the buffer is full), while 0 — or any non-positive value — is
+// unbounded and never blocks the sender, matching the convention that a
+// non-positive bound means "no bound".
 pub fn channel(capacity: Int) -> Task((Sender(m), Receiver(m))):
     let cap = if capacity < 0: 0 else: capacity
     and_then(open_raw(cap), fn(id): done((Sender(id), Receiver(id))))

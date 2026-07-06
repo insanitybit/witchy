@@ -114,7 +114,7 @@ Run `f(x)` as a task for each `x` in `xs`, in order — the lowering target for 
 
 #### `fn channel(capacity: Int) -> Task((Sender(m), Receiver(m)))`
 
-A bounded channel of `capacity` (the sender blocks when it is full); pass 0 for an unbounded channel that never blocks the sender.
+A channel of logical `capacity`: a positive capacity is bounded (the sender blocks when the buffer is full), while 0 — or any non-positive value — is unbounded and never blocks the sender, matching the convention that a non-positive bound means "no bound".
 
 #### `fn unbounded() -> Task((Sender(m), Receiver(m)))`
 
@@ -474,7 +474,7 @@ Whether the duration is exactly zero.
 
 #### `fn abs(d: Duration) -> Duration`
 
-The magnitude of a duration (a negative span, e.g. from subtraction, is made positive).
+The magnitude of a duration (a negative span, e.g. from subtraction, is made positive). The most-negative representable value has no positive counterpart in 64 bits (negating it would wrap back to itself), so it saturates to the largest positive magnitude rather than staying negative.
 
 #### `fn part_hours(d: Duration) -> Int`
 
@@ -502,7 +502,7 @@ A compact label that omits leading zero units: `1h1m1s`, `1m30s`, `5s`, and `500
 
 #### `fn parse(s: String) -> Result(Duration, String)`
 
-Parse a duration string to a `Duration` — the inverse of `human`. Accepts unit-tagged input ("1h2m3s", "500ms", "2hr", any subset) using ms/s/m/h/hr/d/w, and a bare number as plain milliseconds. `Err` on a stray character or a dangling unit-less number after units were given ("1h30"). Returns `Result` to align with `semver.parse`/`time.parse`/`url.parse` (RFC-0044 rule 2: invalid input is a reachable `Result`, not `Option`).
+Parse a duration string to a `Duration` — the inverse of `human`. Accepts unit-tagged input ("1h2m3s", "500ms", "2hr", any subset) using ms/s/m/h/hr/d/w, and a bare number as plain milliseconds. `Err` on a stray character, a unit with no preceding count ("ms", "1hms"), a dangling unit-less number after units were given ("1h30"), or a value that overflows a 64-bit millisecond count. Returns `Result` to align with `semver.parse`/`time.parse`/`url.parse` (RFC-0044 rule 2: invalid input is a reachable `Result`, not `Option`).
 
 ## `encoding`
 
@@ -1077,7 +1077,7 @@ Encode an `Option` as payload-or-`null` — `Some(x)` through `each`, `None` as 
 
 ## `jwt`
 
-jwt — verify a compact JWS / JWT (the OIDC identity-token shape), in PURE witchy over `crypto` (RS256/ES256), `encoding` (base64url), and `json`. Verification is computation, so this module has no host capability of its own — fetching the signing keys (JWKS discovery, over HTTPS) is a separate, network-bearing concern.
+jwt — verify a compact JWS / JWT (the OIDC identity-token shape), in PURE witchy over `crypto` (RS256), `encoding` (base64url), and `json`. Verification is computation, so this module has no host capability of its own — fetching the signing keys (JWKS discovery, over HTTPS) is a separate, network-bearing concern.
 
 A compact JWT is `header.payload.signature`, each base64url. The signature covers the ASCII bytes of `header.payload`; for RS256 it is verified against the issuer's RSA public key (DER PKCS#1, hex). On success the decoded payload `claims` are returned for the caller to inspect (`sub`, `iss`, provider-specific owner fields).
 
@@ -1279,9 +1279,9 @@ The list, reversed.
 
 Sort using a caller-supplied "is-less-than" comparator — a stable merge sort (O(n log n)), so equal elements keep their original order. Generic over the element type.
 
-#### `fn sort(var xs: List(Int)) -> List(Int)`
+#### `fn sort(var xs: List(a)) -> List(a) where a: Ord`
 
-Sort a list of integers ascending — the common default over `sort_by`.
+Sort any list whose elements are `Ord` ascending — a stable merge sort (O(n log n)) that dispatches through the element type's total order, so `xs.sort()` works for `Int`, `String`, `Duration`, or your own derived-`Ord` records, content-correct on both backends (RFC-0046). A merely-partial type like `Float` (not `Ord`) is rejected at the bound; sort those with `sort_by`.
 
 #### `fn contains(xs: List(a), target: a) -> Bool where a: Eq`
 
