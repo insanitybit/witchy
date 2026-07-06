@@ -70,8 +70,12 @@ pub fn render(module_name: &str, source: &str) -> Result<String, String> {
             continue;
         }
         any = true;
-        let _ = writeln!(out, "#### `{}`\n", signature(&f.name, &f.params, &f.ret, &f.bounds));
-        let doc = doc_above(&lines, &format!("pub fn {}(", f.name));
+        let sig = format!("{}{}", fn_qualifier(f.is_async, f.is_gen), signature(&f.name, &f.params, &f.ret, &f.bounds));
+        let _ = writeln!(out, "#### `{sig}`\n");
+        // The source line carries the same `async`/`gen` qualifier before `fn`,
+        // so the doc-comment marker must reconstruct it to find the block.
+        let marker = format!("pub {}fn {}(", fn_qualifier(f.is_async, f.is_gen), f.name);
+        let doc = doc_above(&lines, &marker);
         if !doc.is_empty() {
             let _ = writeln!(out, "{doc}\n");
         }
@@ -95,11 +99,12 @@ pub fn render(module_name: &str, source: &str) -> Result<String, String> {
             let sig = signature(&m.name, params, &m.ret, &m.bounds);
             let sig = sig
                 .strip_prefix("fn ")
-                .map(|s| format!("{}.{s}", im.type_name))
+                .map(|s| format!("{}{}.{s}", fn_qualifier(m.is_async, m.is_gen), im.type_name))
                 .unwrap_or(sig);
             any = true;
             let _ = writeln!(out, "#### `{sig}`\n");
-            let doc = doc_above(&lines, &format!("pub fn {}(", m.name));
+            let marker = format!("pub {}fn {}(", fn_qualifier(m.is_async, m.is_gen), m.name);
+            let doc = doc_above(&lines, &marker);
             if !doc.is_empty() {
                 let _ = writeln!(out, "{doc}\n");
             }
@@ -258,6 +263,19 @@ fn str_lit(v: &str) -> String {
     s
 }
 
+/// The `async`/`gen` prefix a function or method carries before `fn`, matching
+/// `witchy fmt`'s order (`async gen fn`). Empty for a plain function (BUG-167).
+fn fn_qualifier(is_async: bool, is_gen: bool) -> String {
+    let mut q = String::new();
+    if is_async {
+        q.push_str("async ");
+    }
+    if is_gen {
+        q.push_str("gen ");
+    }
+    q
+}
+
 /// A trait's declaration head: `trait Name`, plus type parameters
 /// (`trait From(a)`) and supertraits (`trait Ord: Eq + PartialOrd`), matching the
 /// source form (BUG-073).
@@ -389,5 +407,17 @@ mod tests {
         let src = "pub fn greet(name: String, punct: String = \"!\") -> String:\n    name + punct\n";
         let md = render("greet", src).unwrap();
         assert!(md.contains("punct: String = \"!\""), "default value: {md}");
+    }
+
+    // BUG-167: the `async`/`gen` qualifier is part of the rendered signature, and
+    // the doc comment is still found despite the qualifier on the source line.
+    #[test]
+    fn renders_async_and_gen_qualifiers() {
+        let src = "// Fetches data.\npub async fn fetch(url: String) -> String:\n    url\n\n// Streams numbers.\npub gen fn counter(n: Int) -> Int:\n    yield n\n";
+        let md = render("net", src).unwrap();
+        assert!(md.contains("#### `async fn fetch(url: String) -> String`"), "async: {md}");
+        assert!(md.contains("#### `gen fn counter(n: Int) -> Int`"), "gen: {md}");
+        assert!(md.contains("Fetches data."), "async doc: {md}");
+        assert!(md.contains("Streams numbers."), "gen doc: {md}");
     }
 }
