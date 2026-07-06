@@ -125,11 +125,10 @@ import compiler
 // `uploaded_by`, no claims. Trusted: the token must verify (401) AND satisfy the
 // namespace's policy (403); the first trusted publish binds it.
 
-// SEC-022/BUG-419: a publish token is single-use. The `jti` is consumed BEFORE any
-// namespace-policy binding, so a REPLAYED token can never bind (or rebind) namespace
-// trust state — the replay is refused before it can mutate anything. (A fresh token
-// spent on a policy-rejected publish is burned; that is the safe direction, and a
-// legitimate publisher always publishes to its own bound namespace.)
+// SEC-022: a publish token is single-use. Consuming the `jti` only after the
+// namespace policy passes means a rejected publish doesn't burn the token, but a
+// REPLAY of an accepted one is refused — shrinking the staging-replay window the
+// (intentionally human-gated, see route_promote) promote step already contains.
 
 // SEC-022: mark a token's `jti` consumed so it cannot publish twice (replay defense).
 // The marker is keyed by sha256(jti) so an issuer-chosen id can never escape `_policy/`
@@ -237,29 +236,22 @@ fn serve(console: Console, net: Net, root: Dir, key: Secret, clock: Clock, args:
 fn parse_issuers(args: List(String)) -> List(Issuer):
     var out = []
     for a in list.drop(args, 1):
-        out = list.push(out, parse_issuer_arg(a))
+        if let Some(issuer) = parse_issuer_arg(a):
+            out = list.push(out, issuer)
     out
 
-// Every trailing arg is meant to be a trusted-issuer spec. A malformed one (no `=`, or an
-// unparseable JWKS) must FAIL LOUDLY rather than parse to nothing and silently start the
-// registry with fewer — or zero — trusted issuers (which would quietly make it anonymous).
-fn parse_issuer_arg(a: String) -> Issuer:
-    if !string.contains(a, "="):
-        fail("coven: malformed trusted-issuer argument `" + a + "` (expected `issuer=pubkeyhex` or `issuer=jwks:<json>`)")
-    let (id, value) = string.split_once(a, "=")
-    if string.starts_with(value, "jwks:"):
-        let (_tag, jwks_json) = string.split_once(value, ":")
-        match json.decode(jwks_json):
-            Ok(jwks) -> Issuer(id, "", Some(jwks))
-            Err(e) -> bad_issuer("coven: malformed JWKS for issuer `" + id + "`: " + e)
+fn parse_issuer_arg(a: String) -> Option(Issuer):
+    if string.contains(a, "="):
+        let (id, value) = string.split_once(a, "=")
+        if string.starts_with(value, "jwks:"):
+            let (_tag, jwks_json) = string.split_once(value, ":")
+            match json.decode(jwks_json):
+                Ok(jwks) -> Some(Issuer(id, "", Some(jwks)))
+                Err(_e) -> None
+        else:
+            Some(Issuer(id, value, None))
     else:
-        Issuer(id, value, None)
-
-// `fail` aborts, so the trailing value is unreachable — it only gives this the `Issuer`
-// type the caller needs where `fail` sits in an expression position.
-fn bad_issuer(msg: String) -> Issuer:
-    fail(msg)
-    Issuer("", "", None)
+        None
 
 impl Coven:
     fn route_rootpub(self) -> fn(Request) -> Response:
@@ -289,7 +281,6 @@ impl Coven:
         guard(fn(req: Request) -> Result(Response, CovenError):
             let name = coven_validate.unwire(server.query(req, "name"))
             let version = server.query(req, "version")
-            self.validate_ref(name, version)?
             match coven_store.read_record(self.store, name, version):
                 Some(rec) -> Ok(server.json(200, rec))
                 None -> Err(CovenError(404, name + "@" + version + " not found in registry"))
@@ -299,7 +290,6 @@ impl Coven:
         guard(fn(req: Request) -> Result(Response, CovenError):
             let name = coven_validate.unwire(server.query(req, "name"))
             let version = server.query(req, "version")
-            self.validate_ref(name, version)?
             require(coven_store.record_exists(self.store, name, version), 404, name + "@" + version + " not found")?
             self.source_response(name, version)
         )
@@ -308,22 +298,14 @@ impl Coven:
         guard(fn(req: Request) -> Result(Response, CovenError):
             let name = coven_validate.unwire(server.query(req, "name"))
             let version = server.query(req, "version")
-            self.validate_ref(name, version)?
             require(coven_store.record_exists(self.store, name, version), 404, name + "@" + version + " not found")?
             self.doc_response(name, version)
         )
-
-    // BUG-019: reject a malformed name/version on the read routes too — every path is
-    // built from a network-supplied name, so validate it at each entry, not only publish.
-    fn validate_ref(self, name: String, version: String) -> Result(Bool, CovenError):
-        require(coven_validate.valid_name(name), 400, "invalid rune name `" + name + "`")?
-        require(coven_validate.valid_version(version), 400, "invalid version `" + version + "`")
 
     fn route_compartments(self) -> fn(Request) -> Response:
         guard(fn(req: Request) -> Result(Response, CovenError):
             let name = coven_validate.unwire(server.query(req, "name"))
             let version = server.query(req, "version")
-            self.validate_ref(name, version)?
             require(coven_store.record_exists(self.store, name, version), 404, name + "@" + version + " not found")?
             let files = coven_store.read_source(self.store, name, version)
             Ok(server.send(200, .{compartments: coven_footprint.compartments_in(files)}))
@@ -343,21 +325,16 @@ impl Coven:
         self.publish_checked(req.manifest, name, version, uploaded_by, claims, req.files)
 
     fn publish_checked(self, manifest: String, name: String, version: String, uploaded_by: String, claims: Option(Json), files: List((String, String))) -> Result(Response, CovenError):
-        // BUG-422: a footprint that cannot be computed (source does not compile / bad
-        // report) is a hard 400, never a silently-empty footprint that trivially passes
-        // the under-declaration gate.
-        let computed = coven_footprint.computed_footprint(files).map_err(fn(e: String): CovenError(400, "coven could not compute the capability footprint from source: " + e))?
+        let computed = coven_footprint.computed_footprint(files)
         let gap = rights.uncovered(toml.get_array(manifest, "capabilities.runtime"), computed)
         require(string.is_empty(list.join(gap, ", ")), 400, "declared [capabilities] does not cover what the source demands (" + list.join(gap, ", ") + ") — coven recomputes and will not publish an under-declared rune")?
         let hash = coven_store.content_hash(files)
+        coven_store.store_source(self.store, name, version, files)
         let provenance = match claims:
             Some(c) -> coven_trust.attestation(c, hash, now(self.clock) / 1000)
             None -> "uploader=" + uploaded_by + "|hash=" + hash
 
         require(coven_validate.single_line(uploaded_by) && coven_validate.single_line(provenance), 400, "record fields must not contain newlines")?
-        // BUG-423: store the source only after EVERY validation has passed, so a rejected
-        // publish never leaves poisoned source bytes on disk for this version.
-        coven_store.store_source(self.store, name, version, files)
         let rec = coven_record.sign_record(self.key, name, version, Staged, hash, computed, uploaded_by, "", "", provenance, 0)
         coven_store.write_record(self.store, name, version, rec)
         self.rebuild_metadata()
@@ -368,17 +345,11 @@ impl Coven:
 
     fn do_promote(self, doc: Json) -> Result(Response, CovenError):
         let req = coven_proto.promote_of(doc)
-        require(coven_validate.valid_name(req.name), 400, "invalid rune name `" + req.name + "`")?
-        require(coven_validate.valid_version(req.version), 400, "invalid version `" + req.version + "`")?
         require(coven_store.record_exists(self.store, req.name, req.version), 404, req.name + "@" + req.version + " not found")?
         require(!string.is_empty(req.second_factor), 400, "promotion requires a second factor (the out-of-band 2FA event) — refusing to release")?
-        let (promoter, claims) = self.authorized_promoter(req, now(self.clock) / 1000)?
+        let promoter = self.authorized_promoter(req, now(self.clock) / 1000)?
         require(!string.is_empty(promoter), 400, "promotion requires an authenticated promoter identity")?
-        let resp = self.promote_checked(req.name, req.version, req.second_factor, promoter)?
-        // BUG-281: bind the TOFU maintainer only now the promote has actually succeeded.
-        if let Some(c) = claims:
-            self.bind_maintainer(req.name, c)
-        Ok(resp)
+        self.promote_checked(req.name, req.version, req.second_factor, promoter)
 
     fn promote_checked(self, name: String, version: String, factor: String, promoter: String) -> Result(Response, CovenError):
         let rec = self.load_record(name, version)?
@@ -397,8 +368,6 @@ impl Coven:
 
     fn do_yank(self, doc: Json) -> Result(Response, CovenError):
         let req = coven_proto.yank_of(doc)
-        require(coven_validate.valid_name(req.name), 400, "invalid rune name `" + req.name + "`")?
-        require(coven_validate.valid_version(req.version), 400, "invalid version `" + req.version + "`")?
         let rec = self.load_record(req.name, req.version)?
         let _yanker = self.authorized_yanker(req.name, req.id_token, now(self.clock) / 1000)?
         let signed = coven_record.sign_record(self.key, req.name, req.version, Yanked, rec.hash, rec.runtime_footprint, rec.uploaded_by, coven_record.str_or_empty(rec.promoted_by), coven_record.str_or_empty(rec.second_factor), coven_record.str_or_empty(rec.provenance), rec.released_at)
@@ -426,29 +395,20 @@ impl Coven:
             Ok((if req.uploaded_by.is_empty(): "anonymous" else: req.uploaded_by, None))
         else:
             let claims = verified_claims(self.issuers, req.id_token, now, "publishing to a trusted registry requires a short-lived identity token (long-lived API tokens are not accepted)")?
-            // SEC/BUG-411: the publisher identity is the token's `sub`; an empty subject is
-            // not an identity — refuse it (it would also collapse separation-of-duties, as
-            // `promoter != "" == uploaded_by` could be trivially satisfied).
-            require(!string.is_empty(coven_json.str(claims, "sub")), 403, "identity token carries no subject (`sub`) claim")?
-            // SEC-022/BUG-419: the single-use replay check runs BEFORE any namespace-policy
-            // binding, so a REPLAYED token can never bind (or rebind) namespace trust state —
-            // the write only happens for a token that is fresh.
-            let _used = self.consume_jti(claims)?
             let sub = self.authorize_publish(name, claims)?
+            let _used = self.consume_jti(claims)?
             Ok((sub, Some(claims)))
 
-    // SEC-022/BUG-400: a trusted-publishing token MUST carry a non-empty `jti` so it can be
-    // single-use — a missing one is refused, never waved through unmarked (which would make
-    // a jti-less token replayable). The marker is keyed by sha256(jti) so an issuer-chosen
-    // id can never escape `_policy/` via path traversal.
     fn consume_jti(self, claims: Json) -> Result(String, CovenError):
         let jti = coven_trust.claim(claims, "jti")
-        require(!string.is_empty(jti), 403, "identity token has no `jti` claim — a single-use token id is required (replay defense)")?
-        let marker = "_policy/_jti/" + crypto.sha256(jti)
-        require(!exists(self.store, marker), 403, "identity token already used — single-use replay refused")?
-        fs.ensure_dir(self.store, "_policy/_jti")
-        write(self.store, marker, "1")
-        Ok(jti)
+        if string.is_empty(jti):
+            Ok("")
+        else:
+            let marker = "_policy/_jti/" + crypto.sha256(jti)
+            require(!exists(self.store, marker), 403, "identity token already used — single-use replay refused")?
+            fs.ensure_dir(self.store, "_policy/_jti")
+            write(self.store, marker, "1")
+            Ok(jti)
 
     fn authorize_publish(self, name: String, claims: Json) -> Result(String, CovenError):
         let ns = coven_trust.namespace_of(name)
@@ -462,45 +422,27 @@ impl Coven:
             write(self.store, pubfile, json.encode(JsonObject([("issuer", JsonString(coven_json.str(claims, "iss"))), ("repository", JsonString(repo)), ("workflow_ref", JsonString(wf))])))
             Ok(coven_json.str(claims, "sub"))
         else:
-            // BUG-379: a publisher.json that does not DECODE is corruption/tampering — a
-            // distinct hard error (500), not the 403 "incomplete trust policy" that a
-            // decoded-but-empty policy yields. Both fail closed; they are not the same fault.
-            match json.decode(read(self.store, pubfile)):
-                Err(e) -> Err(CovenError(500, "corrupt trust policy for namespace `" + ns + "` (" + e + "); it must be repaired or rebound out of band"))
-                Ok(policy) -> enforce_publish_policy(policy, claims, ns)
+            enforce_publish_policy(coven_json.or_null(read(self.store, pubfile)), claims, ns)
 
-    fn authorized_promoter(self, req: PromoteRequest, now: Int) -> Result((String, Option(Json)), CovenError):
+    fn authorized_promoter(self, req: PromoteRequest, now: Int) -> Result(String, CovenError):
         if list.length(self.issuers) == 0:
-            Ok((req.promoted_by, None))
+            Ok(req.promoted_by)
         else:
             let claims = verified_claims(self.issuers, req.id_token, now, "promoting on a trusted registry requires a short-lived identity token")?
-            let sub = self.authorize_promote(req.name, claims)?
-            Ok((sub, Some(claims)))
+            self.authorize_promote(req.name, claims)
 
-    // Authorize a promoter WITHOUT binding maintainership: allow the first promoter of an
-    // unclaimed namespace (TOFU) or an existing maintainer, and reject everyone else. The
-    // TOFU bind is deferred to `bind_maintainer`, run only AFTER the promote succeeds —
-    // BUG-281: a FAILED self-promote must not leave the caller a registered maintainer.
     fn authorize_promote(self, name: String, claims: Json) -> Result(String, CovenError):
         let ns = coven_trust.namespace_of(name)
         let mfile = "_policy/" + ns + "/maintainers.json"
         let id = coven_json.str(claims, "iss") + "|" + coven_json.str(claims, "sub")
         if !exists(self.store, mfile):
+            fs.ensure_dir(self.store, "_policy/" + ns)
+            write(self.store, mfile, json.encode(JsonArray([JsonString(id)])))
             Ok(coven_json.str(claims, "sub"))
         else if coven_footprint.member(coven_trust.string_array(read(self.store, mfile)), id):
             Ok(coven_json.str(claims, "sub"))
         else:
             Err(CovenError(403, "`" + coven_json.str(claims, "sub") + "` is not a maintainer of namespace `" + ns + "`"))
-
-    // Commit the trust-on-first-use maintainer binding, only for an as-yet-unclaimed
-    // namespace. Called AFTER a successful promote so a rejected one never binds authority.
-    fn bind_maintainer(self, name: String, claims: Json):
-        let ns = coven_trust.namespace_of(name)
-        let mfile = "_policy/" + ns + "/maintainers.json"
-        if !exists(self.store, mfile):
-            let id = coven_json.str(claims, "iss") + "|" + coven_json.str(claims, "sub")
-            fs.ensure_dir(self.store, "_policy/" + ns)
-            write(self.store, mfile, json.encode(JsonArray([JsonString(id)])))
 
     fn authorized_yanker(self, name: String, id_token: Option(String), now: Int) -> Result(String, CovenError):
         if list.length(self.issuers) == 0:

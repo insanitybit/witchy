@@ -55,23 +55,11 @@ fn file_pair(it: Json) -> (String, String):
     (coven_json.index_str(it, 0), coven_json.index_str(it, 1))
 
 // --- client side: build the exact body the server parses -------------------------
-// `id_token` is the trusted-publishing identity token: `Some(t)` on a trusted registry,
-// `None` for an anonymous one. It is emitted only when present, matching the lenient
-// parsers (`publish_of`/`promote_of`/`yank_of`) which read it as an optional field.
-pub fn publish_body(manifest: String, files: List((String, String)), uploaded_by: String, id_token: Option(String)) -> String:
-    json.encode(JsonObject(with_id_token([("manifest_toml", JsonString(manifest)), ("source", JsonObject([("files", JsonArray(file_jsons(files)))])), ("uploaded_by", JsonString(uploaded_by))], id_token)))
+pub fn publish_body(manifest: String, files: List((String, String)), uploaded_by: String) -> String:
+    json.encode(JsonObject([("manifest_toml", JsonString(manifest)), ("source", JsonObject([("files", JsonArray(file_jsons(files)))])), ("uploaded_by", JsonString(uploaded_by))]))
 
-pub fn promote_body(name: String, version: String, factor: String, promoter: String, id_token: Option(String)) -> String:
-    json.encode(JsonObject(with_id_token([("name", JsonString(name)), ("version", JsonString(version)), ("second_factor", JsonString(factor)), ("promoted_by", JsonString(promoter))], id_token)))
-
-pub fn yank_body(name: String, version: String, id_token: Option(String)) -> String:
-    json.encode(JsonObject(with_id_token([("name", JsonString(name)), ("version", JsonString(version))], id_token)))
-
-// Append the `id_token` field only when a token is present, so an anonymous body omits it.
-fn with_id_token(fields: List((String, Json)), id_token: Option(String)) -> List((String, Json)):
-    match id_token:
-        Some(t) -> list.push(fields, ("id_token", JsonString(t)))
-        None -> fields
+pub fn promote_body(name: String, version: String, factor: String, promoter: String) -> String:
+    json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version)), ("second_factor", JsonString(factor)), ("promoted_by", JsonString(promoter))]))
 
 fn file_jsons(files: List((String, String))) -> List(Json):
     var out = []
