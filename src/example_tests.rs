@@ -268,6 +268,44 @@
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
+    /// (BUG-208, parity) A REORDERED labeled call whose reorder crosses a `var`
+    /// parameter must still write back. The desugar temp-bound every reordered
+    /// argument to an immutable `let __kwN`, so a `var` argument became ill-typed
+    /// ("must be a mutable `var`") and leaked the synthetic `__kwN` into the error —
+    /// legality depended on the order the labels were written. A `var` argument is a
+    /// bare mutable variable with no evaluation effect, so it is now passed directly.
+    #[test]
+    fn keyword_args_var_reorder_writes_back() {
+        // Reordered (`by:` before `xs:`) and in-order both mutate the caller's `var`.
+        let reordered = "fn bump(var xs: List(Int), by: Int):\n    xs.push(by)\n    let _ = 0\n\nfn main(console: Console):\n    var xs: List(Int) = []\n    bump(by: 5, xs: xs)\n    bump(by: 7, xs: xs)\n    print(console, __render(xs))\n";
+        assert_eq!(link_run(reordered), ["[5, 7]"], "interp reordered var write-back");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", reordered)], "main"),
+            ["[5, 7]"],
+            "compiled reordered var write-back must agree",
+        );
+        // A reordered `own`/`move` argument still moves correctly (temp path intact).
+        let owned = "fn eat(own s: String, n: Int) -> String:\n    string.repeat(s, n)\n\nfn main(console: Console):\n    let s = \"ab\"\n    print(console, eat(n: 3, s: move s))\n";
+        assert_eq!(link_run(owned), ["ababab"], "interp reordered own/move");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", owned)], "main"),
+            ["ababab"],
+            "compiled reordered own/move must agree",
+        );
+        // A genuinely non-mutable argument to a `var` param is still rejected — but
+        // the diagnostic names the USER's variable, never a synthetic `__kwN` temp.
+        let bad = "fn bump(var xs: List(Int), by: Int):\n    xs.push(by)\n    let _ = 0\n\nfn main(console: Console):\n    let ys: List(Int) = []\n    bump(by: 5, xs: ys)\n    print(console, __render(ys))\n";
+        let module = parser::parse_module(bad).expect("parse");
+        // `keyword_args::resolve` runs inside `pipeline::link`; the reorder now passes
+        // the `var` argument directly, so typeck (not the desugar) reports the error.
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
+        let err = typeck::check(&linked)
+            .expect_err("a `let` bound to a `var` param must be rejected")
+            .message;
+        assert!(err.contains("ys"), "diagnostic must name the user's variable: {err}");
+        assert!(!err.contains("__kw"), "diagnostic must not leak a `__kwN` temp: {err}");
+    }
+
     /// (RFC-0056) A labeled call evaluates its arguments in SOURCE order, not
     /// declared order: the desugar binds each written argument to a temp in the
     /// order written, then passes the temps in declared order. Here `b:` is written
@@ -442,6 +480,200 @@
             want_lossy,
             "compiled bytes.to_string must lossily decode to U+FFFD too"
         );
+    }
+
+    /// (BUG-392, parity) `bytes.slice` bounds are clamped in i64 on BOTH backends.
+    /// The compiled `$bytes_slice` used to narrow `start`/`end` to i32 BEFORE
+    /// clamping, so a large positive bound wrapped negative: `slice(b, 0, 2^31)`
+    /// returned the FULL buffer on the interpreter (its `Int` clamp saw 2^31 > len)
+    /// but an EMPTY slice compiled (2^31 truncated to a negative i32 clamped up to
+    /// `lo`). Now both clamp the full `Int` first (like `$bytes_at`/`$list_at`).
+    #[test]
+    fn bytes_slice_clamps_bounds_in_i64_on_both_backends() {
+        // "hello" = 5 bytes. Large positive `end` clamps to len (full buffer);
+        // an out-of-i32-range `[start, end)` yields empty without wrapping into an
+        // in-bounds slice; a large-magnitude negative `start` clamps up to 0.
+        let src = "import bytes\n\nfn main(console: Console):\n    let b = bytes.from_string(\"hello\")\n    print(console, __render(bytes.length(bytes.slice(b, 0, 2147483648))))\n    print(console, __render(bytes.length(bytes.slice(b, 2147483648, 2147483649))))\n    print(console, __render(bytes.length(bytes.slice(b, 0 - 2147483648, 2))))\n    print(console, bytes.to_string(bytes.slice(b, 1, 3)))\n";
+        let expected = ["5", "0", "2", "el"];
+        assert_eq!(link_run(src), expected, "interp clamps bytes.slice bounds in i64");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled bytes.slice must clamp bounds in i64 like the interpreter",
+        );
+    }
+
+    /// (BUG-305, parity) `"${f}"` on a function value is rejected at CHECK time, so
+    /// BOTH backends refuse it identically. The interpreter used to render
+    /// `<function/N>` while the compiled backend rejected at codegen with a misleading
+    /// "generic record such as `Set`" diagnostic (there was no Set). A function has no
+    /// printable form; the message now names the function operand, never `Set`.
+    #[test]
+    fn interpolating_a_function_value_is_rejected_on_both_backends() {
+        let src = "fn main(console: Console):\n    let f = fn(n: Int): n + 1\n    print(console, \"${f}\")\n";
+        let err = typeck::check_str(src)
+            .expect_err("interpolating a function value must be a type error on both backends");
+        assert!(err.contains("function"), "diagnostic must name the function operand: {err}");
+        assert!(!err.contains("Set"), "diagnostic must not mention `Set` for a function operand: {err}");
+        // Calling the function and interpolating the RESULT still renders on both.
+        let ok = "fn main(console: Console):\n    let f = fn(n: Int): n + 1\n    print(console, __render(f(41)))\n";
+        assert_eq!(link_run(ok), ["42"], "interp renders the call result");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", ok)], "main"),
+            ["42"],
+            "compiled renders the call result",
+        );
+    }
+
+    /// (BUG-341) A type error in comptime-EMITTED code must report a real, in-file
+    /// location, not a phantom line number relative to the invisible emitted blob
+    /// (which could point PAST the file's EOF). The emitted items' line numbers are
+    /// now re-stamped to the `comptime:` block's own source line.
+    #[test]
+    fn comptime_body_type_error_reports_in_file_location() {
+        // 6-line file; the `comptime:` block (line 1) emits `broken`, whose Bool body
+        // type-errors against its declared `-> Int`. The reported line must be the
+        // block's real line, within the file — never a phantom offset past EOF.
+        let src = "comptime:\n    print(console, \"fn broken() -> Int:\")\n    print(console, \"    true\")\n\nfn main(console: Console):\n    print(console, __render(broken()))\n";
+        let line_count = src.lines().count() as u32;
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
+        let err = typeck::check(&linked)
+            .expect_err("a type error in emitted code must be reported")
+            .message;
+        let reported: u32 = err
+            .split("line ")
+            .nth(1)
+            .and_then(|s| s.split(|c: char| !c.is_ascii_digit()).next())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| panic!("the diagnostic must carry a line number: {err}"));
+        assert!(
+            (1..=line_count).contains(&reported),
+            "reported line {reported} must be within the {line_count}-line file, not a phantom \
+             offset past EOF: {err}",
+        );
+    }
+
+    /// (BUG-182) A tagged literal in a standalone file whose stem is NOT a valid
+    /// identifier (`tag-hyphen`) must still expand and run on both backends. Tag
+    /// expansion seeds a throwaway parse with `import <qualifier>` lines built from
+    /// module names — including the CURRENT module's, which for a standalone file is
+    /// its filesystem stem. A hyphenated stem produced an invalid `import tag-hyphen`
+    /// line that broke every tag in such a file; non-identifier qualifiers are now
+    /// skipped (they can never be referenced as `q.f(…)` anyway).
+    #[test]
+    fn tagged_literal_in_hyphenated_module_expands() {
+        let src = "fn lit(parts: List(String), holes: List(String)) -> String:\n    \"\\\"ok\\\"\"\n\nfn main(console: Console):\n    print(console, lit\"ignored\")\n";
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link(vec![("tag-hyphen".into(), module)], "tag-hyphen")
+            .expect("a tagged literal in a hyphenated-stem module must link");
+        typeck::check(&linked).expect("typecheck");
+        assert_eq!(interpreter::run_module(linked, ".", Vec::new()).expect("run"), ["ok"], "interp");
+        assert_eq!(run_linked_on_wasm(&[("tag-hyphen", src)], "tag-hyphen"), ["ok"], "wasm");
+    }
+
+    /// (BUG-319, parity) Implicit structural `==` on a GENERIC record instantiation
+    /// (`Box(Int)`, std `Set(Int)`) works on BOTH backends. The compiled record-eq
+    /// arm dropped the type arguments (unlike the ADT arm), so a fully-annotated
+    /// `Box(Int) == Box(Int)` passed `check` and ran on the interpreter but was
+    /// rejected at codegen ("unresolved generic payload"). Now generic records carry
+    /// their argument shapes (`RecInst`) and resolve fields under the substitution.
+    #[test]
+    fn generic_record_eq_agrees_on_both_backends() {
+        // A user generic record whose fields are declared OUT of type-parameter
+        // order — pins the DECLARED-parameter mapping (a field-order subst renders
+        // `Rev(8, )` instead of `Rev(x, 1)`).
+        let src = "type Rev(a, b):\n    second: b\n    first: a\n\nfn main(console: Console):\n    let r1: Rev(Int, String) = Rev(\"x\", 1)\n    let r2: Rev(Int, String) = Rev(\"x\", 1)\n    let r3: Rev(Int, String) = Rev(\"y\", 2)\n    print(console, __render(r1 == r2))\n    print(console, __render(r1 == r3))\n    print(console, __render(r1))\n";
+        let expected = ["true", "false", "Rev(x, 1)"];
+        assert_eq!(link_run(src), expected, "interp generic-record eq/render");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled generic-record eq/render must agree",
+        );
+        // std `Set(a)` is itself a generic record, so `Set == Set` must run compiled.
+        let set_src = "import set\n\nfn main(console: Console):\n    let s1: Set(Int) = set.from_list([1, 2, 3])\n    let s2: Set(Int) = set.from_list([1, 2, 3])\n    let s3: Set(Int) = set.from_list([1, 2])\n    print(console, __render(s1 == s2))\n    print(console, __render(s1 == s3))\n";
+        let set_expected = ["true", "false"];
+        assert_eq!(link_run(set_src), set_expected, "interp Set == Set");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", set_src)], "main"),
+            set_expected,
+            "compiled Set == Set must agree",
+        );
+    }
+
+    /// (BUG-240, parity) `math.abs(Int.MIN)` has no positive `Int`, so both backends
+    /// must ABORT rather than silently wrap back to the negative `Int.MIN`. Ordinary
+    /// magnitudes still agree. (Was a stable wrong answer: `-Int.MIN == Int.MIN`.)
+    #[test]
+    fn math_abs_int_min_aborts_on_both_backends() {
+        let compile = |src: &str| -> (ast::Module, Vec<u8>) {
+            let linked = resolve_std_src(src);
+            typeck::check(&linked).expect("typecheck");
+            let bytes = codegen::compile_module_binary(&linked)
+                .expect("compile")
+                .expect("the binary path lowers this program");
+            (linked, bytes)
+        };
+        // Int.MIN: `0 - 9223372036854775807 - 1`. Both backends must error.
+        let min_src = "import math\n\nfn main(console: Console):\n    print(console, __render(math.abs(0 - 9223372036854775807 - 1)))\n";
+        let (lmod, wasm) = compile(min_src);
+        assert!(
+            interpreter::run_module(lmod, ".", Vec::new()).is_err(),
+            "interpreter must abort on math.abs(Int.MIN)"
+        );
+        assert!(crate::run_wasm_bytes(&wasm).is_err(), "WASM must abort on math.abs(Int.MIN)");
+        // Ordinary magnitudes agree (negative, zero, positive, and Int.MAX).
+        let ok_src = "import math\n\nfn main(console: Console):\n    print(console, __render(math.abs(0 - 5)))\n    print(console, __render(math.abs(0)))\n    print(console, __render(math.abs(7)))\n    print(console, __render(math.abs(9223372036854775807)))\n";
+        let expected = ["5", "0", "7", "9223372036854775807"];
+        assert_eq!(link_run(ok_src), expected, "interp math.abs of ordinary values");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", ok_src)], "main"),
+            expected,
+            "compiled math.abs of ordinary values must agree",
+        );
+    }
+
+    /// (BUG-306, parity) A user `return` inside a `gen fn` is re-expressed in terms of
+    /// the generator's stream contract, NOT passed untranslated into the synthesized
+    /// `-> Option(a)` helper. A bare `return` ENDS the stream (both backends), where it
+    /// used to leak the internal `Option` type or (as `return Some(v)`) silently repeat
+    /// `v` forever. `return <value>` is rejected against the declared `-> Iter(a)`.
+    #[test]
+    fn gen_fn_bare_return_ends_stream_on_both_backends() {
+        let src = "import iter\n\ngen fn firstn(n: Int) -> Iter(Int):\n    var i = 0\n    while true:\n        if i >= n:\n            return\n        yield i\n        i = i + 1\n\nfn main(console: Console):\n    let xs: List(Int) = iter.collect(iter.take(firstn(3), 10))\n    print(console, __render(xs))\n";
+        let expected = ["[0, 1, 2]"];
+        assert_eq!(link_run(src), expected, "interp: bare return ends the stream");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: bare return must end the stream identically",
+        );
+    }
+
+    /// (BUG-306) `return <value>` in a `gen fn` is a compile error naming the declared
+    /// `-> Iter(a)` signature — never the synthesized internal `Option(a)`, and never a
+    /// silent infinite repeat (the old `return Some(99)` bug).
+    #[test]
+    fn gen_fn_return_value_is_rejected() {
+        for tail in ["return 5", "return Some(99)"] {
+            let src = format!(
+                "import iter\n\ngen fn g() -> Iter(Int):\n    yield 1\n    {tail}\n\nfn main(console: Console):\n    let xs: List(Int) = iter.collect(iter.take(g(), 3))\n    print(console, __render(xs))\n"
+            );
+            let module = parser::parse_module(&src).expect("parse");
+            let err = crate::pipeline::link(vec![("main".into(), module)], "main")
+                .expect_err("`return <value>` in a gen fn must be rejected");
+            assert!(
+                err.message.contains("gen fn") && err.message.contains("Iter"),
+                "the rejection must name the declared `-> Iter(a)` signature, got: {}",
+                err.message
+            );
+            assert!(
+                !err.message.contains("Option"),
+                "the internal `Option(a)` protocol must not leak into the diagnostic: {}",
+                err.message
+            );
+        }
     }
 
     /// (SEC-038) `bytes.at` out of bounds must FAIL on both backends, not silently
@@ -12719,7 +12951,7 @@ fn main(console: Console):
     fn gen_fn_lowers_to_helper_and_wrapper() {
         let m = parser::parse_module("gen fn nums() -> Iter(Int):\n    yield 1\n    yield 2\n")
             .expect("parse");
-        let lowered = crate::generators::lower(m);
+        let lowered = crate::generators::lower(m).expect("lower");
         let fn_names: Vec<&str> = lowered
             .items
             .iter()

@@ -369,8 +369,9 @@ pub fn link(
     // pull-in below resolves them.
     modules = modules
         .into_iter()
-        .map(|(n, m)| (n, crate::generators::lower(m)))
-        .collect();
+        .map(|(n, m)| crate::generators::lower(m).map(|m| (n, m)))
+        .collect::<Result<_, _>>()
+        .map_err(|message| LinkError { message })?;
 
     // Lower `async fn`/`await` to ordinary functions over `std/task` (CPS over
     // closures), also before typeck — adds `import task`/`import chan` to any

@@ -2965,6 +2965,24 @@ impl Checker {
                 }
                 for (arg, param_ty) in args.iter().zip(&params) {
                     let at = self.infer(arg)?;
+                    // (BUG-305) `"${f}"` on a function value is rejected HERE, at
+                    // check time, so BOTH backends refuse it identically — rather
+                    // than the interpreter rendering `<function/N>` while the
+                    // compiled backend rejected at codegen with a misleading
+                    // "generic record such as `Set`" diagnostic. A function has no
+                    // printable form; interpolation renders DATA. `__render` is the
+                    // desugaring of `"${…}"`, so the message speaks in the user's
+                    // terms and never names `Set`/records for a function operand.
+                    if name == "__render" {
+                        if let Ty::Fn(..) = self.resolve(&at) {
+                            return terr(
+                                "cannot render a function value with `\"${…}\"` — a \
+                                 function has no printable form. Interpolation renders \
+                                 data; call the function (e.g. `f(x)`) and interpolate \
+                                 its result instead",
+                            );
+                        }
+                    }
                     self.coerce_arg(param_ty, &at)
                         .map_err(|e| TypeError { message: format!("in call to `{name}`: {}", e.message) })?;
                 }

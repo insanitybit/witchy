@@ -798,13 +798,17 @@ impl Codegen {
                 // char-indexed `$str_substring`, which mangled multibyte payloads
                 // (the backends diverged: interpreter byte-indexed, compiled
                 // char-indexed). `$bytes_slice` clamps exactly like the interpreter.
+                // The bounds are i64 and clamped in i64 (BUG-392): narrowing to i32
+                // first would wrap a large positive bound negative, so
+                // `slice(b, 0, 2^31)` compiled to empty while the interpreter
+                // returned the full buffer — closing the same hole as `__bytes_at`.
                 self.uses_substr = true;
                 let sk = self.kind_of(&args[1]);
                 let ek = self.kind_of(&args[2]);
                 call("bytes_slice", vec![
                     self.lower_expr(&args[0])?,
-                    Self::wir_convert(self.lower_expr(&args[1])?, sk, Kind::I32),
-                    Self::wir_convert(self.lower_expr(&args[2])?, ek, Kind::I32),
+                    Self::wir_convert(self.lower_expr(&args[1])?, sk, Kind::I64),
+                    Self::wir_convert(self.lower_expr(&args[2])?, ek, Kind::I64),
                 ])
             }
             ("list.push", 2) => {

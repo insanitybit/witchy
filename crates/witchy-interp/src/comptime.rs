@@ -21,7 +21,11 @@ use witchy_syntax::ast::{Block, Expr, Function, Item, Module, Param, Stmt, Type}
 /// each and appending the items its output parses to. `name` is the module's
 /// name, for error messages.
 pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
-    let blocks: Vec<Block> = {
+    // Each block paired with the REAL source line of its `comptime:` declaration
+    // (`u32::MAX`/absent → 0, "unknown"), so a type error in the emitted code can
+    // be attributed to the block that produced it instead of a phantom offset into
+    // the invisible emitted text (BUG-341).
+    let blocks: Vec<(Block, u32)> = {
         let mut out = Vec::new();
         let mut i = 0;
         while i < module.items.len() {
@@ -29,10 +33,13 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
                 let Item::Comptime(b) = module.items.remove(i) else {
                     unreachable!()
                 };
-                if module.item_lines.len() > i {
-                    module.item_lines.remove(i);
-                }
-                out.push(b);
+                let block_line = if module.item_lines.len() > i {
+                    let l = module.item_lines.remove(i);
+                    if l == u32::MAX { 0 } else { l }
+                } else {
+                    0
+                };
+                out.push((b, block_line));
             } else {
                 i += 1;
             }
@@ -52,7 +59,7 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
             _ => None,
         })
         .collect();
-    for mut body in blocks {
+    for (mut body, block_line) in blocks {
         // The block becomes `fn main(console: Console)` of a synthetic
         // program carrying the enclosing module's imports. `emit(line)` is
         // the surface emit channel (a prepended closure over the console);
@@ -178,14 +185,160 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
             }
         }
         let n = emitted.items.len();
-        module.items.extend(emitted.items);
+        for mut item in emitted.items {
+            // The emitted items were parsed from a standalone blob, so every line
+            // number they carry is relative to that invisible text — a phantom
+            // offset that can point PAST the real file's EOF in a later type error
+            // (BUG-341). Re-stamp them to the `comptime:` block's own source line, so
+            // a body type error is attributed to the block that generated the code
+            // rather than a nonexistent absolute line. (The parse-error path already
+            // shows the emitted source; the type-error path now at least reports a
+            // real, in-file location.)
+            stamp_item_lines(&mut item, block_line);
+            module.items.push(item);
+        }
         for _ in 0..n {
             if !module.item_lines.is_empty() {
-                module.item_lines.push(u32::MAX);
+                module.item_lines.push(block_line);
             }
         }
     }
     Ok(())
+}
+
+/// Re-stamp every source line an item carries to `line`. See the call site: the
+/// emitted AST's line numbers are relative to the emitted blob (they can exceed
+/// the real file's length), so a later type error must be pinned to the `comptime:`
+/// block instead of a phantom offset (BUG-341).
+fn stamp_item_lines(item: &mut Item, line: u32) {
+    match item {
+        Item::Function(f) => stamp_block(&mut f.body, line),
+        Item::Impl(im) => {
+            for m in &mut im.methods {
+                stamp_block(&mut m.body, line);
+            }
+        }
+        Item::Trait(t) => {
+            for m in &mut t.methods {
+                if let Some(body) = &mut m.default {
+                    stamp_block(body, line);
+                }
+            }
+        }
+        Item::Const { value, .. } => stamp_expr(value, line),
+        Item::Type(_) | Item::TypeAlias { .. } | Item::Comptime(_) => {}
+    }
+}
+
+fn stamp_block(b: &mut Block, line: u32) {
+    for l in b.lines.iter_mut() {
+        *l = line;
+    }
+    for stmt in &mut b.stmts {
+        match stmt {
+            Stmt::Let { value, .. }
+            | Stmt::LetPattern { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::Expr(value)
+            | Stmt::Yield(value)
+            | Stmt::Return(Some(value)) => stamp_expr(value, line),
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+/// Descend into every block-bearing subexpression so nested `if`/`while`/`for`/
+/// `match`/lambda bodies are re-stamped too (their block lines drive `cur_line`).
+fn stamp_expr(e: &mut Expr, line: u32) {
+    match e {
+        Expr::If { cond, then_block, else_block } => {
+            stamp_expr(cond, line);
+            stamp_block(then_block, line);
+            if let Some(b) = else_block {
+                stamp_block(b, line);
+            }
+        }
+        Expr::While { cond, body } => {
+            stamp_expr(cond, line);
+            stamp_block(body, line);
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            stamp_expr(scrutinee, line);
+            stamp_block(body, line);
+        }
+        Expr::For { iter, body, .. } => {
+            stamp_expr(iter, line);
+            stamp_block(body, line);
+        }
+        Expr::Match { scrutinee, arms } => {
+            stamp_expr(scrutinee, line);
+            for a in arms.iter_mut() {
+                if let Some(g) = &mut a.guard {
+                    stamp_expr(g, line);
+                }
+                stamp_expr(&mut a.body, line);
+            }
+        }
+        Expr::Lambda { body, .. } => stamp_block(body, line),
+        Expr::Block(b) => stamp_block(b, line),
+        Expr::Binary { lhs, rhs, .. } => {
+            stamp_expr(lhs, line);
+            stamp_expr(rhs, line);
+        }
+        Expr::Unary { expr, .. }
+        | Expr::Try(expr)
+        | Expr::As { expr, .. }
+        | Expr::Field { base: expr, .. } => stamp_expr(expr, line),
+        Expr::Index { base, index } => {
+            stamp_expr(base, line);
+            stamp_expr(index, line);
+        }
+        Expr::Range { lo, hi, .. } => {
+            stamp_expr(lo, line);
+            stamp_expr(hi, line);
+        }
+        Expr::Call { args, .. }
+        | Expr::List(args)
+        | Expr::Tuple(args)
+        | Expr::Ctor { args, .. } => {
+            for a in args {
+                stamp_expr(a, line);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            stamp_expr(receiver, line);
+            for a in args {
+                stamp_expr(a, line);
+            }
+        }
+        Expr::Apply { func, args } => {
+            stamp_expr(func, line);
+            for a in args {
+                stamp_expr(a, line);
+            }
+        }
+        Expr::LabeledCall { args, .. } => {
+            for (_, v) in args {
+                stamp_expr(v, line);
+            }
+        }
+        Expr::RecordUpdate { base, fields } => {
+            stamp_expr(base, line);
+            for (_, v) in fields {
+                stamp_expr(v, line);
+            }
+        }
+        Expr::Record { fields, spread, .. } => {
+            for (_, v) in fields {
+                stamp_expr(v, line);
+            }
+            if let Some(s) = spread {
+                stamp_expr(s, line);
+            }
+        }
+        Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
+        | Expr::Var(_) | Expr::TaggedLit { .. } => {}
+    }
 }
 
 /// Run both compile-time expansion passes for one module, in order: `comptime:`

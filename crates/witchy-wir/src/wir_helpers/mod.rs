@@ -2266,55 +2266,86 @@ pub fn substr_helper() -> WirFunc {
 /// `Bytes` is byte-indexed with no UTF-8 contract, so this must NOT go through the
 /// char-indexed `$str_substring` (that mangled multibyte payloads — the
 /// backends diverged: interpreter byte-indexed, compiled char-indexed).
+///
+/// `start`/`end` are i64 and clamped in i64 (the interpreter clamps the full
+/// `Int` before narrowing to a `usize`; narrowing to i32 first would wrap a
+/// large positive bound negative — e.g. `slice(b, 0, 2^31)` then read as empty,
+/// closing the same out-of-i32-range hole as `$bytes_at`/`$list_at`). Only after
+/// clamping into `[0, len]` — where the bounds provably fit i32 for any non-empty
+/// result — are `lo` and the count narrowed to i32 for the `$substr` ABI.
 pub fn bytes_slice_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
-    let i32c = E::ConstI32;
-    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let i64c = E::ConstI64;
+    let b64 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I64, lhs: Box::new(l), rhs: Box::new(r) };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
-    let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    // `len` header is an i32; widen (unsigned) to i64 so all clamping is in i64.
+    let len_i64 = |p: E| E::Convert {
+        from: Kind::I32,
+        to: Kind::I64,
+        arg: Box::new(E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 }),
+    };
+    let to_i32 = |v: E| E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(v) };
     WirFunc {
         name: "bytes_slice".into(),
         params: vec![
             WirLocal { name: "src".into(), ty: WirTy::Str },
-            WirLocal { name: "start".into(), ty: WirTy::Bool },
-            WirLocal { name: "end".into(), ty: WirTy::Bool },
+            WirLocal { name: "start".into(), ty: WirTy::Int },
+            WirLocal { name: "end".into(), ty: WirTy::Int },
         ],
         ret: vec![WirTy::Str],
         locals: vec![
-            WirLocal { name: "len".into(), ty: WirTy::Bool },
-            WirLocal { name: "lo".into(), ty: WirTy::Bool },
-            WirLocal { name: "hi".into(), ty: WirTy::Bool },
+            WirLocal { name: "len".into(), ty: WirTy::Int },
+            WirLocal { name: "lo".into(), ty: WirTy::Int },
+            WirLocal { name: "hi".into(), ty: WirTy::Int },
         ],
         body: vec![
-            setl("len", load(getl("src"))),
+            setl("len", len_i64(getl("src"))),
             // lo = max(start, 0)
             setl("lo", getl("start")),
             N::If {
-                cond: b(BinOp::Lt, getl("lo"), i32c(0)),
-                then_: vec![setl("lo", i32c(0))],
+                // i64 comparison yields i32 (0/1) — fine for `If`'s cond.
+                cond: b64(BinOp::Lt, getl("lo"), i64c(0)),
+                then_: vec![setl("lo", i64c(0))],
+                els: vec![],
+                result: None,
+            },
+            // lo = min(lo, len) — keep `lo` inside `[0, len]` so the narrowed
+            // `$substr` pointer is never wild for an empty (count 0) result. The
+            // interpreter's `b.get(lo..hi)` simply yields empty when `lo` is past
+            // the end, so a large out-of-range `start` must clamp here, not trap.
+            N::If {
+                cond: b64(BinOp::Gt, getl("lo"), getl("len")),
+                then_: vec![setl("lo", getl("len"))],
                 els: vec![],
                 result: None,
             },
             // hi = min(end, len)
             setl("hi", getl("end")),
             N::If {
-                cond: b(BinOp::Gt, getl("hi"), getl("len")),
+                cond: b64(BinOp::Gt, getl("hi"), getl("len")),
                 then_: vec![setl("hi", getl("len"))],
                 els: vec![],
                 result: None,
             },
             // hi = max(hi, lo)  (also covers a negative `end`)
             N::If {
-                cond: b(BinOp::Lt, getl("hi"), getl("lo")),
+                cond: b64(BinOp::Lt, getl("hi"), getl("lo")),
                 then_: vec![setl("hi", getl("lo"))],
                 els: vec![],
                 result: None,
             },
+            // Narrow to i32 only now: for any non-empty result `lo < hi <= len`
+            // (both fit i32); an empty result has count 0, so `$substr` reads
+            // nothing even if `lo` was a huge out-of-range bound.
             N::Push(E::Call {
                 func: "substr".into(),
-                args: vec![getl("src"), getl("lo"), b(BinOp::Sub, getl("hi"), getl("lo"))],
+                args: vec![
+                    getl("src"),
+                    to_i32(getl("lo")),
+                    to_i32(b64(BinOp::Sub, getl("hi"), getl("lo"))),
+                ],
             }),
         ],
         raw_body: None,

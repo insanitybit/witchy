@@ -276,16 +276,28 @@ impl Resolver {
         }
         // Reorder: temp-bind in source order, then call in declared order.
         let mut stmts: Vec<Stmt> = Vec::with_capacity(written.len() + 1);
-        let mut temp_of: HashMap<usize, String> = HashMap::new();
+        let mut resolved: HashMap<usize, Expr> = HashMap::new();
         for (d, value) in written {
+            // An argument to a `var` parameter must be a bare mutable variable
+            // (RFC-0043; typeck enforces it), which is passed by reference and has
+            // no evaluation effect — so hoisting it into a temp buys no ordering
+            // guarantee, and binding it to an immutable `let __kwN` would make the
+            // reorder itself ill-typed ("must be a mutable `var`") and leak the
+            // synthetic temp name into the diagnostic (BUG-208). Pass it directly;
+            // a genuinely non-mutable argument is then reported by typeck against
+            // the user's own expression, never a `__kwN`.
+            if params[d].convention == Convention::Var {
+                resolved.insert(d, value);
+                continue;
+            }
             let temp = format!("__kw{}", self.counter);
             self.counter += 1;
             stmts.push(Stmt::Let { name: temp.clone(), ty: None, mutable: false, value });
-            temp_of.insert(d, temp);
+            resolved.insert(d, Expr::Var(temp));
         }
         let call_args = (0..n)
-            .map(|d| match temp_of.get(&d) {
-                Some(t) => Expr::Var(t.clone()),
+            .map(|d| match resolved.remove(&d) {
+                Some(v) => v,
                 None => params[d].default.clone().expect("checked: unfilled => has default"),
             })
             .collect();

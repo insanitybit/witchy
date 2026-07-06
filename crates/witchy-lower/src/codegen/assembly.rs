@@ -190,6 +190,11 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
                             .collect();
                         cg.record_fields.insert(t.name.clone(), fields);
                         cg.record_field_types.insert(t.name.clone(), variant.fields.clone());
+                        // Declared type parameters, in order (`Pair(a, b)` -> [a, b]),
+                        // so a generic record's `RecInst` maps use-site type arguments
+                        // to the correct field type variable even when fields are
+                        // declared out of parameter order (BUG-319).
+                        cg.record_generics.insert(t.name.clone(), t.params.clone());
                     }
                 }
             }
