@@ -28,8 +28,9 @@ nothing else; the ability to *print* is ambient — `print`, `console.log`,
 `std::cout` are globally available.
 
 In witchy, printing is an effect, and effects require authority. `Console` is a
-**capability**: an unforgeable value that grants the right to write to standard
-output. There is no way to conjure one — you can't write `let c = Console()`.
+**capability**: a value that grants the right to write to standard output — and
+one your code cannot forge. There is no way to conjure one — you can't write
+`let c = Console()`.
 The only `Console` in the whole program is the one the *host* hands to `main`
 when the program starts.
 
