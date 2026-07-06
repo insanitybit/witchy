@@ -8,31 +8,55 @@
 
 import option
 import result
-import ascii
 import encoding
 
 type Url:
     Url(String, String, Int, String)
 
-// Parse a URL, or an error naming what is malformed.
+// Parse a URL, or an error naming what is malformed. A well-formed URL needs a
+// non-empty scheme and host — an empty either side (`://host`, `https:///path`)
+// is rejected rather than accepted with a blank field.
 pub fn parse(s: String) -> Result(Url, String):
     let sep = string.index_of(s, "://") ?? -1
     if sep < 0:
         Err("missing `scheme://` in: " + s)
     else:
         let scheme = string.substring(s, 0, sep)
-        let rest = string.substring(s, sep + 3, string.char_count(s))
-        let slash = string.index_of(rest, "/") ?? -1
-        let authority = if slash < 0: rest else: string.substring(rest, 0, slash)
-        let path = if slash < 0: "/" else: string.substring(rest, slash, string.char_count(rest))
-        let colon = string.index_of(authority, ":") ?? -1
-        let host = if colon < 0: authority else: string.substring(authority, 0, colon)
-        if colon < 0:
-            Ok(Url(scheme, host, default_port(scheme), path))
+        if string.is_empty(scheme):
+            Err("empty scheme in: " + s)
         else:
-            match parse_port(string.substring(authority, colon + 1, string.char_count(authority))):
-                Some(p) -> Ok(Url(scheme, host, p, path))
-                None -> Err("invalid port in: " + s)
+            let rest = string.substring(s, sep + 3, string.char_count(s))
+            // The authority ends at the first `/`, `?`, or `#` — so a query or
+            // fragment glued straight to the host (`host?x=1`) is not swallowed
+            // into the host. Everything from that delimiter on is the path.
+            let cut = authority_end(rest)
+            let authority = string.substring(rest, 0, cut)
+            let path = if cut >= string.char_count(rest): "/" else: string.substring(rest, cut, string.char_count(rest))
+            let colon = string.index_of(authority, ":") ?? -1
+            let host = if colon < 0: authority else: string.substring(authority, 0, colon)
+            if string.is_empty(host):
+                Err("empty host in: " + s)
+            else if colon < 0:
+                Ok(Url(scheme, host, default_port(scheme), path))
+            else:
+                match parse_port(string.substring(authority, colon + 1, string.char_count(authority))):
+                    Some(p) -> Ok(Url(scheme, host, p, path))
+                    None -> Err("invalid port in: " + s)
+
+// The index in `rest` where the authority ends: the earliest of `/`, `?`, `#`,
+// or the end of the string when none is present.
+fn authority_end(rest: String) -> Int:
+    var best = string.char_count(rest)
+    let slash = string.index_of(rest, "/") ?? -1
+    if slash >= 0 && slash < best:
+        best = slash
+    let query = string.index_of(rest, "?") ?? -1
+    if query >= 0 && query < best:
+        best = query
+    let hash = string.index_of(rest, "#") ?? -1
+    if hash >= 0 && hash < best:
+        best = hash
+    best
 
 fn default_port(scheme: String) -> Int:
     if scheme == "https":
@@ -40,14 +64,14 @@ fn default_port(scheme: String) -> Int:
     else:
         80
 
-// The `:port` digits as an Int, or None when empty or non-numeric — so a
-// malformed authority (`host:abc`) makes `parse` return None rather than trap
-// inside `string_to_int`.
+// The `:port` digits as an Int in 0..=65535, or None when empty, non-numeric, or
+// out of range — so a malformed authority (`host:abc`) or an oversized port
+// (`host:99999999999999999999`) makes `parse` return an error rather than trap
+// inside `string.to_int` (which panics on an out-of-i64 magnitude).
 fn parse_port(digits: String) -> Option(Int):
-    if ascii.all_digits(digits):
-        Some(string.to_int(digits))
-    else:
-        None
+    match string.parse_int(digits):
+        Some(p) -> if p >= 0 && p <= 65535: Some(p) else: None
+        None -> None
 
 pub fn scheme(u: Url) -> String:
     match u:
