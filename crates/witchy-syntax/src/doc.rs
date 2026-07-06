@@ -7,7 +7,7 @@
 
 use std::fmt::Write;
 
-use crate::ast::{Item, MethodSig, Param, TraitDef, Type, Variant};
+use crate::ast::{Expr, Item, MethodSig, Param, TraitDef, Type, UnOp, Variant};
 use crate::format::type_str;
 
 /// Render Markdown documentation for one module (named `module_name`) from its
@@ -175,6 +175,13 @@ fn param_str(p: &Param, bounds: &[(String, String, Vec<Type>)]) -> String {
         crate::ast::Convention::Var => "var ",
         crate::ast::Convention::Own => "own ",
     };
+    // (RFC-0056) A closed-constant default (`punct: String = "!"`) is part of the
+    // signature's meaning — render it, matching the declaration (BUG-207).
+    let def = p
+        .default
+        .as_ref()
+        .map(|e| format!(" = {}", default_str(e)))
+        .unwrap_or_default();
     match &p.ty {
         // An `impl Trait` param is stored desugared (a fresh `impltrait_N` type
         // var plus a bound); render it back to the surface `impl Trait`.
@@ -184,11 +191,71 @@ fn param_str(p: &Param, bounds: &[(String, String, Vec<Type>)]) -> String {
                 .find(|(bv, _, _)| bv == v)
                 .map(|(_, t, _)| t.as_str())
                 .unwrap_or("?");
-            format!("{conv}{}: impl {trait_name}", p.name)
+            format!("{conv}{}: impl {trait_name}{def}", p.name)
         }
-        Some(t) => format!("{conv}{}: {}", p.name, type_str(t)),
-        None => format!("{conv}{}", p.name),
+        Some(t) => format!("{conv}{}: {}{def}", p.name, type_str(t)),
+        None => format!("{conv}{}{def}", p.name),
     }
+}
+
+/// Render a closed-constant parameter default (RFC-0056) — a literal, `None`,
+/// `true`/`false`, `[]`/`()`, a constructor of constants, or a unary application
+/// thereof (`-1`) — back to its surface form (BUG-207). Anything outside that set
+/// can't be a default (the parser rejects it), so a bare fallback suffices.
+fn default_str(e: &Expr) -> String {
+    match e {
+        Expr::Int(n) => n.to_string(),
+        Expr::Duration(ms) => format!("{ms}ms"),
+        Expr::Float(x) => {
+            let t = x.to_string();
+            if t.contains('.') || t.contains('e') || t.contains("inf") || t.contains("NaN") {
+                t
+            } else {
+                format!("{t}.0")
+            }
+        }
+        Expr::Str(v) => str_lit(v),
+        Expr::Bool(b) => b.to_string(),
+        Expr::List(xs) => format!("[{}]", xs.iter().map(default_str).collect::<Vec<_>>().join(", ")),
+        Expr::Tuple(xs) => format!("({})", xs.iter().map(default_str).collect::<Vec<_>>().join(", ")),
+        Expr::Ctor { name, args } if args.is_empty() => name.clone(),
+        Expr::Ctor { name, args } => {
+            format!("{name}({})", args.iter().map(default_str).collect::<Vec<_>>().join(", "))
+        }
+        Expr::Unary { op, expr } => format!("{}{}", unop_str(*op), default_str(expr)),
+        _ => "…".to_string(),
+    }
+}
+
+/// The prefix form of a unary operator, for rendering a defaulted `-1`.
+fn unop_str(op: UnOp) -> &'static str {
+    match op {
+        UnOp::Neg => "-",
+        UnOp::Not => "!",
+        UnOp::BitNot => "~",
+        UnOp::Move => "move ",
+        UnOp::Await => "await ",
+    }
+}
+
+/// A witchy string literal, escaping the characters `witchy fmt` escapes, so the
+/// rendered default round-trips.
+fn str_lit(v: &str) -> String {
+    let mut s = String::from("\"");
+    for c in v.chars() {
+        match c {
+            '"' => s.push_str("\\\""),
+            '\\' => s.push_str("\\\\"),
+            '\n' => s.push_str("\\n"),
+            '\t' => s.push_str("\\t"),
+            '\r' => s.push_str("\\r"),
+            '\0' => s.push_str("\\0"),
+            '$' => s.push_str("\\$"),
+            _ => s.push(c),
+        }
+    }
+    s.push('"');
+    s
 }
 
 /// A trait's declaration head: `trait Name`, plus type parameters
@@ -314,5 +381,13 @@ mod tests {
         assert!(md.contains("#### `type UserId = Int`"), "alias: {md}");
         assert!(md.contains("A user identifier."), "alias doc: {md}");
         assert!(!md.contains("_No public API._"), "alias is public API: {md}");
+    }
+
+    // BUG-207: RFC-0056 default values appear in the rendered signature.
+    #[test]
+    fn renders_default_values() {
+        let src = "pub fn greet(name: String, punct: String = \"!\") -> String:\n    name + punct\n";
+        let md = render("greet", src).unwrap();
+        assert!(md.contains("punct: String = \"!\""), "default value: {md}");
     }
 }
