@@ -789,6 +789,42 @@
         assert_eq!(run_linked_on_wasm(&[("main", &clean)], "main"), ["ok"], "wasm accepts a clean header/path");
     }
 
+    /// (BUG-186) An invalid regex pattern is a LOUD error on both backends, not a
+    /// silent non-match — the `std/regex` contract promises exactly that. Before the
+    /// fix, `regex.match_spans` caught the parse failure and returned the same empty
+    /// string used for "no match", so `matches`/`find`/`find_all` could not tell an
+    /// unparseable pattern from a valid regex that matched nothing. A valid pattern
+    /// with zero matches still returns a clean `false`/`None`/`[]` (no false trap).
+    #[test]
+    fn regex_invalid_pattern_errors_on_both_backends() {
+        let prog = |call: &str| {
+            format!("import regex\n\nfn main(console: Console):\n    print(console, \"${{{call}}}\")\n")
+        };
+        // An unclosed group `(` is a syntax error → both backends must abort.
+        for call in ["regex.matches(\"(\", \"abc\")", "regex.find(\"[\", \"abc\")"] {
+            let bad = prog(call);
+            assert!(
+                interpreter::run_module(resolve_std_src(&bad), ".", Vec::new()).is_err(),
+                "interpreter must abort on an invalid regex pattern: {call}"
+            );
+            let bytes = codegen::compile_module_binary(&resolve_std_src(&bad))
+                .expect("compile")
+                .expect("lowers");
+            assert!(
+                crate::run_wasm_bytes(&bytes).is_err(),
+                "WASM must trap on an invalid regex pattern: {call}"
+            );
+        }
+        // A VALID pattern with no match is not an error: false, on both backends.
+        let nomatch = prog("regex.matches(\"xyz\", \"abc\")");
+        assert_eq!(link_run(&nomatch), ["false"], "interp: valid pattern, zero match");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", &nomatch)], "main"),
+            ["false"],
+            "wasm: valid pattern, zero match"
+        );
+    }
+
     /// (BUG-276) The raw byte-level hex primitives (`encoding.hex_decode_lossy`,
     /// `encoding.hex_to_base64url_lossy`) decode STRICTLY: a non-hex character is a
     /// loud error on both backends, never the old silent-drop that could hand

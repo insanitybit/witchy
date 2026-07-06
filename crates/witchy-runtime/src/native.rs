@@ -714,14 +714,19 @@ mod regexp {
         let [Value::Str(pattern), Value::Str(text)] = args else {
             return Err(type_error("regex.match_spans expects (pattern, text) strings"));
         };
-        // An invalid pattern yields no matches rather than aborting the VM. std/regex's
-        // `matches`/`find`/`find_all`/`split` return Bool/Option/List — a TOTAL contract —
-        // so a bad pattern must not trap (on the compiled backend a returned error becomes a
-        // wasm trap; the interpreter raised a RuntimeError — a latent parity gap too). An
-        // empty result is already the "no match" encoding. Also removes a latent DoS were a
-        // pattern ever attacker-supplied.
-        let Ok(re) = regex::Regex::new(pattern) else {
-            return Ok(Value::Str(String::new()));
+        // An invalid pattern is a LOUD error, not a silent non-match — the public
+        // `std/regex` contract (and this module's doc header) promise exactly that.
+        // Returning `Err` here surfaces identically on both backends: the interpreter
+        // raises a RuntimeError and the compiled/wasmtime host wrapper maps it to a
+        // guest trap, so `matches`/`find`/`find_all`/`split` all abort with the same
+        // diagnostic rather than reporting a valid-but-empty match. The RE2 engine is
+        // linear-time, so a bad *pattern* is a fast compile-time rejection (no ReDoS),
+        // and a valid regex with zero matches still returns the empty "no match" string.
+        let re = match regex::Regex::new(pattern) {
+            Ok(re) => re,
+            Err(e) => {
+                return Err(type_error(format!("regex: invalid pattern `{pattern}`: {e}")));
+            }
         };
         let mut out = String::new();
         for m in re.find_iter(text) {
