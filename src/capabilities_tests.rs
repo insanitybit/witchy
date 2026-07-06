@@ -408,7 +408,8 @@ pub fn serve(console: Console) -> Int:
         );
         // `show` is pure except for `say` (the Show-accepting `print`), which
         // takes a `Console` — so the module's surface demands exactly that (the
-        // `Show` trait, its impls, and `show_list` stay capability-free).
+        // `Show` trait and its impls, including the container blankets, stay
+        // capability-free).
         let show = footprint(crate::linker::std_source("show").expect("bundled module"));
         assert_eq!(
             show.total.keys().copied().collect::<Vec<_>>(),
