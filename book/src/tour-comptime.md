@@ -48,6 +48,15 @@ Two consequences worth knowing: a `comptime` block may not emit another
 `comptime` block, and if the emitted text fails to parse, the compiler shows
 you exactly what was emitted alongside the error.
 
+## Type structure at compile time
+
+Every `comptime:` block can read `module_types`, a list of `meta.TypeInfo`
+values for the types declared in the module. Field and variant payload types are
+available as structured `meta.TypeExpr` data, so generators can branch on
+`TNamed("List", ...)` or `TNamed("Option", ...)` without parsing rendered type
+strings. When a generator actually needs to write a type into emitted source,
+`meta.type_source(expr)` renders that structured value back to source text.
+
 ## Tagged literals: `comptime` in expression position
 
 A string literal written *immediately after an identifier* — `tag"…"` — is a

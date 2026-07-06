@@ -29,7 +29,7 @@ pub fn type_info_expr(t: &TypeDef) -> Expr {
             .zip(&v.fields)
             .map(|(name, ty)| Expr::Ctor {
                 name: "meta.FieldInfo".into(),
-                args: vec![s(name), s(&type_to_string(ty))],
+                args: vec![s(name), s(&type_to_string(ty)), type_expr(ty)],
             })
             .collect()
     } else {
@@ -45,6 +45,7 @@ pub fn type_info_expr(t: &TypeDef) -> Expr {
                 args: vec![
                     s(&v.name),
                     Expr::List(v.fields.iter().map(|ty| s(&type_to_string(ty))).collect()),
+                    Expr::List(v.fields.iter().map(type_expr).collect()),
                 ],
             })
             .collect()
@@ -61,8 +62,37 @@ pub fn type_info_expr(t: &TypeDef) -> Expr {
     }
 }
 
-/// Render a declared type to the string form `meta.TypeInfo` exposes — `Int`,
-/// `List(String)`, `Option(Point)`, `(Int, String)`, `fn(Int) -> Bool`.
+/// Build the structured `meta.TypeExpr` for a declared type. `meta.TypeInfo`
+/// still carries the legacy rendered strings for compatibility, but built-in
+/// derives consume this structured shape so they do not parse source-looking
+/// type names.
+fn type_expr(t: &Type) -> Expr {
+    let s = |v: &str| Expr::Str(v.to_string());
+    match t {
+        Type::Qualified(q, inner) => Expr::Ctor {
+            name: "meta.TQualified".into(),
+            args: vec![s(q.as_str()), type_expr(inner)],
+        },
+        Type::Named(n, args) => Expr::Ctor {
+            name: "meta.TNamed".into(),
+            args: vec![s(n), Expr::List(args.iter().map(type_expr).collect())],
+        },
+        Type::Tuple(ts) => Expr::Ctor {
+            name: "meta.TTuple".into(),
+            args: vec![Expr::List(ts.iter().map(type_expr).collect())],
+        },
+        Type::Fn(ps, r) => Expr::Ctor {
+            name: "meta.TFn".into(),
+            args: vec![
+                Expr::List(ps.iter().map(type_expr).collect()),
+                type_expr(r),
+            ],
+        },
+    }
+}
+
+/// Render a declared type to the legacy string form `meta.TypeInfo` exposes —
+/// `Int`, `List(String)`, `Option(Point)`, `(Int, String)`, `fn(Int) -> Bool`.
 fn type_to_string(t: &Type) -> String {
     match t {
         Type::Qualified(q, inner) => format!("{} {}", q.as_str(), type_to_string(inner)),

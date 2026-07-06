@@ -678,6 +678,21 @@
         );
     }
 
+    /// (RFC-0067) `module_types` exposes structured `meta.TypeExpr` facts, not only
+    /// rendered type-name strings. A generator may still render a type at the source
+    /// boundary, but it can read the structured field directly.
+    #[test]
+    fn comptime_typeinfo_exposes_structured_type_expr_on_both_backends() {
+        let src = "import list\nimport meta\n\ntype Config:\n    values: List(Option(Int))\n\ncomptime:\n    for t in module_types:\n        if t.name == \"Config\":\n            let f = list.at(t.fields, 0)\n            emit(\"fn generated_type_shape() -> String:\")\n            emit(\"    \\\"\" + meta.type_source(f.type_expr) + \"\\\"\")\n\nfn main(console: Console):\n    print(console, generated_type_shape())\n";
+        let expected = ["List(Option(Int))"];
+        assert_eq!(link_run(src), expected, "interp reads structured TypeExpr in comptime");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled code generated from structured TypeExpr must agree",
+        );
+    }
+
     /// (BUG-182) A tagged literal in a standalone file whose stem is NOT a valid
     /// identifier (`tag-hyphen`) must still expand and run on both backends. Tag
     /// expansion seeds a throwaway parse with `import <qualifier>` lines built from

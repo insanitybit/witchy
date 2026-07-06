@@ -5,21 +5,31 @@
 // compiler injects the type list as `module_types()`; these are the shapes it
 // hands you.
 //
-// This is COMPILE-TIME structure (field names + declared type names as strings),
+// This is COMPILE-TIME structure (field names + declared type expressions),
 // distinct from `std/reflect`'s runtime `Mirror` (a value's structure at runtime).
 
-import string
+// A declared type expression, exposed as data so generators do not have to parse
+// source-looking type strings. The string fields below remain for compatibility
+// with existing user derives, but built-in derives use this shape.
+type TypeExpr:
+    TNamed(String, List(TypeExpr))
+    TTuple(List(TypeExpr))
+    TFn(List(TypeExpr), TypeExpr)
+    TQualified(String, TypeExpr)
 
-// One field of a record: its name and its declared type rendered as a string
-// (e.g. "Int", "List(String)", "Option(Point)").
+// One field of a record: its name, its declared type rendered as a compatibility
+// string (e.g. "Int", "List(String)", "Option(Point)"), and its structured type.
 type FieldInfo:
     name: String
     type_name: String
+    type_expr: TypeExpr
 
-// One constructor of a sum type: its name and its positional payload types.
+// One constructor of a sum type: its name and its positional payload types,
+// exposed both as compatibility strings and as structured types.
 type VariantInfo:
     name: String
     field_types: List(String)
+    field_type_exprs: List(TypeExpr)
 
 // A type's structure. `kind` is "record" (one constructor with named fields),
 // "sum" (one or more positional constructors), or "unit". `fields` is populated
@@ -56,6 +66,26 @@ fn where_each(params: List(String), trait_name: String) -> String:
         for p in params:
             bounds = list.push(bounds, p + ": " + trait_name)
         " where " + list.join(bounds, ", ")
+
+fn type_sources(types: List(TypeExpr)) -> List(String):
+    var out = []
+    for ty in types:
+        out = list.push(out, type_source(ty))
+    out
+
+// Render a structured type back to source text only when generated source needs
+// to name the type. Semantic branching should stay on `TypeExpr`, not this
+// string.
+pub fn type_source(ty: TypeExpr) -> String:
+    match ty:
+        TNamed(name, args) ->
+            if list.is_empty(args):
+                name
+            else:
+                name + "(" + list.join(type_sources(args), ", ") + ")"
+        TTuple(slots) -> "(" + list.join(type_sources(slots), ", ") + ")"
+        TFn(params, ret) -> "fn(" + list.join(type_sources(params), ", ") + ") -> " + type_source(ret)
+        TQualified(q, inner) -> q + " " + type_source(inner)
 
 // `derive(Show)` → a field-wise structural render: the constructor name, then each
 // field/payload rendered through its own `Show` impl (so a record renders as
@@ -152,15 +182,18 @@ fn variant_eq_arm(v: VariantInfo) -> String:
         rhs = list.join(terms, " && ")
     "            " + selfpat + " -> match other:\n                " + otherpat + " -> " + rhs + "\n                _ -> false"
 
-// The `reflect`-call for a field/payload of declared type `type_name` applied to
-// the expression text `value` — single-line, dispatched by the type's shape.
-fn reflect_call(type_name: String, value: String) -> String:
-    if string.starts_with(type_name, "List("):
-        "reflect_list(" + value + ")"
-    else if string.starts_with(type_name, "Option("):
-        "reflect_option(" + value + ")"
-    else:
-        "reflect_one(" + value + ")"
+// The `reflect`-call for a field/payload of declared type `ty` applied to the
+// expression text `value` — single-line, dispatched by structured type shape.
+fn reflect_call(ty: TypeExpr, value: String) -> String:
+    match ty:
+        TNamed(name, _args) ->
+            if name == "List":
+                "reflect_list(" + value + ")"
+            else if name == "Option":
+                "reflect_option(" + value + ")"
+            else:
+                "reflect_one(" + value + ")"
+        _ -> "reflect_one(" + value + ")"
 
 // `derive(Reflect)` → an `impl Reflect for T` building the value's `Mirror`: a
 // record to `MRecord("T", [(field, reflect field)…])`, a sum type to a `match`
@@ -170,7 +203,7 @@ pub fn derive_reflect(t: TypeInfo) -> String:
     if t.kind == "record":
         var pairs = []
         for f in t.fields:
-            pairs = list.push(pairs, "(\"" + f.name + "\", " + reflect_call(f.type_name, "self." + f.name) + ")")
+            pairs = list.push(pairs, "(\"" + f.name + "\", " + reflect_call(f.type_expr, "self." + f.name) + ")")
         head + "        reflect.MRecord(\"" + t.name + "\", [" + list.join(pairs, ", ") + "])\n"
     else:
         var arms = []
@@ -178,7 +211,7 @@ pub fn derive_reflect(t: TypeInfo) -> String:
             var pats = []
             var refls = []
             var i = 0
-            for ft in v.field_types:
+            for ft in v.field_type_exprs:
                 let pv = "p${i}"
                 pats = list.push(pats, pv)
                 refls = list.push(refls, reflect_call(ft, pv))
@@ -217,42 +250,43 @@ pub fn derive_ord(t: TypeInfo) -> String:
 pub fn derive_partial_ord(t: TypeInfo) -> String:
     "impl PartialOrd for " + target_with_params(t) + where_each(t.params, "PartialOrd") + ":\n    fn partial_compare(self, other: " + target_with_params(t) + ") -> Option(Ordering):\n" + lexicographic_body(t.fields, "Some(Less)", "Some(Greater)", "Some(Equal)")
 
-// The element type inside `List(X)` / `Option(X)` — `after_prefix("List(String)",
-// "List(")` is "String" (strips the prefix and the trailing ")").
-fn after_prefix(s: String, prefix: String) -> String:
-    string.substring(s, string.char_count(prefix), string.char_count(s) - 1)
-
 // A `Result`-producing decode of a `Json` value already in hand (recursive).
-fn json_decode_value(ty: String, value: String) -> String:
-    if ty == "Int":
-        "json.int_of(" + value + ")"
-    else if ty == "Float":
-        "json.float_of(" + value + ")"
-    else if ty == "Bool":
-        "json.bool_of(" + value + ")"
-    else if ty == "String":
-        "json.string_of(" + value + ")"
-    else if string.starts_with(ty, "List("):
-        let elem = after_prefix(ty, "List(")
-        "result.all(list.map(json.array_of(" + value + ")?, fn(__e: json.Json): " + json_decode_value(elem, "__e") + "))"
-    else if string.starts_with(ty, "Option("):
+fn json_decode_value(ty: TypeExpr, value: String) -> String:
+    match ty:
         // An `Option` value already in hand: JSON `null` decodes to `None`,
         // anything else applies the element decoder and wraps `Some`. Reuses
-        // `json.optional` (which maps `Some(JsonNull) -> None`) so it composes at
-        // any depth — inside a `List`, another `Option`, or a record field.
-        let elem = after_prefix(ty, "Option(")
-        "json.optional(Some(" + value + "), fn(__e: json.Json): " + json_decode_value(elem, "__e") + ")"
-    else:
-        ty + ".from_json(" + value + ")"
+        // `json.optional` (which maps `Some(JsonNull) -> None`) so it composes
+        // at any depth — inside a `List`, another `Option`, or a record field.
+        TNamed(name, args) ->
+            if name == "Int":
+                "json.int_of(" + value + ")"
+            else if name == "Float":
+                "json.float_of(" + value + ")"
+            else if name == "Bool":
+                "json.bool_of(" + value + ")"
+            else if name == "String":
+                "json.string_of(" + value + ")"
+            else if name == "List" && list.length(args) == 1:
+                let elem = list.at(args, 0)
+                "result.all(list.map(json.array_of(" + value + ")?, fn(__e: json.Json): " + json_decode_value(elem, "__e") + "))"
+            else if name == "Option" && list.length(args) == 1:
+                let elem = list.at(args, 0)
+                "json.optional(Some(" + value + "), fn(__e: json.Json): " + json_decode_value(elem, "__e") + ")"
+            else:
+                type_source(ty) + ".from_json(" + value + ")"
+        _ -> type_source(ty) + ".from_json(" + value + ")"
 
 // Decode one record field from the object `j`: an Option reads with `get` (absent
 // allowed), everything else with `require`. Trails a `?` so it's a `let` initializer.
-fn json_decode_field(ty: String, key: String) -> String:
-    if string.starts_with(ty, "Option("):
-        let elem = after_prefix(ty, "Option(")
-        "json.optional(json.get(j, \"" + key + "\"), fn(__e: json.Json): " + json_decode_value(elem, "__e") + ")?"
-    else:
-        json_decode_value(ty, "json.require(j, \"" + key + "\")?") + "?"
+fn json_decode_field(ty: TypeExpr, key: String) -> String:
+    match ty:
+        TNamed(name, args) ->
+            if name == "Option" && list.length(args) == 1:
+                let elem = list.at(args, 0)
+                "json.optional(json.get(j, \"" + key + "\"), fn(__e: json.Json): " + json_decode_value(elem, "__e") + ")?"
+            else:
+                json_decode_value(ty, "json.require(j, \"" + key + "\")?") + "?"
+        _ -> json_decode_value(ty, "json.require(j, \"" + key + "\")?") + "?"
 
 // `derive(Deserialize)` generates `from_json` for a record (the caller validates the
 // shape). It decodes and coerces each field, returning on the first error. There is
@@ -263,7 +297,7 @@ pub fn derive_deserialize(t: TypeInfo) -> String:
     var lets = []
     var names = []
     for f in t.fields:
-        lets = list.push(lets, "        let " + f.name + " = " + json_decode_field(f.type_name, f.name) + "\n")
+        lets = list.push(lets, "        let " + f.name + " = " + json_decode_field(f.type_expr, f.name) + "\n")
         names = list.push(names, f.name)
     let from_json = "    fn from_json(j: json.Json) -> Result(Self, String):\n" + list.join(lets, "") + "        Ok(" + t.name + "(" + list.join(names, ", ") + "))\n"
     // The generated body makes module-qualified calls (json.*, list.map, result.all);

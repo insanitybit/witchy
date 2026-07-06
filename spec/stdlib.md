@@ -1533,25 +1533,38 @@ Format `x` with `decimals` digits after the decimal point, rounded half-up: form
 
 Compile-time type introspection — the `typeInfo` half of witchy's comptime reflection (Zig's `@typeInfo`). A `comptime:` block can read the structure of every type in its module as ordinary data and generate code from it (e.g. a `to_json` specialized to a record's fields), with zero runtime cost. The compiler injects the type list as `module_types()`; these are the shapes it hands you.
 
-This is COMPILE-TIME structure (field names + declared type names as strings), distinct from `std/reflect`'s runtime `Mirror` (a value's structure at runtime).
+This is COMPILE-TIME structure (field names + declared type expressions), distinct from `std/reflect`'s runtime `Mirror` (a value's structure at runtime).
+
+#### `type TypeExpr`
+
+A declared type expression, exposed as data so generators do not have to parse source-looking type strings. The string fields below remain for compatibility with existing user derives, but built-in derives use this shape.
+
+- `TNamed(String, List(TypeExpr))`
+- `TTuple(List(TypeExpr))`
+- `TFn(List(TypeExpr), TypeExpr)`
+- `TQualified(String, TypeExpr)`
 
 #### `type FieldInfo`
 
-One field of a record: its name and its declared type rendered as a string (e.g. "Int", "List(String)", "Option(Point)").
+One field of a record: its name, its declared type rendered as a compatibility string (e.g. "Int", "List(String)", "Option(Point)"), and its structured type.
 
-- `FieldInfo { name: String, type_name: String }`
+- `FieldInfo { name: String, type_name: String, type_expr: TypeExpr }`
 
 #### `type VariantInfo`
 
-One constructor of a sum type: its name and its positional payload types.
+One constructor of a sum type: its name and its positional payload types, exposed both as compatibility strings and as structured types.
 
-- `VariantInfo { name: String, field_types: List(String) }`
+- `VariantInfo { name: String, field_types: List(String), field_type_exprs: List(TypeExpr) }`
 
 #### `type TypeInfo`
 
 A type's structure. `kind` is "record" (one constructor with named fields), "sum" (one or more positional constructors), or "unit". `fields` is populated for records, `variants` for sums.
 
 - `TypeInfo { name: String, kind: String, params: List(String), fields: List(FieldInfo), variants: List(VariantInfo) }`
+
+#### `fn type_source(ty: TypeExpr) -> String`
+
+Render a structured type back to source text only when generated source needs to name the type. Semantic branching should stay on `TypeExpr`, not this string.
 
 #### `fn derive_show(t: TypeInfo) -> String`
 
