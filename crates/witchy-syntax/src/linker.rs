@@ -668,6 +668,16 @@ pub fn link(
     // decision reads the RESOLVED CALLEE's `var`-receiver declaration — killing
     // the shadowing (Failure 1) and filter/map (Failure 2) silent-misbehavior
     // classes the census produced. See traits.rs's module doc.
+    //
+    // (BUG-342/BUG-316) The per-module records pass above ran LENIENT, deferring
+    // any named-field construction whose record type that module could not yet
+    // see (an imported record) to this point. Now that every module is merged and
+    // every type is visible, the strict pass resolves those leftover imported
+    // constructions AND rejects a genuinely-unknown constructor name
+    // (`Bogus(x: 9, ..p)` → "not a record type") — so the merge is the single
+    // point where an unknown record type is caught, whether or not a later stage
+    // (typeck/backend) re-runs the idempotent lowering.
+    let module = crate::records::lower(module).map_err(|message| LinkError { message })?;
     Ok(module)
 }
 
@@ -1084,17 +1094,34 @@ fn rewrite_expr(
             // local's type, matching the value-position rule for `local.field`
             // (the `Expr::Field` arm below). The module stays reachable while
             // shadowed via an alias or by renaming the local.
+            //
+            // EXCEPTION: when `base` also names a module in scope that exports
+            // `method` at EXACTLY this arg count, the caller wrote a module-
+            // qualified call with the receiver passed explicitly — the common
+            // capability idiom where the value is named after its module
+            // (`rand.hex(rand, 32)` → the `rand` module's `hex(rand, 32)`, not a
+            // 3-arg `hex` method on the `Rand` value). Keep it a `Call` then; the
+            // arity guard keeps BUG-216's `list.get(2)` (≠ `list.get(xs, i)`'s
+            // arity 2) a method call. (BUG-216 × capability-module shadowing.)
             if let Some((base, method)) = name.split_once('.') {
                 if bound.contains(base) && !method.contains('.') {
-                    let receiver = Box::new(Expr::Var(base.to_string()));
-                    let method = method.to_string();
-                    let mut call_args = Vec::new();
-                    std::mem::swap(args, &mut call_args);
-                    for a in &mut call_args {
-                        rewrite_expr(a, m, imps, fns, bound)?;
+                    let module_qualified = (is_prelude_module(base)
+                        || imps.iter().any(|i| i == base))
+                        && fns
+                            .get(base)
+                            .and_then(|f| f.get(method))
+                            .is_some_and(|sig| sig.arity == args.len());
+                    if !module_qualified {
+                        let receiver = Box::new(Expr::Var(base.to_string()));
+                        let method = method.to_string();
+                        let mut call_args = Vec::new();
+                        std::mem::swap(args, &mut call_args);
+                        for a in &mut call_args {
+                            rewrite_expr(a, m, imps, fns, bound)?;
+                        }
+                        *e = Expr::MethodCall { receiver, method, args: call_args };
+                        return Ok(());
                     }
-                    *e = Expr::MethodCall { receiver, method, args: call_args };
-                    return Ok(());
                 }
             }
             *name = resolve_call(name, m, imps, fns, bound)?;
