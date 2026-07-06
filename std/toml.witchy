@@ -392,7 +392,7 @@ fn parse_array(raw: String) -> List(String):
     let (body, _comment) = string.rsplit_once(string.trim(raw), "]")
     let inner = string.strip_prefix(body, "[")
     var out = []
-    for part in string.split(inner, ","):
+    for part in split_outside_quotes(inner, ","):
         let t = string.trim(part)
         if !string.is_empty(t):
             out = list.push(out, unquote(t))
