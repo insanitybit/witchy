@@ -31,6 +31,7 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
     let mut needs_deserialize = false;
     let mut needs_option = false;
     let mut needs_reflect = false;
+    let mut needs_show = false;
     for item in &mut module.items {
         let Item::Type(t) = item else { continue };
         // CONSUME the annotation: this pass runs at every pipeline entry
@@ -46,7 +47,10 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
         }
         for d in &derives {
             match d.as_str() {
-                "Show" => generated.push(derive_via_comptime("meta.derive_show", t)),
+                "Show" => {
+                    generated.push(derive_via_comptime("meta.derive_show", t));
+                    needs_show = true;
+                }
                 "PartialEq" => generated.push(derive_via_comptime("meta.derive_partial_eq", t)),
                 "Eq" => generated.push(derive_via_comptime("meta.derive_eq", t)),
                 "PartialOrd" => {
@@ -124,6 +128,20 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
     }
     if needs_reflect && !module.imports.iter().any(|i| i == "reflect") {
         return Err("derive(Reflect) needs `import reflect` in the module".into());
+    }
+    // (BUG-299) The generated `impl Show` renders each field/payload through its
+    // OWN `Show` — `"Name(" + show(self.f1) + ...`. The scalar `Show` impls
+    // (`impl Show for Int`/`String`/`Bool`/`Float`/`Duration`) and the `Show`
+    // trait itself live in `std/show`, so the generated impl DEPENDS on that
+    // module. Unlike `derive(Deserialize)` (which errors and asks the user to
+    // import json/result), `derive(Show)` is a pervasive, low-friction derive
+    // whose dependency is an implementation detail of the codegen — so inject the
+    // import rather than burden every `derive(Show)` site with an `import show`.
+    // Runs before the linker's import-pull loop (records-lowering happens first),
+    // so the pulled module is linked; a program that already imports show is
+    // unaffected (idempotent — the annotation is consumed, imports are a set).
+    if needs_show && !module.imports.iter().any(|i| i == "show") {
+        module.imports.push("show".to_string());
     }
     let n = generated.len();
     module.items.extend(generated);
