@@ -1113,6 +1113,36 @@ fn main(console: Console, net: Net):
     }
 
     #[test]
+    fn nonexhaustive_match_diagnostic_renders_home_type_bare() {
+        // BUG-292: a home-module type/variant renders bare (the spelling the reader
+        // wrote) in a non-exhaustive-match diagnostic — never the `prog.Color`
+        // file-stem qualifier — and the missing-variant list is backticked.
+        let src = r#"
+type Color:
+    Red
+    Blue
+
+fn pick(c: Color) -> Int:
+    match c:
+        Red -> 1
+
+fn main(console: Console):
+    print(console, "${pick(Red)}")
+"#;
+        let parsed = witchy_syntax::parser::parse_module(src).expect("parse");
+        let linked =
+            crate::pipeline::link(vec![("prog".to_string(), parsed)], "prog").expect("link");
+        let err = witchy_types::typeck::check(&linked).expect_err("non-exhaustive match");
+        assert!(err.message.contains("non-exhaustive match on `Color`"), "{}", err.message);
+        assert!(err.message.contains("missing `Blue`"), "{}", err.message);
+        assert!(
+            !err.message.contains("prog.Color") && !err.message.contains("prog.Blue"),
+            "home-module file stem leaked: {}",
+            err.message
+        );
+    }
+
+    #[test]
     fn modules_qualified_calls() {
         let strutil = r#"
 fn shout(name: String) -> String:

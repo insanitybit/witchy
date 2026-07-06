@@ -592,8 +592,25 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         }
     }
 
+    let mut lowered = Module {
+        modes: Vec::new(),
+        imports,
+        from_imports: Vec::new(),
+        items,
+        import_lines: Vec::new(),
+        item_lines: Vec::new(),
+    };
+    // (RFC-0056; BUG-210) A defaulted parameter on an `impl`/`trait` method
+    // (`p.scaled()` where `fn scaled(self, k: Int = 2)`) is unreachable through the
+    // linker's keyword-argument pass, which ran BEFORE method calls were resolved.
+    // Now that every dispatchable method is a positional `Call` to a mangled
+    // function that carries the same defaults, splice the trailing constant
+    // defaults with the exact free-function mechanism — in the shared `lower_with`,
+    // so both backends fill them identically (parity by construction). Labels never
+    // reach a method call, so this only ever splices omitted trailing defaults.
+    let kw = witchy_syntax::keyword_args::resolve(&mut lowered);
     (
-        Module { modes: Vec::new(), imports, from_imports: Vec::new(), items, import_lines: Vec::new(), item_lines: Vec::new() },
+        lowered,
         {
             let mut d = supertrait_diags;
             // (RFC-0043) A discarded-result error is a definitive diagnostic on a
@@ -605,6 +622,9 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             d.extend(discards);
             d.extend(missing_impls.into_inner());
             d.extend(mono_diags);
+            if let Err(msg) = kw {
+                d.push(msg);
+            }
             d
         },
     )

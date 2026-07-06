@@ -1094,7 +1094,11 @@ impl Parser {
             // the `.await`/`async fn` gate. Outside one it silently no-op'd on the
             // interpreter but failed to compile: a backend divergence caught here.
             if !self.in_gen {
-                return Err(self.error("`yield` is only allowed inside a `gen fn`".to_string()));
+                return Err(self.error(
+                    "`yield` may appear only directly in a `gen fn` body — not inside a lambda \
+                     or a non-generator function"
+                        .to_string(),
+                ));
             }
             self.advance();
             return Ok(Stmt::Yield(self.expr(0)?));
@@ -1578,7 +1582,15 @@ impl Parser {
                 } else {
                     None
                 };
-                let body = self.colon_or_block()?;
+                // A lambda is its own function scope, never a generator: `yield`
+                // inside it belongs to no generator (the enclosing `gen fn`'s
+                // lowering does not descend into closures), so clearing `in_gen`
+                // here rejects `yield`-in-lambda at parse time instead of letting
+                // it slip through `check` and fail only in codegen (BUG-183).
+                let prev_gen = std::mem::replace(&mut self.in_gen, false);
+                let body = self.colon_or_block();
+                self.in_gen = prev_gen;
+                let body = body?;
                 Ok(Expr::Lambda { params, body, ret })
             }
             Tok::Match => self.match_expr(),

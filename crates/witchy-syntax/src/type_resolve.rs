@@ -96,18 +96,28 @@ struct ModTypes {
 struct World {
     types: HashMap<String, ModTypes>,
     fns: HashMap<String, HashSet<String>>,
+    /// module -> the ambient-named types it declares (`cmp.Ordering`, `set.Set`,
+    /// `iter.Iter`, `option.Option`). Kept OUT of `types` — they stay bare (a bare
+    /// `Ordering` is ambient) — but recorded so the qualified spelling `cmp.Ordering`
+    /// resolves to the same bare ambient name instead of a false "no such type".
+    ambient: HashMap<String, HashSet<String>>,
 }
 
 impl World {
     fn build(modules: &[(String, Module)]) -> World {
         let mut types: HashMap<String, ModTypes> = HashMap::new();
         let mut fns: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut ambient: HashMap<String, HashSet<String>> = HashMap::new();
         for (name, m) in modules {
             let mt = types.entry(name.clone()).or_default();
             let fset = fns.entry(name.clone()).or_default();
             for item in &m.items {
                 match item {
-                    Item::Type(t) if !is_ambient_type(&t.name) && !is_synthetic_type(&t.name) => {
+                    Item::Type(t) if is_synthetic_type(&t.name) => {}
+                    Item::Type(t) if is_ambient_type(&t.name) => {
+                        ambient.entry(name.clone()).or_default().insert(t.name.clone());
+                    }
+                    Item::Type(t) => {
                         mt.types.insert(t.name.clone());
                         for v in &t.variants {
                             mt.ctors.insert(v.name.clone(), t.name.clone());
@@ -120,12 +130,38 @@ impl World {
                 }
             }
         }
-        World { types, fns }
+        World { types, fns, ambient }
     }
 
     /// Whether `module` declares a type spelled (bare) `ty`.
     fn module_has_type(&self, module: &str, ty: &str) -> bool {
         self.types.get(module).is_some_and(|mt| mt.types.contains(ty))
+    }
+
+    /// Whether `module` declares the ambient-named type `ty` (e.g. `cmp`/`Ordering`).
+    fn module_declares_ambient(&self, module: &str, ty: &str) -> bool {
+        self.ambient.get(module).is_some_and(|s| s.contains(ty))
+    }
+
+    /// Modules that declare a TYPE named (bare) `name`, sorted — for the
+    /// unresolved-type hint (BUG-328).
+    fn type_exporters(&self, name: &str) -> Vec<String> {
+        let mut v: Vec<String> =
+            self.types.iter().filter(|(_, mt)| mt.types.contains(name)).map(|(m, _)| m.clone()).collect();
+        v.sort();
+        v
+    }
+
+    /// Modules that declare a CONSTRUCTOR named (bare) `name`, each paired with its
+    /// owning type's bare name, sorted — for the unresolved-constructor hint (BUG-328).
+    fn ctor_exporters(&self, name: &str) -> Vec<(String, String)> {
+        let mut v: Vec<(String, String)> = self
+            .types
+            .iter()
+            .filter_map(|(m, mt)| mt.ctors.get(name).map(|owner| (m.clone(), owner.clone())))
+            .collect();
+        v.sort();
+        v
     }
 }
 
@@ -183,20 +219,35 @@ impl<'a> Scope<'a> {
                 unqual.insert(t.clone(), format!("a local type `{t}`"));
             }
         }
+        // A local `fn` is an unqualified binding too, so a `from X import <fn>`
+        // that names it is the same §3 collision as two from-imports or a
+        // from-imported type vs a local type — not a silent retarget of every
+        // call site to the local (BUG-287).
+        if let Some(fset) = world.fns.get(home) {
+            for f in fset {
+                unqual.entry(f.clone()).or_insert_with(|| format!("a local function `{f}`"));
+            }
+        }
         for (srcmod, names) in from_imports {
             for name in names {
+                // An ambient name (`Ordering`, `Set`, `Iter`, `Less`, …) is in
+                // scope everywhere without an import — so a `from cmp import
+                // Ordering` is a collision, not a missing export. Check this FIRST:
+                // ambient types are kept out of the module type map, so the
+                // export check below would otherwise fire the false "exports no
+                // type or function" message (BUG-291).
+                if is_ambient_type(name) || is_ambient_ctor(name) {
+                    return lerr(format!(
+                        "`from {srcmod} import {name}` collides with the ambient prelude name \
+                         `{name}` — it is already in scope everywhere; drop the import"
+                    ));
+                }
                 let brought_type = world.module_has_type(srcmod, name);
                 let brought_fn = world.fns.get(srcmod).is_some_and(|s| s.contains(name));
                 if !brought_type && !brought_fn {
                     return lerr(format!(
                         "`from {srcmod} import {name}`: module `{srcmod}` exports no type or \
                          function named `{name}`"
-                    ));
-                }
-                if is_ambient_type(name) || is_ambient_ctor(name) {
-                    return lerr(format!(
-                        "`from {srcmod} import {name}` collides with the ambient prelude name \
-                         `{name}` — it is already in scope everywhere; drop the import"
                     ));
                 }
                 if let Some(prev) = unqual.get(name.as_str()) {
@@ -242,6 +293,12 @@ impl<'a> Scope<'a> {
                     "type `{name}`: module `{module}` is not imported (add `import {module}`)"
                 ));
             }
+            // An ambient type declared by this module (`cmp.Ordering`, `set.Set`,
+            // `iter.Iter`, `option.Option`): the qualified spelling is sugar for
+            // the bare ambient name (BUG-291) — they name one and the same type.
+            if is_ambient_type(ty) && self.world.module_declares_ambient(module, ty) {
+                return Ok(ty.to_string());
+            }
             if !self.world.module_has_type(module, ty) {
                 return lerr(format!("module `{module}` has no type `{ty}`"));
             }
@@ -260,11 +317,29 @@ impl<'a> Scope<'a> {
         if let Some(canon) = self.type_map.get(name) {
             return Ok(canon.clone());
         }
-        lerr(format!(
-            "unknown type `{name}` (in module `{}`) — it is not declared here, not a built-in, \
-             and not imported. Qualify it (`module.{name}`) or add `from module import {name}`",
-            self.home
-        ))
+        // Name the module(s) that actually export the type, matching the
+        // unknown-function path's house style — never a literal `module.` (BUG-328).
+        match self.world.type_exporters(name).as_slice() {
+            [] => lerr(format!(
+                "unknown type `{name}` (in module `{}`) — it is not declared here, not a \
+                 built-in, and no in-scope module exports a type named `{name}`",
+                self.home
+            )),
+            [m] => lerr(format!(
+                "unknown type `{name}` (in module `{}`) — qualify it (`{m}.{name}`) or add \
+                 `from {m} import {name}`",
+                self.home
+            )),
+            many => {
+                let list =
+                    many.iter().map(|m| format!("`{m}.{name}`")).collect::<Vec<_>>().join(" or ");
+                lerr(format!(
+                    "unknown type `{name}` (in module `{}`) — it is exported by several modules; \
+                     qualify it: {list}",
+                    self.home
+                ))
+            }
+        }
     }
 
     fn resolve_type(&self, ty: &mut Type) -> Result<(), LinkError> {
@@ -325,10 +400,26 @@ impl<'a> Scope<'a> {
         if let Some(canon) = self.type_map.get(name) {
             return Ok(canon.clone());
         }
-        lerr(format!(
-            "unknown constructor `{name}` — qualify it (`module.{name}`) or add \
-             `from module import <Type>`"
-        ))
+        // Name the exporting module and the constructor's owning type, matching the
+        // unknown-function path — never a literal `module.`/`<Type>` (BUG-328).
+        match self.world.ctor_exporters(name).as_slice() {
+            [] => lerr(format!(
+                "unknown constructor `{name}` — no in-scope module exports a constructor named \
+                 `{name}`"
+            )),
+            [(m, owner)] => lerr(format!(
+                "unknown constructor `{name}` — qualify it (`{m}.{name}`) or add \
+                 `from {m} import {owner}`"
+            )),
+            many => {
+                let list =
+                    many.iter().map(|(m, _)| format!("`{m}.{name}`")).collect::<Vec<_>>().join(" or ");
+                lerr(format!(
+                    "unknown constructor `{name}` — it is exported by several modules; qualify \
+                     it: {list}"
+                ))
+            }
+        }
     }
 
     /// Whether `module.Suffix` names a constructor of an in-scope module — used to
@@ -393,6 +484,29 @@ impl<'a> Scope<'a> {
         for item in &mut m.items {
             match item {
                 Item::Type(t) => {
+                    // A user type may not redeclare an ambient name (a primitive,
+                    // a host capability, or a prelude type) when doing so would
+                    // strand its constructors: an ambient-named type is kept out of
+                    // the module type map, so a NON-ambient constructor it declares
+                    // (`type Secret: Hidden(String)`, `type Set: ...`) is
+                    // unreachable by any spelling (BUG-289). A declaration whose
+                    // constructors are ALL ambient (`type Result: Ok(a) Err(e)`,
+                    // `type Option: Some(a) None`) resolves fine and stays legal —
+                    // a program may restate the prelude type. The canonical std
+                    // declarers (`cmp`/`set`/`iter`/`option`/`result`/`policy`) are
+                    // exempt outright.
+                    if is_ambient_type(&t.name)
+                        && !is_synthetic_type(&t.name)
+                        && !crate::linker::STD_MODULES.contains(&self.home)
+                        && t.variants.iter().any(|v| !is_ambient_ctor(&v.name))
+                    {
+                        return lerr(format!(
+                            "type `{name}` shadows the ambient built-in name `{name}` — rename it \
+                             (a user type may not redeclare a primitive, capability, or prelude \
+                             type with new constructors; they would be unreachable)",
+                            name = t.name
+                        ));
+                    }
                     // Canonicalize the declaration itself (unless ambient or a
                     // compiler synthetic like `__anonN`, whose constructions stay
                     // bare — canonicalizing the def would strand them).
@@ -755,6 +869,137 @@ fn resolve_residual_block(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::parse_module;
+
+    /// Run the per-module type/constructor resolution over a set of `(name, src)`
+    /// modules — the linker's `type_resolve::resolve` step in isolation.
+    fn resolve_src(mods: &[(&str, &str)]) -> Result<(), LinkError> {
+        let mut modules: Vec<(String, Module)> = mods
+            .iter()
+            .map(|(n, s)| (n.to_string(), parse_module(s).expect("parse")))
+            .collect();
+        resolve(&mut modules)
+    }
+
+    #[test]
+    fn from_import_fn_collides_with_local_fn() {
+        // BUG-287: `from json import stringify` + a local `fn stringify` is the
+        // §3 unqualified-binding collision, not a silent retarget to the local.
+        let err = resolve_src(&[
+            ("json", "pub fn stringify(j: Int) -> String:\n    \"j\"\n"),
+            (
+                "main",
+                "from json import stringify\n\nfn stringify(j: Int) -> String:\n    \"local\"\n\nfn main(console: Console):\n    print(console, stringify(1))\n",
+            ),
+        ])
+        .unwrap_err();
+        assert!(
+            err.message.contains("collides with a local function `stringify`"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn from_import_fn_without_local_is_ok() {
+        // Control: no local `stringify`, so the from-import is legal.
+        resolve_src(&[
+            ("json", "pub fn stringify(j: Int) -> String:\n    \"j\"\n"),
+            (
+                "main",
+                "from json import stringify\n\nfn main(console: Console):\n    print(console, stringify(1))\n",
+            ),
+        ])
+        .expect("no collision");
+    }
+
+    const CMP_STUB: &str =
+        "type Ordering:\n    Less\n    Equal\n    Greater\n\npub fn reverse(o: Ordering) -> Ordering:\n    o\n";
+
+    #[test]
+    fn qualified_ambient_type_resolves() {
+        // BUG-291: `cmp.Ordering` in an annotation resolves to the bare ambient
+        // `Ordering`, not a false "module `cmp` has no type `Ordering`".
+        resolve_src(&[
+            ("cmp", CMP_STUB),
+            ("main", "import cmp\n\nfn f(o: cmp.Ordering) -> Int:\n    0\n"),
+        ])
+        .expect("cmp.Ordering resolves");
+    }
+
+    #[test]
+    fn from_import_ambient_type_is_collision_not_missing_export() {
+        // BUG-291: `from cmp import Ordering` is an ambient-name collision, not the
+        // false "exports no type or function named `Ordering`".
+        let err = resolve_src(&[
+            ("cmp", CMP_STUB),
+            ("main", "from cmp import Ordering\n\nfn main(console: Console):\n    print(console, \"x\")\n"),
+        ])
+        .unwrap_err();
+        assert!(err.message.contains("ambient prelude name `Ordering`"), "{}", err.message);
+    }
+
+    #[test]
+    fn user_type_shadowing_ambient_name_is_rejected() {
+        // BUG-289: a user module declaring `type Secret`/`type Set`/… is a loud
+        // error (its constructors would be unreachable), while the canonical std
+        // declarer (`cmp`) may still declare `type Ordering`.
+        for ambient in ["Secret", "Set", "Iter", "Ordering"] {
+            let src = format!("type {ambient}:\n    Wrapped(Int)\n");
+            let err = resolve_src(&[("main", &src)]).unwrap_err();
+            assert!(
+                err.message.contains(&format!("type `{ambient}` shadows the ambient built-in name")),
+                "{ambient}: {}",
+                err.message
+            );
+        }
+        // A std module keeps declaring its own ambient type.
+        resolve_src(&[("cmp", CMP_STUB)]).expect("cmp may declare Ordering");
+        // A program may restate a prelude type whose constructors are all ambient
+        // (`Ok`/`Err`, `Some`/`None`) — those resolve, so nothing is stranded.
+        resolve_src(&[("main", "type Result:\n    Ok(a)\n    Err(e)\n")])
+            .expect("type Result with ambient ctors is legal");
+        resolve_src(&[("main", "type Option:\n    Some(a)\n    None\n")])
+            .expect("type Option with ambient ctors is legal");
+    }
+
+    #[test]
+    fn unknown_ctor_hint_names_the_exporting_module() {
+        // BUG-328: the hint names the real module and owning type — no literal
+        // `module.`/`<Type>` placeholder text.
+        let err = resolve_src(&[
+            ("json", "type Json:\n    JsonInt(Int)\n    JsonNull\n"),
+            ("main", "import json\n\nfn main(console: Console):\n    let x = JsonInt(5)\n    print(console, \"x\")\n"),
+        ])
+        .unwrap_err();
+        assert!(
+            err.message.contains("`json.JsonInt`") && err.message.contains("from json import Json"),
+            "{}",
+            err.message
+        );
+        assert!(!err.message.contains("module."), "leaked placeholder: {}", err.message);
+    }
+
+    #[test]
+    fn unknown_type_hint_names_the_exporting_module() {
+        // BUG-328: same house style for an unresolved type reference.
+        let err = resolve_src(&[
+            ("json", "type Json:\n    JsonInt(Int)\n"),
+            ("main", "import json\n\nfn f(x: Json) -> Int:\n    0\n"),
+        ])
+        .unwrap_err();
+        assert!(
+            err.message.contains("`json.Json`") && err.message.contains("from json import Json"),
+            "{}",
+            err.message
+        );
+        assert!(!err.message.contains("(`module."), "leaked placeholder: {}", err.message);
+    }
 }
 
 fn resolve_residual_expr(

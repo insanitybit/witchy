@@ -1446,4 +1446,30 @@ fn main():
         // A concrete key needs no bound.
         check_str("fn f(d: Dict(String, Int), key: String) -> Int:\n    dict.get_or(d, key, 0)\n")
             .expect("a concrete String key needs no bound");
+    fn dequalify_home_strips_only_the_home_module() {
+        // BUG-292: a home-module name renders bare; a cross-module name keeps its
+        // qualifier (it disambiguates a same-named type from another module).
+        assert_eq!(dequalify_home("t_file.Color", "t_file"), "Color");
+        assert_eq!(dequalify_home("helper.Token", "t_file"), "helper.Token");
+        assert_eq!(dequalify_home("Bool", "t_file"), "Bool");
+        assert_eq!(dequalify_home("t_file.Color", ""), "t_file.Color");
+    }
+
+    #[test]
+    fn strip_home_qualifiers_keeps_cross_module_names() {
+        // Home-module type in a mismatch renders bare...
+        assert_eq!(
+            strip_home_qualifiers("expected `String`, found `app.Point`", "app"),
+            "expected `String`, found `Point`"
+        );
+        // ...while two cross-module same-named types keep BOTH qualifiers (the exact
+        // `expected Token, found Token` confusion RFC-0042 forbids).
+        assert_eq!(
+            strip_home_qualifiers("expected `helper_b.Token`, found `helper_a.Token`", "main"),
+            "expected `helper_b.Token`, found `helper_a.Token`"
+        );
+        // The `module.fn` location prefix (lowercase suffix) is never stripped.
+        assert_eq!(strip_home_qualifiers("in `app.go`: boom", "app"), "in `app.go`: boom");
+        // An unknown home is a no-op.
+        assert_eq!(strip_home_qualifiers("found `app.Point`", ""), "found `app.Point`");
     }
