@@ -19188,3 +19188,94 @@ pub fn serve(console: Console, net: Net) -> Int:
         assert_eq!(link_run(src), expected, "interp");
         assert_eq!(wasm_run(src), expected, "wasm");
     }
+
+    /// REGRESSION (BUG-189/BUG-413): `duration.parse` returns a reachable `Err` for
+    /// a unit with no preceding count (`"ms"`) and for an overflowing value (rather
+    /// than `Ok(0)` or a silently-wrapped, backend-divergent number), and
+    /// `duration.abs` saturates the most-negative value instead of staying negative.
+    #[test]
+    fn duration_parse_and_abs_edge_cases_backends_agree() {
+        let src = "import duration\nfn tag(r: Result(Duration, String)) -> String:\n    match r:\n        Ok(d) -> \"ok:\" + __render(duration.to_milliseconds(d))\n        Err(_e) -> \"err\"\nfn main(console: Console):\n    print(console, tag(duration.parse(\"ms\")))\n    print(console, tag(duration.parse(\"1h2m3s\")))\n    print(console, tag(duration.parse(\"99999999999999999999w\")))\n    print(console, __render(duration.to_milliseconds(duration.abs(duration.milliseconds(0 - 9223372036854775807 - 1)))))\n";
+        let expected = ["err", "ok:3723000", "err", "9223372036854775807"];
+        let linked = resolve_std_src(src);
+        assert_eq!(
+            interpreter::run_module(linked, ".", Vec::new()).expect("interp"),
+            expected,
+            "interp"
+        );
+        assert_eq!(wasm_run(src), expected, "wasm");
+    }
+
+    /// REGRESSION (BUG-253): `xs.sort()` dispatches through `Ord`, so a list of
+    /// derived-`Ord` records sorts (it used to fail 'expected Int' by binding the
+    /// Int-only `list.sort`); Ints still sort. Identical on both backends.
+    #[test]
+    fn list_sort_orders_records_through_ord_backends_agree() {
+        let src = "import list\ntype V derive(PartialEq, Eq, PartialOrd, Ord):\n    major: Int\n    minor: Int\nfn main(console: Console):\n    for v in [V(3, 1), V(1, 2), V(2, 0)].sort():\n        print(console, __render(v.major) + \".\" + __render(v.minor))\n    print(console, __render([3, 1, 2, 5].sort()))\n";
+        let expected = ["1.2", "2.0", "3.1", "[1, 2, 3, 5]"];
+        let linked = resolve_std_src(src);
+        assert_eq!(
+            interpreter::run_module(linked, ".", Vec::new()).expect("interp"),
+            expected,
+            "interp"
+        );
+        assert_eq!(wasm_run(src), expected, "wasm");
+    }
+
+    /// REGRESSION (BUG-408/BUG-250): `jwt.rsa_key_from_jwk` rejects an empty JWK (it
+    /// used to return an `Ok` bogus key), and `verify_oidc` pins the header `alg` to
+    /// RS256 — an `alg: none` token is refused before the signature is even checked
+    /// (algorithm-confusion defense, fail closed). Identical on both backends.
+    #[test]
+    fn jwt_rejects_empty_jwk_and_non_rs256_alg_backends_agree() {
+        let src = "import jwt\nfn tag(r: Result(String, String)) -> String:\n    match r:\n        Ok(_k) -> \"ok\"\n        Err(_e) -> \"err\"\nfn main(console: Console):\n    print(console, tag(jwt.rsa_key_from_jwk(\"\", \"\")))\n    let token = \"eyJhbGciOiJub25lIn0.eyJpc3MiOiJpIiwiYXVkIjoiYSIsImV4cCI6OTk5OTk5OTk5OX0.AAAA\"\n    match jwt.verify_oidc(token, \"00\", \"i\", \"a\", 0):\n        Ok(_c) -> print(console, \"accepted\")\n        Err(e) -> print(console, e)\n";
+        let expected = ["err", "JWT `alg` is `none`, not the required `RS256`"];
+        let linked = resolve_std_src(src);
+        assert_eq!(
+            interpreter::run_module(linked, ".", Vec::new()).expect("interp"),
+            expected,
+            "interp"
+        );
+        assert_eq!(wasm_run(src), expected, "wasm");
+    }
+
+    /// REGRESSION (BUG-280): a negative channel capacity is unbounded (sends never
+    /// block), not the permanently-full channel it used to build. Identical on both
+    /// backends.
+    #[test]
+    fn chan_negative_capacity_is_unbounded_backends_agree() {
+        let src = "from chan import Sender\nasync fn prod(tx: Sender(Int)) -> Nil:\n    chan.send(tx, 1).await\n    chan.send(tx, 2).await\n    chan.send(tx, 3).await\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(0 - 1).await\n    chan.scope([prod(tx)]).await\n    let a = chan.recv(rx).await\n    let b = chan.recv(rx).await\n    let c = chan.recv(rx).await\n    print(console, __render(a) + __render(b) + __render(c))\n";
+        let expected = ["Some(1)Some(2)Some(3)"];
+        let linked = resolve_std_src(src);
+        assert_eq!(
+            interpreter::run_module(linked, ".", Vec::new()).expect("interp"),
+            expected,
+            "interp"
+        );
+        assert_eq!(wasm_run(src), expected, "wasm");
+    }
+
+    /// REGRESSION (BUG-396): `chan.par_map` returns results in INPUT order.
+    #[test]
+    fn chan_par_map_preserves_input_order_backends_agree() {
+        let src = "import list\nasync fn sq(n: Int) -> Int:\n    n * n\nasync fn main(console: Console):\n    let m = chan.par_map([5, 3, 8, 1], fn(x): sq(x)).await\n    print(console, __render(m))\n";
+        let expected = ["[25, 9, 64, 1]"];
+        let linked = resolve_std_src(src);
+        assert_eq!(
+            interpreter::run_module(linked, ".", Vec::new()).expect("interp"),
+            expected,
+            "interp"
+        );
+        assert_eq!(wasm_run(src), expected, "wasm");
+    }
+
+    /// REGRESSION (BUG-396): `chan.par_map`'s structured fan-out is iterative — the
+    /// tail-recursive par_build/recv_each/spawn_all no longer build the O(n)-deep
+    /// continuation that overflowed the compiled backend's stack (wasm OOB) at
+    /// N≈2000. Compiled-only: the interpreter's O(n^2) clone-per-push is too slow
+    /// at this scale.
+    #[test]
+    fn chan_par_map_is_iterative_at_scale_on_wasm() {
+        let src = "import list\nasync fn ident(n: Int) -> Int:\n    n\nasync fn main(console: Console):\n    let m = chan.par_map(list.range(2000), fn(x): ident(x)).await\n    print(console, __render(list.length(m)))\n";
+        assert_eq!(wasm_run(src), vec!["2000"]);
+    }
