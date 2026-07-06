@@ -481,7 +481,7 @@ fn run_one_build_step(console: Console, runner: Exec, root: Dir, bin: Dir, dir: 
 fn exec_build_step(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, name: String, depdir: String, manifest: String) -> (Int, List(String)):
     let gendir = join_path(join_path(dir, "build-out"), name)
     let buildfile = join_path(join_path(depdir, "src"), "build.witchy")
-    let key = build_cache_key(read(root, buildfile))
+    let key = build_cache_key(root, dir, manifest, name, read(root, buildfile))
     if !cache_hit(root, gendir, key):
         let argv = flatten_argv(["build-step", buildfile, "--out", gendir], grant_flags(manifest, name, dir))
         let result = exec.run_args(runner, bin, "witchy", argv)
@@ -512,12 +512,37 @@ fn audit_then_flags(console: Console, root: Dir, dir: String, name: String, depd
     else:
         (0, flags)
 
-// A deterministic build step is a pure function of its build source, so its output
-// is cached by a hash of that source: a re-build with an unchanged step reuses the
-// prior generated files instead of re-running. (The compiler confines the step;
-// non-deterministic steps that read env/exec/net are out of scope for these runes.)
-fn build_cache_key(build_src: String) -> String:
-    "witchy-build-cache-v1:" + crypto.sha256(build_src)
+// A deterministic build step is a pure function of its build source AND the inputs
+// it reads. BUG-082: keying the cache on the build source alone would serve stale
+// output when a granted read INPUT (not the build.witchy) changes. Key on the build
+// source, the recursive contents of every granted `--read` input, and the grant
+// surface (env keys / exec tools) — so any input change invalidates the cache. (The
+// compiler confines the step; env/exec VALUE non-determinism stays out of scope.)
+fn build_cache_key(root: Dir, dir: String, manifest: String, name: String, build_src: String) -> String:
+    var material = "build-src\n" + build_src
+    let section = "build.grants.\"" + name + "\""
+    for p in toml.get_array(manifest, section + ".read"):
+        material = material + "\nread " + p + "=" + read_input_digest(root, normalize_path(join_path(dir, p)))
+    for k in toml.get_array(manifest, section + ".env"):
+        material = material + "\nenv " + k
+    for t in toml.get_array(manifest, section + ".exec"):
+        material = material + "\nexec " + t
+    "witchy-build-cache-v2:" + crypto.sha256(material)
+
+// The content digest of a granted read input — a single file, or (a read grant is a
+// directory root) the recursive contents of a directory. Absent inputs hash to a
+// stable sentinel so a later-appearing input still flips the key.
+fn read_input_digest(root: Dir, path: String) -> String:
+    if !exists(root, path):
+        "(absent)"
+    else if is_dir(root, path):
+        var material = ""
+        for f in fs.collect_files(root, path, "", ""):
+            let (rel, contents) = f
+            material = material + rel + "=" + crypto.sha256(contents) + "\n"
+        crypto.sha256(material)
+    else:
+        crypto.sha256(read(root, path))
 
 fn cache_hit(root: Dir, gendir: String, key: String) -> Bool:
     let keyfile = join_path(gendir, ".witchy-build-cache")
