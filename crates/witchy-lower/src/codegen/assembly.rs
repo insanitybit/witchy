@@ -47,7 +47,14 @@ fn export_cap_of<'a>(f: &'a Function, module: &'a Module) -> Option<(&'a str, us
     Some((cap, nfields))
 }
 
-fn reachable_functions(module: &Module) -> HashSet<String> {
+/// The functions reachable from `main` (+ string-export roots), plus `extra_roots`
+/// — additional reachability roots for functions a reached AST body does not name
+/// directly. (RFC-0047) A container `==` over a CUSTOM-`PartialEq` element type
+/// calls that type's `PartialEq__T__eq` from a codegen-synthesized eq helper, so the
+/// call is invisible to the AST walk; seeding those impls as roots keeps them (and
+/// their transitive callees) emitted, so the honored-at-every-depth guarantee holds
+/// for the compiled backend too.
+fn reachable_functions_with(module: &Module, extra_roots: &[String]) -> HashSet<String> {
     let mut bodies: HashMap<&str, &Block> = HashMap::new();
     for item in &module.items {
         if let Item::Function(f) = item {
@@ -66,6 +73,11 @@ fn reachable_functions(module: &Module) -> HashSet<String> {
     for name in string_export_functions(module) {
         if reachable.insert(name.clone()) {
             work.push(name);
+        }
+    }
+    for name in extra_roots {
+        if bodies.contains_key(name.as_str()) && reachable.insert(name.clone()) {
+            work.push(name.clone());
         }
     }
     while let Some(name) = work.pop() {
@@ -397,7 +409,16 @@ pub fn assemble_wir_module(
     register_module_items(&mut cg, module);
     cg.summaries = analysis::Summaries::of_module(module);
 
-    let reachable = reachable_functions(module);
+    // (RFC-0047) A custom-`PartialEq` type's `PartialEq__T__eq` may be called only
+    // from a codegen-synthesized container eq helper (invisible to the AST walk), so
+    // seed those impls as reachability roots — otherwise a `[CI] == [CI]` helper
+    // calls an un-emitted function and the whole module bails to `Ok(None)`.
+    let custom_eq_roots: Vec<String> = cg
+        .custom_eq_types
+        .iter()
+        .map(|t| format!("PartialEq__{t}__eq"))
+        .collect();
+    let reachable = reachable_functions_with(module, &custom_eq_roots);
     // The exact `$name` functions this module emits — the discriminator
     // `lower_expr`'s call arm uses to tell a user call from an intrinsic/native.
     cg.emitted_funcs = module

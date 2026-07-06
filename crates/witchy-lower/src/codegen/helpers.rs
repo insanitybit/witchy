@@ -288,6 +288,32 @@ impl Codegen {
                     ],
                 ))
             }
+            // (BUG-407) A record has the same flat `[tag i32][slot i64]…` layout as a
+            // tuple, so its copy-out is the tuple body over its RESOLVED field shapes —
+            // deep-copying each slot through `slot_rcopy_wir`. This closes the shape
+            // dependence for the common `region -> SomeRecord:` result (a self-
+            // referential field bails via the `ensure_rcopy_wir_helper` cycle guard,
+            // as the recursive-List case already does).
+            EqShape::Record(tyname) => {
+                let field_tys = self.record_field_types.get(tyname).cloned()?;
+                let mut shapes = Vec::new();
+                for fty in &field_tys {
+                    shapes.push(self.eq_shape_of_type(fty)?);
+                }
+                self.build_rcopy_wir_body(&EqShape::Tuple(shapes))
+            }
+            // A GENERIC record instantiation (`Box(Int)`): resolve each field type UNDER
+            // the argument substitution, the record analogue of `AdtRec` — matching the
+            // `RecInst` eq arm (BUG-319), so a generic-record region result copies out.
+            EqShape::RecInst(tyname, args) => {
+                let field_tys = self.record_field_types.get(tyname).cloned()?;
+                let subst = self.record_field_subst(tyname, args);
+                let mut shapes = Vec::new();
+                for fty in &field_tys {
+                    shapes.push(self.eq_shape_of_type_with(fty, &subst)?);
+                }
+                self.build_rcopy_wir_body(&EqShape::Tuple(shapes))
+            }
             _ => None,
         }
     }

@@ -1051,6 +1051,28 @@ fn check_main_signature(module: &Module) -> Result<(), TypeError> {
             ));
         }
     }
+    // (BUG-335, spec §16.3) `main` may return only `Nil` (the default) or `Int` (the
+    // process exit code); `Float` is also surfaced (both backends print it). Any
+    // OTHER return type — `String`/`Bool`/`List`/a record — is a parity trap: the
+    // interpreter echoes it when the program printed nothing, but the compiled run
+    // wrapper wires only `print_int`/`print_float` and silently drops the rest. Reject
+    // it at check time so the backends agree by construction (fail loud, never a
+    // silently different answer).
+    if let Some(t) = &main.ret {
+        let allowed = matches!(
+            t.unqualified(),
+            ast::Type::Named(n, _) if n == "Nil" || n == "Int" || n == "Float"
+        );
+        if !allowed {
+            return terr(format!(
+                "`main` returns `{}`, but `main` may return only `Nil` (the default) or \
+                 `Int` (the process exit code) — a `String`/`Bool`/`List`/record result is \
+                 printed by the interpreter but dropped by the compiled backend, so the two \
+                 diverge. Print the value inside `main` and return `Nil` or an exit code.",
+                witchy_syntax::format::type_str(t)
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -3728,7 +3750,7 @@ impl Checker {
         // literals (RFC-0052), so a duplicate `1s` arm is dead code just like a
         // duplicate `1` — track them the same way Int/Str/Bool are tracked.
         let mut durations: HashSet<i64> = HashSet::new();
-        for arm in arms {
+        for (i, arm) in arms.iter().enumerate() {
             let already = saturated
                 || match &arm.pattern {
                     Pattern::Ctor { name, .. } => ctors.contains(name.as_str()),
@@ -3738,7 +3760,17 @@ impl Checker {
                     Pattern::Duration(ms) => durations.contains(ms),
                     _ => false,
                 };
-            if already {
+            // (BUG-295, spec §6: `if let`/`while let` accept ANY pattern) A trailing
+            // bare `_` arm is idiomatic AND is exactly the synthesized else-arm an
+            // irrefutable `if let x = e:` / `while let x = e:` desugars to
+            // (`match e: <irrefutable> -> …; _ -> …`). So a redundant FINAL wildcard is
+            // not an error — otherwise `if let x = 3` rejects while the equally-
+            // irrefutable `if let (a, b) = p` passes (an inconsistent split). A
+            // non-final or non-wildcard duplicate (real dead code, e.g. `1s` then `1s`)
+            // is still flagged.
+            let is_trailing_catchall =
+                i + 1 == arms.len() && arm.guard.is_none() && matches!(arm.pattern, Pattern::Wildcard);
+            if already && !is_trailing_catchall {
                 return terr(format!(
                     "unreachable match arm: `{}` is already covered by an earlier arm",
                     describe_pattern(&arm.pattern)

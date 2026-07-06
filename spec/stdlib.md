@@ -1347,11 +1347,11 @@ The elements in the half-open index range [start, end), clamped to bounds. `slic
 
 #### `fn set_at(var xs: List(a), index: Int, value: a) -> List(a)`
 
-A copy of `xs` with the element at `index` replaced by `value`. An out-of- range index leaves the list unchanged. (Lists are immutable, so this returns a new list rather than mutating in place.)
+A copy of `xs` with the element at `index` replaced by `value`. An out-of-range (or negative) index is a runtime error on both backends, exactly like `list.at` and `xs[i]` read — a write that would silently vanish is a contract violation (RFC-0044 rule 3), so it aborts rather than discarding the value. (Lists are immutable, so this returns a new list rather than mutating in place.)
 
 #### `fn update_at(var xs: List(a), index: Int, f: fn(a) -> a) -> List(a)`
 
-A copy of `xs` with the function `f` applied to the element at `index`. An out-of-range index leaves the list unchanged.
+A copy of `xs` with the function `f` applied to the element at `index`. An out-of-range (or negative) index is a runtime error on both backends, exactly like `list.at` — a silently discarded update is a contract violation (RFC-0044 rule 3), so it aborts rather than leaving the list unchanged.
 
 #### `fn windows(xs: List(a), n: Int) -> List(List(a))`
 
@@ -1497,7 +1497,7 @@ A type's structure. `kind` is "record" (one constructor with named fields), "sum
 
 #### `fn derive_show(t: TypeInfo) -> String`
 
-`derive(Show)` → structural rendering via the `__render` builtin.
+`derive(Show)` → a field-wise structural render: the constructor name, then each field/payload rendered through its own `Show` impl (so a record renders as `Name(f1, f2)` and a sum type matches the variant). This matches `__render`'s output byte-for-byte (each builtin `Show` mirrors the value's `Display`) but, unlike routing through `__render`, it COMPILES on both backends for a generic type — the same field-wise technique `derive(PartialEq)` uses. A generic type's parameters carry a `: Show` bound, so decoding each field is coherent.
 
 #### `fn derive_eq(t: TypeInfo) -> String`
 

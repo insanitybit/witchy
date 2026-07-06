@@ -3547,6 +3547,145 @@ fn yn(b: Bool) -> String:
         assert_eq!(copied, 10, "a region-born string copies header + bytes");
     }
 
+    /// (BUG-251, RFC-0047) A hand-written `impl PartialEq` is honored INSIDE
+    /// containers on the compiled backend too — a `List`/`Option`/tuple of a
+    /// custom-eq type compares by that impl, not by structural bytes. The
+    /// case-insensitive impl proves the user fn decided the answer ("X" == "x").
+    #[test]
+    fn custom_partial_eq_inside_containers_backends_agree() {
+        let src = "type CI:\n    s: String\n\nimpl PartialEq for CI:\n    fn eq(self, other: CI) -> Bool:\n        string.to_lower(self.s) == string.to_lower(other.s)\n\nfn main(console: Console):\n    let la = [CI(s: \"X\")]\n    let lb = [CI(s: \"x\")]\n    print(console, \"${la == lb}\")\n    let oa: Option(CI) = Some(CI(s: \"Y\"))\n    let ob: Option(CI) = Some(CI(s: \"y\"))\n    print(console, \"${oa == ob}\")\n    let ta = (CI(s: \"Z\"), 1)\n    let tb = (CI(s: \"z\"), 1)\n    print(console, \"${ta == tb}\")\n";
+        let want = ["true", "true", "true"];
+        assert_eq!(link_run(src), want, "interp");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// (BUG-286) `derive(Deserialize)` composes `Option` at any depth — inside a
+    /// `List` and nested in another `Option` — decoding JSON `null` to `None`.
+    #[test]
+    fn derive_deserialize_nested_option_backends_agree() {
+        let src = "import json\nimport result\nimport option\n\ntype Rec derive(Deserialize):\n    xs: List(Option(Int))\n    oo: Option(Option(Int))\n\nfn main(console: Console):\n    match json.decode(\"{\\\"xs\\\": [1, null, 3], \\\"oo\\\": 7}\"):\n        Ok(j) -> match Rec.from_json(j):\n            Ok(r) -> print(console, \"${r.xs} ${r.oo}\")\n            Err(e) -> print(console, \"err\")\n        Err(e) -> print(console, \"parse\")\n";
+        let want = ["[Some(1), None, Some(3)] Some(Some(7))"];
+        assert_eq!(link_run(src), want, "interp");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// (BUG-295, spec §6) An irrefutable `if let`/`while let` (Var or Wildcard) is
+    /// accepted, consistently with the already-accepted irrefutable TUPLE form. A
+    /// genuine duplicate arm still errors (dead-code detection preserved).
+    #[test]
+    fn irrefutable_if_let_while_let_accepted_consistently() {
+        let iflet = "fn main(console: Console):\n    if let x = 3:\n        print(console, __render(x))\n";
+        assert_eq!(link_run(iflet), ["3"], "interp if-let");
+        assert_eq!(wasm_run(iflet), ["3"], "wasm if-let");
+        let whilelet = "fn main(console: Console):\n    var n = 0\n    while let x = 3:\n        n = n + x\n        if n >= 6:\n            break\n    print(console, __render(n))\n";
+        assert_eq!(link_run(whilelet), ["6"], "interp while-let");
+        assert_eq!(wasm_run(whilelet), ["6"], "wasm while-let");
+        typeck::check_str("fn main(console: Console):\n    if let _ = 3:\n        print(console, \"m\")\n").expect("if let _ ok");
+        typeck::check_str("fn main(console: Console):\n    let p = (1, 2)\n    if let (a, b) = p:\n        print(console, __render(a + b))\n").expect("tuple if-let ok");
+        assert!(typeck::check_str("fn f(d: Duration) -> Int:\n    match d:\n        1s -> 1\n        1s -> 2\n        _ -> 0\n\nfn main(console: Console):\n    print(console, __render(f(1s)))\n").is_err(), "duplicate arm must still error");
+    }
+
+    /// (BUG-299) `derive(Show)` on a GENERIC type renders identically on both
+    /// backends (was a check-passes/interp-runs/WASM-rejects split: the derived body
+    /// routed through `__render`). Now field-wise, matching `__render` byte-for-byte.
+    #[test]
+    fn derive_show_generic_backends_agree() {
+        let src = "import show\n\ntype Box(a) derive(Show):\n    value: a\n\ntype Color derive(Show):\n    Red\n    Named(String)\n\ntype Score derive(Show):\n    n: Int\n    name: String\n\nfn main(console: Console):\n    print(console, show(Box(value: 42)))\n    print(console, show(Box(value: [1, 2, 3])))\n    print(console, show(Red))\n    print(console, show(Named(\"blue\")))\n    print(console, show(Score(n: 12, name: \"beta\")))\n";
+        let want = ["Box(42)", "Box([1, 2, 3])", "Red", "Named(blue)", "Score(12, beta)"];
+        assert_eq!(link_run(src), want, "interp");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// (BUG-300) Field projection on a method-call-chain result compiles on both
+    /// backends (`cmp.sort(xs).at(0).label`, `[..].at(0).label`) — the record type
+    /// of the chain result comes from the type table, not a local-var-only map.
+    #[test]
+    fn field_projection_on_call_chain_backends_agree() {
+        let src = "import cmp\n\ntype Top derive(Ord, PartialOrd, Eq, PartialEq):\n    label: String\n\nfn main(console: Console):\n    let xs = [Top(label: \"b\"), Top(label: \"a\")]\n    print(console, cmp.sort(xs).at(0).label)\n    print(console, [Top(label: \"b\"), Top(label: \"a\")].at(0).label)\n    print(console, list.at([Top(label: \"b\"), Top(label: \"a\")], 0).label)\n";
+        let want = ["a", "b", "b"];
+        assert_eq!(link_run(src), want, "interp");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// (BUG-315, RFC-0044 rule 3) An out-of-range (or negative) `xs[i] = v` /
+    /// `list.set_at` / `list.update_at` is a runtime error on BOTH backends,
+    /// matching the `xs[i]` READ trap — never a silent no-op. In-bounds still agrees.
+    #[test]
+    fn oob_list_set_at_traps_on_both_backends() {
+        let compile = |src: &str| -> (ast::Module, Vec<u8>) {
+            let linked = resolve_std_src(src);
+            typeck::check(&linked).expect("typecheck");
+            let bytes = codegen::compile_module_binary(&linked).expect("compile").expect("lowers");
+            (linked, bytes)
+        };
+        for prog in [
+            "fn main(console: Console):\n    var xs = [1, 2, 3]\n    xs[5] = 9\n    print(console, __render(xs))\n",
+            "fn main(console: Console):\n    var xs = [1, 2, 3]\n    xs[0 - 1] = 9\n    print(console, __render(xs))\n",
+            "fn main(console: Console):\n    var xs = [1, 2, 3]\n    xs = list.set_at(xs, 5, 9)\n    print(console, __render(xs))\n",
+            "fn main(console: Console):\n    var xs = [1, 2, 3]\n    xs = list.update_at(xs, 9, fn(x: Int): x + 1)\n    print(console, __render(xs))\n",
+        ] {
+            let (lmod, wasm) = compile(prog);
+            assert!(interpreter::run_module(lmod, ".", Vec::new()).is_err(), "interp must trap: {prog}");
+            assert!(crate::run_wasm_bytes(&wasm).is_err(), "wasm must trap: {prog}");
+        }
+        let ok = "fn main(console: Console):\n    var xs = [1, 2, 3]\n    xs[1] = 9\n    print(console, __render(xs))\n";
+        assert_eq!(link_run(ok), ["[1, 9, 3]"], "interp in-bounds");
+        assert_eq!(wasm_run(ok), ["[1, 9, 3]"], "wasm in-bounds");
+    }
+
+    /// (BUG-318) Anonymous-record `==` and `"${…}"` work on both backends — the
+    /// structural eq/render build the shape from the inline field types.
+    #[test]
+    fn anonymous_record_eq_and_show_backends_agree() {
+        let src = "fn main(console: Console):\n    let a = .{x: 1, y: \"hi\"}\n    let b = .{x: 1, y: \"hi\"}\n    let c = .{x: 2, y: \"hi\"}\n    print(console, \"${a == b}\")\n    print(console, \"${a == c}\")\n    print(console, \"${a}\")\n";
+        let want = ["true", "false", "__anon0(1, hi)"];
+        assert_eq!(link_run(src), want, "interp");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// (BUG-335, spec §16) `main` may return only Nil/Int/Float; a String/Bool/List
+    /// return is a CHECK-TIME error (the interpreter echoes it but the compiled run
+    /// wrapper drops it — a silent divergence, now rejected loud by construction).
+    #[test]
+    fn off_spec_main_return_is_check_error() {
+        assert!(typeck::check_str("fn main(console: Console) -> String:\n    \"oops\"\n").is_err(), "String main rejected");
+        assert!(typeck::check_str("fn main(console: Console) -> Bool:\n    true\n").is_err(), "Bool main rejected");
+        assert!(typeck::check_str("fn main(console: Console) -> List(Int):\n    [1, 2]\n").is_err(), "List main rejected");
+        typeck::check_str("fn main(console: Console) -> Int:\n    0\n").expect("Int main ok");
+        typeck::check_str("fn main(console: Console) -> Float:\n    2.5\n").expect("Float main ok");
+        typeck::check_str("fn main(console: Console):\n    print(console, \"hi\")\n").expect("Nil main ok");
+    }
+
+    /// (BUG-399) `derive(Deserialize)` on a GENERIC record reconstructs on both
+    /// backends: the impl carries its type params + a per-param `Deserialize` bound,
+    /// and the caller ascribes the concrete type.
+    #[test]
+    fn derive_deserialize_generic_backends_agree() {
+        let src = "import json\nimport result\n\ntype Inner derive(Deserialize):\n    n: Int\n\ntype Box(a) derive(Deserialize):\n    value: a\n\nfn main(console: Console):\n    match json.decode(\"{\\\"value\\\": {\\\"n\\\": 7}}\"):\n        Ok(j) ->\n            let r: Result(Box(Inner), String) = Box.from_json(j)\n            match r:\n                Ok(b) -> print(console, __render(b.value.n))\n                Err(e) -> print(console, \"err\")\n        Err(e) -> print(console, \"parse\")\n";
+        let want = ["7"];
+        assert_eq!(link_run(src), want, "interp");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// (BUG-407) A `region -> SomeRecord:` result reclaims on the compiled backend
+    /// (records were silently falling back to a plain block with NO reclaim). The
+    /// `__region_copy_bytes` counter proves the record's block is copied out (> 0,
+    /// was 0), and the value agrees with the interpreter.
+    #[test]
+    fn region_copy_out_reclaims_record_result() {
+        use crate::runtime::{Capabilities, Runtime};
+        let src = "type Point:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let p = region -> Point:\n        var acc = Point(x: 0, y: 0)\n        for i in [1, 2, 3, 4, 5]:\n            acc = Point(x: acc.x + i, y: acc.y + i * 2)\n        acc\n    print(console, __render(p.x))\n    print(console, __render(p.y))\n";
+        let linked = resolve_std_src(src);
+        typeck::check(&linked).expect("typecheck");
+        let bytes = codegen::compile_module_binary(&linked).expect("compile").expect("lowers");
+        let mut rt = Runtime::batch().expect("rt");
+        let mut actor = rt.spawn(&bytes, Capabilities { print: true, quiet: true, ..Default::default() }, 64).expect("spawn");
+        actor.run().expect("run");
+        assert_eq!(actor.output(), vec!["15", "30"]);
+        assert!(actor.region_copy_bytes().expect("counter") > 0, "record region must copy its block out (was 0 = plain-block fallback)");
+        assert_eq!(link_run(src), vec!["15", "30"], "interp agrees on the value");
+    }
+
     /// `region:` rejections: an outer pointer-typed assignment and a `yield`
     /// are type errors — the region's only pointer escape is its value.
     #[test]
@@ -3593,10 +3732,11 @@ fn yn(b: Bool) -> String:
     /// slot in place (O(1)) via `$list_set_cap`, instead of rebuilding the whole
     /// list each set — which is O(n^2) memory that traps the WASM bump allocator
     /// at ~10k. An aliased list keeps the copying set_at (the alias still sees the
-    /// original), and an out-of-range index leaves the list unchanged.
+    /// original); a set does not change the length. (An out-of-range index traps —
+    /// see `oob_list_set_at_traps_on_both_backends`, BUG-315.)
     #[test]
     fn inplace_set_at_is_fast_and_alias_safe() {
-        let src = "fn main(console: Console):\n    var xs = []\n    for i in 0..5000:\n        xs = list.push(xs, 0)\n    var k = 0\n    while k < 5000:\n        xs = list.set_at(xs, k, k * 2)\n        k = k + 1\n    print(console, __render(list.at(xs, 4999)))\n    xs = list.set_at(xs, 99999, 7)\n    print(console, __render(list.length(xs)))\n    var ys = [1, 2, 3]\n    let alias = ys\n    ys = list.set_at(ys, 1, 99)\n    print(console, __render(list.at(ys, 1)))\n    print(console, __render(list.at(alias, 1)))\n";
+        let src = "fn main(console: Console):\n    var xs = []\n    for i in 0..5000:\n        xs = list.push(xs, 0)\n    var k = 0\n    while k < 5000:\n        xs = list.set_at(xs, k, k * 2)\n        k = k + 1\n    print(console, __render(list.at(xs, 4999)))\n    xs = list.set_at(xs, 4999, 7)\n    print(console, __render(list.length(xs)))\n    var ys = [1, 2, 3]\n    let alias = ys\n    ys = list.set_at(ys, 1, 99)\n    print(console, __render(list.at(ys, 1)))\n    print(console, __render(list.at(alias, 1)))\n";
         let want: Vec<String> =
             ["9998", "5000", "99", "2"].iter().map(|s| s.to_string()).collect();
         assert_eq!(link_run(src), want.clone(), "interpreter");
@@ -3606,10 +3746,11 @@ fn yn(b: Bool) -> String:
     /// IN-PLACE UPDATE_AT: `xs = list.update_at(xs, i, f)` applies the closure to
     /// the owned buffer's slot in place (O(1)) via `$list_update_cap`, instead of
     /// rebuilding the whole list each update (O(n^2), OOM-prone). Alias-safe (a
-    /// shared list keeps the copy), and an out-of-range index is a no-op.
+    /// shared list keeps the copy); an update does not change the length. (An
+    /// out-of-range index traps — see `oob_list_set_at_traps_on_both_backends`, BUG-315.)
     #[test]
     fn inplace_update_at_is_fast_and_alias_safe() {
-        let src = "fn main(console: Console):\n    var xs = []\n    for i in 0..5000:\n        xs = list.push(xs, 1)\n    var k = 0\n    while k < 5000:\n        xs = list.update_at(xs, k, fn(v: Int): v + 1)\n        k = k + 1\n    print(console, __render(list.at(xs, 4999)))\n    xs = list.update_at(xs, 99999, fn(v: Int): v + 1)\n    print(console, __render(list.length(xs)))\n    var ys = [1, 2, 3]\n    let alias = ys\n    ys = list.update_at(ys, 1, fn(v: Int): v + 100)\n    print(console, __render(list.at(ys, 1)))\n    print(console, __render(list.at(alias, 1)))\n";
+        let src = "fn main(console: Console):\n    var xs = []\n    for i in 0..5000:\n        xs = list.push(xs, 1)\n    var k = 0\n    while k < 5000:\n        xs = list.update_at(xs, k, fn(v: Int): v + 1)\n        k = k + 1\n    print(console, __render(list.at(xs, 4999)))\n    xs = list.update_at(xs, 4999, fn(v: Int): v + 1)\n    print(console, __render(list.length(xs)))\n    var ys = [1, 2, 3]\n    let alias = ys\n    ys = list.update_at(ys, 1, fn(v: Int): v + 100)\n    print(console, __render(list.at(ys, 1)))\n    print(console, __render(list.at(alias, 1)))\n";
         let want: Vec<String> =
             ["2", "5000", "102", "2"].iter().map(|s| s.to_string()).collect();
         assert_eq!(link_run(src), want.clone(), "interpreter");
