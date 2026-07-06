@@ -108,10 +108,13 @@ type Receiver(m):
 
 // `Handle` is task's (from-imported above) — a spawned child's join handle.
 
-// A bounded channel of `capacity` (the sender blocks when it is full); pass 0 for
-// an unbounded channel that never blocks the sender.
+// A channel of logical `capacity`: a positive capacity is bounded (the sender
+// blocks when the buffer is full), while 0 — or any non-positive value — is
+// unbounded and never blocks the sender, matching the convention that a
+// non-positive bound means "no bound".
 pub fn channel(capacity: Int) -> Task((Sender(m), Receiver(m))):
-    and_then(open_raw(capacity), fn(id): done((Sender(id), Receiver(id))))
+    let cap = if capacity < 0: 0 else: capacity
+    and_then(open_raw(cap), fn(id): done((Sender(id), Receiver(id))))
 
 // An unbounded channel — `send` never blocks (the buffer grows without limit).
 pub fn unbounded() -> Task((Sender(m), Receiver(m))):
@@ -154,10 +157,18 @@ pub fn cancel(h: Handle) -> Task(Nil):
 // Spawn every task in `children` concurrently, returning their handles. The
 // children begin running on the next executor turns; nothing is joined yet.
 pub fn spawn_all(children: List(Task(Nil))) -> Task(List(Handle)):
-    if list.is_empty(children):
-        done([])
+    spawn_all_into(children, 0, [])
+
+// Tail-recursive accumulator form (see `recv_n_into`): each spawned handle is
+// appended and the recursion continues in TAIL position, so the executor
+// trampolines it at constant stack depth rather than building the O(n)-deep
+// continuation the post-`concat` form did — the same stack floor that let
+// `par_map`/`gather`/`scope` overflow the compiled backend (BUG-396).
+fn spawn_all_into(children: List(Task(Nil)), i: Int, hs: List(Handle)) -> Task(List(Handle)):
+    if i >= list.length(children):
+        done(hs)
     else:
-        and_then(spawn(list.at(children, 0)), fn(h): and_then(spawn_all(list.tail(children)), fn(rest): done(list.concat([h], rest))))
+        and_then(spawn(list.at(children, i)), fn(h): spawn_all_into(children, i + 1, list.push(hs, h)))
 
 // Join every handle in `hs` — block until they have all finished.
 pub fn join_all(hs: List(Handle)) -> Task(Nil):
@@ -182,13 +193,22 @@ pub fn scope(children: List(Task(Nil))) -> Task(Nil):
 // Receive exactly `n` messages from `rx`, in arrival order. Stops early (and
 // shorter) if the channel closes first.
 fn recv_n(rx: Receiver(m), n: Int) -> Task(List(m)):
+    recv_n_into(rx, n, [])
+
+// Tail-recursive accumulator form: each received message is pushed onto `acc` and
+// the recursion continues in TAIL position, so the executor trampolines it at a
+// constant stack depth. The earlier post-`concat` form wrapped one extra `and_then`
+// around the recursion per received message, building an O(n)-deep continuation
+// that overflowed the compiled backend's stack at a few thousand messages — the
+// OOB trap `gather`/`par_map` hit at N≈2000 (BUG-396).
+fn recv_n_into(rx: Receiver(m), n: Int, acc: List(m)) -> Task(List(m)):
     if n <= 0:
-        done([])
+        done(acc)
     else:
         and_then(recv(rx), fn(o):
             match o:
-                Some(x) -> and_then(recv_n(rx, n - 1), fn(rest): done(list.concat([x], rest)))
-                None -> done([])
+                Some(x) -> recv_n_into(rx, n - 1, list.push(acc, x))
+                None -> done(acc)
         )
 
 // STRUCTURED fan-out-and-collect: run every task in `jobs` concurrently and return
@@ -209,28 +229,40 @@ pub fn gather(jobs: List(Task(m))) -> Task(List(m)):
 // back results in INPUT order — each task owns its own channel, so the parent
 // collecting channel-by-channel is independent of which task finished first.
 fn recv_each(rxs: List(Receiver(m))) -> Task(List(m)):
-    if list.is_empty(rxs):
-        done([])
+    recv_each_into(rxs, 0, [])
+
+// Tail-recursive accumulator form (see `recv_n_into`): indexing `rxs` and threading
+// the growing result forward keeps the recursion in TAIL position, so the executor
+// trampolines it at constant stack depth instead of building the O(n)-deep
+// continuation that overflowed the compiled backend at N≈2000 (BUG-396).
+fn recv_each_into(rxs: List(Receiver(m)), i: Int, acc: List(m)) -> Task(List(m)):
+    if i >= list.length(rxs):
+        done(acc)
     else:
-        and_then(recv(list.at(rxs, 0)), fn(o):
+        and_then(recv(list.at(rxs, i)), fn(o):
             match o:
-                Some(x) -> and_then(recv_each(list.tail(rxs)), fn(rest): done(list.concat([x], rest)))
-                None -> recv_each(list.tail(rxs))
+                Some(x) -> recv_each_into(rxs, i + 1, list.push(acc, x))
+                None -> recv_each_into(rxs, i + 1, acc)
         )
 
 // Build one private channel per item, pairing each item's task (which sends its
 // own result) with its receiver, so results can be read back in input order.
 fn par_build(items: List(a), f: fn(a) -> Task(m)) -> Task((List(Task(Nil)), List(Receiver(m)))):
-    if list.is_empty(items):
-        done(([], []))
+    par_build_into(items, 0, f, [], [])
+
+// Tail-recursive accumulator form (see `recv_n_into`): each opened channel appends
+// its job and receiver to the accumulators and the recursion continues in TAIL
+// position, so the executor trampolines it at constant stack depth. The earlier
+// post-`concat` form nested an extra `and_then` per item, building the O(n)-deep
+// continuation that overflowed the compiled backend at N≈2000 (BUG-396).
+fn par_build_into(items: List(a), i: Int, f: fn(a) -> Task(m), jobs: List(Task(Nil)), rxs: List(Receiver(m))) -> Task((List(Task(Nil)), List(Receiver(m)))):
+    if i >= list.length(items):
+        done((jobs, rxs))
     else:
         and_then(channel(0), fn(pair):
             let (tx, rx) = pair
-            let job = and_then(f(list.at(items, 0)), fn(r): send(tx, r))
-            and_then(par_build(list.tail(items), f), fn(rest):
-                let (jobs, rxs) = rest
-                done((list.concat([job], jobs), list.concat([rx], rxs)))
-            )
+            let job = and_then(f(list.at(items, i)), fn(r): send(tx, r))
+            par_build_into(items, i + 1, f, list.push(jobs, job), list.push(rxs, rx))
         )
 
 // STRUCTURED parallel map (the level-1 combinator): run `f` over every item of

@@ -1,5 +1,5 @@
 // jwt — verify a compact JWS / JWT (the OIDC identity-token shape), in PURE witchy
-// over `crypto` (RS256/ES256), `encoding` (base64url), and `json`. Verification is
+// over `crypto` (RS256), `encoding` (base64url), and `json`. Verification is
 // computation, so this module has no host capability of its own — fetching the
 // signing keys (JWKS discovery, over HTTPS) is a separate, network-bearing concern.
 //
@@ -24,15 +24,36 @@ pub fn verify_rs256(token: String, rsa_pubkey_der_hex: String, audience: String,
     if list.length(parts) != 3:
         Err("malformed JWT: expected three `.`-separated segments")
     else:
-        let signed = list.at(parts, 0) + "." + list.at(parts, 1)
-        // A malformed signature segment is a distinct, reachable error — not a
-        // silent truncation to garbage bytes that would later read as "signature
-        // invalid". Rejecting on the decode error is the safe direction.
-        let sig_hex = encoding.base64url_to_hex(list.at(parts, 2)).map_err(fn(e: String): "JWT signature segment is malformed: " + e)?
-        if !crypto.rsa_pkcs1_sha256_verify(rsa_pubkey_der_hex, signed, sig_hex):
-            Err("JWT signature is invalid (untrusted or forged)")
+        // Pin the algorithm: the JOSE header's `alg` MUST be exactly `RS256`. An
+        // attacker-chosen `alg` (`none`, a symmetric alg, a downgrade) is refused
+        // here rather than trusted — algorithm confusion is defended by failing
+        // closed on anything but RS256, never by honouring the header (BUG-250,
+        // RFC 8725 §3.1).
+        let alg = header_alg(list.at(parts, 0))?
+        if alg != "RS256":
+            Err("JWT `alg` is `" + alg + "`, not the required `RS256`")
         else:
-            check_claims(list.at(parts, 1), audience, now)
+            let signed = list.at(parts, 0) + "." + list.at(parts, 1)
+            // A malformed signature segment is a distinct, reachable error — not a
+            // silent truncation to garbage bytes that would later read as "signature
+            // invalid". Rejecting on the decode error is the safe direction.
+            let sig_hex = encoding.base64url_to_hex(list.at(parts, 2)).map_err(fn(e: String): "JWT signature segment is malformed: " + e)?
+            if !crypto.rsa_pkcs1_sha256_verify(rsa_pubkey_der_hex, signed, sig_hex):
+                Err("JWT signature is invalid (untrusted or forged)")
+            else:
+                check_claims(list.at(parts, 1), audience, now)
+
+// The `alg` from a compact JWT's base64url header segment, or an `Err` if the
+// header is not valid base64url/JSON or carries no `alg`. A missing `alg` is an
+// error (fail closed), not a default.
+fn header_alg(header_b64: String) -> Result(String, String):
+    let header_json = encoding.base64url_decode(header_b64).map_err(fn(e: String): "JWT header is not valid base64url: " + e)?
+    match json.decode(header_json):
+        Err(e) -> Err("JWT header is not JSON: " + e)
+        Ok(h) ->
+            match json.get_string(h, "alg"):
+                Some(a) -> Ok(a)
+                None -> Err("JWT header is missing `alg`")
 
 // Decode and validate the payload's registered claims: `exp` not in the past, and the
 // audience matches (defends against a token minted for a different relying party).
@@ -43,10 +64,22 @@ fn check_claims(payload_b64: String, audience: String, now: Int) -> Result(Json,
         Ok(claims) ->
             if json.get_int(claims, "exp").unwrap_or(0) <= now:
                 Err("JWT has expired")
-            else if json.get_string(claims, "aud").unwrap_or("") != audience:
+            else if !aud_matches(claims, audience):
                 Err("JWT audience mismatch (wrong relying party / replay)")
             else:
                 Ok(claims)
+
+// The `aud` claim may be a single string OR an array of strings (RFC 7519 §4.1.3):
+// the token is accepted when `audience` is that string, or is a member of that
+// array. A missing `aud`, or an `audience` absent from the array, is a mismatch
+// (BUG-270).
+fn aud_matches(claims: Json, audience: String) -> Bool:
+    match json.get(claims, "aud"):
+        None -> false
+        Some(aud) ->
+            match json.as_string(aud):
+                Some(single) -> single == audience
+                None -> list.contains(json.strings(aud), audience)
 
 // The full OIDC relying-party check: verify the RS256 signature AND that the token was
 // minted by the expected `issuer` for the expected `audience`, and is valid now
@@ -103,8 +136,16 @@ pub fn claims_unverified(token: String) -> Result(Json, String):
 pub fn rsa_key_from_jwk(n: String, e: String) -> Result(String, String):
     let n_hex = encoding.base64url_to_hex(n).map_err(fn(err: String): "JWK modulus `n` is not valid base64url: " + err)?
     let e_hex = encoding.base64url_to_hex(e).map_err(fn(err: String): "JWK exponent `e` is not valid base64url: " + err)?
-    let body = der_integer(n_hex) + der_integer(e_hex)
-    Ok("30" + der_len(body) + body)
+    // Reject an empty/missing `n` or `e` (a JWK with no such member decodes to empty
+    // hex): building a key from them would yield a structurally-valid but bogus DER
+    // key that later "verifies" nothing, so fail closed here (BUG-408).
+    if string.is_empty(n_hex):
+        Err("JWK modulus `n` is empty or missing")
+    else if string.is_empty(e_hex):
+        Err("JWK exponent `e` is empty or missing")
+    else:
+        let body = der_integer(n_hex) + der_integer(e_hex)
+        Ok("30" + der_len(body) + body)
 
 // An ASN.1 INTEGER (tag `02`) wrapping an unsigned magnitude, sign-padded with `00`
 // when the high bit would otherwise read as negative.
