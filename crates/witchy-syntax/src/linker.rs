@@ -386,7 +386,7 @@ pub fn link(
     // constructors / record updates, so later stages never see `Expr::Record`.
     modules = modules
         .into_iter()
-        .map(|(n, m)| crate::records::lower(m).map(|m| (n, m)))
+        .map(|(n, m)| crate::records::lower_lenient(m).map(|m| (n, m)))
         .collect::<Result<_, _>>()
         .map_err(|message| LinkError { message })?;
 
@@ -465,7 +465,7 @@ pub fn link(
     // restrict to `pulled_std_start..` to avoid re-running comptime expansion
     // (which, unlike derive desugaring, is not idempotent).
     for (_, m) in modules[pulled_std_start..].iter_mut() {
-        *m = crate::records::lower(m.clone()).map_err(|message| LinkError { message })?;
+        *m = crate::records::lower_lenient(m.clone()).map_err(|message| LinkError { message })?;
     }
     for k in pulled_std_start..modules.len() {
         let name = modules[k].0.clone();
@@ -1693,6 +1693,44 @@ mod tests {
             has_method_call_on(&linked, "list", "get"),
             "`list.get(2)` on a shadowing local must stay a method call, not a `list.get` module call"
         );
+    }
+
+    #[test]
+    fn named_field_construction_of_imported_record_resolves() {
+        // BUG-342: `from lib import FieldInfo; FieldInfo(name: ..)` used to fail at
+        // link ("not a record type") because the per-module records pass ran
+        // before the imported type was visible. It now leaves the construction for
+        // the merged pass, which resolves it.
+        let lib = "type FieldInfo:\n    name: String\n    type_name: String\n";
+        let user = "from rec_lib import FieldInfo\n\n\
+                    fn main(console: Console):\n    \
+                    let fi = FieldInfo(name: \"x\", type_name: \"Int\")\n    print(console, fi.name)\n";
+        let libm = crate::parser::parse_module(lib).expect("lib parses");
+        let userm = crate::parser::parse_module(user).expect("user parses");
+        let linked = link(
+            vec![("rec_lib".to_string(), libm), ("user".to_string(), userm)],
+            "user",
+            noop_expand,
+        )
+        .expect("links without a false 'not a record type' error");
+        // The merged strict pass (run by typeck/backends) must resolve the leftover
+        // `Expr::Record` to a positional constructor.
+        let lowered = crate::records::lower(linked).expect("merged records pass lowers it");
+        fn has_record(m: &Module) -> bool {
+            fn e(x: &Expr) -> bool {
+                match x {
+                    Expr::Record { .. } => true,
+                    Expr::Call { args, .. } | Expr::Ctor { args, .. } => args.iter().any(e),
+                    Expr::Block(b) => b.stmts.iter().any(|s| matches!(s,
+                        Stmt::Let { value, .. } | Stmt::Expr(value) if e(value))),
+                    _ => false,
+                }
+            }
+            m.items.iter().any(|it| matches!(it, Item::Function(f)
+                if f.body.stmts.iter().any(|s| matches!(s,
+                    Stmt::Let { value, .. } | Stmt::Expr(value) if e(value)))))
+        }
+        assert!(!has_record(&lowered), "imported named-field construction must lower to a Ctor");
     }
 
     #[test]
