@@ -3750,7 +3750,7 @@ impl Checker {
         // literals (RFC-0052), so a duplicate `1s` arm is dead code just like a
         // duplicate `1` — track them the same way Int/Str/Bool are tracked.
         let mut durations: HashSet<i64> = HashSet::new();
-        for arm in arms {
+        for (i, arm) in arms.iter().enumerate() {
             let already = saturated
                 || match &arm.pattern {
                     Pattern::Ctor { name, .. } => ctors.contains(name.as_str()),
@@ -3760,7 +3760,17 @@ impl Checker {
                     Pattern::Duration(ms) => durations.contains(ms),
                     _ => false,
                 };
-            if already {
+            // (BUG-295, spec §6: `if let`/`while let` accept ANY pattern) A trailing
+            // bare `_` arm is idiomatic AND is exactly the synthesized else-arm an
+            // irrefutable `if let x = e:` / `while let x = e:` desugars to
+            // (`match e: <irrefutable> -> …; _ -> …`). So a redundant FINAL wildcard is
+            // not an error — otherwise `if let x = 3` rejects while the equally-
+            // irrefutable `if let (a, b) = p` passes (an inconsistent split). A
+            // non-final or non-wildcard duplicate (real dead code, e.g. `1s` then `1s`)
+            // is still flagged.
+            let is_trailing_catchall =
+                i + 1 == arms.len() && arm.guard.is_none() && matches!(arm.pattern, Pattern::Wildcard);
+            if already && !is_trailing_catchall {
                 return terr(format!(
                     "unreachable match arm: `{}` is already covered by an earlier arm",
                     describe_pattern(&arm.pattern)
