@@ -233,19 +233,33 @@ struct Args {
     values: BTreeMap<String, Vec<String>>,
 }
 
-fn parse_args(rest: &[String]) -> Args {
+/// Parse the value-flag argv, FAILING CLOSED on anything malformed. Silently
+/// dropping a mistyped flag or a missing value is a security defect for a
+/// token-minting CLI — an unknown `--bogus`, a stray positional, or a known flag
+/// with no value (`--ttl` at end / followed by another flag) is a loud error, not
+/// a silent default (BUG-212).
+fn parse_args(rest: &[String]) -> IdpResult<Args> {
     let mut values: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut i = 0;
     while i < rest.len() {
         let tok = &rest[i];
-        if VALUE_FLAGS.contains(&tok.as_str()) && i + 1 < rest.len() {
-            values.entry(tok.clone()).or_default().push(rest[i + 1].clone());
-            i += 2;
-        } else {
-            i += 1;
+        if !tok.starts_with("--") {
+            return Err(IdpError(format!("unexpected argument `{tok}` (expected a --flag)")));
+        }
+        if !VALUE_FLAGS.contains(&tok.as_str()) {
+            return Err(IdpError(format!("unknown flag `{tok}`")));
+        }
+        // Every known flag takes a value; a missing one (end of args, or the next
+        // token is itself a flag) must not be a silent default.
+        match rest.get(i + 1) {
+            Some(v) if !v.starts_with("--") => {
+                values.entry(tok.clone()).or_default().push(v.clone());
+                i += 2;
+            }
+            _ => return Err(IdpError(format!("flag `{tok}` expects a value"))),
         }
     }
-    Args { values }
+    Ok(Args { values })
 }
 
 impl Args {
@@ -265,7 +279,7 @@ impl Args {
 /// keypair, printing its public key (hex) for registration with `coven-serve
 /// --trust-issuer`. Models a CI provider's OIDC signing key.
 pub fn gen_issuer(rest: &[String]) -> IdpResult<()> {
-    let a = parse_args(rest);
+    let a = parse_args(rest)?;
     let dir = PathBuf::from(a.val("--out").unwrap_or("./issuer-key"));
     let key = RegistryKey::load_or_create(&dir)?;
     println!("{}", key.public_hex());
@@ -277,7 +291,7 @@ pub fn gen_issuer(rest: &[String]) -> IdpResult<()> {
 /// short-lived identity token (the IdP's job — a CI provider does this per run).
 /// Prints the token JSON for `COVEN_ID_TOKEN`.
 pub fn mint_token(rest: &[String]) -> IdpResult<()> {
-    let a = parse_args(rest);
+    let a = parse_args(rest)?;
     let key_dir = a
         .val("--issuer-key")
         .ok_or_else(|| IdpError("--issuer-key <dir> is required".into()))?;
@@ -322,7 +336,7 @@ pub fn mint_token(rest: &[String]) -> IdpResult<()> {
 /// publishes. `coven-serve --trust-issuer-jwks iss=<file>` consumes this; tokens minted
 /// with the matching `--kid` then verify against it.
 pub fn issuer_jwks(rest: &[String]) -> IdpResult<()> {
-    let a = parse_args(rest);
+    let a = parse_args(rest)?;
     let key_dir = a
         .val("--issuer-key")
         .ok_or_else(|| IdpError("--issuer-key <dir> is required".into()))?;
@@ -485,6 +499,17 @@ mod tests {
         let bad_claim = mint_token(&args(&["--issuer-key", &d, "--sub", "s", "--claim", "repository"]));
         assert!(bad_claim.is_err(), "a --claim without key=value must be rejected");
         assert!(format!("{}", bad_claim.unwrap_err()).contains("--claim"), "the error names --claim");
+
+        // `--ttl` with NO value (trailing) must not silently fall back to the
+        // default lifetime — the missing value is a loud error (BUG-212).
+        let missing_ttl = mint_token(&args(&["--issuer-key", &d, "--sub", "s", "--ttl"]));
+        assert!(missing_ttl.is_err(), "a --ttl with no value must be rejected");
+        assert!(format!("{}", missing_ttl.unwrap_err()).contains("--ttl"), "the error names --ttl");
+
+        // An unknown flag must be rejected, never silently ignored (BUG-212).
+        let bogus = mint_token(&args(&["--issuer-key", &d, "--sub", "s", "--bogus"]));
+        assert!(bogus.is_err(), "an unknown flag must be rejected");
+        assert!(format!("{}", bogus.unwrap_err()).contains("--bogus"), "the error names --bogus");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
