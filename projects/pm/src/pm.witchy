@@ -146,16 +146,23 @@ fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, args
     let target = arg(args, 1)
     let dir = if string.is_empty(target): "." else: target
     if exists(root, join_path(dir, "witchy.toml")):
-        match project_entry(root, dir):
-            Some(entry) ->
-                let built = build_step_flags(console, runner, root, bin, dir)
-                if built.0 != 0:
-                    built.0
-                else:
-                    run_compiler(console, runner, bin, "build", flatten_argv(["compile", entry], flatten_argv(dep_flags(root, dir), built.1)))
+        match lock_integrity_error(root, dir):
+            Some(msg) ->
+                // BUG-094: refuse to link a vendored dependency whose on-disk source
+                // no longer matches its signed record — before any compile.
+                print(console, msg)
+                2
             None ->
-                print(console, "no entry source under " + join_path(dir, "src"))
-                1
+                match project_entry(root, dir):
+                    Some(entry) ->
+                        let built = build_step_flags(console, runner, root, bin, dir)
+                        if built.0 != 0:
+                            built.0
+                        else:
+                            run_compiler(console, runner, bin, "build", flatten_argv(["compile", entry], flatten_argv(dep_flags(root, dir), built.1)))
+                    None ->
+                        print(console, "no entry source under " + join_path(dir, "src"))
+                        1
     else if string.is_empty(target):
         print(console, "usage: pm build <file|dir>")
         1
@@ -175,16 +182,46 @@ fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, args
 // program's data Dir would default to pm's cwd — too wide when pm runs from a
 // workspace root, and missing the project's data files (e.g. `tasks.md`).
 fn run_project(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, app_args: List(String)) -> Int:
-    match project_entry(root, dir):
+    match lock_integrity_error(root, dir):
+        Some(msg) ->
+            // BUG-094: verify vendored sources against their signed records before
+            // linking + running, so a tampered vendored rune never executes.
+            print(console, msg)
+            2
         None ->
-            print(console, "no entry source under " + join_path(dir, "src"))
-            1
-        Some(entry) ->
-            let steps = build_step_flags(console, runner, root, bin, dir)
-            if steps.0 != 0:
-                steps.0
-            else:
-                compile_then_run(console, runner, root, bin, dir, entry, steps.1, app_args)
+            match project_entry(root, dir):
+                None ->
+                    print(console, "no entry source under " + join_path(dir, "src"))
+                    1
+                Some(entry) ->
+                    let steps = build_step_flags(console, runner, root, bin, dir)
+                    if steps.0 != 0:
+                        steps.0
+                    else:
+                        compile_then_run(console, runner, root, bin, dir, entry, steps.1, app_args)
+
+// BUG-094: the integrity a `build`/`run` enforces before linking — every vendored
+// registry dependency's on-disk source must still hash to its own signed
+// `coven.json`. Path dependencies are the developer's local siblings (edited in
+// place), so they are NOT gated here; `pm verify`/`pm lock` cover those. `Some(msg)`
+// names the tampered runes, `None` when the vendored tree is intact (or absent).
+fn lock_integrity_error(root: Dir, dir: String) -> Option(String):
+    let bad = tampered_vendored(root, dir)
+    if list.length(bad) == 0:
+        None
+    else:
+        Some("BLOCK: refusing to build — vendored dependency source no longer matches its signed record for: " + list.join(bad, ", ") + " (re-run `pm add` or `pm verify " + dir + "`)")
+
+fn tampered_vendored(root: Dir, dir: String) -> List(String):
+    var bad = []
+    let vendor = join_path(dir, "vendor")
+    if exists(root, vendor):
+        for entry in list(subtree(root, vendor)):
+            let rune_dir = join_path(vendor, entry)
+            if exists(root, join_path(rune_dir, "coven.json")):
+                if rune_hash(root, rune_dir) != recorded_hash(read(root, join_path(rune_dir, "coven.json"))):
+                    bad = list.push(bad, entry)
+    bad
 
 fn compile_then_run(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, entry: String, build_flags: List(String), app_args: List(String)) -> Int:
     let outdir = join_path(dir, "target")
