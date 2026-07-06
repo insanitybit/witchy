@@ -168,35 +168,36 @@ pub fn route(r: Router, m: String, p: String, h: fn(Request) -> Response) -> Rou
 // The fluent surface: real METHODS on Router (`router().get(...).post(...)`),
 // each returning the extended Router.
 impl Router:
-    fn get(self, p: String, h: fn(Request) -> Response) -> Router:
+    pub fn get(self, p: String, h: fn(Request) -> Response) -> Router:
+        // Route GET requests at `p` to `h`.
         route(self, "GET", p, h)
 
-    fn post(self, p: String, h: fn(Request) -> Response) -> Router:
+    pub fn post(self, p: String, h: fn(Request) -> Response) -> Router:
+        // Route POST requests at `p` to `h`.
         route(self, "POST", p, h)
 
-    fn put(self, p: String, h: fn(Request) -> Response) -> Router:
+    pub fn put(self, p: String, h: fn(Request) -> Response) -> Router:
+        // Route PUT requests at `p` to `h`.
         route(self, "PUT", p, h)
 
-    fn delete(self, p: String, h: fn(Request) -> Response) -> Router:
+    pub fn delete(self, p: String, h: fn(Request) -> Response) -> Router:
+        // Route DELETE requests at `p` to `h`.
         route(self, "DELETE", p, h)
 
-    fn patch(self, p: String, h: fn(Request) -> Response) -> Router:
+    pub fn patch(self, p: String, h: fn(Request) -> Response) -> Router:
+        // Route PATCH requests at `p` to `h`.
         route(self, "PATCH", p, h)
 
-    fn head(self, p: String, h: fn(Request) -> Response) -> Router:
+    pub fn head(self, p: String, h: fn(Request) -> Response) -> Router:
+        // Route HEAD requests at `p` to `h`.
         route(self, "HEAD", p, h)
 
-    fn any(self, p: String, h: fn(Request) -> Response) -> Router:
-        // Match `p` under ANY method (axum's `any`). Stored with the `*` wildcard
-        // method, which `check_route` accepts for any verb.
+    pub fn any(self, p: String, h: fn(Request) -> Response) -> Router:
+        // Route any HTTP method at `p` to `h`.
         route(self, "*", p, h)
 
-    fn nest(self, prefix: String, sub: Router) -> Router:
-        // Mount `sub`'s routes under `prefix` (axum-style nesting). (BUG-268) The
-        // sub-router's OWN middleware layers must not be dropped: each nested route's
-        // handler is wrapped in `sub`'s layers before mounting, so a layer added to
-        // the sub-router still runs for its routes (the outer router's layers wrap
-        // the whole dispatch on top, as before).
+    pub fn nest(self, prefix: String, sub: Router) -> Router:
+        // Mount `sub` under `prefix`, preserving the sub-router's own layers.
         match sub:
             Router(sub_routes, sub_layers) ->
                 var out = self
@@ -205,9 +206,8 @@ impl Router:
                         Route(m, p, h) -> out = route(out, m, prefix + p, wrap_layers(h, sub_layers))
                 out
 
-    fn layer(self, mw: fn(fn(Request) -> Response) -> fn(Request) -> Response) -> Router:
-        // A tower-style middleware Layer: `fn(Handler) -> Handler`, wrapping the
-        // whole dispatch (so it sees every request, 404s included).
+    pub fn layer(self, mw: fn(fn(Request) -> Response) -> fn(Request) -> Response) -> Router:
+        // Add a tower-style middleware layer wrapping the whole dispatch.
         match self:
             Router(routes, layers) -> Router(routes, list.push(layers, mw))
 

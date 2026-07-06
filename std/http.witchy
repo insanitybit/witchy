@@ -232,29 +232,27 @@ pub fn patch_request(url: String) -> RequestBuilder:
 // The fluent surface: real METHODS on RequestBuilder, each returning the
 // extended builder (`http.get_request(url).with_header(...).send(net)`).
 impl RequestBuilder:
-    fn with_header(self, name: String, value: String) -> RequestBuilder:
+    pub fn with_header(self, name: String, value: String) -> RequestBuilder:
         // Add a request header (chainable).
         match self:
             RequestBuilder(m, u, hs, b) -> RequestBuilder(m, u, list.push(hs, (name, value)), b)
 
-    fn with_body(self, b: String) -> RequestBuilder:
+    pub fn with_body(self, b: String) -> RequestBuilder:
         // Set the request body (e.g. a JSON document); nothing else changes.
         match self:
             RequestBuilder(m, u, hs, _b) -> RequestBuilder(m, u, hs, b)
 
-    fn with_query(self, key: String, value: String) -> RequestBuilder:
-        // Append a `key=value` query parameter to the URL (chainable), choosing
-        // `?` for the first and `&` thereafter. (BUG-235) The key and value are
-        // percent-encoded (`url.encode`), so a `&`, `=`, space, or other reserved
-        // byte in either can't inject an extra parameter or corrupt the query.
+    pub fn with_query(self, key: String, value: String) -> RequestBuilder:
+        // Append a `key=value` query parameter to the URL (chainable), choosing `?`
+        // for the first and `&` thereafter. The key and value are percent-encoded.
         match self:
             RequestBuilder(m, u, hs, b) ->
                 let sep = if string.contains(u, "?"): "&" else: "?"
                 RequestBuilder(m, u + sep + url.encode(key) + "=" + url.encode(value), hs, b)
 
-    fn send(self, net: Net[Connect, Tcp]) -> Result(Response, String):
-        // Send the assembled request, parsing host/port/path from its URL. An Err
-        // is returned (rather than a panic) when the URL doesn't parse.
+    pub fn send(self, net: Net[Connect, Tcp]) -> Result(Response, String):
+        // Send the assembled request, parsing host/port/path from its URL. An `Err`
+        // is returned rather than a panic when the URL does not parse.
         match self:
             RequestBuilder(m, u, hs, b) ->
                 match url.parse(u):

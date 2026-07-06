@@ -860,6 +860,14 @@ Validate one `(name, value)` header pair — the name is a token, the value is C
 
 Parse a raw HTTP/1.1 response string into a `Response`: split at the blank line separating headers from body, parse the header lines into (lowercased name, trimmed value) pairs, decode a `chunked` body, and read the status code totally (a non-numeric or overflowing code becomes 0 rather than trapping). Public so a proxy or test can parse a response it obtained by other means.
 
+#### `RequestBuilder.with_header(name: String, value: String) -> RequestBuilder`
+
+#### `RequestBuilder.with_body(b: String) -> RequestBuilder`
+
+#### `RequestBuilder.with_query(key: String, value: String) -> RequestBuilder`
+
+#### `RequestBuilder.send(net: Net[Connect, Tcp]) -> Result(Response, String)`
+
 ## `iter`
 
 std/iter — lazy, pull-based iterators: the witchy take on Rust's Iterator, minus the part Rust most regrets. Because witchy values are "data" (no borrowing), there is no lending-iterator / GAT complexity: an `Iter(a)` is just a thunk that produces the next `Step`. Adapters (`map`/`filter`/ `take_while`/...) are lazy and compose without building intermediate lists; consumers (`collect`/`fold`/`find`/`count`) drive the pulling. Infinite iterators are fine (`count_from`, `repeat`) as long as something bounds them (`take`/`take_while`/`find`). Pure and capability-free; runs on both backends. (The planned `gen`/`yield` syntax will de-sugar to these constructors.)
@@ -2191,6 +2199,24 @@ Serve `app` over HTTPS on `addr` forever, using ALL cores — `serve` with TLS t
 #### `fn serve_tls_n(net: Net[Listen, Tcp], addr: String, cert_pem: String, key: Secret, app: Router, n: Int)`
 
 Serve exactly `n` HTTPS requests then return — `serve_tls`'s one-shot/test twin (the TLS handling and key discipline of `serve_tls`, the loop shape of `serve_n`).
+
+#### `Router.get(p: String, h: fn(Request) -> Response) -> Router`
+
+#### `Router.post(p: String, h: fn(Request) -> Response) -> Router`
+
+#### `Router.put(p: String, h: fn(Request) -> Response) -> Router`
+
+#### `Router.delete(p: String, h: fn(Request) -> Response) -> Router`
+
+#### `Router.patch(p: String, h: fn(Request) -> Response) -> Router`
+
+#### `Router.head(p: String, h: fn(Request) -> Response) -> Router`
+
+#### `Router.any(p: String, h: fn(Request) -> Response) -> Router`
+
+#### `Router.nest(prefix: String, sub: Router) -> Router`
+
+#### `Router.layer(mw: fn(fn(Request) -> Response) -> fn(Request) -> Response) -> Router`
 
 ## `set`
 
