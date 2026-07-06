@@ -72,10 +72,15 @@ pub fn is_zero(d: Duration) -> Bool:
     duration_to_int(d) == 0
 
 // The magnitude of a duration (a negative span, e.g. from subtraction, is made
-// positive).
+// positive). The most-negative representable value has no positive counterpart in
+// 64 bits (negating it would wrap back to itself), so it saturates to the largest
+// positive magnitude rather than staying negative.
 pub fn abs(d: Duration) -> Duration:
-    if duration_to_int(d) < 0:
-        int_to_duration(0 - duration_to_int(d))
+    let ms = duration_to_int(d)
+    if ms == 0 - 9223372036854775807 - 1:
+        int_to_duration(9223372036854775807)
+    else if ms < 0:
+        int_to_duration(0 - ms)
     else:
         d
 
