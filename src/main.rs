@@ -2427,7 +2427,14 @@ fn run_file_grants(
     net_allow.dedup();
     let mut named_secrets: Vec<runtime::SecretGrant> = Vec::new();
     for (name, s) in &doc.secrets {
-        named_secrets.push(runtime::SecretGrant::new(name.clone(), resolve_secret_from(&s.from)?));
+        // BUG-146: carry the document's `use-only` modifier through to the runtime
+        // grant — otherwise a grant that declares a signing/TLS key as unrevealable
+        // was silently lowered to a revealable secret (`crypto.reveal` would leak it).
+        named_secrets.push(runtime::SecretGrant {
+            name: name.clone(),
+            bytes: resolve_secret_from(&s.from)?,
+            use_only: s.use_only,
+        });
     }
     if let Some(ast::Item::Function(main)) =
         linked.items.iter().find(|it| matches!(it, ast::Item::Function(f) if f.name == "main"))
