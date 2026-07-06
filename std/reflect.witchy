@@ -14,6 +14,7 @@
 
 import list
 import string
+import dict
 
 // The reflected shape of a value.
 type Mirror:
@@ -104,6 +105,30 @@ impl Reflect for Option(a) where a: Reflect:
     fn reflect(self) -> Mirror:
         reflect_option(self)
 
+// A `Dict` reflects to an `MRecord` — the same shape a record uses, so `json`
+// encodes it as an object and `debug` renders it record-style. Each key is
+// rendered to a string (an object/record key is always a string), each value
+// reflects through the `v: Reflect` bound. A free function for the same reason
+// `reflect_list` is: a `Dict` receiver's `.reflect()` would bind to the `dict`
+// module, so the generated `reflect` for a `Dict` field routes here.
+pub fn reflect_dict(d: Dict(k, v)) -> Mirror where k: Reflect, v: Reflect:
+    var fields = []
+    for pair in dict.pairs(d):
+        let (key, val) = pair
+        fields = list.push(fields, (key_string(reflect_one(key)), reflect_one(val)))
+    MRecord("Dict", fields)
+
+// The string form of a reflected key: an `MString`'s raw text (unquoted, since it
+// is a field name, not a value), any other key its structural rendering.
+fn key_string(m: Mirror) -> String:
+    match m:
+        MString(s) -> s
+        _ -> render(m)
+
+impl Reflect for Dict(k, v) where k: Reflect, v: Reflect:
+    fn reflect(self) -> Mirror:
+        reflect_dict(self)
+
 // Tuples reflect to `MTuple` (a JSON array, or a parenthesized debug). Each common
 // arity has its own impl; `reflect_one` on the destructured slots dispatches per
 // slot type.
@@ -133,7 +158,7 @@ fn render(m: Mirror) -> String:
         MInt(n) -> "${n}"
         MFloat(f) -> "${f}"
         MBool(b) -> if b: "true" else: "false"
-        MString(s) -> "\"" + s + "\""
+        MString(s) -> "\"" + escape_string(s) + "\""
         MNil -> "nil"
         MList(xs) -> "[" + join_rendered(xs) + "]"
         MTuple(xs) -> "(" + join_rendered(xs) + ")"
@@ -143,6 +168,27 @@ fn render(m: Mirror) -> String:
                 variant
             else:
                 variant + "(" + join_rendered(payload) + ")"
+
+// Escape a string value for `debug`'s quoted rendering: backslash, double quote,
+// and the whitespace controls become their `\`-escapes, so a value containing a
+// newline (or a quote) renders on a single line instead of splitting the output
+// across lines — the same hazard `json`'s encoder guards against.
+fn escape_string(s: String) -> String:
+    var out = ""
+    for c in string.chars(s):
+        if c == "\\":
+            out = out + "\\\\"
+        else if c == "\"":
+            out = out + "\\\""
+        else if c == "\n":
+            out = out + "\\n"
+        else if c == "\t":
+            out = out + "\\t"
+        else if c == "\r":
+            out = out + "\\r"
+        else:
+            out = out + c
+    out
 
 fn join_rendered(xs: List(Mirror)) -> String:
     var parts = []
