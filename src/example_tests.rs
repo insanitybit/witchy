@@ -3916,6 +3916,20 @@ fn yn(b: Bool) -> String:
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
+    /// (BUG-532) Tuple fields are outside the documented `derive(Deserialize)`
+    /// contract for now. Reject them at the derive boundary instead of emitting a
+    /// fallback call like `(Int, String).from_json(...)` and leaking `Tuple2` in a
+    /// later type error.
+    #[test]
+    fn derive_deserialize_rejects_tuple_fields_without_generated_fallback_leak() {
+        let src = "import json\nimport result\n\ntype PairBox derive(Deserialize):\n    pair: (Int, String)\n";
+        let err = try_link_std(src).expect_err("tuple field must be rejected by derive");
+        assert!(err.contains("derive(Deserialize)"), "{err}");
+        assert!(err.contains("tuple field `pair`"), "{err}");
+        assert!(!err.contains("Tuple2"), "must not leak generated tuple fallback: {err}");
+        assert!(!err.contains("from_json"), "must not leak generated from_json fallback: {err}");
+    }
+
     /// (BUG-295, spec §6) An irrefutable `if let`/`while let` (Var or Wildcard) is
     /// accepted, consistently with the already-accepted irrefutable TUPLE form. A
     /// genuine duplicate arm still errors (dead-code detection preserved).

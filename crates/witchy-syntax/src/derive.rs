@@ -40,6 +40,26 @@ fn has_float_field(t: &TypeDef) -> bool {
         .any(|v| v.fields.iter().any(contains_concrete_float))
 }
 
+fn unsupported_deserialize_shape(ty: &Type) -> Option<&'static str> {
+    match ty {
+        Type::Named(_, args) => args.iter().find_map(unsupported_deserialize_shape),
+        Type::Tuple(_) => Some("tuple"),
+        Type::Fn(_, _) => Some("function"),
+        Type::Qualified(_, inner) => unsupported_deserialize_shape(inner),
+    }
+}
+
+fn unsupported_deserialize_field(t: &TypeDef) -> Option<(&str, &'static str)> {
+    let variant = t.variants.first()?;
+    variant
+        .fields
+        .iter()
+        .zip(variant.field_names.iter())
+        .find_map(|(field_type, field_name)| {
+            unsupported_deserialize_shape(field_type).map(|shape| (field_name.as_str(), shape))
+        })
+}
+
 /// Expand every `type T derive(...)` into a comptime call of the matching witchy
 /// generator. Unsupported shapes for the built-ins are loud errors; an unknown
 /// derive routes to a user-provided `derive_<name>` (a comptime error if absent).
@@ -118,6 +138,12 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                         return Err(format!(
                             "type `{}`: derive(Deserialize) supports record types (one constructor with named fields)",
                             t.name
+                        ));
+                    }
+                    if let Some((field, shape)) = unsupported_deserialize_field(t) {
+                        return Err(format!(
+                            "type `{}`: derive(Deserialize) does not support {} field `{}`; decode it manually",
+                            t.name, shape, field
                         ));
                     }
                     generated.push(derive_via_comptime("meta.derive_deserialize", t));
