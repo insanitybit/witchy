@@ -503,18 +503,14 @@ entrypoints that try to expose `File` as a leading cap. A hostile precompiled
 module that passes `ref.null extern` to `file_read_len` traps with
 `File externref is null`.
 
-**Validation checkpoint (2026-07-06, branch `impl/rfc-0005-stage2` at
-`f3921df`).** The File externref cut has been checked with targeted coverage for
-direct `--file` read/write grants, `file_capability` Dir navigation,
-`file_capability_rights_and_narrowing`, and the hostile null-externref runtime
-fixture (`cargo test -p witchy-runtime --features native
-null_file_externref_is_rejected`). The branch also carries the glamour chart
-fixture commit needed by the current full gate. `./scripts/check.sh` gets through
-build, clippy, and Witchy formatting; under concurrent-machine load its nextest
-phase timed out only in long-running tests, and every timed-out test passed in
-isolation (`inplace_set_at_is_fast_and_alias_safe`,
-`inplace_update_at_is_fast_and_alias_safe`,
-`list_reverse_flatten_flat_map_are_linear_at_scale`, and
-`glamour_publishes_to_coven_empty_footprint_and_renders_through_html`). The
-glamour e2e remains the known interpreter-backed package-manager path and is
-owned by the compiled-wasm `pm` migration.
+**Validation checkpoint (2026-07-06, final integration branch
+`integrate/rfc0005-final`).** The File externref cut has been checked with
+targeted coverage for direct `--file` read/write grants, `file_capability` Dir
+navigation, `file_capability_rights_and_narrowing`, and the hostile
+null-externref runtime fixture (`cargo test -p witchy-runtime --features native
+null_file_externref_is_rejected`). The branch is based on BUG-550's compiled-wasm
+package-manager front end and carries the glamour chart fixture needed by the
+current full gate. Before BUG-550, the glamour e2e timed out as an
+interpreter-backed package-manager path; with BUG-550, it passes in isolation in
+10.575s on `master` and 11.123s on this integration stack. The final
+`./scripts/check.sh` gate for `integrate/rfc0005-final` is the merge authority.
