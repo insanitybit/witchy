@@ -592,6 +592,12 @@ fn grant_flags(manifest: String, name: String, dir: String) -> List(String):
         out = list.push(list.push(out, "--env"), k)
     for t in toml.get_array(manifest, section + ".exec"):
         out = list.push(list.push(out, "--exec"), t)
+    // BUG-081: a granted BuildNet host must be plumbed to the confined build step
+    // just like read/env/exec — one `--net <host:port>` per allowed address. (The
+    // matching consumer of this flag in the compiler's `build-step` command is the
+    // Rust TCB half; without it the grant is inert, but the policy plumbing is here.)
+    for h in toml.get_array(manifest, section + ".net"):
+        out = list.push(list.push(out, "--net"), h)
     out
 
 // The build-axis footprint of a source: the build capabilities its `build`
