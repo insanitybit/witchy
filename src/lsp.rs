@@ -97,7 +97,8 @@ const PRELUDE_FNS: &[&str] = &[
 /// Completion items: keywords, builtins, this document's functions, and the
 /// `pub fn`s of every imported module (offered as `module.name`).
 fn completion_response(docs: &HashMap<String, String>, params: &Value) -> Value {
-    let Some(text) = params["textDocument"]["uri"].as_str().and_then(|u| docs.get(u)) else {
+    let uri = params["textDocument"]["uri"].as_str();
+    let Some(text) = uri.and_then(|u| docs.get(u)) else {
         return json!([]);
     };
     let mut items: Vec<Value> = Vec::new();
@@ -118,7 +119,7 @@ fn completion_response(docs: &HashMap<String, String>, params: &Value) -> Value 
             }
         }
         if let Some(module) = t.strip_prefix("import ") {
-            push_module_completions(&mut items, module.trim());
+            push_module_completions(&mut items, module.trim(), uri, docs);
         }
         // `from X import a, b` (RFC-0042) binds `a`/`b` UNQUALIFIED and implies
         // `import X`, so offer the bare names plus the module's qualified fns.
@@ -126,7 +127,7 @@ fn completion_response(docs: &HashMap<String, String>, params: &Value) -> Value 
             for name in names {
                 items.push(json!({ "label": name, "kind": 3 }));
             }
-            push_module_completions(&mut items, &module);
+            push_module_completions(&mut items, &module, uri, docs);
         }
     }
     json!(items)
@@ -134,9 +135,15 @@ fn completion_response(docs: &HashMap<String, String>, params: &Value) -> Value 
 
 /// The `module` label plus every `module.fn` of a resolvable module — the
 /// completions an `import module` (or the module half of a `from`-import) offers.
-fn push_module_completions(items: &mut Vec<Value>, module: &str) {
+/// The module resolves as std, a sibling `<module>.witchy`, or an open buffer.
+fn push_module_completions(
+    items: &mut Vec<Value>,
+    module: &str,
+    uri: Option<&str>,
+    docs: &HashMap<String, String>,
+) {
     items.push(json!({ "label": module, "kind": 9 })); // Module
-    if let Some(src) = crate::linker::std_source(module) {
+    if let Some(src) = module_source(module, uri, docs) {
         for ml in src.lines() {
             if let Some(rest) = ml.trim_start().strip_prefix("pub fn ") {
                 if let Some(name) = rest.split('(').next() {
@@ -148,6 +155,29 @@ fn push_module_completions(items: &mut Vec<Value>, module: &str) {
             }
         }
     }
+}
+
+/// Resolve an imported module NAME to its source: a bundled std module, a sibling
+/// `<name>.witchy` on disk next to the open document, or (preferred, for unsaved
+/// edits) an open editor buffer. Local resolution needs the open document's URI
+/// to find the containing directory; `None` there falls back to std-only.
+fn module_source(
+    name: &str,
+    doc_uri: Option<&str>,
+    docs: &HashMap<String, String>,
+) -> Option<String> {
+    if let Some(src) = crate::linker::std_source(name) {
+        return Some(src.to_string());
+    }
+    let dir = doc_uri.and_then(uri_to_path).and_then(|p| p.parent().map(PathBuf::from))?;
+    let sibling = dir.join(format!("{name}.witchy"));
+    // An open buffer (possibly with unsaved edits) wins over the on-disk copy.
+    for (u, buf) in docs {
+        if uri_to_path(u).as_deref() == Some(sibling.as_path()) {
+            return Some(buf.clone());
+        }
+    }
+    std::fs::read_to_string(&sibling).ok()
 }
 
 /// Parse a `from X import a, b, c` line into `(module, [names])` (RFC-0042).
@@ -169,7 +199,8 @@ fn parse_from_import(line: &str) -> Option<(String, Vec<String>)> {
 /// function defined in this document or in an imported std module (qualified
 /// `module.name` or bare).
 fn hover_response(docs: &HashMap<String, String>, params: &Value) -> Value {
-    let Some(text) = params["textDocument"]["uri"].as_str().and_then(|u| docs.get(u)) else {
+    let uri = params["textDocument"]["uri"].as_str();
+    let Some(text) = uri.and_then(|u| docs.get(u)) else {
         return Value::Null;
     };
     let (line, character) = (
@@ -190,16 +221,16 @@ fn hover_response(docs: &HashMap<String, String>, params: &Value) -> Value {
             // treat `tail`'s final segment as a method and resolve it against
             // every visible module (`xs.push` → `list.push`).
             let name = tail.rsplit_once('.').map_or(tail, |(_, n)| n).to_string();
-            if let Some(src) = crate::linker::std_source(head) {
-                sources.push((src.to_string(), format!("{head}.")));
+            if let Some(src) = module_source(head, uri, docs) {
+                sources.push((src, format!("{head}.")));
             } else {
-                sources.extend(visible_module_sources(text));
+                sources.extend(visible_module_sources(text, uri, docs));
             }
             name
         }
         None => {
             sources.push((text.to_string(), String::new()));
-            sources.extend(visible_module_sources(text));
+            sources.extend(visible_module_sources(text, uri, docs));
             word.clone()
         }
     };
@@ -279,10 +310,15 @@ fn signature_doc(src: &str, name: &str) -> Option<(String, String)> {
 }
 
 /// Module sources visible to this document without qualification at a use site:
-/// the always-present prelude modules plus every `import`ed std module, each
-/// paired with its `module.` display prefix. Lets hover resolve a bare method
-/// (`xs.push` → `list.push`) or an imported function.
-fn visible_module_sources(text: &str) -> Vec<(String, String)> {
+/// the always-present prelude modules plus every `import`ed module (std or a
+/// sibling/open-buffer local module), each paired with its `module.` display
+/// prefix. Lets hover resolve a bare method (`xs.push` → `list.push`), an
+/// imported function, or a `from`-imported name.
+fn visible_module_sources(
+    text: &str,
+    uri: Option<&str>,
+    docs: &HashMap<String, String>,
+) -> Vec<(String, String)> {
     // Explicitly imported modules are searched BEFORE the ambient prelude, so a
     // bare name the document actually imports wins over an incidental
     // prelude-module namesake (`from string import repeat` beats `list.repeat`).
@@ -301,8 +337,8 @@ fn visible_module_sources(text: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for name in names {
         if seen.insert(name.clone()) {
-            if let Some(src) = crate::linker::std_source(&name) {
-                out.push((src.to_string(), format!("{name}.")));
+            if let Some(src) = module_source(&name, uri, docs) {
+                out.push((src, format!("{name}.")));
             }
         }
     }

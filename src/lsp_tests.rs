@@ -110,6 +110,54 @@
     }
 
     #[test]
+    fn local_disk_imports_feed_completion_and_hover() {
+        // BUG-169: a disk-backed sibling `helper.witchy` must contribute its
+        // `pub fn`s to completion and hover, exactly like a std module.
+        let dir = std::env::temp_dir().join(format!("witchy-lsp-169-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("helper.witchy"),
+            "// Greets someone warmly.\npub fn greet(name: String) -> String:\n    \"hi \" + name\n",
+        )
+        .unwrap();
+        let main = dir.join("main.witchy");
+        let main_src =
+            "import helper\n\nfn main(console: Console):\n    print(console, helper.greet(\"x\"))\n";
+        std::fs::write(&main, main_src).unwrap();
+        let uri = format!("file://{}", main.to_str().unwrap());
+
+        let mut docs = HashMap::new();
+        docs.insert(uri.clone(), main_src.to_string());
+
+        let items = completion_response(&docs, &json!({ "textDocument": { "uri": uri } }));
+        let labels: Vec<String> = items
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["label"].as_str().unwrap().to_string())
+            .collect();
+        assert!(
+            labels.contains(&"helper.greet".to_string()),
+            "local import fn offered: {labels:?}"
+        );
+
+        // Hover on `greet` in `helper.greet(...)` on line 3.
+        let col = main_src.lines().nth(3).unwrap().find("greet").unwrap() as u64;
+        let resp = hover_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 3, "character": col },
+            }),
+        );
+        let contents = resp["contents"]["value"].as_str().expect("hover text");
+        assert!(contents.contains("fn helper.greet("), "{contents}");
+        assert!(contents.contains("Greets someone warmly."), "{contents}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn from_import_offers_bare_names_and_hovers() {
         // BUG-388: `from X import Y` binds `Y` unqualified. Completion must offer
         // the bare name, and hover on a bare use must resolve it in module X.
