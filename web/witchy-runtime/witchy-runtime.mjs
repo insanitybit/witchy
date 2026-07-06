@@ -213,21 +213,29 @@ function stringFromCode(cp) {
 const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const B64URL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-function hexToBytes(s) {
+// STRICT hex decode, byte-for-byte with native `hex_decode`/`hex_bytes`
+// (crates/witchy-runtime/src/native.rs): an odd length or ANY non-hex character
+// (whitespace included) is a hard reject — returns `null`, never a silently
+// filtered/truncated buffer. The old lossy codec dropped non-hex chars and an
+// odd tail, so the browser accepted keys/signatures native REJECTS — a
+// parity/security divergence (BUG-276). Callers mirror native's None-handling:
+// crypto.ed25519_verify → false, everything else → error.
+export function hexToBytes(s) {
   const nib = (c) => {
     if (c >= 48 && c <= 57) return c - 48;
     if (c >= 97 && c <= 102) return c - 97 + 10;
     if (c >= 65 && c <= 70) return c - 65 + 10;
     return -1;
   };
-  const cs = [];
-  for (let i = 0; i < s.length; i++) {
-    const v = nib(s.charCodeAt(i));
-    if (v >= 0) cs.push(v);
+  if (s.length % 2 !== 0) return null;
+  const out = new Uint8Array(s.length / 2);
+  for (let i = 0; i < s.length; i += 2) {
+    const hi = nib(s.charCodeAt(i));
+    const lo = nib(s.charCodeAt(i + 1));
+    if (hi < 0 || lo < 0) return null;
+    out[i / 2] = hi * 16 + lo;
   }
-  const out = [];
-  for (let i = 0; i + 1 < cs.length; i += 2) out.push(cs[i] * 16 + cs[i + 1]);
-  return new Uint8Array(out);
+  return out;
 }
 
 // encoding(op, input) -> string. op: 0 hex_encode, 1 hex_decode, 2 base64_encode,
@@ -237,22 +245,13 @@ function encodingOp(op, input /* Uint8Array */) {
     case 0: { // hex_encode of the UTF-8 bytes
       return toHex(input);
     }
-    case 1: { // hex_decode (lossy UTF-8); whitespace skipped, odd/non-hex tail ignored
-      const text = decodeLossy(input);
-      const digits = [];
-      for (const ch of text) {
-        const c = ch.charCodeAt(0);
-        if (c === 9 || c === 10 || c === 13 || c === 32 || c === 11 || c === 12) continue;
-        digits.push(c);
-      }
-      const bytes = [];
-      for (let i = 0; i + 1 < digits.length; i += 2) {
-        const hi = parseInt(String.fromCharCode(digits[i]), 16);
-        const lo = parseInt(String.fromCharCode(digits[i + 1]), 16);
-        if (Number.isNaN(hi) || Number.isNaN(lo)) break;
-        bytes.push(hi * 16 + lo);
-      }
-      return decodeLossy(new Uint8Array(bytes));
+    case 1: { // hex_decode: lossy UTF-8 of the DECODED bytes. The hex alphabet is
+      // decoded STRICTLY — a non-hex char or odd length is a hard error, matching
+      // native `encoding::hex_decode_lossy` (BUG-276), never a silent whitespace-
+      // skip / odd-tail drop.
+      const bytes = hexToBytes(decodeLossy(input));
+      if (bytes === null) throw new Error("encoding.hex_decode: input is not valid hex");
+      return decodeLossy(bytes);
     }
     case 2: { // standard base64 (=-padded) of the UTF-8 bytes
       let out = "";
@@ -284,8 +283,10 @@ function encodingOp(op, input /* Uint8Array */) {
       }
       return decodeLossy(new Uint8Array(bytes));
     }
-    case 4: { // base64url (no padding) of the bytes given as a HEX string
+    case 4: { // base64url (no padding) of the bytes given as a HEX string; the hex
+      // is decoded STRICTLY, matching native `encoding::hex_to_base64url` (BUG-276).
       const bytes = hexToBytes(decodeLossy(input));
+      if (bytes === null) throw new Error("encoding.hex_to_base64url: input is not valid hex");
       let out = "";
       for (let i = 0; i < bytes.length; i += 3) {
         const b0 = bytes[i], b1 = bytes[i + 1] || 0, b2 = bytes[i + 2] || 0;
@@ -554,6 +555,9 @@ export async function instantiate(wasmBytes, opts = {}) {
       // The key is a HEX string (so binary keys are representable), the message
       // raw bytes — matching src/native.rs::crypto::hmac_sha256.
       const key = hexToBytes(readWstrText(keyPtr));
+      // Malformed hex key is a hard error, matching native crypto::hmac_sha256
+      // (`hex_decode(...).ok_or_else(...)`) — never a silently mangled key (BUG-276).
+      if (key === null) throw new Error("crypto.hmac_sha256: key is not valid hex");
       writeAt(utf8.encode(toHex(crypto.hmacSha256(key, readWstr(msgPtr)))), outPtr);
     },
     "crypto.rune_hash"(pathsPtr, contentsPtr, outPtr) {
@@ -563,6 +567,9 @@ export async function instantiate(wasmBytes, opts = {}) {
     "crypto.ed25519_verify"(pkPtr, msgPtr, sigPtr) {
       const pk = hexToBytes(readWstrText(pkPtr));
       const sig = hexToBytes(readWstrText(sigPtr));
+      // Malformed hex → verification fails (false), matching native
+      // ed25519_verify (`hex_decode(...)?`...`.unwrap_or(false)`) (BUG-276).
+      if (pk === null || sig === null) return 0;
       return crypto.ed25519Verify(pk, readWstr(msgPtr), sig) ? 1 : 0;
     },
     "crypto.ecdsa_p256_verify"(_pk, _msg, _sig) {
