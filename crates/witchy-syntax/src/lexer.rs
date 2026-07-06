@@ -236,9 +236,10 @@ struct Lexer {
     line: u32,
     col: u32,
     /// Own-line comments (only whitespace precedes them on their line), captured
-    /// as `(line, text)` so the formatter can reproduce them. Trailing comments
-    /// on a code line are not captured.
-    comments: Vec<(u32, String)>,
+    /// as `(line, col, text)` so the formatter can reproduce them and tell a
+    /// body comment (indented) from a next-item doc comment (at the item's own
+    /// column). Trailing comments on a code line are not captured.
+    comments: Vec<(u32, u32, String)>,
 }
 
 impl Lexer {
@@ -248,7 +249,7 @@ impl Lexer {
             pos: 0,
             line: 1,
             col: 1,
-            comments: Vec::new(),
+            comments: Vec::new(), // (line, col, text)
         }
     }
 
@@ -357,11 +358,11 @@ impl Lexer {
         }
     }
 
-    /// Record an own-line comment spanning `start..self.pos` at `line`.
-    fn record_comment(&mut self, own_line: bool, line: u32, start: usize) {
+    /// Record an own-line comment spanning `start..self.pos` at `line`, `col`.
+    fn record_comment(&mut self, own_line: bool, line: u32, col: u32, start: usize) {
         if own_line {
             let text: String = self.chars[start..self.pos].iter().collect();
-            self.comments.push((line, text.trim_end().to_string()));
+            self.comments.push((line, col, text.trim_end().to_string()));
         }
     }
 
@@ -373,21 +374,21 @@ impl Lexer {
                 }
                 Some('/') if self.peek2() == Some('/') => {
                     let own_line = self.at_line_start();
-                    let (line, start) = (self.line, self.pos);
+                    let (line, col, start) = (self.line, self.col, self.pos);
                     while let Some(c) = self.peek() {
                         if c == '\n' {
                             break;
                         }
                         self.bump();
                     }
-                    self.record_comment(own_line, line, start);
+                    self.record_comment(own_line, line, col, start);
                 }
                 // Block comments `/* ... */`, which nest (so a block containing a
                 // block comment can itself be commented out). An unterminated
                 // block comment runs to end of input.
                 Some('/') if self.peek2() == Some('*') => {
                     let own_line = self.at_line_start();
-                    let (line, start) = (self.line, self.pos);
+                    let (line, col, start) = (self.line, self.col, self.pos);
                     self.bump();
                     self.bump();
                     let mut depth = 1u32;
@@ -409,7 +410,7 @@ impl Lexer {
                             (None, _) => break,
                         }
                     }
-                    self.record_comment(own_line, line, start);
+                    self.record_comment(own_line, line, col, start);
                 }
                 _ => return,
             }
@@ -930,10 +931,12 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, LexError> {
     Lexer::new(src).tokenize()
 }
 
-/// The own-line comments in `src`, as `(line, text)` in source order — used by
-/// the formatter to reproduce comments. Trailing comments (sharing a line with
-/// code) are not captured. Returns what was lexed even if a later error occurs.
-pub fn own_line_comments(src: &str) -> Vec<(u32, String)> {
+/// The own-line comments in `src`, as `(line, col, text)` in source order — used
+/// by the formatter to reproduce comments and to tell a body comment (indented)
+/// from a next-item comment (at the item's column). Trailing comments (sharing a
+/// line with code) are not captured. Returns what was lexed even if a later error
+/// occurs.
+pub fn own_line_comments(src: &str) -> Vec<(u32, u32, String)> {
     let mut lexer = Lexer::new(src);
     let _ = lexer.tokenize();
     lexer.comments

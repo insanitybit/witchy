@@ -11,9 +11,9 @@
         assert_eq!(
             cs,
             vec![
-                (1, "// header".to_string()),
-                (3, "// inner".to_string()),
-                (5, "/* block */".to_string()),
+                (1, 1, "// header".to_string()),
+                (3, 5, "// inner".to_string()),
+                (5, 1, "/* block */".to_string()),
             ]
         );
     }
