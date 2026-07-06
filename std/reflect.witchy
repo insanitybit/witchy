@@ -2,8 +2,8 @@
 // `reflect(x)` returns a `Mirror` describing `x`: a record's named fields, a sum
 // type's variant, a list's elements, or a scalar. Code that would otherwise need a
 // per-type `derive` (JSON encoding, debug rendering, structural diffing) is written
-// once against `Mirror`. Scalars and the built-in containers (`List`, `Option`,
-// `Result`, `Set`, tuples, `Dict`) are reflectable out of the box; a user `type`
+// once against `Mirror`. Scalars, `Ordering`, and the built-in containers (`List`,
+// `Option`, `Result`, `Set`, tuples, `Dict`) are reflectable out of the box; a user `type`
 // becomes reflectable when you add `derive(Reflect)` to it (which needs
 // `import reflect`), much like Zig's `@typeInfo` but opt-in per type — so
 // `reflect(x)` / `json.stringify(x)` work without a per-type macro once the type
@@ -17,6 +17,7 @@ import list
 import string
 import dict
 import duration
+import cmp
 import set
 
 // The reflected shape of a value.
@@ -62,6 +63,13 @@ impl Reflect for String:
 impl Reflect for Duration:
     fn reflect(self) -> Mirror:
         MInt(duration.to_milliseconds(self))
+
+impl Reflect for Ordering:
+    fn reflect(self) -> Mirror:
+        match self:
+            Less -> MVariant("Ordering", "Less", [])
+            Equal -> MVariant("Ordering", "Equal", [])
+            Greater -> MVariant("Ordering", "Greater", [])
 
 // Reflect a single value through a free function. The generated `reflect` calls this
 // rather than the trait method directly, because trait dispatch resolves on params

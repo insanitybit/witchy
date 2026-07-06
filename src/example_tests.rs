@@ -885,6 +885,22 @@
         );
     }
 
+    /// (BUG-544) `Ordering` is ordinary std data: it renders through `Show`,
+    /// reflects as a nullary variant, and therefore serializes through JSON
+    /// reflection, including when it appears in a derived-reflect record.
+    #[test]
+    fn ordering_is_showable_and_reflectable_on_both_backends() {
+        let src = "import cmp\nimport show\nimport reflect\nimport json\n\ntype SortStep derive(Reflect):\n    ordering: Ordering\n\nfn main(console: Console):\n    let o: Ordering = cmp.reverse(Greater)\n    show.say(console, o)\n    print(console, reflect.debug(o))\n    print(console, json.stringify(o))\n    print(console, json.stringify(SortStep(o)))\n";
+        let expected = [
+            "Less",
+            "Less",
+            "{\"$variant\":\"Less\",\"$values\":[]}",
+            "{\"ordering\":{\"$variant\":\"Less\",\"$values\":[]}}",
+        ];
+        assert_eq!(link_run(src), expected, "interp: Ordering protocols");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: Ordering protocols");
+    }
+
     /// (BUG-240, parity) `math.abs(Int.MIN)` has no positive `Int`, so both backends
     /// must ABORT rather than silently wrap back to the negative `Int.MIN`. Ordinary
     /// magnitudes still agree. (Was a stable wrong answer: `-Int.MIN == Int.MIN`.)
