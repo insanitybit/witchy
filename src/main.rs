@@ -301,6 +301,20 @@ fn main() -> wasmtime::Result<()> {
                 std::process::exit(1);
             }
         };
+        // BUG-177: honor `mode opt` like `check`/`run`/`emit` — a copy-cliff or a
+        // missing ownership convention is an error, not a silently-measured stat.
+        match link_file(&path) {
+            Ok((linked, stem)) => {
+                if let Err(e) = enforce_performance_modes(&linked, &stem) {
+                    eprintln!("witchy stats: {e}");
+                    std::process::exit(1);
+                }
+            }
+            Err(e) => {
+                eprintln!("witchy stats: {e}");
+                std::process::exit(1);
+            }
+        }
         match witchy::stats::compute(&src) {
             Ok(s) => {
                 println!("heap_bytes {}", s.heap_bytes);
@@ -1543,48 +1557,136 @@ fn execute_file_exit(
 /// A failed in-language test: its (qualified) name and the abort message.
 type TestFailure = (String, String);
 
-/// Discover and run the tests in a source file: every ZERO-parameter function
-/// named `test_*`, each invoked through a synthesized `main` in a fresh
-/// interpreter. A test passes by returning and fails by aborting (which
-/// `std/testing`'s assertions do, with a message). Tests take no capabilities,
-/// so a suite provably has no effects. Returns the failures as (name, message).
-fn run_tests_in_file(path: &str) -> Result<(Vec<String>, Vec<TestFailure>), String> {
-    use std::path::Path;
-    let (linked, _stem) = link_file(path)?;
-    typeck::check(&linked).map_err(|e| e.to_string())?;
-    // Post-link names are module-qualified (`suite.test_x`); match on the bare
-    // name, call the qualified one.
-    let tests: Vec<String> = linked
+/// Rewrite the placeholder call `witchy_test_target()` in a synthesized test-driver
+/// expression to the real (linker-qualified) test name — so the parser never has to
+/// re-read `mod.fn` as a method call. The placeholder may sit anywhere in the driver
+/// body: bare (`witchy_test_target()`), or as an argument (`task.run(
+/// witchy_test_target())`, the async driver), so this recurses through calls,
+/// method calls, and unary ops.
+fn patch_test_target(expr: &mut ast::Expr, name: &str) {
+    match expr {
+        ast::Expr::Call { name: n, args } => {
+            if n == "witchy_test_target" {
+                *n = name.to_string();
+            } else {
+                for a in args {
+                    patch_test_target(a, name);
+                }
+            }
+        }
+        ast::Expr::MethodCall { receiver, args, .. } => {
+            patch_test_target(receiver, name);
+            for a in args {
+                patch_test_target(a, name);
+            }
+        }
+        ast::Expr::Unary { expr, .. } => patch_test_target(expr, name),
+        _ => {}
+    }
+}
+
+/// The bare names of every zero-parameter `test_*` function in the UNLOWERED source,
+/// split into `(async, gen)` sets. Async lowering (`generators` too) runs during
+/// `link`, erasing `is_async`/`is_gen` and rewriting the bodies, so the linked module
+/// can no longer tell an async or generator test from a plain one — this recovers
+/// that shape from the raw parse. A parse/read failure yields empty sets (the linked
+/// module still fails to compile and is reported separately).
+fn raw_test_shapes(path: &str) -> (std::collections::HashSet<String>, std::collections::HashSet<String>) {
+    let mut async_tests = std::collections::HashSet::new();
+    let mut gen_tests = std::collections::HashSet::new();
+    if let Ok(src) = std::fs::read_to_string(path) {
+        if let Ok(module) = parser::parse_module(&src) {
+            for it in &module.items {
+                if let ast::Item::Function(f) = it {
+                    if f.name.starts_with("test_") && f.params.is_empty() {
+                        if f.is_async {
+                            async_tests.insert(f.name.clone());
+                        } else if f.is_gen {
+                            gen_tests.insert(f.name.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    (async_tests, gen_tests)
+}
+
+/// Discover and run the tests in an already-linked module (`stem` = the entry file's
+/// stem). Every ZERO-parameter function named `test_*` that the ENTRY file itself
+/// declares is invoked through a synthesized `main` in a fresh interpreter. A test
+/// passes by returning and fails by aborting (which `std/testing`'s assertions do,
+/// with a message). Tests take no capabilities, so a suite provably has no effects.
+/// `async_tests`/`gen_tests` are the bare names of the entry file's async/gen tests
+/// (from `raw_test_shapes`, since lowering erased the AST flags). Returns
+/// `(passed, failures)` where each failure is `(name, message)`.
+fn run_tests_in_module(
+    linked: &ast::Module,
+    stem: &str,
+    root: &std::path::Path,
+    async_tests: &std::collections::HashSet<String>,
+    gen_tests: &std::collections::HashSet<String>,
+) -> Result<(Vec<String>, Vec<TestFailure>), String> {
+    typeck::check(linked).map_err(|e| e.to_string())?;
+    // BUG-177: a test run honors `mode opt` like `check`/`run` — a copy-cliff or a
+    // missing ownership convention fails the run, it is not silently ignored.
+    enforce_performance_modes(linked, stem)?;
+    // Post-link names are module-qualified (`suite.test_x`); match on the bare name.
+    // BUG-185: run only the ENTRY file's OWN tests. Linking pulls an imported
+    // module's `test_*` functions into `linked` too (as `othermod.test_x`); running
+    // them here would DOUBLE-count them — they run again when that module's own file
+    // is swept. `is_entry_function` keeps just `main` + the `{stem}.`-prefixed items.
+    let tests: Vec<(String, bool, bool)> = linked
         .items
         .iter()
         .filter_map(|it| match it {
             ast::Item::Function(f)
-                if f.name.rsplit('.').next().unwrap_or(&f.name).starts_with("test_")
+                if is_entry_function(&f.name, stem)
+                    && f.name.rsplit('.').next().unwrap_or(&f.name).starts_with("test_")
                     && f.params.is_empty() =>
             {
-                Some(f.name.clone())
+                let bare = f.name.rsplit('.').next().unwrap_or(&f.name);
+                Some((f.name.clone(), async_tests.contains(bare), gen_tests.contains(bare)))
             }
             _ => None,
         })
         .collect();
-    let root = Path::new(path).parent().unwrap_or(Path::new("."));
     let mut passed = Vec::new();
     let mut failed = Vec::new();
-    for test in tests {
-        // Synthesize `fn main(): <test>()` (replacing any real main) and run.
-        // The test name is already linker-qualified (`suite.test_x`), which the
-        // parser would read as a method call — so parse a placeholder and patch
-        // the call name in the AST.
+    for (test, is_async, is_gen) in tests {
+        // BUG-184: an async/gen test's body does NOT run when the function is merely
+        // CALLED — calling an `async fn` yields a `Task` and a `gen fn` yields an
+        // iterator, both discarded, so a `fail_with` inside never fires and the test
+        // FALSELY passes. An `async fn test_*()` is already lowered (when the file was
+        // linked) to a `Task(Nil)`-returning function, so DRIVE it to completion with
+        // `task.run` — which surfaces the abort. A `gen fn` yields a sequence rather
+        // than running to completion, so it cannot be a test; report it as a failure
+        // rather than a silent pass.
+        if is_gen {
+            failed.push((
+                test,
+                "a `gen fn` cannot be run as a test — it yields a sequence instead of running to completion".to_string(),
+            ));
+            continue;
+        }
+        // Synthesize a `main` (replacing any real one) that runs the test, and run it.
+        // The test name is linker-qualified (`suite.test_x`), which the parser would
+        // read as a method call — so parse a placeholder and patch the call in the AST.
+        // `task.run` is in scope: async lowering imported `task` into a file with any
+        // `async fn`, which is exactly the case an async test needs it.
         let mut m = linked.clone();
         m.items
             .retain(|it| !matches!(it, ast::Item::Function(f) if f.name == "main"));
-        let mut driver = parser::parse_module("fn main():\n    witchy_test_target()\n")
-            .map_err(|e| e.to_string())?;
+        let driver_src = if is_async {
+            "fn main():\n    task.run(witchy_test_target())\n"
+        } else {
+            "fn main():\n    witchy_test_target()\n"
+        };
+        let mut driver = parser::parse_module(driver_src).map_err(|e| e.to_string())?;
         for it in &mut driver.items {
             if let ast::Item::Function(f) = it {
-                if let Some(ast::Stmt::Expr(ast::Expr::Call { name, .. })) = f.body.stmts.first_mut()
-                {
-                    *name = test.clone();
+                if let Some(ast::Stmt::Expr(e)) = f.body.stmts.first_mut() {
+                    patch_test_target(e, &test);
                 }
             }
         }
@@ -1629,17 +1731,36 @@ fn run_tests(path: &str) -> Result<bool, String> {
     let mut total_pass = 0usize;
     let mut total_fail = 0usize;
     for file in &files {
-        let (passed, failed) = match run_tests_in_file(file) {
-            Ok(r) => r,
-            // In a directory sweep, a file that can't link standalone — e.g. a
-            // module of a multi-rune project that imports a sibling rune via a
-            // path dependency — is skipped, not fatal. An explicit single file
-            // still surfaces the error.
+        // Distinguish a LINK failure from a post-link (compile) failure (BUG-120).
+        // In a directory sweep, a file that can't LINK standalone — a module of a
+        // multi-rune project that imports a sibling rune via a path dependency, which
+        // resolves no local `<import>.witchy` — is skipped, not fatal. But a file
+        // that links yet fails to TYPE-CHECK (or violates `mode opt`) is a genuinely
+        // BROKEN test file: it must FAIL the run, never be silently skipped as
+        // "ok. 0 passed". An explicit single file surfaces even a link error.
+        let (linked, stem) = match link_file(file) {
+            Ok(v) => v,
             Err(e) if meta.is_dir() => {
                 eprintln!("  skipped {file}: {e}");
                 continue;
             }
             Err(e) => return Err(e),
+        };
+        let root = std::path::Path::new(file)
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .to_path_buf();
+        let (async_tests, gen_tests) = raw_test_shapes(file);
+        let (passed, failed) = match run_tests_in_module(&linked, &stem, &root, &async_tests, &gen_tests) {
+            Ok(r) => r,
+            Err(e) => {
+                // Linked OK but broken (a type error or a `mode opt` violation): count
+                // it as a failure so the run exits non-zero (BUG-120).
+                println!("running test(s) in {file}");
+                println!("test {file} ... FAILED to compile: {e}");
+                total_fail += 1;
+                continue;
+            }
         };
         if passed.is_empty() && failed.is_empty() {
             continue;
