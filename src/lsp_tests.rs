@@ -1,7 +1,7 @@
     use super::*;
 
     fn diags(text: &str) -> Vec<Value> {
-        compute_diagnostics("file:///tmp/main.witchy", text)
+        compute_diagnostics("file:///tmp/main.witchy", text, &HashMap::new())
     }
 
     #[test]
@@ -63,6 +63,175 @@
         );
         let contents = resp["contents"]["value"].as_str().expect("hover text");
         assert!(contents.contains("repeat"), "{contents}");
+        // BUG-161: the module qualifier must go BEFORE the fn name, not jammed in
+        // front of `pub fn` — `string.pub fn repeat(...)` is malformed.
+        assert!(
+            !contents.contains("string.pub fn"),
+            "malformed signature: {contents}"
+        );
+        assert!(
+            contents.contains("fn string.repeat("),
+            "expected qualified signature, got: {contents}"
+        );
+    }
+
+    #[test]
+    fn qualify_signature_inserts_module_before_name() {
+        assert_eq!(
+            qualify_signature("pub fn repeat(s: String, n: Int) -> String", "string."),
+            "pub fn string.repeat(s: String, n: Int) -> String"
+        );
+        assert_eq!(
+            qualify_signature("fn tcp(host: String, port: Int) -> NetPolicy", "Net."),
+            "fn Net.tcp(host: String, port: Int) -> NetPolicy"
+        );
+        // A bare (document-local) signature is left untouched.
+        assert_eq!(
+            qualify_signature("fn double(n: Int) -> Int", ""),
+            "fn double(n: Int) -> Int"
+        );
+    }
+
+    #[test]
+    fn word_at_is_utf8_boundary_safe() {
+        // A line with a multibyte char before the identifier. LSP `character` is a
+        // code-unit (char) offset; using it as a BYTE index slices off a UTF-8
+        // boundary (panic) or returns the wrong word. Here `π` precedes `repeat`;
+        // the char offset of `repeat` differs from its byte offset.
+        let line = "    print(console, \"π\" + string.repeat(\"ab\", 2))";
+        let text = format!("fn main(console: Console):\n{line}\n");
+        // char offset of the `r` in `repeat` (differs from its byte offset).
+        let repeat_char_idx = "    print(console, \"π\" + string.".chars().count();
+        let w = word_at(&text, 1, repeat_char_idx).expect("word found");
+        assert_eq!(w, "string.repeat", "got {w:?}");
+        // Hovering right on the multibyte char must not panic.
+        let pi_idx = "    print(console, \"".chars().count();
+        let _ = word_at(&text, 1, pi_idx); // must not panic
+    }
+
+    #[test]
+    fn local_disk_imports_feed_completion_and_hover() {
+        // BUG-169: a disk-backed sibling `helper.witchy` must contribute its
+        // `pub fn`s to completion and hover, exactly like a std module.
+        let dir = std::env::temp_dir().join(format!("witchy-lsp-169-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("helper.witchy"),
+            "// Greets someone warmly.\npub fn greet(name: String) -> String:\n    \"hi \" + name\n",
+        )
+        .unwrap();
+        let main = dir.join("main.witchy");
+        let main_src =
+            "import helper\n\nfn main(console: Console):\n    print(console, helper.greet(\"x\"))\n";
+        std::fs::write(&main, main_src).unwrap();
+        let uri = format!("file://{}", main.to_str().unwrap());
+
+        let mut docs = HashMap::new();
+        docs.insert(uri.clone(), main_src.to_string());
+
+        let items = completion_response(&docs, &json!({ "textDocument": { "uri": uri } }));
+        let labels: Vec<String> = items
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["label"].as_str().unwrap().to_string())
+            .collect();
+        assert!(
+            labels.contains(&"helper.greet".to_string()),
+            "local import fn offered: {labels:?}"
+        );
+
+        // Hover on `greet` in `helper.greet(...)` on line 3.
+        let col = main_src.lines().nth(3).unwrap().find("greet").unwrap() as u64;
+        let resp = hover_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 3, "character": col },
+            }),
+        );
+        let contents = resp["contents"]["value"].as_str().expect("hover text");
+        assert!(contents.contains("fn helper.greet("), "{contents}");
+        assert!(contents.contains("Greets someone warmly."), "{contents}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn from_import_offers_bare_names_and_hovers() {
+        // BUG-388: `from X import Y` binds `Y` unqualified. Completion must offer
+        // the bare name, and hover on a bare use must resolve it in module X.
+        let mut docs = HashMap::new();
+        let src = "from string import repeat\n\nfn main(console: Console):\n    print(console, repeat(\"ab\", 2))\n";
+        docs.insert("file:///t.witchy".to_string(), src.to_string());
+        let items = completion_response(
+            &docs,
+            &json!({ "textDocument": { "uri": "file:///t.witchy" } }),
+        );
+        let labels: Vec<String> = items
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["label"].as_str().unwrap().to_string())
+            .collect();
+        assert!(
+            labels.contains(&"repeat".to_string()),
+            "bare from-import offered: {labels:?}"
+        );
+
+        // Hover on the bare `repeat` on line 3.
+        let col = src.lines().nth(3).unwrap().find("repeat").unwrap() as u64;
+        let resp = hover_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": "file:///t.witchy" },
+                "position": { "line": 3, "character": col },
+            }),
+        );
+        assert!(
+            resp["contents"]["value"]
+                .as_str()
+                .is_some_and(|c| c.contains("fn string.repeat(")),
+            "{resp}"
+        );
+    }
+
+    #[test]
+    fn hover_resolves_receiver_method_calls() {
+        // BUG-174: `xs.push(1)` — word_at reads `xs.push`; treating `xs` as a
+        // module used to return null. The method must resolve against the prelude
+        // data modules (`list.push`).
+        let mut docs = HashMap::new();
+        let src = "fn main(console: Console):\n    var xs = [1]\n    xs.push(2)\n";
+        docs.insert("file:///t.witchy".to_string(), src.to_string());
+        let col = src.lines().nth(2).unwrap().find("push").unwrap() as u64;
+        let resp = hover_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": "file:///t.witchy" },
+                "position": { "line": 2, "character": col },
+            }),
+        );
+        let contents = resp["contents"]["value"].as_str().expect("hover text");
+        assert!(contents.contains("fn list.push("), "{contents}");
+
+        // `xs.length` (no call) must resolve too.
+        let src2 = "fn main(console: Console):\n    let xs = [1]\n    let n = xs.length\n";
+        docs.insert("file:///t2.witchy".to_string(), src2.to_string());
+        let col2 = src2.lines().nth(2).unwrap().find("length").unwrap() as u64;
+        let resp2 = hover_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": "file:///t2.witchy" },
+                "position": { "line": 2, "character": col2 },
+            }),
+        );
+        assert!(
+            resp2["contents"]["value"]
+                .as_str()
+                .is_some_and(|c| c.contains("fn list.length(")),
+            "{resp2}"
+        );
     }
 
     #[test]
@@ -111,6 +280,81 @@ fn main(console: Console):
             "{:?}",
             d[0]["message"]
         );
+    }
+
+    #[test]
+    fn missing_on_disk_import_is_reported_gracefully() {
+        // BUG-168: `import helper` with no helper.witchy anywhere must yield a
+        // clear "cannot resolve import" at the import line, not a line-0
+        // "link error: module main imports unknown module helper".
+        let dir = std::env::temp_dir().join(format!("witchy-lsp-168-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main.witchy");
+        let src = "import helper\n\nfn main(console: Console):\n    print(console, \"x\")\n";
+        let uri = format!("file://{}", main.to_str().unwrap());
+        let mut docs = HashMap::new();
+        docs.insert(uri.clone(), src.to_string());
+        let d = compute_diagnostics(&uri, src, &docs);
+        assert_eq!(d.len(), 1, "{d:?}");
+        let msg = d[0]["message"].as_str().unwrap();
+        assert!(msg.contains("cannot resolve import `helper`"), "{msg}");
+        assert_eq!(d[0]["range"]["start"]["line"], json!(0), "{d:?}");
+        assert!(!msg.contains("link error"), "{msg}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn missing_on_disk_import_resolves_from_open_buffer() {
+        // BUG-168: an unsaved sibling buffer (not yet on disk) still resolves.
+        let dir = std::env::temp_dir().join(format!("witchy-lsp-168b-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main.witchy");
+        let helper = dir.join("helper.witchy");
+        let src = "import helper\n\nfn main(console: Console):\n    print(console, helper.greet(\"x\"))\n";
+        let main_uri = format!("file://{}", main.to_str().unwrap());
+        let helper_uri = format!("file://{}", helper.to_str().unwrap());
+        let mut docs = HashMap::new();
+        docs.insert(main_uri.clone(), src.to_string());
+        docs.insert(
+            helper_uri,
+            "pub fn greet(name: String) -> String:\n    \"hi \" + name\n".to_string(),
+        );
+        // helper.witchy is NOT written to disk.
+        let d = compute_diagnostics(&main_uri, src, &docs);
+        assert_eq!(d, Vec::<Value>::new(), "{d:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn broken_sibling_import_surfaces_a_diagnostic() {
+        // BUG-137: a neighbour that fails to parse must not be silently skipped.
+        let dir = std::env::temp_dir().join(format!("witchy-lsp-137-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("helper.witchy"), "pub fn f( -> :\n").unwrap();
+        let main = dir.join("main.witchy");
+        let src = "import helper\n\nfn main(console: Console):\n    print(console, \"x\")\n";
+        let uri = format!("file://{}", main.to_str().unwrap());
+        let mut docs = HashMap::new();
+        docs.insert(uri.clone(), src.to_string());
+        let d = compute_diagnostics(&uri, src, &docs);
+        assert_eq!(d.len(), 1, "{d:?}");
+        let msg = d[0]["message"].as_str().unwrap();
+        assert!(msg.contains("imported module `helper` failed to parse"), "{msg}");
+        assert_eq!(d[0]["range"]["start"]["line"], json!(0), "{d:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn link_error_maps_to_real_location() {
+        // BUG-162: a link error carrying `line N` underlines that line; one that
+        // blames an imported module underlines its import; otherwise line 0.
+        let text = "import helper\nimport other\nfn main(console: Console):\n    print(console, \"x\")\n";
+        assert_eq!(link_error_line("boom at line 3: bad thing", text), 2);
+        assert_eq!(
+            link_error_line("module `main` imports unknown module `other`", text),
+            1
+        );
+        assert_eq!(link_error_line("something went wrong", text), 0);
     }
 
     #[test]

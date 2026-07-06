@@ -74,6 +74,12 @@ const BUILTINS: &[&str] = &[
     "recv_all", "recv_bytes", "close", "send", "fail",
 ];
 
+/// The modules the linker always bundles (importable without an `import` line):
+/// their functions are offered and hover-resolvable everywhere, and a bare
+/// method call resolves against them (`xs.push` → `list.push`).
+const PRELUDE_MODULES: &[&str] =
+    &["list", "string", "dict", "math", "option", "result", "policy"];
+
 /// The prelude's module-qualified core operations, completed without an
 /// import line (the linker always bundles these modules).
 const PRELUDE_FNS: &[&str] = &[
@@ -91,7 +97,8 @@ const PRELUDE_FNS: &[&str] = &[
 /// Completion items: keywords, builtins, this document's functions, and the
 /// `pub fn`s of every imported module (offered as `module.name`).
 fn completion_response(docs: &HashMap<String, String>, params: &Value) -> Value {
-    let Some(text) = params["textDocument"]["uri"].as_str().and_then(|u| docs.get(u)) else {
+    let uri = params["textDocument"]["uri"].as_str();
+    let Some(text) = uri.and_then(|u| docs.get(u)) else {
         return json!([]);
     };
     let mut items: Vec<Value> = Vec::new();
@@ -112,23 +119,81 @@ fn completion_response(docs: &HashMap<String, String>, params: &Value) -> Value 
             }
         }
         if let Some(module) = t.strip_prefix("import ") {
-            let module = module.trim();
-            items.push(json!({ "label": module, "kind": 9 })); // Module
-            if let Some(src) = crate::linker::std_source(module) {
-                for ml in src.lines() {
-                    if let Some(rest) = ml.trim_start().strip_prefix("pub fn ") {
-                        if let Some(name) = rest.split('(').next() {
-                            items.push(json!({
-                                "label": format!("{module}.{}", name.trim()),
-                                "kind": 3,
-                            }));
-                        }
-                    }
+            push_module_completions(&mut items, module.trim(), uri, docs);
+        }
+        // `from X import a, b` (RFC-0042) binds `a`/`b` UNQUALIFIED and implies
+        // `import X`, so offer the bare names plus the module's qualified fns.
+        if let Some((module, names)) = parse_from_import(t) {
+            for name in names {
+                items.push(json!({ "label": name, "kind": 3 }));
+            }
+            push_module_completions(&mut items, &module, uri, docs);
+        }
+    }
+    json!(items)
+}
+
+/// The `module` label plus every `module.fn` of a resolvable module — the
+/// completions an `import module` (or the module half of a `from`-import) offers.
+/// The module resolves as std, a sibling `<module>.witchy`, or an open buffer.
+fn push_module_completions(
+    items: &mut Vec<Value>,
+    module: &str,
+    uri: Option<&str>,
+    docs: &HashMap<String, String>,
+) {
+    items.push(json!({ "label": module, "kind": 9 })); // Module
+    if let Some(src) = module_source(module, uri, docs) {
+        for ml in src.lines() {
+            if let Some(rest) = ml.trim_start().strip_prefix("pub fn ") {
+                if let Some(name) = rest.split('(').next() {
+                    items.push(json!({
+                        "label": format!("{module}.{}", name.trim()),
+                        "kind": 3,
+                    }));
                 }
             }
         }
     }
-    json!(items)
+}
+
+/// Resolve an imported module NAME to its source: a bundled std module, a sibling
+/// `<name>.witchy` on disk next to the open document, or (preferred, for unsaved
+/// edits) an open editor buffer. Local resolution needs the open document's URI
+/// to find the containing directory; `None` there falls back to std-only.
+fn module_source(
+    name: &str,
+    doc_uri: Option<&str>,
+    docs: &HashMap<String, String>,
+) -> Option<String> {
+    if let Some(src) = crate::linker::std_source(name) {
+        return Some(src.to_string());
+    }
+    let dir = doc_uri.and_then(uri_to_path).and_then(|p| p.parent().map(PathBuf::from))?;
+    let sibling = dir.join(format!("{name}.witchy"));
+    // An open buffer (possibly with unsaved edits) wins over the on-disk copy.
+    open_buffer(&sibling, docs).or_else(|| std::fs::read_to_string(&sibling).ok())
+}
+
+/// The contents of an open editor buffer whose URI maps to `path` — an unsaved
+/// sibling module the client is currently editing.
+fn open_buffer(path: &std::path::Path, docs: &HashMap<String, String>) -> Option<String> {
+    docs.iter()
+        .find(|(u, _)| uri_to_path(u).as_deref() == Some(path))
+        .map(|(_, buf)| buf.clone())
+}
+
+/// Parse a `from X import a, b, c` line into `(module, [names])` (RFC-0042).
+/// Returns `None` for any other line.
+fn parse_from_import(line: &str) -> Option<(String, Vec<String>)> {
+    let rest = line.trim_start().strip_prefix("from ")?;
+    let (module, names) = rest.split_once(" import ")?;
+    let names = names
+        .split(',')
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .collect();
+    Some((module.trim().to_string(), names))
 }
 
 // --- hover ------------------------------------------------------------------
@@ -137,7 +202,8 @@ fn completion_response(docs: &HashMap<String, String>, params: &Value) -> Value 
 /// function defined in this document or in an imported std module (qualified
 /// `module.name` or bare).
 fn hover_response(docs: &HashMap<String, String>, params: &Value) -> Value {
-    let Some(text) = params["textDocument"]["uri"].as_str().and_then(|u| docs.get(u)) else {
+    let uri = params["textDocument"]["uri"].as_str();
+    let Some(text) = uri.and_then(|u| docs.get(u)) else {
         return Value::Null;
     };
     let (line, character) = (
@@ -147,55 +213,77 @@ fn hover_response(docs: &HashMap<String, String>, params: &Value) -> Value {
     let Some(word) = word_at(text, line, character) else {
         return Value::Null;
     };
-    // Where to look: `mod.name` looks in the imported module, a bare name in
-    // this document, then in every imported module.
-    let mut sources: Vec<(&str, String)> = Vec::new();
+    // Where to look: `mod.name` looks in the named module; a receiver method
+    // (`xs.push`) or a bare name looks in this document and every module the
+    // document can see (prelude + imports).
+    let mut sources: Vec<(String, String)> = Vec::new();
     let bare = match word.split_once('.') {
-        Some((module, name)) => {
-            if let Some(src) = crate::linker::std_source(module) {
-                sources.push((src, format!("{module}.")));
+        Some((head, tail)) => {
+            // `head.tail`: `head` is a module (`string.repeat`) or a receiver
+            // value (`xs.push`). When it names a module, look there; otherwise
+            // treat `tail`'s final segment as a method and resolve it against
+            // every visible module (`xs.push` → `list.push`).
+            let name = tail.rsplit_once('.').map_or(tail, |(_, n)| n).to_string();
+            if let Some(src) = module_source(head, uri, docs) {
+                sources.push((src, format!("{head}.")));
+            } else {
+                sources.extend(visible_module_sources(text, uri, docs));
             }
-            name.to_string()
+            name
         }
         None => {
-            sources.push((text.as_str(), String::new()));
-            for l in text.lines() {
-                if let Some(module) = l.trim_start().strip_prefix("import ") {
-                    if let Some(src) = crate::linker::std_source(module.trim()) {
-                        sources.push((src, format!("{}.", module.trim())));
-                    }
-                }
-            }
+            sources.push((text.to_string(), String::new()));
+            sources.extend(visible_module_sources(text, uri, docs));
             word.clone()
         }
     };
     for (src, prefix) in sources {
-        if let Some(doc) = signature_doc(src, &bare) {
-            let contents = format!("```witchy\n{}{}\n```\n{}", prefix, doc.0, doc.1);
+        if let Some((sig, doc)) = signature_doc(&src, &bare) {
+            let contents = format!("```witchy\n{}\n```\n{}", qualify_signature(&sig, &prefix), doc);
             return json!({ "contents": { "kind": "markdown", "value": contents } });
         }
     }
     Value::Null
 }
 
+/// Render a signature line qualified by `prefix` (e.g. `string.`). The qualifier
+/// belongs before the FUNCTION NAME, not in front of the whole line: prepending
+/// it produced the malformed `string.pub fn repeat(...)` (and `Net.pub fn tcp`).
+/// Inserting it after the `fn`/`pub fn` keyword yields `pub fn string.repeat(...)`.
+fn qualify_signature(sig: &str, prefix: &str) -> String {
+    if prefix.is_empty() {
+        return sig.to_string();
+    }
+    for kw in ["pub fn ", "fn "] {
+        if let Some(rest) = sig.strip_prefix(kw) {
+            return format!("{kw}{prefix}{rest}");
+        }
+    }
+    format!("{prefix}{sig}")
+}
+
 /// The identifier (allowing `.` for module-qualified names) covering `character`
-/// on `line`.
+/// on `line`. Indexing is by CHARACTER offset, not byte offset: an LSP position's
+/// `character` counts code units, so treating it as a byte index and slicing
+/// `l[start..end]` lands off a UTF-8 char boundary on any multibyte line and
+/// panics. Scanning over the decoded `chars` keeps every index on a boundary.
 fn word_at(text: &str, line: usize, character: usize) -> Option<String> {
     let l = text.lines().nth(line)?;
-    let bytes = l.as_bytes();
-    let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'.';
-    let mut start = character.min(bytes.len());
-    while start > 0 && is_word(bytes[start - 1]) {
+    let chars: Vec<char> = l.chars().collect();
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.';
+    let mut start = character.min(chars.len());
+    while start > 0 && is_word(chars[start - 1]) {
         start -= 1;
     }
-    let mut end = character.min(bytes.len());
-    while end < bytes.len() && is_word(bytes[end]) {
+    let mut end = character.min(chars.len());
+    while end < chars.len() && is_word(chars[end]) {
         end += 1;
     }
     if start == end {
         return None;
     }
-    Some(l[start..end].trim_matches('.').to_string())
+    let word: String = chars[start..end].iter().collect();
+    Some(word.trim_matches('.').to_string())
 }
 
 /// Find `fn <name>(` in `src` and return (signature line, preceding `//` block).
@@ -224,6 +312,42 @@ fn signature_doc(src: &str, name: &str) -> Option<(String, String)> {
     None
 }
 
+/// Module sources visible to this document without qualification at a use site:
+/// the always-present prelude modules plus every `import`ed module (std or a
+/// sibling/open-buffer local module), each paired with its `module.` display
+/// prefix. Lets hover resolve a bare method (`xs.push` → `list.push`), an
+/// imported function, or a `from`-imported name.
+fn visible_module_sources(
+    text: &str,
+    uri: Option<&str>,
+    docs: &HashMap<String, String>,
+) -> Vec<(String, String)> {
+    // Explicitly imported modules are searched BEFORE the ambient prelude, so a
+    // bare name the document actually imports wins over an incidental
+    // prelude-module namesake (`from string import repeat` beats `list.repeat`).
+    let mut names: Vec<String> = Vec::new();
+    for l in text.lines() {
+        let lt = l.trim_start();
+        if let Some(module) = lt.strip_prefix("import ") {
+            names.push(module.trim().to_string());
+        } else if let Some((module, _)) = parse_from_import(lt) {
+            // `from X import Y` implies `import X`, so a bare `Y` resolves in X.
+            names.push(module);
+        }
+    }
+    names.extend(PRELUDE_MODULES.iter().map(|s| s.to_string()));
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out = Vec::new();
+    for name in names {
+        if seen.insert(name.clone()) {
+            if let Some(src) = module_source(&name, uri, docs) {
+                out.push((src, format!("{name}.")));
+            }
+        }
+    }
+    out
+}
+
 fn handle_notification(
     connection: &Connection,
     docs: &mut HashMap<String, String>,
@@ -234,7 +358,7 @@ fn handle_notification(
             let td = &not.params["textDocument"];
             if let (Some(uri), Some(text)) = (td["uri"].as_str(), td["text"].as_str()) {
                 docs.insert(uri.to_string(), text.to_string());
-                send_diagnostics(connection, uri, compute_diagnostics(uri, text));
+                send_diagnostics(connection, uri, compute_diagnostics(uri, text, docs));
             }
         }
         "textDocument/didChange" => {
@@ -246,7 +370,7 @@ fn handle_notification(
                 .and_then(|c| c["text"].as_str());
             if let (Some(uri), Some(text)) = (uri, text) {
                 docs.insert(uri.to_string(), text.to_string());
-                send_diagnostics(connection, uri, compute_diagnostics(uri, text));
+                send_diagnostics(connection, uri, compute_diagnostics(uri, text, docs));
             }
         }
         "textDocument/didClose" => {
@@ -270,9 +394,10 @@ fn send_diagnostics(connection: &Connection, uri: &str, diagnostics: Vec<Value>)
 
 /// Run the front-end over the open document and return LSP diagnostic objects.
 /// The entry module's text comes from the editor buffer; imported modules are
-/// resolved from sibling files on disk, falling back to the bundled std library
-/// — mirroring how `witchy <file>` loads a program.
-fn compute_diagnostics(uri: &str, text: &str) -> Vec<Value> {
+/// resolved from sibling files on disk (or an open buffer for unsaved edits),
+/// falling back to the bundled std library — mirroring how `witchy <file>` loads
+/// a program.
+fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) -> Vec<Value> {
     let path = uri_to_path(uri);
     let dir = path
         .as_ref()
@@ -300,32 +425,72 @@ fn compute_diagnostics(uri: &str, text: &str) -> Vec<Value> {
     loaded.insert(entry.clone());
     modules.push((entry.clone(), entry_module));
 
+    // Import-resolution problems (a neighbour that is missing or won't parse) are
+    // reported against the entry buffer's import site, not swallowed. Collected
+    // here and returned in place of the confusing line-0 link cascade they'd
+    // otherwise provoke.
+    let mut import_diags: Vec<Value> = Vec::new();
     while let Some(name) = queue.pop_front() {
         if !loaded.insert(name.clone()) {
             continue;
         }
-        let src = match std::fs::read_to_string(dir.join(format!("{name}.witchy"))) {
-            Ok(s) => s,
-            Err(_) => match crate::bundled_module(&name) {
-                Some(s) => s.to_string(),
-                None => continue, // unknown import — the linker will report it
-            },
+        // Resolve like `witchy <file>`: sibling `<name>.witchy` on disk (or its
+        // open buffer for unsaved edits) first, then the bundled std library.
+        let sibling = dir.join(format!("{name}.witchy"));
+        let src = std::fs::read_to_string(&sibling)
+            .ok()
+            .or_else(|| open_buffer(&sibling, docs))
+            .or_else(|| crate::bundled_module(&name).map(str::to_string));
+        let Some(src) = src else {
+            // BUG-168: an import that resolves to nothing. Say so at the import
+            // line instead of letting the linker emit a line-0
+            // "module `main` imports unknown module `name`".
+            let line0 = import_line_of(text, &name).unwrap_or(0);
+            import_diags.push(line_diag(
+                line0,
+                text,
+                &format!(
+                    "cannot resolve import `{name}`: no `{name}.witchy` beside this file, and it is not a bundled module"
+                ),
+            ));
+            continue;
         };
-        // A dependency that fails to parse isn't the open file; skip it rather
-        // than blaming the user's buffer for a broken neighbour.
-        if let Ok(m) = parser::parse_module(&src) {
-            for imp in &m.imports {
-                if !loaded.contains(imp) {
-                    queue.push_back(imp.clone());
+        // BUG-137: a neighbour that fails to parse used to be silently skipped,
+        // so the buffer showed no error at all — surface it against the import.
+        match parser::parse_module(&src) {
+            Ok(m) => {
+                for imp in &m.imports {
+                    if !loaded.contains(imp) {
+                        queue.push_back(imp.clone());
+                    }
                 }
+                modules.push((name, m));
             }
-            modules.push((name, m));
+            Err(e) => {
+                let line0 = import_line_of(text, &name).unwrap_or(0);
+                import_diags.push(line_diag(
+                    line0,
+                    text,
+                    &format!(
+                        "imported module `{name}` failed to parse: {} (line {})",
+                        e.message, e.line
+                    ),
+                ));
+            }
         }
+    }
+    if !import_diags.is_empty() {
+        return import_diags;
     }
 
     let linked = match crate::pipeline::link(modules, &entry) {
         Ok(m) => m,
-        Err(e) => return vec![line_diag(0, text, &e.to_string())],
+        Err(e) => {
+            // BUG-162: map the link error onto the line it names (or the import it
+            // blames) instead of always pinning it to line 0.
+            let msg = e.to_string();
+            return vec![line_diag(link_error_line(&msg, text), text, &msg)];
+        }
     };
     match typeck::check(&linked) {
         Ok(()) => {
@@ -399,6 +564,51 @@ fn extract_line(message: &str) -> Option<u32> {
     let rest = &message[message.find("line ")? + "line ".len()..];
     let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
     digits.parse().ok()
+}
+
+/// The 0-based line of `text` that imports `name` (`import name` or
+/// `from name import …`), if any.
+fn import_line_of(text: &str, name: &str) -> Option<u32> {
+    text.lines().enumerate().find_map(|(i, l)| {
+        let t = l.trim_start();
+        let hit = t.strip_prefix("import ").map(str::trim) == Some(name)
+            || parse_from_import(t).is_some_and(|(m, _)| m == name);
+        hit.then_some(i as u32)
+    })
+}
+
+/// The line a link error should underline: the `line N` it carries, else the
+/// import line of the first module it names in backticks, else the top of file.
+/// Link errors otherwise all pinned to line 0 (BUG-162).
+fn link_error_line(message: &str, text: &str) -> u32 {
+    if let Some(n) = extract_line(message) {
+        return n.saturating_sub(1);
+    }
+    // The message may name several things in backticks (e.g. the importing module
+    // AND the unknown one); use the first that this file actually imports.
+    for name in backtick_tokens(message) {
+        if let Some(line0) = import_line_of(text, &name) {
+            return line0;
+        }
+    }
+    0
+}
+
+/// The contents of every `` `…` `` span in `s`, in order.
+fn backtick_tokens(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = s;
+    while let Some(start) = rest.find('`') {
+        let after = &rest[start + 1..];
+        match after.find('`') {
+            Some(end) => {
+                out.push(after[..end].to_string());
+                rest = &after[end + 1..];
+            }
+            None => break,
+        }
+    }
+    out
 }
 
 /// Convert a `file://` URI to a filesystem path, percent-decoding escapes.
