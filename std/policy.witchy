@@ -15,6 +15,18 @@
 // scheme is a connect-time choice on the address, not a property of the policy (RFC-0009).
 // The module is preluded, so `Net.tcp(…)` / `Dir.ext(…)` resolve without an import.
 
+import string
+
+// Reject a pattern component that could smuggle a second allowlist entry. A
+// `union` carries several patterns joined by a NEWLINE, and the host enforces the
+// list by splitting on that newline — so a newline (or carriage return) inside a
+// host, CIDR block, or suffix would inject an extra, unintended allowlist entry
+// (`Net.tcp("evil\ngood", 80)` would admit both `evil` and `good:80`). Refuse it.
+fn checked_component(value: String) -> String:
+    if string.contains(value, "\n") || string.contains(value, "\r"):
+        fail("policy: a pattern component may not contain a newline")
+    value
+
 // A typed `Net` address policy — one allowlist pattern (`host:port`, with `:*` / CIDR forms).
 type NetPolicy:
     pattern: String
@@ -29,19 +41,19 @@ type DirPolicy:
 impl Net:
     pub fn tcp(host: String, port: Int) -> NetPolicy:
         // A plaintext TCP endpoint: `<host>:<port>`.
-        NetPolicy(host + ":" + "${port}")
+        NetPolicy(checked_component(host) + ":" + "${port}")
 
     pub fn any_port(host: String) -> NetPolicy:
         // Any port on a host: `<host>:*`.
-        NetPolicy(host + ":*")
+        NetPolicy(checked_component(host) + ":*")
 
     pub fn cidr(block: String, port: Int) -> NetPolicy:
         // An IPv4 CIDR block (rebinding-proof — matched against the resolved IP): `<a.b.c.d/bits>:<port>`.
-        NetPolicy(block + ":" + "${port}")
+        NetPolicy(checked_component(block) + ":" + "${port}")
 
     pub fn cidr_any(block: String) -> NetPolicy:
         // An IPv4 CIDR block, any port: `<a.b.c.d/bits>:*`.
-        NetPolicy(block + ":*")
+        NetPolicy(checked_component(block) + ":*")
 
     pub fn union(a: NetPolicy, b: NetPolicy) -> NetPolicy:
         // The UNION of two policies — `net.only(Net.union(a, b))` admits either (e.g. an OAuth
@@ -63,7 +75,7 @@ impl Dir:
     pub fn ext(suffix: String) -> DirPolicy:
         // A Dir entry policy admitting only files whose name ends with `suffix` (include
         // the dot, e.g. `".txt"`). Compose with `dir.only` to confine a `Dir`'s reach.
-        DirPolicy("ext:" + suffix)
+        DirPolicy("ext:" + checked_component(suffix))
 
     pub fn files() -> DirPolicy:
         // A Dir entry policy admitting only FILE entries: `dir.only(Dir.files())` confines a
