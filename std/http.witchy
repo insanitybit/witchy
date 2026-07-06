@@ -64,8 +64,23 @@ pub fn head(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Re
 // parse. Saves splitting host/port/path by hand.
 pub fn get_url(net: Net[Connect, Tcp], raw: String) -> Result(Response, String):
     match url.parse(raw):
-        Ok(u) -> Ok(request_with(net, url.scheme(u) == "https", "GET", url.host(u), url.port(u), url.path(u), [], ""))
+        Ok(u) ->
+            match scheme_secure(url.scheme(u)):
+                Ok(secure) -> Ok(request_with(net, secure, "GET", url.host(u), url.port(u), url.path(u), [], ""))
+                Err(e) -> Err(e)
         Err(e) -> Err("invalid URL: " + e)
+
+// (BUG-234) Whether a URL scheme is HTTPS (`Ok(true)`), plain HTTP (`Ok(false)`),
+// or unsupported (`Err`). This module speaks only HTTP/1.1: a `ftp:`/`file:`/`ws:`
+// URL must NOT be silently dialed as plaintext HTTP to the named host — reject it so
+// the caller gets an error rather than an accidental request to the wrong protocol.
+fn scheme_secure(scheme: String) -> Result(Bool, String):
+    if scheme == "https":
+        Ok(true)
+    else if scheme == "http":
+        Ok(false)
+    else:
+        Err("unsupported URL scheme `" + scheme + "` (only http and https are supported)")
 
 // The dial target for a request: `tls:host:port` when `secure` (HTTPS), else
 // `host:port`. The capability allowlist governs the bare `host:port`; the `tls:`
@@ -88,17 +103,25 @@ pub fn request_with(net: Net[Connect, Tcp], secure: Bool, method: String, host: 
 // response. Shared by `request_with` (a fresh `connect`) and `send_pinned` (a pinned
 // `connect_pinned`) so the two dial paths produce byte-identical requests.
 fn send_on(sock: Socket, method: String, host: String, path: String, headers: List((String, String)), body: String) -> Response:
-    // (SEC-043) Validate everything spliced into the request line/headers BEFORE
-    // rendering: a `\r`/`\n` in the method/path/host, or a malformed header name,
-    // would inject a header or a second request. Trap loudly (both backends).
-    check_field("method", method)
-    check_field("request path", path)
-    check_field("host", host)
+    // (SEC-043 / BUG-364) Validate everything spliced into the request line/headers
+    // BEFORE rendering: a `\r`/`\n` in the method/path/host, or a malformed header
+    // name, would inject a header or a second request. The request-LINE fields
+    // (method/path/host) must additionally carry no SPACE or TAB — a space in the
+    // path or method splits the request line into extra tokens (request smuggling) —
+    // so they use the stricter `check_request_field`. Trap loudly (both backends).
+    check_request_field("method", method)
+    check_request_field("request path", path)
+    check_request_field("host", host)
     var head = method + " " + path + " HTTP/1.1\r\n" + "Host: " + host + "\r\n"
     for h in headers:
         let (k, v) = h
         check_header(k, v)
-        head = head + k + ": " + v + "\r\n"
+        // (BUG-393) The framing headers are OWNED by this renderer (Content-Length
+        // and Connection are appended below). A caller-supplied Content-Length /
+        // Transfer-Encoding / Connection would conflict with ours and enable request
+        // smuggling, so drop it here rather than emit two framing headers.
+        if !is_framing_header(k):
+            head = head + k + ": " + v + "\r\n"
     let req = head + "Content-Length: " + "${string.length(body)}" + "\r\n" + "Connection: close\r\n\r\n" + body
 
     send_bytes(sock, req)
@@ -141,9 +164,12 @@ pub fn pin(net: Net[Connect, Tcp], raw: String, allow_ip: fn(String) -> Bool) ->
     match url.parse(raw):
         Err(e) -> Err("invalid URL: " + e)
         Ok(u) ->
-            match first_allowed(resolve(net, url.host(u)), allow_ip):
-                None -> Err("no resolved address for " + url.host(u) + " passed the pin policy")
-                Some(ip) -> Ok(PinnedUrl(url.host(u), url.port(u), url.scheme(u) == "https", url.path(u), ip))
+            match scheme_secure(url.scheme(u)):
+                Err(e) -> Err(e)
+                Ok(secure) ->
+                    match first_allowed(resolve(net, url.host(u)), allow_ip):
+                        None -> Err("no resolved address for " + url.host(u) + " passed the pin policy")
+                        Some(ip) -> Ok(PinnedUrl(url.host(u), url.port(u), secure, url.path(u), ip))
 
 // The NAMED, greppable no-policy pin: resolve once and pin the first address, applying no
 // per-IP policy. Safe only behind a confined `Net` (the allowlist floor still applies);
@@ -218,11 +244,13 @@ impl RequestBuilder:
 
     fn with_query(self, key: String, value: String) -> RequestBuilder:
         // Append a `key=value` query parameter to the URL (chainable), choosing
-        // `?` for the first and `&` thereafter. Values are appended as-is.
+        // `?` for the first and `&` thereafter. (BUG-235) The key and value are
+        // percent-encoded (`url.encode`), so a `&`, `=`, space, or other reserved
+        // byte in either can't inject an extra parameter or corrupt the query.
         match self:
             RequestBuilder(m, u, hs, b) ->
                 let sep = if string.contains(u, "?"): "&" else: "?"
-                RequestBuilder(m, u + sep + key + "=" + value, hs, b)
+                RequestBuilder(m, u + sep + url.encode(key) + "=" + url.encode(value), hs, b)
 
     fn send(self, net: Net[Connect, Tcp]) -> Result(Response, String):
         // Send the assembled request, parsing host/port/path from its URL. An Err
@@ -231,7 +259,9 @@ impl RequestBuilder:
             RequestBuilder(m, u, hs, b) ->
                 match url.parse(u):
                     Ok(parsed) ->
-                        Ok(request_with(net, url.scheme(parsed) == "https", m, url.host(parsed), url.port(parsed), url.path(parsed), hs, b))
+                        match scheme_secure(url.scheme(parsed)):
+                            Ok(secure) -> Ok(request_with(net, secure, m, url.host(parsed), url.port(parsed), url.path(parsed), hs, b))
+                            Err(e) -> Err(e)
                     Err(e) -> Err("invalid URL: " + e)
 
 // Whether the response status is in the 2xx success range.
@@ -311,9 +341,30 @@ pub fn check_header(name: String, value: String):
     check_header_name(name)
     check_field("header value", value)
 
-// Split the raw response at the blank line separating headers from body, and
-// parse the header lines into (lowercased name, trimmed value) pairs.
-fn parse_response(raw: String) -> Response:
+// (BUG-364) Trap unless `value` is safe to splice into the request LINE — no CR/LF
+// AND no space or tab. The request line is space-delimited (`METHOD SP TARGET SP
+// HTTP/1.1`), so a space or tab in the method/path/host would split it into extra
+// tokens (request smuggling). Stricter than `check_field` (CR/LF only), which stays
+// for header VALUES — those legitimately contain spaces.
+pub fn check_request_field(what: String, value: String):
+    if has_crlf(value) || string.contains(value, " ") || string.contains(value, "\t"):
+        fail("HTTP " + what + " contains a whitespace/control character that would break the request line: " + value)
+
+// (BUG-358 / BUG-393) Whether `name` is a message-FRAMING header — Content-Length,
+// Transfer-Encoding, or Connection. The renderer owns framing (it appends its own
+// Content-Length / Connection), so a caller/handler-supplied framing header must be
+// dropped rather than emitted alongside ours: two conflicting framing headers are a
+// request/response-smuggling primitive.
+pub fn is_framing_header(name: String) -> Bool:
+    let n = string.to_lower(name)
+    n == "content-length" || n == "transfer-encoding" || n == "connection"
+
+// Parse a raw HTTP/1.1 response string into a `Response`: split at the blank line
+// separating headers from body, parse the header lines into (lowercased name,
+// trimmed value) pairs, decode a `chunked` body, and read the status code totally
+// (a non-numeric or overflowing code becomes 0 rather than trapping). Public so a
+// proxy or test can parse a response it obtained by other means.
+pub fn parse_response(raw: String) -> Response:
     let sep = string.index_of(raw, "\r\n\r\n") ?? -1
     let head = if sep < 0: raw else: string.substring(raw, 0, sep)
     let bdy = if sep < 0: "" else: string.substring(raw, sep + 4, string.char_count(raw))
@@ -329,7 +380,15 @@ fn parse_response(raw: String) -> Response:
             let value = string.trim(string.substring(line, colon + 1, string.char_count(line)))
             hdrs = list.push(hdrs, (name, value))
         i = i + 1
-    Response(status_code(status_line), hdrs, bdy)
+    // (BUG-269) A `Transfer-Encoding: chunked` response frames its body as a series
+    // of hex-sized chunks; returning it verbatim would hand the caller wire framing
+    // instead of the payload. Decode it when the header advertises chunked (a `TE`
+    // value like `gzip, chunked` counts); otherwise pass the body through unchanged.
+    let body = match find_header(hdrs, "transfer-encoding"):
+        Some(te) -> if string.contains(string.to_lower(te), "chunked"): dechunk(bdy) else: bdy
+        None -> bdy
+
+    Response(status_code(status_line), hdrs, body)
 
 // Pull the numeric code out of a status line like "HTTP/1.1 200 OK".
 fn status_code(line: String) -> Int:
@@ -340,9 +399,83 @@ fn status_code(line: String) -> Int:
         let rest = string.substring(line, sp + 1, string.char_count(line))
         let sp2 = string.index_of(rest, " ") ?? -1
         let code = if sp2 < 0: rest else: string.substring(rest, 0, sp2)
-        // A malformed/non-HTTP response can carry a non-numeric code; don't let
-        // it trap `string_to_int` and crash the client — report 0 instead.
-        if ascii.all_digits(code):
-            string.to_int(code)
+        // (BUG-203) A malformed/non-HTTP response can carry a non-numeric OR an
+        // overflowing code. `string.to_int` TRAPS on i64 overflow — an
+        // attacker-controlled response could crash the client — so parse totally
+        // with `string.parse_int` (None on non-digit, empty, or overflow) → 0.
+        string.parse_int(code) ?? 0
+
+// (BUG-269) Decode a `chunked` transfer-coding body: a sequence of
+// `<hex-size>[;ext]CRLF <size bytes> CRLF`, ending at a `0`-sized chunk. Total —
+// a malformed/truncated stream stops decoding and returns what was recovered
+// rather than trapping. (Chunk sizes are byte counts; witchy indexes by character,
+// so this is exact for the ASCII/UTF-8 bodies HTTP text payloads use in practice.)
+fn dechunk(body: String) -> String:
+    var out = ""
+    var i = 0
+    let n = string.char_count(body)
+    var done = false
+    while !done:
+        let nl = index_from(body, "\r\n", i)
+        if nl < 0:
+            done = true
         else:
-            0
+            match parse_hex_size(chunk_size_hex(string.substring(body, i, nl))):
+                None -> done = true
+                Some(sz) ->
+                    if sz <= 0:
+                        done = true
+                    else:
+                        let start = nl + 2
+                        let stop = start + sz
+                        if stop > n:
+                            out = out + string.substring(body, start, n)
+                            done = true
+                        else:
+                            out = out + string.substring(body, start, stop)
+                            i = stop + 2
+    out
+
+// The index of `needle` in `s` at or after `from`, or -1. (No offset variant of
+// `string.index_of` exists, so search the suffix and re-base the result.)
+fn index_from(s: String, needle: String, from: Int) -> Int:
+    if from >= string.char_count(s):
+        -1
+    else:
+        match string.index_of(string.substring(s, from, string.char_count(s)), needle):
+            Some(k) -> from + k
+            None -> -1
+
+// The hex size of a chunk line, with any `;chunk-extension` and surrounding
+// whitespace stripped.
+fn chunk_size_hex(line: String) -> String:
+    let semi = string.index_of(line, ";") ?? -1
+    let raw = if semi < 0: line else: string.substring(line, 0, semi)
+    string.trim(raw)
+
+// Parse a hex string to an Int, totally: `None` on empty, a non-hex digit, or a
+// size wide enough to risk i64 overflow (>15 hex digits) — so a hostile chunk
+// header can't trap the arithmetic.
+fn parse_hex_size(hex: String) -> Option(Int):
+    if hex == "" || string.char_count(hex) > 15:
+        None
+    else:
+        var val = 0
+        var ok = true
+        for c in string.chars(hex):
+            match hex_digit(c):
+                Some(d) -> val = val * 16 + d
+                None -> ok = false
+        if ok:
+            Some(val)
+        else:
+            None
+
+// One hex digit `0-9a-fA-F` as its value, or None.
+fn hex_digit(c: String) -> Option(Int):
+    if string.char_count(c) != 1:
+        None
+    else:
+        match string.index_of("0123456789abcdef", string.to_lower(c)):
+            Some(k) -> Some(k)
+            None -> None

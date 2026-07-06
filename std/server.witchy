@@ -16,6 +16,7 @@
 
 import option
 import reflect
+import encoding
 from http import Request, Response
 from json import Json
 
@@ -24,7 +25,16 @@ pub fn method(req: Request) -> String:
     match req:
         Request(m, _p, _pa, _q, _h, _b) -> m
 
+// The request path, percent-decoded for the handler (BUG-375). Routing itself
+// runs on the RAW path (`raw_path_of`) and decodes each segment individually, so a
+// `%2F` in a segment can't forge an extra path separator; this accessor decodes the
+// whole path for display/logging.
 pub fn path(req: Request) -> String:
+    percent_decode(raw_path_of(req), false)
+
+// The raw (still percent-encoded) request path — used by the router so that
+// segment boundaries are taken from literal `/` only.
+fn raw_path_of(req: Request) -> String:
     match req:
         Request(_m, p, _pa, _q, _h, _b) -> p
 
@@ -182,13 +192,17 @@ impl Router:
         route(self, "*", p, h)
 
     fn nest(self, prefix: String, sub: Router) -> Router:
-        // Mount `sub`'s routes under `prefix` (axum-style nesting).
+        // Mount `sub`'s routes under `prefix` (axum-style nesting). (BUG-268) The
+        // sub-router's OWN middleware layers must not be dropped: each nested route's
+        // handler is wrapped in `sub`'s layers before mounting, so a layer added to
+        // the sub-router still runs for its routes (the outer router's layers wrap
+        // the whole dispatch on top, as before).
         match sub:
-            Router(sub_routes, _sub_layers) ->
+            Router(sub_routes, sub_layers) ->
                 var out = self
                 for rt in sub_routes:
                     match rt:
-                        Route(m, p, h) -> out = route(out, m, prefix + p, h)
+                        Route(m, p, h) -> out = route(out, m, prefix + p, wrap_layers(h, sub_layers))
                 out
 
     fn layer(self, mw: fn(fn(Request) -> Response) -> fn(Request) -> Response) -> Router:
@@ -220,7 +234,7 @@ fn path_matches_any(routes: List(Route), req: Request) -> Bool:
 
 fn route_path_matches(rt: Route, req: Request) -> Bool:
     match rt:
-        Route(_m, pat, _h) -> option.is_some(match_path(pat, path(req)))
+        Route(_m, pat, _h) -> option.is_some(match_path(pat, raw_path_of(req)))
 
 fn try_routes(routes: List(Route), req: Request) -> Option(Response):
     for rt in routes:
@@ -233,7 +247,7 @@ fn check_route(rt: Route, req: Request) -> Option(Response):
     match rt:
         Route(m, pat, h) ->
             if m == method(req) || m == "*":
-                match match_path(pat, path(req)):
+                match match_path(pat, raw_path_of(req)):
                     Some(params) -> Some(h(with_params(req, params)))
                     None -> None
             else:
@@ -248,10 +262,15 @@ fn match_path(pattern: String, p: String) -> Option(List((String, String))):
     match_segs(split_path(pattern), split_path(p), [])
 
 fn split_path(p: String) -> List(String):
+    // (BUG-375) Split on literal `/` FIRST, then percent-decode each segment — so a
+    // captured `:param` / `*rest` reaches the handler decoded (`a%20b` -> `a b`),
+    // while a `%2F` inside a segment decodes to a literal `/` that stays WITHIN that
+    // one segment rather than forging a new routing boundary. (`+` is left literal:
+    // it is a space only in query/form encoding, not in a path.)
     var out = []
     for seg in string.split(p, "/"):
         if seg != "":
-            out = list.push(out, seg)
+            out = list.push(out, percent_decode(seg, false))
     out
 
 fn match_segs(pat: List(String), segs: List(String), acc: List((String, String))) -> Option(List((String, String))):
@@ -295,16 +314,20 @@ fn join_segs(xs: List(String)) -> String:
     out
 
 // ---- Request parsing from the socket ----
-fn read_request(sock: Socket) -> Request:
+fn read_request(sock: Socket) -> Result(Request, Response):
     let request_line = recv_line(sock)
     let m = first_word(request_line)
     let target = second_word(request_line)
     let raw_path = before(target, "?")
     let q = parse_query(after(target, "?"))
     let headers = read_headers(sock)
-    let len = content_length(headers)
-    let body = if len > 0: recv_bytes(sock, len) else: ""
-    Request(m, raw_path, [], q, headers, body)
+    // (BUG-390) A request with conflicting Content-Length headers is answered 400,
+    // not processed first-wins — that mismatch is the request-smuggling primitive.
+    match framed_length(headers):
+        Err(msg) -> Err(bad_request(msg))
+        Ok(len) ->
+            let body = if len > 0: recv_bytes(sock, len) else: ""
+            Ok(Request(m, raw_path, [], q, headers, body))
 
 fn read_headers(sock: Socket) -> List((String, String)):
     var hdrs = []
@@ -314,38 +337,138 @@ fn read_headers(sock: Socket) -> List((String, String)):
         if line == "":
             done = true
         else:
-            let colon = string.index_of(line, ":") ?? -1
-            if colon >= 0:
-                let name = string.to_lower(string.trim(string.substring(line, 0, colon)))
-                let value = string.trim(string.substring(line, colon + 1, string.char_count(line)))
-                hdrs = list.push(hdrs, (name, value))
+            hdrs = match parse_header_line(line):
+                Some(hv) -> list.push(hdrs, hv)
+                None -> hdrs
+
     hdrs
 
-fn content_length(headers: List((String, String))) -> Int:
-    // The header is attacker-controlled; a non-numeric OR out-of-range value must
-    // not trap and take down the server. `ascii.all_digits` accepts arbitrarily
-    // long digit strings, and `string.to_int` then TRAPS on i64 overflow (SEC-045),
-    // so parse totally with `string.parse_int` (returns None on non-digit, empty,
-    // OR overflow) and treat any rejection as no body.
-    match http.find_header(headers, "content-length"):
-        Some(v) ->
-            match string.parse_int(v):
-                Some(n) -> if n > 0: n else: 0
-                None -> 0
-        None -> 0
+// Parse one `Name: value` header line into `(lowercased name, trimmed value)`, or
+// None if it has no colon. Shared by the streaming reader and `parse_request`.
+fn parse_header_line(line: String) -> Option((String, String)):
+    let colon = string.index_of(line, ":") ?? -1
+    if colon < 0:
+        None
+    else:
+        let name = string.to_lower(string.trim(string.substring(line, 0, colon)))
+        let value = string.trim(string.substring(line, colon + 1, string.char_count(line)))
+        Some((name, value))
+
+// Parse a whole raw HTTP/1.1 request string into a `Request` (or a 400 `Response`
+// when it is malformed, e.g. conflicting Content-Length) — the network-free mirror
+// of the socket reader and of `http.parse_response`. Public so a router can be
+// tested, or a request framed by another transport re-parsed, without a socket.
+pub fn parse_request(raw: String) -> Result(Request, Response):
+    let sep = string.index_of(raw, "\r\n\r\n") ?? -1
+    let head = if sep < 0: raw else: string.substring(raw, 0, sep)
+    let body_all = if sep < 0: "" else: string.substring(raw, sep + 4, string.char_count(raw))
+    let lines = string.split(head, "\r\n")
+    let request_line = if list.length(lines) > 0: list.at(lines, 0) else: ""
+    let m = first_word(request_line)
+    let target = second_word(request_line)
+    let raw_path = before(target, "?")
+    let q = parse_query(after(target, "?"))
+    var headers = []
+    var i = 1
+    while i < list.length(lines):
+        headers = match parse_header_line(list.at(lines, i)):
+            Some(hv) -> list.push(headers, hv)
+            None -> headers
+
+        i = i + 1
+    match framed_length(headers):
+        Err(msg) -> Err(bad_request(msg))
+        Ok(len) ->
+            let body = if len > 0: string.take(body_all, len) else: ""
+            Ok(Request(m, raw_path, [], q, headers, body))
+
+fn framed_length(headers: List((String, String))) -> Result(Int, String):
+    // (BUG-390) Content-Length is attacker-controlled. Two Content-Length headers
+    // with DIFFERENT values (or one header carrying a differing comma list) is a
+    // request-smuggling ambiguity — reject it (400) rather than pick first-wins.
+    // A repeated header with the SAME value is collapsed and allowed. A non-numeric
+    // OR out-of-range value must not trap (SEC-045): `string.parse_int` returns None
+    // on non-digit, empty, or i64 overflow, and any such rejection means no body.
+    var seen = false
+    var value = ""
+    var conflict = false
+    for h in headers:
+        let (k, v) = h
+        if k == "content-length":
+            let tv = string.trim(v)
+            if seen:
+                if tv != value:
+                    conflict = true
+            else:
+                seen = true
+                value = tv
+    if conflict:
+        Err("conflicting Content-Length headers")
+    else if !seen:
+        Ok(0)
+    else:
+        match string.parse_int(value):
+            Some(n) -> if n > 0: Ok(n) else: Ok(0)
+            None -> Ok(0)
 
 fn parse_query(q: String) -> List((String, String)):
+    // (BUG-236 / BUG-352) `application/x-www-form-urlencoded`: keys and values are
+    // percent-encoded and `+` stands for a space. Decode BOTH (`%XX` and `+`) so a
+    // handler sees `q=a b` for `?q=a%20b` or `?q=a+b`, not the raw escapes. Empty
+    // pairs (a stray `&`) are skipped rather than yielding a bogus `("", "")`.
     if q == "":
         []
     else:
         var out = []
         for pair in string.split(q, "&"):
-            let eq = string.index_of(pair, "=") ?? -1
-            if eq >= 0:
-                out = list.push(out, (string.substring(pair, 0, eq), string.substring(pair, eq + 1, string.char_count(pair))))
-            else:
-                out = list.push(out, (pair, ""))
+            if pair != "":
+                let eq = string.index_of(pair, "=") ?? -1
+                if eq >= 0:
+                    let k = percent_decode(string.substring(pair, 0, eq), true)
+                    let v = percent_decode(string.substring(pair, eq + 1, string.char_count(pair)), true)
+                    out = list.push(out, (k, v))
+                else:
+                    out = list.push(out, (percent_decode(pair, true), ""))
         out
+
+// Percent-decode `s` (RFC 3986): each `%XX` becomes the byte it names, and — when
+// `plus_space` — a `+` becomes a space (the form/query convention; false for paths).
+// Consecutive `%XX` bytes are accumulated and decoded together so a multi-byte UTF-8
+// escape (`%E2%82%AC` -> `€`) round-trips. Total: a stray `%` (not followed by two
+// hex digits) is passed through literally rather than trapping.
+fn percent_decode(s: String, plus_space: Bool) -> String:
+    var out = ""
+    var pending = ""
+    var i = 0
+    let n = string.char_count(s)
+    while i < n:
+        let ch = string.char_at(s, i) ?? ""
+        if ch == "%" && i + 2 < n && is_hex(string.char_at(s, i + 1) ?? "") && is_hex(string.char_at(s, i + 2) ?? ""):
+            pending = pending + string.substring(s, i + 1, i + 3)
+            i = i + 3
+        else:
+            out = out + flush_bytes(pending)
+            pending = ""
+            if plus_space && ch == "+":
+                out = out + " "
+            else:
+                out = out + ch
+            i = i + 1
+    out + flush_bytes(pending)
+
+// Decode an accumulated hex string of pending percent-escaped bytes to text (lossy
+// UTF-8). The string only ever holds valid, even-count hex digits, so the decode
+// succeeds; on the impossible failure the raw hex is returned rather than trapping.
+fn flush_bytes(hex: String) -> String:
+    if hex == "":
+        ""
+    else:
+        match encoding.hex_decode(hex):
+            Ok(text) -> text
+            Err(_e) -> hex
+
+fn is_hex(c: String) -> Bool:
+    string.char_count(c) == 1 && string.contains("0123456789abcdefABCDEF", c)
 
 fn first_word(s: String) -> String:
     let sp = string.index_of(s, " ") ?? -1
@@ -381,9 +504,23 @@ fn after(s: String, sep: String) -> String:
         string.substring(s, i + string.char_count(sep), string.char_count(s))
 
 // ---- Rendering + the serve loop ----
-fn render_response(resp: Response) -> String:
+
+// Dispatch `req` through `app` (all routes and middleware layers) and return the
+// Response — the whole request pipeline WITHOUT a socket. The axum "oneshot" analog:
+// handlers and routers become unit-testable with a `Request` literal, and it is the
+// in-process way to call one app from another. `serve*` is this plus the accept loop.
+pub fn handle(app: Router, req: Request) -> Response:
+    handler_of(app)(req)
+
+// Serialize a `Response` to its HTTP/1.1 wire form (inverse of `http.parse_response`).
+// The framing headers (Content-Length, Connection) are owned here; a status outside
+// 100..599 traps. Public so a test or a custom transport can render a Response itself.
+pub fn render(resp: Response) -> String:
     match resp:
         Response(code, headers, b) ->
+            // (BUG-255) A status code outside 100..599 is not a valid HTTP status
+            // and would render a malformed status line; trap loudly (both backends).
+            check_status(code)
             var out = "HTTP/1.1 ${code} " + reason(code) + "\r\n"
             for h in headers:
                 let (k, v) = h
@@ -392,10 +529,20 @@ fn render_response(resp: Response) -> String:
                 // `\r`/`\n` here would inject a header or split the response. Validate
                 // before concatenating — trap loudly rather than emit a split response.
                 http.check_header(k, v)
-                out = out + k + ": " + v + "\r\n"
+                // (BUG-358) The framing headers are OWNED below (Content-Length +
+                // Connection). Drop any handler-supplied Content-Length /
+                // Transfer-Encoding / Connection so the response never carries two
+                // conflicting framing headers (a response-smuggling primitive).
+                if !http.is_framing_header(k):
+                    out = out + k + ": " + v + "\r\n"
             out = out + "Content-Length: " + "${string.length(b)}" + "\r\n"
             out = out + "Connection: close\r\n\r\n"
             out + b
+
+// (BUG-255) Trap unless `code` is a syntactically valid HTTP status (100..599).
+fn check_status(code: Int):
+    if code < 100 || code > 599:
+        fail("invalid HTTP status code (must be 100..599): ${code}")
 
 fn reason(code: Int) -> String:
     if code == 200:
@@ -435,8 +582,13 @@ fn wrap_layers(handler: fn(Request) -> Response, layers: List(fn(fn(Request) -> 
 
 fn handle_one(server: Listener, handler: fn(Request) -> Response):
     let sock = accept(server)
-    let resp = handler(read_request(sock))
-    send_bytes(sock, render_response(resp))
+    // A malformed request (e.g. conflicting Content-Length, BUG-390) short-circuits
+    // to its error Response without ever reaching a handler.
+    let resp = match read_request(sock):
+        Ok(req) -> handler(req)
+        Err(err_resp) -> err_resp
+
+    send_bytes(sock, render(resp))
     close(sock)
 
 // Serve `app` on `addr` forever, using ALL cores. Needs the `Net` capability to
