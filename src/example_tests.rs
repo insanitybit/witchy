@@ -18628,3 +18628,21 @@ pub fn serve(console: Console, net: Net) -> Int:
         );
         assert_eq!(wasm_run(src), expected, "wasm");
     }
+
+    #[test]
+    fn bug307_real_body_error_surfaces_over_collect_inference_fallback() {
+        // (BUG-307) A genuine body type error must surface even when the module has a
+        // result-position bounded call (`iter.collect`) whose annotate fell back —
+        // the false "cannot infer the result type" diagnostic must not mask it.
+        let src = "import iter\n\
+                   import list\n\
+                   fn broken() -> Int:\n\
+                   \x20   \"oops\"\n\
+                   fn main(console: Console):\n\
+                   \x20   let a: List(Int) = iter.collect(iter.range(0, 3))\n\
+                   \x20   print(console, \"${list.length(a)}\")\n";
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
+        let err = typeck::check(&linked).expect_err("broken body must fail").to_string();
+        assert!(err.contains("broken") && err.contains("expected `Int`"), "{err}");
+    }
