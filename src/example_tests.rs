@@ -2533,6 +2533,27 @@ fn main(console: Console):
         assert_eq!(wasm_run(embed), ew, "wasm (embed)");
     }
 
+    /// Reflection's built-in protocol matrix includes scalar-like `Duration` and
+    /// common std containers `Result`/`Set`, so `json.stringify` and
+    /// `reflect.debug` do not arbitrarily stop at a few older container types.
+    #[test]
+    fn reflection_protocol_covers_duration_result_and_set() {
+        let src = "import json\nimport reflect\nimport set\nimport duration\n\nfn main(console: Console):\n    let ok: Result(Int, String) = Ok(7)\n    let err: Result(Int, String) = Err(\"bad\")\n    let s = set.from_list([2, 1, 2])\n    print(console, json.stringify(1500ms))\n    print(console, reflect.debug(duration.seconds(2)))\n    print(console, json.stringify(ok))\n    print(console, json.stringify(err))\n    print(console, json.stringify(s))\n    print(console, reflect.debug(s))\n";
+        let want: Vec<String> = [
+            "1500",
+            "2000",
+            "{\"$variant\":\"Ok\",\"$values\":[7]}",
+            "{\"$variant\":\"Err\",\"$values\":[\"bad\"]}",
+            "[2,1]",
+            "[2, 1]",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
     /// `a ?? b` (RFC-0048) is THE fallback: `Option(T) ?? T -> T` and
     /// `Result(T, e) ?? T -> T`, short-circuiting (the fallback runs only on
     /// `None`/`Err`), chaining right-associatively — and `||` stays Bool-only

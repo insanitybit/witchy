@@ -3,10 +3,11 @@
 // type's variant, a list's elements, or a scalar. Code that would otherwise need a
 // per-type `derive` (JSON encoding, debug rendering, structural diffing) is written
 // once against `Mirror`. Scalars and the built-in containers (`List`, `Option`,
-// tuples, `Dict`) are reflectable out of the box; a user `type` becomes reflectable
-// when you add `derive(Reflect)` to it (which needs `import reflect`), much like
-// Zig's `@typeInfo` but opt-in per type — so `reflect(x)` / `json.stringify(x)` work
-// without a per-type macro once the type derives it.
+// `Result`, `Set`, tuples, `Dict`) are reflectable out of the box; a user `type`
+// becomes reflectable when you add `derive(Reflect)` to it (which needs
+// `import reflect`), much like Zig's `@typeInfo` but opt-in per type — so
+// `reflect(x)` / `json.stringify(x)` work without a per-type macro once the type
+// derives it.
 //
 // `reflect` is a trait method; `derive(Reflect)` generates `impl Reflect for T`,
 // building the `Mirror` from the declared fields and variants. The scalar impls
@@ -15,6 +16,8 @@
 import list
 import string
 import dict
+import duration
+import set
 
 // The reflected shape of a value.
 type Mirror:
@@ -55,6 +58,10 @@ impl Reflect for Bool:
 impl Reflect for String:
     fn reflect(self) -> Mirror:
         MString(self)
+
+impl Reflect for Duration:
+    fn reflect(self) -> Mirror:
+        MInt(duration.to_milliseconds(self))
 
 // Reflect a single value through a free function. The generated `reflect` calls this
 // rather than the trait method directly, because trait dispatch resolves on params
@@ -104,6 +111,48 @@ impl Reflect for List(a) where a: Reflect:
 impl Reflect for Option(a) where a: Reflect:
     fn reflect(self) -> Mirror:
         reflect_option(self)
+
+// Reflect a `Result` to an `Ok`/`Err` `MVariant`. Like `Option`, payloads flow
+// through 0-or-1-element lists so trait dispatch happens on loop variables under
+// the relevant `where` bound instead of on a match binding.
+pub fn reflect_result(r: Result(a, e)) -> Mirror where a: Reflect, e: Reflect:
+    var ok_payloads = []
+    for x in result_ok_list(r):
+        ok_payloads = list.push(ok_payloads, reflect(x))
+    if !list.is_empty(ok_payloads):
+        MVariant("Result", "Ok", ok_payloads)
+    else:
+        var err_payloads = []
+        for err in result_err_list(r):
+            err_payloads = list.push(err_payloads, reflect(err))
+        MVariant("Result", "Err", err_payloads)
+
+fn result_ok_list(r: Result(a, e)) -> List(a):
+    match r:
+        Ok(v) -> [v]
+        Err(_e) -> []
+
+fn result_err_list(r: Result(a, e)) -> List(e):
+    match r:
+        Ok(_v) -> []
+        Err(e) -> [e]
+
+impl Reflect for Result(a, e) where a: Reflect, e: Reflect:
+    fn reflect(self) -> Mirror:
+        reflect_result(self)
+
+// A `Set` reflects to the same `MList` shape as its insertion-order `to_list`
+// view. Reflection is an encoding protocol, not a reconstruction protocol, so
+// JSON sees a set as an array and `derive(Deserialize)` remains per-type.
+pub fn reflect_set(s: Set(a)) -> Mirror where a: Reflect:
+    var out = []
+    for x in set.to_list(s):
+        out = list.push(out, reflect(x))
+    MList(out)
+
+impl Reflect for Set(a) where a: Reflect:
+    fn reflect(self) -> Mirror:
+        reflect_set(self)
 
 // A `Dict` reflects to an `MRecord` — the same shape a record uses, so `json`
 // encodes it as an object and `debug` renders it record-style. Each key is

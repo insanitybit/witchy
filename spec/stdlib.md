@@ -1809,7 +1809,7 @@ A uniformly-chosen element of `xs` (None if empty) and the next state.
 
 ## `reflect`
 
-Reflection: a value's structure as data, so one function can work over any type. `reflect(x)` returns a `Mirror` describing `x`: a record's named fields, a sum type's variant, a list's elements, or a scalar. Code that would otherwise need a per-type `derive` (JSON encoding, debug rendering, structural diffing) is written once against `Mirror`. Scalars and the built-in containers (`List`, `Option`, tuples, `Dict`) are reflectable out of the box; a user `type` becomes reflectable when you add `derive(Reflect)` to it (which needs `import reflect`), much like Zig's `@typeInfo` but opt-in per type — so `reflect(x)` / `json.stringify(x)` work without a per-type macro once the type derives it.
+Reflection: a value's structure as data, so one function can work over any type. `reflect(x)` returns a `Mirror` describing `x`: a record's named fields, a sum type's variant, a list's elements, or a scalar. Code that would otherwise need a per-type `derive` (JSON encoding, debug rendering, structural diffing) is written once against `Mirror`. Scalars and the built-in containers (`List`, `Option`, `Result`, `Set`, tuples, `Dict`) are reflectable out of the box; a user `type` becomes reflectable when you add `derive(Reflect)` to it (which needs `import reflect`), much like Zig's `@typeInfo` but opt-in per type — so `reflect(x)` / `json.stringify(x)` work without a per-type macro once the type derives it.
 
 `reflect` is a trait method; `derive(Reflect)` generates `impl Reflect for T`, building the `Mirror` from the declared fields and variants. The scalar impls below are the leaves.
 
@@ -1844,6 +1844,14 @@ Reflect an `Option` to a `Some`/`None` `MVariant`. The payload reflects through 
 #### `fn reflect_list(xs: List(a)) -> Mirror where a: Reflect`
 
 Reflect a list of `Reflect` elements. This is a free function rather than an `impl Reflect for List(a)` because method dispatch on a `List` receiver binds to the `list` module, so the generated `reflect` for a record's List field calls this.
+
+#### `fn reflect_result(r: Result(a, e)) -> Mirror where a: Reflect, e: Reflect`
+
+Reflect a `Result` to an `Ok`/`Err` `MVariant`. Like `Option`, payloads flow through 0-or-1-element lists so trait dispatch happens on loop variables under the relevant `where` bound instead of on a match binding.
+
+#### `fn reflect_set(s: Set(a)) -> Mirror where a: Reflect`
+
+A `Set` reflects to the same `MList` shape as its insertion-order `to_list` view. Reflection is an encoding protocol, not a reconstruction protocol, so JSON sees a set as an array and `derive(Deserialize)` remains per-type.
 
 #### `fn reflect_dict(d: Dict(k, v)) -> Mirror where k: Reflect, v: Reflect`
 
