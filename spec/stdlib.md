@@ -1578,7 +1578,7 @@ Render a structured type back to source text only when generated source needs to
 
 #### `fn derive_show(t: TypeInfo) -> String`
 
-`derive(Show)` → a field-wise structural render: the constructor name, then each field/payload rendered through its own `Show` impl (so a record renders as `Name(f1, f2)` and a sum type matches the variant). This matches `__render`'s output byte-for-byte (each builtin `Show` mirrors the value's `Display`) but, unlike routing through `__render`, it COMPILES on both backends for a generic type — the same field-wise technique `derive(PartialEq)` uses. A generic type's parameters carry a `: Show` bound, so decoding each field is coherent.
+`derive(Show)` -> constructor-shaped rendering with each field/payload rendered through its own `Show` impl. Primitive fields still match `__render`, while fields with custom `Show` keep their public display form. Generic parameters carry a `: Show` bound, so the same code path compiles coherently on both backends.
 
 #### `fn derive_eq(t: TypeInfo) -> String`
 

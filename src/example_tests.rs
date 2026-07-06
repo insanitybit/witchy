@@ -785,14 +785,14 @@
 
     /// (RFC-0053, parity) Interpolation (`"${x}"`) honors a CUSTOM `Show` impl, exactly
     /// as `say` does — the typed lowering rewrites `__render(x)` to `show(x)` when x's
-    /// type renders differently than its structural form (a hand-written `impl Show`,
-    /// `Duration`, or a container of those), while derived-`Show` and primitive types
-    /// keep the structural render unchanged. Both backends must agree byte-for-byte.
+    /// type has a public `Show` model. Primitive-derived values may print the same
+    /// bytes as the structural fallback, but they still share the `Show` path when
+    /// `show` is linked. Both backends must agree byte-for-byte.
     #[test]
     fn rfc0053_interpolation_honors_custom_show_on_both_backends() {
         let src = "import show\nimport duration\n\ntype P:\n    P(Int)\n\nimpl Show for P:\n    fn show(self) -> String:\n        match self:\n            P(n) -> \"P<${n}>\"\n\ntype Q derive(Show):\n    Q(Int)\n\nfn main(console: Console):\n    print(console, \"${P(5)}\")\n    print(console, \"${[P(1), P(2)]}\")\n    print(console, \"${90000ms}\")\n    print(console, \"${Q(7)}\")\n    print(console, \"${42}\")\n";
-        // custom Show honored; container recurses; Duration -> human; derived/primitive
-        // unchanged.
+        // custom Show honored; container recurses; Duration -> human; primitive
+        // derived Show remains constructor-shaped by its generated implementation.
         let expected = ["P<5>", "[P<1>, P<2>]", "1m30s", "Q(7)", "42"];
         assert_eq!(link_run(src), expected, "interp: interpolation honors custom Show");
         assert_eq!(
@@ -831,6 +831,26 @@
             run_linked_on_wasm(&[("main", no_show)], "main"),
             structural,
             "compiled: no linked show keeps structural fallback",
+        );
+    }
+
+    /// (RFC-0053, coherence) `derive(Show)` is not a second rendering protocol.
+    /// Its generated body renders fields through `Show`, so interpolation must
+    /// agree with `show.say` for derived values containing custom-Show fields and
+    /// for containers of those derived values.
+    #[test]
+    fn rfc0053_derived_show_fields_use_show_in_interpolation_on_both_backends() {
+        let src = "import show\n\ntype Label:\n    Label(String)\n\nimpl Show for Label:\n    fn show(self) -> String:\n        match self:\n            Label(s) -> \"<\" + s + \">\"\n\ntype Box derive(Show):\n    label: Label\n\nfn main(console: Console):\n    let b = Box(Label(\"x\"))\n    print(console, \"${Label(\"x\")}\")\n    show.say(console, Label(\"x\"))\n    print(console, \"${b}\")\n    show.say(console, b)\n    print(console, \"${[b]}\")\n    show.say(console, [b])\n";
+        let expected = ["<x>", "<x>", "Box(<x>)", "Box(<x>)", "[Box(<x>)]", "[Box(<x>)]"];
+        assert_eq!(
+            link_run(src),
+            expected,
+            "interp: derived Show fields must use field Show impls",
+        );
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: derived Show fields must use field Show impls",
         );
     }
 

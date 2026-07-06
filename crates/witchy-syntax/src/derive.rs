@@ -45,13 +45,6 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
         if derives.iter().any(|d| d == "PartialEq" || d == "Eq") {
             t.partial_eq_derived = true;
         }
-        // (RFC-0053) Record that this type's `Show` is the STRUCTURAL derive, so the
-        // interpolation-flip keeps `"${x}"` on the fast structural path (a custom
-        // hand-written `impl Show` leaves this false and IS honored by `${}`). Set
-        // before the loop so it survives the idempotent empty-`derives` re-run.
-        if derives.iter().any(|d| d == "Show") {
-            t.show_derived = true;
-        }
         for d in &derives {
             match d.as_str() {
                 "Show" => {
