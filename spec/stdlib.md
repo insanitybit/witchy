@@ -883,6 +883,8 @@ A type an iterator can be collected INTO. `from_iter` mentions the implementing 
 
 - `fn from_iter(it: Iter(e)) -> Self`
 
+#### `fn next(it: Iter(a)) -> Step(a)`
+
 #### `fn empty() -> Iter(a)`
 
 The empty iterator.

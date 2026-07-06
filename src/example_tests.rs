@@ -13332,6 +13332,27 @@ fn main(console: Console):
         assert_eq!(compiled, vec!["1 2 3 2 4".to_string()]);
     }
 
+    /// `iter.next` is the documented low-level pull primitive. It must be a real
+    /// public API, not just an internal helper reachable only because privacy was
+    /// previously unenforced.
+    #[test]
+    fn std_iter_next_is_public_pull_api() {
+        let client = r#"
+import iter
+fn main(console: Console):
+    match iter.next(iter.from_list([1, 2])):
+        Empty -> print(console, "empty")
+        Item(x, rest) ->
+            print(console, "${x}")
+            match iter.next(rest):
+                Empty -> print(console, "empty")
+                Item(y, _more) -> print(console, "${y}")
+"#;
+        let want = vec!["1", "2"];
+        assert_eq!(link_run(client), want, "interpreter");
+        assert_eq!(wasm_run(client), want, "wasm");
+    }
+
     /// The `std/iter` adapters `enumerate`/`zip`/`chain`/`flat_map`/`for_each`
     /// (plus `func.first`/`second` for the pairs they produce) must agree on both
     /// backends — they compose lazily over finite and infinite iterators.

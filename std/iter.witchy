@@ -20,7 +20,7 @@ type Step:
 type Iter:
     Iter(fn() -> Step(a))
 
-fn next(it: Iter(a)) -> Step(a):
+pub fn next(it: Iter(a)) -> Step(a):
     match it:
         Iter(thunk) -> thunk()
 
