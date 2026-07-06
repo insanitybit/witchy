@@ -429,6 +429,24 @@ impl<'a> Scope<'a> {
         for item in &mut m.items {
             match item {
                 Item::Type(t) => {
+                    // A user type may not redeclare an ambient name (a primitive,
+                    // a host capability, or a prelude type like `Option`/`Set`/
+                    // `Ordering`): the declaration would be accepted but its
+                    // constructors would be unreachable by any spelling, since a
+                    // bare `Secret`/`Set`/… resolves to the ambient built-in
+                    // (BUG-289). The canonical std declarers (`cmp`/`set`/`iter`/
+                    // `option`/`result`/`policy`) legitimately declare theirs.
+                    if is_ambient_type(&t.name)
+                        && !is_synthetic_type(&t.name)
+                        && !crate::linker::STD_MODULES.contains(&self.home)
+                    {
+                        return lerr(format!(
+                            "type `{name}` shadows the ambient built-in name `{name}` — rename it \
+                             (a user type may not redeclare a primitive, capability, or prelude \
+                             type; its constructors would be unreachable)",
+                            name = t.name
+                        ));
+                    }
                     // Canonicalize the declaration itself (unless ambient or a
                     // compiler synthetic like `__anonN`, whose constructions stay
                     // bare — canonicalizing the def would strand them).
@@ -864,6 +882,24 @@ mod tests {
         ])
         .unwrap_err();
         assert!(err.message.contains("ambient prelude name `Ordering`"), "{}", err.message);
+    }
+
+    #[test]
+    fn user_type_shadowing_ambient_name_is_rejected() {
+        // BUG-289: a user module declaring `type Secret`/`type Set`/… is a loud
+        // error (its constructors would be unreachable), while the canonical std
+        // declarer (`cmp`) may still declare `type Ordering`.
+        for ambient in ["Secret", "Set", "Iter", "Ordering"] {
+            let src = format!("type {ambient}:\n    Wrapped(Int)\n");
+            let err = resolve_src(&[("main", &src)]).unwrap_err();
+            assert!(
+                err.message.contains(&format!("type `{ambient}` shadows the ambient built-in name")),
+                "{ambient}: {}",
+                err.message
+            );
+        }
+        // A std module keeps declaring its own ambient type.
+        resolve_src(&[("cmp", CMP_STUB)]).expect("cmp may declare Ordering");
     }
 }
 
