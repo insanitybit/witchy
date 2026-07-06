@@ -268,6 +268,44 @@
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
+    /// (BUG-208, parity) A REORDERED labeled call whose reorder crosses a `var`
+    /// parameter must still write back. The desugar temp-bound every reordered
+    /// argument to an immutable `let __kwN`, so a `var` argument became ill-typed
+    /// ("must be a mutable `var`") and leaked the synthetic `__kwN` into the error —
+    /// legality depended on the order the labels were written. A `var` argument is a
+    /// bare mutable variable with no evaluation effect, so it is now passed directly.
+    #[test]
+    fn keyword_args_var_reorder_writes_back() {
+        // Reordered (`by:` before `xs:`) and in-order both mutate the caller's `var`.
+        let reordered = "fn bump(var xs: List(Int), by: Int):\n    xs.push(by)\n    let _ = 0\n\nfn main(console: Console):\n    var xs: List(Int) = []\n    bump(by: 5, xs: xs)\n    bump(by: 7, xs: xs)\n    print(console, __render(xs))\n";
+        assert_eq!(link_run(reordered), ["[5, 7]"], "interp reordered var write-back");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", reordered)], "main"),
+            ["[5, 7]"],
+            "compiled reordered var write-back must agree",
+        );
+        // A reordered `own`/`move` argument still moves correctly (temp path intact).
+        let owned = "fn eat(own s: String, n: Int) -> String:\n    string.repeat(s, n)\n\nfn main(console: Console):\n    let s = \"ab\"\n    print(console, eat(n: 3, s: move s))\n";
+        assert_eq!(link_run(owned), ["ababab"], "interp reordered own/move");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", owned)], "main"),
+            ["ababab"],
+            "compiled reordered own/move must agree",
+        );
+        // A genuinely non-mutable argument to a `var` param is still rejected — but
+        // the diagnostic names the USER's variable, never a synthetic `__kwN` temp.
+        let bad = "fn bump(var xs: List(Int), by: Int):\n    xs.push(by)\n    let _ = 0\n\nfn main(console: Console):\n    let ys: List(Int) = []\n    bump(by: 5, xs: ys)\n    print(console, __render(ys))\n";
+        let module = parser::parse_module(bad).expect("parse");
+        // `keyword_args::resolve` runs inside `pipeline::link`; the reorder now passes
+        // the `var` argument directly, so typeck (not the desugar) reports the error.
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
+        let err = typeck::check(&linked)
+            .expect_err("a `let` bound to a `var` param must be rejected")
+            .message;
+        assert!(err.contains("ys"), "diagnostic must name the user's variable: {err}");
+        assert!(!err.contains("__kw"), "diagnostic must not leak a `__kwN` temp: {err}");
+    }
+
     /// (RFC-0056) A labeled call evaluates its arguments in SOURCE order, not
     /// declared order: the desugar binds each written argument to a temp in the
     /// order written, then passes the temps in declared order. Here `b:` is written
