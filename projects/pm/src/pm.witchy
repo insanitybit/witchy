@@ -130,13 +130,16 @@ fn cmd_info(console: Console, root: Dir, dir: String):
 fn cmd_run(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, clock: Clock, args: List(String)) -> Int:
     let target = arg(args, 1)
     let dir = if string.is_empty(target): "." else: target
+    // BUG-102: everything after `run <file|dir>` is the program's own argv and must
+    // be forwarded to the sandboxed run, not dropped.
+    let app_args = args_from(args, 2)
     if exists(root, join_path(dir, "witchy.toml")):
-        run_project(console, runner, root, bin, dir)
+        run_project(console, runner, root, bin, dir, app_args)
     else if string.is_empty(target):
         print(console, "usage: pm run <file|dir>")
         1
     else:
-        run_compiler(console, runner, bin, "run", [target])
+        run_compiler(console, runner, bin, "run", flatten_argv([target], app_args))
 
 // build <file|dir> — compile a program (and its vendored deps) to verify it builds.
 fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, args: List(String)) -> Int:
@@ -171,7 +174,7 @@ fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, args
 // that holds both the app and its siblings). Without the explicit `--dir`, the
 // program's data Dir would default to pm's cwd — too wide when pm runs from a
 // workspace root, and missing the project's data files (e.g. `tasks.md`).
-fn run_project(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String) -> Int:
+fn run_project(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, app_args: List(String)) -> Int:
     match project_entry(root, dir):
         None ->
             print(console, "no entry source under " + join_path(dir, "src"))
@@ -181,9 +184,9 @@ fn run_project(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String)
             if steps.0 != 0:
                 steps.0
             else:
-                compile_then_run(console, runner, root, bin, dir, entry, steps.1)
+                compile_then_run(console, runner, root, bin, dir, entry, steps.1, app_args)
 
-fn compile_then_run(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, entry: String, build_flags: List(String)) -> Int:
+fn compile_then_run(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, entry: String, build_flags: List(String), app_args: List(String)) -> Int:
     let outdir = join_path(dir, "target")
     if !exists(root, outdir):
         make_dir(root, outdir)
@@ -195,7 +198,8 @@ fn compile_then_run(console: Console, runner: Exec, root: Dir, bin: Dir, dir: St
         print(console, built.1)
         built.0
     else:
-        run_compiler(console, runner, bin, "run", ["sandbox", "--dir", project_data_dir(dir), wasm])
+        // BUG-102: forward the program's own argv after the sandboxed wasm.
+        run_compiler(console, runner, bin, "run", flatten_argv(["sandbox", "--dir", project_data_dir(dir), wasm], app_args))
 
 // The directory backing the program's runtime `Dir` grant — the project itself
 // (`.` when pm is run from inside the project, `<dir>` when run from a workspace
@@ -1345,7 +1349,7 @@ fn cmd_gate(console: Console, root: Dir, args: List(String)) -> Int:
     else:
         let manifest = read(root, join_path(dir, "witchy.toml"))
         let lock = read(root, join_path(dir, "witchy.lock"))
-        let baseline = union_all(lock_baseline(lock), allowed_from(args, 2))
+        let baseline = union_all(lock_baseline(lock), args_from(args, 2))
         let demanded = resolution_footprint(root, dir, manifest)
         report_gate(console, root, dir, manifest, rights.uncovered(baseline, demanded))
 
@@ -1388,7 +1392,10 @@ fn gate_contributors(root: Dir, dir: String, manifest: String, cap: String) -> L
                 who = list.push(who, name)
     who
 
-fn allowed_from(let args: List(String), start: Int) -> List(String):
+// The arguments at index `start` and beyond (a positional slice). Used both to
+// collect a gate's trailing accepted-cap list and to forward a program's own argv
+// after `pm run <file|dir>` (BUG-102).
+fn args_from(let args: List(String), start: Int) -> List(String):
     var out = []
     var i = 0
     for a in args:
