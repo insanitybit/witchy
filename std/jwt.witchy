@@ -24,15 +24,36 @@ pub fn verify_rs256(token: String, rsa_pubkey_der_hex: String, audience: String,
     if list.length(parts) != 3:
         Err("malformed JWT: expected three `.`-separated segments")
     else:
-        let signed = list.at(parts, 0) + "." + list.at(parts, 1)
-        // A malformed signature segment is a distinct, reachable error — not a
-        // silent truncation to garbage bytes that would later read as "signature
-        // invalid". Rejecting on the decode error is the safe direction.
-        let sig_hex = encoding.base64url_to_hex(list.at(parts, 2)).map_err(fn(e: String): "JWT signature segment is malformed: " + e)?
-        if !crypto.rsa_pkcs1_sha256_verify(rsa_pubkey_der_hex, signed, sig_hex):
-            Err("JWT signature is invalid (untrusted or forged)")
+        // Pin the algorithm: the JOSE header's `alg` MUST be exactly `RS256`. An
+        // attacker-chosen `alg` (`none`, a symmetric alg, a downgrade) is refused
+        // here rather than trusted — algorithm confusion is defended by failing
+        // closed on anything but RS256, never by honouring the header (BUG-250,
+        // RFC 8725 §3.1).
+        let alg = header_alg(list.at(parts, 0))?
+        if alg != "RS256":
+            Err("JWT `alg` is `" + alg + "`, not the required `RS256`")
         else:
-            check_claims(list.at(parts, 1), audience, now)
+            let signed = list.at(parts, 0) + "." + list.at(parts, 1)
+            // A malformed signature segment is a distinct, reachable error — not a
+            // silent truncation to garbage bytes that would later read as "signature
+            // invalid". Rejecting on the decode error is the safe direction.
+            let sig_hex = encoding.base64url_to_hex(list.at(parts, 2)).map_err(fn(e: String): "JWT signature segment is malformed: " + e)?
+            if !crypto.rsa_pkcs1_sha256_verify(rsa_pubkey_der_hex, signed, sig_hex):
+                Err("JWT signature is invalid (untrusted or forged)")
+            else:
+                check_claims(list.at(parts, 1), audience, now)
+
+// The `alg` from a compact JWT's base64url header segment, or an `Err` if the
+// header is not valid base64url/JSON or carries no `alg`. A missing `alg` is an
+// error (fail closed), not a default.
+fn header_alg(header_b64: String) -> Result(String, String):
+    let header_json = encoding.base64url_decode(header_b64).map_err(fn(e: String): "JWT header is not valid base64url: " + e)?
+    match json.decode(header_json):
+        Err(e) -> Err("JWT header is not JSON: " + e)
+        Ok(h) ->
+            match json.get_string(h, "alg"):
+                Some(a) -> Ok(a)
+                None -> Err("JWT header is missing `alg`")
 
 // Decode and validate the payload's registered claims: `exp` not in the past, and the
 // audience matches (defends against a token minted for a different relying party).
