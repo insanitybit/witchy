@@ -47,16 +47,13 @@ fn export_cap_of<'a>(f: &'a Function, module: &'a Module) -> Option<(&'a str, us
     Some((cap, nfields))
 }
 
-fn reachable_functions(module: &Module) -> HashSet<String> {
-    reachable_functions_with(module, &[])
-}
-
-/// [`reachable_functions`] plus `extra_roots` — additional reachability roots for
-/// functions a reached AST body does not name directly. (RFC-0047) A container
-/// `==` over a CUSTOM-`PartialEq` element type calls that type's `PartialEq__T__eq`
-/// from a codegen-synthesized eq helper, so the call is invisible to the AST walk;
-/// seeding those impls as roots keeps them (and their transitive callees) emitted,
-/// so the honored-at-every-depth guarantee holds for the compiled backend too.
+/// The functions reachable from `main` (+ string-export roots), plus `extra_roots`
+/// — additional reachability roots for functions a reached AST body does not name
+/// directly. (RFC-0047) A container `==` over a CUSTOM-`PartialEq` element type
+/// calls that type's `PartialEq__T__eq` from a codegen-synthesized eq helper, so the
+/// call is invisible to the AST walk; seeding those impls as roots keeps them (and
+/// their transitive callees) emitted, so the honored-at-every-depth guarantee holds
+/// for the compiled backend too.
 fn reachable_functions_with(module: &Module, extra_roots: &[String]) -> HashSet<String> {
     let mut bodies: HashMap<&str, &Block> = HashMap::new();
     for item in &module.items {
