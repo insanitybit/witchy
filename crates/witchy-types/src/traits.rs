@@ -308,6 +308,34 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         .collect();
     items.extend(generated.into_iter().map(Item::Function));
 
+    // (RFC-0053) The set of user types whose `Show` is CUSTOM (hand-written), so
+    // interpolation flips `__render(x)` to `show(x)` for them (and containers of
+    // them) — see `Ctx::custom_show`. A type is custom-Show when its lowered
+    // `Show__T__show` exists AND it did NOT `derive(Show)` (the derived render is
+    // structural — identical to `__render` — so flipping it would only cost perf).
+    // `Duration` (a built-in with a hand-written `impl Show`) is recognised in the
+    // predicate itself, gated on its impl being linked (`lookup_impl`).
+    let custom_show: std::collections::HashSet<String> = {
+        let show_fns: std::collections::HashSet<&str> = items
+            .iter()
+            .filter_map(|it| match it {
+                Item::Function(f) => Some(f.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        items
+            .iter()
+            .filter_map(|it| match it {
+                Item::Type(t) if !t.show_derived
+                    && show_fns.contains(format!("Show__{}__show", t.name).as_str()) =>
+                {
+                    Some(t.name.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    };
+
     // Phase 0 (typed lowering): annotate this exact items instance so
     // monomorphization can resolve type arguments the head-name scope cannot
     // (e.g. `dict.get(d, k)` needs `v` from `d: Dict(String, String)`).
@@ -357,6 +385,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             returns_nil: &returns_nil,
             discard_errors: &discard_errors,
             table: &empty_table,
+            custom_show: &custom_show,
             bound_traits: std::cell::RefCell::new(HashMap::new()),
         };
         for item in &mut items {
@@ -580,6 +609,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         returns_nil: &returns_nil,
         discard_errors: &discard_errors,
         table: &type_table,
+        custom_show: &custom_show,
         bound_traits: std::cell::RefCell::new(HashMap::new()),
     };
     for item in &mut items {
@@ -801,6 +831,17 @@ struct Ctx<'a> {
     discard_errors: &'a std::cell::RefCell<Vec<String>>,
     /// typeck's resolved types — receiver typing for method resolution.
     table: &'a crate::typeck::TypeTable,
+    /// (RFC-0053) User type names whose `Show` impl is CUSTOM (hand-written, not
+    /// the structural `derive(Show)`). Interpolation (`"${x}"`/`to_string`, both
+    /// desugared to `__render`) flips `__render(x)` to `show(x)` when x's concrete
+    /// type renders non-structurally — a member here, `Duration` (human `1m30s` vs
+    /// raw ms), or a container whose element does — so `"${x}"` honors a custom
+    /// `Show` exactly like `say`, on BOTH backends (the flip is one rewrite the
+    /// existing `show` dispatch then resolves — parity by construction). A derived
+    /// (structural) or absent `Show` is NOT here, so the common case keeps the fast
+    /// structural render, byte-identical to before. Mirrors the interpreter's/
+    /// codegen's `custom_eq` distinction that RFC-0047 proved out.
+    custom_show: &'a std::collections::HashSet<String>,
     /// The current function's type-variable bounds (var -> trait names), so a
     /// comparison operator on a type-variable operand desugars to a trait call
     /// ONLY when that variable is bound by the relevant comparison trait — an
@@ -867,6 +908,54 @@ impl Ctx<'_> {
                     .map(|(_, v)| v)
             })
             .cloned()
+    }
+
+    /// (RFC-0053) Whether a value of scope-type `sn` renders DIFFERENTLY through
+    /// its `Show` impl than through the structural `__render` — the predicate that
+    /// decides whether interpolation flips `__render(x)` to `show(x)`. TRUE for a
+    /// custom (non-derived) `Show` type, `Duration` (human `1m30s` vs raw ms), and
+    /// a CONTAINER whose element renders differently (recursive, via the encoded
+    /// element scope-name). FALSE for primitives (their `Show` IS the structural
+    /// form) and derived-`Show` types — so the common `"${int}"`/`"${derived}"`
+    /// path stays on the fast structural render, no dispatch, zero behaviour change.
+    /// A type variable (lowercase head) is FALSE: its rendering is decided per
+    /// specialization, and an unbounded one has no `Show` to flip to.
+    fn renders_nonstructurally(&self, sn: &str) -> bool {
+        let head = head_of(sn);
+        match head {
+            "Int" | "Float" | "Bool" | "String" | "Nil" | "Bytes" => false,
+            "Duration" => true,
+            // Single-element containers: flip only when the element flips.
+            "List" | "Set" | "Option" => {
+                generic_arg(sn).is_some_and(|e| self.renders_nonstructurally(e))
+            }
+            // Dict / Result carry two type arguments; flip when EITHER flips.
+            "Dict" | "Result" => {
+                tuple_args(sn).is_some_and(|args| args.iter().any(|a| self.renders_nonstructurally(a)))
+            }
+            h if h.starts_with("Tuple") => {
+                tuple_args(sn).is_some_and(|args| args.iter().any(|a| self.renders_nonstructurally(a)))
+            }
+            // A user record/ADT: flips exactly when it has a custom (non-derived)
+            // `Show`. A type-variable head is lowercase and never in the set.
+            _ => self.custom_show.contains(head),
+        }
+    }
+
+    /// (RFC-0053) If interpolating `arg` should flip to `show(arg)`, the mangled
+    /// `show` impl to dispatch it to — `Some` only when `arg`'s concrete type
+    /// renders non-structurally AND its `Show` impl is actually linked (so the
+    /// rewrite always resolves; a Duration in a program that never linked
+    /// `Show for Duration` keeps the structural render rather than dangling).
+    fn render_flip(&self, arg: &Expr, scope: &Scope) -> Option<String> {
+        let sn = self.type_name(arg, scope)?;
+        if self.renders_nonstructurally(&sn) {
+            // The container blanket (`Show__List__show`) or the concrete impl
+            // (`Show__Duration__show`, `Show__P__show`) must exist to dispatch to.
+            self.lookup_impl("show", head_of(&sn))
+        } else {
+            None
+        }
     }
 
     /// Record the current function's type-variable bounds, so the operator
@@ -1137,6 +1226,25 @@ impl Ctx<'_> {
             Expr::Call { name, args } => {
                 for a in args.iter_mut() {
                     self.rewrite_expr(a, scope);
+                }
+                // (RFC-0053) The interpolation flip. `"${x}"`/`to_string` desugar
+                // to `__render(x)` (a structural renderer). When x's concrete type
+                // renders DIFFERENTLY through a custom `Show` — a hand-written impl,
+                // `Duration`, or a container of such — rewrite the call to the
+                // resolved `show` impl so `"${x}"` honours `Show` exactly like `say`
+                // does. The SAME rewrite feeds both backends (the interpreter and
+                // codegen just call the resolved function), so the two agree by
+                // construction. Primitives and derived-`Show` types stay `__render`
+                // (their `Show` IS the structural form) — zero behaviour/perf change
+                // for the common case. Done here, PRE-monomorphization, so a
+                // container's generic blanket (`Show__List__show`) is specialized to
+                // its element by the same fixpoint that specializes every other
+                // bounded call.
+                if name == "__render" && args.len() == 1 {
+                    if let Some(mangled) = self.render_flip(&args[0], scope) {
+                        *name = mangled;
+                    }
+                    return;
                 }
                 // A call on a bound LOCAL (a function-typed parameter, a `let`
                 // holding a closure) is a first-class invocation — never a
