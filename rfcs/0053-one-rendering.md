@@ -31,6 +31,20 @@ implementation-notes: |
     custom-Show types in examples/durations, examples/display, book/tour-values,
     book/tour-generics; delete show.show_list + set.show workarounds (break-don't-
     deprecate) and rewrite their callers to `${xs}`/say; add differential tests.
+  EXACT HOOK (pinned 2026-07-06): typeck.rs:2998 — inside the `__render` arg check,
+  `at` (= self.infer(arg)) ALREADY holds x's concrete type. Two parity-coupled edits,
+  both keyed on the SAME fact "does this type have a Show impl in the linked program":
+    (1) INTERP: interpreter.rs:1222 `__render` currently returns `one(args)?.to_string()`
+        (structural Display for Value). Change: if the value's type has a Show impl ->
+        call it (mirror how `say`/`show(x)` dispatches), else Display.
+    (2) COMPILED: the ts_helpers per-shape renderer (codegen/mod.rs ~698-810) — when it
+        monomorphizes the renderer for a shape whose type has a Show impl, emit a CALL to
+        that impl instead of the structural walk.
+  Both must use the identical "type has Show impl" predicate so they agree -> parity.
+  The `show(x)` dispatch already works (say uses it), so reuse it; only impl-LESS types
+  keep the structural __render (the smaller cut — no need for "every type gets derived
+  Show"). Then blast radius (Duration + custom-Show in examples/durations, examples/
+  display, book/tour-values, book/tour-generics; delete show.show_list + set.show).
   LESSON: this class of deep central change is NOT feasible for Opus-4.8 agents (the
   600s stream watchdog kills them mid-integration; agent acc99b35 died at 0 commits).
 
