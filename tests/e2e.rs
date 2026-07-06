@@ -4033,3 +4033,54 @@ fn run_forwards_net_grant_to_the_sandboxed_app() {
         stderr(&denied),
     );
 }
+
+/// (BUG-100) A dependency's build step generates source that the consumer imports;
+/// the front-end audits each generated file and emits one `--dep <module>=<path>`
+/// per module (`audit_then_flags`). Those flags must be de-duped by module name —
+/// `dep_flag` is idempotent — so a build that emits several modules yields exactly
+/// one flag each, and the consumer links and runs against the generated code. This
+/// exercises the build-step → audit → compile path end to end.
+#[test]
+fn build_step_generated_deps_link_and_run() {
+    let work = unique("build-step-deps");
+    let app = work.join("app");
+    let lib = work.join("genlib");
+    std::fs::create_dir_all(app.join("src")).unwrap();
+    std::fs::create_dir_all(lib.join("src")).unwrap();
+
+    // The app depends on `genlib` and accepts its build step (empty grants section
+    // permits only the confined BuildOut sandbox).
+    std::fs::write(
+        app.join("witchy.toml"),
+        "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"genlib\" = { path = \"../genlib\" }\n\n[build.grants.\"genlib\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("src/app.witchy"),
+        "import genmod\nimport genmod2\n\nfn main(console: Console):\n    print(console, __render(genmod.value() + genmod2.value()))\n",
+    )
+    .unwrap();
+
+    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"genlib\"\nversion = \"0.1.0\"\n").unwrap();
+    std::fs::write(lib.join("src/genlib.witchy"), "pub fn placeholder() -> Int:\n    0\n").unwrap();
+    // The build step emits TWO modules; audit_then_flags must produce one --dep per
+    // module (deduped by name), not duplicates.
+    std::fs::write(
+        lib.join("src/build.witchy"),
+        "fn build(out: BuildOut):\n    write_out(out, \"genmod.witchy\", \"pub fn value() -> Int:\\n    40\\n\")\n    write_out(out, \"genmod2.witchy\", \"pub fn value() -> Int:\\n    2\\n\")\n",
+    )
+    .unwrap();
+
+    let out = Command::new(BIN)
+        .current_dir(&work)
+        .args(["run", "app"])
+        .output()
+        .expect("spawn witchy run");
+    assert!(
+        out.status.success() && stdout(&out).contains("42"),
+        "app must link + run against the generated modules: status {:?} stdout {} stderr {}",
+        out.status.code(),
+        stdout(&out),
+        stderr(&out),
+    );
+}

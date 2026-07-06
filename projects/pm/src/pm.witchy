@@ -289,8 +289,16 @@ fn push_path_dep(root: Dir, dir: String, flags: List(String), pair: (String, Str
                     None -> flags
             None -> flags
 
+// Append one `--dep <name>=<src>`, de-duped by name: a module already carrying a
+// `--dep` flag is left untouched, so a build step that emits several generated
+// files sharing a module stem (BUG-100) — or a diamond that resolves the same base
+// twice — yields exactly one flag per module, not duplicates. This is the single
+// choke point every `--dep` producer routes through.
 fn dep_flag(flags: List(String), name: String, src: String) -> List(String):
-    list.push(list.push(flags, "--dep"), name + "=" + src)
+    if has_dep(flags, name):
+        flags
+    else:
+        list.push(list.push(flags, "--dep"), name + "=" + src)
 
 // Whether a `--dep <name>=...` flag is already present.
 fn has_dep(flags: List(String), name: String) -> Bool:
