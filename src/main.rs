@@ -2655,17 +2655,24 @@ fn run_wasm_module(
     use crate::runtime::{Capabilities, Runtime};
     let needs = witchy_imports(bytes)?;
     let has = |n: &str| needs.iter().any(|i| i == n);
-    let dir_read = ["dir_subdir", "dir_read_len", "dir_exists", "dir_is_dir", "dir_list_size"]
-        .iter()
-        .any(|n| has(n));
-    let dir_write = ["dir_write", "dir_append", "dir_make_dir"].iter().any(|n| has(n));
-    let net_connect = [
-        "net_connect", "net_try_connect", "net_restrict", "net_send_line", "net_send_bytes",
-        "net_recv_line_len", "net_recv_all_len", "net_recv_bytes_len", "net_close",
+    let dir_read = [
+        "dir_subdir", "dir_read_len", "dir_exists", "dir_is_dir", "dir_list_size",
+        // BUG-013: the runtime links these too — omitting them left a precompiled `.wasm`
+        // failing `unknown import: witchy::dir_*` under `--dir`.
+        "dir_only", "dir_open",
     ]
     .iter()
     .any(|n| has(n));
-    let net_listen = ["net_listen", "net_accept"].iter().any(|n| has(n));
+    let dir_write = ["dir_write", "dir_append", "dir_make_dir", "dir_create"].iter().any(|n| has(n));
+    let net_connect = [
+        "net_connect", "net_try_connect", "net_restrict", "net_send_line", "net_send_bytes",
+        "net_recv_line_len", "net_recv_all_len", "net_recv_bytes_len", "net_close",
+        // BUG-013: pinned/resolve/deny variants the runtime links but the classifier missed.
+        "net_deny", "net_resolve_size", "net_connect_pinned", "net_try_connect_pinned",
+    ]
+    .iter()
+    .any(|n| has(n));
+    let net_listen = ["net_listen", "net_accept", "serve_pool"].iter().any(|n| has(n));
     let needs_secret =
         has("crypto.sign") || has("crypto.public_key") || has("crypto.reveal") || has("secretstore_lookup");
     if needs_secret && signing_key.is_none() && named_secrets.is_empty() {
