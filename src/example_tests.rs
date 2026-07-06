@@ -444,6 +444,27 @@
         );
     }
 
+    /// (BUG-392, parity) `bytes.slice` bounds are clamped in i64 on BOTH backends.
+    /// The compiled `$bytes_slice` used to narrow `start`/`end` to i32 BEFORE
+    /// clamping, so a large positive bound wrapped negative: `slice(b, 0, 2^31)`
+    /// returned the FULL buffer on the interpreter (its `Int` clamp saw 2^31 > len)
+    /// but an EMPTY slice compiled (2^31 truncated to a negative i32 clamped up to
+    /// `lo`). Now both clamp the full `Int` first (like `$bytes_at`/`$list_at`).
+    #[test]
+    fn bytes_slice_clamps_bounds_in_i64_on_both_backends() {
+        // "hello" = 5 bytes. Large positive `end` clamps to len (full buffer);
+        // an out-of-i32-range `[start, end)` yields empty without wrapping into an
+        // in-bounds slice; a large-magnitude negative `start` clamps up to 0.
+        let src = "import bytes\n\nfn main(console: Console):\n    let b = bytes.from_string(\"hello\")\n    print(console, __render(bytes.length(bytes.slice(b, 0, 2147483648))))\n    print(console, __render(bytes.length(bytes.slice(b, 2147483648, 2147483649))))\n    print(console, __render(bytes.length(bytes.slice(b, 0 - 2147483648, 2))))\n    print(console, bytes.to_string(bytes.slice(b, 1, 3)))\n";
+        let expected = ["5", "0", "2", "el"];
+        assert_eq!(link_run(src), expected, "interp clamps bytes.slice bounds in i64");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled bytes.slice must clamp bounds in i64 like the interpreter",
+        );
+    }
+
     /// (BUG-306, parity) A user `return` inside a `gen fn` is re-expressed in terms of
     /// the generator's stream contract, NOT passed untranslated into the synthesized
     /// `-> Option(a)` helper. A bare `return` ENDS the stream (both backends), where it
