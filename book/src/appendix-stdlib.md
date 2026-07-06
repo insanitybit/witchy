@@ -21,7 +21,7 @@ always current — is
 |---|---|
 | `list` *(prelude)* | `map`, `filter`, `fold`, `zip`, `sort`, … |
 | `dict` *(prelude)* | map operations over `Dict(k, v)` |
-| `set` | the `Set(a)` type — distinct values, `union`/`intersection`/`difference`, `for x in set` iteration, and `let s: Set(Int) = iter.collect(it)` (its `FromIterator` is a conditional impl `where a: Eq`). Render a set with `set.show(s)` (`{1, 2, 3}`); `Set` is a *generic record*, so `"${s}"` interpolation works on the interpreter but not the compiled backend — use `set.show`. |
+| `set` | the `Set(a)` type — distinct values, `union`/`intersection`/`difference`, `for x in set` iteration, and `let s: Set(Int) = iter.collect(it)` (its `FromIterator` is a conditional impl `where a: Eq`). Render a set with `"${s}"` interpolation or `say(console, s)` — both work identically on both backends and honor the elements' `Show`. |
 | `string` *(prelude)* | `split`, `lines`, `join`, `trim`, case, search, … |
 | `path` | path-*string* manipulation (join, normalize, base/dir/ext) — pure; the `Dir`-using half lives in `fs` |
 | `iter` | lazy iterator combinators (`take`, `collect`, …) |
@@ -66,7 +66,7 @@ These do real I/O, so their functions take capabilities:
 | `fs` | `Dir` |
 | `http` / `server` | `Net` |
 | `crypto` | hashing, verification; signing needs a `Secret` |
-| `show` | the trait and `show_list` are pure; `say` (the Show-accepting `print`) takes a `Console` |
+| `show` | the `Show` trait (with blanket impls for the built-in containers) is pure; `say` (the Show-accepting `print`) takes a `Console`. `"${x}"` interpolation renders through `Show` too |
 
 ## Build-time intrinsics
 
@@ -78,11 +78,10 @@ chapter.
 ## A reminder about portability
 
 Most of the library works on every backend — including rendering the built-in
-compound values (lists, tuples, dicts, records, enums) with `${...}`
-interpolation, which is identical on both. A few things are interpreter-only by
-nature: Unicode-aware operations the WebAssembly backend scopes to ASCII, and
-interpolating a *generic record* such as `Set(a)` — for those the module gives
-you an explicit renderer (`set.show(s)`). The compiler stops a program that
-reaches one in code headed for the sandbox, though today that happens at run/
-compile time rather than at `witchy check`, so prefer a quick `witchy <file>`
-run to confirm a program is sandbox-clean.
+compound values (lists, tuples, dicts, records, enums, and sets) with `${...}`
+interpolation, which is identical on both. Interpolation now also honors a
+custom `Show`: `"${x}"` renders through a hand-written `impl Show` (and a
+`Duration` in its human form, `1m30s`) exactly as `say` does — see the *Show*
+appendix. A few operations remain interpreter-only by nature: the Unicode-aware
+string operations the WebAssembly backend scopes to ASCII. A quick `witchy
+<file>` run confirms a program is sandbox-clean.

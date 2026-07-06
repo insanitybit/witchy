@@ -1,13 +1,13 @@
 ---
 rfc: 0053
 title: "One rendering system: interpolation and say through Show"
-status: planned
+status: implemented
 created: 2026-07-03
 predecessors:
   - "0046 (typed trait dispatch — the bounded-impl and site-typing machinery this consumes)"
   - "0047 (equality coherence — the sibling that rejects ==(fn, fn); rendering deliberately differs, see Design)"
   - "scratch/consistency-analysis-2026-07-03.md §4 (two rendering systems with disjoint domains)"
-tracking: "blanket-Show slice shipped; interpolation flip pending"
+tracking: "IMPLEMENTED — blanket-Show + interpolation flip both shipped"
 implementation-notes: |
   IMPLEMENTATION PLAN (scoped 2026-07-06 after an agent died on the depth; do in a
   focused MAIN-LOOP session, not a watchdog-bound agent):
