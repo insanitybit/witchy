@@ -139,6 +139,10 @@ pub fn join_all(tasks: List(Future(a))) -> List(a):
 // deterministic and both backends agree. This is the `select` of structured
 // concurrency (e.g. race a task against `sleep` for a timeout).
 pub fn select(tasks: List(Future(a))) -> (Int, a):
+    if list.is_empty(tasks):
+        // No task can win a race with no entrants, and the `(Int, a)` result has
+        // no `a` to fabricate — so fail loudly rather than recurse forever.
+        fail("future.select: cannot race an empty task list")
     let polled = list.map(tasks, fn(f): poll(f))
     match first_done(polled, 0):
         Some(hit) -> hit

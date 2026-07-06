@@ -13,6 +13,17 @@ import string
 type Set(a):
     items: List(a)
 
+// Two sets are equal when they hold exactly the same members, regardless of
+// insertion order or the backing list's layout: `from_list([1, 2, 3])` equals
+// `from_list([3, 2, 1])`. Without this impl, `==` falls back to the derived
+// structural equality of the backing list (order-sensitive on the interpreter,
+// and unresolvable on the compiled backend), which is not set equality.
+impl PartialEq for Set(a) where a: Eq:
+    fn eq(self, other: Self) -> Bool:
+        is_subset(self, other) && is_subset(other, self)
+
+impl Eq for Set(a) where a: Eq
+
 // The empty set.
 pub fn new() -> Set(a):
     Set([])

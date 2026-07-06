@@ -51,7 +51,11 @@ fn component(parts: List(String), i: Int) -> Result(Int, String):
         Ok(0)
     else:
         match string.parse_int(list.at(parts, i)):
-            Some(n) -> Ok(n)
+            Some(n) ->
+                if n < 0:
+                    Err("bad version component `" + list.at(parts, i) + "`: must be non-negative")
+                else:
+                    Ok(n)
             None -> Err("bad version component `" + list.at(parts, i) + "`")
 
 pub fn format(v: Version) -> String:

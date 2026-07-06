@@ -11,6 +11,12 @@
 // Run `path` (resolved within `dir`) with `args` and `stdin`, returning
 // `(exit_code, output)`.
 pub fn run(e: Exec, dir: Dir[Read], path: String, args: List(String), stdin: String) -> (Int, String):
+    // argv is passed to the low-level primitive as a single `\0`-joined string, so
+    // an argument that itself contains a `\0` would be split into two arguments —
+    // an argument-injection. Reject it loudly (RFC-0044 rule 3).
+    for a in args:
+        if string.contains(a, "\0"):
+            fail("exec.run: an argument may not contain a NUL byte")
     let joined = list.join(args, "\0")
     let payload = exec(e, dir, path, joined, stdin)
     let nl = string.index_of(payload, "\n") ?? -1

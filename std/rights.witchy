@@ -7,6 +7,13 @@
 // only a subset — so Net[Connect] does NOT cover full Net. This rights-precision
 // is what the package manager's declared-vs-actual check and the block-on-widening
 // gate both rely on, so it lives in one tested place.
+//
+// `Net` has TWO independent axes — verbs {Connect, Listen} and transports
+// {Tcp, Udp, Uds} — and (mirroring the compiler) an axis named by NO marker in
+// the bracket means that whole axis is granted. So "Net[Connect]" is Connect over
+// ANY transport ({Connect, Tcp, Udp, Uds}) and therefore covers the narrower
+// "Net[Connect, Tcp]". Comparison expands each side's omitted axes to full before
+// testing subset; other kinds have flat rights and are compared literally.
 
 import string
 
@@ -19,7 +26,7 @@ pub fn covers(declared: String, demanded: String) -> Bool:
     else if is_full(demanded):
         false
     else:
-        subset(rights_of(demanded), rights_of(declared))
+        subset(expanded_rights(demanded), expanded_rights(declared))
 
 // Whether any capability in `declared` covers `demanded`.
 pub fn any_covers(declared: List(String), demanded: String) -> Bool:
@@ -59,6 +66,27 @@ pub fn rights_of(cap: String) -> List(String):
         let r = string.trim(part)
         if !string.is_empty(r):
             out = list.push(out, r)
+    out
+
+// The declared rights EXPANDED to fill any omitted axis with its full set — the
+// same normalization the compiler's footprint applies. For `Net`, an axis with no
+// marker present is granted whole: `Net[Connect]` -> {Connect, Tcp, Udp, Uds}.
+// Non-`Net` kinds have flat rights and pass through unchanged.
+fn expanded_rights(cap: String) -> List(String):
+    if base_name(cap) == "Net":
+        expand_net(rights_of(cap))
+    else:
+        rights_of(cap)
+
+fn expand_net(rs: List(String)) -> List(String):
+    var out = rs
+    if !member(rs, "Connect") && !member(rs, "Listen"):
+        out = list.push(out, "Connect")
+        out = list.push(out, "Listen")
+    if !member(rs, "Tcp") && !member(rs, "Udp") && !member(rs, "Uds"):
+        out = list.push(out, "Tcp")
+        out = list.push(out, "Udp")
+        out = list.push(out, "Uds")
     out
 
 fn subset(xs: List(String), ys: List(String)) -> Bool:

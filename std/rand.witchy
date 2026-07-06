@@ -27,10 +27,18 @@ pub fn bool(rand: Rand) -> Bool:
 // WebAuthn challenge, a CSRF nonce, or a session/token id wants. Draws full 64-bit
 // words and truncates to the requested length.
 pub fn hex(rand: Rand, nbytes: Int) -> String:
-    var out = ""
-    while string.length(out) < nbytes * 2:
-        out = out + word_hex(rand_u64(rand))
-    string.substring(out, 0, nbytes * 2)
+    // `nbytes * 2` (the character count) would overflow past `Int.MAX` and wrap
+    // negative, silently yielding an EMPTY string — a catastrophic result for a
+    // token/nonce. Refuse loudly instead (RFC-0044 rule 3).
+    if nbytes > 4611686018427387903:
+        fail("rand.hex: nbytes `${nbytes}` too large")
+    if nbytes <= 0:
+        ""
+    else:
+        var out = ""
+        while string.length(out) < nbytes * 2:
+            out = out + word_hex(rand_u64(rand))
+        string.substring(out, 0, nbytes * 2)
 
 // The 16 lowercase hex characters of a 64-bit word, most-significant nibble first.
 fn word_hex(n: Int) -> String:

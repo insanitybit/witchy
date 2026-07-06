@@ -322,37 +322,52 @@ pub fn split_first(it: Iter(a)) -> Option((a, Iter(a))):
 // The first element satisfying `pred`, or None (stops at the first match, so it
 // is safe on an unbounded iterator if a match exists).
 pub fn find(it: Iter(a), pred: fn(a) -> Bool) -> Option(a):
-    match next(it):
-        Empty -> None
-        Item(x, rest) ->
-            if pred(x):
-                Some(x)
-            else:
-                find(rest, pred)
+    var cur = it
+    var more = true
+    while more:
+        match next(cur):
+            Empty -> more = false
+            Item(x, rest) ->
+                if pred(x):
+                    return Some(x)
+                cur = rest
+    None
 
 // Whether at least one element satisfies `pred` — stops (short-circuits) at the
 // first match, so it terminates on an unbounded iterator once one is found.
 // `false` for the empty iterator.
 pub fn any(it: Iter(a), pred: fn(a) -> Bool) -> Bool:
-    match next(it):
-        Empty -> false
-        Item(x, rest) ->
-            if pred(x):
-                true
-            else:
-                any(rest, pred)
+    var cur = it
+    var found = false
+    var searching = true
+    while searching:
+        match next(cur):
+            Empty -> searching = false
+            Item(x, rest) ->
+                if pred(x):
+                    found = true
+                    searching = false
+                else:
+                    cur = rest
+    found
 
 // Whether every element satisfies `pred` — stops at the first failure. `true`
 // for the empty iterator (vacuously). Don't call on an unbounded iterator whose
 // elements all satisfy `pred`: it never stops.
 pub fn all(it: Iter(a), pred: fn(a) -> Bool) -> Bool:
-    match next(it):
-        Empty -> true
-        Item(x, rest) ->
-            if pred(x):
-                all(rest, pred)
-            else:
-                false
+    var cur = it
+    var ok = true
+    var checking = true
+    while checking:
+        match next(cur):
+            Empty -> checking = false
+            Item(x, rest) ->
+                if pred(x):
+                    cur = rest
+                else:
+                    ok = false
+                    checking = false
+    ok
 
 // The last element (drives the iterator to exhaustion), or None if it is empty.
 // Don't call on an unbounded iterator — it never stops.
@@ -360,9 +375,16 @@ pub fn last(it: Iter(a)) -> Option(a):
     last_from(it, None)
 
 fn last_from(it: Iter(a), acc: Option(a)) -> Option(a):
-    match next(it):
-        Empty -> acc
-        Item(x, rest) -> last_from(rest, Some(x))
+    var cur = it
+    var result = acc
+    var going = true
+    while going:
+        match next(cur):
+            Empty -> going = false
+            Item(x, rest) ->
+                result = Some(x)
+                cur = rest
+    result
 
 // The 0-based index of the first element satisfying `pred`, or None. Stops at
 // the first match, so it is safe on an unbounded iterator if a match exists.
@@ -370,13 +392,18 @@ pub fn position(it: Iter(a), pred: fn(a) -> Bool) -> Option(Int):
     position_from(it, pred, 0)
 
 fn position_from(it: Iter(a), pred: fn(a) -> Bool, i: Int) -> Option(Int):
-    match next(it):
-        Empty -> None
-        Item(x, rest) ->
-            if pred(x):
-                Some(i)
-            else:
-                position_from(rest, pred, i + 1)
+    var cur = it
+    var idx = i
+    var more = true
+    while more:
+        match next(cur):
+            Empty -> more = false
+            Item(x, rest) ->
+                if pred(x):
+                    return Some(idx)
+                idx = idx + 1
+                cur = rest
+    None
 
 // The smallest element by the type's `Ord`, or None if the iterator is empty
 // (drives to exhaustion; don't call on an unbounded iterator).
@@ -386,13 +413,17 @@ pub fn min(it: Iter(a)) -> Option(a) where a: Ord:
         Item(x, rest) -> Some(min_from(rest, x))
 
 fn min_from(it: Iter(a), best: a) -> a where a: Ord:
-    match next(it):
-        Empty -> best
-        Item(x, rest) ->
-            if x < best:
-                min_from(rest, x)
-            else:
-                min_from(rest, best)
+    var cur = it
+    var b = best
+    var going = true
+    while going:
+        match next(cur):
+            Empty -> going = false
+            Item(x, rest) ->
+                if x < b:
+                    b = x
+                cur = rest
+    b
 
 // The largest element by the type's `Ord`, or None if the iterator is empty
 // (drives to exhaustion; don't call on an unbounded iterator).
@@ -402,13 +433,17 @@ pub fn max(it: Iter(a)) -> Option(a) where a: Ord:
         Item(x, rest) -> Some(max_from(rest, x))
 
 fn max_from(it: Iter(a), best: a) -> a where a: Ord:
-    match next(it):
-        Empty -> best
-        Item(x, rest) ->
-            if x > best:
-                max_from(rest, x)
-            else:
-                max_from(rest, best)
+    var cur = it
+    var b = best
+    var going = true
+    while going:
+        match next(cur):
+            Empty -> going = false
+            Item(x, rest) ->
+                if x > b:
+                    b = x
+                cur = rest
+    b
 
 // A lazy STATEFUL map: thread `state` through `f`, which returns the new state
 // and the value to emit. `scan(xs, 0, fn(s, x): (s + x, s + x))` yields the

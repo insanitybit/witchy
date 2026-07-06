@@ -139,14 +139,18 @@ impl PartialEq for Float:
 
 impl PartialOrd for Float:
     fn partial_compare(self, other: Self) -> Option(Ordering):
-        if self < other:
+        // A `NaN` is unordered: detect it FIRST (a `NaN` is the only value not
+        // equal to itself), because the `<` / `>` operators trap on a `NaN`
+        // operand rather than returning false. With both sides known non-`NaN`,
+        // the ordering compares safely.
+        if !(self == self) || !(other == other):
+            None
+        else if self < other:
             Some(Less)
         else if self > other:
             Some(Greater)
-        else if self == other:
-            Some(Equal)
         else:
-            None
+            Some(Equal)
 
 // --- generic helpers over `Ord` ----------------------------------------------
 
@@ -179,20 +183,28 @@ pub fn clamp(x: a, lo: a, hi: a) -> a where a: Ord:
     else:
         x
 
-// The largest element of `xs`, or `default` when `xs` is empty.
+// The largest element of `xs`, or `default` when `xs` is empty. `default` is
+// only the empty fallback — it never participates in the comparison, so it is
+// returned unchanged only for an empty list (a small `default` no longer wins
+// over the elements, nor a large one lose to them).
 pub fn maximum(xs: List(a), default: a) -> a where a: Ord:
     var best = default
+    var seen = false
     for x in xs:
-        if lt(best, x):
+        if !seen || lt(best, x):
             best = x
+            seen = true
     best
 
-// The smallest element of `xs`, or `default` when `xs` is empty.
+// The smallest element of `xs`, or `default` when `xs` is empty. As with
+// `maximum`, `default` is the empty fallback only, never a competing bound.
 pub fn minimum(xs: List(a), default: a) -> a where a: Ord:
     var best = default
+    var seen = false
     for x in xs:
-        if lt(x, best):
+        if !seen || lt(x, best):
             best = x
+            seen = true
     best
 
 // Insert `x` into an already-sorted list, keeping it ordered by the type's `Ord`.

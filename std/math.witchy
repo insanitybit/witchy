@@ -170,7 +170,7 @@ pub fn to_base(n: Int, base: Int) -> String:
     else if n == 0:
         "0"
     else if n < 0:
-        "-" + to_base_pos(0 - n, base)
+        "-" + to_base_neg(n, base)
     else:
         to_base_pos(n, base)
 
@@ -179,6 +179,16 @@ fn to_base_pos(n: Int, base: Int) -> String:
         ""
     else:
         to_base_pos(n / base, base) + base_digit(n % base)
+
+// Digits of a NEGATIVE `n`, computed on `n` directly rather than negating it
+// first — so `Int.MIN` (whose negation overflows back to itself) renders
+// correctly. Each step takes the negated low remainder as a digit and divides
+// toward zero; both `n % base` and `n / base` stay in range for any negative `n`.
+fn to_base_neg(n: Int, base: Int) -> String:
+    if n == 0:
+        ""
+    else:
+        to_base_neg(n / base, base) + base_digit(0 - (n % base))
 
 fn base_digit(d: Int) -> String:
     string.substring("0123456789abcdef", d, d + 1)
@@ -218,9 +228,10 @@ pub fn float_clamp(x: Float, lo: Float, hi: Float) -> Float:
 // format_float(2.0, 0) = "2". Built from float arithmetic, so unlike the
 // `to_string` builtin it works on the compiled WASM backend too (which has no
 // float formatting). Best for a fixed number of places; very large magnitudes
-// lose precision to the Float itself.
+// lose precision to the Float itself. `decimals` is capped at 18 — the most
+// places the `Int` scale `pow(10, decimals)` can hold without overflowing.
 pub fn format_float(x: Float, decimals: Int) -> String:
-    let d = if decimals < 0: 0 else: decimals
+    let d = if decimals < 0: 0 else if decimals > 18: 18 else: decimals
     let scale = pow(10, d)
     let scaled = math.to_int(float_abs(x) * math.to_float(scale) + 0.5)
     let sign = if x < 0.0 && scaled > 0: "-" else: ""
