@@ -730,9 +730,15 @@ A parsed request the server hands to a handler: method, raw path, the path param
 
 - `Request(String, String, List((String, String)), List((String, String)), List((String, String)), String)`
 
-#### `type PinnedUrl`
+#### `capability PinnedUrl`
 
-- `PinnedUrl { host: String, port: Int, secure: Bool, path: String, ip: String }`
+(RFC-0020) A vetted pin: a URL resolved ONCE to a single checked IP. Sealed — only this module can mint one (`pin`/`unpinned`), so holding a `PinnedUrl` is proof that a policy ran and cannot be hand-forged with an attacker's address. `get_pinned` dials EXACTLY `ip`, carrying `host` for TLS SNI and the `Host` header, and never re-resolves — closing the DNS-rebinding TOCTOU by construction. The `Net` allowlist stays the hard floor underneath: `connect_pinned` re-checks `ip`, so even a buggy pin policy cannot dial past `net.deny(Net.private())`.
+
+- `host: String`
+- `port: Int`
+- `secure: Bool`
+- `path: String`
+- `ip: String`
 
 #### `type RequestBuilder`
 
@@ -1762,7 +1768,7 @@ A fair coin.
 
 A small, deterministic pseudo-random generator: the Park-Miller "minimal standard" LCG, `state' = state * 16807 mod (2^31 - 1)`. The intermediate fits in i64 (no overflow), so it is content-correct on both backends. State is threaded explicitly — the same seed always replays the same sequence, which is what you want for tests, sampling, and games. NOT for cryptography. Pure and capability-free.
 
-#### `type Rng`
+#### `sealed type Rng`
 
 - `Rng(Int)`
 
@@ -1979,7 +1985,7 @@ semver — semantic versions and constraints, for dependency resolution.
 
 Intentionally minimal (matching the package manager's needs): `major.minor.patch` versions and the `^`, `~`, exact, `>=`, and `*` constraints — enough for deterministic resolution without a full SemVer grammar. A missing component parses as 0 (`1.2` is `1.2.0`); a non-numeric component is an error.
 
-#### `type Version`
+#### `sealed type Version`
 
 - `Version { major: Int, minor: Int, patch: Int }`
 
@@ -2167,7 +2173,7 @@ Serve exactly `n` HTTPS requests then return — `serve_tls`'s one-shot/test twi
 
 Set(a) — an unordered collection of distinct values. Members are compared by value equality (a `where a: Eq` bound on every operation that compares), so sets of Ints, Strings, tuples, or your own `Eq` types all work. Build one with `set.new()` / `set.from_list(xs)`, test membership with `set.contains`, and reach for `union`/`intersection`/`difference` for the algebra. A `Set` whose members are `Show` renders as `{a, b, c}` through `show`/`say` (import `show`); `set.to_list(s)` returns the members in insertion order.
 
-#### `type Set`
+#### `sealed type Set`
 
 - `Set { items: List(a) }`
 
@@ -2508,7 +2514,7 @@ time — civil (UTC) date/time from a unix timestamp.
 
 `std/duration` models *spans*; this module models *points* on the calendar. Given seconds since the unix epoch (1970-01-01T00:00:00Z), it computes the civil year/month/day/hour/minute/second and formats them. The conversions use the standard days<->civil algorithm (proleptic Gregorian), correct for any CE date and for negative timestamps (before 1970) via floor division.
 
-#### `type DateTime`
+#### `sealed type DateTime`
 
 - `DateTime(Int, Int, Int, Int, Int, Int)`
 
@@ -2624,7 +2630,7 @@ Minimal URL parsing — the witchy slice of Go's net/url. Pure and capability-fr
 
 Structured parses return `Result(_, String)` with what went wrong (the same convention as `json.decode` and `semver.parse`); simple scalar parses like `string.parse_int` stay `Option`.
 
-#### `type Url`
+#### `sealed type Url`
 
 - `Url(String, String, Int, String)`
 
