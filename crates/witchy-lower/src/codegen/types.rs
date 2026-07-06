@@ -312,18 +312,37 @@ impl Codegen {
     /// returning calls, `get_or` (the default's type), `at` (a List(Record)
     /// element), `?` payloads, `update`, and the branches of if/match/block.
     pub(crate) fn record_type_of(&self, e: &Expr) -> Option<String> {
+        // Structural resolution is primary — it works even where the type table is
+        // silent (e.g. a synthesized node). When it misses, fall back to typeck's
+        // annotation for THIS expression: the checker knows the concrete record
+        // type of any call result, field projection, or generic-record field —
+        // which the local-shape maps cannot see (a generic field's declared type is
+        // an opaque type parameter, e.g. `Box(a).value`, but the table has `Inner`).
+        self.record_type_structural(e).or_else(|| self.record_type_from_table(e))
+    }
+
+    /// Typeck's annotated record type of `e`, if it is a known record — the shape-
+    /// independent fallback that closes the "field projection on a call-chain
+    /// result" gap (a call result or a generic-record field the local maps miss).
+    fn record_type_from_table(&self, e: &Expr) -> Option<String> {
+        match self.type_table.type_of(e).and_then(witchy_types::typeck::ty_to_ast) {
+            Some(witchy_syntax::ast::Type::Named(n, _)) if self.record_fields.contains_key(&n) => {
+                Some(n)
+            }
+            _ => None,
+        }
+    }
+
+    /// The record type codegen can determine from an expression's SHAPE alone
+    /// (constructors, tracked locals, record-returning calls, `?` payloads,
+    /// `update`, and the branches of if/match/block). `record_type_of` layers the
+    /// type-table fallback on top.
+    fn record_type_structural(&self, e: &Expr) -> Option<String> {
         match e {
             Expr::Ctor { name, .. } if self.record_fields.contains_key(name) => Some(name.clone()),
-            // A record-typed variable. Local tracking is primary; when it misses
-            // (e.g. a `match` binding whose scrutinee is a closure-parameter call,
-            // whose return shape codegen can't infer locally) fall back to typeck's
-            // annotation, which knows the binding's record type.
-            Expr::Var(v) => self.local_records.get(v).cloned().or_else(|| {
-                match self.type_table.type_of(e).and_then(witchy_types::typeck::ty_to_ast) {
-                    Some(witchy_syntax::ast::Type::Named(n, _)) if self.record_fields.contains_key(&n) => Some(n),
-                    _ => None,
-                }
-            }),
+            // A record-typed variable tracked locally (primary; the table fallback
+            // in `record_type_of` covers a binding local tracking missed).
+            Expr::Var(v) => self.local_records.get(v).cloned(),
             Expr::Call { name, args } => {
                 if let Some(ty) = self.fn_ret_records.get(name) {
                     Some(ty.clone())
