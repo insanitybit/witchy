@@ -465,6 +465,28 @@
         );
     }
 
+    /// (BUG-305, parity) `"${f}"` on a function value is rejected at CHECK time, so
+    /// BOTH backends refuse it identically. The interpreter used to render
+    /// `<function/N>` while the compiled backend rejected at codegen with a misleading
+    /// "generic record such as `Set`" diagnostic (there was no Set). A function has no
+    /// printable form; the message now names the function operand, never `Set`.
+    #[test]
+    fn interpolating_a_function_value_is_rejected_on_both_backends() {
+        let src = "fn main(console: Console):\n    let f = fn(n: Int): n + 1\n    print(console, \"${f}\")\n";
+        let err = typeck::check_str(src)
+            .expect_err("interpolating a function value must be a type error on both backends");
+        assert!(err.contains("function"), "diagnostic must name the function operand: {err}");
+        assert!(!err.contains("Set"), "diagnostic must not mention `Set` for a function operand: {err}");
+        // Calling the function and interpolating the RESULT still renders on both.
+        let ok = "fn main(console: Console):\n    let f = fn(n: Int): n + 1\n    print(console, __render(f(41)))\n";
+        assert_eq!(link_run(ok), ["42"], "interp renders the call result");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", ok)], "main"),
+            ["42"],
+            "compiled renders the call result",
+        );
+    }
+
     /// (BUG-240, parity) `math.abs(Int.MIN)` has no positive `Int`, so both backends
     /// must ABORT rather than silently wrap back to the negative `Int.MIN`. Ordinary
     /// magnitudes still agree. (Was a stable wrong answer: `-Int.MIN == Int.MIN`.)
