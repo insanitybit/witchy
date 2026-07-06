@@ -274,17 +274,17 @@ fn json_decode_value(ty: TypeExpr, value: String) -> String:
                 type_source(ty) + ".from_json(" + value + ")"
         _ -> type_source(ty) + ".from_json(" + value + ")"
 
-// Decode one record field from the object `j`: an Option reads with `get` (absent
+// Decode one record field from `object`: an Option reads with `get` (absent
 // allowed), everything else with `require`. Trails a `?` so it's a `let` initializer.
-fn json_decode_field(ty: TypeExpr, key: String) -> String:
+fn json_decode_field(ty: TypeExpr, object: String, key: String) -> String:
     match ty:
         TNamed(name, args) ->
             if name == "Option" && list.length(args) == 1:
                 let elem = list.at(args, 0)
-                "json.optional(json.get(j, \"" + key + "\"), fn(__e: json.Json): " + json_decode_value(elem, "__e") + ")?"
+                "json.optional(json.get(" + object + ", \"" + key + "\"), fn(__e: json.Json): " + json_decode_value(elem, "__e") + ")?"
             else:
-                json_decode_value(ty, "json.require(j, \"" + key + "\")?") + "?"
-        _ -> json_decode_value(ty, "json.require(j, \"" + key + "\")?") + "?"
+                json_decode_value(ty, "json.require(" + object + ", \"" + key + "\")?") + "?"
+        _ -> json_decode_value(ty, "json.require(" + object + ", \"" + key + "\")?") + "?"
 
 // `derive(Deserialize)` generates `from_json` for a record (the caller validates the
 // shape). It decodes and coerces each field, returning on the first error. There is
@@ -294,10 +294,13 @@ fn json_decode_field(ty: TypeExpr, key: String) -> String:
 pub fn derive_deserialize(t: TypeInfo) -> String:
     var lets = []
     var names = []
+    var i = 0
     for f in t.fields:
-        lets = list.push(lets, "        let " + f.name + " = " + json_decode_field(f.type_expr, f.name) + "\n")
-        names = list.push(names, f.name)
-    let from_json = "    fn from_json(j: json.Json) -> Result(Self, String):\n" + list.join(lets, "") + "        Ok(" + t.name + "(" + list.join(names, ", ") + "))\n"
+        let local = "__field${i}"
+        lets = list.push(lets, "        let " + local + " = " + json_decode_field(f.type_expr, "__j", f.name) + "\n")
+        names = list.push(names, local)
+        i = i + 1
+    let from_json = "    fn from_json(__j: json.Json) -> Result(Self, String):\n" + list.join(lets, "") + "        Ok(" + t.name + "(" + list.join(names, ", ") + "))\n"
     // The generated body makes module-qualified calls (json.*, list.map, result.all);
     // emitted source is parsed on its own, so it must carry those imports for the
     // parser to qualify them (comptime merges them into the module). A generic type's

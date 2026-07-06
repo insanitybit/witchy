@@ -3889,6 +3889,18 @@ fn yn(b: Bool) -> String:
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
+    /// (BUG-496) `derive(Deserialize)` must not bind decoded fields under source
+    /// field names. Fields named like generator helpers (`j`) or constructors
+    /// (`Ok`/`Err`/`Some`/`None`) decode normally, and later fields still read from
+    /// the original JSON object.
+    #[test]
+    fn derive_deserialize_field_names_are_hygienic_on_both_backends() {
+        let src = "import json\nimport result\nimport option\n\ntype Odd derive(Deserialize):\n    j: String\n    Ok: String\n    Err: String\n    Some: String\n    None: String\n    rest: Option(List(Option(Int)))\n\nfn main(console: Console):\n    match json.decode(\"{\\\"j\\\": \\\"jay\\\", \\\"Ok\\\": \\\"ok\\\", \\\"Err\\\": \\\"err\\\", \\\"Some\\\": \\\"some\\\", \\\"None\\\": \\\"none\\\", \\\"rest\\\": [1, null, 3]}\"):\n        Ok(doc) -> match Odd.from_json(doc):\n            Ok(r) ->\n                print(console, r.j + \":\" + r.Ok + \":\" + r.Err + \":\" + r.Some + \":\" + r.None)\n                print(console, \"${r.rest}\")\n            Err(e) -> print(console, \"err \" + e)\n        Err(e) -> print(console, \"parse\")\n";
+        let want = ["jay:ok:err:some:none", "Some([Some(1), None, Some(3)])"];
+        assert_eq!(link_run(src), want, "interp");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
     /// (BUG-295, spec §6) An irrefutable `if let`/`while let` (Var or Wildcard) is
     /// accepted, consistently with the already-accepted irrefutable TUPLE form. A
     /// genuine duplicate arm still errors (dead-code detection preserved).
