@@ -61,7 +61,7 @@ fn main(console: Console, args: List(String), root: Dir, bin: Dir, runner: Exec,
     else if cmd == "outdated":
         cmd_outdated(console, net, root, args)
     else if cmd == "update":
-        cmd_update(console, net, root, env, args)
+        cmd_update(console, net, root, env, clock, args)
     else if cmd == "audit":
         cmd_audit(console, root, arg(args, 1))
         0
@@ -1672,7 +1672,7 @@ fn drop_last(xs: List(String)) -> List(String):
 // that moved (verifying signature + hash), then regenerates `witchy.lock`. With a
 // `name` argument only that rune is updated; the others stay pinned at their
 // vendored version. Run from a project directory (cwd is the project Dir).
-fn cmd_update(console: Console, net: Net, root: Dir, env: Env, args: List(String)) -> Int:
+fn cmd_update(console: Console, net: Net, root: Dir, env: Env, clock: Clock, args: List(String)) -> Int:
     let allowed = allowed_caps(args)
     let positional = update_positionals(args)
     let only = list.at(positional, 0)
@@ -1687,7 +1687,12 @@ fn cmd_update(console: Console, net: Net, root: Dir, env: Env, args: List(String
                 print(console, "no vendored dependencies to update")
                 0
             else:
-                update_vendored(console, net, root, host, port, only, allowed)
+                // BUG-090: honor the staging cooldown on re-resolution (a fresh
+                // release inside its cooldown is not resolvable without --allow-fresh),
+                // the same compromised-release protection `add` applies.
+                let cooldown = cooldown_now(env, clock, args)
+                let manifest = if exists(root, "witchy.toml"): read(root, "witchy.toml") else: ""
+                update_vendored(console, net, root, host, port, only, allowed, cooldown, manifest)
 
 // `update`'s positional args (`[only, addr]`), skipping the command word and any
 // `--allow-cap <Cap>` flag pairs. Always length 2 (absent positionals are ""), so
@@ -1733,19 +1738,28 @@ fn set_at(xs: List(String), i: Int, v: String) -> List(String):
         j = j + 1
     out
 
-fn update_vendored(console: Console, net: Net, root: Dir, host: String, port: Int, only: String, allowed: List(String)) -> Int:
+fn update_vendored(console: Console, net: Net, root: Dir, host: String, port: Int, only: String, allowed: List(String), cooldown: (Int, Int, Bool), manifest: String) -> Int:
     var changed = 0
     var blocked = false
+    var failed = false
     for entry in list(subtree(root, "vendor")):
         if string.is_empty(only) || entry == only:
-            let outcome = update_one(console, net, root, host, port, entry, allowed)
+            let outcome = update_one(console, net, root, host, port, entry, allowed, cooldown, manifest)
             changed = changed + outcome.0
             if outcome.1:
                 blocked = true
+            if outcome.2:
+                failed = true
     if blocked:
         // Leave the vendored tree + lock untouched: a widening upgrade is the
         // supply-chain attack the gate exists to stop.
         2
+    else if failed:
+        // BUG-371: a refetch failed (bad signature / integrity / missing source). Do
+        // NOT repin the registry root key or rewrite the lock as if the update
+        // succeeded — a partial/failed update must not mint fresh trust metadata.
+        print(console, "BLOCK: an update failed to fetch or verify — leaving witchy.lock and the pinned registry key untouched")
+        1
     else:
         match snapshot_pin(net, root, host, port):
             Err(m) ->
@@ -1756,29 +1770,47 @@ fn update_vendored(console: Console, net: Net, root: Dir, host: String, port: In
                 print(console, "updated ${changed} dependencies -> witchy.lock")
                 0
 
-// Re-fetch one vendored rune if the registry has a newer released version than the
-// one currently vendored. Returns (changed, blocked): `changed` is 1 if it moved,
-// `blocked` is true if the newer version WIDENS the rune's capability footprint
-// beyond the vendored baseline (the gate) — in which case nothing is re-fetched.
-fn update_one(console: Console, net: Net, root: Dir, host: String, port: Int, entry: String, allowed: List(String)) -> (Int, Bool):
+// Re-fetch one vendored rune if the registry has a newer eligible version than the
+// one currently vendored. Returns (changed, blocked, failed): `changed` is 1 if it
+// moved, `blocked` is true if the newer version WIDENS authority beyond the baseline
+// (the gate), `failed` is true if a fetch/verify was attempted and failed. The target
+// version is resolved WITHIN the consumer's declared requirement (BUG-092) and past
+// the staging cooldown (BUG-090).
+fn update_one(console: Console, net: Net, root: Dir, host: String, port: Int, entry: String, allowed: List(String), cooldown: (Int, Int, Bool), manifest: String) -> (Int, Bool, Bool):
     let rune_dir = join_path("vendor", entry)
     if !exists(root, join_path(rune_dir, "coven.json")):
-        (0, false)
+        (0, false, false)
     else:
         let record = read(root, join_path(rune_dir, "coven.json"))
         let fullname = recorded_field(record, "name")
         let current = recorded_field(record, "version")
-        let latest = latest_released(net, host, port, fullname)
-        if string.is_empty(latest) || latest == current:
-            (0, false)
-        else:
-            gated_refetch(console, net, root, host, port, fullname, current, latest, record, allowed)
+        let req = dep_req(manifest, fullname, entry)
+        match resolve_version(net, host, port, fullname, req, cooldown):
+            Err(_e) -> (0, false, false)
+            Ok(latest) ->
+                if string.is_empty(latest) || latest == current:
+                    (0, false, false)
+                else:
+                    gated_refetch(console, net, root, host, port, fullname, current, latest, record, allowed, cooldown)
+
+// The version requirement the consumer's manifest declares for a vendored dep,
+// matched by full registry identity or basename alias; `*` (latest) when the
+// manifest names no requirement (BUG-092). `update` resolves WITHIN this bound
+// rather than jumping to the absolute latest.
+fn dep_req(manifest: String, fullname: String, alias: String) -> String:
+    var req = "*"
+    for pair in toml.table(manifest, "dependencies"):
+        let (name, inline) = pair
+        if name == fullname || basename(name) == alias:
+            if let Some(v) = toml.inline_get(inline, "version"):
+                req = v
+    req
 
 // The capability gate: compare the incoming version's declared footprint (from its
 // signed registry record) against the vendored baseline ∪ the consented caps. Any
 // capability the baseline doesn't already admit is a widening of authority — BLOCK.
 // Only on a clean (non-widening) upgrade do we re-fetch.
-fn gated_refetch(console: Console, net: Net, root: Dir, host: String, port: Int, fullname: String, current: String, latest: String, baseline_record: String, allowed: List(String)) -> (Int, Bool):
+fn gated_refetch(console: Console, net: Net, root: Dir, host: String, port: Int, fullname: String, current: String, latest: String, baseline_record: String, allowed: List(String), cooldown: (Int, Int, Bool)) -> (Int, Bool, Bool):
     let baseline = union_all(recorded_footprint(baseline_record), allowed)
     // BUG-232: the widening gate must diff against a VERIFIED footprint, not a raw
     // `/coven/record` body. A hostile mirror could otherwise serve an under-declared
@@ -1788,15 +1820,15 @@ fn gated_refetch(console: Console, net: Net, root: Dir, host: String, port: Int,
     match verified_incoming_footprint(net, root, host, port, fullname, latest):
         Err(msg) ->
             print(console, "BLOCK: cannot verify the registry record for " + fullname + "@" + latest + " — " + msg)
-            (0, true)
+            (0, true, false)
         Ok(incoming) ->
             let widened = rights.uncovered(baseline, incoming)
             if list.length(widened) > 0:
                 print(console, "BLOCK: upgrading " + fullname + " " + current + " -> " + latest + " widens authority: " + list.join(widened, ", "))
                 print(console, "  re-run with --allow-cap " + list.join(widened, " --allow-cap ") + " to consent")
-                (0, true)
+                (0, true, false)
             else:
-                (refetch(console, net, root, host, port, fullname, latest, current), false)
+                refetch(console, net, root, host, port, fullname, latest, current, cooldown, allowed)
 
 // The runtime footprint a registry version declares, read from its signed record at
 // `/coven/record` ONLY AFTER the record is verified against the registry root key
@@ -1825,23 +1857,20 @@ fn recorded_footprint(record: String) -> List(String):
         Ok(doc) -> json.get_strings(doc, "runtime_footprint")
         Err(_e) -> []
 
-fn refetch(console: Console, net: Net, root: Dir, host: String, port: Int, fullname: String, latest: String, current: String) -> Int:
+// Returns (changed, blocked, failed). BUG-091: after a clean re-fetch, recurse into
+// the new version's OWN dependency closure (`add_deps`), so a release that GAINED a
+// transitive dependency has it fetched + vendored too — an update is not just the
+// single rune. BUG-371: a failed fetch/verify (or a failed transitive fetch) reports
+// `failed` so the caller does not repin registry metadata.
+fn refetch(console: Console, net: Net, root: Dir, host: String, port: Int, fullname: String, latest: String, current: String, cooldown: (Int, Int, Bool), allowed: List(String)) -> (Int, Bool, Bool):
     let code = fetch_source(console, net, root, host, port, fullname, latest, "vendor")
     if code != 0:
-        0
+        (0, false, true)
+    else if add_deps(console, net, root, host, port, fullname, "vendor", cooldown, allowed) != 0:
+        (0, false, true)
     else:
         print(console, "updated " + fullname + " " + current + " -> " + latest)
-        1
-
-// The highest released version of `name` in the registry, or "" if none.
-fn latest_released(net: Net, host: String, port: Int, name: String) -> String:
-    let resp = http.get(net, host, port, "/coven/versions?name=" + wire(name))
-    if http.status(resp) != 200:
-        ""
-    else:
-        match latest_version(released_versions(http.body(resp))):
-            Some(v) -> semver.format(v)
-            None -> ""
+        (1, false, false)
 
 // --- add: resolve + fetch a rune (and its deps) from a coven registry --------
 // Resolves a version requirement against the registry's released versions
