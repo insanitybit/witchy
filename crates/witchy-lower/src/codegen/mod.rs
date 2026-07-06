@@ -3971,6 +3971,19 @@ impl Codegen {
         self.locals.contains_key(name)
     }
 
+    /// (BUG-414) Whether `e` is a bare reference to a top-level, capture-free
+    /// function — the ONLY argument shape the `vm.*` worker-VM intercepts
+    /// (`vm_par_map`/`vm_with_dir`/`vm_serve`) may take, because the host invokes it
+    /// via the `__call_idx` export by TABLE INDEX with a null environment. A name is
+    /// a top-level ref only when it is an actually-emitted function (`emitted_funcs`
+    /// — it therefore has a table entry) AND is not shadowed by a local holding a
+    /// function value. Any other argument (a local/param, a lambda, a call result, a
+    /// non-function name) falls back to the sequential `std/vm` reference body, which
+    /// calls the value directly and is always correct — robust to any arg expression.
+    fn is_top_level_fn_ref(&self, e: &Expr) -> bool {
+        matches!(e, Expr::Var(f) if self.emitted_funcs.contains(f) && !self.locals.contains_key(f))
+    }
+
     /// Does `e` have a compound (list/tuple/record) equality shape? Such operands
     /// compare structurally (a helper), not by the bare `i32.eq` the numeric path
     /// would emit — so `lower_expr` declines to lower them here.

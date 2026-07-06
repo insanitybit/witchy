@@ -520,7 +520,7 @@ impl Codegen {
             // std/vm.witchy, which is always correct.
             (_, 2)
                 if Self::is_scalar_par_map(name)
-                    && matches!(&args[1], Expr::Var(f) if !self.locals.contains_key(f)) =>
+                    && self.is_top_level_fn_ref(&args[1]) =>
             {
                 call("vm_par_map", self.lower_args(&[&args[0], &args[1]])?)
             }
@@ -528,24 +528,20 @@ impl Codegen {
             // worker VMs (one path; a `String` is valid-UTF-8 `Bytes`).
             (_, 2)
                 if Self::is_buf_par_map(name)
-                    && matches!(&args[1], Expr::Var(f) if !self.locals.contains_key(f)) =>
+                    && self.is_top_level_fn_ref(&args[1]) =>
             {
                 call("vm_par_map_bytes", self.lower_args(&[&args[0], &args[1]])?)
             }
             // (RFC-0032) Capability-passing: run a top-level `f(Dir, Bytes) -> Bytes` in an
             // isolated worker VM granted exactly `dir`. `f` must be a top-level (capture-free)
             // function, like the par_map variants.
-            ("vm.with_dir", 3)
-                if matches!(&args[1], Expr::Var(f) if !self.locals.contains_key(f)) =>
-            {
+            ("vm.with_dir", 3) if self.is_top_level_fn_ref(&args[1]) => {
                 call("vm_with_dir", self.lower_args(&[&args[0], &args[1], &args[2]])?)
             }
             // (RFC-0032) `vm.serve(init, requests, handler)` — a stateful service on a
             // long-lived isolated worker VM (the parity-safe cross-VM channel). `handler`
             // must be a top-level (capture-free) function.
-            ("vm.serve", 3)
-                if matches!(&args[2], Expr::Var(f) if !self.locals.contains_key(f)) =>
-            {
+            ("vm.serve", 3) if self.is_top_level_fn_ref(&args[2]) => {
                 call("vm_serve", self.lower_args(&[&args[0], &args[1], &args[2]])?)
             }
             ("read_build", 2) => {
