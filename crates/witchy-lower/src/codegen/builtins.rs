@@ -328,9 +328,9 @@ impl Codegen {
                     self.reject_reason.get_or_insert_with(|| CodegenError {
                         message: "cannot render this value with `\"${…}\"` on the \
                                   compiled backend — the structural renderer can't \
-                                  build this shape (typically a generic record such \
-                                  as `Set`); call the type's own renderer instead, \
-                                  e.g. `set.show(s)`"
+                                  build this shape. Import `show` and render through \
+                                  the public `Show` protocol instead, e.g. \
+                                  `show.render(x)` or `show.say(console, x)`"
                             .into(),
                     });
                     return None;

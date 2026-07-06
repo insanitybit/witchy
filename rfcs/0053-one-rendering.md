@@ -7,60 +7,31 @@ predecessors:
   - "0046 (typed trait dispatch — the bounded-impl and site-typing machinery this consumes)"
   - "0047 (equality coherence — the sibling that rejects ==(fn, fn); rendering deliberately differs, see Design)"
   - "scratch/consistency-analysis-2026-07-03.md §4 (two rendering systems with disjoint domains)"
-tracking: "IMPLEMENTED — blanket-Show + interpolation flip both shipped"
+tracking: "IMPLEMENTED — blanket-Show + typed interpolation flip both shipped"
 implementation-notes: |
-  IMPLEMENTATION PLAN (scoped 2026-07-06 after an agent died on the depth; do in a
-  focused MAIN-LOOP session, not a watchdog-bound agent):
-  - Interpolation desugars at LEX time (crates/witchy-syntax/src/lexer.rs:628-749):
-    `"${e}"` -> token stream `( lit0 + __render(e0) + lit1 + ... )`. No types there,
-    so the flip CANNOT live in the lexer.
-  - The flip point is the TYPED pass: rewrite `__render(x)` -> `show(x)` when x's
-    concrete type has a `Show` impl. RFC-0046's TypeTable gives the concrete type at
-    the call site; the Show-impl registry (typeck) says whether an impl exists. Then
-    existing `show()` trait dispatch (what `say` already uses) renders on BOTH
-    backends -> parity by construction (one rewrite, not two per-backend edits).
-  - Full model needs EVERY type to have a derived structural `Show` (so a
-    no-custom-Show type still resolves `show(x)`), OR: keep `__render` as the
-    universal structural fallback and only rewrite to `show(x)` for types that have a
-    (custom or derived) Show impl; leave the rest as `__render`. The latter is the
-    smaller cut and preserves today's output for impl-less types.
-  - Interp side: interpreter.rs `__render` (:1222) currently = structural
-    `Display for Value`; the rewrite makes the typed call `show(x)` instead, so the
-    interp's `Display` stays the derived arm.
-  - Blast radius (update in the SAME change): Duration (`${d}` 90000 -> 1m30s) and
-    custom-Show types in examples/durations, examples/display, book/tour-values,
-    book/tour-generics; delete show.show_list + set.show workarounds (break-don't-
-    deprecate) and rewrite their callers to `${xs}`/say; add differential tests.
-  EXACT HOOK (pinned 2026-07-06): typeck.rs:2998 — inside the `__render` arg check,
-  `at` (= self.infer(arg)) ALREADY holds x's concrete type. Two parity-coupled edits,
-  both keyed on the SAME fact "does this type have a Show impl in the linked program":
-    (1) INTERP: interpreter.rs:1222 `__render` currently returns `one(args)?.to_string()`
-        (structural Display for Value). Change: if the value's type has a Show impl ->
-        call it (mirror how `say`/`show(x)` dispatches), else Display.
-    (2) COMPILED: the ts_helpers per-shape renderer (codegen/mod.rs ~698-810) — when it
-        monomorphizes the renderer for a shape whose type has a Show impl, emit a CALL to
-        that impl instead of the structural walk.
-  Both must use the identical "type has Show impl" predicate so they agree -> parity.
-  DESIGN CRUX (the real decision, found 2026-07-06): interp dispatches via mangled
-  `Show__{tyname}__show` (mirror interpreter.rs:681's `PartialEq__{name}__eq` +
-  contains_key check; get tyname from `ctor_type_name` for a Value::Ctor / the Ty for
-  primitives). BUT primitives (Int/Bool/String) AND containers already have Show impls
-  that ARE the structural form — so "flip whenever a Show impl exists" routes EVERY
-  `${int}` through show-dispatch: a perf hit AND a large codegen change (ts_helpers
-  would emit a show call for primitives too). The clean cut: flip ONLY for types with a
-  CUSTOM (non-derived) Show — add a `show_derived: bool` to TypeDef exactly like the
-  existing `partial_eq_derived` (set by derive::expand when it generates the Show impl),
-  and flip `__render(x)` to `show(x)` only when x's type has a Show impl that is NOT
-  derived (Duration's hand-written impl, user `impl Show for P`, and containers whose
-  ELEMENT has a custom Show). Everything else keeps today's structural __render — zero
-  perf/behavior change for the common case. THIS is why it's deep: it needs the
-  derived-vs-custom Show distinction plumbed through derive + typeck + both renderers.
-  The `show(x)` dispatch already works (say uses it), so reuse it; only impl-LESS types
-  keep the structural __render (the smaller cut — no need for "every type gets derived
-  Show"). Then blast radius (Duration + custom-Show in examples/durations, examples/
-  display, book/tour-values, book/tour-generics; delete show.show_list + set.show).
-  LESSON: this class of deep central change is NOT feasible for Opus-4.8 agents (the
-  600s stream watchdog kills them mid-integration; agent acc99b35 died at 0 commits).
+  AS BUILT (2026-07-06, RFC-0067 reconciliation):
+  - Interpolation still desugars at lex time to `__render(x)`, the structural
+    fallback. The lexer remains type-free.
+  - The semantic flip lives in `crates/witchy-types/src/traits.rs`, inside
+    `Mono::walk_expr`, after RFC-0046's TypeTable can report the concrete type of
+    `x`. That is the only place `__render(x)` is rewritten.
+  - `std/show.witchy` exposes `pub fn render(x: impl Show) -> String: show(x)`.
+    When `show.render` is linked and the concrete type has a relevant `Show` path,
+    monomorphization rewrites `__render(x)` to `show.render(x)`. That then
+    specializes through the same bounded-generic machinery as any other `Show`
+    call, so interpreter and compiled backend parity follows from one AST rewrite.
+  - Modules that never import/link `show` keep structural `__render`. This preserves
+    the current no-ambient-`show` policy: `"${90000ms}"` remains raw milliseconds
+    unless `show` is linked, while `import show` makes interpolation agree with
+    `show.render`/`show.say`.
+  - The rewrite predicate keeps primitives structural, flips `Duration`, flips any
+    named type carrying a `Show` impl, recurses through `List`, `Option`, `Result`,
+    `Dict`, and tuples, and always flips `Set` once `show.render` is available
+    because `Set([1, 2])` structurally and `{1, 2}` through `Show` are different
+    public renderings.
+  - The previous early `custom_show`/`Ctx::render_flip` approach was removed: it
+    could not see generic container specializations such as `Set(Int)`, which left
+    interpolation and `show.say` disagreeing.
 
 ---
 
@@ -110,35 +81,31 @@ All probed at HEAD against the PATH binary:
 
 ## Design
 
-### One path: `render(x)`
+### One path when `Show` is linked: `show.render(x)`
 
-Define one function of the semantics, `render(x)`:
+The shipped 0.1 contract is intentionally import-gated:
 
-1. If `x`'s concrete type has a user (or std) `impl Show` → `show(x)`.
-2. Otherwise → the **derived structural `Show`**: the current structural
-   renderer, now specified as the default `Show` every type gets.
+1. If `show.render` is linked and `x`'s concrete type has a relevant `Show`
+   path, interpolation rewrites to `show.render(x)`.
+2. Otherwise interpolation keeps `__render(x)`, the structural fallback.
 
-Interpolation (`"${x}"`), the `to_string` builtin, and `say` all mean
-`render(x)`. Nothing else renders. Consequences:
+`show.say(console, x)` and `show.render(x)` always mean the `Show` protocol.
+Interpolation joins that protocol once `show` is linked; modules that never
+import `show` keep the existing structural behavior. Consequences:
 
-- For types **without** a custom `Show`, output is byte-identical to today —
-  zero migration for most programs.
-- For types **with** a custom `Show`, every `"${x}"` in the program starts
-  honoring it. This is an observable change and the point of the RFC; it is
-  called out as breaking below.
-- `spec/language.md:67-76` is rewritten: interpolation doesn't merely give "a
-  structural default *like* `Show`" — it *is* `Show`, derived unless you
-  write one.
+- For types without a linked `Show` path, output is byte-identical to today.
+- For types with a linked `Show` path, `"${x}"`, `show.render(x)`, and
+  `show.say(console, x)` agree.
+- `Set(a)` flips whenever `show.render` is available because its structural
+  fallback (`Set([1, 2])`) and public display form (`{1, 2}`) differ even when
+  `a` is primitive.
 
 **Dependency on [RFC-0046](0046-typed-trait-dispatch.md).** Step 1 needs the
 concrete type of an arbitrary interpolated expression at the call site — the
 exact capability the string-encoded shadow dispatch cannot deliver and 0046's
-TypeTable threading does. The compiled backend already monomorphizes per-shape
-renderers (`ts_helpers` / `ts_{id}`, `crates/witchy-lower/src/codegen/mod.rs:698-810`);
-the change is that a shape whose type has a `Show` impl compiles its renderer
-as a call to that impl instead of the structural walk. The interpreter
-mirrors: its `Display for Value` walk becomes the *derived* arm, entered only
-after an impl lookup misses.
+TypeTable threading does. The shipped hook uses that typed table during
+monomorphization to rewrite selected `__render(x)` calls to `show.render(x)`;
+both backends then run the same rewritten program.
 
 ### Blanket impls close `say`'s holes
 
@@ -152,41 +119,29 @@ impl Show for Set(a) where a: Show
 impl Show for (a, b) where a: Show, b: Show     # per tuple arity, as derives do
 ```
 
-Each is the derived structural form over the elements' `render` — so a
-`List(Point)` under a custom `Point` Show prints `[P<1,2>, P<3,4>]`
-everywhere. `say` then accepts any `Show` value, which — with the derived
-default — is any value. `show.show_list` and `set.show` are **deleted** in
-the same cut (break-don't-deprecate): both were named workarounds for the
-missing impls, and their call sites become plain `"${xs}"`/`say`.
+Each is the structural container form over the elements' `Show` rendering — so
+a `List(Point)` under a custom `Point` Show prints `[P<1,2>, P<3,4>]`
+everywhere once `show` is linked. `show.show_list` and `set.show` are retired
+workaround names; callers use interpolation with `import show`, `show.render`,
+or `show.say`.
 
-### Duration renders humanely, everywhere
+### Duration renders humanely when `show` is linked
 
-`Show for Duration` is already `duration.human` (`std/show.witchy:34-40`);
-under one path, interpolation follows: `"${90000ms}"` → `1m30s`. **Breaking**
-for any program that parsed interpolated raw ms — the escape hatch is explicit
-(`"${duration.ms(d)}"`), and the differential corpus + book fences catch every
-in-tree occurrence.
+`Show for Duration` is already `duration.human` (`std/show.witchy`). Under the
+import-gated path, `import show` makes interpolation follow: `"${90000ms}"` →
+`1m30s`. Without `show`, interpolation keeps the raw structural milliseconds.
 
-### The codegen-fail class dies: opaque forms, not type errors
+### Unsupported structural rendering is explicit
 
-**Decision: render, don't reject.** `Nil`, closures, and capabilities get
-stable opaque renderings (table below) rather than becoming typecheck-time
-interpolation errors. Rationale: rejecting at check time breaks
-debug-printing ergonomics — `"${x}"` inside a generic or exploratory context
-must never be the thing that won't compile; an opaque form is useless to
-*parse* but harmless to *print*. This deliberately differs from
-[RFC-0047](0047-one-equality.md), which **rejects** `==` on functions
-and capabilities: equality is a semantic judgment programs branch on (a wrong
-or backend-dependent answer corrupts behavior — the probed `f == f`
-interp-true/compiled-false divergence), while rendering is a human-facing
-projection where a stable opaque token is a correct, total answer. Rendering
-and equality may coherently have different domains because only one of them
-feeds back into program logic.
+The current compiler does not promise total opaque rendering for every value.
+Function interpolation is rejected at check time, and shapes the compiled
+structural renderer cannot build now get a diagnostic pointing users at
+`import show` plus `show.render`/`show.say` when the value has a `Show` path.
 
-Either way the invariant is: **a program that passes `witchy check` compiles,
-and a rendering that can't be supported fails at check time** — loud at check
-or working at runtime, never a codegen surprise. The `reject_reason` channel
-at builtins.rs:288-300 becomes dead for rendering and is deleted.
+The invariant for 0.1 is narrower but enforceable: interpolation either follows
+the linked `Show` protocol, uses a structural form both backends support, or
+fails loudly before runtime with a diagnostic that names the public rendering
+protocol. Silent `check`-passes/codegen-surprise paths are bugs.
 
 ### The render table (acceptance spec — both backends, byte-identical)
 
@@ -197,32 +152,29 @@ at builtins.rs:288-300 becomes dead for rendering and is deleted.
 | `Bool` | `true` / `false` | unchanged |
 | `String` | the string, bare | unchanged; **stays unquoted inside containers** (see Alternatives) |
 | `Nil` | `Nil` | interpreter already does this; compiled: new |
-| `Duration` | human form `1m30s` | **changed** in interpolation (was raw ms) |
+| `Duration` | human form `1m30s` when `show` is linked; raw ms structurally | import-gated |
 | `List(a)` | `[e1, e2]`, elements via `render` | element custom Shows now honored |
 | tuple | `(e1, e2)` | " |
 | record / ADT | custom `Show` if impl'd, else `Name(f1, f2)` | **changed** when an impl exists |
 | `Dict(k, v)` | `{k1: v1, k2: v2}` | insertion order, as today |
-| `Set(a)` | `{e1, e2}` | compiled: new (was codegen-fail); matches deleted `set.show` |
-| `Bytes` | `Bytes(len=N)` | interpreter's existing form; compiled: new |
+| `Set(a)` | `{e1, e2}` when `show` is linked; `Set([...])` structurally | generic-container follow-up shipped in `Mono::walk_expr` |
+| `Bytes` | structural/backend-supported form | total opaque rendering deferred |
 | range | `[0, 1, 2]` | already works both backends; unchanged |
-| closure / fn value | `<fn>` | interpreter changes from `<function/N>`; compiled: new |
-| capability | `<Console>`, `<Dir>`, `<Net>`, `<Secret>`, … | interpreter standardizes its `<capability …>`/`<dir>` zoo; compiled: new |
+| closure / fn value | rejected for interpolation | check-time error |
+| capability | structural/backend-supported form or check/codegen diagnostic | total opaque rendering deferred |
 
-Every row gets a differential test; the table is the DoD. The
-`WITCHY_TYPE_CHECK` sanitizer's tag machinery gives the compiled opaque rows
-their type names for free where a header tag exists.
+Rows that are part of the shipped 0.1 contract get differential tests. The
+deferred opaque rows are not release claims until their check/runtime behavior is
+specified and tested.
 
 ## Alternatives
 
 - **Do nothing / document the two systems.** Leaves the spec's own §"Rendering
   values" internally false and the codegen-fail class alive. Rejected.
-- **Reject `${Nil}`/`${closure}`/`${capability}` at typecheck** instead of
-  opaque forms. Cleanly kills the codegen surprise and mirrors 0047's
-  equality rejection — but breaks debug printing in generic code (a `where`
-  fn interpolating a type-var param would need a `Show` bound today it can't
-  always state) and makes `say` and interpolation diverge again at the domain
-  edge. Rejected for ergonomics; revisitable if opaque forms prove to mask
-  bugs in practice.
+- **Total opaque forms for `${Nil}`/`${closure}`/`${capability}`.** This keeps
+  debug-printing ergonomic, but it was not the shipped 0.1 cut. Function
+  interpolation is currently rejected at check time, matching the language's
+  preference for loud unsupported semantics over backend-dependent surprises.
 - **Make interpolation always-structural and `say` the only Show path**
   (i.e. bless today's split as design). Coherent, but it makes writing a
   `Show` impl nearly pointless (interpolation is the dominant idiom — probed
@@ -247,16 +199,12 @@ their type names for free where a header tag exists.
   impls are both blocked on TypeTable-backed dispatch; shipping this first
   would mean interpolation consults impls only where the shadow dispatch can
   see — recreating an allowlist. This RFC must not land piecemeal.
-- **Compiled-side renderer growth**: five new shape renderers (Set, Bytes,
-  Nil, closures, capabilities) and impl-call indirection in `ts_` helpers —
-  more monomorphized code per program, and the `ts_`/WIR-twin seam
-  (`ts_helpers` + `wir ts_{id}`) gets more load-bearing before any
-  [RFC-0050](0050-method-call-generalization.md) cleanup reaches it.
-- **Opaque forms can hide mistakes**: printing `<fn>` where a user meant to
-  *call* the function is now silent-but-visible instead of a compile error.
-  The equality side stays loud (0047), which bounds the damage to output.
-- Deleting `show_list`/`set.show` breaks their callers (in-tree: few; the
-  fix is shorter code), and the `Show for String` identity impl means
+- **More monomorphization pressure**: routing interpolation through
+  `show.render` creates the same bounded-generic specializations that `say`
+  does. This is simpler semantically, but it makes the mono pass more
+  load-bearing.
+- Retiring `show_list`/`set.show`-style workaround names breaks their callers
+  (in-tree: few; the fix is shorter code), and the `Show for String` identity impl means
   `render` on a bare String is unquoted by spec — the container-ambiguity
   wart is now written down rather than fixed.
 

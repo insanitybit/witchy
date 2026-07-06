@@ -6,10 +6,10 @@
 // `Show` (`[a, b]`, `{k: v}`, `Some(x)`), so `say(console, [1, 2, 3])` and
 // `say(console, someSet)` just work — and a custom element `Show` is honored
 // (`[P<1,2>, P<3,4>]`). Implement `Show` for your own types to give them a
-// *custom* readable form. (The built-in `to_string` already renders any value
-// structurally — `Point(1, 2)`, `[Circle(2), Dot]` — on every backend; reach
-// for `Show` when you want a different rendering than that default.) Pure
-// except `say`, which takes the `Console` it prints to.
+// custom readable form. Interpolation (`"${x}"`) uses `Show` when the helper
+// below is linked, and otherwise keeps the structural fallback for values whose
+// module never imports `show`. Pure except `say`, which takes the `Console` it
+// prints to.
 
 import duration
 import set
@@ -136,6 +136,14 @@ impl Show for (a, b, c, d) where a: Show, b: Show, c: Show, d: Show:
     fn show(self) -> String:
         let (x0, x1, x2, x3) = self
         "(" + show_one(x0) + ", " + show_one(x1) + ", " + show_one(x2) + ", " + show_one(x3) + ")"
+
+// Render one `Show` value to a `String` — `render(point)`, `render(90000ms)`,
+// `render([1, 2, 3])`. This is the one public renderer (RFC-0053): string
+// interpolation `"${x}"` lowers to `render(x)` for any `x` whose concrete type
+// has a relevant `Show` impl, so interpolation and `say` agree. A type without
+// a linked `Show` path keeps interpolation's byte-identical structural fallback.
+pub fn render(x: impl Show) -> String:
+    show(x)
 
 // Print any `Show` value without converting it by hand — `say(console, 42)`,
 // `say(console, point)`, `say(console, [1, 2, 3])`. The Show-accepting `print`

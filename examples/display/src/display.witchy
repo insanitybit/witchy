@@ -1,8 +1,8 @@
-// The `Show` trait renders any type as a String — including your own, which the
-// built-in `to_string` cannot. A blanket `impl Show for List(a) where a: Show`
-// means `say` renders a whole list through each element's Show impl, so it works
-// for lists of user types too, and it produces the same output whether
-// interpreted or compiled.
+// The `Show` trait is Witchy's public display protocol. Implement it for your own
+// types, and interpolation, `show.render`, and `show.say` use the same rendering
+// model. A blanket `impl Show for List(a) where a: Show` means lists render
+// through each element's Show impl too, with the same output whether interpreted
+// or compiled.
 
 import show
 

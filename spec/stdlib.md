@@ -2235,11 +2235,15 @@ Whether the two sets share no members.
 
 ## `show`
 
-The witchy standard `Show` trait: render a value as a `String`. Built-in impls cover the scalars — `Int`, `Float`, `Bool`, `String`, and `Duration` (which shows in its human form, `1m30s`, not raw milliseconds) — and the built-in containers: a `List`, `Dict`, `Set`, `Option`, `Result`, or tuple whose elements are themselves `Show` renders structurally through each element's `Show` (`[a, b]`, `{k: v}`, `Some(x)`), so `say(console, [1, 2, 3])` and `say(console, someSet)` just work — and a custom element `Show` is honored (`[P<1,2>, P<3,4>]`). Implement `Show` for your own types to give them a *custom* readable form. (The built-in `to_string` already renders any value structurally — `Point(1, 2)`, `[Circle(2), Dot]` — on every backend; reach for `Show` when you want a different rendering than that default.) Pure except `say`, which takes the `Console` it prints to.
+The witchy standard `Show` trait: render a value as a `String`. Built-in impls cover the scalars — `Int`, `Float`, `Bool`, `String`, and `Duration` (which shows in its human form, `1m30s`, not raw milliseconds) — and the built-in containers: a `List`, `Dict`, `Set`, `Option`, `Result`, or tuple whose elements are themselves `Show` renders structurally through each element's `Show` (`[a, b]`, `{k: v}`, `Some(x)`), so `say(console, [1, 2, 3])` and `say(console, someSet)` just work — and a custom element `Show` is honored (`[P<1,2>, P<3,4>]`). Implement `Show` for your own types to give them a custom readable form. Interpolation (`"${x}"`) uses `Show` when the helper below is linked, and otherwise keeps the structural fallback for values whose module never imports `show`. Pure except `say`, which takes the `Console` it prints to.
 
 #### `trait Show`
 
 - `fn show(self) -> String`
+
+#### `fn render(x: impl Show) -> String`
+
+Render one `Show` value to a `String` — `render(point)`, `render(90000ms)`, `render([1, 2, 3])`. This is the one public renderer (RFC-0053): string interpolation `"${x}"` lowers to `render(x)` for any `x` whose concrete type has a relevant `Show` impl, so interpolation and `say` agree. A type without a linked `Show` path keeps interpolation's byte-identical structural fallback.
 
 #### `fn say(console: Console, x: impl Show)`
 
@@ -2494,7 +2498,7 @@ Abort the test with `msg` unless `cond` holds.
 
 #### `fn assert_eq(got: String, want: String)`
 
-Abort unless the two strings are equal, showing both. Convert values with `to_string`/`int_to_string` at the call site — the message stays readable.
+Abort unless the two strings are equal, showing both. Convert values at the call site with interpolation, or with `show.render` when you want `Show`.
 
 #### `fn assert_ne(got: String, other: String)`
 

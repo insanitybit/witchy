@@ -787,6 +787,38 @@
         );
     }
 
+    /// (RFC-0053, coherence) Generic container `Show` impls are part of the same
+    /// rendering model as concrete custom impls. In particular, `Set(Int)` has a
+    /// structural fallback (`Set([1, 2])`) but a public display form (`{1, 2}`), so
+    /// interpolation, `show.render`, and `show.say` must agree once `show` is linked.
+    #[test]
+    fn rfc0053_interpolation_matches_show_for_generic_containers_on_both_backends() {
+        let with_show = "import set\nimport show\n\ntype P:\n    P(Int)\n\nimpl Show for P:\n    fn show(self) -> String:\n        match self:\n            P(n) -> \"P<${n}>\"\n\nfn main(console: Console):\n    let s = set.from_list([1, 1, 2, 3])\n    print(console, \"${s}\")\n    print(console, show.render(s))\n    show.say(console, s)\n    print(console, \"${[s]}\")\n    let ps = [P(1), P(2)]\n    print(console, \"${ps}\")\n    print(console, show.render(ps))\n";
+        let expected = [
+            "{1, 2, 3}",
+            "{1, 2, 3}",
+            "{1, 2, 3}",
+            "[{1, 2, 3}]",
+            "[P<1>, P<2>]",
+            "[P<1>, P<2>]",
+        ];
+        assert_eq!(link_run(with_show), expected, "interp: interpolation matches show.render/say");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", with_show)], "main"),
+            expected,
+            "compiled: interpolation matches show.render/say",
+        );
+
+        let no_show = "import set\n\nfn main(console: Console):\n    let s = set.from_list([1, 1, 2, 3])\n    print(console, \"${s}\")\n";
+        let structural = ["Set([1, 2, 3])"];
+        assert_eq!(link_run(no_show), structural, "interp: no linked show keeps structural fallback");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", no_show)], "main"),
+            structural,
+            "compiled: no linked show keeps structural fallback",
+        );
+    }
+
     /// (BUG-240, parity) `math.abs(Int.MIN)` has no positive `Int`, so both backends
     /// must ABORT rather than silently wrap back to the negative `Int.MIN`. Ordinary
     /// magnitudes still agree. (Was a stable wrong answer: `-Int.MIN == Int.MIN`.)

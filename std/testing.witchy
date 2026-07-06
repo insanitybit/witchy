@@ -17,8 +17,8 @@ pub fn assert(cond: Bool, msg: String):
     if !cond:
         fail("assertion failed: " + msg)
 
-// Abort unless the two strings are equal, showing both. Convert values with
-// `to_string`/`int_to_string` at the call site — the message stays readable.
+// Abort unless the two strings are equal, showing both. Convert values at the
+// call site with interpolation, or with `show.render` when you want `Show`.
 pub fn assert_eq(got: String, want: String):
     if got != want:
         fail("assertion failed: got `" + got + "`, want `" + want + "`")
