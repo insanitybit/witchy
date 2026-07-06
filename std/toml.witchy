@@ -29,16 +29,86 @@ type Toml:
 pub fn decode(text: String) -> Result(Toml, String):
     var root = TomlTable([])
     var section = []
+    var aot = ""          // current `[[name]]` array key
+    var in_aot = false    // whether we are inside a `[[name]]` block
+    var aot_seq = 0       // distinguishes duplicate keys per array-of-tables entry
+    var seen_keys = []    // context-qualified key ids already inserted
+    var seen_tables = []  // `[section]` header paths already defined
     for line in string.lines(text):
         let t = string.trim(line)
-        if is_header(t):
-            section = header_path(header_name(t))
+        if is_array_header(t):
+            aot = array_header_name(t)
+            in_aot = true
+            aot_seq = aot_seq + 1
+            section = []
+            root = append_aot_table(root, aot)
+        else if is_header(t):
+            let path = header_path(header_name(t))
+            let id = list.join(path, ".")
+            if list.contains(seen_tables, id):
+                return Err("duplicate TOML table `[" + id + "]`")
+            seen_tables = list.push(seen_tables, id)
+            section = path
+            in_aot = false
         else if !(string.is_empty(t) || string.starts_with(t, "#")):
-            root = match key_value(t):
-                Some((k, v)) -> insert_kv(root, section, k, parse_value(v))
+            match key_value(t):
+                Some(pair) ->
+                    let (k, raw) = pair
+                    let value = parse_value(raw)?
+                    if in_aot:
+                        let id = "A" + "${aot_seq}" + "\n" + k
+                        if list.contains(seen_keys, id):
+                            return Err("duplicate key `" + k + "` in `[[" + aot + "]]`")
+                        seen_keys = list.push(seen_keys, id)
+                        root = insert_into_last_aot(root, aot, k, value)
+                    else:
+                        let id = "S" + list.join(section, ".") + "\n" + k
+                        if list.contains(seen_keys, id):
+                            return Err("duplicate key `" + k + "` in TOML")
+                        seen_keys = list.push(seen_keys, id)
+                        root = insert_kv(root, section, k, value)
                 None -> return Err("`" + t + "` is not a TOML line (expected `key = value`, a `[section]` header, or a `#` comment)")
-
     Ok(root)
+
+// Append a fresh empty table to the array-of-tables at `key` (creating the array
+// if absent) — the effect of encountering a `[[key]]` header.
+fn append_aot_table(node: Toml, key: String) -> Toml:
+    match node:
+        TomlTable(pairs) -> TomlTable(upsert(pairs, key, TomlArray(list.push(aot_array(pairs, key), TomlTable([])))))
+        _ -> node
+
+// Insert `(kv_key -> value)` into the LAST table of the array-of-tables at `key`
+// (the entry the current `[[key]]` block is filling).
+fn insert_into_last_aot(node: Toml, key: String, kv_key: String, value: Toml) -> Toml:
+    match node:
+        TomlTable(pairs) -> TomlTable(upsert(pairs, key, TomlArray(update_last(aot_array(pairs, key), kv_key, value))))
+        _ -> node
+
+// The `List(Toml)` currently stored as an array at `key`, or [] when absent.
+fn aot_array(pairs: List((String, Toml)), key: String) -> List(Toml):
+    var out = []
+    for p in pairs:
+        let (k, v) = p
+        if k == key:
+            if let TomlArray(xs) = v:
+                out = xs
+    out
+
+// Replace the last element of `arr` (a `TomlTable`) with one that has
+// `(kv_key -> value)` upserted into it.
+fn update_last(arr: List(Toml), kv_key: String, value: Toml) -> List(Toml):
+    let last = list.length(arr) - 1
+    var out = []
+    var i = 0
+    for elem in arr:
+        if i == last:
+            match elem:
+                TomlTable(pairs) -> out = list.push(out, TomlTable(upsert(pairs, kv_key, value)))
+                _ -> out = list.push(out, elem)
+        else:
+            out = list.push(out, elem)
+        i = i + 1
+    out
 
 // "a.b.c" -> ["a", "b", "c"]; "" -> [].
 fn header_path(name: String) -> List(String):
@@ -49,26 +119,38 @@ fn header_path(name: String) -> List(String):
             out = list.push(out, unquote_key(s))
     out
 
-// Type a raw value string into a Toml leaf.
-fn parse_value(raw: String) -> Toml:
+// Type a raw value string into a Toml leaf, or `Err` when the value is malformed
+// — an opening `"` with no closing `"`, or an opening `[` with no closing `]`
+// (a truncated line the old lenient parser silently accepted).
+fn parse_value(raw: String) -> Result(Toml, String):
     let v = string.trim(raw)
     if string.starts_with(v, "\""):
-        TomlString(unquote(v))
+        if has_closing_quote(v):
+            Ok(TomlString(unquote(v)))
+        else:
+            Err("unterminated string in TOML value `" + v + "`")
     else if string.starts_with(v, "["):
-        var elems = []
-        for e in parse_array(v):
-            elems = list.push(elems, parse_value(e))
-        TomlArray(elems)
+        if !string.contains(v, "]"):
+            Err("unterminated array in TOML value `" + v + "`")
+        else:
+            var elems = []
+            for e in parse_array(v):
+                elems = list.push(elems, parse_value(e)?)
+            Ok(TomlArray(elems))
     else:
         let bare = unquote(v)
         if bare == "true":
-            TomlBool(true)
+            Ok(TomlBool(true))
         else if bare == "false":
-            TomlBool(false)
+            Ok(TomlBool(false))
         else:
             match string.parse_int(bare):
-                Some(n) -> TomlInt(n)
-                None -> TomlString(bare)
+                Some(n) -> Ok(TomlInt(n))
+                None -> Ok(TomlString(bare))
+
+// Whether a value that opens with `"` also has a closing `"`.
+fn has_closing_quote(v: String) -> Bool:
+    string.contains(string.strip_prefix(v, "\""), "\"")
 
 // Insert (key -> value) into `node` at the table reached by `path`, creating
 // intermediate tables as needed.
@@ -155,13 +237,12 @@ pub fn table(text: String, section: String) -> List((String, String)):
 // `get_array` to read its fields. Use this to walk a `witchy.lock`'s `[[rune]]`
 // entries, which `table`/`get` (single-table) cannot enumerate.
 pub fn array_tables(text: String, name: String) -> List(String):
-    let marker = "[[" + name + "]]"
     var blocks = []
     var current = ""
     var collecting = false
     for line in string.lines(text):
         let t = string.trim(line)
-        if t == marker:
+        if is_array_header(t) && array_header_name(t) == name:
             if collecting:
                 blocks = list.push(blocks, current)
             current = ""
@@ -190,11 +271,29 @@ pub fn keys(text: String, section: String) -> List(String):
 pub fn inline_get(inline: String, key: String) -> Option(String):
     let body = string.strip_suffix(string.strip_prefix(string.trim(inline), "{"), "}")
     var found = None
-    for part in string.split(body, ","):
+    // Split on commas OUTSIDE quotes, so a quoted value that itself contains a
+    // comma (`path = "../foo,bar"`) is not truncated at the embedded comma.
+    for part in split_outside_quotes(body, ","):
         if let Some((k, v)) = key_value(string.trim(part)):
             if k == key:
                 found = Some(unquote(v))
     found
+
+// Split `s` on `sep` only where `sep` occurs outside a double-quoted span.
+fn split_outside_quotes(s: String, sep: String) -> List(String):
+    var parts = []
+    var current = ""
+    var in_quotes = false
+    for ch in string.chars(s):
+        if ch == "\"":
+            in_quotes = !in_quotes
+            current = current + ch
+        else if ch == sep && !in_quotes:
+            parts = list.push(parts, current)
+            current = ""
+        else:
+            current = current + ch
+    list.push(parts, current)
 
 // If `line` is `key = value` (and not a comment), return (unquoted key, raw value).
 fn key_value(line: String) -> Option((String, String)):
@@ -234,10 +333,33 @@ fn split_path(path: String) -> (String, String):
         ("", path)
 
 fn is_header(line: String) -> Bool:
-    string.starts_with(line, "[") && string.ends_with(line, "]")
+    string.starts_with(line, "[") && string.ends_with(header_no_comment(line), "]")
 
 fn header_name(line: String) -> String:
-    string.strip_suffix(string.strip_prefix(line, "["), "]")
+    string.strip_suffix(string.strip_prefix(header_no_comment(line), "["), "]")
+
+// Whether `line` is a `[[name]]` array-of-tables header (checked before the
+// single-table `is_header`, which a `[[...]]` line also matches).
+fn is_array_header(line: String) -> Bool:
+    string.starts_with(header_no_comment(line), "[[") && string.ends_with(header_no_comment(line), "]]")
+
+// The `name` inside a `[[name]]` array-of-tables header.
+fn array_header_name(line: String) -> String:
+    string.strip_suffix(string.strip_prefix(header_no_comment(line), "[["), "]]")
+
+// A header line with any trailing `# comment` dropped: the header runs to its
+// closing `]`, and a `#` after that begins a comment. A `#` before the first `]`
+// (e.g. inside a quoted key) is left intact, so `[section] # note` reads as
+// `[section]` while `["a#b"]` keeps its key.
+fn header_no_comment(line: String) -> String:
+    let close = string.index_of(line, "]") ?? -1
+    if close < 0:
+        line
+    else:
+        let rest = string.substring(line, close + 1, string.char_count(line))
+        match string.index_of(rest, "#"):
+            Some(h) -> string.trim(string.substring(line, 0, close + 1 + h))
+            None -> line
 
 // If `line` is `key = value`, return the trimmed raw value (still quoted).
 fn match_key(line: String, key: String) -> Option(String):
