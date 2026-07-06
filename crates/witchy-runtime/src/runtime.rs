@@ -1158,7 +1158,7 @@ fn host_encoding(mut caller: Caller<'_, VmState>, op: i32, in_ptr: i32, out_ptr:
         1 => "encoding.hex_decode_lossy",
         2 => "encoding.base64_encode",
         3 => "encoding.base64_decode_lossy",
-        4 => "encoding.hex_to_base64url",
+        4 => "encoding.hex_to_base64url_lossy",
         5 => "encoding.base64url_decode_lossy",
         6 => "encoding.base64url_to_hex_lossy",
         7 => "encoding.utf8_lossy",

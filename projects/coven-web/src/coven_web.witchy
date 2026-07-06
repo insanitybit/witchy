@@ -221,7 +221,7 @@ fn h_wa_challenge(store: Dir, rand: Rand) -> fn(Request) -> Response:
         let name = wa_field(doc, "name")
         let version = wa_field(doc, "version")
         let ch_hex = rand.hex(rand, 32)
-        let ch_b64 = encoding.hex_to_base64url(ch_hex)
+        let ch_b64 = result.unwrap_or(encoding.hex_to_base64url(ch_hex), "")
         write(store, "_wa_challenge.json", json.encode(JsonObject([("b64", JsonString(ch_b64)), ("op", JsonString(op)), ("name", JsonString(name)), ("version", JsonString(version))])))
         server.json(200, json.encode(JsonObject([("challengeHex", JsonString(ch_hex))])))
 

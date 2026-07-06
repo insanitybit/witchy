@@ -116,7 +116,7 @@ pub fn string_from_code(cp: i64) -> String {
 
 /// `encoding.*` via the shared native registry (hex/base64), selected by op code
 /// (0 hex_encode, 1 hex_decode_lossy, 2 base64_encode, 3 base64_decode_lossy, 4
-/// hex_to_base64url). The `*_lossy` decoders are the raw byte-level primitives; the
+/// hex_to_base64url_lossy). The `*_lossy` codecs are the raw byte-level primitives; the
 /// public `encoding.*decode` wrappers validate the alphabet and return `Result`.
 /// The playground host shim delegates here.
 pub fn encoding(op: i32, input: &str) -> Result<String, String> {
@@ -125,7 +125,7 @@ pub fn encoding(op: i32, input: &str) -> Result<String, String> {
         1 => "encoding.hex_decode_lossy",
         2 => "encoding.base64_encode",
         3 => "encoding.base64_decode_lossy",
-        4 => "encoding.hex_to_base64url",
+        4 => "encoding.hex_to_base64url_lossy",
         _ => return Err(format!("unknown encoding op {op}")),
     };
     native_str(name, crate::value::NativeValue::Str(input.to_string()))

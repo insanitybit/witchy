@@ -1502,7 +1502,7 @@ fn main(console: Console):
     #[test]
     fn encoding_base64url_of_hex_matches() {
         // hex("test-challenge") -> base64url "dGVzdC1jaGFsbGVuZ2U" (WebAuthn challenge form).
-        let p = "import encoding\nfn main(console: Console):\n    print(console, encoding.hex_to_base64url(\"746573742d6368616c6c656e6765\"))\n";
+        let p = "import encoding\nfn main(console: Console):\n    print(console, encoding.hex_to_base64url(\"746573742d6368616c6c656e6765\").unwrap_or(\"?\"))\n";
         assert_eq!(link_run(p), vec!["dGVzdC1jaGFsbGVuZ2U"]);
     }
 
@@ -10533,7 +10533,7 @@ fn main(console: Console):
     /// for reading `iss` to select the verification key before `verify_oidc`. Both backends.
     #[test]
     fn jwt_claims_unverified_reads_routing_fields() {
-        let src = "import jwt\nimport json\nimport encoding\nfn main(console: Console):\n    let payload = encoding.hex_to_base64url(encoding.hex_encode(\"{\\\"iss\\\":\\\"acme\\\",\\\"sub\\\":\\\"x\\\"}\"))\n    match jwt.claims_unverified(\"aaa.\" + payload + \".bbb\"):\n        Err(e) -> print(console, e)\n        Ok(claims) -> print(console, json.get_string(claims, \"iss\").unwrap_or(\"?\"))\n";
+        let src = "import jwt\nimport json\nimport encoding\nfn main(console: Console):\n    let payload = encoding.hex_to_base64url(encoding.hex_encode(\"{\\\"iss\\\":\\\"acme\\\",\\\"sub\\\":\\\"x\\\"}\")).unwrap_or(\"?\")\n    match jwt.claims_unverified(\"aaa.\" + payload + \".bbb\"):\n        Err(e) -> print(console, e)\n        Ok(claims) -> print(console, json.get_string(claims, \"iss\").unwrap_or(\"?\"))\n";
         let expected = vec!["acme".to_string()];
         assert_eq!(link_run(src), expected, "interp");
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
@@ -11036,7 +11036,7 @@ fn main(console: Console):
     /// `base64url_decode` yields the text; identical on both backends.
     #[test]
     fn base64url_decode_backends_agree() {
-        let src = "import encoding\nfn main(console: Console):\n    let e = encoding.hex_to_base64url(\"7b2274223a317d\")\n    print(console, encoding.base64url_to_hex(e).unwrap_or(\"?\"))\n    print(console, encoding.base64url_decode(e).unwrap_or(\"?\"))\n";
+        let src = "import encoding\nfn main(console: Console):\n    let e = encoding.hex_to_base64url(\"7b2274223a317d\").unwrap_or(\"?\")\n    print(console, encoding.base64url_to_hex(e).unwrap_or(\"?\"))\n    print(console, encoding.base64url_decode(e).unwrap_or(\"?\"))\n";
         let expected = vec!["7b2274223a317d".to_string(), "{\"t\":1}".to_string()];
         assert_eq!(link_run(src), expected, "interp");
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
