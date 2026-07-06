@@ -1051,6 +1051,28 @@ fn check_main_signature(module: &Module) -> Result<(), TypeError> {
             ));
         }
     }
+    // (BUG-335, spec §16.3) `main` may return only `Nil` (the default) or `Int` (the
+    // process exit code); `Float` is also surfaced (both backends print it). Any
+    // OTHER return type — `String`/`Bool`/`List`/a record — is a parity trap: the
+    // interpreter echoes it when the program printed nothing, but the compiled run
+    // wrapper wires only `print_int`/`print_float` and silently drops the rest. Reject
+    // it at check time so the backends agree by construction (fail loud, never a
+    // silently different answer).
+    if let Some(t) = &main.ret {
+        let allowed = matches!(
+            t.unqualified(),
+            ast::Type::Named(n, _) if n == "Nil" || n == "Int" || n == "Float"
+        );
+        if !allowed {
+            return terr(format!(
+                "`main` returns `{}`, but `main` may return only `Nil` (the default) or \
+                 `Int` (the process exit code) — a `String`/`Bool`/`List`/record result is \
+                 printed by the interpreter but dropped by the compiled backend, so the two \
+                 diverge. Print the value inside `main` and return `Nil` or an exit code.",
+                witchy_syntax::format::type_str(t)
+            ));
+        }
+    }
     Ok(())
 }
 
