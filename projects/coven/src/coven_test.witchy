@@ -7,6 +7,7 @@ import testing
 import coven_validate
 import coven_proto
 import coven_footprint
+import coven_record
 import string
 import reflect
 import result
@@ -134,3 +135,17 @@ fn test_json_null_optional_is_none():
     match Sample.from_json(json.from_value(s)):
         Ok(b) -> testing.assert(option.is_none(b.note), "an absent optional decodes to None")
         Err(e) -> testing.assert(false, "round-trip failed: " + e)
+
+// --- BUG-363: the footprint list encoding in the signed payload is injective ---
+// A bare comma join was NOT injective: `["A,B"]` and `["A", "B"]` produced the same
+// `rt=A,B` line, so two different footprints shared one signed payload — and witchy's
+// own rights strings carry commas (`Net[Connect, Tcp]`). Length-prefixing keeps them
+// distinct. (pm.witchy's `record_payload` rebuilds the byte-identical string, so a
+// coven signature still verifies there; the Rust e2e round-trip locks that lockstep.)
+fn test_signing_payload_footprint_is_injective():
+    let a = coven_record.signing_payload("n", "1.0.0", "staged", "h", ["A,B"], "u", "", "", "", 0)
+    let b = coven_record.signing_payload("n", "1.0.0", "staged", "h", ["A", "B"], "u", "", "", "", 0)
+    testing.assert(a != b, "['A,B'] and ['A','B'] must sign to different payloads")
+    let c = coven_record.signing_payload("n", "1.0.0", "staged", "h", ["Net[Connect, Tcp]"], "u", "", "", "", 0)
+    let d = coven_record.signing_payload("n", "1.0.0", "staged", "h", ["Net[Connect", " Tcp]"], "u", "", "", "", 0)
+    testing.assert(c != d, "Net[Connect, Tcp] must not collide with its split form")
