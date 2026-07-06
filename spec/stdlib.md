@@ -1045,6 +1045,8 @@ Coerce a Json value to a scalar, or `Err` describing the expected shape.
 
 #### `fn array_of(j: Json) -> Result(List(Json), String)`
 
+A JSON number with no fraction/exponent decodes to `JsonInt`, but it is still a valid `Float` field value (`{"ratio": 1}`), so widen it here.
+
 #### `fn optional(o: Option(Json), each: fn(Json) -> Result(a, String)) -> Result(Option(a), String)`
 
 Decode an optional field: an absent key or an explicit `null` is `None`; otherwise the value is decoded via `each`. Used for `Option(_)` fields.
@@ -1874,8 +1876,6 @@ Split a list of Results into the Ok values and the Err values, each in order —
 rights — rights-precise reasoning over capability footprints.
 
 A capability is rendered the way the compiler's footprint prints it: "Console", "Dir[Read]", "Net[Connect, Tcp]". A *declared* capability covers a *demanded* one when they share a base kind AND the declared authority is at least as broad: a bare "Net" admits any rights of that kind, while "Net[Connect]" admits only a subset — so Net[Connect] does NOT cover full Net. This rights-precision is what the package manager's declared-vs-actual check and the block-on-widening gate both rely on, so it lives in one tested place.
-
-`Net` has TWO independent axes — verbs {Connect, Listen} and transports {Tcp, Udp, Uds} — and (mirroring the compiler) an axis named by NO marker in the bracket means that whole axis is granted. So "Net[Connect]" is Connect over ANY transport ({Connect, Tcp, Udp, Uds}) and therefore covers the narrower "Net[Connect, Tcp]". Comparison expands each side's omitted axes to full before testing subset; other kinds have flat rights and are compared literally.
 
 #### `fn covers(declared: String, demanded: String) -> Bool`
 
