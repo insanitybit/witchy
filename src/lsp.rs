@@ -494,18 +494,35 @@ fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) ->
     };
     match typeck::check(&linked) {
         Ok(()) => {
-            // Performance notes (severity Hint -> rendered unobtrusively):
-            // accumulation that reverts to the copying path inside a loop.
-            crate::analysis::module_cliffs(&linked)
-                .into_iter()
-                // Only the user's own functions: linked-in module functions
-                // carry qualified (`module.fn`) names — their cliffs belong
-                // to that module's author, not this buffer.
-                .filter(|(func, _)| !func.contains('.'))
-                .map(|(func, c)| {
-                    let line0 = c.line.saturating_sub(1);
+            // A file that declares `mode opt` turns the performance contract into a
+            // HARD gate — the same one `witchy check` enforces via
+            // `enforce_performance_modes`. Mirror it here so the editor surfaces those
+            // errors instead of silently accepting a program `check` rejects (BUG-165).
+            let enforce = !linked.modes.is_empty();
+            let modes = linked.modes.join(", ");
+            let mut diags: Vec<Value> = Vec::new();
+
+            // Copy-cliffs: a plain note normally (Hint, rendered unobtrusively); in a
+            // `mode` file the cliff is a hard error. Only the buffer's OWN functions
+            // (the entry module's `main` / `{entry}.fn`) are judged; linked-in modules
+            // keep their own policy.
+            for (func, c) in crate::analysis::module_cliffs(&linked) {
+                if !crate::is_entry_function(&func, &entry) {
+                    continue;
+                }
+                let line0 = c.line.saturating_sub(1);
+                if enforce {
+                    diags.push(line_diag(
+                        line0,
+                        text,
+                        &format!(
+                            "`{}` is rebuilt by copy on every iteration of this loop (in `{func}`): it is {} — `mode {modes}` requires it stay on the in-place path",
+                            c.var, c.reason
+                        ),
+                    ));
+                } else {
                     let end = line_len(text, line0);
-                    json!({
+                    diags.push(json!({
                         "range": {
                             "start": { "line": line0, "character": 0 },
                             "end": { "line": line0, "character": end }
@@ -516,9 +533,36 @@ fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) ->
                             "`{}` is rebuilt by copy on every iteration (in `{func}`): it is {} — O(n²)",
                             c.var, c.reason
                         )
-                    })
-                })
-                .collect()
+                    }));
+                }
+            }
+
+            // Signature contract (mode files only): every ownership-relevant parameter
+            // must declare its convention (`let`/`own`/`var`), so the interprocedural
+            // summaries are declared facts. A bare (default) `let` is the violation.
+            if enforce {
+                for item in &linked.items {
+                    let ast::Item::Function(f) = item else { continue };
+                    if !crate::is_entry_function(&f.name, &entry) {
+                        continue;
+                    }
+                    for p in &f.params {
+                        if p.convention == ast::Convention::Let && crate::ownership_relevant(&p.ty) {
+                            let bare = f.name.rsplit('.').next().unwrap_or(&f.name);
+                            let line0 = fn_decl_line(text, bare).unwrap_or(0);
+                            diags.push(line_diag(
+                                line0,
+                                text,
+                                &format!(
+                                    "parameter `{}` has no ownership convention — `mode {modes}` requires an explicit `let` (read-only borrow), `own` (consumed), or `var` (mutated in place)",
+                                    p.name
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+            diags
         }
         Err(e) => {
             let line0 = extract_line(&e.message).map_or(0, |n| n.saturating_sub(1));
@@ -550,6 +594,17 @@ fn diag(start_line: u32, start_char: u32, end_line: u32, end_char: u32, message:
         "source": "witchy",
         "message": message
     })
+}
+
+/// The 0-based line of `text` declaring function `bare` (`fn bare(` / `pub fn bare(`),
+/// so a mode-opt signature-contract error can point at the offending function even
+/// though the AST carries no span for it.
+fn fn_decl_line(text: &str, bare: &str) -> Option<u32> {
+    let needle = format!("fn {bare}(");
+    text.lines().position(|l| {
+        let t = l.trim_start();
+        t.strip_prefix("pub ").unwrap_or(t).starts_with(&needle)
+    }).map(|i| i as u32)
 }
 
 fn line_len(text: &str, line0: u32) -> u32 {

@@ -243,6 +243,36 @@ fn main(console: Console):
         assert_eq!(diags(src), Vec::<Value>::new());
     }
 
+    /// (BUG-165) A `mode opt` file whose ownership-relevant parameter carries no
+    /// convention is rejected by `witchy check`; the LSP must publish that same
+    /// error instead of silently accepting a program the compiler refuses.
+    #[test]
+    fn mode_opt_ownership_violation_is_a_diagnostic() {
+        let bad = "mode opt\n\nimport list\n\nfn tag(xs: List(Int)) -> Int:\n    list.length(xs)\n\nfn main(console: Console):\n    print(console, __render(tag([1, 2, 3])))\n";
+        let d = diags(bad);
+        assert!(
+            d.iter().any(|x| x["severity"] == json!(1)
+                && x["message"].as_str().unwrap().contains("ownership convention")),
+            "mode opt must flag the unannotated param as an error: {d:?}"
+        );
+
+        // Declaring the convention (`let xs`) satisfies the contract — no error.
+        let good = bad.replace("fn tag(xs:", "fn tag(let xs:");
+        let d = diags(&good);
+        assert!(
+            !d.iter().any(|x| x["message"].as_str().unwrap().contains("ownership convention")),
+            "an annotated parameter must be clean: {d:?}"
+        );
+
+        // The contract is opt-in: without `mode opt`, the same code is accepted.
+        let no_mode = bad.replace("mode opt\n\n", "");
+        let d = diags(&no_mode);
+        assert!(
+            !d.iter().any(|x| x["message"].as_str().unwrap().contains("ownership convention")),
+            "no mode -> no ownership-convention error: {d:?}"
+        );
+    }
+
     #[test]
     fn importing_std_resolves_without_false_errors() {
         // `string` isn't on disk next to /tmp/main.witchy, so this exercises the

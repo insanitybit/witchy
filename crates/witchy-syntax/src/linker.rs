@@ -158,20 +158,36 @@ pub fn std_signatures(query: &str) -> Vec<String> {
     for m in STD_MODULES {
         let Some(src) = std_source(m) else { continue };
         let lines: Vec<&str> = src.lines().collect();
+        let mut current_impl: Option<&str> = None;
         for (i, line) in lines.iter().enumerate() {
+            let indent = line.len() - line.trim_start().len();
             let t = line.trim_start();
+            // Track an INHERENT `impl <Type>:` block at column 0, so a `pub fn` inside
+            // it is surfaced under its Type (`Net.tcp`) — the callable, `check`-accepted
+            // form — not the module (`policy.tcp`), which `check` rejects (BUG-160). A
+            // TRAIT impl (`impl Trait for Type:`) is not a `Type.method` call site, so it
+            // leaves methods module-qualified; any other top-level line ends the block.
+            if indent == 0 && !t.is_empty() && !t.starts_with("//") {
+                current_impl = t
+                    .strip_prefix("impl ")
+                    .and_then(|r| r.trim_end().strip_suffix(':'))
+                    .map(str::trim)
+                    .filter(|s| !s.contains(" for ") && !s.contains(" where ") && !s.contains('('));
+            }
             let Some(rest) = t.strip_prefix("pub fn ") else { continue };
             let Some(paren) = rest.find('(') else { continue };
             let fname = rest[..paren].trim();
-            let bucket = if fname == query {
+            let qualifier = if indent > 0 { current_impl.unwrap_or(m) } else { m };
+            let qualified = format!("{qualifier}.{fname}");
+            let bucket = if fname == query || qualified == query {
                 &mut exact
-            } else if fname.contains(query) {
+            } else if fname.contains(query) || qualified.contains(query) {
                 &mut partial
             } else {
                 continue;
             };
             let sig = rest.trim_end().trim_end_matches(':');
-            let mut entry = format!("{m}.{sig}");
+            let mut entry = format!("{qualifier}.{sig}");
             // The doc is the contiguous `//` block above; its FIRST line is
             // the sentence that describes the function.
             let mut start = i;
@@ -222,11 +238,23 @@ pub fn module_exports(module: &str) -> Vec<String> {
         return Vec::new();
     };
     let mut out = Vec::new();
+    let mut current_impl: Option<&str> = None;
     for line in src.lines() {
+        let indent = line.len() - line.trim_start().len();
         let t = line.trim_start();
+        // Surface inherent-`impl <Type>:` methods under their Type (`Net.tcp`), the
+        // callable form, rather than the module (`policy.tcp`) — see BUG-160.
+        if indent == 0 && !t.is_empty() && !t.starts_with("//") {
+            current_impl = t
+                .strip_prefix("impl ")
+                .and_then(|r| r.trim_end().strip_suffix(':'))
+                .map(str::trim)
+                .filter(|s| !s.contains(" for ") && !s.contains(" where ") && !s.contains('('));
+        }
         if let Some(rest) = t.strip_prefix("pub fn ") {
             if rest.contains('(') {
-                out.push(format!("{module}.{}", rest.trim_end().trim_end_matches(':')));
+                let qualifier = if indent > 0 { current_impl.unwrap_or(module) } else { module };
+                out.push(format!("{qualifier}.{}", rest.trim_end().trim_end_matches(':')));
             }
         }
     }
@@ -1790,5 +1818,34 @@ mod tests {
             "{ms:?}"
         );
         assert!(std_signatures("zzz_nothing").is_empty());
+    }
+
+    /// (BUG-160) A `pub fn` inside an inherent `impl <Type>:` block (a capability
+    /// policy constructor) is surfaced under its Type — the callable, `check`-accepted
+    /// form `Net.tcp(...)` — not the module form `policy.tcp(...)` that `check` rejects.
+    /// `which` resolves both the bare name and the qualified `Type.method` query.
+    #[test]
+    fn which_reports_impl_methods_under_their_type() {
+        // The bare name resolves to the Type-qualified, callable form.
+        let tcp = std_signatures("tcp");
+        assert!(tcp.iter().any(|s| s.starts_with("Net.tcp(")), "bare `tcp` -> Net.tcp: {tcp:?}");
+        assert!(!tcp.iter().any(|s| s.starts_with("policy.tcp(")), "no unusable policy.tcp: {tcp:?}");
+
+        // The qualified `Type.method` query resolves.
+        let qualified = std_signatures("Net.tcp");
+        assert!(
+            qualified.iter().any(|s| s.starts_with("Net.tcp(")),
+            "qualified `Net.tcp` must resolve: {qualified:?}"
+        );
+        assert!(std_signatures("Dir.ext").iter().any(|s| s.starts_with("Dir.ext(")));
+
+        // Listing the `policy` module reports every constructor under its Type.
+        let exports = module_exports("policy");
+        assert!(exports.iter().any(|s| s.starts_with("Net.tcp(")), "{exports:?}");
+        assert!(exports.iter().any(|s| s.starts_with("Dir.ext(")), "{exports:?}");
+        assert!(!exports.iter().any(|s| s.starts_with("policy.")), "no module-qualified form: {exports:?}");
+
+        // Ordinary module functions stay module-qualified.
+        assert!(std_signatures("split").iter().any(|s| s.starts_with("string.split(")));
     }
 }

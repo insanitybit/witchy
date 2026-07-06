@@ -112,11 +112,15 @@ fn run_embedded_pm(raw: Vec<String>) -> ! {
     use std::collections::{HashSet, VecDeque};
     let mut net_allow: Vec<String> = Vec::new();
     let mut pm_args: Vec<String> = Vec::new();
+    let mut runtime_net: Vec<String> = Vec::new();
     let mut argv = raw.into_iter();
     while let Some(a) = argv.next() {
         if a == "--net" {
             match argv.next() {
-                Some(addr) => net_allow.push(addr),
+                Some(addr) => {
+                    net_allow.push(addr.clone());
+                    runtime_net.push(addr);
+                }
                 None => {
                     eprintln!("--net needs a host:port");
                     std::process::exit(1);
@@ -125,6 +129,17 @@ fn run_embedded_pm(raw: Vec<String>) -> ! {
         } else {
             pm_args.push(a);
         }
+    }
+    // (BUG-406) Forward the user's `--net` grants to the front-end as trailing args
+    // so `pm run/build` can propagate them to the INNER `sandbox` run of the compiled
+    // app — otherwise a program that needs `Net` at runtime is compiled but then run
+    // with no address allow-listed, silently losing its grant. These are appended
+    // AFTER the user's verb/target (which the pm reads positionally) and do NOT
+    // include the COVEN_URL auto-grant below (that is the front-end's own registry
+    // reach, not the app's runtime authority).
+    for addr in &runtime_net {
+        pm_args.push("--net".to_string());
+        pm_args.push(addr.clone());
     }
     // Auto-grant Net to the configured registry (COVEN_URL) so registry commands
     // need no explicit `--net`. The front-end reads COVEN_URL itself (via Env)

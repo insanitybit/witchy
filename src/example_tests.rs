@@ -432,6 +432,32 @@
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
+    /// (BUG-414) The `vm.*` worker-VM intercepts fire only for a bare TOP-LEVEL
+    /// function (invoked by table index with a null environment). Passing the
+    /// function INDIRECTLY — via a local, or a lambda — must fall back to the
+    /// sequential `std/vm` body, which is byte-identical on both backends. The
+    /// intercept now requires a proven emitted top-level function, so it is robust to
+    /// any argument expression rather than mis-firing on a non-emitted name.
+    #[test]
+    fn vm_builtins_robust_to_indirect_function() {
+        // par_map with the function in a LOCAL and as an inline LAMBDA -> fallback.
+        let par = "import vm\n\nfn dbl(n: Int) -> Int:\n    n * 2\n\nfn main(console: Console):\n    let f = dbl\n    print(console, __render(vm.par_map([1, 2, 3], f)))\n    print(console, __render(vm.par_map([4, 5], fn(n: Int): n + 1)))\n";
+        let par_expected = ["[2, 4, 6]", "[5, 6]"];
+        assert_eq!(interpreter::run(par).expect("interp"), par_expected, "interp par_map indirect");
+        assert_eq!(run_linked_on_wasm(&[("main", par)], "main"), par_expected, "wasm par_map indirect");
+
+        // serve with the handler in a LOCAL -> fallback (sequential fold).
+        let serve = "import vm\nimport bytes\n\nfn step(state: Bytes, req: Bytes) -> Bytes:\n    bytes.concat(state, req)\n\nfn main(console: Console):\n    let h = step\n    let outs = vm.serve(bytes.from_string(\"\"), [bytes.from_string(\"a\"), bytes.from_string(\"b\")], h)\n    for o in outs:\n        print(console, bytes.to_string(o))\n";
+        let serve_expected = ["a", "ab"];
+        assert_eq!(link_run(serve), serve_expected, "interp serve indirect");
+        assert_eq!(run_linked_on_wasm(&[("main", serve)], "main"), serve_expected, "wasm serve indirect");
+
+        // A bare TOP-LEVEL function still takes the fast path and agrees.
+        let direct = "import vm\n\nfn dbl(n: Int) -> Int:\n    n * 2\n\nfn main(console: Console):\n    print(console, __render(vm.par_map([1, 2, 3], dbl)))\n";
+        assert_eq!(interpreter::run(direct).expect("interp"), ["[2, 4, 6]"], "interp direct");
+        assert_eq!(run_linked_on_wasm(&[("main", direct)], "main"), ["[2, 4, 6]"], "wasm direct");
+    }
+
     /// (Bytes) The first-class `Bytes` type: a UTF-8-free flat byte buffer. Exercises
     /// the round-trip with `String`, length/at/concat/slice/to_list, on both backends
     /// (linked interp + compiled WASM), which must agree — `Bytes` shares `String`'s
@@ -761,6 +787,36 @@
         let clean = prog("http.check_header(\"content-type\", \"application/json\")\n    http.check_field(\"request path\", \"/api/v1/users\")");
         assert_eq!(link_run(&clean), ["ok"], "interp accepts a clean header/path");
         assert_eq!(run_linked_on_wasm(&[("main", &clean)], "main"), ["ok"], "wasm accepts a clean header/path");
+    }
+
+    /// (BUG-276) The raw byte-level hex primitives (`encoding.hex_decode_lossy`,
+    /// `encoding.hex_to_base64url_lossy`) decode STRICTLY: a non-hex character is a
+    /// loud error on both backends, never the old silent-drop that could hand
+    /// mangled crypto material to a signature check. Valid hex still round-trips.
+    #[test]
+    fn hex_primitives_reject_non_hex_strictly_on_both_backends() {
+        let prog = |call: &str| {
+            format!("import encoding\n\nfn main(console: Console):\n    print(console, {call})\n")
+        };
+        for bad in [
+            "encoding.hex_decode_lossy(\"68zz69\")",
+            "encoding.hex_to_base64url_lossy(\"zz6869\")",
+            "encoding.hex_decode_lossy(\"abc\")", // odd length
+        ] {
+            let src = prog(bad);
+            assert!(
+                interpreter::run_module(resolve_std_src(&src), ".", Vec::new()).is_err(),
+                "interpreter must reject non-hex: {bad}"
+            );
+            let bytes = codegen::compile_module_binary(&resolve_std_src(&src))
+                .expect("compile")
+                .expect("lowers");
+            assert!(crate::run_wasm_bytes(&bytes).is_err(), "WASM must reject non-hex: {bad}");
+        }
+        // Valid hex still decodes identically on both backends.
+        let ok = prog("encoding.hex_decode_lossy(\"6869\")");
+        assert_eq!(link_run(&ok), ["hi"], "interp decodes valid hex");
+        assert_eq!(run_linked_on_wasm(&[("main", &ok)], "main"), ["hi"], "wasm decodes valid hex");
     }
 
     /// (SEC-045) An overflowing `Content-Length` must NOT crash the server. The old
@@ -4386,6 +4442,72 @@ fn yn(b: Bool) -> String:
             actor.run().is_err(),
             "compiled backend must not resolve the signing key via the removed handle-0 fallback"
         );
+    }
+
+    /// (BUG-394) `SecretStore.require(name)` for an ungranted secret must fail
+    /// EAGERLY on BOTH backends — at the require site — even when the returned
+    /// `Secret` is NEVER used. The compiled backend previously lowered `require` to
+    /// a bare `secretstore_lookup` returning -1, so an unused missing secret ran to
+    /// the end without error (lazy), diverging from the interpreter. A GRANTED
+    /// secret still resolves on both backends.
+    #[test]
+    fn require_missing_secret_errors_eagerly_on_both_backends() {
+        use crate::runtime::{Capabilities, Runtime};
+        // The required secret is fetched but NEVER used — the compiled backend must
+        // still trap at the require, not run to "reached".
+        let src = "import secretstore\nfn main(console: Console, secrets: SecretStore):\n    let s = secrets.require(\"missing\")\n    print(console, \"reached\")\n";
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+
+        // Interpreter (oracle): errors at the require site.
+        let interp = interpreter::run_module(linked.clone(), ".", Vec::new());
+        let msg = interp.expect_err("interp must reject an ungranted required secret").message;
+        assert!(msg.contains("required secret `missing` was not granted"), "interp msg: {msg}");
+
+        // Compiled WASM: no "missing" secret granted → must trap eagerly (not print).
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(&bytes, Capabilities { print: true, quiet: true, ..Default::default() }, 64)
+            .expect("spawn");
+        assert!(
+            actor.run().is_err(),
+            "compiled backend must trap eagerly on an ungranted required secret, not run to the end"
+        );
+
+        // A GRANTED (but unused) secret resolves on both backends.
+        let ok_module = parser::parse_module(src).expect("parse");
+        let ok_linked = crate::pipeline::link(vec![("main".into(), ok_module)], "main").expect("link");
+        let (interp_ok, _) = interpreter::run_module_exit_secrets(
+            ok_linked.clone(),
+            ".",
+            Vec::new(),
+            Vec::new(),
+            None,
+            vec![("missing".to_string(), b"hunter2".to_vec(), false)],
+        )
+        .expect("interp with grant");
+        assert_eq!(interp_ok, vec!["reached"]);
+        let ok_bytes = codegen::compile_module_binary(&ok_linked)
+            .expect("compile")
+            .expect("lowers");
+        let mut ok_actor = rt
+            .spawn(
+                &ok_bytes,
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    secrets: vec![crate::runtime::SecretGrant::new("missing", b"hunter2".to_vec())],
+                    ..Default::default()
+                },
+                64,
+            )
+            .expect("spawn");
+        ok_actor.run().expect("compiled with grant");
+        assert_eq!(ok_actor.output(), vec!["reached"], "granted secret resolves on the compiled backend");
     }
 
     /// Every ```witchy code block in the documentation must be a real program:

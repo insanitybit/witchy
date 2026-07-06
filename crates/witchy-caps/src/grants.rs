@@ -118,7 +118,14 @@ impl GrantDoc {
             cs.insert("Net", ["Connect", "Listen", "Tcp", "Udp", "Uds"].into_iter().collect());
         }
         if !self.secrets.is_empty() {
-            cs.insert("Secret", Rights::new());
+            // A `[secrets]` section models NAMED store secrets, reached through a
+            // `SecretStore` (`SecretStore.get`/`require`). It does NOT confer a bare
+            // `Secret` — the sign-only signing key, which is granted at LAUNCH by
+            // `--signing-key`, not by this document. Conferring both collapsed the two
+            // distinct capabilities, so a `[secrets] signing = {…}` grant silently
+            // satisfied a program that actually needs the bare signing-key `Secret`
+            // (BUG-117). Bind precisely: `[secrets]` -> `SecretStore` only, so a
+            // bare-`Secret` program reports the missing `Secret` as an under-grant.
             cs.insert("SecretStore", Rights::new());
         }
         cs
@@ -247,6 +254,28 @@ mod tests {
         let g = doc.cap_set();
         assert_eq!(g.get("File"), Some(&["Read"].into_iter().collect::<Rights>()));
         assert_eq!(g.get("Dir"), Some(&["Write"].into_iter().collect::<Rights>()));
+    }
+
+    /// (BUG-117) A `[secrets]` section confers `SecretStore` (named store secrets)
+    /// but NOT the bare `Secret` (the launch-granted signing key). So a program that
+    /// takes a bare `Secret` is UNDER-granted by a `[secrets]` document — the grant
+    /// no longer collapses the two distinct capabilities and silently passes.
+    #[test]
+    fn secrets_section_confers_secretstore_not_bare_secret() {
+        let doc = GrantDoc::parse("[secrets]\nsigning = { from = \"env:SIGNING_KEY\" }\n").unwrap();
+        let g = doc.cap_set();
+        assert!(g.contains_key("SecretStore"), "[secrets] must confer SecretStore");
+        assert!(!g.contains_key("Secret"), "[secrets] must NOT confer a bare Secret (the signing key)");
+
+        // A program needing a bare `Secret` is under-granted by this document.
+        let bare_secret = cs(&[("Console", &[]), ("Secret", &[])]);
+        let r = cross_check(&g, &bare_secret);
+        assert!(!r.sufficient(), "a bare-Secret program must not be satisfied by [secrets]");
+        assert!(r.under_grant.contains_key("Secret"), "the missing Secret is the finding: {r:?}");
+
+        // A program using a `SecretStore` is satisfied.
+        let store = cs(&[("Console", &[]), ("SecretStore", &[])]);
+        assert!(cross_check(&g, &store).sufficient(), "[secrets] satisfies a SecretStore program");
     }
 
     #[test]
