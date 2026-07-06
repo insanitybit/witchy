@@ -19145,6 +19145,10 @@ pub fn serve(console: Console, net: Net) -> Int:
             "encode_nan: null",
             "encode_finite: 1.5",
         ];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(wasm_run(src), expected, "wasm");
+    }
+
     #[test]
     fn bug307_real_body_error_surfaces_over_collect_inference_fallback() {
         // (BUG-307) A genuine body type error must surface even when the module has a
