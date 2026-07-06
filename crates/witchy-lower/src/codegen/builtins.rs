@@ -183,7 +183,7 @@ impl Codegen {
                 self.uses_encoding = true;
                 call("encoding", vec![W::ConstI32(3), self.lower_expr(&args[0])?])
             }
-            ("encoding.hex_to_base64url", 1) => {
+            ("encoding.hex_to_base64url_lossy", 1) => {
                 self.uses_encoding = true;
                 call("encoding", vec![W::ConstI32(4), self.lower_expr(&args[0])?])
             }

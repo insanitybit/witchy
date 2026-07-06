@@ -338,7 +338,7 @@ Fields are separated by commas and rows by newlines. A field that contains a com
 
 #### `fn decode(text: String) -> Result(List(List(String)), String)`
 
-Decode CSV text into rows of fields. A trailing newline is ignored; `\r\n` and `\n` line endings both work. Genuinely fallible (RFC-0044 rule 2): a field that opens a quote and never closes it is structurally malformed input, so decoding returns `Err` naming the fault rather than silently absorbing it. Paired with `encode`, and aligned with `json`/`toml` (serialization formats `decode`).
+Decode CSV text into rows of fields. A trailing newline is ignored; `\r\n` and `\n` line endings both work. Genuinely fallible (RFC-0044 rule 2): a field that opens a quote and never closes it, or a bare `"` in the middle of an unquoted field (`a"b`) / text after a closing quote (`"a"b`), is structurally malformed, so decoding returns `Err` naming the fault rather than silently mangling it. A lone `\r` (not part of a `\r\n`) is a literal data byte, kept rather than silently deleted. Paired with `encode`, aligned with `json`/`toml`.
 
 #### `fn encode(rows: List(List(String))) -> String`
 
@@ -346,7 +346,7 @@ Encode rows back to CSV text (each row newline-terminated), quoting any field th
 
 #### `fn decode_records(text: String) -> Result(List(Dict(String, String)), String)`
 
-Decode with the first row as a header: each remaining row becomes a Dict keyed by the header columns (a short row's missing columns read as ""). Fallible for the same reason as `decode` (it decodes first), so it returns `Result`.
+Decode with the first row as a header: each remaining row becomes a Dict keyed by the header columns. Fallible (RFC-0044): besides `decode`'s faults, a duplicate header column (`a,b,a`) would silently collapse in the Dict, and a ragged data row (a field count other than the header's) would silently drop or invent columns — both are rejected with an `Err` naming the fault instead.
 
 ## `dict`
 
@@ -528,9 +528,9 @@ Standard base64 (with `=` padding) of `data`'s UTF-8 bytes.
 
 Decode standard base64 (the `A-Za-z0-9+/` alphabet, `=` padding) back to text (lossy UTF-8), or an `Err` naming the input when it is not valid base64.
 
-#### `fn hex_to_base64url(hex: String) -> String`
+#### `fn hex_to_base64url(hex: String) -> Result(String, String)`
 
-base64url (no padding; `-`/`_`) of the bytes given as a HEX string. The hex indirection lets binary round-trip through UTF-8 strings — e.g. a WebAuthn `clientDataJSON.challenge` is base64url of the raw challenge bytes.
+base64url (no padding; `-`/`_`) of the bytes given as a HEX string, or an `Err` naming the input when it is not valid hex. The hex indirection lets binary round-trip through UTF-8 strings — e.g. a WebAuthn `clientDataJSON.challenge` is base64url of the raw challenge bytes. Fallible like `hex_decode` (RFC-0044): malformed hex is a reachable `Err`, never the silent drop the raw codec would do.
 
 #### `fn base64url_decode(data: String) -> Result(String, String)`
 
@@ -2566,7 +2566,7 @@ Structured parses return `Result(_, String)` with what went wrong (the same conv
 
 #### `fn parse(s: String) -> Result(Url, String)`
 
-Parse a URL, or an error naming what is malformed.
+Parse a URL, or an error naming what is malformed. A well-formed URL needs a non-empty scheme and host — an empty either side (`://host`, `https:///path`) is rejected rather than accepted with a blank field.
 
 #### `fn scheme(u: Url) -> String`
 

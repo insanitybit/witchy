@@ -48,7 +48,7 @@ pub fn lookup(qualified: &str) -> Option<NativeFn> {
         "encoding.hex_encode" => Some(encoding::hex_encode),
         "encoding.hex_decode_lossy" => Some(encoding::hex_decode_lossy),
         "encoding.base64_encode" => Some(encoding::base64_encode),
-        "encoding.hex_to_base64url" => Some(encoding::hex_to_base64url),
+        "encoding.hex_to_base64url_lossy" => Some(encoding::hex_to_base64url),
         "encoding.base64_decode_lossy" => Some(encoding::base64_decode_lossy),
         "encoding.base64url_decode_lossy" => Some(encoding::base64url_decode_lossy),
         "encoding.base64url_to_hex_lossy" => Some(encoding::base64url_to_hex_lossy),
@@ -580,7 +580,7 @@ mod encoding {
     /// WebAuthn `clientDataJSON.challenge` is base64url of the raw challenge bytes.
     pub fn hex_to_base64url(args: &[Value]) -> Result<Value, RuntimeError> {
         let [Value::Str(hexs)] = args else {
-            return Err(type_error("encoding.hex_to_base64url expects a hex String"));
+            return Err(type_error("encoding.hex_to_base64url_lossy expects a hex String"));
         };
         let bytes = hex_to_bytes(hexs);
         let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
