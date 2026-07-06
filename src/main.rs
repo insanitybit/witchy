@@ -204,17 +204,10 @@ fn main() -> wasmtime::Result<()> {
     // neither flag is present. The user-facing run/sandbox arg loops skip these tokens so they
     // aren't mistaken for the program file.
     {
-        let a: Vec<String> = std::env::args().collect();
-        let mode = if a.iter().any(|s| s == "--debug") {
-            Some("debug")
-        } else if a.iter().any(|s| s == "--release") {
-            Some("release")
-        } else {
-            None
-        };
+        let a: Vec<String> = std::env::args().skip(1).collect();
         // SAFETY: this runs at the very top of `main`, before any thread is spawned, so there is
         // no concurrent env access to race with (the requirement `set_var` is unsafe for).
-        if let Some(m) = mode {
+        if let Some(m) = leading_opt_mode(&a) {
             unsafe { std::env::set_var("WITCHY_OPT", m) };
         }
     }
@@ -1410,6 +1403,37 @@ fn load_signing_seed(path: &str) -> Result<[u8; 32], String> {
             .map_err(|_| "seed is not valid hex".to_string())?;
     }
     Ok(seed)
+}
+
+/// (RFC-0037) The optimization mode a LEADING global flag selects (`--release` /
+/// `--debug`), or `None`. `args` is the argv WITHOUT the program name. Only the
+/// flags BEFORE the program file — the first `.witchy`/`.wasm` token, which is where
+/// the guest's own argv begins — are consulted: a mode flag sitting in the guest's
+/// argv must neither flip the compiler's optimization mode nor be double-consumed
+/// (BUG-108 / BUG-114). Every other global flag already obeys this "before the file"
+/// rule via the per-command arg loops; the top-of-`main` mode scan is the one that
+/// used to read the whole argv, guest args included. `--debug` wins over `--release`
+/// when both lead (maximal debuggability), matching the prior precedence.
+fn leading_opt_mode(args: &[String]) -> Option<&'static str> {
+    let mut debug = false;
+    let mut release = false;
+    for a in args {
+        if a.ends_with(".witchy") || a.ends_with(".wasm") {
+            break;
+        }
+        match a.as_str() {
+            "--debug" => debug = true,
+            "--release" => release = true,
+            _ => {}
+        }
+    }
+    if debug {
+        Some("debug")
+    } else if release {
+        Some("release")
+    } else {
+        None
+    }
 }
 
 /// The value of a `--flag value` / `--flag=value` option: the inline form if
