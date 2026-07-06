@@ -525,6 +525,35 @@
         );
     }
 
+    /// (BUG-341) A type error in comptime-EMITTED code must report a real, in-file
+    /// location, not a phantom line number relative to the invisible emitted blob
+    /// (which could point PAST the file's EOF). The emitted items' line numbers are
+    /// now re-stamped to the `comptime:` block's own source line.
+    #[test]
+    fn comptime_body_type_error_reports_in_file_location() {
+        // 6-line file; the `comptime:` block (line 1) emits `broken`, whose Bool body
+        // type-errors against its declared `-> Int`. The reported line must be the
+        // block's real line, within the file — never a phantom offset past EOF.
+        let src = "comptime:\n    print(console, \"fn broken() -> Int:\")\n    print(console, \"    true\")\n\nfn main(console: Console):\n    print(console, __render(broken()))\n";
+        let line_count = src.lines().count() as u32;
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
+        let err = typeck::check(&linked)
+            .expect_err("a type error in emitted code must be reported")
+            .message;
+        let reported: u32 = err
+            .split("line ")
+            .nth(1)
+            .and_then(|s| s.split(|c: char| !c.is_ascii_digit()).next())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| panic!("the diagnostic must carry a line number: {err}"));
+        assert!(
+            (1..=line_count).contains(&reported),
+            "reported line {reported} must be within the {line_count}-line file, not a phantom \
+             offset past EOF: {err}",
+        );
+    }
+
     /// (BUG-182) A tagged literal in a standalone file whose stem is NOT a valid
     /// identifier (`tag-hyphen`) must still expand and run on both backends. Tag
     /// expansion seeds a throwaway parse with `import <qualifier>` lines built from
