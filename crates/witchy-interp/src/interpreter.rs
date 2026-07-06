@@ -2087,16 +2087,21 @@ impl Interpreter {
                         .get_mut(*id)
                         .ok_or_else(|| RuntimeError { message: "invalid socket".into() })?;
                     let want = (*n).max(0) as usize;
-                    let mut buf = vec![0u8; want];
-                    let mut read = 0;
-                    while read < want {
-                        match sock.read(&mut buf[read..]) {
+                    // `want` is attacker-controlled (an HTTP Content-Length, up to i64::MAX);
+                    // do NOT pre-allocate `vec![0u8; want]` — a peer that sends a huge count
+                    // but few bytes would OOM the host before a single byte arrives. Read in
+                    // bounded chunks so memory tracks bytes actually received, matching the
+                    // compiled runtime (`host_net_recv_bytes_len`). (BUG-065)
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 8192];
+                    while buf.len() < want {
+                        let to_read = (want - buf.len()).min(chunk.len());
+                        match sock.read(&mut chunk[..to_read]) {
                             Ok(0) => break,
-                            Ok(k) => read += k,
+                            Ok(k) => buf.extend_from_slice(&chunk[..k]),
                             Err(e) => return err(format!("recv failed: {e}")),
                         }
                     }
-                    buf.truncate(read);
                     Ok(Some(Value::Str(String::from_utf8_lossy(&buf).into_owned())))
                 }
                 _ => err("recv_bytes expects a Socket and an Int"),

@@ -547,6 +547,45 @@ fn main(console: Console, net: Net):
     }
 
     #[test]
+    fn recv_bytes_does_not_preallocate_attacker_count() {
+        // (BUG-065) `recv_bytes(sock, n)` must NOT pre-allocate `n` bytes up front —
+        // `n` is an attacker-controlled count (an HTTP Content-Length up to i64::MAX),
+        // so `vec![0u8; n]` before reading a single byte is a remote OOM. The fix reads
+        // in bounded chunks: a huge `n` against a peer that sends only a few bytes then
+        // closes returns exactly the bytes received, without allocating the claimed
+        // count. (The compiled backend already reads chunked — parity.)
+        use std::io::Write;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let server = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let _ = stream.write_all(b"hi");
+                // dropping `stream` closes the connection => EOF for the reader.
+            }
+        });
+
+        let (host, port) = addr.rsplit_once(':').expect("addr is host:port");
+        // Claim ~2 billion bytes but the peer sends 2 then closes.
+        let src = format!(
+            r#"
+fn main(console: Console, net: Net):
+    let only = net.only(Net.tcp("{host}", {port}))
+    let s = connect(only, "{addr}")
+    print(console, recv_bytes(s, 2000000000))
+"#
+        );
+        let linked = crate::pipeline::link(
+            vec![("main".to_string(), witchy_syntax::parser::parse_module(&src).expect("parse"))],
+            "main",
+        )
+        .expect("link");
+        assert_eq!(run_module(linked, ".", vec![addr.clone()]).unwrap(), vec!["hi"]);
+        server.join().ok();
+    }
+
+    #[test]
     fn serve_loopback_roundtrip() {
         use std::io::{Read, Write};
         use std::net::{TcpListener, TcpStream};
