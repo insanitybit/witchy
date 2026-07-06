@@ -573,6 +573,108 @@
         }
     }
 
+    /// HTTP/query hardening — the cluster of stdlib `http`/`server` fixes must behave
+    /// identically on both backends (parity is prime):
+    ///   BUG-236/352  query/form values are percent- AND `+`-decoded (`%E2%82%AC` -> €).
+    ///   BUG-375      path params and the handler-visible path are percent-decoded,
+    ///                while a `%2F` stays inside one segment (no forged separator).
+    ///   BUG-268      a nested router's own middleware layers are preserved.
+    ///   BUG-390      a request with conflicting Content-Length is rejected (400).
+    ///   BUG-203      an overflowing response status code parses to 0, never traps.
+    ///   BUG-269      a `chunked` response body is de-chunked.
+    ///   BUG-358      the renderer drops a handler-supplied framing header (no dup CL).
+    #[test]
+    fn http_server_hardening_agrees_on_both_backends() {
+        let src = r#"import server
+import http
+import option
+from http import Request, Response
+
+fn hi(req: Request) -> Response:
+    server.text(200, "id=" + server.param(req, "id") + " path=" + server.path(req))
+
+fn tag(inner: fn(Request) -> Response) -> fn(Request) -> Response:
+    fn(req: Request):
+        match inner(req):
+            Response(c, h, b) -> Response(c, h, "[wrapped]" + b)
+
+fn main(console: Console):
+    let req = Request("POST", "/x", [], [], [], "q=a%20b&x=1+2&k&e=%E2%82%AC")
+    print(console, __render(server.form_body(req)))
+    let app = server.router().get("/users/:id", hi)
+    print(console, http.body(server.handle(app, Request("GET", "/users/a%20b", [], [], [], ""))))
+    print(console, __render(http.status(server.handle(app, Request("GET", "/users/a%2Fb", [], [], [], "")))))
+    let sub = server.router().get("/inner", hi).layer(tag)
+    let nested = server.router().nest("/api", sub)
+    print(console, http.body(server.handle(nested, Request("GET", "/api/inner", [], [], [], ""))))
+    match server.parse_request("POST /x HTTP/1.1\r\nContent-Length: 3\r\nContent-Length: 5\r\n\r\nabc"):
+        Ok(_r) -> print(console, "PARSED")
+        Err(resp) -> print(console, "rejected " + __render(http.status(resp)))
+    print(console, "status=" + __render(http.status(http.parse_response("HTTP/1.1 999999999999999999999999 X\r\n\r\nb"))))
+    print(console, "chunked=" + http.body(http.parse_response("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n")))
+    let r1 = server.with_header(server.text(200, "hi"), "content-length", "999")
+    print(console, "cl=" + __render(string.count(string.to_lower(server.render(r1)), "content-length")))
+    print(console, __render(http.is_framing_header("Content-Length")))
+"#;
+        let expected = vec![
+            "[(q, a b), (x, 1 2), (k, ), (e, €)]".to_string(),
+            "id=a b path=/users/a b".to_string(),
+            "200".to_string(),
+            "[wrapped]id= path=/api/inner".to_string(),
+            "rejected 400".to_string(),
+            "status=0".to_string(),
+            "chunked=hello world".to_string(),
+            "cl=1".to_string(),
+            "true".to_string(),
+        ];
+        assert_eq!(link_run(src), expected, "interpreter");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+    }
+
+    /// (BUG-234) A non-http(s) URL scheme (`ftp:`/`file:`/`gopher:`) is REJECTED with
+    /// an Err rather than silently dialed as plaintext HTTP to the named host — the
+    /// http client speaks only HTTP/1.1. Same rejection on both backends.
+    #[test]
+    fn http_rejects_non_http_schemes_on_both_backends() {
+        let src = "import http\n\n\
+                   fn main(net: Net, console: Console):\n\
+                   \x20   for u in [\"ftp://h/x\", \"file:///etc/passwd\", \"gopher://h/1\"]:\n\
+                   \x20       match http.get_url(net, u):\n\
+                   \x20           Ok(_r) -> print(console, \"OK\")\n\
+                   \x20           Err(_e) -> print(console, \"rejected\")\n";
+        let want = ["rejected", "rejected", "rejected"];
+        let linked = resolve_std_src(src);
+        typeck::check(&linked).expect("typecheck");
+        assert_eq!(
+            interpreter::run_module(linked, ".", Vec::new()).expect("interp"),
+            want,
+            "interpreter"
+        );
+        assert_eq!(run_linked_on_wasm_net(&[("main", src)], "main", &[]), want, "wasm");
+    }
+
+    /// (BUG-364 / BUG-255) The request-line validator rejects a SPACE (it would split
+    /// the request line into extra tokens — request smuggling), and the response
+    /// renderer rejects a status code outside 100..599. Both trap LOUDLY and
+    /// identically on both backends rather than emit a malformed message.
+    #[test]
+    fn http_request_line_and_status_validation_trap_on_both_backends() {
+        let cases = [
+            "import http\n\nfn main(console: Console):\n    http.check_request_field(\"request path\", \"/a b\")\n    print(console, \"x\")\n",
+            "import server\n\nfn main(console: Console):\n    print(console, server.render(server.status_only(700)))\n",
+        ];
+        for src in cases {
+            assert!(
+                interpreter::run_module(resolve_std_src(src), ".", Vec::new()).is_err(),
+                "interpreter must trap: {src}"
+            );
+            let bytes = codegen::compile_module_binary(&resolve_std_src(src))
+                .expect("compile")
+                .expect("lowers");
+            assert!(crate::run_wasm_bytes(&bytes).is_err(), "wasm must trap: {src}");
+        }
+    }
+
     /// (RFC-0047) `==` on a function type is a compile-time error — there is no
     /// stable equality for functions (identity is a monomorphization/inlining
     /// accident), and comparing them was a confirmed backend parity divergence

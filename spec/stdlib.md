@@ -802,6 +802,18 @@ Trap unless `name` is a valid header-name token (rejects `:`, space, and CR/LF).
 
 Validate one `(name, value)` header pair — the name is a token, the value is CR/LF-free. Shared by the client request builder and the server renderer.
 
+#### `fn check_request_field(what: String, value: String)`
+
+(BUG-364) Trap unless `value` is safe to splice into the request LINE — no CR/LF AND no space or tab. The request line is space-delimited (`METHOD SP TARGET SP HTTP/1.1`), so a space or tab in the method/path/host would split it into extra tokens (request smuggling). Stricter than `check_field` (CR/LF only), which stays for header VALUES — those legitimately contain spaces.
+
+#### `fn is_framing_header(name: String) -> Bool`
+
+(BUG-358 / BUG-393) Whether `name` is a message-FRAMING header — Content-Length, Transfer-Encoding, or Connection. The renderer owns framing (it appends its own Content-Length / Connection), so a caller/handler-supplied framing header must be dropped rather than emitted alongside ours: two conflicting framing headers are a request/response-smuggling primitive.
+
+#### `fn parse_response(raw: String) -> Response`
+
+Parse a raw HTTP/1.1 response string into a `Response`: split at the blank line separating headers from body, parse the header lines into (lowercased name, trimmed value) pairs, decode a `chunked` body, and read the status code totally (a non-numeric or overflowing code becomes 0 rather than trapping). Public so a proxy or test can parse a response it obtained by other means.
+
 ## `iter`
 
 std/iter — lazy, pull-based iterators: the witchy take on Rust's Iterator, minus the part Rust most regrets. Because witchy values are "data" (no borrowing), there is no lending-iterator / GAT complexity: an `Iter(a)` is just a thunk that produces the next `Step`. Adapters (`map`/`filter`/ `take_while`/...) are lazy and compose without building intermediate lists; consumers (`collect`/`fold`/`find`/`count`) drive the pulling. Infinite iterators are fine (`count_from`, `repeat`) as long as something bounds them (`take`/`take_while`/`find`). Pure and capability-free; runs on both backends. (The planned `gen`/`yield` syntax will de-sugar to these constructors.)
@@ -1969,6 +1981,8 @@ A router: its routes plus the middleware layers wrapping the whole dispatch.
 
 #### `fn path(req: Request) -> String`
 
+The request path, percent-decoded for the handler (BUG-375). Routing itself runs on the RAW path (`raw_path_of`) and decodes each segment individually, so a `%2F` in a segment can't forge an extra path separator; this accessor decodes the whole path for display/logging.
+
 #### `fn param(req: Request, name: String) -> String`
 
 A captured path parameter (`:name`), or "" if absent.
@@ -2050,6 +2064,18 @@ Return `resp` with its status code replaced.
 #### `fn router() -> Router`
 
 #### `fn route(r: Router, m: String, p: String, h: fn(Request) -> Response) -> Router`
+
+#### `fn parse_request(raw: String) -> Result(Request, Response)`
+
+Parse a whole raw HTTP/1.1 request string into a `Request` (or a 400 `Response` when it is malformed, e.g. conflicting Content-Length) — the network-free mirror of the socket reader and of `http.parse_response`. Public so a router can be tested, or a request framed by another transport re-parsed, without a socket.
+
+#### `fn handle(app: Router, req: Request) -> Response`
+
+Dispatch `req` through `app` (all routes and middleware layers) and return the Response — the whole request pipeline WITHOUT a socket. The axum "oneshot" analog: handlers and routers become unit-testable with a `Request` literal, and it is the in-process way to call one app from another. `serve*` is this plus the accept loop.
+
+#### `fn render(resp: Response) -> String`
+
+Serialize a `Response` to its HTTP/1.1 wire form (inverse of `http.parse_response`). The framing headers (Content-Length, Connection) are owned here; a status outside 100..599 traps. Public so a test or a custom transport can render a Response itself.
 
 #### `fn serve(net: Net[Listen, Tcp], addr: String, app: Router)`
 
