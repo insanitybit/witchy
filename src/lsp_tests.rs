@@ -1,7 +1,7 @@
     use super::*;
 
     fn diags(text: &str) -> Vec<Value> {
-        compute_diagnostics("file:///tmp/main.witchy", text)
+        compute_diagnostics("file:///tmp/main.witchy", text, &HashMap::new())
     }
 
     #[test]
@@ -280,6 +280,81 @@ fn main(console: Console):
             "{:?}",
             d[0]["message"]
         );
+    }
+
+    #[test]
+    fn missing_on_disk_import_is_reported_gracefully() {
+        // BUG-168: `import helper` with no helper.witchy anywhere must yield a
+        // clear "cannot resolve import" at the import line, not a line-0
+        // "link error: module main imports unknown module helper".
+        let dir = std::env::temp_dir().join(format!("witchy-lsp-168-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main.witchy");
+        let src = "import helper\n\nfn main(console: Console):\n    print(console, \"x\")\n";
+        let uri = format!("file://{}", main.to_str().unwrap());
+        let mut docs = HashMap::new();
+        docs.insert(uri.clone(), src.to_string());
+        let d = compute_diagnostics(&uri, src, &docs);
+        assert_eq!(d.len(), 1, "{d:?}");
+        let msg = d[0]["message"].as_str().unwrap();
+        assert!(msg.contains("cannot resolve import `helper`"), "{msg}");
+        assert_eq!(d[0]["range"]["start"]["line"], json!(0), "{d:?}");
+        assert!(!msg.contains("link error"), "{msg}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn missing_on_disk_import_resolves_from_open_buffer() {
+        // BUG-168: an unsaved sibling buffer (not yet on disk) still resolves.
+        let dir = std::env::temp_dir().join(format!("witchy-lsp-168b-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main.witchy");
+        let helper = dir.join("helper.witchy");
+        let src = "import helper\n\nfn main(console: Console):\n    print(console, helper.greet(\"x\"))\n";
+        let main_uri = format!("file://{}", main.to_str().unwrap());
+        let helper_uri = format!("file://{}", helper.to_str().unwrap());
+        let mut docs = HashMap::new();
+        docs.insert(main_uri.clone(), src.to_string());
+        docs.insert(
+            helper_uri,
+            "pub fn greet(name: String) -> String:\n    \"hi \" + name\n".to_string(),
+        );
+        // helper.witchy is NOT written to disk.
+        let d = compute_diagnostics(&main_uri, src, &docs);
+        assert_eq!(d, Vec::<Value>::new(), "{d:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn broken_sibling_import_surfaces_a_diagnostic() {
+        // BUG-137: a neighbour that fails to parse must not be silently skipped.
+        let dir = std::env::temp_dir().join(format!("witchy-lsp-137-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("helper.witchy"), "pub fn f( -> :\n").unwrap();
+        let main = dir.join("main.witchy");
+        let src = "import helper\n\nfn main(console: Console):\n    print(console, \"x\")\n";
+        let uri = format!("file://{}", main.to_str().unwrap());
+        let mut docs = HashMap::new();
+        docs.insert(uri.clone(), src.to_string());
+        let d = compute_diagnostics(&uri, src, &docs);
+        assert_eq!(d.len(), 1, "{d:?}");
+        let msg = d[0]["message"].as_str().unwrap();
+        assert!(msg.contains("imported module `helper` failed to parse"), "{msg}");
+        assert_eq!(d[0]["range"]["start"]["line"], json!(0), "{d:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn link_error_maps_to_real_location() {
+        // BUG-162: a link error carrying `line N` underlines that line; one that
+        // blames an imported module underlines its import; otherwise line 0.
+        let text = "import helper\nimport other\nfn main(console: Console):\n    print(console, \"x\")\n";
+        assert_eq!(link_error_line("boom at line 3: bad thing", text), 2);
+        assert_eq!(
+            link_error_line("module `main` imports unknown module `other`", text),
+            1
+        );
+        assert_eq!(link_error_line("something went wrong", text), 0);
     }
 
     #[test]

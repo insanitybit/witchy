@@ -172,12 +172,15 @@ fn module_source(
     let dir = doc_uri.and_then(uri_to_path).and_then(|p| p.parent().map(PathBuf::from))?;
     let sibling = dir.join(format!("{name}.witchy"));
     // An open buffer (possibly with unsaved edits) wins over the on-disk copy.
-    for (u, buf) in docs {
-        if uri_to_path(u).as_deref() == Some(sibling.as_path()) {
-            return Some(buf.clone());
-        }
-    }
-    std::fs::read_to_string(&sibling).ok()
+    open_buffer(&sibling, docs).or_else(|| std::fs::read_to_string(&sibling).ok())
+}
+
+/// The contents of an open editor buffer whose URI maps to `path` — an unsaved
+/// sibling module the client is currently editing.
+fn open_buffer(path: &std::path::Path, docs: &HashMap<String, String>) -> Option<String> {
+    docs.iter()
+        .find(|(u, _)| uri_to_path(u).as_deref() == Some(path))
+        .map(|(_, buf)| buf.clone())
 }
 
 /// Parse a `from X import a, b, c` line into `(module, [names])` (RFC-0042).
@@ -355,7 +358,7 @@ fn handle_notification(
             let td = &not.params["textDocument"];
             if let (Some(uri), Some(text)) = (td["uri"].as_str(), td["text"].as_str()) {
                 docs.insert(uri.to_string(), text.to_string());
-                send_diagnostics(connection, uri, compute_diagnostics(uri, text));
+                send_diagnostics(connection, uri, compute_diagnostics(uri, text, docs));
             }
         }
         "textDocument/didChange" => {
@@ -367,7 +370,7 @@ fn handle_notification(
                 .and_then(|c| c["text"].as_str());
             if let (Some(uri), Some(text)) = (uri, text) {
                 docs.insert(uri.to_string(), text.to_string());
-                send_diagnostics(connection, uri, compute_diagnostics(uri, text));
+                send_diagnostics(connection, uri, compute_diagnostics(uri, text, docs));
             }
         }
         "textDocument/didClose" => {
@@ -391,9 +394,10 @@ fn send_diagnostics(connection: &Connection, uri: &str, diagnostics: Vec<Value>)
 
 /// Run the front-end over the open document and return LSP diagnostic objects.
 /// The entry module's text comes from the editor buffer; imported modules are
-/// resolved from sibling files on disk, falling back to the bundled std library
-/// — mirroring how `witchy <file>` loads a program.
-fn compute_diagnostics(uri: &str, text: &str) -> Vec<Value> {
+/// resolved from sibling files on disk (or an open buffer for unsaved edits),
+/// falling back to the bundled std library — mirroring how `witchy <file>` loads
+/// a program.
+fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) -> Vec<Value> {
     let path = uri_to_path(uri);
     let dir = path
         .as_ref()
@@ -421,32 +425,72 @@ fn compute_diagnostics(uri: &str, text: &str) -> Vec<Value> {
     loaded.insert(entry.clone());
     modules.push((entry.clone(), entry_module));
 
+    // Import-resolution problems (a neighbour that is missing or won't parse) are
+    // reported against the entry buffer's import site, not swallowed. Collected
+    // here and returned in place of the confusing line-0 link cascade they'd
+    // otherwise provoke.
+    let mut import_diags: Vec<Value> = Vec::new();
     while let Some(name) = queue.pop_front() {
         if !loaded.insert(name.clone()) {
             continue;
         }
-        let src = match std::fs::read_to_string(dir.join(format!("{name}.witchy"))) {
-            Ok(s) => s,
-            Err(_) => match crate::bundled_module(&name) {
-                Some(s) => s.to_string(),
-                None => continue, // unknown import — the linker will report it
-            },
+        // Resolve like `witchy <file>`: sibling `<name>.witchy` on disk (or its
+        // open buffer for unsaved edits) first, then the bundled std library.
+        let sibling = dir.join(format!("{name}.witchy"));
+        let src = std::fs::read_to_string(&sibling)
+            .ok()
+            .or_else(|| open_buffer(&sibling, docs))
+            .or_else(|| crate::bundled_module(&name).map(str::to_string));
+        let Some(src) = src else {
+            // BUG-168: an import that resolves to nothing. Say so at the import
+            // line instead of letting the linker emit a line-0
+            // "module `main` imports unknown module `name`".
+            let line0 = import_line_of(text, &name).unwrap_or(0);
+            import_diags.push(line_diag(
+                line0,
+                text,
+                &format!(
+                    "cannot resolve import `{name}`: no `{name}.witchy` beside this file, and it is not a bundled module"
+                ),
+            ));
+            continue;
         };
-        // A dependency that fails to parse isn't the open file; skip it rather
-        // than blaming the user's buffer for a broken neighbour.
-        if let Ok(m) = parser::parse_module(&src) {
-            for imp in &m.imports {
-                if !loaded.contains(imp) {
-                    queue.push_back(imp.clone());
+        // BUG-137: a neighbour that fails to parse used to be silently skipped,
+        // so the buffer showed no error at all — surface it against the import.
+        match parser::parse_module(&src) {
+            Ok(m) => {
+                for imp in &m.imports {
+                    if !loaded.contains(imp) {
+                        queue.push_back(imp.clone());
+                    }
                 }
+                modules.push((name, m));
             }
-            modules.push((name, m));
+            Err(e) => {
+                let line0 = import_line_of(text, &name).unwrap_or(0);
+                import_diags.push(line_diag(
+                    line0,
+                    text,
+                    &format!(
+                        "imported module `{name}` failed to parse: {} (line {})",
+                        e.message, e.line
+                    ),
+                ));
+            }
         }
+    }
+    if !import_diags.is_empty() {
+        return import_diags;
     }
 
     let linked = match crate::pipeline::link(modules, &entry) {
         Ok(m) => m,
-        Err(e) => return vec![line_diag(0, text, &e.to_string())],
+        Err(e) => {
+            // BUG-162: map the link error onto the line it names (or the import it
+            // blames) instead of always pinning it to line 0.
+            let msg = e.to_string();
+            return vec![line_diag(link_error_line(&msg, text), text, &msg)];
+        }
     };
     match typeck::check(&linked) {
         Ok(()) => {
@@ -520,6 +564,51 @@ fn extract_line(message: &str) -> Option<u32> {
     let rest = &message[message.find("line ")? + "line ".len()..];
     let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
     digits.parse().ok()
+}
+
+/// The 0-based line of `text` that imports `name` (`import name` or
+/// `from name import …`), if any.
+fn import_line_of(text: &str, name: &str) -> Option<u32> {
+    text.lines().enumerate().find_map(|(i, l)| {
+        let t = l.trim_start();
+        let hit = t.strip_prefix("import ").map(str::trim) == Some(name)
+            || parse_from_import(t).is_some_and(|(m, _)| m == name);
+        hit.then_some(i as u32)
+    })
+}
+
+/// The line a link error should underline: the `line N` it carries, else the
+/// import line of the first module it names in backticks, else the top of file.
+/// Link errors otherwise all pinned to line 0 (BUG-162).
+fn link_error_line(message: &str, text: &str) -> u32 {
+    if let Some(n) = extract_line(message) {
+        return n.saturating_sub(1);
+    }
+    // The message may name several things in backticks (e.g. the importing module
+    // AND the unknown one); use the first that this file actually imports.
+    for name in backtick_tokens(message) {
+        if let Some(line0) = import_line_of(text, &name) {
+            return line0;
+        }
+    }
+    0
+}
+
+/// The contents of every `` `…` `` span in `s`, in order.
+fn backtick_tokens(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = s;
+    while let Some(start) = rest.find('`') {
+        let after = &rest[start + 1..];
+        match after.find('`') {
+            Some(end) => {
+                out.push(after[..end].to_string());
+                rest = &after[end + 1..];
+            }
+            None => break,
+        }
+    }
+    out
 }
 
 /// Convert a `file://` URI to a filesystem path, percent-decoding escapes.
