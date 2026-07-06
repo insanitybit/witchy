@@ -183,6 +183,15 @@ impl<'a> Scope<'a> {
                 unqual.insert(t.clone(), format!("a local type `{t}`"));
             }
         }
+        // A local `fn` is an unqualified binding too, so a `from X import <fn>`
+        // that names it is the same §3 collision as two from-imports or a
+        // from-imported type vs a local type — not a silent retarget of every
+        // call site to the local (BUG-287).
+        if let Some(fset) = world.fns.get(home) {
+            for f in fset {
+                unqual.entry(f.clone()).or_insert_with(|| format!("a local function `{f}`"));
+            }
+        }
         for (srcmod, names) in from_imports {
             for name in names {
                 let brought_type = world.module_has_type(srcmod, name);
@@ -755,6 +764,54 @@ fn resolve_residual_block(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::parse_module;
+
+    /// Run the per-module type/constructor resolution over a set of `(name, src)`
+    /// modules — the linker's `type_resolve::resolve` step in isolation.
+    fn resolve_src(mods: &[(&str, &str)]) -> Result<(), LinkError> {
+        let mut modules: Vec<(String, Module)> = mods
+            .iter()
+            .map(|(n, s)| (n.to_string(), parse_module(s).expect("parse")))
+            .collect();
+        resolve(&mut modules)
+    }
+
+    #[test]
+    fn from_import_fn_collides_with_local_fn() {
+        // BUG-287: `from json import stringify` + a local `fn stringify` is the
+        // §3 unqualified-binding collision, not a silent retarget to the local.
+        let err = resolve_src(&[
+            ("json", "pub fn stringify(j: Int) -> String:\n    \"j\"\n"),
+            (
+                "main",
+                "from json import stringify\n\nfn stringify(j: Int) -> String:\n    \"local\"\n\nfn main(console: Console):\n    print(console, stringify(1))\n",
+            ),
+        ])
+        .unwrap_err();
+        assert!(
+            err.message.contains("collides with a local function `stringify`"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn from_import_fn_without_local_is_ok() {
+        // Control: no local `stringify`, so the from-import is legal.
+        resolve_src(&[
+            ("json", "pub fn stringify(j: Int) -> String:\n    \"j\"\n"),
+            (
+                "main",
+                "from json import stringify\n\nfn main(console: Console):\n    print(console, stringify(1))\n",
+            ),
+        ])
+        .expect("no collision");
+    }
 }
 
 fn resolve_residual_expr(
