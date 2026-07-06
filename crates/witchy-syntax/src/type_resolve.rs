@@ -485,20 +485,25 @@ impl<'a> Scope<'a> {
             match item {
                 Item::Type(t) => {
                     // A user type may not redeclare an ambient name (a primitive,
-                    // a host capability, or a prelude type like `Option`/`Set`/
-                    // `Ordering`): the declaration would be accepted but its
-                    // constructors would be unreachable by any spelling, since a
-                    // bare `Secret`/`Set`/… resolves to the ambient built-in
-                    // (BUG-289). The canonical std declarers (`cmp`/`set`/`iter`/
-                    // `option`/`result`/`policy`) legitimately declare theirs.
+                    // a host capability, or a prelude type) when doing so would
+                    // strand its constructors: an ambient-named type is kept out of
+                    // the module type map, so a NON-ambient constructor it declares
+                    // (`type Secret: Hidden(String)`, `type Set: ...`) is
+                    // unreachable by any spelling (BUG-289). A declaration whose
+                    // constructors are ALL ambient (`type Result: Ok(a) Err(e)`,
+                    // `type Option: Some(a) None`) resolves fine and stays legal —
+                    // a program may restate the prelude type. The canonical std
+                    // declarers (`cmp`/`set`/`iter`/`option`/`result`/`policy`) are
+                    // exempt outright.
                     if is_ambient_type(&t.name)
                         && !is_synthetic_type(&t.name)
                         && !crate::linker::STD_MODULES.contains(&self.home)
+                        && t.variants.iter().any(|v| !is_ambient_ctor(&v.name))
                     {
                         return lerr(format!(
                             "type `{name}` shadows the ambient built-in name `{name}` — rename it \
                              (a user type may not redeclare a primitive, capability, or prelude \
-                             type; its constructors would be unreachable)",
+                             type with new constructors; they would be unreachable)",
                             name = t.name
                         ));
                     }
@@ -955,6 +960,12 @@ mod tests {
         }
         // A std module keeps declaring its own ambient type.
         resolve_src(&[("cmp", CMP_STUB)]).expect("cmp may declare Ordering");
+        // A program may restate a prelude type whose constructors are all ambient
+        // (`Ok`/`Err`, `Some`/`None`) — those resolve, so nothing is stranded.
+        resolve_src(&[("main", "type Result:\n    Ok(a)\n    Err(e)\n")])
+            .expect("type Result with ambient ctors is legal");
+        resolve_src(&[("main", "type Option:\n    Some(a)\n    None\n")])
+            .expect("type Option with ambient ctors is legal");
     }
 
     #[test]
