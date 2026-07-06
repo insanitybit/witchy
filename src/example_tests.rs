@@ -19682,3 +19682,35 @@ pub fn serve(console: Console, net: Net) -> Int:
         let src = "import list\nasync fn ident(n: Int) -> Int:\n    n\nasync fn main(console: Console):\n    let m = chan.par_map(list.range(2000), fn(x): ident(x)).await\n    print(console, __render(list.length(m)))\n";
         assert_eq!(wasm_run(src), vec!["2000"]);
     }
+
+    /// PARITY (BUG-246): a TAB in leading indentation is rejected at the SHARED
+    /// parse stage, so neither backend can silently mis-nest a tab-indented body.
+    /// The old bug let a tab count as one column, so the body of `if false:` below
+    /// lexed shallower than it looked and *executed*. Rejection before codegen means
+    /// `witchy run` and the compiled path fail identically (parity by construction).
+    #[test]
+    fn tab_indentation_rejected_identically_on_both_backends() {
+        let src = "fn main(console: Console):\n    if false:\n\tprint(console, \"tab body executed\")\n    print(console, \"done\")\n";
+        let err = typeck::check_str(src).expect_err("a tab-indented body must be rejected");
+        assert!(
+            err.to_string().contains("tab in leading indentation"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// PARITY (BUG-339): a multiline tagged literal keeps the raw newline in its
+    /// content byte-for-byte. `tagged::parse_splice_expr` used to reindent EVERY
+    /// newline when nesting the emitted source under its throwaway `fn __tagsplice()`
+    /// wrapper, injecting four spaces after a newline that fell inside a string
+    /// literal — so `line1\nline2` rendered as `line1\n    line2`. The fix reindents
+    /// only STRUCTURAL newlines (outside string literals), so the tagged literal now
+    /// matches a plain multiline string and both backends produce identical bytes.
+    #[test]
+    fn multiline_tag_literal_preserves_raw_newlines_on_both_backends() {
+        let src = "import list\n\nfn raw(parts: List(String), holes: List(String)) -> String:\n    \"\\\"\" + parts.at(0) + \"\\\"\"\n\nfn main(console: Console):\n    print(console, raw\"line1\\nline2\")\n    print(console, \"line1\\nline2\")\n";
+        // The plain multiline string (line 2 of output) is the oracle; the tagged
+        // literal (line 1) must match it exactly on BOTH backends.
+        let expected = vec!["line1\nline2".to_string(), "line1\nline2".to_string()];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(wasm_run(src), expected, "wasm");
+    }
