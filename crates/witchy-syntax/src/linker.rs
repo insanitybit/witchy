@@ -493,11 +493,6 @@ pub fn link(
         }
     }
 
-    // RFC-0002 sealing: a `capability` (a sealed type) may be CONSTRUCTED or
-    // DESTRUCTURED only inside the module that declares it. Run here, while each
-    // item still knows its home module (before merge flattens the namespace).
-    check_sealing(&modules)?;
-
     // Expand type aliases and inline top-level constants per module before
     // merging, so their use sites (and any function calls inside constant values)
     // are qualified along with the bodies they expand into — no `Item::TypeAlias`
@@ -514,6 +509,15 @@ pub fn link(
     // still knows its home module and imports. Dissolves the flat-type-namespace
     // collisions (iter+chan's `Step`, task+future's `Step`/`Task`).
     crate::type_resolve::resolve(&mut modules)?;
+
+    // RFC-0002 sealing: a `capability` (a sealed type) may be CONSTRUCTED or
+    // DESTRUCTURED only inside the module that declares it. Run AFTER
+    // `type_resolve` canonicalizes every constructor and pattern — bare,
+    // module-qualified (`lib.Vault(…)`), and from-imported alike — to a single
+    // `Expr::Ctor { name: "module.Ctor" }`, so a qualified spelling can no longer
+    // slip past the name-keyed check (BUG-313, fail-closed). Modules are still
+    // unmerged here, so each item knows its home module.
+    check_sealing(&modules)?;
 
     let mut fns: FnTable = HashMap::new();
     for (name, m) in &modules {
@@ -1316,9 +1320,11 @@ fn seal_use(
 ) -> Result<(), LinkError> {
     if let Some(decl) = sealed.get(name) {
         if decl != home {
+            // Names are canonical `module.Ctor` here; show the bare ctor.
+            let bare = name.rsplit('.').next().unwrap_or(name);
             return lerr(format!(
-                "`{name}` is a sealed capability declared in module `{decl}`; module \
-                 `{home}` may hold and pass a `{name}` but cannot {verb} one — only \
+                "`{bare}` is a sealed capability declared in module `{decl}`; module \
+                 `{home}` may hold and pass a `{bare}` but cannot {verb} one — only \
                  `{decl}` can mint or unwrap it (use the functions `{decl}` exports)"
             ));
         }
@@ -1544,6 +1550,68 @@ mod tests {
         // `map` lives in list (and option); a near miss resolves to a real name.
         assert!(closest_std_function("mep").is_some());
         assert_eq!(closest_std_function("zzzzzz"), None);
+    }
+
+    fn noop_expand(_: &str, _: &mut Module, _: &[(String, Module)]) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Link `lib` (module `sealed_lib`) with `user` (module `user`, the entry) and
+    /// return the link error message, if any.
+    fn link_lib_user(lib: &str, user: &str) -> Result<(), String> {
+        let libm = crate::parser::parse_module(lib).expect("lib parses");
+        let userm = crate::parser::parse_module(user).expect("user parses");
+        link(
+            vec![("sealed_lib".to_string(), libm), ("user".to_string(), userm)],
+            "user",
+            noop_expand,
+        )
+        .map(|_| ())
+        .map_err(|e| e.message)
+    }
+
+    #[test]
+    fn sealing_rejects_module_qualified_constructor_and_pattern() {
+        // BUG-313: a module-qualified constructor/pattern must not evade the RFC-0002
+        // seal check — a sealed capability may be minted/destructured only in its
+        // declaring module, on EVERY spelling (fail-closed).
+        let lib = "capability Vault from Net\n\n\
+                   pub fn make(net: Net) -> Vault:\n    Vault(net)\n\n\
+                   pub fn zone(v: Vault) -> String:\n    match v:\n        Vault(n) -> \"z\"\n";
+
+        // CONSTRUCT via `lib.Vault(...)` — rejected.
+        let forge = "import sealed_lib\n\n\
+                     fn main(console: Console, net: Net):\n    \
+                     let forged = sealed_lib.Vault(net)\n    print(console, \"x\")\n";
+        let err = link_lib_user(lib, forge).expect_err("qualified construct must be rejected");
+        assert!(err.contains("sealed capability") && err.contains("Vault"), "{err}");
+
+        // DESTRUCTURE via `match v: lib.Vault(...)` — rejected.
+        let destr = "import sealed_lib\n\n\
+                     fn main(console: Console, net: Net):\n    \
+                     let v = sealed_lib.make(net)\n    \
+                     match v:\n        sealed_lib.Vault(inner) -> print(console, \"leak\")\n";
+        let err = link_lib_user(lib, destr).expect_err("qualified destructure must be rejected");
+        assert!(err.contains("sealed capability") && err.contains("destructure"), "{err}");
+
+        // Legit: hold and pass a Vault through the lib's exported functions — allowed.
+        let holder = "from sealed_lib import Vault\nimport sealed_lib\n\n\
+                      fn use_it(v: Vault, console: Console):\n    print(console, sealed_lib.zone(v))\n\n\
+                      fn main(console: Console, net: Net):\n    \
+                      let v = sealed_lib.make(net)\n    use_it(v, console)\n";
+        assert!(link_lib_user(lib, holder).is_ok(), "hold+pass must be allowed");
+    }
+
+    #[test]
+    fn sealing_rejects_grantable_mint_from_paramless_main() {
+        // BUG-313: a grantable root capability minted by `lib.RootCap(...)` from a
+        // param-less main forges authority from nothing — rejected.
+        let lib = "grantable capability UiRoot:\n    policy: String\n";
+        let forge = "import sealed_lib\n\n\
+                     fn main(console: Console):\n    \
+                     let forged = sealed_lib.UiRoot(\"admin\")\n    print(console, \"x\")\n";
+        let err = link_lib_user(lib, forge).expect_err("grantable mint must be rejected");
+        assert!(err.contains("sealed capability") && err.contains("UiRoot"), "{err}");
     }
 
     #[test]
