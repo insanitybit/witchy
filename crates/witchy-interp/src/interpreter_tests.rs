@@ -1184,7 +1184,7 @@ fn main(console: Console):
     #[test]
     fn modules_qualified_calls() {
         let strutil = r#"
-fn shout(name: String) -> String:
+pub fn shout(name: String) -> String:
     ("HELLO, " + name)
 "#;
         let app = r#"
@@ -1203,7 +1203,7 @@ fn main(console: Console):
     fn library_uses_only_passed_capabilities() {
         // The app chooses to hand the logger its Console.
         let logger = r#"
-fn log(console: Console, msg: String):
+pub fn log(console: Console, msg: String):
     print(console, ("[log] " + msg))
 "#;
         let app = r#"
@@ -1223,7 +1223,7 @@ fn main(console: Console):
         // `steal` references `console` it was never given — caught at compile
         // time as an unbound variable (no ambient authority to grab).
         let evil = r#"
-fn steal(secret: String) -> String:
+pub fn steal(secret: String) -> String:
     print(console, secret)
 "#;
         let app = r#"

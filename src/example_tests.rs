@@ -995,32 +995,33 @@
         assert_eq!(run_linked_on_wasm(&[("main", &clean)], "main"), ["ok"], "wasm accepts a clean header/path");
     }
 
-    /// (BUG-276) The raw byte-level hex primitives (`encoding.hex_decode_lossy`,
-    /// `encoding.hex_to_base64url_lossy`) decode STRICTLY: a non-hex character is a
-    /// loud error on both backends, never the old silent-drop that could hand
-    /// mangled crypto material to a signature check. Valid hex still round-trips.
+    /// (BUG-276) The public hex decoders reject malformed input before it can
+    /// reach the private raw byte-level primitives (`encoding.hex_decode_lossy`,
+    /// `encoding.hex_to_base64url_lossy`). Invalid input is `Err` on both
+    /// backends, never the old silent-drop that could hand mangled crypto
+    /// material to a signature check. Valid hex still round-trips.
     #[test]
     fn hex_primitives_reject_non_hex_strictly_on_both_backends() {
         let prog = |call: &str| {
-            format!("import encoding\n\nfn main(console: Console):\n    print(console, {call})\n")
+            format!(
+                "import encoding\n\nfn main(console: Console):\n    match {call}:\n        Ok(x) -> print(console, x)\n        Err(e) -> print(console, \"err\")\n"
+            )
         };
         for bad in [
-            "encoding.hex_decode_lossy(\"68zz69\")",
-            "encoding.hex_to_base64url_lossy(\"zz6869\")",
-            "encoding.hex_decode_lossy(\"abc\")", // odd length
+            "encoding.hex_decode(\"68zz69\")",
+            "encoding.hex_to_base64url(\"zz6869\")",
+            "encoding.hex_decode(\"abc\")", // odd length
         ] {
             let src = prog(bad);
-            assert!(
-                interpreter::run_module(resolve_std_src(&src), ".", Vec::new()).is_err(),
-                "interpreter must reject non-hex: {bad}"
+            assert_eq!(link_run(&src), ["err"], "interpreter must reject non-hex: {bad}");
+            assert_eq!(
+                run_linked_on_wasm(&[("main", &src)], "main"),
+                ["err"],
+                "WASM must reject non-hex: {bad}"
             );
-            let bytes = codegen::compile_module_binary(&resolve_std_src(&src))
-                .expect("compile")
-                .expect("lowers");
-            assert!(crate::run_wasm_bytes(&bytes).is_err(), "WASM must reject non-hex: {bad}");
         }
         // Valid hex still decodes identically on both backends.
-        let ok = prog("encoding.hex_decode_lossy(\"6869\")");
+        let ok = prog("encoding.hex_decode(\"6869\")");
         assert_eq!(link_run(&ok), ["hi"], "interp decodes valid hex");
         assert_eq!(run_linked_on_wasm(&[("main", &ok)], "main"), ["hi"], "wasm decodes valid hex");
     }
@@ -6889,7 +6890,7 @@ fn main(console: Console):
                 r#"
 fn main(console: Console):
     print(console, string.replace("a,b,c", ",", "-"))
-    print(console, __render(string.find("hello", "l")))
+    print(console, __render(string.contains("hello", "l")))
     print(console, string.substring("hello", 1, 4))
     for w in string.split("the cat sat", " "):
         print(console, w)
@@ -10180,15 +10181,6 @@ fn main(console: Console):
                 "fn main(console: Console):\n    print(console, __render(string.ends_with(\"hello\", \"llo\")))\n    print(console, __render(string.ends_with(\"hello\", \"hel\")))\n    print(console, __render(string.ends_with(\"hello\", \"\")))\n",
                 vec!["true".to_string(), "false".to_string(), "true".to_string()],
             ),
-            // string.find ($str_index_of → $find_byte + $byte_to_char, the
-            // byte-offset → char-index conversion) on the binary path. `find` is
-            // the raw -1-sentinel intrinsic behind the public `index_of` (which
-            // RFC-0044 rule 1 made return Option); this corpus links only `main`
-            // (no std), so it exercises the builtin directly.
-            (
-                "fn main(console: Console):\n    print(console, __render(string.find(\"hello\", \"ll\")))\n    print(console, __render(string.find(\"hello\", \"xyz\")))\n",
-                vec!["2".to_string(), "-1".to_string()],
-            ),
             // string.substring ($str_substring → $char_to_byte + $substr, a
             // heap-allocating slice) on the binary path.
             (
@@ -12306,17 +12298,17 @@ fn main(console: Console):
     print(console, __render(if string.contains("hello world", "world"): 1 else: 0))
     print(console, __render(if string.contains("abc", "xyz"): 1 else: 0))
     print(console, __render(if string.contains("abc", ""): 1 else: 0))
-    print(console, __render(string.find("hello", "l")))
-    print(console, __render(string.find("hello", "z")))
+    print(console, __render(string.contains("hello", "l")))
+    print(console, __render(string.contains("hello", "z")))
     print(console, string.substring("hello", 1, 4))
     print(console, string.substring("hi", 0, 100))
     print(console, string.substring("hi", 5, 10))
-    print(console, __render(string.find("café!", "!")))
+    print(console, __render(string.contains("café!", "!")))
     print(console, string.substring("café!", 3, 5))
 "#;
         assert_eq!(
             run_on_wasm(src),
-            vec!["1", "0", "1", "2", "-1", "ell", "hi", "", "4", "é!"]
+            vec!["1", "0", "1", "true", "false", "ell", "hi", "", "true", "é!"]
         );
     }
 
@@ -13134,7 +13126,7 @@ fn main(console: Console, net: Net):
     #[test]
     fn imported_library_is_pure_and_confined() {
         let lib = r#"
-fn label(n: Int) -> String:
+pub fn label(n: Int) -> String:
     if (n < 0):
         "neg"
     else:
@@ -16412,8 +16404,8 @@ fn main(console: Console):
     print(console, (("[" + string.substring("", 0, 5)) + "]"))
     print(console, (("[" + string.substring("hello", 3, 1)) + "]"))
     print(console, string.substring("hello", 2, 100))
-    print(console, __render(string.find("hello", "")))
-    print(console, __render(string.find("hello", "z")))
+    print(console, __render(string.contains("hello", "")))
+    print(console, __render(string.contains("hello", "z")))
     print(console, (("[" + (("" + "x") + "")) + "]"))
     print(console, __render(string.length("")))
 "#;
@@ -18441,7 +18433,7 @@ fn main(console: Console):
         std::fs::write(
             dir.join("strutil.witchy"),
             r#"
-fn shout(s: String) -> String:
+pub fn shout(s: String) -> String:
     ("HI " + s)
 "#,
         )

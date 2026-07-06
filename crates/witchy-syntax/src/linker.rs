@@ -107,6 +107,9 @@ struct EtaSig {
     /// would bind a `let` lambda parameter where a `var` is demanded, so it is
     /// excluded from value position with an error that names the real cause.
     is_var_procedure: bool,
+    /// Part of this module's public API. Same-module calls may use private
+    /// helpers; imported or module-qualified cross-module calls may not.
+    public: bool,
 }
 
 /// The source of a bundled standard-library module, if `name` is one. This is
@@ -567,7 +570,11 @@ pub fn link(
             if let Item::Function(f) = item {
                 names.insert(
                     f.name.clone(),
-                    EtaSig { arity: f.params.len(), is_var_procedure: f.is_var_procedure() },
+                    EtaSig {
+                        arity: f.params.len(),
+                        is_var_procedure: f.is_var_procedure(),
+                        public: f.public,
+                    },
                 );
             }
         }
@@ -1151,7 +1158,7 @@ fn rewrite_expr(
                         && fns
                             .get(base)
                             .and_then(|f| f.get(method))
-                            .is_some_and(|sig| sig.arity == args.len());
+                            .is_some_and(|sig| sig.public && sig.arity == args.len());
                     if !module_qualified {
                         let receiver = Box::new(Expr::Var(base.to_string()));
                         let method = method.to_string();
@@ -1617,9 +1624,11 @@ fn resolve_call(
                 "module `{m}` calls `{modname}.{fname}` but does not `import {modname}`"
             ));
         }
-        return match fns.get(modname) {
-            Some(s) if s.contains_key(fname) => Ok(name.to_string()),
-            _ => lerr(format!("module `{modname}` has no function `{fname}`")),
+        return match fns.get(modname).and_then(|s| s.get(fname)) {
+            Some(_) if modname == m => Ok(name.to_string()),
+            Some(sig) if sig.public => Ok(name.to_string()),
+            Some(_) => lerr(format!("function `{modname}.{fname}` is private to module `{modname}`")),
+            None => lerr(format!("module `{modname}` has no function `{fname}`")),
         };
     }
     // A function defined in THIS module wins over a builtin of the same name, so
@@ -1638,7 +1647,7 @@ fn resolve_call(
     if !bound.contains(name) {
         let mut providers: Vec<&str> = Vec::new();
         for imp in imps {
-            if fns.get(imp).is_some_and(|s| s.contains_key(name)) {
+            if fns.get(imp).and_then(|s| s.get(name)).is_some_and(|sig| sig.public) {
                 providers.push(imp.as_str());
             }
         }
@@ -2132,6 +2141,26 @@ mod tests {
     fn render_intrinsic_remains_available_for_interpolation_oracles() {
         link_main("fn main(console: Console):\n    print(console, __render(1))\n")
             .expect("__render is still the interpolation/oracle spelling");
+    }
+
+    #[test]
+    fn module_private_functions_are_not_cross_module_api() {
+        let lib = "fn hidden(n: Int) -> Int:\n    n + 1\n\n\
+                   pub fn shown(n: Int) -> Int:\n    hidden(n)\n";
+
+        let ok = "import sealed_lib\n\n\
+                  fn main(console: Console):\n    print(console, __render(sealed_lib.shown(1)))\n";
+        link_lib_user(lib, ok).expect("public function may call its private helper");
+
+        let hidden_call = "import sealed_lib\n\n\
+                           fn main(console: Console):\n    print(console, __render(sealed_lib.hidden(1)))\n";
+        let err = link_lib_user(lib, hidden_call).expect_err("private function must not be module-callable");
+        assert!(err.contains("function `sealed_lib.hidden` is private"), "{err}");
+
+        let hidden_ref = "import sealed_lib\n\n\
+                          fn main(console: Console):\n    let f = sealed_lib.hidden\n    print(console, \"x\")\n";
+        let err = link_lib_user(lib, hidden_ref).expect_err("private function must not be a module value");
+        assert!(err.contains("function `sealed_lib.hidden` is private"), "{err}");
     }
 
     #[test]

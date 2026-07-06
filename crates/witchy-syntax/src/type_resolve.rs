@@ -105,7 +105,10 @@ struct ModTypes {
 /// and its exported function names (to validate `from X import <function>`).
 struct World {
     types: HashMap<String, ModTypes>,
+    /// All functions declared by a module. Used for same-module collision checks.
     fns: HashMap<String, HashSet<String>>,
+    /// Public functions exported by a module. Used for cross-module imports.
+    pub_fns: HashMap<String, HashSet<String>>,
     /// module -> the ambient-named types it declares (`cmp.Ordering`, `set.Set`,
     /// `iter.Iter`, `option.Option`). Kept OUT of `types` — they stay bare (a bare
     /// `Ordering` is ambient) — but recorded so the qualified spelling `cmp.Ordering`
@@ -117,10 +120,12 @@ impl World {
     fn build(modules: &[(String, Module)]) -> World {
         let mut types: HashMap<String, ModTypes> = HashMap::new();
         let mut fns: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut pub_fns: HashMap<String, HashSet<String>> = HashMap::new();
         let mut ambient: HashMap<String, HashSet<String>> = HashMap::new();
         for (name, m) in modules {
             let mt = types.entry(name.clone()).or_default();
             let fset = fns.entry(name.clone()).or_default();
+            let pub_fset = pub_fns.entry(name.clone()).or_default();
             for item in &m.items {
                 match item {
                     Item::Type(t) if is_synthetic_type(&t.name) => {}
@@ -138,17 +143,24 @@ impl World {
                     }
                     Item::Function(f) => {
                         fset.insert(f.name.clone());
+                        if f.public {
+                            pub_fset.insert(f.name.clone());
+                        }
                     }
                     _ => {}
                 }
             }
         }
-        World { types, fns, ambient }
+        World { types, fns, pub_fns, ambient }
     }
 
     /// Whether `module` declares a type spelled (bare) `ty`.
     fn module_has_type(&self, module: &str, ty: &str) -> bool {
         self.types.get(module).is_some_and(|mt| mt.types.contains(ty))
+    }
+
+    fn module_has_public_fn(&self, module: &str, name: &str) -> bool {
+        self.pub_fns.get(module).is_some_and(|fns| fns.contains(name))
     }
 
     /// Whether `module` declares the ambient-named type `ty` (e.g. `cmp`/`Ordering`).
@@ -275,7 +287,7 @@ impl<'a> Scope<'a> {
                     ));
                 }
                 let brought_type = world.module_has_type(srcmod, name);
-                let brought_fn = world.fns.get(srcmod).is_some_and(|s| s.contains(name));
+                let brought_fn = world.module_has_public_fn(srcmod, name);
                 if !brought_type && !brought_fn {
                     return lerr(format!(
                         "`from {srcmod} import {name}`: module `{srcmod}` exports no type or \
@@ -985,6 +997,22 @@ mod tests {
             ),
         ])
         .expect("no collision");
+    }
+
+    #[test]
+    fn from_import_private_fn_is_not_an_export() {
+        // Module privacy is part of the language surface: a private helper may be
+        // called inside its module, but cannot be imported unqualified elsewhere.
+        let err = resolve_src(&[
+            ("lib", "fn hidden(n: Int) -> Int:\n    n + 1\n\npub fn shown(n: Int) -> Int:\n    hidden(n)\n"),
+            ("main", "from lib import hidden\n\nfn main(console: Console):\n    print(console, \"x\")\n"),
+        ])
+        .unwrap_err();
+        assert!(
+            err.message.contains("module `lib` exports no type or function named `hidden`"),
+            "{}",
+            err.message
+        );
     }
 
     const CMP_STUB: &str =
