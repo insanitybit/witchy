@@ -7,7 +7,7 @@
 
 use std::fmt::Write;
 
-use crate::ast::{Expr, Item, MethodSig, Param, TraitDef, Type, UnOp, Variant};
+use crate::ast::{Expr, Item, MethodSig, Param, TraitDef, Type, TypeDef, UnOp, Variant};
 use crate::format::type_str;
 
 /// Render Markdown documentation for one module (named `module_name`) from its
@@ -24,17 +24,31 @@ pub fn render(module_name: &str, source: &str) -> Result<String, String> {
     }
 
     let mut any = false;
-    // Types first — they are the vocabulary the functions are written in.
+    // Types first — they are the vocabulary the functions are written in. A
+    // `capability` (RFC-0002/0038) or `sealed type` (RFC-0065) is rendered with
+    // its own keyword rather than as an ordinary record `type` (BUG-138), mirroring
+    // how `witchy fmt` distinguishes them.
     for item in &module.items {
         let Item::Type(t) = item else { continue };
         any = true;
-        let _ = writeln!(out, "#### `type {}`\n", t.name);
-        let doc = doc_above(&lines, &format!("type {}:", t.name));
+        let (head, marker) = type_decl(t);
+        let _ = writeln!(out, "#### `{head}`\n");
+        let doc = doc_above(&lines, &marker);
         if !doc.is_empty() {
             let _ = writeln!(out, "{doc}\n");
         }
-        for v in &t.variants {
-            let _ = writeln!(out, "- `{}`", variant_str(v));
+        // A record capability lists its carried state as fields; a `from` brand
+        // shows the underlying capability in the heading, so it needs no body. An
+        // ordinary/sealed type lists its variants (or record fields).
+        if t.is_capability {
+            let v = &t.variants[0];
+            for (n, ty) in v.field_names.iter().zip(&v.fields) {
+                let _ = writeln!(out, "- `{n}: {}`", type_str(ty));
+            }
+        } else {
+            for v in &t.variants {
+                let _ = writeln!(out, "- `{}`", variant_str(v));
+            }
         }
         let _ = writeln!(out);
     }
@@ -114,6 +128,35 @@ pub fn render(module_name: &str, source: &str) -> Result<String, String> {
         let _ = writeln!(out, "_No public API._\n");
     }
     Ok(out)
+}
+
+/// The declaration head to display for a type, and the source-line marker used to
+/// find its leading doc comment. A `capability` (RFC-0002/0038) and a `sealed type`
+/// (RFC-0065) render with their own keyword rather than as an ordinary `type`
+/// (BUG-138) — mirroring how `witchy fmt` distinguishes them. `is_capability`
+/// implies the type is sealed, so it is the one flag that decides the keyword.
+fn type_decl(t: &TypeDef) -> (String, String) {
+    if t.is_capability {
+        let kw = if t.grantable { "grantable capability" } else { "capability" };
+        let v = &t.variants[0];
+        // `capability X from U` (RFC-0002): a sealed brand — `field_names` is empty
+        // and the single variant's field types ARE the underlying capabilities.
+        // Show them in the heading; the source line has no trailing `:`.
+        if v.field_names.is_empty() && !v.fields.is_empty() {
+            let from = if v.fields.len() == 1 {
+                type_str(&v.fields[0])
+            } else {
+                format!("({})", v.fields.iter().map(type_str).collect::<Vec<_>>().join(", "))
+            };
+            return (format!("{kw} {} from {from}", t.name), format!("{kw} {} from", t.name));
+        }
+        // `capability X:` — a record capability carrying named state.
+        return (format!("{kw} {}", t.name), format!("{kw} {}:", t.name));
+    }
+    if t.sealed {
+        return (format!("sealed type {}", t.name), format!("sealed type {}:", t.name));
+    }
+    (format!("type {}", t.name), format!("type {}:", t.name))
 }
 
 fn variant_str(v: &Variant) -> String {
@@ -407,6 +450,39 @@ mod tests {
         let src = "pub fn greet(name: String, punct: String = \"!\") -> String:\n    name + punct\n";
         let md = render("greet", src).unwrap();
         assert!(md.contains("punct: String = \"!\""), "default value: {md}");
+    }
+
+    // BUG-138: a `capability` renders with its own keyword and lists its carried
+    // fields — NOT as an ordinary record `type` with a variant-shaped body.
+    #[test]
+    fn renders_capability_not_record_type() {
+        let src = "// A URL pinned to one origin.\ncapability PinnedUrl:\n    host: String\n    port: Int\n";
+        let md = render("http", src).unwrap();
+        assert!(md.contains("#### `capability PinnedUrl`"), "capability heading: {md}");
+        assert!(!md.contains("type PinnedUrl"), "must not render as ordinary type: {md}");
+        assert!(!md.contains("PinnedUrl { "), "no record-variant body: {md}");
+        assert!(md.contains("- `host: String`"), "carried field: {md}");
+        assert!(md.contains("- `port: Int`"), "carried field: {md}");
+        assert!(md.contains("A URL pinned to one origin."), "capability doc: {md}");
+    }
+
+    // BUG-138: a `grantable capability` keeps its `grantable` keyword.
+    #[test]
+    fn renders_grantable_capability() {
+        let src = "// A UI root.\ngrantable capability UiRoot:\n    policy: String\n";
+        let md = render("ui", src).unwrap();
+        assert!(md.contains("#### `grantable capability UiRoot`"), "grantable heading: {md}");
+        assert!(md.contains("- `policy: String`"), "carried field: {md}");
+        assert!(md.contains("A UI root."), "capability doc: {md}");
+    }
+
+    // RFC-0065: a `sealed type` renders with the `sealed` keyword (still a type).
+    #[test]
+    fn renders_sealed_type() {
+        let src = "// An opaque token.\nsealed type Token:\n    value: String\n";
+        let md = render("auth", src).unwrap();
+        assert!(md.contains("#### `sealed type Token`"), "sealed heading: {md}");
+        assert!(md.contains("An opaque token."), "sealed doc: {md}");
     }
 
     // BUG-167: the `async`/`gen` qualifier is part of the rendered signature, and
