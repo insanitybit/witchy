@@ -1,10 +1,10 @@
 ---
 rfc: 0063
 title: Strong-state coherence gate for a proud 0.1 release
-status: proposed
+status: accepted
 created: 2026-07-04
 superseded-by:
-tracking: strong-state gap analysis after RFC-0061 coordination plan
+tracking: coherence gate accepted as the pre-tag bar; executed alongside RFC-0061
 ---
 
 # RFC-0063: Strong-state coherence gate for a proud 0.1 release

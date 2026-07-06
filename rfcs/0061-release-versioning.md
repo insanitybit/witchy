@@ -1,9 +1,9 @@
 ---
 rfc: 0061
 title: Release versioning — 0.x policy and the 0.1.0 gate
-status: proposed
+status: accepted
 created: 2026-07-04
-tracking:
+tracking: the 0.1.0 gate is the active release plan; bug-drain + RFC-drain in progress 2026-07
 ---
 
 # RFC-0061: Release versioning — 0.x policy and the 0.1.0 gate
@@ -68,6 +68,29 @@ this is early, it moves fast, releases are real checkpoints.
 
 This makes "0.1.0" a checkable statement, not a mood: the version exists the
 day the language stops needing apologies, which is the public-launch bar.
+
+
+## Release checklist (operational — the tracked steps to cut a tag)
+
+Run in order; each is checkable, nothing is a mood:
+
+1. **Gate green**: `./scripts/check.sh --full` passes (build, clippy -D warnings,
+   `witchy fmt` over std+examples, `nextest --workspace`, heap-check fuzz, wasm
+   build, parity sweep, e2e, docs).
+2. **RFC ledger drained**: no RFC in `rfcs/` sits in a non-terminal status
+   (`proposed`/`planned`) that blocks the release; each open item is
+   `implemented`, `accepted` (with tracking), `deferred`, `rejected`, or
+   `superseded`.
+3. **Bug ledger clean above LOW**: `bugs/` holds no OPEN entry above LOW
+   severity; every prime-directive (backend-divergence/security) bug is closed.
+4. **CHANGELOG written** for the tag, at release time, from the RFC + bug
+   ledgers (a description of what 0.1.0 *is*, not a diff against history).
+5. **Version stamped**: `Cargo.toml` version matches the tag; `witchy --version`
+   reports it.
+6. **Release workflow exercised** once end-to-end: `.github/workflows/release.yml`
+   builds the artifacts, attaches `SHA256SUMS`, and the artifacts run.
+7. **Tag** `v0.MINOR.PATCH` (annotated), pushed; the tagged tree is the
+   reproducible snapshot the version names.
 
 ## Alternatives
 
