@@ -1770,11 +1770,18 @@ fn parity_check(path: &str) -> ParityOutcome {
             return ParityOutcome::Unexpected { message: format!($($arg)*) }
         };
     }
-    let (linked, _stem) = match link_file(path) {
+    let (linked, stem) = match link_file(path) {
         Ok(v) => v,
         Err(e) => unexpected!("{e}"),
     };
     if let Err(e) = typeck::check(&linked) {
+        unexpected!("{e}");
+    }
+    // Honor `mode opt` here too (BUG-119): a copy-cliff or a missing ownership
+    // convention is a hard error under `mode opt` on every other path
+    // (check/run/sandbox/emit) — a program `check` rejects must not slip through
+    // `parity` as an "unexpected error" masquerading as a compile miss.
+    if let Err(e) = enforce_performance_modes(&linked, &stem) {
         unexpected!("{e}");
     }
     let has_main = linked
@@ -1905,8 +1912,12 @@ fn parity_check(path: &str) -> ParityOutcome {
 /// Compile a program to WebAssembly text (WAT) and return it — the same module
 /// `sandbox` would run. For inspecting and optimizing the generated code.
 fn emit_wat_file(path: &str) -> Result<String, String> {
-    let (linked, _stem) = link_file(path)?;
+    let (linked, stem) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
+    // Honor `mode opt` (BUG-163): `emit-wat` renders the SAME module `sandbox` runs,
+    // so a copy-cliff / missing-convention that `check`, `emit-wasm`, and `sandbox`
+    // reject must not be quietly rendered here (exit 0 with a copy-cliff file).
+    enforce_performance_modes(&linked, &stem)?;
     // The WIR-as-WAT: the actual module the backend encodes and runs
     // (optimization passes included), rendered back to text for inspection —
     // a display of the real WIR, not a separately generated WAT string.
@@ -1949,10 +1960,13 @@ fn run_linked_compiled(
     // (the supply-chain surface the package gate diffs); a run wants only main's row
     // — which also means a `Secret` in some unreached signing path needs no key here.
     let grant = capabilities::run_grant(linked);
-    if (grant.contains_key("Secret") || grant.contains_key("SecretStore"))
-        && signing_key.is_none()
-        && named_secrets.is_empty()
-    {
+    // Only a BARE `Secret` is unmintable without a key — a `Secret` *is* its key, so
+    // there is no empty one to hand over. A `SecretStore` with no secrets is a real,
+    // mintable capability (the interpreter mints an empty store; see
+    // `capabilities::unmintable_main_cap`), so binding one must NOT force a
+    // `--secret`. This keeps `run`/`sandbox` aligned with `parity` and both backends,
+    // which run a `main(…, SecretStore)` fine with an empty store (BUG-112).
+    if grant.contains_key("Secret") && signing_key.is_none() && named_secrets.is_empty() {
         return Err(
             "this program needs a Secret, but the host granted none (provide `--signing-key <seed-file>`, `--secret name=value`, or `--secret-file name=path`)".to_string(),
         );
@@ -2222,9 +2236,14 @@ fn run_file_grants(
         .map_err(|e| format!("cannot read `{grants_path}`: {e}"))?;
     let doc = grants::GrantDoc::parse(&doc_src)?;
 
-    // Cross-check the grant against what the code actually exercises.
-    let footprint = capabilities::analyze(&linked);
-    let check = grants::cross_check(&doc.cap_set(), &footprint.total);
+    // Cross-check the grant against what a RUN actually exercises — `main`'s own
+    // parameter row (`run_grant`), not `analyze().total` (the whole-program union
+    // over every public entry point). `total` includes a linked library's `pub fn`s
+    // (a dep's `pub fn fetch(net)`, std `crypto.sign`'s `Secret`) that this run never
+    // reaches, so cross-checking against it can reject a launch grant that is in fact
+    // exactly what `main` receives — a wrongly-refused, valid grant (BUG-016).
+    let needed = capabilities::run_grant(&linked);
+    let check = grants::cross_check(&doc.cap_set(), &needed);
     if !check.over_grant.is_empty() {
         eprintln!(
             "warning: grant `{grants_path}` over-requests {} \u{2014} the code never exercises it",
@@ -2678,7 +2697,24 @@ fn report_capability_diff(old_path: &str, new_path: &str) -> Result<bool, String
             join(&d.refinements_gained)
         );
     }
+    if !old.user_caps.is_empty() || !new.user_caps.is_empty() {
+        println!("  user caps +: {}", join(&d.user_caps_added));
+        println!("  user caps -: {}", join(&d.user_caps_removed));
+    }
     let mut flagged = false;
+    if !d.user_caps_added.is_empty() {
+        // A new grantable (user) capability carries no host authority, but it IS a
+        // widening: `main` now receives a policy token it did not before, expanding
+        // the policy TCB — and `FootprintDiff::widened` counts it, so the exit code
+        // is 2. Surface it in the message too, so the two agree (BUG-314): previously
+        // this printed "OK: no widening" yet exited 2.
+        println!(
+            "USER-CAP WIDENING: the newer version's `main` receives new grantable capabilities ({}). \
+             They confer no host authority but widen the policy TCB — review before trusting.",
+            join(&d.user_caps_added)
+        );
+        flagged = true;
+    }
     if d.build_widened() {
         // The high-signal supply-chain event: build-time execution is outside the
         // consumer's type-checked call graph, so a new build cap is the thing the
