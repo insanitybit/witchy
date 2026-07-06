@@ -391,6 +391,97 @@ fn check_unique_functions(module: &Module) -> Result<(), TypeError> {
     Ok(())
 }
 
+/// (BUG-230) Reject duplicate top-level declarations in the type/constructor/method
+/// namespaces — the same "defined more than once" quality of error the function
+/// namespace already gets from [`check_unique_functions`]. Runs pre-lowering (while
+/// `impl`/`type` items are still distinct) on the merged module, whose type and
+/// constructor names are already module-qualified, so a genuine cross-module name
+/// is distinct and only same-module duplicates (a typo or copy-paste) collide.
+fn check_unique_declarations(module: &Module) -> Result<(), TypeError> {
+    let bare = |n: &str| n.rsplit('.').next().unwrap_or(n).to_string();
+    let mut types: HashMap<String, &witchy_syntax::ast::TypeDef> = HashMap::new();
+    // Constructor name -> its owning type, so a cross-type duplicate names both.
+    let mut ctors: HashMap<String, String> = HashMap::new();
+    for item in &module.items {
+        let Item::Type(t) = item else { continue };
+        if let Some(prev) = types.insert(t.name.clone(), t) {
+            // A structurally-IDENTICAL re-declaration is a harmless shadow — a user
+            // module may redefine a prelude-injected type (`Result`/`Option`) with
+            // the same shape (examples/try teaches exactly this). Only a CONFLICTING
+            // redefinition (a different shape under the same name) is an error; the
+            // identical one is skipped so its constructors aren't double-counted.
+            if prev.params == t.params && prev.variants == t.variants {
+                continue;
+            }
+            return terr(format!(
+                "type `{}` is defined more than once; top-level type names must be unique",
+                bare(&t.name)
+            ));
+        }
+        for v in &t.variants {
+            if let Some(prev) = ctors.insert(v.name.clone(), t.name.clone()) {
+                let (a, b) = (bare(&prev), bare(&t.name));
+                let where_ = if a == b {
+                    format!("in type `{a}`")
+                } else {
+                    format!("in types `{a}` and `{b}`")
+                };
+                return terr(format!(
+                    "constructor `{}` is defined more than once ({where_}); \
+                     constructor names must be unique",
+                    bare(&v.name)
+                ));
+            }
+        }
+    }
+    // Methods: no two methods with the same name in one `impl` block or `trait`,
+    // and no duplicate inherent method (same receiver type, same name) across the
+    // inherent `impl` blocks of a type.
+    let mut inherent: HashSet<(String, String)> = HashSet::new();
+    for item in &module.items {
+        match item {
+            Item::Impl(im) => {
+                let mut here: HashSet<String> = HashSet::new();
+                for m in &im.methods {
+                    let name = bare(&m.name);
+                    if !here.insert(name.clone()) {
+                        return terr(format!(
+                            "method `{name}` is defined more than once in `impl {}`; \
+                             method names must be unique within an impl",
+                            im.trait_name.as_deref().map_or_else(
+                                || im.type_name.clone(),
+                                |tr| format!("{tr} for {}", im.type_name)
+                            )
+                        ));
+                    }
+                    // Inherent (trait-free) methods share one namespace per type.
+                    if im.trait_name.is_none() && !inherent.insert((im.type_name.clone(), name.clone())) {
+                        return terr(format!(
+                            "inherent method `{name}` is defined more than once on `{}`; \
+                             method names must be unique per receiver type",
+                            bare(&im.type_name)
+                        ));
+                    }
+                }
+            }
+            Item::Trait(tr) => {
+                let mut here: HashSet<&str> = HashSet::new();
+                for m in &tr.methods {
+                    if !here.insert(m.name.as_str()) {
+                        return terr(format!(
+                            "method `{}` is declared more than once in `trait {}`; \
+                             trait method names must be unique",
+                            m.name, tr.name
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// (RFC-0064 Check 1) Enforce RFC-0043's row-3 rule: a function with any `var`
 /// parameter must be EITHER a procedure channel (`is_var_procedure` — returns
 /// `Nil`/nothing) OR a mutator receiver (`is_mutator` — first parameter, returning
@@ -456,6 +547,42 @@ fn is_local_unique_type(t: &ast::Type) -> bool {
     }
 }
 
+/// The rights markers each capability kind admits inside `[...]`. A marker
+/// outside this vocabulary is a typo (`Dir[Reed]`) or a rejected right
+/// (`Net[Tls]`), and is rejected at check time rather than silently dropped —
+/// keeping the declared authority shape faithful to the source (BUG-154). The
+/// single source of truth the rights-interpreting functions
+/// (`dir_rights`/`file_rights`/`net_rights`) match against.
+fn cap_markers(cap: &str) -> &'static [&'static str] {
+    match cap {
+        "Dir" | "File" => &["Read", "Write"],
+        "Net" => &["Connect", "Listen", "Tcp", "Udp", "Uds"],
+        _ => &[],
+    }
+}
+
+/// Reject any bracket marker on a `Dir`/`File`/`Net` capability that is not in its
+/// [`cap_markers`] vocabulary. An empty list (`Dir[]`) is legal (no rights); each
+/// marker must be a bare, argument-less name from the allowed set.
+fn validate_cap_markers(cap: &str, args: &[ast::Type]) -> Result<(), TypeError> {
+    let allowed = cap_markers(cap);
+    for a in args {
+        let ok = matches!(a, ast::Type::Named(m, margs)
+            if margs.is_empty() && allowed.contains(&m.as_str()));
+        if !ok {
+            let found = match a {
+                ast::Type::Named(m, _) => m.clone(),
+                _ => format!("{a:?}"),
+            };
+            return terr(format!(
+                "unknown `{cap}` right `{found}` — `{cap}` admits {}",
+                allowed.join(", ")
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_type(t: &ast::Type, known: &HashSet<&str>) -> Result<(), TypeError> {
     match t {
         ast::Type::Qualified(_, inner) => validate_type(inner, known),
@@ -465,10 +592,14 @@ fn validate_type(t: &ast::Type, known: &HashSet<&str>) -> Result<(), TypeError> 
             validate_type(ret, known)
         }
         ast::Type::Named(n, args) => {
-            // `Dir`/`File`/`Net` carry capability *rights* (`Dir[Read]`,
-            // `Net[Connect]`) in their arguments, not types — checked elsewhere.
+            // `Dir`/`File`/`Net` carry capability *rights* markers (`Dir[Read]`,
+            // `Net[Connect]`) in their arguments, not types. Validate the marker
+            // vocabulary here (BUG-154) so a typo (`Dir[Reed]`, `Net[Conect]`) or
+            // a rejected right (`Net[Tls]` — TLS is an endpoint scheme, not a Net
+            // right; RFC-0009) is a clear error instead of a silently-normalized
+            // capability whose authority shape no longer matches the source.
             if n == "Dir" || n == "File" || n == "Net" {
-                return Ok(());
+                return validate_cap_markers(n, args);
             }
             if known.contains(n.as_str()) {
                 args.iter().try_for_each(|a| validate_type(a, known))
@@ -748,29 +879,8 @@ enum Uncomparable {
     Capability,
 }
 
-/// Whether `t` (a resolved [`Ty`]) contains a function or capability type at any
-/// depth — the two kinds `==` refuses. Containers (List/Tuple/Dict/Result/Option/
-/// records-as-Named) are transparent: a `List(fn(Int) -> Int)` is as un-comparable
-/// as a bare function. A bare type variable is comparable here (a bounded generic
-/// resolves after monomorphization; an unbounded one is caught elsewhere).
-fn uncomparable_kind(t: &Ty) -> Option<Uncomparable> {
-    match t {
-        Ty::Fn(_, _) => Some(Uncomparable::Function),
-        Ty::Console | Ty::Clock | Ty::Rand | Ty::Env | Ty::Secret | Ty::Exec | Ty::Socket
-        | Ty::Listener | Ty::Dir(_) | Ty::File(_) | Ty::Net(_) | Ty::BuildOut | Ty::BuildRead
-        | Ty::BuildEnv | Ty::BuildNet | Ty::BuildExec => Some(Uncomparable::Capability),
-        Ty::List(e) => uncomparable_kind(e),
-        Ty::Tuple(ts) => ts.iter().find_map(uncomparable_kind),
-        Ty::Named(n, args) => {
-            // `SecretStore` is a capability the type checker models as a Named type.
-            if n == "SecretStore" {
-                return Some(Uncomparable::Capability);
-            }
-            args.iter().find_map(uncomparable_kind)
-        }
-        _ => None,
-    }
-}
+// `uncomparable_kind` is a `Checker` method (it must consult the record/enum type
+// tables to reach fn/capability FIELDS, not just generic arguments — BUG-302).
 
 /// (RFC-0047) Which key/member position a `Float` occupies — used for the teaching
 /// error suggesting the right escape.
@@ -804,6 +914,31 @@ fn float_key_position(t: &Ty) -> Option<FloatKeyKind> {
         Ty::List(e) => float_key_position(e),
         Ty::Tuple(ts) => ts.iter().find_map(float_key_position),
         Ty::Fn(ps, r) => ps.iter().chain(std::iter::once(r.as_ref())).find_map(float_key_position),
+        _ => None,
+    }
+}
+
+/// (BUG-395) The argument index of the KEY of a generic `Dict` key operation (the
+/// ones that hash/compare the key), or `None` for a non-key-op. Key operations
+/// require an `Eq` key; the position lets the checker read the key's type after
+/// argument unification.
+fn dict_key_op_index(name: &str) -> Option<usize> {
+    match name {
+        "dict.insert" | "dict.get_or" | "dict.update" | "dict.contains_key" | "dict.remove" => {
+            Some(1)
+        }
+        _ => None,
+    }
+}
+
+/// The first type variable appearing anywhere in `t`, if any.
+fn first_type_var(t: &Ty) -> Option<u32> {
+    match t {
+        Ty::Var(v) => Some(*v),
+        Ty::List(e) => first_type_var(e),
+        Ty::Tuple(ts) => ts.iter().find_map(first_type_var),
+        Ty::Named(_, args) => args.iter().find_map(first_type_var),
+        Ty::Fn(ps, r) => ps.iter().chain(std::iter::once(r.as_ref())).find_map(first_type_var),
         _ => None,
     }
 }
@@ -1251,6 +1386,12 @@ struct Checker {
     /// Per-function type parameters (name, var id), from lowercase type names in
     /// signatures. Generalized: instantiated fresh at each call site.
     fn_typarams: HashMap<String, Vec<(String, u32)>>,
+    /// (BUG-308) The type parameters (name -> var id) of the function whose body is
+    /// currently being checked, so a body `let`/`var` ascription's lowercase name
+    /// (`let out: List(a) = …`) resolves to the SAME type-parameter var as the
+    /// signature rather than a fresh concrete `Named("a")` — which would pin the
+    /// generic parameter and trip the "isn't generic" soundness check.
+    current_typarams: HashMap<String, u32>,
     subst: HashMap<u32, Ty>,
     next_var: u32,
     /// Each binding carries its type and whether it is mutable.
@@ -1265,6 +1406,13 @@ struct Checker {
     /// The declared return type of the function currently being checked, so `?`
     /// can require the enclosing function to return a matching Result/Option.
     current_ret: Option<Ty>,
+    /// (BUG-395 / RFC-0047) The key types of the generic `Dict` key operations
+    /// (`dict.insert`/`get_or`/`update`/`contains_key`/`remove`) invoked in the
+    /// body currently being checked, with the source line. A dict key is hashed and
+    /// compared, so it must be `Eq`; validated once the body is fully inferred so
+    /// an unbounded generic key (a type parameter with no `where k: Eq` bound)
+    /// is rejected rather than silently accepted.
+    dict_key_ops: Vec<(Ty, u32)>,
     /// Source line of the statement currently being checked, attached to errors
     /// so diagnostics point at a location. 0 means "no line known".
     cur_line: u32,
@@ -1327,6 +1475,20 @@ impl Checker {
                     None => self.fresh(),
                 };
                 Ty::List(Box::new(elem))
+            }
+            // (BUG-308) A lowercase, argument-less name that names one of the
+            // enclosing function's type parameters is that parameter's var — so a
+            // body ascription refines the generic parameter instead of pinning it
+            // to a distinct concrete `Named`. (Matches the signature-only rule in
+            // `to_ty_generic`; outside a generic fn `current_typarams` is empty, so
+            // top-level `let` and non-parameter names are unaffected.)
+            other
+                if args.is_empty()
+                    && other.chars().next().is_some_and(|c| c.is_lowercase())
+                    && !other.contains('.')
+                    && self.current_typarams.contains_key(other) =>
+            {
+                Ty::Var(self.current_typarams[other])
             }
             _ => Ty::Named(name.clone(), args.iter().map(|a| self.to_ty(a)).collect()),
         }
@@ -2250,6 +2412,74 @@ impl Checker {
         }
     }
 
+    /// (RFC-0047 / BUG-302) Whether `t` (a resolved [`Ty`]) contains a function or
+    /// capability type at any depth — the two kinds `==`/`!=` refuse. Containers
+    /// (List/Tuple/Dict/Result/Option) are transparent through their generic
+    /// arguments; a record or enum is transparent through its DECLARED FIELD /
+    /// variant-payload types too (a `type H: run: fn(Int) -> Int` is `Named("H",
+    /// [])` with no generic argument, so walking only arguments — the old bug —
+    /// let it escape the net, then the compiled backend rejected it while the
+    /// interpreter compared by closure identity: a parity divergence). `seen`
+    /// guards against recursive types. A bare type variable is comparable here (a
+    /// bounded generic resolves after monomorphization; an unbounded one is caught
+    /// elsewhere).
+    fn uncomparable_kind(&self, t: &Ty, seen: &mut HashSet<String>) -> Option<Uncomparable> {
+        match t {
+            Ty::Fn(_, _) => Some(Uncomparable::Function),
+            Ty::Console | Ty::Clock | Ty::Rand | Ty::Env | Ty::Secret | Ty::Exec | Ty::Socket
+            | Ty::Listener | Ty::Dir(_) | Ty::File(_) | Ty::Net(_) | Ty::BuildOut | Ty::BuildRead
+            | Ty::BuildEnv | Ty::BuildNet | Ty::BuildExec => Some(Uncomparable::Capability),
+            Ty::List(e) => self.uncomparable_kind(e, seen),
+            Ty::Tuple(ts) => ts.iter().find_map(|x| self.uncomparable_kind(x, seen)),
+            Ty::Named(n, args) => {
+                // `SecretStore` is a capability the type checker models as a Named type.
+                if n == "SecretStore" {
+                    return Some(Uncomparable::Capability);
+                }
+                // Generic arguments (`List(fn)`, `Option(File)`, `H(fn)`).
+                if let Some(k) = args.iter().find_map(|a| self.uncomparable_kind(a, seen)) {
+                    return Some(k);
+                }
+                // Declared record fields / enum variant payloads. Guard against a
+                // recursive type revisiting itself (which cannot make it
+                // uncomparable — the offending fn/cap would be found on the first
+                // visit).
+                if !seen.insert(n.clone()) {
+                    return None;
+                }
+                let found = self.named_field_uncomparable(n, seen);
+                seen.remove(n);
+                found
+            }
+            _ => None,
+        }
+    }
+
+    /// The un-comparable kind carried by any DECLARED field of record/enum `n`
+    /// (payload types are walked with the type's own parameters left as vars — a
+    /// concrete fn/cap field triggers; a generic field is caught via the generic
+    /// argument walk in [`Self::uncomparable_kind`]).
+    fn named_field_uncomparable(&self, n: &str, seen: &mut HashSet<String>) -> Option<Uncomparable> {
+        // A record: its named fields.
+        if let Some((_, fields)) = self.record_fields.get(n) {
+            if let Some(k) = fields.iter().find_map(|(_, ty)| self.uncomparable_kind(ty, seen)) {
+                return Some(k);
+            }
+        }
+        // An enum (possibly the same record type, which is a one-variant enum):
+        // every variant's payload types.
+        if let Some(variants) = self.adt_variants.get(n) {
+            for v in variants {
+                if let Some((payloads, _)) = self.ctor_sigs.get(v) {
+                    if let Some(k) = payloads.iter().find_map(|ty| self.uncomparable_kind(ty, seen)) {
+                        return Some(k);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     // --- inference ---
 
     fn infer_block(&mut self, block: &Block) -> Result<Ty, TypeError> {
@@ -2684,6 +2914,14 @@ impl Checker {
                     self.coerce_arg(param_ty, &at)
                         .map_err(|e| TypeError { message: format!("in call to `{name}`: {}", e.message) })?;
                 }
+                // (BUG-395) A generic `Dict` key operation's key must be `Eq` — record
+                // the (post-unification) key type and its line; validated once the
+                // whole body is inferred (so a key var pinned later is seen concrete).
+                if let Some(i) = dict_key_op_index(name) {
+                    if let Some(key_ty) = params.get(i) {
+                        self.dict_key_ops.push((key_ty.clone(), self.cur_line));
+                    }
+                }
                 // Enforce conventions: a `var` parameter needs a mutable variable;
                 // `own` consumes its argument (use-after-move becomes an error).
                 if let Some(convs) = self.fn_conventions.get(name).cloned() {
@@ -3065,7 +3303,7 @@ impl Checker {
                 // not a backend-dependent answer. This deletes the confirmed
                 // `f == f` parity divergence by construction.
                 let resolved = self.resolve(&lt);
-                if let Some(kind) = uncomparable_kind(&resolved) {
+                if let Some(kind) = self.uncomparable_kind(&resolved, &mut HashSet::new()) {
                     return terr(equality_reject_message(kind, &resolved));
                 }
                 Ok(Ty::Bool)
@@ -3414,6 +3652,10 @@ impl Checker {
         let mut ints: HashSet<i64> = HashSet::new();
         let mut strs: HashSet<&str> = HashSet::new();
         let mut bools: HashSet<bool> = HashSet::new();
+        // (BUG-294) Duration literal patterns are ordinary `i64`-of-milliseconds
+        // literals (RFC-0052), so a duplicate `1s` arm is dead code just like a
+        // duplicate `1` — track them the same way Int/Str/Bool are tracked.
+        let mut durations: HashSet<i64> = HashSet::new();
         for arm in arms {
             let already = saturated
                 || match &arm.pattern {
@@ -3421,6 +3663,7 @@ impl Checker {
                     Pattern::Int(n) => ints.contains(n),
                     Pattern::Str(s) => strs.contains(s.as_str()),
                     Pattern::Bool(b) => bools.contains(b),
+                    Pattern::Duration(ms) => durations.contains(ms),
                     _ => false,
                 };
             if already {
@@ -3447,6 +3690,9 @@ impl Checker {
                     }
                     Pattern::Bool(b) => {
                         bools.insert(*b);
+                    }
+                    Pattern::Duration(ms) => {
+                        durations.insert(*ms);
                     }
                     _ => {}
                 }
@@ -3495,6 +3741,32 @@ impl Checker {
                 "non-exhaustive match on `{kind}`: it has no finite set of cases, \
                  so add a catch-all `_` arm (a guard does not make a match exhaustive)"
             ));
+        }
+        // (BUG-293) Tuple/list scrutinees are compound, not `Ty::Named`, so the ADT
+        // path below never saw them and a non-exhaustive tuple/list match passed
+        // `check` then TRAPPED at runtime. Cover them with the general
+        // constructor-matrix algorithm (`rows_exhaustive`): a tuple is a
+        // single-constructor product; a list is `[]` (nil) + `[head, ..tail]`
+        // (cons). Only unguarded arms count (a guard can fail).
+        if matches!(resolved, Ty::Tuple(_) | Ty::List(_)) {
+            let rows: Vec<Vec<Pattern>> = arms
+                .iter()
+                .filter(|a| a.guard.is_none())
+                .map(|a| vec![a.pattern.clone()])
+                .collect();
+            if self.rows_exhaustive(std::slice::from_ref(&resolved), &rows) {
+                return Ok(());
+            }
+            return match resolved {
+                Ty::List(_) => terr(
+                    "non-exhaustive match on list: cover both the empty list `[]` and a \
+                     non-empty list (`[head, ..tail]`), or add a catch-all `_` arm",
+                ),
+                _ => terr(
+                    "non-exhaustive match on tuple: the arms don't cover every combination \
+                     of component cases — add the missing case(s) or a catch-all `_` arm",
+                ),
+            };
         }
         let Ty::Named(adt, _) = resolved else {
             return Ok(());
@@ -3556,6 +3828,111 @@ impl Checker {
         }
     }
 
+    /// (BUG-293) The constructors a value of `ty` can take, each with the types of
+    /// its fields — the finite signature the exhaustiveness matrix enumerates.
+    /// `None` for an *open* type (Int/Float/String/Duration, a type variable, a
+    /// capability/function, or an unknown ADT): such a column can only be covered
+    /// by a wildcard, so the algorithm stays SOUND (it never rejects a valid match,
+    /// only one with a provable hole).
+    fn column_ctors(&self, ty: &Ty) -> Option<Vec<ColCtor>> {
+        match ty {
+            Ty::Bool => Some(vec![
+                ColCtor { key: "true".into(), args: Vec::new() },
+                ColCtor { key: "false".into(), args: Vec::new() },
+            ]),
+            Ty::Tuple(comps) => {
+                Some(vec![ColCtor { key: TUPLE_CTOR.into(), args: comps.clone() }])
+            }
+            Ty::List(elem) => Some(vec![
+                ColCtor { key: LIST_NIL.into(), args: Vec::new() },
+                ColCtor { key: LIST_CONS.into(), args: vec![(**elem).clone(), ty.clone()] },
+            ]),
+            Ty::Named(adt, args) => {
+                let variants = self.adt_variants.get(adt)?;
+                Some(
+                    variants
+                        .iter()
+                        .map(|v| ColCtor { key: v.clone(), args: self.variant_arg_types(v, args) })
+                        .collect(),
+                )
+            }
+            _ => None,
+        }
+    }
+
+    /// The field types of variant `v` of a `Named(adt, actual_args)` type, with the
+    /// ADT's formal type parameters substituted by `actual_args` — so a
+    /// `Pair(a): P(a, a)` matched at `Pair(Bool)` yields fields `[Bool, Bool]`, not
+    /// the un-substituted parameter vars (which would look opaque). Any leftover
+    /// var stays a var (→ opaque → needs a wildcard), keeping the check sound.
+    fn variant_arg_types(&self, v: &str, actual_args: &[Ty]) -> Vec<Ty> {
+        let Some((fields, result)) = self.ctor_sigs.get(v) else {
+            return Vec::new();
+        };
+        // The variant's result type carries its ADT's formal parameter vars in
+        // order (`Named(adt, [Var(p0), Var(p1), …])`), so zip them to the actual
+        // arguments to build the substitution.
+        let map: HashMap<u32, Ty> = match result {
+            Ty::Named(_, formals) => formals
+                .iter()
+                .zip(actual_args)
+                .filter_map(|(f, a)| match f {
+                    Ty::Var(id) => Some((*id, a.clone())),
+                    _ => None,
+                })
+                .collect(),
+            _ => HashMap::new(),
+        };
+        fields.iter().map(|f| self.subst_vars(f, &map)).collect()
+    }
+
+    /// (BUG-293) Type-directed exhaustiveness: whether the `rows` (each a pattern
+    /// per column) provably cover every value of `types`. The classic
+    /// constructor-matrix algorithm — for a column whose type has a finite ctor
+    /// signature that the rows mention completely, split per constructor; otherwise
+    /// only wildcard rows can cover the rest, so recurse on the default matrix. It
+    /// terminates on recursive types (List) because an all-wildcard column takes
+    /// the default branch instead of expanding `cons` forever.
+    fn rows_exhaustive(&self, types: &[Ty], rows: &[Vec<Pattern>]) -> bool {
+        // Expand a head-position or-pattern into one row per alternative, so
+        // coverage reasons per alternative (a nested `(1 | 2, x)` contributes both
+        // `1` and `2`). Deeper ors surface as column heads after specialization and
+        // are expanded by the same step on the recursive call.
+        let rows: Vec<Vec<Pattern>> = rows.iter().flat_map(|r| expand_head_or(r)).collect();
+        let Some((col_ty, rest)) = types.split_first() else {
+            // No columns left: the (empty) value is covered iff a row remains.
+            return !rows.is_empty();
+        };
+        let col_ty = self.resolve(col_ty);
+        let full = self.column_ctors(&col_ty);
+        let present: HashSet<&str> =
+            rows.iter().filter_map(|r| pattern_ctor_key(&r[0])).collect();
+        let complete = matches!(&full, Some(cs) if cs.iter().all(|c| present.contains(c.key.as_str())));
+        if complete {
+            // Every constructor is mentioned — the match is exhaustive iff each
+            // constructor's specialized sub-matrix is exhaustive.
+            for c in full.expect("complete implies Some") {
+                let sub_rows: Vec<Vec<Pattern>> =
+                    rows.iter().filter_map(|r| specialize_row(r, &c)).collect();
+                let mut sub_types = c.args.clone();
+                sub_types.extend_from_slice(rest);
+                if !self.rows_exhaustive(&sub_types, &sub_rows) {
+                    return false;
+                }
+            }
+            true
+        } else {
+            // Open or incomplete column: only wildcard rows can cover the missing
+            // constructors. Drop this column from them and recurse on the rest.
+            let default: Vec<Vec<Pattern>> = rows
+                .iter()
+                .filter(|r| pattern_ctor_key(&r[0]).is_none())
+                .map(|r| r[1..].to_vec())
+                .collect();
+            self.rows_exhaustive(rest, &default)
+        }
+    }
+
     /// Whether a set of patterns at one position covers every value of its type.
     /// The type is read from the patterns themselves — a constructor names its
     /// ADT, a `Bool`/`Int`/`Str` literal names a scalar. Returns `true` whenever
@@ -3605,12 +3982,33 @@ impl Checker {
         true
     }
 
+    /// The source name of the type parameter appearing in a (rejected) `Dict` key
+    /// type, for the "add a `where <k>: Eq`" hint — falls back to `k`.
+    fn key_var_name(&self, ty: &Ty) -> String {
+        if let Some(id) = first_type_var(ty) {
+            for (name, v) in &self.current_typarams {
+                if *v == id {
+                    return name.clone();
+                }
+            }
+        }
+        "k".to_string()
+    }
+
     fn check_function(&mut self, func: &Function) -> Result<(), TypeError> {
         borrow_escape_check(func)?;
         let (params, ret) = self.fn_sigs.get(&func.name).cloned().unwrap();
         self.scopes = vec![HashMap::new()];
         self.consumed.clear();
         self.current_ret = Some(ret.clone());
+        // (BUG-308) Make this function's type parameters visible to `to_ty` so body
+        // ascriptions resolve `a` to the signature's parameter var.
+        self.current_typarams = self
+            .fn_typarams
+            .get(&func.name)
+            .map(|ps| ps.iter().map(|(n, v)| (n.clone(), *v)).collect())
+            .unwrap_or_default();
+        self.dict_key_ops.clear();
         self.cur_line = 0;
         for (param, ty) in func.params.iter().zip(&params) {
             // (RFC-0025) A `frozen` parameter is deeply immutable, so a mutable
@@ -3660,6 +4058,40 @@ impl Checker {
                 }
             }
         }
+        // (BUG-395 / RFC-0047) A generic `Dict` key operation performed in this
+        // (unbounded) body must have an `Eq` key. Now that the body is fully
+        // inferred, a key type that still carries a type variable is an UNBOUNDED
+        // generic key — the function needs a `where <k>: Eq` bound (a bounded
+        // function is checked through monomorphization instead, where the key is
+        // concrete). Concrete keys (Int/String/records that derive Eq) are already
+        // fine; `Float` is caught separately by `float_key_position`.
+        // The std `dict` module's own compositional helpers (`map_values`, `filter`,
+        // `merge`, …) key their output dicts with keys drawn from an INPUT `Dict`
+        // parameter — whose existence already guarantees the key is `Eq` (a dict
+        // can only be built through the bounded insert wrappers). Exempting the
+        // trusted std API layer keeps those helpers unbounded (bounding them makes
+        // them templates that regress result inference), while USER code that does a
+        // generic key op is still enforced.
+        let is_std = func
+            .name
+            .rsplit_once('.')
+            .is_some_and(|(m, _)| witchy_syntax::linker::STD_MODULES.contains(&m));
+        for (key_ty, line) in std::mem::take(&mut self.dict_key_ops) {
+            if is_std {
+                continue;
+            }
+            let resolved = self.resolve(&key_ty);
+            if ty_has_var(&resolved) {
+                self.cur_line = line;
+                return terr(format!(
+                    "`{}`: a generic `Dict` key must be `Eq` — the key type is used to hash \
+                     and compare entries, so an unbounded type parameter can't be a key. Add a \
+                     `where {}: Eq` bound (or use a concrete key type)",
+                    func.name.rsplit('.').next().unwrap_or(&func.name),
+                    self.key_var_name(&resolved)
+                ));
+            }
+        }
         // Soundness: a declared type parameter must stay free (truly generic).
         // If the body pinned it to a concrete type, the signature is misleading.
         if let Some(typarams) = self.fn_typarams.get(&func.name).cloned() {
@@ -3685,6 +4117,11 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
     // mistaken for duplicates) and source lines are still available.
     check_unique_functions(module)?;
 
+    // (BUG-230) Duplicate type / constructor / method declarations get the same
+    // "defined more than once" error the function namespace already gets. Runs
+    // pre-lowering, while `impl`/`type` items are still present and distinct.
+    check_unique_declarations(module)?;
+
     // (RFC-0064 Check 1) A `var` parameter must be a procedure channel or a
     // mutator receiver — every other shape is the abolished combined write-back
     // (rejected before either backend lowers, so parity holds by construction).
@@ -3698,8 +4135,33 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
     // checker only ever sees plain functions (a no-op for trait-free modules).
     // The checked flavor surfaces unsatisfiable dispatch ("`Float` does not
     // implement `Show`") instead of a post-lowering unknown-function error.
-    let lowered = crate::traits::lower_checked(recs).map_err(|message| TypeError { message })?;
-    run_check(&lowered, false).map(|_| ())
+    match crate::traits::lower_checked(recs.clone()) {
+        Ok(lowered) => run_check(&lowered, false).map(|_| ()),
+        Err(message) => {
+            // (BUG-307) Mono's "cannot infer the result type" fallback fires when
+            // `annotate` returned an EMPTY TypeTable — which is itself a symptom of
+            // a REAL checker error elsewhere in the module (a body type error breaks
+            // annotate, so every result-position bounded call loses its inferred
+            // type and mono then misdiagnoses it). Run the checker on the plainly
+            // lowered module first: its genuine error takes priority. The inference
+            // fallback only stands when the module otherwise type-checks. Other
+            // (genuine) dispatch errors are surfaced unchanged, preserving their
+            // teaching message.
+            if message.contains("cannot infer the result type") {
+                if let Err(real) = run_check(&crate::traits::lower(recs), false) {
+                    // Plain lowering can't resolve the un-inferable bounded call and
+                    // leaves it as an unknown function — that artifact IS the same
+                    // problem the mono message already describes (and better), so
+                    // ignore it and keep the mono message. Any OTHER checker error is
+                    // the real one mono masked (a body type error, etc.) — surface it.
+                    if !real.message.contains("call to unknown function") {
+                        return Err(real);
+                    }
+                }
+            }
+            Err(TypeError { message })
+        }
+    }
 }
 
 /// The resolved-type side table produced by `annotate`: expression identity
@@ -3799,12 +4261,14 @@ fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeErr
         sealed_types: HashSet::new(),
         adt_variants: HashMap::new(),
         fn_typarams: HashMap::new(),
+        current_typarams: HashMap::new(),
         subst: HashMap::new(),
         next_var: 0,
         scopes: vec![HashMap::new()],
         consumed: HashSet::new(),
         region_locals: Vec::new(),
         current_ret: None,
+        dict_key_ops: Vec::new(),
         cur_line: 0,
     };
 
@@ -4042,6 +4506,113 @@ fn flatten_or_arms(arms: &[MatchArm]) -> Vec<MatchArm> {
         }
     }
     out
+}
+
+/// (BUG-293) One entry of a type's constructor signature for the exhaustiveness
+/// matrix: a constructor key plus the field types it introduces as sub-columns.
+struct ColCtor {
+    key: String,
+    args: Vec<Ty>,
+}
+
+/// Synthetic constructor keys for the structural (non-ADT) constructors.
+const TUPLE_CTOR: &str = "(tuple)";
+const LIST_NIL: &str = "(nil)";
+const LIST_CONS: &str = "(cons)";
+
+/// The constructor key a pattern tests at its column, or `None` if it matches ANY
+/// value of that column (a wildcard, a variable, or an open list tail `[..r]`).
+/// Literal patterns on open types (Int/String/Duration/range) return a key so they
+/// are NOT mistaken for wildcards — they never complete a signature (their types
+/// are open), and excluding them from the default matrix keeps a literal-only
+/// match non-exhaustive, as it should be.
+fn pattern_ctor_key(p: &Pattern) -> Option<&str> {
+    match p {
+        Pattern::Wildcard | Pattern::Var(_) => None,
+        Pattern::Bool(true) => Some("true"),
+        Pattern::Bool(false) => Some("false"),
+        Pattern::Ctor { name, .. } => Some(name),
+        Pattern::Tuple(_) => Some(TUPLE_CTOR),
+        Pattern::List { elems, rest } => {
+            if !elems.is_empty() {
+                Some(LIST_CONS)
+            } else if rest.is_none() {
+                Some(LIST_NIL)
+            } else {
+                None // `[..r]` matches any list — wildcard-like for this column
+            }
+        }
+        Pattern::Int(_) | Pattern::Str(_) | Pattern::Duration(_) | Pattern::IntRange { .. } => {
+            Some("(literal)")
+        }
+        // Expanded away at each column head by `expand_head_or` before this runs.
+        Pattern::Or(_) => None,
+    }
+}
+
+/// Specialize one matrix row by constructor `c`: if the row's head pattern can
+/// match `c`, return the row with the head replaced by `c`'s field sub-patterns
+/// (so `c`'s arguments become new leading columns); otherwise `None` (the row is
+/// dropped, as it can never match `c`).
+fn specialize_row(row: &[Pattern], c: &ColCtor) -> Option<Vec<Pattern>> {
+    let (head, tail) = row.split_first()?;
+    let mut new_row = specialize_head(head, c)?;
+    new_row.extend_from_slice(tail);
+    Some(new_row)
+}
+
+fn specialize_head(p: &Pattern, c: &ColCtor) -> Option<Vec<Pattern>> {
+    let arity = c.args.len();
+    match p {
+        Pattern::Wildcard | Pattern::Var(_) => Some(vec![Pattern::Wildcard; arity]),
+        Pattern::Bool(b) => (c.key == if *b { "true" } else { "false" }).then(Vec::new),
+        Pattern::Ctor { name, args } => (c.key == *name).then(|| args.clone()),
+        Pattern::Tuple(ps) => (c.key == TUPLE_CTOR).then(|| ps.clone()),
+        Pattern::List { elems, rest } => specialize_list(elems, rest, c),
+        // A literal on an open type never reaches a synthetic ctor; drop the row.
+        Pattern::Int(_) | Pattern::Str(_) | Pattern::Duration(_) | Pattern::IntRange { .. } => None,
+        Pattern::Or(_) => None, // expanded away before specialization
+    }
+}
+
+/// Specialize a list pattern under the `nil`/`cons` constructors of `List(elem)`.
+fn specialize_list(
+    elems: &[Pattern],
+    rest: &Option<Option<String>>,
+    c: &ColCtor,
+) -> Option<Vec<Pattern>> {
+    match c.key.as_str() {
+        // `[]` / `[..r]` match the empty list; a fixed-length prefix does not.
+        LIST_NIL => elems.is_empty().then(Vec::new),
+        LIST_CONS => {
+            if let Some((first, more)) = elems.split_first() {
+                // `[e0, e1.., ..r]` = cons(e0, `[e1.., ..r]`)
+                Some(vec![first.clone(), Pattern::List { elems: more.to_vec(), rest: rest.clone() }])
+            } else if rest.is_some() {
+                // `[..r]` matches a non-empty list too: head `_`, tail `_`.
+                Some(vec![Pattern::Wildcard, Pattern::Wildcard])
+            } else {
+                None // `[]` is not a cons
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Expand a head-position or-pattern into one row per alternative (recursively, so
+/// a nested `1 | 2 | 3` fully flattens). Non-or heads pass through unchanged.
+fn expand_head_or(row: &[Pattern]) -> Vec<Vec<Pattern>> {
+    match row.first() {
+        Some(Pattern::Or(alts)) => alts
+            .iter()
+            .flat_map(|alt| {
+                let mut r = vec![alt.clone()];
+                r.extend_from_slice(&row[1..]);
+                expand_head_or(&r)
+            })
+            .collect(),
+        _ => vec![row.to_vec()],
+    }
 }
 
 fn describe_pattern(p: &Pattern) -> String {

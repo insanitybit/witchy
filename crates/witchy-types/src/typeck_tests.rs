@@ -1306,3 +1306,144 @@ fn main():
             .expect_err("a policy-narrowed Dir[Read] must not re-widen to full Dir");
         assert!(err.contains("can only drop rights"), "got: {err}");
     }
+
+    #[test]
+    fn unknown_capability_right_markers_are_rejected() {
+        // (BUG-154) A misspelled or invalid bracket marker must be a clear error,
+        // not silently normalized to a different authority shape.
+        let net = check_str("fn f(net: Net[Conect, Tcp]) -> Bool:\n    true\n").unwrap_err();
+        assert!(net.contains("unknown `Net` right `Conect`"), "{net}");
+        // `Tls` is a rejected Net right (RFC-0009), not just a typo.
+        let tls = check_str("fn f(net: Net[Connect, Tls]) -> Bool:\n    true\n").unwrap_err();
+        assert!(tls.contains("unknown `Net` right `Tls`"), "{tls}");
+        let dir = check_str("fn f(d: Dir[Reed]) -> Bool:\n    true\n").unwrap_err();
+        assert!(dir.contains("unknown `Dir` right `Reed`"), "{dir}");
+        let file = check_str("fn f(x: File[Reed]) -> Bool:\n    true\n").unwrap_err();
+        assert!(file.contains("unknown `File` right `Reed`"), "{file}");
+        // Valid vocabularies still type-check (including a bare capability).
+        check_str("fn f(net: Net[Connect, Tcp]) -> Bool:\n    true\n").expect("valid Net rights");
+        check_str("fn f(d: Dir[Read, Write]) -> Bool:\n    true\n").expect("valid Dir rights");
+        check_str("fn f(net: Net) -> Bool:\n    true\n").expect("bare Net is full rights");
+    }
+
+    #[test]
+    fn duplicate_duration_match_arm_is_unreachable() {
+        // (BUG-294) A duplicate Duration literal arm is dead code, exactly as an
+        // Int/Str/Bool duplicate is.
+        let err = check_str(
+            "fn f(d: Duration) -> Int:\n    match d:\n        1s -> 1\n        1s -> 2\n        _ -> 0\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("unreachable match arm"), "{err}");
+        // Distinct Duration arms remain reachable.
+        check_str(
+            "fn f(d: Duration) -> Int:\n    match d:\n        1s -> 1\n        2s -> 2\n        _ -> 0\n",
+        )
+        .expect("distinct Duration arms are reachable");
+    }
+
+    #[test]
+    fn non_exhaustive_tuple_and_list_matches_are_rejected() {
+        // (BUG-293) tuple/list scrutinees are exhaustiveness-checked at check time
+        // instead of trapping at runtime.
+        let tup = check_str(
+            "fn f(t: (Bool, Bool)) -> Int:\n    match t:\n        (true, true) -> 1\n        (true, false) -> 2\n        (false, true) -> 3\n",
+        )
+        .unwrap_err();
+        assert!(tup.contains("non-exhaustive") && tup.contains("tuple"), "{tup}");
+        // A single-arm Int-tuple literal match: Int is open, so it needs a catch-all.
+        let ints = check_str("fn f(t: (Int, Int)) -> Int:\n    match t:\n        (3, 4) -> 1\n").unwrap_err();
+        assert!(ints.contains("non-exhaustive"), "{ints}");
+        // A list match covering only `[]` misses every non-empty list.
+        let lst = check_str("fn f(xs: List(Int)) -> Int:\n    match xs:\n        [] -> 0\n").unwrap_err();
+        assert!(lst.contains("non-exhaustive") && lst.contains("list"), "{lst}");
+        // Fully covered tuple / list matches pass.
+        check_str(
+            "fn f(t: (Bool, Bool)) -> Int:\n    match t:\n        (true, true) -> 1\n        (true, false) -> 2\n        (false, true) -> 3\n        (false, false) -> 4\n",
+        )
+        .expect("the full (Bool, Bool) product is exhaustive");
+        check_str("fn f(xs: List(Int)) -> Int:\n    match xs:\n        [] -> 0\n        [h, ..rest] -> h\n")
+            .expect("`[]` + `[h, ..rest]` is exhaustive");
+    }
+
+    #[test]
+    fn equality_on_fn_or_cap_fields_of_records_and_enums_is_rejected() {
+        // (BUG-302) a record/enum carrying a fn or capability field must reject `==`
+        // at check time, so both backends agree (interp compared by closure identity,
+        // compiled rejected — a parity divergence).
+        let rec = check_str(
+            "type H:\n    run: fn(Int) -> Int\nfn add1(x: Int) -> Int:\n    x + 1\nfn f() -> Bool:\n    H(add1) == H(add1)\n",
+        )
+        .unwrap_err();
+        assert!(rec.contains("not defined on function types") && rec.contains("H"), "{rec}");
+        let en = check_str(
+            "type W:\n    Func(fn(Int) -> Int)\nfn add1(x: Int) -> Int:\n    x + 1\nfn f() -> Bool:\n    Func(add1) == Func(add1)\n",
+        )
+        .unwrap_err();
+        assert!(en.contains("not defined on function types"), "{en}");
+        let cap = check_str("type Hold:\n    c: Console\nfn f(a: Hold, b: Hold) -> Bool:\n    a == b\n").unwrap_err();
+        assert!(cap.contains("not defined on capability types"), "{cap}");
+        // A plain data record still compares.
+        check_str("type P:\n    x: Int\n    y: Int\nfn f(a: P, b: P) -> Bool:\n    a == b\n")
+            .expect("a plain data record is comparable");
+    }
+
+    #[test]
+    fn body_let_ascription_binds_the_enclosing_type_parameter() {
+        // (BUG-308) `let out: List(a) = xs` refines the fn's generic `a` rather than
+        // pinning it to a distinct concrete `Named("a")`.
+        check_str("fn firsts(xs: List(a), k: Int) -> List(a):\n    let out: List(a) = xs\n    out\n")
+            .expect("a body ascription unifies with the generic parameter");
+        // A concrete ascription is unaffected.
+        check_str("fn g(xs: List(Int)) -> List(Int):\n    let out: List(Int) = xs\n    out\n")
+            .expect("a concrete ascription still works");
+        // A *different* letter is still, correctly, a distinct parameter (pins `a`).
+        let err = check_str("fn firsts(xs: List(a)) -> List(a):\n    let out: List(b) = xs\n    out\n").unwrap_err();
+        assert!(err.contains("isn't generic"), "{err}");
+    }
+
+    #[test]
+    fn duplicate_declarations_are_rejected() {
+        // (BUG-230) types, constructors, and methods get the same "defined more than
+        // once" error the function namespace already gives.
+        let ty = check_str("type T:\n    A\ntype T:\n    B\n").unwrap_err();
+        assert!(ty.contains("type `T` is defined more than once"), "{ty}");
+        let same = check_str("type T:\n    Same(Int)\n    Same(String)\n").unwrap_err();
+        assert!(same.contains("constructor `Same`"), "{same}");
+        let cross = check_str("type A:\n    Same(Int)\ntype B:\n    Same(String)\n").unwrap_err();
+        assert!(cross.contains("constructor `Same`"), "{cross}");
+        let meth = check_str(
+            "type Box:\n    Box(Int)\nimpl Box:\n    fn value(self) -> Int:\n        1\n    fn value(self) -> Int:\n        2\n",
+        )
+        .unwrap_err();
+        assert!(meth.contains("method `value` is defined more than once"), "{meth}");
+        let trait_dup = check_str("trait Two:\n    fn m(self) -> Int\n    fn m(self) -> Int\n").unwrap_err();
+        assert!(trait_dup.contains("method `m` is declared more than once"), "{trait_dup}");
+        // Distinct declarations (incl. same trait for different types) are fine.
+        check_str(
+            "trait Greet:\n    fn greet(self) -> String\ntype A:\n    A(Int)\ntype B:\n    B(Int)\nimpl Greet for A:\n    fn greet(self) -> String:\n        \"a\"\nimpl Greet for B:\n    fn greet(self) -> String:\n        \"b\"\n",
+        )
+        .expect("distinct declarations are accepted");
+    }
+
+    #[test]
+    fn generic_dict_key_operation_requires_eq_bound() {
+        // (BUG-395 / RFC-0047) A generic helper performing a `Dict` key operation
+        // must carry a `where k: Eq` bound — the key is hashed and compared.
+        for op in [
+            "dict.get_or(d, key, fallback)",
+            "dict.insert(d, key, fallback)",
+            "dict.contains_key(d, key)",
+            "dict.remove(d, key)",
+        ] {
+            let src = format!("fn f(d: Dict(k, v), key: k, fallback: v) -> v:\n    {op}\n    fallback\n");
+            let err = check_str(&src).unwrap_err();
+            assert!(err.contains("generic `Dict` key must be `Eq`"), "{op}: {err}");
+        }
+        // With the bound it type-checks (checked through monomorphization).
+        check_str("fn f(d: Dict(k, v), key: k, fallback: v) -> v where k: Eq:\n    dict.get_or(d, key, fallback)\n")
+            .expect("a `where k: Eq` generic dict helper is accepted");
+        // A concrete key needs no bound.
+        check_str("fn f(d: Dict(String, Int), key: String) -> Int:\n    dict.get_or(d, key, 0)\n")
+            .expect("a concrete String key needs no bound");
+    }

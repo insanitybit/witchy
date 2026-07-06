@@ -18913,6 +18913,42 @@ pub fn serve(console: Console, net: Net) -> Int:
             "encode_nan: null",
             "encode_finite: 1.5",
         ];
+    #[test]
+    fn bug307_real_body_error_surfaces_over_collect_inference_fallback() {
+        // (BUG-307) A genuine body type error must surface even when the module has a
+        // result-position bounded call (`iter.collect`) whose annotate fell back —
+        // the false "cannot infer the result type" diagnostic must not mask it.
+        let src = "import iter\n\
+                   import list\n\
+                   fn broken() -> Int:\n\
+                   \x20   \"oops\"\n\
+                   fn main(console: Console):\n\
+                   \x20   let a: List(Int) = iter.collect(iter.range(0, 3))\n\
+                   \x20   print(console, \"${list.length(a)}\")\n";
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
+        let err = typeck::check(&linked).expect_err("broken body must fail").to_string();
+        assert!(err.contains("broken") && err.contains("expected `Int`"), "{err}");
+    }
+
+    #[test]
+    fn bug181_tagged_literals_in_impls_and_consts_expand() {
+        // (BUG-181) a `tag"…"` in an impl method OR a top-level `let` constant must
+        // be expanded before type-checking — it must not survive as an
+        // `Expr::TaggedLit` (which the type checker `unreachable!`s on). The `lit`
+        // tag here emits the source `"ok"`, so both sites render `ok`.
+        let src = "fn lit(parts: List(String), holes: List(String)) -> String:\n\
+                   \x20   \"\\\"ok\\\"\"\n\
+                   type Box:\n\
+                   \x20   value: Int\n\
+                   impl Box:\n\
+                   \x20   pub fn label(self) -> String:\n\
+                   \x20       lit\"ignored\"\n\
+                   let LABEL = lit\"ignored\"\n\
+                   fn main(console: Console):\n\
+                   \x20   print(console, Box(1).label())\n\
+                   \x20   print(console, LABEL)\n";
+        let expected = ["ok", "ok"];
         assert_eq!(link_run(src), expected, "interp");
         assert_eq!(wasm_run(src), expected, "wasm");
     }

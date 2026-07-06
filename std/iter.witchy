@@ -239,7 +239,7 @@ impl FromIterator(a) for List(a):
                     cur = rest
         out
 
-impl FromIterator((k, v)) for Dict(k, v):
+impl FromIterator((k, v)) for Dict(k, v) where k: Eq:
     fn from_iter(it: Iter((k, v))) -> Dict(k, v):
         var out = dict.new()
         var cur = it
