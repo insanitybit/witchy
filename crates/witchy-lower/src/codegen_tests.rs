@@ -55,6 +55,39 @@
         }
     }
 
+    #[test]
+    fn grantful_build_primitives_compile_to_build_imports_only() {
+        let module = parse_module(
+            "import option\nfn build(out: BuildOut, env: BuildEnv, dl: BuildNet, cc: BuildExec):\n    let v = match get_build_env(env, \"WITCHY_BUILD_ALLOWED\"):\n        Some(x) -> x\n        None -> \"unset\"\n    write_out(out, \"x.witchy\", v + fetch_build(dl, \"127.0.0.1:9\", \"/schema\") + run_tool(cc, \"cat\", \"input\"))\n",
+        )
+        .expect("parse");
+        let wasm = compile_build_module(&module).expect("compile build module");
+        let mut imports = Vec::new();
+        for payload in wasmparser::Parser::new(0).parse_all(&wasm) {
+            if let wasmparser::Payload::ImportSection(reader) = payload.expect("valid wasm") {
+                for imp in reader.into_imports() {
+                    imports.push(imp.expect("import").name.to_string());
+                }
+            }
+        }
+
+        for needed in [
+            "build_out_write",
+            "build_env_len",
+            "build_env_fill",
+            "build_fetch_len",
+            "build_exec_run",
+        ] {
+            assert!(imports.iter().any(|i| i == needed), "build import `{needed}` missing: {imports:?}");
+        }
+        for forbidden in ["env_len", "env_fill", "exec_run", "net_connect", "net_try_connect"] {
+            assert!(
+                !imports.iter().any(|i| i == forbidden),
+                "build primitive must not lower to runtime import `{forbidden}`: {imports:?}"
+            );
+        }
+    }
+
     fn run_int(src: &str) -> i64 {
         let module = parse_module(src).expect("parse");
         let bytes = compile_module_binary(&module)
@@ -833,4 +866,3 @@ fn main(console: Console):
         assert_eq!(on, vec!["510".to_string()], "elided closure computes the right value");
         assert_eq!(on, off, "elided and boxed closures produce identical output (parity)");
     }
-

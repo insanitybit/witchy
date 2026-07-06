@@ -1,7 +1,7 @@
 ---
 rfc: 0068
 title: "Unify build caps onto the runtime capability set (finish Exec/Env refinement)"
-status: proposed
+status: implemented
 created: 2026-07-06
 related:
   - "0001 (the parity prime directive: interpreter = differential-testing oracle only)"
@@ -14,16 +14,17 @@ tracking:
 
 # RFC-0068: Unify build caps onto the runtime capability set
 
-> Provisional throughout. Code blocks are intentionally **not** tagged `witchy` so the
-> doc-examples sweep does not compile pre-implementation snippets.
+> Code blocks are intentionally **not** tagged `witchy` so the doc-examples sweep does
+> not compile design snippets.
 
 ## Summary
 
 The interpreter is meant to be the **differential-testing oracle only**; the compiled
 WASM tier is the sole production run path. Two recent fixes removed the last two
 production paths that still ran through the tree-walker: `witchy pm`/`coven-serve`
-(compiled) and `witchy test` (compiled). **One deliberate holdout remains:** a `build`
-step that needs `BuildExec`, `BuildNet`, or `BuildEnv` runs on the interpreter.
+(compiled) and `witchy test` (compiled). **The remaining deliberate holdout is now
+closed:** a `build` step that needs `BuildExec`, `BuildNet`, or `BuildEnv` runs on the
+compiled backend.
 
 The framing matters. Build caps and runtime caps are **not two systems** — they are
 already **one `Capabilities` struct** whose fields both carry each grant *and* gate
@@ -35,15 +36,31 @@ are fine-grained (`exec_tools`, `env_keys`), so a bool can't represent them with
 over- or under-granting — which is what forces the interpreter.
 
 So the fix is not "add a build-enforcement subsystem." It is **finish runtime capability
-refinement**: give `Exec`/`Env` allow-lists so they match `Net`/`Dir`, then let build
-caps lower straight onto the unified fields. That upgrade is desirable on its own (an
-`Exec[cc,ld]` runtime grant is exactly what RFC-0011/0012/0013 want); build is just the
-first consumer. Confinement is preserved for free — linking is already caps-gated, so a
-step gets only the imports its footprint grants.
+refinement** where needed: give `Exec`/`Env` allow-lists so they match the finer-grained
+shape of `Net`/`Dir`, and keep BuildNet as a phase-specific allow-list on the same runtime
+capability record. That upgrade is desirable on its own (an `Exec[cc,ld]` runtime grant is
+exactly what RFC-0011/0012/0013 want); build is just the first consumer. Confinement is
+preserved by caps-gated linking, so a step gets only the imports its footprint grants.
+
+## As Built
+
+Implemented on 2026-07-06:
+
+- `get_build_env`, `fetch_build`, and `run_tool` now have compiled WIR lowering.
+- The new compiled helpers import only build-specific host functions:
+  `build_env_len`/`build_env_fill`, `build_fetch_len`, and `build_exec_run`.
+- `Capabilities` now carries `env_allow`, `exec_allow`, and `build_net_allow`.
+  `build_net_allow` is intentionally separate from runtime `net_allow`, so a precompiled
+  module granted ordinary `Net` cannot import the build-only `fetch_build` primitive.
+- `witchy build-step` now accepts `--net <host:port>` and routes all build steps through
+  the compiled build sandbox. The interpreter build executor remains as the oracle path.
+- Focused regressions cover compiled allow/deny behavior for BuildEnv, BuildNet, and
+  BuildExec, plus import-shape coverage proving grantful build primitives do not lower to
+  runtime Env/Exec/Net imports.
 
 ## Motivation
 
-`run_build_step_file` (`src/main.rs`) already splits build steps by grant shape:
+Before this RFC, `run_build_step_file` (`src/main.rs`) split build steps by grant shape:
 
     // Deterministic steps (only BuildOut/BuildRead, no env/exec/net) are a pure
     // function of their inputs, so they run in the zero-ambient WASM sandbox where a
@@ -69,7 +86,7 @@ on is produced by the very `Capabilities` struct build caps already share. Build
 are fields on that struct (`build_out`, `build_read_roots`) and run compiled today. There
 is no second system to unify with; there is one struct.
 
-What's actually missing is **expressiveness on two of its fields**. `net`/`dir` carry
+What was actually missing was **expressiveness on two of its fields**. `net`/`dir` carry
 allow-lists; `exec`/`env` do not:
 
 - `Capabilities.exec: bool` — all-or-nothing. `host_exec_run` does `Command::new(&prog)`
@@ -95,7 +112,7 @@ expressiveness.
 
 ### Why it matters
 
-With pm/coven/`witchy test` migrated, `run_build_step_file`'s exec/env/net branch is the
+With pm/coven/`witchy test` migrated, `run_build_step_file`'s former exec/env/net branch was the
 **last deliberate interpreter invocation in a production path**. Closing it means the
 interpreter is invoked *only* for: the parity oracle (`parity_check`), compile-time
 const-eval (`comptime`/tagged literals), and benchmarks/tests. That is the invariant fully
@@ -147,7 +164,7 @@ site* is needed, only a guard in the host function:
 This is the same shape as the net allow-list check already performed on `connect`. The
 abort message must match the interpreter's for message parity (RFC-0045 root-cause routing).
 
-### 3. Route the build caps + widen `sandboxable`
+### 3. Route the build caps + remove the `sandboxable` split
 
 `run_build_step_sandboxed` today grants only `BuildOut`/`BuildRead`. Generalize it (or add a
 compiled sibling) to mint `Build[Exec]`/`Build[Env]`/`Build[Net]` and set the three
@@ -156,10 +173,10 @@ allow-list fields from `BuildGrants`, then broaden the gate:
     // No branch on grant *kind* anymore — every build step runs compiled. The grants
     // (Out/Read/Exec/Env/Net allow-lists) are enforced host-side, and a `..` escape or
     // an ungranted tool/key/host aborts with no host import to satisfy it.
-    return run_build_step_compiled(linked, out, read_roots, exec_tools, env_keys, net_hosts);
+    return run_build_step_compiled(linked, out, read_roots, env_keys, exec_tools, net_hosts);
 
 The deterministic (`BuildOut`/`BuildRead`-only) path keeps its current zero-ambient
-strictness as the natural special case where all three allow-lists are `None`.
+strictness as a compatibility wrapper over the compiled path with empty allow-lists.
 
 ## Parity considerations
 
@@ -188,19 +205,19 @@ strictness as the natural special case where all three allow-lists are `None`.
 
 The unified framing lets this land **incrementally**, smallest first:
 
-1. **`Build[Net]` compiled — no new fields.** `net_allow` already exists; route
-   `BuildCap::Net(net_hosts)` into it and admit net-only steps into the compiled path.
-   This is a pure `sandboxable`-gate + routing change, shippable on its own.
+1. **`Build[Net]` compiled with a build-phase allow-list.** Runtime `net_allow` already
+   proved the host:port model, but the implementation uses `build_net_allow` so ordinary
+   runtime Net grants do not link build-only imports.
 2. **Add `exec_allow`/`env_allow` to `Capabilities`** (default `None` — inert for all
    current callers), and guard `host_exec_run` + the env host import against them. This is
    the runtime capability-refinement core (RFC-0011/0012/0013) and is independently useful
    beyond build.
-3. **Route `BuildGrants` exec/env allow-lists in** (via `run_build_step_compiled` or a
-   generalized sandboxed path) and widen the `sandboxable` gate to every build step.
+3. **Route `BuildGrants` exec/env allow-lists in** via `run_build_step_compiled` and remove
+   the `sandboxable` gate so every build step uses the compiled sandbox.
 4. Differential tests + a `book/` example per denial (ungranted tool/key/host); then delete
    the kind-based branch in `run_build_step_file` and its now-false comment. The
-   `BuildOut`/`BuildRead`-only path remains as the natural special case (all allow-lists
-   `None`).
+   `BuildOut`/`BuildRead`-only path remains as the natural special case through the
+   compatibility wrapper.
 
 No user-visible syntax or grant-declaration change; `build` steps keep declaring
 `Build[Exec{…}]`/`Build[Env{…}]`/`Build[Net{…}]` exactly as today. The only observable

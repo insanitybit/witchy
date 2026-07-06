@@ -185,6 +185,10 @@ pub struct Capabilities {
     /// May read process environment variables via `witchy.env_*` (an `Env`
     /// capability).
     pub env: bool,
+    /// Optional per-key restriction for `Env` host reads. `None` preserves the
+    /// ordinary coarse `Env` grant; `Some(keys)` links the same host operation but
+    /// refuses every key not named here. BuildEnv uses this path.
+    pub env_allow: Option<Vec<String>>,
     /// The directory subtree backing the root `Dir` capability (handle 0).
     /// `None` denies the filesystem entirely; the `dir_read`/`dir_write` flags
     /// pick which operation families are linked within it.
@@ -207,10 +211,18 @@ pub struct Capabilities {
     /// without filesystem read is useless — but the flag is tracked separately so
     /// `Exec` appears as its own authority. See rfcs/0004-self-hosted-cli.md.
     pub exec: bool,
+    /// Optional per-tool restriction for native subprocess execution. `None`
+    /// preserves the ordinary coarse `Exec` grant; `Some(tools)` is used by
+    /// BuildExec and refuses every tool not named here.
+    pub exec_allow: Option<Vec<String>>,
     /// The `host:port` allowlist backing the root `Net` capability (handle 0).
     /// `None` denies the network entirely; the verb flags below pick which
     /// operation families are linked within it.
     pub net_allow: Option<Vec<String>>,
+    /// The `host:port` allowlist backing a build step's `BuildNet` capability.
+    /// Kept separate from runtime `Net` so precompiled modules granted network
+    /// authority cannot import the build-only `fetch_build` primitive.
+    pub build_net_allow: Option<Vec<String>>,
     /// May dial out (`connect`/`restrict`) to allowlisted addresses.
     pub net_connect: bool,
     /// May bind and accept (`listen`/`accept`) on allowlisted addresses.
@@ -724,6 +736,16 @@ pub(crate) fn link_capability_imports(
         // unconditionally below) does the transfer.
         linker.func_wrap("witchy", "build_read_len", host_build_read_len)?;
     }
+    if caps.env_allow.is_some() {
+        linker.func_wrap("witchy", "build_env_len", host_build_env_len)?;
+        linker.func_wrap("witchy", "build_env_fill", host_build_env_fill)?;
+    }
+    if caps.build_net_allow.is_some() {
+        linker.func_wrap("witchy", "build_fetch_len", host_build_fetch_len)?;
+    }
+    if caps.exec_allow.is_some() {
+        linker.func_wrap("witchy", "build_exec_run", host_build_exec_run)?;
+    }
     // `fill_pending` / `write_pending_list` only write out data already
     // staged by a granted size call — no authority of their own, so they are
     // always available. `args_size` stages the host-chosen argv (pure
@@ -1226,6 +1248,11 @@ fn host_now_monotonic(_caller: Caller<'_, VmState>) -> i64 {
 fn host_env_len(mut caller: Caller<'_, VmState>, name_ptr: i32) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let name = read_wstr(mem.data(&caller), name_ptr)?;
+    if let Some(allow) = &caller.data().caps.env_allow {
+        if !allow.iter().any(|k| k == &name) {
+            return Err(Error::msg(format!("get_env: `{name}` is not in this Env grant's allow-list")));
+        }
+    }
     match std::env::var(&name) {
         Ok(v) => Ok(v.len() as i32),
         Err(_) => Ok(-1),
@@ -1238,6 +1265,11 @@ fn host_env_len(mut caller: Caller<'_, VmState>, name_ptr: i32) -> Result<i32> {
 fn host_env_fill(mut caller: Caller<'_, VmState>, name_ptr: i32, out_ptr: i32) -> Result<()> {
     let mem = memory_of(&mut caller)?;
     let name = read_wstr(mem.data(&caller), name_ptr)?;
+    if let Some(allow) = &caller.data().caps.env_allow {
+        if !allow.iter().any(|k| k == &name) {
+            return Err(Error::msg(format!("get_env: `{name}` is not in this Env grant's allow-list")));
+        }
+    }
     let value = std::env::var(&name).unwrap_or_default();
     mem.write(&mut caller, out_ptr as usize, value.as_bytes())
         .map_err(|e| Error::msg(format!("writing env value into guest memory: {e}")))
@@ -1436,6 +1468,11 @@ fn host_exec_run(
     let path = read_wstr(data, path_ptr)?;
     let joined = read_wstr(data, args_ptr)?;
     let stdin = read_wstr(data, stdin_ptr)?;
+    if let Some(allow) = &caller.data().caps.exec_allow {
+        if !allow.iter().any(|tool| tool == &path) {
+            return Err(Error::msg(format!("exec: `{path}` is not in this Exec grant's allow-list")));
+        }
+    }
     // (RFC-0011) exec is the sharpest right, so it takes the SAME entry-policy gate as
     // every other Dir op: a `Dir[...].only(...)` may only run a file it admits — "you
     // can only run a file you can read" was false while this was skipped.
@@ -2105,6 +2142,139 @@ fn host_build_read_len(mut caller: Caller<'_, VmState>, _h: i32, rel_ptr: i32) -
         }
     }
     Err(Error::msg(format!("read_build: `{rel}` not found in any granted read root ({last})")))
+}
+
+fn host_build_env_len(mut caller: Caller<'_, VmState>, _h: i32, name_ptr: i32) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let name = read_wstr(mem.data(&caller), name_ptr)?;
+    let allow = caller
+        .data()
+        .caps
+        .env_allow
+        .as_ref()
+        .ok_or_else(|| Error::msg("get_build_env: no BuildEnv grant"))?;
+    if !allow.iter().any(|k| k == &name) {
+        return Err(Error::msg(format!(
+            "get_build_env: `{name}` is not in this BuildEnv grant's allow-list"
+        )));
+    }
+    match std::env::var(&name) {
+        Ok(v) => Ok(v.len() as i32),
+        Err(_) => Ok(-1),
+    }
+}
+
+fn host_build_env_fill(
+    mut caller: Caller<'_, VmState>,
+    _h: i32,
+    name_ptr: i32,
+    out_ptr: i32,
+) -> Result<()> {
+    let mem = memory_of(&mut caller)?;
+    let name = read_wstr(mem.data(&caller), name_ptr)?;
+    let allow = caller
+        .data()
+        .caps
+        .env_allow
+        .as_ref()
+        .ok_or_else(|| Error::msg("get_build_env: no BuildEnv grant"))?;
+    if !allow.iter().any(|k| k == &name) {
+        return Err(Error::msg(format!(
+            "get_build_env: `{name}` is not in this BuildEnv grant's allow-list"
+        )));
+    }
+    let value = std::env::var(&name).unwrap_or_default();
+    mem.write(&mut caller, out_ptr as usize, value.as_bytes())
+        .map_err(|e| Error::msg(format!("writing build env value into guest memory: {e}")))
+}
+
+fn host_build_fetch_len(
+    mut caller: Caller<'_, VmState>,
+    _h: i32,
+    host_ptr: i32,
+    path_ptr: i32,
+) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let data = mem.data(&caller);
+    let host = read_wstr(data, host_ptr)?;
+    let path = read_wstr(data, path_ptr)?;
+    let allow = caller
+        .data()
+        .caps
+        .build_net_allow
+        .as_ref()
+        .ok_or_else(|| Error::msg("fetch_build: no BuildNet grant"))?;
+    if !allow.iter().any(|h| h == &host) {
+        return Err(Error::msg(format!(
+            "fetch_build: `{host}` is not in this BuildNet grant's allow-list"
+        )));
+    }
+
+    use std::io::{Read as _, Write as _};
+    let mut sock = std::net::TcpStream::connect(host.as_str())
+        .map_err(|e| Error::msg(format!("fetch_build: cannot connect to `{host}`: {e}")))?;
+    let hostname = host.split(':').next().unwrap_or(host.as_str());
+    let req = format!("GET {path} HTTP/1.1\r\nHost: {hostname}\r\nConnection: close\r\n\r\n");
+    sock.write_all(req.as_bytes())
+        .map_err(|e| Error::msg(format!("fetch_build: sending to `{host}`: {e}")))?;
+    let mut raw = Vec::new();
+    sock.read_to_end(&mut raw)
+        .map_err(|e| Error::msg(format!("fetch_build: reading from `{host}`: {e}")))?;
+    let text = String::from_utf8_lossy(&raw);
+    let body = match text.split_once("\r\n\r\n") {
+        Some((_, b)) => b.to_string(),
+        None => text.into_owned(),
+    };
+    let len = body.len() as i32;
+    caller.data_mut().pending = Some(body.into_bytes());
+    Ok(len)
+}
+
+fn host_build_exec_run(
+    mut caller: Caller<'_, VmState>,
+    _h: i32,
+    tool_ptr: i32,
+    input_ptr: i32,
+) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let data = mem.data(&caller);
+    let tool = read_wstr(data, tool_ptr)?;
+    let input = read_wstr(data, input_ptr)?;
+    let allow = caller
+        .data()
+        .caps
+        .exec_allow
+        .as_ref()
+        .ok_or_else(|| Error::msg("run_tool: no BuildExec grant"))?;
+    if !allow.iter().any(|t| t == &tool) {
+        return Err(Error::msg(format!(
+            "run_tool: `{tool}` is not in this BuildExec grant's allow-list"
+        )));
+    }
+
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(&tool)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| Error::msg(format!("run_tool: cannot start `{tool}`: {e}")))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(input.as_bytes())
+            .map_err(|e| Error::msg(format!("run_tool: writing to `{tool}` stdin: {e}")))?;
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| Error::msg(format!("run_tool: `{tool}` failed: {e}")))?;
+    if !out.status.success() {
+        return Err(Error::msg(format!("run_tool: `{tool}` exited with {}", out.status)));
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let len = stdout.len() as i32;
+    caller.data_mut().pending = Some(stdout.into_bytes());
+    Ok(len)
 }
 
 // --- the Net capability family ---

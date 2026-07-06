@@ -3673,6 +3673,37 @@ fn two_phase_helper(name: &str, params: &[&str], run_import: &str, write_import:
     }
 }
 
+/// Like [`exec_helper`], but parameterized for build-only host operations that
+/// stage a Witchy `String`: `len = host(args...)`; allocate `[len][bytes]`;
+/// `fill_pending(res+4)`.
+fn staged_string_helper(name: &str, params: &[&str], run_import: &str) -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: name.into(),
+        params: params.iter().map(|p| WirLocal { name: (*p).into(), ty: WirTy::Bool }).collect(),
+        ret: vec![WirTy::Bool],
+        locals: vec![
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "res".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::SetLocal {
+                local: "len".into(),
+                value: E::CallHost { import: run_import.into(), args: params.iter().map(|p| getl(p)).collect() },
+            },
+            N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] } },
+            N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
 
 /// `$list_drop(list, k) -> i32` — a fresh list with the first `k` elements
 /// dropped. Allocates `(len-k)` slots and `memory.copy`s the tail. Used by the
@@ -3751,6 +3782,62 @@ pub fn get_env_helper() -> WirFunc {
         raw_body: None,
     }
 }
+
+/// `$build_get_env(h, name) -> Option(String)` — build-time environment reads
+/// are staged like ordinary `get_env`, but the host enforces the BuildEnv
+/// allow-list carried by the sandbox grant.
+pub fn build_get_env_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "build_get_env".into(),
+        params: vec![
+            WirLocal { name: "h".into(), ty: WirTy::Bool },
+            WirLocal { name: "name".into(), ty: WirTy::Str },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: ["len", "str", "res"].iter().map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool }).collect(),
+        body: vec![
+            N::SetLocal {
+                local: "len".into(),
+                value: E::CallHost {
+                    import: "build_env_len".into(),
+                    args: vec![getl("h"), getl("name")],
+                },
+            },
+            N::If {
+                cond: b(BinOp::Lt, getl("len"), i32c(0)),
+                then_: vec![
+                    N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![i32c(4)] } },
+                    N::Store { ptr: getl("res"), value: i32c(1), kind: Kind::I32, offset: 0 },
+                    N::Return(Some(getl("res"))),
+                ],
+                els: vec![],
+                result: None,
+            },
+            N::SetLocal { local: "str".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] } },
+            N::Store { ptr: getl("str"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            N::Do(E::CallHost {
+                import: "build_env_fill".into(),
+                args: vec![getl("h"), getl("name"), b(BinOp::Add, getl("str"), i32c(4))],
+            }),
+            N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![i32c(12)] } },
+            N::Store { ptr: getl("res"), value: i32c(0), kind: Kind::I32, offset: 0 },
+            N::Store {
+                ptr: getl("res"),
+                value: E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(getl("str")) },
+                kind: Kind::I64,
+                offset: 4,
+            },
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
 
 /// `$float_to_str(x) -> i32` — render f64 `x` to a String via the host
 /// `float_to_str` import (writes into a reserved 512-byte buffer, returns the
@@ -4784,6 +4871,27 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             helper_deps: &[],
             import_deps: &["build_out_write"],
             uses_heap: false,
+            uses_table: false,
+        }),
+        "build_get_env" => Some(WirHelperSpec {
+            func: build_get_env_helper(),
+            helper_deps: &["rc_alloc"],
+            import_deps: &["build_env_len", "build_env_fill"],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "build_fetch" => Some(WirHelperSpec {
+            func: staged_string_helper("build_fetch", &["h", "host", "path"], "build_fetch_len"),
+            helper_deps: &["rc_alloc"],
+            import_deps: &["build_fetch_len", "fill_pending"],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "build_exec" => Some(WirHelperSpec {
+            func: staged_string_helper("build_exec", &["h", "tool", "input"], "build_exec_run"),
+            helper_deps: &["rc_alloc"],
+            import_deps: &["build_exec_run", "fill_pending"],
+            uses_heap: true,
             uses_table: false,
         }),
         "dir_list" => Some(WirHelperSpec {

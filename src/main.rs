@@ -414,7 +414,7 @@ fn main() -> wasmtime::Result<()> {
             }
         }
     }
-    // `witchy build-step <file> [--out <dir>] [--read <dir>] [--env <KEY>]...`
+    // `witchy build-step <file> [--out <dir>] [--read <dir>] [--env <KEY>]... [--exec <tool>]... [--net <host:port>]...`
     // runs a rune's `build` entrypoint under confined grants and reports the
     // source it generated. The build step can only use the build capabilities it
     // is granted here (it cannot forge a runtime cap), so this is the build-time
@@ -424,6 +424,7 @@ fn main() -> wasmtime::Result<()> {
         let mut read_roots: Vec<std::path::PathBuf> = Vec::new();
         let mut env_keys: Vec<String> = Vec::new();
         let mut exec_tools: Vec<String> = Vec::new();
+        let mut net_hosts: Vec<String> = Vec::new();
         let mut path: Option<String> = None;
         let mut argv = std::env::args().skip(2);
         while let Some(a) = argv.next() {
@@ -444,15 +445,20 @@ fn main() -> wasmtime::Result<()> {
                         exec_tools.push(t);
                     }
                 }
+                "--net" => {
+                    if let Some(h) = argv.next() {
+                        net_hosts.push(h);
+                    }
+                }
                 _ if path.is_none() => path = Some(a),
                 _ => {}
             }
         }
         let Some(path) = path else {
-            eprintln!("usage: witchy build-step <file.witchy> [--out <dir>] [--read <dir>]... [--env <KEY>]... [--exec <tool>]...");
+            eprintln!("usage: witchy build-step <file.witchy> [--out <dir>] [--read <dir>]... [--env <KEY>]... [--exec <tool>]... [--net <host:port>]...");
             std::process::exit(1);
         };
-        match run_build_step_file(&path, out_dir, read_roots, env_keys, exec_tools) {
+        match run_build_step_file(&path, out_dir, read_roots, env_keys, exec_tools, net_hosts) {
             Ok(files) if files.is_empty() => println!("{path}: no `build` entrypoint, or it generated no files"),
             Ok(files) => {
                 println!("build step generated {} file(s):", files.len());
@@ -2800,20 +2806,33 @@ fn emit_wasm_file(path: &str, out: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Run a `build` step in the **zero-ambient WASM sandbox**: compile it (the
-/// `build` entrypoint becomes the `run` export), then instantiate under a
-/// `Capabilities` granting *only* the build output sandbox and read roots — so
-/// the module physically has no `dir_*`/`net_*`/`print` import to call, and a
-/// `..` write traps via the same confinement as a runtime `Dir`. Returns the
-/// generated source files written into `out_dir`.
-///
-/// Used for deterministic steps (BuildOut/BuildRead only). It is hard isolation
-/// for untrusted codegen logic: a bug in the interpreter could not help a build
-/// step here, because the dangerous host functions simply are not linked.
+/// Run a deterministic `build` step in the zero-ambient WASM sandbox. This keeps
+/// the old BuildOut/BuildRead-only helper shape used by tests and callers; the
+/// grantful production path is [`run_build_step_compiled`].
 pub fn run_build_step_sandboxed(
     module: ast::Module,
     out_dir: std::path::PathBuf,
     read_roots: Vec<std::path::PathBuf>,
+) -> Result<Vec<String>, String> {
+    run_build_step_compiled(module, out_dir, read_roots, Vec::new(), Vec::new(), Vec::new())
+}
+
+/// Run a `build` step in the **grant-minimal WASM sandbox**: compile it (the
+/// `build` entrypoint becomes the `run` export), then instantiate under a
+/// `Capabilities` granting only the build output sandbox, read roots, and named
+/// BuildEnv/BuildExec/BuildNet allow-lists. The module physically has no
+/// `dir_*`/runtime `net_*`/`print` import to call, and every build primitive is
+/// confined by the same host-side grant tables as the interpreter oracle.
+///
+/// This is the production build-step path. The interpreter remains the oracle
+/// for parity tests, not a package-manager execution backend.
+pub fn run_build_step_compiled(
+    module: ast::Module,
+    out_dir: std::path::PathBuf,
+    read_roots: Vec<std::path::PathBuf>,
+    env_keys: Vec<String>,
+    exec_tools: Vec<String>,
+    net_hosts: Vec<String>,
 ) -> Result<Vec<String>, String> {
     use runtime::{Capabilities, Runtime};
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("build: output dir: {e}"))?;
@@ -2821,6 +2840,9 @@ pub fn run_build_step_sandboxed(
     let caps = Capabilities {
         build_out: Some(out_dir.clone()),
         build_read_roots: read_roots,
+        env_allow: Some(env_keys),
+        exec_allow: Some(exec_tools),
+        build_net_allow: Some(net_hosts),
         ..Default::default()
     };
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
@@ -2920,36 +2942,156 @@ fn run_build_step_file(
     read_roots: Vec<std::path::PathBuf>,
     env_keys: Vec<String>,
     exec_tools: Vec<String>,
+    net_hosts: Vec<String>,
 ) -> Result<Vec<String>, String> {
     let (linked, _) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
     let out = out_dir.unwrap_or_else(|| std::path::PathBuf::from("build-out"));
-    // Hard isolation when it adds value (matching the package manager): a
-    // *deterministic* step — only BuildOut/BuildRead, no granted env/exec/net —
-    // is a pure function of its inputs, so it runs in the zero-ambient WASM
-    // sandbox where a `..` write traps with no host import to call. Steps needing
-    // BuildExec/BuildNet/BuildEnv run on the capability-sound interpreter: their
-    // host process/socket/env I/O is confined by the grant allow-list, and the
-    // compiled backend has no per-tool exec / per-key env allow-list to enforce it
-    // (only all-or-nothing bools; net already has one). This is the last deliberate
-    // interpreter use in a production path — RFC-0068 proposes closing it by giving
-    // `Capabilities` exec/env allow-lists so every build step runs compiled.
-    let footprint = capabilities::analyze(&linked);
-    let sandboxable = env_keys.is_empty()
-        && exec_tools.is_empty()
-        && !footprint.build.is_empty()
-        && footprint.build.keys().all(|k| *k == "BuildOut" || *k == "BuildRead");
-    if sandboxable {
-        return run_build_step_sandboxed(linked, out, read_roots);
+    run_build_step_compiled(linked, out, read_roots, env_keys, exec_tools, net_hosts)
+}
+
+#[cfg(test)]
+mod compiled_build_step_tests {
+    use super::run_build_step_file;
+
+    fn unique(name: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("witchy_{name}_{}_{}", std::process::id(), nanos))
     }
-    let grants = interpreter::BuildGrants {
-        out_dir: out,
-        read_roots,
-        env_keys,
-        exec_tools,
-        ..Default::default()
-    };
-    interpreter::run_build_step(linked, grants).map_err(|e| e.message)
+
+    fn write_source(dir: &std::path::Path, src: &str) -> std::path::PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join("build.witchy");
+        std::fs::write(&path, src).unwrap();
+        path
+    }
+
+    #[test]
+    fn compiled_build_env_reads_only_allow_listed_keys() {
+        let dir = unique("compiled_build_env");
+        let _ = std::fs::remove_dir_all(&dir);
+        unsafe { std::env::set_var("WITCHY_BUILD_ALLOWED", "yes") };
+        unsafe { std::env::set_var("WITCHY_BUILD_SECRET", "leak") };
+
+        let allowed = write_source(
+            &dir,
+            "import option\nfn build(out: BuildOut, env: BuildEnv):\n    let v = match get_build_env(env, \"WITCHY_BUILD_ALLOWED\"):\n        Some(x) -> x\n        None -> \"unset\"\n    write_out(out, \"g.txt\", v)\n",
+        );
+        run_build_step_file(
+            allowed.to_str().unwrap(),
+            Some(dir.join("out")),
+            vec![],
+            vec!["WITCHY_BUILD_ALLOWED".to_string()],
+            vec![],
+            vec![],
+        )
+        .expect("allow-listed env key reads");
+        assert_eq!(std::fs::read_to_string(dir.join("out/g.txt")).unwrap(), "yes");
+
+        let denied = write_source(
+            &dir,
+            "import option\nfn build(out: BuildOut, env: BuildEnv):\n    let v = match get_build_env(env, \"WITCHY_BUILD_SECRET\"):\n        Some(x) -> x\n        None -> \"unset\"\n    write_out(out, \"g.txt\", v)\n",
+        );
+        let err = run_build_step_file(
+            denied.to_str().unwrap(),
+            Some(dir.join("out2")),
+            vec![],
+            vec!["WITCHY_BUILD_ALLOWED".to_string()],
+            vec![],
+            vec![],
+        )
+        .expect_err("unlisted env key is refused");
+        assert!(err.contains("not in this BuildEnv grant's allow-list"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compiled_build_net_fetches_only_allow_listed_hosts() {
+        use std::io::{Read as _, Write as _};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let server = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf);
+            let body = "schema-v1";
+            let _ = sock.write_all(
+                format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{body}", body.len()).as_bytes(),
+            );
+        });
+
+        let dir = unique("compiled_build_net");
+        let _ = std::fs::remove_dir_all(&dir);
+        let source = write_source(
+            &dir,
+            &format!(
+                "fn build(out: BuildOut, dl: BuildNet):\n    write_out(out, \"got.txt\", fetch_build(dl, \"{addr}\", \"/schema\"))\n"
+            ),
+        );
+        run_build_step_file(
+            source.to_str().unwrap(),
+            Some(dir.join("out")),
+            vec![],
+            vec![],
+            vec![],
+            vec![addr.clone()],
+        )
+        .expect("allow-listed fetch runs");
+        assert_eq!(std::fs::read_to_string(dir.join("out/got.txt")).unwrap(), "schema-v1");
+        server.join().unwrap();
+
+        let err = run_build_step_file(
+            source.to_str().unwrap(),
+            Some(dir.join("out2")),
+            vec![],
+            vec![],
+            vec![],
+            vec!["allowed.example:80".to_string()],
+        )
+        .expect_err("unlisted host is refused");
+        assert!(err.contains("not in this BuildNet grant's allow-list"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compiled_build_exec_runs_only_allow_listed_tools() {
+        let dir = unique("compiled_build_exec");
+        let _ = std::fs::remove_dir_all(&dir);
+        let source = write_source(
+            &dir,
+            "fn build(out: BuildOut, cc: BuildExec):\n    write_out(out, \"x.txt\", run_tool(cc, \"cat\", \"piped-input\"))\n",
+        );
+        run_build_step_file(
+            source.to_str().unwrap(),
+            Some(dir.join("out")),
+            vec![],
+            vec![],
+            vec!["cat".to_string()],
+            vec![],
+        )
+        .expect("cat is allow-listed");
+        assert_eq!(std::fs::read_to_string(dir.join("out/x.txt")).unwrap(), "piped-input");
+
+        let denied = write_source(
+            &dir,
+            "fn build(out: BuildOut, cc: BuildExec):\n    write_out(out, \"x.txt\", run_tool(cc, \"rm\", \"-rf /\"))\n",
+        );
+        let err = run_build_step_file(
+            denied.to_str().unwrap(),
+            Some(dir.join("out2")),
+            vec![],
+            vec![],
+            vec!["cat".to_string()],
+            vec![],
+        )
+        .expect_err("unlisted tool is refused");
+        assert!(err.contains("not in this BuildExec grant's allow-list"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// Print the host-capability footprint of a single source file: every

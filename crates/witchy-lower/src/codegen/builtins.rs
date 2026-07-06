@@ -548,6 +548,18 @@ impl Codegen {
                 self.used_build_ops.insert("read_build");
                 call("build_read", self.lower_args(&[&args[0], &args[1]])?)
             }
+            ("get_build_env", 2) => {
+                self.used_build_ops.insert("get_build_env");
+                call("build_get_env", self.lower_args(&[&args[0], &args[1]])?)
+            }
+            ("fetch_build", 3) => {
+                self.used_build_ops.insert("fetch_build");
+                call("build_fetch", self.lower_args(&[&args[0], &args[1], &args[2]])?)
+            }
+            ("run_tool", 3) => {
+                self.used_build_ops.insert("run_tool");
+                call("build_exec", self.lower_args(&[&args[0], &args[1], &args[2]])?)
+            }
             ("recv_line", 1) => {
                 self.used_net_ops.insert("recv_line");
                 call("net_recv_line", self.lower_args(&[&args[0]])?)
