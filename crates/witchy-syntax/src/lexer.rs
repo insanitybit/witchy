@@ -511,6 +511,14 @@ impl Lexer {
         }
         let value = text
             .parse::<i64>()
+            // `-9223372036854775808` (Int.MIN): the lexer sees the MAGNITUDE
+            // `9223372036854775808` (a leading `-` is a separate unary-minus token),
+            // which is `i64::MAX + 1` and overflows a signed parse. Parse it as u64
+            // and wrap into i64's two's-complement range — the enclosing unary `-`
+            // then negates it back (`-(i64::MIN)` wraps to `i64::MIN`), so both the
+            // expression and pattern spellings denote the true minimum (BUG-324). A
+            // magnitude past u64 is still a hard error.
+            .or_else(|_| text.parse::<u64>().map(|u| u as i64))
             .map_err(|_| self.err(format!("invalid integer literal `{text}`")))?;
         // A duration suffix (`30s`, `2hr`, `1ms`, ...) turns the integer into a
         // Duration literal carried as whole milliseconds. The suffix is the
