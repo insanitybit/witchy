@@ -11,16 +11,20 @@ import iter
 
 // Decode CSV text into rows of fields. A trailing newline is ignored; `\r\n` and
 // `\n` line endings both work. Genuinely fallible (RFC-0044 rule 2): a field that
-// opens a quote and never closes it is structurally malformed input, so decoding
-// returns `Err` naming the fault rather than silently absorbing it. Paired with
-// `encode`, and aligned with `json`/`toml` (serialization formats `decode`).
+// opens a quote and never closes it, or a bare `"` in the middle of an unquoted
+// field (`a"b`) / text after a closing quote (`"a"b`), is structurally malformed,
+// so decoding returns `Err` naming the fault rather than silently mangling it. A
+// lone `\r` (not part of a `\r\n`) is a literal data byte, kept rather than
+// silently deleted. Paired with `encode`, aligned with `json`/`toml`.
 pub fn decode(text: String) -> Result(List(List(String)), String):
     let chars = string.chars(text)
     let n = list.length(chars)
     var rows = []
     var row = []
     var field = ""
-    var in_quotes = false
+    var in_quotes = false   // currently inside the quoted section of a field
+    var started = false     // this field has consumed at least one char
+    var closed = false      // this field's closing `"` has been seen
     var i = 0
     while i < n:
         let ch = list.at(chars, i)
@@ -31,32 +35,46 @@ pub fn decode(text: String) -> Result(List(List(String)), String):
                     i = i + 2
                 else:
                     in_quotes = false
+                    closed = true
                     i = i + 1
             else:
                 field = field + ch
                 i = i + 1
         else if ch == "\"":
-            in_quotes = true
-            i = i + 1
+            if started:
+                return Err("`" + text + "` has a stray `\"` (a quote may only open a field or be doubled inside one)")
+            else:
+                started = true
+                in_quotes = true
+                i = i + 1
         else if ch == ",":
             row = list.push(row, field)
             field = ""
+            started = false
+            closed = false
             i = i + 1
         else if ch == "\n":
             row = list.push(row, field)
             rows = list.push(rows, move row)
             row = []
             field = ""
+            started = false
+            closed = false
             i = i + 1
-        else if ch == "\r":
+        else if ch == "\r" && i + 1 < n && list.at(chars, i + 1) == "\n":
+            // `\r\n`: drop the `\r` so the following `\n` terminates the row.
             i = i + 1
         else:
+            if closed:
+                return Err("`" + text + "` has text after a closing quote (a quoted field must be followed by `,` or a newline)")
             field = field + ch
+            started = true
             i = i + 1
     if in_quotes:
         return Err("`" + text + "` has an unterminated quoted field (expected a closing `\"`)")
-    // Flush a final row that had no trailing newline.
-    if !string.is_empty(field) || list.length(row) > 0:
+    // Flush a final row that had no trailing newline (including a lone empty
+    // quoted field, which set `started` but left `field` empty).
+    if started || list.length(row) > 0:
         rows = list.push(rows, list.push(row, field))
     Ok(rows)
 
@@ -83,19 +101,36 @@ fn needs_quoting(f: String) -> Bool:
     string.contains(f, ",") || string.contains(f, "\"") || string.contains(f, "\n") || string.contains(f, "\r")
 
 // Decode with the first row as a header: each remaining row becomes a Dict keyed
-// by the header columns (a short row's missing columns read as ""). Fallible for
-// the same reason as `decode` (it decodes first), so it returns `Result`.
+// by the header columns. Fallible (RFC-0044): besides `decode`'s faults, a
+// duplicate header column (`a,b,a`) would silently collapse in the Dict, and a
+// ragged data row (a field count other than the header's) would silently drop or
+// invent columns — both are rejected with an `Err` naming the fault instead.
 pub fn decode_records(text: String) -> Result(List(Dict(String, String)), String):
     var out = []
     var i = 0
     var header = []
+    var width = 0
     for row in decode(text)?:
         if i == 0:
+            if let Some(dup) = first_duplicate(row):
+                return Err("duplicate CSV header column `" + dup + "`")
             header = row
+            width = list.length(row)
         else:
+            if list.length(row) != width:
+                return Err("CSV row " + "${i}" + " has " + "${list.length(row)}" + " fields but the header has " + "${width}")
             out = list.push(out, zip_record(header, row))
         i = i + 1
     Ok(out)
+
+// The first column name that appears more than once in `header`, or None.
+fn first_duplicate(header: List(String)) -> Option(String):
+    var seen = []
+    for col in header:
+        if list.contains(seen, col):
+            return Some(col)
+        seen = list.push(seen, col)
+    None
 
 fn zip_record(header: List(String), row: List(String)) -> Dict(String, String):
     var d = dict.new()
