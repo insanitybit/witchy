@@ -944,18 +944,26 @@ impl Ctx<'_> {
 
     /// (RFC-0053) If interpolating `arg` should flip to `show(arg)`, the mangled
     /// `show` impl to dispatch it to — `Some` only when `arg`'s concrete type
-    /// renders non-structurally AND its `Show` impl is actually linked (so the
-    /// rewrite always resolves; a Duration in a program that never linked
-    /// `Show for Duration` keeps the structural render rather than dangling).
+    /// renders non-structurally AND the resolved impl is a function that CURRENTLY
+    /// EXISTS in this pass's item set. That existence check is what keeps the flip
+    /// sound across the annotate/mono fixpoint: a CONCRETE impl (`Show__Duration__show`,
+    /// `Show__P__show`) is always present, so a scalar flips in any pass; a generic
+    /// container BLANKET (`Show__List__show`) is a no-fallback template that is
+    /// present PRE-mono (so the quiet pass flips it and mono then specializes the
+    /// call to its element) but REMOVED post-mono — so a container whose element type
+    /// only resolves in the FINAL pass (e.g. `vm.par_map(...)`'s generic `List(b)`
+    /// return) is NOT flipped, keeping the structural `__render` rather than dangling
+    /// on a deleted `Show__List__show`. Both backends see the same decision → parity.
     fn render_flip(&self, arg: &Expr, scope: &Scope) -> Option<String> {
         let sn = self.type_name(arg, scope)?;
-        if self.renders_nonstructurally(&sn) {
-            // The container blanket (`Show__List__show`) or the concrete impl
-            // (`Show__Duration__show`, `Show__P__show`) must exist to dispatch to.
-            self.lookup_impl("show", head_of(&sn))
-        } else {
-            None
+        if !self.renders_nonstructurally(&sn) {
+            return None;
         }
+        // The container blanket (`Show__List__show`) or the concrete impl
+        // (`Show__Duration__show`, `Show__P__show`) must resolve AND still be an
+        // emitted function in this pass (see the fixpoint note above).
+        let mangled = self.lookup_impl("show", head_of(&sn))?;
+        self.free_fns.contains(&mangled).then_some(mangled)
     }
 
     /// Record the current function's type-variable bounds, so the operator
