@@ -1098,6 +1098,11 @@ fn main() -> wasmtime::Result<()> {
             }
         }
         match file.as_deref() {
+            // Standard version flags report the compiler version (RFC-0061 §5).
+            Some("--version" | "-V" | "version") => {
+                println!("witchy {}", env!("CARGO_PKG_VERSION"));
+                Ok(())
+            }
             // Standard help flags show the usage overview.
             Some("--help" | "-h" | "help") => {
                 print_usage();
