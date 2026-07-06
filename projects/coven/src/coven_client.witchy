@@ -19,27 +19,28 @@ fn main(console: Console, net: Net, clock: Clock, args: List(String)):
     let rp = http.get(net, host, port, "/coven/rootpub")
     print(console, "rootpub:" + "${http.status(rp)}")
 
-    // publish acme/money@1.0.0 (a pure library — no capabilities)
-    let pub1 = http.post(net, host, port, "/coven/publish", coven_proto.publish_body(money_toml(), money_files(), "ci-bot"))
+    // publish acme/money@1.0.0 (a pure library — no capabilities). Anonymous registry:
+    // no identity token, so the builders pass `None`.
+    let pub1 = http.post(net, host, port, "/coven/publish", coven_proto.publish_body(money_toml(), money_files(), "ci-bot", None))
     print(console, "publish:${http.status(pub1)} state=" + field(http.body(pub1), "state"))
 
     let rec = http.get(net, host, port, "/coven/record?name=acme~money&version=1.0.0")
     print(console, "record:${http.status(rec)} state=" + field(http.body(rec), "state"))
 
     // promote with a DISTINCT identity (separation of duties holds) -> released
-    let prom = http.post(net, host, port, "/coven/promote", coven_proto.promote_body("acme~money", "1.0.0", "webauthn", "release-human"))
+    let prom = http.post(net, host, port, "/coven/promote", coven_proto.promote_body("acme~money", "1.0.0", "webauthn", "release-human", None))
     print(console, "promote:${http.status(prom)} state=" + nested_state(http.body(prom)) + " sod=" + nested_bool(http.body(prom)))
 
     // publish v2, then attempt to promote it as the SAME identity that uploaded
     // it — separation of duties must refuse (403).
-    let pub2 = http.post(net, host, port, "/coven/publish", coven_proto.publish_body(money_toml_v2(), money_files_v2(), "ci-bot"))
+    let pub2 = http.post(net, host, port, "/coven/publish", coven_proto.publish_body(money_toml_v2(), money_files_v2(), "ci-bot", None))
     print(console, "publish2:" + "${http.status(pub2)}")
-    let sod = http.post(net, host, port, "/coven/promote", coven_proto.promote_body("acme~money", "2.0.0", "webauthn", "ci-bot"))
+    let sod = http.post(net, host, port, "/coven/promote", coven_proto.promote_body("acme~money", "2.0.0", "webauthn", "ci-bot", None))
     print(console, "selfpromote:" + "${http.status(sod)}")
 
     // an under-declared rune: the code demands Net but the manifest declares
     // nothing — the server recomputes the footprint and refuses (400).
-    let leak = http.post(net, host, port, "/coven/publish", coven_proto.publish_body(leak_toml(), leak_files(), "attacker"))
+    let leak = http.post(net, host, port, "/coven/publish", coven_proto.publish_body(leak_toml(), leak_files(), "attacker", None))
     print(console, "underdeclared:" + "${http.status(leak)}")
 
     let src = http.get(net, host, port, "/coven/source?name=acme~money&version=1.0.0")
