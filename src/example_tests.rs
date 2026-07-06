@@ -444,6 +444,48 @@
         );
     }
 
+    /// (BUG-306, parity) A user `return` inside a `gen fn` is re-expressed in terms of
+    /// the generator's stream contract, NOT passed untranslated into the synthesized
+    /// `-> Option(a)` helper. A bare `return` ENDS the stream (both backends), where it
+    /// used to leak the internal `Option` type or (as `return Some(v)`) silently repeat
+    /// `v` forever. `return <value>` is rejected against the declared `-> Iter(a)`.
+    #[test]
+    fn gen_fn_bare_return_ends_stream_on_both_backends() {
+        let src = "import iter\n\ngen fn firstn(n: Int) -> Iter(Int):\n    var i = 0\n    while true:\n        if i >= n:\n            return\n        yield i\n        i = i + 1\n\nfn main(console: Console):\n    let xs: List(Int) = iter.collect(iter.take(firstn(3), 10))\n    print(console, __render(xs))\n";
+        let expected = ["[0, 1, 2]"];
+        assert_eq!(link_run(src), expected, "interp: bare return ends the stream");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: bare return must end the stream identically",
+        );
+    }
+
+    /// (BUG-306) `return <value>` in a `gen fn` is a compile error naming the declared
+    /// `-> Iter(a)` signature — never the synthesized internal `Option(a)`, and never a
+    /// silent infinite repeat (the old `return Some(99)` bug).
+    #[test]
+    fn gen_fn_return_value_is_rejected() {
+        for tail in ["return 5", "return Some(99)"] {
+            let src = format!(
+                "import iter\n\ngen fn g() -> Iter(Int):\n    yield 1\n    {tail}\n\nfn main(console: Console):\n    let xs: List(Int) = iter.collect(iter.take(g(), 3))\n    print(console, __render(xs))\n"
+            );
+            let module = parser::parse_module(&src).expect("parse");
+            let err = crate::pipeline::link(vec![("main".into(), module)], "main")
+                .expect_err("`return <value>` in a gen fn must be rejected");
+            assert!(
+                err.message.contains("gen fn") && err.message.contains("Iter"),
+                "the rejection must name the declared `-> Iter(a)` signature, got: {}",
+                err.message
+            );
+            assert!(
+                !err.message.contains("Option"),
+                "the internal `Option(a)` protocol must not leak into the diagnostic: {}",
+                err.message
+            );
+        }
+    }
+
     /// (SEC-038) `bytes.at` out of bounds must FAIL on both backends, not silently
     /// read adjacent heap on WASM. The compiled `$bytes_at` bounds-checks and traps
     /// (like `$list_at`), matching the interpreter's "bytes index out of bounds"
@@ -12617,7 +12659,7 @@ fn main(console: Console):
     fn gen_fn_lowers_to_helper_and_wrapper() {
         let m = parser::parse_module("gen fn nums() -> Iter(Int):\n    yield 1\n    yield 2\n")
             .expect("parse");
-        let lowered = crate::generators::lower(m);
+        let lowered = crate::generators::lower(m).expect("lower");
         let fn_names: Vec<&str> = lowered
             .items
             .iter()
