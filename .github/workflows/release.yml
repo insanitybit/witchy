@@ -3,20 +3,163 @@ name: Release
 # Build witchy binaries when a version tag is pushed. Artifacts attach to the
 # GitHub release for the tag; nothing is published anywhere else.
 #
-# Least privilege: the `build` jobs run untrusted code (cargo build/test pulls
-# in build scripts, proc-macros and the dependency tree) and hold NO write
-# token — they only emit tarballs as workflow artifacts. The single `publish`
-# job holds `contents: write` but runs no project code: it just downloads those
-# artifacts and attaches them via the first-party `gh` CLI.
+# The full project gate runs FIRST, mirroring .github/workflows/ci.yml
+# (RFC-0061 release checklist §1): clippy -D warnings + nextest, the checked-heap
+# differential fuzz, the backend parity sweep, and the from-scratch acceptance
+# run — plus a version check that the tag matches Cargo.toml. Only when every
+# gate job is green do the per-target `build` jobs produce tarballs; `publish`
+# then emits a SHA256SUMS manifest over them and attaches everything.
+#
+# Least privilege: the gate and `build` jobs run untrusted code (cargo pulls in
+# build scripts, proc-macros and the dependency tree) and hold NO write token —
+# they only emit tarballs as workflow artifacts. The single `publish` job holds
+# `contents: write` but runs no project code: it just downloads those artifacts,
+# hashes them, and attaches them via the first-party `gh` CLI.
 on:
   push:
     tags: ["v*"]
 
 permissions: {}
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
+  # RFC-0061 §checklist 5: the tag names the version, so the crate must agree.
+  version:
+    name: Verify tag matches Cargo version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Tag must equal the crate version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          crate_ver="$(awk -F'"' '/^\[package\]/{p=1} p&&/^version *=/{print $2; exit}' Cargo.toml)"
+          if [ -z "$crate_ver" ]; then echo "could not read [package] version from Cargo.toml" >&2; exit 1; fi
+          if [ "$TAG" != "v${crate_ver}" ]; then
+            echo "::error::tag $TAG does not match Cargo.toml version v$crate_ver (RFC-0061 checklist §5)"
+            exit 1
+          fi
+          echo "version OK: $TAG == v$crate_ver"
+
+  # Mirrors ci.yml `test`: build + clippy -D warnings + workspace nextest.
+  test:
+    name: Build, lint, test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/install-rust
+        with:
+          components: clippy
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
+        with:
+          tool: nextest
+      - name: Build
+        run: cargo build --workspace --all-targets
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Unit + integration tests
+        run: cargo nextest run --workspace --profile ci --all-targets
+
+  # Mirrors ci.yml `heap-check`: the differential fuzzer under the checked heap.
+  heap-check:
+    name: Checked heap (RFC-0023)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/install-rust
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
+        with:
+          tool: nextest
+      - name: Differential fuzzer under WITCHY_HEAP_CHECK
+        env:
+          WITCHY_HEAP_CHECK: "1"
+        run: cargo nextest run --profile ci --test differential_fuzz
+
+  # Mirrors ci.yml `parity`: differential-check every runnable example on both
+  # backends. FAIL-CLOSED on any non-zero parity exit (RFC-0058 §2, BUG-002):
+  # classify on the exit code + the machine `parity-stats` line, guard vacuity,
+  # and prove the gate can fail with a seeded-divergence positive control.
+  parity:
+    name: Backend parity sweep
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/install-rust
+      - name: Build release binary
+        run: cargo build --release
+      - name: Differential check every runnable example on both backends
+        run: |
+          set -uo pipefail
+          bin=./target/release/witchy
+          fail=0
+          files=0
+          compared=0
+          ctrl=""
+          for f in examples/*/src/*.witchy; do
+            grep -q 'fn main' "$f" || continue
+            [ -z "$ctrl" ] && ctrl="$f"
+            files=$((files + 1))
+            out=$("$bin" parity "$f" 2>&1)
+            code=$?
+            n=$(printf '%s\n' "$out" | grep '^parity-stats ' | tail -1 | sed -n 's/.*compared=\([0-9][0-9]*\).*/\1/p')
+            compared=$((compared + ${n:-0}))
+            if [ "$code" -ne 0 ]; then
+              echo "PARITY FAIL (exit $code): $f"
+              echo "$out"
+              fail=1
+            fi
+          done
+          if [ "$files" -eq 0 ]; then
+            echo "parity-sweep VACUOUS: no runnable example files discovered (BUG-002)" >&2
+            exit 1
+          fi
+          if [ "$compared" -eq 0 ]; then
+            echo "parity-sweep VACUOUS: compared 0 output lines across $files files (BUG-002)" >&2
+            exit 1
+          fi
+          if WITCHY_SEEDED_DIVERGENCE=1 "$bin" parity "$ctrl" >/dev/null 2>&1; then
+            echo "parity-sweep POSITIVE CONTROL FAILED: seeded divergence did NOT fail parity on $ctrl" >&2
+            exit 1
+          fi
+          echo "parity-sweep: $files files, $compared compared lines, positive control OK"
+          exit $fail
+
+  # Mirrors ci.yml `acceptance`: the from-scratch e2e run (its own build; the
+  # Rust test suites run in the `test` job).
+  acceptance:
+    name: From-scratch acceptance (e2e-full)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/install-rust
+      - name: Run the acceptance script (test suites run in their own job)
+        run: ./scripts/e2e-full.sh --quick
+
   build:
     name: Build ${{ matrix.target }}
+    needs: [version, test, heap-check, parity, acceptance]
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -41,8 +184,6 @@ jobs:
           targets: ${{ matrix.target }}
       - name: Build release binary
         run: cargo build --release --target "$TARGET"
-      - name: Run the test suite
-        run: cargo test --workspace --release
       - name: Package
         run: |
           mkdir -p dist
@@ -70,11 +211,17 @@ jobs:
           path: dist
           pattern: witchy-*
           merge-multiple: true
+      - name: Generate the SHA256SUMS manifest
+        working-directory: dist
+        run: |
+          sha256sum witchy-*.tar.gz > SHA256SUMS
+          cat SHA256SUMS
       - name: Attach the artifacts to the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$TAG" --verify-tag --generate-notes --title "$TAG" dist/*.tar.gz \
-            || gh release upload "$TAG" --clobber dist/*.tar.gz
+          gh release create "$TAG" --verify-tag --generate-notes --title "$TAG" \
+            dist/*.tar.gz dist/SHA256SUMS \
+            || gh release upload "$TAG" --clobber dist/*.tar.gz dist/SHA256SUMS
