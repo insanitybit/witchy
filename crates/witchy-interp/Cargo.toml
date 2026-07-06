@@ -2,6 +2,7 @@
 name = "witchy-interp"
 version = "0.1.0"
 edition = "2024"
+publish = false            # internal workspace crate — not published standalone
 license = "MIT OR Apache-2.0"
 description = "witchy compiler — the reference interpreter (parity oracle) + compile-time evaluation"
 
