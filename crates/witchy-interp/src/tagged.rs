@@ -463,9 +463,28 @@ fn expand_one(
 /// throwaway `fn __tagsplice()` (only `parse_module` exists). `qualifiers` are the
 /// module names to seed as `import` lines so `m.f(…)` parses as a qualified call,
 /// not a UFCS method call — load-bearing for the tag's hygienic qualified emission.
+/// Whether `name` is a valid witchy module identifier — the shape an `import`
+/// line accepts, and the only shape a qualified call `name.f(…)` can lex as. A
+/// standalone file's module name is its filesystem stem, which may not be one
+/// (`tag-hyphen`), so tag-splice import seeding must gate on this.
+fn is_module_ident(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 fn parse_splice_expr(src: &str, qualifiers: &[String]) -> Result<Expr, String> {
     let mut wrapped = String::new();
     for q in qualifiers {
+        // A qualifier that is not a valid module identifier can never be referenced
+        // as `q.f(…)` (it would not lex), so it never needs an `import` line — and
+        // emitting one would itself fail to parse. A standalone file's module name
+        // is its filesystem stem, which may be a NON-identifier (`tag-hyphen`); such
+        // a name reaches `qualifiers` via `seen`, so it must be skipped here rather
+        // than break every tag expansion in a hyphenated file (BUG-182).
+        if !is_module_ident(q) {
+            continue;
+        }
         // Only real (non-prelude) module names need an explicit `import`; the
         // prelude modules (`list`/`string`/…) the parser already seeds. Importing a
         // prelude name again is harmless, so we don't filter — the parse is

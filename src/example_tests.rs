@@ -487,6 +487,24 @@
         );
     }
 
+    /// (BUG-182) A tagged literal in a standalone file whose stem is NOT a valid
+    /// identifier (`tag-hyphen`) must still expand and run on both backends. Tag
+    /// expansion seeds a throwaway parse with `import <qualifier>` lines built from
+    /// module names — including the CURRENT module's, which for a standalone file is
+    /// its filesystem stem. A hyphenated stem produced an invalid `import tag-hyphen`
+    /// line that broke every tag in such a file; non-identifier qualifiers are now
+    /// skipped (they can never be referenced as `q.f(…)` anyway).
+    #[test]
+    fn tagged_literal_in_hyphenated_module_expands() {
+        let src = "fn lit(parts: List(String), holes: List(String)) -> String:\n    \"\\\"ok\\\"\"\n\nfn main(console: Console):\n    print(console, lit\"ignored\")\n";
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link(vec![("tag-hyphen".into(), module)], "tag-hyphen")
+            .expect("a tagged literal in a hyphenated-stem module must link");
+        typeck::check(&linked).expect("typecheck");
+        assert_eq!(interpreter::run_module(linked, ".", Vec::new()).expect("run"), ["ok"], "interp");
+        assert_eq!(run_linked_on_wasm(&[("tag-hyphen", src)], "tag-hyphen"), ["ok"], "wasm");
+    }
+
     /// (BUG-319, parity) Implicit structural `==` on a GENERIC record instantiation
     /// (`Box(Int)`, std `Set(Int)`) works on BOTH backends. The compiled record-eq
     /// arm dropped the type arguments (unlike the ADT arm), so a fully-annotated
