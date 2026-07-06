@@ -63,6 +63,33 @@
         );
         let contents = resp["contents"]["value"].as_str().expect("hover text");
         assert!(contents.contains("repeat"), "{contents}");
+        // BUG-161: the module qualifier must go BEFORE the fn name, not jammed in
+        // front of `pub fn` — `string.pub fn repeat(...)` is malformed.
+        assert!(
+            !contents.contains("string.pub fn"),
+            "malformed signature: {contents}"
+        );
+        assert!(
+            contents.contains("fn string.repeat("),
+            "expected qualified signature, got: {contents}"
+        );
+    }
+
+    #[test]
+    fn qualify_signature_inserts_module_before_name() {
+        assert_eq!(
+            qualify_signature("pub fn repeat(s: String, n: Int) -> String", "string."),
+            "pub fn string.repeat(s: String, n: Int) -> String"
+        );
+        assert_eq!(
+            qualify_signature("fn tcp(host: String, port: Int) -> NetPolicy", "Net."),
+            "fn Net.tcp(host: String, port: Int) -> NetPolicy"
+        );
+        // A bare (document-local) signature is left untouched.
+        assert_eq!(
+            qualify_signature("fn double(n: Int) -> Int", ""),
+            "fn double(n: Int) -> Int"
+        );
     }
 
     #[test]

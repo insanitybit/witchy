@@ -170,12 +170,28 @@ fn hover_response(docs: &HashMap<String, String>, params: &Value) -> Value {
         }
     };
     for (src, prefix) in sources {
-        if let Some(doc) = signature_doc(src, &bare) {
-            let contents = format!("```witchy\n{}{}\n```\n{}", prefix, doc.0, doc.1);
+        if let Some((sig, doc)) = signature_doc(src, &bare) {
+            let contents = format!("```witchy\n{}\n```\n{}", qualify_signature(&sig, &prefix), doc);
             return json!({ "contents": { "kind": "markdown", "value": contents } });
         }
     }
     Value::Null
+}
+
+/// Render a signature line qualified by `prefix` (e.g. `string.`). The qualifier
+/// belongs before the FUNCTION NAME, not in front of the whole line: prepending
+/// it produced the malformed `string.pub fn repeat(...)` (and `Net.pub fn tcp`).
+/// Inserting it after the `fn`/`pub fn` keyword yields `pub fn string.repeat(...)`.
+fn qualify_signature(sig: &str, prefix: &str) -> String {
+    if prefix.is_empty() {
+        return sig.to_string();
+    }
+    for kw in ["pub fn ", "fn "] {
+        if let Some(rest) = sig.strip_prefix(kw) {
+            return format!("{kw}{prefix}{rest}");
+        }
+    }
+    format!("{prefix}{sig}")
 }
 
 /// The identifier (allowing `.` for module-qualified names) covering `character`
