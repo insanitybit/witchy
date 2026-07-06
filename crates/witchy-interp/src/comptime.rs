@@ -121,12 +121,19 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
         // comptime block (a link-time, capability-free eval) cannot use sibling
         // runtime code in any case. Dropping the project-local imports lets a module
         // that both `derive`s and imports a sibling (e.g. a rune's test module)
-        // still run its comptime. `module_types` is `meta.TypeInfo`s, so meta is
-        // always present.
+        // still run its comptime. Preserve matching STD `from X import Y` bindings
+        // so the block sees the same unqualified std names as its enclosing source.
+        // `module_types` is `meta.TypeInfo`s, so meta is always present.
         let mut prog_imports: Vec<String> = module
             .imports
             .iter()
             .filter(|i| witchy_syntax::linker::STD_MODULES.contains(&i.as_str()))
+            .cloned()
+            .collect();
+        let prog_from_imports: Vec<(String, Vec<String>)> = module
+            .from_imports
+            .iter()
+            .filter(|(m, _)| witchy_syntax::linker::STD_MODULES.contains(&m.as_str()))
             .cloned()
             .collect();
         if !prog_imports.iter().any(|i| i == "meta") {
@@ -135,7 +142,7 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
         let prog = Module {
             modes: Vec::new(),
             imports: prog_imports,
-            from_imports: Vec::new(),
+            from_imports: prog_from_imports,
             items: vec![Item::Function(Function {
                 public: false,
                 name: "main".into(),
@@ -354,4 +361,3 @@ pub fn expand_compile_time(
     expand(name, module)?;
     crate::tagged::expand(name, module, siblings)
 }
-

@@ -693,6 +693,21 @@
         );
     }
 
+    /// (BUG-533) A `comptime:` block runs in a synthetic std-only module, but it
+    /// must keep the source module's std `from X import Y` bindings. Otherwise
+    /// comptime code is a smaller import language than ordinary Witchy source.
+    #[test]
+    fn comptime_preserves_std_from_imports_on_both_backends() {
+        let src = "from meta import TypeInfo\n\ntype Point:\n    x: Int\n\ncomptime:\n    let types: List(TypeInfo) = module_types\n    var n = 0\n    for _t in types:\n        n = n + 1\n    emit(\"fn generated_type_count() -> Int:\")\n    emit(\"    ${n}\")\n\nfn main(console: Console):\n    print(console, \"${generated_type_count()}\")\n";
+        let expected = ["1"];
+        assert_eq!(link_run(src), expected, "interp comptime sees from-imported std type");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled comptime output from from-imported std type must agree",
+        );
+    }
+
     /// (BUG-182) A tagged literal in a standalone file whose stem is NOT a valid
     /// identifier (`tag-hyphen`) must still expand and run on both backends. Tag
     /// expansion seeds a throwaway parse with `import <qualifier>` lines built from
