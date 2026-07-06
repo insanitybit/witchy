@@ -8651,7 +8651,7 @@ fn main(console: Console):
         let out = tmp.to_str().unwrap();
         crate::emit_wasm_file("examples/calc/src/calc.witchy", out).expect("emit-wasm");
         let (from_wasm, _) =
-            crate::run_wasm_file(out, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, Vec::new()).expect("run .wasm");
+            crate::run_wasm_file(out, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, Vec::new(), false).expect("run .wasm");
         let from_source = crate::execute_file("examples/calc/src/calc.witchy", Vec::new()).expect("run source");
         assert_eq!(from_wasm, from_source, "precompiled .wasm diverges from the source run");
         let _ = std::fs::remove_file(&tmp);

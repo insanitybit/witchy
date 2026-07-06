@@ -1699,6 +1699,20 @@ fn run_tests_in_module(
     Ok((passed, failed))
 }
 
+/// Link `path` and run its own tests — the single-file convenience the test suite
+/// drives. Mirrors what `run_tests` does per file (link, recover async/gen shapes,
+/// dispatch to `run_tests_in_module`).
+#[cfg(test)]
+fn run_tests_in_file(path: &str) -> Result<(Vec<String>, Vec<TestFailure>), String> {
+    let (linked, stem) = link_file(path)?;
+    let root = std::path::Path::new(path)
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .to_path_buf();
+    let (async_tests, gen_tests) = raw_test_shapes(path);
+    run_tests_in_module(&linked, &stem, &root, &async_tests, &gen_tests)
+}
+
 /// `witchy test <file|dir>`: run in-language tests, print a cargo-style
 /// report, and return whether everything passed.
 fn run_tests(path: &str) -> Result<bool, String> {
@@ -3036,6 +3050,34 @@ fn report_grant_check(prog_path: &str, grants_path: &str) -> Result<bool, String
         );
     }
     Ok(!check.sufficient())
+}
+
+/// BUG-108 / BUG-114: the global mode selector (`--release`/`--debug`) is a LEADING
+/// flag; a mode flag in the guest's argv (after the program file) must not flip the
+/// compiler's optimization mode nor be double-consumed.
+#[cfg(test)]
+mod cli_flag_tests {
+    use super::leading_opt_mode;
+
+    fn argv(args: &[&str]) -> Vec<String> {
+        args.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn mode_flags_before_the_file_are_global() {
+        assert_eq!(leading_opt_mode(&argv(&["--release", "foo.witchy"])), Some("release"));
+        assert_eq!(leading_opt_mode(&argv(&["--debug", "sandbox", "foo.witchy"])), Some("debug"));
+        // `--debug` wins over `--release` when both lead (maximal debuggability).
+        assert_eq!(leading_opt_mode(&argv(&["--release", "--debug", "foo.witchy"])), Some("debug"));
+    }
+
+    #[test]
+    fn mode_flags_in_guest_argv_are_ignored() {
+        assert_eq!(leading_opt_mode(&argv(&["foo.witchy", "--release"])), None);
+        assert_eq!(leading_opt_mode(&argv(&["app.wasm", "--debug", "hello"])), None);
+        assert_eq!(leading_opt_mode(&argv(&["foo.witchy"])), None);
+        assert_eq!(leading_opt_mode(&argv(&[])), None);
+    }
 }
 
 /// End-to-end coverage: every shipped example must type-check and produce the
