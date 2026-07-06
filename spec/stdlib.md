@@ -1995,7 +1995,7 @@ A version constraint (requirement).
 
 #### `fn version(major: Int, minor: Int, patch: Int) -> Version`
 
---- constructors ------------------------------------------------------------
+--- constructors ------------------------------------------------------------ A convenience constructor for known-good components (e.g. a computed bump). It does not validate — untrusted input belongs in `parse`, which rejects negatives. (Sealing removes the raw `Version(...)` forge; making `version` itself checked would fully close BUG-191 but force every caller to unwrap a `Result`.)
 
 #### `fn parse(s: String) -> Result(Version, String)`
 

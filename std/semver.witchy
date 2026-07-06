@@ -11,8 +11,12 @@ import iter
 
 // A version orders by major, then minor, then patch — exactly the lexicographic
 // order `derive(Ord)` gives the fields in declaration order, so `<`, `>`, and
-// `==` compare versions directly. Construct positionally: `Version(1, 2, 3)`.
-type Version derive(PartialEq, Eq, PartialOrd, Ord):
+// `==` compare versions directly. `Version` is sealed (RFC-0065): external code
+// cannot forge one with the raw data constructor, so a `Version` can only be
+// built through this module — `parse`, which rejects negative components, or
+// `version`. This closes the arbitrary-raw-construction vector of BUG-191
+// (`semver.Version(-1, 2, 3)` from another module is now a compile error).
+sealed type Version derive(PartialEq, Eq, PartialOrd, Ord):
     major: Int
     minor: Int
     patch: Int
@@ -26,6 +30,10 @@ type Req:
     Any
 
 // --- constructors ------------------------------------------------------------
+// A convenience constructor for known-good components (e.g. a computed bump). It
+// does not validate — untrusted input belongs in `parse`, which rejects negatives.
+// (Sealing removes the raw `Version(...)` forge; making `version` itself checked
+// would fully close BUG-191 but force every caller to unwrap a `Result`.)
 pub fn version(major: Int, minor: Int, patch: Int) -> Version:
     Version(major, minor, patch)
 

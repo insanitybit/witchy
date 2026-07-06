@@ -681,6 +681,17 @@
             err.contains("sealed type") && err.contains("DateTime") && err.contains("construct"),
             "diagnostic must name the sealed type and construction: {err}"
         );
+
+        // `semver.Version` is also sealed (BUG-191) — and, unlike the four above, it
+        // is a DERIVED record used inside `List`/`Option`/`Result` across a module
+        // that itself imports (cmp/string/iter), so this pins that the seal holds for
+        // a derived, container-carried, transitively-imported type too.
+        let sv_forge = "import semver\n\nfn main(console: Console):\n    let v = semver.Version(-1, 2, 3)\n    print(console, __render(semver.format(v)))\n";
+        let err = try_link_std(sv_forge).expect_err("raw Version construction must be a link error");
+        assert!(
+            err.contains("sealed type") && err.contains("Version") && err.contains("construct"),
+            "diagnostic must name the sealed Version and construction: {err}"
+        );
     }
 
     /// (BUG-240, parity) `math.abs(Int.MIN)` has no positive `Int`, so both backends
