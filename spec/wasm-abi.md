@@ -127,8 +127,9 @@ cannot instantiate.
 ABI version 1 declares **77 imports** (`IMPORT_COUNT` in
 `crates/witchy-wir/src/wir_prelude.rs`),
 classified below. **Infrastructure** imports carry no authority and the
-pure-compute host provides them. **Capability** imports are authority (or
-interpreter-only host services) and the pure-compute host **omits** them. The
+pure-compute host provides them. **Capability** imports are authority (or host
+services the pure-compute target does not provide) and the pure-compute host
+**omits** them. The
 tables group imports by family and, for a *staged* result, list the representative
 `…_len`/`…_size` import (its paired drain — `dir_read`, `dir_list`,
 `net_recv_*`, `file_read`, … — is implied), so the rows classify each family's
@@ -170,9 +171,9 @@ a self-contained synchronous implementation needing none.
 
 ### Capability — omitted by the pure-compute host
 
-Providing any of these would grant authority (or an interpreter-only host
-service). The pure-compute host omits them all; a module that imports one cannot
-instantiate.
+Providing any of these would grant authority (or is a host service the
+pure-compute target does not provide). The pure-compute host omits them all; a
+module that imports one cannot instantiate.
 
 | family | imports | authority |
 | --- | --- | --- |
@@ -186,11 +187,20 @@ instantiate.
 | SecretStore | `secretstore_lookup`, `crypto_reveal_len` | named secrets |
 | Args | `args_size` | host-chosen argv (pure input, but a host service) |
 | Build | `build_read_len`, `build_out_write` | build-time confined I/O |
-| Compiler | `compiler_footprint_len`, `compiler_diff_len` | interpreter-only toolchain services |
+| Compiler | `compiler_footprint_len`, `compiler_diff_len`, `compiler_doc_len` | toolchain services — pure, grant no authority; see note |
 
 > `args_size` is host-chosen *input* rather than authority, but it is a host
 > service the pure-compute target does not offer, so it is omitted; a browser
 > module receives no argv.
+
+> The `compiler_*` imports are pure functions of their source arguments and grant
+> no authority — they never appear in the capability footprint (a program that
+> `import compiler` and calls `compiler.footprint` shows only its real
+> capabilities). The interpreter **and** the native wasmtime host
+> (`crates/witchy-runtime/src/runtime.rs`) both link them, so `std/compiler`'s
+> `footprint`/`diff`/`doc` run on the compiled backend as well as the
+> interpreter. Only the pure-compute browser host omits them — it ships no
+> compiler — so a module importing one cannot instantiate there.
 
 ## Hosts
 
