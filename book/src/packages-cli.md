@@ -79,45 +79,41 @@ Commit the lockfile. Same lock ⇒ same bytes, same authority, offline.
 
 | Command | What it does |
 |---|---|
-| `witchy new <name>` / `init` | scaffold a rune (namespaced names like `acme/lib` work) |
-| `witchy add <pkg>[@version] [--path <p>]` | resolve + add a dependency — **gated** on widening (either axis), and a release younger than the staging cooldown (72h; `WITCHY_COOLDOWN_SECS`) is refused unless `--allow-fresh` |
-| `witchy build` | resolve, verify hashes, link, type-check; writes/uses the lock |
-| `witchy run` | `build`, then run the app rune |
-| `witchy update [--allow-cap K] [--allow-build-cap K]` | re-resolve; **blocked** if the tree's footprint would widen on either axis until you accept |
-| `witchy outdated` | what could upgrade, without touching anything |
-| `witchy tree` | the dependency tree |
-| `witchy audit` | every rune's authority + the aggregate (below) |
-| `witchy why <name>` | why a rune is in your tree (`app -> genlib`) |
-| `witchy why-cap <Cap>` | which rune(s) demand a capability (`genlib@0.1.0 demands \`BuildExec\``) |
-| `witchy verify` | re-check the lock's hashes/signatures/provenance offline |
-| `witchy vendor` | materialize the resolved tree into the project for offline builds |
+| `witchy new <name>` / `init [name]` | scaffold a rune — `new` makes a subdirectory, `init` writes into the current one (namespaced names like `acme/lib` work) |
+| `witchy add <pkg>[@<version>] [host:port] [--allow-cap <Cap>]... [--allow-fresh]` | resolve + add a **registry** dependency — **gated** on widening (either axis), and a release younger than the staging cooldown (72h; `WITCHY_COOLDOWN_SECS`) is refused unless `--allow-fresh`. A local **path** dependency is added by hand in `witchy.toml`; `add --path` is not wired up |
+| `witchy build [<file\|dir>]` | resolve, verify hashes, link, type-check; writes/uses the lock (defaults to the current project) |
+| `witchy run [<file\|dir>] [args…]` | `build`, then run the app rune |
+| `witchy update [--allow-cap <Cap>]...` | re-resolve; **blocked** until you consent to any widening with `--allow-cap` |
+| `witchy outdated <dir> <coven-host:port>` | what could upgrade, without touching anything |
+| `witchy tree <dir>` | the dependency tree (pass `.` for the current project) |
+| `witchy audit <file>` | the capability footprint a single source file demands, recomputed from source |
+| `witchy why <dir> <name>` | whether `<name>` is a dependency of the rune at `<dir>`, and where it comes from |
+| `witchy why-cap <dir> <Cap>` | which dependency of the rune at `<dir>` demands a capability (`genlib demands BuildExec`) |
+| `witchy verify` | re-check the lock's hashes/signatures/provenance offline (current project) |
+| `witchy vendor <dir>` | materialize the resolved tree into the project for offline builds |
 | `witchy publish` / `promote` / `yank` / `list` | registry operations (staged → 2FA-promoted releases) |
 | `witchy coven-serve` | run a registry yourself (it's a witchy program — `projects/coven`) |
 
-Every project command accepts `-C <dir>` (anywhere in the arguments) to run
-against a project directory from somewhere else — `witchy why genlib -C
-path/to/app` works the same as `cd`-ing first.
+`build`, `run`, `update`, and `verify` act on the current project. The
+inspection commands take the project's directory — or, for `audit`, a source
+file — as a positional argument: pass `.` to inspect the current project, or a
+relative path to inspect one elsewhere (`witchy tree path/to/app`,
+`witchy why path/to/app genlib`).
 
 ## Reading an audit
 
-`witchy audit` answers "what can my whole tree do?" in one screen:
+`witchy audit <file>` recomputes the capability footprint of one source file
+straight from its code and prints what it demands:
 
 ```text
-audit: `app`@0.1.0
-  genlib@0.1.0  [path:./../genlib]
-      caps: build[BuildExec, BuildOut]   determinism: pinned-only
-      provenance: path:./../genlib
-
-  AGGREGATE max authority of the whole tree:
-    runtime: none
-    build:   BuildExec, BuildOut
-    determinism: pinned-only
+src/app.witchy demands: Console
 ```
 
-Read the aggregate first: this tree can touch *nothing* at runtime, and at build
-time its one dependency may write generated source and exec an allow-listed
-tool. If the aggregate ever says more than you expect, `why-cap` names the rune
-responsible.
+The footprint is derived from the source, never read from the manifest, so it is
+the authority the file actually reaches for — not what it claims. Across a whole
+tree, each rune's runtime and build footprints are pinned per rune in
+`witchy.lock` (the `runtime_footprint` / `build_footprint` fields above), and
+`witchy why-cap <dir> <Cap>` names which dependency introduces a given
+capability.
 
-Next: what that `build[…]` axis actually is — build steps and their
-capabilities.
+Next: what that build axis actually is — build steps and their capabilities.
