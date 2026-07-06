@@ -564,10 +564,14 @@ pub fn slice(xs: List(a), start: Int, end: Int) -> List(a):
         i = i + 1
     out
 
-// A copy of `xs` with the element at `index` replaced by `value`. An out-of-
-// range index leaves the list unchanged. (Lists are immutable, so this returns
-// a new list rather than mutating in place.)
+// A copy of `xs` with the element at `index` replaced by `value`. An out-of-range
+// (or negative) index is a runtime error on both backends, exactly like `list.at`
+// and `xs[i]` read — a write that would silently vanish is a contract violation
+// (RFC-0044 rule 3), so it aborts rather than discarding the value. (Lists are
+// immutable, so this returns a new list rather than mutating in place.)
 pub fn set_at(var xs: List(a), index: Int, value: a) -> List(a):
+    if index < 0 || index >= list.length(xs):
+        fail("list index ${index} out of bounds (length ${list.length(xs)})")
     var out = []
     var i = 0
     for x in xs:
@@ -579,8 +583,12 @@ pub fn set_at(var xs: List(a), index: Int, value: a) -> List(a):
     out
 
 // A copy of `xs` with the function `f` applied to the element at `index`. An
-// out-of-range index leaves the list unchanged.
+// out-of-range (or negative) index is a runtime error on both backends, exactly
+// like `list.at` — a silently discarded update is a contract violation (RFC-0044
+// rule 3), so it aborts rather than leaving the list unchanged.
 pub fn update_at(var xs: List(a), index: Int, f: fn(a) -> a) -> List(a):
+    if index < 0 || index >= list.length(xs):
+        fail("list index ${index} out of bounds (length ${list.length(xs)})")
     var out = []
     var i = 0
     for x in xs:

@@ -2820,6 +2820,24 @@ impl Codegen {
                                 // free), and `rc-floor` is on. The `els` re-own+copy cold path is
                                 // NOT dropped — a copy shares element pointers without a dup, so a
                                 // free there could be a UAF (left as a sound leak).
+                                // (BUG-315) An out-of-range (or negative) `set_at` is a
+                                // runtime error on both backends — symmetric with the
+                                // `xs[i]` READ trap — never a silent no-op (the cold
+                                // `$list_set_cap` path used to swallow it). Route the OOB
+                                // case through `$list_at`, which aborts with the identical
+                                // `list index {i} out of bounds (length {len})` diagnostic
+                                // (and carries the `__witchy_abort` import); the result is
+                                // unreachable (the call always traps here) so it is dropped.
+                                let set_len = || W::Load { ptr: Box::new(W::GetLocal(name.clone())), kind: witchy_wir::wir::Kind::I32, offset: 0 };
+                                seq.push(N::If {
+                                    cond: bin(BinOp::Or, bin(BinOp::Lt, si(), W::ConstI32(0)), bin(BinOp::Ge, si(), set_len())),
+                                    then_: vec![N::Drop(W::Call {
+                                        func: "list_at".into(),
+                                        args: vec![W::GetLocal(name.clone()), Self::wir_convert(si(), Kind::I32, Kind::I64)],
+                                    })],
+                                    els: vec![],
+                                    result: None,
+                                });
                                 let rc_drop_displaced = Self::wir_kind(vk) == witchy_wir::wir::Kind::I32
                                     && self.inplace_push.contains(name)
                                     && self.expr_is_offset0_rc(vexpr)
@@ -2863,11 +2881,34 @@ impl Codegen {
                                 };
                                 let iw = self.lower_expr(iexpr)?;
                                 let fw = self.lower_expr(fexpr)?;
+                                use witchy_wir::wir::BinOp;
+                                let bin = |op, l, r| W::Binary { op, kind: witchy_wir::wir::Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+                                // Stash the index so the bounds check and the helper call
+                                // share it (the index expr is lowered once).
+                                seq.push(N::SetLocal {
+                                    local: "__witchy_set_idx".into(),
+                                    value: Self::wir_convert(iw, ik, Kind::I32),
+                                });
+                                let si = || W::GetLocal("__witchy_set_idx".to_string());
+                                // (BUG-315) An out-of-range (or negative) `update_at` is a
+                                // runtime error on both backends — symmetric with the
+                                // `list.at` READ trap — never a silent no-op. See the
+                                // `SetAt` arm; `$list_at` carries the identical diagnostic.
+                                let upd_len = || W::Load { ptr: Box::new(W::GetLocal(name.clone())), kind: witchy_wir::wir::Kind::I32, offset: 0 };
+                                seq.push(N::If {
+                                    cond: bin(BinOp::Or, bin(BinOp::Lt, si(), W::ConstI32(0)), bin(BinOp::Ge, si(), upd_len())),
+                                    then_: vec![N::Drop(W::Call {
+                                        func: "list_at".into(),
+                                        args: vec![W::GetLocal(name.clone()), Self::wir_convert(si(), Kind::I32, Kind::I64)],
+                                    })],
+                                    els: vec![],
+                                    result: None,
+                                });
                                 seq.push(N::CallStoreMulti {
                                     func: "list_update_cap".to_string(),
                                     args: vec![
                                         W::GetLocal(name.clone()),
-                                        Self::wir_convert(iw, ik, Kind::I32),
+                                        si(),
                                         fw,
                                         cap,
                                     ],
