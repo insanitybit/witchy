@@ -77,8 +77,13 @@ fn is_ambient_ctor(name: &str) -> bool {
 /// `TupleN` head a tuple `impl` dispatches under, and the `__anonN` record a
 /// `.{…}` literal desugars to.
 fn is_synthetic_type(name: &str) -> bool {
-    name.starts_with("__")
+    is_anon_type(name)
         || (name.strip_prefix("Tuple").is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())))
+}
+
+fn is_anon_type(name: &str) -> bool {
+    name.strip_prefix("__anon")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// The types (and their constructors) one module declares, in their BARE spelling

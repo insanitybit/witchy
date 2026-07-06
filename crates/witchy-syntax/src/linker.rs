@@ -392,6 +392,8 @@ pub fn link(
     entry: &str,
     expand: ComptimeExpander,
 ) -> Result<Module, LinkError> {
+    check_reserved_source_names(&modules)?;
+
     // Lower `gen fn`/`yield` to ordinary functions over `std/iter` first — this
     // adds `import iter`/`import option` to any generator module, so the std
     // pull-in below resolves them.
@@ -1605,6 +1607,7 @@ fn resolve_call(
     fns: &FnTable,
     bound: &HashSet<String>,
 ) -> Result<String, LinkError> {
+    check_private_intrinsic_call(name, m)?;
     if let Some((modname, fname)) = name.split_once('.') {
         // The prelude modules are importable-by-default everywhere (the link
         // set always carries them), including from inside one another.
@@ -1652,6 +1655,397 @@ fn resolve_call(
     Ok(name.to_string())
 }
 
+// ---------------------------------------------------------------------------
+// Compiler-private namespace boundary.
+// ---------------------------------------------------------------------------
+
+fn is_compiler_private_name(name: &str) -> bool {
+    name.starts_with("__")
+}
+
+fn is_user_spellable_lowered_method_name(name: &str) -> bool {
+    // Trait/inherent method lowering historically generated source-spellable
+    // `Type__method` / `Trait__Type__method` function names. Reserve that shape
+    // for top-level functions so a handwritten helper cannot collide with a
+    // lowered method after the duplicate-name census has already run.
+    name.contains("__")
+}
+
+fn is_generated_anon_type(name: &str, line: Option<u32>) -> bool {
+    line == Some(u32::MAX)
+        && name
+            .strip_prefix("__anon")
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+fn is_generated_local_name(name: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "__fv",
+        "__fortuple",
+        "__compr",
+        "__range",
+        "__ri",
+        "__rend",
+        "__kw",
+        "__eta",
+        "__await",
+    ];
+    PREFIXES.iter().any(|prefix| {
+        name.strip_prefix(prefix)
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    })
+}
+
+fn check_reserved_source_names(modules: &[(String, Module)]) -> Result<(), LinkError> {
+    for (module_name, module) in modules {
+        if STD_MODULES.contains(&module_name.as_str()) {
+            continue;
+        }
+        for (idx, item) in module.items.iter().enumerate() {
+            let line = module.item_lines.get(idx).copied();
+            check_reserved_item(module_name, item, line)?;
+        }
+    }
+    Ok(())
+}
+
+fn check_reserved_item(module_name: &str, item: &Item, line: Option<u32>) -> Result<(), LinkError> {
+    match item {
+        Item::Function(f) => {
+            if is_compiler_private_name(&f.name) || is_user_spellable_lowered_method_name(&f.name) {
+                return reserved_name_error(module_name, "function", &f.name);
+            }
+            check_reserved_function(module_name, f)
+        }
+        Item::Type(t) => {
+            let generated_anon = is_generated_anon_type(&t.name, line);
+            if is_compiler_private_name(&t.name) && !generated_anon {
+                return reserved_name_error(module_name, "type", &t.name);
+            }
+            for param in &t.params {
+                check_reserved_binding(module_name, "type parameter", param)?;
+            }
+            for variant in &t.variants {
+                if is_compiler_private_name(&variant.name) && !generated_anon {
+                    return reserved_name_error(module_name, "constructor", &variant.name);
+                }
+            }
+            Ok(())
+        }
+        Item::Trait(t) => {
+            if is_compiler_private_name(&t.name) {
+                return reserved_name_error(module_name, "trait", &t.name);
+            }
+            for param in &t.typarams {
+                check_reserved_binding(module_name, "type parameter", param)?;
+            }
+            for method in &t.methods {
+                if is_compiler_private_name(&method.name)
+                    || is_user_spellable_lowered_method_name(&method.name)
+                {
+                    return reserved_name_error(module_name, "trait method", &method.name);
+                }
+                for p in &method.params {
+                    check_reserved_param(module_name, p)?;
+                    if let Some(default) = &p.default {
+                        check_reserved_expr(module_name, default)?;
+                    }
+                }
+                if let Some(body) = &method.default {
+                    check_reserved_block(module_name, body)?;
+                }
+            }
+            Ok(())
+        }
+        Item::Impl(im) => {
+            if let Some(trait_name) = &im.trait_name {
+                if is_compiler_private_name(trait_name) {
+                    return reserved_name_error(module_name, "trait", trait_name);
+                }
+            }
+            if is_compiler_private_name(&im.type_name) {
+                return reserved_name_error(module_name, "type", &im.type_name);
+            }
+            for method in &im.methods {
+                if is_compiler_private_name(&method.name)
+                    || is_user_spellable_lowered_method_name(&method.name)
+                {
+                    return reserved_name_error(module_name, "method", &method.name);
+                }
+                check_reserved_function(module_name, method)?;
+            }
+            Ok(())
+        }
+        Item::Const { name, value } => {
+            check_reserved_binding(module_name, "constant", name)?;
+            check_reserved_expr(module_name, value)
+        }
+        Item::TypeAlias { name, ty } => {
+            check_reserved_binding(module_name, "type alias", name)?;
+            check_reserved_type(module_name, ty)
+        }
+        Item::Comptime(body) => check_reserved_block(module_name, body),
+    }
+}
+
+fn check_reserved_function(module_name: &str, f: &Function) -> Result<(), LinkError> {
+    for p in &f.params {
+        check_reserved_param(module_name, p)?;
+    }
+    check_reserved_block(module_name, &f.body)
+}
+
+fn check_reserved_param(module_name: &str, p: &Param) -> Result<(), LinkError> {
+    check_reserved_binding(module_name, "parameter", &p.name)?;
+    if let Some(ty) = &p.ty {
+        check_reserved_type(module_name, ty)?;
+    }
+    if let Some(default) = &p.default {
+        check_reserved_expr(module_name, default)?;
+    }
+    Ok(())
+}
+
+fn check_reserved_binding(module_name: &str, kind: &str, name: &str) -> Result<(), LinkError> {
+    if is_compiler_private_name(name) && !is_generated_local_name(name) {
+        return reserved_name_error(module_name, kind, name);
+    }
+    Ok(())
+}
+
+fn reserved_name_error(module_name: &str, kind: &str, name: &str) -> Result<(), LinkError> {
+    lerr(format!(
+        "module `{module_name}` declares {kind} `{name}`, but identifiers beginning with `__` \
+         and lowered-method names containing `__` are reserved for the compiler"
+    ))
+}
+
+fn check_reserved_type(module_name: &str, ty: &Type) -> Result<(), LinkError> {
+    match ty {
+        Type::Named(name, args) => {
+            if is_compiler_private_name(name) {
+                return reserved_name_error(module_name, "type", name);
+            }
+            for arg in args {
+                check_reserved_type(module_name, arg)?;
+            }
+        }
+        Type::Tuple(items) => {
+            for item in items {
+                check_reserved_type(module_name, item)?;
+            }
+        }
+        Type::Fn(params, ret) => {
+            for param in params {
+                check_reserved_type(module_name, param)?;
+            }
+            check_reserved_type(module_name, ret)?;
+        }
+        Type::Qualified(_, inner) => check_reserved_type(module_name, inner)?,
+    }
+    Ok(())
+}
+
+fn check_reserved_block(module_name: &str, block: &Block) -> Result<(), LinkError> {
+    for stmt in &block.stmts {
+        check_reserved_stmt(module_name, stmt)?;
+    }
+    Ok(())
+}
+
+fn check_reserved_stmt(module_name: &str, stmt: &Stmt) -> Result<(), LinkError> {
+    match stmt {
+        Stmt::Let { name, ty, value, .. } => {
+            check_reserved_binding(module_name, "binding", name)?;
+            if let Some(ty) = ty {
+                check_reserved_type(module_name, ty)?;
+            }
+            check_reserved_expr(module_name, value)
+        }
+        Stmt::Assign { name, value } => {
+            check_reserved_binding(module_name, "assignment target", name)?;
+            check_reserved_expr(module_name, value)
+        }
+        Stmt::LetPattern { pattern, value } => {
+            check_reserved_pattern(module_name, pattern)?;
+            check_reserved_expr(module_name, value)
+        }
+        Stmt::Return(Some(value)) | Stmt::Expr(value) | Stmt::Yield(value) => {
+            check_reserved_expr(module_name, value)
+        }
+        Stmt::Return(None) | Stmt::Break | Stmt::Continue => Ok(()),
+    }
+}
+
+fn check_reserved_expr(module_name: &str, expr: &Expr) -> Result<(), LinkError> {
+    match expr {
+        Expr::List(items) | Expr::Tuple(items) | Expr::Ctor { args: items, .. } => {
+            for item in items {
+                check_reserved_expr(module_name, item)?;
+            }
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                check_reserved_expr(module_name, arg)?;
+            }
+        }
+        Expr::LabeledCall { args, .. } => {
+            for (_, arg) in args {
+                check_reserved_expr(module_name, arg)?;
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            check_reserved_expr(module_name, receiver)?;
+            for arg in args {
+                check_reserved_expr(module_name, arg)?;
+            }
+        }
+        Expr::Apply { func, args } => {
+            check_reserved_expr(module_name, func)?;
+            for arg in args {
+                check_reserved_expr(module_name, arg)?;
+            }
+        }
+        Expr::Lambda { params, body, ret } => {
+            for param in params {
+                check_reserved_param(module_name, param)?;
+            }
+            if let Some(ret) = ret {
+                check_reserved_type(module_name, ret)?;
+            }
+            check_reserved_block(module_name, body)?;
+        }
+        Expr::RecordUpdate { base, fields } => {
+            check_reserved_expr(module_name, base)?;
+            for (_, value) in fields {
+                check_reserved_expr(module_name, value)?;
+            }
+        }
+        Expr::Record { fields, spread, .. } => {
+            for (_, value) in fields {
+                check_reserved_expr(module_name, value)?;
+            }
+            if let Some(spread) = spread {
+                check_reserved_expr(module_name, spread)?;
+            }
+        }
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
+            check_reserved_expr(module_name, expr)?
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            check_reserved_expr(module_name, lhs)?;
+            check_reserved_expr(module_name, rhs)?;
+        }
+        Expr::If { cond, then_block, else_block } => {
+            check_reserved_expr(module_name, cond)?;
+            check_reserved_block(module_name, then_block)?;
+            if let Some(block) = else_block {
+                check_reserved_block(module_name, block)?;
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            check_reserved_expr(module_name, scrutinee)?;
+            for arm in arms {
+                check_reserved_pattern(module_name, &arm.pattern)?;
+                if let Some(guard) = &arm.guard {
+                    check_reserved_expr(module_name, guard)?;
+                }
+                check_reserved_expr(module_name, &arm.body)?;
+            }
+        }
+        Expr::Block(block) => check_reserved_block(module_name, block)?,
+        Expr::While { cond, body } => {
+            check_reserved_expr(module_name, cond)?;
+            check_reserved_block(module_name, body)?;
+        }
+        Expr::For { var, iter, body } => {
+            check_reserved_binding(module_name, "loop binding", var)?;
+            check_reserved_expr(module_name, iter)?;
+            check_reserved_block(module_name, body)?;
+        }
+        Expr::Range { lo, hi, .. } => {
+            check_reserved_expr(module_name, lo)?;
+            check_reserved_expr(module_name, hi)?;
+        }
+        Expr::Index { base, index } => {
+            check_reserved_expr(module_name, base)?;
+            check_reserved_expr(module_name, index)?;
+        }
+        Expr::WhileLet { pattern, scrutinee, body } => {
+            check_reserved_pattern(module_name, pattern)?;
+            check_reserved_expr(module_name, scrutinee)?;
+            check_reserved_block(module_name, body)?;
+        }
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Duration(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::Var(_)
+        | Expr::TaggedLit { .. } => {}
+    }
+    Ok(())
+}
+
+fn check_reserved_pattern(module_name: &str, pattern: &Pattern) -> Result<(), LinkError> {
+    match pattern {
+        Pattern::Var(name) => check_reserved_binding(module_name, "pattern binding", name),
+        Pattern::Ctor { args, .. } | Pattern::Tuple(args) => {
+            for arg in args {
+                check_reserved_pattern(module_name, arg)?;
+            }
+            Ok(())
+        }
+        Pattern::List { elems, rest } => {
+            for elem in elems {
+                check_reserved_pattern(module_name, elem)?;
+            }
+            if let Some(Some(name)) = rest {
+                check_reserved_binding(module_name, "pattern binding", name)?;
+            }
+            Ok(())
+        }
+        Pattern::Or(alts) => {
+            for alt in alts {
+                check_reserved_pattern(module_name, alt)?;
+            }
+            Ok(())
+        }
+        Pattern::Wildcard
+        | Pattern::Int(_)
+        | Pattern::Str(_)
+        | Pattern::Bool(_)
+        | Pattern::Duration(_)
+        | Pattern::IntRange { .. } => Ok(()),
+    }
+}
+
+fn private_intrinsic_owner(name: &str) -> Option<&'static [&'static str]> {
+    match name {
+        "__erase" | "__unerase" => Some(&["chan", "task"]),
+        "__bytes_from_string"
+        | "__bytes_to_string"
+        | "__bytes_length"
+        | "__bytes_at"
+        | "__bytes_concat"
+        | "__bytes_slice" => Some(&["bytes"]),
+        _ => None,
+    }
+}
+
+fn check_private_intrinsic_call(name: &str, module_name: &str) -> Result<(), LinkError> {
+    let Some(owners) = private_intrinsic_owner(name) else {
+        return Ok(());
+    };
+    if owners.contains(&module_name) {
+        return Ok(());
+    }
+    lerr(format!(
+        "`{name}` is a compiler-private intrinsic for std/{}`; use the public stdlib surface instead",
+        owners.join(" or std/")
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1684,6 +2078,60 @@ mod tests {
         )
         .map(|_| ())
         .map_err(|e| e.message)
+    }
+
+    fn link_main(src: &str) -> Result<(), String> {
+        let module = crate::parser::parse_module(src).expect("parses");
+        link(vec![("main".to_string(), module)], "main", noop_expand)
+            .map(|_| ())
+            .map_err(|e| e.message)
+    }
+
+    #[test]
+    fn user_source_cannot_declare_compiler_private_names() {
+        let err = link_main("type __Hidden:\n    Hidden(Int)\n").unwrap_err();
+        assert!(err.contains("type `__Hidden`") && err.contains("reserved for the compiler"), "{err}");
+
+        let err = link_main("fn Point__show(x: Int) -> String:\n    \"x\"\n").unwrap_err();
+        assert!(
+            err.contains("function `Point__show`") && err.contains("reserved for the compiler"),
+            "{err}"
+        );
+
+        let err = link_main(
+            "fn main(console: Console):\n    let __target = 1\n    print(console, __render(__target))\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("binding `__target`"), "{err}");
+    }
+
+    #[test]
+    fn private_bridge_intrinsics_are_std_only() {
+        let err = link_main(
+            "fn main(console: Console):\n    let s = __unerase(__erase(1))\n    print(console, __render(s))\n",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("`__unerase` is a compiler-private intrinsic")
+                || err.contains("`__erase` is a compiler-private intrinsic"),
+            "{err}"
+        );
+
+        let err = link_main(
+            "fn main(console: Console):\n    let b = __bytes_from_string(\"x\")\n    print(console, \"x\")\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("`__bytes_from_string` is a compiler-private intrinsic"), "{err}");
+
+        let bytes = crate::parser::parse_module(std_source("bytes").expect("std bytes")).expect("bytes parses");
+        link(vec![("bytes".to_string(), bytes)], "bytes", noop_expand)
+            .expect("std/bytes may use the private bytes bridge");
+    }
+
+    #[test]
+    fn render_intrinsic_remains_available_for_interpolation_oracles() {
+        link_main("fn main(console: Console):\n    print(console, __render(1))\n")
+            .expect("__render is still the interpolation/oracle spelling");
     }
 
     #[test]
