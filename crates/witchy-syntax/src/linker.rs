@@ -451,7 +451,15 @@ pub fn link(
     // module-qualified spellings (`list.push`, `string.split`, `dict.insert`,
     // `math.sqrt`) resolve without an import line. Locally provided modules
     // still take precedence; dead-code elimination strips what goes unused.
-    for prelude in ["list", "string", "dict", "math", "option", "result", "policy"] {
+    //
+    // (RFC-0053) `show` is a prelude module (link-set only — `say`/`show.*` still
+    // need an explicit `import show`, so `is_prelude_module` deliberately omits it).
+    // It is here so the `Show` trait and its impls (the `Duration` human form and
+    // the container blankets) are always available for the interpolation flip: a
+    // bare `"${90000ms}"` renders `1m30s` on EVERY program, not only those that
+    // happen to link `show` some other way. DCE strips the impls a program never
+    // renders, so a program that interpolates nothing custom pays nothing.
+    for prelude in ["list", "string", "dict", "math", "option", "result", "policy", "show"] {
         if !modules.iter().any(|(n, _)| n == prelude) {
             if let Some(src) = std_source(prelude) {
                 if let Ok(m) = crate::parser::parse_module(src) {
