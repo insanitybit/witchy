@@ -130,8 +130,17 @@ pub struct TypeDef {
     /// constructor and pattern may only be used in the module that declares it
     /// (enforced at link time) — so a value of `X` can only be minted by `X`'s
     /// own module, making it un-forgeable like the host capability it refines.
-    /// `false` for an ordinary `type`.
+    /// `false` for an ordinary `type`. Set to `true` by BOTH `capability X …`
+    /// (RFC-0002) and `sealed type X …` (RFC-0065): the two share one enforcement
+    /// mechanism — a value may be CONSTRUCTED/DESTRUCTURED only in its home module.
+    /// `is_capability` distinguishes which surface produced it (for rendering and
+    /// the diagnostic noun); the sealing check treats them identically.
     pub sealed: bool,
+    /// `true` when the `sealed` flag came from a `capability` declaration (RFC-0002),
+    /// `false` when it came from `sealed type` (RFC-0065). Only meaningful when
+    /// `sealed` is set. Drives the formatter (`capability X` vs `sealed type X`) and
+    /// the sealing diagnostic's noun ("sealed capability" vs "sealed type").
+    pub is_capability: bool,
     /// `grantable capability X:` (RFC-0038): a sealed capability the host may mint
     /// at a root entrypoint (a parameter of `main`) from a grant document's
     /// `[user_caps]` section. Valid ONLY on a BARE capability — one carrying zero

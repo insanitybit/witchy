@@ -42,6 +42,33 @@ fn add(a: Int, b: Int) -> Int:
     }
 
     #[test]
+    fn sealed_type_marker_parses() {
+        // `sealed type X:` (RFC-0065) sets the same `sealed` flag a `capability`
+        // sets, but is NOT a capability (so it renders as `sealed type`, not
+        // `capability`, and reports a "sealed type" diagnostic).
+        let m = parse_module("sealed type Box(a):\n    BoxData(a)\n").unwrap();
+        let Item::Type(t) = &m.items[0] else { panic!("expected a type") };
+        assert_eq!(t.name, "Box");
+        assert!(t.sealed, "`sealed type` is sealed");
+        assert!(!t.is_capability, "`sealed type` is not a capability");
+        assert!(!t.grantable, "`sealed type` is not grantable");
+        assert_eq!(t.variants[0].name, "BoxData");
+
+        // An ordinary `type` is neither sealed nor a capability.
+        let m2 = parse_module("type Plain(a):\n    Plain(a)\n").unwrap();
+        let Item::Type(t2) = &m2.items[0] else { panic!("expected a type") };
+        assert!(!t2.sealed && !t2.is_capability, "an ordinary type is not sealed");
+
+        // A `capability` record is sealed AND a capability.
+        let m3 = parse_module("capability Session:\n    token: String\n").unwrap();
+        let Item::Type(t3) = &m3.items[0] else { panic!("expected a type") };
+        assert!(t3.sealed && t3.is_capability, "a capability is a sealed capability");
+
+        // `sealed` before anything but `type` is an error.
+        assert!(parse_module("sealed fn foo():\n    1\n").is_err());
+    }
+
+    #[test]
     fn impl_trait_param_desugars_to_a_bound() {
         // `fn f(x: impl Show)` becomes a fresh type-var param plus a `Show` bound,
         // so it reuses the whole generics path; two `impl` params get distinct vars.

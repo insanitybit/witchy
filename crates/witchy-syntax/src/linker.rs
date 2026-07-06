@@ -1370,13 +1370,28 @@ fn eta_lambda(qualified: &str, arity: usize) -> Expr {
 // traversal, plus pattern walking the rewriter skips) before names are merged.
 // ---------------------------------------------------------------------------
 
+/// constructor name (bare or canonical `module.Ctor`) -> (home module, is_capability).
+type SealMap = HashMap<String, (String, bool)>;
+
 fn check_sealing(modules: &[(String, Module)]) -> Result<(), LinkError> {
-    let mut sealed: HashMap<String, String> = HashMap::new();
+    // Each CONSTRUCTOR of a sealed type is registered under both its bare name and
+    // its canonical `module.Ctor` spelling (whichever form reaches `seal_use` after
+    // `type_resolve` — a qualified `m.Ctor` is the BUG-313 bypass). The value is the
+    // home module plus whether the seal came from a `capability` (RFC-0002) or a
+    // `sealed type` (RFC-0065), which only changes the diagnostic noun. Keying on
+    // the constructor (not the type name) is what generalizes RFC-0002's mechanism:
+    // a `capability`'s single variant is named after the type, so this is a strict
+    // superset of the old type-name keying.
+    let mut sealed: SealMap = HashMap::new();
     for (mname, m) in modules {
         for item in &m.items {
             if let Item::Type(t) = item {
                 if t.sealed {
-                    sealed.insert(t.name.clone(), mname.clone());
+                    for v in &t.variants {
+                        let info = (mname.clone(), t.is_capability);
+                        sealed.insert(v.name.clone(), info.clone());
+                        sealed.insert(format!("{mname}.{}", v.name), info);
+                    }
                 }
             }
         }
@@ -1400,18 +1415,14 @@ fn check_sealing(modules: &[(String, Module)]) -> Result<(), LinkError> {
     Ok(())
 }
 
-fn seal_use(
-    name: &str,
-    sealed: &HashMap<String, String>,
-    home: &str,
-    verb: &str,
-) -> Result<(), LinkError> {
-    if let Some(decl) = sealed.get(name) {
+fn seal_use(name: &str, sealed: &SealMap, home: &str, verb: &str) -> Result<(), LinkError> {
+    if let Some((decl, is_capability)) = sealed.get(name) {
         if decl != home {
-            // Names are canonical `module.Ctor` here; show the bare ctor.
+            // Names may be bare or canonical `module.Ctor` here; show the bare ctor.
             let bare = name.rsplit('.').next().unwrap_or(name);
+            let noun = if *is_capability { "sealed capability" } else { "sealed type" };
             return lerr(format!(
-                "`{bare}` is a sealed capability declared in module `{decl}`; module \
+                "`{bare}` is a {noun} declared in module `{decl}`; module \
                  `{home}` may hold and pass a `{bare}` but cannot {verb} one — only \
                  `{decl}` can mint or unwrap it (use the functions `{decl}` exports)"
             ));
@@ -1420,7 +1431,7 @@ fn seal_use(
     Ok(())
 }
 
-fn seal_block(b: &Block, sealed: &HashMap<String, String>, home: &str) -> Result<(), LinkError> {
+fn seal_block(b: &Block, sealed: &SealMap, home: &str) -> Result<(), LinkError> {
     for stmt in &b.stmts {
         match stmt {
             Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetPattern { value, .. } => {
@@ -1433,7 +1444,7 @@ fn seal_block(b: &Block, sealed: &HashMap<String, String>, home: &str) -> Result
     Ok(())
 }
 
-fn seal_pattern(p: &Pattern, sealed: &HashMap<String, String>, home: &str) -> Result<(), LinkError> {
+fn seal_pattern(p: &Pattern, sealed: &SealMap, home: &str) -> Result<(), LinkError> {
     match p {
         Pattern::Ctor { name, args } => {
             seal_use(name, sealed, home, "destructure")?;
@@ -1467,7 +1478,7 @@ fn seal_pattern(p: &Pattern, sealed: &HashMap<String, String>, home: &str) -> Re
     Ok(())
 }
 
-fn seal_expr(e: &Expr, sealed: &HashMap<String, String>, home: &str) -> Result<(), LinkError> {
+fn seal_expr(e: &Expr, sealed: &SealMap, home: &str) -> Result<(), LinkError> {
     match e {
         Expr::Ctor { name, args } => {
             seal_use(name, sealed, home, "construct")?;
@@ -1700,6 +1711,45 @@ mod tests {
                      let forged = sealed_lib.UiRoot(\"admin\")\n    print(console, \"x\")\n";
         let err = link_lib_user(lib, forge).expect_err("grantable mint must be rejected");
         assert!(err.contains("sealed capability") && err.contains("UiRoot"), "{err}");
+    }
+
+    #[test]
+    fn sealed_type_seals_construction_and_destructure_but_not_reading() {
+        // RFC-0065: a `sealed type` seals its data constructor(s) with the SAME
+        // mechanism a `capability` uses — construction/destructuring is home-module
+        // only (even the qualified `m.Ctor` spelling, BUG-313), but holding,
+        // passing, and reading through the module's smart constructors is fine.
+        // The ctor (`BoxData`) is NOT named after the type (`Box`), so this
+        // exercises the generalization past the capability case (ctor == type name).
+        let lib = "sealed type Box(a):\n    BoxData(a)\n\n\
+                   pub fn wrap(x: a) -> Box(a):\n    BoxData(x)\n\n\
+                   pub fn unwrap(b: Box(a)) -> a:\n    match b:\n        BoxData(inner) -> inner\n";
+
+        // CONSTRUCT the sealed data ctor from another module — rejected, and named a
+        // "sealed type" (not a "sealed capability").
+        let forge = "import sealed_lib\n\n\
+                     fn main(console: Console):\n    \
+                     let b = sealed_lib.BoxData(1)\n    print(console, \"x\")\n";
+        let err = link_lib_user(lib, forge).expect_err("sealed-type construct must be rejected");
+        assert!(
+            err.contains("sealed type") && err.contains("BoxData") && err.contains("construct"),
+            "{err}"
+        );
+
+        // DESTRUCTURE from another module — rejected.
+        let destr = "import sealed_lib\n\n\
+                     fn main(console: Console):\n    \
+                     let b = sealed_lib.wrap(1)\n    \
+                     match b:\n        sealed_lib.BoxData(inner) -> print(console, \"${inner}\")\n";
+        let err = link_lib_user(lib, destr).expect_err("sealed-type destructure must be rejected");
+        assert!(err.contains("sealed type") && err.contains("destructure"), "{err}");
+
+        // Legit: build via the smart constructor, hold, pass, and read the value out.
+        let ok = "import sealed_lib\n\n\
+                  fn main(console: Console):\n    \
+                  let b = sealed_lib.wrap(41)\n    \
+                  print(console, \"${sealed_lib.unwrap(b)}\")\n";
+        assert!(link_lib_user(lib, ok).is_ok(), "smart-constructor use must be allowed");
     }
 
     /// Find the first `MethodCall` whose receiver is `Var(recv)` and method is

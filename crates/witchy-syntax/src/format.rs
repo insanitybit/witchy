@@ -337,7 +337,7 @@ fn type_def(s: &mut String, t: &TypeDef, c: &mut Comments, upper: u32) {
     // variant/field body is indented past that (BUG-332). Flushed after the
     // header, below.
     const HEADER_COL: u32 = 1;
-    if t.sealed {
+    if t.sealed && t.is_capability {
         if t.grantable {
             s.push_str("grantable ");
         }
@@ -375,6 +375,11 @@ fn type_def(s: &mut String, t: &TypeDef, c: &mut Comments, upper: u32) {
         }
         s.push('\n');
         return;
+    }
+    // `sealed type X …` (RFC-0065): a sealed general type renders through the
+    // ordinary type path with a leading `sealed ` (a capability took the branch above).
+    if t.sealed {
+        s.push_str("sealed ");
     }
     s.push_str("type ");
     s.push_str(&t.name);

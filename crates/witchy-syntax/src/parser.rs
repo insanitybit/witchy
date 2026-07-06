@@ -314,7 +314,17 @@ impl Parser {
         if self.at(&Tok::Fn) || self.at(&Tok::Gen) || self.at(&Tok::Async) {
             Ok(Item::Function(self.function(public)?))
         } else if self.at(&Tok::Type) {
-            self.type_def()
+            self.type_def(false)
+        } else if self.at_ident("sealed") {
+            // `sealed type X:` (RFC-0065) — seal a type's data constructor(s) so a
+            // value may be built only in its home module (the same enforcement
+            // `capability` uses, generalized to any type). Contextual, so `sealed`
+            // stays usable as an ordinary ident.
+            self.advance();
+            if !self.at(&Tok::Type) {
+                return Err(self.error("`sealed` may only precede a `type` declaration"));
+            }
+            self.type_def(true)
         } else if self.at(&Tok::Trait) {
             Ok(Item::Trait(self.trait_def()?))
         } else if self.at(&Tok::Impl) {
@@ -550,7 +560,7 @@ impl Parser {
         })
     }
 
-    fn type_def(&mut self) -> Result<Item, ParseError> {
+    fn type_def(&mut self, sealed: bool) -> Result<Item, ParseError> {
         self.expect(&Tok::Type)?;
         let name = self.ident()?;
         // Optional explicit type parameters: `type Pair(a, b):`. These FIX the
@@ -638,7 +648,8 @@ impl Parser {
                     field_names: rec_names,
                 }],
                 derives,
-                sealed: false,
+                sealed,
+                is_capability: false,
                 grantable: false,
                 packed,
                 partial_eq_derived: false,
@@ -649,7 +660,8 @@ impl Parser {
                 params,
                 variants,
                 derives,
-                sealed: false,
+                sealed,
+                is_capability: false,
                 grantable: false,
                 packed,
                 partial_eq_derived: false,
@@ -697,6 +709,7 @@ impl Parser {
                 variants: vec![Variant { name, fields, field_names }],
                 derives: vec![],
                 sealed: true,
+                is_capability: true,
                 grantable,
                 packed: false,
                 partial_eq_derived: false,
@@ -729,6 +742,7 @@ impl Parser {
             variants: vec![Variant { name, fields, field_names: vec![] }],
             derives: vec![],
             sealed: true,
+            is_capability: true,
             grantable,
             packed: false,
             partial_eq_derived: false,
