@@ -252,9 +252,6 @@ pub fn dir_only(current: &str, refine: &str) -> String {
     if refine.is_empty() {
         return current.to_string();
     }
-    if current.is_empty() {
-        return refine.to_string();
-    }
     use std::collections::{BTreeMap, BTreeSet};
     // Group patterns by dimension (the part before `:`), e.g. "ext" / "kind".
     fn group(s: &str) -> BTreeMap<&str, BTreeSet<&str>> {
@@ -266,8 +263,17 @@ pub fn dir_only(current: &str, refine: &str) -> String {
         }
         m
     }
-    let cur = group(current);
     let refi = group(refine);
+    // BUG-257: a non-empty refine that yields NO valid `dim:pattern` (a raw/garbled
+    // constraint with no `:` form) must FAIL CLOSED — an unrecognized narrowing can only
+    // deny, never silently keep the current (wider) policy or install the garbage as-is.
+    if refi.is_empty() {
+        return DIR_DENY_ALL.to_string();
+    }
+    if current.is_empty() {
+        return refine.to_string();
+    }
+    let cur = group(current);
     let mut out: BTreeSet<&str> = BTreeSet::new();
     // Dimensions `current` constrains that `refine` does not: carry them forward.
     for (dim, pats) in &cur {
