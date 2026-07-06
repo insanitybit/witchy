@@ -210,16 +210,11 @@ fn project_data_dir(dir: String) -> String:
     else:
         dir
 
-// The project's entry source: the first `.witchy` under <dir>/src, prefixed back
-// to a path the compiler can read relative to the project Dir.
+// The project's entry source: the conventional `src/<module_name(rune.name)>.witchy`
+// (BUG-086), falling back to the first `.witchy` under <dir>/src for a rune with a
+// non-conventional layout. Identical resolution to `module_in_src`.
 fn project_entry(root: Dir, dir: String) -> Option(String):
-    let srcdir = join_path(dir, "src")
-    if !exists(root, srcdir):
-        None
-    else:
-        match first_witchy(list(subtree(root, srcdir))):
-            Some(file) -> Some(join_path(srcdir, file))
-            None -> None
+    module_in_src(root, dir)
 
 // One `--dep name=path` token per dependency (TRANSITIVELY), mapping the `import
 // <name>` any linked module uses to the source the compiler should link. The
@@ -295,15 +290,35 @@ fn has_dep(flags: List(String), name: String) -> Bool:
 fn vendored_module(root: Dir, dir: String, name: String) -> Option(String):
     module_in_src(root, join_path(join_path(dir, "vendor"), name))
 
-// The first `.witchy` under `<base>/src`, as a path the compiler can read.
+// The entry `.witchy` under `<base>/src`, as a path the compiler can read. BUG-086:
+// prefer the conventional `src/<module_name(rune.name)>.witchy` (the launcher's
+// `project_entry_file` convention) so a rune with several modules compiles its real
+// entry, not whichever file happens to sort first. Falls back to the first `.witchy`
+// in listing order for a rune whose entry does not follow the convention.
 fn module_in_src(root: Dir, base: String) -> Option(String):
     let srcdir = join_path(base, "src")
     if !exists(root, srcdir):
         None
     else:
-        match first_witchy(list(subtree(root, srcdir))):
-            Some(file) -> Some(join_path(srcdir, file))
-            None -> None
+        let conventional = manifest_entry(root, base)
+        if !string.is_empty(conventional) && exists(root, conventional):
+            Some(conventional)
+        else:
+            match first_witchy(list(subtree(root, srcdir))):
+                Some(file) -> Some(join_path(srcdir, file))
+                None -> None
+
+// The conventional entry-source path derived from the rune's own manifest identity
+// (`<base>/src/<module_name(rune.name)>.witchy`), or "" when there is no manifest /
+// no `rune.name`. BUG-086.
+fn manifest_entry(root: Dir, base: String) -> String:
+    let manifest_path = join_path(base, "witchy.toml")
+    if !exists(root, manifest_path):
+        ""
+    else:
+        match toml.get(read(root, manifest_path), "rune.name"):
+            Some(nm) -> conventional_entry(base, nm)
+            None -> ""
 
 // The conventional entry-source path for a rune at `base` whose module stem is
 // `name`: `<base>/src/<module_name(name)>.witchy` (the launcher's
