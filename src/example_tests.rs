@@ -18628,3 +18628,189 @@ pub fn serve(console: Console, net: Net) -> Int:
         );
         assert_eq!(wasm_run(src), expected, "wasm");
     }
+
+    /// std/url: malformed URLs return `Err` identically on both backends rather
+    /// than accepting a blank scheme/host (BUG-187), swallowing a query into the
+    /// host (BUG-249), or trapping on an oversized port (BUG-197).
+    #[test]
+    fn url_parse_rejects_malformed_on_both_backends() {
+        let src = "import url\n\
+                   fn show(label: String, s: String, console: Console):\n\
+                   \x20   match url.parse(s):\n\
+                   \x20       Ok(u) -> print(console, label + \": \" + url.scheme(u) + \"|\" + url.host(u) + \"|${url.port(u)}|\" + url.path(u))\n\
+                   \x20       Err(e) -> print(console, label + \": ERR\")\n\
+                   fn main(console: Console):\n\
+                   \x20   show(\"empty_scheme\", \"://host\", console)\n\
+                   \x20   show(\"empty_host\", \"https:///path\", console)\n\
+                   \x20   show(\"query\", \"https://example.com?x=1\", console)\n\
+                   \x20   show(\"big_port\", \"https://host:99999999999999999999999/p\", console)\n\
+                   \x20   show(\"bad_port\", \"https://host:abc/x\", console)\n\
+                   \x20   show(\"ok\", \"https://example.com/a/b\", console)\n";
+        let expected = [
+            "empty_scheme: ERR",
+            "empty_host: ERR",
+            "query: https|example.com|443|?x=1",
+            "big_port: ERR",
+            "bad_port: ERR",
+            "ok: https|example.com|443|/a/b",
+        ];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(wasm_run(src), expected, "wasm");
+    }
+
+    /// std/encoding: base64/base64url reject malformed `=` padding (a middle `=`,
+    /// three `=`, an incomplete final group) rather than silently accepting it
+    /// (BUG-198), and `hex_to_base64url` is fallible on non-hex input instead of
+    /// silently dropping bytes (BUG-201). Both backends agree.
+    #[test]
+    fn encoding_rejects_malformed_padding_and_hex_on_both_backends() {
+        let src = "import encoding\n\
+                   fn show(label: String, r: Result(String, String), console: Console):\n\
+                   \x20   match r:\n\
+                   \x20       Ok(v) -> print(console, label + \": OK\")\n\
+                   \x20       Err(e) -> print(console, label + \": ERR\")\n\
+                   fn main(console: Console):\n\
+                   \x20   show(\"mid_pad\", encoding.base64_decode(\"S=Gk\"), console)\n\
+                   \x20   show(\"tail_after_pad\", encoding.base64_decode(\"ab=c\"), console)\n\
+                   \x20   show(\"triple_pad\", encoding.base64_decode(\"ab===\"), console)\n\
+                   \x20   show(\"pad_ok\", encoding.base64_decode(\"SGk=\"), console)\n\
+                   \x20   show(\"nopad_ok\", encoding.base64_decode(\"SGk\"), console)\n\
+                   \x20   show(\"url_mid_pad\", encoding.base64url_decode(\"J=Gk\"), console)\n\
+                   \x20   show(\"url_ok\", encoding.base64url_decode(\"SGk\"), console)\n\
+                   \x20   show(\"bad_hex\", encoding.hex_to_base64url(\"zz\"), console)\n\
+                   \x20   show(\"good_hex\", encoding.hex_to_base64url(\"4869\"), console)\n";
+        let expected = [
+            "mid_pad: ERR",
+            "tail_after_pad: ERR",
+            "triple_pad: ERR",
+            "pad_ok: OK",
+            "nopad_ok: OK",
+            "url_mid_pad: ERR",
+            "url_ok: OK",
+            "bad_hex: ERR",
+            "good_hex: OK",
+        ];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(wasm_run(src), expected, "wasm");
+    }
+
+    /// std/csv: the decoder rejects a bare `"` in an unquoted field / text after a
+    /// closing quote (BUG-188) and keeps a lone `\r` as literal data rather than
+    /// deleting it (BUG-416); `decode_records` rejects duplicate header columns
+    /// (BUG-264) and ragged rows (BUG-378). Both backends agree.
+    #[test]
+    fn csv_rejects_malformed_input_on_both_backends() {
+        let src = "import csv\n\
+                   import list\n\
+                   import string\n\
+                   fn rows(label: String, r: Result(List(List(String)), String), console: Console):\n\
+                   \x20   match r:\n\
+                   \x20       Ok(rs) -> print(console, label + \": OK n=${list.length(rs)}\")\n\
+                   \x20       Err(e) -> print(console, label + \": ERR\")\n\
+                   fn recs(label: String, r: Result(List(Dict(String, String)), String), console: Console):\n\
+                   \x20   match r:\n\
+                   \x20       Ok(rs) -> print(console, label + \": OK n=${list.length(rs)}\")\n\
+                   \x20       Err(e) -> print(console, label + \": ERR\")\n\
+                   fn main(console: Console):\n\
+                   \x20   rows(\"bare_quote\", csv.decode(\"a\\\"b\\\",c\"), console)\n\
+                   \x20   rows(\"after_quote\", csv.decode(\"\\\"a\\\"b\"), console)\n\
+                   \x20   match csv.decode(\"a\\rb\"):\n\
+                   \x20       Ok(rs) -> print(console, \"lone_cr: len=${string.char_count(list.at(list.at(rs, 0), 0))}\")\n\
+                   \x20       Err(e) -> print(console, \"lone_cr: ERR\")\n\
+                   \x20   rows(\"crlf\", csv.decode(\"a\\r\\nb\"), console)\n\
+                   \x20   recs(\"dup_header\", csv.decode_records(\"a,b,a\\n1,2,3\"), console)\n\
+                   \x20   recs(\"ragged\", csv.decode_records(\"a,b\\n1,2,3\"), console)\n\
+                   \x20   recs(\"clean\", csv.decode_records(\"a,b\\n1,2\"), console)\n";
+        let expected = [
+            "bare_quote: ERR",
+            "after_quote: ERR",
+            "lone_cr: len=3",
+            "crlf: OK n=2",
+            "dup_header: ERR",
+            "ragged: ERR",
+            "clean: OK n=1",
+        ];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(wasm_run(src), expected, "wasm");
+    }
+
+    /// std/toml: `decode` rejects an unterminated string / array (BUG-196) and
+    /// duplicate keys / `[table]` headers (BUG-245), represents `[[table]]` as an
+    /// array-of-tables instead of collapsing it (BUG-373), and reads a `[section]`
+    /// header that carries a trailing `# comment` (BUG-389); `inline_get` respects
+    /// commas inside quoted values (BUG-355). Both backends agree.
+    #[test]
+    fn toml_rejects_malformed_and_supports_array_tables_on_both_backends() {
+        let src = "import toml\n\
+                   import option\n\
+                   fn dec(label: String, text: String, console: Console):\n\
+                   \x20   match toml.decode(text):\n\
+                   \x20       Ok(t) -> print(console, label + \": \" + \"${t}\")\n\
+                   \x20       Err(e) -> print(console, label + \": ERR\")\n\
+                   fn main(console: Console):\n\
+                   \x20   dec(\"unterm_string\", \"name = \\\"oops\", console)\n\
+                   \x20   dec(\"unterm_array\", \"deps = [\\\"a\\\",\\\"b\\\"\", console)\n\
+                   \x20   dec(\"dup_key\", \"a = 1\\na = 2\", console)\n\
+                   \x20   dec(\"dup_table\", \"[s]\\nx = 1\\n[s]\\ny = 2\", console)\n\
+                   \x20   dec(\"header_comment\", \"[s] # note\\nx = 1\", console)\n\
+                   \x20   dec(\"array_tables\", \"[[r]]\\nn = \\\"a\\\"\\n[[r]]\\nn = \\\"b\\\"\", console)\n\
+                   \x20   print(console, \"inline: \" + option.unwrap_or(toml.inline_get(\"{ path = \\\"../foo,bar\\\" }\", \"path\"), \"?\"))\n";
+        let expected = [
+            "unterm_string: ERR",
+            "unterm_array: ERR",
+            "dup_key: ERR",
+            "dup_table: ERR",
+            "header_comment: TomlTable([(s, TomlTable([(x, TomlInt(1))]))])",
+            "array_tables: TomlTable([(r, TomlArray([TomlTable([(n, TomlString(a))]), TomlTable([(n, TomlString(b))])]))])",
+            "inline: ../foo,bar",
+        ];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(wasm_run(src), expected, "wasm");
+    }
+
+    /// std/json: `decode` rejects an overflowing exponent (BUG-241), an invalid
+    /// string escape (BUG-243), a leading-zero number and a raw control character
+    /// (BUG-244), and a duplicate object key (BUG-262); `float_of` accepts an
+    /// integer JSON number as a Float (BUG-356), and `encode` renders a non-finite
+    /// Float as `null` rather than the invalid `inf`/`NaN` token (BUG-374). Both
+    /// backends agree.
+    #[test]
+    fn json_rejects_malformed_and_handles_floats_on_both_backends() {
+        let src = "import json\n\
+                   from json import Json\n\
+                   fn dec(label: String, text: String, console: Console):\n\
+                   \x20   match json.decode(text):\n\
+                   \x20       Ok(j) -> print(console, label + \": \" + json.encode(j))\n\
+                   \x20       Err(e) -> print(console, label + \": ERR\")\n\
+                   fn main(console: Console):\n\
+                   \x20   dec(\"exp_overflow\", \"1e9223372036854775808\", console)\n\
+                   \x20   dec(\"exp_inf\", \"1e400\", console)\n\
+                   \x20   dec(\"bad_escape\", \"\\\"a\\\\qb\\\"\", console)\n\
+                   \x20   dec(\"leading_zero\", \"01\", console)\n\
+                   \x20   dec(\"neg_leading_zero\", \"-01\", console)\n\
+                   \x20   dec(\"zero_ok\", \"0\", console)\n\
+                   \x20   dec(\"dup_key\", \"{\\\"a\\\":1,\\\"a\\\":2}\", console)\n\
+                   \x20   dec(\"exp_ok\", \"1.5e3\", console)\n\
+                   \x20   match json.float_of(JsonInt(1)):\n\
+                   \x20       Ok(f) -> print(console, \"float_of_int: ${f}\")\n\
+                   \x20       Err(e) -> print(console, \"float_of_int: ERR\")\n\
+                   \x20   print(console, \"encode_inf: \" + json.encode(JsonFloat(1.0 / 0.0)))\n\
+                   \x20   print(console, \"encode_nan: \" + json.encode(JsonFloat(0.0 / 0.0)))\n\
+                   \x20   print(console, \"encode_finite: \" + json.encode(JsonFloat(1.5)))\n";
+        let expected = [
+            "exp_overflow: ERR",
+            "exp_inf: ERR",
+            "bad_escape: ERR",
+            "leading_zero: ERR",
+            "neg_leading_zero: ERR",
+            "zero_ok: 0",
+            "dup_key: ERR",
+            "exp_ok: 1500.0",
+            "float_of_int: 1.0",
+            "encode_inf: null",
+            "encode_nan: null",
+            "encode_finite: 1.5",
+        ];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(wasm_run(src), expected, "wasm");
+    }
