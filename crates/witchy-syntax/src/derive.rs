@@ -9,6 +9,20 @@
 
 use crate::ast::*;
 
+/// Whether an `Option` constructor appears anywhere inside `ty` (the type itself
+/// or any of its argument positions) — a `derive(Deserialize)` field of shape
+/// `Option(T)`, `List(Option(T))`, or `Option(Option(T))` all reach `Some`/`None`
+/// in the generated decoder, so all need the option support in scope.
+fn mentions_option(ty: &Type) -> bool {
+    match ty {
+        Type::Named(n, args) => {
+            (n == "Option" && args.len() == 1) || args.iter().any(mentions_option)
+        }
+        Type::Qualified(_, inner) => mentions_option(inner),
+        _ => false,
+    }
+}
+
 /// Expand every `type T derive(...)` into a comptime call of the matching witchy
 /// generator. Unsupported shapes for the built-ins are loud errors; an unknown
 /// derive routes to a user-provided `derive_<name>` (a comptime error if absent).
@@ -73,10 +87,12 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                     }
                     generated.push(derive_via_comptime("meta.derive_deserialize", t));
                     needs_deserialize = true;
+                    // `Option` anywhere in a field type — a direct field, a list
+                    // element (`List(Option(T))`), or a nested option
+                    // (`Option(Option(T))`) — makes the generated decoder reach for
+                    // `Some`/`None`, so the import story must account for all of them.
                     if t.variants.first().is_some_and(|v| {
-                        v.fields
-                            .iter()
-                            .any(|ty| matches!(ty, Type::Named(n, a) if n == "Option" && a.len() == 1))
+                        v.fields.iter().any(mentions_option)
                     }) {
                         needs_option = true;
                     }
