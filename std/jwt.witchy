@@ -103,8 +103,16 @@ pub fn claims_unverified(token: String) -> Result(Json, String):
 pub fn rsa_key_from_jwk(n: String, e: String) -> Result(String, String):
     let n_hex = encoding.base64url_to_hex(n).map_err(fn(err: String): "JWK modulus `n` is not valid base64url: " + err)?
     let e_hex = encoding.base64url_to_hex(e).map_err(fn(err: String): "JWK exponent `e` is not valid base64url: " + err)?
-    let body = der_integer(n_hex) + der_integer(e_hex)
-    Ok("30" + der_len(body) + body)
+    // Reject an empty/missing `n` or `e` (a JWK with no such member decodes to empty
+    // hex): building a key from them would yield a structurally-valid but bogus DER
+    // key that later "verifies" nothing, so fail closed here (BUG-408).
+    if string.is_empty(n_hex):
+        Err("JWK modulus `n` is empty or missing")
+    else if string.is_empty(e_hex):
+        Err("JWK exponent `e` is empty or missing")
+    else:
+        let body = der_integer(n_hex) + der_integer(e_hex)
+        Ok("30" + der_len(body) + body)
 
 // An ASN.1 INTEGER (tag `02`) wrapping an unsigned magnitude, sign-padded with `00`
 // when the high bit would otherwise read as negative.
