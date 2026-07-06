@@ -494,6 +494,43 @@ fn is_module_ident(name: &str) -> bool {
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// Re-indent a spliced tag body so it nests under the throwaway `fn __tagsplice():`
+/// wrapper (whose body sits at 4-column indentation): every *structural* newline
+/// must carry the same 4-space continuation so a multi-line emitted expression stays
+/// inside the function block. A newline that falls INSIDE a `"…"` string literal is
+/// NOT structural — it is literal content the author wrote (a multiline tagged
+/// literal, BUG-339) and must survive byte-for-byte; injecting spaces there would
+/// silently rewrite the string in the shared expanded AST (both backends). We track
+/// string state (honoring `\`-escapes) and indent only newlines outside a string.
+fn reindent_body(src: &str) -> String {
+    let mut out = String::with_capacity(src.len() + src.len() / 8);
+    let mut in_string = false;
+    let mut escaped = false;
+    for c in src.chars() {
+        if in_string {
+            out.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => {
+                in_string = true;
+                out.push(c);
+            }
+            // A structural newline: keep the body indented under `__tagsplice`.
+            '\n' => out.push_str("\n    "),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 fn parse_splice_expr(src: &str, qualifiers: &[String]) -> Result<Expr, String> {
     let mut wrapped = String::new();
     for q in qualifiers {
@@ -515,7 +552,7 @@ fn parse_splice_expr(src: &str, qualifiers: &[String]) -> Result<Expr, String> {
         wrapped.push('\n');
     }
     wrapped.push_str("fn __tagsplice():\n    ");
-    wrapped.push_str(&src.replace('\n', "\n    "));
+    wrapped.push_str(&reindent_body(src));
     wrapped.push('\n');
     let parsed = witchy_syntax::parser::parse_module(&wrapped)
         .map_err(|e| format!("does not parse as an expression: {e}"))?;
@@ -969,5 +1006,31 @@ fn collect_refs_expr(e: &Expr, out: &mut HashSet<String>) {
         | Expr::Str(_)
         | Expr::Bool(_)
         | Expr::TaggedLit { .. } => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reindent_body;
+
+    #[test]
+    fn reindents_structural_newlines_only() {
+        // A structural newline (outside any string) gets the 4-space continuation
+        // so the emitted expression stays nested under `fn __tagsplice()`.
+        assert_eq!(reindent_body("f(\na)"), "f(\n    a)");
+        // A newline INSIDE a string literal is content — preserved byte-for-byte
+        // (BUG-339); it must NOT gain four spaces.
+        assert_eq!(reindent_body("\"line1\nline2\""), "\"line1\nline2\"");
+        // Mixed: structural newlines reindent, the in-string newline does not.
+        assert_eq!(
+            reindent_body("f(\n\"a\nb\",\n1)"),
+            "f(\n    \"a\nb\",\n    1)"
+        );
+        // An escaped quote does not close the string, so its trailing newline stays
+        // content, and the newline after the real closing quote is structural.
+        assert_eq!(
+            reindent_body("\"a\\\"\nb\"\nc"),
+            "\"a\\\"\nb\"\n    c"
+        );
     }
 }
