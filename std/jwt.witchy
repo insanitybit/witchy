@@ -1,5 +1,5 @@
 // jwt — verify a compact JWS / JWT (the OIDC identity-token shape), in PURE witchy
-// over `crypto` (RS256/ES256), `encoding` (base64url), and `json`. Verification is
+// over `crypto` (RS256), `encoding` (base64url), and `json`. Verification is
 // computation, so this module has no host capability of its own — fetching the
 // signing keys (JWKS discovery, over HTTPS) is a separate, network-bearing concern.
 //
