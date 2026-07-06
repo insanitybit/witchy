@@ -429,9 +429,26 @@ fn dep_dirs(root: Dir, dir: String) -> List((String, String)):
                 out = list.push(out, (name, normalize_path(join_path(dir, rel))))
     let vendor = join_path(dir, "vendor")
     if exists(root, vendor):
+        let lockpath = join_path(dir, "witchy.lock")
+        let lock = if exists(root, lockpath): read(root, lockpath) else: ""
         for name in list(subtree(root, vendor)):
-            out = list.push(out, (name, join_path(vendor, name)))
+            let rune_dir = join_path(vendor, name)
+            // BUG-095: only treat a vendored subdir as a real dependency (and thus
+            // run its build step) when it carries provenance (coven.json) AND is
+            // pinned in witchy.lock. A stray directory dropped under vendor/, or an
+            // unpinned partial add, must not have its build step executed.
+            if exists(root, join_path(rune_dir, "coven.json")) && locked_alias(lock, name):
+                out = list.push(out, (name, rune_dir))
     out
+
+// Whether the lock records a `[[rune]]` whose local import alias is `alias` — the
+// gate for a vendored dependency to count as resolved (BUG-095).
+fn locked_alias(lock: String, alias: String) -> Bool:
+    var found = false
+    for block in toml.array_tables(lock, "rune"):
+        if entry_alias(block) == alias:
+            found = true
+    found
 
 // Whether a dependency ships a `build` step (`src/build.witchy` defining `build`).
 fn has_build_step(root: Dir, depdir: String) -> Bool:
