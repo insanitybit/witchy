@@ -1417,6 +1417,12 @@ fn check_sealing(modules: &[(String, Module)]) -> Result<(), LinkError> {
 
 fn seal_use(name: &str, sealed: &SealMap, home: &str, verb: &str) -> Result<(), LinkError> {
     if let Some((decl, is_capability)) = sealed.get(name) {
+        // A `sealed type` (RFC-0065) restricts only CONSTRUCTION; matching/reading
+        // are unaffected (DoD item 4). A `capability` (RFC-0002) additionally seals
+        // DESTRUCTURING — its carried authority must not be unwrapped elsewhere.
+        if verb == "destructure" && !is_capability {
+            return Ok(());
+        }
         if decl != home {
             // Names may be bare or canonical `module.Ctor` here; show the bare ctor.
             let bare = name.rsplit('.').next().unwrap_or(name);
@@ -1714,13 +1720,13 @@ mod tests {
     }
 
     #[test]
-    fn sealed_type_seals_construction_and_destructure_but_not_reading() {
-        // RFC-0065: a `sealed type` seals its data constructor(s) with the SAME
-        // mechanism a `capability` uses — construction/destructuring is home-module
-        // only (even the qualified `m.Ctor` spelling, BUG-313), but holding,
-        // passing, and reading through the module's smart constructors is fine.
-        // The ctor (`BoxData`) is NOT named after the type (`Box`), so this
-        // exercises the generalization past the capability case (ctor == type name).
+    fn sealed_type_seals_construction_only_not_matching_or_reading() {
+        // RFC-0065: a `sealed type` seals only CONSTRUCTION (the smart-constructor
+        // choke point) — home-module only, even the qualified `m.Ctor` spelling
+        // (BUG-313). Unlike a `capability`, MATCHING/reading are UNAFFECTED
+        // (DoD item 4): inspection can't forge an invalid value. The ctor
+        // (`BoxData`) is NOT named after the type (`Box`), so this exercises the
+        // generalization past the capability case (ctor == type name).
         let lib = "sealed type Box(a):\n    BoxData(a)\n\n\
                    pub fn wrap(x: a) -> Box(a):\n    BoxData(x)\n\n\
                    pub fn unwrap(b: Box(a)) -> a:\n    match b:\n        BoxData(inner) -> inner\n";
@@ -1736,13 +1742,14 @@ mod tests {
             "{err}"
         );
 
-        // DESTRUCTURE from another module — rejected.
+        // DESTRUCTURE from another module — ALLOWED (matching is inspection, not
+        // construction; it cannot forge an invalid Box). This is the key difference
+        // from a capability, whose destructure IS sealed.
         let destr = "import sealed_lib\n\n\
                      fn main(console: Console):\n    \
                      let b = sealed_lib.wrap(1)\n    \
                      match b:\n        sealed_lib.BoxData(inner) -> print(console, \"${inner}\")\n";
-        let err = link_lib_user(lib, destr).expect_err("sealed-type destructure must be rejected");
-        assert!(err.contains("sealed type") && err.contains("destructure"), "{err}");
+        assert!(link_lib_user(lib, destr).is_ok(), "sealed-type match must be allowed");
 
         // Legit: build via the smart constructor, hold, pass, and read the value out.
         let ok = "import sealed_lib\n\n\

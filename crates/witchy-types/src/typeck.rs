@@ -4494,7 +4494,12 @@ fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeErr
                             .collect();
                         c.record_fields
                             .insert(t.name.clone(), (params_in_order.clone(), rec));
-                        if t.sealed {
+                        // Field privacy is a CAPABILITY property (its carried
+                        // authority is secret), not a general sealing one. A
+                        // `sealed type` (RFC-0065) seals only CONSTRUCTION; its
+                        // fields stay readable/matchable (DoD item 4), so only a
+                        // `capability` goes in `sealed_types`.
+                        if t.sealed && t.is_capability {
                             c.sealed_types.insert(t.name.clone());
                         }
                     }

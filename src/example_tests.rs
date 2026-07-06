@@ -45,6 +45,30 @@
         crate::pipeline::link(modules, "main").expect("link")
     }
 
+    /// Like [`resolve_std_src`] but RETURNS the link result (its error message on
+    /// failure) instead of panicking — for tests that assert a link-time rejection
+    /// (e.g. RFC-0065 sealed-construction). Parsing still panics (the source must
+    /// be syntactically valid); only the final link may legitimately fail.
+    fn try_link_std(src: &str) -> Result<ast::Module, String> {
+        use std::collections::{HashSet, VecDeque};
+        let entry = parser::parse_module(src).expect("parse");
+        let mut modules: Vec<(String, ast::Module)> = vec![("main".to_string(), entry.clone())];
+        let mut loaded: HashSet<String> = HashSet::from(["main".to_string()]);
+        let mut queue: VecDeque<ast::Module> = VecDeque::from([entry]);
+        while let Some(module) = queue.pop_front() {
+            for name in module.imports.clone() {
+                if !loaded.insert(name.clone()) {
+                    continue;
+                }
+                let source = crate::bundled_module(&name).expect("a bundled std module");
+                let parsed = parser::parse_module(source).expect("parse std module");
+                queue.push_back(parsed.clone());
+                modules.push((name, parsed));
+            }
+        }
+        crate::pipeline::link(modules, "main").map_err(|e| e.message)
+    }
+
     /// Link a single source as the entry module `t`, for performance-mode tests.
     fn link_mode(src: &str) -> ast::Module {
         let module = parser::parse_module(src).expect("parse");
@@ -625,6 +649,37 @@
             run_linked_on_wasm(&[("main", set_src)], "main"),
             set_expected,
             "compiled Set == Set must agree",
+        );
+    }
+
+    /// (RFC-0065, parity) Set/DateTime/Rng/Url are `sealed type`s: external code must
+    /// build them through the module's smart constructors (dedup / validated /
+    /// parsed), but may still READ and MATCH them. The public API + inspection run
+    /// identically on both backends, and a raw out-of-module data-constructor call is
+    /// a link-time rejection (the same check on both backends — parity by
+    /// construction). Guards BUG-238/252/256/460.
+    #[test]
+    fn rfc0065_sealed_std_types_seal_construction_keep_inspection_on_both_backends() {
+        // Public API (dedup set, validated time, parsed url) + external field-read all
+        // run, and agree on both backends.
+        let ok = "import set\nimport time\nimport url\n\nfn main(console: Console):\n    let s = set.from_list([1, 1, 2, 3])\n    print(console, __render(set.length(s)))\n    let d = time.from_millis(0)\n    print(console, __render(time.year(d)))\n    match url.parse(\"http://h/p\"):\n        Ok(u) -> print(console, url.host(u))\n        Err(e) -> print(console, e)\n";
+        let expected = ["3", "1970", "h"];
+        assert_eq!(link_run(ok), expected, "interp: sealed-type public API + inspection");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", ok)], "main"),
+            expected,
+            "compiled: sealed-type public API + inspection must agree",
+        );
+
+        // Raw out-of-module construction of the data constructor is a link error,
+        // naming the sealed type — so the impossible `DateTime(2026, 13, 40, …)` the
+        // validating `time.civil`/`time.from_millis` would never produce is
+        // unrepresentable outside `time` (BUG-252).
+        let forge = "import time\n\nfn main(console: Console):\n    let d = time.DateTime(2026, 13, 40, 0, 0, 0)\n    print(console, __render(time.year(d)))\n";
+        let err = try_link_std(forge).expect_err("raw sealed construction must be a link error");
+        assert!(
+            err.contains("sealed type") && err.contains("DateTime") && err.contains("construct"),
+            "diagnostic must name the sealed type and construction: {err}"
         );
     }
 

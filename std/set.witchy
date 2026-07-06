@@ -10,7 +10,7 @@ import cmp
 import list
 import string
 
-type Set(a):
+sealed type Set(a):
     items: List(a)
 
 // Two sets are equal when they hold exactly the same members, regardless of

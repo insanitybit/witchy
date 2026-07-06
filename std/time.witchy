@@ -8,7 +8,7 @@
 
 import ascii
 
-type DateTime:
+sealed type DateTime:
     DateTime(Int, Int, Int, Int, Int, Int)
 
 pub fn year(d: DateTime) -> Int:

@@ -10,7 +10,7 @@ import option
 import result
 import encoding
 
-type Url:
+sealed type Url:
     Url(String, String, Int, String)
 
 // Parse a URL, or an error naming what is malformed. A well-formed URL needs a
