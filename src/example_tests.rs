@@ -575,6 +575,80 @@
         );
     }
 
+    /// (RFC-0064 Check 1, parity) A row-3 `var` shape — the abolished *combined*
+    /// write-back+return — is rejected at the shared type-check gate both backends
+    /// run before lowering, so BOTH refuse it identically. The `var`-first /
+    /// unrelated-return variant used to RUN on the interpreter (combined semantics)
+    /// while only WASM rejected it — an interpreter-only shape this closes.
+    #[test]
+    fn rfc0064_row3_var_shape_rejected_on_both_backends() {
+        // (a) `var` in a NON-first position with a self-typed return.
+        let non_first =
+            "fn f(x: Int, var xs: List(Int)) -> List(Int):\n    xs\nfn main(console: Console):\n    print(console, \"hi\")\n";
+        let e1 = typeck::check_str(non_first).expect_err("row-3 (non-first var) is a type error");
+        assert!(e1.contains("write-back channel") && e1.contains("mutator receiver"), "{e1}");
+        // (b) `var` FIRST with an UNRELATED return type — the interpreter-only shape.
+        let unrelated =
+            "fn f(var xs: List(Int), x: Int) -> Int:\n    x\nfn main(console: Console):\n    print(console, \"hi\")\n";
+        let e2 = typeck::check_str(unrelated).expect_err("row-3 (unrelated return) is a type error");
+        assert!(e2.contains("mutator receiver"), "{e2}");
+        // A legal mutator's statement form writes back identically on both backends.
+        let interp_std = |src: &str| interpreter::run_module(resolve_std_src(src), ".", Vec::new()).expect("run");
+        let ok = "import list\n\nfn main(console: Console):\n    var xs: List(Int) = []\n    xs.push(1)\n    xs.push(2)\n    print(console, \"${xs}\")\n";
+        assert_eq!(interp_std(ok), ["[1, 2]"], "interp mutator statement writes back");
+        assert_eq!(wasm_run(ok), ["[1, 2]"], "compiled mutator statement writes back");
+    }
+
+    /// (RFC-0064 Check 2, parity) The BUG-213 trap: `fn bump(var xs: List(Int), by):
+    /// xs.push(by)` (elided return, inferred tail == receiver type) is ambiguous
+    /// between a mutator and a procedure. It now errors at the DECLARATION on both
+    /// backends (the shared gate), instead of silently classifying as a mutator so
+    /// every free call is a no-op. Both explicit annotations run identically.
+    #[test]
+    fn rfc0064_ambiguous_elided_var_receiver_rejected_on_both_backends() {
+        let bad = "fn bump(var xs: List(Int), by: Int):\n    xs\nfn main(console: Console):\n    print(console, \"hi\")\n";
+        let err = typeck::check_str(bad).expect_err("ambiguous elided var receiver must annotate");
+        assert!(err.contains("annotate the intent"), "{err}");
+        let interp_std = |src: &str| interpreter::run_module(resolve_std_src(src), ".", Vec::new()).expect("run");
+        // `-> Nil` declares a PROCEDURE (write-back through the param) — runs the same.
+        let proc = "import list\n\nfn bump(var xs: List(Int), by: Int) -> Nil:\n    xs = list.push(xs, by)\n    return\nfn main(console: Console):\n    var xs: List(Int) = []\n    bump(xs, 5)\n    print(console, \"${xs}\")\n";
+        assert_eq!(interp_std(proc), ["[5]"], "interp procedure writes back through the param");
+        assert_eq!(wasm_run(proc), ["[5]"], "compiled procedure agrees");
+        // `-> List(Int)` declares a MUTATOR — its expression form delivers the value.
+        let mutator = "import list\n\nfn bump(var xs: List(Int), by: Int) -> List(Int):\n    list.push(xs, by)\nfn main(console: Console):\n    var xs: List(Int) = []\n    let ys = bump(xs, 5)\n    print(console, \"${ys}\")\n";
+        assert_eq!(interp_std(mutator), ["[5]"], "interp mutator expression form");
+        assert_eq!(wasm_run(mutator), ["[5]"], "compiled mutator agrees");
+    }
+
+    /// (RFC-0064 Check 3, parity) A discarded non-`Nil` FREE call in statement
+    /// position is the same discard error the method form already raised — a free
+    /// call does not write back. `list.push(xs, 2)` as a bare statement (the
+    /// BUG-209 headline), a user mutator called free-form, and any non-`Nil` free
+    /// call all reject at the shared gate; `let _ =` is the escape hatch.
+    #[test]
+    fn rfc0064_discarded_free_call_rejected_on_both_backends() {
+        // The discard classifier lives in the trait/method rewrite pass; that pass
+        // runs whenever the linked module "needs lowering", which every real
+        // program does once std is bundled (std is full of method calls). So link
+        // the whole set with `resolve_std_src` — the exact module both backends
+        // lower — and check it: a `check` error is refused identically by both.
+        let check_err = |src: &str| typeck::check(&resolve_std_src(src)).expect_err("a discarded free call is an error").message;
+        // The BUG-209 headline: a documented std mutator called in FREE form.
+        let std_mut = "import list\n\nfn main(console: Console):\n    var xs: List(Int) = []\n    list.push(xs, 2)\n    print(console, \"${xs}\")\n";
+        assert!(check_err(std_mut).contains("is discarded"), "std mutator free-call must be discarded");
+        // A user mutator called free-form: its return (the write-back) is thrown away.
+        let user_mut = "import list\n\nfn add(var xs: List(Int), x: Int) -> List(Int):\n    list.push(xs, x)\nfn main(console: Console):\n    var xs: List(Int) = []\n    add(xs, 2)\n    print(console, \"${xs}\")\n";
+        assert!(check_err(user_mut).contains("is discarded"), "user mutator free-call must be discarded");
+        // ANY non-`Nil` free call (not only mutators) whose result is discarded.
+        let non_mut = "import list\n\nfn double(n: Int) -> Int:\n    n * 2\nfn main(console: Console):\n    var xs: List(Int) = []\n    xs = list.push(xs, 1)\n    double(3)\n    print(console, \"${xs}\")\n";
+        assert!(check_err(non_mut).contains("is discarded"), "non-mutator free-call must be discarded");
+        // `let _ = …` is the explicit-discard escape; it runs identically on both.
+        let interp_std = |src: &str| interpreter::run_module(resolve_std_src(src), ".", Vec::new()).expect("run");
+        let ok = "import list\n\nfn main(console: Console):\n    var xs: List(Int) = []\n    xs.push(1)\n    let _ = list.push(xs, 2)\n    print(console, \"${xs}\")\n";
+        assert_eq!(interp_std(ok), ["[1]"], "interp accepts the explicit discard (no write-back)");
+        assert_eq!(wasm_run(ok), ["[1]"], "compiled accepts the explicit discard (no write-back)");
+    }
+
     /// (BUG-341) A type error in comptime-EMITTED code must report a real, in-file
     /// location, not a phantom line number relative to the invisible emitted blob
     /// (which could point PAST the file's EOF). The emitted items' line numbers are

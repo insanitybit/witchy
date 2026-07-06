@@ -1476,3 +1476,100 @@ fn main():
         // An unknown home is a no-op.
         assert_eq!(strip_home_qualifiers("found `app.Point`", ""), "found `app.Point`");
     }
+
+    #[test]
+    fn rfc0064_row3_var_shapes_are_rejected() {
+        // (RFC-0064 Check 1) Row 3 of RFC-0043's table: a `var` parameter that is
+        // neither a procedure channel (`-> Nil`) nor a mutator receiver (first
+        // parameter, self-typed return) carries the abolished *combined*
+        // write-back+return semantics and is a compile error at the shared gate —
+        // rejected before either backend lowers, so parity holds by construction.
+
+        // (a) `var` in a NON-first position with a self-typed return.
+        let non_first =
+            check_str("fn f(x: Int, var xs: List(Int)) -> List(Int):\n    xs\n").unwrap_err();
+        assert!(
+            non_first.contains("write-back channel") && non_first.contains("mutator receiver"),
+            "{non_first}"
+        );
+
+        // (b) `var` FIRST with an UNRELATED (non-`Nil`, non-receiver) return type —
+        // the shape the interpreter used to run with combined semantics while the
+        // WASM backend rejected it; now rejected identically at type-check.
+        let unrelated =
+            check_str("fn f(var xs: List(Int), x: Int) -> Int:\n    x\n").unwrap_err();
+        assert!(unrelated.contains("mutator receiver"), "{unrelated}");
+
+        // Both legal shapes still compile: a procedure channel (`-> Nil`) and a
+        // mutator receiver (first parameter, self-typed return).
+        check_str("fn bump(var n: Int):\n    n = n + 1\n")
+            .expect("a `var` procedure channel is valid");
+        check_str("fn keep(var xs: List(Int), x: Int) -> List(Int):\n    xs\n")
+            .expect("a mutator receiver is valid");
+    }
+
+    #[test]
+    fn rfc0064_ambiguous_elided_var_receiver_must_annotate() {
+        // (RFC-0064 Check 2) A `var` FIRST parameter with an ELIDED return whose
+        // inferred tail type equals the receiver's type is ambiguous between a
+        // mutator (`-> T`, statement form writes back) and a procedure (`-> Nil`).
+        // Write-back is DECLARED, not inferred (RFC-0043's thesis), and this is
+        // the one property whose inferred value changes call-site semantics, so
+        // the author must annotate the intent.
+        let err = check_str("fn bump(var xs: List(Int), by: Int):\n    xs\n").unwrap_err();
+        assert!(err.contains("annotate the intent"), "{err}");
+
+        // An EXPLICIT self-typed return declares a mutator with no extra ceremony.
+        check_str("fn bump(var xs: List(Int), by: Int) -> List(Int):\n    xs\n")
+            .expect("an explicit self-typed return is an unambiguous mutator");
+        // `-> Nil` (with a `return`) is the other unambiguous choice — a procedure.
+        check_str("fn bump(var xs: List(Int), by: Int) -> Nil:\n    xs = xs\n    return\n")
+            .expect("an explicit `-> Nil` return is an unambiguous procedure");
+        // A `var` first param whose inferred tail is a DIFFERENT type is untouched
+        // by this rule (its non-`Nil` shape is instead caught by Check 1).
+        let other =
+            check_str("fn f(var xs: List(Int), x: Int):\n    x\n").unwrap_err();
+        assert!(other.contains("mutator receiver"), "{other}");
+    }
+
+    #[test]
+    fn rfc0064_discarded_free_call_is_an_error() {
+        // (RFC-0064 Check 3) A non-`Nil` FREE call in statement position whose
+        // result is discarded is the same discard error the method form already
+        // raised — a free call does NOT write back (its first argument is not the
+        // syntactic target), so the value is silently thrown away without this.
+        //
+        // The discard classifier lives in the trait/method rewrite pass, which the
+        // single-module `check_str` harness only runs when the module "needs
+        // lowering". The leading `impl` forces that here; a real CLI program always
+        // links std (which needs lowering), so BOTH backends run this check on
+        // every program (verified: even a std-free `f()` discard errors on both).
+        const LOWER: &str = "type Tag:\n    v: Int\nimpl Tag:\n    fn id(self) -> Int:\n        self.v\n";
+
+        // A user mutator called in free form as a statement: its return is lost.
+        let mutator_free = check_str(&format!(
+            "{LOWER}fn add(var xs: List(Int), x: Int) -> List(Int):\n    xs\nfn main(console: Console):\n    var xs: List(Int) = []\n    add(xs, 2)\n    print(console, \"hi\")\n"
+        ))
+        .unwrap_err();
+        assert!(mutator_free.contains("is discarded"), "{mutator_free}");
+
+        // ANY non-`Nil` free call (not only mutators) whose result is discarded.
+        let nonmut_free = check_str(&format!(
+            "{LOWER}fn double(n: Int) -> Int:\n    n * 2\nfn main(console: Console):\n    double(3)\n    print(console, \"hi\")\n"
+        ))
+        .unwrap_err();
+        assert!(nonmut_free.contains("is discarded"), "{nonmut_free}");
+
+        // `let _ = …` is the explicit-discard escape hatch and still compiles.
+        check_str(&format!(
+            "{LOWER}fn double(n: Int) -> Int:\n    n * 2\nfn main(console: Console):\n    let _ = double(3)\n    print(console, \"hi\")\n"
+        ))
+        .expect("`let _ =` is the explicit discard escape");
+
+        // A `Nil`-returning free call in statement position is unaffected — there
+        // is no result to discard.
+        check_str(&format!(
+            "{LOWER}fn noop(n: Int):\n    let _ = n\nfn main(console: Console):\n    noop(3)\n    print(console, \"hi\")\n"
+        ))
+        .expect("a `Nil`-returning free call statement is fine");
+    }
