@@ -79,7 +79,9 @@ async function boot(): Promise<void> {
       },
       promote: async (route: string) => {
         const [name, version] = nameVer(route);
-        const r = await promote2fa(location.hostname, name, version, "maintainer@demo");
+        // The promoter identity is bound server-side to the authenticated session (BUG-278);
+        // the host attaches the bearer via authHeaders, so we send only name/version here.
+        const r = await promote2fa(location.hostname, name, version);
         if (r.ok) return "released ✓";
         const d = (await r.json().catch(() => ({}))) as { error?: string };
         return "refused: " + (d.error ?? r.status);
