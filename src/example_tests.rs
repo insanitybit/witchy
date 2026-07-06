@@ -487,6 +487,36 @@
         );
     }
 
+    /// (BUG-319, parity) Implicit structural `==` on a GENERIC record instantiation
+    /// (`Box(Int)`, std `Set(Int)`) works on BOTH backends. The compiled record-eq
+    /// arm dropped the type arguments (unlike the ADT arm), so a fully-annotated
+    /// `Box(Int) == Box(Int)` passed `check` and ran on the interpreter but was
+    /// rejected at codegen ("unresolved generic payload"). Now generic records carry
+    /// their argument shapes (`RecInst`) and resolve fields under the substitution.
+    #[test]
+    fn generic_record_eq_agrees_on_both_backends() {
+        // A user generic record whose fields are declared OUT of type-parameter
+        // order — pins the DECLARED-parameter mapping (a field-order subst renders
+        // `Rev(8, )` instead of `Rev(x, 1)`).
+        let src = "type Rev(a, b):\n    second: b\n    first: a\n\nfn main(console: Console):\n    let r1: Rev(Int, String) = Rev(\"x\", 1)\n    let r2: Rev(Int, String) = Rev(\"x\", 1)\n    let r3: Rev(Int, String) = Rev(\"y\", 2)\n    print(console, __render(r1 == r2))\n    print(console, __render(r1 == r3))\n    print(console, __render(r1))\n";
+        let expected = ["true", "false", "Rev(x, 1)"];
+        assert_eq!(link_run(src), expected, "interp generic-record eq/render");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled generic-record eq/render must agree",
+        );
+        // std `Set(a)` is itself a generic record, so `Set == Set` must run compiled.
+        let set_src = "import set\n\nfn main(console: Console):\n    let s1: Set(Int) = set.from_list([1, 2, 3])\n    let s2: Set(Int) = set.from_list([1, 2, 3])\n    let s3: Set(Int) = set.from_list([1, 2])\n    print(console, __render(s1 == s2))\n    print(console, __render(s1 == s3))\n";
+        let set_expected = ["true", "false"];
+        assert_eq!(link_run(set_src), set_expected, "interp Set == Set");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", set_src)], "main"),
+            set_expected,
+            "compiled Set == Set must agree",
+        );
+    }
+
     /// (BUG-240, parity) `math.abs(Int.MIN)` has no positive `Int`, so both backends
     /// must ABORT rather than silently wrap back to the negative `Int.MIN`. Ordinary
     /// magnitudes still agree. (Was a stable wrong answer: `-Int.MIN == Int.MIN`.)

@@ -222,6 +222,14 @@ enum EqShape {
     List(Box<EqShape>),
     Tuple(Vec<EqShape>),
     Record(String),
+    /// A GENERIC record INSTANTIATED at the comparison site (`Box(Int)`),
+    /// identified by its type-ARGUMENT shapes — the record analogue of `AdtRec`.
+    /// The `Record` variant carries no arguments, so a generic record's field
+    /// types (`item: a`) could not be resolved (the record arm dropped the type
+    /// args, unlike the ADT arm — BUG-319). The helper resolves each field lazily
+    /// under the argument substitution, so `Box(Int) == Box(Int)` and std
+    /// `Set(a) == Set(a)` compile like the interpreter runs them.
+    RecInst(String, Vec<EqShape>),
     /// A sum type (its variants and their field types come from `adt_variants`).
     Adt(String),
     /// A generic sum type INSTANTIATED at the comparison site: the resolved
@@ -262,6 +270,7 @@ impl EqShape {
             EqShape::List(_)
                 | EqShape::Tuple(_)
                 | EqShape::Record(_)
+                | EqShape::RecInst(..)
                 | EqShape::Adt(_)
                 | EqShape::AdtInst(..)
                 | EqShape::AdtRec(..)
@@ -281,6 +290,10 @@ impl EqShape {
                 format!("tup_{}_", fs.iter().map(|f| f.id()).collect::<Vec<_>>().join("_"))
             }
             EqShape::Record(name) => format!("rec_{name}"),
+            EqShape::RecInst(name, args) => {
+                let a: Vec<String> = args.iter().map(|s| s.id()).collect();
+                format!("reci_{name}_{}_", a.join("_"))
+            }
             EqShape::Adt(name) => format!("adt_{name}"),
             EqShape::AdtInst(name, variants) => {
                 let vs: Vec<String> = variants
@@ -700,6 +713,12 @@ struct Codegen {
     /// can derive an `EqShape` for `List`/`Tuple`/nested-record fields (which the
     /// name-only `record_fields` can't represent).
     record_field_types: HashMap<String, Vec<Type>>,
+    /// Record type name -> its DECLARED type parameters, in order (`Pair(a, b)` ->
+    /// `["a", "b"]`). A generic record's `RecInst` maps use-site type arguments to
+    /// these parameters positionally; using declared order (not field-occurrence
+    /// order) keeps the field substitution correct when fields are declared out of
+    /// parameter order (`Rev(a, b): second: b, first: a`) — BUG-319.
+    record_generics: HashMap<String, Vec<String>>,
     /// (RFC-0027 declared `packed`) Type names declared `packed` (`type P packed:`).
     /// A `List` of such a type is stored as ONE flat inline buffer (the same layout
     /// the `unbox` inference uses for confined record lists), GUARANTEED by the
@@ -911,6 +930,7 @@ impl Codegen {
             fn_ret_tuple_slot_list_elem: HashMap::new(),
             record_fields: HashMap::new(),
             record_field_types: HashMap::new(),
+            record_generics: HashMap::new(),
             custom_eq_types: HashSet::new(),
             packed_types: HashSet::new(),
             adt_variants: HashMap::new(),
@@ -5834,7 +5854,12 @@ impl Codegen {
         }
         if let Expr::Var(v) = e {
             if let Some(rec) = self.local_list_elem.get(v) {
-                return Some(EqShape::List(Box::new(EqShape::Record(rec.clone()))));
+                // A GENERIC record element (`List(Box(Int))`) has no name-only shape —
+                // its type arguments live only in the type table, so fall through to
+                // `table_shape_of` rather than dropping them (BUG-319).
+                if !self.record_is_generic(rec) {
+                    return Some(EqShape::List(Box::new(EqShape::Record(rec.clone()))));
+                }
             }
         }
         if let Expr::Tuple(items) = e {
@@ -5884,6 +5909,16 @@ impl Codegen {
             }
         }
         if let Some(rec) = self.record_type_of(e) {
+            // A GENERIC record (`Box(Int)`) drops its type arguments in the name-only
+            // `Record` shape, so resolve the fully-typed shape (`RecInst`) from
+            // typeck's type table instead — the arguments are what let the eq/render
+            // helper resolve a generic field (`item: a`) (BUG-319). A non-generic
+            // record keeps the fast, name-only path.
+            if self.record_is_generic(&rec) {
+                if let Some(shape) = self.table_shape_of(e) {
+                    return Some(shape);
+                }
+            }
             return Some(EqShape::Record(rec));
         }
         // A constructor of a sum type (`Some(..)`, `Red`, ...). A monomorphic
@@ -6053,7 +6088,29 @@ impl Codegen {
                     )),
                     _ => None,
                 },
-                t if self.record_fields.contains_key(t) => Some(EqShape::Record(t.to_string())),
+                t if self.record_fields.contains_key(t) => {
+                    // A GENERIC record instantiation (`Box(Int)`, std `Set(a)`) must
+                    // carry its type-ARGUMENT shapes, so the eq/render helper can
+                    // resolve a generic field type (`item: a`) under the argument
+                    // substitution — exactly as the ADT arm below does (BUG-319). The
+                    // plain `Record` arm dropped the args, so a fully annotated
+                    // `Box(Int) == Box(Int)` was rejected on the compiled backend.
+                    // A non-generic use (no type args) OR a record whose fields use
+                    // no type variable (a phantom generic like `Wrap(a): count: Int`):
+                    // the arg-free `Record` shape resolves every field concretely.
+                    if args.is_empty() || !self.record_is_generic(t) {
+                        return Some(EqShape::Record(t.to_string()));
+                    }
+                    // Generic record instantiation: map the record's DECLARED type
+                    // parameters (in order) to the use-site argument shapes, so a
+                    // generic field (`item: a`) resolves under the substitution.
+                    let params = self.record_generics.get(t).cloned().unwrap_or_default();
+                    let mut arg_shapes: Vec<EqShape> = Vec::new();
+                    for (_, arg) in params.iter().zip(args) {
+                        arg_shapes.push(self.eq_shape_of_type_rec(arg, subst, visiting)?);
+                    }
+                    Some(EqShape::RecInst(t.to_string(), arg_shapes))
+                }
                 t if self.adt_variants.contains_key(t) => {
                     if args.is_empty() || visiting.iter().any(|v| v == t) {
                         return Some(EqShape::Adt(t.to_string()));
@@ -6108,6 +6165,39 @@ impl Codegen {
                 .map(EqShape::Tuple),
             Type::Fn(..) => None,
         }
+    }
+
+    /// The field-resolution substitution for a `RecInst(tyname, args)`: the record's
+    /// distinct field type variables (first-occurrence order, matching how the
+    /// argument shapes were built in `eq_shape_of_type_rec`) mapped to `args`. Used
+    /// by the eq/render helper builders to resolve a generic field under the
+    /// instantiation — the record analogue of `AdtRec`'s subst.
+    pub(crate) fn record_field_subst(
+        &self,
+        tyname: &str,
+        args: &[EqShape],
+    ) -> HashMap<String, EqShape> {
+        self.record_generics
+            .get(tyname)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .zip(args.iter().cloned())
+            .collect()
+    }
+
+    /// Whether a record type is GENERIC for equality purposes — i.e. one of its
+    /// field types mentions a type variable (`Box(a): item: a`). Such a record's
+    /// shape can only be resolved with its type arguments (via the type table),
+    /// so the name-only `EqShape::Record` fast path must be skipped for it.
+    pub(crate) fn record_is_generic(&self, tyname: &str) -> bool {
+        self.record_field_types.get(tyname).is_some_and(|fields| {
+            let mut params: Vec<String> = Vec::new();
+            for f in fields {
+                collect_type_vars(f, &mut params);
+            }
+            !params.is_empty()
+        })
     }
 
 

@@ -58,7 +58,11 @@ impl Codegen {
     /// recursive `slot_cmp_wir`).
     pub(crate) fn custom_eq_type_of_shape(&self, shape: &EqShape) -> Option<String> {
         let name = match shape {
-            EqShape::Record(n) | EqShape::Adt(n) | EqShape::AdtInst(n, _) | EqShape::AdtRec(n, _) => n,
+            EqShape::Record(n)
+            | EqShape::RecInst(n, _)
+            | EqShape::Adt(n)
+            | EqShape::AdtInst(n, _)
+            | EqShape::AdtRec(n, _) => n,
             _ => return None,
         };
         if self.custom_eq_types.contains(name) {
@@ -319,6 +323,25 @@ impl Codegen {
                 let mut b: witchy_wir::wir::WirSeq = Vec::new();
                 for (i, fty) in fields.iter().enumerate() {
                     let fshape = self.eq_shape_of_type(fty)?;
+                    let off = i32c((4 + 8 * i) as i32);
+                    let cmp = self.slot_cmp_wir(&fshape, add(getl("a"), off.clone()), add(getl("b"), off))?;
+                    b.push(check(cmp));
+                }
+                b.push(N::Push(i32c(1)));
+                (b, vec![])
+            }
+            // A GENERIC record instantiation (`Box(Int)`): resolve each field type
+            // UNDER the argument substitution — the record analogue of `AdtRec`. The
+            // plain `Record` arm resolves fields with an EMPTY subst, so a generic
+            // field (`item: a`) came back `None` and the whole `==` was rejected even
+            // when fully annotated (BUG-319). A self-referential field resolves back
+            // to this same shape, whose helper name is already reserved.
+            EqShape::RecInst(tyname, args) => {
+                let fields = self.record_field_types.get(tyname).cloned()?;
+                let subst = self.record_field_subst(tyname, args);
+                let mut b: witchy_wir::wir::WirSeq = Vec::new();
+                for (i, fty) in fields.iter().enumerate() {
+                    let fshape = self.eq_shape_of_type_with(fty, &subst)?;
                     let off = i32c((4 + 8 * i) as i32);
                     let cmp = self.slot_cmp_wir(&fshape, add(getl("a"), off.clone()), add(getl("b"), off))?;
                     b.push(check(cmp));
@@ -645,6 +668,28 @@ impl Codegen {
                 let mut body: witchy_wir::wir::WirSeq = vec![setl("acc", W::StrPtr(header))];
                 for (i, fty) in fields.iter().enumerate() {
                     let fshape = self.eq_shape_of_type(fty)?;
+                    let render = self.slot_render_wir(&fshape, add(getl("p"), i32c((4 + 8 * i) as i32)))?;
+                    if i > 0 {
+                        body.push(setl("acc", concat(getl("acc"), W::StrPtr(comma))));
+                    }
+                    body.push(setl("acc", concat(getl("acc"), render)));
+                }
+                body.push(N::Push(concat(getl("acc"), W::StrPtr(close))));
+                Some((body, vec![bool_local("acc")]))
+            }
+            // A generic record instantiation renders `Name(f0, f1, …)` like a plain
+            // record, but resolves each field UNDER the argument substitution (so a
+            // generic field `item: a` renders per `Box(Int)`). Mirrors the eq
+            // `RecInst` arm and the render `AdtRec` arm.
+            EqShape::RecInst(tyname, args) => {
+                let fields = self.record_field_types.get(tyname).cloned()?;
+                let subst = self.record_field_subst(tyname, args);
+                let shown = tyname.rsplit_once('.').map_or(tyname.as_str(), |(_, c)| c);
+                let header = self.intern(&format!("{shown}("));
+                let (close, comma) = (self.intern(")"), self.intern(", "));
+                let mut body: witchy_wir::wir::WirSeq = vec![setl("acc", W::StrPtr(header))];
+                for (i, fty) in fields.iter().enumerate() {
+                    let fshape = self.eq_shape_of_type_with(fty, &subst)?;
                     let render = self.slot_render_wir(&fshape, add(getl("p"), i32c((4 + 8 * i) as i32)))?;
                     if i > 0 {
                         body.push(setl("acc", concat(getl("acc"), W::StrPtr(comma))));
