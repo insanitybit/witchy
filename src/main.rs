@@ -1662,7 +1662,6 @@ fn raw_test_shapes(path: &str) -> (std::collections::HashSet<String>, std::colle
 fn run_tests_in_module(
     linked: &ast::Module,
     stem: &str,
-    root: &std::path::Path,
     async_tests: &std::collections::HashSet<String>,
     gen_tests: &std::collections::HashSet<String>,
 ) -> Result<(Vec<String>, Vec<TestFailure>), String> {
@@ -1730,9 +1729,22 @@ fn run_tests_in_module(
             }
         }
         m.items.extend(driver.items);
-        match interpreter::run_module(m, root, Vec::new()) {
-            Ok(_) => passed.push(test),
-            Err(e) => failed.push((test, e.message)),
+        // Run the test on the COMPILED WASM tier — the tier users ship — not the
+        // interpreter oracle: a `witchy test` that passes must reflect the backend
+        // that actually runs in production. A `test_*` is nullary (no capability
+        // params), so the synthesized `main` needs no grants. A `testing.assert` /
+        // `fail_with` lowers to `__witchy_abort`, which `run_wasm_bytes` surfaces as
+        // the same `runtime error: <core>` the interpreter produced (RFC-0045 message
+        // parity), so a failure reads identically. A module that does not lower is
+        // itself a failure: the test cannot run where it ships.
+        let outcome = match codegen::compile_module_binary(&m) {
+            Ok(Some(bytes)) => run_wasm_bytes(&bytes).map(|_| ()),
+            Ok(None) => Err("does not lower to the compiled backend (WASM)".to_string()),
+            Err(e) => Err(e.to_string()),
+        };
+        match outcome {
+            Ok(()) => passed.push(test),
+            Err(msg) => failed.push((test, msg)),
         }
     }
     Ok((passed, failed))
@@ -1744,12 +1756,8 @@ fn run_tests_in_module(
 #[cfg(test)]
 fn run_tests_in_file(path: &str) -> Result<(Vec<String>, Vec<TestFailure>), String> {
     let (linked, stem) = link_file(path)?;
-    let root = std::path::Path::new(path)
-        .parent()
-        .unwrap_or(std::path::Path::new("."))
-        .to_path_buf();
     let (async_tests, gen_tests) = raw_test_shapes(path);
-    run_tests_in_module(&linked, &stem, &root, &async_tests, &gen_tests)
+    run_tests_in_module(&linked, &stem, &async_tests, &gen_tests)
 }
 
 /// `witchy test <file|dir>`: run in-language tests, print a cargo-style
@@ -1799,12 +1807,8 @@ fn run_tests(path: &str) -> Result<bool, String> {
             }
             Err(e) => return Err(e),
         };
-        let root = std::path::Path::new(file)
-            .parent()
-            .unwrap_or(std::path::Path::new("."))
-            .to_path_buf();
         let (async_tests, gen_tests) = raw_test_shapes(file);
-        let (passed, failed) = match run_tests_in_module(&linked, &stem, &root, &async_tests, &gen_tests) {
+        let (passed, failed) = match run_tests_in_module(&linked, &stem, &async_tests, &gen_tests) {
             Ok(r) => r,
             Err(e) => {
                 // Linked OK but broken (a type error or a `mode opt` violation): count
