@@ -364,7 +364,7 @@ fn parse_float_tail(cs: List(String), start: Int, ip_end: Int) -> Result((Json, 
 // `x - x` is `NaN`, which is not equal to `0.0`; for a finite `x` it is exactly
 // `0.0`. witchy exposes no `is_finite` primitive, so this identity stands in.
 fn is_finite(x: Float) -> Bool:
-    (x - x) == 0.0
+    x - x == 0.0
 
 fn pow10(k: Int) -> Float:
     var out = 1.0
@@ -648,11 +648,11 @@ pub fn bool_of(j: Json) -> Result(Bool, String):
 pub fn float_of(j: Json) -> Result(Float, String):
     match j:
         JsonFloat(f) -> Ok(f)
-        // A JSON number with no fraction/exponent decodes to `JsonInt`, but it is
-        // still a valid `Float` field value (`{"ratio": 1}`), so widen it here.
         JsonInt(n) -> Ok(math.to_float(n))
         _ -> Err("expected a number")
 
+// A JSON number with no fraction/exponent decodes to `JsonInt`, but it is
+// still a valid `Float` field value (`{"ratio": 1}`), so widen it here.
 pub fn array_of(j: Json) -> Result(List(Json), String):
     match j:
         JsonArray(items) -> Ok(items)

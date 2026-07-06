@@ -22,9 +22,9 @@ pub fn decode(text: String) -> Result(List(List(String)), String):
     var rows = []
     var row = []
     var field = ""
-    var in_quotes = false   // currently inside the quoted section of a field
-    var started = false     // this field has consumed at least one char
-    var closed = false      // this field's closing `"` has been seen
+    var in_quotes = false
+    var started = false
+    var closed = false
     var i = 0
     while i < n:
         let ch = list.at(chars, i)

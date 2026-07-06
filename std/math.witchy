@@ -188,7 +188,7 @@ fn to_base_neg(n: Int, base: Int) -> String:
     if n == 0:
         ""
     else:
-        to_base_neg(n / base, base) + base_digit(0 - (n % base))
+        to_base_neg(n / base, base) + base_digit(0 - n % base)
 
 fn base_digit(d: Int) -> String:
     string.substring("0123456789abcdef", d, d + 1)
@@ -231,7 +231,7 @@ pub fn float_clamp(x: Float, lo: Float, hi: Float) -> Float:
 // lose precision to the Float itself. `decimals` is capped at 18 — the most
 // places the `Int` scale `pow(10, decimals)` can hold without overflowing.
 pub fn format_float(x: Float, decimals: Int) -> String:
-    let d = if decimals < 0: 0 else if decimals > 18: 18 else: decimals
+    let d = if decimals < 0: 0 else: if decimals > 18: 18 else: decimals
     let scale = pow(10, d)
     let scaled = math.to_int(float_abs(x) * math.to_float(scale) + 0.5)
     let sign = if x < 0.0 && scaled > 0: "-" else: ""

@@ -29,11 +29,11 @@ type Toml:
 pub fn decode(text: String) -> Result(Toml, String):
     var root = TomlTable([])
     var section = []
-    var aot = ""          // current `[[name]]` array key
-    var in_aot = false    // whether we are inside a `[[name]]` block
-    var aot_seq = 0       // distinguishes duplicate keys per array-of-tables entry
-    var seen_keys = []    // context-qualified key ids already inserted
-    var seen_tables = []  // `[section]` header paths already defined
+    var aot = ""
+    var in_aot = false
+    var aot_seq = 0
+    var seen_keys = []
+    var seen_tables = []
     for line in string.lines(text):
         let t = string.trim(line)
         if is_array_header(t):
@@ -102,9 +102,10 @@ fn update_last(arr: List(Toml), kv_key: String, value: Toml) -> List(Toml):
     var i = 0
     for elem in arr:
         if i == last:
-            match elem:
-                TomlTable(pairs) -> out = list.push(out, TomlTable(upsert(pairs, kv_key, value)))
-                _ -> out = list.push(out, elem)
+            if let TomlTable(pairs) = elem:
+                out = list.push(out, TomlTable(upsert(pairs, kv_key, value)))
+            else:
+                out = list.push(out, elem)
         else:
             out = list.push(out, elem)
         i = i + 1
