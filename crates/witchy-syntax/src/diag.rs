@@ -33,6 +33,10 @@ pub enum DiagTemplate {
     NanOrder,
     /// `{s}` — a user `fail(msg)`; the message is passed through verbatim.
     Fail,
+    /// `required secret `{s}` was not granted` — `SecretStore.require(name)` on a
+    /// name the host did not grant. Matches the interpreter's eager error so the
+    /// compiled backend fails at the require site, not lazily (BUG-394).
+    SecretRequired,
 }
 
 impl DiagTemplate {
@@ -45,6 +49,7 @@ impl DiagTemplate {
             DiagTemplate::ParseInt => 3,
             DiagTemplate::NanOrder => 4,
             DiagTemplate::Fail => 5,
+            DiagTemplate::SecretRequired => 6,
         }
     }
 
@@ -58,6 +63,7 @@ impl DiagTemplate {
             3 => Some(DiagTemplate::ParseInt),
             4 => Some(DiagTemplate::NanOrder),
             5 => Some(DiagTemplate::Fail),
+            6 => Some(DiagTemplate::SecretRequired),
             _ => None,
         }
     }
@@ -75,6 +81,7 @@ impl DiagTemplate {
             DiagTemplate::ParseInt => format!("cannot parse `{s}` as an Int"),
             DiagTemplate::NanOrder => "cannot compare NaN".to_string(),
             DiagTemplate::Fail => s.to_string(),
+            DiagTemplate::SecretRequired => format!("required secret `{s}` was not granted"),
         }
     }
 }
@@ -106,6 +113,7 @@ mod tests {
             DiagTemplate::ParseInt,
             DiagTemplate::NanOrder,
             DiagTemplate::Fail,
+            DiagTemplate::SecretRequired,
         ] {
             assert_eq!(DiagTemplate::from_id(t.id()), Some(t));
         }
@@ -128,6 +136,10 @@ mod tests {
         );
         assert_eq!(DiagTemplate::NanOrder.render(0, 0, ""), "cannot compare NaN");
         assert_eq!(DiagTemplate::Fail.render(0, 0, "the reason"), "the reason");
+        assert_eq!(
+            DiagTemplate::SecretRequired.render(0, 0, "signing"),
+            "required secret `signing` was not granted"
+        );
     }
 
     #[test]

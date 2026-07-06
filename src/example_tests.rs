@@ -4418,6 +4418,72 @@ fn yn(b: Bool) -> String:
         );
     }
 
+    /// (BUG-394) `SecretStore.require(name)` for an ungranted secret must fail
+    /// EAGERLY on BOTH backends — at the require site — even when the returned
+    /// `Secret` is NEVER used. The compiled backend previously lowered `require` to
+    /// a bare `secretstore_lookup` returning -1, so an unused missing secret ran to
+    /// the end without error (lazy), diverging from the interpreter. A GRANTED
+    /// secret still resolves on both backends.
+    #[test]
+    fn require_missing_secret_errors_eagerly_on_both_backends() {
+        use crate::runtime::{Capabilities, Runtime};
+        // The required secret is fetched but NEVER used — the compiled backend must
+        // still trap at the require, not run to "reached".
+        let src = "import secretstore\nfn main(console: Console, secrets: SecretStore):\n    let s = secrets.require(\"missing\")\n    print(console, \"reached\")\n";
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+
+        // Interpreter (oracle): errors at the require site.
+        let interp = interpreter::run_module(linked.clone(), ".", Vec::new());
+        let msg = interp.expect_err("interp must reject an ungranted required secret").message;
+        assert!(msg.contains("required secret `missing` was not granted"), "interp msg: {msg}");
+
+        // Compiled WASM: no "missing" secret granted → must trap eagerly (not print).
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(&bytes, Capabilities { print: true, quiet: true, ..Default::default() }, 64)
+            .expect("spawn");
+        assert!(
+            actor.run().is_err(),
+            "compiled backend must trap eagerly on an ungranted required secret, not run to the end"
+        );
+
+        // A GRANTED (but unused) secret resolves on both backends.
+        let ok_module = parser::parse_module(src).expect("parse");
+        let ok_linked = crate::pipeline::link(vec![("main".into(), ok_module)], "main").expect("link");
+        let (interp_ok, _) = interpreter::run_module_exit_secrets(
+            ok_linked.clone(),
+            ".",
+            Vec::new(),
+            Vec::new(),
+            None,
+            vec![("missing".to_string(), b"hunter2".to_vec(), false)],
+        )
+        .expect("interp with grant");
+        assert_eq!(interp_ok, vec!["reached"]);
+        let ok_bytes = codegen::compile_module_binary(&ok_linked)
+            .expect("compile")
+            .expect("lowers");
+        let mut ok_actor = rt
+            .spawn(
+                &ok_bytes,
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    secrets: vec![crate::runtime::SecretGrant::new("missing", b"hunter2".to_vec())],
+                    ..Default::default()
+                },
+                64,
+            )
+            .expect("spawn");
+        ok_actor.run().expect("compiled with grant");
+        assert_eq!(ok_actor.output(), vec!["reached"], "granted secret resolves on the compiled backend");
+    }
+
     /// Every ```witchy code block in the documentation must be a real program:
     /// it parses, links, and type-checks; and when it defines a `main` whose
     /// footprint needs nothing beyond Console, it RUNS on both backends and the

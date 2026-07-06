@@ -114,6 +114,11 @@ const SCRUT_POOL: usize = 16;
 /// is fetched once and reused for both the present-test and the `Some` payload.
 const SECRET_TMP: &str = "__witchy_secret_tmp";
 
+/// Scratch i32 slot holding a `SecretStore.require` name-string pointer, so the
+/// name is evaluated ONCE and reused for both the `secretstore_lookup` and the
+/// eager not-granted abort message (BUG-394).
+const SECRET_NAME_TMP: &str = "__witchy_secret_name_tmp";
+
 /// (RFC-0037 §3) Scratch i32 local holding a record pointer under `WITCHY_TYPE_CHECK`, so the
 /// type-tag check and the field load share one evaluation of the base.
 const TYPECHECK_TMP: &str = "__witchy_typecheck_tmp";
@@ -1984,6 +1989,7 @@ impl Codegen {
             locals.push(WirLocal { name: format!("__witchy_scrut_save_{i}"), ty: i64t() });
         }
         locals.push(WirLocal { name: SECRET_TMP.into(), ty: i32t() });
+        locals.push(WirLocal { name: SECRET_NAME_TMP.into(), ty: i32t() });
         // Scratch slots for the inlined in-place `set_at` fast path (index i32,
         // value i64): the common in-bounds + owned case stores directly without a
         // `$list_set_cap` call; the helper is only invoked for OOB / re-own.
@@ -5530,6 +5536,7 @@ impl Codegen {
                     locals.push(WirLocal { name: format!("__witchy_scrut_save_{i}"), ty: WirTy::Int });
                 }
                 locals.push(WirLocal { name: SECRET_TMP.into(), ty: i32t() });
+                locals.push(WirLocal { name: SECRET_NAME_TMP.into(), ty: i32t() });
                 // Scratch slots for the inlined in-place set_at/push fast path (a
                 // self-assign accumulator can live inside a lifted lambda body too).
                 locals.push(WirLocal { name: "__witchy_set_idx".into(), ty: i32t() });
