@@ -27,6 +27,11 @@ scratch/
 # local bug reports (deep-eval triage backlog — kept out of tracked history)
 bugs/
 dist/
+!projects/coven-web/web/dist/
+!projects/coven-web/web/dist/compartments/
+!projects/coven-web/web/dist/compartments/d3-runes-chart/
+!projects/coven-web/web/dist/compartments/d3-runes-chart/index.html
+!projects/coven-web/web/dist/compartments/d3-runes-chart/chart.test.mjs
 
 # source PDFs (e.g. the papers under external-refs/) — keep locally as
 # reference; commit the markdown notes/index, not the binaries
