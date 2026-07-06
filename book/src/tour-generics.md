@@ -95,8 +95,7 @@ comparison hierarchy for it and the same function applies. The `>` operator
 desugars to the type's `Ord` impl, so you never call a `greater`/`compare`
 function by name. The standard `cmp` and `show` modules provide these traits
 (`PartialEq` → `Eq` → `PartialOrd` → `Ord`) along with generic algorithms built
-on them (`cmp.max_of`, `cmp.sort`, and so on). `Eq`-bounded list membership and
-lookup live in `list` (`list.contains`, `list.index_of`).
+on them (`cmp.member`, `cmp.max_of`, `cmp.sort`, and so on).
 
 ## `impl Trait` and rendering with `Show`
 

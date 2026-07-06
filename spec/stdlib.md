@@ -256,6 +256,22 @@ The smallest element of `xs`, or `default` when `xs` is empty. As with `maximum`
 
 Sort any list of an `Ord` type ascending — a stable insertion sort that dispatches through the element type's `Ord` impl, so it is content-correct on both backends (Int, String, Duration, or your own `Ord` types) without a caller-supplied comparator. For Ints, `list.sort` is the lighter default.
 
+#### `fn member(xs: List(a), x: a) -> Bool where a: Eq`
+
+Whether `x` is in `xs`, by the element type's `Eq` impl — correct on both backends, unlike a generic `==`-based search reached through a type variable.
+
+#### `fn index_of(xs: List(a), x: a) -> Int where a: Eq`
+
+The index of the first element equal to `x`, or -1 if absent.
+
+#### `fn count(xs: List(a), x: a) -> Int where a: Eq`
+
+How many elements equal `x` (by the element type's `Eq`).
+
+#### `fn unique(xs: List(a)) -> List(a) where a: Eq`
+
+The list with duplicates removed, keeping the first occurrence of each element (by the element type's `Eq`), in original order. Equivalent to `list.unique`, which is also `Eq`-bound and content-correct on both backends.
+
 ## `compiler`
 
 compiler — witchy's own toolchain, exposed to witchy programs.
@@ -1352,10 +1368,6 @@ Whether every element satisfies `pred` (true for the empty list).
 #### `fn index_of(xs: List(a), target: a) -> Option(Int) where a: Eq`
 
 The index of the first element equal to `target` as `Some`, or `None` if absent (RFC-0044 rule 1: absence is `Option`, never a -1 sentinel). The `where a: Eq` bound makes the equality content-correct on both backends.
-
-#### `fn count(xs: List(a), target: a) -> Int where a: Eq`
-
-How many elements equal `target`, by the element type's `Eq` impl. The `where a: Eq` bound makes the equality content-correct on both backends, including user record element types. For an arbitrary predicate, reach for `count_where`.
 
 #### `fn take(xs: List(a), n: Int) -> List(a)`
 

@@ -503,17 +503,6 @@ pub fn index_of(xs: List(a), target: a) -> Option(Int) where a: Eq:
         i = i + 1
     None
 
-// How many elements equal `target`, by the element type's `Eq` impl. The
-// `where a: Eq` bound makes the equality content-correct on both backends,
-// including user record element types. For an arbitrary predicate, reach for
-// `count_where`.
-pub fn count(xs: List(a), target: a) -> Int where a: Eq:
-    var n = 0
-    for x in xs:
-        if x == target:
-            n = n + 1
-    n
-
 // The first `n` elements (fewer if the list is shorter).
 pub fn take(xs: List(a), n: Int) -> List(a):
     var out = []

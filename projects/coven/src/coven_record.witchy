@@ -2,9 +2,9 @@
 // payload it is verified against. `derive(Reflect)` encodes the record to JSON via
 // reflection (`json.from_value`) and `derive(Deserialize)` reconstructs it from JSON;
 // field order matches the Rust `Record`, so the bytes are identical. Records are
-// signed over `signing_payload` (a fixed line format byte-identical to pm.witchy's
-// `record_payload`), not over the JSON, so a record signed here verifies under the
-// same ed25519 verifier the PM uses.
+// signed over `signing_payload` (a fixed line format byte-identical to
+// src/pm/registry.rs), not over the JSON, so a record signed here verifies under
+// the Rust ed25519 verifier.
 
 import json
 import reflect
@@ -62,26 +62,9 @@ pub fn state_of(s: String) -> State:
         Unknown
 
 // The canonical, signed view of a record — every security-relevant field except the
-// signature. Byte-identical to pm.witchy's `record_payload`.
+// signature. Byte-identical to src/pm/registry.rs::Record::signing_payload.
 pub fn signing_payload(name: String, version: String, state: String, hash: String, rt: List(String), uploaded_by: String, promoted_by: String, factor: String, provenance: String, released_at: Int) -> String:
-    "coven-v1\nname=" + name + "\nversion=" + version + "\nstate=" + state + "\nhash=" + hash + "\nrt=" + encode_footprint(rt) + "\nbuild=\nuploaded_by=" + uploaded_by + "\npromoted_by=" + promoted_by + "\nfactor=" + factor + "\nprovenance=" + provenance + "\nreleased_at=" + "${released_at}"
-
-// Injective encoding of a footprint list for the signed payload. A bare comma join
-// is NOT injective — `["A,B"]` and `["A", "B"]` both render `A,B`, and witchy's own
-// rights strings carry commas (`Net[Connect, Tcp]`, `Dir[Read, Write]`), so a comma
-// join would let two different footprint lists share one signed payload (signature
-// confusion). Length-prefixing every element (`<charlen>:<elem>`) makes the encoding
-// unambiguous, so the signature binds the exact list shape. MUST stay byte-identical
-// to pm.witchy's `encode_footprint`.
-fn encode_footprint(xs: List(String)) -> String:
-    var out = ""
-    var first = true
-    for e in xs:
-        if !first:
-            out = out + ","
-        out = out + "${string.length(e)}:" + e
-        first = false
-    out
+    "coven-v1\nname=" + name + "\nversion=" + version + "\nstate=" + state + "\nhash=" + hash + "\nrt=" + list.join(rt, ",") + "\nbuild=\nuploaded_by=" + uploaded_by + "\npromoted_by=" + promoted_by + "\nfactor=" + factor + "\nprovenance=" + provenance + "\nreleased_at=" + "${released_at}"
 
 // Build + sign a record, returning its coven.json text. `released_at` (unix seconds;
 // 0 = not yet released) is part of the signed payload — tamper-evident.

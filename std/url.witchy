@@ -32,41 +32,16 @@ pub fn parse(s: String) -> Result(Url, String):
             let cut = authority_end(rest)
             let authority = string.substring(rest, 0, cut)
             let path = if cut >= string.char_count(rest): "/" else: string.substring(rest, cut, string.char_count(rest))
-            parse_authority(scheme, authority, path, s)
-
-// Split an authority into host + optional port and build the Url, or an error.
-// A bracketed IPv6 literal (`[::1]`, `[2001:db8::1]:443`) keeps every colon
-// inside the brackets as part of the host — only a `:port` AFTER the matching
-// `]` is a port. A plain hostname or IPv4 literal splits on its single colon, as
-// before. The host retains its brackets, so `format` round-trips it and the Net
-// layer (which also understands `[host]:port`) sees the same literal.
-fn parse_authority(scheme: String, authority: String, path: String, s: String) -> Result(Url, String):
-    if string.starts_with(authority, "["):
-        let close = string.index_of(authority, "]") ?? -1
-        if close < 0:
-            Err("unterminated IPv6 literal in: " + s)
-        else:
-            let host = string.substring(authority, 0, close + 1)
-            let after = string.substring(authority, close + 1, string.char_count(authority))
-            if string.is_empty(after):
+            let colon = string.index_of(authority, ":") ?? -1
+            let host = if colon < 0: authority else: string.substring(authority, 0, colon)
+            if string.is_empty(host):
+                Err("empty host in: " + s)
+            else if colon < 0:
                 Ok(Url(scheme, host, default_port(scheme), path))
-            else if string.starts_with(after, ":"):
-                match parse_port(string.substring(after, 1, string.char_count(after))):
+            else:
+                match parse_port(string.substring(authority, colon + 1, string.char_count(authority))):
                     Some(p) -> Ok(Url(scheme, host, p, path))
                     None -> Err("invalid port in: " + s)
-            else:
-                Err("trailing junk after IPv6 literal in: " + s)
-    else:
-        let colon = string.index_of(authority, ":") ?? -1
-        let host = if colon < 0: authority else: string.substring(authority, 0, colon)
-        if string.is_empty(host):
-            Err("empty host in: " + s)
-        else if colon < 0:
-            Ok(Url(scheme, host, default_port(scheme), path))
-        else:
-            match parse_port(string.substring(authority, colon + 1, string.char_count(authority))):
-                Some(p) -> Ok(Url(scheme, host, p, path))
-                None -> Err("invalid port in: " + s)
 
 // The index in `rest` where the authority ends: the earliest of `/`, `?`, `#`,
 // or the end of the string when none is present.

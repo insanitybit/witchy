@@ -2557,22 +2557,7 @@ fn record_field_has_newline(doc: Json) -> Bool:
     string.contains(jget(doc, "uploaded_by"), "\n") || string.contains(jget(doc, "promoted_by"), "\n") || string.contains(jget(doc, "second_factor"), "\n") || string.contains(jget(doc, "provenance"), "\n")
 
 fn record_payload(doc: Json) -> String:
-    "coven-v1\nname=" + jget(doc, "name") + "\nversion=" + jget(doc, "version") + "\nstate=" + jget(doc, "state") + "\nhash=" + jget(doc, "hash") + "\nrt=" + encode_footprint(json.get_strings(doc, "runtime_footprint")) + "\nbuild=\nuploaded_by=" + jget(doc, "uploaded_by") + "\npromoted_by=" + jget(doc, "promoted_by") + "\nfactor=" + jget(doc, "second_factor") + "\nprovenance=" + jget(doc, "provenance") + "\nreleased_at=" + "${jget_int(doc, "released_at")}"
-
-// Injective encoding of a footprint list for the signed payload — length-prefixes
-// each element (`<charlen>:<elem>`) so `["A,B"]` and `["A", "B"]` no longer share a
-// payload (witchy rights strings carry commas, e.g. `Net[Connect, Tcp]`). MUST stay
-// byte-identical to coven_record.witchy's `encode_footprint`, or signatures + TUF
-// target digests minted by coven will not verify here.
-fn encode_footprint(xs: List(String)) -> String:
-    var out = ""
-    var first = true
-    for e in xs:
-        if !first:
-            out = out + ","
-        out = out + "${string.length(e)}:" + e
-        first = false
-    out
+    "coven-v1\nname=" + jget(doc, "name") + "\nversion=" + jget(doc, "version") + "\nstate=" + jget(doc, "state") + "\nhash=" + jget(doc, "hash") + "\nrt=" + list.join(json.get_strings(doc, "runtime_footprint"), ",") + "\nbuild=\nuploaded_by=" + jget(doc, "uploaded_by") + "\npromoted_by=" + jget(doc, "promoted_by") + "\nfactor=" + jget(doc, "second_factor") + "\nprovenance=" + jget(doc, "provenance") + "\nreleased_at=" + "${jget_int(doc, "released_at")}"
 
 fn jget_int(doc: Json, key: String) -> Int:
     match json.get(doc, key):
