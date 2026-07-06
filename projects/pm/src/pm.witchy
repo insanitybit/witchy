@@ -699,20 +699,29 @@ fn cmd_deps(console: Console, root: Dir, dir: String):
                 let (name, inline) = pair
                 print(console, name + " -> " + dep_source(inline))
 
-// tree <dir> — the rune and its direct dependencies, indented.
+// tree <dir> — the rune and its dependency tree, indented. BUG-134: recurses into
+// path dependencies (the transitive closure), not just the direct line; a registry
+// dependency is a leaf (its own subtree lives in the registry, not on disk). A
+// diamond/cycle terminates via the visited set.
 fn cmd_tree(console: Console, root: Dir, dir: String):
     if string.is_empty(dir):
         print(console, "usage: pm tree <dir>")
     else:
         let manifest = read(root, join_path(dir, "witchy.toml"))
         print(console, field(manifest, "rune.name"))
-        let deps = toml.table(manifest, "dependencies")
-        if list.length(deps) == 0:
+        if list.length(toml.table(manifest, "dependencies")) == 0:
             print(console, "  (no dependencies)")
         else:
-            for pair in deps:
-                let (name, inline) = pair
-                print(console, "  " + name + " (" + dep_source(inline) + ")")
+            tree_children(console, root, dir, "  ", [])
+
+fn tree_children(console: Console, root: Dir, dir: String, indent: String, seen: List(String)):
+    if exists(root, join_path(dir, "witchy.toml")):
+        for pair in toml.table(read(root, join_path(dir, "witchy.toml")), "dependencies"):
+            let (name, inline) = pair
+            print(console, indent + name + " (" + dep_source(inline) + ")")
+            if let Some(rel) = toml.inline_get(inline, "path"):
+                if !has(seen, name):
+                    tree_children(console, root, normalize_path(join_path(dir, rel)), indent + "  ", list.push(seen, name))
 
 // vendor <dir> — materialize path dependencies' sources into <dir>/vendor/<name>
 // for offline, auditable builds. Copies each dep's src/*.witchy and manifest.
@@ -1031,22 +1040,43 @@ fn resp_field(text: String, key: String) -> String:
             None -> "?"
         Err(_e) -> "?"
 
-// why <dir> <name> — explain a dependency's presence in the rune.
+// why <dir> <name> — explain a dependency's presence in the rune. BUG-134: reports
+// a transitive dependency too, tracing the path from the root to it (`app -> lib ->
+// name`), not only a direct match.
 fn cmd_why(console: Console, root: Dir, dir: String, name: String) -> Int:
     if string.is_empty(dir) || string.is_empty(name):
         print(console, "usage: pm why <dir> <name>")
         1
     else:
         let manifest = read(root, join_path(dir, "witchy.toml"))
-        var found = false
+        var direct = false
         for pair in toml.table(manifest, "dependencies"):
             let (dep, inline) = pair
             if dep == name:
-                found = true
+                direct = true
                 print(console, name + " — direct dependency (" + dep_source(inline) + ")")
-        if !found:
-            print(console, name + " is not a dependency of this rune")
+        if !direct:
+            match why_path(root, dir, name, []):
+                Some(chain) -> print(console, name + " — transitive dependency (" + chain + ")")
+                None -> print(console, name + " is not a dependency of this rune (directly or transitively)")
         0
+
+// The dependency path from `dir` down to `target` (import names joined by ` -> `),
+// or None if `target` is not reachable through the path-dependency closure.
+fn why_path(root: Dir, dir: String, target: String, seen: List(String)) -> Option(String):
+    var found = None
+    if exists(root, join_path(dir, "witchy.toml")):
+        for pair in toml.table(read(root, join_path(dir, "witchy.toml")), "dependencies"):
+            let (name, inline) = pair
+            if is_none(found):
+                if name == target:
+                    found = Some(name)
+                else:
+                    if let Some(rel) = toml.inline_get(inline, "path"):
+                        if !has(seen, name):
+                            if let Some(sub) = why_path(root, normalize_path(join_path(dir, rel)), target, list.push(seen, name)):
+                                found = Some(name + " -> " + sub)
+    found
 
 // why-cap <dir> <Cap> — which dependencies introduce a capability into the tree.
 fn cmd_why_cap(console: Console, root: Dir, dir: String, cap: String) -> Int:
