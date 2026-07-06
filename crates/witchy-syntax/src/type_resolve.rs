@@ -96,18 +96,28 @@ struct ModTypes {
 struct World {
     types: HashMap<String, ModTypes>,
     fns: HashMap<String, HashSet<String>>,
+    /// module -> the ambient-named types it declares (`cmp.Ordering`, `set.Set`,
+    /// `iter.Iter`, `option.Option`). Kept OUT of `types` — they stay bare (a bare
+    /// `Ordering` is ambient) — but recorded so the qualified spelling `cmp.Ordering`
+    /// resolves to the same bare ambient name instead of a false "no such type".
+    ambient: HashMap<String, HashSet<String>>,
 }
 
 impl World {
     fn build(modules: &[(String, Module)]) -> World {
         let mut types: HashMap<String, ModTypes> = HashMap::new();
         let mut fns: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut ambient: HashMap<String, HashSet<String>> = HashMap::new();
         for (name, m) in modules {
             let mt = types.entry(name.clone()).or_default();
             let fset = fns.entry(name.clone()).or_default();
             for item in &m.items {
                 match item {
-                    Item::Type(t) if !is_ambient_type(&t.name) && !is_synthetic_type(&t.name) => {
+                    Item::Type(t) if is_synthetic_type(&t.name) => {}
+                    Item::Type(t) if is_ambient_type(&t.name) => {
+                        ambient.entry(name.clone()).or_default().insert(t.name.clone());
+                    }
+                    Item::Type(t) => {
                         mt.types.insert(t.name.clone());
                         for v in &t.variants {
                             mt.ctors.insert(v.name.clone(), t.name.clone());
@@ -120,12 +130,17 @@ impl World {
                 }
             }
         }
-        World { types, fns }
+        World { types, fns, ambient }
     }
 
     /// Whether `module` declares a type spelled (bare) `ty`.
     fn module_has_type(&self, module: &str, ty: &str) -> bool {
         self.types.get(module).is_some_and(|mt| mt.types.contains(ty))
+    }
+
+    /// Whether `module` declares the ambient-named type `ty` (e.g. `cmp`/`Ordering`).
+    fn module_declares_ambient(&self, module: &str, ty: &str) -> bool {
+        self.ambient.get(module).is_some_and(|s| s.contains(ty))
     }
 }
 
@@ -194,18 +209,24 @@ impl<'a> Scope<'a> {
         }
         for (srcmod, names) in from_imports {
             for name in names {
+                // An ambient name (`Ordering`, `Set`, `Iter`, `Less`, …) is in
+                // scope everywhere without an import — so a `from cmp import
+                // Ordering` is a collision, not a missing export. Check this FIRST:
+                // ambient types are kept out of the module type map, so the
+                // export check below would otherwise fire the false "exports no
+                // type or function" message (BUG-291).
+                if is_ambient_type(name) || is_ambient_ctor(name) {
+                    return lerr(format!(
+                        "`from {srcmod} import {name}` collides with the ambient prelude name \
+                         `{name}` — it is already in scope everywhere; drop the import"
+                    ));
+                }
                 let brought_type = world.module_has_type(srcmod, name);
                 let brought_fn = world.fns.get(srcmod).is_some_and(|s| s.contains(name));
                 if !brought_type && !brought_fn {
                     return lerr(format!(
                         "`from {srcmod} import {name}`: module `{srcmod}` exports no type or \
                          function named `{name}`"
-                    ));
-                }
-                if is_ambient_type(name) || is_ambient_ctor(name) {
-                    return lerr(format!(
-                        "`from {srcmod} import {name}` collides with the ambient prelude name \
-                         `{name}` — it is already in scope everywhere; drop the import"
                     ));
                 }
                 if let Some(prev) = unqual.get(name.as_str()) {
@@ -250,6 +271,12 @@ impl<'a> Scope<'a> {
                 return lerr(format!(
                     "type `{name}`: module `{module}` is not imported (add `import {module}`)"
                 ));
+            }
+            // An ambient type declared by this module (`cmp.Ordering`, `set.Set`,
+            // `iter.Iter`, `option.Option`): the qualified spelling is sugar for
+            // the bare ambient name (BUG-291) — they name one and the same type.
+            if is_ambient_type(ty) && self.world.module_declares_ambient(module, ty) {
+                return Ok(ty.to_string());
             }
             if !self.world.module_has_type(module, ty) {
                 return lerr(format!("module `{module}` has no type `{ty}`"));
@@ -811,6 +838,32 @@ mod tests {
             ),
         ])
         .expect("no collision");
+    }
+
+    const CMP_STUB: &str =
+        "type Ordering:\n    Less\n    Equal\n    Greater\n\npub fn reverse(o: Ordering) -> Ordering:\n    o\n";
+
+    #[test]
+    fn qualified_ambient_type_resolves() {
+        // BUG-291: `cmp.Ordering` in an annotation resolves to the bare ambient
+        // `Ordering`, not a false "module `cmp` has no type `Ordering`".
+        resolve_src(&[
+            ("cmp", CMP_STUB),
+            ("main", "import cmp\n\nfn f(o: cmp.Ordering) -> Int:\n    0\n"),
+        ])
+        .expect("cmp.Ordering resolves");
+    }
+
+    #[test]
+    fn from_import_ambient_type_is_collision_not_missing_export() {
+        // BUG-291: `from cmp import Ordering` is an ambient-name collision, not the
+        // false "exports no type or function named `Ordering`".
+        let err = resolve_src(&[
+            ("cmp", CMP_STUB),
+            ("main", "from cmp import Ordering\n\nfn main(console: Console):\n    print(console, \"x\")\n"),
+        ])
+        .unwrap_err();
+        assert!(err.message.contains("ambient prelude name `Ordering`"), "{}", err.message);
     }
 }
 
