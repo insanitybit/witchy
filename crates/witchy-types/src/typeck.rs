@@ -391,6 +391,97 @@ fn check_unique_functions(module: &Module) -> Result<(), TypeError> {
     Ok(())
 }
 
+/// (BUG-230) Reject duplicate top-level declarations in the type/constructor/method
+/// namespaces — the same "defined more than once" quality of error the function
+/// namespace already gets from [`check_unique_functions`]. Runs pre-lowering (while
+/// `impl`/`type` items are still distinct) on the merged module, whose type and
+/// constructor names are already module-qualified, so a genuine cross-module name
+/// is distinct and only same-module duplicates (a typo or copy-paste) collide.
+fn check_unique_declarations(module: &Module) -> Result<(), TypeError> {
+    let bare = |n: &str| n.rsplit('.').next().unwrap_or(n).to_string();
+    let mut types: HashMap<String, &witchy_syntax::ast::TypeDef> = HashMap::new();
+    // Constructor name -> its owning type, so a cross-type duplicate names both.
+    let mut ctors: HashMap<String, String> = HashMap::new();
+    for item in &module.items {
+        let Item::Type(t) = item else { continue };
+        if let Some(prev) = types.insert(t.name.clone(), t) {
+            // A structurally-IDENTICAL re-declaration is a harmless shadow — a user
+            // module may redefine a prelude-injected type (`Result`/`Option`) with
+            // the same shape (examples/try teaches exactly this). Only a CONFLICTING
+            // redefinition (a different shape under the same name) is an error; the
+            // identical one is skipped so its constructors aren't double-counted.
+            if prev.params == t.params && prev.variants == t.variants {
+                continue;
+            }
+            return terr(format!(
+                "type `{}` is defined more than once; top-level type names must be unique",
+                bare(&t.name)
+            ));
+        }
+        for v in &t.variants {
+            if let Some(prev) = ctors.insert(v.name.clone(), t.name.clone()) {
+                let (a, b) = (bare(&prev), bare(&t.name));
+                let where_ = if a == b {
+                    format!("in type `{a}`")
+                } else {
+                    format!("in types `{a}` and `{b}`")
+                };
+                return terr(format!(
+                    "constructor `{}` is defined more than once ({where_}); \
+                     constructor names must be unique",
+                    bare(&v.name)
+                ));
+            }
+        }
+    }
+    // Methods: no two methods with the same name in one `impl` block or `trait`,
+    // and no duplicate inherent method (same receiver type, same name) across the
+    // inherent `impl` blocks of a type.
+    let mut inherent: HashSet<(String, String)> = HashSet::new();
+    for item in &module.items {
+        match item {
+            Item::Impl(im) => {
+                let mut here: HashSet<String> = HashSet::new();
+                for m in &im.methods {
+                    let name = bare(&m.name);
+                    if !here.insert(name.clone()) {
+                        return terr(format!(
+                            "method `{name}` is defined more than once in `impl {}`; \
+                             method names must be unique within an impl",
+                            im.trait_name.as_deref().map_or_else(
+                                || im.type_name.clone(),
+                                |tr| format!("{tr} for {}", im.type_name)
+                            )
+                        ));
+                    }
+                    // Inherent (trait-free) methods share one namespace per type.
+                    if im.trait_name.is_none() && !inherent.insert((im.type_name.clone(), name.clone())) {
+                        return terr(format!(
+                            "inherent method `{name}` is defined more than once on `{}`; \
+                             method names must be unique per receiver type",
+                            bare(&im.type_name)
+                        ));
+                    }
+                }
+            }
+            Item::Trait(tr) => {
+                let mut here: HashSet<&str> = HashSet::new();
+                for m in &tr.methods {
+                    if !here.insert(m.name.as_str()) {
+                        return terr(format!(
+                            "method `{}` is declared more than once in `trait {}`; \
+                             trait method names must be unique",
+                            m.name, tr.name
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// (RFC-0064 Check 1) Enforce RFC-0043's row-3 rule: a function with any `var`
 /// parameter must be EITHER a procedure channel (`is_var_procedure` — returns
 /// `Nil`/nothing) OR a mutator receiver (`is_mutator` — first parameter, returning
@@ -3937,6 +4028,11 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
     // are still distinct from free functions (so overloaded methods aren't
     // mistaken for duplicates) and source lines are still available.
     check_unique_functions(module)?;
+
+    // (BUG-230) Duplicate type / constructor / method declarations get the same
+    // "defined more than once" error the function namespace already gets. Runs
+    // pre-lowering, while `impl`/`type` items are still present and distinct.
+    check_unique_declarations(module)?;
 
     // (RFC-0064 Check 1) A `var` parameter must be a procedure channel or a
     // mutator receiver — every other shape is the abolished combined write-back

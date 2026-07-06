@@ -1401,3 +1401,27 @@ fn main():
         let err = check_str("fn firsts(xs: List(a)) -> List(a):\n    let out: List(b) = xs\n    out\n").unwrap_err();
         assert!(err.contains("isn't generic"), "{err}");
     }
+
+    #[test]
+    fn duplicate_declarations_are_rejected() {
+        // (BUG-230) types, constructors, and methods get the same "defined more than
+        // once" error the function namespace already gives.
+        let ty = check_str("type T:\n    A\ntype T:\n    B\n").unwrap_err();
+        assert!(ty.contains("type `T` is defined more than once"), "{ty}");
+        let same = check_str("type T:\n    Same(Int)\n    Same(String)\n").unwrap_err();
+        assert!(same.contains("constructor `Same`"), "{same}");
+        let cross = check_str("type A:\n    Same(Int)\ntype B:\n    Same(String)\n").unwrap_err();
+        assert!(cross.contains("constructor `Same`"), "{cross}");
+        let meth = check_str(
+            "type Box:\n    Box(Int)\nimpl Box:\n    fn value(self) -> Int:\n        1\n    fn value(self) -> Int:\n        2\n",
+        )
+        .unwrap_err();
+        assert!(meth.contains("method `value` is defined more than once"), "{meth}");
+        let trait_dup = check_str("trait Two:\n    fn m(self) -> Int\n    fn m(self) -> Int\n").unwrap_err();
+        assert!(trait_dup.contains("method `m` is declared more than once"), "{trait_dup}");
+        // Distinct declarations (incl. same trait for different types) are fine.
+        check_str(
+            "trait Greet:\n    fn greet(self) -> String\ntype A:\n    A(Int)\ntype B:\n    B(Int)\nimpl Greet for A:\n    fn greet(self) -> String:\n        \"a\"\nimpl Greet for B:\n    fn greet(self) -> String:\n        \"b\"\n",
+        )
+        .expect("distinct declarations are accepted");
+    }
