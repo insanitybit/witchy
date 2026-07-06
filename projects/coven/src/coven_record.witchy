@@ -36,23 +36,30 @@ type State:
     Staged
     Released
     Yanked
+    Unknown
 
-// The wire/canonical string for a state — what is stored and signed.
+// The wire/canonical string for a state — what is stored and signed. `Unknown` is
+// never written (records are only signed with a real state); it exists so `state_of`
+// can name an unrecognized stored string without silently aliasing a real state.
 pub fn state_wire(s: State) -> String:
     match s:
         Staged -> "staged"
         Released -> "released"
         Yanked -> "yanked"
+        Unknown -> "unknown"
 
-// A stored state string back to a `State`. A persisted record always holds one of
-// the three; anything else reads as `Staged` (the pre-release default).
+// A stored state string back to a `State`. A persisted record always holds one of the
+// three; an unrecognized string maps to `Unknown` — NOT `Staged` — so a corrupt state
+// can never be mistaken for a promotable version (`promote_checked` requires `Staged`).
 pub fn state_of(s: String) -> State:
-    if s == "released":
+    if s == "staged":
+        Staged
+    else if s == "released":
         Released
     else if s == "yanked":
         Yanked
     else:
-        Staged
+        Unknown
 
 // The canonical, signed view of a record — every security-relevant field except the
 // signature. Byte-identical to src/pm/registry.rs::Record::signing_payload.
@@ -76,7 +83,15 @@ pub fn parse(text: String) -> Result(Record, String):
 pub fn record_signing_payload(text: String) -> String:
     match parse(text):
         Ok(r) -> signing_payload(r.name, r.version, r.state, r.hash, r.runtime_footprint, r.uploaded_by, str_or_empty(r.promoted_by), str_or_empty(r.second_factor), str_or_empty(r.provenance), r.released_at)
-        Err(_e) -> ""
+        Err(e) -> corrupt_record(e)
+
+// A stored record that no longer parses is corruption/tampering, not an empty payload:
+// hashing sha256("") would give every corrupt record the same snapshot digest and hide
+// the damage. Fail loudly instead. `fail` aborts, so the trailing "" is unreachable —
+// it only gives this the `String` type the caller needs.
+fn corrupt_record(reason: String) -> String:
+    fail("coven: corrupt stored record — cannot reconstruct its signing payload (" + reason + "); refusing to hash an empty payload into the snapshot")
+    ""
 
 // Empty string <-> absent (`null`): keeps the optional fields' JSON byte-identical.
 fn opt_str(s: String) -> Option(String):
