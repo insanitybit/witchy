@@ -348,7 +348,7 @@ fn terr<T>(message: impl Into<String>) -> Result<T, TypeError> {
 /// Prefix a type error with where it occurred — the enclosing function (after
 /// linking this is `module.func`, which also names the file) and source line.
 /// `line == 0` means no line is available; an empty `func` omits the name.
-fn at_loc(e: TypeError, line: u32, func: &str) -> TypeError {
+fn at_loc(e: TypeError, line: u32, func: &str, home: &str) -> TypeError {
     if line == 0 {
         return e;
     }
@@ -357,8 +357,11 @@ fn at_loc(e: TypeError, line: u32, func: &str) -> TypeError {
     } else {
         format!("`{func}`, line {line}")
     };
+    // The location prefix already names the home module, so render home-module
+    // type/variant names bare in the body — the spelling the reader wrote — while
+    // keeping cross-module qualifiers (BUG-292).
     TypeError {
-        message: format!("{where_}: {}", e.message),
+        message: format!("{where_}: {}", strip_home_qualifiers(&e.message, home)),
     }
 }
 
@@ -1268,6 +1271,57 @@ struct Checker {
     /// Source line of the statement currently being checked, attached to errors
     /// so diagnostics point at a location. 0 means "no line known".
     cur_line: u32,
+    /// The module (file stem) of the function currently being checked, so a
+    /// diagnostic can render a home-module type/variant with its bare name — the
+    /// spelling the reader wrote — while keeping cross-module qualifiers that
+    /// disambiguate (RFC-0042; BUG-292). Empty means "unknown".
+    cur_module: String,
+    /// The entry module's name (the home of the unqualified `main`), used as the
+    /// home for a bare function whose name carries no `module.` prefix (BUG-292).
+    entry_module: String,
+}
+
+/// Render a canonical `module.Name` for a diagnostic: strip the qualifier when it
+/// names `home` (the reader wrote the bare name and the error location already
+/// names the module), but keep a cross-module qualifier (it disambiguates a
+/// same-named type from another module).
+fn dequalify_home(name: &str, home: &str) -> String {
+    match name.split_once('.') {
+        Some((module, bare)) if module == home => bare.to_string(),
+        _ => name.to_string(),
+    }
+}
+
+/// Strip the `home.` qualifier from every canonical type/constructor name embedded
+/// in a diagnostic message, leaving cross-module qualifiers intact (RFC-0042;
+/// BUG-292). A canonical qualifier is `home.` at a word boundary followed by an
+/// uppercase letter (`t_file.Point`) — never an incidental substring, and never a
+/// lowercase-suffixed name like the `module.fn` location prefix.
+fn strip_home_qualifiers(message: &str, home: &str) -> String {
+    if home.is_empty() {
+        return message.to_string();
+    }
+    let needle = format!("{home}.");
+    let bytes = message.as_bytes();
+    let mut out = String::with_capacity(message.len());
+    let mut i = 0;
+    while i < message.len() {
+        let boundary = i == 0 || {
+            let prev = bytes[i - 1];
+            !(prev.is_ascii_alphanumeric() || prev == b'_' || prev == b'.')
+        };
+        if boundary
+            && message[i..].starts_with(&needle)
+            && message[i + needle.len()..].chars().next().is_some_and(|c| c.is_ascii_uppercase())
+        {
+            i += needle.len(); // drop the `home.` qualifier, keep the bare name
+            continue;
+        }
+        let ch = message[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
 }
 
 impl Checker {
@@ -3513,8 +3567,15 @@ impl Checker {
             .collect();
         let missing: Vec<&String> = variants.iter().filter(|v| !covered.contains(v.as_str())).collect();
         if !missing.is_empty() {
-            let names = missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ");
-            return terr(format!("non-exhaustive match on `{adt}`: missing {names}"));
+            // Render home-module names bare (`Blue`, not `t_file.Blue`) and backtick
+            // each missing variant (BUG-292).
+            let adt_disp = dequalify_home(&adt, &self.cur_module);
+            let names = missing
+                .iter()
+                .map(|s| format!("`{}`", dequalify_home(s, &self.cur_module)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return terr(format!("non-exhaustive match on `{adt_disp}`: missing {names}"));
         }
         // ...and each present variant must ALSO cover its fields, so a *nested*
         // non-exhaustive match (`Circle(Red)` without `Circle(Blue)`) is caught at
@@ -3532,9 +3593,11 @@ impl Checker {
                 })
                 .collect();
             if !v_arms.is_empty() && !self.variant_fields_covered(&v_arms) {
+                let adt_disp = dequalify_home(&adt, &self.cur_module);
+                let v_disp = dequalify_home(v, &self.cur_module);
                 return terr(format!(
-                    "non-exhaustive match on `{adt}`: `{v}` is matched but its fields \
-                     don't cover every case — add a wholesale `{v}(_)` arm or a `_`"
+                    "non-exhaustive match on `{adt_disp}`: `{v_disp}` is matched but its fields \
+                     don't cover every case — add a wholesale `{v_disp}(_)` arm or a `_`"
                 ));
             }
         }
@@ -3612,6 +3675,14 @@ impl Checker {
         self.consumed.clear();
         self.current_ret = Some(ret.clone());
         self.cur_line = 0;
+        // `func.name` is the canonical `module.fn`; remember the module so home
+        // types render bare in this function's diagnostics (BUG-292). The entry
+        // module's `main` is left unqualified by the linker, so fall back to the
+        // detected entry module for it.
+        self.cur_module = func
+            .name
+            .rsplit_once('.')
+            .map_or_else(|| self.entry_module.clone(), |(m, _)| m.to_string());
         for (param, ty) in func.params.iter().zip(&params) {
             // (RFC-0025) A `frozen` parameter is deeply immutable, so a mutable
             // convention (`var`/`own`, which exist to mutate/consume the argument)
@@ -3786,6 +3857,28 @@ pub fn annotate(module: &Module) -> TypeTable {
     }
 }
 
+/// The entry module — the home of the unqualified `main` — for home-module
+/// de-qualification in `main`'s own diagnostics (BUG-292). The linker emits the
+/// entry module's items FIRST and qualifies every declaration except the bare
+/// `main`, so the first `module.`-qualified item appearing BEFORE `main` belongs
+/// to the entry module. An entry that declares only `main` (no qualified item
+/// before it) yields "" — there are no home types to strip, and `main`'s
+/// references to imported types must keep their qualifiers. When there is no bare
+/// `main` at all (a library/comptime unit), fall back to the first qualified item.
+fn detect_entry_module(module: &Module) -> String {
+    let prefix = |name: &str| name.rsplit_once('.').map(|(m, _)| m.to_string());
+    let mut before: Option<String> = None;
+    for item in &module.items {
+        match item {
+            Item::Function(f) if f.name == "main" => return before.unwrap_or_default(),
+            Item::Type(t) => before = before.or_else(|| prefix(&t.name)),
+            Item::Function(f) => before = before.or_else(|| prefix(&f.name)),
+            _ => {}
+        }
+    }
+    before.unwrap_or_default()
+}
+
 fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeError> {
     let module = &module;
     let mut c = Checker {
@@ -3806,6 +3899,8 @@ fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeErr
         region_locals: Vec::new(),
         current_ret: None,
         cur_line: 0,
+        cur_module: String::new(),
+        entry_module: detect_entry_module(module),
     };
 
     // Pass 1: collect all signatures so definitions can refer to each other.
@@ -3928,9 +4023,9 @@ fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeErr
     for item in &module.items {
         match item {
             Item::Function(f) if !f.bounds.is_empty() => {}
-            Item::Function(f) => {
-                c.check_function(f).map_err(|e| at_loc(e, c.cur_line, &f.name))?
-            }
+            Item::Function(f) => c
+                .check_function(f)
+                .map_err(|e| at_loc(e, c.cur_line, &f.name, &c.cur_module))?,
             Item::Type(_) | Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } | Item::Comptime(_) => {}
         }
     }
