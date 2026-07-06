@@ -7940,6 +7940,52 @@ fn main(console: Console):
         assert_eq!(compiled, vec!["ok:8443", "none", "none", "none", "ok:443"]);
     }
 
+    /// (BUG-351) A bracketed IPv6 authority keeps every colon inside the brackets
+    /// as part of the host — only a `:port` after the matching `]` is a port. The
+    /// old parser split on the first colon (inside the literal), so `[::1]:8080`
+    /// became host `[` with an invalid port. The Net capability layer already
+    /// understands `[host]:port`; the URL helper now agrees. Malformed brackets
+    /// return a structured Err on both backends, never a trap.
+    #[test]
+    fn url_parse_bracketed_ipv6_backends_agree() {
+        let client = r#"
+import url
+import result
+fn p(s: String) -> String:
+    match url.parse(s):
+        Ok(u) -> url.host(u) + "|" + __render(url.port(u)) + "|" + url.path(u)
+        Err(_e) -> "err"
+fn main(console: Console):
+    print(console, p("http://[::1]:8080/p"))
+    print(console, p("http://[::1]/p"))
+    print(console, p("https://[2001:4860:4860::8888]:443/dns-query"))
+    print(console, p("http://[::1"))
+    print(console, p("http://[::1]bad/p"))
+    print(console, p("http://[::1]:abc/p"))
+    print(console, p("http://example.com:9000/x"))
+"#;
+        let sources = [
+            ("option", crate::bundled_module("option").unwrap()),
+            ("url", crate::bundled_module("url").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "url IPv6 diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                "[::1]|8080|/p",
+                "[::1]|80|/p",
+                "[2001:4860:4860::8888]|443|/dns-query",
+                "err",
+                "err",
+                "err",
+                "example.com|9000|/x",
+            ]
+        );
+    }
+
     #[test]
     fn func_on_backends_agree() {
         // on(op, f) lifts op to act on projections — here sorting (name, age)
