@@ -407,6 +407,30 @@
     }
 
     #[test]
+    fn derive_eq_ord_rejects_float_fields() {
+        let eq = check_str("import cmp\n\ntype Reading derive(PartialEq, Eq):\n    value: Float\n")
+            .expect_err("Float is not Eq");
+        assert!(eq.contains("derive(Eq)") && eq.contains("Float is not Eq"), "{eq}");
+
+        let ord = check_str(
+            "import cmp\n\ntype Reading derive(PartialEq, PartialOrd, Ord):\n    value: Float\n",
+        )
+        .expect_err("Float is not Ord");
+        assert!(ord.contains("derive(Ord)") && ord.contains("Float is not Ord"), "{ord}");
+
+        check_str("import cmp\n\ntype Reading derive(PartialEq, PartialOrd):\n    value: Float\n")
+            .expect("Float supports partial equality and partial ordering");
+    }
+
+    #[test]
+    fn derive_ord_accepts_total_nested_fields() {
+        check_str(
+            "import cmp\nimport duration\n\ntype Key derive(PartialEq, Eq, PartialOrd, Ord):\n    name: String\n    age: Duration\n\ntype Reading derive(PartialEq, Eq, PartialOrd, Ord):\n    key: Key\n    count: Int\n",
+        )
+        .expect("derived Ord composes through total nested fields");
+    }
+
+    #[test]
     fn accepts_a_well_typed_program() {
         let src = r#"
 fn double(n: Int) -> Int:

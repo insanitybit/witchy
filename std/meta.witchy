@@ -220,33 +220,33 @@ pub fn derive_reflect(t: TypeInfo) -> String:
             arms = list.push(arms, "            " + pat + " -> reflect.MVariant(\"" + t.name + "\", \"" + v.name + "\", [" + list.join(refls, ", ") + "])")
         head + "        match self:\n" + list.join(arms, "\n") + "\n"
 
-// The lexicographic if/else chain shared by `derive(Ord)` and `derive(PartialOrd)`:
-// compare fields in declaration order via the operators (which dispatch to each
-// field type's impl), yielding `lt`/`gt`/`eq` (wrapped in `Some` for the partial
-// variant).
-fn lexicographic_body(fields: List(FieldInfo), lt: String, gt: String, eq: String) -> String:
-    var arms = []
-    for f in fields:
-        arms = list.push(arms, "self." + f.name + " < other." + f.name + ": " + lt)
-        arms = list.push(arms, "self." + f.name + " > other." + f.name + ": " + gt)
-    var body = ""
-    var first = true
-    for a in arms:
-        if first:
-            body = body + "        if " + a + "\n"
-            first = false
-        else:
-            body = body + "        else if " + a + "\n"
-    body + "        else: " + eq + "\n"
+// The lexicographic body for `derive(Ord)`: compare fields in declaration order
+// through the field type's total `Ord.compare`, not through `<`/`>`. Method
+// syntax avoids shadowing by a same-module free function named `compare`.
+fn ord_lexicographic_body(fields: List(FieldInfo), index: Int, indent: String) -> String:
+    if index >= list.length(fields):
+        indent + "Equal\n"
+    else:
+        let f = list.at(fields, index)
+        indent + "match self." + f.name + ".compare(other." + f.name + "):\n" + indent + "    Less -> Less\n" + indent + "    Greater -> Greater\n" + indent + "    Equal ->\n" + ord_lexicographic_body(fields, index + 1, indent + "        ")
+
+// The lexicographic body for `derive(PartialOrd)`: propagate an incomparable
+// field (`None`) instead of treating "neither less nor greater" as equality.
+fn partial_ord_lexicographic_body(fields: List(FieldInfo), index: Int, indent: String) -> String:
+    if index >= list.length(fields):
+        indent + "Some(Equal)\n"
+    else:
+        let f = list.at(fields, index)
+        indent + "match self." + f.name + ".partial_compare(other." + f.name + "):\n" + indent + "    None -> None\n" + indent + "    Some(Less) -> Some(Less)\n" + indent + "    Some(Greater) -> Some(Greater)\n" + indent + "    Some(Equal) ->\n" + partial_ord_lexicographic_body(fields, index + 1, indent + "        ")
 
 // `derive(Ord)` → lexicographic `compare` returning `Ordering` (records only; the
 // caller validates the shape). Requires the `PartialEq`/`Eq`/`PartialOrd` impls too.
 pub fn derive_ord(t: TypeInfo) -> String:
-    "impl Ord for " + target_with_params(t) + where_each(t.params, "Ord") + ":\n    fn compare(self, other: " + target_with_params(t) + ") -> Ordering:\n" + lexicographic_body(t.fields, "Less", "Greater", "Equal")
+    "impl Ord for " + target_with_params(t) + where_each(t.params, "Ord") + ":\n    fn compare(self, other: " + target_with_params(t) + ") -> Ordering:\n" + ord_lexicographic_body(t.fields, 0, "        ")
 
 // `derive(PartialOrd)` → lexicographic `partial_compare` (records only).
 pub fn derive_partial_ord(t: TypeInfo) -> String:
-    "impl PartialOrd for " + target_with_params(t) + where_each(t.params, "PartialOrd") + ":\n    fn partial_compare(self, other: " + target_with_params(t) + ") -> Option(Ordering):\n" + lexicographic_body(t.fields, "Some(Less)", "Some(Greater)", "Some(Equal)")
+    "impl PartialOrd for " + target_with_params(t) + where_each(t.params, "PartialOrd") + ":\n    fn partial_compare(self, other: " + target_with_params(t) + ") -> Option(Ordering):\n" + partial_ord_lexicographic_body(t.fields, 0, "        ")
 
 // A `Result`-producing decode of a `Json` value already in hand (recursive).
 fn json_decode_value(ty: TypeExpr, value: String) -> String:

@@ -854,6 +854,22 @@
         );
     }
 
+    /// (BUG-498, parity) `derive(PartialOrd)` must compose through each field's
+    /// `partial_compare`, not through `<`/`>` tests that accidentally treat
+    /// incomparable fields as equal. A Float NaN field should propagate `None`
+    /// on both backends.
+    #[test]
+    fn derive_partial_ord_float_field_propagates_none_on_both_backends() {
+        let src = "import cmp\n\ntype Reading derive(PartialEq, PartialOrd):\n    value: Float\n\nfn describe(o: Option(Ordering)) -> String:\n    match o:\n        None -> \"none\"\n        Some(Less) -> \"less\"\n        Some(Equal) -> \"equal\"\n        Some(Greater) -> \"greater\"\n\nfn main(console: Console):\n    print(console, describe(partial_compare(Reading(0.0 / 0.0), Reading(1.0))))\n    print(console, describe(partial_compare(Reading(1.0), Reading(2.0))))\n    print(console, describe(partial_compare(Reading(2.0), Reading(1.0))))\n    print(console, describe(partial_compare(Reading(2.0), Reading(2.0))))\n";
+        let expected = ["none", "less", "greater", "equal"];
+        assert_eq!(link_run(src), expected, "interp: derived PartialOrd propagates None");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: derived PartialOrd propagates None",
+        );
+    }
+
     /// (BUG-240, parity) `math.abs(Int.MIN)` has no positive `Int`, so both backends
     /// must ABORT rather than silently wrap back to the negative `Int.MIN`. Ordinary
     /// magnitudes still agree. (Was a stable wrong answer: `-Int.MIN == Int.MIN`.)

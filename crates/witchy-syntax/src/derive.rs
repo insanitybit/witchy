@@ -23,6 +23,23 @@ fn mentions_option(ty: &Type) -> bool {
     }
 }
 
+fn contains_concrete_float(ty: &Type) -> bool {
+    match ty {
+        Type::Named(n, args) => n == "Float" || args.iter().any(contains_concrete_float),
+        Type::Tuple(slots) => slots.iter().any(contains_concrete_float),
+        Type::Fn(params, ret) => {
+            params.iter().any(contains_concrete_float) || contains_concrete_float(ret)
+        }
+        Type::Qualified(_, inner) => contains_concrete_float(inner),
+    }
+}
+
+fn has_float_field(t: &TypeDef) -> bool {
+    t.variants
+        .iter()
+        .any(|v| v.fields.iter().any(contains_concrete_float))
+}
+
 /// Expand every `type T derive(...)` into a comptime call of the matching witchy
 /// generator. Unsupported shapes for the built-ins are loud errors; an unknown
 /// derive routes to a user-provided `derive_<name>` (a comptime error if absent).
@@ -52,7 +69,15 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                     needs_show = true;
                 }
                 "PartialEq" => generated.push(derive_via_comptime("meta.derive_partial_eq", t)),
-                "Eq" => generated.push(derive_via_comptime("meta.derive_eq", t)),
+                "Eq" => {
+                    if has_float_field(t) {
+                        return Err(format!(
+                            "type `{}`: derive(Eq) cannot include `Float` fields because Float is not Eq",
+                            t.name
+                        ));
+                    }
+                    generated.push(derive_via_comptime("meta.derive_eq", t));
+                }
                 "PartialOrd" => {
                     let is_record = t.variants.len() == 1 && !t.variants[0].field_names.is_empty();
                     if !is_record {
@@ -68,6 +93,12 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                     if !is_record {
                         return Err(format!(
                             "type `{}`: derive(Ord) supports record types (one constructor with named fields)",
+                            t.name
+                        ));
+                    }
+                    if has_float_field(t) {
+                        return Err(format!(
+                            "type `{}`: derive(Ord) cannot include `Float` fields because Float is not Ord",
                             t.name
                         ));
                     }
