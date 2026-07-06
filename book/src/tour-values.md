@@ -33,13 +33,12 @@ deliberate choice for portability, which we'll revisit when we talk about
 backends. Division or modulo by zero is a runtime error, loudly, on every
 backend.
 
-One display gotcha worth knowing now: a `Duration` is carried as whole
-milliseconds, and that is what `${timeout}` prints —
-`30000`, not `30s`. For human output, reach for `duration.human(timeout)`
-(`"30s"`, `"1m30s"`) or `duration.clock(timeout)` (`"0:00:30"`) — both need an
-`import duration` (it isn't one of the six prelude modules) — or `say` it, since
-`Duration` implements `Show` with the human form (`say` lives in the `show`
-module, so it needs an `import show`).
+A `Duration` renders through its `Show` impl — the human form — so `${timeout}`
+prints `30s` (and `${90s}` prints `1m30s`), the same everywhere and identical to
+`say(console, timeout)`. Underneath it is carried as whole milliseconds; when you
+want the raw count reach for `duration.to_milliseconds(timeout)` (`30000`), and
+for a clock face `duration.clock(timeout)` (`"0:00:30"`) — both live in the
+`duration` module, so they need an `import duration`.
 
 ## Strings
 
