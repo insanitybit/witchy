@@ -67,7 +67,7 @@ const isSlot = (v) => v != null && typeof v.slot === "string" && typeof v.data =
 const SAFE_ELEMENTS = new Set([
   // flow / sections
   "a", "abbr", "address", "article", "aside", "b", "bdi", "bdo", "blockquote", "br",
-  "caption", "cite", "code", "col", "colgroup", "data", "datalist", "dd", "del", "details",
+  "button", "caption", "cite", "code", "col", "colgroup", "data", "datalist", "dd", "del", "details",
   "dfn", "dialog", "div", "dl", "dt", "em", "fieldset", "figcaption", "figure", "footer",
   "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hgroup", "hr", "i", "img", "input",
   "ins", "kbd", "label", "legend", "li", "main", "mark", "menu", "meter", "nav", "ol",
