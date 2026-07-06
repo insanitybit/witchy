@@ -163,6 +163,16 @@ pub struct TypeDef {
     /// flag persists across the idempotent re-runs of `derive::expand` (it is set,
     /// not consumed, so a later empty-`derives` pass never clears it).
     pub partial_eq_derived: bool,
+    /// (RFC-0053) Set by `derive::expand` when the type derives `Show`: its `Show`
+    /// impl is the STRUCTURAL default, so rendering it via `show` is byte-identical
+    /// to the structural `__render`. A type with a HAND-WRITTEN `impl Show for T`
+    /// (e.g. `Duration`, a user `P`) leaves this `false`. The interpolation-flip
+    /// (`"${x}"`/`to_string` honoring a custom `Show`) reads it: `__render(x)` is
+    /// rewritten to `show(x)` only when `x`'s type has a Show impl that is NOT the
+    /// derived structural one — so the common case (primitives, derived types) keeps
+    /// today's fast structural render with zero behavior change. Like
+    /// `partial_eq_derived`, set (never cleared) so it survives idempotent re-runs.
+    pub show_derived: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
