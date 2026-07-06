@@ -284,12 +284,24 @@ pub fn mint_token(rest: &[String]) -> IdpResult<()> {
     let key = RegistryKey::load_or_create(Path::new(key_dir))?;
     let iss = a.val("--issuer").unwrap_or("local-idp").to_string();
     let sub = a.val("--sub").unwrap_or("anonymous").to_string();
-    let ttl: u64 = a.val("--ttl").and_then(|s| s.parse().ok()).unwrap_or(300);
+    // A malformed `--ttl` must be a loud error, not a silent fall-back to the
+    // default that would mint a token with an unintended lifetime (BUG-212).
+    let ttl: u64 = match a.val("--ttl") {
+        Some(s) => s
+            .parse()
+            .map_err(|_| IdpError(format!("--ttl expects a number of seconds, got `{s}`")))?,
+        None => 300,
+    };
     let now = now_unix();
     let mut extra = BTreeMap::new();
+    // A `--claim` without a `key=value` shape (or an empty key) is rejected rather
+    // than silently dropped, so an intended claim can never go missing (BUG-212).
     for c in a.vals("--claim") {
-        if let Some((k, v)) = c.split_once('=') {
-            extra.insert(k.to_string(), v.to_string());
+        match c.split_once('=') {
+            Some((k, v)) if !k.is_empty() => {
+                extra.insert(k.to_string(), v.to_string());
+            }
+            _ => return Err(IdpError(format!("--claim expects key=value, got `{c}`"))),
         }
     }
     let claims = Claims {
@@ -445,6 +457,35 @@ mod tests {
         // The provider claim is FLATTENED to the payload top level (like a real GH token).
         let payload = String::from_utf8(b64url_decode(parts[1])).unwrap();
         assert!(payload.contains("\"repository\":\"acme/x\""), "extra flattened: {payload}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (BUG-212) `coven-mint-token` must REJECT a malformed `--ttl` (not silently
+    /// default to 300) and a `--claim` without a `key=value` shape (not silently
+    /// drop it). A well-formed invocation still succeeds.
+    #[test]
+    fn mint_token_rejects_malformed_ttl_and_claim() {
+        let dir = tmp();
+        let d = dir.to_str().unwrap().to_string();
+        let args = |v: &[&str]| -> Vec<String> { v.iter().map(|s| s.to_string()).collect() };
+
+        // Well-formed: a numeric ttl and a key=value claim succeed.
+        assert!(
+            mint_token(&args(&["--issuer-key", &d, "--sub", "s", "--ttl", "600", "--claim", "repository=acme/x"]))
+                .is_ok(),
+            "a well-formed mint must succeed"
+        );
+
+        // `--ttl bananas` is not a number → error, not a defaulted lifetime.
+        let bad_ttl = mint_token(&args(&["--issuer-key", &d, "--sub", "s", "--ttl", "bananas"]));
+        assert!(bad_ttl.is_err(), "a non-numeric --ttl must be rejected");
+        assert!(format!("{}", bad_ttl.unwrap_err()).contains("--ttl"), "the error names --ttl");
+
+        // `--claim repository` (no `=`) → error, not a silently dropped claim.
+        let bad_claim = mint_token(&args(&["--issuer-key", &d, "--sub", "s", "--claim", "repository"]));
+        assert!(bad_claim.is_err(), "a --claim without key=value must be rejected");
+        assert!(format!("{}", bad_claim.unwrap_err()).contains("--claim"), "the error names --claim");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
