@@ -296,3 +296,49 @@
         assert!(!out.contains("dict.update"), "a shadowing param must not be qualified: {out}");
         assert_eq!(out, src, "already canonical — fmt must be a no-op here");
     }
+
+    #[test]
+    fn preserves_default_parameter() {
+        // BUG-206: `fmt` used to drop `= <const>` on a defaulted parameter, so
+        // the round-trip guard rejected any file with one. It now renders back.
+        let src = "fn add(a: Int, b: Int = 2) -> Int:\n    a + b\n";
+        let out = reformat(src).expect("default parameter round-trips");
+        assert!(out.contains("b: Int = 2"), "default dropped: {out}");
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "not idempotent: {out}");
+    }
+
+    #[test]
+    fn preserves_index_place_assignment() {
+        // BUG-333: `xs[i] = v` used to print as the desugared `xs = xs.set_at(...)`.
+        // It now round-trips to the RFC-0022 canonical form, compound included.
+        let src = "fn main(console: Console):\n    var xs = [1, 2, 3]\n    xs[0] = 9\n    xs[1] += 5\n    var d = dict.new()\n    d[\"k\"] = 1\n    print(console, __render(xs.at(0)))\n";
+        let out = reformat(src).expect("index place-assign round-trips");
+        assert!(out.contains("    xs[0] = 9\n"), "index assign de-sugared: {out}");
+        assert!(out.contains("    xs[1] += 5\n"), "compound index assign de-sugared: {out}");
+        assert!(out.contains("    d[\"k\"] = 1\n"), "dict place-assign de-sugared: {out}");
+        assert!(!out.contains("set_at"), "set_at leaked into output: {out}");
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "not idempotent: {out}");
+    }
+
+    #[test]
+    fn preserves_field_place_assignment() {
+        // BUG-330: `p.f = v` desugars to a `RecordUpdate`, which `fmt` used to
+        // render as the non-parseable `update p: f = v`, rejecting the whole file.
+        let src = "type P:\n    x: Int\n\nfn main(console: Console):\n    var p = P(x: 1)\n    p.x = 5\n    p.x += 4\n    print(console, __render(p.x))\n";
+        let out = reformat(src).expect("field place-assign round-trips");
+        assert!(out.contains("    p.x = 5\n"), "field assign de-sugared: {out}");
+        assert!(out.contains("    p.x += 4\n"), "compound field assign de-sugared: {out}");
+        assert!(!out.contains("update p"), "RecordUpdate leaked into output: {out}");
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "not idempotent: {out}");
+    }
+
+    #[test]
+    fn preserves_for_var_loop() {
+        // BUG-334: `for var x in xs:` used to de-sugar into a `for __fvN in ...`
+        // indexed loop, leaking the internal counter into formatted source.
+        let src = "fn main(console: Console):\n    var xs = [1, 2, 3]\n    for var x in xs:\n        x = x * 10\n    print(console, __render(xs.at(1)))\n";
+        let out = reformat(src).expect("for var round-trips");
+        assert!(out.contains("    for var x in xs:\n"), "for var de-sugared: {out}");
+        assert!(!out.contains("__fv"), "synthetic counter leaked into output: {out}");
+        assert_eq!(out, src, "for var must format to itself: {out}");
+    }

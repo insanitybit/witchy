@@ -1529,7 +1529,9 @@ impl Parser {
                             "`for var` does not yet support break/continue/return/`?` in its body (RFC-0028 v1) — use an index loop for early exit",
                         ));
                     }
-                    return Ok(desugar_for_var(name, list_var.clone(), body));
+                    let n = self.compr_counter;
+                    self.compr_counter += 1;
+                    return Ok(desugar_for_var(n, name, list_var.clone(), body));
                 }
                 // Otherwise the loop header is a PATTERN (RFC-0052 — one grammar for
                 // every binding position). The unparenthesized `for a, b in xs`
@@ -2295,15 +2297,10 @@ pub fn desugar_place_assign(place: Expr, value: Expr) -> Result<Stmt, String> {
 /// `break`/`continue`/`return`/`?` in the body (checked by the caller via
 /// [`for_var_body_escapes`]) — straight-line element mutation, the common case;
 /// loss-free write-back across early exit is a later refinement.
-fn desugar_for_var(name: String, list_var: String, body: Block) -> Expr {
-    thread_local! {
-        static FORVAR_COUNTER: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    }
-    let n = FORVAR_COUNTER.with(|c| {
-        let v = c.get();
-        c.set(v + 1);
-        v
-    });
+fn desugar_for_var(n: usize, name: String, list_var: String, body: Block) -> Expr {
+    // `n` is the parser's per-module comprehension counter, so a given `for var`
+    // gets a stable `__fvN` within one parse (and the same one on a re-parse of
+    // formatted output) — that is what lets `witchy fmt` round-trip the sugar.
     let idx = format!("__fv{n}");
     let elem = || Expr::Index {
         base: Box::new(Expr::Var(list_var.clone())),
@@ -2313,11 +2310,24 @@ fn desugar_for_var(name: String, list_var: String, body: Block) -> Expr {
     // `xs[idx] = name` — desugar_place_assign turns it into `xs = xs.set_at(idx, name)`.
     let writeback = desugar_place_assign(elem(), Expr::Var(name))
         .expect("an index place always desugars");
+    // Keep the original body's source lines on the middle statements (the
+    // synthetic bind/write-back borrow the body's first/last line) so `witchy
+    // fmt` still sees the loop spanning its real extent — otherwise a phantom
+    // blank line appears after the re-sugared loop.
+    let first_line = body.lines.first().copied().unwrap_or(0);
+    let last_line = body.lines.last().copied().unwrap_or(first_line);
     let mut stmts = Vec::with_capacity(body.stmts.len() + 2);
+    let mut lines = Vec::with_capacity(body.lines.len() + 2);
     stmts.push(bind);
-    stmts.extend(body.stmts);
+    lines.push(first_line);
+    for (st, ln) in body.stmts.into_iter().zip(
+        body.lines.iter().copied().chain(std::iter::repeat(first_line)),
+    ) {
+        stmts.push(st);
+        lines.push(ln);
+    }
     stmts.push(writeback);
-    let lines = vec![0u32; stmts.len()];
+    lines.push(last_line);
     let inner = Block { stmts, lines, region: None };
     Expr::For {
         var: idx,

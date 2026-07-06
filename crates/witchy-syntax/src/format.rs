@@ -275,9 +275,15 @@ fn param(p: &Param) -> String {
         Convention::Var => "var ",
         Convention::Own => "own ",
     };
-    match &p.ty {
+    let base = match &p.ty {
         Some(t) => format!("{conv}{}: {}", p.name, type_str(t)),
         None => format!("{conv}{}", p.name),
+    };
+    // (RFC-0056) A closed-constant default renders back as `= <const>` so a
+    // defaulted parameter round-trips through `witchy fmt` (BUG-206).
+    match &p.default {
+        Some(d) => format!("{base} = {}", expr(d)),
+        None => base,
     }
 }
 
@@ -520,6 +526,110 @@ fn block_stmts(s: &mut String, b: &Block, depth: usize, c: &mut Comments) {
     }
 }
 
+/// The surface compound-assignment operator (`+=`, …) for a binary op, or `None`
+/// for one that has no compound form.
+fn compound_op(op: BinOp) -> Option<&'static str> {
+    match op {
+        BinOp::Add => Some("+"),
+        BinOp::Sub => Some("-"),
+        BinOp::Mul => Some("*"),
+        BinOp::Div => Some("/"),
+        BinOp::Mod => Some("%"),
+        _ => None,
+    }
+}
+
+/// Re-sugar an RFC-0022 place-assignment. `desugar_place_assign` lowers `v[i] = e`
+/// to `v = v.set_at(i, e)` and `v.f = e` to `v = update v: f = e` (a
+/// `RecordUpdate`); this recovers the canonical surface form, and the compound
+/// `v[i] += e` / `v.f += e` when the RHS reads the same place. Returns `None` when
+/// `value` is not such a self-assignment, so a plain assignment prints normally.
+/// (BUG-333/BUG-330 — mirrors the while-let/UFCS/comprehension re-sugaring.)
+fn place_assign_sugar(name: &str, value: &Expr) -> Option<String> {
+    let same_var = |e: &Expr| matches!(e, Expr::Var(v) if v == name);
+    match value {
+        Expr::MethodCall { receiver, method, args }
+            if method == "set_at" && args.len() == 2 && same_var(receiver) =>
+        {
+            let idx = &args[0];
+            let val = &args[1];
+            // Compound `v[i] += e`: RHS is `v[i] <op> e` reading the same place.
+            if let Expr::Binary { op, lhs, rhs } = val {
+                if let (Expr::Index { base, index }, Some(sym)) = (lhs.as_ref(), compound_op(*op)) {
+                    if same_var(base) && index.as_ref() == idx {
+                        return Some(format!("{name}[{}] {sym}= {}", expr(idx), expr(rhs)));
+                    }
+                }
+            }
+            Some(format!("{name}[{}] = {}", expr(idx), expr(val)))
+        }
+        Expr::RecordUpdate { base, fields } if fields.len() == 1 && same_var(base) => {
+            let (f, val) = &fields[0];
+            // Compound `v.f += e`: RHS is `v.f <op> e` reading the same field.
+            if let Expr::Binary { op, lhs, rhs } = val {
+                if let (Expr::Field { base: fb, field }, Some(sym)) =
+                    (lhs.as_ref(), compound_op(*op))
+                {
+                    if same_var(fb) && field == f {
+                        return Some(format!("{name}.{f} {sym}= {}", expr(rhs)));
+                    }
+                }
+            }
+            Some(format!("{name}.{f} = {}", expr(val)))
+        }
+        _ => None,
+    }
+}
+
+/// Recognize the `for var x in xs:` desugar (an indexed `__fvN` loop that binds
+/// `var x = xs[__fvN]` first and writes `xs[__fvN] = x` back last). Returns the
+/// element name, the list variable, and the body with the bind/write-back
+/// stripped, or `None` when `body` is not that exact shape. (BUG-334.)
+fn for_var_sugar<'a>(idx: &str, iter: &'a Expr, body: &'a Block) -> Option<(&'a str, &'a str, Block)> {
+    // iter must be `0..<list>.length()`.
+    let Expr::Range { lo, hi, inclusive: false } = iter else { return None };
+    if !matches!(lo.as_ref(), Expr::Int(0)) {
+        return None;
+    }
+    let Expr::MethodCall { receiver, method, args } = hi.as_ref() else { return None };
+    if method != "length" || !args.is_empty() {
+        return None;
+    }
+    let Expr::Var(list_var) = receiver.as_ref() else { return None };
+    if body.stmts.len() < 2 {
+        return None;
+    }
+    // First stmt: `var x = list[idx]`.
+    let Stmt::Let { name: elem, ty: None, mutable: true, value: bind } = &body.stmts[0] else {
+        return None;
+    };
+    let Expr::Index { base, index } = bind else { return None };
+    if !matches!(base.as_ref(), Expr::Var(v) if v == list_var)
+        || !matches!(index.as_ref(), Expr::Var(v) if v == idx)
+    {
+        return None;
+    }
+    // Last stmt: `list[idx] = x`  (i.e. `list = list.set_at(idx, x)`).
+    let Stmt::Assign { name: wb_list, value: wb } = body.stmts.last()? else { return None };
+    if wb_list != list_var {
+        return None;
+    }
+    let Expr::MethodCall { receiver: wr, method: wm, args: wa } = wb else { return None };
+    if wm != "set_at" || wa.len() != 2 || !matches!(wr.as_ref(), Expr::Var(v) if v == list_var) {
+        return None;
+    }
+    if !matches!(&wa[0], Expr::Var(v) if v == idx) || !matches!(&wa[1], Expr::Var(v) if v == elem) {
+        return None;
+    }
+    let n = body.stmts.len();
+    let inner = Block {
+        stmts: body.stmts[1..n - 1].to_vec(),
+        lines: body.lines.get(1..n - 1).map(<[u32]>::to_vec).unwrap_or_default(),
+        region: body.region.clone(),
+    };
+    Some((elem, list_var, inner))
+}
+
 fn stmt(s: &mut String, st: &Stmt, depth: usize, c: &mut Comments) {
     match st {
         Stmt::Let { name, ty, mutable, value } => {
@@ -535,6 +645,14 @@ fn stmt(s: &mut String, st: &Stmt, depth: usize, c: &mut Comments) {
         }
         Stmt::Assign { name, value } => {
             pad(s, depth);
+            // (RFC-0022) Re-sugar a place-assignment that the parser lowered to a
+            // self-`set_at`/`RecordUpdate` back to `v[i] = e` / `v.f = e`
+            // (BUG-333/BUG-330); an ordinary assignment prints normally.
+            if let Some(line) = place_assign_sugar(name, value) {
+                s.push_str(&line);
+                s.push('\n');
+                return;
+            }
             s.push_str(name);
             s.push_str(" = ");
             value_or_block(s, value, depth, c);
@@ -771,6 +889,22 @@ fn multiline(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
             block(s, body, depth + 1, c);
         }
         Expr::For { var, iter, body } => {
+            // `for var x in xs:` (RFC-0028) desugars to an indexed loop with a
+            // synthetic `__fvN` counter, a leading `var x = xs[__fvN]` bind, and a
+            // trailing `xs[__fvN] = x` write-back. Recognize exactly that shape and
+            // print the surface form back (BUG-334) — leaking the internal counter
+            // into formatted source is a de-sugar defect, like while-let.
+            if var.starts_with("__fv") {
+                if let Some((elem, list_var, inner)) = for_var_sugar(var, iter, body) {
+                    s.push_str("for var ");
+                    s.push_str(elem);
+                    s.push_str(" in ");
+                    s.push_str(list_var);
+                    s.push_str(":\n");
+                    block(s, &inner, depth + 1, c);
+                    return;
+                }
+            }
             // `for a, b in e:` desugars at parse to a synthetic element variable
             // plus a leading destructure; print the sugar back (unparenthesized —
             // the canonical Python-style form; `for (a, b) in e:` also parses).
@@ -894,9 +1028,9 @@ fn arm_body(s: &mut String, body: &Expr, depth: usize, c: &mut Comments) {
         Expr::Block(b) if b.stmts.len() == 1 && b.region.is_none() => {
             let inline = match &b.stmts[0] {
                 Stmt::Return(Some(e)) => inline_value(e).map(|v| format!("return {v}")),
-                Stmt::Assign { name, value } => {
-                    inline_value(value).map(|v| format!("{name} = {v}"))
-                }
+                Stmt::Assign { name, value } => place_assign_sugar(name, value)
+                    .filter(|l| !l.contains('\n'))
+                    .or_else(|| inline_value(value).map(|v| format!("{name} = {v}"))),
                 Stmt::Break => Some("break".into()),
                 Stmt::Continue => Some("continue".into()),
                 _ => None,
