@@ -721,28 +721,53 @@ fn cmd_vendor(console: Console, root: Dir, dir: String) -> Int:
         print(console, "usage: pm vendor <dir>")
         1
     else:
-        let manifest = read(root, join_path(dir, "witchy.toml"))
         let vendor = join_path(dir, "vendor")
         if !exists(root, vendor):
             make_dir(root, vendor)
-        var count = 0
-        for pair in toml.table(manifest, "dependencies"):
-            let (name, inline) = pair
-            if let Some(rel) = toml.inline_get(inline, "path"):
-                let dep_dir = normalize_path(join_path(dir, rel))
-                let dest = join_path(vendor, name)
-                if !exists(root, dest):
-                    make_dir(root, dest)
-                if !exists(root, join_path(dest, "src")):
-                    make_dir(root, join_path(dest, "src"))
-                for f in fs.collect_files(root, join_path(dep_dir, "src"), "src", ".witchy"):
-                    let (relpath, contents) = f
-                    write(root, join_path(dest, relpath), contents)
-                    count = count + 1
-                if exists(root, join_path(dep_dir, "witchy.toml")):
-                    write(root, join_path(dest, "witchy.toml"), read(root, join_path(dep_dir, "witchy.toml")))
+        // BUG-136: materialize the whole resolved PATH-dependency closure, not just
+        // the direct manifest entries — a transitive path dep (`app -> lib -> base`)
+        // must be vendored too, or an offline build can't resolve it. Deduplicated by
+        // vendored name so a diamond/cycle terminates.
+        let (_seen, count) = vendor_closure(root, dir, vendor, [], 0)
         print(console, "vendored ${count} file(s) into " + vendor)
         0
+
+// Vendor the path-dependency closure rooted at `base` into `vendor/<name>`, walking
+// each dep's own manifest recursively. Threads a visited set (import aliases already
+// vendored) and a running file count.
+fn vendor_closure(root: Dir, base: String, vendor: String, seen: List(String), count: Int) -> (List(String), Int):
+    var visited = seen
+    var total = count
+    if exists(root, join_path(base, "witchy.toml")):
+        for pair in toml.table(read(root, join_path(base, "witchy.toml")), "dependencies"):
+            let (name, inline) = pair
+            if let Some(rel) = toml.inline_get(inline, "path"):
+                if !has(visited, name):
+                    visited = list.push(visited, name)
+                    let dep_dir = normalize_path(join_path(base, rel))
+                    total = total + vendor_one(root, dep_dir, vendor, name)
+                    let (v2, c2) = vendor_closure(root, dep_dir, vendor, visited, total)
+                    visited = v2
+                    total = c2
+    (visited, total)
+
+// Copy one dependency's `src/**/*.witchy` (+ its manifest) into `vendor/<name>`,
+// returning the number of source files written.
+fn vendor_one(root: Dir, dep_dir: String, vendor: String, name: String) -> Int:
+    let dest = join_path(vendor, name)
+    if !exists(root, dest):
+        make_dir(root, dest)
+    if !exists(root, join_path(dest, "src")):
+        make_dir(root, join_path(dest, "src"))
+    var count = 0
+    for f in fs.collect_files(root, join_path(dep_dir, "src"), "src", ".witchy"):
+        let (relpath, contents) = f
+        fs.ensure_dir(root, join_path(dest, fs.parent_dir(relpath)))
+        write(root, join_path(dest, relpath), contents)
+        count = count + 1
+    if exists(root, join_path(dep_dir, "witchy.toml")):
+        write(root, join_path(dest, "witchy.toml"), read(root, join_path(dep_dir, "witchy.toml")))
+    count
 
 // publish <dir> [host:port] [identity] — stage a rune to a coven registry. Reads
 // the manifest + full src tree, builds the coven publish envelope, and POSTs it.
