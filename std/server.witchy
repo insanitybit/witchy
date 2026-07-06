@@ -217,10 +217,10 @@ fn dispatch(routes: List(Route)) -> fn(Request) -> Response:
 
 fn dispatch_one(routes: List(Route), req: Request) -> Response:
     match try_routes(routes, req):
+        // The path may exist under a different method — that's a 405, not a
+        // 404 (so clients can tell "wrong verb" from "no such resource").
         Some(resp) -> resp
         None ->
-            // The path may exist under a different method — that's a 405, not a
-            // 404 (so clients can tell "wrong verb" from "no such resource").
             if path_matches_any(routes, req):
                 method_not_allowed()
             else:
@@ -517,22 +517,24 @@ pub fn handle(app: Router, req: Request) -> Response:
 // 100..599 traps. Public so a test or a custom transport can render a Response itself.
 pub fn render(resp: Response) -> String:
     match resp:
+        // (BUG-255) A status code outside 100..599 is not a valid HTTP status
+        // and would render a malformed status line; trap loudly (both backends).
+
+        // (SEC-043) A handler-set header name/value (e.g. a `location` from
+        // `redirect`, a `set-cookie`) may carry attacker-derived data; a
+        // `\r`/`\n` here would inject a header or split the response. Validate
+        // before concatenating — trap loudly rather than emit a split response.
+
+        // (BUG-358) The framing headers are OWNED below (Content-Length +
+        // Connection). Drop any handler-supplied Content-Length /
+        // Transfer-Encoding / Connection so the response never carries two
+        // conflicting framing headers (a response-smuggling primitive).
         Response(code, headers, b) ->
-            // (BUG-255) A status code outside 100..599 is not a valid HTTP status
-            // and would render a malformed status line; trap loudly (both backends).
             check_status(code)
             var out = "HTTP/1.1 ${code} " + reason(code) + "\r\n"
             for h in headers:
                 let (k, v) = h
-                // (SEC-043) A handler-set header name/value (e.g. a `location` from
-                // `redirect`, a `set-cookie`) may carry attacker-derived data; a
-                // `\r`/`\n` here would inject a header or split the response. Validate
-                // before concatenating — trap loudly rather than emit a split response.
                 http.check_header(k, v)
-                // (BUG-358) The framing headers are OWNED below (Content-Length +
-                // Connection). Drop any handler-supplied Content-Length /
-                // Transfer-Encoding / Connection so the response never carries two
-                // conflicting framing headers (a response-smuggling primitive).
                 if !http.is_framing_header(k):
                     out = out + k + ": " + v + "\r\n"
             out = out + "Content-Length: " + "${string.length(b)}" + "\r\n"
