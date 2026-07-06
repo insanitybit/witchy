@@ -2921,8 +2921,11 @@ fn run_build_step_file(
     // is a pure function of its inputs, so it runs in the zero-ambient WASM
     // sandbox where a `..` write traps with no host import to call. Steps needing
     // BuildExec/BuildNet/BuildEnv run on the capability-sound interpreter: their
-    // host process/socket/env I/O is confined by the grant allow-list, which the
-    // WASM boundary cannot itself enforce.
+    // host process/socket/env I/O is confined by the grant allow-list, and the
+    // compiled backend has no per-tool exec / per-key env allow-list to enforce it
+    // (only all-or-nothing bools; net already has one). This is the last deliberate
+    // interpreter use in a production path — RFC-0068 proposes closing it by giving
+    // `Capabilities` exec/env allow-lists so every build step runs compiled.
     let footprint = capabilities::analyze(&linked);
     let sandboxable = env_keys.is_empty()
         && exec_tools.is_empty()
