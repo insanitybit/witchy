@@ -87,19 +87,55 @@ fn fv_block(block: &Block, s: &mut LambdaScan) {
 
 fn fv_expr(e: &Expr, s: &mut LambdaScan) {
     match e {
-        // A range survives only inside a `for` iterator (its loop is lowered in
-        // codegen, not the parser); scan its bounds for free variables. The
-        // other sugar nodes are fully lowered before codegen.
+        // The surface-sugar nodes (`Range`, `Index`, `MethodCall`, `Record`,
+        // `LabeledCall`, `WhileLet`) are only lowered by `lower_sugar_module`,
+        // which the COMPILED backend runs up front — but the TYPE CHECKER calls
+        // this scan (via `lambda_outer_assigns`) on the still-sugared tree (it
+        // desugars subscripts/ranges transiently for inference, never mutating the
+        // AST). Free-variable analysis is purely structural, so scan the operands
+        // of each rather than assume they are gone (a lambda body may legitimately
+        // subscript a captured list, `fn(i): xs[i]`, or method-call it). A
+        // place-assignment target (`xs[i] = v`) never appears here — the parser
+        // desugars it to `xs = xs.set_at(i, v)` (a `Stmt::Assign`) at parse time —
+        // so an `Index`/`Field` here is always a READ.
         Expr::Range { lo, hi, .. } => {
             fv_expr(lo, s);
             fv_expr(hi, s);
         }
-        Expr::Index { .. }
-        | Expr::WhileLet { .. }
-        | Expr::MethodCall { .. }
-        | Expr::Record { .. }
-        | Expr::LabeledCall { .. } => {
-            unreachable!("range/index sugar is lowered before codegen (parser::lower_sugar_module)")
+        Expr::Index { base, index } => {
+            fv_expr(base, s);
+            fv_expr(index, s);
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            fv_expr(receiver, s);
+            for a in args {
+                fv_expr(a, s);
+            }
+        }
+        Expr::Record { fields, spread, .. } => {
+            for (_, v) in fields {
+                fv_expr(v, s);
+            }
+            if let Some(sp) = spread {
+                fv_expr(sp, s);
+            }
+        }
+        // A labeled call's name may be a captured function-valued local (mirrors
+        // the `Call` arm); recurse over its argument values.
+        Expr::LabeledCall { name, args } => {
+            s.reads.insert(name.clone());
+            for (_, a) in args {
+                fv_expr(a, s);
+            }
+        }
+        Expr::WhileLet { pattern, scrutinee, body } => {
+            fv_expr(scrutinee, s);
+            let mut pv = Vec::new();
+            collect_pattern_vars(pattern, &mut pv);
+            for v in pv {
+                s.bound.insert(v);
+            }
+            fv_block(body, s);
         }
         Expr::Var(n) => {
             s.reads.insert(n.clone());

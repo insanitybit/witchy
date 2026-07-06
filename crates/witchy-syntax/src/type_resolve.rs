@@ -89,6 +89,11 @@ struct ModTypes {
     types: HashSet<String>,
     /// Bare constructor name -> bare owning type name.
     ctors: HashMap<String, String>,
+    /// Bare names of the SEALED (`capability`) types this module declares — an
+    /// RFC-0002 brand may be constructed/destructured only in its home module, so
+    /// a bare reference to one from ELSEWHERE is canonicalized (not rejected as
+    /// "qualify it") so the linker's sealing check reports the precise error.
+    sealed: HashSet<String>,
 }
 
 /// Program-wide facts gathered before any rewrite: each module's declared types
@@ -119,6 +124,9 @@ impl World {
                     }
                     Item::Type(t) => {
                         mt.types.insert(t.name.clone());
+                        if t.sealed {
+                            mt.sealed.insert(t.name.clone());
+                        }
                         for v in &t.variants {
                             mt.ctors.insert(v.name.clone(), t.name.clone());
                         }
@@ -159,6 +167,25 @@ impl World {
             .types
             .iter()
             .filter_map(|(m, mt)| mt.ctors.get(name).map(|owner| (m.clone(), owner.clone())))
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// Modules that declare a SEALED constructor named (bare) `name`, each paired
+    /// with its owning type — the subset of [`ctor_exporters`] whose owner is a
+    /// `capability` brand (RFC-0002). Used to canonicalize a bare out-of-module
+    /// reference so the sealing check, not the "qualify it" hint, reports it.
+    fn sealed_ctor_exporters(&self, name: &str) -> Vec<(String, String)> {
+        let mut v: Vec<(String, String)> = self
+            .types
+            .iter()
+            .filter_map(|(m, mt)| {
+                mt.ctors
+                    .get(name)
+                    .filter(|owner| mt.sealed.contains(owner.as_str()))
+                    .map(|owner| (m.clone(), owner.clone()))
+            })
             .collect();
         v.sort();
         v
@@ -372,6 +399,23 @@ impl<'a> Scope<'a> {
     /// `Set.new()`) is a type-as-value static-method receiver: it resolves like a
     /// type name (bare if ambient, canonical otherwise), so static dispatch keys
     /// on the same name as the `impl` head.
+    /// A bare constructor of a SEALED capability declared in a single in-scope
+    /// module canonicalizes to `module.Ctor`, so the RFC-0002 sealing check
+    /// (which keys on the canonical declaration name) reports the precise
+    /// "sealed capability … cannot construct/destructure" error. You may not
+    /// construct such a brand AT ALL outside its home module, so the ordinary
+    /// "qualify it (`m.Ctor`) or from-import it" hint would be actively
+    /// misleading — neither spelling is allowed (BUG-313 × RFC-0042).
+    fn sealed_ctor_canonical(&self, name: &str) -> Option<String> {
+        let mut hits = self
+            .world
+            .sealed_ctor_exporters(name)
+            .into_iter()
+            .filter(|(m, _)| self.in_scope(m));
+        let (m, _) = hits.next()?;
+        hits.next().is_none().then(|| format!("{m}.{name}"))
+    }
+
     fn resolve_ctor_expr_name(&self, name: &str) -> Result<String, LinkError> {
         if let Some((module, ctor)) = name.split_once('.') {
             if !self.in_scope(module) {
@@ -399,6 +443,10 @@ impl<'a> Scope<'a> {
         }
         if let Some(canon) = self.type_map.get(name) {
             return Ok(canon.clone());
+        }
+        // A sealed capability's brand: canonicalize so sealing reports it (below).
+        if let Some(canon) = self.sealed_ctor_canonical(name) {
+            return Ok(canon);
         }
         // Name the exporting module and the constructor's owning type, matching the
         // unknown-function path — never a literal `module.`/`<Type>` (BUG-328).
@@ -450,6 +498,12 @@ impl<'a> Scope<'a> {
         }
         if let Some(canon) = self.ctor_map.get(name) {
             return Ok(canon.clone());
+        }
+        // A sealed capability's brand destructured from another module: canonicalize
+        // it (rather than leaving it bare) so the sealing check keys on the same
+        // canonical name and reports "cannot destructure" (BUG-313 × RFC-0042).
+        if let Some(canon) = self.sealed_ctor_canonical(name) {
+            return Ok(canon);
         }
         Ok(name.to_string())
     }
@@ -676,8 +730,18 @@ impl<'a> Scope<'a> {
                 self.resolve_block(body)?;
             }
             Expr::Record { name, fields, spread } => {
-                // Named-field construction: the name is the record type's ctor.
-                *name = self.resolve_ctor_expr_name(name)?;
+                // Named-field / spread construction (`Point(x: 1, ..p)`). Canonicalize
+                // the ctor name when it resolves in scope (a local or from-imported
+                // record), but LEAVE an unresolved bare name for the records-lowering
+                // pass — which reports the precise "`X(...)` … `X` is not a record
+                // type" (BUG-316), resolves an imported record once every module is
+                // merged (BUG-342), and rejects a genuine typo. Emitting the bare-
+                // ctor "qualify it" error here would both mask that clearer message
+                // and pre-empt the merged pass that legitimately resolves an imported
+                // record type this module cannot yet see.
+                if let Ok(canon) = self.resolve_ctor_expr_name(name) {
+                    *name = canon;
+                }
                 for (_, v) in fields {
                     self.resolve_expr(v)?;
                 }
