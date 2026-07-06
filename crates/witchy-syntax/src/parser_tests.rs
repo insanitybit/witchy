@@ -575,3 +575,23 @@ fn f(var a: Int, own b: Int, c: Int) -> Int:
         parse_deep(src).expect("nesting within the limit parses");
     }
 
+    #[test]
+    fn yield_inside_a_lambda_in_a_gen_fn_is_rejected() {
+        // BUG-183: a `yield` in a nested lambda used to `check` clean but fail only
+        // in codegen (the generator lowering does not descend into closures). It is
+        // now a parse error, so `check` is a reliable gate for both backends.
+        let err = parse_module(
+            "import iter\n\ngen fn bad() -> Iter(Int):\n    let f = fn():\n        yield 1\n    yield 2\n",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("`yield`"), "{err}");
+        // A `gen fn` method with a nested-lambda yield is rejected the same way.
+        assert!(parse_module(
+            "type Box:\n    value: Int\n\nimpl Box:\n    gen fn bad(self) -> Iter(Int):\n        let f = fn():\n            yield self.value\n        yield 2\n"
+        )
+        .is_err());
+        // Control: a block-nested `yield` in the same generator still parses.
+        parse_module("gen fn ok() -> Iter(Int):\n    if true:\n        yield 1\n    yield 2\n")
+            .expect("block-nested yield parses");
+    }
+
