@@ -3965,3 +3965,71 @@ fn find_str_in_rs(dir: &Path, needle: &str, hits: &mut Vec<PathBuf>) {
         }
     }
 }
+
+/// (BUG-406) `witchy run <project> --net <addr>` must FORWARD the runtime `--net`
+/// grant to the inner sandboxed run of the compiled app. The front-end consumes
+/// `--net` for its own registry reach; before the fix it dropped it from the app's
+/// run, so a program that connects at runtime was compiled and then run with an
+/// EMPTY Net allow-list — its grant silently lost. With the fix the app connects;
+/// without any `--net` it is still denied (the grant is the discriminator, not an
+/// over-grant).
+#[test]
+fn run_forwards_net_grant_to_the_sandboxed_app() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+
+    // A one-shot loopback echo server on a free port.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let addr = format!("127.0.0.1:{port}");
+    let server = std::thread::spawn(move || {
+        if let Ok((stream, _)) = listener.accept() {
+            let mut r = BufReader::new(stream);
+            let mut line = String::new();
+            let _ = r.read_line(&mut line);
+            let _ = r.get_mut().write_all(line.as_bytes());
+        }
+    });
+
+    // A hermetic project whose app needs Net at runtime.
+    let work = unique("net-forward");
+    let app = work.join("netapp");
+    std::fs::create_dir_all(app.join("src")).unwrap();
+    std::fs::write(app.join("witchy.toml"), "[rune]\nname = \"netapp\"\nversion = \"0.1.0\"\n").unwrap();
+    std::fs::write(
+        app.join("src/netapp.witchy"),
+        format!(
+            "fn main(console: Console, net: Net):\n    let s = connect(net, \"{addr}\")\n    send_line(s, \"ping\")\n    print(console, recv_line(s))\n"
+        ),
+    )
+    .unwrap();
+
+    // WITH --net: the grant is forwarded, so the app connects and echoes.
+    let out = Command::new(BIN)
+        .current_dir(&work)
+        .args(["run", "netapp", "--net", &addr])
+        .output()
+        .expect("spawn witchy run");
+    assert!(
+        out.status.success() && stdout(&out).contains("ping"),
+        "net grant must reach the app: status {:?} stdout {} stderr {}",
+        out.status.code(),
+        stdout(&out),
+        stderr(&out),
+    );
+    server.join().ok();
+
+    // WITHOUT --net: still denied (no silent over-grant).
+    let denied = Command::new(BIN)
+        .current_dir(&work)
+        .args(["run", "netapp"])
+        .output()
+        .expect("spawn witchy run");
+    assert!(
+        !denied.status.success()
+            && (stdout(&denied).contains("not permitted") || stderr(&denied).contains("not permitted")),
+        "no --net must remain denied: stdout {} stderr {}",
+        stdout(&denied),
+        stderr(&denied),
+    );
+}
