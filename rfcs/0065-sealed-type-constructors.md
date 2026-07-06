@@ -15,8 +15,9 @@ tracking: |
   also seals destructure + hides fields). Both backends reject at link time (parity
   by construction). Applied to Set (BUG-238), time.DateTime (BUG-252), random.Rng
   (BUG-256), url.Url (BUG-460) — zero migration; smart constructors already existed.
-  FOLLOW-UP: semver.Version (BUG-191 — a bare-name seal can false-positive against the
-  book/example tutorial `Version` types; needs blast-radius care) and the coven
+  semver.Version (BUG-191) is now sealed too — the first DERIVED + container-carried
+  sealed type (the tutorial `Version` types don't import semver, so no collision); its
+  `version` convenience stays unchecked (a documented narrowing). FOLLOW-UP: the coven
   envelope/record-state types (BUG-367, BUG-224 — project code, lower priority). A
   cosmetic follow-up: `witchy doc` does not yet render the `sealed` marker.
 ---
