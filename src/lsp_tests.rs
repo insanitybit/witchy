@@ -110,6 +110,45 @@
     }
 
     #[test]
+    fn from_import_offers_bare_names_and_hovers() {
+        // BUG-388: `from X import Y` binds `Y` unqualified. Completion must offer
+        // the bare name, and hover on a bare use must resolve it in module X.
+        let mut docs = HashMap::new();
+        let src = "from string import repeat\n\nfn main(console: Console):\n    print(console, repeat(\"ab\", 2))\n";
+        docs.insert("file:///t.witchy".to_string(), src.to_string());
+        let items = completion_response(
+            &docs,
+            &json!({ "textDocument": { "uri": "file:///t.witchy" } }),
+        );
+        let labels: Vec<String> = items
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["label"].as_str().unwrap().to_string())
+            .collect();
+        assert!(
+            labels.contains(&"repeat".to_string()),
+            "bare from-import offered: {labels:?}"
+        );
+
+        // Hover on the bare `repeat` on line 3.
+        let col = src.lines().nth(3).unwrap().find("repeat").unwrap() as u64;
+        let resp = hover_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": "file:///t.witchy" },
+                "position": { "line": 3, "character": col },
+            }),
+        );
+        assert!(
+            resp["contents"]["value"]
+                .as_str()
+                .is_some_and(|c| c.contains("fn string.repeat(")),
+            "{resp}"
+        );
+    }
+
+    #[test]
     fn hover_resolves_receiver_method_calls() {
         // BUG-174: `xs.push(1)` — word_at reads `xs.push`; treating `xs` as a
         // module used to return null. The method must resolve against the prelude

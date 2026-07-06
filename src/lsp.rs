@@ -118,23 +118,49 @@ fn completion_response(docs: &HashMap<String, String>, params: &Value) -> Value 
             }
         }
         if let Some(module) = t.strip_prefix("import ") {
-            let module = module.trim();
-            items.push(json!({ "label": module, "kind": 9 })); // Module
-            if let Some(src) = crate::linker::std_source(module) {
-                for ml in src.lines() {
-                    if let Some(rest) = ml.trim_start().strip_prefix("pub fn ") {
-                        if let Some(name) = rest.split('(').next() {
-                            items.push(json!({
-                                "label": format!("{module}.{}", name.trim()),
-                                "kind": 3,
-                            }));
-                        }
-                    }
+            push_module_completions(&mut items, module.trim());
+        }
+        // `from X import a, b` (RFC-0042) binds `a`/`b` UNQUALIFIED and implies
+        // `import X`, so offer the bare names plus the module's qualified fns.
+        if let Some((module, names)) = parse_from_import(t) {
+            for name in names {
+                items.push(json!({ "label": name, "kind": 3 }));
+            }
+            push_module_completions(&mut items, &module);
+        }
+    }
+    json!(items)
+}
+
+/// The `module` label plus every `module.fn` of a resolvable module — the
+/// completions an `import module` (or the module half of a `from`-import) offers.
+fn push_module_completions(items: &mut Vec<Value>, module: &str) {
+    items.push(json!({ "label": module, "kind": 9 })); // Module
+    if let Some(src) = crate::linker::std_source(module) {
+        for ml in src.lines() {
+            if let Some(rest) = ml.trim_start().strip_prefix("pub fn ") {
+                if let Some(name) = rest.split('(').next() {
+                    items.push(json!({
+                        "label": format!("{module}.{}", name.trim()),
+                        "kind": 3,
+                    }));
                 }
             }
         }
     }
-    json!(items)
+}
+
+/// Parse a `from X import a, b, c` line into `(module, [names])` (RFC-0042).
+/// Returns `None` for any other line.
+fn parse_from_import(line: &str) -> Option<(String, Vec<String>)> {
+    let rest = line.trim_start().strip_prefix("from ")?;
+    let (module, names) = rest.split_once(" import ")?;
+    let names = names
+        .split(',')
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .collect();
+    Some((module.trim().to_string(), names))
 }
 
 // --- hover ------------------------------------------------------------------
@@ -257,12 +283,20 @@ fn signature_doc(src: &str, name: &str) -> Option<(String, String)> {
 /// paired with its `module.` display prefix. Lets hover resolve a bare method
 /// (`xs.push` → `list.push`) or an imported function.
 fn visible_module_sources(text: &str) -> Vec<(String, String)> {
-    let mut names: Vec<String> = PRELUDE_MODULES.iter().map(|s| s.to_string()).collect();
+    // Explicitly imported modules are searched BEFORE the ambient prelude, so a
+    // bare name the document actually imports wins over an incidental
+    // prelude-module namesake (`from string import repeat` beats `list.repeat`).
+    let mut names: Vec<String> = Vec::new();
     for l in text.lines() {
-        if let Some(module) = l.trim_start().strip_prefix("import ") {
+        let lt = l.trim_start();
+        if let Some(module) = lt.strip_prefix("import ") {
             names.push(module.trim().to_string());
+        } else if let Some((module, _)) = parse_from_import(lt) {
+            // `from X import Y` implies `import X`, so a bare `Y` resolves in X.
+            names.push(module);
         }
     }
+    names.extend(PRELUDE_MODULES.iter().map(|s| s.to_string()));
     let mut seen: HashSet<String> = HashSet::new();
     let mut out = Vec::new();
     for name in names {
