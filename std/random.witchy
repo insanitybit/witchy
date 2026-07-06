@@ -13,25 +13,38 @@ type Rng:
 fn modulus() -> Int:
     2147483647
 
-// A generator from seed `s` (any Int is mapped into the valid range 1..modulus).
-pub fn seed(s: Int) -> Rng:
+// Map any Int into the valid seed/state range [1, modulus). 0 is forbidden (the
+// LCG is stuck at 0) and a negative would replay an out-of-range sequence, so
+// both are folded in — this is the PRNG contract every state must satisfy.
+fn normalize(s: Int) -> Int:
     let m = modulus()
     var v = s % m
     if v < 0:
         v = v + m
     if v == 0:
         v = 1
-    Rng(v)
+    v
+
+// A generator from seed `s` (any Int is mapped into the valid range 1..modulus).
+pub fn seed(s: Int) -> Rng:
+    Rng(normalize(s))
 
 // Advance the generator: a pseudo-random Int in [1, 2^31-1) and the next state.
+// The incoming state is normalized first, so a hand-built `Rng(0)` / `Rng(-5)`
+// (which bypasses `seed`) still yields an in-range draw instead of sticking at 0
+// or going negative.
 pub fn next(r: Rng) -> (Int, Rng):
     match r:
         Rng(state) ->
-            let n = state * 16807 % modulus()
+            let n = normalize(state) * 16807 % modulus()
             (n, Rng(n))
 
-// A pseudo-random Int in [0, bound) (bound must be positive) and the next state.
+// A pseudo-random Int in [0, bound) and the next state. `bound` must be positive
+// (RFC-0044 rule 3): a non-positive bound has no valid range, so it fails loudly
+// naming the bad argument rather than dividing by zero.
 pub fn next_below(r: Rng, bound: Int) -> (Int, Rng):
+    if bound <= 0:
+        fail("random.next_below: bound `${bound}` must be positive")
     let (n, r2) = next(r)
     (n % bound, r2)
 
