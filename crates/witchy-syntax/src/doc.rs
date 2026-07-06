@@ -38,6 +38,16 @@ pub fn render(module_name: &str, source: &str) -> Result<String, String> {
         }
         let _ = writeln!(out);
     }
+    // Type aliases — `type Id = Int` — are part of the vocabulary too (BUG-170).
+    for item in &module.items {
+        let Item::TypeAlias { name, ty } = item else { continue };
+        any = true;
+        let _ = writeln!(out, "#### `type {name} = {}`\n", type_str(ty));
+        let doc = doc_above(&lines, &format!("type {name} ="));
+        if !doc.is_empty() {
+            let _ = writeln!(out, "{doc}\n");
+        }
+    }
     // Traits — the interface vocabulary (BUG-073). Traits carry no visibility
     // gate; a module-level `trait` is public API. Render the header (name, type
     // parameters, supertraits) and each method signature.
@@ -294,5 +304,15 @@ mod tests {
         let src = "trait Ord: Eq + PartialOrd:\n    fn cmp(self, other: Self) -> Int\n";
         let md = render("cmp", src).unwrap();
         assert!(md.contains("#### `trait Ord: Eq + PartialOrd`"), "supertraits: {md}");
+    }
+
+    // BUG-170: `type X = ...` aliases render (heading + doc + target).
+    #[test]
+    fn renders_type_aliases() {
+        let src = "// A user identifier.\ntype UserId = Int\n";
+        let md = render("ids", src).unwrap();
+        assert!(md.contains("#### `type UserId = Int`"), "alias: {md}");
+        assert!(md.contains("A user identifier."), "alias doc: {md}");
+        assert!(!md.contains("_No public API._"), "alias is public API: {md}");
     }
 }
