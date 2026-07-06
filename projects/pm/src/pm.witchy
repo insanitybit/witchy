@@ -1054,8 +1054,7 @@ fn cmd_why_cap(console: Console, root: Dir, dir: String, cap: String) -> Int:
         print(console, "usage: pm why-cap <dir> <Cap>")
         1
     else:
-        let manifest = read(root, join_path(dir, "witchy.toml"))
-        let who = gate_contributors(root, dir, manifest, cap)
+        let who = gate_contributors(root, dir, cap)
         if list.length(who) == 0:
             print(console, "no dependency demands " + cap)
         else:
@@ -1513,20 +1512,19 @@ fn cmd_gate(console: Console, root: Dir, args: List(String)) -> Int:
         print(console, "no witchy.lock — run `pm lock " + dir + "` first")
         1
     else:
-        let manifest = read(root, join_path(dir, "witchy.toml"))
         let lock = read(root, join_path(dir, "witchy.lock"))
         let baseline = union_all(lock_baseline(lock), args_from(args, 2))
-        let demanded = resolution_footprint(root, dir, manifest)
-        report_gate(console, root, dir, manifest, rights.uncovered(baseline, demanded))
+        let demanded = resolution_footprint(root, dir)
+        report_gate(console, root, dir, rights.uncovered(baseline, demanded))
 
-fn report_gate(console: Console, root: Dir, dir: String, manifest: String, widened: List(String)) -> Int:
+fn report_gate(console: Console, root: Dir, dir: String, widened: List(String)) -> Int:
     if list.length(widened) == 0:
         print(console, "OK: dependencies demand no authority beyond witchy.lock")
         0
     else:
         print(console, "BLOCK: dependencies demand new authority: " + list.join(widened, ", "))
         for cap in widened:
-            print(console, "  " + cap + " <- " + list.join(gate_contributors(root, dir, manifest, cap), ", "))
+            print(console, "  " + cap + " <- " + list.join(gate_contributors(root, dir, cap), ", "))
         2
 
 // The capabilities the lockfile already records (union of every [[rune]] entry's
@@ -1538,24 +1536,27 @@ fn lock_baseline(lock: String) -> List(String):
             out = add_unique(out, cap)
     out
 
-// The aggregate authority the current dependency sources demand.
-fn resolution_footprint(root: Dir, dir: String, manifest: String) -> List(String):
+// The aggregate authority the current dependency sources demand. BUG-080: the whole
+// transitive path-dep closure (not just direct entries), each dep's footprint being
+// the union over ALL its src modules (rune_footprint, BUG-085) — matching coven's
+// computed_footprint, so the local gate can't miss a capability a transitive dep or
+// a non-entry module reaches for.
+fn resolution_footprint(root: Dir, dir: String) -> List(String):
     var out = []
-    for pair in toml.table(manifest, "dependencies"):
-        let (name, inline) = pair
-        if let Some(rel) = toml.inline_get(inline, "path"):
-            for cap in rune_footprint(root, normalize_path(join_path(dir, rel))):
-                out = add_unique(out, cap)
+    for entry in path_closure(root, dir):
+        let (_name, dep_dir) = entry
+        for cap in rune_footprint(root, dep_dir):
+            out = add_unique(out, cap)
     out
 
-// The dependencies whose own footprint covers `cap` — who introduced it.
-fn gate_contributors(root: Dir, dir: String, manifest: String, cap: String) -> List(String):
+// The dependencies whose own footprint covers `cap` — who introduced it. Walks the
+// transitive closure (BUG-080/134), so `why-cap` names a deep contributor too.
+fn gate_contributors(root: Dir, dir: String, cap: String) -> List(String):
     var who = []
-    for pair in toml.table(manifest, "dependencies"):
-        let (name, inline) = pair
-        if let Some(rel) = toml.inline_get(inline, "path"):
-            if rights.any_covers(rune_footprint(root, normalize_path(join_path(dir, rel))), cap):
-                who = list.push(who, name)
+    for entry in path_closure(root, dir):
+        let (name, dep_dir) = entry
+        if rights.any_covers(rune_footprint(root, dep_dir), cap):
+            who = list.push(who, name)
     who
 
 // The arguments at index `start` and beyond (a positional slice). Used both to
@@ -2594,14 +2595,18 @@ fn src_stub(let name: String) -> String:
 
 // --- footprint helpers -------------------------------------------------------
 
-// The capabilities the rune's source actually demands. The source is the first
-// `.witchy` under <dir>/src — found by listing, so the file name need not match
-// the rune name.
+// The capabilities the rune's source actually demands: the UNION over every
+// `src/**/*.witchy` module's footprint (BUG-085) — matching coven's
+// `computed_footprint`. Footprinting only the first module would miss a capability
+// a non-entry helper module reaches for (an under-report a supply-chain attacker
+// could hide behind).
 fn rune_footprint(root: Dir, dir: String) -> List(String):
-    let src = subtree(root, join_path(dir, "src"))
-    match first_witchy(list(src)):
-        Some(file) -> footprint_total(compiler.footprint(read(src, file)))
-        None -> []
+    var out = []
+    for f in fs.collect_files(root, join_path(dir, "src"), "src", ".witchy"):
+        let (_relpath, text) = f
+        for cap in footprint_total(compiler.footprint(text)):
+            out = add_unique(out, cap)
+    out
 
 // SEC-006: the union footprint of EVERY vendored rune — the full resolved closure. A
 // registry record's footprint is single-rune, so a direct add's gate never sees a
