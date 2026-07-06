@@ -8,6 +8,32 @@ predecessors:
   - "0047 (equality coherence — the sibling that rejects ==(fn, fn); rendering deliberately differs, see Design)"
   - "scratch/consistency-analysis-2026-07-03.md §4 (two rendering systems with disjoint domains)"
 tracking: "blanket-Show slice shipped; interpolation flip pending"
+implementation-notes: |
+  IMPLEMENTATION PLAN (scoped 2026-07-06 after an agent died on the depth; do in a
+  focused MAIN-LOOP session, not a watchdog-bound agent):
+  - Interpolation desugars at LEX time (crates/witchy-syntax/src/lexer.rs:628-749):
+    `"${e}"` -> token stream `( lit0 + __render(e0) + lit1 + ... )`. No types there,
+    so the flip CANNOT live in the lexer.
+  - The flip point is the TYPED pass: rewrite `__render(x)` -> `show(x)` when x's
+    concrete type has a `Show` impl. RFC-0046's TypeTable gives the concrete type at
+    the call site; the Show-impl registry (typeck) says whether an impl exists. Then
+    existing `show()` trait dispatch (what `say` already uses) renders on BOTH
+    backends -> parity by construction (one rewrite, not two per-backend edits).
+  - Full model needs EVERY type to have a derived structural `Show` (so a
+    no-custom-Show type still resolves `show(x)`), OR: keep `__render` as the
+    universal structural fallback and only rewrite to `show(x)` for types that have a
+    (custom or derived) Show impl; leave the rest as `__render`. The latter is the
+    smaller cut and preserves today's output for impl-less types.
+  - Interp side: interpreter.rs `__render` (:1222) currently = structural
+    `Display for Value`; the rewrite makes the typed call `show(x)` instead, so the
+    interp's `Display` stays the derived arm.
+  - Blast radius (update in the SAME change): Duration (`${d}` 90000 -> 1m30s) and
+    custom-Show types in examples/durations, examples/display, book/tour-values,
+    book/tour-generics; delete show.show_list + set.show workarounds (break-don't-
+    deprecate) and rewrite their callers to `${xs}`/say; add differential tests.
+  LESSON: this class of deep central change is NOT feasible for Opus-4.8 agents (the
+  600s stream watchdog kills them mid-integration; agent acc99b35 died at 0 commits).
+
 ---
 
 # RFC-0053: One rendering system — interpolation and `say` through `Show`
