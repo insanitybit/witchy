@@ -1,7 +1,7 @@
 ---
 rfc: 0065
 title: Sealed type constructors — smart constructors that enforce invariants
-status: accepted
+status: implemented
 created: 2026-07-05
 predecessors:
   - "0002 (user-definable capabilities — introduces sealing for `capability` types; this RFC generalizes it)"
