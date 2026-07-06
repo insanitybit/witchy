@@ -452,14 +452,17 @@ pub fn link(
     // `math.sqrt`) resolve without an import line. Locally provided modules
     // still take precedence; dead-code elimination strips what goes unused.
     //
-    // (RFC-0053) `show` is a prelude module (link-set only — `say`/`show.*` still
-    // need an explicit `import show`, so `is_prelude_module` deliberately omits it).
-    // It is here so the `Show` trait and its impls (the `Duration` human form and
-    // the container blankets) are always available for the interpolation flip: a
-    // bare `"${90000ms}"` renders `1m30s` on EVERY program, not only those that
-    // happen to link `show` some other way. DCE strips the impls a program never
-    // renders, so a program that interpolates nothing custom pays nothing.
-    for prelude in ["list", "string", "dict", "math", "option", "result", "policy", "show"] {
+    // (RFC-0053) `show` is deliberately NOT a prelude module. It was tried, so the
+    // interpolation flip (`"${90000ms}"` -> `1m30s`) would fire on programs that
+    // never link `show` — but `std/show` transitively imports `result`/`set`/
+    // `duration`/`string`, and a program is allowed to define its OWN module by one
+    // of those names (a local module SHADOWS the std one). Forcing `show` in then
+    // resolved `std/show`'s internal `result.ok` against such a local `result` that
+    // lacks it, a spurious link error (e.g. `examples/result`). So the flip honors
+    // `Show` only where the program already links it (an `impl Show`, a `say`, an
+    // `import show` — every real Show-using program); a bare `"${90000ms}"` with
+    // none of those keeps the structural millisecond render.
+    for prelude in ["list", "string", "dict", "math", "option", "result", "policy"] {
         if !modules.iter().any(|(n, _)| n == prelude) {
             if let Some(src) = std_source(prelude) {
                 if let Ok(m) = crate::parser::parse_module(src) {
