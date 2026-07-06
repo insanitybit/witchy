@@ -77,9 +77,15 @@ work types would: structural equality, for instance, derives an `EqShape` from
 the static types and generates a memoized helper function per shape.
 
 Capability values compile to **handles**: a `Dir` or `Net` is an i32 index
-into a host-side table (paths and allowlists never enter guest memory, so a
-module cannot forge or widen authority); `Console`/`Clock`/`Env` are erased
-entirely (the linked host import *is* the authority).
+into a host-side table whose entries are only this VM's own grants — the paths
+and allowlists themselves never enter guest memory, so nothing a module reads
+reveals another program's authority. The handle is still an ordinary integer,
+so the load-bearing guarantee is the type system's: source code cannot mint or
+widen a capability (there is no constructor to call). Hardening the *runtime*
+representation so a corrupted-linear-memory handle cannot be forged (an
+`externref` capability core) is tracked by
+[RFC-0005](../rfcs/0005-unforgeable-capabilities.md). `Console`/`Clock`/`Env`
+are erased entirely (the linked host import *is* the authority).
 
 ## Memory model
 
@@ -130,9 +136,12 @@ function fails at instantiation, before any code runs.
 families the grant entitles: a program with no `Console` in its footprint
 physically has no `print` import, and a `Dir[Read]` footprint links the read
 family only. `Dir`/`File`/`Net` values compile to i32 handles into a host-side table
-(paths and allowlists never enter guest memory, so a module cannot forge or
-widen authority); attenuation (`dir.subtree`, `dir.read_file`/`write_file`,
-`net.only`/`net.deny`) rewrites the handle. The
+(paths and allowlists never enter guest memory, and the table holds only this
+program's own grants); attenuation (`dir.subtree`, `dir.read_file`/`write_file`,
+`net.only`/`net.deny`) rewrites the handle. Unforgeability is enforced by the
+type system — source code cannot mint or widen a capability — while hardening the
+i32-handle runtime representation itself is
+[RFC-0005](../rfcs/0005-unforgeable-capabilities.md). The
 grant comes from the host: the dev grant for `run`/`parity`, the computed
 footprint for `witchy sandbox`. Resource bounds: a per-VM linear memory cap
 and (under the scheduler) epoch-based preemption at loop back-edges to reclaim

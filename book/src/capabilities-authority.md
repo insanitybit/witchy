@@ -1,6 +1,6 @@
 # Authority as a Value
 
-## A capability is an unforgeable token
+## A capability is a token you cannot forge in code
 
 A **capability** is a value whose type grants permission to do something. You've
 already met `Console`, which grants printing. There are a handful of these host
