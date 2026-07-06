@@ -142,6 +142,27 @@ impl World {
     fn module_declares_ambient(&self, module: &str, ty: &str) -> bool {
         self.ambient.get(module).is_some_and(|s| s.contains(ty))
     }
+
+    /// Modules that declare a TYPE named (bare) `name`, sorted — for the
+    /// unresolved-type hint (BUG-328).
+    fn type_exporters(&self, name: &str) -> Vec<String> {
+        let mut v: Vec<String> =
+            self.types.iter().filter(|(_, mt)| mt.types.contains(name)).map(|(m, _)| m.clone()).collect();
+        v.sort();
+        v
+    }
+
+    /// Modules that declare a CONSTRUCTOR named (bare) `name`, each paired with its
+    /// owning type's bare name, sorted — for the unresolved-constructor hint (BUG-328).
+    fn ctor_exporters(&self, name: &str) -> Vec<(String, String)> {
+        let mut v: Vec<(String, String)> = self
+            .types
+            .iter()
+            .filter_map(|(m, mt)| mt.ctors.get(name).map(|owner| (m.clone(), owner.clone())))
+            .collect();
+        v.sort();
+        v
+    }
 }
 
 /// The per-module resolution maps: what each bare name canonicalizes to.
@@ -296,11 +317,29 @@ impl<'a> Scope<'a> {
         if let Some(canon) = self.type_map.get(name) {
             return Ok(canon.clone());
         }
-        lerr(format!(
-            "unknown type `{name}` (in module `{}`) — it is not declared here, not a built-in, \
-             and not imported. Qualify it (`module.{name}`) or add `from module import {name}`",
-            self.home
-        ))
+        // Name the module(s) that actually export the type, matching the
+        // unknown-function path's house style — never a literal `module.` (BUG-328).
+        match self.world.type_exporters(name).as_slice() {
+            [] => lerr(format!(
+                "unknown type `{name}` (in module `{}`) — it is not declared here, not a \
+                 built-in, and no in-scope module exports a type named `{name}`",
+                self.home
+            )),
+            [m] => lerr(format!(
+                "unknown type `{name}` (in module `{}`) — qualify it (`{m}.{name}`) or add \
+                 `from {m} import {name}`",
+                self.home
+            )),
+            many => {
+                let list =
+                    many.iter().map(|m| format!("`{m}.{name}`")).collect::<Vec<_>>().join(" or ");
+                lerr(format!(
+                    "unknown type `{name}` (in module `{}`) — it is exported by several modules; \
+                     qualify it: {list}",
+                    self.home
+                ))
+            }
+        }
     }
 
     fn resolve_type(&self, ty: &mut Type) -> Result<(), LinkError> {
@@ -361,10 +400,26 @@ impl<'a> Scope<'a> {
         if let Some(canon) = self.type_map.get(name) {
             return Ok(canon.clone());
         }
-        lerr(format!(
-            "unknown constructor `{name}` — qualify it (`module.{name}`) or add \
-             `from module import <Type>`"
-        ))
+        // Name the exporting module and the constructor's owning type, matching the
+        // unknown-function path — never a literal `module.`/`<Type>` (BUG-328).
+        match self.world.ctor_exporters(name).as_slice() {
+            [] => lerr(format!(
+                "unknown constructor `{name}` — no in-scope module exports a constructor named \
+                 `{name}`"
+            )),
+            [(m, owner)] => lerr(format!(
+                "unknown constructor `{name}` — qualify it (`{m}.{name}`) or add \
+                 `from {m} import {owner}`"
+            )),
+            many => {
+                let list =
+                    many.iter().map(|(m, _)| format!("`{m}.{name}`")).collect::<Vec<_>>().join(" or ");
+                lerr(format!(
+                    "unknown constructor `{name}` — it is exported by several modules; qualify \
+                     it: {list}"
+                ))
+            }
+        }
     }
 
     /// Whether `module.Suffix` names a constructor of an in-scope module — used to
@@ -900,6 +955,39 @@ mod tests {
         }
         // A std module keeps declaring its own ambient type.
         resolve_src(&[("cmp", CMP_STUB)]).expect("cmp may declare Ordering");
+    }
+
+    #[test]
+    fn unknown_ctor_hint_names_the_exporting_module() {
+        // BUG-328: the hint names the real module and owning type — no literal
+        // `module.`/`<Type>` placeholder text.
+        let err = resolve_src(&[
+            ("json", "type Json:\n    JsonInt(Int)\n    JsonNull\n"),
+            ("main", "import json\n\nfn main(console: Console):\n    let x = JsonInt(5)\n    print(console, \"x\")\n"),
+        ])
+        .unwrap_err();
+        assert!(
+            err.message.contains("`json.JsonInt`") && err.message.contains("from json import Json"),
+            "{}",
+            err.message
+        );
+        assert!(!err.message.contains("module."), "leaked placeholder: {}", err.message);
+    }
+
+    #[test]
+    fn unknown_type_hint_names_the_exporting_module() {
+        // BUG-328: same house style for an unresolved type reference.
+        let err = resolve_src(&[
+            ("json", "type Json:\n    JsonInt(Int)\n"),
+            ("main", "import json\n\nfn f(x: Json) -> Int:\n    0\n"),
+        ])
+        .unwrap_err();
+        assert!(
+            err.message.contains("`json.Json`") && err.message.contains("from json import Json"),
+            "{}",
+            err.message
+        );
+        assert!(!err.message.contains("(`module."), "leaked placeholder: {}", err.message);
     }
 }
 
