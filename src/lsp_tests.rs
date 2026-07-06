@@ -66,6 +66,23 @@
     }
 
     #[test]
+    fn word_at_is_utf8_boundary_safe() {
+        // A line with a multibyte char before the identifier. LSP `character` is a
+        // code-unit (char) offset; using it as a BYTE index slices off a UTF-8
+        // boundary (panic) or returns the wrong word. Here `π` precedes `repeat`;
+        // the char offset of `repeat` differs from its byte offset.
+        let line = "    print(console, \"π\" + string.repeat(\"ab\", 2))";
+        let text = format!("fn main(console: Console):\n{line}\n");
+        // char offset of the `r` in `repeat` (differs from its byte offset).
+        let repeat_char_idx = "    print(console, \"π\" + string.".chars().count();
+        let w = word_at(&text, 1, repeat_char_idx).expect("word found");
+        assert_eq!(w, "string.repeat", "got {w:?}");
+        // Hovering right on the multibyte char must not panic.
+        let pi_idx = "    print(console, \"".chars().count();
+        let _ = word_at(&text, 1, pi_idx); // must not panic
+    }
+
+    #[test]
     fn clean_program_has_no_diagnostics() {
         let src = r#"
 fn main(console: Console):

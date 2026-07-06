@@ -179,23 +179,27 @@ fn hover_response(docs: &HashMap<String, String>, params: &Value) -> Value {
 }
 
 /// The identifier (allowing `.` for module-qualified names) covering `character`
-/// on `line`.
+/// on `line`. Indexing is by CHARACTER offset, not byte offset: an LSP position's
+/// `character` counts code units, so treating it as a byte index and slicing
+/// `l[start..end]` lands off a UTF-8 char boundary on any multibyte line and
+/// panics. Scanning over the decoded `chars` keeps every index on a boundary.
 fn word_at(text: &str, line: usize, character: usize) -> Option<String> {
     let l = text.lines().nth(line)?;
-    let bytes = l.as_bytes();
-    let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'.';
-    let mut start = character.min(bytes.len());
-    while start > 0 && is_word(bytes[start - 1]) {
+    let chars: Vec<char> = l.chars().collect();
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.';
+    let mut start = character.min(chars.len());
+    while start > 0 && is_word(chars[start - 1]) {
         start -= 1;
     }
-    let mut end = character.min(bytes.len());
-    while end < bytes.len() && is_word(bytes[end]) {
+    let mut end = character.min(chars.len());
+    while end < chars.len() && is_word(chars[end]) {
         end += 1;
     }
     if start == end {
         return None;
     }
-    Some(l[start..end].trim_matches('.').to_string())
+    let word: String = chars[start..end].iter().collect();
+    Some(word.trim_matches('.').to_string())
 }
 
 /// Find `fn <name>(` in `src` and return (signature line, preceding `//` block).
