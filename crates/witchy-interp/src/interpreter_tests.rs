@@ -446,6 +446,46 @@ fn main(console: Console, root: Dir):
         std::fs::remove_dir_all(&root).ok();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn dir_list_rejects_non_utf8_names() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "witchy_nonutf8_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("normal.txt"), "ok").unwrap();
+        let bad = std::path::PathBuf::from(std::ffi::OsString::from_vec(vec![
+            0xbd, 0xb2, b'=', 0xbc,
+        ]));
+        if std::fs::write(root.join(bad), "hidden").is_err() {
+            // Some Unix filesystems (notably macOS APFS/HFS configurations)
+            // reject non-UTF-8 names at creation time; the runtime bug is only
+            // observable where the host filesystem can contain such an entry.
+            std::fs::remove_dir_all(&root).ok();
+            return;
+        }
+
+        let src = r#"
+fn main(console: Console, root: Dir):
+    let names = list(root)
+    print(console, "${list.length(names)}")
+"#;
+        let err = run_in(src, &root).expect_err("non-UTF-8 names must be loud");
+        assert!(
+            err.message.contains("not valid UTF-8"),
+            "unexpected error: {}",
+            err.message
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     #[test]
     fn net_capability_connects_attenuates_and_denies() {
         use std::io::{BufRead, BufReader, Write};

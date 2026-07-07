@@ -1546,9 +1546,17 @@ fn host_dir_list_size(mut caller: Caller<'_, VmState>, h: i32) -> Result<i32> {
     let base = dir_base(&caller, h)?;
     let mut names: Vec<String> = std::fs::read_dir(&base)
         .map_err(|e| Error::msg(format!("list failed for `{}`: {e}", base.display())))?
-        .filter_map(|e| e.ok())
-        .filter_map(|e| e.file_name().into_string().ok())
-        .collect();
+        .map(|entry| {
+            let entry =
+                entry.map_err(|e| Error::msg(format!("list failed for `{}`: {e}", base.display())))?;
+            entry.file_name().into_string().map_err(|_| {
+                Error::msg(format!(
+                    "list failed for `{}`: directory entry name is not valid UTF-8",
+                    base.display()
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
     names.sort();
     let size = 4 + 8 * names.len() + names.iter().map(|n| 4 + n.len()).sum::<usize>();
     caller.data_mut().pending_list = Some(names);

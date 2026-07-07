@@ -3874,6 +3874,64 @@ fn sandbox_dir_requires_explicit_grant() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(unix)]
+#[test]
+fn sandbox_dir_list_rejects_non_utf8_names() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let dir = unique("dir-list-nonutf8");
+    let grant = dir.join("grant");
+    std::fs::create_dir_all(&grant).unwrap();
+    std::fs::write(grant.join("normal.txt"), "ok").unwrap();
+    let bad = PathBuf::from(std::ffi::OsString::from_vec(vec![0xbd, 0xb2, b'=', 0xbc]));
+    if std::fs::write(grant.join(bad), "hidden").is_err() {
+        // Some Unix filesystems reject non-UTF-8 names at creation time. The
+        // runtime bug is only observable where such an entry can exist.
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
+
+    let prog = dir.join("prog.witchy");
+    std::fs::write(
+        &prog,
+        "fn main(console: Console, root: Dir):\n    let names = list(root)\n    print(console, \"listed\")\n",
+    )
+    .unwrap();
+
+    let source = Command::new(BIN)
+        .args(["sandbox", "--dir", grant.to_str().unwrap(), prog.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!source.status.success(), "source sandbox must reject non-UTF8 names");
+    assert!(
+        stdout(&source).contains("not valid UTF-8") || stderr(&source).contains("not valid UTF-8"),
+        "expected UTF-8 error from source sandbox: out={} err={}",
+        stdout(&source),
+        stderr(&source)
+    );
+
+    let wasm = dir.join("prog.wasm");
+    let emit = Command::new(BIN)
+        .args(["emit-wasm", prog.to_str().unwrap(), "-o", wasm.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(emit.status.success(), "emit-wasm failed: {}\n{}", stderr(&emit), stdout(&emit));
+
+    let artifact = Command::new(BIN)
+        .args(["sandbox", "--dir", grant.to_str().unwrap(), wasm.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!artifact.status.success(), "wasm sandbox must reject non-UTF8 names");
+    assert!(
+        stdout(&artifact).contains("not valid UTF-8") || stderr(&artifact).contains("not valid UTF-8"),
+        "expected UTF-8 error from wasm sandbox: out={} err={}",
+        stdout(&artifact),
+        stderr(&artifact)
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// SEC-004: `crypto.reveal` gates the SIGNING key only. A named `--secret`
 /// value-secret (e.g. an OAuth client secret) stays revealable, but the signing key
 /// (`--signing-key`) is sign-only — revealing it aborts. Closes the seed-exfiltration

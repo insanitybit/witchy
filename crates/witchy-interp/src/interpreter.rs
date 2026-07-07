@@ -1677,10 +1677,28 @@ impl Interpreter {
             "list" => match args {
                 [Value::Dir(base, _)] => {
                     let mut names: Vec<String> = match std::fs::read_dir(base) {
-                        Ok(entries) => entries
-                            .filter_map(|e| e.ok())
-                            .filter_map(|e| e.file_name().into_string().ok())
-                            .collect(),
+                        Ok(entries) => {
+                            let mut names = Vec::new();
+                            for entry in entries {
+                                let entry = match entry {
+                                    Ok(entry) => entry,
+                                    Err(e) => {
+                                        return err(format!("list failed for `{}`: {e}", base.display()));
+                                    }
+                                };
+                                let name = match entry.file_name().into_string() {
+                                    Ok(name) => name,
+                                    Err(_) => {
+                                        return err(format!(
+                                            "list failed for `{}`: directory entry name is not valid UTF-8",
+                                            base.display()
+                                        ));
+                                    }
+                                };
+                                names.push(name);
+                            }
+                            names
+                        }
                         Err(e) => return err(format!("list failed for `{}`: {e}", base.display())),
                     };
                     names.sort();
