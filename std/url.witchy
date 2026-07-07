@@ -34,16 +34,27 @@ pub fn parse(s: String) -> Result(Url, String):
             let cut = authority_end(rest)
             let authority = string.substring(rest, 0, cut)
             let path = if cut >= string.char_count(rest): "/" else: string.substring(rest, cut, string.char_count(rest))
-            let colon = string.index_of(authority, ":") ?? -1
-            let host = if colon < 0: authority else: string.substring(authority, 0, colon)
-            if string.is_empty(host):
-                Err("empty host in: " + s)
-            else if colon < 0:
-                Ok(Url(scheme, host, default_port(scheme), path))
+            // Userinfo (`user@` or `user:pass@`) is outside this minimal
+            // `scheme://host[:port][/path]` grammar; reject it loudly rather
+            // than reinterpret credentials as host/port text (BUG-380).
+            if string.contains(authority, "@"):
+                Err("userinfo (`user@…`) is not supported in: " + s)
             else:
-                match parse_port(string.substring(authority, colon + 1, string.char_count(authority))):
-                    Some(p) -> Ok(Url(scheme, host, p, path))
-                    None -> Err("invalid port in: " + s)
+                // Split host from port at the LAST colon so a bracketed IPv6
+                // literal keeps its inner colons (`[::1]:80` -> host `[::1]`,
+                // matching the Net layer's last-colon split). A bare IPv6
+                // literal has no brackets and no port, so any colon before the
+                // closing `]` is part of the host.
+                let split = host_port_split(authority)
+                let host = string.substring(authority, 0, split)
+                if string.is_empty(host):
+                    Err("empty host in: " + s)
+                else if split >= string.char_count(authority):
+                    Ok(Url(scheme, host, default_port(scheme), path))
+                else:
+                    match parse_port(string.substring(authority, split + 1, string.char_count(authority))):
+                        Some(p) -> Ok(Url(scheme, host, p, path))
+                        None -> Err("invalid port in: " + s)
 
 // The index in `rest` where the authority ends: the earliest of `/`, `?`, `#`,
 // or the end of the string when none is present.
@@ -59,6 +70,40 @@ fn authority_end(rest: String) -> Int:
     if hash >= 0 && hash < best:
         best = hash
     best
+
+// The index of the port-separating colon in an authority, or the authority's
+// length when there is no explicit port. A bracketed IPv6 literal (`[::1]`,
+// `[::1]:80`) keeps every colon up to and including the closing `]` inside the
+// host: the only port colon is one that follows `]`. An unbracketed authority
+// splits at its last colon, so an ordinary `host:port` is unambiguous and a
+// bare IPv6 literal (`::1`, no port) stays entirely in the host.
+fn host_port_split(authority: String) -> Int:
+    let n = string.char_count(authority)
+    if string.starts_with(authority, "["):
+        let close = string.index_of(authority, "]") ?? -1
+        if close < 0:
+            n
+        else if close + 1 < n && string.char_at(authority, close + 1) == Some(":"):
+            close + 1
+        else:
+            n
+    else:
+        let last = last_colon(authority)
+        if last < 0:
+            n
+        else:
+            last
+
+fn last_colon(s: String) -> Int:
+    var i = string.char_count(s) - 1
+    var found = 0 - 1
+    var scanning = true
+    while scanning && i >= 0:
+        if string.char_at(s, i) == Some(":"):
+            found = i
+            scanning = false
+        i = i - 1
+    found
 
 fn default_port(scheme: String) -> Int:
     if scheme == "https":

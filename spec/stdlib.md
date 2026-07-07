@@ -1713,13 +1713,13 @@ Join two path pieces with a single `/`. An empty piece is ignored; an absolute `
 
 The final component: "a/b/c.txt" -> "c.txt", "a/b/" -> "b", "/" -> "/".
 
-#### `fn dir(p: String) -> String`
+#### `fn dir(p: String) -> Option(String)`
 
-Everything before the final component: "a/b/c" -> "a/b", "c" -> "", "/x" -> "/".
+The parent before the final component as `Some`: "a/b/c" -> Some("a/b"), "/x" -> Some("/"). A single-component path has no parent, so "c" is `None` (RFC-0044 rule 1: absence is `Option`, never an "" sentinel).
 
-#### `fn ext(p: String) -> String`
+#### `fn ext(p: String) -> Option(String)`
 
-The extension after the final `.` in the base name, WITHOUT the leading dot ("a/b.tar.gz" -> "gz"), or "" when there is none — matching Rust's `Path::extension` (not Node/Python, which keep the dot). A dotfile base (".bashrc") has no extension.
+The extension after the final `.` in the base name, WITHOUT the leading dot, as `Some` ("a/b.tar.gz" -> Some("gz")) — matching Rust's `Path::extension` both in dropping the dot AND in the `Option` shape (RFC-0044 rule 1). A base with no extension, or a dotfile base (".bashrc"), is `None`.
 
 #### `fn stem(p: String) -> String`
 
@@ -1805,7 +1805,7 @@ Advance the generator: a pseudo-random Int in [1, 2^31-1) and the next state. Th
 
 #### `fn next_below(r: Rng, bound: Int) -> (Int, Rng)`
 
-A pseudo-random Int in [0, bound) and the next state. `bound` must be positive (RFC-0044 rule 3): a non-positive bound has no valid range, so it fails loudly naming the bad argument rather than dividing by zero.
+A pseudo-random Int in [0, bound) and the next state. `bound` must be positive (RFC-0044 rule 3): a non-positive bound has no valid range, so it fails loudly naming the bad argument rather than dividing by zero. It must also be below the generator range `2^31-1` (`next`'s cardinality): the reducer is `n % bound`, so a `bound` at or above that range cannot produce every value in `[0, bound)` and would silently under-cover it — that impossible case fails loudly too. For a `bound` well below the range the modulo bias is negligible; for a strictly uniform bounded draw, use the `Rand` capability's byte-oriented helpers.
 
 #### `fn next_bool(r: Rng) -> (Bool, Rng)`
 
@@ -1813,7 +1813,7 @@ A pseudo-random Bool (true ~half the time) and the next state.
 
 #### `fn choice(xs: List(a), r: Rng) -> (Option(a), Rng)`
 
-A uniformly-chosen element of `xs` (None if empty) and the next state.
+A pseudo-randomly chosen element of `xs` (`None` if empty) and the next state. The index comes from `next_below`, whose `% len` reducer carries a negligible modulo bias for ordinary list lengths — plenty for tests, sampling, and games, but not a strict uniform distribution (see `next_below`).
 
 ## `reflect`
 

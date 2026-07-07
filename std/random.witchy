@@ -41,10 +41,17 @@ pub fn next(r: Rng) -> (Int, Rng):
 
 // A pseudo-random Int in [0, bound) and the next state. `bound` must be positive
 // (RFC-0044 rule 3): a non-positive bound has no valid range, so it fails loudly
-// naming the bad argument rather than dividing by zero.
+// naming the bad argument rather than dividing by zero. It must also be below the
+// generator range `2^31-1` (`next`'s cardinality): the reducer is `n % bound`, so
+// a `bound` at or above that range cannot produce every value in `[0, bound)` and
+// would silently under-cover it — that impossible case fails loudly too. For a
+// `bound` well below the range the modulo bias is negligible; for a strictly
+// uniform bounded draw, use the `Rand` capability's byte-oriented helpers.
 pub fn next_below(r: Rng, bound: Int) -> (Int, Rng):
     if bound <= 0:
         fail("random.next_below: bound `${bound}` must be positive")
+    if bound >= modulus():
+        fail("random.next_below: bound `${bound}` is at or above the generator range (2^31-1) and cannot be covered")
     let (n, r2) = next(r)
     (n % bound, r2)
 
@@ -53,7 +60,10 @@ pub fn next_bool(r: Rng) -> (Bool, Rng):
     let (n, r2) = next(r)
     (n % 2 == 0, r2)
 
-// A uniformly-chosen element of `xs` (None if empty) and the next state.
+// A pseudo-randomly chosen element of `xs` (`None` if empty) and the next state.
+// The index comes from `next_below`, whose `% len` reducer carries a negligible
+// modulo bias for ordinary list lengths — plenty for tests, sampling, and games,
+// but not a strict uniform distribution (see `next_below`).
 pub fn choice(xs: List(a), r: Rng) -> (Option(a), Rng):
     let len = list.length(xs)
     if len == 0:
