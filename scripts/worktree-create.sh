@@ -12,7 +12,7 @@
 set -u
 
 root="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
-cd "$root"
+cd "$root" || exit 1
 
 name=$(jq -r '.name // empty' 2>/dev/null || true)
 [ -n "$name" ] || name="wt-$$-$(date +%s)"
@@ -33,5 +33,18 @@ fi
 git worktree add -b "$branch" "$dest" HEAD 1>&2 || exit 1
 
 "$root/scripts/worktree-warm.sh" "$dest" 1>&2 || true
+
+# Precompile the workspace crates in the background: the CoW seed leaves deps
+# warm but the 8 workspace crates cold (their fingerprints are path-keyed), so
+# the agent's first build pays ~1-2 min. Starting it now means that cost runs
+# during the agent's read/think phase instead of blocking its first command.
+# Safe to race the agent's own cargo: the per-target-dir build lock serializes
+# them and the work is shared either way. Fully detached; never fails creation.
+if command -v cargo >/dev/null 2>&1; then
+    nohup cargo build --workspace --manifest-path "$dest/Cargo.toml" \
+        >"$dest/.worktree-prebuild.log" 2>&1 </dev/null &
+    disown
+    echo "worktree-create: background workspace prebuild started (log: $dest/.worktree-prebuild.log)" >&2
+fi
 
 echo "$dest"
