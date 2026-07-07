@@ -580,6 +580,15 @@ Decode base64url (URL-safe `-`/`_`, no padding) back to text (lossy UTF-8) — t
 
 Decode base64url to a HEX string — for binary that must round-trip through a witchy String, e.g. a JWT's RS256 signature fed to `crypto.rsa_pkcs1_sha256_verify` — or an `Err` naming the input when it is not valid base64url.
 
+## `error`
+
+The common bound for typed errors.
+
+Errors are ordinary values carried in `Result(_, e)`. Library-specific error enums should implement `Show` for display, `Error` for the conventional bound, and `From(source)` for each lower-level error they want `?` to propagate.
+
+#### `trait Error: Show`
+
+
 ## `exec`
 
 The `Exec` capability: spawn a confined native subprocess. The executable is named through a `Dir[Read]` — you can only run a file you can read — so `run` takes both the `Exec` right and the `Dir` the binary lives under. Pure data otherwise; the only authority is the `Exec`/`Dir` it is handed.

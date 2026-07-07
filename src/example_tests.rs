@@ -1033,6 +1033,46 @@ fn main(console: Console):
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: Ordering protocols");
     }
 
+    /// (RFC-0054) `?` converts typed errors through `From`, so libraries can
+    /// expose matchable enum errors without collapsing every layer to `String`.
+    #[test]
+    fn rfc0054_try_converts_errors_through_from_backends_agree() {
+        let src = "import show\nimport error\nimport convert\n\ntype ParseError:\n    Bad(String)\n\nimpl Show for ParseError:\n    fn show(self) -> String:\n        match self:\n            Bad(s) -> \"parse:\" + s\n\nimpl Error for ParseError\n\ntype AppError:\n    Wrapped(String)\n\nimpl Show for AppError:\n    fn show(self) -> String:\n        match self:\n            Wrapped(s) -> \"app:\" + s\n\nimpl Error for AppError\n\nimpl From(ParseError) for AppError:\n    fn from(value: ParseError) -> Self:\n        match value:\n            Bad(s) -> Wrapped(\"wrapped \" + s)\n\nfn leaf() -> Result(Int, ParseError):\n    Err(Bad(\"nope\"))\n\nfn wrapper() -> Result(Int, AppError):\n    let x = leaf()?\n    Ok(x + 1)\n\nfn main(console: Console):\n    match wrapper():\n        Ok(n) -> print(console, __render(n))\n        Err(e) -> print(console, show.render(e))\n";
+        let expected = ["app:wrapped nope"];
+        assert_eq!(link_run(src), expected, "interp: From-converting ?");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: From-converting ?",
+        );
+    }
+
+    #[test]
+    fn rfc0054_try_rejects_missing_from_error_conversion() {
+        let src = "import show\nimport error\n\ntype LeafError:\n    Leaf\n\nimpl Show for LeafError:\n    fn show(self) -> String:\n        \"leaf\"\n\nimpl Error for LeafError\n\ntype AppError:\n    App\n\nimpl Show for AppError:\n    fn show(self) -> String:\n        \"app\"\n\nimpl Error for AppError\n\nfn leaf() -> Result(Int, LeafError):\n    Err(Leaf)\n\nfn wrapper() -> Result(Int, AppError):\n    leaf()?\n";
+        let err = typeck::check(&resolve_std_src(src)).expect_err("missing From conversion must reject");
+        assert!(err.to_string().contains("no `From("), "{err}");
+    }
+
+    #[test]
+    fn rfc0054_option_context_converts_through_string_from() {
+        let src = "import show\nimport error\nimport convert\n\ntype AppError:\n    Message(String)\n\nimpl Show for AppError:\n    fn show(self) -> String:\n        match self:\n            Message(s) -> \"app:\" + s\n\nimpl Error for AppError\n\nimpl From(String) for AppError:\n    fn from(value: String) -> Self:\n        Message(value)\n\nfn find() -> Option(Int):\n    None\n\nfn wrapper() -> Result(Int, AppError):\n    let x = find()? \"missing value\"\n    Ok(x)\n\nfn main(console: Console):\n    match wrapper():\n        Ok(n) -> print(console, __render(n))\n        Err(e) -> print(console, show.render(e))\n";
+        let expected = ["app:missing value"];
+        assert_eq!(link_run(src), expected, "interp: Option ? context converts through From(String)");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: Option ? context converts through From(String)",
+        );
+    }
+
+    #[test]
+    fn rfc0054_plain_option_try_stays_option_scoped() {
+        let src = "import show\nimport error\n\ntype AppError:\n    Missing\n\nimpl Show for AppError:\n    fn show(self) -> String:\n        \"missing\"\n\nimpl Error for AppError\n\nfn find() -> Option(Int):\n    None\n\nfn wrapper() -> Result(Int, AppError):\n    find()?\n";
+        let err = typeck::check(&resolve_std_src(src)).expect_err("plain Option ? must not invent a typed error");
+        assert!(err.to_string().contains("propagates from a `Option"), "{err}");
+    }
+
     /// (BUG-539) `Bytes` is ordinary core data, so it must participate in the
     /// public display and reflection protocols instead of being printable only by
     /// the interpreter's private `Value::Display` path. `Show` stays concise and

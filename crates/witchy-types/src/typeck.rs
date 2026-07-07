@@ -2281,6 +2281,24 @@ impl Checker {
         }
     }
 
+    fn same_resolved_type(&self, a: &Ty, b: &Ty) -> bool {
+        self.resolve(a) == self.resolve(b)
+    }
+
+    fn has_from_conversion(&self, dst: &Ty, src: &Ty) -> bool {
+        self.fn_sigs.iter().any(|(name, (params, ret))| {
+            name.starts_with("From__")
+                && name.ends_with("__from")
+                && params.len() == 1
+                && self.same_resolved_type(ret, dst)
+                && self.same_resolved_type(&params[0], src)
+        })
+    }
+
+    fn result_error_compatible(&self, dst: &Ty, src: &Ty) -> bool {
+        self.same_resolved_type(dst, src) || self.has_from_conversion(dst, src)
+    }
+
     /// The first migrated externref capability carried by `t`, if any. Kept in
     /// lockstep with `is_externref_cap`; today only `File` has moved off the i32
     /// handle path. This is used for expression-level shapes (not just annotated
@@ -3932,17 +3950,40 @@ impl Checker {
             Expr::Try(inner) => {
                 let it = self.infer(inner)?;
                 let resolved = self.resolve(&it);
-                let (value_ty, expected_ret) = match &resolved {
+                let Some(ret) = self.current_ret.clone() else {
+                    return terr("`?` can only be used inside a function returning Result or Option");
+                };
+                let ret = self.resolve(&ret);
+                let value_ty = match &resolved {
                     Ty::Named(n, args) if n == "Result" && args.len() == 2 => {
-                        let r = self.fresh();
-                        (
-                            args[0].clone(),
-                            Ty::Named("Result".into(), vec![r, args[1].clone()]),
-                        )
+                        match &ret {
+                            Ty::Named(rn, rargs) if rn == "Result" && rargs.len() == 2 => {
+                                if !self.result_error_compatible(&rargs[1], &args[1]) {
+                                    return terr(format!(
+                                        "`?` propagates a `{}` error, but the enclosing function returns `{}` \
+                                         and no `From({}) for {}` impl exists",
+                                        args[1], rargs[1], args[1], rargs[1]
+                                    ));
+                                }
+                                args[0].clone()
+                            }
+                            _ => {
+                                return terr(format!(
+                                    "`?` propagates from a `{resolved}`, but the enclosing function returns `{ret}`"
+                                ))
+                            }
+                        }
                     }
                     Ty::Named(n, args) if n == "Option" && args.len() == 1 => {
                         let r = self.fresh();
-                        (args[0].clone(), Ty::Named("Option".into(), vec![r]))
+                        let expected_ret = Ty::Named("Option".into(), vec![r]);
+                        self.unify(&ret, &expected_ret).map_err(|e| TypeError {
+                            message: format!(
+                                "`?` propagates from a `{resolved}`, but the enclosing function returns a different type: {}",
+                                e.message
+                            ),
+                        })?;
+                        args[0].clone()
                     }
                     other => {
                         return terr(format!(
@@ -3950,15 +3991,6 @@ impl Checker {
                         ))
                     }
                 };
-                let Some(ret) = self.current_ret.clone() else {
-                    return terr("`?` can only be used inside a function returning Result or Option");
-                };
-                self.unify(&ret, &expected_ret).map_err(|e| TypeError {
-                    message: format!(
-                        "`?` propagates from a `{resolved}`, but the enclosing function returns a different type: {}",
-                        e.message
-                    ),
-                })?;
                 Ok(value_ty)
             }
             Expr::As { expr, ty } => {

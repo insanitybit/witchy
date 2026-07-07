@@ -1,9 +1,13 @@
 ---
 rfc: 0054
 title: Structured errors (design-first)
-status: planned
+status: in-progress
 created: 2026-07-03
-tracking: "direction accepted; implementation deferred behind ecosystem demand"
+tracking: >
+  Core language slice shipped: std/error defines Error: Show, String implements
+  Error, and ? accepts/lowers Result(_, Ein) -> Result(_, Eout) through an
+  ordinary From(Ein) for Eout impl. Remaining 0.1 work: migrate trust-boundary
+  decoders and package/registry callers to typed errors.
 ---
 
 # RFC-0054: Structured errors (design-first)
@@ -198,3 +202,25 @@ not start `json.DecodeError` yet.
 
 **Verdict.** Accept as direction; defer implementation. Priority: medium
 (acceptance) / low (implementation).
+
+## Implementation note (2026-07-07)
+
+The core language mechanism is implemented. `std/error.witchy` provides the
+conventional `Error: Show` bound and keeps `String` in the error family for the
+existing application-style surface. The type checker now accepts `expr?` in a
+`Result(_, Eout)` function when `expr` is `Result(_, Ein)` and the lowered module
+contains an ordinary `impl From(Ein) for Eout`. Trait lowering rewrites that
+operand to `result.map_err(expr, fn(e: Ein): Eout.from(e))` before either backend
+sees it, so interpreter and compiled WASM share one AST and the old `?` lowering
+still only propagates same-error `Result`s.
+
+The Option case is deliberately narrower: plain `Option(T)?` still only
+propagates through an `Option`-returning function, because a bare `None` carries
+no error value to convert. The contextual form, `opt? "message"`, remains the
+typed-error bridge: it turns `None` into `Err(String)`, and the same
+`From(String) for E` rule lets a typed `Result(_, E)` function accept it when the
+library author explicitly provides that conversion.
+
+This does not complete the RFC. The remaining release-blocking work is the std
+and core-library migration: json/toml/grant/TUF/webauthn/package-manager trust
+boundaries need typed decoder errors and fail-closed callers.

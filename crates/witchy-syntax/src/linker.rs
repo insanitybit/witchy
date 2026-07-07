@@ -364,6 +364,7 @@ pub fn std_source(name: &str) -> Option<&'static str> {
         "oauth" => Some(include_str!("../../../std/oauth.witchy")),
         "vm" => Some(include_str!("../../../std/vm.witchy")),
         "bytes" => Some(include_str!("../../../std/bytes.witchy")),
+        "error" => Some(include_str!("../../../std/error.witchy")),
         // (RFC-0041) `glamour` is a published RUNE, not std — deliberately ABSENT from
         // `STD_MODULES` so it is not advertised as std and a project still declares it as a
         // dependency (the PM/footprint treat it as external). But its source is bundled here so
