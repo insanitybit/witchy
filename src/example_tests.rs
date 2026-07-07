@@ -540,6 +540,28 @@
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
+    /// (BUG-508) `string.split_once_opt` / `rsplit_once_opt` preserve the
+    /// missing-separator bit that the legacy tuple helpers erase.
+    #[test]
+    fn string_split_once_option_helpers_backends_agree() {
+        let src = "import string\n\nfn show(console: Console, label: String, p: Option((String, String))):\n    match p:\n        Some(parts) ->\n            let (a, b) = parts\n            print(console, label + \"=Some(\" + a + \"|\" + b + \")\")\n        None -> print(console, label + \"=None\")\n\nfn main(console: Console):\n    show(console, \"missing\", string.split_once_opt(\"host\", \":\"))\n    show(console, \"present-empty-right\", string.split_once_opt(\"host:\", \":\"))\n    show(console, \"present-empty-left\", string.split_once_opt(\":name\", \":\"))\n    show(console, \"last\", string.rsplit_once_opt(\"a.b.c\", \".\"))\n    show(console, \"last-missing\", string.rsplit_once_opt(\"name\", \".\"))\n    let (a, b) = string.split_once(\"host\", \":\")\n    print(console, \"old-first=\" + a + \"|\" + b)\n    let (c, d) = string.rsplit_once(\"name\", \".\")\n    print(console, \"old-last=\" + c + \"|\" + d)\n";
+        let expected = [
+            "missing=None",
+            "present-empty-right=Some(host|)",
+            "present-empty-left=Some(|name)",
+            "last=Some(a.b|c)",
+            "last-missing=None",
+            "old-first=host|",
+            "old-last=|name",
+        ];
+        assert_eq!(link_run(src), expected, "interp: split_once_opt preserves absence");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: split_once_opt preserves absence",
+        );
+    }
+
     /// RFC-0050 Part 1: for ordinary module-scoped types, method ownership is
     /// derived from the canonical `module.Type` name, so package/user modules get
     /// receiver-first methods without being listed in the compiler.

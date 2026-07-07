@@ -2425,17 +2425,25 @@ The whitespace-separated words of `text`: tabs, newlines, and carriage returns a
 
 Replace only the first occurrence of `from` with `to`; return `s` unchanged when `from` is absent. An empty `from` matches nothing (the module-wide empty-pattern rule: `count`/`index_of`/`last_index_of` treat it as absent). (The `replace` builtin replaces every occurrence.)
 
+#### `fn split_once_opt(s: String, sep: String) -> Option((String, String))`
+
+Split at the first occurrence of `sep` into `Some((before, after))`, with `sep` itself dropped. Returns `None` when `sep` is absent or empty, so parsing code can distinguish a missing separator from a present separator with an empty side (`"host"` vs `"host:"`). Counted by Unicode scalar.
+
 #### `fn split_once(s: String, sep: String) -> (String, String)`
 
-Split at the first occurrence of `sep` into `(before, after)`, with `sep` itself dropped. When `sep` is absent — including the empty separator, which matches nothing (mirroring `rsplit_once`) — returns `(s, "")`. Handy for parsing `key=value` or `host:port`. Counted by Unicode scalar.
+Split at the first occurrence of `sep` into `(before, after)`, with `sep` itself dropped. Compatibility wrapper: when `sep` is absent — including the empty separator, which matches nothing (mirroring `rsplit_once`) — returns `(s, "")`. Prefer `split_once_opt` for parsers and validators that need to distinguish absence from a present empty side. Counted by Unicode scalar.
 
 #### `fn last_index_of(s: String, sep: String) -> Option(Int)`
 
 The character index of the LAST occurrence of `sep` in `s` as `Some`, or `None` when absent or `sep` is empty (RFC-0044 rule 1: absence is `Option`, never -1). The right-to-left companion of `index_of`.
 
+#### `fn rsplit_once_opt(s: String, sep: String) -> Option((String, String))`
+
+Split on the LAST occurrence of `sep` into `Some((before, after))`, with `sep` itself dropped. Returns `None` when `sep` is absent or empty.
+
 #### `fn rsplit_once(s: String, sep: String) -> (String, String)`
 
-Split on the LAST occurrence of `sep` (e.g. a file extension): `rsplit_once` of `"a.b.c"` on `"."` is `("a.b", "c")`. When `sep` is absent the whole string is the right part: `("", s)` — mirroring `split_once`'s `(s, "")`.
+Split on the LAST occurrence of `sep` (e.g. a file extension): `rsplit_once` of `"a.b.c"` on `"."` is `("a.b", "c")`. Compatibility wrapper: when `sep` is absent the whole string is the right part: `("", s)` — mirroring `split_once`'s `(s, "")`. Prefer `rsplit_once_opt` when absence matters.
 
 #### `fn parse_int(s: String) -> Option(Int)`
 
