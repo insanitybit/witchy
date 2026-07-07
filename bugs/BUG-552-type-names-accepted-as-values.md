@@ -1,4 +1,4 @@
-# BUG-551: type names are rejected as values
+# BUG-552: type names are rejected as values
 
 Severity: HIGH
 Status: FIXED
