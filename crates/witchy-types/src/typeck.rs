@@ -485,6 +485,189 @@ fn check_unique_declarations(module: &Module) -> Result<(), TypeError> {
     Ok(())
 }
 
+/// Reject duplicate parameter names in every source and lowered callable. The
+/// checker scopes parameters in a name map, so accepting duplicates would make a
+/// later parameter silently hide an earlier one and would also make keyword labels
+/// ambiguous at direct call sites.
+fn check_unique_parameters(module: &Module) -> Result<(), TypeError> {
+    fn bare(name: &str) -> &str {
+        name.rsplit('.').next().unwrap_or(name)
+    }
+
+    fn check_params(context: String, params: &[ast::Param]) -> Result<(), TypeError> {
+        let mut seen: HashSet<&str> = HashSet::new();
+        for param in params {
+            if !seen.insert(param.name.as_str()) {
+                return terr(format!(
+                    "parameter `{}` is declared more than once in {context}; \
+                     parameter names must be unique",
+                    param.name
+                ));
+            }
+        }
+        for param in params {
+            if let Some(default) = &param.default {
+                check_expr(default)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn check_function(context: &str, f: &Function) -> Result<(), TypeError> {
+        check_params(format!("{context} `{}`", bare(&f.name)), &f.params)?;
+        check_block(&f.body)
+    }
+
+    fn check_block(block: &Block) -> Result<(), TypeError> {
+        for stmt in &block.stmts {
+            check_stmt(stmt)?;
+        }
+        Ok(())
+    }
+
+    fn check_stmt(stmt: &Stmt) -> Result<(), TypeError> {
+        match stmt {
+            Stmt::Let { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::LetPattern { value, .. }
+            | Stmt::Yield(value)
+            | Stmt::Expr(value) => check_expr(value),
+            Stmt::Return(Some(value)) => check_expr(value),
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => Ok(()),
+        }
+    }
+
+    fn check_expr(expr: &Expr) -> Result<(), TypeError> {
+        match expr {
+            Expr::Int(_)
+            | Expr::Float(_)
+            | Expr::Duration(_)
+            | Expr::Str(_)
+            | Expr::Bool(_)
+            | Expr::Var(_)
+            | Expr::TaggedLit { .. } => Ok(()),
+            Expr::List(values) | Expr::Tuple(values) => {
+                for value in values {
+                    check_expr(value)?;
+                }
+                Ok(())
+            }
+            Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
+                for arg in args {
+                    check_expr(arg)?;
+                }
+                Ok(())
+            }
+            Expr::LabeledCall { args, .. } => {
+                for (_, arg) in args {
+                    check_expr(arg)?;
+                }
+                Ok(())
+            }
+            Expr::MethodCall { receiver, args, .. } => {
+                check_expr(receiver)?;
+                for arg in args {
+                    check_expr(arg)?;
+                }
+                Ok(())
+            }
+            Expr::Apply { func, args } => {
+                check_expr(func)?;
+                for arg in args {
+                    check_expr(arg)?;
+                }
+                Ok(())
+            }
+            Expr::Unary { expr, .. }
+            | Expr::Field { base: expr, .. }
+            | Expr::Try(expr)
+            | Expr::As { expr, .. } => check_expr(expr),
+            Expr::Lambda { params, body, .. } => {
+                check_params("lambda".to_string(), params)?;
+                check_block(body)
+            }
+            Expr::RecordUpdate { base, fields } => {
+                check_expr(base)?;
+                for (_, value) in fields {
+                    check_expr(value)?;
+                }
+                Ok(())
+            }
+            Expr::Record { fields, spread, .. } => {
+                for (_, value) in fields {
+                    check_expr(value)?;
+                }
+                if let Some(base) = spread {
+                    check_expr(base)?;
+                }
+                Ok(())
+            }
+            Expr::Binary { lhs, rhs, .. } | Expr::Range { lo: lhs, hi: rhs, .. } => {
+                check_expr(lhs)?;
+                check_expr(rhs)
+            }
+            Expr::If { cond, then_block, else_block } => {
+                check_expr(cond)?;
+                check_block(then_block)?;
+                if let Some(block) = else_block {
+                    check_block(block)?;
+                }
+                Ok(())
+            }
+            Expr::Match { scrutinee, arms } => {
+                check_expr(scrutinee)?;
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        check_expr(guard)?;
+                    }
+                    check_expr(&arm.body)?;
+                }
+                Ok(())
+            }
+            Expr::Block(block) => check_block(block),
+            Expr::While { cond, body } => {
+                check_expr(cond)?;
+                check_block(body)
+            }
+            Expr::For { iter, body, .. } => {
+                check_expr(iter)?;
+                check_block(body)
+            }
+            Expr::Index { base, index } => {
+                check_expr(base)?;
+                check_expr(index)
+            }
+            Expr::WhileLet { scrutinee, body, .. } => {
+                check_expr(scrutinee)?;
+                check_block(body)
+            }
+        }
+    }
+
+    for item in &module.items {
+        match item {
+            Item::Function(f) => check_function("function", f)?,
+            Item::Impl(im) => {
+                for method in &im.methods {
+                    check_function("method", method)?;
+                }
+            }
+            Item::Trait(tr) => {
+                for method in &tr.methods {
+                    check_params(format!("trait method `{}`", method.name), &method.params)?;
+                    if let Some(default) = &method.default {
+                        check_block(default)?;
+                    }
+                }
+            }
+            Item::Const { value, .. } => check_expr(value)?,
+            Item::Comptime(block) => check_block(block)?,
+            Item::Type(_) | Item::TypeAlias { .. } => {}
+        }
+    }
+    Ok(())
+}
+
 /// (RFC-0064 Check 1) Enforce RFC-0043's row-3 rule: a function with any `var`
 /// parameter must be EITHER a procedure channel (`is_var_procedure` — returns
 /// `Nil`/nothing) OR a mutator receiver (`is_mutator` — first parameter, returning
@@ -4404,6 +4587,11 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
     // pre-lowering, while `impl`/`type` items are still present and distinct.
     check_unique_declarations(module)?;
 
+    // (BUG-444) Parameter names are binding labels, not an overloadable surface:
+    // duplicates silently shadow in the checker scope and make keyword labels
+    // incoherent. Validate before lowering for source-quality diagnostics.
+    check_unique_parameters(module)?;
+
     // (RFC-0064 Check 1) A `var` parameter must be a procedure channel or a
     // mutator receiver — every other shape is the abolished combined write-back
     // (rejected before either backend lowers, so parity holds by construction).
@@ -4418,7 +4606,10 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
     // The checked flavor surfaces unsatisfiable dispatch ("`Float` does not
     // implement `Show`") instead of a post-lowering unknown-function error.
     match crate::traits::lower_checked(recs.clone()) {
-        Ok(lowered) => run_check(&lowered, false).map(|_| ()),
+        Ok(lowered) => {
+            check_unique_parameters(&lowered)?;
+            run_check(&lowered, false).map(|_| ())
+        }
         Err(message) => {
             // (BUG-307) Mono's "cannot infer the result type" fallback fires when
             // `annotate` returned an EMPTY TypeTable — which is itself a symptom of

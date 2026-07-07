@@ -211,6 +211,32 @@
     }
 
     #[test]
+    fn duplicate_parameter_names_are_rejected() {
+        let top = check_str("fn pick(x: Int, x: Int) -> Int:\n    x\n")
+            .expect_err("duplicate function parameters must be rejected");
+        assert!(top.contains("parameter `x`") && top.contains("function `pick`"), "{top}");
+
+        let lambda = check_str(
+            "fn main(console: Console):\n    let f = fn(x: Int, x: Int): x\n    print(console, \"bad\")\n",
+        )
+        .expect_err("duplicate lambda parameters must be rejected");
+        assert!(lambda.contains("parameter `x`") && lambda.contains("lambda"), "{lambda}");
+
+        let method = check_str(
+            "type Box:\n    Box(Int)\nimpl Box:\n    fn bad(self, x: Int, x: Int) -> Int:\n        x\n",
+        )
+        .expect_err("duplicate method parameters must be rejected");
+        assert!(method.contains("parameter `x`") && method.contains("method `bad`"), "{method}");
+
+        let trait_method = check_str("trait T:\n    fn bad(x: Int, x: Int) -> Int\n")
+            .expect_err("duplicate trait method parameters must be rejected");
+        assert!(
+            trait_method.contains("parameter `x`") && trait_method.contains("trait method `bad`"),
+            "{trait_method}"
+        );
+    }
+
+    #[test]
     fn occurs_check_rejects_infinite_types() {
         // Unifying `a` with `List(a)` (the classic omega shape) must be a clear
         // check-time error, not an infinite type silently bound in the subst.
