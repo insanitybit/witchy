@@ -42,6 +42,18 @@ fn static_bound_marker(receiver: &str, method: &str) -> String {
     format!("__trait_static__{receiver}__{method}")
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TraitMethodInfo {
+    owner: String,
+    is_static: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum MethodResolution {
+    Found(String),
+    Ambiguous(Vec<String>),
+}
+
 /// Build the ordinary function a (possibly defaulted) method lowers to.
 /// `Self` in any annotation refers to the implementing type (so a trait can
 /// write `fn eq(self, other: Self) -> Bool`), and an unannotated receiver
@@ -164,26 +176,25 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         return (module, Vec::new());
     }
 
-    // method name -> owning trait (increment 1 assumes a method name is unique
-    // across traits), and each trait's full method list (for default bodies).
-    let mut trait_methods: HashMap<String, String> = HashMap::new();
+    // method name -> owning trait(s), and each trait's full method list (for
+    // default bodies). A method name is not a global namespace: unrelated traits
+    // may both declare `name`, `from`, etc.; bounded dispatch chooses by trait
+    // identity and concrete dispatch rejects ambiguous trait-method calls.
+    let mut trait_methods: HashMap<String, Vec<TraitMethodInfo>> = HashMap::new();
     let mut trait_method_list: HashMap<String, Vec<MethodSig>> = HashMap::new();
     let mut trait_type_params: HashMap<String, Vec<String>> = HashMap::new();
-    // Trait methods whose first parameter is NOT `self` are STATIC (`From::from`,
-    // `FromIterator::from_iter`): a call on a bound type variable (`b.from(x)`)
-    // takes no receiver — the receiver IS the type, resolved via the bound at
-    // monomorphization. Tracked so the generic-receiver dispatch doesn't prepend a
-    // phantom `self`.
-    let mut static_trait_methods: std::collections::HashSet<String> = std::collections::HashSet::new();
     // trait name -> its DIRECT supertraits; closed under transitivity below.
     let mut trait_supertraits: HashMap<String, Vec<String>> = HashMap::new();
     for item in &module.items {
         if let Item::Trait(t) = item {
             for m in &t.methods {
-                trait_methods.insert(m.name.clone(), t.name.clone());
-                if m.params.first().is_none_or(|p| p.name != "self") {
-                    static_trait_methods.insert(m.name.clone());
-                }
+                trait_methods
+                    .entry(m.name.clone())
+                    .or_default()
+                    .push(TraitMethodInfo {
+                        owner: t.name.clone(),
+                        is_static: m.params.first().is_none_or(|p| p.name != "self"),
+                    });
             }
             trait_method_list.insert(t.name.clone(), t.methods.clone());
             trait_type_params.insert(t.name.clone(), t.typarams.clone());
@@ -194,9 +205,11 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     // so each trait maps to ALL of its supertraits (direct and inherited).
     let trait_supertraits = transitive_supertraits(&trait_supertraits);
 
-    // (method name, receiver type) -> mangled function, plus the generated
-    // functions themselves (impl methods with `self` typed to the impl type).
-    let mut impl_table: HashMap<(String, String), String> = HashMap::new();
+    // Trait methods are keyed by (trait, method, receiver type). Inherent methods
+    // are a deliberate separate namespace keyed by (method, receiver type).
+    let mut trait_impl_table: HashMap<(String, String, String), String> = HashMap::new();
+    let mut inherent_impl_table: HashMap<(String, String), String> = HashMap::new();
+    let mut inherent_methods: HashSet<String> = HashSet::new();
     // (trait name, impl head) -> the impl's trait type-arguments
     // (`impl FromIterator(a) for List(a)` registers ("FromIterator","List")
     // -> [a]) — the variable map for substitution-directed dispatch.
@@ -244,12 +257,16 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                     ));
                     continue;
                 }
-                impl_table.insert((method.name.clone(), im.type_name.clone()), mangled.clone());
-                // An inherent method dispatches by receiver type too, so register
-                // its name as dispatchable (trait methods are already in the map).
-                trait_methods
-                    .entry(method.name.clone())
-                    .or_insert_with(|| im.trait_name.clone().unwrap_or_default());
+                if let Some(trait_name) = &im.trait_name {
+                    trait_impl_table.insert(
+                        (trait_name.clone(), method.name.clone(), im.type_name.clone()),
+                        mangled.clone(),
+                    );
+                } else {
+                    inherent_methods.insert(method.name.clone());
+                    inherent_impl_table
+                        .insert((method.name.clone(), im.type_name.clone()), mangled.clone());
+                }
                 generated.push(method_fn(
                     mangled,
                     method.params.clone(),
@@ -270,8 +287,10 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                         }
                         if let Some(body) = &ms.default {
                             let mangled = mangle(Some(trait_name), &im.type_name, &ms.name);
-                            impl_table
-                                .insert((ms.name.clone(), im.type_name.clone()), mangled.clone());
+                            trait_impl_table.insert(
+                                (trait_name.clone(), ms.name.clone(), im.type_name.clone()),
+                                mangled.clone(),
+                            );
                             generated.push(method_fn(
                                 mangled,
                                 ms.params.clone(),
@@ -355,8 +374,10 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         let empty_table = crate::typeck::TypeTable::default();
         let ctx = Ctx {
             trait_methods: &trait_methods,
-            static_trait_methods: &static_trait_methods,
-            impl_table: &impl_table,
+            inherent_methods: &inherent_methods,
+            supertraits: &trait_supertraits,
+            trait_impl_table: &trait_impl_table,
+            inherent_impl_table: &inherent_impl_table,
             ctor_results: &ctor_results,
             fn_rets: &fn_rets,
             fn_sigs: &fn_sigs,
@@ -456,14 +477,14 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         }
     }
     // (RFC-0053) The interpolation flip's inputs. `show_types` is the bare name
-    // of every type carrying a `Show` impl (`impl_table`'s `show` keys). A value
+    // of every type carrying a `Show` impl (`trait_impl_table`'s `Show.show` keys). A value
     // whose concrete type is here, or whose container transitively contains one,
     // can render through `show.render`. The rewrite is gated on that helper being
     // linked, so modules that never import `show` keep structural `__render`.
-    let show_types: std::collections::HashSet<String> = impl_table
+    let show_types: std::collections::HashSet<String> = trait_impl_table
         .keys()
-        .filter(|(method, _)| method == "show")
-        .map(|(_, ty)| ty.rsplit_once('.').map_or(ty.clone(), |(_, s)| s.to_string()))
+        .filter(|(owner, method, _)| owner == "Show" && method == "show")
+        .map(|(_, _, ty)| ty.rsplit_once('.').map_or(ty.clone(), |(_, s)| s.to_string()))
         .collect();
     let render_available = templates.contains_key("show.render");
     let mut mono_diags: Vec<String> = Vec::new();
@@ -616,8 +637,10 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     let (mutators, returns_nil) = build_mutation_tables(&items);
     let ctx = Ctx {
         trait_methods: &trait_methods,
-        static_trait_methods: &static_trait_methods,
-        impl_table: &impl_table,
+        inherent_methods: &inherent_methods,
+        supertraits: &trait_supertraits,
+        trait_impl_table: &trait_impl_table,
+        inherent_impl_table: &inherent_impl_table,
         ctor_results: &ctor_results,
         fn_rets: &fn_rets,
         fn_sigs: &fn_sigs,
@@ -988,11 +1011,13 @@ fn bind_loop_var(var: &str, iter_type: Option<String>, scope: &mut Scope) {
 }
 
 struct Ctx<'a> {
-    trait_methods: &'a HashMap<String, String>,
-    /// Trait methods that take no `self` — a call on a bound type variable passes
-    /// no receiver.
-    static_trait_methods: &'a std::collections::HashSet<String>,
-    impl_table: &'a HashMap<(String, String), String>,
+    trait_methods: &'a HashMap<String, Vec<TraitMethodInfo>>,
+    inherent_methods: &'a HashSet<String>,
+    /// trait -> its transitive supertraits, so a `where a: Ord` bound discharges
+    /// the methods of `Eq`/`PartialOrd`/`PartialEq` too.
+    supertraits: &'a HashMap<String, Vec<String>>,
+    trait_impl_table: &'a HashMap<(String, String, String), String>,
+    inherent_impl_table: &'a HashMap<(String, String), String>,
     ctor_results: &'a HashMap<String, String>,
     fn_rets: &'a HashMap<String, String>,
     /// Function -> (param types, return type), for recovering a generic call's
@@ -1071,34 +1096,104 @@ impl Ctx<'_> {
             .or_else(|| cap_op_return_type(e))
     }
 
-    /// Resolve a trait method to its mangled impl for a receiver type. A concrete
-    /// generic type falls back to its head, where generic impls are registered:
+    /// Resolve an owner-specific trait method to its mangled impl for a receiver
+    /// type. A concrete generic type falls back to its head, where generic impls
+    /// are registered:
     /// `List<Int>` matches `impl … for List(a)`, `Option<String>` matches
     /// `impl … for Option(a)`. The impl method stays generic and monomorphizes per
     /// element exactly as a `where`-bounded free function would. Last, a BLANKET impl
     /// — `impl Into(b) for a where b: From(a)` — is registered under a type-variable
     /// head (lowercase); it applies to any receiver, with its `where` bound
     /// discharged at monomorphization.
-    fn lookup_impl(&self, method: &str, tn: &str) -> Option<String> {
-        self.impl_table
-            .get(&(method.to_string(), tn.to_string()))
-            .or_else(|| self.impl_table.get(&(method.to_string(), head_of(tn).to_string())))
+    fn lookup_trait_impl(&self, owner: &str, method: &str, tn: &str) -> Option<String> {
+        self.trait_impl_table
+            .get(&(owner.to_string(), method.to_string(), tn.to_string()))
+            .or_else(|| {
+                self.trait_impl_table
+                    .get(&(owner.to_string(), method.to_string(), head_of(tn).to_string()))
+            })
             .or_else(|| {
                 // A BLANKET impl is registered under a type-VARIABLE head (a bare
                 // lowercase name like `a`). A module-qualified concrete head
                 // (`geometry.Coord`) also starts lowercase but is NOT a variable —
                 // exclude it, or every qualified impl would masquerade as blanket
                 // and a generic receiver would dispatch to an arbitrary one (RFC-0042).
-                self.impl_table
+                self.trait_impl_table
                     .iter()
-                    .find(|((m, k), _)| {
-                        m == method
+                    .find(|((tr, m, k), _)| {
+                        tr == owner
+                            && m == method
                             && k.chars().next().is_some_and(char::is_lowercase)
                             && !k.contains('.')
                     })
                     .map(|(_, v)| v)
             })
             .cloned()
+    }
+
+    fn lookup_inherent_impl(&self, method: &str, tn: &str) -> Option<String> {
+        self.inherent_impl_table
+            .get(&(method.to_string(), tn.to_string()))
+            .or_else(|| self.inherent_impl_table.get(&(method.to_string(), head_of(tn).to_string())))
+            .cloned()
+    }
+
+    /// Resolve a concrete receiver method. Inherent methods take precedence; if
+    /// multiple trait impls with the same method apply to the same receiver, the
+    /// source needs a bound to provide trait identity and the call is ambiguous.
+    fn lookup_impl(&self, method: &str, tn: &str) -> Option<MethodResolution> {
+        if let Some(mangled) = self.lookup_inherent_impl(method, tn) {
+            return Some(MethodResolution::Found(mangled));
+        }
+        let mut matches = Vec::new();
+        if let Some(infos) = self.trait_methods.get(method) {
+            for info in infos {
+                if let Some(mangled) = self.lookup_trait_impl(&info.owner, method, tn) {
+                    matches.push((info.owner.clone(), mangled));
+                }
+            }
+        }
+        matches.sort();
+        matches.dedup();
+        match matches.len() {
+            0 => None,
+            1 => Some(MethodResolution::Found(matches.pop().unwrap().1)),
+            _ => Some(MethodResolution::Ambiguous(matches.into_iter().map(|(owner, _)| owner).collect())),
+        }
+    }
+
+    fn trait_method_infos_for_receiver(&self, method: &str, receiver_ty: Option<&str>) -> Vec<TraitMethodInfo> {
+        let Some(infos) = self.trait_methods.get(method) else {
+            return Vec::new();
+        };
+        let Some(var) =
+            receiver_ty.filter(|n| n.chars().next().is_some_and(char::is_lowercase) && !n.contains('.'))
+        else {
+            return infos.clone();
+        };
+        let bounds = self.bound_traits.borrow();
+        let Some(active_bounds) = bounds.get(var) else { return infos.clone() };
+        infos
+            .iter()
+            .filter(|info| {
+                active_bounds.iter().any(|b| {
+                    b == &info.owner || self.supertraits.get(b).is_some_and(|s| s.contains(&info.owner))
+                })
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn ambiguous_method_msg(method: &str, tn: &str, owners: &[String]) -> String {
+        let disp = tn.rsplit_once('.').map_or(tn, |(_, s)| s);
+        format!(
+            "method `{method}` on `{disp}` is ambiguous between trait impls: {}",
+            owners.join(", ")
+        )
+    }
+
+    fn is_dispatch_method(&self, method: &str) -> bool {
+        self.trait_methods.contains_key(method) || self.inherent_methods.contains(method)
     }
 
     /// Record the current function's type-variable bounds, so the operator
@@ -1378,11 +1473,15 @@ impl Ctx<'_> {
                 // comparator's own `less(best, x)` would be rewritten to the
                 // element type's `Ord::less`, silently discarding the passed-in
                 // function.
-                if let Some(trait_name) = self.trait_methods.get(name.as_str()).filter(|_| !scope.is_local(name)) {
+                if self.is_dispatch_method(name) && !scope.is_local(name) {
                     if let Some(recv) = args.first() {
                         if let Some(tn) = self.type_name(recv, scope) {
                             match self.lookup_impl(name, &tn) {
-                                Some(mangled) => *name = mangled.clone(),
+                                Some(MethodResolution::Found(mangled)) => *name = mangled,
+                                Some(MethodResolution::Ambiguous(owners)) => self
+                                    .missing_impls
+                                    .borrow_mut()
+                                    .push(Self::ambiguous_method_msg(name, &tn, &owners)),
                                 // The receiver's type is known and no impl
                                 // exists; unless a plain function of this name
                                 // can take the call, that is a bound the
@@ -1392,13 +1491,27 @@ impl Ctx<'_> {
                                 // monomorphization, never an error here.
                                 None if !self.free_fns.contains(name.as_str())
                                     && (!tn.chars().next().is_some_and(|c| c.is_lowercase()) || tn.contains('.')) => {
-                                    // Render the unqualified type name a reader wrote
-                                    // (`Blob`, not the canonical `main.Blob`) (RFC-0042).
-                                    let disp = tn.rsplit_once('.').map_or(tn.as_str(), |(_, s)| s);
-                                    self.missing_impls.borrow_mut().push(format!(
-                                        "`{disp}` does not implement `{trait_name}` \
-                                         (no `impl {trait_name} for {disp}`) — required by a call to `{name}`"
-                                    ));
+                                    if let Some(infos) = self.trait_methods.get(name.as_str()) {
+                                        // Render the unqualified type name a reader wrote
+                                        // (`Blob`, not the canonical `main.Blob`) (RFC-0042).
+                                        let disp = tn.rsplit_once('.').map_or(tn.as_str(), |(_, s)| s);
+                                        let trait_name = if infos.len() == 1 {
+                                            infos[0].owner.clone()
+                                        } else {
+                                            format!(
+                                                "one of {}",
+                                                infos
+                                                    .iter()
+                                                    .map(|i| i.owner.as_str())
+                                                    .collect::<Vec<_>>()
+                                                    .join(", ")
+                                            )
+                                        };
+                                        self.missing_impls.borrow_mut().push(format!(
+                                            "`{disp}` does not implement `{trait_name}` \
+                                             (no `impl {trait_name} for {disp}`) — required by a call to `{name}`"
+                                        ));
+                                    }
                                 }
                                 None => {}
                             }
@@ -1477,7 +1590,10 @@ impl Ctx<'_> {
                         let resolved = head
                             .as_deref()
                             .filter(|h| !h.chars().next().is_some_and(char::is_lowercase) || h.contains('.'))
-                            .and_then(|h| self.lookup_impl(method, h));
+                            .and_then(|h| match self.lookup_impl(method, h) {
+                                Some(MethodResolution::Found(mangled)) => Some(mangled),
+                                _ => None,
+                            });
                         *e = Expr::Call {
                             name: resolved.unwrap_or_else(|| method.to_string()),
                             args: vec![l, r],
@@ -1523,10 +1639,7 @@ impl Ctx<'_> {
                             .ctor_fields
                             .get(tyname.as_str())
                             .is_some_and(|fs| fs.is_empty());
-                        if self
-                            .impl_table
-                            .contains_key(&(method.clone(), tyname.clone()))
-                            && !is_value
+                        if self.lookup_impl(method, tyname).is_some() && !is_value
                         {
                             self.missing_impls.borrow_mut().push(format!(
                                 "`{tyname}.{method}` is an INSTANCE method (it takes `self`) — \
@@ -1545,14 +1658,23 @@ impl Ctx<'_> {
                             .and_then(|t| type_to_scope_name(&t))
                     });
                 if let Some(tn) = &tn {
-                    if let Some(mangled) = self.lookup_impl(method, tn) {
-                        let mut call_args = vec![std::mem::replace(
-                            receiver.as_mut(),
-                            Expr::Bool(false),
-                        )];
-                        call_args.append(args);
-                        *e = Expr::Call { name: mangled.clone(), args: call_args };
-                        return;
+                    match self.lookup_impl(method, tn) {
+                        Some(MethodResolution::Found(mangled)) => {
+                            let mut call_args = vec![std::mem::replace(
+                                receiver.as_mut(),
+                                Expr::Bool(false),
+                            )];
+                            call_args.append(args);
+                            *e = Expr::Call { name: mangled, args: call_args };
+                            return;
+                        }
+                        Some(MethodResolution::Ambiguous(owners)) => {
+                            self.missing_impls
+                                .borrow_mut()
+                                .push(Self::ambiguous_method_msg(method, tn, &owners));
+                            return;
+                        }
+                        None => {}
                     }
                 }
                 // A trait method on a generic (bound) receiver dispatches after
@@ -1562,8 +1684,22 @@ impl Ctx<'_> {
                 // explicit arguments are passed; an instance method prepends `self`.
                 let receiver_is_generic =
                     tn.as_deref().is_none_or(|n| n.chars().next().is_some_and(char::is_lowercase) && !n.contains('.'));
-                if self.trait_methods.contains_key(method.as_str()) && receiver_is_generic {
-                    let mut call_args = if self.static_trait_methods.contains(method.as_str()) {
+                let active_trait_methods =
+                    self.trait_method_infos_for_receiver(method, tn.as_deref());
+                if !active_trait_methods.is_empty() && receiver_is_generic {
+                    if active_trait_methods.len() > 1 {
+                        self.missing_impls.borrow_mut().push(format!(
+                            "method `{method}` on a generic receiver is ambiguous between trait bounds: {}",
+                            active_trait_methods
+                                .iter()
+                                .map(|info| info.owner.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ));
+                        return;
+                    }
+                    let method_info = &active_trait_methods[0];
+                    let mut call_args = if method_info.is_static {
                         if let Expr::Var(receiver_name) = receiver.as_ref() {
                             *e = Expr::Call {
                                 name: static_bound_marker(receiver_name, method),
@@ -3300,9 +3436,9 @@ struct Mono<'a> {
     /// when its target actually exists (a missing impl stays a bare call,
     /// which the post-mono pass diagnoses properly).
     known_fns: &'a std::collections::HashSet<String>,
-    /// method name -> owning trait, and (trait, impl head) -> the impl's
+    /// method name -> owning trait(s), and (trait, impl head) -> the impl's
     /// trait type-arguments — substitution-directed dispatch for bounds.
-    trait_methods: &'a HashMap<String, String>,
+    trait_methods: &'a HashMap<String, Vec<TraitMethodInfo>>,
     /// trait -> its transitive supertraits, so a `where a: Ord` bound discharges
     /// the methods of `Eq`/`PartialOrd`/`PartialEq` too.
     supertraits: &'a HashMap<String, Vec<String>>,
@@ -3659,7 +3795,7 @@ impl Mono<'_> {
         let trait_method_pairs: Vec<(String, String)> = self
             .trait_methods
             .iter()
-            .map(|(m, t)| (m.clone(), t.clone()))
+            .flat_map(|(m, infos)| infos.iter().map(|info| (m.clone(), info.owner.clone())))
             .collect();
         let bounds_snapshot = f.bounds.clone();
         // Keyed by (concrete receiver-type head, method) — NOT method alone — so

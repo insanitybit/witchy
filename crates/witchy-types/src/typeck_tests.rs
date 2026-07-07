@@ -403,6 +403,48 @@
     }
 
     #[test]
+    fn same_named_trait_methods_dispatch_by_trait_identity() {
+        use witchy_syntax::ast::{Expr, Item, Stmt};
+
+        let src = "trait Label:\n    fn name(self) -> String\n\
+                   trait DebugName:\n    fn name(self) -> String\n\
+                   type User:\n    User(String)\n\
+                   impl Label for User:\n    fn name(self) -> String:\n        \"label\"\n\
+                   impl DebugName for User:\n    fn name(self) -> String:\n        \"debug\"\n\
+                   fn label(x: a) -> String where a: Label:\n    name(x)\n\
+                   fn debug_name(x: a) -> String where a: DebugName:\n    name(x)\n\
+                   fn main(console: Console):\n    print(console, label(User(\"u\")) + debug_name(User(\"u\")))\n";
+        check_str(src).expect("same-named trait methods are scoped by the active bound");
+
+        let module = witchy_syntax::parser::parse_module(src).expect("parse");
+        let lowered = crate::traits::lower_checked(module).expect("lower");
+        let lowered_call = |prefix: &str| -> String {
+            lowered
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    Item::Function(f) if f.name.starts_with(prefix) => match f.body.stmts.last() {
+                        Some(Stmt::Expr(Expr::Call { name, .. })) => Some(name.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("missing lowered call for {prefix}"))
+        };
+        assert_eq!(lowered_call("label__"), "Label__User__name");
+        assert_eq!(lowered_call("debug_name__"), "DebugName__User__name");
+
+        let ambiguous = "trait Label:\n    fn name(self) -> String\n\
+                         trait DebugName:\n    fn name(self) -> String\n\
+                         type User:\n    User(String)\n\
+                         impl Label for User:\n    fn name(self) -> String:\n        \"label\"\n\
+                         impl DebugName for User:\n    fn name(self) -> String:\n        \"debug\"\n\
+                         fn bad(u: User) -> String:\n    u.name()\n";
+        let err = check_str(ambiguous).unwrap_err();
+        assert!(err.contains("ambiguous") && err.contains("Label") && err.contains("DebugName"), "{err}");
+    }
+
+    #[test]
     fn build_entrypoint_takes_only_build_capabilities() {
         // A valid build step: build caps only.
         check_str("fn build(out: BuildOut, schema: BuildRead):\n    write_out(out, \"x.witchy\", read_build(schema, \"a.proto\"))\n")
