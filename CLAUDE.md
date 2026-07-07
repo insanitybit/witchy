@@ -135,6 +135,10 @@ CARGO_TARGET_DIR=target-codex cargo clippy --workspace --all-targets -- -D warni
 
 ### Merging: the gate coordinator (`scripts/merge-queue.sh`)
 
+**Full operator's guide: `scripts/MERGE-QUEUE.md`** — architecture, command
+reference, invariants, sharp edges, testing recipe, and recovery playbook.
+Read it before debugging or extending the queue. Summary protocol:
+
 Never run two full gates at once (the long-tail e2e tests stretch each other
 and the publish e2e is load-flaky), and never merge to master while a full gate
 is running (it invalidates that gate). The coordinator enforces both:
