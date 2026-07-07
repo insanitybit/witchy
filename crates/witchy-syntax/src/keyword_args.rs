@@ -136,7 +136,7 @@ impl Resolver {
                 self.expr(lo)?;
                 self.expr(hi)?;
             }
-            Expr::RecordUpdate { base, fields } => {
+            Expr::RecordUpdate { name: _, base, fields } => {
                 self.expr(base)?;
                 for (_, v) in fields {
                     self.expr(v)?;

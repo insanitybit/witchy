@@ -329,7 +329,7 @@ fn stamp_expr(e: &mut Expr, line: u32) {
                 stamp_expr(v, line);
             }
         }
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             stamp_expr(base, line);
             for (_, v) in fields {
                 stamp_expr(v, line);

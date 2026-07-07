@@ -947,7 +947,7 @@ fn fv_expr(e: &Expr, bound: &HashSet<String>, seen: &mut HashSet<String>, out: &
                 fv_expr(a, bound, seen, out);
             }
         }
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             fv_expr(base, bound, seen, out);
             for (_, v) in fields {
                 fv_expr(v, bound, seen, out);
@@ -1135,7 +1135,7 @@ fn contains_await(e: &Expr) -> bool {
             contains_await(receiver) || args.iter().any(contains_await)
         }
         Expr::Apply { func, args } => contains_await(func) || args.iter().any(contains_await),
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             contains_await(base) || fields.iter().any(|(_, v)| contains_await(v))
         }
         Expr::Record { fields, spread, .. } => {

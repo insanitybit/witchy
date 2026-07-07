@@ -443,9 +443,11 @@ pub enum Expr {
     /// boundary with that exact `Result`/`Option` type.
     Lambda { params: Vec<Param>, body: Block, ret: Option<Type> },
     /// Record update: a new record like `p` with the named fields replaced. `p`
-    /// is not mutated. Produced by lowering an `Expr::Record` whose `spread` is
-    /// set (`Point(x: 5, ..p)`); no longer has surface syntax of its own.
+    /// is not mutated. `name` is `Some(Point)` when produced by lowering the
+    /// surface spread form `Point(x: 5, ..p)`, and `None` for internal updates
+    /// such as field assignment desugaring (`p.x = v`).
     RecordUpdate {
+        name: Option<String>,
         base: Box<Expr>,
         fields: Vec<(String, Expr)>,
     },

@@ -1729,7 +1729,7 @@ impl Codegen {
             }
             Expr::Field { base, .. } => self.infer_locals_expr(base),
             Expr::Try(inner) => self.infer_locals_expr(inner),
-            Expr::RecordUpdate { base, fields } => {
+            Expr::RecordUpdate { name: _, base, fields } => {
                 self.infer_locals_expr(base);
                 for (_, v) in fields {
                     self.infer_locals_expr(v);
@@ -2654,7 +2654,7 @@ impl Codegen {
                         }
                         tail_is_value = false;
                     } else if self.sroa_active.contains_key(name) {
-                        let Expr::RecordUpdate { base, fields } = value else {
+                        let Expr::RecordUpdate { name: _, base, fields } = value else {
                             return None;
                         };
                         let tyname = self.record_type_of(base)?;
@@ -4630,7 +4630,7 @@ impl Codegen {
             // an overridden value (in a slot) or the base's raw slot copied across.
             // Only the bare-variable base is lowered (the base read directly); a
             // non-`Var` base needs the scratch-local pool, so it stays in legacy.
-            Expr::RecordUpdate { base, fields } => {
+            Expr::RecordUpdate { name: _, base, fields } => {
                 let tyname = self.record_type_of(base)?;
                 let names = self.record_fields.get(&tyname)?.clone();
                 let &(tag, nfields) = self.ctors.get(&tyname)?;
@@ -5861,7 +5861,7 @@ impl Codegen {
                     self.scan_escapes_expr(a, inner, ok);
                 }
             }
-            Expr::RecordUpdate { base, fields } => {
+            Expr::RecordUpdate { name: _, base, fields } => {
                 self.scan_escapes_expr(base, inner, ok);
                 for (_, v) in fields {
                     self.scan_escapes_expr(v, inner, ok);
@@ -6538,7 +6538,7 @@ impl DevirtScan {
                 }
                 self.walk_block(body);
             }
-            Expr::RecordUpdate { base, fields } => {
+            Expr::RecordUpdate { name: _, base, fields } => {
                 self.walk_expr(base);
                 fields.iter().for_each(|(_, v)| self.walk_expr(v));
             }
@@ -6694,7 +6694,7 @@ fn collect_fn_refs_expr(e: &Expr, out: &mut HashSet<String>) {
         Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
             collect_fn_refs_expr(expr, out)
         }
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             collect_fn_refs_expr(base, out);
             for (_, v) in fields {
                 collect_fn_refs_expr(v, out);
@@ -6965,7 +6965,7 @@ fn collect_let_names_expr(expr: &Expr, out: &mut Vec<String>) {
         Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
             collect_let_names_expr(expr, out)
         }
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             collect_let_names_expr(base, out);
             for (_, v) in fields {
                 collect_let_names_expr(v, out);

@@ -233,7 +233,7 @@ fn walk_children(expr: &mut Expr, ctx: &Context, depth: u32) -> Result<(), Strin
         Expr::Unary { expr, .. } => recur(expr)?,
         Expr::Field { base, .. } => recur(base)?,
         Expr::Lambda { body, .. } => walk_block_depth(body, ctx, depth)?,
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             recur(base)?;
             for (_, v) in fields {
                 recur(v)?;
@@ -711,7 +711,7 @@ fn substitute_holes_children(
         Expr::Unary { expr, .. } => substitute_holes(expr, holes, where_)?,
         Expr::Field { base, .. } => substitute_holes(base, holes, where_)?,
         Expr::Lambda { body, .. } => substitute_holes_block(body, holes, where_)?,
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             substitute_holes(base, holes, where_)?;
             for (_, v) in fields {
                 substitute_holes(v, holes, where_)?;
@@ -977,7 +977,7 @@ fn collect_refs_expr(e: &Expr, out: &mut HashSet<String>) {
             collect_refs_expr(expr, out);
             collect_type_names(ty, out);
         }
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             collect_refs_expr(base, out);
             for (_, v) in fields {
                 collect_refs_expr(v, out);

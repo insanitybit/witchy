@@ -778,7 +778,12 @@ impl<'a> Scope<'a> {
                     self.resolve_expr(s)?;
                 }
             }
-            Expr::RecordUpdate { base, fields } => {
+            Expr::RecordUpdate { name, base, fields } => {
+                if let Some(name) = name {
+                    if let Ok(canon) = self.resolve_ctor_expr_name(name) {
+                        *name = canon;
+                    }
+                }
                 self.resolve_expr(base)?;
                 for (_, v) in fields {
                     self.resolve_expr(v)?;
@@ -1171,7 +1176,14 @@ fn resolve_residual_expr(
                 resolve_residual_expr(a, by_suffix)?;
             }
         }
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name, base, fields } => {
+            if let Some(name) = name {
+                if !name.contains('.') && !is_ambient_ctor(name) {
+                    if let Some([only]) = by_suffix.get(name.as_str()).map(|v| v.as_slice()) {
+                        *name = only.clone();
+                    }
+                }
+            }
             resolve_residual_expr(base, by_suffix)?;
             for (_, v) in fields {
                 resolve_residual_expr(v, by_suffix)?;

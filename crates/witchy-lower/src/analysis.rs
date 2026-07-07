@@ -274,7 +274,7 @@ pub fn self_inplace_op<'a>(name: &str, value: &'a Expr) -> Option<InPlaceOp<'a>>
 /// owned the update writes the changed fields into `s`'s slots in place rather
 /// than reallocating (RFC-0033 R1). Returns the updated `(field, value)` pairs.
 fn self_record_update<'a>(name: &str, value: &'a Expr) -> Option<&'a [(String, Expr)]> {
-    if let Expr::RecordUpdate { base, fields } = value {
+    if let Expr::RecordUpdate { name: _, base, fields } = value {
         if matches!(base.as_ref(), Expr::Var(v) if v == name) {
             return Some(fields.as_slice());
         }
@@ -579,7 +579,7 @@ fn collect_accumulators_expr(
                 collect_accumulators_expr(a, summaries, accs, loop_ptrs, loop_sites);
             }
         }
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             collect_accumulators_expr(base, summaries, accs, loop_ptrs, loop_sites);
             for (_, v) in fields {
                 collect_accumulators_expr(v, summaries, accs, loop_ptrs, loop_sites);
@@ -923,7 +923,7 @@ impl<'a> Walker<'a> {
                     self.scan(s, live, "stored into a record", out);
                 }
             }
-            Expr::RecordUpdate { base, fields } => {
+            Expr::RecordUpdate { name: _, base, fields } => {
                 self.scan(base, false, reason, out);
                 for (_, v) in fields {
                     self.scan(v, live, "stored into a record", out);
@@ -1076,7 +1076,7 @@ fn expr(e: &Expr, accs: &HashSet<String>, out: &mut HashSet<String>) {
                     expr(a, accs, out);
                 }
             }
-            Expr::RecordUpdate { base, fields } => {
+            Expr::RecordUpdate { name: _, base, fields } => {
                 expr(base, accs, out);
                 for (_, v) in fields {
                     expr(v, accs, out);
@@ -1152,7 +1152,7 @@ fn collect_field_push_candidates(
     out: &mut std::collections::HashSet<(String, String)>,
 ) {
     for stmt in &body.stmts {
-        if let Stmt::Assign { name, value: Expr::RecordUpdate { base, fields } } = stmt {
+        if let Stmt::Assign { name, value: Expr::RecordUpdate { name: _, base, fields } } = stmt {
             if matches!(base.as_ref(), Expr::Var(v) if v == name) {
                 for (f, fv) in fields {
                     if let Expr::Call { name: pn, args } = fv {
@@ -1237,7 +1237,7 @@ fn collect_candidates_in_expr(e: &Expr, out: &mut std::collections::HashSet<(Str
                 collect_candidates_in_expr(a, out);
             }
         }
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             collect_candidates_in_expr(base, out);
             for (_, v) in fields {
                 collect_candidates_in_expr(v, out);
@@ -1323,7 +1323,7 @@ fn field_escapes_expr(e: &Expr, var: &str, field: &str) -> bool {
             field_escapes_expr(receiver, var, field)
                 || args.iter().any(|a| field_escapes_expr(a, var, field))
         }
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             field_escapes_expr(base, var, field)
                 || fields.iter().any(|(_, v)| field_escapes_expr(v, var, field))
         }
@@ -1438,7 +1438,7 @@ fn collect_moved_accs(e: &Expr, accs: &HashSet<String>, out: &mut Vec<String>) {
             }
         }
         Expr::Block(b) => collect_moved_in_block(b, accs, out),
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             collect_moved_accs(base, accs, out);
             for (_, v) in fields {
                 collect_moved_accs(v, accs, out);
@@ -1768,7 +1768,7 @@ fn rc_lets_expr(e: &Expr, confined: bool, out: &mut HashSet<String>) {
             rc_lets_expr(lhs, confined, out);
             rc_lets_expr(rhs, confined, out);
         }
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             rc_lets_expr(base, confined, out);
             fields.iter().for_each(|(_, v)| rc_lets_expr(v, confined, out));
         }
@@ -1919,7 +1919,7 @@ fn each_value_child(e: &Expr, f: &mut impl FnMut(&Expr)) {
             f(lhs);
             f(rhs);
         }
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             f(base);
             fields.iter().for_each(|(_, v)| f(v));
         }
@@ -2027,7 +2027,7 @@ fn expr_read_count(e: &Expr, name: &str) -> usize {
             n += expr_read_count(lhs, name);
             n += expr_read_count(rhs, name);
         }
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             n += expr_read_count(base, name);
             for (_, v) in fields {
                 n += expr_read_count(v, name);
@@ -2171,7 +2171,7 @@ fn each_block_in_expr(e: &Expr, f: &mut impl FnMut(&Block)) {
             each_block_in_expr(lhs, f);
             each_block_in_expr(rhs, f);
         }
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             each_block_in_expr(base, f);
             fields.iter().for_each(|(_, v)| each_block_in_expr(v, f));
         }

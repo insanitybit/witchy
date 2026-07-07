@@ -175,7 +175,7 @@ fn fv_expr(e: &Expr, s: &mut LambdaScan) {
         }
         Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } => fv_expr(expr, s),
         Expr::Field { base, .. } => fv_expr(base, s),
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             fv_expr(base, s);
             for (_, v) in fields {
                 fv_expr(v, s);

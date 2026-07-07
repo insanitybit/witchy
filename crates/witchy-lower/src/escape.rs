@@ -298,7 +298,7 @@ fn scan_uses_block(b: &Block, mode: UseScan, call: CallExempt, out: &mut HashSet
                     // (`p.x = v` desugars to `p = RecordUpdate{ base: p, [(x, v)] }`):
                     // scan only the field value, not the `..p` base. Every other
                     // assignment to `name` marks it.
-                    if let Expr::RecordUpdate { base, fields } = value {
+                    if let Expr::RecordUpdate { name: _, base, fields } = value {
                         if fields.len() == 1 && matches!(base.as_ref(), Expr::Var(x) if x == name) {
                             scan_uses_expr(&fields[0].1, mode, call, out);
                             continue;
@@ -779,7 +779,7 @@ fn each_subexpr(e: &Expr, f: &mut impl FnMut(&Expr)) {
             }
         }
         Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } => f(expr),
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             f(base);
             for (_, v) in fields {
                 f(v);

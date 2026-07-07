@@ -1414,7 +1414,7 @@ impl Ctx<'_> {
             Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
                 self.rewrite_expr(expr, scope)
             }
-            Expr::RecordUpdate { base, fields } => {
+            Expr::RecordUpdate { name: _, base, fields } => {
                 self.rewrite_expr(base, scope);
                 for (_, v) in fields.iter_mut() {
                     self.rewrite_expr(v, scope);
@@ -1943,7 +1943,7 @@ fn expr_needs_lowering(e: &Expr) -> bool {
         }
         Expr::Field { base, .. } => expr_needs_lowering(base),
         Expr::Lambda { body, .. } | Expr::Block(body) => block_needs_lowering(body),
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             expr_needs_lowering(base) || fields.iter().any(|(_, v)| expr_needs_lowering(v))
         }
         Expr::Record { fields, spread, .. } => {
@@ -2511,7 +2511,7 @@ fn subst_expr_types(e: &mut Expr, subst: &HashMap<&str, String>) {
             subst_expr_types(base, subst);
             subst_expr_types(index, subst);
         }
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             subst_expr_types(base, subst);
             for (_, v) in fields {
                 subst_expr_types(v, subst);
@@ -2707,7 +2707,7 @@ fn collect_call_names(b: &Block, out: &mut HashSet<String>) {
                     walk(sp, out);
                 }
             }
-            Expr::RecordUpdate { base, fields } => {
+            Expr::RecordUpdate { name: _, base, fields } => {
                 walk(base, out);
                 for (_, v) in fields {
                     walk(v, out);
@@ -2906,7 +2906,7 @@ fn rename_calls_block(b: &mut Block, renames: &Renames, scope: &mut Scope, resol
                     walk_expr(sp, renames, scope, resolve);
                 }
             }
-            Expr::RecordUpdate { base, fields } => {
+            Expr::RecordUpdate { name: _, base, fields } => {
                 walk_expr(base, renames, scope, resolve);
                 for (_, v) in fields {
                     walk_expr(v, renames, scope, resolve);
@@ -3590,7 +3590,7 @@ impl Mono<'_> {
             Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
                 self.walk_expr(expr, scope)
             }
-            Expr::RecordUpdate { base, fields } => {
+            Expr::RecordUpdate { name: _, base, fields } => {
                 self.walk_expr(base, scope);
                 for (_, v) in fields.iter_mut() {
                     self.walk_expr(v, scope);

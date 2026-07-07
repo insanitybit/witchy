@@ -143,7 +143,7 @@ fn opt_expr(e: &mut Expr, consts: &mut Consts) {
             }
             opt_block(body, &mut inner);
         }
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             opt_expr(base, consts);
             for (_, v) in fields {
                 opt_expr(v, consts);

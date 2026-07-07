@@ -2290,6 +2290,7 @@ pub fn desugar_place_assign(place: Expr, value: Expr) -> Result<Stmt, String> {
         }
         Expr::Field { base, field } => {
             let new_base = Expr::RecordUpdate {
+                name: None,
                 base: base.clone(),
                 fields: vec![(field, value)],
             };
@@ -2449,7 +2450,7 @@ fn for_var_expr_escapes(e: &Expr, in_loop: bool, in_lambda: bool) -> bool {
         Expr::Unary { expr, .. } | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
             for_var_expr_escapes(expr, in_loop, in_lambda)
         }
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             for_var_expr_escapes(base, in_loop, in_lambda)
                 || fields.iter().any(|(_, v)| for_var_expr_escapes(v, in_loop, in_lambda))
         }
@@ -2685,7 +2686,7 @@ fn lower_sugar_expr(e: &mut Expr) {
         | Expr::Try(expr)
         | Expr::As { expr, .. }
         | Expr::Field { base: expr, .. } => lower_sugar_expr(expr),
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             lower_sugar_expr(base);
             for (_, v) in fields {
                 lower_sugar_expr(v);

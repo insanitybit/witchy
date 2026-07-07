@@ -611,7 +611,7 @@ fn check_unique_parameters(module: &Module) -> Result<(), TypeError> {
                 check_params("lambda".to_string(), params)?;
                 check_block(body)
             }
-            Expr::RecordUpdate { base, fields } => {
+            Expr::RecordUpdate { name: _, base, fields } => {
                 check_expr(base)?;
                 for (_, value) in fields {
                     check_expr(value)?;
@@ -1016,7 +1016,7 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                     }
                     validate_block_types(body, known, arities, ctx, in_ctx)
                 }
-                Expr::RecordUpdate { base, fields } => {
+                Expr::RecordUpdate { name: _, base, fields } => {
                     validate_expr_types(base, known, arities, ctx, in_ctx)?;
                     for (_, value) in fields {
                         validate_expr_types(value, known, arities, ctx, in_ctx)?;
@@ -3891,15 +3891,21 @@ impl Checker {
                     params.iter().cloned().zip(args.iter().cloned()).collect();
                 Ok(self.subst_vars(fty, &map))
             }
-            Expr::RecordUpdate { base, fields } => {
+            Expr::RecordUpdate { name, base, fields } => {
                 let bt = self.infer(base)?;
                 let resolved = self.resolve(&bt);
-                let (tyname, args) = match &resolved {
+                let (base_tyname, base_args) = match &resolved {
                     Ty::Named(n, a) => (n.clone(), a.clone()),
                     other => {
                         return terr(format!("`update` requires a record, found `{other}`"))
                     }
                 };
+                let tyname = name.clone().unwrap_or_else(|| base_tyname.clone());
+                if tyname != base_tyname {
+                    return terr(format!(
+                        "`{tyname}(..base)` requires a `{tyname}` base, found `{base_tyname}`"
+                    ));
+                }
                 if self.sealed_types.contains(&tyname) {
                     return terr(format!(
                         "`{tyname}` is a sealed capability and cannot be `update`d — \
@@ -3910,7 +3916,7 @@ impl Checker {
                     return terr(format!("type `{tyname}` is not a record"));
                 };
                 let map: HashMap<u32, Ty> =
-                    params.into_iter().zip(args).collect();
+                    params.into_iter().zip(base_args.iter().cloned()).collect();
                 for (fname, vexpr) in fields {
                     let Some((_, fty)) = rec_fields.iter().find(|(n, _)| n == fname) else {
                         return terr(format!("record `{tyname}` has no field `{fname}`"));
@@ -3921,8 +3927,7 @@ impl Checker {
                         message: format!("`update` of field `{fname}`: {}", e.message),
                     })?;
                 }
-                // The result is a record of the same type as the base.
-                Ok(resolved)
+                Ok(Ty::Named(tyname, base_args))
             }
             Expr::Try(inner) => {
                 let it = self.infer(inner)?;

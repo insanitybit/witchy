@@ -982,6 +982,22 @@ fn bump(p: Point) -> Point:
     }
 
     #[test]
+    fn record_spread_base_must_match_named_record() {
+        check_str(
+            "type P:\n    x: Int\n    y: Int\nfn f(p: P) -> P:\n    P(x: 5, ..p)\n",
+        )
+        .expect("same-type record spread remains valid");
+
+        let err = check_str(
+            "type P:\n    x: Int\n    y: Int\n\
+             type Big:\n    x: Int\n    y: Int\n    z: String\n\
+             fn f(big: Big) -> P:\n    P(x: 5, ..big)\n",
+        )
+        .expect_err("record spread base must have the named record type");
+        assert!(err.contains("requires a `P` base") && err.contains("found `Big`"), "{err}");
+    }
+
+    #[test]
     fn rejects_record_update_wrong_field_type() {
         let src = r#"
 type Point:

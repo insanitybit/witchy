@@ -932,7 +932,7 @@ fn resolve_in_expr(
             resolve_in_expr(scrutinee, sig, by_base, vars);
             resolve_in_block(body, sig, by_base, vars);
         }
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             resolve_in_expr(base, sig, by_base, vars);
             for (_, v) in fields.iter_mut() {
                 resolve_in_expr(v, sig, by_base, vars);
@@ -1089,7 +1089,7 @@ fn collect_bound_expr(e: &Expr, out: &mut HashSet<String>) {
         Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
             collect_bound_expr(expr, out)
         }
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             collect_bound_expr(base, out);
             for (_, v) in fields {
                 collect_bound_expr(v, out);
@@ -1257,7 +1257,7 @@ fn rewrite_expr(
             }
             rewrite_expr(base, m, imps, fns, bound)?;
         }
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             rewrite_expr(base, m, imps, fns, bound)?;
             for (_, value) in fields {
                 rewrite_expr(value, m, imps, fns, bound)?;
@@ -1521,7 +1521,7 @@ fn seal_expr(e: &Expr, sealed: &SealMap, home: &str) -> Result<(), LinkError> {
         | Expr::Try(expr)
         | Expr::As { expr, .. }
         | Expr::Field { base: expr, .. } => seal_expr(expr, sealed, home)?,
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             seal_expr(base, sealed, home)?;
             for (_, v) in fields {
                 seal_expr(v, sealed, home)?;
@@ -1907,7 +1907,7 @@ fn check_reserved_expr(module_name: &str, expr: &Expr) -> Result<(), LinkError> 
             }
             check_reserved_block(module_name, body)?;
         }
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             check_reserved_expr(module_name, base)?;
             for (_, value) in fields {
                 check_reserved_expr(module_name, value)?;

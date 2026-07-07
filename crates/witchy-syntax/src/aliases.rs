@@ -288,7 +288,7 @@ fn resolve_in_expr(e: &mut Expr, map: &HashMap<String, Type>) {
         Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
             resolve_in_expr(expr, map)
         }
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             resolve_in_expr(base, map);
             for (_, v) in fields {
                 resolve_in_expr(v, map);

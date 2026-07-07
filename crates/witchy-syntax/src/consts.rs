@@ -75,7 +75,7 @@ fn collect_names(e: &Expr, out: &mut Vec<String>) {
         Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
             collect_names(expr, out)
         }
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             collect_names(base, out);
             for (_, v) in fields {
                 collect_names(v, out);
@@ -330,7 +330,7 @@ fn subst_expr(
         Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
             subst_expr(expr, consts, cnames, scope)
         }
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             let mut changed = subst_expr(base, consts, cnames, scope);
             for (_, v) in fields {
                 changed |= subst_expr(v, consts, cnames, scope);

@@ -96,7 +96,7 @@ fn build(
     }
     if let Some(base) = spread {
         // The base supplies every field not overridden here, so no missing-field check.
-        return Ok(Expr::RecordUpdate { base, fields });
+        return Ok(Expr::RecordUpdate { name: Some(name), base, fields });
     }
     let mut by_name: HashMap<String, Expr> = fields.into_iter().collect();
     let mut args = Vec::with_capacity(decl.len());
@@ -183,7 +183,7 @@ fn lower_expr(e: &mut Expr, orders: &Orders, lenient: bool) -> Result<(), String
             lower_expr(lo, orders, lenient)?;
             lower_expr(hi, orders, lenient)?;
         }
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             lower_expr(base, orders, lenient)?;
             for (_, v) in fields {
                 lower_expr(v, orders, lenient)?;

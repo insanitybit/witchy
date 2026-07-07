@@ -606,7 +606,7 @@ fn place_assign_sugar(name: &str, value: &Expr) -> Option<String> {
             }
             Some(format!("{name}[{}] = {}", expr(idx), expr(val)))
         }
-        Expr::RecordUpdate { base, fields } if fields.len() == 1 && same_var(base) => {
+        Expr::RecordUpdate { name: _, base, fields } if fields.len() == 1 && same_var(base) => {
             let (f, val) = &fields[0];
             // Compound `v.f += e`: RHS is `v.f <op> e` reading the same field.
             if let Expr::Binary { op, lhs, rhs } = val {
@@ -1289,7 +1289,7 @@ fn expr(e: &Expr) -> String {
                 .unwrap_or_default();
             format!("if {}: {}{}", expr(cond), block_value(then_block), e)
         }
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             let fs: Vec<String> = fields
                 .iter()
                 .map(|(n, v)| format!("{n} = {}", expr(v)))
@@ -1879,7 +1879,7 @@ fn canon_expr(e: &mut Expr) {
             canon_block(body);
         }
         Expr::Lambda { body, .. } => canon_block(body),
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             canon_expr(base);
             for (_, v) in fields {
                 canon_expr(v);

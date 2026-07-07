@@ -427,7 +427,7 @@ fn idents_in_expr(e: &Expr, f: &mut dyn FnMut(&str)) {
         }
         Expr::Field { base, .. } => idents_in_expr(base, f),
         Expr::Lambda { body, .. } => idents_in_block(body, f),
-        Expr::RecordUpdate { base, fields } => {
+        Expr::RecordUpdate { name: _, base, fields } => {
             idents_in_expr(base, f);
             for (_, fe) in fields {
                 idents_in_expr(fe, f);
@@ -2578,7 +2578,7 @@ impl Interpreter {
                     env: Box::new(env.capture(&mentioned)),
                 })
             }
-            Expr::RecordUpdate { base, fields } => {
+            Expr::RecordUpdate { name: _, base, fields } => {
                 let v = self.eval(base, env)?;
                 let Value::Ctor { name, fields: mut values } = v else {
                     return err(format!("`update` requires a record value, got `{v}`"));
