@@ -46,11 +46,14 @@ pub fn from_millis(ms: Int) -> DateTime:
 
 // The civil UTC date/time at `secs` SECONDS since the unix epoch (a classic
 // unix timestamp). `now(clock)` returns milliseconds — use `from_millis`
-// for it, or this becomes the year 58000.
+// for it, or this becomes the year 58000. The formatted/parsing contract is a
+// fixed four-digit CE year, so timestamps outside 0001..9999 are out of domain.
 pub fn from_unix(secs: Int) -> DateTime:
     let days = floor_div(secs, 86400)
     let sod = secs - days * 86400
     let (y, mo, da) = civil_from_days(days)
+    if y < 1 || y > 9999:
+        fail("time.from_unix: year `${y}` is out of range (expected 1..9999)")
     DateTime(y, mo, da, sod / 3600, sod / 60 % 60, sod % 60)
 
 // The unix timestamp for a DateTime (its inverse).
@@ -60,6 +63,8 @@ pub fn to_unix(d: DateTime) -> Int:
 // A DateTime from civil UTC components, validated — `civil(2026, 2, 30, ...)`
 // is an Err, not a rollover.
 pub fn civil(y: Int, mo: Int, da: Int, h: Int, mi: Int, s: Int) -> Result(DateTime, String):
+    if y < 1 || y > 9999:
+        return Err("year ${y} is out of range 1..9999")
     if mo < 1 || mo > 12:
         return Err("month ${mo} is out of range 1..12")
     if da < 1 || da > days_in_month(y, mo):

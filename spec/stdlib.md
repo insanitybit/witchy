@@ -2622,7 +2622,7 @@ The civil UTC date/time at `ms` MILLISECONDS since the unix epoch — what `now(
 
 #### `fn from_unix(secs: Int) -> DateTime`
 
-The civil UTC date/time at `secs` SECONDS since the unix epoch (a classic unix timestamp). `now(clock)` returns milliseconds — use `from_millis` for it, or this becomes the year 58000.
+The civil UTC date/time at `secs` SECONDS since the unix epoch (a classic unix timestamp). `now(clock)` returns milliseconds — use `from_millis` for it, or this becomes the year 58000. The formatted/parsing contract is a fixed four-digit CE year, so timestamps outside 0001..9999 are out of domain.
 
 #### `fn to_unix(d: DateTime) -> Int`
 

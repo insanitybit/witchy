@@ -1126,6 +1126,25 @@ fn main(console: Console):
         );
     }
 
+    /// (BUG-537) `DateTime`'s public constructors enforce the fixed-width
+    /// RFC3339 year domain that `time.iso8601` and `time.parse_iso8601` share.
+    #[test]
+    fn datetime_rejects_years_outside_fixed_iso_domain_on_both_backends() {
+        let src = "import time\n\nfn report(console: Console, r: Result(time.DateTime, String)):\n    match r:\n        Ok(d) -> print(console, time.iso8601(d))\n        Err(e) -> print(console, e)\n\nfn main(console: Console):\n    report(console, time.civil(0, 1, 1, 0, 0, 0))\n    report(console, time.civil(10000, 1, 1, 0, 0, 0))\n    report(console, time.parse_iso8601(\"0000-01-01T00:00:00Z\"))\n    report(console, time.parse_iso8601(\"9999-12-31T23:59:59Z\"))\n";
+        let expected = [
+            "year 0 is out of range 1..9999",
+            "year 10000 is out of range 1..9999",
+            "year 0 is out of range 1..9999",
+            "9999-12-31T23:59:59Z",
+        ];
+        assert_eq!(link_run(src), expected, "interp: DateTime fixed ISO domain");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: DateTime fixed ISO domain",
+        );
+    }
+
     /// (RFC-0054) `?` converts typed errors through `From`, so libraries can
     /// expose matchable enum errors without collapsing every layer to `String`.
     #[test]
