@@ -389,73 +389,35 @@ fn pm_fe(dir: &Path, args: &[&str]) -> Output {
         .expect("spawn witchy pm")
 }
 
-/// The full networked lifecycle through the front-end against a real coven:
-/// trusted CI `publish` (staged) → a staged rune is not addable → distinct-human
-/// `promote` (released) → `add` (fetched over HTTP, signature + content verified,
-/// vendored + locked) → `run` the consumer → `list` reflects `released`.
+/// The trusted-publishing token lifecycle over one registry, end to end. On the
+/// FIRST publish to a namespace the token's identity binds it (TOFU), and SEC-023
+/// requires that first bind's repository org to equal the namespace — so an
+/// attacker's CI token (`evilcorp/fork`) cannot land-grab a victim's intended
+/// namespace, while a matching org (`acme/secure-repo`) claims it. Once bound,
+/// every later `pm publish` (carrying `COVEN_ID_TOKEN`) must match the bound
+/// policy: a token from a different repository is refused 403 (namespace hijack),
+/// a token from the right repo but a non-release workflow is refused 403, and a
+/// REPLAYED token — right repo, right workflow, but a `jti` already consumed by a
+/// successful publish — is refused 403 (single-use, SEC-022). A real workflow
+/// mints a fresh token per run, so the bound CI identity re-publishes with a
+/// fresh token; a distinct human then promotes.
 #[test]
-fn networked_registry_full_lifecycle() {
-    let server = RegistryServer::start();
-    let fe = FrontEnd::new(&server, "net");
-    let app = fe.new_app();
-
-    let lib = fe.lib("acme/lib", "1.0.0", "pub fn shout(s: String) -> String:\n    \"HEY \" + s\n");
-    // Publish via a trusted CI identity token (no long-lived API key).
-    let ci = server.ci_token("acme-lib-repo", "release.yml");
-    let out = fe.pm(&lib, &["publish", "."], Some(&ci));
-    assert!(out.status.success() && stdout(&out).contains("publish: 200"), "publish: {}", stdout(&out));
-
-    // Staged over the network → not addable (no released version satisfies it).
-    let out = fe.pm(&app, &["add", "acme/lib"], None);
-    assert!(!out.status.success(), "a staged version must not be addable");
-    assert!(
-        stdout(&out).contains("no released version") || stderr(&out).contains("no released version"),
-        "stdout {} stderr {}",
-        stdout(&out),
-        stderr(&out)
-    );
-
-    // Promote over the network with a distinct human identity token.
-    let alice = server.human_token("alice");
-    let out = fe.pm(&lib, &["promote", "acme/lib", "1.0.0"], Some(&alice));
-    assert!(out.status.success() && stdout(&out).contains("promote: 200"), "promote: {}", stdout(&out));
-
-    // Add (fetched over HTTP, signature-verified + content-hashed) and run.
-    let out = fe.pm(&app, &["add", "acme/lib"], None);
-    assert!(out.status.success(), "remote add failed: {}\n{}", stderr(&out), stdout(&out));
-    std::fs::write(
-        app.join("src/app.witchy"),
-        "import lib\n\nfn main(console: Console):\n    print(console, lib.shout(\"net\"))\n",
-    )
-    .unwrap();
-    let out = fe.pm(&app, &["run", "."], None);
-    assert!(out.status.success(), "remote run failed: {}\n{}", stderr(&out), stdout(&out));
-    assert!(stdout(&out).contains("HEY net"), "got: {}", stdout(&out));
-
-    // The lock pins the fetched dependency by content hash.
-    let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
-    assert!(lock.contains("sha256:"), "lock should pin the content hash: {lock}");
-
-    // `list` over the network reflects the released state.
-    let out = fe.pm(&app, &["list", "acme/lib"], None);
-    assert!(stdout(&out).contains("released"), "list: {}", stdout(&out));
-}
-
-/// Trusted publishing binds a namespace to a repository + workflow on first
-/// publish (TOFU), and the front-end `pm publish` (carrying `COVEN_ID_TOKEN`) is
-/// refused (403) for a token from a different repository or a non-release
-/// workflow — even though the token is otherwise valid. The bound CI identity may
-/// re-publish; a distinct human then promotes.
-#[test]
-fn trusted_publishing_binds_repo_and_rejects_others() {
+fn trusted_publishing_binds_repo_single_use_and_first_bind() {
     let server = RegistryServer::start();
     let fe = FrontEnd::new(&server, "auth");
     let lib = fe.lib("acme/secure", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
 
-    // First trusted publish from acme-secure-repo / release.yml binds namespace `acme`.
-    let good = server.ci_token("acme-secure-repo", "release.yml");
+    // SEC-023: a token from a DIFFERENT org cannot first-claim the `acme` namespace.
+    let evil_org = server.ci_token("evilcorp/fork", "release.yml");
+    let out = fe.pm(&lib, &["publish", "."], Some(&evil_org));
+    assert!(!out.status.success(), "a cross-org first-bind must be refused");
+    assert!(stdout(&out).contains("publish: 403"), "cross-org bind: {}", stdout(&out));
+
+    // A repository whose org IS the namespace may claim it: the first trusted
+    // publish from acme/secure-repo / release.yml binds namespace `acme`.
+    let good = server.ci_token("acme/secure-repo", "release.yml");
     let out = fe.pm(&lib, &["publish", "."], Some(&good));
-    assert!(out.status.success() && stdout(&out).contains("publish: 200"), "good publish: {}", stdout(&out));
+    assert!(out.status.success() && stdout(&out).contains("publish: 200"), "matching-org bind: {}", stdout(&out));
 
     // A token from a DIFFERENT repository cannot publish to `acme` (namespace hijack).
     std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/secure\"\nversion = \"1.1.0\"\n").unwrap();
@@ -465,14 +427,20 @@ fn trusted_publishing_binds_repo_and_rejects_others() {
     assert!(stdout(&out).contains("publish: 403"), "wrong-repo: {}", stdout(&out));
 
     // A token from the right repo but a NON-release workflow is also refused.
-    let wrong_wf = server.ci_token("acme-secure-repo", "ci.yml");
+    let wrong_wf = server.ci_token("acme/secure-repo", "ci.yml");
     let out = fe.pm(&lib, &["publish", "."], Some(&wrong_wf));
     assert!(!out.status.success(), "publish from wrong workflow must be refused");
     assert!(stdout(&out).contains("publish: 403"), "wrong-workflow: {}", stdout(&out));
 
-    // The legitimate CI identity may publish the new version — with a FRESH token, as a
-    // real workflow mints one per run (the publish token is single-use, SEC-022).
-    let good2 = server.ci_token("acme-secure-repo", "release.yml");
+    // SEC-022: replaying the token that ALREADY published 1.0.0 — right repo and
+    // workflow, so only the consumed `jti` can refuse it — is rejected (single-use).
+    let out = fe.pm(&lib, &["publish", "."], Some(&good));
+    assert!(!out.status.success(), "a replayed publish token must be refused");
+    assert!(stdout(&out).contains("publish: 403"), "replayed token: {}", stdout(&out));
+
+    // The legitimate CI identity may publish the new version — with a FRESH token,
+    // as a real workflow mints one per run.
+    let good2 = server.ci_token("acme/secure-repo", "release.yml");
     let out = fe.pm(&lib, &["publish", "."], Some(&good2));
     assert!(out.status.success() && stdout(&out).contains("publish: 200"), "legit re-publish: {}", stdout(&out));
 
@@ -480,47 +448,6 @@ fn trusted_publishing_binds_repo_and_rejects_others() {
     let alice = server.human_token("alice");
     let out = fe.pm(&lib, &["promote", "acme/secure", "1.1.0"], Some(&alice));
     assert!(out.status.success() && stdout(&out).contains("promote: 200"), "human promote: {}", stdout(&out));
-}
-
-/// SEC-022: a trusted-publishing token is single-use — its `jti` is consumed on a
-/// successful publish, so a replayed (e.g. stolen/leaked) token cannot publish again. A
-/// real workflow mints a fresh token per run, so this never bites legitimate CI.
-#[test]
-fn trusted_publish_token_is_single_use() {
-    let server = RegistryServer::start();
-    let fe = FrontEnd::new(&server, "singleuse");
-    let lib = fe.lib("acme/once", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
-
-    let ci = server.ci_token("acme-once-repo", "release.yml");
-    let out = fe.pm(&lib, &["publish", "."], Some(&ci));
-    assert!(out.status.success() && stdout(&out).contains("publish: 200"), "first publish: {}", stdout(&out));
-
-    // Replaying the SAME token for a new version is refused (single-use).
-    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/once\"\nversion = \"1.1.0\"\n").unwrap();
-    let out = fe.pm(&lib, &["publish", "."], Some(&ci));
-    assert!(!out.status.success(), "a replayed publish token must be refused");
-    assert!(stdout(&out).contains("publish: 403"), "replayed token: {}", stdout(&out));
-}
-
-/// SEC-023: the first trusted publish to a namespace must come from a repository whose
-/// org segment equals the namespace — so an attacker's CI token (`evilcorp/fork`) cannot
-/// land-grab a victim's intended namespace. A matching org binds it.
-#[test]
-fn trusted_publish_first_bind_requires_matching_repo_org() {
-    let server = RegistryServer::start();
-    let fe = FrontEnd::new(&server, "orgmatch");
-    let lib = fe.lib("victim/pkg", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
-
-    // A token from a DIFFERENT org cannot first-claim the `victim` namespace.
-    let evil = server.ci_token("evilcorp/fork", "release.yml");
-    let out = fe.pm(&lib, &["publish", "."], Some(&evil));
-    assert!(!out.status.success(), "a cross-org first-bind must be refused");
-    assert!(stdout(&out).contains("publish: 403"), "cross-org bind: {}", stdout(&out));
-
-    // A repository whose org IS the namespace may claim it.
-    let good = server.ci_token("victim/pkg-repo", "release.yml");
-    let out = fe.pm(&lib, &["publish", "."], Some(&good));
-    assert!(out.status.success() && stdout(&out).contains("publish: 200"), "matching-org bind: {}", stdout(&out));
 }
 
 /// SEC-018: on a trusted registry, `yank` requires an EXISTING maintainer of the
@@ -637,8 +564,9 @@ fn coven_audits_embedded_compartments() {
     assert!(body.contains("d3-runes-chart"), "the audit should flag the embedded compartment: {body}");
 
     // A rune with no compartment embed reports none. Mint a FRESH CI token: tokens are
-    // single-use (see `trusted_publish_token_is_single_use`), and the first publish
-    // already consumed `ci`. Same repo, so it publishes into the same TOFU-bound namespace.
+    // single-use (see `trusted_publishing_binds_repo_single_use_and_first_bind`), and the
+    // first publish already consumed `ci`. Same repo, so it publishes into the same
+    // TOFU-bound namespace.
     let ci2 = server.ci_token("acme-repo", "release.yml");
     let plain = fe.lib("acme/plain", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
     let out2 = fe.pm(&plain, &["publish", "."], Some(&ci2));
@@ -813,25 +741,50 @@ fn scaffold_and_run() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
-/// The cargo-like consumer lifecycle through the **witchy front-end**: author +
-/// publish + promote a library over a real coven, `witchy pm add` it (vendored
-/// into the project's `vendor/` and pinned in `witchy.lock` by content hash), then
-/// `witchy pm run` a consumer that imports it. The front-end is canonical: the
-/// vendored basename `strkit` is the import name, and the lock pins `sha256:`.
+/// The cargo-like consumer lifecycle through the **witchy front-end** against a
+/// real coven, stage gate included: trusted CI `publish` (staged, no long-lived
+/// API key) → a staged rune is NOT addable (no released version satisfies it) →
+/// a DISTINCT human `promote` (released; machines stage, humans release) →
+/// `witchy pm add` (fetched over HTTP, signature + content verified, vendored
+/// into the project's `vendor/` and pinned in `witchy.lock` by content hash) →
+/// `witchy pm run` a consumer that imports it → `list` reflects `released`. The
+/// front-end is canonical: the vendored basename `strkit` is the import name,
+/// and the lock pins `sha256:`.
 #[test]
 fn full_lifecycle_publish_promote_add_use() {
     let server = RegistryServer::start();
     let fe = FrontEnd::new(&server, "lifecycle");
     let app = fe.new_app();
-    fe.published_lib(
+    let lib = fe.lib(
         "acme/strkit",
         "0.1.0",
         "pub fn shout(s: String) -> String:\n    \"HEY \" + s\n",
     );
 
-    // Add the released library (pure — no capability widening, just vendored).
+    // Publish via a trusted CI identity token (no long-lived API key).
+    let ci = server.ci_token("acme-strkit-repo", "release.yml");
+    let out = fe.pm(&lib, &["publish", "."], Some(&ci));
+    assert!(out.status.success() && stdout(&out).contains("publish: 200"), "publish: {}", stdout(&out));
+
+    // Staged over the network → not addable (no released version satisfies it).
     let out = fe.pm(&app, &["add", "acme/strkit"], None);
-    assert!(out.status.success(), "add failed: {}", stderr(&out));
+    assert!(!out.status.success(), "a staged version must not be addable");
+    assert!(
+        stdout(&out).contains("no released version") || stderr(&out).contains("no released version"),
+        "stdout {} stderr {}",
+        stdout(&out),
+        stderr(&out)
+    );
+
+    // Promote over the network with a distinct human identity token.
+    let alice = server.human_token("alice");
+    let out = fe.pm(&lib, &["promote", "acme/strkit", "0.1.0"], Some(&alice));
+    assert!(out.status.success() && stdout(&out).contains("promote: 200"), "promote: {}", stdout(&out));
+
+    // Add the released library (pure — no capability widening, just vendored;
+    // fetched over HTTP, signature-verified + content-hashed).
+    let out = fe.pm(&app, &["add", "acme/strkit"], None);
+    assert!(out.status.success(), "add failed: {}\n{}", stderr(&out), stdout(&out));
     assert!(stdout(&out).contains("added acme/strkit@0.1.0"), "add: {}", stdout(&out));
 
     // Use it from main (the vendored basename `strkit` is the import name).
@@ -841,14 +794,18 @@ fn full_lifecycle_publish_promote_add_use() {
     )
     .unwrap();
     let out = fe.pm(&app, &["run", "."], None);
-    assert!(out.status.success(), "run failed: {}", stderr(&out));
+    assert!(out.status.success(), "run failed: {}\n{}", stderr(&out), stdout(&out));
     assert!(stdout(&out).contains("HEY witchy"), "got: {}", stdout(&out));
 
     // The lockfile pins the dependency by content hash. BUG-193: the lock identity
     // is the manifest name `acme/strkit`; the import alias `strkit` is recorded too.
     let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
     assert!(lock.contains("name = \"acme/strkit\"") && lock.contains("alias = \"strkit\""), "lock: {lock}");
-    assert!(lock.contains("sha256:"), "lock: {lock}");
+    assert!(lock.contains("sha256:"), "lock should pin the content hash: {lock}");
+
+    // `list` over the network reflects the released state.
+    let out = fe.pm(&app, &["list", "acme/strkit"], None);
+    assert!(stdout(&out).contains("released"), "list: {}", stdout(&out));
 }
 
 /// A staged (published-but-not-promoted) version is not resolvable: only released
@@ -1158,34 +1115,6 @@ fn update_single_package_leaves_others_pinned() {
     assert!(a_at.contains("1.1.0"), "alfa should be 1.1.0; lock:\n{lock}");
     let b_at = lock.find("\"bravo\"").map(|i| &lock[i..i + 60]).unwrap_or("");
     assert!(b_at.contains("1.0.0"), "bravo should stay 1.0.0; lock:\n{lock}");
-}
-
-/// A yanked version is excluded from new resolution: `pm add` skips it (no
-/// non-yanked released version remains), and `pm list` reflects the yanked state.
-#[test]
-fn yank_excludes_from_new_resolution() {
-    let server = RegistryServer::start();
-    let fe = FrontEnd::new(&server, "yank");
-    let lib = fe.published_lib("acme/old", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
-
-    // Yank it (a distinct human identity).
-    let human = server.human_token("alice");
-    let out = fe.pm(&lib, &["yank", "acme/old", "1.0.0"], Some(&human));
-    assert!(
-        out.status.success() && stdout(&out).contains("yank: 200"),
-        "yank failed: {}\nstdout: {}",
-        stderr(&out),
-        stdout(&out)
-    );
-
-    // A fresh app can no longer add it (no non-yanked released version).
-    let app = fe.new_app();
-    let out = fe.pm(&app, &["add", "acme/old"], None);
-    assert!(!out.status.success(), "yanked version must not be addable");
-
-    // `list` reflects the yanked state.
-    let out = fe.pm(&app, &["list", "acme/old"], None);
-    assert!(stdout(&out).contains("yanked"), "list: {}", stdout(&out));
 }
 
 /// Provenance is always recorded: a rune fetched by `pm add` carries its signed
@@ -2816,7 +2745,9 @@ fn witchy_pm_add_resolves_and_fetches_from_coven() {
 /// Self-hosted yank: the witchy coven marks a version yanked and the witchy pm's
 /// resolver skips it. With 1.0.0 and 2.0.0 both released, `*` resolves to 2.0.0;
 /// after 2.0.0 is yanked, `*` falls back to 1.0.0 — a yanked version is excluded
-/// from new resolutions (existing locks would still pin it).
+/// from new resolutions (existing locks would still pin it). Once EVERY version
+/// is yanked, `add` refuses outright (no non-yanked released version remains),
+/// and `pm list` reflects the yanked lifecycle state.
 #[test]
 fn witchy_coven_yank_excludes_from_resolution() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -2900,7 +2831,7 @@ fn witchy_coven_yank_excludes_from_resolution() {
             .expect("run pm add");
         let stdout = String::from_utf8_lossy(&out.stdout).to_string();
         let _ = std::fs::remove_dir_all(&dest);
-        stdout
+        (out.status.success(), stdout)
     };
 
     // Both released: `*` resolves to the highest, 2.0.0.
@@ -2909,20 +2840,37 @@ fn witchy_coven_yank_excludes_from_resolution() {
     let (yank_status, yank_body) =
         http_post(&addr, "/coven/yank", "{\"name\":\"acme~money\",\"version\":\"2.0.0\"}");
     let after = add_star();
+    // Yank 1.0.0 as well: with no non-yanked released version left, `add` must refuse.
+    let (yank2_status, yank2_body) =
+        http_post(&addr, "/coven/yank", "{\"name\":\"acme~money\",\"version\":\"1.0.0\"}");
+    let exhausted = add_star();
+    // `pm list` reflects the yanked lifecycle state.
+    let list = Command::new(BIN)
+        .args(["--net", &addr, &pm_src, "list", "acme/money", &addr])
+        .current_dir(&store)
+        .output()
+        .expect("run pm list");
+    let list_out = String::from_utf8_lossy(&list.stdout).to_string();
 
     let _ = server.kill();
     let _ = server.wait();
     let _ = std::fs::remove_dir_all(&store);
 
     assert!(
-        before.contains("added acme/money@2.0.0"),
+        before.0 && before.1.contains("added acme/money@2.0.0"),
         "before yank, * resolves to 2.0.0: {before:?}"
     );
     assert_eq!(yank_status, 200, "yank should succeed: {yank_body}");
     assert!(
-        after.contains("added acme/money@1.0.0"),
+        after.0 && after.1.contains("added acme/money@1.0.0"),
         "after yank, * falls back to 1.0.0: {after:?}"
     );
+    assert_eq!(yank2_status, 200, "second yank should succeed: {yank2_body}");
+    assert!(
+        !exhausted.0,
+        "with every version yanked, add must be refused: {exhausted:?}"
+    );
+    assert!(list_out.contains("yanked"), "list must reflect the yanked state: {list_out}");
 }
 
 /// Transitive resolution, self-hosted: publishing `acme/app` whose manifest
