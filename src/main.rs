@@ -2370,9 +2370,26 @@ fn active_opt_key() -> String {
 /// only the wasm is cached.
 fn compile_linked_to_wasm_cached(linked: &ast::Module) -> Result<Vec<u8>, String> {
     use sha2::{Digest, Sha256};
+    // The AST reaches the hasher STREAMING through a `fmt::Write` adapter: the
+    // Debug rendering of a std-linked module runs hundreds of KB, and `format!`
+    // used to materialize all of it as a heap String on EVERY run, warm or
+    // cold, just to be hashed and dropped. Each formatted fragment now goes
+    // straight into the hasher instead — the hashed bytes are IDENTICAL, so
+    // existing cache entries stay valid.
+    struct HashWriter(Sha256);
+    impl std::fmt::Write for HashWriter {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            self.0.update(s.as_bytes());
+            Ok(())
+        }
+    }
     let key = {
-        let mut h = Sha256::new();
-        h.update(format!("{linked:?}").as_bytes());
+        use std::fmt::Write as _;
+        let mut w = HashWriter(Sha256::new());
+        // Infallible: the adapter never errors, and the AST's derived Debug has
+        // no failing formatter.
+        let _ = write!(w, "{linked:?}");
+        let mut h = w.0;
         h.update(b"\0");
         h.update(compiler_fingerprint().as_bytes());
         h.update(b"\0");
@@ -2600,15 +2617,38 @@ fn run_file_grants(
 /// footprint: there is no source to analyze, but a module physically cannot call
 /// a host op it does not import, so granting exactly the imported families is the
 /// distribution counterpart of `capabilities::analyze`.
+///
+/// Reads the import section with `wasmparser` — a streaming parse of one
+/// section, not a compile. (This used to call `wasmtime::Module::new` on a
+/// fresh uncached `Engine`, running the FULL Cranelift compile — ~30% of a warm
+/// `witchy pm <verb>` — only to list imports and throw the code away; the real
+/// compile happens at `rt.spawn`, which also rejects any malformed module.)
 fn witchy_imports(bytes: &[u8]) -> Result<Vec<String>, String> {
-    use wasmtime::{Engine, Module};
-    let engine = Engine::default();
-    let module = Module::new(&engine, bytes).map_err(|e| format!("not a valid wasm module: {e}"))?;
-    Ok(module
-        .imports()
-        .filter(|i| i.module() == "witchy")
-        .map(|i| i.name().to_string())
-        .collect())
+    use wasmparser::{Parser, Payload, TypeRef};
+    // wasmparser renders some errors (bad magic) multi-line; keep the CLI's
+    // message a single line like the wasmtime-sourced one it replaced.
+    fn one_line(e: wasmparser::BinaryReaderError) -> String {
+        let msg: String = e.to_string().split_whitespace().collect::<Vec<_>>().join(" ");
+        format!("not a valid wasm module: {msg}")
+    }
+    let mut names = Vec::new();
+    for payload in Parser::new(0).parse_all(bytes) {
+        match payload.map_err(one_line)? {
+            Payload::ImportSection(reader) => {
+                for imp in reader.into_imports() {
+                    let imp = imp.map_err(one_line)?;
+                    if imp.module == "witchy" && matches!(imp.ty, TypeRef::Func(_)) {
+                        names.push(imp.name.to_string());
+                    }
+                }
+            }
+            // Imports live in a single early section; stop at the first code
+            // entry so a large module's body is never scanned here.
+            Payload::CodeSectionStart { .. } => break,
+            _ => {}
+        }
+    }
+    Ok(names)
 }
 
 /// Run a PRECOMPILED program module (`app.wasm`) under the capability sandbox,
