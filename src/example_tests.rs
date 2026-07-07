@@ -5213,6 +5213,26 @@ fn yn(b: Bool) -> String:
                 "import time\nfn main(console: Console):\n    print(console, __render(time.days_in_month(2026, 13)))\n",
                 "time.days_in_month: month `13` is out of range (expected 1..12)",
             ),
+            (
+                "import math\nfn main(console: Console):\n    print(console, math.to_base(10, 17))\n",
+                "math.to_base: base `17` is outside 2..16",
+            ),
+            (
+                "import math\nfn main(console: Console):\n    print(console, math.to_base(10, 1))\n",
+                "math.to_base: base `1` is outside 2..16",
+            ),
+            (
+                "import string\nfn main(console: Console):\n    print(console, string.pad_left(\"x\", 3, \"\"))\n",
+                "string.pad_left: empty `fill` cannot pad to width 3",
+            ),
+            (
+                "import string\nfn main(console: Console):\n    print(console, string.pad_right(\"x\", 3, \"\"))\n",
+                "string.pad_right: empty `fill` cannot pad to width 3",
+            ),
+            (
+                "import string\nfn main(console: Console):\n    print(console, string.center(\"x\", 3, \"\"))\n",
+                "string.center: empty `fill` cannot pad to width 3",
+            ),
         ];
         for (src, want_core) in cases {
             // The interpreter resolves the std bodies at run time only when they are
@@ -5235,11 +5255,90 @@ fn yn(b: Bool) -> String:
             assert_eq!(ccore, *want_core, "compiled abort core mismatch for src:\n{src}");
         }
         // The valid-boundary values still work (no over-eager abort): factorial(0),
-        // pow(x, 0), isqrt(0), days_in_month for every month 1..12.
-        let ok = "import math\nimport time\nfn main(console: Console):\n    print(console, __render(math.factorial(0)))\n    print(console, __render(math.pow(2, 0)))\n    print(console, __render(math.isqrt(0)))\n    print(console, __render(time.days_in_month(2024, 2)))\n    print(console, __render(time.days_in_month(2026, 2)))\n    print(console, __render(time.days_in_month(2026, 12)))\n";
-        let want = vec!["1", "1", "0", "29", "28", "31"];
+        // pow(x, 0), isqrt(0), days_in_month for every month 1..12, to_base at both
+        // ends of 2..16, and an empty fill when the string is already wide enough
+        // (no padding is needed, so nothing is violated).
+        let ok = "import math\nimport time\nimport string\nfn main(console: Console):\n    print(console, __render(math.factorial(0)))\n    print(console, __render(math.pow(2, 0)))\n    print(console, __render(math.isqrt(0)))\n    print(console, __render(time.days_in_month(2024, 2)))\n    print(console, __render(time.days_in_month(2026, 2)))\n    print(console, __render(time.days_in_month(2026, 12)))\n    print(console, math.to_base(10, 2))\n    print(console, math.to_base(255, 16))\n    print(console, string.pad_left(\"abc\", 3, \"\"))\n    print(console, string.center(\"abcd\", 3, \"\"))\n";
+        let want = vec!["1", "1", "0", "29", "28", "31", "1010", "ff", "abc", "abcd"];
         assert_eq!(link_run(ok), want, "interpreter boundary");
         assert_eq!(wasm_run(ok), want, "compiled boundary");
+    }
+
+    /// Small stdlib edge contracts, pinned on both backends: `path.base("/")`
+    /// honors its documented root case; `list.chunks` yields `[]` for a
+    /// non-positive size (there are no chunks of length 0) like `windows`;
+    /// `time.format` preserves a trailing bare `%` like any other unknown
+    /// directive; `duration.human`/`clock` render a negative span as a signed
+    /// magnitude, never truncated-division fields; `ascii` predicates reject
+    /// multi-character strings instead of classifying by lexicographic prefix.
+    #[test]
+    fn stdlib_edge_contracts_backends_agree() {
+        let src = r#"import path
+import list
+import time
+import duration
+import ascii
+import string
+import option
+
+fn show_chunks(xs: List(List(Int))) -> String:
+    "[" + list.join(list.map(xs, fn(c: List(Int)): "[" + list.join(list.map(c, fn(x: Int): "${x}"), ",") + "]"), ";") + "]"
+
+fn main(console: Console):
+    print(console, path.base("/") + "|" + path.stem("/") + "|" + path.base("a/b/"))
+    print(console, show_chunks(list.chunks([1, 2, 3], 2)) + "|" + show_chunks(list.chunks([1, 2, 3], 0)) + "|" + show_chunks(list.chunks([1, 2, 3], -1)))
+    match time.civil(2026, 7, 5, 12, 34, 56):
+        Ok(d) -> print(console, time.format(d, "done %") + "|" + time.format(d, "done %%") + "|" + time.format(d, "done %Q"))
+        Err(e) -> print(console, e)
+    print(console, duration.human(duration.seconds(0 - 1)) + "|" + duration.human(duration.minutes(0 - 1)) + "|" + duration.human(duration.milliseconds(0 - 1)) + "|" + duration.human(duration.seconds(90)))
+    print(console, duration.clock(duration.seconds(0 - 1)) + "|" + duration.clock(duration.seconds(3661)))
+    print(console, "${ascii.is_digit("55")}|${ascii.is_digit("5")}|${ascii.is_upper("ABC")}|${ascii.is_upper("A")}|${ascii.is_lower("az")}|${ascii.is_lower("z")}")
+    print(console, "${ascii.to_digit("55")}|${ascii.to_digit("7")}|${ascii.is_digit("")}")
+"#;
+        let interpreted = link_run(src);
+        let compiled = wasm_run(src);
+        assert_eq!(interpreted, compiled, "stdlib edge contracts diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                "/|/|b",
+                "[[1,2];[3]]|[]|[]",
+                "done %|done %|done %Q",
+                "-1s|-1m0s|-1ms|1m30s",
+                "-0:00:01|1:01:01",
+                "false|true|false|true|false|true",
+                "None|Some(7)|false",
+            ]
+        );
+    }
+
+    /// `rand.below` fails loudly for an impossible range (RFC-0044 rule 3,
+    /// matching `random.next_below`) — and still draws for a valid bound.
+    #[test]
+    fn rand_below_rejects_nonpositive_bound_on_both_backends() {
+        let bad = "import rand\nfn main(console: Console, r: Rand):\n    print(console, __render(rand.below(r, 0)))\n";
+        let want_core = "rand.below: bound `0` must be positive";
+        let linked = resolve_std_src(bad);
+        let ierr = interpreter::run_module(linked.clone(), ".", Vec::new())
+            .expect_err("interpreter must abort");
+        assert!(
+            ierr.message.ends_with(want_core),
+            "interpreter core mismatch: got `{}`, want suffix `{want_core}`",
+            ierr.message
+        );
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort");
+        let ccore = cerr
+            .strip_prefix("runtime error: ")
+            .unwrap_or_else(|| panic!("compiled abort not routed: `{cerr}`"));
+        assert_eq!(ccore, want_core, "compiled abort core mismatch");
+
+        // A valid bound still draws a value in range on both backends.
+        let ok = "import rand\nfn main(console: Console, r: Rand):\n    let n = rand.below(r, 10)\n    print(console, __render(n >= 0 && n < 10))\n";
+        assert_eq!(link_run(ok), vec!["true"], "interpreter valid bound");
+        assert_eq!(wasm_run(ok), vec!["true"], "compiled valid bound");
     }
 
     /// `now` (Clock) and `get_env` (Env) compile to capability-gated host
@@ -8792,7 +8891,8 @@ fn main(console: Console):
     #[test]
     fn math_to_base_backends_agree() {
         // to_base renders a number in base 2..16 (recursively, MSB-first);
-        // zero is "0", negatives get a "-", an out-of-range base is "".
+        // zero is "0", negatives get a "-". An out-of-range base fails loudly
+        // (RFC-0044 rule 3) — covered in std_contract_violations_abort_on_both_backends.
         let client = r#"
 import math
 fn main(console: Console):
@@ -8802,7 +8902,6 @@ fn main(console: Console):
     print(console, math.to_binary(5))
     print(console, math.to_base(255, 16))
     print(console, math.to_base(0 - 255, 16))
-    print(console, math.to_base(100, 1))
     print(console, math.to_base(0, 2))
 "#;
         let sources = [("math", crate::bundled_module("math").unwrap()), ("main", client)];
@@ -8811,7 +8910,7 @@ fn main(console: Console):
         assert_eq!(interpreted, compiled, "to_base diverged");
         assert_eq!(
             compiled,
-            vec!["ff", "0", "1000", "101", "ff", "-ff", "", "0"]
+            vec!["ff", "0", "1000", "101", "ff", "-ff", "0"]
         );
     }
 

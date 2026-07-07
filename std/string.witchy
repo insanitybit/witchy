@@ -95,33 +95,43 @@ pub fn repeat(s: String, n: Int) -> String:
     out
 
 // Left-pad `s` with copies of `fill` until it is `width` characters wide.
-// The padding is trimmed to fit exactly, so any fill width yields a result of
-// exactly `width` chars; `s` is returned unchanged when already that long.
+// The padding is trimmed to fit exactly, so any non-empty fill yields a result
+// of exactly `width` chars; `s` is returned unchanged when already that long.
+// An empty `fill` can never reach the promised width, so when padding is
+// needed it fails loudly (RFC-0044 rule 3) instead of returning a short string.
 pub fn pad_left(var s: String, width: Int, fill: String) -> String:
     let len = string.char_count(s)
     if len >= width:
         s
     else:
+        if is_empty(fill):
+            fail("string.pad_left: empty `fill` cannot pad to width ${width}")
         let needed = width - len
         string.substring(repeat(fill, needed), 0, needed) + s
 
-// Right-pad `s` with copies of `fill` until it is `width` characters wide.
+// Right-pad `s` with copies of `fill` until it is `width` characters wide; an
+// empty `fill` fails loudly when padding is needed (see `pad_left`).
 pub fn pad_right(var s: String, width: Int, fill: String) -> String:
     let len = string.char_count(s)
     if len >= width:
         s
     else:
+        if is_empty(fill):
+            fail("string.pad_right: empty `fill` cannot pad to width ${width}")
         let needed = width - len
         s + string.substring(repeat(fill, needed), 0, needed)
 
 // Center `s` in a field `width` characters wide, padding both sides with `fill`;
 // an odd remainder goes on the right. `s` is returned unchanged when already at
-// least that wide.
+// least that wide; an empty `fill` fails loudly when padding is needed (see
+// `pad_left`).
 pub fn center(var s: String, width: Int, fill: String) -> String:
     let len = string.char_count(s)
     if len >= width:
         s
     else:
+        if is_empty(fill):
+            fail("string.center: empty `fill` cannot pad to width ${width}")
         let total = width - len
         let left = total / 2
         let right = total - left

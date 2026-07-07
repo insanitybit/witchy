@@ -182,6 +182,10 @@ pub fn format(d: DateTime, layout: String) -> String:
             pending = true
         else:
             out = out + c
+    // A layout ending in a bare `%` starts a directive that never arrives;
+    // preserve the literal character like any other unknown directive.
+    if pending:
+        out = out + "%"
     out
 
 fn directive(d: DateTime, c: String) -> String:

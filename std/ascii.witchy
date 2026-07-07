@@ -7,14 +7,21 @@
 
 import option
 
+// Each predicate is false for anything but a SINGLE character in its class:
+// a bare lexicographic range check would classify by prefix ("55" would pass
+// `"0" <= c && c <= "9"`), silently accepting multi-character strings the
+// contract excludes.
+fn one_char(c: String) -> Bool:
+    string.char_count(c) == 1
+
 pub fn is_digit(c: String) -> Bool:
-    "0" <= c && c <= "9"
+    one_char(c) && "0" <= c && c <= "9"
 
 pub fn is_upper(c: String) -> Bool:
-    "A" <= c && c <= "Z"
+    one_char(c) && "A" <= c && c <= "Z"
 
 pub fn is_lower(c: String) -> Bool:
-    "a" <= c && c <= "z"
+    one_char(c) && "a" <= c && c <= "z"
 
 pub fn is_alpha(c: String) -> Bool:
     is_upper(c) || is_lower(c)

@@ -537,8 +537,11 @@ pub fn drop_last(xs: List(a)) -> List(a):
     take(xs, list.length(xs) - 1)
 
 // Split `xs` into consecutive sublists of length `n` (the final one may be
-// shorter). `chunks([1,2,3,4,5], 2)` is `[[1,2],[3,4],[5]]`.
+// shorter). `chunks([1,2,3,4,5], 2)` is `[[1,2],[3,4],[5]]`; there are no
+// chunks of a non-positive length, so `n < 1` yields `[]` (like `windows`).
 pub fn chunks(xs: List(a), n: Int) -> List(List(a)):
+    if n < 1:
+        return []
     var out = []
     var cur = []
     var count = 0

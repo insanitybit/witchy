@@ -26,7 +26,7 @@ pub fn join(a: String, b: String) -> String:
 // The final component: "a/b/c.txt" -> "c.txt", "a/b/" -> "b", "/" -> "/".
 pub fn base(p: String) -> String:
     let t = trim_slashes(p)
-    if string.is_empty(t):
+    if string.is_empty(t) || t == "/":
         "/"
     else if string.contains(t, "/"):
         let (_head, b) = string.rsplit_once(t, "/")

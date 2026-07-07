@@ -534,11 +534,11 @@ The milliseconds component (0..999).
 
 #### `fn clock(d: Duration) -> String`
 
-A clock string "H:MM:SS": minutes and seconds zero-padded, hours in full (so a long span reads as e.g. "100:00:00"); the sub-second part is dropped.
+A clock string "H:MM:SS": minutes and seconds zero-padded, hours in full (so a long span reads as e.g. "100:00:00"); the sub-second part is dropped. A negative span renders as a single leading "-" over the absolute components ("-0:00:01"), never as negative fields inside the clock.
 
 #### `fn human(d: Duration) -> String`
 
-A compact label that omits leading zero units: `1h1m1s`, `1m30s`, `5s`, and `500ms` for a pure sub-second span.
+A compact label that omits leading zero units: `1h1m1s`, `1m30s`, `5s`, and `500ms` for a pure sub-second span. A negative span (e.g. from subtraction) keeps its sign as a single leading "-" over the absolute magnitude: `-1s`, `-1m30s` — not the truncated-division fields of the raw negative count.
 
 #### `fn parse(s: String) -> Result(Duration, String)`
 
@@ -1407,7 +1407,7 @@ All elements except the last; the empty list maps to the empty list.
 
 #### `fn chunks(xs: List(a), n: Int) -> List(List(a))`
 
-Split `xs` into consecutive sublists of length `n` (the final one may be shorter). `chunks([1,2,3,4,5], 2)` is `[[1,2],[3,4],[5]]`.
+Split `xs` into consecutive sublists of length `n` (the final one may be shorter). `chunks([1,2,3,4,5], 2)` is `[[1,2],[3,4],[5]]`; there are no chunks of a non-positive length, so `n < 1` yields `[]` (like `windows`).
 
 #### `fn slice(xs: List(a), start: Int, end: Int) -> List(a)`
 
@@ -1515,7 +1515,7 @@ Whether `n` is a perfect square (0, 1, 4, 9, ...). Negative `n` is never one.
 
 #### `fn to_base(n: Int, base: Int) -> String`
 
-Render `n` in `base` (2..16) with lowercase digits; a negative `n` gets a leading "-". An out-of-range base yields "" (so callers can detect misuse).
+Render `n` in `base` (2..16) with lowercase digits; a negative `n` gets a leading "-". A base outside 2..16 has no digit alphabet, so it fails loudly naming the bad argument (RFC-0044 rule 3) rather than returning "".
 
 #### `fn to_hex(n: Int) -> String`
 
@@ -1777,7 +1777,7 @@ A fresh 64-bit draw spanning the full `Int` range (it may be negative). The prim
 
 #### `fn below(rand: Rand, n: Int) -> Int`
 
-A non-negative integer in `[0, n)` (and `0` when `n <= 0`). Clears the sign bit, then takes the remainder; the modulo bias is negligible for ordinary small ranges. For cryptographic uniformity draw bytes with `hex` instead.
+A non-negative integer in `[0, n)`. `n` must be positive (RFC-0044 rule 3): `[0, 0)` is an impossible range, so a non-positive bound fails loudly naming the bad argument (matching `random.next_below`) instead of returning a plausible-looking `0`. Clears the sign bit, then takes the remainder; the modulo bias is negligible for ordinary small ranges. For cryptographic uniformity draw bytes with `hex` instead.
 
 #### `fn bool(rand: Rand) -> Bool`
 
@@ -2362,15 +2362,15 @@ Repeat a string `n` times.
 
 #### `fn pad_left(var s: String, width: Int, fill: String) -> String`
 
-Left-pad `s` with copies of `fill` until it is `width` characters wide. The padding is trimmed to fit exactly, so any fill width yields a result of exactly `width` chars; `s` is returned unchanged when already that long.
+Left-pad `s` with copies of `fill` until it is `width` characters wide. The padding is trimmed to fit exactly, so any non-empty fill yields a result of exactly `width` chars; `s` is returned unchanged when already that long. An empty `fill` can never reach the promised width, so when padding is needed it fails loudly (RFC-0044 rule 3) instead of returning a short string.
 
 #### `fn pad_right(var s: String, width: Int, fill: String) -> String`
 
-Right-pad `s` with copies of `fill` until it is `width` characters wide.
+Right-pad `s` with copies of `fill` until it is `width` characters wide; an empty `fill` fails loudly when padding is needed (see `pad_left`).
 
 #### `fn center(var s: String, width: Int, fill: String) -> String`
 
-Center `s` in a field `width` characters wide, padding both sides with `fill`; an odd remainder goes on the right. `s` is returned unchanged when already at least that wide.
+Center `s` in a field `width` characters wide, padding both sides with `fill`; an odd remainder goes on the right. `s` is returned unchanged when already at least that wide; an empty `fill` fails loudly when padding is needed (see `pad_left`).
 
 #### `fn strip_prefix(var s: String, prefix: String) -> String`
 
