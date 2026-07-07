@@ -6,6 +6,7 @@
 
 import string
 import iter
+import option
 
 // Whether `p` is absolute (rooted at `/`).
 pub fn is_abs(p: String) -> Bool:
@@ -34,38 +35,38 @@ pub fn base(p: String) -> String:
     else:
         t
 
-// Everything before the final component: "a/b/c" -> "a/b", "c" -> "", "/x" -> "/".
-pub fn dir(p: String) -> String:
+// The parent before the final component as `Some`: "a/b/c" -> Some("a/b"),
+// "/x" -> Some("/"). A single-component path has no parent, so "c" is `None`
+// (RFC-0044 rule 1: absence is `Option`, never an "" sentinel).
+pub fn dir(p: String) -> Option(String):
     let t = trim_slashes(p)
     if !string.contains(t, "/"):
-        ""
+        None
     else:
         let (head, _b) = string.rsplit_once(t, "/")
         if string.is_empty(head):
-            "/"
+            Some("/")
         else:
-            head
+            Some(head)
 
-// The extension after the final `.` in the base name, WITHOUT the leading dot
-// ("a/b.tar.gz" -> "gz"), or "" when there is none — matching Rust's
-// `Path::extension` (not Node/Python, which keep the dot). A dotfile base
-// (".bashrc") has no extension.
-pub fn ext(p: String) -> String:
+// The extension after the final `.` in the base name, WITHOUT the leading dot,
+// as `Some` ("a/b.tar.gz" -> Some("gz")) — matching Rust's `Path::extension`
+// both in dropping the dot AND in the `Option` shape (RFC-0044 rule 1). A base
+// with no extension, or a dotfile base (".bashrc"), is `None`.
+pub fn ext(p: String) -> Option(String):
     let b = base(p)
     let i = string.last_index_of(b, ".") ?? -1
     if i > 0:
-        string.substring(b, i + 1, string.char_count(b))
+        Some(string.substring(b, i + 1, string.char_count(b)))
     else:
-        ""
+        None
 
 // The base name without its extension (".bashrc" -> ".bashrc"; "a.b.c" -> "a.b").
 pub fn stem(p: String) -> String:
     let b = base(p)
-    let e = ext(p)
-    if string.is_empty(e):
-        b
-    else:
-        string.strip_suffix(b, "." + e)
+    match ext(p):
+        Some(e) -> string.strip_suffix(b, "." + e)
+        None -> b
 
 // Collapse `.` and `..` segments and redundant slashes. A relative path that
 // backs out past its start keeps the leading `..`s; an absolute one cannot escape

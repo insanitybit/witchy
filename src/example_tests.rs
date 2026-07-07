@@ -3878,11 +3878,13 @@ fn yes(b: Bool) -> String:
     #[test]
     fn path_module_components_and_normalize() {
         let src = r#"import path
+import option
 
 fn main(console: Console):
-    print(console, path.base("a/b/c.txt") + "|" + path.dir("a/b/c.txt"))
-    print(console, path.ext("a/b.tar.gz") + "|" + path.stem("a/b.tar.gz"))
-    print(console, "[" + path.ext(".bashrc") + "]|" + path.base("a/b/"))
+    print(console, path.base("a/b/c.txt") + "|" + (path.dir("a/b/c.txt") ?? "<none>"))
+    print(console, (path.ext("a/b.tar.gz") ?? "<none>") + "|" + path.stem("a/b.tar.gz"))
+    print(console, "[" + (path.ext(".bashrc") ?? "<none>") + "]|" + path.base("a/b/"))
+    print(console, (path.dir("c") ?? "<none>") + "|" + (path.ext("README") ?? "<none>"))
     print(console, path.join("a/b", "c") + "|" + path.join("a", "/x"))
     print(console, path.normalize("a/./b/../c/") + "|" + path.normalize("/a/b/../../../x"))
     print(console, path.normalize("../a/../../b"))
@@ -3892,7 +3894,8 @@ fn main(console: Console):
             vec![
                 "c.txt|a/b",
                 "gz|b.tar",
-                "[]|b",
+                "[<none>]|b",
+                "<none>|<none>",
                 "a/b/c|/x",
                 "a/c|/x",
                 "../../b",
@@ -8750,6 +8753,79 @@ fn main(console: Console):
         let compiled = run_linked_on_wasm(&sources, "main");
         assert_eq!(interpreted, compiled, "url bad-port diverged");
         assert_eq!(compiled, vec!["ok:8443", "none", "none", "none", "ok:443"]);
+    }
+
+    #[test]
+    fn url_parse_ipv6_and_userinfo_backends_agree() {
+        // A bracketed IPv6 authority keeps its inner colons in the host and splits
+        // the port at the colon after `]` — matching the Net layer's last-colon /
+        // bracket-aware split (BUG-351). Userinfo (`user@`, `user:pass@`) is outside
+        // this minimal grammar and is rejected loudly rather than reinterpreted as
+        // host/port text (BUG-380). Both backends agree, and format round-trips.
+        let client = r#"
+import url
+import result
+fn p(s: String) -> String:
+    match url.parse(s):
+        Ok(u) -> url.host(u) + " " + __render(url.port(u)) + " " + url.format(u)
+        Err(_e) -> "err"
+fn main(console: Console):
+    print(console, p("http://[::1]:8080/x"))
+    print(console, p("http://[::1]/x"))
+    print(console, p("https://[2001:db8::1]:443/y"))
+    print(console, p("https://user@example.com/x"))
+    print(console, p("https://user:pass@example.com/x"))
+    print(console, p("https://example.com:8443/z"))
+"#;
+        let sources = [
+            ("option", crate::bundled_module("option").unwrap()),
+            ("url", crate::bundled_module("url").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "url ipv6/userinfo diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                "[::1] 8080 http://[::1]:8080/x",
+                "[::1] 80 http://[::1]/x",
+                "[2001:db8::1] 443 https://[2001:db8::1]/y",
+                "err",
+                "err",
+                "example.com 8443 https://example.com:8443/z",
+            ]
+        );
+    }
+
+    #[test]
+    fn random_next_below_rejects_uncoverable_bound_backends_agree() {
+        // The Park-Miller reducer is `n % bound`; a bound at or above the generator
+        // range (2^31-1) cannot cover its own range, so it fails loudly (BUG-482)
+        // — like the non-positive guard. An ordinary small bound still draws.
+        let bad = r#"
+import random
+fn main(console: Console):
+    let (_i, _r) = random.next_below(random.seed(1), 2147483647)
+    print(console, "unreachable")
+"#;
+        let linked = resolve_std_src(bad);
+        let ierr =
+            interpreter::run_module(linked.clone(), ".", Vec::new()).expect_err("interpreter must abort");
+        assert!(
+            ierr.message.contains("cannot be covered"),
+            "interpreter core mismatch: {}",
+            ierr.message
+        );
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort");
+        assert!(cerr.contains("cannot be covered"), "compiled core mismatch: {cerr}");
+
+        let ok = "import random\nfn main(console: Console):\n    let (i, _r) = random.next_below(random.seed(1), 6)\n    print(console, __render(i >= 0 && i < 6))\n";
+        assert_eq!(link_run(ok), vec!["true"], "interpreter small bound");
+        assert_eq!(wasm_run(ok), vec!["true"], "compiled small bound");
     }
 
     #[test]
