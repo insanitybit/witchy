@@ -7,6 +7,7 @@
 // date and for negative timestamps (before 1970) via floor division.
 
 import ascii
+import show
 
 sealed type DateTime:
     DateTime(Int, Int, Int, Int, Int, Int)
@@ -166,6 +167,10 @@ pub fn time_string(d: DateTime) -> String:
 // RFC 3339 / ISO 8601 in UTC, e.g. `2026-06-08T22:30:00Z`.
 pub fn iso8601(d: DateTime) -> String:
     date_string(d) + "T" + time_string(d) + "Z"
+
+impl Show for DateTime:
+    fn show(self) -> String:
+        iso8601(self)
 
 // A strftime-style layout: `%Y-%m-%d %H:%M:%S`, `%A %B %d` and friends.
 // Directives: %Y year, %m month, %d day, %H hour, %M minute, %S second,

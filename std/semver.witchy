@@ -8,6 +8,7 @@
 import cmp
 import string
 import iter
+import show
 
 // A version orders by major, then minor, then patch — exactly the lexicographic
 // order `derive(Ord)` gives the fields in declaration order, so `<`, `>`, and
@@ -75,6 +76,10 @@ fn component(parts: List(String), i: Int) -> Result(Int, String):
 
 pub fn format(v: Version) -> String:
     "${v.major}.${v.minor}.${v.patch}"
+
+impl Show for Version:
+    fn show(self) -> String:
+        format(self)
 
 // --- ordering ----------------------------------------------------------------
 

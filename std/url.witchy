@@ -9,6 +9,7 @@
 import option
 import result
 import encoding
+import show
 
 sealed type Url:
     Url(String, String, Int, String)
@@ -144,6 +145,10 @@ pub fn format(u: Url) -> String:
         Url(s, h, p, pa) ->
             let authority = if p == default_port(s): h else: h + ":" + "${p}"
             s + "://" + authority + pa
+
+impl Show for Url:
+    fn show(self) -> String:
+        format(self)
 
 // Percent-encode `s` for use as a query-string value (RFC 3986): the unreserved set
 // (`A-Z a-z 0-9 - _ . ~`) passes through, every other byte becomes `%XX`. Used to build

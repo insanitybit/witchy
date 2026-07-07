@@ -1088,6 +1088,29 @@ fn main(console: Console):
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: Json debug object shape");
     }
 
+    /// (BUG-546) Sealed domain values display through their public canonical
+    /// formatter, not their private constructor-shaped representation.
+    #[test]
+    fn sealed_domain_values_use_canonical_show_on_both_backends() {
+        let src = "import show\nimport semver\nimport url\nimport time\n\nfn main(console: Console):\n    let v = semver.version(1, 2, 3)\n    let d = time.from_unix(0)\n    match url.parse(\"https://example.com/p\"):\n        Ok(u) ->\n            show.say(console, v)\n            show.say(console, u)\n            show.say(console, d)\n            print(console, \"${v}\")\n            print(console, \"${u}\")\n            print(console, \"${d}\")\n            print(console, show.render([v, semver.version(2, 0, 0)]))\n            print(console, show.render(Some(u)))\n        Err(e) -> print(console, e)\n";
+        let expected = [
+            "1.2.3",
+            "https://example.com/p",
+            "1970-01-01T00:00:00Z",
+            "1.2.3",
+            "https://example.com/p",
+            "1970-01-01T00:00:00Z",
+            "[1.2.3, 2.0.0]",
+            "Some(https://example.com/p)",
+        ];
+        assert_eq!(link_run(src), expected, "interp: sealed domain Show");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: sealed domain Show",
+        );
+    }
+
     /// (RFC-0054) `?` converts typed errors through `From`, so libraries can
     /// expose matchable enum errors without collapsing every layer to `String`.
     #[test]
