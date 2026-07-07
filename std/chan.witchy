@@ -9,7 +9,7 @@
 // pair carries values of ITS OWN type `m`, and independent channels in one program
 // may carry different types — a library may pipeline work through a private channel
 // without forcing its message type on the whole program. Under the hood the
-// executor is ERASED: its buffers, `Step`, and `Slot` carry the opaque `__Msg`; the
+// executor is ERASED: its effects and buffers carry the opaque `__Msg`; the
 // typed endpoints erase a message on `send` and recover it on `recv`. The erasure
 // is representationally the identity on both backends (a message already rides the
 // universal slot), so interleavings stay byte-identical. Spawned tasks return
@@ -24,21 +24,14 @@
 // `await chan.send(tx, x)`) run on the same protocol.
 
 import option
-from task import Task, Step, Slot, Handle
+from task import Task, Step, Handle
 
 // (RFC-0042) The async effect (`Step`), the `Task` monad, and the executor's
-// `Slot`/`Handle` are ONE type each, owned by `std/task` (the executor lives
-// there). `chan` produces the channel effects (`Open`/`Push`/`Pull`) as values of
-// task's `Step`, so a channel `Task` and an `async fn`'s `Task` are the SAME type
-// and interoperate. Previously each module re-declared these identically and the
-// flat namespace merged them; module-scoped types make that reuse explicit.
-fn poll(t: Task(a)) -> Step(a):
-    match t:
-        Task(th) -> th()
-
-fn unit():
-    let _ignore = 0
-
+// `Handle` are ONE type each, owned by `std/task` (the executor lives there).
+// `chan` produces the channel effects (`Open`/`Push`/`Pull`) as values of task's
+// `Step`, so a channel `Task` and an `async fn`'s `Task` are the SAME type and
+// interoperate. Previously each module re-declared these identically and the flat
+// namespace merged them; module-scoped types make that reuse explicit.
 // ---- erasure boundary (RFC-0055) ----
 
 // Recover a received `Option(__Msg)` at the endpoint's message type. `__unerase`
@@ -53,51 +46,36 @@ fn unerase_option(o: Option(__Msg)) -> Option(m):
 
 // A finished task.
 pub fn done(x: a) -> Task(a):
-    Task(fn(): Done(x))
+    task.done(x)
 
 // An already-complete `Task(Nil)` — the async/await lowering target for a body
 // that falls off its end.
 pub fn ready_unit() -> Task(Nil):
-    Task(fn(): Done(unit()))
+    task.ready_unit()
 
 // Hand control back to the executor once, then continue.
 pub fn yield_now() -> Task(Nil):
-    Task(fn(): Yield(Task(fn(): Done(unit()))))
+    task.yield_now()
 
 // Sequence: run `t`, then continue with `k` applied to its result. This is what
 // `await` lowers to — the continuation `k` is the rest of the body.
 pub fn and_then(t: Task(a), k: fn(a) -> Task(b)) -> Task(b):
-    Task(fn(): and_then_step(poll(t), k))
-
-fn and_then_step(s: Step(a), k: fn(a) -> Task(b)) -> Step(b):
-    match s:
-        Done(v) -> Yield(k(v))
-        Yield(t2) -> Yield(and_then(t2, k))
-        Fork(child, cont) -> Fork(child, fn(h): and_then(cont(h), k))
-        Open(cap, cont) -> Open(cap, fn(c): and_then(cont(c), k))
-        Push(ch, msg, cont) -> Push(ch, msg, fn(u): and_then(cont(u), k))
-        Pull(ch, cont) -> Pull(ch, fn(o): and_then(cont(o), k))
-        PullAny(chs, cont) -> PullAny(chs, fn(o): and_then(cont(o), k))
-        Wait(t2, cont) -> Wait(t2, fn(u): and_then(cont(u), k))
-        Cancel(target, cont) -> Cancel(target, fn(u): and_then(cont(u), k))
+    task.and_then(t, k)
 
 // Transform a task's result.
 pub fn map(t: Task(a), f: fn(a) -> b) -> Task(b):
-    and_then(t, fn(x): Task(fn(): Done(f(x))))
+    task.map(t, f)
 
 // Build the task `thunk()` lazily: nothing runs until the first poll. This is what
 // makes an `async fn` LAZY — calling it yields a task that does no work until
 // driven (by `run`, or by being `spawn`ed, or `await`ed).
 pub fn lazy(thunk: fn() -> Task(a)) -> Task(a):
-    Task(fn(): poll(thunk()))
+    task.lazy(thunk)
 
 // Run `f(x)` as a task for each `x` in `xs`, in order — the lowering target for an
 // `await` inside a `for x in xs:` loop.
 pub fn for_each(xs: List(a), f: fn(a) -> Task(Nil)) -> Task(Nil):
-    if list.is_empty(xs):
-        ready_unit()
-    else:
-        and_then(f(list.at(xs, 0)), fn(_done): for_each(list.tail(xs), f))
+    task.for_each(xs, f)
 
 // ---- spawn + channels (the surface) ----
 type Sender(m):
@@ -138,12 +116,11 @@ pub fn recv(rx: Receiver(m)) -> Task(Option(m)):
 
 // Start `child` as a concurrent task; the returned handle completes when it does.
 pub fn spawn(child: Task(Nil)) -> Task(Handle):
-    Task(fn(): Fork(child, fn(h): Task(fn(): Done(Handle(h)))))
+    task.spawn(child)
 
 // Block until the spawned task behind `h` finishes.
 pub fn join(h: Handle) -> Task(Nil):
-    match h:
-        Handle(id) -> Task(fn(): Wait(id, fn(u): Task(fn(): Done(u))))
+    task.join(h)
 
 // Cancel the spawned task behind `h`: it is stepped no further and is treated as
 // finished, so anyone `join`ing it unblocks immediately. Cancellation is shallow —
@@ -151,8 +128,7 @@ pub fn join(h: Handle) -> Task(Nil):
 // finished or already cancelled is a no-op). Deterministic on the cooperative
 // schedule, hence byte-identical on both backends. Used by `race` to drop the loser.
 pub fn cancel(h: Handle) -> Task(Nil):
-    match h:
-        Handle(id) -> Task(fn(): Cancel(id, fn(u): Task(fn(): Done(u))))
+    task.cancel(h)
 
 // Spawn every task in `children` concurrently, returning their handles. The
 // children begin running on the next executor turns; nothing is joined yet.
@@ -356,218 +332,7 @@ pub fn serve(rx: Receiver(m), state: s, handler: fn(s, m) -> Task(s)) -> Task(Ni
             None -> ready_unit()
     )
 
-// ---- executor ----
-
-// A scheduling slot is task's `Slot` (from-imported above): running, parked on a
-// channel recv/send or on a join, or done.
-fn is_live(s: Slot) -> Bool:
-    match s:
-        Ended -> false
-        Active(_) -> true
-        WaitRecv(_, _) -> true
-        WaitSend(_, _, _) -> true
-        WaitAny(_, _) -> true
-        WaitJoin(_, _) -> true
-
-fn is_parked(s: Slot) -> Bool:
-    match s:
-        WaitRecv(_, _) -> true
-        WaitSend(_, _, _) -> true
-        WaitAny(_, _) -> true
-        WaitJoin(_, _) -> true
-        Active(_) -> false
-        Ended -> false
-
-// The local index (within `chs`) and global id of the first listed channel with a
-// pending message, or None if all are empty. Drives the `PullAny`/`select` path.
-//
-// (RFC-0059 Stage 2) A channel is a FIXED-capacity ring buffer, not a growable list.
-// Its state is `(buf, head, count, cap)`: `buf` is a physical list of `physcap` slots;
-// the `count` live messages are `buf[(head + i) % physcap]` for `i in 0..count`, in
-// FIFO order; `cap` is the logical capacity (0 = unbounded). Send writes the tail slot
-// with `list.set_at` (in place — no growth), recv advances `head` — so the O(occupancy)
-// `list.tail` rebuild the growable buffer did on every recv is gone, and FIFO order +
-// the ready/room predicates are byte-identical, preserving the deterministic schedule.
-// (Duplicated here rather than imported from `std/task`, matching the existing executor
-// duplication — `first_ready`/`is_live` are private copies in both files.)
-
-// A fresh channel of logical capacity `cap`: bounded (`cap > 0`) is a fixed ring of
-// `cap` slots; unbounded (`cap == 0`) is a 1-slot ring that grows amortized. The
-// pre-filled slots are erased Int sentinels, never delivered.
-fn ring_new(cap: Int) -> (List(__Msg), Int, Int, Int):
-    let physcap = if cap > 0: cap else: 1
-    (list.repeat(__erase(0), physcap), 0, 0, cap)
-
-// Grow a physically-full ring: relayout its `count` live messages to the front of a
-// doubled buffer (FIFO preserved), append `msg`, return the new `(buf, head, count, cap)`.
-fn ring_grow(buf: List(__Msg), head: Int, count: Int, msg: __Msg, cap: Int) -> (List(__Msg), Int, Int, Int):
-    let physcap = list.length(buf)
-    let newcap = if physcap == 0: 1 else: physcap * 2
-    var nb = list.repeat(msg, newcap)
-    var k = 0
-    while k < count:
-        nb = list.set_at(nb, k, list.at(buf, (head + k) % physcap))
-        k = k + 1
-    nb = list.set_at(nb, count, msg)
-    (nb, 0, count + 1, cap)
-
-fn first_ready(k: Int, chs: List(Int), channels: List((List(__Msg), Int, Int, Int))) -> Option((Int, Int)):
-    if k >= list.length(chs):
-        None
-    else:
-        let ch = list.at(chs, k)
-        let (_buf, _head, count, _cap) = list.at(channels, ch)
-        if count > 0:
-            Some((k, ch))
-        else:
-            first_ready(k + 1, chs, channels)
-
-// Drive `root` (and everything it spawns) to completion on a deterministic
-// round-robin schedule. An async `main` lowers to a single `run` of its body.
+// Drive `root` through the canonical `std/task` executor. `chan` keeps this
+// facade for channel-centric programs, but scheduling has a single implementation.
 pub fn run(root: Task(Nil)):
-    // (RFC-0036 Design B) The scheduler OWNS its state: `slots` and `channels` are
-    // confined-unique local `var` accumulators, mutated in place with self-assign
-    // (`slots = list.set_at(slots, …)` / `list.push(…)`). Every effect is inlined
-    // here so each mutation lands on these locals — never on a borrowed param rebuilt
-    // through a tuple return — which is the shape the uniqueness + reclamation
-    // machinery reclaims per step, so the heap high-water stays flat as messages flow
-    // instead of growing per message. The schedule is unchanged and thus byte-identical
-    // on both backends: each round steps slots `0..n` with `n` fixed at the round's
-    // start (so a freshly `Fork`ed slot first runs next round), progress is the OR of
-    // the round's steps, and a quiescent round with live parked tasks runs the close
-    // pass (closed receivers get `None`; blocked senders/joiners are released).
-    var slots = [Active(root)]
-    var channels = []
-    var go = true
-    while go:
-        let n = list.length(slots)
-        var prog = false
-        var i = 0
-        while i < n:
-            match list.at(slots, i):
-                Ended -> unit()
-                WaitRecv(ch, cont) ->
-                    let (buf, head, count, cap) = list.at(channels, ch)
-                    if count > 0:
-                        let msg = list.at(buf, head)
-                        let physcap = list.length(buf)
-                        channels = list.set_at(channels, ch, (buf, (head + 1) % physcap, count - 1, cap))
-                        slots = list.set_at(slots, i, Active(cont(Some(msg))))
-                        prog = true
-                    else:
-                        unit()
-                WaitSend(ch, msg, cont) ->
-                    let (buf, head, count, cap) = list.at(channels, ch)
-                    if cap == 0 || count < cap:
-                        let physcap = list.length(buf)
-                        if count < physcap:
-                            channels = list.set_at(channels, ch, (list.set_at(buf, (head + count) % physcap, msg), head, count + 1, cap))
-                        else:
-                            channels = list.set_at(channels, ch, ring_grow(buf, head, count, msg, cap))
-                        slots = list.set_at(slots, i, Active(cont(unit())))
-                        prog = true
-                    else:
-                        unit()
-                WaitAny(chs, cont) ->
-                    match first_ready(0, chs, channels):
-                        Some(hit) ->
-                            let (k, ch) = hit
-                            let (buf, head, count, cap) = list.at(channels, ch)
-                            let msg = list.at(buf, head)
-                            let physcap = list.length(buf)
-                            channels = list.set_at(channels, ch, (buf, (head + 1) % physcap, count - 1, cap))
-                            slots = list.set_at(slots, i, Active(cont(Some((k, msg)))))
-                            prog = true
-                        None -> unit()
-                WaitJoin(t, cont) ->
-                    match list.at(slots, t):
-                        Ended ->
-                            slots = list.set_at(slots, i, Active(cont(unit())))
-                            prog = true
-                        _ -> unit()
-                Active(task) ->
-                    match poll(task):
-                        Done(_v) ->
-                            slots = list.set_at(slots, i, Ended)
-                            prog = true
-                        Yield(t2) ->
-                            slots = list.set_at(slots, i, Active(t2))
-                            prog = true
-                        Fork(child, cont) ->
-                            let new_id = list.length(slots)
-                            slots = list.push(slots, Active(child))
-                            slots = list.set_at(slots, i, Active(cont(new_id)))
-                            prog = true
-                        Open(cap, cont) ->
-                            let cid = list.length(channels)
-                            slots = list.set_at(slots, i, Active(cont(cid)))
-                            channels = list.push(channels, ring_new(cap))
-                            prog = true
-                        Push(ch, msg, cont) ->
-                            let (buf, head, count, cap) = list.at(channels, ch)
-                            if cap == 0 || count < cap:
-                                let physcap = list.length(buf)
-                                if count < physcap:
-                                    channels = list.set_at(channels, ch, (list.set_at(buf, (head + count) % physcap, msg), head, count + 1, cap))
-                                else:
-                                    channels = list.set_at(channels, ch, ring_grow(buf, head, count, msg, cap))
-                                slots = list.set_at(slots, i, Active(cont(unit())))
-                                prog = true
-                            else:
-                                slots = list.set_at(slots, i, WaitSend(ch, msg, cont))
-                        Pull(ch, cont) ->
-                            let (buf, head, count, cap) = list.at(channels, ch)
-                            if count > 0:
-                                let msg = list.at(buf, head)
-                                let physcap = list.length(buf)
-                                channels = list.set_at(channels, ch, (buf, (head + 1) % physcap, count - 1, cap))
-                                slots = list.set_at(slots, i, Active(cont(Some(msg))))
-                                prog = true
-                            else:
-                                slots = list.set_at(slots, i, WaitRecv(ch, cont))
-                        PullAny(chs, cont) ->
-                            match first_ready(0, chs, channels):
-                                Some(hit) ->
-                                    let (k, ch) = hit
-                                    let (buf, head, count, cap) = list.at(channels, ch)
-                                    let msg = list.at(buf, head)
-                                    let physcap = list.length(buf)
-                                    channels = list.set_at(channels, ch, (buf, (head + 1) % physcap, count - 1, cap))
-                                    slots = list.set_at(slots, i, Active(cont(Some((k, msg)))))
-                                    prog = true
-                                None -> slots = list.set_at(slots, i, WaitAny(chs, cont))
-                        Wait(t, cont) ->
-                            if let Ended = list.at(slots, t):
-                                slots = list.set_at(slots, i, Active(cont(unit())))
-                                prog = true
-                            else:
-                                slots = list.set_at(slots, i, WaitJoin(t, cont))
-                        Cancel(target, cont) ->
-                            slots = list.set_at(slots, target, Ended)
-                            slots = list.set_at(slots, i, Active(cont(unit())))
-                            prog = true
-            i = i + 1
-        if prog:
-            go = list.any(slots, fn(s): is_live(s))
-        else if list.any(slots, fn(s): is_parked(s)):
-            let m = list.length(slots)
-            var j = 0
-            while j < m:
-                match list.at(slots, j):
-                    WaitRecv(_ch, cont) -> slots = list.set_at(slots, j, Active(cont(None)))
-                    WaitSend(ch, msg, cont) ->
-                        let (buf, head, count, cap) = list.at(channels, ch)
-                        slots = list.set_at(slots, j, Active(cont(unit())))
-                        let physcap = list.length(buf)
-                        if count < physcap:
-                            channels = list.set_at(channels, ch, (list.set_at(buf, (head + count) % physcap, msg), head, count + 1, cap))
-                        else:
-                            channels = list.set_at(channels, ch, ring_grow(buf, head, count, msg, cap))
-                    WaitAny(_chs, cont) -> slots = list.set_at(slots, j, Active(cont(None)))
-                    WaitJoin(_t, cont) -> slots = list.set_at(slots, j, Active(cont(unit())))
-                    _ -> unit()
-
-                j = j + 1
-            go = true
-        else:
-            go = false
+    task.run(root)
