@@ -1210,21 +1210,24 @@ fn check_trait_names(module: &Module) -> Result<(), TypeError> {
         name.rsplit('.').next().unwrap_or(name)
     }
 
-    let mut known: HashSet<&str> = HashSet::new();
-    known.extend(AMBIENT_TRAIT_NAMES.iter().copied());
+    let mut arities: HashMap<&str, usize> = HashMap::new();
+    arities.extend(AMBIENT_TRAIT_NAMES.iter().copied().map(|name| (name, 0)));
     for item in &module.items {
         if let Item::Trait(tr) = item {
-            known.insert(tr.name.as_str());
-            known.insert(bare(&tr.name));
+            arities.insert(tr.name.as_str(), tr.typarams.len());
+            arities.insert(bare(&tr.name), tr.typarams.len());
         }
     }
 
-    let known_trait = |name: &str| known.contains(name) || known.contains(bare(name));
-    let unknown = |trait_name: &str, context: String| -> Result<(), TypeError> {
-        if known_trait(trait_name) {
-            Ok(())
-        } else {
-            terr(format!("unknown trait `{}` in {context}", bare(trait_name)))
+    let trait_arity = |name: &str| arities.get(name).or_else(|| arities.get(bare(name))).copied();
+    let validate_trait_use = |trait_name: &str, arg_count: usize, context: String| -> Result<(), TypeError> {
+        match trait_arity(trait_name) {
+            Some(expected) if expected == arg_count => Ok(()),
+            Some(expected) => terr(format!(
+                "trait `{}` expects {expected} type argument(s) but got {arg_count} in {context}",
+                bare(trait_name)
+            )),
+            None => terr(format!("unknown trait `{}` in {context}", bare(trait_name))),
         }
     };
 
@@ -1232,43 +1235,48 @@ fn check_trait_names(module: &Module) -> Result<(), TypeError> {
         match item {
             Item::Trait(tr) => {
                 for supertrait in &tr.supertraits {
-                    unknown(
+                    validate_trait_use(
                         supertrait,
+                        0,
                         format!("trait `{}` supertrait list", bare(&tr.name)),
                     )?;
                 }
             }
             Item::Impl(im) => {
                 if let Some(trait_name) = &im.trait_name {
-                    unknown(
+                    validate_trait_use(
                         trait_name,
+                        im.trait_args.len(),
                         format!("impl head for `{}`", bare(&im.type_name)),
                     )?;
                 }
-                for (_, trait_name, _) in &im.bounds {
-                    unknown(
+                for (_, trait_name, trait_args) in &im.bounds {
+                    validate_trait_use(
                         trait_name,
+                        trait_args.len(),
                         format!("impl `{}` where clause", bare(&im.type_name)),
                     )?;
                 }
                 for method in &im.methods {
-                    for (_, trait_name, _) in &method.bounds {
-                        unknown(
+                    for (_, trait_name, trait_args) in &method.bounds {
+                        validate_trait_use(
                             trait_name,
+                            trait_args.len(),
                             format!("method `{}` where clause", bare(&method.name)),
                         )?;
                     }
                 }
             }
             Item::Function(f) => {
-                for (var, trait_name, _) in &f.bounds {
+                for (var, trait_name, trait_args) in &f.bounds {
                     let bound_kind = if var.starts_with("impltrait_") {
                         "impl-trait parameter"
                     } else {
                         "where clause"
                     };
-                    unknown(
+                    validate_trait_use(
                         trait_name,
+                        trait_args.len(),
                         format!("{bound_kind} of function `{}`", bare(&f.name)),
                     )?;
                 }

@@ -262,6 +262,61 @@
     }
 
     #[test]
+    fn trait_type_argument_arity_is_checked() {
+        let impl_missing = check_str(
+            "trait From(a):\n    fn from(x: a) -> Self\n\ntype Celsius:\n    Celsius(Int)\n\nimpl From for Celsius:\n    fn from(i: Int) -> Celsius:\n        Celsius(i)\n",
+        )
+        .unwrap_err();
+        assert!(
+            impl_missing.contains("trait `From` expects 1 type argument(s) but got 0")
+                && impl_missing.contains("impl head for `Celsius`"),
+            "{impl_missing}"
+        );
+
+        let impl_extra = check_str(
+            "trait From(a):\n    fn from(x: a) -> Self\n\ntype Celsius:\n    Celsius(Int)\n\nimpl From(Int, String) for Celsius:\n    fn from(i: Int) -> Celsius:\n        Celsius(i)\n",
+        )
+        .unwrap_err();
+        assert!(
+            impl_extra.contains("trait `From` expects 1 type argument(s) but got 2")
+                && impl_extra.contains("impl head for `Celsius`"),
+            "{impl_extra}"
+        );
+
+        let where_missing =
+            check_str("trait From(a):\n    fn from(x: a) -> Self\n\nfn f(x: a) -> Int where a: From:\n    0\n")
+                .unwrap_err();
+        assert!(
+            where_missing.contains("trait `From` expects 1 type argument(s) but got 0")
+                && where_missing.contains("where clause of function `f`"),
+            "{where_missing}"
+        );
+
+        let where_extra = check_str(
+            "trait From(a):\n    fn from(x: a) -> Self\n\nfn f(x: a) -> Int where a: From(Int, String):\n    0\n",
+        )
+        .unwrap_err();
+        assert!(
+            where_extra.contains("trait `From` expects 1 type argument(s) but got 2")
+                && where_extra.contains("where clause of function `f`"),
+            "{where_extra}"
+        );
+
+        let impl_trait = check_str("trait From(a):\n    fn from(x: a) -> Self\n\nfn f(x: impl From) -> Int:\n    0\n")
+            .unwrap_err();
+        assert!(
+            impl_trait.contains("trait `From` expects 1 type argument(s) but got 0")
+                && impl_trait.contains("impl-trait parameter of function `f`"),
+            "{impl_trait}"
+        );
+
+        check_str(
+            "trait From(a):\n    fn from(x: a) -> Self\n\ntype Celsius:\n    Celsius(Int)\n\nimpl From(Int) for Celsius:\n    fn from(i: Int) -> Celsius:\n        Celsius(i)\n\nfn f(x: a) -> Int where a: From(Int):\n    0\n",
+        )
+        .expect("matching trait type-argument arity passes");
+    }
+
+    #[test]
     fn trait_impls_must_match_trait_methods() {
         let misspelled = check_str(
             "type R:\n    R(Int)\ntrait PartialLike:\n    fn partial_compare(self, other: Self) -> Option(Int)\nimpl PartialLike for R:\n    fn partial_cmp(self, other: R) -> Option(Int):\n        Some(1)\nfn main(console: Console):\n    print(console, \"ok\")\n",
