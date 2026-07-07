@@ -38,6 +38,10 @@ fn mangle(trait_name: Option<&str>, type_name: &str, method: &str) -> String {
     }
 }
 
+fn static_bound_marker(receiver: &str, method: &str) -> String {
+    format!("__trait_static__{receiver}__{method}")
+}
+
 /// Build the ordinary function a (possibly defaulted) method lowers to.
 /// `Self` in any annotation refers to the implementing type (so a trait can
 /// write `fn eq(self, other: Self) -> Bool`), and an unannotated receiver
@@ -1552,6 +1556,13 @@ impl Ctx<'_> {
                     tn.as_deref().is_none_or(|n| n.chars().next().is_some_and(char::is_lowercase) && !n.contains('.'));
                 if self.trait_methods.contains_key(method.as_str()) && receiver_is_generic {
                     let mut call_args = if self.static_trait_methods.contains(method.as_str()) {
+                        if let Expr::Var(receiver_name) = receiver.as_ref() {
+                            *e = Expr::Call {
+                                name: static_bound_marker(receiver_name, method),
+                                args: std::mem::take(args),
+                            };
+                            return;
+                        }
                         Vec::new()
                     } else {
                         vec![std::mem::replace(receiver.as_mut(), Expr::Bool(false))]
@@ -3441,7 +3452,8 @@ impl Mono<'_> {
                     || self.known_fns.contains(&mangled)
                     || self.templates.contains_key(&mangled)
                 {
-                    renames.insert((head.clone(), method.clone()), target);
+                    renames.insert((head.clone(), method.clone()), target.clone());
+                    renames.insert((head.clone(), static_bound_marker(bvar, method)), target);
                 }
             }
         }

@@ -334,6 +334,20 @@
     }
 
     #[test]
+    fn static_trait_methods_on_distinct_bounds_keep_receiver_identity() {
+        check_str(
+            "trait Named:\n    fn tag() -> String\n\
+             type A:\n    A\n\
+             type B:\n    B\n\
+             impl Named for A:\n    fn tag() -> String:\n        \"A\"\n\
+             impl Named for B:\n    fn tag() -> String:\n        \"B\"\n\
+             fn pair_tags(x: a, y: b) -> String where a: Named, b: Named:\n    \"${a.tag()} ${b.tag()}\"\n\
+             fn main(console: Console):\n    print(console, pair_tags(A, B))\n",
+        )
+        .expect("static trait methods dispatch through the bound variable, not the method name");
+    }
+
+    #[test]
     fn build_entrypoint_takes_only_build_capabilities() {
         // A valid build step: build caps only.
         check_str("fn build(out: BuildOut, schema: BuildRead):\n    write_out(out, \"x.witchy\", read_build(schema, \"a.proto\"))\n")
