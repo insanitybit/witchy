@@ -3184,6 +3184,15 @@ impl Checker {
                 Ok(ret)
             }
             Expr::Ctor { name, args } => {
+                if name == "Nil" {
+                    if !args.is_empty() {
+                        return terr(format!(
+                            "constructor `{name}` takes 0 field(s) but got {}",
+                            args.len()
+                        ));
+                    }
+                    return Ok(Ty::Nil);
+                }
                 if let Some((fields, result)) = self.ctor_sigs.get(name).cloned() {
                     let typarams = self.ctor_typarams.get(name).cloned().unwrap_or_default();
                     let (fields, result) = self.instantiate(&fields, &result, &typarams);

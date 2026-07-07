@@ -912,6 +912,45 @@
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: Nil reflection");
     }
 
+    /// (BUG-214) `Nil` is the language's unit value, so every backend must accept
+    /// it anywhere a `Nil` expression is expected instead of treating it as an
+    /// unknown nullary constructor that the compiled backend cannot lower.
+    #[test]
+    fn bare_nil_expression_compiles_on_both_backends() {
+        let cases = [
+            (
+                "tail",
+                "fn unit() -> Nil:\n    Nil\n\nfn main(console: Console):\n    unit()\n    print(console, \"tail\")\n",
+                ["tail"],
+            ),
+            (
+                "statement",
+                "fn main(console: Console):\n    Nil\n    print(console, \"statement\")\n",
+                ["statement"],
+            ),
+            (
+                "match arm",
+                "fn unit(n: Int) -> Nil:\n    match n:\n        0 -> Nil\n        _ -> Nil\n\nfn main(console: Console):\n    unit(0)\n    unit(1)\n    print(console, \"match\")\n",
+                ["match"],
+            ),
+            (
+                "let binding",
+                "fn unit() -> Nil:\n    Nil\n\nfn main(console: Console):\n    let x = unit()\n    print(console, \"let\")\n",
+                ["let"],
+            ),
+        ];
+
+        for (label, src, expected) in cases {
+            assert_eq!(link_run(src), expected, "interp: {label}");
+            assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: {label}");
+        }
+
+        assert!(
+            typeck::check_str("fn main(console: Console):\n    Nil(1)\n").is_err(),
+            "Nil has no constructor fields"
+        );
+    }
+
     /// (BUG-240, parity) `math.abs(Int.MIN)` has no positive `Int`, so both backends
     /// must ABORT rather than silently wrap back to the negative `Int.MIN`. Ordinary
     /// magnitudes still agree. (Was a stable wrong answer: `-Int.MIN == Int.MIN`.)

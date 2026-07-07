@@ -4611,6 +4611,9 @@ impl Codegen {
             Expr::List(items) => return self.lower_aggregate(items.len() as i32, items, 0),
             Expr::Tuple(items) => return self.lower_aggregate(0, items, 0),
             Expr::Ctor { name, args } => {
+                if name == "Nil" && args.is_empty() {
+                    return Some(W::ConstI32(0));
+                }
                 let &(tag, nfields) = self.ctors.get(name)?;
                 if nfields != args.len() {
                     return None; // arity mismatch → legacy emits the loud error
