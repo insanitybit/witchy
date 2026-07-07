@@ -92,9 +92,10 @@ fn and_then_step(s: Step(a), k: fn(a) -> Task(b)) -> Step(b):
 pub fn map(t: Task(a), f: fn(a) -> b) -> Task(b):
     and_then(t, fn(x): Task(fn(): Done(f(x))))
 
-// Build the task `thunk()` lazily: nothing runs until the first poll. This is what
-// makes an `async fn` LAZY — calling it yields a task that does no work until
-// driven (by `run`, or by being `spawn`ed, or `await`ed).
+// Build the task `thunk()` lazily: nothing runs until this task is polled. A
+// `Task` is a replayable execution recipe, not a memo cell; the standard driver
+// advances through continuations, but driving the same task value again reruns
+// its thunk.
 pub fn lazy(thunk: fn() -> Task(a)) -> Task(a):
     Task(fn(): poll(thunk()))
 

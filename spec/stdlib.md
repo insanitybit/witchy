@@ -106,7 +106,7 @@ Transform a task's result.
 
 #### `fn lazy(thunk: fn() -> Task(a)) -> Task(a)`
 
-Build the task `thunk()` lazily: nothing runs until the first poll. This is what makes an `async fn` LAZY — calling it yields a task that does no work until driven (by `run`, or by being `spawn`ed, or `await`ed).
+Build the task `thunk()` lazily: nothing runs until this task is polled. A `Task` is a replayable execution recipe, not a memo cell; the standard driver advances through continuations, but driving the same task value again reruns its thunk.
 
 #### `fn for_each(xs: List(a), f: fn(a) -> Task(Nil)) -> Task(Nil)`
 
@@ -677,11 +677,11 @@ Transform the result of a future.
 
 #### `fn defer(thunk: fn() -> a) -> Future(a)`
 
-Run `thunk` at POLL time and complete with its result. Unlike `ready`, which captures an already-computed value, `defer` delays the work (and any effects in it) until the executor polls — so effects from concurrent tasks interleave in scheduling order instead of all firing when the task is built.
+Run `thunk` at poll time and complete with its result. Unlike `ready`, which captures an already-computed value, `defer` delays the work (and any effects in it) until this future is polled. A `Future` is a replayable execution recipe, not a memo cell: polling the same `defer` value again reruns `thunk`.
 
 #### `fn lazy(thunk: fn() -> Future(a)) -> Future(a)`
 
-Build the future `thunk()` lazily: nothing runs until the first poll, and then exactly once (the executor advances to that future's own continuation, never back through `lazy`). This is what makes an `async fn` LAZY — calling it yields a future that does no work, not even its pre-`await` statements, until driven.
+Build the future `thunk()` lazily: nothing runs until this future is polled. The usual drivers replace a `More` result with its continuation, so a normal drive path enters the lazy wrapper once. The value itself is not consumed or memoized, though: polling the same `Future` value again reruns `thunk`.
 
 #### `fn ready_unit() -> Future(Nil)`
 
@@ -2518,7 +2518,7 @@ Transform a task's result.
 
 #### `fn lazy(thunk: fn() -> Task(a)) -> Task(a)`
 
-Build the task `thunk()` lazily: nothing runs until the first poll. This is what makes an `async fn` LAZY — calling it yields a task that does no work until driven (by `run`, or by being `spawn`ed, or `await`ed).
+Build the task `thunk()` lazily: nothing runs until this task is polled. A `Task` is a replayable execution recipe, not a memo cell; the standard driver advances through continuations, but driving the same task value again reruns its thunk.
 
 #### `fn for_each(xs: List(a), f: fn(a) -> Task(Nil)) -> Task(Nil)`
 

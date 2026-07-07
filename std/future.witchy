@@ -54,17 +54,17 @@ fn and_then_step(p: Poll(a), k: fn(a) -> Future(b)) -> Poll(b):
 pub fn map(f: Future(a), g: fn(a) -> b) -> Future(b):
     and_then(f, fn(x): ready(g(x)))
 
-// Run `thunk` at POLL time and complete with its result. Unlike `ready`, which
+// Run `thunk` at poll time and complete with its result. Unlike `ready`, which
 // captures an already-computed value, `defer` delays the work (and any effects in
-// it) until the executor polls — so effects from concurrent tasks interleave in
-// scheduling order instead of all firing when the task is built.
+// it) until this future is polled. A `Future` is a replayable execution recipe,
+// not a memo cell: polling the same `defer` value again reruns `thunk`.
 pub fn defer(thunk: fn() -> a) -> Future(a):
     Future(fn(): Done(thunk()))
 
-// Build the future `thunk()` lazily: nothing runs until the first poll, and then
-// exactly once (the executor advances to that future's own continuation, never
-// back through `lazy`). This is what makes an `async fn` LAZY — calling it yields
-// a future that does no work, not even its pre-`await` statements, until driven.
+// Build the future `thunk()` lazily: nothing runs until this future is polled.
+// The usual drivers replace a `More` result with its continuation, so a normal
+// drive path enters the lazy wrapper once. The value itself is not consumed or
+// memoized, though: polling the same `Future` value again reruns `thunk`.
 pub fn lazy(thunk: fn() -> Future(a)) -> Future(a):
     Future(fn(): poll(thunk()))
 
