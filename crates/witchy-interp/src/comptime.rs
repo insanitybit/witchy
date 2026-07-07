@@ -49,16 +49,6 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
     if blocks.is_empty() {
         return Ok(());
     }
-    // The module's type structures, exposed to every block as `module_types`
-    // (the comptime `typeInfo` primitive). Built once from the module's types.
-    let type_infos: Vec<Expr> = module
-        .items
-        .iter()
-        .filter_map(|it| match it {
-            Item::Type(t) => Some(witchy_syntax::reflect::type_info_expr(t)),
-            _ => None,
-        })
-        .collect();
     for (mut body, block_line) in blocks {
         // The block becomes `fn main(console: Console)` of a synthetic
         // program carrying the enclosing module's imports. `emit(line)` is
@@ -99,15 +89,17 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
         } else {
             body.lines.push(0);
         }
-        // Expose the module's type structures to the block as `module_types`
-        // (the comptime `typeInfo` reflection primitive).
+        // Expose the module's current type structures to the block as
+        // `module_types` (the comptime `typeInfo` reflection primitive).
+        // Rebuild this per block so later generators see types emitted by
+        // earlier generators in the same module.
         body.stmts.insert(
             0,
             Stmt::Let {
                 ty: None,
                 name: "module_types".into(),
                 mutable: false,
-                value: Expr::List(type_infos.clone()),
+                value: Expr::List(module_type_infos(module)),
             },
         );
         if let Some(first) = body.lines.first().copied() {
@@ -211,6 +203,17 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn module_type_infos(module: &Module) -> Vec<Expr> {
+    module
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            Item::Type(t) => Some(witchy_syntax::reflect::type_info_expr(t)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Re-stamp every source line an item carries to `line`. See the call site: the
@@ -360,4 +363,44 @@ pub fn expand_compile_time(
 ) -> Result<(), String> {
     expand(name, module)?;
     crate::tagged::expand(name, module, siblings)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn module_types_include_types_emitted_by_earlier_comptime_blocks() {
+        let src = r#"
+comptime:
+    emit("type Generated:")
+    emit("    value: Int")
+
+type Handwritten:
+    value: Int
+
+comptime:
+    var saw_generated = false
+    var saw_handwritten = false
+    for t in module_types:
+        if t.name == "Generated":
+            saw_generated = true
+        if t.name == "Handwritten":
+            saw_handwritten = true
+    emit("fn saw_generated() -> Bool:")
+    emit("    " + __render(saw_generated))
+    emit("fn saw_handwritten() -> Bool:")
+    emit("    " + __render(saw_handwritten))
+
+fn main(console: Console):
+    print(console, __render(saw_generated()))
+    print(console, __render(saw_handwritten()))
+    let g = Generated(value: 7)
+    print(console, __render(g.value))
+"#;
+
+        let module = witchy_syntax::parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
+        witchy_types::typeck::check(&linked).expect("typecheck");
+        let out = crate::interpreter::run_module(linked, ".", Vec::new()).expect("run");
+        assert_eq!(out, ["true", "true", "7"]);
+    }
 }
