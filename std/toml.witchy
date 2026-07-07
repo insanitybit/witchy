@@ -8,6 +8,9 @@
 // primitive yet.)
 
 import string
+import show
+import error
+import convert
 
 // A decoded TOML value (`toml.decode`), the structured counterpart of the
 // string-query API below. A document decodes to a `TomlTable`. Floats, dates, and
@@ -20,13 +23,33 @@ type Toml:
     TomlArray(List(Toml))
     TomlTable(List((String, Toml)))
 
+type TomlDecodeError:
+    message: String
+
+pub fn decode_error_message(e: TomlDecodeError) -> String:
+    match e:
+        TomlDecodeError(message) -> message
+
+impl Show for TomlDecodeError:
+    fn show(self) -> String:
+        decode_error_message(self)
+
+impl Error for TomlDecodeError
+
+impl From(TomlDecodeError) for String:
+    fn from(value: TomlDecodeError) -> Self:
+        decode_error_message(value)
+
+fn decode_error(message: String) -> TomlDecodeError:
+    TomlDecodeError(message)
+
 // Parse a whole TOML document into a `Toml` tree (always a `TomlTable`).
 // Supports top-level keys, `[section]` and dotted `[a.b]` tables, `#` comments,
 // and `string`/`int`/`bool`/array values. Genuinely fallible (RFC-0044 rule 2):
 // a non-blank, non-comment line that is neither a `[section]` header nor a
 // `key = value` pair is structurally malformed, so decoding returns `Err`
-// naming the offending line. The `Result` shape mirrors `json.decode`.
-pub fn decode(text: String) -> Result(Toml, String):
+// naming the offending line.
+pub fn decode(text: String) -> Result(Toml, TomlDecodeError):
     var root = TomlTable([])
     var section = []
     var aot = ""
@@ -46,7 +69,7 @@ pub fn decode(text: String) -> Result(Toml, String):
             let path = header_path(header_name(t))
             let id = list.join(path, ".")
             if list.contains(seen_tables, id):
-                return Err("duplicate TOML table `[" + id + "]`")
+                return Err(decode_error("duplicate TOML table `[" + id + "]`"))
             seen_tables = list.push(seen_tables, id)
             section = path
             in_aot = false
@@ -58,16 +81,16 @@ pub fn decode(text: String) -> Result(Toml, String):
                     if in_aot:
                         let id = "A" + "${aot_seq}" + "\n" + k
                         if list.contains(seen_keys, id):
-                            return Err("duplicate key `" + k + "` in `[[" + aot + "]]`")
+                            return Err(decode_error("duplicate key `" + k + "` in `[[" + aot + "]]`"))
                         seen_keys = list.push(seen_keys, id)
                         root = insert_into_last_aot(root, aot, k, value)
                     else:
                         let id = "S" + list.join(section, ".") + "\n" + k
                         if list.contains(seen_keys, id):
-                            return Err("duplicate key `" + k + "` in TOML")
+                            return Err(decode_error("duplicate key `" + k + "` in TOML"))
                         seen_keys = list.push(seen_keys, id)
                         root = insert_kv(root, section, k, value)
-                None -> return Err("`" + t + "` is not a TOML line (expected `key = value`, a `[section]` header, or a `#` comment)")
+                None -> return Err(decode_error("`" + t + "` is not a TOML line (expected `key = value`, a `[section]` header, or a `#` comment)"))
     Ok(root)
 
 // Append a fresh empty table to the array-of-tables at `key` (creating the array
@@ -123,16 +146,16 @@ fn header_path(name: String) -> List(String):
 // Type a raw value string into a Toml leaf, or `Err` when the value is malformed
 // — an opening `"` with no closing `"`, or an opening `[` with no closing `]`
 // (a truncated line the old lenient parser silently accepted).
-fn parse_value(raw: String) -> Result(Toml, String):
+fn parse_value(raw: String) -> Result(Toml, TomlDecodeError):
     let v = string.trim(raw)
     if string.starts_with(v, "\""):
         if has_closing_quote(v):
             Ok(TomlString(unquote(v)))
         else:
-            Err("unterminated string in TOML value `" + v + "`")
+            Err(decode_error("unterminated string in TOML value `" + v + "`"))
     else if string.starts_with(v, "["):
         if !string.contains(v, "]"):
-            Err("unterminated array in TOML value `" + v + "`")
+            Err(decode_error("unterminated array in TOML value `" + v + "`"))
         else:
             var elems = []
             for e in parse_array(v):

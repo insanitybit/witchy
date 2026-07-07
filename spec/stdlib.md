@@ -2666,9 +2666,15 @@ A decoded TOML value (`toml.decode`), the structured counterpart of the string-q
 - `TomlArray(List(Toml))`
 - `TomlTable(List((String, Toml)))`
 
-#### `fn decode(text: String) -> Result(Toml, String)`
+#### `type TomlDecodeError`
 
-Parse a whole TOML document into a `Toml` tree (always a `TomlTable`). Supports top-level keys, `[section]` and dotted `[a.b]` tables, `#` comments, and `string`/`int`/`bool`/array values. Genuinely fallible (RFC-0044 rule 2): a non-blank, non-comment line that is neither a `[section]` header nor a `key = value` pair is structurally malformed, so decoding returns `Err` naming the offending line. The `Result` shape mirrors `json.decode`.
+- `TomlDecodeError { message: String }`
+
+#### `fn decode_error_message(e: TomlDecodeError) -> String`
+
+#### `fn decode(text: String) -> Result(Toml, TomlDecodeError)`
+
+Parse a whole TOML document into a `Toml` tree (always a `TomlTable`). Supports top-level keys, `[section]` and dotted `[a.b]` tables, `#` comments, and `string`/`int`/`bool`/array values. Genuinely fallible (RFC-0044 rule 2): a non-blank, non-comment line that is neither a `[section]` header nor a `key = value` pair is structurally malformed, so decoding returns `Err` naming the offending line.
 
 #### `fn get(text: String, path: String) -> Option(String)`
 

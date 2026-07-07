@@ -29,13 +29,53 @@ use std::collections::{HashMap, HashSet};
 
 use witchy_syntax::ast::*;
 
-/// Mangled name for an impl method: `Trait__Type__method`.
-fn mangle(trait_name: Option<&str>, type_name: &str, method: &str) -> String {
+#[derive(Clone, Debug)]
+struct ImplTraitMethod {
+    trait_args: Vec<Type>,
+    mangled: String,
+}
+
+type TraitImplTable = HashMap<(String, String, String), Vec<ImplTraitMethod>>;
+
+fn mangle_segment(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .collect()
+}
+
+/// Mangled name for an impl method: `Trait__Type__method`, or
+/// `Trait__Arg__Type__method` for parameterized trait impls such as `From(Arg)`.
+fn mangle(trait_name: Option<&str>, trait_args: &[Type], type_name: &str, method: &str) -> String {
     match trait_name {
-        Some(t) => format!("{t}__{type_name}__{method}"),
+        Some(t) if trait_args.is_empty() => format!("{t}__{type_name}__{method}"),
+        Some(t) => {
+            let args = trait_args
+                .iter()
+                .map(|a| mangle_segment(&witchy_syntax::format::type_str(a)))
+                .collect::<Vec<_>>()
+                .join("__");
+            format!("{t}__{args}__{type_name}__{method}")
+        }
         // Inherent method: no trait segment, still dispatched by receiver type.
         None => format!("{type_name}__{method}"),
     }
+}
+
+fn push_trait_impl(
+    table: &mut TraitImplTable,
+    trait_name: &str,
+    trait_args: &[Type],
+    method: &str,
+    type_name: &str,
+    mangled: String,
+) {
+    table
+        .entry((trait_name.to_string(), method.to_string(), type_name.to_string()))
+        .or_default()
+        .push(ImplTraitMethod {
+            trait_args: trait_args.to_vec(),
+            mangled,
+        });
 }
 
 fn static_bound_marker(receiver: &str, method: &str) -> String {
@@ -207,13 +247,9 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
 
     // Trait methods are keyed by (trait, method, receiver type). Inherent methods
     // are a deliberate separate namespace keyed by (method, receiver type).
-    let mut trait_impl_table: HashMap<(String, String, String), String> = HashMap::new();
+    let mut trait_impl_table: TraitImplTable = HashMap::new();
     let mut inherent_impl_table: HashMap<(String, String), String> = HashMap::new();
     let mut inherent_methods: HashSet<String> = HashSet::new();
-    // (trait name, impl head) -> the impl's trait type-arguments
-    // (`impl FromIterator(a) for List(a)` registers ("FromIterator","List")
-    // -> [a]) — the variable map for substitution-directed dispatch.
-    let mut impl_trait_args: HashMap<(String, String), Vec<Type>> = HashMap::new();
     // (type name, method name) -> mangled fn, for self-less impl methods.
     let mut statics: HashMap<(String, String), String> = HashMap::new();
     // (trait name, impl head) present, to check supertrait obligations below.
@@ -224,10 +260,6 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         if let Item::Impl(im) = item {
             if let Some(t) = &im.trait_name {
                 impl_pairs.insert((t.clone(), im.type_name.clone()));
-                if !im.trait_args.is_empty() {
-                    impl_trait_args
-                        .insert((t.clone(), im.type_name.clone()), im.trait_args.clone());
-                }
                 if let Some(methods) = trait_method_list.get(t) {
                     let params = trait_type_params.get(t).map(Vec::as_slice).unwrap_or(&[]);
                     impl_contract_diags.extend(validate_trait_impl(im, methods, params));
@@ -238,10 +270,25 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             // `self` is an INSTANCE method (dispatched on a value); one
             // without is a STATIC, callable only as `Type.name(args)`.
             for method in &im.methods {
-                let mangled = mangle(im.trait_name.as_deref(), &im.type_name, &method.name);
+                let mangled = mangle(
+                    im.trait_name.as_deref(),
+                    &im.trait_args,
+                    &im.type_name,
+                    &method.name,
+                );
                 let is_static =
                     method.params.first().is_none_or(|p| p.name != "self");
                 if is_static {
+                    if let Some(trait_name) = &im.trait_name {
+                        push_trait_impl(
+                            &mut trait_impl_table,
+                            trait_name,
+                            &im.trait_args,
+                            &method.name,
+                            &im.type_name,
+                            mangled.clone(),
+                        );
+                    }
                     statics.insert(
                         (im.type_name.clone(), method.name.clone()),
                         mangled.clone(),
@@ -258,8 +305,12 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                     continue;
                 }
                 if let Some(trait_name) = &im.trait_name {
-                    trait_impl_table.insert(
-                        (trait_name.clone(), method.name.clone(), im.type_name.clone()),
+                    push_trait_impl(
+                        &mut trait_impl_table,
+                        trait_name,
+                        &im.trait_args,
+                        &method.name,
+                        &im.type_name,
                         mangled.clone(),
                     );
                 } else {
@@ -286,9 +337,18 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                             continue;
                         }
                         if let Some(body) = &ms.default {
-                            let mangled = mangle(Some(trait_name), &im.type_name, &ms.name);
-                            trait_impl_table.insert(
-                                (trait_name.clone(), ms.name.clone(), im.type_name.clone()),
+                            let mangled = mangle(
+                                Some(trait_name),
+                                &im.trait_args,
+                                &im.type_name,
+                                &ms.name,
+                            );
+                            push_trait_impl(
+                                &mut trait_impl_table,
+                                trait_name,
+                                &im.trait_args,
+                                &ms.name,
+                                &im.type_name,
                                 mangled.clone(),
                             );
                             generated.push(method_fn(
@@ -528,7 +588,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                 known_fns: &known_fns,
                 trait_methods: &trait_methods,
                 supertraits: &trait_supertraits,
-                impl_trait_args: &impl_trait_args,
+                trait_impl_table: &trait_impl_table,
                 diagnostics: Vec::new(),
                 ctor_results: &ctor_results,
                 ctor_fields: &ctor_fields,
@@ -1016,7 +1076,7 @@ struct Ctx<'a> {
     /// trait -> its transitive supertraits, so a `where a: Ord` bound discharges
     /// the methods of `Eq`/`PartialOrd`/`PartialEq` too.
     supertraits: &'a HashMap<String, Vec<String>>,
-    trait_impl_table: &'a HashMap<(String, String, String), String>,
+    trait_impl_table: &'a TraitImplTable,
     inherent_impl_table: &'a HashMap<(String, String), String>,
     ctor_results: &'a HashMap<String, String>,
     fn_rets: &'a HashMap<String, String>,
@@ -1105,30 +1165,28 @@ impl Ctx<'_> {
     /// — `impl Into(b) for a where b: From(a)` — is registered under a type-variable
     /// head (lowercase); it applies to any receiver, with its `where` bound
     /// discharged at monomorphization.
-    fn lookup_trait_impl(&self, owner: &str, method: &str, tn: &str) -> Option<String> {
+    fn lookup_trait_impls(&self, owner: &str, method: &str, tn: &str) -> Vec<String> {
+        let key = |ty: &str| (owner.to_string(), method.to_string(), ty.to_string());
+        for candidate_key in [key(tn), key(head_of(tn))] {
+            if let Some(candidates) = self.trait_impl_table.get(&candidate_key) {
+                return candidates.iter().map(|c| c.mangled.clone()).collect();
+            }
+        }
+        // A BLANKET impl is registered under a type-VARIABLE head (a bare
+        // lowercase name like `a`). A module-qualified concrete head
+        // (`geometry.Coord`) also starts lowercase but is NOT a variable —
+        // exclude it, or every qualified impl would masquerade as blanket
+        // and a generic receiver would dispatch to an arbitrary one (RFC-0042).
         self.trait_impl_table
-            .get(&(owner.to_string(), method.to_string(), tn.to_string()))
-            .or_else(|| {
-                self.trait_impl_table
-                    .get(&(owner.to_string(), method.to_string(), head_of(tn).to_string()))
+            .iter()
+            .filter(|((tr, m, k), _)| {
+                tr == owner
+                    && m == method
+                    && k.chars().next().is_some_and(char::is_lowercase)
+                    && !k.contains('.')
             })
-            .or_else(|| {
-                // A BLANKET impl is registered under a type-VARIABLE head (a bare
-                // lowercase name like `a`). A module-qualified concrete head
-                // (`geometry.Coord`) also starts lowercase but is NOT a variable —
-                // exclude it, or every qualified impl would masquerade as blanket
-                // and a generic receiver would dispatch to an arbitrary one (RFC-0042).
-                self.trait_impl_table
-                    .iter()
-                    .find(|((tr, m, k), _)| {
-                        tr == owner
-                            && m == method
-                            && k.chars().next().is_some_and(char::is_lowercase)
-                            && !k.contains('.')
-                    })
-                    .map(|(_, v)| v)
-            })
-            .cloned()
+            .flat_map(|(_, candidates)| candidates.iter().map(|c| c.mangled.clone()))
+            .collect()
     }
 
     fn lookup_inherent_impl(&self, method: &str, tn: &str) -> Option<String> {
@@ -1148,7 +1206,10 @@ impl Ctx<'_> {
         let mut matches = Vec::new();
         if let Some(infos) = self.trait_methods.get(method) {
             for info in infos {
-                if let Some(mangled) = self.lookup_trait_impl(&info.owner, method, tn) {
+                if info.is_static {
+                    continue;
+                }
+                for mangled in self.lookup_trait_impls(&info.owner, method, tn) {
                     matches.push((info.owner.clone(), mangled));
                 }
             }
@@ -3449,13 +3510,13 @@ struct Mono<'a> {
     /// when its target actually exists (a missing impl stays a bare call,
     /// which the post-mono pass diagnoses properly).
     known_fns: &'a std::collections::HashSet<String>,
-    /// method name -> owning trait(s), and (trait, impl head) -> the impl's
-    /// trait type-arguments — substitution-directed dispatch for bounds.
+    /// method name -> owning trait(s), and the concrete impl methods available
+    /// for substitution-directed dispatch through bounds.
     trait_methods: &'a HashMap<String, Vec<TraitMethodInfo>>,
     /// trait -> its transitive supertraits, so a `where a: Ord` bound discharges
     /// the methods of `Eq`/`PartialOrd`/`PartialEq` too.
     supertraits: &'a HashMap<String, Vec<String>>,
-    impl_trait_args: &'a HashMap<(String, String), Vec<Type>>,
+    trait_impl_table: &'a TraitImplTable,
     /// Loud failures (an uninferrable bounded call) surfaced as check errors.
     diagnostics: Vec<String>,
     ctor_results: &'a HashMap<String, String>,
@@ -3828,21 +3889,38 @@ impl Mono<'_> {
                     continue;
                 }
                 // The impl that defines this method is registered under its actual
-                // owning trait, so mangle and look up trait-args by `owner`.
-                let impl_vars = self.impl_trait_args.get(&(owner.clone(), head.clone())).cloned();
-                let mangled = format!("{owner}__{head}__{method}");
-                let mut target = mangled.clone();
-                if let (Some(vars), Some(tmpl)) =
-                    (&impl_vars, self.templates.get(&mangled).cloned())
-                {
+                // owning trait. Parameterized traits can have several impls for
+                // the same receiver head (`From(JsonError) for String`,
+                // `From(TomlDecodeError) for String`), so choose the candidate
+                // whose trait arguments match the substituted bound arguments.
+                let mut candidates = self
+                    .trait_impl_table
+                    .get(&(owner.clone(), method.clone(), head.clone()))
+                    .cloned()
+                    .unwrap_or_default();
+                if candidates.is_empty() {
+                    candidates = self
+                        .trait_impl_table
+                        .iter()
+                        .filter(|((tr, m, k), _)| {
+                            tr == owner
+                                && m == method
+                                && k.chars().next().is_some_and(char::is_lowercase)
+                                && !k.contains('.')
+                        })
+                        .flat_map(|(_, methods)| methods.clone())
+                        .collect();
+                }
+                for candidate in candidates {
+                    let mangled = candidate.mangled;
                     // Bind the impl method's own type variables by STRUCTURAL
                     // matching: each impl trait-argument pattern against the
                     // bound's (substituted) concrete argument. Anything that
                     // doesn't bind falls back to the generic impl function.
                     let mut bound_map: HashMap<String, String> = HashMap::new();
-                    let mut ok = vars.len() == btargs.len();
+                    let mut ok = candidate.trait_args.len() == btargs.len();
                     if ok {
-                        for (pat, targ) in vars.iter().zip(btargs) {
+                        for (pat, targ) in candidate.trait_args.iter().zip(btargs) {
                             let concrete = subst_vars(targ, &subst);
                             if !bind_type_vars(pat, &concrete, &mut bound_map) {
                                 ok = false;
@@ -3850,6 +3928,18 @@ impl Mono<'_> {
                             }
                         }
                     }
+                    if !ok {
+                        continue;
+                    }
+
+                    let mut target = mangled.clone();
+                    let Some(tmpl) = self.templates.get(&mangled).cloned() else {
+                        if self.known_fns.contains(&mangled) {
+                            renames.insert((head.clone(), method.clone()), mangled.clone());
+                            renames.insert((head.clone(), static_bound_marker(bvar, method)), mangled);
+                        }
+                        continue;
+                    };
                     if ok {
                         let mut targs_out: Vec<String> = Vec::new();
                         for v in type_var_list(&tmpl) {
@@ -3865,9 +3955,7 @@ impl Mono<'_> {
                             target = self.specialize(&mangled, targs_out);
                         }
                     }
-                }
-                if target == mangled {
-                    if let Some(tmpl) = self.templates.get(&mangled).cloned() {
+                    if target == mangled {
                         if let Some(targs_out) =
                             type_args_from_receiver(&tmpl, concrete)
                                 .filter(|args| !args.is_empty())
@@ -3875,11 +3963,6 @@ impl Mono<'_> {
                             target = self.specialize(&mangled, targs_out);
                         }
                     }
-                }
-                if target != mangled
-                    || self.known_fns.contains(&mangled)
-                    || self.templates.contains_key(&mangled)
-                {
                     if target != mangled {
                         renames.insert((head.clone(), mangled.clone()), target.clone());
                     }

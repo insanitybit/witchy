@@ -6,10 +6,10 @@ created: 2026-07-03
 tracking: >
   Core language slice shipped: std/error defines Error: Show, String implements
   Error, and ? accepts/lowers Result(_, Ein) -> Result(_, Eout) through an
-  ordinary From(Ein) for Eout impl. std/json now exposes json.DecodeError and
-  converts it to String through From at existing application boundaries.
-  Remaining 0.1 work: decide whether any other trust-boundary decoders need
-  typed errors before the release.
+  ordinary From(Ein) for Eout impl. std/json and std/toml now expose typed
+  decode-error values and convert them to String through From at existing
+  application boundaries. Remaining 0.1 work: decide whether any other
+  trust-boundary decoders need typed errors before the release.
 ---
 
 # RFC-0054: Structured errors (design-first)
@@ -223,11 +223,12 @@ typed-error bridge: it turns `None` into `Err(String)`, and the same
 `From(String) for E` rule lets a typed `Result(_, E)` function accept it when the
 library author explicitly provides that conversion.
 
-`std/json.decode` now returns `Result(Json, json.DecodeError)`.
-`json.DecodeError` implements `Show`, `Error`, and `From(DecodeError) for
-String`, so libraries can match the typed error while existing stringly
-application boundaries can keep using `?` or render the message explicitly with
-`json.decode_error_message`.
+`std/json.decode` now returns `Result(Json, json.DecodeError)`, and
+`std/toml.decode` now returns `Result(Toml, toml.TomlDecodeError)`. Both typed
+decode errors implement `Show`, `Error`, and conversion to `String`, so
+libraries can match typed errors while existing stringly application boundaries
+can keep using `?` or render the message explicitly with
+`json.decode_error_message` / `toml.decode_error_message`.
 
 This does not complete the RFC. The remaining release-blocking work is the std
 and core-library migration: json/toml/grant/TUF/webauthn/package-manager trust

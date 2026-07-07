@@ -317,6 +317,23 @@
     }
 
     #[test]
+    fn trait_impl_identity_includes_trait_type_arguments() {
+        check_str(
+            "trait From(a):\n    fn from(x: a) -> Self\n\ntype JsonError:\n    JsonError(String)\n\ntype TomlError:\n    TomlError(String)\n\nimpl From(JsonError) for String:\n    fn from(e: JsonError) -> String:\n        \"json\"\n\nimpl From(TomlError) for String:\n    fn from(e: TomlError) -> String:\n        \"toml\"\n",
+        )
+        .expect("same trait and target with different trait args are distinct impl heads");
+
+        let dup = check_str(
+            "trait From(a):\n    fn from(x: a) -> Self\n\ntype JsonError:\n    JsonError(String)\n\nimpl From(JsonError) for String:\n    fn from(e: JsonError) -> String:\n        \"a\"\n\nimpl From(JsonError) for String:\n    fn from(e: JsonError) -> String:\n        \"b\"\n",
+        )
+        .unwrap_err();
+        assert!(
+            dup.contains("impl `From(JsonError)` for `String` is defined more than once"),
+            "{dup}"
+        );
+    }
+
+    #[test]
     fn trait_impls_must_match_trait_methods() {
         let misspelled = check_str(
             "type R:\n    R(Int)\ntrait PartialLike:\n    fn partial_compare(self, other: Self) -> Option(Int)\nimpl PartialLike for R:\n    fn partial_cmp(self, other: R) -> Option(Int):\n        Some(1)\nfn main(console: Console):\n    print(console, \"ok\")\n",

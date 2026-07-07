@@ -1232,6 +1232,22 @@ fn main(console: Console):
     }
 
     #[test]
+    fn rfc0054_toml_decode_uses_typed_error_and_converts_to_string() {
+        let src = "import json\nimport toml\nfrom toml import Toml\n\nfn via_string() -> Result(Toml, String):\n    let doc = toml.decode(\"not a toml line\")?\n    Ok(doc)\n\nfn main(console: Console):\n    match json.decode(\"1 2\"):\n        Ok(_) -> print(console, \"bad\")\n        Err(e) -> print(console, json.decode_error_message(e))\n    match toml.decode(\"not a toml line\"):\n        Ok(_) -> print(console, \"bad\")\n        Err(e) -> print(console, toml.decode_error_message(e))\n    match via_string():\n        Ok(_) -> print(console, \"bad\")\n        Err(e) -> print(console, e)\n";
+        let expected = [
+            "unexpected trailing content at 2",
+            "`not a toml line` is not a TOML line (expected `key = value`, a `[section]` header, or a `#` comment)",
+            "`not a toml line` is not a TOML line (expected `key = value`, a `[section]` header, or a `#` comment)",
+        ];
+        assert_eq!(link_run(src), expected, "interp: typed toml.TomlDecodeError");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: typed toml.TomlDecodeError",
+        );
+    }
+
+    #[test]
     fn native_compiler_intrinsics_reject_comptime_source_strings() {
         use crate::value::NativeValue;
 
@@ -4037,7 +4053,7 @@ fn main(console: Console):
     let doc = "title = \"demo\"\nport = 8080\nenabled = true\ntags = [\"a\", \"b\"]\n\n[server]\nhost = \"localhost\"\nworkers = 4\n\n[server.tls]\nenabled = false\n"
     match toml.decode(doc):
         Ok(t) -> print(console, "${t}")
-        Err(e) -> print(console, e)
+        Err(e) -> print(console, toml.decode_error_message(e))
 "#;
         let want = vec!["TomlTable([(title, TomlString(demo)), (port, TomlInt(8080)), (enabled, TomlBool(true)), (tags, TomlArray([TomlString(a), TomlString(b)])), (server, TomlTable([(host, TomlString(localhost)), (workers, TomlInt(4)), (tls, TomlTable([(enabled, TomlBool(false))]))]))])".to_string()];
         assert_eq!(link_run(src), want.clone(), "interpreter");
@@ -4055,7 +4071,7 @@ fn main(console: Console):
 fn main(console: Console):
     match toml.decode("title = \"ok\"\nthis line has no equals\n"):
         Ok(_) -> print(console, "unexpected-ok")
-        Err(e) -> print(console, e)
+        Err(e) -> print(console, toml.decode_error_message(e))
 "#;
         let want = vec!["`this line has no equals` is not a TOML line (expected `key = value`, a `[section]` header, or a `#` comment)".to_string()];
         assert_eq!(link_run(src), want.clone(), "interpreter");

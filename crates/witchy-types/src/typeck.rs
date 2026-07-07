@@ -402,6 +402,22 @@ fn check_unique_functions(module: &Module) -> Result<(), TypeError> {
 /// is distinct and only same-module duplicates (a typo or copy-paste) collide.
 fn check_unique_declarations(module: &Module) -> Result<(), TypeError> {
     let bare = |n: &str| n.rsplit('.').next().unwrap_or(n).to_string();
+    let impl_trait_display = |name: &str, args: &[String]| {
+        let base = bare(name);
+        if args.is_empty() {
+            base
+        } else {
+            format!("{base}({})", args.join(", "))
+        }
+    };
+    let impl_target_display = |name: &str, args: &[String]| {
+        let base = bare(name);
+        if args.is_empty() {
+            base
+        } else {
+            format!("{base}({})", args.join(", "))
+        }
+    };
     let check_type_params = |context: String, params: &[String]| -> Result<(), TypeError> {
         let mut seen: HashSet<&str> = HashSet::new();
         for param in params {
@@ -454,17 +470,32 @@ fn check_unique_declarations(module: &Module) -> Result<(), TypeError> {
     // and no duplicate inherent method (same receiver type, same name) across the
     // inherent `impl` blocks of a type.
     let mut inherent: HashSet<(String, String)> = HashSet::new();
-    let mut trait_impls: HashSet<(String, String)> = HashSet::new();
+    let mut trait_impls: HashSet<(String, Vec<String>, String, Vec<String>)> = HashSet::new();
     for item in &module.items {
         match item {
             Item::Impl(im) => {
                 if let Some(trait_name) = &im.trait_name {
-                    if !trait_impls.insert((trait_name.clone(), im.type_name.clone())) {
+                    let trait_args = im
+                        .trait_args
+                        .iter()
+                        .map(witchy_syntax::format::type_str)
+                        .collect::<Vec<_>>();
+                    let target_args = im
+                        .target_args
+                        .iter()
+                        .map(witchy_syntax::format::type_str)
+                        .collect::<Vec<_>>();
+                    if !trait_impls.insert((
+                        trait_name.clone(),
+                        trait_args.clone(),
+                        im.type_name.clone(),
+                        target_args.clone(),
+                    )) {
                         return terr(format!(
                             "impl `{}` for `{}` is defined more than once; \
                              trait impl heads must be unique",
-                            bare(trait_name),
-                            bare(&im.type_name)
+                            impl_trait_display(trait_name, &trait_args),
+                            impl_target_display(&im.type_name, &target_args)
                         ));
                     }
                 }
