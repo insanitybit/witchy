@@ -1610,6 +1610,24 @@ fn main():
     }
 
     #[test]
+    fn rfc0064_row3_var_shapes_are_rejected_in_impl_methods() {
+        // (BUG-436 / RFC-0064 Check 1) Impl methods lower to ordinary functions.
+        // Re-run the same row-3 validation after trait/impl lowering so method
+        // surfaces cannot keep the abolished combined write-back+return channel.
+        let static_method = check_str(
+            "type Box:\n    Box(List(Int))\nimpl Box:\n    fn row3_static(var xs: List(Int), n: Int) -> Int:\n        xs.push(n)\n        n\n",
+        )
+        .unwrap_err();
+        assert!(static_method.contains("write-back channel"), "{static_method}");
+
+        let instance_method = check_str(
+            "type Box:\n    Box(List(Int))\nimpl Box:\n    fn row3_method(self, var xs: List(Int)) -> List(Int):\n        xs.push(1)\n",
+        )
+        .unwrap_err();
+        assert!(instance_method.contains("write-back channel"), "{instance_method}");
+    }
+
+    #[test]
     fn rfc0064_ambiguous_elided_var_receiver_must_annotate() {
         // (RFC-0064 Check 2) A `var` FIRST parameter with an ELIDED return whose
         // inferred tail type equals the receiver's type is ambiguous between a

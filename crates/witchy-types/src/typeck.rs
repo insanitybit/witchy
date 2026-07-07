@@ -702,10 +702,9 @@ fn check_unique_parameters(module: &Module) -> Result<(), TypeError> {
 ///   (b) a `var` FIRST parameter with an UNRELATED (non-`Nil`, non-receiver)
 ///       return — the interpreter-only shape the WASM backend rejects, so this
 ///       also closes a parity divergence.
-/// Scoped to free functions (`Item::Function`): all `var`-receiver code — std
-/// mutators and user procedures — is written as free functions, and an impl
-/// method's implicit `var self` has no source-level type here, so checking it
-/// would false-positive.
+/// Runs before lowering for source-quality diagnostics on free functions, and
+/// again after trait/impl lowering so method bodies cannot bypass the same
+/// declaration-shape contract.
 fn check_var_conventions(module: &Module) -> Result<(), TypeError> {
     for item in &module.items {
         if let Item::Function(f) = item {
@@ -4633,6 +4632,7 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
     match crate::traits::lower_checked(recs.clone()) {
         Ok(lowered) => {
             check_unique_parameters(&lowered)?;
+            check_var_conventions(&lowered)?;
             run_check(&lowered, false).map(|_| ())
         }
         Err(message) => {
