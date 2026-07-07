@@ -259,7 +259,11 @@ fn render(m: Mirror) -> String:
         MNil -> "nil"
         MList(xs) -> "[" + join_rendered(xs) + "]"
         MTuple(xs) -> "(" + join_rendered(xs) + ")"
-        MRecord(name, fields) -> name + " { " + render_fields(fields) + " }"
+        MRecord(name, fields) ->
+            if name == "":
+                "{ " + render_fields(fields) + " }"
+            else:
+                name + " { " + render_fields(fields) + " }"
         MVariant(_tyname, variant, payload) ->
             if list.is_empty(payload):
                 variant

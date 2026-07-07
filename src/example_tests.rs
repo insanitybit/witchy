@@ -1072,6 +1072,22 @@ fn main(console: Console):
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: Ordering protocols");
     }
 
+    /// (BUG-545) A decoded/built `JsonObject` reflects as the JSON object shape,
+    /// not as the `JsonObject(...)` constructor. Its debug rendering should
+    /// therefore look like an object, not like an accidental nameless record with
+    /// a leading space.
+    #[test]
+    fn json_object_debug_renders_as_object_on_both_backends() {
+        let src = "import json\nimport reflect\n\nfn main(console: Console):\n    let obj = json.JsonObject([(\"ok\", json.JsonBool(true)), (\"n\", json.JsonInt(2))])\n    let arr = json.JsonArray([json.JsonInt(1), json.JsonString(\"x\")])\n    print(console, reflect.debug(obj))\n    print(console, reflect.debug(arr))\n    print(console, json.stringify(obj))\n";
+        let expected = [
+            "{ ok: true, n: 2 }",
+            "[1, \"x\"]",
+            "{\"ok\":true,\"n\":2}",
+        ];
+        assert_eq!(link_run(src), expected, "interp: Json debug object shape");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: Json debug object shape");
+    }
+
     /// (RFC-0054) `?` converts typed errors through `From`, so libraries can
     /// expose matchable enum errors without collapsing every layer to `String`.
     #[test]
