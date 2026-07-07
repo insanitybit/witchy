@@ -252,8 +252,9 @@ trait Fetcher:
 
 ## Why this stays deterministic
 
-The executor is ordinary witchy code (see `std/chan`): it owns the channel buffers
-and polls tasks in a fixed round-robin order. No scheduler state lives in the
+The executor is ordinary witchy code (see `std/task`): it owns the channel buffers
+and polls tasks in a fixed round-robin order. `std/chan` is the ergonomic channel
+surface over that task executor. No scheduler state lives in the
 runtime, no operating-system threads are involved, and nothing is shared mutably —
 so the interleaving is identical on both backends. Each channel carries its own
 message type (the executor moves messages erased and every endpoint recovers its

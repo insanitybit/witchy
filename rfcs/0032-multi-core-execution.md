@@ -437,9 +437,9 @@ construction), the **complete constraint ladder**:
   Leak-free, no escaping handle, failures surface at the scope.
 - **Level 3 — escaping tasks:** the pre-existing `chan.spawn` → `Handle` for
   long-lived/background loops.
-- **Cancellation:** a `Cancel` `Step` extension to the cooperative executor (added
-  to BOTH `std/task` and `std/chan`, which duplicate the executor and are kept
-  structurally identical), plus `chan.cancel(handle)` (shallow, idempotent) and
+- **Cancellation:** a `Cancel` `Step` extension to the cooperative executor
+  (`std/task` owns the scheduler; `std/chan` delegates its public surface there),
+  plus `chan.cancel(handle)` (shallow, idempotent) and
   `chan.race(a, b)` — run two tasks, return the first result, cancel the loser; the
   winner of a tie is fixed by the round-robin schedule, so the outcome is
   deterministic and byte-identical on both backends. Build `timeout` by racing

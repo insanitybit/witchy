@@ -165,6 +165,11 @@ chan/task/future. Under 0042's namespaces the duplication should collapse to
 one executor in `task`, re-exported by `chan` — but that consolidation is
 0042's call, not this RFC's.
 
+2026-07-07 update: that consolidation has landed. `std/chan` now imports the
+task substrate, keeps typed channel endpoints and channel combinators, and
+delegates task combinators plus `chan.run` to `std/task`; there is one scheduler
+implementation body.
+
 ## Drawbacks
 
 - **A hole in the type system, however confined.** `__erase`/`__unerase` is a

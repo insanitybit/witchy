@@ -405,8 +405,10 @@ per-task scalar columns and is where the flat DoD lands.
 
 ## Implementation note (2026-07-05) — Increment-2 STEP 1 LANDED: fixed-capacity ring channels; and the CORRECTED finding that the ring is NOT where the leak is
 
-Step 1 of increment 2 — **fixed-capacity ring channels** — is implemented in both
-executor copies (`std/task.witchy`, `std/chan.witchy`). A channel's state changed from
+Step 1 of increment 2 — **fixed-capacity ring channels** — is implemented in the
+executor. Originally that meant both executor copies (`std/task.witchy`,
+`std/chan.witchy`); after the 2026-07-07 dedup, the implementation lives only in
+`std/task` and `std/chan` delegates `run` there. A channel's state changed from
 the growable `(buf, cap)` (mutated by `list.push` on send / `list.tail` on recv) to a
 **fixed-capacity ring** `(buf, head, count, cap)`: `buf` is a physical list of `physcap`
 slots, the `count` live messages are `buf[(head + i) % physcap]` for `i in 0..count` in

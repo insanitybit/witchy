@@ -35,8 +35,8 @@ from task import Task, Step, Handle
 // `Handle` are ONE type each, owned by `std/task` (the executor lives there).
 // `chan` produces the channel effects (`Open`/`Push`/`Pull`) as values of task's
 // `Step`, so a channel `Task` and an `async fn`'s `Task` are the SAME type and
-// interoperate. Previously each module re-declared these identically and the flat
-// namespace merged them; module-scoped types make that reuse explicit.
+// interoperate. The task combinator functions below are facade wrappers over
+// `std/task`, so the implementation body lives in one module.
 // ---- erasure boundary (RFC-0055) ----
 
 // Recover a received `Option(__Msg)` at the endpoint's message type. `__unerase`

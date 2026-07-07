@@ -213,6 +213,13 @@ offered as an alternative was NOT taken: `std/chan` defines its own erased
 `Step`/`Task`/`Slot` and the async lowering selects the executor by import, so sharing
 them would touch the RFC-0055 erasure boundary; Design B was applied to each copy.
 
+2026-07-07 update: the RFC-0042/0070 namespace cleanup has now made that
+deduplication tractable and it has landed. `std/task.witchy` owns the
+`Task`/`Step`/`Slot`/`Handle` types, task combinator implementations,
+ring-buffer helpers, and scheduler loop. `std/chan.witchy` keeps the public
+concurrency/channel spelling (`chan.spawn`, `chan.run`, `chan.gather`,
+`chan.par_map`, etc.) but delegates task combinators and `run` to `std/task`.
+
 Effect (chan_throughput DoD, N=200, rc-floor on): live_cells **26569 → 18608**. The
 per-message ARRAY churn (formerly O(n^2) abandoned copies) is now bounded; the compiled
 benchmark's OOM ceiling moved from ~9k to ~10k messages. The RESIDUAL is a FLAT ~93 live

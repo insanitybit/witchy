@@ -388,10 +388,11 @@ call**. The enforcement is structural, not a runtime permission check:
   interpreter.
 - Memory is capped; a scheduler can preempt a runaway guest at loop back-edges.
 - Concurrency stays *inside* the single VM: `async`/`await`, `spawn`, and
-  channels lower to a cooperative executor written in witchy (`std/task`,
-  `std/chan`), so concurrent tasks share that VM's one linear memory and one
-  capability grant. There is no per-task sandbox boundary — isolating untrusted
-  code means running it as its own sandboxed program, not as a task.
+  channels lower to a cooperative executor written in witchy (`std/task`, with
+  `std/chan` as the channel-facing surface), so concurrent tasks share that VM's
+  one linear memory and one capability grant. There is no per-task sandbox
+  boundary — isolating untrusted code means running it as its own sandboxed
+  program, not as a task.
 
 A bare `witchy program.witchy` (and `witchy run`) compiles the program to
 WebAssembly and executes it under the same wasmtime runtime, granting the
