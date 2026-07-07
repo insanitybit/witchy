@@ -939,6 +939,21 @@ fn main(console: Console):
         );
     }
 
+    /// (RFC-0053, D5) f-strings are not a second rendering mechanism. They lower
+    /// to the same interpolation path, so they honor `Show` for custom values,
+    /// containers, and std domain/scalar display.
+    #[test]
+    fn rfc0053_f_strings_honor_show_on_both_backends() {
+        let src = "import show\nimport duration\n\ntype P:\n    P(Int)\n\nimpl Show for P:\n    fn show(self) -> String:\n        match self:\n            P(n) -> \"P<${n}>\"\n\nfn main(console: Console):\n    print(console, f\"p={P(5)} xs={[P(1), P(2)]} d={90000ms}\")\n";
+        let expected = ["p=P<5> xs=[P<1>, P<2>] d=1m30s"];
+        assert_eq!(link_run(src), expected, "interp: f-strings honor Show");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: f-strings honor Show",
+        );
+    }
+
     /// (RFC-0053, coherence) Generic container `Show` impls are part of the same
     /// rendering model as concrete custom impls. In particular, `Set(Int)` has a
     /// structural fallback (`Set([1, 2])`) but a public display form (`{1, 2}`), so
