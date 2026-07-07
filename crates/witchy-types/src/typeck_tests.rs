@@ -1491,6 +1491,16 @@ fn main():
         // once" error the function namespace already gives.
         let ty = check_str("type T:\n    A\ntype T:\n    B\n").unwrap_err();
         assert!(ty.contains("type `T` is defined more than once"), "{ty}");
+        let type_param = check_str("type Pair(a, a):\n    Pair(a, a)\n").unwrap_err();
+        assert!(
+            type_param.contains("type parameter `a` is declared more than once in type `Pair`"),
+            "{type_param}"
+        );
+        let trait_param = check_str("trait Codec(a, a):\n    fn encode(self) -> String\n").unwrap_err();
+        assert!(
+            trait_param.contains("type parameter `a` is declared more than once in trait `Codec`"),
+            "{trait_param}"
+        );
         let same = check_str("type T:\n    Same(Int)\n    Same(String)\n").unwrap_err();
         assert!(same.contains("constructor `Same`"), "{same}");
         let cross = check_str("type A:\n    Same(Int)\ntype B:\n    Same(String)\n").unwrap_err();

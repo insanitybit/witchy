@@ -402,11 +402,24 @@ fn check_unique_functions(module: &Module) -> Result<(), TypeError> {
 /// is distinct and only same-module duplicates (a typo or copy-paste) collide.
 fn check_unique_declarations(module: &Module) -> Result<(), TypeError> {
     let bare = |n: &str| n.rsplit('.').next().unwrap_or(n).to_string();
+    let check_type_params = |context: String, params: &[String]| -> Result<(), TypeError> {
+        let mut seen: HashSet<&str> = HashSet::new();
+        for param in params {
+            if !seen.insert(param.as_str()) {
+                return terr(format!(
+                    "type parameter `{param}` is declared more than once in {context}; \
+                     type parameter names must be unique"
+                ));
+            }
+        }
+        Ok(())
+    };
     let mut types: HashMap<String, &witchy_syntax::ast::TypeDef> = HashMap::new();
     // Constructor name -> its owning type, so a cross-type duplicate names both.
     let mut ctors: HashMap<String, String> = HashMap::new();
     for item in &module.items {
         let Item::Type(t) = item else { continue };
+        check_type_params(format!("type `{}`", bare(&t.name)), &t.params)?;
         if let Some(prev) = types.insert(t.name.clone(), t) {
             // A structurally-IDENTICAL re-declaration is a harmless shadow — a user
             // module may redefine a prelude-injected type (`Result`/`Option`) with
@@ -468,6 +481,7 @@ fn check_unique_declarations(module: &Module) -> Result<(), TypeError> {
                 }
             }
             Item::Trait(tr) => {
+                check_type_params(format!("trait `{}`", bare(&tr.name)), &tr.typarams)?;
                 let mut here: HashSet<&str> = HashSet::new();
                 for m in &tr.methods {
                     if !here.insert(m.name.as_str()) {
