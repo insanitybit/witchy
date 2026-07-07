@@ -1020,6 +1020,26 @@ fn main(console: Console):
         assert_eq!(run_linked_on_wasm(&[("main", raw)], "main"), raw_expected, "compiled: raw Bytes rendering");
     }
 
+    /// (BUG-530) Tuple values are legal beyond arity four, so the public protocol
+    /// surface must not silently stop there. Witchy does not have variadic trait
+    /// impls yet; the documented 0.1 contract is tuple `Show`/`Reflect` through
+    /// arity 8, with wider heterogeneous values modeled as named records.
+    #[test]
+    fn tuple5_show_and_reflect_protocols_work_on_both_backends() {
+        let src = "import show\nimport reflect\nimport json\n\ntype Box5 derive(Reflect):\n    value: (Int, Int, Int, Int, Int)\n\nfn main(console: Console):\n    let t = (1, 2, 3, 4, 5)\n    show.say(console, t)\n    print(console, \"${t}\")\n    print(console, reflect.debug(t))\n    print(console, json.stringify(t))\n    print(console, json.stringify(Box5(t)))\n    let t8 = (1, 2, 3, 4, 5, 6, 7, 8)\n    print(console, show.render(t8))\n    print(console, json.stringify(t8))\n";
+        let expected = [
+            "(1, 2, 3, 4, 5)",
+            "(1, 2, 3, 4, 5)",
+            "(1, 2, 3, 4, 5)",
+            "[1,2,3,4,5]",
+            "{\"value\":[1,2,3,4,5]}",
+            "(1, 2, 3, 4, 5, 6, 7, 8)",
+            "[1,2,3,4,5,6,7,8]",
+        ];
+        assert_eq!(link_run(src), expected, "interp: tuple protocol arity");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: tuple protocol arity");
+    }
+
     /// (BUG-486) `MNil` is the reflection shape for the language's unit value,
     /// not only for JSON null. Exercise it through a Nil-returning helper so this
     /// stays independent of the separate bare-`Nil` expression backend bug.

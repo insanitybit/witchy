@@ -59,7 +59,9 @@ n is 3, doubled 6
 ```
 
 `${expr}` renders *any* value — scalars, lists, tuples, records, sum types,
-dicts, and any nesting.
+dicts, and any nesting. Tuple `Show` and `Reflect` impls are provided through
+arity 8; for wider heterogeneous data, use a named record so the protocol
+surface stays explicit.
 Strings are UTF-8 and the common operations
 (`string.length`, `string.char_count`, `string.split`, `string.contains`, …)
 live in the `string` module — part of the prelude, so no import line is

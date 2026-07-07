@@ -9,8 +9,8 @@ never seen, with no per-type encoder.
 ## Making a type reflectable
 
 The scalars (`Int`, `Float`, `Bool`, `String`), the built-in containers (`List`,
-`Option`, tuples, `Dict`), and [anonymous records](tour-data.md) are reflectable
-out of the box. A `type` of your own becomes reflectable when you add
+`Option`, tuples through arity 8, `Dict`), and [anonymous records](tour-data.md)
+are reflectable out of the box. A `type` of your own becomes reflectable when you add
 `derive(Reflect)`, which needs `import reflect`:
 
 ```witchy

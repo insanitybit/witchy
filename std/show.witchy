@@ -2,11 +2,12 @@
 // cover the scalars — `Int`, `Float`, `Bool`, `String`, `Bytes`, `Duration` (which
 // shows in its human form, `1m30s`, not raw milliseconds) — and the built-in
 // comparison result `Ordering`. A `List`, `Dict`, `Set`, `Option`, `Result`, or
-// tuple whose elements are themselves `Show` renders structurally through each
-// element's `Show` (`[a, b]`, `{k: v}`, `Some(x)`), so `say(console, [1, 2, 3])`
-// and `say(console, someSet)` just work — and a custom element `Show` is honored
-// (`[P<1,2>, P<3,4>]`). Implement `Show` for your own types to give them a custom
-// readable form. Interpolation (`"${x}"`) uses `Show` when the helper below is
+// tuple through arity 8 whose elements are themselves `Show` renders structurally
+// through each element's `Show` (`[a, b]`, `{k: v}`, `Some(x)`), so
+// `say(console, [1, 2, 3])` and `say(console, someSet)` just work — and a custom
+// element `Show` is honored (`[P<1,2>, P<3,4>]`). Implement `Show` for your own
+// types to give them a custom readable form. Interpolation (`"${x}"`) uses `Show`
+// when the helper below is
 // linked, and otherwise keeps the structural fallback for values whose module
 // never imports `show`. Pure except `say`, which takes the `Console` it prints to.
 
@@ -132,8 +133,9 @@ impl Show for Set(a) where a: Show:
         let elems: List(a) = set.to_list(self)
         "{" + list.join(show_each(elems), ", ") + "}"
 
-// Tuples render as `(a, b)`; each common arity has its own impl and dispatches
-// per slot, as the derives do.
+// Tuples render as `(a, b)`; each supported arity has its own impl and dispatches
+// per slot, as the derives do. The protocol surface is explicit through arity 8;
+// larger tuples remain structural values but do not carry blanket `Show`.
 impl Show for (a, b) where a: Show, b: Show:
     fn show(self) -> String:
         let (x0, x1) = self
@@ -148,6 +150,26 @@ impl Show for (a, b, c, d) where a: Show, b: Show, c: Show, d: Show:
     fn show(self) -> String:
         let (x0, x1, x2, x3) = self
         "(" + show_one(x0) + ", " + show_one(x1) + ", " + show_one(x2) + ", " + show_one(x3) + ")"
+
+impl Show for (a, b, c, d, e) where a: Show, b: Show, c: Show, d: Show, e: Show:
+    fn show(self) -> String:
+        let (x0, x1, x2, x3, x4) = self
+        "(" + show_one(x0) + ", " + show_one(x1) + ", " + show_one(x2) + ", " + show_one(x3) + ", " + show_one(x4) + ")"
+
+impl Show for (a, b, c, d, e, f) where a: Show, b: Show, c: Show, d: Show, e: Show, f: Show:
+    fn show(self) -> String:
+        let (x0, x1, x2, x3, x4, x5) = self
+        "(" + show_one(x0) + ", " + show_one(x1) + ", " + show_one(x2) + ", " + show_one(x3) + ", " + show_one(x4) + ", " + show_one(x5) + ")"
+
+impl Show for (a, b, c, d, e, f, g) where a: Show, b: Show, c: Show, d: Show, e: Show, f: Show, g: Show:
+    fn show(self) -> String:
+        let (x0, x1, x2, x3, x4, x5, x6) = self
+        "(" + show_one(x0) + ", " + show_one(x1) + ", " + show_one(x2) + ", " + show_one(x3) + ", " + show_one(x4) + ", " + show_one(x5) + ", " + show_one(x6) + ")"
+
+impl Show for (a, b, c, d, e, f, g, h) where a: Show, b: Show, c: Show, d: Show, e: Show, f: Show, g: Show, h: Show:
+    fn show(self) -> String:
+        let (x0, x1, x2, x3, x4, x5, x6, x7) = self
+        "(" + show_one(x0) + ", " + show_one(x1) + ", " + show_one(x2) + ", " + show_one(x3) + ", " + show_one(x4) + ", " + show_one(x5) + ", " + show_one(x6) + ", " + show_one(x7) + ")"
 
 // Render one `Show` value to a `String` — `render(point)`, `render(90000ms)`,
 // `render([1, 2, 3])`. This is the one public renderer (RFC-0053): string

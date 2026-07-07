@@ -66,8 +66,10 @@ fn main(console: Console):
 
 **Rendering values to strings.** Reach for interpolation first: `"${x}"` renders
 *any* value — scalars, record fields, lists, tuples, records, sum types, dicts,
-and any nesting — identically on both backends. You rarely need to call
-a conversion by hand. To print
+and any nesting — identically on both backends. Tuple `Show`/`Reflect` protocol
+impls are provided through arity 8; larger tuples still exist as structural
+values, but should be modeled as records or lists when they need
+protocol-backed display or reflection. You rarely need to call a conversion by hand. To print
 one value, `print(console, "${x}")`, or `say(console, x)` — the `Show`-accepting
 `print` from `import show`, for any `Show` value (the built-in scalars and your
 own types). The **`Show` trait** (`fn show(self) -> String`) is the trait-method
@@ -667,9 +669,9 @@ that carries the type parameters and their bounds and specializes per type argum
 ### Reflection and anonymous structs
 
 `reflect(x)` returns a value's structure as a `Mirror`, which lets one function
-handle a value of any type. `List`, `Option`, tuples, and generic records implement
+handle a value of any type. `List`, `Option`, tuples through arity 8, and generic records implement
 `Reflect` through ordinary generic impls, so `json.stringify(x)` and
-`reflect.debug(x)` work on a list, an option, a tuple, or a nested record without a
+`reflect.debug(x)` work on a list, an option, a supported tuple, or a nested record without a
 per-type impl.
 
 An anonymous struct, `.{ field: expr, ... }`, is a record with no declared type. It
