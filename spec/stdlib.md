@@ -608,7 +608,7 @@ The parent component of a relative path as `Some`: "a/b/c" -> Some("a/b"). A sin
 
 #### `fn collect_files(root: Dir, path: String, rel: String, ext: String) -> List((String, String))`
 
-Recursively collect every file under `path` whose name ends with `ext`, as (relpath, contents) pairs. `rel` is prefixed to each result path (so a nested `a/b.witchy` keeps its full relative path). Needs a readable `Dir`.
+Recursively collect every file under `path` whose name ends with `ext`, as (relpath, contents) pairs. `rel` is prefixed to each result path (so a nested `a/b.witchy` keeps its full relative path). An empty `path` walks from the Dir root itself. Needs a readable `Dir`.
 
 ## `func`
 
@@ -951,7 +951,7 @@ Skip the leading elements while `pred` holds, then yield the rest.
 
 #### `fn drop(it: Iter(a), k: Int) -> Iter(a)`
 
-Skip the first `k` elements.
+Skip the first `k` elements. Lazy like every adapter: nothing is pulled from the source at construction — the skip runs inside the returned iterator's thunk on first pull, and iteratively, so a large `k` cannot exhaust the stack.
 
 #### `fn enumerate(it: Iter(a)) -> Iter((Int, a))`
 
@@ -1297,13 +1297,13 @@ The first element satisfying `pred` as `Some`, or `None` if none do.
 
 The first non-`None` result of applying `f` across the list (search and transform in one pass), or `None` if every result is `None`.
 
-#### `fn min(xs: List(Int)) -> Option(Int)`
+#### `fn min(xs: List(a)) -> Option(a) where a: Ord`
 
-The smallest element as `Some`, or `None` for the empty list.
+The smallest element as `Some`, or `None` for the empty list. Generic over any `Ord` element type (like `sort`), dispatching through the total order — so `xs.min()` works for `Int`, `String`, `Duration`, or a derived-`Ord` record. For a merely-partial type or a custom criterion, use `min_by`.
 
-#### `fn max(xs: List(Int)) -> Option(Int)`
+#### `fn max(xs: List(a)) -> Option(a) where a: Ord`
 
-The largest element as `Some`, or `None` for the empty list.
+The largest element as `Some`, or `None` for the empty list. Generic over any `Ord` element type — see `min`.
 
 #### `fn max_by(xs: List(a), less: fn(a, a) -> Bool) -> Option(a)`
 
@@ -2158,7 +2158,7 @@ A JSON response from any reflectable value. Reflection serializes it, so a handl
 
 #### `fn with_header(resp: Response, name: String, value: String) -> Response`
 
-Return `resp` with an extra header — for handlers and middleware that decorate a response (e.g. add a `set-cookie` or a tracing header).
+Return `resp` with an extra header — for handlers and middleware that decorate a response (e.g. add a `set-cookie` or a tracing header). The stored name is lowercased: `Response` documents its header list as lowercase so `http.header(resp, name)` can look up case-insensitively — headers are case-insensitive on the wire, and rendering emits the lowercase form.
 
 #### `fn with_status(resp: Response, code: Int) -> Response`
 
@@ -2179,6 +2179,10 @@ Dispatch `req` through `app` (all routes and middleware layers) and return the R
 #### `fn render(resp: Response) -> String`
 
 Serialize a `Response` to its HTTP/1.1 wire form (inverse of `http.parse_response`). The framing headers (Content-Length, Connection) are owned here; a status outside 100..599 traps. Public so a test or a custom transport can render a Response itself.
+
+#### `fn render_for(resp: Response, method: String) -> String`
+
+`render`, honoring the request method: a HEAD response carries the same status/headers — including the Content-Length the body WOULD have — but the body bytes themselves are never sent (RFC 9110 §9.3.2). This is enforced at the rendering boundary so a `.head(...)` handler may simply return the GET response and the framework suppresses the body.
 
 #### `fn serve(net: Net[Listen, Tcp], addr: String, app: Router)`
 
@@ -2689,7 +2693,7 @@ Structured parses return `Result(_, String)` with what went wrong (the same conv
 
 #### `fn parse(s: String) -> Result(Url, String)`
 
-Parse a URL, or an error naming what is malformed. A well-formed URL needs a non-empty scheme and host — an empty either side (`://host`, `https:///path`) is rejected rather than accepted with a blank field.
+Parse a URL, or an error naming what is malformed. A well-formed URL needs a non-empty scheme and host — an empty either side (`://host`, `https:///path`) is rejected rather than accepted with a blank field. The scheme is case-insensitive (RFC 3986 §3.1) and is normalized to lowercase, so `HTTPS://` gets the https default port and formats back canonically.
 
 #### `fn scheme(u: Url) -> String`
 

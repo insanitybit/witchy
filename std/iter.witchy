@@ -154,14 +154,31 @@ fn drop_while_step(it: Iter(a), pred: fn(a) -> Bool) -> Step(a):
             else:
                 Item(x, rest)
 
-// Skip the first `k` elements.
+// Skip the first `k` elements. Lazy like every adapter: nothing is pulled from
+// the source at construction — the skip runs inside the returned iterator's
+// thunk on first pull, and iteratively, so a large `k` cannot exhaust the stack.
 pub fn drop(it: Iter(a), k: Int) -> Iter(a):
     if k <= 0:
         it
     else:
-        match next(it):
-            Empty -> empty()
-            Item(_x, rest) -> drop(rest, k - 1)
+        Iter(fn(): drop_step(it, k))
+
+fn drop_step(it: Iter(a), k: Int) -> Step(a):
+    var cur = it
+    var remaining = k
+    var out = Empty
+    var scanning = true
+    while scanning:
+        match next(cur):
+            Empty -> scanning = false
+            Item(x, rest) ->
+                if remaining <= 0:
+                    out = Item(x, rest)
+                    scanning = false
+                else:
+                    cur = rest
+                    remaining = remaining - 1
+    out
 
 // Pair each element with its index: (0, x0), (1, x1), ...
 pub fn enumerate(it: Iter(a)) -> Iter((Int, a)):

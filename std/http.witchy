@@ -117,10 +117,12 @@ fn send_on(sock: Socket, method: String, host: String, path: String, headers: Li
         let (k, v) = h
         check_header(k, v)
         // (BUG-393) The framing headers are OWNED by this renderer (Content-Length
-        // and Connection are appended below). A caller-supplied Content-Length /
+        // and Connection are appended below), and so is Host — derived from the
+        // request target and rendered first above. A caller-supplied Content-Length /
         // Transfer-Encoding / Connection would conflict with ours and enable request
-        // smuggling, so drop it here rather than emit two framing headers.
-        if !is_framing_header(k):
+        // smuggling; a second Host is the request-routing twin of that ambiguity.
+        // Drop them rather than emit two owned headers.
+        if !is_framing_header(k) && string.to_lower(k) != "host":
             head = head + k + ": " + v + "\r\n"
     let req = head + "Content-Length: " + "${string.length(body)}" + "\r\n" + "Connection: close\r\n\r\n" + body
 

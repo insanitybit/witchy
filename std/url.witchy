@@ -15,13 +15,15 @@ sealed type Url:
 
 // Parse a URL, or an error naming what is malformed. A well-formed URL needs a
 // non-empty scheme and host — an empty either side (`://host`, `https:///path`)
-// is rejected rather than accepted with a blank field.
+// is rejected rather than accepted with a blank field. The scheme is
+// case-insensitive (RFC 3986 §3.1) and is normalized to lowercase, so
+// `HTTPS://` gets the https default port and formats back canonically.
 pub fn parse(s: String) -> Result(Url, String):
     let sep = string.index_of(s, "://") ?? -1
     if sep < 0:
         Err("missing `scheme://` in: " + s)
     else:
-        let scheme = string.substring(s, 0, sep)
+        let scheme = string.to_lower(string.substring(s, 0, sep))
         if string.is_empty(scheme):
             Err("empty scheme in: " + s)
         else:

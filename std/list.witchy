@@ -234,27 +234,17 @@ pub fn find_map(xs: List(a), f: fn(a) -> Option(b)) -> Option(b):
             return r
     None
 
-// The smallest element as `Some`, or `None` for the empty list.
-pub fn min(xs: List(Int)) -> Option(Int):
-    if is_empty(xs):
-        None
-    else:
-        var m = list.at(xs, 0)
-        for x in xs:
-            if x < m:
-                m = x
-        Some(m)
+// The smallest element as `Some`, or `None` for the empty list. Generic over
+// any `Ord` element type (like `sort`), dispatching through the total order —
+// so `xs.min()` works for `Int`, `String`, `Duration`, or a derived-`Ord`
+// record. For a merely-partial type or a custom criterion, use `min_by`.
+pub fn min(xs: List(a)) -> Option(a) where a: Ord:
+    min_by(xs, fn(x: a, y: a): before(x, y))
 
-// The largest element as `Some`, or `None` for the empty list.
-pub fn max(xs: List(Int)) -> Option(Int):
-    if is_empty(xs):
-        None
-    else:
-        var m = list.at(xs, 0)
-        for x in xs:
-            if x > m:
-                m = x
-        Some(m)
+// The largest element as `Some`, or `None` for the empty list. Generic over
+// any `Ord` element type — see `min`.
+pub fn max(xs: List(a)) -> Option(a) where a: Ord:
+    max_by(xs, fn(x: a, y: a): before(x, y))
 
 // The maximum element under a caller-supplied "is-less-than" comparator, as
 // `Some` (the first of equal maxima), or `None` for the empty list. Generic, so
