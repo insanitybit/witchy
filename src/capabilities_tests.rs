@@ -137,6 +137,56 @@ fn main(console: Console):
         );
     }
 
+    #[test]
+    fn impl_methods_contribute_to_capability_footprints() {
+        let fp = footprint(r#"
+type Client:
+    Client(String)
+
+impl Client:
+    pub fn open(net: Net[Connect, Tcp], host: String) -> Client:
+        Client(host)
+
+    pub fn send(self, net: Net[Connect, Tcp]) -> Nil:
+        return
+
+    fn helper(secret: Secret) -> Client:
+        Client("x")
+"#);
+        assert_eq!(fp.total, cs(&[("Net", &["Connect", "Tcp"])]));
+
+        let names: Vec<&str> = fp.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["Client.open", "Client.send"]);
+
+        let open = fp.entries.iter().find(|e| e.name == "Client.open").unwrap();
+        assert_eq!(open.capabilities, cs(&[("Net", &["Connect", "Tcp"])]));
+        let send = fp.entries.iter().find(|e| e.name == "Client.send").unwrap();
+        assert_eq!(send.capabilities, cs(&[("Net", &["Connect", "Tcp"])]));
+
+        assert!(
+            fp.per_function.iter().any(|e| e.name == "Client.helper"
+                && e.capabilities == cs(&[("Secret", &[])])),
+            "private impl helpers should be visible in per_function without widening total"
+        );
+        assert!(
+            !fp.total.contains_key("Secret"),
+            "private impl helper authority must not enter the public total"
+        );
+    }
+
+    #[test]
+    fn adding_public_impl_method_authority_is_a_widening() {
+        let old = footprint(
+            "type Client:\n    Client(String)\n\nimpl Client:\n    pub fn label(self) -> String:\n        \"client\"\n",
+        );
+        let new = footprint(
+            "type Client:\n    Client(String)\n\nimpl Client:\n    pub fn label(self) -> String:\n        \"client\"\n    pub fn open(net: Net[Connect, Tcp], host: String) -> Client:\n        Client(host)\n",
+        );
+        let d = diff(&old, &new);
+        assert_eq!(d.added, cs(&[("Net", &["Connect", "Tcp"])]));
+        assert!(d.widened());
+    }
+
     /// A *run*'s grant is `main`'s authority alone — NOT `total`'s union. Authority
     /// originates only at `main` (no ambient caps), so a public `serve(net: Net)`
     /// that `main` never calls is unreachable in a run, and a linked std `pub fn`

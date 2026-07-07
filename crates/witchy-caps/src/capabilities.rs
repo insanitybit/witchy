@@ -718,6 +718,54 @@ pub fn show_caps(caps: &CapSet) -> String {
     }
 }
 
+fn analyze_signature(
+    name: String,
+    types: Vec<&Type>,
+    is_entry: bool,
+    taint: &HashMap<String, CapSet>,
+    brands: &HashMap<String, &'static str>,
+    grantable: &std::collections::HashSet<&str>,
+    user_caps: &mut BTreeSet<String>,
+) -> Entry {
+    let mut capabilities = CapSet::new();
+    let mut entry_brands = BTreeSet::new();
+    for ty in types {
+        // RFC-0038: a bare grantable cap carries no host authority, so it is
+        // invisible to `caps_in` — record it on its own axis (entry points only).
+        if is_entry {
+            if let Type::Named(n, _) = ty {
+                if grantable.contains(n.as_str()) {
+                    user_caps.insert(n.clone());
+                }
+            }
+        }
+        let mut caps = CapSet::new();
+        caps_in(ty, taint, &mut caps);
+        if caps.is_empty() {
+            continue;
+        }
+        merge_into(&mut capabilities, &caps);
+        // A directly-named brand is recorded as a refinement.
+        if let Type::Named(n, _) = ty {
+            if brands.contains_key(n.as_str()) {
+                entry_brands.insert(n.clone());
+            }
+        }
+    }
+    Entry {
+        name,
+        capabilities,
+        brands: entry_brands,
+    }
+}
+
+fn impl_method_entry_name(im: &witchy_syntax::ast::ImplDef, method: &str) -> String {
+    match &im.trait_name {
+        Some(trait_name) => format!("{trait_name} for {}.{method}", im.type_name),
+        None => format!("{}.{method}", im.type_name),
+    }
+}
+
 pub fn analyze(module: &Module) -> Footprint {
     let taint = taint_map(module);
     let brands = brand_map(module, &taint);
@@ -736,52 +784,46 @@ pub fn analyze(module: &Module) -> Footprint {
     let mut total = CapSet::new();
     for item in &module.items {
         // The capability-bearing types at this entry point: a public function's
-        // (or `main`'s) parameters. Private
-        // functions get the same signature scan, but report-only.
-        let (name, types, is_entry): (String, Vec<&Type>, bool) = match item {
-            Item::Function(f) => (
-                f.name.clone(),
-                f.params.iter().filter_map(|p| p.ty.as_ref()).collect(),
-                f.public || f.name == "main",
-            ),
-            _ => continue,
-        };
-        let mut capabilities = CapSet::new();
-        let mut entry_brands = BTreeSet::new();
-        for ty in types {
-            // RFC-0038: a bare grantable cap carries no host authority, so it is
-            // invisible to `caps_in` — record it on its own axis (entry points only).
-            if is_entry {
-                if let Type::Named(n, _) = ty {
-                    if grantable.contains(n.as_str()) {
-                        user_caps.insert(n.clone());
-                    }
+        // (or `main`'s) parameters. Private functions get the same signature scan,
+        // but report-only. Public impl methods are callable API too, so they are
+        // scanned under the same rule; private impl helpers remain report-only.
+        let mut item_entries = Vec::new();
+        match item {
+            Item::Function(f) => {
+                item_entries.push((
+                    f.name.clone(),
+                    f.params.iter().filter_map(|p| p.ty.as_ref()).collect(),
+                    f.public || f.name == "main",
+                ));
+            }
+            Item::Impl(im) => {
+                for method in &im.methods {
+                    item_entries.push((
+                        impl_method_entry_name(im, &method.name),
+                        method.params.iter().filter_map(|p| p.ty.as_ref()).collect(),
+                        method.public,
+                    ));
                 }
             }
-            let mut caps = CapSet::new();
-            caps_in(ty, &taint, &mut caps);
-            if caps.is_empty() {
-                continue;
-            }
-            merge_into(&mut capabilities, &caps);
-            // A directly-named brand is recorded as a refinement.
-            if let Type::Named(n, _) = ty {
-                if brands.contains_key(n.as_str()) {
-                    entry_brands.insert(n.clone());
-                }
-            }
+            _ => {}
         }
-        let entry = Entry {
-            name,
-            capabilities,
-            brands: entry_brands,
-        };
-        if is_entry {
-            merge_into(&mut total, &entry.capabilities);
-            per_function.push(entry.clone());
-            entries.push(entry);
-        } else if !entry.capabilities.is_empty() {
-            per_function.push(entry);
+        for (name, types, is_entry) in item_entries {
+            let entry = analyze_signature(
+                name,
+                types,
+                is_entry,
+                &taint,
+                &brands,
+                &grantable,
+                &mut user_caps,
+            );
+            if is_entry {
+                merge_into(&mut total, &entry.capabilities);
+                per_function.push(entry.clone());
+                entries.push(entry);
+            } else if !entry.capabilities.is_empty() {
+                per_function.push(entry);
+            }
         }
     }
     let brands = entries.iter().flat_map(|e| e.brands.iter().cloned()).collect();
