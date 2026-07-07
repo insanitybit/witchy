@@ -9002,6 +9002,34 @@ fn main(console: Console):
     }
 
     #[test]
+    fn json_long_fraction_does_not_wrap_backends_agree() {
+        // BUG-241: the fractional tail used to fold digits into an i64
+        // (`frac * 10 + digit`), so a long input-controlled fraction wrapped to a
+        // wrong value (`0.<20 nines>` parsed as ~0.0776). It now folds over the
+        // digit span into a Float like the integer part, so a long fraction rounds
+        // to the nearest double instead of wrapping. Identical on both backends.
+        let client = r#"
+import json
+fn rt(s: String) -> String:
+    match json.decode(s):
+        Ok(j) -> json.encode(j)
+        Err(e) -> "err:" + e
+fn main(console: Console):
+    print(console, rt("0.99999999999999999999"))
+    print(console, rt("1.99999999999999999999999999999999999999"))
+    print(console, rt("0.1234567890123456789"))
+    print(console, rt("3.14159"))
+"#;
+        let want: Vec<String> =
+            ["1.0000000000000002", "2.0", "0.1234567890123457", "3.14159"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+        assert_eq!(link_run(client), want, "interpreter");
+        assert_eq!(wasm_run(client), want, "wasm");
+    }
+
+    #[test]
     fn string_rsplit_once_backends_agree() {
         // rsplit_once splits on the LAST separator (vs split_once's first); when
         // the separator is absent the whole string is the right part.

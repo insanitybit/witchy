@@ -308,16 +308,22 @@ fn parse_number(cs: List(String), i: Int) -> Result((Json, Int), String):
 fn parse_float_tail(cs: List(String), start: Int, ip_end: Int) -> Result((Json, Int), String):
     let n = list.length(cs)
     var j = ip_end
-    var frac = 0
+    var frac_start = ip_end
     var frac_digits = 0
     if j < n && list.at(cs, j) == ".":
         j = j + 1
+        frac_start = j
         while j < n && is_digit(list.at(cs, j)):
-            frac = frac * 10 + string.to_int(list.at(cs, j))
             frac_digits = frac_digits + 1
             j = j + 1
         if frac_digits == 0:
             return Err("invalid number at " + "${start}")
+    // The fraction is folded straight into a Float over its digit span, NOT an
+    // Int accumulator (`frac * 10 + digit`): a long input-controlled fraction
+    // like `0.<400 nines>` would wrap i64 and silently yield a wrong value
+    // (BUG-241). `digits_to_float` accumulates in Float, matching the integer
+    // part; an unrepresentable magnitude is caught by the `is_finite` check below.
+    let frac = if frac_digits > 0: digits_to_float(cspan(cs, frac_start, j)) else: 0.0
     var exp = 0
     var exp_neg = false
     if j < n && (list.at(cs, j) == "e" || list.at(cs, j) == "E"):
@@ -346,7 +352,7 @@ fn parse_float_tail(cs: List(String), start: Int, ip_end: Int) -> Result((Json, 
     // huge integer part (`99999999999999999999.5`) is valid JSON and must not
     // trap the way `string.to_int` would on an out-of-i64 magnitude.
     var x = digits_to_float(cspan(cs, start, ip_end))
-    var fpart = math.to_float(frac) / pow10(frac_digits)
+    var fpart = frac / pow10(frac_digits)
     if negative:
         fpart = 0.0 - fpart
     x = x + fpart
