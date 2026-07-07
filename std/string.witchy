@@ -45,9 +45,11 @@ pub fn ends_with(s: String, suffix: String) -> Bool:
 
 // The character index (counted by Unicode scalar) of the first occurrence of
 // `needle` as `Some`, or `None` when `needle` does not occur (RFC-0044 rule 1:
-// absence is `Option`, never a -1 sentinel). For a bare yes/no, use `contains`.
+// absence is `Option`, never a -1 sentinel). An empty `needle` matches nothing
+// (the module-wide empty-pattern rule, matching `last_index_of`/`count`). For
+// a bare yes/no, use `contains`.
 pub fn index_of(s: String, needle: String) -> Option(Int):
-    let i = find(s, needle)
+    let i = if is_empty(needle): 0 - 1 else: find(s, needle)
     if i < 0:
         None
     else:
@@ -220,19 +222,22 @@ pub fn words(text: String) -> List(String):
     out
 
 // Replace only the first occurrence of `from` with `to`; return `s` unchanged
-// when `from` is absent. (The `replace` builtin replaces every occurrence.)
+// when `from` is absent. An empty `from` matches nothing (the module-wide
+// empty-pattern rule: `count`/`index_of`/`last_index_of` treat it as absent).
+// (The `replace` builtin replaces every occurrence.)
 pub fn replace_first(var s: String, from: String, to: String) -> String:
-    let i = find(s, from)
+    let i = if is_empty(from): 0 - 1 else: find(s, from)
     if i < 0:
         s
     else:
         string.substring(s, 0, i) + to + string.substring(s, i + string.char_count(from), string.char_count(s))
 
 // Split at the first occurrence of `sep` into `(before, after)`, with `sep`
-// itself dropped. When `sep` is absent, returns `(s, "")`. Handy for parsing
-// `key=value` or `host:port`. Counted by Unicode scalar.
+// itself dropped. When `sep` is absent — including the empty separator, which
+// matches nothing (mirroring `rsplit_once`) — returns `(s, "")`. Handy for
+// parsing `key=value` or `host:port`. Counted by Unicode scalar.
 pub fn split_once(s: String, sep: String) -> (String, String):
-    let i = find(s, sep)
+    let i = if is_empty(sep): 0 - 1 else: find(s, sep)
     if i < 0:
         (s, "")
     else:

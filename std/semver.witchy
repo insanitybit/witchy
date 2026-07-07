@@ -30,11 +30,14 @@ type Req:
     Any
 
 // --- constructors ------------------------------------------------------------
-// A convenience constructor for known-good components (e.g. a computed bump). It
-// does not validate — untrusted input belongs in `parse`, which rejects negatives.
-// (Sealing removes the raw `Version(...)` forge; making `version` itself checked
-// would fully close BUG-191 but force every caller to unwrap a `Result`.)
+// A convenience constructor for known-good components (e.g. a computed bump).
+// A negative component is not a version at all, so it is a contract violation
+// (RFC-0044 rule 3): fail loudly naming the bad coordinate rather than minting
+// an impossible one. Untrusted input belongs in `parse`, which returns `Err`
+// instead of aborting.
 pub fn version(major: Int, minor: Int, patch: Int) -> Version:
+    if major < 0 || minor < 0 || patch < 0:
+        fail("semver.version: components `${major}.${minor}.${patch}` must be non-negative")
     Version(major, minor, patch)
 
 // --- parsing + rendering -----------------------------------------------------
@@ -57,6 +60,10 @@ pub fn parse(s: String) -> Result(Version, String):
 fn component(parts: List(String), i: Int) -> Result(Int, String):
     if i >= list.length(parts):
         Ok(0)
+    else if string.starts_with(list.at(parts, i), "+"):
+        // `parse_int` deliberately accepts a leading `+`, but a SemVer component
+        // is a bare unsigned decimal: `+1.2.3` is not a version coordinate.
+        Err("bad version component `" + list.at(parts, i) + "`: sign characters are not allowed")
     else:
         match string.parse_int(list.at(parts, i)):
             Some(n) ->

@@ -87,10 +87,11 @@ fn hex_valid(data: String) -> Bool:
 fn base64_valid(data: String) -> Bool:
     valid_symbols(data, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
 
-// Every non-padding character in the URL-safe base64 alphabet, with a decodable
-// bit-length.
+// Every character in the URL-safe base64 alphabet, with a decodable bit-length.
+// base64url is the NO-PADDING form (the JWT/WebAuthn wire format), so any `=` —
+// even a well-formed trailing run — is invalid here, not just misplaced padding.
 fn base64url_valid(data: String) -> Bool:
-    valid_symbols(data, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+    !string.contains(data, "=") && valid_symbols(data, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
 
 // Shared base64/base64url check. Every data symbol must be in `alphabet`, and any
 // `=` padding must be a contiguous run of 1 or 2 at the very END — never in the

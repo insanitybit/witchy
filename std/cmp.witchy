@@ -174,8 +174,12 @@ pub fn min_of(x: a, y: a) -> a where a: Ord:
     else:
         x
 
-// `x` confined to the range [lo, hi].
+// `x` confined to the range [lo, hi]. `lo` must not exceed `hi` (RFC-0044
+// rule 3): inverted bounds describe an empty range, so they fail loudly
+// instead of silently returning `lo` (matching `math.clamp`).
 pub fn clamp(x: a, lo: a, hi: a) -> a where a: Ord:
+    if lt(hi, lo):
+        fail("cmp.clamp: lo exceeds hi (an empty range)")
     if lt(x, lo):
         lo
     else if lt(hi, x):

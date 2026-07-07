@@ -48,7 +48,7 @@ fn rune_path(name: String, version: String, rel: String) -> String:
 pub fn store_source(store: Dir, name: String, version: String, files: List((String, String))):
     for rel, text in files:
         let full = rune_path(name, version, rel)
-        fs.ensure_dir(store, fs.parent_dir(full))
+        fs.ensure_dir(store, fs.parent_dir(full) ?? "")
         write(store, full, text)
 
 // Read the stored source back as (relpath, text) pairs: witchy.toml + every
