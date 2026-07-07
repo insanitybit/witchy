@@ -2,8 +2,8 @@
 // reflection (Zig's `@typeInfo`). A `comptime:` block can read the structure of
 // every type in its module as ordinary data and generate code from it (e.g. a
 // `to_json` specialized to a record's fields), with zero runtime cost. The
-// compiler injects the type list as `module_types()`; these are the shapes it
-// hands you.
+// compiler injects the type list as the `module_types` value; these are the
+// shapes it hands you.
 //
 // This is COMPILE-TIME structure (field names + declared type expressions),
 // distinct from `std/reflect`'s runtime `Mirror` (a value's structure at runtime).

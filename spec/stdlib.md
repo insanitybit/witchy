@@ -859,7 +859,7 @@ Parse a raw HTTP/1.1 response string into a `Response`: split at the blank line 
 
 ## `iter`
 
-std/iter — lazy, pull-based iterators: the witchy take on Rust's Iterator, minus the part Rust most regrets. Because witchy values are "data" (no borrowing), there is no lending-iterator / GAT complexity: an `Iter(a)` is just a thunk that produces the next `Step`. Adapters (`map`/`filter`/ `take_while`/...) are lazy and compose without building intermediate lists; consumers (`collect`/`fold`/`find`/`count`) drive the pulling. Infinite iterators are fine (`count_from`, `repeat`) as long as something bounds them (`take`/`take_while`/`find`). Pure and capability-free; runs on both backends. (The planned `gen`/`yield` syntax will de-sugar to these constructors.)
+std/iter — lazy, pull-based iterators: the witchy take on Rust's Iterator, minus the part Rust most regrets. Because witchy values are "data" (no borrowing), there is no lending-iterator / GAT complexity: an `Iter(a)` is just a thunk that produces the next `Step`. Adapters (`map`/`filter`/ `take_while`/...) are lazy and compose without building intermediate lists; consumers (`collect`/`fold`/`find`/`count`) drive the pulling. Infinite iterators are fine (`count_from`, `repeat`) as long as something bounds them (`take`/`take_while`/`find`). Pure and capability-free; runs on both backends. `gen fn`/`yield` lower to this representation; `from_gen` is the low-level desugaring target for compiler-generated iterators.
 
 #### `type Step`
 
@@ -1542,7 +1542,7 @@ Format `x` with `decimals` digits after the decimal point, rounded half-up: form
 
 ## `meta`
 
-Compile-time type introspection — the `typeInfo` half of witchy's comptime reflection (Zig's `@typeInfo`). A `comptime:` block can read the structure of every type in its module as ordinary data and generate code from it (e.g. a `to_json` specialized to a record's fields), with zero runtime cost. The compiler injects the type list as `module_types()`; these are the shapes it hands you.
+Compile-time type introspection — the `typeInfo` half of witchy's comptime reflection (Zig's `@typeInfo`). A `comptime:` block can read the structure of every type in its module as ordinary data and generate code from it (e.g. a `to_json` specialized to a record's fields), with zero runtime cost. The compiler injects the type list as the `module_types` value; these are the shapes it hands you.
 
 This is COMPILE-TIME structure (field names + declared type expressions), distinct from `std/reflect`'s runtime `Mirror` (a value's structure at runtime).
 

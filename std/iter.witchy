@@ -6,7 +6,8 @@
 // consumers (`collect`/`fold`/`find`/`count`) drive the pulling. Infinite
 // iterators are fine (`count_from`, `repeat`) as long as something bounds them
 // (`take`/`take_while`/`find`). Pure and capability-free; runs on both backends.
-// (The planned `gen`/`yield` syntax will de-sugar to these constructors.)
+// `gen fn`/`yield` lower to this representation; `from_gen` is the low-level
+// desugaring target for compiler-generated iterators.
 
 import option
 import set
