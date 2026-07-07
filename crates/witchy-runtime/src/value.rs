@@ -6,12 +6,13 @@
 //! bridges its own `Value` to/from this at its single native-dispatch site.
 
 /// The argument/return type of a native-module function. Only the shapes a pure
-/// stdlib function actually exchanges — strings, ints, bools, lists, and the
-/// `Secret` seed (host-only; the ability to sign is authority).
+/// stdlib function actually exchanges — strings, raw bytes, ints, bools, lists,
+/// and the `Secret` seed (host-only; the ability to sign is authority).
 #[derive(Debug, Clone, PartialEq)]
 pub enum NativeValue {
     Int(i64),
     Str(String),
+    Bytes(Vec<u8>),
     Bool(bool),
     List(Vec<NativeValue>),
     /// A secret's raw bytes — a signing seed (read as a hex Ed25519 seed by

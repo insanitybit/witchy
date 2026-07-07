@@ -656,7 +656,7 @@ struct Codegen {
     /// Unicode code point -> its UTF-8 character; powers the JSON `\u` decoder).
     uses_string_from_code: bool,
     /// Whether the `encoding` host import + `$encoding` guest helper are needed
-    /// (hex/base64 encode/decode, all `String -> String`).
+    /// (hex/base64 encode/decode over flat `String`/`Bytes` buffers).
     uses_encoding: bool,
     /// Whether the NaN-trapping float ordering helpers (`$f_lt`/`$f_le`/`$f_gt`/
     /// `$f_ge`) are needed. Ordering a NaN is a runtime error on the interpreter,

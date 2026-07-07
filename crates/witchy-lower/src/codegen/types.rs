@@ -288,8 +288,12 @@ impl Codegen {
                 | "compiler.footprint"
                 | "compiler.diff" | "compiler.doc" | "regex.match_spans" | "recv_line" | "recv_all"
                 | "crypto.sha512" | "crypto.sha3_256" | "crypto.hmac_sha256"
+                | "encoding.hex_encode_bytes" | "encoding.base64_encode_bytes"
+                | "encoding.base64url_encode_bytes"
                 | "recv_bytes" => ValType::Str,
-                "__bytes_from_string" | "__bytes_concat" | "__bytes_slice" => ValType::Bytes,
+                "__bytes_from_string" | "__bytes_concat" | "__bytes_slice"
+                | "encoding.hex_decode_bytes_raw" | "encoding.base64_decode_bytes_raw"
+                | "encoding.base64url_decode_bytes_raw" => ValType::Bytes,
                 "string.starts_with" | "string.ends_with" | "string.contains" | "dict.contains_key"
                 | "exists" | "is_dir" | "crypto.ed25519_verify"
                 | "crypto.ecdsa_p256_verify" | "crypto.ecdsa_p256_verify_hex"

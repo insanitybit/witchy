@@ -2951,13 +2951,14 @@ fn compare(l: &Value, r: &Value) -> Result<std::cmp::Ordering, RuntimeError> {
 /// is what the planned WASI-preopen substrate gives us.
 // Bridge between the interpreter's `Value` and the registry's `NativeValue` at
 // the single native-dispatch site. Native functions are typed (their `.witchy`
-// stubs), so they only ever receive the five shapes `NativeValue` carries; any
+// stubs), so they only ever receive the simple shapes `NativeValue` carries; any
 // other `Value` is a caller bug surfaced as a runtime error.
 fn value_to_native(v: &Value) -> Result<witchy_runtime::value::NativeValue, RuntimeError> {
     use witchy_runtime::value::NativeValue as N;
     Ok(match v {
         Value::Int(i) => N::Int(*i),
         Value::Str(s) => N::Str(s.clone()),
+        Value::Bytes(b) => N::Bytes(b.clone()),
         Value::Bool(b) => N::Bool(*b),
         Value::List(xs) => N::List(
             xs.iter().map(value_to_native).collect::<Result<Vec<_>, RuntimeError>>()?,
@@ -2978,6 +2979,7 @@ fn native_to_value(v: witchy_runtime::value::NativeValue) -> Value {
     match v {
         N::Int(i) => Value::Int(i),
         N::Str(s) => Value::Str(s),
+        N::Bytes(b) => Value::Bytes(b),
         N::Bool(b) => Value::Bool(b),
         N::List(xs) => Value::List(xs.into_iter().map(native_to_value).collect()),
         // A secret produced by a native op (none do today) is revealable by default.

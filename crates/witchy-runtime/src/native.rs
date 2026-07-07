@@ -46,11 +46,17 @@ pub fn lookup(qualified: &str) -> Option<NativeFn> {
         "compiler.doc" => Some(compiler::doc),
         "encoding.utf8_lossy" => Some(encoding::utf8_lossy),
         "encoding.hex_encode" => Some(encoding::hex_encode),
+        "encoding.hex_encode_bytes" => Some(encoding::hex_encode_bytes),
         "encoding.hex_decode_lossy" => Some(encoding::hex_decode_lossy),
+        "encoding.hex_decode_bytes_raw" => Some(encoding::hex_decode_bytes_raw),
         "encoding.base64_encode" => Some(encoding::base64_encode),
+        "encoding.base64_encode_bytes" => Some(encoding::base64_encode_bytes),
+        "encoding.base64url_encode_bytes" => Some(encoding::base64url_encode_bytes),
         "encoding.hex_to_base64url_lossy" => Some(encoding::hex_to_base64url),
         "encoding.base64_decode_lossy" => Some(encoding::base64_decode_lossy),
+        "encoding.base64_decode_bytes_raw" => Some(encoding::base64_decode_bytes_raw),
         "encoding.base64url_decode_lossy" => Some(encoding::base64url_decode_lossy),
+        "encoding.base64url_decode_bytes_raw" => Some(encoding::base64url_decode_bytes_raw),
         "encoding.base64url_to_hex_lossy" => Some(encoding::base64url_to_hex_lossy),
         "regex.match_spans" => Some(regexp::match_spans),
         "string.from_code" => Some(string::from_code),
@@ -517,14 +523,11 @@ mod compiler {
     }
 }
 
-/// The `encoding` module: hex and base64, over a string's UTF-8 bytes. These need
-/// byte-level access witchy strings don't expose, so (like `crypto`) they are
-/// native. The `*_lossy` decoders are the raw byte-level primitives — they return
-/// the bytes they could decode as a UTF-8 string (lossy for non-text payloads) and
-/// stop at the first non-alphabet byte. The public `encoding.*decode` wrappers in
-/// `std/encoding.witchy` guard these with a pure-witchy alphabet validator and
-/// return `Result` (RFC-0044): valid input decodes to `Ok`, malformed input is a
-/// reachable `Err`, never a silent truncation.
+/// The `encoding` module: hex and base64 over strings or raw `Bytes`. The
+/// byte-level codecs are native because witchy source cannot inspect raw bytes
+/// without going through `std/bytes`. The `*_lossy` decoders are compatibility
+/// text helpers; the `*_bytes_raw` decoders are the lossless binary primitives
+/// guarded by validating `std/encoding.witchy` wrappers.
 mod encoding {
     use super::{type_error, Value};
     use crate::value::NativeError as RuntimeError;
@@ -543,17 +546,29 @@ mod encoding {
         Ok(Value::Str(s.clone()))
     }
 
+    fn hex_string(bytes: &[u8]) -> String {
+        use std::fmt::Write;
+        let mut out = String::with_capacity(bytes.len() * 2);
+        for b in bytes {
+            let _ = write!(out, "{b:02x}");
+        }
+        out
+    }
+
     /// Lowercase hex of the input's UTF-8 bytes.
     pub fn hex_encode(args: &[Value]) -> Result<Value, RuntimeError> {
         let [Value::Str(s)] = args else {
             return Err(type_error("encoding.hex_encode expects a String"));
         };
-        use std::fmt::Write;
-        let mut out = String::with_capacity(s.len() * 2);
-        for b in s.as_bytes() {
-            let _ = write!(out, "{b:02x}");
-        }
-        Ok(Value::Str(out))
+        Ok(Value::Str(hex_string(s.as_bytes())))
+    }
+
+    /// Lowercase hex of raw bytes.
+    pub fn hex_encode_bytes(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::Bytes(bytes)] = args else {
+            return Err(type_error("encoding.hex_encode_bytes expects Bytes"));
+        };
+        Ok(Value::Str(hex_string(bytes)))
     }
 
     /// Strict hex → bytes: an even count of `0-9a-fA-F` digits, or `None` for any
@@ -585,8 +600,42 @@ mod encoding {
         Ok(Value::Str(String::from_utf8_lossy(&bytes).into_owned()))
     }
 
+    /// Raw hex decode to bytes. Public witchy code reaches this through
+    /// `encoding.hex_decode_bytes`, which validates before calling the primitive.
+    pub fn hex_decode_bytes_raw(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::Str(s)] = args else {
+            return Err(type_error("encoding.hex_decode_bytes_raw expects a String"));
+        };
+        let bytes = hex_bytes(s)
+            .ok_or_else(|| type_error("encoding.hex_decode_bytes: input is not valid hex"))?;
+        Ok(Value::Bytes(bytes))
+    }
+
     const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     const B64URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+    fn base64_string(bytes: &[u8], alphabet: &[u8; 64], padding: bool) -> String {
+        let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+        for chunk in bytes.chunks(3) {
+            let b0 = chunk[0] as u32;
+            let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+            let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+            let n = (b0 << 16) | (b1 << 8) | b2;
+            out.push(alphabet[(n >> 18 & 63) as usize] as char);
+            out.push(alphabet[(n >> 12 & 63) as usize] as char);
+            if chunk.len() > 1 {
+                out.push(alphabet[(n >> 6 & 63) as usize] as char);
+            } else if padding {
+                out.push('=');
+            }
+            if chunk.len() > 2 {
+                out.push(alphabet[(n & 63) as usize] as char);
+            } else if padding {
+                out.push('=');
+            }
+        }
+        out
+    }
 
     /// base64url (no padding; `-`/`_`) of the bytes given as a HEX string. The hex
     /// indirection lets binary round-trip through witchy's UTF-8 strings — e.g. a
@@ -599,22 +648,7 @@ mod encoding {
         };
         let bytes = hex_bytes(hexs)
             .ok_or_else(|| type_error("encoding.hex_to_base64url: input is not valid hex"))?;
-        let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-        for chunk in bytes.chunks(3) {
-            let b0 = chunk[0] as u32;
-            let b1 = *chunk.get(1).unwrap_or(&0) as u32;
-            let b2 = *chunk.get(2).unwrap_or(&0) as u32;
-            let n = (b0 << 16) | (b1 << 8) | b2;
-            out.push(B64URL[(n >> 18 & 63) as usize] as char);
-            out.push(B64URL[(n >> 12 & 63) as usize] as char);
-            if chunk.len() > 1 {
-                out.push(B64URL[(n >> 6 & 63) as usize] as char);
-            }
-            if chunk.len() > 2 {
-                out.push(B64URL[(n & 63) as usize] as char);
-            }
-        }
-        Ok(Value::Str(out))
+        Ok(Value::Str(base64_string(&bytes, B64URL, false)))
     }
 
     /// Standard base64 (with `=` padding) of the input's UTF-8 bytes.
@@ -622,19 +656,23 @@ mod encoding {
         let [Value::Str(s)] = args else {
             return Err(type_error("encoding.base64_encode expects a String"));
         };
-        let bytes = s.as_bytes();
-        let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-        for chunk in bytes.chunks(3) {
-            let b0 = chunk[0] as u32;
-            let b1 = *chunk.get(1).unwrap_or(&0) as u32;
-            let b2 = *chunk.get(2).unwrap_or(&0) as u32;
-            let n = (b0 << 16) | (b1 << 8) | b2;
-            out.push(B64[(n >> 18 & 63) as usize] as char);
-            out.push(B64[(n >> 12 & 63) as usize] as char);
-            out.push(if chunk.len() > 1 { B64[(n >> 6 & 63) as usize] as char } else { '=' });
-            out.push(if chunk.len() > 2 { B64[(n & 63) as usize] as char } else { '=' });
-        }
-        Ok(Value::Str(out))
+        Ok(Value::Str(base64_string(s.as_bytes(), B64, true)))
+    }
+
+    /// Standard base64 (with `=` padding) of raw bytes.
+    pub fn base64_encode_bytes(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::Bytes(bytes)] = args else {
+            return Err(type_error("encoding.base64_encode_bytes expects Bytes"));
+        };
+        Ok(Value::Str(base64_string(bytes, B64, true)))
+    }
+
+    /// base64url (no padding) of raw bytes.
+    pub fn base64url_encode_bytes(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::Bytes(bytes)] = args else {
+            return Err(type_error("encoding.base64url_encode_bytes expects Bytes"));
+        };
+        Ok(Value::Str(base64_string(bytes, B64URL, false)))
     }
 
     /// Raw standard-base64 decode to text (lossy UTF-8). Padding and whitespace
@@ -644,6 +682,19 @@ mod encoding {
         let [Value::Str(s)] = args else {
             return Err(type_error("encoding.base64_decode_lossy expects a String"));
         };
+        Ok(Value::Str(String::from_utf8_lossy(&base64_bytes(s, B64)).into_owned()))
+    }
+
+    /// Raw standard-base64 decode to bytes. Public witchy code reaches this
+    /// through `encoding.base64_decode_bytes`, which validates first.
+    pub fn base64_decode_bytes_raw(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::Str(s)] = args else {
+            return Err(type_error("encoding.base64_decode_bytes_raw expects a String"));
+        };
+        Ok(Value::Bytes(base64_bytes(s, B64)))
+    }
+
+    fn base64_bytes(s: &str, alphabet: &[u8; 64]) -> Vec<u8> {
         let mut acc: u32 = 0;
         let mut nbits = 0;
         let mut bytes = Vec::new();
@@ -651,51 +702,7 @@ mod encoding {
             if c == b'=' || c.is_ascii_whitespace() {
                 continue;
             }
-            let Some(v) = B64.iter().position(|&x| x == c) else {
-                break;
-            };
-            acc = (acc << 6) | v as u32;
-            nbits += 6;
-            if nbits >= 8 {
-                nbits -= 8;
-                bytes.push((acc >> nbits & 0xff) as u8);
-            }
-        }
-        Ok(Value::Str(String::from_utf8_lossy(&bytes).into_owned()))
-    }
-
-    /// Raw base64url decode (URL-safe `-`/`_`, padding/whitespace tolerated) to text
-    /// (lossy UTF-8). Byte-level primitive behind the validating
-    /// `encoding.base64url_decode` wrapper — the JSON header/payload of a JWT/OIDC token.
-    pub fn base64url_decode_lossy(args: &[Value]) -> Result<Value, RuntimeError> {
-        let [Value::Str(s)] = args else {
-            return Err(type_error("encoding.base64url_decode_lossy expects a String"));
-        };
-        Ok(Value::Str(String::from_utf8_lossy(&base64url_bytes(s)).into_owned()))
-    }
-
-    /// Raw base64url decode to a HEX string — for binary that must round-trip through a
-    /// witchy String, e.g. a JWT's RS256 signature fed to `crypto.rsa_pkcs1_sha256_verify`.
-    /// Byte-level primitive behind the validating `encoding.base64url_to_hex` wrapper.
-    pub fn base64url_to_hex_lossy(args: &[Value]) -> Result<Value, RuntimeError> {
-        let [Value::Str(s)] = args else {
-            return Err(type_error("encoding.base64url_to_hex_lossy expects a String"));
-        };
-        let hex: String = base64url_bytes(s).iter().map(|b| format!("{b:02x}")).collect();
-        Ok(Value::Str(hex))
-    }
-
-    /// Shared base64url decoder (URL-safe alphabet; `=`/whitespace tolerated; a
-    /// non-alphabet byte stops decoding).
-    fn base64url_bytes(s: &str) -> Vec<u8> {
-        let mut acc: u32 = 0;
-        let mut nbits = 0;
-        let mut bytes = Vec::new();
-        for c in s.bytes() {
-            if c == b'=' || c.is_ascii_whitespace() {
-                continue;
-            }
-            let Some(v) = B64URL.iter().position(|&x| x == c) else {
+            let Some(v) = alphabet.iter().position(|&x| x == c) else {
                 break;
             };
             acc = (acc << 6) | v as u32;
@@ -706,6 +713,35 @@ mod encoding {
             }
         }
         bytes
+    }
+
+    /// Raw base64url decode (URL-safe `-`/`_`, padding/whitespace tolerated) to text
+    /// (lossy UTF-8). Byte-level primitive behind the validating
+    /// `encoding.base64url_decode` wrapper — the JSON header/payload of a JWT/OIDC token.
+    pub fn base64url_decode_lossy(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::Str(s)] = args else {
+            return Err(type_error("encoding.base64url_decode_lossy expects a String"));
+        };
+        Ok(Value::Str(String::from_utf8_lossy(&base64_bytes(s, B64URL)).into_owned()))
+    }
+
+    /// Raw base64url decode to bytes. Public witchy code reaches this through
+    /// `encoding.base64url_decode_bytes`, which validates first.
+    pub fn base64url_decode_bytes_raw(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::Str(s)] = args else {
+            return Err(type_error("encoding.base64url_decode_bytes_raw expects a String"));
+        };
+        Ok(Value::Bytes(base64_bytes(s, B64URL)))
+    }
+
+    /// Raw base64url decode to a HEX string — for binary that must round-trip through a
+    /// witchy String, e.g. a JWT's RS256 signature fed to `crypto.rsa_pkcs1_sha256_verify`.
+    /// Byte-level primitive behind the validating `encoding.base64url_to_hex` wrapper.
+    pub fn base64url_to_hex_lossy(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::Str(s)] = args else {
+            return Err(type_error("encoding.base64url_to_hex_lossy expects a String"));
+        };
+        Ok(Value::Str(hex_string(&base64_bytes(s, B64URL))))
     }
 }
 

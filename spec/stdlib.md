@@ -554,9 +554,9 @@ Parse a duration string to a `Duration` — the inverse of `human`. Accepts unit
 
 ## `encoding`
 
-encoding — hex and base64 over a string's UTF-8 bytes.
+encoding — hex and base64 for text conveniences and raw Bytes payloads.
 
-The byte-level codecs need access witchy strings don't expose, so the raw transforms are native intrinsics (like `crypto`): the private `*_lossy` helpers below are placeholders the runtime never executes — each is intercepted by its qualified name (`encoding.hex_decode_lossy`, …) and run in Rust on both backends.
+The byte-level codecs need access witchy source cannot express directly, so the raw transforms are native intrinsics (like `crypto`): the private helpers below are placeholders the runtime never executes — each is intercepted by its qualified name and run in Rust on both backends.
 
 Encoding is total, so the encoders return a plain `String`. Decoding can fail, so the public `*decode` functions guard the raw codec with a pure-witchy alphabet check and return `Result` (RFC-0044): valid input decodes to `Ok`, and any non-alphabet character or a truncated final group is a reachable `Err` — never a silent truncation (the JWT/WebAuthn segment-decoding hazard BUG-006 named).
 
@@ -564,17 +564,37 @@ Encoding is total, so the encoders return a plain `String`. Decoding can fail, s
 
 Lowercase hex of `data`'s UTF-8 bytes.
 
+#### `fn hex_encode_bytes(data: Bytes) -> String`
+
+Lowercase hex of raw bytes.
+
 #### `fn hex_decode(data: String) -> Result(String, String)`
 
 Decode a hex string (an even count of `0-9a-fA-F` digits) back to text (lossy UTF-8 for non-text payloads), or an `Err` naming the input when it is not hex.
+
+#### `fn hex_decode_bytes(data: String) -> Result(Bytes, String)`
+
+Decode a hex string (an even count of `0-9a-fA-F` digits) to raw bytes.
 
 #### `fn base64_encode(data: String) -> String`
 
 Standard base64 (with `=` padding) of `data`'s UTF-8 bytes.
 
+#### `fn base64_encode_bytes(data: Bytes) -> String`
+
+Standard base64 (with `=` padding) of raw bytes.
+
+#### `fn base64url_encode_bytes(data: Bytes) -> String`
+
+base64url (no padding; `-`/`_`) of raw bytes.
+
 #### `fn base64_decode(data: String) -> Result(String, String)`
 
 Decode standard base64 (the `A-Za-z0-9+/` alphabet, `=` padding) back to text (lossy UTF-8), or an `Err` naming the input when it is not valid base64.
+
+#### `fn base64_decode_bytes(data: String) -> Result(Bytes, String)`
+
+Decode standard base64 (the `A-Za-z0-9+/` alphabet, `=` padding) to raw bytes.
 
 #### `fn hex_to_base64url(hex: String) -> Result(String, String)`
 
@@ -583,6 +603,10 @@ base64url (no padding; `-`/`_`) of the bytes given as a HEX string, or an `Err` 
 #### `fn base64url_decode(data: String) -> Result(String, String)`
 
 Decode base64url (URL-safe `-`/`_`, no padding) back to text (lossy UTF-8) — the JSON header/payload segments of a JWT/OIDC identity token — or an `Err` naming the input when it is not valid base64url.
+
+#### `fn base64url_decode_bytes(data: String) -> Result(Bytes, String)`
+
+Decode base64url (URL-safe `-`/`_`, no padding) to raw bytes.
 
 #### `fn base64url_to_hex(data: String) -> Result(String, String)`
 

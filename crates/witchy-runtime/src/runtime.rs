@@ -1171,40 +1171,53 @@ fn host_regex_match_spans_len(
     Ok(len)
 }
 
-/// `encoding.*(op, in_header_ptr, out_data_ptr) -> byte length`: read the input
-/// string, run the selected hex/base64 transform through the shared native
-/// registry (the same implementation the interpreter uses, so the backends agree
-/// byte-for-byte), write the result bytes at `out_data_ptr`, and return their
-/// length. The guest reserves a sufficient buffer (`2*len + slack`) beforehand.
-/// `op`: 0 = hex_encode, 1 = hex_decode_lossy, 2 = base64_encode, 3 =
-/// base64_decode_lossy. The `*_lossy` decoders are the raw byte-level primitives;
-/// the public `encoding.*decode` wrappers validate the alphabet in pure witchy and
-/// return `Result`, so a malformed segment errors instead of silently truncating.
+/// `encoding.*(op, in_header_ptr, out_data_ptr) -> byte length`: read a flat
+/// String/Bytes buffer, run the selected hex/base64 transform through the shared
+/// native registry (the same implementation the interpreter uses), write the
+/// result flat buffer at `out_data_ptr`, and return its byte length. The guest
+/// reserves a sufficient buffer (`2*len + slack`) beforehand.
 fn host_encoding(mut caller: Caller<'_, VmState>, op: i32, in_ptr: i32, out_ptr: i32) -> Result<i32> {
     use crate::value::NativeValue as Value;
-    let name = match op {
-        0 => "encoding.hex_encode",
-        1 => "encoding.hex_decode_lossy",
-        2 => "encoding.base64_encode",
-        3 => "encoding.base64_decode_lossy",
-        4 => "encoding.hex_to_base64url_lossy",
-        5 => "encoding.base64url_decode_lossy",
-        6 => "encoding.base64url_to_hex_lossy",
-        7 => "encoding.utf8_lossy",
+    enum Input {
+        String,
+        Bytes,
+        LossyString,
+    }
+    let (name, input) = match op {
+        0 => ("encoding.hex_encode", Input::String),
+        1 => ("encoding.hex_decode_lossy", Input::String),
+        2 => ("encoding.base64_encode", Input::String),
+        3 => ("encoding.base64_decode_lossy", Input::String),
+        4 => ("encoding.hex_to_base64url_lossy", Input::String),
+        5 => ("encoding.base64url_decode_lossy", Input::String),
+        6 => ("encoding.base64url_to_hex_lossy", Input::String),
+        7 => ("encoding.utf8_lossy", Input::LossyString),
+        8 => ("encoding.hex_encode_bytes", Input::Bytes),
+        9 => ("encoding.base64_encode_bytes", Input::Bytes),
+        10 => ("encoding.base64url_encode_bytes", Input::Bytes),
+        11 => ("encoding.hex_decode_bytes_raw", Input::String),
+        12 => ("encoding.base64_decode_bytes_raw", Input::String),
+        13 => ("encoding.base64url_decode_bytes_raw", Input::String),
         _ => return Err(Error::msg(format!("unknown encoding op {op}"))),
     };
     let mem = memory_of(&mut caller)?;
-    let input = read_wstr(mem.data(&caller), in_ptr)?;
+    let arg = match input {
+        Input::String => Value::Str(read_wstr(mem.data(&caller), in_ptr)?),
+        Input::Bytes => Value::Bytes(read_wbytes(mem.data(&caller), in_ptr)?),
+        Input::LossyString => {
+            Value::Str(String::from_utf8_lossy(&read_wbytes(mem.data(&caller), in_ptr)?).into_owned())
+        }
+    };
     let f = crate::native::lookup(name)
         .ok_or_else(|| Error::msg(format!("{name} is not registered")))?;
-    let out = match f(&[Value::Str(input)]).map_err(|e| Error::msg(e.message))? {
-        Value::Str(s) => s,
-        _ => return Err(Error::msg(format!("{name} did not return a String"))),
+    let out = match f(&[arg]).map_err(|e| Error::msg(e.message))? {
+        Value::Str(s) => s.into_bytes(),
+        Value::Bytes(bytes) => bytes,
+        _ => return Err(Error::msg(format!("{name} did not return a flat buffer"))),
     };
-    let bytes = out.as_bytes();
-    mem.write(&mut caller, out_ptr as usize, bytes)
+    mem.write(&mut caller, out_ptr as usize, &out)
         .map_err(|e| Error::msg(format!("writing {name} result into guest memory: {e}")))?;
-    Ok(bytes.len() as i32)
+    Ok(out.len() as i32)
 }
 
 /// `now() -> Int`: wall-clock milliseconds since the Unix epoch — the same value
@@ -2801,10 +2814,7 @@ fn host_crypto_reveal_len(mut caller: Caller<'_, VmState>, key: i32) -> Result<i
 
 /// Read a witchy string value (a `[i32 len][bytes...]` header) at `ptr`.
 fn read_wstr(data: &[u8], ptr: i32) -> Result<String> {
-    let len_bytes = slice(data, ptr, 4)?;
-    let len = i32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]]);
-    let bytes = slice(data, ptr + 4, len)?;
-    Ok(String::from_utf8_lossy(bytes).into_owned())
+    Ok(String::from_utf8_lossy(&read_wbytes(data, ptr)?).into_owned())
 }
 
 /// Read a guest `List(String)` — `[count: i32][count x i64 string pointers]`,

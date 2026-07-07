@@ -3341,10 +3341,10 @@ pub fn replace_helper() -> WirFunc {
 }
 
 /// `$encoding(op, in) -> i32` — a thin wrapper over the host `encoding` import,
-/// which does the actual hex/base64 transform (op 0 hex-encode, 1 hex-decode,
-/// 2 base64-encode, 3 base64-decode, 4 base64url-of-hex). Reserves a worst-case
-/// `2*len + 20` result buffer, lets the host write into `res+4`, and caps the
-/// length header to what it returned. The first migrated host-import helper.
+/// which does the actual hex/base64 transform over flat String/Bytes buffers.
+/// Reserves a worst-case `2*len + 20` result buffer, lets the host write into
+/// `res+4`, and caps the length header to what it returned. The first migrated
+/// host-import helper.
 pub fn encoding_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;

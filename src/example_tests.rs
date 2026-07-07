@@ -1750,6 +1750,33 @@ fn main(console: Console):
         assert_eq!(run_linked_on_wasm(&[("main", &ok)], "main"), ["hi"], "wasm decodes valid hex");
     }
 
+    /// (BUG-456) Encoding's canonical binary path is `Bytes`, not lossy `String`
+    /// plumbing or hex detours. The payload includes `0xff`, so any accidental
+    /// UTF-8 normalization changes the rendered byte list.
+    #[test]
+    fn encoding_bytes_codecs_round_trip_binary_on_both_backends() {
+        let src = "import bytes\nimport encoding\nimport result\n\n\
+                   fn main(console: Console):\n\
+                   \x20   let raw = result.unwrap_or(encoding.hex_decode_bytes(\"4100ff2f\"), bytes.from_string(\"\"))\n\
+                   \x20   print(console, encoding.hex_encode_bytes(raw))\n\
+                   \x20   print(console, encoding.base64_encode_bytes(raw))\n\
+                   \x20   print(console, encoding.base64url_encode_bytes(raw))\n\
+                   \x20   let from_b64 = result.unwrap_or(encoding.base64_decode_bytes(\"QQD/Lw==\"), bytes.from_string(\"\"))\n\
+                   \x20   print(console, __render(bytes.to_list(from_b64)))\n\
+                   \x20   let from_url = result.unwrap_or(encoding.base64url_decode_bytes(\"QQD_Lw\"), bytes.from_string(\"\"))\n\
+                   \x20   print(console, __render(bytes.to_list(from_url)))\n\
+                   \x20   match encoding.base64url_decode_bytes(\"QQD/Lw==\"):\n\
+                   \x20       Ok(_) -> print(console, \"bad\")\n\
+                   \x20       Err(_) -> print(console, \"err\")\n";
+        let want = ["4100ff2f", "QQD/Lw==", "QQD_Lw", "[65, 0, 255, 47]", "[65, 0, 255, 47]", "err"];
+        assert_eq!(link_run(src), want, "interpreter byte codecs must preserve binary");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            want,
+            "WASM byte codecs must preserve binary"
+        );
+    }
+
     /// (SEC-045) An overflowing `Content-Length` must NOT crash the server. The old
     /// `content_length` guarded with `ascii.all_digits` (which passes an arbitrarily
     /// long digit string) then called `string.to_int`, which TRAPS on i64 overflow —

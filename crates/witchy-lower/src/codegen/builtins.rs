@@ -201,17 +201,37 @@ impl Codegen {
                 self.uses_encoding = true;
                 call("encoding", vec![W::ConstI32(0), self.lower_expr(&args[0])?])
             }
+            ("encoding.hex_encode_bytes", 1) => {
+                self.uses_encoding = true;
+                call("encoding", vec![W::ConstI32(8), self.lower_expr(&args[0])?])
+            }
             ("encoding.hex_decode_lossy", 1) => {
                 self.uses_encoding = true;
                 call("encoding", vec![W::ConstI32(1), self.lower_expr(&args[0])?])
+            }
+            ("encoding.hex_decode_bytes_raw", 1) => {
+                self.uses_encoding = true;
+                call("encoding", vec![W::ConstI32(11), self.lower_expr(&args[0])?])
             }
             ("encoding.base64_encode", 1) => {
                 self.uses_encoding = true;
                 call("encoding", vec![W::ConstI32(2), self.lower_expr(&args[0])?])
             }
+            ("encoding.base64_encode_bytes", 1) => {
+                self.uses_encoding = true;
+                call("encoding", vec![W::ConstI32(9), self.lower_expr(&args[0])?])
+            }
+            ("encoding.base64url_encode_bytes", 1) => {
+                self.uses_encoding = true;
+                call("encoding", vec![W::ConstI32(10), self.lower_expr(&args[0])?])
+            }
             ("encoding.base64_decode_lossy", 1) => {
                 self.uses_encoding = true;
                 call("encoding", vec![W::ConstI32(3), self.lower_expr(&args[0])?])
+            }
+            ("encoding.base64_decode_bytes_raw", 1) => {
+                self.uses_encoding = true;
+                call("encoding", vec![W::ConstI32(12), self.lower_expr(&args[0])?])
             }
             ("encoding.hex_to_base64url_lossy", 1) => {
                 self.uses_encoding = true;
@@ -220,6 +240,10 @@ impl Codegen {
             ("encoding.base64url_decode_lossy", 1) => {
                 self.uses_encoding = true;
                 call("encoding", vec![W::ConstI32(5), self.lower_expr(&args[0])?])
+            }
+            ("encoding.base64url_decode_bytes_raw", 1) => {
+                self.uses_encoding = true;
+                call("encoding", vec![W::ConstI32(13), self.lower_expr(&args[0])?])
             }
             ("encoding.base64url_to_hex_lossy", 1) => {
                 self.uses_encoding = true;

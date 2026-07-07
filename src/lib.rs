@@ -114,21 +114,45 @@ pub fn string_from_code(cp: i64) -> String {
         .unwrap_or_else(|_| "\u{FFFD}".to_string())
 }
 
-/// `encoding.*` via the shared native registry (hex/base64), selected by op code
-/// (0 hex_encode, 1 hex_decode_lossy, 2 base64_encode, 3 base64_decode_lossy, 4
-/// hex_to_base64url_lossy). The `*_lossy` codecs are the raw byte-level primitives; the
-/// public `encoding.*decode` wrappers validate the alphabet and return `Result`.
+/// `encoding.*` via the shared native registry (hex/base64), selected by the
+/// same op table the native WASM runtime uses. Text ops read `input` lossily as
+/// UTF-8; byte ops preserve the raw slice and return raw flat-buffer bytes.
 /// The playground host shim delegates here.
-pub fn encoding(op: i32, input: &str) -> Result<String, String> {
-    let name = match op {
-        0 => "encoding.hex_encode",
-        1 => "encoding.hex_decode_lossy",
-        2 => "encoding.base64_encode",
-        3 => "encoding.base64_decode_lossy",
-        4 => "encoding.hex_to_base64url_lossy",
+pub fn encoding(op: i32, input: &[u8]) -> Result<Vec<u8>, String> {
+    use crate::value::NativeValue;
+    enum Input {
+        String,
+        Bytes,
+        LossyString,
+    }
+    let (name, input_kind) = match op {
+        0 => ("encoding.hex_encode", Input::String),
+        1 => ("encoding.hex_decode_lossy", Input::String),
+        2 => ("encoding.base64_encode", Input::String),
+        3 => ("encoding.base64_decode_lossy", Input::String),
+        4 => ("encoding.hex_to_base64url_lossy", Input::String),
+        5 => ("encoding.base64url_decode_lossy", Input::String),
+        6 => ("encoding.base64url_to_hex_lossy", Input::String),
+        7 => ("encoding.utf8_lossy", Input::LossyString),
+        8 => ("encoding.hex_encode_bytes", Input::Bytes),
+        9 => ("encoding.base64_encode_bytes", Input::Bytes),
+        10 => ("encoding.base64url_encode_bytes", Input::Bytes),
+        11 => ("encoding.hex_decode_bytes_raw", Input::String),
+        12 => ("encoding.base64_decode_bytes_raw", Input::String),
+        13 => ("encoding.base64url_decode_bytes_raw", Input::String),
         _ => return Err(format!("unknown encoding op {op}")),
     };
-    native_str(name, crate::value::NativeValue::Str(input.to_string()))
+    let arg = match input_kind {
+        Input::String => NativeValue::Str(String::from_utf8_lossy(input).into_owned()),
+        Input::Bytes => NativeValue::Bytes(input.to_vec()),
+        Input::LossyString => NativeValue::Str(String::from_utf8_lossy(input).into_owned()),
+    };
+    let f = native::lookup(name).ok_or_else(|| format!("{name} is not registered"))?;
+    match f(&[arg]).map_err(|e| e.message)? {
+        NativeValue::Str(s) => Ok(s.into_bytes()),
+        NativeValue::Bytes(bytes) => Ok(bytes),
+        _ => Err(format!("{name} did not return a flat buffer")),
+    }
 }
 
 fn native_str(name: &str, arg: crate::value::NativeValue) -> Result<String, String> {
@@ -283,9 +307,8 @@ mod wasm_abi {
     #[unsafe(no_mangle)]
     pub extern "C" fn witchy_encoding(op: i32, in_ptr: *const u8, in_len: usize) -> *mut u8 {
         let input = unsafe { std::slice::from_raw_parts(in_ptr, in_len) };
-        let input = String::from_utf8_lossy(input).into_owned();
-        let out = super::encoding(op, &input).unwrap_or_default();
-        pack(out.as_bytes())
+        let out = super::encoding(op, input).unwrap_or_default();
+        pack(&out)
     }
 
     // SAFETY for the next four: each `*_ptr`/`*_len` pair is a slice JS wrote into

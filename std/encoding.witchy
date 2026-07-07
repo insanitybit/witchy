@@ -1,9 +1,9 @@
-// encoding — hex and base64 over a string's UTF-8 bytes.
+// encoding — hex and base64 for text conveniences and raw Bytes payloads.
 //
-// The byte-level codecs need access witchy strings don't expose, so the raw
-// transforms are native intrinsics (like `crypto`): the private `*_lossy` helpers
-// below are placeholders the runtime never executes — each is intercepted by its
-// qualified name (`encoding.hex_decode_lossy`, …) and run in Rust on both backends.
+// The byte-level codecs need access witchy source cannot express directly, so the
+// raw transforms are native intrinsics (like `crypto`): the private helpers below
+// are placeholders the runtime never executes — each is intercepted by its
+// qualified name and run in Rust on both backends.
 //
 // Encoding is total, so the encoders return a plain `String`. Decoding can fail, so
 // the public `*decode` functions guard the raw codec with a pure-witchy alphabet
@@ -11,29 +11,51 @@
 // non-alphabet character or a truncated final group is a reachable `Err` — never a
 // silent truncation (the JWT/WebAuthn segment-decoding hazard BUG-006 named).
 
+import bytes
+import result
 import string
 
 // Lowercase hex of `data`'s UTF-8 bytes.
 pub fn hex_encode(data: String) -> String:
-    data
+    hex_encode_bytes(bytes.from_string(data))
+
+// Lowercase hex of raw bytes.
+pub fn hex_encode_bytes(data: Bytes) -> String:
+    bytes.to_string_lossy(data)
 
 // Decode a hex string (an even count of `0-9a-fA-F` digits) back to text (lossy
 // UTF-8 for non-text payloads), or an `Err` naming the input when it is not hex.
 pub fn hex_decode(data: String) -> Result(String, String):
+    result.map_ok(hex_decode_bytes(data), fn(b: Bytes): bytes.to_string_lossy(b))
+
+// Decode a hex string (an even count of `0-9a-fA-F` digits) to raw bytes.
+pub fn hex_decode_bytes(data: String) -> Result(Bytes, String):
     if hex_valid(data):
-        Ok(hex_decode_lossy(data))
+        Ok(hex_decode_bytes_raw(data))
     else:
         Err("`" + data + "` is not valid hex (expected an even count of `0-9a-fA-F` digits)")
 
 // Standard base64 (with `=` padding) of `data`'s UTF-8 bytes.
 pub fn base64_encode(data: String) -> String:
-    data
+    base64_encode_bytes(bytes.from_string(data))
+
+// Standard base64 (with `=` padding) of raw bytes.
+pub fn base64_encode_bytes(data: Bytes) -> String:
+    bytes.to_string_lossy(data)
+
+// base64url (no padding; `-`/`_`) of raw bytes.
+pub fn base64url_encode_bytes(data: Bytes) -> String:
+    bytes.to_string_lossy(data)
 
 // Decode standard base64 (the `A-Za-z0-9+/` alphabet, `=` padding) back to text
 // (lossy UTF-8), or an `Err` naming the input when it is not valid base64.
 pub fn base64_decode(data: String) -> Result(String, String):
+    result.map_ok(base64_decode_bytes(data), fn(b: Bytes): bytes.to_string_lossy(b))
+
+// Decode standard base64 (the `A-Za-z0-9+/` alphabet, `=` padding) to raw bytes.
+pub fn base64_decode_bytes(data: String) -> Result(Bytes, String):
     if base64_valid(data):
-        Ok(base64_decode_lossy(data))
+        Ok(base64_decode_bytes_raw(data))
     else:
         Err("`" + data + "` is not valid base64 (expected the `A-Za-z0-9+/` alphabet)")
 
@@ -44,7 +66,7 @@ pub fn base64_decode(data: String) -> Result(String, String):
 // malformed hex is a reachable `Err`, never the silent drop the raw codec would do.
 pub fn hex_to_base64url(hex: String) -> Result(String, String):
     if hex_valid(hex):
-        Ok(hex_to_base64url_lossy(hex))
+        result.map_ok(hex_decode_bytes(hex), fn(b: Bytes): base64url_encode_bytes(b))
     else:
         Err("`" + hex + "` is not valid hex (expected an even count of `0-9a-fA-F` digits)")
 
@@ -52,8 +74,12 @@ pub fn hex_to_base64url(hex: String) -> Result(String, String):
 // JSON header/payload segments of a JWT/OIDC identity token — or an `Err` naming the
 // input when it is not valid base64url.
 pub fn base64url_decode(data: String) -> Result(String, String):
+    result.map_ok(base64url_decode_bytes(data), fn(b: Bytes): bytes.to_string_lossy(b))
+
+// Decode base64url (URL-safe `-`/`_`, no padding) to raw bytes.
+pub fn base64url_decode_bytes(data: String) -> Result(Bytes, String):
     if base64url_valid(data):
-        Ok(base64url_decode_lossy(data))
+        Ok(base64url_decode_bytes_raw(data))
     else:
         Err("`" + data + "` is not valid base64url (expected the URL-safe `A-Za-z0-9-_` alphabet)")
 
@@ -61,10 +87,7 @@ pub fn base64url_decode(data: String) -> Result(String, String):
 // String, e.g. a JWT's RS256 signature fed to `crypto.rsa_pkcs1_sha256_verify` — or an
 // `Err` naming the input when it is not valid base64url.
 pub fn base64url_to_hex(data: String) -> Result(String, String):
-    if base64url_valid(data):
-        Ok(base64url_to_hex_lossy(data))
-    else:
-        Err("`" + data + "` is not valid base64url (expected the URL-safe `A-Za-z0-9-_` alphabet)")
+    result.map_ok(base64url_decode_bytes(data), fn(b: Bytes): hex_encode_bytes(b))
 
 // --- alphabet validators (pure witchy) --------------------------------------
 // Character-level, so they agree with the native byte-level codecs: a string these
@@ -135,14 +158,23 @@ fn valid_symbols(data: String, alphabet: String) -> Bool:
 fn hex_decode_lossy(data: String) -> String:
     data
 
+fn hex_decode_bytes_raw(data: String) -> Bytes:
+    bytes.from_string(data)
+
 fn hex_to_base64url_lossy(hex: String) -> String:
     hex
 
 fn base64_decode_lossy(data: String) -> String:
     data
 
+fn base64_decode_bytes_raw(data: String) -> Bytes:
+    bytes.from_string(data)
+
 fn base64url_decode_lossy(data: String) -> String:
     data
+
+fn base64url_decode_bytes_raw(data: String) -> Bytes:
+    bytes.from_string(data)
 
 fn base64url_to_hex_lossy(data: String) -> String:
     data
