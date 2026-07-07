@@ -1118,6 +1118,21 @@ fn main(console: Console):
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: Json debug object shape");
     }
 
+    /// (BUG-370) `reflect.debug` strings escape every C0 control, matching JSON's
+    /// discipline instead of emitting raw terminal controls into structural text.
+    #[test]
+    fn reflect_debug_escapes_all_c0_controls_on_both_backends() {
+        let src = "import reflect\nimport string\n\ntype Note derive(Reflect):\n    text: String\n\nfn main(console: Console):\n    print(console, reflect.debug(\"a\" + string.from_code(8) + \"b\"))\n    print(console, reflect.debug(\"a\" + string.from_code(12) + \"b\"))\n    print(console, reflect.debug(\"a\" + string.from_code(0) + \"b\"))\n    print(console, reflect.debug(Note(\"x\" + string.from_code(27) + \"y\")))\n";
+        let expected = [
+            "\"a\\bb\"",
+            "\"a\\fb\"",
+            "\"a\\u0000b\"",
+            "Note { text: \"x\\u001by\" }",
+        ];
+        assert_eq!(link_run(src), expected, "interp: reflect.debug C0 escapes");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: reflect.debug C0 escapes");
+    }
+
     /// (BUG-546) Sealed domain values display through their public canonical
     /// formatter, not their private constructor-shaped representation.
     #[test]

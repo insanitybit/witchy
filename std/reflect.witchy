@@ -271,9 +271,8 @@ fn render(m: Mirror) -> String:
                 variant + "(" + join_rendered(payload) + ")"
 
 // Escape a string value for `debug`'s quoted rendering: backslash, double quote,
-// and the whitespace controls become their `\`-escapes, so a value containing a
-// newline (or a quote) renders on a single line instead of splitting the output
-// across lines — the same hazard `json`'s encoder guards against.
+// and every C0 control become escapes, so debug output stays single-line and
+// parseable-looking instead of smuggling terminal controls into structural text.
 fn escape_string(s: String) -> String:
     var out = ""
     for c in string.chars(s):
@@ -287,9 +286,31 @@ fn escape_string(s: String) -> String:
             out = out + "\\t"
         else if c == "\r":
             out = out + "\\r"
+        else if c < " ":
+            out = out + escape_control(c)
         else:
             out = out + c
     out
+
+fn escape_control(c: String) -> String:
+    let code = control_code(c)
+    if code == 8:
+        "\\b"
+    else if code == 12:
+        "\\f"
+    else:
+        "\\u00" + hex_digit(code / 16) + hex_digit(code % 16)
+
+fn control_code(c: String) -> Int:
+    var k = 0
+    while k < 32:
+        if c == string.from_code(k):
+            return k
+        k = k + 1
+    0
+
+fn hex_digit(v: Int) -> String:
+    string.substring("0123456789abcdef", v, v + 1)
 
 fn join_rendered(xs: List(Mirror)) -> String:
     var parts = []
