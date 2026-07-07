@@ -1800,8 +1800,8 @@ fn tuple_args(type_name: &str) -> Option<Vec<&str>> {
     let mut start = 0;
     for (i, c) in inner.char_indices() {
         match c {
-            '<' => depth += 1,
-            '>' => depth -= 1,
+            '<' | '(' => depth += 1,
+            '>' | ')' => depth -= 1,
             ',' if depth == 0 => {
                 out.push(inner[start..i].trim());
                 start = i + 1;
@@ -1982,6 +1982,15 @@ fn type_to_scope_name_d(t: &Type, depth: usize) -> Option<String> {
                 },
             )
         }
+        Type::Fn(params, ret) => {
+            if depth >= SCOPE_NAME_MAX_DEPTH {
+                return None;
+            }
+            let ps: Option<Vec<String>> =
+                params.iter().map(|p| type_to_scope_name_d(p, depth + 1)).collect();
+            let r = type_to_scope_name_d(ret, depth + 1)?;
+            Some(format!("fn({})->{r}", ps?.join(",")))
+        }
         _ => None,
     }
 }
@@ -2152,6 +2161,27 @@ fn declared_call_result(
     }
 }
 
+fn split_scope_args(inner: &str) -> Vec<&str> {
+    let mut args = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (i, c) in inner.char_indices() {
+        match c {
+            '<' | '(' => depth += 1,
+            '>' | ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                args.push(inner[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if start < inner.len() {
+        args.push(inner[start..].trim());
+    }
+    args
+}
+
 /// Record type name -> its named field types, for typing `x.field` receivers.
 fn build_record_fields(items: &[Item]) -> HashMap<String, Vec<(String, Type)>> {
     let mut map = HashMap::new();
@@ -2285,48 +2315,46 @@ fn bind_type_vars(pattern: &Type, concrete: &Type, out: &mut HashMap<String, Str
 /// Decode a scope-encoded type name ("List<Int>", "Dict<String, Int>",
 /// "Int") back into a structured `Type` — the inverse of `simple_ty_name`.
 fn decode_scope_type(name: &str) -> Type {
+    if let Some(rest) = name.strip_prefix("fn(") {
+        if let Some((params_src, ret_src)) = rest.split_once(")->") {
+            let params = if params_src.trim().is_empty() {
+                Vec::new()
+            } else {
+                split_scope_args(params_src)
+                    .into_iter()
+                    .map(decode_scope_type)
+                    .collect()
+            };
+            return Type::Fn(params, Box::new(decode_scope_type(ret_src.trim())));
+        }
+        if let Some((params_src, ret_src)) = rest.split_once(") -> ") {
+            let params = if params_src.trim().is_empty() {
+                Vec::new()
+            } else {
+                split_scope_args(params_src)
+                    .into_iter()
+                    .map(decode_scope_type)
+                    .collect()
+            };
+            return Type::Fn(params, Box::new(decode_scope_type(ret_src.trim())));
+        }
+    }
     // A tuple encoding: "(String, Int)".
     if let Some(inner) = name.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
-        let mut args = Vec::new();
-        let mut depth = 0usize;
-        let mut start = 0usize;
-        for (i, c) in inner.char_indices() {
-            match c {
-                '<' | '(' => depth += 1,
-                '>' | ')' => depth = depth.saturating_sub(1),
-                ',' if depth == 0 => {
-                    args.push(decode_scope_type(inner[start..i].trim()));
-                    start = i + 1;
-                }
-                _ => {}
-            }
-        }
-        if start < inner.len() {
-            args.push(decode_scope_type(inner[start..].trim()));
-        }
+        let args: Vec<Type> = split_scope_args(inner)
+            .into_iter()
+            .map(decode_scope_type)
+            .collect();
         return Type::Tuple(args);
     }
     match name.split_once('<') {
         Some((head, rest)) if rest.ends_with('>') => {
             let inner = &rest[..rest.len() - 1];
             // Split on top-level commas only (nested encodings nest brackets).
-            let mut args = Vec::new();
-            let mut depth = 0usize;
-            let mut start = 0usize;
-            for (i, c) in inner.char_indices() {
-                match c {
-                    '<' | '(' => depth += 1,
-                    '>' | ')' => depth = depth.saturating_sub(1),
-                    ',' if depth == 0 => {
-                        args.push(decode_scope_type(inner[start..i].trim()));
-                        start = i + 1;
-                    }
-                    _ => {}
-                }
-            }
-            if start < inner.len() {
-                args.push(decode_scope_type(inner[start..].trim()));
-            }
+            let args: Vec<Type> = split_scope_args(inner)
+                .into_iter()
+                .map(decode_scope_type)
+                .collect();
             if head == "List" && args.len() == 1 {
                 Type::Named("List".into(), args)
             } else if head
@@ -2511,6 +2539,11 @@ fn bind_var_simple(param: &Type, concrete: &crate::typeck::Ty, var: &str) -> Opt
         (Type::Tuple(ps), Ty::Tuple(cs)) if ps.len() == cs.len() => {
             ps.iter().zip(cs).find_map(|(p, c)| bind_var_simple(p, c, var))
         }
+        (Type::Fn(ps, pr), Ty::Fn(cs, cr)) if ps.len() == cs.len() => ps
+            .iter()
+            .zip(cs)
+            .find_map(|(p, c)| bind_var_simple(p, c, var))
+            .or_else(|| bind_var_simple(pr, cr, var)),
         _ => None,
     }
 }
@@ -2535,6 +2568,10 @@ fn simple_ty_name(t: &crate::typeck::Ty) -> Option<String> {
         Ty::Named(n, args) => {
             let inner: Option<Vec<String>> = args.iter().map(simple_ty_name).collect();
             Some(format!("{n}<{}>", inner?.join(", ")))
+        }
+        Ty::Fn(params, ret) => {
+            let ps: Option<Vec<String>> = params.iter().map(simple_ty_name).collect();
+            Some(format!("fn({})->{}", ps?.join(","), simple_ty_name(ret)?))
         }
         _ => None,
     }

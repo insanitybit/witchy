@@ -304,6 +304,36 @@
     }
 
     #[test]
+    fn generic_trait_impls_preserve_function_type_arguments() {
+        check_str(
+            "trait Label:\n    fn label(self) -> String\n\
+             type Box(a):\n    value: a\n\
+             impl Label for Box(a):\n    fn label(self) -> String:\n        \"Box\"\n\
+             fn id(n: Int) -> Int:\n    n\n\
+             fn main(console: Console):\n    let b: Box(fn(Int) -> Int) = Box(id)\n    print(console, b.label())\n",
+        )
+        .expect("generic trait dispatch preserves a function-typed type argument");
+
+        check_str(
+            "trait Label:\n    fn label(self) -> String\n\
+             type Box(a):\n    value: a\n\
+             impl Label for Box(a):\n    fn label(self) -> String:\n        \"Box\"\n\
+             fn id(n: Int) -> Int:\n    n\n\
+             fn main(console: Console):\n    let b: Box(List(fn(Int) -> Int)) = Box([id])\n    print(console, b.label())\n",
+        )
+        .expect("nested function-typed type arguments keep their full scope encoding");
+
+        check_str(
+            "trait Label:\n    fn label(self) -> String\n\
+             type Box(a):\n    value: a\n\
+             impl Label for Box(a):\n    fn label(self) -> String:\n        \"Box\"\n\
+             fn choose(n: Int, s: String) -> Int:\n    n\n\
+             fn main(console: Console):\n    let b: Box(fn(Int, String) -> Int) = Box(choose)\n    print(console, b.label())\n",
+        )
+        .expect("function-typed type arguments may contain parameter commas");
+    }
+
+    #[test]
     fn build_entrypoint_takes_only_build_capabilities() {
         // A valid build step: build caps only.
         check_str("fn build(out: BuildOut, schema: BuildRead):\n    write_out(out, \"x.witchy\", read_build(schema, \"a.proto\"))\n")
