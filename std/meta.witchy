@@ -187,12 +187,12 @@ fn reflect_call(ty: TypeExpr, value: String) -> String:
     match ty:
         TNamed(name, _args) ->
             if name == "List":
-                "reflect_list(" + value + ")"
+                "reflect.reflect_list(" + value + ")"
             else if name == "Option":
-                "reflect_option(" + value + ")"
+                "reflect.reflect_option(" + value + ")"
             else:
-                "reflect_one(" + value + ")"
-        _ -> "reflect_one(" + value + ")"
+                "reflect.reflect_one(" + value + ")"
+        _ -> "reflect.reflect_one(" + value + ")"
 
 // `derive(Reflect)` → an `impl Reflect for T` building the value's `Mirror`: a
 // record to `MRecord("T", [(field, reflect field)…])`, a sum type to a `match`
