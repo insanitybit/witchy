@@ -7,7 +7,7 @@ predecessors:
   - "0042 (module namespaces — the type→module ownership this derives from)"
   - "0046 (typed trait dispatch — the receiver typing this consumes)"
   - "scratch/consistency-analysis-2026-07-03.md §4 (UFCS allowlist + functions-as-values evidence)"
-tracking: "Part 2 (module functions as values) shipped; Part 1 (method calls from type ownership) deferred, gated on RFC-0042"
+tracking: "Part 2 (module functions as values) shipped; Part 1 (method calls from type ownership) shipped after RFC-0042"
 ---
 
 # RFC-0050: Method calls from type ownership, not an allowlist; module functions as values
@@ -294,9 +294,10 @@ until 0042 lands. Priority: medium-high (Part 2) / medium (Part 1).
 
 ## Implementation note (2026-07-05, Part 2)
 
-Part 2 is implemented; Part 1 remains deferred (it is hard-gated on RFC-0042's
-module-scoped type ownership, and the `builtin_method_module` allowlist is
-untouched).
+Part 2 is implemented. At the time of this note, Part 1 remained deferred
+because it was hard-gated on RFC-0042's module-scoped type ownership, and the
+`builtin_method_module` allowlist was untouched. See the 2026-07-07 note below
+for the Part 1 landing.
 
 **Where.** All in the linker, `crates/witchy-syntax/src/linker.rs` — a
 source-to-source rewrite on the single linked AST before either backend lowers,
@@ -337,3 +338,20 @@ variable `list` `` no longer appears for a module base.
 
 **Tests.** Five differential tests in `src/example_tests.rs`
 (`module_function_*` / `module_var_procedure_*`).
+
+## Implementation note (2026-07-07, Part 1)
+
+Part 1 is implemented. Method fallback no longer depends on a compiler census of
+method-capable types. For ordinary module-scoped types, the owner is derived from
+the RFC-0042 canonical type name (`matrix.Matrix` → `matrix`), and only public
+receiver-first functions from that owner module become methods. Ambient builtins
+that still have no ordinary source declaration keep a small owner table until
+those types stop being ambient; this table now includes the motivating Bytes and
+Duration holes. Direct checker-only paths still lower ambient builtin methods
+without needing linked std item metadata, matching the old behavior for `List`
+and friends.
+
+Acceptance tests cover Bytes/Duration methods, a user `matrix.Matrix` module
+whose public receiver-first functions become methods without a compiler entry,
+and the privacy boundary: a private receiver-first helper in the owner module is
+not callable as a cross-module method.

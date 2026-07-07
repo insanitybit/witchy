@@ -50,8 +50,8 @@ const AMBIENT_TYPES: &[&str] = &[
     // `NetPolicy`/`DirPolicy` (typeck.rs), and a program may declare its own
     // policy record for them — so these names, like `Ordering`, stay ambient.
     "NetPolicy", "DirPolicy",
-    // `set.Set` / `iter.Iter`: the method-dispatch and for-loop machinery is
-    // hard-wired to these bare names (`builtin_method_module`, the `for x in set`
+    // `set.Set` / `iter.Iter`: the method-dispatch and for-loop machinery still
+    // treats these as ambient owner types (`type_owner_module`, the `for x in set`
     // -> `set.to_list` view, the `Set`-member `Eq` check). Each has a single
     // declarer, so keeping it ambient collides with nothing and keeps `xs.map()`
     // / `for x in aSet` / `collect` working without an import.

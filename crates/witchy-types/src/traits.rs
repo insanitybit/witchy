@@ -349,6 +349,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                 _ => None,
             })
             .collect();
+        let owner_methods = build_owner_methods(&items);
         let quiet = std::cell::RefCell::new(Vec::new());
         let (mutators, returns_nil) = build_mutation_tables(&items);
         let empty_table = crate::typeck::TypeTable::default();
@@ -362,6 +363,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             ctor_fields: &ctor_fields,
             record_fields: &record_fields,
             free_fns: &free_fns,
+            owner_methods: &owner_methods,
             missing_impls: &quiet,
             statics: &statics,
             mutators: &mutators,
@@ -609,6 +611,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             _ => None,
         })
         .collect();
+    let owner_methods = build_owner_methods(&items);
     let missing_impls = std::cell::RefCell::new(Vec::new());
     let (mutators, returns_nil) = build_mutation_tables(&items);
     let ctx = Ctx {
@@ -621,6 +624,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         ctor_fields: &ctor_fields,
         record_fields: &record_fields,
         free_fns: &free_fns,
+        owner_methods: &owner_methods,
         missing_impls: &missing_impls,
         statics: &statics,
         mutators: &mutators,
@@ -1000,6 +1004,9 @@ struct Ctx<'a> {
     /// a free function may legitimately resolve to it, so it is never a
     /// missing-impl error.
     free_fns: &'a std::collections::HashSet<String>,
+    /// Public receiver-first functions whose first parameter is owned by the
+    /// function's module. These are the RFC-0050 Part 1 owner methods.
+    owner_methods: &'a std::collections::HashSet<String>,
     /// Trait-method calls whose receiver type is KNOWN but has no impl —
     /// surfaced by the type checker as a clean "T does not implement Trait"
     /// instead of a post-lowering unknown-function error.
@@ -1571,12 +1578,13 @@ impl Ctx<'_> {
                     *e = Expr::Call { name: method.clone(), args: call_args };
                     return;
                 }
-                // UFCS fallback: on a built-in collection type, `recv.method(args)`
-                // lowers to the module-qualified free function
-                // `module.method(recv, args)` — so `d.keys()` is `dict.keys(d)`,
-                // `xs.length()` is `list.length(xs)`, and so on. A wrong name is
-                // validated downstream ("module `dict` has no function `keys`").
-                if let Some(module) = tn.as_deref().and_then(builtin_method_module) {
+                // UFCS fallback: a receiver may call public functions from its
+                // owning module (`matrix.Matrix.scale(m, n)` as `m.scale(n)`).
+                // RFC-0042 gives ordinary user types canonical `module.Type`
+                // names, so the owner is derived from the type itself. Ambient
+                // builtin types still use a small declaration table until they
+                // acquire ordinary source declarations.
+                if let Some(module) = tn.as_deref().and_then(type_owner_module) {
                     let mut call_args =
                         vec![std::mem::replace(receiver.as_mut(), Expr::Bool(false))];
                     call_args.append(args);
@@ -1589,8 +1597,12 @@ impl Ctx<'_> {
                     } else {
                         format!("{module}.{method}")
                     };
-                    *e = Expr::Call { name: func, args: call_args };
-                    return;
+                    if is_ambient_owned_type(tn.as_deref().unwrap_or_default())
+                        || self.owner_methods.contains(&func)
+                    {
+                        *e = Expr::Call { name: func, args: call_args };
+                        return;
+                    }
                 }
                 // UFCS for host-capability operations, which are BARE intrinsics
                 // (`restrict`, `connect`, `subdir`, `read`, …) rather than module
@@ -1852,13 +1864,10 @@ fn tuple_args(type_name: &str) -> Option<Vec<&str>> {
 
 /// The scope name for a declared parameter type, encoding a list's element type
 /// (`List<Int>`) so loop-variable typing works on annotated list parameters.
-// The stdlib module that backs UFCS method calls on a built-in type, so
-// `recv.method(args)` can lower to `module.method(recv, args)`. `tn` may carry a
-// generic suffix (`List<Int>`), so match on the head.
 /// Host capabilities whose operations are BARE intrinsics (`restrict`, `connect`,
 /// `subdir`, `read`, `write`, …) rather than module functions — so `cap.op(args)`
 /// UFCS-lowers to the bare call `op(cap, args)`. (`Secret`/`SecretStore` map to the
-/// `crypto`/`secretstore` modules via `builtin_method_module` and are handled first.)
+/// `crypto`/`secretstore` modules via `type_owner_module` and are handled first.)
 /// The capability/handle type a host-capability operation *intrinsic* returns, so a
 /// let-bound result (`let d = net.deny(...)`) is typed and a chained method call on it
 /// resolves (`d.only(...)`). These are bare intrinsics — not user functions — so they
@@ -1885,8 +1894,16 @@ fn is_host_capability(tn: &str) -> bool {
     )
 }
 
-fn builtin_method_module(tn: &str) -> Option<&'static str> {
-    match tn.split('<').next().unwrap_or(tn) {
+fn type_owner_module(tn: &str) -> Option<&str> {
+    let head = tn.split('<').next().unwrap_or(tn).trim();
+    if let Some((module, ty)) = head.rsplit_once('.') {
+        if !module.is_empty() && !ty.is_empty() {
+            return Some(module);
+        }
+    }
+    match head {
+        "Bytes" => Some("bytes"),
+        "Duration" => Some("duration"),
         "List" => Some("list"),
         "Dict" => Some("dict"),
         "String" => Some("string"),
@@ -1901,6 +1918,10 @@ fn builtin_method_module(tn: &str) -> Option<&'static str> {
         "SecretStore" => Some("secretstore"),
         _ => None,
     }
+}
+
+fn is_ambient_owned_type(tn: &str) -> bool {
+    !tn.split('<').next().unwrap_or(tn).contains('.')
 }
 
 // A `MethodCall` anywhere means the lowering pass must run (to resolve it via
@@ -2106,6 +2127,29 @@ fn build_tables(
         }
     }
     (ctor_results, fn_rets, fn_sigs)
+}
+
+fn build_owner_methods(items: &[Item]) -> std::collections::HashSet<String> {
+    let mut methods = std::collections::HashSet::new();
+    for item in items {
+        let Item::Function(f) = item else { continue };
+        if !f.public {
+            continue;
+        }
+        let Some((module, _)) = f.name.rsplit_once('.') else {
+            continue;
+        };
+        let Some(first_ty) = f.params.first().and_then(|p| p.ty.as_ref()) else {
+            continue;
+        };
+        let Some(first_scope) = type_to_scope_name(first_ty) else {
+            continue;
+        };
+        if type_owner_module(&first_scope) == Some(module) {
+            methods.insert(f.name.clone());
+        }
+    }
+    methods
 }
 
 /// (RFC-0043) The write-back tables read at a resolved call site:

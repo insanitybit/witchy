@@ -505,6 +505,42 @@
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
+    /// RFC-0050 Part 1: ambient builtin types whose API home is a std module are
+    /// method-capable through that owner. Bytes and Duration were the motivating
+    /// holes in the old hardcoded UFCS allowlist.
+    #[test]
+    fn rfc0050_builtin_type_owners_backends_agree() {
+        let src = "import bytes\nimport duration\n\nfn main(console: Console):\n    let b = bytes.from_string(\"hello\")\n    print(console, \"${b.length()} ${b.slice(1, 4).to_string()}\")\n    let d = duration.seconds(3661)\n    print(console, \"${d.to_seconds()} ${d.abs().to_seconds()}\")\n";
+        let expected = ["5 ell", "3661 3661"];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+    }
+
+    /// RFC-0050 Part 1: for ordinary module-scoped types, method ownership is
+    /// derived from the canonical `module.Type` name, so package/user modules get
+    /// receiver-first methods without being listed in the compiler.
+    #[test]
+    fn rfc0050_user_type_owner_methods_backends_agree() {
+        let matrix = "type Matrix:\n    Matrix(Int)\n\npub fn value(m: Matrix) -> Int:\n    match m:\n        Matrix(n) -> n\n\npub fn shifted(m: Matrix, delta: Int) -> Matrix:\n    match m:\n        Matrix(n) -> Matrix(n + delta)\n\nfn secret(m: Matrix) -> Int:\n    99\n";
+        let main = "import matrix\n\nfn main(console: Console):\n    let m = matrix.Matrix(40)\n    print(console, \"${m.value()} ${m.shifted(2).value()}\")\n";
+        let sources = [("matrix", matrix), ("main", main)];
+        let expected = vec!["40 42".to_string()];
+        assert_eq!(interpreter::run_program(&sources, "main").expect("interp"), expected);
+        assert_eq!(run_linked_on_wasm(&sources, "main"), expected, "wasm");
+
+        let bad_main = "import matrix\n\nfn main(console: Console):\n    let m = matrix.Matrix(1)\n    print(console, \"${m.secret()}\")\n";
+        let linked = crate::pipeline::link(
+            vec![
+                ("matrix".to_string(), parser::parse_module(matrix).expect("parse matrix")),
+                ("main".to_string(), parser::parse_module(bad_main).expect("parse main")),
+            ],
+            "main",
+        )
+        .expect("link");
+        let err = typeck::check(&linked).expect_err("private owner helper is not a method").message;
+        assert!(err.contains("no method `secret`"), "got: {err}");
+    }
+
     /// (parity, SEC-040) `bytes.slice` is BYTE-indexed and `bytes.to_string` is
     /// LOSSY on BOTH backends. The compiled `bytes.slice` used to route through the
     /// CHAR-indexed `$str_substring` (so slicing a multibyte payload returned the
