@@ -15,7 +15,7 @@ fn main(console: Console):
 pub fn query(document: String, path: String) -> String:
     match json.decode(document):
         Ok(value) -> render(navigate(value, path))
-        Err(message) -> "parse error: " + message
+        Err(message) -> "parse error: " + json.decode_error_message(message)
 
 fn render(selected: Option(Json)) -> String:
     match selected:

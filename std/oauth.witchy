@@ -62,7 +62,8 @@ pub fn token_response(net: Net[Connect, Tcp], token_url: String, client_id: Stri
             if !http.is_success(resp):
                 Err("token endpoint returned HTTP " + "${http.status(resp)}" + ": " + http.body(resp))
             else:
-                json.decode(http.body(resp))
+                let doc = json.decode(http.body(resp))?
+                Ok(doc)
 
 // GET `url` with a `Bearer` access token and parse the JSON body — the "read the
 // signed-in user" step after `exchange_code` (GitHub `/user`, an OIDC userinfo endpoint).
@@ -83,7 +84,8 @@ pub fn bearer_get_json(net: Net[Connect, Tcp], url: String, token: String) -> Re
             if !http.is_success(resp):
                 Err("endpoint returned HTTP " + "${http.status(resp)}")
             else:
-                json.decode(http.body(resp))
+                let doc = json.decode(http.body(resp))?
+                Ok(doc)
 
 // Read a string field from a token response, surfacing the provider's `error` if the
 // field is absent (an OAuth error response carries `error`/`error_description`).

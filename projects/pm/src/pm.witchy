@@ -711,7 +711,7 @@ fn cmd_guard(console: Console, root: Dir, old: String, new: String) -> Int:
 fn verdict(report: String) -> String:
     match json.decode(report):
         Ok(doc) -> if widened(doc): "BLOCK: upgrade widens authority by " + added(doc) else: "OK: no new authority"
-        Err(e) -> "error: " + e
+        Err(e) -> "error: " + json.decode_error_message(e)
 
 fn exit_for(report: String) -> Int:
     match json.decode(report):

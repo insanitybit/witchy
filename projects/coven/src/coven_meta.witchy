@@ -34,7 +34,7 @@ pub fn current_version(store: Dir) -> Int:
                             Some(v) -> v
                             None -> refuse_reset("has no integer `signed.version`")
                     None -> refuse_reset("is missing its `signed` object")
-            Err(e) -> refuse_reset("is corrupt (" + e + ")")
+            Err(e) -> refuse_reset("is corrupt (" + json.decode_error_message(e) + ")")
     else:
         0
 

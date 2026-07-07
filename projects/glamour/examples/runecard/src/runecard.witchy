@@ -18,8 +18,6 @@
 // That empty footprint is itself the thing this card celebrates: a rune that asks
 // for nothing.
 
-import glamour
-import json
 import list
 from glamour import VNode
 from json import Json
@@ -63,25 +61,14 @@ fn msg_to_json(m: Msg) -> Json:
 //   * `<div class="rune-provenance">prov</div>`   — the provenance line
 // Every text leaf is a `text(...)` node, so no field can ever form markup.
 // ---------------------------------------------------------------------------
-
 fn card(name: String, version: String, caps: List(String), provenance: String) -> VNode(Msg):
     let heading = glamour.element("h3", [glamour.prop("class", "rune-name")], [glamour.text(name)])
-    let ver = glamour.element(
-        "div",
-        [glamour.prop("class", "rune-version")],
-        [glamour.text("v" + version)],
-    )
+    let ver = glamour.element("div", [glamour.prop("class", "rune-version")], [glamour.text("v" + version)])
+
     let caps_row = cap_row(caps)
-    let prov = glamour.element(
-        "div",
-        [glamour.prop("class", "rune-provenance")],
-        [glamour.text(provenance)],
-    )
-    glamour.element(
-        "div",
-        [glamour.prop("class", "rune-card")],
-        [heading, ver, caps_row, prov],
-    )
+    let prov = glamour.element("div", [glamour.prop("class", "rune-provenance")], [glamour.text(provenance)])
+
+    glamour.element("div", [glamour.prop("class", "rune-card")], [heading, ver, caps_row, prov])
 
 // The capability row. A NON-empty footprint becomes one `<span class="cap-badge">`
 // per declared capability. An EMPTY footprint becomes a SINGLE distinct
@@ -89,11 +76,8 @@ fn card(name: String, version: String, caps: List(String), provenance: String) -
 // given its own class so the shell can style it as a reward rather than a warning.
 fn cap_row(caps: List(String)) -> VNode(Msg):
     if list.is_empty(caps):
-        let none_badge = glamour.element(
-            "span",
-            [glamour.prop("class", "cap-none")],
-            [glamour.text("no capabilities")],
-        )
+        let none_badge = glamour.element("span", [glamour.prop("class", "cap-none")], [glamour.text("no capabilities")])
+
         glamour.element("div", [glamour.prop("class", "cap-row")], [none_badge])
     else:
         var badges: List(VNode(Msg)) = []
@@ -113,10 +97,9 @@ fn cap_badge(name: String) -> VNode(Msg):
 // matching glamour's run-loop convention. Each field defaults gracefully so a
 // partial record still renders a card.
 // ---------------------------------------------------------------------------
-
 pub fn export_render(input: String) -> String:
     match json.decode(input):
-        Err(e) -> json.encode(JsonObject([("error", JsonString(e))]))
+        Err(e) -> json.encode(JsonObject([("error", JsonString(json.decode_error_message(e)))]))
         Ok(doc) ->
             let name = field_or(doc, "name", "(unnamed rune)")
             let version = field_or(doc, "version", "0.0.0")

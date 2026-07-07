@@ -78,7 +78,7 @@ fn test_publish_body_round_trips_id_token():
             match coven_proto.publish_of(doc).id_token:
                 Some(t) -> testing.assert_eq(t, "tok123")
                 None -> testing.assert(false, "id_token should round-trip as Some")
-        Err(e) -> testing.assert(false, "decode failed: " + e)
+        Err(e) -> testing.assert(false, "decode failed: " + json.decode_error_message(e))
 
 fn test_publish_body_omits_id_token_when_anonymous():
     let body = coven_proto.publish_body("[rune]\n", [], "ci-bot", None)
@@ -91,7 +91,7 @@ fn test_yank_body_carries_id_token():
             match coven_proto.yank_of(doc).id_token:
                 Some(t) -> testing.assert_eq(t, "ytok")
                 None -> testing.assert(false, "yank_body id_token should round-trip as Some")
-        Err(e) -> testing.assert(false, "decode failed: " + e)
+        Err(e) -> testing.assert(false, "decode failed: " + json.decode_error_message(e))
 
 // --- footprint recompute fails closed (BUG-422) ------------------------------
 // A source whose footprint cannot be computed (it does not compile) must be a hard

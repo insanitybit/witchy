@@ -43,7 +43,7 @@ fn json_str(doc: Json, key: String) -> String:
 // when every check passes, or `Err(reason)`.
 pub fn verify_assertion(stored_pubkey_hex: String, auth_data_hex: String, client_data_json: String, signature_hex: String, expected_challenge: String, expected_origin: String, expected_rp_id: String, require_uv: Bool) -> Result(Bool, String):
     match json.decode(client_data_json):
-        Err(e) -> Err("clientDataJSON did not parse: " + e)
+        Err(e) -> Err("clientDataJSON did not parse: " + json.decode_error_message(e))
         Ok(doc) ->
             if json_str(doc, "type") != "webauthn.get":
                 Err("clientData.type is not webauthn.get")

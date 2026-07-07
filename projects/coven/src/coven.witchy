@@ -251,7 +251,7 @@ fn parse_issuer_arg(a: String) -> Issuer:
         let (_tag, jwks_json) = string.split_once(value, ":")
         match json.decode(jwks_json):
             Ok(jwks) -> Issuer(id, "", Some(jwks))
-            Err(e) -> bad_issuer("coven: malformed JWKS for issuer `" + id + "`: " + e)
+            Err(e) -> bad_issuer("coven: malformed JWKS for issuer `" + id + "`: " + json.decode_error_message(e))
     else:
         Issuer(id, value, None)
 
@@ -313,9 +313,9 @@ impl Coven:
             self.doc_response(name, version)
         )
 
-    // BUG-019: reject a malformed name/version on the read routes too — every path is
-    // built from a network-supplied name, so validate it at each entry, not only publish.
     fn validate_ref(self, name: String, version: String) -> Result(Bool, CovenError):
+        // BUG-019: reject a malformed name/version on the read routes too — every path is
+        // built from a network-supplied name, so validate it at each entry, not only publish.
         require(coven_validate.valid_name(name), 400, "invalid rune name `" + name + "`")?
         require(coven_validate.valid_version(version), 400, "invalid version `" + version + "`")
 
@@ -437,11 +437,11 @@ impl Coven:
             let sub = self.authorize_publish(name, claims)?
             Ok((sub, Some(claims)))
 
-    // SEC-022/BUG-400: a trusted-publishing token MUST carry a non-empty `jti` so it can be
-    // single-use — a missing one is refused, never waved through unmarked (which would make
-    // a jti-less token replayable). The marker is keyed by sha256(jti) so an issuer-chosen
-    // id can never escape `_policy/` via path traversal.
     fn consume_jti(self, claims: Json) -> Result(String, CovenError):
+        // SEC-022/BUG-400: a trusted-publishing token MUST carry a non-empty `jti` so it can be
+        // single-use — a missing one is refused, never waved through unmarked (which would make
+        // a jti-less token replayable). The marker is keyed by sha256(jti) so an issuer-chosen
+        // id can never escape `_policy/` via path traversal.
         let jti = coven_trust.claim(claims, "jti")
         require(!string.is_empty(jti), 403, "identity token has no `jti` claim — a single-use token id is required (replay defense)")?
         let marker = "_policy/_jti/" + crypto.sha256(jti)
@@ -466,7 +466,7 @@ impl Coven:
             // distinct hard error (500), not the 403 "incomplete trust policy" that a
             // decoded-but-empty policy yields. Both fail closed; they are not the same fault.
             match json.decode(read(self.store, pubfile)):
-                Err(e) -> Err(CovenError(500, "corrupt trust policy for namespace `" + ns + "` (" + e + "); it must be repaired or rebound out of band"))
+                Err(e) -> Err(CovenError(500, "corrupt trust policy for namespace `" + ns + "` (" + json.decode_error_message(e) + "); it must be repaired or rebound out of band"))
                 Ok(policy) -> enforce_publish_policy(policy, claims, ns)
 
     fn authorized_promoter(self, req: PromoteRequest, now: Int) -> Result((String, Option(Json)), CovenError):
@@ -477,11 +477,11 @@ impl Coven:
             let sub = self.authorize_promote(req.name, claims)?
             Ok((sub, Some(claims)))
 
-    // Authorize a promoter WITHOUT binding maintainership: allow the first promoter of an
-    // unclaimed namespace (TOFU) or an existing maintainer, and reject everyone else. The
-    // TOFU bind is deferred to `bind_maintainer`, run only AFTER the promote succeeds —
-    // BUG-281: a FAILED self-promote must not leave the caller a registered maintainer.
     fn authorize_promote(self, name: String, claims: Json) -> Result(String, CovenError):
+        // Authorize a promoter WITHOUT binding maintainership: allow the first promoter of an
+        // unclaimed namespace (TOFU) or an existing maintainer, and reject everyone else. The
+        // TOFU bind is deferred to `bind_maintainer`, run only AFTER the promote succeeds —
+        // BUG-281: a FAILED self-promote must not leave the caller a registered maintainer.
         let ns = coven_trust.namespace_of(name)
         let mfile = "_policy/" + ns + "/maintainers.json"
         let id = coven_json.str(claims, "iss") + "|" + coven_json.str(claims, "sub")
@@ -492,9 +492,9 @@ impl Coven:
         else:
             Err(CovenError(403, "`" + coven_json.str(claims, "sub") + "` is not a maintainer of namespace `" + ns + "`"))
 
-    // Commit the trust-on-first-use maintainer binding, only for an as-yet-unclaimed
-    // namespace. Called AFTER a successful promote so a rejected one never binds authority.
     fn bind_maintainer(self, name: String, claims: Json):
+        // Commit the trust-on-first-use maintainer binding, only for an as-yet-unclaimed
+        // namespace. Called AFTER a successful promote so a rejected one never binds authority.
         let ns = coven_trust.namespace_of(name)
         let mfile = "_policy/" + ns + "/maintainers.json"
         if !exists(self.store, mfile):

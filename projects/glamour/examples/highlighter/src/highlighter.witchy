@@ -16,8 +16,6 @@
 // shell (web/witchy-runtime/glamour-dom.mjs) diffs into the DOM. The rune holds NO
 // capability — `witchy caps .../highlighter.witchy` reports `export_render (none)`.
 
-import glamour
-import json
 import string
 import list
 from glamour import VNode
@@ -45,7 +43,6 @@ fn msg_to_json(m: Msg) -> Json:
 //   *  ""   — anything else (identifiers, whitespace, punctuation) as plain text.
 // A token is a (class, text) pair; an empty class means plain (unclassed) text.
 // ---------------------------------------------------------------------------
-
 type Token:
     Tok(String, String)
 
@@ -56,12 +53,7 @@ fn is_keyword(word: String) -> Bool:
     list.contains(keywords(), word)
 
 fn keywords() -> List(String):
-    [
-        "fn", "let", "var", "if", "else", "match", "type", "import", "pub",
-        "for", "while", "return", "in", "where", "derive", "and", "or", "not",
-        "true", "false", "async", "await", "spawn", "comptime", "gen", "yield",
-        "as", "capability", "from", "test",
-    ]
+    ["fn", "let", "var", "if", "else", "match", "type", "import", "pub", "for", "while", "return", "in", "where", "derive", "and", "or", "not", "true", "false", "async", "await", "spawn", "comptime", "gen", "yield", "as", "capability", "from", "test"]
 
 // witchy's host capabilities — the unforgeable authority a rune may hold. The
 // highlighter gives them their OWN class (`cap`) so a reader's eye lands on
@@ -86,30 +78,27 @@ fn tokenize(src: String) -> List(Token):
             let (text, j) = read_line_comment(cs, i, n)
             toks = list.push(toks, Tok("com", text))
             i = j
+        else if c == "\"":
+            // A string literal, quotes included; `\"` does not close it.
+            let (text, j) = read_string(cs, i, n)
+            toks = list.push(toks, Tok("str", text))
+            i = j
+        else if is_digit(c):
+            let (text, j) = read_number(cs, i, n)
+            toks = list.push(toks, Tok("num", text))
+            i = j
+        else if is_ident_start(c):
+            let (word, j) = read_ident(cs, i, n)
+            let kind = if is_keyword(word): "kw" else: if is_capability(word): "cap" else: ""
+            toks = list.push(toks, Tok(kind, word))
+            i = j
         else:
-            if c == "\"":
-                // A string literal, quotes included; `\"` does not close it.
-                let (text, j) = read_string(cs, i, n)
-                toks = list.push(toks, Tok("str", text))
-                i = j
-            else:
-                if is_digit(c):
-                    let (text, j) = read_number(cs, i, n)
-                    toks = list.push(toks, Tok("num", text))
-                    i = j
-                else:
-                    if is_ident_start(c):
-                        let (word, j) = read_ident(cs, i, n)
-                        let kind = if is_keyword(word): "kw" else if is_capability(word): "cap" else: ""
-                        toks = list.push(toks, Tok(kind, word))
-                        i = j
-                    else:
-                        // Plain run: anything that is not the start of a
-                        // classed token (whitespace, punctuation, operators),
-                        // coalesced so the tree stays small.
-                        let (text, j) = read_plain(cs, i, n)
-                        toks = list.push(toks, Tok("", text))
-                        i = j
+            // Plain run: anything that is not the start of a
+            // classed token (whitespace, punctuation, operators),
+            // coalesced so the tree stays small.
+            let (text, j) = read_plain(cs, i, n)
+            toks = list.push(toks, Tok("", text))
+            i = j
     toks
 
 // `//` at position `i`?
@@ -176,10 +165,8 @@ fn read_plain(cs: List(String), start: Int, n: Int) -> (String, Int):
     (out, i)
 
 // ---- character classes ----
-
 fn is_digit(c: String) -> Bool:
-    c == "0" || c == "1" || c == "2" || c == "3" || c == "4"
-        || c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
+    c == "0" || c == "1" || c == "2" || c == "3" || c == "4" || c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
 
 fn is_number_char(c: String) -> Bool:
     is_digit(c) || c == "_" || c == "."
@@ -201,7 +188,6 @@ fn is_alpha(c: String) -> Bool:
 // a plain token becomes a bare `text(...)` node. Either way the token's text is a
 // `text(...)` node, so it can NEVER form markup (XSS-immune by construction).
 // ---------------------------------------------------------------------------
-
 fn highlight(src: String) -> VNode(Msg):
     let toks = tokenize(src)
     var spans: List(VNode(Msg)) = []
@@ -213,12 +199,13 @@ fn highlight(src: String) -> VNode(Msg):
 
 fn render_token(t: Token) -> VNode(Msg):
     match t:
+        // Plain text — a bare text node (no wrapping span).
+
+        // A classed run — `<span class="kind">text</span>`.
         Tok(kind, text) ->
             if string.is_empty(kind):
-                // Plain text — a bare text node (no wrapping span).
                 glamour.text(text)
             else:
-                // A classed run — `<span class="kind">text</span>`.
                 glamour.element("span", [glamour.prop("class", kind)], [glamour.text(text)])
 
 // ---------------------------------------------------------------------------
@@ -227,10 +214,9 @@ fn render_token(t: Token) -> VNode(Msg):
 // highlighter is render-only). On a missing/invalid `src` it returns an `{"error"}`
 // object the host surfaces, matching glamour's run-loop convention.
 // ---------------------------------------------------------------------------
-
 pub fn export_render(input: String) -> String:
     match json.decode(input):
-        Err(e) -> json.encode(JsonObject([("error", JsonString(e))]))
+        Err(e) -> json.encode(JsonObject([("error", JsonString(json.decode_error_message(e)))]))
         Ok(doc) ->
             match json.get_string(doc, "src"):
                 None -> json.encode(JsonObject([("error", JsonString("missing `src`"))]))

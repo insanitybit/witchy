@@ -15,7 +15,7 @@ fn main(console: Console, root: Dir[Read]):
 fn report(text: String) -> String:
     match json.decode(text):
         Ok(doc) -> render(array_or_empty(json.as_array(doc)))
-        Err(e) -> "parse error: " + e
+        Err(e) -> "parse error: " + json.decode_error_message(e)
 
 fn render(records: List(Json)) -> String:
     var scores = []

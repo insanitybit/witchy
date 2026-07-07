@@ -28,7 +28,7 @@ fn exit_code(report: String) -> Int:
 fn gate(report: String) -> String:
     match json.decode(report):
         Ok(doc) -> verdict(doc)
-        Err(e) -> "error: " + e
+        Err(e) -> "error: " + json.decode_error_message(e)
 
 fn verdict(doc: Json) -> String:
     if widened(doc):

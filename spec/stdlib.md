@@ -1052,11 +1052,17 @@ A JSON library — the witchy take on Go's encoding/json. This slice is the valu
 - `JsonArray(List(Json))`
 - `JsonObject(List((String, Json)))`
 
+#### `type DecodeError`
+
+- `DecodeError { message: String }`
+
 #### `trait Deserialize`
 
 Reconstruct a value from a `Json`. Reflection can read a value's structure but not rebuild a value from structure, so `derive(Deserialize)` generates `from_json` per type. Encoding needs no trait: `from_value`, `stringify`, and `x.into()` already serialize any `Reflect` value.
 
 - `fn from_json(j: Json) -> Result(Self, String)`
+
+#### `fn decode_error_message(e: DecodeError) -> String`
 
 #### `fn encode(j: Json) -> String`
 
@@ -1066,7 +1072,7 @@ Serialize a Json value to its compact textual form.
 
 Serialize with 2-space indentation, for human-readable output. Empty arrays and objects stay on one line (`[]` / `{}`).
 
-#### `fn decode(s: String) -> Result(Json, String)`
+#### `fn decode(s: String) -> Result(Json, DecodeError)`
 
 Parse a complete JSON document, or return an error message. The whole input must be a single value: trailing content after it (other than whitespace) is rejected, so `decode("1 2")` is an Err rather than silently yielding `1`.
 

@@ -18,7 +18,7 @@ fn main(console: Console, root: Dir[Read]):
 fn total_of(report: String) -> String:
     match json.decode(report):
         Ok(doc) -> render_total(doc)
-        Err(e) -> "parse error: " + e
+        Err(e) -> "parse error: " + json.decode_error_message(e)
 
 fn render_total(doc: Json) -> String:
     match json.get(doc, "total"):

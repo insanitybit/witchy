@@ -268,10 +268,26 @@ type Cmd(msg):
 // ---------------------------------------------------------------------------
 pub fn cmd_to_json(cmd: Cmd(msg), msg_to_json: fn(msg) -> Json) -> Json:
     match cmd:
+        // (BUG-017) Carry the token's `min_ms` floor so the shell — the real authority —
+        // re-clamps the delay itself, rather than trusting the emitted `ms` blindly.
+
+        // `tag` is a literal variant NAME (not routed through msg_to_json): the shell
+        // reconstructs `{"$variant": tag, "$values": [status, body]}` once the response
+        // arrives, so the response carries data the rune did not have at emit time.
+        // (BUG-017) The `UiFetch` policy (`methods`/`prefix`/`scope`) rides the wire so the
+        // host re-checks method+prefix before performing the fetch — the real authority.
+
+        // (BUG-017) Carry the `UiRoute` `base`/`rights` so the host re-checks the path is
+        // under the authorized base before `pushState`.
+
+        // The port NAME is read out of the `CredentialPort` token (not a free arg), so
+        // the wire can only ever name the port the component was actually granted.
+
+        // A secret submit carries the host-slot name (from the `SecretRef`) and the port
+        // name (from the `CredentialPort`) — both from tokens, neither forgeable — plus the
+        // reply tag. The secret VALUE is NOT here: the shell reads it from its own custody.
         NoCmd -> JsonObject([("cmd", JsonString("none"))])
         After(timer, ms, msg) ->
-            // (BUG-017) Carry the token's `min_ms` floor so the shell — the real authority —
-            // re-clamps the delay itself, rather than trusting the emitted `ms` blindly.
             let mj: Json = msg_to_json(msg)
             match timer:
                 UiTimer(min_ms) ->
@@ -283,30 +299,18 @@ pub fn cmd_to_json(cmd: Cmd(msg), msg_to_json: fn(msg) -> Json) -> Json:
                 cjs = list.push(cjs, cj)
             JsonObject([("cmd", JsonString("batch")), ("cmds", JsonArray(cjs))])
         Http(fetch, method, url, body, tag) ->
-            // `tag` is a literal variant NAME (not routed through msg_to_json): the shell
-            // reconstructs `{"$variant": tag, "$values": [status, body]}` once the response
-            // arrives, so the response carries data the rune did not have at emit time.
-            // (BUG-017) The `UiFetch` policy (`methods`/`prefix`/`scope`) rides the wire so the
-            // host re-checks method+prefix before performing the fetch — the real authority.
             match fetch:
                 UiFetch(scope, methods, prefix) ->
                     JsonObject([("cmd", JsonString("http")), ("method", JsonString(method)), ("url", JsonString(url)), ("body", JsonString(body)), ("tag", JsonString(tag)), ("methods", JsonString(methods)), ("prefix", JsonString(prefix)), ("scope", JsonString(scope))])
         Nav(route, path) ->
-            // (BUG-017) Carry the `UiRoute` `base`/`rights` so the host re-checks the path is
-            // under the authorized base before `pushState`.
             match route:
                 UiRoute(base, rights) ->
                     JsonObject([("cmd", JsonString("nav")), ("path", JsonString(path)), ("base", JsonString(base)), ("rights", JsonString(rights))])
         Port(cred, arg, tag) ->
-            // The port NAME is read out of the `CredentialPort` token (not a free arg), so
-            // the wire can only ever name the port the component was actually granted.
             match cred:
                 CredentialPort(name) ->
                     JsonObject([("cmd", JsonString("port")), ("port", JsonString(name)), ("arg", JsonString(arg)), ("tag", JsonString(tag))])
         SubmitSecret(secret, cred, tag) ->
-            // A secret submit carries the host-slot name (from the `SecretRef`) and the port
-            // name (from the `CredentialPort`) — both from tokens, neither forgeable — plus the
-            // reply tag. The secret VALUE is NOT here: the shell reads it from its own custody.
             match secret:
                 SecretRef(slot) ->
                     match cred:
@@ -390,12 +394,12 @@ pub fn submit_secret(secret: SecretRef, cred: CredentialPort, on_done: String) -
 // ---------------------------------------------------------------------------
 pub fn to_html(node: VNode(msg)) -> String:
     match node:
+        // (BUG-272) The renderer is a REGISTRY KEY, not URL path material. Validate it as
+        // an opaque, non-path id; a value carrying `/`, `.`, `%`, `?`, `#` (which URL
+        // resolution could normalize out of the `/compartments/<id>/` namespace) is FAIL
+        // CLOSED to an inert `about:blank` frame instead of a crafted path.
         Text(s) -> escape_text(s)
         Compartment(renderer, _grant, _on) ->
-            // (BUG-272) The renderer is a REGISTRY KEY, not URL path material. Validate it as
-            // an opaque, non-path id; a value carrying `/`, `.`, `%`, `?`, `#` (which URL
-            // resolution could normalize out of the `/compartments/<id>/` namespace) is FAIL
-            // CLOSED to an inert `about:blank` frame instead of a crafted path.
             if valid_renderer_id(renderer):
                 "<iframe sandbox=\"allow-scripts\" class=\"glamour-compartment\" src=\"/compartments/" + renderer + "/\"></iframe>"
             else:
@@ -576,21 +580,28 @@ pub fn to_json(node: VNode(msg), msg_to_json: fn(msg) -> Json) -> String:
 
 fn node_json(node: VNode(msg), msg_to_json: fn(msg) -> Json) -> Json:
     match node:
+        // A secret field carries only its host-slot coordinates (`form`/`field`, read out
+        // of the `SecretInput` token) and the non-sensitive `on_ready` msg-tag. No value —
+        // the shell owns the bytes; the rune never emitted them.
+
+        // A host slot names its `kind` renderer and carries its `data` payload; the host
+        // mounts the widget (glamour never diffs into it).
+
+        // The msg VALUE serialized to JSON — the host sends it back
+        // unchanged, so a `${Inc}` event handler round-trips as the
+        // `Inc` message into `update`. Events are data.
+
+        // The shell fills the target's value into a `tag(value)` msg on `event`.
         Text(s) -> JsonObject([("text", JsonString(s))])
         Compartment(renderer, grant, on_event) ->
             JsonObject([("compartment", JsonString(renderer)), ("grant", JsonString(grant)), ("on", JsonString(on_event))])
         Keyed(key, inner) ->
             JsonObject([("key", JsonString(key)), ("node", node_json(inner, msg_to_json))])
         SecretField(input, on_ready) ->
-            // A secret field carries only its host-slot coordinates (`form`/`field`, read out
-            // of the `SecretInput` token) and the non-sensitive `on_ready` msg-tag. No value —
-            // the shell owns the bytes; the rune never emitted them.
             match input:
                 SecretInput(form, field) ->
                     JsonObject([("secret", JsonObject([("form", JsonString(form)), ("field", JsonString(field))])), ("on_ready", JsonString(on_ready))])
         Slot(kind, data) ->
-            // A host slot names its `kind` renderer and carries its `data` payload; the host
-            // mounts the widget (glamour never diffs into it).
             JsonObject([("slot", JsonString(kind)), ("data", JsonString(data))])
         Element(tag, attrs, children) ->
             var ajs: List(Json) = []
@@ -598,13 +609,9 @@ fn node_json(node: VNode(msg), msg_to_json: fn(msg) -> Json) -> Json:
                 let aj: Json = match a:
                     Prop(name, value) -> JsonArray([JsonString("prop"), JsonString(name), JsonString(value)])
                     On(event, msg) ->
-                        // The msg VALUE serialized to JSON — the host sends it back
-                        // unchanged, so a `${Inc}` event handler round-trips as the
-                        // `Inc` message into `update`. Events are data.
                         let mj: Json = msg_to_json(msg)
                         JsonArray([JsonString("on"), JsonString(event), mj])
                     OnInput(event, tag) ->
-                        // The shell fills the target's value into a `tag(value)` msg on `event`.
                         JsonArray([JsonString("oninput"), JsonString(event), JsonString(tag)])
                 ajs = list.push(ajs, aj)
             var kjs: List(Json) = []
@@ -641,32 +648,35 @@ fn node_json(node: VNode(msg), msg_to_json: fn(msg) -> Json) -> Json:
 pub fn step_with(input: String, view: fn(model) -> VNode(msg), update: fn(model, msg) -> (model, Cmd(msg)), parse_model: fn(Json) -> model, parse_msg: fn(Json) -> msg, model_to_json: fn(model) -> Json, msg_to_json: fn(msg) -> Json) -> String:
     let parsed = json.decode(input)
     match parsed:
-        Err(e) -> json.encode(JsonObject([("error", JsonString(e))]))
+        // The model is required; a missing/invalid `model` is an error result.
+
+        // Apply `update` only when a `msg` is present (the event step);
+        // the initial render has model-only input and so emits `NoCmd`.
+        // Kept inline (not a helper) so the `model`/`msg` type vars
+        // thread without a cross-function inference hop.
+
+        // Initial render: model-only input, no msg, so no effect.
+
+        // Event step: fold the msg in and carry its command out.
+
+        // Serialize the command so the host shell can interpret it —
+        // the shell holds the authority (e.g. the timer); the rune only
+        // described the effect here.
+        Err(e) -> json.encode(JsonObject([("error", JsonString(json.decode_error_message(e)))]))
         Ok(doc) ->
-            // The model is required; a missing/invalid `model` is an error result.
             match json.get(doc, "model"):
                 None -> json.encode(JsonObject([("error", JsonString("missing `model`"))]))
                 Some(model_json) ->
                     let model0 = parse_model(model_json)
-                    // Apply `update` only when a `msg` is present (the event step);
-                    // the initial render has model-only input and so emits `NoCmd`.
-                    // Kept inline (not a helper) so the `model`/`msg` type vars
-                    // thread without a cross-function inference hop.
                     let stepped = match json.get(doc, "msg"):
                         None -> (model0, NoCmd)
                         Some(msg_json) ->
-                            // Initial render: model-only input, no msg, so no effect.
-
-                            // Event step: fold the msg in and carry its command out.
                             let msg = parse_msg(msg_json)
                             update(model0, msg)
                     let (model1, cmd) = stepped
                     let vnode = view(model1)
                     let model_j = model_to_json(model1)
                     let vnode_j = node_json(vnode, msg_to_json)
-                    // Serialize the command so the host shell can interpret it —
-                    // the shell holds the authority (e.g. the timer); the rune only
-                    // described the effect here.
                     let cmd_j = cmd_to_json(cmd, msg_to_json)
                     json.encode(JsonObject([("model", model_j), ("vnode", vnode_j), ("cmd", cmd_j)]))
 

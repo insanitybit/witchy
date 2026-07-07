@@ -1073,6 +1073,22 @@ fn main(console: Console):
         assert!(err.to_string().contains("propagates from a `Option"), "{err}");
     }
 
+    #[test]
+    fn rfc0054_json_decode_uses_typed_error_and_converts_to_string() {
+        let src = "import json\nfrom json import Json\nimport show\n\nfn via_string() -> Result(Json, String):\n    let doc = json.decode(\"1 2\")?\n    Ok(doc)\n\nfn main(console: Console):\n    match json.decode(\"1 2\"):\n        Ok(_) -> print(console, \"bad\")\n        Err(e) ->\n            print(console, json.decode_error_message(e))\n            print(console, show.render(e))\n    match via_string():\n        Ok(_) -> print(console, \"bad\")\n        Err(e) -> print(console, e)\n";
+        let expected = [
+            "unexpected trailing content at 2",
+            "unexpected trailing content at 2",
+            "unexpected trailing content at 2",
+        ];
+        assert_eq!(link_run(src), expected, "interp: typed json.DecodeError");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: typed json.DecodeError",
+        );
+    }
+
     /// (BUG-539) `Bytes` is ordinary core data, so it must participate in the
     /// public display and reflection protocols instead of being printable only by
     /// the interpreter's private `Value::Display` path. `Show` stays concise and
@@ -3749,7 +3765,7 @@ fn main(console: Console):
         assert!(out[0].contains("\"name\":\"load\""), "entry missing: {}", out[0]);
         // The output is valid JSON — it round-trips through `std/json`.
         let composed = link_run(
-            "import compiler\nimport json\nfn main(console: Console):\n    match json.decode(compiler.footprint(\"pub fn serve(n: Net) -> Int:\\n    0\\n\")):\n        Ok(doc) -> print(console, \"valid\")\n        Err(e) -> print(console, \"invalid: \" + e)\n",
+            "import compiler\nimport json\nfn main(console: Console):\n    match json.decode(compiler.footprint(\"pub fn serve(n: Net) -> Int:\\n    0\\n\")):\n        Ok(doc) -> print(console, \"valid\")\n        Err(e) -> print(console, \"invalid: \" + json.decode_error_message(e))\n",
         );
         assert_eq!(composed, vec!["valid"]);
         // Malformed source degrades to an error object, not a crash.
@@ -9024,7 +9040,7 @@ import json
 fn round_trip(s: String) -> String:
     match json.decode(s):
         Ok(j) -> json.encode(j)
-        Err(e) -> "err:" + e
+        Err(e) -> "err:" + json.decode_error_message(e)
 fn main(console: Console):
     print(console, round_trip("10"))
     print(console, round_trip("-3"))
@@ -9053,7 +9069,7 @@ import json
 fn rt(s: String) -> String:
     match json.decode(s):
         Ok(j) -> json.encode(j)
-        Err(e) -> "err:" + e
+        Err(e) -> "err:" + json.decode_error_message(e)
 fn main(console: Console):
     print(console, rt("0.99999999999999999999"))
     print(console, rt("1.99999999999999999999999999999999999999"))
@@ -17471,7 +17487,7 @@ fn main(console: Console):
             print(console, str_at(j, "user.name"))
             print(console, __render(int_at(j, "user.age")))
             print(console, str_at(j, "user.missing"))
-        Err(e) -> print(console, e)"#;
+        Err(e) -> print(console, json.decode_error_message(e))"#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
@@ -19134,7 +19150,7 @@ fn main(console: Console):
     let input = "{\"name\":\"witchy\",\"nums\":[1,2,3],\"ok\":true,\"nil\":null,\"neg\":-5,\"nested\":{\"a\":[true,false]}}"
     match json.decode(input):
         Ok(j) -> print(console, json.encode(j))
-        Err(e) -> print(console, "error: " + e)
+        Err(e) -> print(console, "error: " + json.decode_error_message(e))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -19175,7 +19191,7 @@ fn main(console: Console):
             print(console, option.unwrap_or(json.as_string(field(j, "name")), "?"))
             print(console, __render(option.unwrap_or(json.as_int(field(j, "version")), 0)))
             print(console, __render(elem_int(j, "items", 1)))
-        Err(e) -> print(console, e)"#;
+        Err(e) -> print(console, json.decode_error_message(e))"#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");

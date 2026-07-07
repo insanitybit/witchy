@@ -49,7 +49,7 @@ pub fn verify_rs256(token: String, rsa_pubkey_der_hex: String, audience: String,
 fn header_alg(header_b64: String) -> Result(String, String):
     let header_json = encoding.base64url_decode(header_b64).map_err(fn(e: String): "JWT header is not valid base64url: " + e)?
     match json.decode(header_json):
-        Err(e) -> Err("JWT header is not JSON: " + e)
+        Err(e) -> Err("JWT header is not JSON: " + json.decode_error_message(e))
         Ok(h) ->
             match json.get_string(h, "alg"):
                 Some(a) -> Ok(a)
@@ -60,7 +60,7 @@ fn header_alg(header_b64: String) -> Result(String, String):
 fn check_claims(payload_b64: String, audience: String, now: Int) -> Result(Json, String):
     let payload_json = encoding.base64url_decode(payload_b64).map_err(fn(e: String): "JWT payload is not valid base64url: " + e)?
     match json.decode(payload_json):
-        Err(e) -> Err("JWT payload is not JSON: " + e)
+        Err(e) -> Err("JWT payload is not JSON: " + json.decode_error_message(e))
         Ok(claims) ->
             if json.get_int(claims, "exp").unwrap_or(0) <= now:
                 Err("JWT has expired")
@@ -143,7 +143,8 @@ pub fn header(token: String) -> Result(Json, String):
         Err("malformed JWT: no header segment")
     else:
         let header_json = encoding.base64url_decode(list.at(parts, 0)).map_err(fn(e: String): "JWT header is not valid base64url: " + e)?
-        json.decode(header_json)
+        let doc = json.decode(header_json)?
+        Ok(doc)
 
 // The payload claims of a compact JWT WITHOUT verifying its signature — for reading the
 // routing fields (`iss`, and `kid` via `header`) needed to SELECT the verification key
@@ -155,7 +156,8 @@ pub fn claims_unverified(token: String) -> Result(Json, String):
         Err("malformed JWT: no payload segment")
     else:
         let payload_json = encoding.base64url_decode(list.at(parts, 1)).map_err(fn(e: String): "JWT payload is not valid base64url: " + e)?
-        json.decode(payload_json)
+        let doc = json.decode(payload_json)?
+        Ok(doc)
 
 // Build the DER PKCS#1 `RSAPublicKey` (as hex — the shape `verify_rs256` wants) from a
 // JWK's base64url modulus `n` and exponent `e`, so an OIDC verifier can turn a JWKS
