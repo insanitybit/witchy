@@ -2763,6 +2763,17 @@ fn main(console: Console):
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
+    /// (BUG-534) RFC-0042's qualified type spelling composes with static trait
+    /// methods: plain `import json` exposes the type as `json.Json`, and that
+    /// receiver should reach the same `From(a) for Json` impl as bare `Json.from`.
+    #[test]
+    fn qualified_type_receiver_static_trait_method_backends_agree() {
+        let src = "import json\nimport reflect\n\ntype Point derive(Reflect):\n    x: Int\n\nfn main(console: Console):\n    let p = Point(7)\n    let j = json.Json.from(p)\n    print(console, json.encode(j))\n";
+        let want = vec!["{\"x\":7}".to_string()];
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
     /// ANONYMOUS STRUCTS: `.{ field: expr, … }` is an ad-hoc reflectable record (a
     /// generic synthetic type carrying `derive(Reflect)`), so `json.stringify(.{…})`
     /// works on any field types — including a `List` of tuples — with no per-type

@@ -495,6 +495,18 @@ impl<'a> Scope<'a> {
             && self.world.types.get(module).is_some_and(|mt| mt.ctors.contains_key(suffix))
     }
 
+    /// Whether `module.Suffix` names a constructor or a type in an in-scope module.
+    /// A static method receiver (`json.Json.from(x)`) uses the same zero-arg `Ctor`
+    /// representation as a bare type receiver (`Json.from(x)`), even when `Json`
+    /// is a type name rather than a data constructor.
+    fn is_qualified_type_receiver(&self, module: &str, suffix: &str) -> bool {
+        suffix.chars().next().is_some_and(|c| c.is_uppercase())
+            && self.in_scope(module)
+            && self.world.types.get(module).is_some_and(|mt| {
+                mt.ctors.contains_key(suffix) || mt.types.contains(suffix)
+            })
+    }
+
     // ---- patterns --------------------------------------------------------
 
     /// Canonicalize a constructor pattern name. A bare name that resolves in scope
@@ -784,6 +796,21 @@ impl<'a> Scope<'a> {
                 }
             }
             Expr::MethodCall { receiver, args, .. } => {
+                let qualified_type_receiver = match receiver.as_ref() {
+                    Expr::Field { base, field } => match base.as_ref() {
+                        Expr::Var(module) if self.is_qualified_type_receiver(module, field) => {
+                            Some((module.clone(), field.clone()))
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some((module, field)) = qualified_type_receiver {
+                    **receiver = Expr::Ctor {
+                        name: format!("{module}.{field}"),
+                        args: Vec::new(),
+                    };
+                }
                 self.resolve_expr(receiver)?;
                 for a in args {
                     self.resolve_expr(a)?;
