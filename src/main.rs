@@ -166,7 +166,7 @@ fn run_embedded_pm(raw: Vec<String>) -> ! {
             let module = parser::parse_module(&source).map_err(|e| format!("{name}: {e}"))?;
             for imp in &module.imports {
                 if !loaded.contains(imp) {
-                    match bundled_module(imp) {
+                    match embedded_pm_module(imp).or_else(|| bundled_module(imp)) {
                         Some(s) => queue.push_back((imp.clone(), s.to_string())),
                         None => return Err(format!("embedded front-end imports `{imp}`, not a bundled module")),
                     }
@@ -227,6 +227,15 @@ fn run_embedded_pm(raw: Vec<String>) -> ! {
             eprintln!("{e}");
             std::process::exit(1);
         }
+    }
+}
+
+fn embedded_pm_module(name: &str) -> Option<&'static str> {
+    match name {
+        "coven_proto" => Some(include_str!("../projects/coven/src/coven_proto.witchy")),
+        "coven_json" => Some(include_str!("../projects/coven/src/coven_json.witchy")),
+        "coven_validate" => Some(include_str!("../projects/coven/src/coven_validate.witchy")),
+        _ => None,
     }
 }
 

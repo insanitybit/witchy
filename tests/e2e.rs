@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 
 const BIN: &str = env!("CARGO_BIN_EXE_witchy");
+const SERVER_START_ATTEMPTS: usize = 2400;
+const SERVER_START_POLL_MS: u64 = 50;
 
 /// A coven registry server (the real `witchy coven-serve` binary) on a free
 /// local port, for end-to-end testing over HTTP. Trusted publishing is enabled
@@ -76,12 +78,12 @@ impl RegistryServer {
 
         // Wait for the listener to come up.
         let mut up = false;
-        for _ in 0..600 {
+        for _ in 0..SERVER_START_ATTEMPTS {
             if std::net::TcpStream::connect(&addr).is_ok() {
                 up = true;
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            std::thread::sleep(std::time::Duration::from_millis(SERVER_START_POLL_MS));
         }
         assert!(up, "witchy coven-serve never started listening on {addr}");
 
@@ -184,12 +186,12 @@ impl RegistryServer {
             .spawn()
             .expect("spawn coven-serve");
         let mut up = false;
-        for _ in 0..600 {
+        for _ in 0..SERVER_START_ATTEMPTS {
             if std::net::TcpStream::connect(&addr).is_ok() {
                 up = true;
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            std::thread::sleep(std::time::Duration::from_millis(SERVER_START_POLL_MS));
         }
         assert!(up, "witchy coven-serve (jwks) never started listening on {addr}");
         RegistryServer { child, port, regroot, home, issuer_dir }
@@ -344,6 +346,53 @@ fn stdout(o: &Output) -> String {
 }
 fn stderr(o: &Output) -> String {
     String::from_utf8_lossy(&o.stderr).into_owned()
+}
+
+fn start_basic_coven(tag: &str) -> (Child, String, PathBuf) {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let addr = format!("127.0.0.1:{port}");
+    let store = unique(tag);
+    let seed = store.join("root.seed");
+    std::fs::write(
+        &seed,
+        "0000000000000000000000000000000000000000000000000000000000000001",
+    )
+    .unwrap();
+
+    let mut server = Command::new(BIN)
+        .args([
+            "coven-serve",
+            "--addr",
+            &addr,
+            "--root",
+            store.to_str().unwrap(),
+            "--signing-key",
+            seed.to_str().unwrap(),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn witchy coven-serve");
+
+    let mut up = false;
+    for _ in 0..SERVER_START_ATTEMPTS {
+        if std::net::TcpStream::connect(&addr).is_ok() {
+            up = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(SERVER_START_POLL_MS));
+    }
+    if !up {
+        let _ = server.kill();
+        let _ = server.wait();
+        panic!("witchy coven-serve never started on {addr}");
+    }
+
+    (server, addr, store)
 }
 
 /// Recursively copy the contents of `src` into `dst` (used to lift a committed
@@ -1859,12 +1908,12 @@ fn witchy_coven_full_lifecycle_self_hosted() {
 
     // Wait for the listener to come up.
     let mut up = false;
-    for _ in 0..600 {
+    for _ in 0..SERVER_START_ATTEMPTS {
         if std::net::TcpStream::connect(&addr).is_ok() {
             up = true;
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(std::time::Duration::from_millis(SERVER_START_POLL_MS));
     }
     if !up {
         let _ = server.kill();
@@ -2015,12 +2064,12 @@ fn witchy_coven_trusted_publishing_verifies_a_rust_minted_token() {
         .expect("spawn witchy coven (trusted)");
 
     let mut up = false;
-    for _ in 0..600 {
+    for _ in 0..SERVER_START_ATTEMPTS {
         if std::net::TcpStream::connect(&addr).is_ok() {
             up = true;
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(std::time::Duration::from_millis(SERVER_START_POLL_MS));
     }
     if !up {
         let _ = server.kill();
@@ -2310,12 +2359,12 @@ fn coven_web_github_login_completes_a_session() {
         .expect("spawn coven-web");
 
     let mut up = false;
-    for _ in 0..600 {
+    for _ in 0..SERVER_START_ATTEMPTS {
         if std::net::TcpStream::connect(&web_addr).is_ok() {
             up = true;
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(std::time::Duration::from_millis(SERVER_START_POLL_MS));
     }
     assert!(up, "coven-web never started on {web_addr}");
 
@@ -2528,12 +2577,12 @@ fn coven_web_google_login_verifies_id_token_and_completes_a_session() {
         .expect("spawn coven-web");
 
     let mut up = false;
-    for _ in 0..600 {
+    for _ in 0..SERVER_START_ATTEMPTS {
         if std::net::TcpStream::connect(&web_addr).is_ok() {
             up = true;
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(std::time::Duration::from_millis(SERVER_START_POLL_MS));
     }
     assert!(up, "coven-web never started on {web_addr}");
 
@@ -2586,51 +2635,7 @@ fn json_str(s: &str) -> String {
 /// versions resolve — a staged version is invisible to `add`.
 #[test]
 fn witchy_pm_add_resolves_and_fetches_from_coven() {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let coven_src = format!("{manifest_dir}/projects/coven/src/coven.witchy");
-    let pm_src = format!("{manifest_dir}/projects/pm/src/pm.witchy");
-
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    let addr = format!("127.0.0.1:{port}");
-    let store = unique("witchy-pmadd-store");
-    let seed = store.join("root.seed");
-    std::fs::write(
-        &seed,
-        "0000000000000000000000000000000000000000000000000000000000000001",
-    )
-    .unwrap();
-
-    let mut server = Command::new(BIN)
-        .args([
-            "--net",
-            &addr,
-            "--signing-key",
-            seed.to_str().unwrap(),
-            &coven_src,
-            &addr,
-        ])
-        .current_dir(&store)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn witchy coven");
-    let mut up = false;
-    for _ in 0..600 {
-        if std::net::TcpStream::connect(&addr).is_ok() {
-            up = true;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    if !up {
-        let _ = server.kill();
-        let _ = server.wait();
-        panic!("witchy coven never started on {addr}");
-    }
+    let (mut server, addr, store) = start_basic_coven("witchy-pmadd-store");
 
     // Publish + promote 1.0.0 and 1.5.0; publish 2.0.0 but leave it STAGED.
     let publish = |version: &str| {
@@ -2663,9 +2668,9 @@ fn witchy_pm_add_resolves_and_fetches_from_coven() {
     let dest = unique("witchy-pmadd-dest");
     let out = Command::new(BIN)
         .args([
+            "pm",
             "--net",
             &addr,
-            &pm_src,
             "add",
             "acme/money",
             "*",
@@ -2690,7 +2695,7 @@ fn witchy_pm_add_resolves_and_fetches_from_coven() {
     // no network, using its coven.json and the pinned registry root key.
     let rootpub = "4cb5abf6ad79fbf5abbccafcc269d85cd2651ed4b885b5869f241aedf0a5ba29";
     let verify = Command::new(BIN)
-        .args([pm_src.as_str(), "verify-rune", "vendor/money", rootpub])
+        .args(["pm", "verify-rune", "vendor/money", rootpub])
         .current_dir(&dest)
         .output()
         .expect("run pm verify-rune");
@@ -2704,7 +2709,7 @@ fn witchy_pm_add_resolves_and_fetches_from_coven() {
     )
     .unwrap();
     let tampered = Command::new(BIN)
-        .args([pm_src.as_str(), "verify-rune", "vendor/money", rootpub])
+        .args(["pm", "verify-rune", "vendor/money", rootpub])
         .current_dir(&dest)
         .output()
         .expect("run pm verify-rune on tampered source");
@@ -2750,51 +2755,7 @@ fn witchy_pm_add_resolves_and_fetches_from_coven() {
 /// and `pm list` reflects the yanked lifecycle state.
 #[test]
 fn witchy_coven_yank_excludes_from_resolution() {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let coven_src = format!("{manifest_dir}/projects/coven/src/coven.witchy");
-    let pm_src = format!("{manifest_dir}/projects/pm/src/pm.witchy");
-
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    let addr = format!("127.0.0.1:{port}");
-    let store = unique("witchy-yank-store");
-    let seed = store.join("root.seed");
-    std::fs::write(
-        &seed,
-        "0000000000000000000000000000000000000000000000000000000000000001",
-    )
-    .unwrap();
-
-    let mut server = Command::new(BIN)
-        .args([
-            "--net",
-            &addr,
-            "--signing-key",
-            seed.to_str().unwrap(),
-            &coven_src,
-            &addr,
-        ])
-        .current_dir(&store)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn witchy coven");
-    let mut up = false;
-    for _ in 0..600 {
-        if std::net::TcpStream::connect(&addr).is_ok() {
-            up = true;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    if !up {
-        let _ = server.kill();
-        let _ = server.wait();
-        panic!("witchy coven never started on {addr}");
-    }
+    let (mut server, addr, store) = start_basic_coven("witchy-yank-store");
 
     let module = "fn ver() -> String:\n    \"x\"\n";
     let publish = |version: &str| {
@@ -2824,7 +2785,7 @@ fn witchy_coven_yank_excludes_from_resolution() {
     let add_star = || {
         let dest = unique("witchy-yank-dest");
         let out = Command::new(BIN)
-            .args(["--net", &addr, &pm_src, "add", "acme/money", "*", &addr, "vendor"])
+            .args(["pm", "--net", &addr, "add", "acme/money", "*", &addr, "vendor"])
             .env("WITCHY_COOLDOWN_SECS", "0")
             .current_dir(&dest)
             .output()
@@ -2846,7 +2807,7 @@ fn witchy_coven_yank_excludes_from_resolution() {
     let exhausted = add_star();
     // `pm list` reflects the yanked lifecycle state.
     let list = Command::new(BIN)
-        .args(["--net", &addr, &pm_src, "list", "acme/money", &addr])
+        .args(["pm", "--net", &addr, "list", "acme/money", &addr])
         .current_dir(&store)
         .output()
         .expect("run pm list");
@@ -2879,51 +2840,7 @@ fn witchy_coven_yank_excludes_from_resolution() {
 /// integrity-verified and carries its coven.json.
 #[test]
 fn witchy_pm_add_resolves_transitive_dependencies() {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let coven_src = format!("{manifest_dir}/projects/coven/src/coven.witchy");
-    let pm_src = format!("{manifest_dir}/projects/pm/src/pm.witchy");
-
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    let addr = format!("127.0.0.1:{port}");
-    let store = unique("witchy-trans-store");
-    let seed = store.join("root.seed");
-    std::fs::write(
-        &seed,
-        "0000000000000000000000000000000000000000000000000000000000000001",
-    )
-    .unwrap();
-
-    let mut server = Command::new(BIN)
-        .args([
-            "--net",
-            &addr,
-            "--signing-key",
-            seed.to_str().unwrap(),
-            &coven_src,
-            &addr,
-        ])
-        .current_dir(&store)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn witchy coven");
-    let mut up = false;
-    for _ in 0..600 {
-        if std::net::TcpStream::connect(&addr).is_ok() {
-            up = true;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    if !up {
-        let _ = server.kill();
-        let _ = server.wait();
-        panic!("witchy coven never started on {addr}");
-    }
+    let (mut server, addr, store) = start_basic_coven("witchy-trans-store");
 
     let publish = |name: &str, stem: &str, manifest: &str, module: &str| {
         let source = format!(
@@ -2958,7 +2875,7 @@ fn witchy_pm_add_resolves_transitive_dependencies() {
 
     let dest = unique("witchy-trans-dest");
     let out = Command::new(BIN)
-        .args(["--net", &addr, &pm_src, "add", "acme/app", "*", &addr, "vendor"])
+        .args(["pm", "--net", &addr, "add", "acme/app", "*", &addr, "vendor"])
         .env("WITCHY_COOLDOWN_SECS", "0")
         .current_dir(&dest)
         .output()
@@ -2973,7 +2890,7 @@ fn witchy_pm_add_resolves_transitive_dependencies() {
     // The whole vendored tree re-verifies offline (the registry is now down).
     let rootpub = "4cb5abf6ad79fbf5abbccafcc269d85cd2651ed4b885b5869f241aedf0a5ba29";
     let vverify = Command::new(BIN)
-        .args([pm_src.as_str(), "verify-vendor", "vendor", rootpub])
+        .args(["pm", "verify-vendor", "vendor", rootpub])
         .current_dir(&dest)
         .output()
         .expect("run pm verify-vendor");
@@ -3007,11 +2924,9 @@ fn witchy_pm_add_resolves_transitive_dependencies() {
 /// self-hosted twin of the Rust PM's lock/verify/gate e2e coverage.
 #[test]
 fn witchy_pm_local_lifecycle_new_lock_verify_gate() {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let pm_src = format!("{manifest_dir}/projects/pm/src/pm.witchy");
     let work = unique("witchy-pm-local");
     let pm = |args: &[&str]| {
-        let mut full = vec![pm_src.as_str()];
+        let mut full = vec!["pm"];
         full.extend_from_slice(args);
         Command::new(BIN)
             .args(&full)
@@ -3130,41 +3045,7 @@ fn witchy_pm_local_lifecycle_new_lock_verify_gate() {
 /// NEW authority.
 #[test]
 fn witchy_coven_promote_delta_immutability_and_error_paths() {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let coven_src = format!("{manifest_dir}/projects/coven/src/coven.witchy");
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    let addr = format!("127.0.0.1:{port}");
-    let store = unique("witchy-coven-guard");
-    let seed = store.join("root.seed");
-    std::fs::write(
-        &seed,
-        "0000000000000000000000000000000000000000000000000000000000000001",
-    )
-    .unwrap();
-    let mut server = Command::new(BIN)
-        .args(["--net", &addr, "--signing-key", seed.to_str().unwrap(), &coven_src, &addr])
-        .current_dir(&store)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn witchy coven");
-    let mut up = false;
-    for _ in 0..600 {
-        if std::net::TcpStream::connect(&addr).is_ok() {
-            up = true;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    if !up {
-        let _ = server.kill();
-        let _ = server.wait();
-        panic!("witchy coven never started on {addr}");
-    }
+    let (mut server, addr, store) = start_basic_coven("witchy-coven-guard");
 
     let publish = |version: &str, declared: &str, module: &str| {
         let manifest = format!(

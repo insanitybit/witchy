@@ -1,7 +1,7 @@
 # The witchy package manager — a self-hosted rune. It reads witchy.toml manifests,
 # audits a rune's capability footprint, and guards dependency upgrades against any
-# widening of authority. It runs on the interpreter (it uses `compiler.footprint`,
-# a host introspection intrinsic), the way a build tool is allowed to.
+# widening of authority. The embedded `witchy pm` command runs the front-end on
+# the compiled WASM tier while granting the host capabilities it needs.
 [rune]
 name = "pm"
 version = "0.1.0"

@@ -2,11 +2,11 @@
 // manifests, audits a rune's capability footprint, checks that the declared
 // footprint *admits* what the code actually demands (rights-precisely), and
 // guards an upgrade against any widening of authority. The capability work goes
-// through `compiler` (a host introspection intrinsic), so pm runs on the
-// interpreter — the way a build tool is allowed to. It is the package manager's
-// heart, self-hosted.
+// through `compiler` (a host introspection intrinsic) and host capabilities; the
+// embedded `witchy pm` command runs this front-end on the compiled WASM tier.
+// It is the package manager's heart, self-hosted.
 //
-//   witchy projects/pm/src/pm.witchy <command> [args]
+//   witchy pm <command> [args]
 //
 // Commands:
 //   info  <dir>          summarize a rune (name, version, declared vs. actual caps)
@@ -17,6 +17,7 @@
 //   help                 show this message
 
 import compiler
+import coven_proto
 import crypto
 import exec
 import fs
@@ -841,7 +842,7 @@ fn cmd_publish(console: Console, net: Net, root: Dir, env: Env, args: List(Strin
 fn publish_checked(console: Console, net: Net, root: Dir, dir: String, manifest: String, host: String, port: Int, identity: String, env: Env) -> Int:
     let files = publish_files(root, dir, manifest)
     let token = id_token_from_env(env)
-    let resp = http.post(net, host, port, "/coven/publish", publish_body(manifest, files, identity, token))
+    let resp = http.post(net, host, port, "/coven/publish", coven_proto.publish_body(manifest, files, identity, token))
     print(console, "publish: ${http.status(resp)} state=" + resp_field(http.body(resp), "state"))
     if http.status(resp) >= 200 && http.status(resp) < 300:
         0
@@ -900,7 +901,7 @@ fn cmd_promote(console: Console, net: Net, env: Env, args: List(String)) -> Int:
                 1
             Ok(hp) ->
                 let (host, port) = hp
-                let body = promote_body(name, version, "webauthn", identity, id_token_from_env(env))
+                let body = coven_proto.promote_body(name, version, "webauthn", identity, id_token_from_env(env))
                 let resp = http.post(net, host, port, "/coven/promote", body)
                 print(console, "promote: ${http.status(resp)}")
                 if http.status(resp) >= 200 && http.status(resp) < 300:
@@ -973,22 +974,12 @@ fn cmd_yank(console: Console, net: Net, env: Env, args: List(String)) -> Int:
                 1
             Ok(hp) ->
                 let (host, port) = hp
-                let resp = http.post(net, host, port, "/coven/yank", yank_body(name, version, id_token_from_env(env)))
+                let resp = http.post(net, host, port, "/coven/yank", coven_proto.yank_body(name, version, id_token_from_env(env)))
                 print(console, "yank: ${http.status(resp)}")
                 if http.status(resp) >= 200 && http.status(resp) < 300:
                     0
                 else:
                     1
-
-// SEC-018: carry the trusted-publishing token (COVEN_ID_TOKEN) so a trusted registry can
-// authorize the yank as an existing maintainer, mirroring promote.
-fn yank_body(name: String, version: String, id_token: Option(String)) -> String:
-    let base = [("name", JsonString(name)), ("version", JsonString(version))]
-    let fields = match id_token:
-        Some(tok) -> list.push(base, ("id_token", JsonString(tok)))
-        None -> base
-
-    json.encode(JsonObject(fields))
 
 // list <name> [host:port] — every version of a rune the registry knows, with its
 // lifecycle state (staged / released / yanked). The registry comes from the
@@ -1038,31 +1029,6 @@ fn publish_files(root: Dir, dir: String, manifest: String) -> List((String, Stri
     var out = [("witchy.toml", manifest)]
     for f in fs.collect_files(root, join_path(dir, "src"), "src", ".witchy"):
         out = list.push(out, f)
-    out
-
-// Replicate coven's (unsigned) publish/promote wire envelopes (see
-// projects/coven/src/coven_proto.witchy) — the front-end is a client, so it
-// rebuilds the shape rather than depending on the server rune.
-fn publish_body(manifest: String, files: List((String, String)), identity: String, id_token: Option(String)) -> String:
-    let base = [("manifest_toml", JsonString(manifest)), ("source", JsonObject([("files", JsonArray(file_jsons(files)))])), ("uploaded_by", JsonString(identity))]
-    let fields = match id_token:
-        Some(tok) -> list.push(base, ("id_token", JsonString(tok)))
-        None -> base
-
-    json.encode(JsonObject(fields))
-
-fn promote_body(name: String, version: String, factor: String, promoter: String, id_token: Option(String)) -> String:
-    let base = [("name", JsonString(name)), ("version", JsonString(version)), ("second_factor", JsonString(factor)), ("promoted_by", JsonString(promoter))]
-    let fields = match id_token:
-        Some(tok) -> list.push(base, ("id_token", JsonString(tok)))
-        None -> base
-
-    json.encode(JsonObject(fields))
-
-fn file_jsons(files: List((String, String))) -> List(Json):
-    var out = []
-    for path, text in files:
-        out = list.push(out, JsonArray([JsonString(path), JsonString(text)]))
     out
 
 fn resp_field(text: String, key: String) -> String:

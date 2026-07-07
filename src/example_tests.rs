@@ -14623,16 +14623,32 @@ fn main(console: Console):
     /// `projects/pm` is the package manager itself, written in witchy. `pm audit`
     /// prints the capability footprint a source file demands — the self-hosted
     /// `witchy caps`, dispatched from a real CLI (`args: List(String)`).
+    fn linked_pm() -> crate::ast::Module {
+        let sources = [
+            ("pm", "projects/pm/src/pm.witchy"),
+            ("coven_proto", "projects/coven/src/coven_proto.witchy"),
+            ("coven_json", "projects/coven/src/coven_json.witchy"),
+            ("coven_validate", "projects/coven/src/coven_validate.witchy"),
+        ];
+        let modules = sources
+            .iter()
+            .map(|(name, path)| {
+                let src = std::fs::read_to_string(path).expect("read pm module");
+                ((*name).to_string(), parser::parse_module(&src).expect("parse pm module"))
+            })
+            .collect();
+        crate::pipeline::link(modules, "pm").expect("link pm")
+    }
+
+    fn run_pm(root: impl AsRef<std::path::Path>, args: Vec<String>) -> (Vec<String>, i32) {
+        let linked = linked_pm();
+        typeck::check(&linked).expect("typeck pm");
+        interpreter::run_module_exit(linked, root, Vec::new(), args, None).expect("run pm")
+    }
+
     #[test]
     fn pm_audits_a_files_footprint() {
-        let (out, code) = crate::execute_file_exit(
-            "projects/pm/src/pm.witchy",
-            Vec::new(),
-            vec!["audit".into(), "examples/data/sample_rune.witchy".into()],
-            None,
-            Vec::new(),
-        )
-        .unwrap();
+        let (out, code) = run_pm(".", vec!["audit".into(), "examples/data/sample_rune.witchy".into()]);
         assert_eq!(
             out,
             vec!["examples/data/sample_rune.witchy demands: Dir[Read], Net[Connect]"]
@@ -14653,18 +14669,14 @@ fn main(console: Console):
     /// into CI). The sample upgrade adds `Listen`, so it BLOCKs.
     #[test]
     fn pm_guard_blocks_a_widening() {
-        let (out, code) = crate::execute_file_exit(
-            "projects/pm/src/pm.witchy",
-            Vec::new(),
+        let (out, code) = run_pm(
+            ".",
             vec![
                 "guard".into(),
                 "examples/data/sample_rune.witchy".into(),
                 "examples/data/sample_rune_v2.witchy".into(),
             ],
-            None,
-            Vec::new(),
-        )
-        .unwrap();
+        );
         assert_eq!(out, vec!["BLOCK: upgrade widens authority by Net[Listen]"]);
         assert_eq!(code, 2, "a widening must exit 2");
     }
@@ -14675,14 +14687,7 @@ fn main(console: Console):
     /// undeclared `Dir[Read]` is caught and the gate exits 2.
     #[test]
     fn pm_check_blocks_an_under_declared_rune() {
-        let (out, code) = crate::execute_file_exit(
-            "projects/pm/src/pm.witchy",
-            Vec::new(),
-            vec!["check".into(), "projects/pm/tests/fixtures/leaky".into()],
-            None,
-            Vec::new(),
-        )
-        .unwrap();
+        let (out, code) = run_pm(".", vec!["check".into(), "projects/pm/tests/fixtures/leaky".into()]);
         assert_eq!(
             out,
             vec!["BLOCK: code demands authority not admitted by [capabilities]: Dir[Read]"]
@@ -14695,14 +14700,7 @@ fn main(console: Console):
     /// itself, proving the self-hosted gate is honest.
     #[test]
     fn pm_passes_its_own_check() {
-        let (out, code) = crate::execute_file_exit(
-            "projects/pm/src/pm.witchy",
-            Vec::new(),
-            vec!["check".into(), "projects/pm".into()],
-            None,
-            Vec::new(),
-        )
-        .unwrap();
+        let (out, code) = run_pm(".", vec!["check".into(), "projects/pm".into()]);
         assert_eq!(out, vec!["OK: declared footprint admits the code, nothing unused"]);
         assert_eq!(code, 0);
     }
@@ -14716,7 +14714,7 @@ fn main(console: Console):
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
 
-        let (linked, _stem) = crate::link_file("projects/pm/src/pm.witchy").expect("link");
+        let linked = linked_pm();
         typeck::check(&linked).expect("typeck");
         let (out, code) = interpreter::run_module_exit(
             linked,
@@ -14744,14 +14742,7 @@ fn main(console: Console):
     /// straight from `[dependencies]`'s inline tables (`toml.table`/`inline_get`).
     #[test]
     fn pm_lists_dependencies() {
-        let (out, code) = crate::execute_file_exit(
-            "projects/pm/src/pm.witchy",
-            Vec::new(),
-            vec!["deps".into(), "examples/projects/ledger/ledger".into()],
-            None,
-            Vec::new(),
-        )
-        .unwrap();
+        let (out, code) = run_pm(".", vec!["deps".into(), "examples/projects/ledger/ledger".into()]);
         assert_eq!(out, vec!["money -> path:../money"]);
         assert_eq!(code, 0);
     }
@@ -14762,14 +14753,7 @@ fn main(console: Console):
     /// `check` gate enforces.
     #[test]
     fn pm_info_summarizes_a_rune() {
-        let (out, code) = crate::execute_file_exit(
-            "projects/pm/src/pm.witchy",
-            Vec::new(),
-            vec!["info".into(), "projects/pm".into()],
-            None,
-            Vec::new(),
-        )
-        .unwrap();
+        let (out, code) = run_pm(".", vec!["info".into(), "projects/pm".into()]);
         assert_eq!(
             out,
             vec![
@@ -14788,14 +14772,7 @@ fn main(console: Console):
     /// store, so a witchy-checked lock and a coven-written one agree.
     #[test]
     fn pm_verify_validates_a_coven_generated_lockfile() {
-        let (out, code) = crate::execute_file_exit(
-            "projects/pm/src/pm.witchy",
-            Vec::new(),
-            vec!["verify".into(), "examples/projects/ledger/ledger".into()],
-            None,
-            Vec::new(),
-        )
-        .unwrap();
+        let (out, code) = run_pm(".", vec!["verify".into(), "examples/projects/ledger/ledger".into()]);
         assert_eq!(out, vec!["OK: every locked hash matches the dependency sources"]);
         assert_eq!(code, 0);
     }
@@ -14834,7 +14811,7 @@ fn main(console: Console):
         .unwrap();
 
         let run_pm = |args: Vec<String>| -> (Vec<String>, i32) {
-            let (linked, _stem) = crate::link_file("projects/pm/src/pm.witchy").expect("link");
+            let linked = linked_pm();
             typeck::check(&linked).expect("typeck");
             interpreter::run_module_exit(linked, &tmp, Vec::new(), args, None).expect("run")
         };
