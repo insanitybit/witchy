@@ -30,15 +30,20 @@ pub fn parent_dir(path: String) -> Option(String):
 
 // Recursively collect every file under `path` whose name ends with `ext`, as
 // (relpath, contents) pairs. `rel` is prefixed to each result path (so a nested
-// `a/b.witchy` keeps its full relative path). Needs a readable `Dir`.
+// `a/b.witchy` keeps its full relative path). An empty `path` walks from the
+// Dir root itself. Needs a readable `Dir`.
 pub fn collect_files(root: Dir, path: String, rel: String, ext: String) -> List((String, String)):
     var out = []
     if exists(root, path):
         for entry in list(subtree(root, path)):
-            let child = path + "/" + entry
+            // At the root (empty `path`/`rel`) the child is the bare entry name,
+            // never "/entry": the confinement resolver rejects absolute-looking
+            // paths, so raw concatenation would skip or trap on root-level entries.
+            let child = if string.is_empty(path): entry else: path + "/" + entry
+            let child_rel = if string.is_empty(rel): entry else: rel + "/" + entry
             if is_dir(root, child):
-                for f in collect_files(root, child, rel + "/" + entry, ext):
+                for f in collect_files(root, child, child_rel, ext):
                     out = list.push(out, f)
             else if string.ends_with(entry, ext):
-                out = list.push(out, (rel + "/" + entry, read(root, child)))
+                out = list.push(out, (child_rel, read(root, child)))
     out

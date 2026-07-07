@@ -5476,6 +5476,110 @@ fn main(console: Console):
         );
     }
 
+    /// Batch-3 stdlib edge contracts, pinned on both backends: `list.min`/`max`
+    /// are generic over `Ord` like `sort` (Strings, Durations — not just Int);
+    /// `url.parse` normalizes the case-insensitive scheme so `HTTPS://` gets
+    /// port 443 and formats canonically; `server.with_header` stores lowercase
+    /// names so `http.header` lookup works for any spelling; the HTTP client
+    /// drops a caller-supplied Host (the renderer owns it, like the framing
+    /// headers); `server.render_for` suppresses a HEAD response's body while
+    /// keeping its Content-Length; a large `iter.drop` skips iteratively.
+    #[test]
+    fn stdlib_edge_contracts_batch3_backends_agree() {
+        let src = r#"import list
+import url
+import http
+import server
+import iter
+import option
+import duration
+import string
+
+fn show_url(raw: String) -> String:
+    match url.parse(raw):
+        Err(_e) -> "err"
+        Ok(u) -> url.scheme(u) + " " + "${url.port(u)}" + " " + url.format(u)
+
+fn main(console: Console):
+    print(console, (list.min(["pear", "apple", "plum"]) ?? "none") + "|" + (list.max(["pear", "apple", "plum"]) ?? "none"))
+    print(console, "${list.min([3, 1, 4]) ?? 0}|${list.max([3, 1, 4]) ?? 0}")
+    print(console, duration.human(list.max([duration.seconds(5), duration.minutes(1)]) ?? duration.seconds(0)))
+    print(console, show_url("HTTPS://example.test/p") + "|" + show_url("https://example.test/p"))
+    let resp = server.with_header(server.ok("body"), "X-Trace-Id", "abc")
+    print(console, (http.header(resp, "x-trace-id") ?? "none") + "|" + (http.header(resp, "X-Trace-Id") ?? "none"))
+    let head_wire = server.render_for(server.text(200, "body"), "HEAD")
+    let get_wire = server.render_for(server.text(200, "body"), "GET")
+    print(console, "${string.contains(head_wire, "Content-Length: 4")}|${string.ends_with(head_wire, "\r\n\r\n")}|${string.ends_with(get_wire, "body")}")
+    let tail: List(Int) = iter.collect(iter.drop(iter.range(0, 100000), 99997))
+    print(console, __render(tail))
+"#;
+        let interpreted = link_run(src);
+        let compiled = wasm_run(src);
+        assert_eq!(interpreted, compiled, "batch-3 edge contracts diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                "apple|plum",
+                "1|4",
+                "1m0s",
+                "https 443 https://example.test/p|https 443 https://example.test/p",
+                "abc|abc",
+                "true|true|true",
+                "[99997, 99998, 99999]",
+            ]
+        );
+    }
+
+    /// `iter.drop` must not pull from its source at construction time (the
+    /// lazy-adapter contract, like take/take_while/drop_while): building
+    /// `drop(explode, 1)` over an aborting generator succeeds; only consuming
+    /// the returned iterator would abort.
+    #[test]
+    fn iter_drop_is_lazy_on_both_backends() {
+        let src = r#"import iter
+import option
+
+fn explode(i: Int) -> Option(Int):
+    if i >= 0:
+        fail("iter was pulled at ${i}")
+    None
+
+fn main(console: Console):
+    let dropped = iter.drop(iter.from_gen(explode), 1)
+    print(console, "constructed")
+"#;
+        assert_eq!(link_run(src), vec!["constructed"], "interpreter must not pull at construction");
+        assert_eq!(wasm_run(src), vec!["constructed"], "compiled must not pull at construction");
+    }
+
+    /// `fs.collect_files(root, "", "", ext)` walks from the Dir root itself:
+    /// root-level files are collected with bare relative paths (never "/name"),
+    /// and root-level directories recurse instead of being silently skipped by
+    /// the confinement resolver rejecting absolute-looking paths.
+    #[test]
+    fn fs_collect_files_walks_from_dir_root() {
+        let dir = std::env::temp_dir().join(format!("witchy-collect-root-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("top.witchy"), "// top").unwrap();
+        std::fs::write(dir.join("sub/nested.witchy"), "// nested").unwrap();
+        std::fs::write(dir.join("skip.txt"), "no").unwrap();
+        let src = r#"import fs
+import list
+
+fn main(console: Console, root: Dir):
+    var names = []
+    for f in fs.collect_files(root, "", "", ".witchy"):
+        let (rel, _contents) = f
+        names = list.push(names, rel)
+    print(console, list.join(list.sort(names), ","))
+"#;
+        let linked = resolve_std_src(src);
+        let interpreted =
+            interpreter::run_module(linked, dir.to_str().unwrap(), Vec::new()).expect("interp run");
+        assert_eq!(interpreted, vec!["sub/nested.witchy,top.witchy"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// `rand.below` fails loudly for an impossible range (RFC-0044 rule 3,
     /// matching `random.next_below`) — and still draws for a valid bound.
     #[test]
@@ -16389,6 +16493,9 @@ fn main(console: Console):
 
     #[test]
     fn std_list_min_max_position_backends_agree() {
+        // min/max are Ord-bounded generics (like sort), so this goes through the
+        // full link+typeck pipeline (link_run/wasm_run), not raw run_program —
+        // bounded calls need the mono pass to specialize.
         let client = r#"
 import list
 import option
@@ -16396,13 +16503,13 @@ import option
 fn main(console: Console):
     print(console, __render(option.unwrap_or(list.min([3, 1, 4, 1, 5]), 0)))
     print(console, __render(option.unwrap_or(list.max([3, 1, 4, 1, 5]), 0)))
-    print(console, __render(option.is_none(list.min([]))))
+    let empty: List(Int) = []
+    print(console, __render(option.is_none(list.min(empty))))
     print(console, __render(option.unwrap_or(list.index_of([10, 20, 30], 20), (0 - 1))))
     print(console, __render(option.is_none(list.index_of([10, 20], 99))))
 "#;
-        let sources = [("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
+        let interpreted = link_run(client);
+        let compiled = wasm_run(client);
         assert_eq!(interpreted, compiled, "list min/max/index_of diverged");
         assert_eq!(compiled, vec!["1", "5", "true", "1", "true"]);
     }

@@ -137,10 +137,13 @@ pub fn redirect(location: String) -> Response:
     Response(303, [("location", location)], "")
 
 // Return `resp` with an extra header — for handlers and middleware that decorate
-// a response (e.g. add a `set-cookie` or a tracing header).
+// a response (e.g. add a `set-cookie` or a tracing header). The stored name is
+// lowercased: `Response` documents its header list as lowercase so
+// `http.header(resp, name)` can look up case-insensitively — headers are
+// case-insensitive on the wire, and rendering emits the lowercase form.
 pub fn with_header(resp: Response, name: String, value: String) -> Response:
     match resp:
-        Response(code, hdrs, body) -> Response(code, list.push(hdrs, (name, value)), body)
+        Response(code, hdrs, body) -> Response(code, list.push(hdrs, (string.to_lower(name), value)), body)
 
 // Return `resp` with its status code replaced.
 pub fn with_status(resp: Response, code: Int) -> Response:
@@ -516,6 +519,14 @@ pub fn handle(app: Router, req: Request) -> Response:
 // The framing headers (Content-Length, Connection) are owned here; a status outside
 // 100..599 traps. Public so a test or a custom transport can render a Response itself.
 pub fn render(resp: Response) -> String:
+    render_for(resp, "")
+
+// `render`, honoring the request method: a HEAD response carries the same
+// status/headers — including the Content-Length the body WOULD have — but the
+// body bytes themselves are never sent (RFC 9110 §9.3.2). This is enforced at
+// the rendering boundary so a `.head(...)` handler may simply return the GET
+// response and the framework suppresses the body.
+pub fn render_for(resp: Response, method: String) -> String:
     match resp:
         // (BUG-255) A status code outside 100..599 is not a valid HTTP status
         // and would render a malformed status line; trap loudly (both backends).
@@ -539,7 +550,10 @@ pub fn render(resp: Response) -> String:
                     out = out + k + ": " + v + "\r\n"
             out = out + "Content-Length: " + "${string.length(b)}" + "\r\n"
             out = out + "Connection: close\r\n\r\n"
-            out + b
+            if method == "HEAD":
+                out
+            else:
+                out + b
 
 // (BUG-255) Trap unless `code` is a syntactically valid HTTP status (100..599).
 fn check_status(code: Int):
@@ -585,12 +599,13 @@ fn wrap_layers(handler: fn(Request) -> Response, layers: List(fn(fn(Request) -> 
 fn handle_one(server: Listener, handler: fn(Request) -> Response):
     let sock = accept(server)
     // A malformed request (e.g. conflicting Content-Length, BUG-390) short-circuits
-    // to its error Response without ever reaching a handler.
-    let resp = match read_request(sock):
-        Ok(req) -> handler(req)
-        Err(err_resp) -> err_resp
+    // to its error Response without ever reaching a handler. The request method is
+    // retained for rendering: a HEAD response must not carry body bytes (BUG-376).
+    let (m, resp) = match read_request(sock):
+        Ok(req) -> (method(req), handler(req))
+        Err(err_resp) -> ("", err_resp)
 
-    send_bytes(sock, render(resp))
+    send_bytes(sock, render_for(resp, m))
     close(sock)
 
 // Serve `app` on `addr` forever, using ALL cores. Needs the `Net` capability to
