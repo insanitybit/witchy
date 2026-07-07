@@ -171,7 +171,7 @@ fn lower_gen(f: Function, method: Option<&MethodCtx>) -> Result<(Function, Funct
         mutable: true,
         value: Expr::Int(0),
     }];
-    stmts.extend(rewrite_block(f.body.clone(), &f.name)?.stmts);
+    stmts.extend(rewrite_block(f.body.clone(), &f.name, false)?.stmts);
     stmts.push(Stmt::Expr(Expr::Ctor { name: "None".to_string(), args: vec![] }));
     let helper = Function {
         public: false,
@@ -239,11 +239,18 @@ fn lower_gen(f: Function, method: Option<&MethodCtx>) -> Result<(Function, Funct
 /// its elements with `yield`, not by returning a scalar) — so the internal
 /// `Option(a)` protocol never leaks into a user diagnostic. `gen_name` is the
 /// generator's name, used only to phrase that rejection.
-fn rewrite_block(b: Block, gen_name: &str) -> Result<Block, String> {
+fn rewrite_block(b: Block, gen_name: &str, in_region: bool) -> Result<Block, String> {
+    let in_region = in_region || b.region.is_some();
     let mut out = Vec::with_capacity(b.stmts.len());
     for stmt in b.stmts {
         match stmt {
             Stmt::Yield(e) => {
+                if in_region {
+                    return Err(
+                        "cannot `yield` inside `region:`: the generator frame outlives the region"
+                            .to_string(),
+                    );
+                }
                 let check = Expr::If {
                     cond: Box::new(Expr::Binary {
                         op: BinOp::Eq,
@@ -271,13 +278,21 @@ fn rewrite_block(b: Block, gen_name: &str) -> Result<Block, String> {
                 });
             }
             Stmt::Let { name, ty, mutable, value } => {
-                out.push(Stmt::Let { name, ty, mutable, value: rewrite_expr(value, gen_name)? })
+                out.push(Stmt::Let {
+                    name,
+                    ty,
+                    mutable,
+                    value: rewrite_expr(value, gen_name, in_region)?,
+                })
             }
             Stmt::Assign { name, value } => {
-                out.push(Stmt::Assign { name, value: rewrite_expr(value, gen_name)? })
+                out.push(Stmt::Assign { name, value: rewrite_expr(value, gen_name, in_region)? })
             }
             Stmt::LetPattern { pattern, value } => {
-                out.push(Stmt::LetPattern { pattern, value: rewrite_expr(value, gen_name)? })
+                out.push(Stmt::LetPattern {
+                    pattern,
+                    value: rewrite_expr(value, gen_name, in_region)?,
+                })
             }
             // A bare `return` ends the stream: it becomes the helper's `return None`.
             Stmt::Return(None) => out.push(Stmt::Return(Some(Expr::Ctor {
@@ -295,7 +310,7 @@ fn rewrite_block(b: Block, gen_name: &str) -> Result<Block, String> {
                      `return` to end the stream early"
                 ));
             }
-            Stmt::Expr(e) => out.push(Stmt::Expr(rewrite_expr(e, gen_name)?)),
+            Stmt::Expr(e) => out.push(Stmt::Expr(rewrite_expr(e, gen_name, in_region)?)),
             other => out.push(other),
         }
     }
@@ -304,19 +319,21 @@ fn rewrite_block(b: Block, gen_name: &str) -> Result<Block, String> {
 
 /// Rewrite the nested blocks of an expression's control-flow forms so yields
 /// inside `if`/`while`/`for`/`match`/block bodies are transformed too.
-fn rewrite_expr(e: Expr, gen_name: &str) -> Result<Expr, String> {
+fn rewrite_expr(e: Expr, gen_name: &str, in_region: bool) -> Result<Expr, String> {
     Ok(match e {
         Expr::If { cond, then_block, else_block } => Expr::If {
             cond,
-            then_block: rewrite_block(then_block, gen_name)?,
+            then_block: rewrite_block(then_block, gen_name, in_region)?,
             else_block: match else_block {
-                Some(b) => Some(rewrite_block(b, gen_name)?),
+                Some(b) => Some(rewrite_block(b, gen_name, in_region)?),
                 None => None,
             },
         },
-        Expr::While { cond, body } => Expr::While { cond, body: rewrite_block(body, gen_name)? },
+        Expr::While { cond, body } => {
+            Expr::While { cond, body: rewrite_block(body, gen_name, in_region)? }
+        }
         Expr::For { var, iter, body } => {
-            Expr::For { var, iter, body: rewrite_block(body, gen_name)? }
+            Expr::For { var, iter, body: rewrite_block(body, gen_name, in_region)? }
         }
         Expr::Match { scrutinee, arms } => {
             let mut new_arms = Vec::with_capacity(arms.len());
@@ -324,12 +341,12 @@ fn rewrite_expr(e: Expr, gen_name: &str) -> Result<Expr, String> {
                 new_arms.push(MatchArm {
                     pattern: a.pattern,
                     guard: a.guard,
-                    body: rewrite_expr(a.body, gen_name)?,
+                    body: rewrite_expr(a.body, gen_name, in_region)?,
                 });
             }
             Expr::Match { scrutinee, arms: new_arms }
         }
-        Expr::Block(b) => Expr::Block(rewrite_block(b, gen_name)?),
+        Expr::Block(b) => Expr::Block(rewrite_block(b, gen_name, in_region)?),
         other => other,
     })
 }

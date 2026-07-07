@@ -1345,6 +1345,31 @@ fn main(console: Console):
         }
     }
 
+    /// (BUG-428) Generator lowering must not erase the source-level
+    /// no-`yield`-inside-`region:` safety rule before type checking can enforce
+    /// it.
+    #[test]
+    fn gen_fn_rejects_yield_inside_region_before_lowering() {
+        for body in [
+            "region:\n        yield 1\n        0",
+            "region:\n        if true:\n            yield 1\n        0",
+            "if true:\n        region:\n            yield 1\n            0",
+        ] {
+            let src = format!(
+                "import iter\n\ngen fn bad() -> Iter(Int):\n    {body}\n    yield 2\n\nfn main(console: Console):\n    let xs: List(Int) = iter.collect(bad())\n    print(console, __render(xs))\n"
+            );
+            let module = parser::parse_module(&src).expect("parse");
+            let err = crate::pipeline::link(vec![("main".into(), module)], "main")
+                .expect_err("yield inside region must be rejected during generator lowering");
+            assert!(
+                err.message.contains("cannot `yield` inside `region:`")
+                    && err.message.contains("generator frame"),
+                "diagnostic should explain the region/generator safety rule, got: {}",
+                err.message
+            );
+        }
+    }
+
     /// (SEC-038) `bytes.at` out of bounds must FAIL on both backends, not silently
     /// read adjacent heap on WASM. The compiled `$bytes_at` bounds-checks and traps
     /// (like `$list_at`), matching the interpreter's "bytes index out of bounds"
