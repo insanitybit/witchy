@@ -735,12 +735,30 @@ const BUILTIN_TYPE_NAMES: &[&str] = &[
 
 const AMBIENT_STD_TYPE_NAMES: &[&str] = &["Ordering", "Set", "Iter"];
 
+fn builtin_type_arity(name: &str) -> Option<usize> {
+    match name {
+        "List" | "Option" | "Set" | "Iter" => Some(1),
+        "Result" | "Dict" => Some(2),
+        "Int" | "Float" | "Duration" | "String" | "Bytes" | "__Msg" | "Bool" | "Nil"
+        | "Console" | "Clock" | "Rand" | "Env" | "Secret" | "SecretStore" | "Exec"
+        | "Socket" | "Listener" | "BuildOut" | "BuildRead" | "BuildEnv" | "BuildNet"
+        | "BuildExec" | "Ordering" => Some(0),
+        _ => None,
+    }
+}
+
 fn is_synthetic_type_name(name: &str) -> bool {
     name.strip_prefix("__anon").is_some_and(|n| {
         !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())
     }) || name.strip_prefix("Tuple").is_some_and(|n| {
         !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())
     })
+}
+
+fn tuple_synthetic_arity(name: &str) -> Option<usize> {
+    name.strip_prefix("Tuple")
+        .and_then(|n| (!n.is_empty()).then_some(n))
+        .and_then(|n| n.parse::<usize>().ok())
 }
 
 /// Validate that every named type in `t` is known — a builtin, a declared type,
@@ -803,13 +821,33 @@ fn validate_cap_markers(cap: &str, args: &[ast::Type]) -> Result<(), TypeError> 
     Ok(())
 }
 
-fn validate_type(t: &ast::Type, known: &HashSet<&str>) -> Result<(), TypeError> {
+fn type_param_names<'a>(fields: impl Iterator<Item = &'a ast::Type>) -> Vec<String> {
+    let mut names = Vec::new();
+    for field in fields {
+        collect_type_params(field, &mut names);
+    }
+    names
+}
+
+fn type_def_arity(t: &ast::TypeDef) -> usize {
+    if !t.params.is_empty() {
+        t.params.len()
+    } else {
+        type_param_names(t.variants.iter().flat_map(|v| v.fields.iter())).len()
+    }
+}
+
+fn validate_type(
+    t: &ast::Type,
+    known: &HashSet<&str>,
+    arities: &HashMap<&str, usize>,
+) -> Result<(), TypeError> {
     match t {
-        ast::Type::Qualified(_, inner) => validate_type(inner, known),
-        ast::Type::Tuple(ts) => ts.iter().try_for_each(|x| validate_type(x, known)),
+        ast::Type::Qualified(_, inner) => validate_type(inner, known, arities),
+        ast::Type::Tuple(ts) => ts.iter().try_for_each(|x| validate_type(x, known, arities)),
         ast::Type::Fn(params, ret) => {
-            params.iter().try_for_each(|p| validate_type(p, known))?;
-            validate_type(ret, known)
+            params.iter().try_for_each(|p| validate_type(p, known, arities))?;
+            validate_type(ret, known, arities)
         }
         ast::Type::Named(n, args) => {
             // `Dir`/`File`/`Net` carry capability *rights* markers (`Dir[Read]`,
@@ -821,8 +859,20 @@ fn validate_type(t: &ast::Type, known: &HashSet<&str>) -> Result<(), TypeError> 
             if n == "Dir" || n == "File" || n == "Net" {
                 return validate_cap_markers(n, args);
             }
-            if known.contains(n.as_str()) {
-                args.iter().try_for_each(|a| validate_type(a, known))
+            if known.contains(n.as_str()) || is_synthetic_type_name(n) {
+                if let Some(expected) = arities
+                    .get(n.as_str())
+                    .copied()
+                    .or_else(|| tuple_synthetic_arity(n))
+                {
+                    let got = args.len();
+                    if got != expected {
+                        return terr(format!(
+                            "type `{n}` expects {expected} type argument(s) but got {got}"
+                        ));
+                    }
+                }
+                args.iter().try_for_each(|a| validate_type(a, known, arities))
             } else if args.is_empty() && n.chars().next().is_some_and(|c| c.is_lowercase()) && !n.contains('.') {
                 // A lowercase, argument-less name is a generic type parameter.
                 Ok(())
@@ -838,6 +888,11 @@ fn validate_type(t: &ast::Type, known: &HashSet<&str>) -> Result<(), TypeError> 
 /// module; lowercase argument-less names are generic parameters.
 fn check_type_names(module: &Module) -> Result<(), TypeError> {
     let mut known: HashSet<&str> = BUILTIN_TYPE_NAMES.iter().copied().collect();
+    let mut arities: HashMap<&str, usize> = BUILTIN_TYPE_NAMES
+        .iter()
+        .chain(AMBIENT_STD_TYPE_NAMES.iter())
+        .filter_map(|name| builtin_type_arity(name).map(|arity| (*name, arity)))
+        .collect();
     let mut packed_names: HashSet<&str> = HashSet::new();
     // (RFC-0005) User `type`/`capability` declarations, so `carries_externref_cap`
     // can resolve whether a `Named` type transitively holds a migrated capability.
@@ -845,6 +900,7 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
     for item in &module.items {
         if let Item::Type(t) = item {
             known.insert(t.name.as_str());
+            arities.insert(t.name.as_str(), type_def_arity(t));
             type_defs.insert(t.name.as_str(), t);
             if t.packed {
                 packed_names.insert(t.name.as_str());
@@ -855,17 +911,178 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
         let in_ctx = |e: TypeError, ctx: &str| TypeError {
             message: format!("in `{}`: {}", ctx.rsplit('.').next().unwrap_or(ctx), e.message),
         };
+        fn validate_block_types(
+            block: &Block,
+            known: &HashSet<&str>,
+            arities: &HashMap<&str, usize>,
+            ctx: &str,
+            in_ctx: &impl Fn(TypeError, &str) -> TypeError,
+        ) -> Result<(), TypeError> {
+            if let Some(region) = &block.region {
+                if let Some(ty) = &region.ty {
+                    validate_type(ty, known, arities).map_err(|e| in_ctx(e, ctx))?;
+                }
+            }
+            for stmt in &block.stmts {
+                validate_stmt_types(stmt, known, arities, ctx, in_ctx)?;
+            }
+            Ok(())
+        }
+        fn validate_stmt_types(
+            stmt: &Stmt,
+            known: &HashSet<&str>,
+            arities: &HashMap<&str, usize>,
+            ctx: &str,
+            in_ctx: &impl Fn(TypeError, &str) -> TypeError,
+        ) -> Result<(), TypeError> {
+            match stmt {
+                Stmt::Let { ty, value, .. } => {
+                    if let Some(ty) = ty {
+                        validate_type(ty, known, arities).map_err(|e| in_ctx(e, ctx))?;
+                    }
+                    validate_expr_types(value, known, arities, ctx, in_ctx)
+                }
+                Stmt::Assign { value, .. }
+                | Stmt::LetPattern { value, .. }
+                | Stmt::Return(Some(value))
+                | Stmt::Yield(value)
+                | Stmt::Expr(value) => validate_expr_types(value, known, arities, ctx, in_ctx),
+                Stmt::Return(None) | Stmt::Break | Stmt::Continue => Ok(()),
+            }
+        }
+        fn validate_expr_types(
+            expr: &Expr,
+            known: &HashSet<&str>,
+            arities: &HashMap<&str, usize>,
+            ctx: &str,
+            in_ctx: &impl Fn(TypeError, &str) -> TypeError,
+        ) -> Result<(), TypeError> {
+            match expr {
+                Expr::Int(_)
+                | Expr::Float(_)
+                | Expr::Duration(_)
+                | Expr::Str(_)
+                | Expr::Bool(_)
+                | Expr::Var(_)
+                | Expr::TaggedLit { .. } => Ok(()),
+                Expr::List(values) | Expr::Tuple(values) => {
+                    for value in values {
+                        validate_expr_types(value, known, arities, ctx, in_ctx)?;
+                    }
+                    Ok(())
+                }
+                Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
+                    for arg in args {
+                        validate_expr_types(arg, known, arities, ctx, in_ctx)?;
+                    }
+                    Ok(())
+                }
+                Expr::LabeledCall { args, .. } => {
+                    for (_, arg) in args {
+                        validate_expr_types(arg, known, arities, ctx, in_ctx)?;
+                    }
+                    Ok(())
+                }
+                Expr::MethodCall { receiver, args, .. } => {
+                    validate_expr_types(receiver, known, arities, ctx, in_ctx)?;
+                    for arg in args {
+                        validate_expr_types(arg, known, arities, ctx, in_ctx)?;
+                    }
+                    Ok(())
+                }
+                Expr::Apply { func, args } => {
+                    validate_expr_types(func, known, arities, ctx, in_ctx)?;
+                    for arg in args {
+                        validate_expr_types(arg, known, arities, ctx, in_ctx)?;
+                    }
+                    Ok(())
+                }
+                Expr::Unary { expr, .. }
+                | Expr::Field { base: expr, .. }
+                | Expr::Try(expr) => validate_expr_types(expr, known, arities, ctx, in_ctx),
+                Expr::As { expr, ty } => {
+                    validate_expr_types(expr, known, arities, ctx, in_ctx)?;
+                    validate_type(ty, known, arities).map_err(|e| in_ctx(e, ctx))
+                }
+                Expr::Lambda { params, body, ret } => {
+                    for param in params {
+                        if let Some(ty) = &param.ty {
+                            validate_type(ty, known, arities).map_err(|e| in_ctx(e, ctx))?;
+                        }
+                    }
+                    if let Some(ret) = ret {
+                        validate_type(ret, known, arities).map_err(|e| in_ctx(e, ctx))?;
+                    }
+                    validate_block_types(body, known, arities, ctx, in_ctx)
+                }
+                Expr::RecordUpdate { base, fields } => {
+                    validate_expr_types(base, known, arities, ctx, in_ctx)?;
+                    for (_, value) in fields {
+                        validate_expr_types(value, known, arities, ctx, in_ctx)?;
+                    }
+                    Ok(())
+                }
+                Expr::Record { fields, spread, .. } => {
+                    for (_, value) in fields {
+                        validate_expr_types(value, known, arities, ctx, in_ctx)?;
+                    }
+                    if let Some(base) = spread {
+                        validate_expr_types(base, known, arities, ctx, in_ctx)?;
+                    }
+                    Ok(())
+                }
+                Expr::Binary { lhs, rhs, .. } | Expr::Range { lo: lhs, hi: rhs, .. } => {
+                    validate_expr_types(lhs, known, arities, ctx, in_ctx)?;
+                    validate_expr_types(rhs, known, arities, ctx, in_ctx)
+                }
+                Expr::If { cond, then_block, else_block } => {
+                    validate_expr_types(cond, known, arities, ctx, in_ctx)?;
+                    validate_block_types(then_block, known, arities, ctx, in_ctx)?;
+                    if let Some(block) = else_block {
+                        validate_block_types(block, known, arities, ctx, in_ctx)?;
+                    }
+                    Ok(())
+                }
+                Expr::Match { scrutinee, arms } => {
+                    validate_expr_types(scrutinee, known, arities, ctx, in_ctx)?;
+                    for arm in arms {
+                        if let Some(guard) = &arm.guard {
+                            validate_expr_types(guard, known, arities, ctx, in_ctx)?;
+                        }
+                        validate_expr_types(&arm.body, known, arities, ctx, in_ctx)?;
+                    }
+                    Ok(())
+                }
+                Expr::Block(block) => validate_block_types(block, known, arities, ctx, in_ctx),
+                Expr::While { cond, body } => {
+                    validate_expr_types(cond, known, arities, ctx, in_ctx)?;
+                    validate_block_types(body, known, arities, ctx, in_ctx)
+                }
+                Expr::For { iter, body, .. } => {
+                    validate_expr_types(iter, known, arities, ctx, in_ctx)?;
+                    validate_block_types(body, known, arities, ctx, in_ctx)
+                }
+                Expr::Index { base, index } => {
+                    validate_expr_types(base, known, arities, ctx, in_ctx)?;
+                    validate_expr_types(index, known, arities, ctx, in_ctx)
+                }
+                Expr::WhileLet { scrutinee, body, .. } => {
+                    validate_expr_types(scrutinee, known, arities, ctx, in_ctx)?;
+                    validate_block_types(body, known, arities, ctx, in_ctx)
+                }
+            }
+        }
         match item {
             Item::Function(f) => {
                 for p in &f.params {
                     if let Some(t) = &p.ty {
-                        validate_type(t, &known).map_err(|e| in_ctx(e, &f.name))?;
+                        validate_type(t, &known, &arities).map_err(|e| in_ctx(e, &f.name))?;
                         reject_packed_list_boundary(t, &packed_names, &f.name, "a parameter")?;
                         reject_cap_slot_boundary(t, &type_defs, &f.name, "a parameter")?;
                     }
                 }
                 if let Some(t) = &f.ret {
-                    validate_type(t, &known).map_err(|e| in_ctx(e, &f.name))?;
+                    validate_type(t, &known, &arities).map_err(|e| in_ctx(e, &f.name))?;
                     reject_packed_list_boundary(t, &packed_names, &f.name, "a return type")?;
                     reject_cap_slot_boundary(t, &type_defs, &f.name, "a return type")?;
                     // (RFC-0026) `local unique` is valid only WITHIN the call — it may
@@ -879,6 +1096,58 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                         });
                     }
                 }
+                validate_block_types(&f.body, &known, &arities, &f.name, &in_ctx)?;
+            }
+            Item::Trait(tr) => {
+                let mut trait_known = known.clone();
+                let mut trait_arities = arities.clone();
+                trait_known.insert("Self");
+                trait_arities.insert("Self", 0);
+                for method in &tr.methods {
+                    for param in &method.params {
+                        if let Some(ty) = &param.ty {
+                            validate_type(ty, &trait_known, &trait_arities).map_err(|e| in_ctx(e, &tr.name))?;
+                        }
+                    }
+                    if let Some(ret) = &method.ret {
+                        validate_type(ret, &trait_known, &trait_arities).map_err(|e| in_ctx(e, &tr.name))?;
+                    }
+                    if let Some(default) = &method.default {
+                        validate_block_types(default, &trait_known, &trait_arities, &tr.name, &in_ctx)?;
+                    }
+                }
+            }
+            Item::Impl(im) => {
+                let target = ast::Type::Named(im.type_name.clone(), im.target_args.clone());
+                validate_type(&target, &known, &arities).map_err(|e| in_ctx(e, &im.type_name))?;
+                for arg in &im.trait_args {
+                    validate_type(arg, &known, &arities).map_err(|e| in_ctx(e, &im.type_name))?;
+                }
+                for (_, _, trait_args) in &im.bounds {
+                    for arg in trait_args {
+                        validate_type(arg, &known, &arities).map_err(|e| in_ctx(e, &im.type_name))?;
+                    }
+                }
+                let mut method_known = known.clone();
+                let mut method_arities = arities.clone();
+                method_known.insert("Self");
+                method_arities.insert("Self", 0);
+                for method in &im.methods {
+                    for param in &method.params {
+                        if let Some(ty) = &param.ty {
+                            validate_type(ty, &method_known, &method_arities).map_err(|e| in_ctx(e, &method.name))?;
+                        }
+                    }
+                    if let Some(ret) = &method.ret {
+                        validate_type(ret, &method_known, &method_arities).map_err(|e| in_ctx(e, &method.name))?;
+                    }
+                    for (_, _, trait_args) in &method.bounds {
+                        for arg in trait_args {
+                            validate_type(arg, &method_known, &method_arities).map_err(|e| in_ctx(e, &method.name))?;
+                        }
+                    }
+                    validate_block_types(&method.body, &method_known, &method_arities, &method.name, &in_ctx)?;
+                }
             }
             // A type's variant field types must also be known. The type's own
             // name (and any sibling type) is already in `known`, so recursive and
@@ -886,7 +1155,7 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
             Item::Type(t) => {
                 for variant in &t.variants {
                     for field in &variant.fields {
-                        validate_type(field, &known).map_err(|e| in_ctx(e, &t.name))?;
+                        validate_type(field, &known, &arities).map_err(|e| in_ctx(e, &t.name))?;
                         reject_packed_list_boundary(field, &packed_names, &t.name, "a field")?;
                         reject_cap_slot_boundary(field, &type_defs, &t.name, "a field")?;
                     }
@@ -918,7 +1187,15 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                     }
                 }
             }
-            _ => {}
+            Item::Const { value, .. } => {
+                validate_expr_types(value, &known, &arities, "<const>", &in_ctx)?;
+            }
+            Item::Comptime(block) => {
+                validate_block_types(block, &known, &arities, "comptime", &in_ctx)?;
+            }
+            Item::TypeAlias { ty, name } => {
+                validate_type(ty, &known, &arities).map_err(|e| in_ctx(e, name))?;
+            }
         }
     }
     Ok(())
@@ -4624,6 +4901,7 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
     // Lower named-field record construction (a no-op once the linker has done so,
     // but covers single-module paths like `check_str`).
     let recs = witchy_syntax::records::lower(module.clone()).map_err(|message| TypeError { message })?;
+    check_type_names(&recs)?;
 
     // Trait/impl declarations are desugared to ordinary functions first, so the
     // checker only ever sees plain functions (a no-op for trait-free modules).

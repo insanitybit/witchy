@@ -176,6 +176,51 @@
     }
 
     #[test]
+    fn type_argument_arity_is_checked() {
+        let scalar = check_str("fn f(x: Int(String)) -> Int:\n    x\n").unwrap_err();
+        assert!(scalar.contains("type `Int` expects 0 type argument(s) but got 1"), "{scalar}");
+
+        let missing_list = check_str("fn f(xs: List) -> Int:\n    0\n").unwrap_err();
+        assert!(missing_list.contains("type `List` expects 1 type argument(s) but got 0"), "{missing_list}");
+
+        let extra_list = check_str("fn f(xs: List(Int, String)) -> Int:\n    0\n").unwrap_err();
+        assert!(extra_list.contains("type `List` expects 1 type argument(s) but got 2"), "{extra_list}");
+
+        let result = check_str("fn f(r: Result(Int)) -> Int:\n    0\n").unwrap_err();
+        assert!(result.contains("type `Result` expects 2 type argument(s) but got 1"), "{result}");
+
+        let dict = check_str("fn f(d: Dict(String, Int, Bool)) -> Int:\n    0\n").unwrap_err();
+        assert!(dict.contains("type `Dict` expects 2 type argument(s) but got 3"), "{dict}");
+
+        let user_missing = check_str("type Pair(a, b):\n    Pair(a, b)\nfn f(p: Pair(Int)) -> Int:\n    0\n")
+            .unwrap_err();
+        assert!(
+            user_missing.contains("type `Pair` expects 2 type argument(s) but got 1"),
+            "{user_missing}"
+        );
+
+        let user_extra = check_str("type Box:\n    Box(a)\nfn f(b: Box(Int, String)) -> Int:\n    0\n")
+            .unwrap_err();
+        assert!(
+            user_extra.contains("type `Box` expects 1 type argument(s) but got 2"),
+            "{user_extra}"
+        );
+
+        let local = check_str("fn main(console: Console):\n    let xs: List = []\n    print(console, \"bad\")\n")
+            .unwrap_err();
+        assert!(local.contains("type `List` expects 1 type argument(s) but got 0"), "{local}");
+
+        check_str("fn f(xs: List(Int), r: Result(Int, String), d: Dict(String, Int)) -> Int:\n    0\n")
+            .expect("valid builtin generic arities pass");
+        check_str("type Pair(a, b):\n    Pair(a, b)\nfn f(p: Pair(Int, String)) -> Int:\n    0\n")
+            .expect("valid explicit ADT arity passes");
+        check_str("type Box:\n    Box(a)\nfn f(b: Box(Int)) -> Int:\n    0\n")
+            .expect("valid inferred ADT arity passes");
+        check_str("fn f(dir: Dir[Read], file: File[Read, Write], net: Net[Connect]) -> Int:\n    0\n")
+            .expect("capability right markers are not ordinary type arguments");
+    }
+
+    #[test]
     fn build_entrypoint_takes_only_build_capabilities() {
         // A valid build step: build caps only.
         check_str("fn build(out: BuildOut, schema: BuildRead):\n    write_out(out, \"x.witchy\", read_build(schema, \"a.proto\"))\n")
