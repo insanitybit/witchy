@@ -47,11 +47,17 @@ pub fn map_err(r: Result(a, e), f: fn(e) -> g) -> Result(a, g):
         Ok(v) -> Ok(v)
         Err(x) -> Err(f(x))
 
-// The Err value, or `default` if it's Ok.
-pub fn unwrap_err(r: Result(a, e), default: e) -> e:
+// The Err value, or `default` if it's Ok. This is the error-side counterpart of
+// `unwrap_or`: it is a defaulting helper, not a strict assertion that `r` is Err.
+pub fn unwrap_err_or(r: Result(a, e), default: e) -> e:
     match r:
         Ok(_) -> default
         Err(x) -> x
+
+// Compatibility alias for `unwrap_err_or`. Prefer `unwrap_err_or` in new code so
+// the defaulting behavior is visible at the call site.
+pub fn unwrap_err(r: Result(a, e), default: e) -> e:
+    unwrap_err_or(r, default)
 
 // The Ok value, or the result of calling `f` (a lazily-computed default).
 pub fn unwrap_or_else(r: Result(a, e), f: fn() -> a) -> a:
