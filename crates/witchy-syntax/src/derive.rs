@@ -8,6 +8,8 @@
 //! user-extensible witchy code over `meta.TypeInfo`, generated BEFORE type checking.
 
 use crate::ast::*;
+// foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
+use foldhash::HashSet;
 
 fn contains_concrete_float(ty: &Type) -> bool {
     match ty {
@@ -54,7 +56,7 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
     let mut needs_deserialize = false;
     let mut needs_reflect = false;
     let mut needs_show = false;
-    let explicit_partial_eq_targets: std::collections::HashSet<String> = module
+    let explicit_partial_eq_targets: HashSet<String> = module
         .items
         .iter()
         .filter_map(|item| {

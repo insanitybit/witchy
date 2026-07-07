@@ -29,7 +29,8 @@
 //! positional-only, and the parser never produces a `LabeledCall` for those.
 
 use crate::ast::*;
-use std::collections::HashMap;
+// foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
+use foldhash::{HashMap, HashMapExt as _};
 
 type Params = HashMap<String, Vec<Param>>;
 

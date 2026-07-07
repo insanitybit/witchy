@@ -11,7 +11,8 @@
 //! standing for one fully-written type.
 
 use crate::ast::{collect_type_names, Block, Expr, Function, Item, MethodSig, Module, Stmt, Type};
-use std::collections::HashMap;
+// foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
+use foldhash::{HashMap, HashMapExt as _, HashSet};
 
 /// The name of a type alias defined in terms of itself (directly or through a
 /// chain), if any — so the linker can report it rather than letting the alias
@@ -26,7 +27,7 @@ pub fn find_cycle(module: &Module) -> Option<String> {
         }
     }
     // Restrict edges to other aliases, then DFS for a back edge.
-    let names: std::collections::HashSet<String> = edges.keys().cloned().collect();
+    let names: HashSet<String> = edges.keys().cloned().collect();
     for refs in edges.values_mut() {
         refs.retain(|r| names.contains(r));
     }

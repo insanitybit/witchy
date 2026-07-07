@@ -44,7 +44,8 @@
 //! through the loop segment's parameter).
 
 use crate::ast::*;
-use std::collections::HashSet;
+// foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
+use foldhash::{HashSet, HashSetExt as _};
 
 pub fn lower(mut module: Module) -> Result<Module, String> {
     if !has_async(&module) {

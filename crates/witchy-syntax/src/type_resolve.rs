@@ -20,7 +20,8 @@
 //! prelude types `Option`/`Result` (and their `Some`/`None`/`Ok`/`Err`) — these
 //! are load-bearing language surface, not ordinary library types.
 
-use std::collections::{HashMap, HashSet};
+// foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
+use foldhash::{HashMap, HashMapExt as _, HashSet};
 
 use crate::ast::*;
 use crate::linker::LinkError;

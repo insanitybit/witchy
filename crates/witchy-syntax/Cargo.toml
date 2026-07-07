@@ -10,3 +10,5 @@ description = "witchy compiler — the lexer, parser, and AST (source text → A
 # `#[cfg(test)]` unit tests (no wasmtime), so this crate builds identically on
 # every target including the wasm playground.
 [dependencies]
+# Fast non-DoS-resistant hasher for internal tables (see witchy-types).
+foldhash = "0.2.0"

@@ -3,6 +3,8 @@
 //! Pipelines are desugared at parse time: `x |> f(a)` becomes `f(x, a)`.
 
 use std::fmt;
+// foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
+use foldhash::HashSet;
 
 use crate::ast::*;
 use crate::lexer::{tokenize, Tok, Token};
@@ -78,7 +80,7 @@ struct Parser {
     compr_counter: usize,
     /// Imported module names, so `mod.func(...)` (module-qualified call) can be
     /// told apart from `value.method(...)` (UFCS method call) after `.`.
-    imports: std::collections::HashSet<String>,
+    imports: HashSet<String>,
     /// `impl Trait` parameter bounds collected while parsing one function's
     /// params — `fn f(x: impl Show)` desugars to a fresh type var plus a
     /// `where`-style bound, reusing the whole trait/monomorphization path.

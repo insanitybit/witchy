@@ -9,7 +9,8 @@
 //! that is in scope everywhere it isn't shadowed.
 
 use crate::ast::{Block, Expr, Item, Module, Pattern, Stmt};
-use std::collections::{HashMap, HashSet};
+// foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
+use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 
 /// The name of a constant defined in terms of itself (directly or through a
 /// chain), if any — so the linker can report it rather than letting it expand to

@@ -4,6 +4,9 @@
 //! constructors/variants (`Click`, `Closed`); lowercase identifiers are
 //! variables and functions (`greet`, `count`).
 
+// foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
+use foldhash::{HashSet, HashSetExt as _};
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Module {
     /// The performance mode declared at the top of the file (`mode opt`), or empty
@@ -696,9 +699,9 @@ pub fn collect_type_names<S: Extend<String>>(t: &Type, out: &mut S) {
 /// declaration did not generate a structural PartialEq. (A type with a hand impl
 /// plus marker `derive(Eq)` has `partial_eq_derived == false`; a derived
 /// structural PartialEq has it `true`.)
-pub fn custom_partial_eq_types(module: &Module) -> std::collections::HashSet<String> {
+pub fn custom_partial_eq_types(module: &Module) -> HashSet<String> {
     // Types that DERIVED their PartialEq — their generated impl is structural.
-    let mut derived: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut derived: HashSet<&str> = HashSet::new();
     for item in &module.items {
         if let Item::Type(t) = item {
             if t.partial_eq_derived {
@@ -706,7 +709,7 @@ pub fn custom_partial_eq_types(module: &Module) -> std::collections::HashSet<Str
             }
         }
     }
-    let mut custom: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut custom: HashSet<String> = HashSet::new();
     for item in &module.items {
         if let Item::Impl(im) = item {
             let is_partial_eq = im.trait_name.as_deref() == Some("PartialEq");

@@ -11,7 +11,8 @@
 //! v1: functions are module-scoped; types/constructors share one global
 //! namespace.
 
-use std::collections::{HashMap, HashSet};
+// foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
+use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 use std::fmt;
 
 use crate::ast::*;

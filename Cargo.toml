@@ -115,3 +115,8 @@ opt-level = 1
 opt-level = 1
 [profile.dev.package.witchy-syntax]
 opt-level = 1
+# foldhash backs the compiler crates' HashMaps; unoptimized it LOSES to std's
+# precompiled SipHash (~2% more instructions on a pm-front-end compile), with
+# this override it wins. Tiny crate — no build-time cost.
+[profile.dev.package.foldhash]
+opt-level = 3

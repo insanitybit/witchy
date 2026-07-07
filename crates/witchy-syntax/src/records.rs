@@ -8,7 +8,8 @@
 //! `Record` node and prints the named form back.
 
 use crate::ast::*;
-use std::collections::{HashMap, HashSet};
+// foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
+use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 
 type Orders = HashMap<String, Vec<String>>;
 

@@ -9,6 +9,8 @@
 //! be perfect — only sound where it fires.
 
 use crate::ast::*;
+// foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
+use foldhash::{HashSet, HashSetExt as _};
 
 const IND: &str = "    ";
 
@@ -159,7 +161,7 @@ pub fn module(m: &Module, comments: &[(u32, u32, String)]) -> String {
         }
         // A module that appears in a `from X import …` is rendered as that line,
         // not a bare `import X` (the `from` form implies the plain import).
-        let from_mods: std::collections::HashSet<&str> =
+        let from_mods: HashSet<&str> =
             m.from_imports.iter().map(|(x, _)| x.as_str()).collect();
         let mut first = true;
         for (i, imp) in m.imports.iter().enumerate() {
@@ -1734,8 +1736,8 @@ pub fn type_str(t: &Type) -> String {
 thread_local! {
     /// Function names defined by the module currently being formatted —
     /// exempt from the moved-builtin rewrite.
-    static LOCAL_FNS: std::cell::RefCell<std::collections::HashSet<String>> =
-        std::cell::RefCell::new(std::collections::HashSet::new());
+    static LOCAL_FNS: std::cell::RefCell<HashSet<String>> =
+        std::cell::RefCell::new(HashSet::new());
 }
 
 fn local_fn(name: &str) -> bool {

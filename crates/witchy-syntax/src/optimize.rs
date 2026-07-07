@@ -30,7 +30,8 @@
 //! conservatively with no propagation.
 
 use crate::ast::{BinOp, Block, Expr, Item, Module, Stmt, UnOp};
-use std::collections::HashMap;
+// foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
+use foldhash::{HashMap, HashMapExt as _};
 
 /// Immutable `let`-bindings whose value is a literal, in scope at a program
 /// point. Used for LOCAL constant propagation: a `Var` reference is replaced by

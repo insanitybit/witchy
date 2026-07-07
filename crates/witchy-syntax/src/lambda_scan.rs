@@ -9,7 +9,8 @@
 //! (identically to what lowering would detect) rather than backend-specifically.
 
 use crate::ast::*;
-use std::collections::HashSet;
+// foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
+use foldhash::HashSet;
 
 /// The reads, internal assignments, and internal bindings gathered while
 /// walking a lambda body.
