@@ -311,6 +311,11 @@ impl Parser {
 
     fn item(&mut self) -> Result<Item, ParseError> {
         let public = self.eat(&Tok::Pub);
+        if public && !(self.at(&Tok::Fn) || self.at(&Tok::Gen) || self.at(&Tok::Async)) {
+            return Err(self.error(
+                "`pub` may only precede a function declaration (`pub fn`, `pub gen fn`, or `pub async fn`)",
+            ));
+        }
         if self.at(&Tok::Fn) || self.at(&Tok::Gen) || self.at(&Tok::Async) {
             Ok(Item::Function(self.function(public)?))
         } else if self.at(&Tok::Type) {
@@ -678,9 +683,11 @@ impl Parser {
     /// The RECORD form (RFC-0011 carried state) names its fields and may mix host
     /// capabilities with ordinary policy data:
     ///
-    ///     capability Postgres:
-    ///         net: Net[Connect, Tcp]
-    ///         table: String
+    /// ```text
+    /// capability Postgres:
+    ///     net: Net[Connect, Tcp]
+    ///     table: String
+    /// ```
     ///
     /// It desugars to a sealed record `Postgres(net, table)`; its footprint is the
     /// UNION of its capability-typed fields (the `String` contributes nothing), so

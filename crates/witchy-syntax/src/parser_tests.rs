@@ -69,6 +69,30 @@ fn add(a: Int, b: Int) -> Int:
     }
 
     #[test]
+    fn pub_only_marks_function_declarations() {
+        for src in [
+            "pub let ANSWER = 42\n",
+            "pub type Box:\n    Box(Int)\n",
+            "pub sealed type Box:\n    Box(Int)\n",
+            "pub capability Token:\n    label: String\n",
+            "pub grantable capability Token:\n    label: String\n",
+            "pub trait Label:\n    fn label(self) -> String\n",
+            "pub impl Box:\n    pub fn new(value: Int) -> Box:\n        Box(value)\n",
+        ] {
+            let err = parse_module(src).expect_err("non-function `pub` must be rejected");
+            assert!(err.message.contains("`pub` may only precede a function"), "{err}");
+        }
+
+        parse_module("pub fn id(x: Int) -> Int:\n    x\n").expect("public function parses");
+        parse_module("pub async fn fetch() -> String:\n    \"ok\"\n").expect("public async function parses");
+        parse_module("pub gen fn one() -> Iter(Int):\n    yield 1\n").expect("public generator parses");
+        parse_module(
+            "type Box:\n    Box(Int)\nimpl Box:\n    pub fn new(value: Int) -> Box:\n        Box(value)\n",
+        )
+        .expect("public impl methods still parse");
+    }
+
+    #[test]
     fn impl_trait_param_desugars_to_a_bound() {
         // `fn f(x: impl Show)` becomes a fresh type-var param plus a `Show` bound,
         // so it reuses the whole generics path; two `impl` params get distinct vars.
@@ -621,4 +645,3 @@ fn f(var a: Int, own b: Int, c: Int) -> Int:
         parse_module("gen fn ok() -> Iter(Int):\n    if true:\n        yield 1\n    yield 2\n")
             .expect("block-nested yield parses");
     }
-
