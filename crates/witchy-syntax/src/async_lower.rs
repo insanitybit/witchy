@@ -355,9 +355,19 @@ impl<'a> Ctx<'a> {
                 if contains_await(cond) {
                     return Err(self.err("`await` in an `if` condition is not yet supported"));
                 }
+                if then_block.region.is_some() {
+                    return Err(self.err("`region:` in an async tail branch is not yet supported"));
+                }
                 let then_f = self.go(&then_block.stmts, scope, tail)?;
                 let else_f = match else_block {
-                    Some(b) => self.go(&b.stmts, scope, tail)?,
+                    Some(b) => {
+                        if b.region.is_some() {
+                            return Err(
+                                self.err("`region:` in an async tail branch is not yet supported")
+                            );
+                        }
+                        self.go(&b.stmts, scope, tail)?
+                    }
                     None => self.end(tail),
                 };
                 Ok(Expr::If {
@@ -387,7 +397,12 @@ impl<'a> Ctx<'a> {
                 }
                 Ok(Expr::Match { scrutinee: scrutinee.clone(), arms: new_arms })
             }
-            Expr::Block(b) => self.go(&b.stmts, scope, tail),
+            Expr::Block(b) => {
+                if b.region.is_some() {
+                    return Err(self.err("`region:` in an async tail expression is not yet supported"));
+                }
+                self.go(&b.stmts, scope, tail)
+            }
             _ => {
                 reject_await(e, &self.fname)?;
                 match tail {

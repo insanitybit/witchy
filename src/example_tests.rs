@@ -455,6 +455,30 @@
         assert_eq!(link_run(inherent), ["[7]"], "inherent gen method is supported");
     }
 
+    /// (BUG-429) Async lowering runs before type checking, so it must not erase
+    /// tail-position `region:` blocks. Until async preserves region copy-out
+    /// semantics, these shapes are rejected before flattening.
+    #[test]
+    fn async_tail_region_blocks_are_rejected_before_lowering() {
+        for body in [
+            "region -> String:\n        \"x\"",
+            "return region -> String:\n        \"x\"",
+            "if true:\n        region -> String:\n            \"x\"\n    else:\n        \"y\"",
+        ] {
+            let src = format!(
+                "async fn build() -> String:\n    {body}\n\nfn main(console: Console):\n    print(console, \"ok\")\n"
+            );
+            let module = parser::parse_module(&src).expect("parse");
+            let err = crate::pipeline::link(vec![("main".into(), module)], "main")
+                .expect_err("async tail region must be rejected before lowering erases it");
+            assert!(
+                err.message.contains("region") && err.message.contains("async tail"),
+                "diagnostic should name the async tail region limitation, got: {}",
+                err.message
+            );
+        }
+    }
+
     /// (RFC-0032) `vm.par_map(xs, f)` maps a capture-free function over a list. On the
     /// interpreter it is the sequential oracle; on the compiled backend it runs across
     /// OS-thread VMs. Because results are collected by input index and `f` is pure, the
