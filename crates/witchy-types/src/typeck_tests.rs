@@ -262,6 +262,48 @@
     }
 
     #[test]
+    fn trait_impls_must_match_trait_methods() {
+        let misspelled = check_str(
+            "type R:\n    R(Int)\ntrait PartialLike:\n    fn partial_compare(self, other: Self) -> Option(Int)\nimpl PartialLike for R:\n    fn partial_cmp(self, other: R) -> Option(Int):\n        Some(1)\nfn main(console: Console):\n    print(console, \"ok\")\n",
+        )
+        .unwrap_err();
+        assert!(
+            misspelled.contains("`partial_cmp` is not a `PartialLike` method")
+                && misspelled.contains("did you mean `partial_compare`"),
+            "{misspelled}"
+        );
+
+        let missing = check_str(
+            "type R:\n    R(Int)\ntrait Ranked:\n    fn compare(self, other: Self) -> Int\n    fn greater(self, other: Self) -> Bool:\n        compare(self, other) > 0\nimpl Ranked for R:\n    fn greater(self, other: R) -> Bool:\n        true\n",
+        )
+        .unwrap_err();
+        assert!(missing.contains("missing required method `compare`"), "{missing}");
+
+        let wrong_ret = check_str(
+            "type R:\n    R(Int)\ntrait Label:\n    fn label(self) -> String\nimpl Label for R:\n    fn label(self) -> Int:\n        1\n",
+        )
+        .unwrap_err();
+        assert!(
+            wrong_ret.contains("method `label` returns `Int`, but the trait requires `String`"),
+            "{wrong_ret}"
+        );
+
+        let wrong_param = check_str(
+            "type R:\n    R(Int)\ntrait Combine:\n    fn combine(self, other: Self) -> Int\nimpl Combine for R:\n    fn combine(self, other: Int) -> Int:\n        other\n",
+        )
+        .unwrap_err();
+        assert!(
+            wrong_param.contains("method `combine` parameter 2 has type `Int`, but the trait requires `R`"),
+            "{wrong_param}"
+        );
+
+        check_str(
+            "type R:\n    R(Int)\ntrait Ranked:\n    fn compare(self, other: Self) -> Int\n    fn greater(self, other: Self) -> Bool:\n        compare(self, other) > 0\nimpl Ranked for R:\n    fn compare(self, other: R) -> Int:\n        1\n    fn greater(self, other: R) -> Bool:\n        true\n",
+        )
+        .expect("required methods plus default overrides are valid");
+    }
+
+    #[test]
     fn build_entrypoint_takes_only_build_capabilities() {
         // A valid build step: build caps only.
         check_str("fn build(out: BuildOut, schema: BuildRead):\n    write_out(out, \"x.witchy\", read_build(schema, \"a.proto\"))\n")

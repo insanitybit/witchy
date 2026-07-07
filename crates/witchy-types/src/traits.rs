@@ -164,6 +164,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     // across traits), and each trait's full method list (for default bodies).
     let mut trait_methods: HashMap<String, String> = HashMap::new();
     let mut trait_method_list: HashMap<String, Vec<MethodSig>> = HashMap::new();
+    let mut trait_type_params: HashMap<String, Vec<String>> = HashMap::new();
     // Trait methods whose first parameter is NOT `self` are STATIC (`From::from`,
     // `FromIterator::from_iter`): a call on a bound type variable (`b.from(x)`)
     // takes no receiver — the receiver IS the type, resolved via the bound at
@@ -181,6 +182,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                 }
             }
             trait_method_list.insert(t.name.clone(), t.methods.clone());
+            trait_type_params.insert(t.name.clone(), t.typarams.clone());
             trait_supertraits.insert(t.name.clone(), t.supertraits.clone());
         }
     }
@@ -199,6 +201,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     let mut statics: HashMap<(String, String), String> = HashMap::new();
     // (trait name, impl head) present, to check supertrait obligations below.
     let mut impl_pairs: HashSet<(String, String)> = HashSet::new();
+    let mut impl_contract_diags: Vec<String> = Vec::new();
     let mut generated: Vec<Function> = Vec::new();
     for item in &module.items {
         if let Item::Impl(im) = item {
@@ -207,6 +210,10 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                 if !im.trait_args.is_empty() {
                     impl_trait_args
                         .insert((t.clone(), im.type_name.clone()), im.trait_args.clone());
+                }
+                if let Some(methods) = trait_method_list.get(t) {
+                    let params = trait_type_params.get(t).map(Vec::as_slice).unwrap_or(&[]);
+                    impl_contract_diags.extend(validate_trait_impl(im, methods, params));
                 }
             }
             let provided: HashSet<&str> = im.methods.iter().map(|m| m.name.as_str()).collect();
@@ -625,7 +632,8 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     (
         lowered,
         {
-            let mut d = supertrait_diags;
+            let mut d = impl_contract_diags;
+            d.extend(supertrait_diags);
             // (RFC-0043) A discarded-result error is a definitive diagnostic on a
             // fully-resolved callee — surface it FIRST (ahead of any spurious
             // missing-impl the quiet pass would otherwise report), deduplicated.
@@ -641,6 +649,179 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             d
         },
     )
+}
+
+fn bare(name: &str) -> &str {
+    name.rsplit('.').next().unwrap_or(name)
+}
+
+fn display_type(t: &Type) -> String {
+    match t {
+        Type::Qualified(q, inner) => format!("{} {}", q.as_str(), display_type(inner)),
+        Type::Named(n, args) if args.is_empty() => bare(n).to_string(),
+        Type::Named(n, args) => {
+            format!(
+                "{}({})",
+                bare(n),
+                args.iter().map(display_type).collect::<Vec<_>>().join(", ")
+            )
+        }
+        Type::Tuple(ts) => {
+            format!("({})", ts.iter().map(display_type).collect::<Vec<_>>().join(", "))
+        }
+        Type::Fn(ps, r) => {
+            format!(
+                "fn({}) -> {}",
+                ps.iter().map(display_type).collect::<Vec<_>>().join(", "),
+                display_type(r)
+            )
+        }
+    }
+}
+
+fn nil_type() -> Type {
+    Type::Named("Nil".to_string(), Vec::new())
+}
+
+fn impl_self_type(im: &ImplDef) -> Type {
+    if im.type_name.starts_with("Tuple") {
+        Type::Tuple(im.target_args.clone())
+    } else {
+        Type::Named(im.type_name.clone(), im.target_args.clone())
+    }
+}
+
+fn subst_trait_params(t: &Type, vars: &HashMap<String, Type>) -> Type {
+    match t {
+        Type::Qualified(q, inner) => Type::Qualified(*q, Box::new(subst_trait_params(inner, vars))),
+        Type::Named(n, args) if args.is_empty() => {
+            vars.get(n).cloned().unwrap_or_else(|| Type::Named(n.clone(), Vec::new()))
+        }
+        Type::Named(n, args) => {
+            Type::Named(n.clone(), args.iter().map(|a| subst_trait_params(a, vars)).collect())
+        }
+        Type::Tuple(ts) => Type::Tuple(ts.iter().map(|a| subst_trait_params(a, vars)).collect()),
+        Type::Fn(ps, r) => Type::Fn(
+            ps.iter().map(|a| subst_trait_params(a, vars)).collect(),
+            Box::new(subst_trait_params(r, vars)),
+        ),
+    }
+}
+
+fn expected_method_type(t: &Type, im: &ImplDef, trait_params: &HashMap<String, Type>) -> Type {
+    subst_trait_params(&subst_self(t, &impl_self_type(im)), trait_params)
+}
+
+fn ret_type(ret: &Option<Type>, im: &ImplDef, trait_params: &HashMap<String, Type>) -> Type {
+    ret.as_ref()
+        .map(|t| expected_method_type(t, im, trait_params))
+        .unwrap_or_else(nil_type)
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0; b.len() + 1];
+    for (i, ca) in a.bytes().enumerate() {
+        cur[0] = i + 1;
+        for (j, cb) in b.bytes().enumerate() {
+            cur[j + 1] = if ca == cb {
+                prev[j]
+            } else {
+                1 + prev[j].min(prev[j + 1]).min(cur[j])
+            };
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
+fn closest_method<'a>(name: &str, methods: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+    methods
+        .map(|cand| (edit_distance(name, cand), cand))
+        .filter(|(dist, _)| *dist <= 6)
+        .min_by_key(|(dist, cand)| (*dist, cand.len()))
+        .map(|(_, cand)| cand)
+}
+
+fn validate_trait_impl(im: &ImplDef, methods: &[MethodSig], trait_params: &[String]) -> Vec<String> {
+    let Some(trait_name) = &im.trait_name else { return Vec::new() };
+    let trait_bare = bare(trait_name);
+    let type_bare = bare(&im.type_name);
+    let known: HashMap<&str, &MethodSig> = methods.iter().map(|m| (m.name.as_str(), m)).collect();
+    let trait_param_map: HashMap<String, Type> = trait_params
+        .iter()
+        .cloned()
+        .zip(im.trait_args.iter().cloned())
+        .collect();
+    let mut provided: HashSet<&str> = HashSet::new();
+    let mut diags = Vec::new();
+
+    for method in &im.methods {
+        let name = method.name.as_str();
+        let Some(sig) = known.get(name) else {
+            let suggestion = closest_method(name, known.keys().copied())
+                .map(|m| format!("; did you mean `{m}`?"))
+                .unwrap_or_default();
+            diags.push(format!(
+                "`{name}` is not a `{trait_bare}` method in `impl {trait_bare} for {type_bare}`{suggestion}"
+            ));
+            continue;
+        };
+        provided.insert(name);
+
+        if method.params.len() != sig.params.len() {
+            diags.push(format!(
+                "`impl {trait_bare} for {type_bare}` method `{name}` has {} parameter(s), but the trait requires {}",
+                method.params.len(),
+                sig.params.len()
+            ));
+            continue;
+        }
+
+        for (idx, (actual, expected)) in method.params.iter().zip(&sig.params).enumerate() {
+            if actual.convention != expected.convention {
+                diags.push(format!(
+                    "`impl {trait_bare} for {type_bare}` method `{name}` parameter {} has convention `{:?}`, but the trait requires `{:?}`",
+                    idx + 1,
+                    actual.convention,
+                    expected.convention
+                ));
+            }
+            if let (Some(actual_ty), Some(expected_ty)) = (&actual.ty, &expected.ty) {
+                let actual_ty = expected_method_type(actual_ty, im, &trait_param_map);
+                let expected_ty = expected_method_type(expected_ty, im, &trait_param_map);
+                if actual_ty != expected_ty {
+                    diags.push(format!(
+                        "`impl {trait_bare} for {type_bare}` method `{name}` parameter {} has type `{}`, but the trait requires `{}`",
+                        idx + 1,
+                        display_type(&actual_ty),
+                        display_type(&expected_ty)
+                    ));
+                }
+            }
+        }
+
+        let actual_ret = ret_type(&method.ret, im, &trait_param_map);
+        let expected_ret = ret_type(&sig.ret, im, &trait_param_map);
+        if actual_ret != expected_ret {
+            diags.push(format!(
+                "`impl {trait_bare} for {type_bare}` method `{name}` returns `{}`, but the trait requires `{}`",
+                display_type(&actual_ret),
+                display_type(&expected_ret)
+            ));
+        }
+    }
+
+    for sig in methods {
+        if sig.default.is_none() && !provided.contains(sig.name.as_str()) {
+            diags.push(format!(
+                "`impl {trait_bare} for {type_bare}` is missing required method `{}`",
+                sig.name
+            ));
+        }
+    }
+
+    diags
 }
 
 /// Close a direct-supertrait map under transitivity: each trait maps to ALL of
