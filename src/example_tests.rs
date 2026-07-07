@@ -4098,11 +4098,13 @@ fn yn(b: Bool) -> String:
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
-    /// (BUG-286) `derive(Deserialize)` composes `Option` at any depth — inside a
-    /// `List` and nested in another `Option` — decoding JSON `null` to `None`.
+    /// (BUG-286, BUG-034) `derive(Deserialize)` composes `Option` at any depth —
+    /// inside a `List` and nested in another `Option` — decoding JSON `null` to
+    /// `None`. The generated code uses prelude `Result`/`Option` names without
+    /// requiring redundant `import result` / `import option` lines.
     #[test]
     fn derive_deserialize_nested_option_backends_agree() {
-        let src = "import json\nimport result\nimport option\n\ntype Rec derive(Deserialize):\n    xs: List(Option(Int))\n    oo: Option(Option(Int))\n\nfn main(console: Console):\n    match json.decode(\"{\\\"xs\\\": [1, null, 3], \\\"oo\\\": 7}\"):\n        Ok(j) -> match Rec.from_json(j):\n            Ok(r) -> print(console, \"${r.xs} ${r.oo}\")\n            Err(e) -> print(console, \"err\")\n        Err(e) -> print(console, \"parse\")\n";
+        let src = "import json\n\ntype Rec derive(Deserialize):\n    xs: List(Option(Int))\n    oo: Option(Option(Int))\n\nfn main(console: Console):\n    match json.decode(\"{\\\"xs\\\": [1, null, 3], \\\"oo\\\": 7}\"):\n        Ok(j) -> match Rec.from_json(j):\n            Ok(r) -> print(console, \"${r.xs} ${r.oo}\")\n            Err(e) -> print(console, \"err\")\n        Err(e) -> print(console, \"parse\")\n";
         let want = ["[Some(1), None, Some(3)] Some(Some(7))"];
         assert_eq!(link_run(src), want, "interp");
         assert_eq!(wasm_run(src), want, "wasm");
@@ -4114,7 +4116,7 @@ fn yn(b: Bool) -> String:
     /// the original JSON object.
     #[test]
     fn derive_deserialize_field_names_are_hygienic_on_both_backends() {
-        let src = "import json\nimport result\nimport option\n\ntype Odd derive(Deserialize):\n    j: String\n    Ok: String\n    Err: String\n    Some: String\n    None: String\n    rest: Option(List(Option(Int)))\n\nfn main(console: Console):\n    match json.decode(\"{\\\"j\\\": \\\"jay\\\", \\\"Ok\\\": \\\"ok\\\", \\\"Err\\\": \\\"err\\\", \\\"Some\\\": \\\"some\\\", \\\"None\\\": \\\"none\\\", \\\"rest\\\": [1, null, 3]}\"):\n        Ok(doc) -> match Odd.from_json(doc):\n            Ok(r) ->\n                print(console, r.j + \":\" + r.Ok + \":\" + r.Err + \":\" + r.Some + \":\" + r.None)\n                print(console, \"${r.rest}\")\n            Err(e) -> print(console, \"err \" + e)\n        Err(e) -> print(console, \"parse\")\n";
+        let src = "import json\n\ntype Odd derive(Deserialize):\n    j: String\n    Ok: String\n    Err: String\n    Some: String\n    None: String\n    rest: Option(List(Option(Int)))\n\nfn main(console: Console):\n    match json.decode(\"{\\\"j\\\": \\\"jay\\\", \\\"Ok\\\": \\\"ok\\\", \\\"Err\\\": \\\"err\\\", \\\"Some\\\": \\\"some\\\", \\\"None\\\": \\\"none\\\", \\\"rest\\\": [1, null, 3]}\"):\n        Ok(doc) -> match Odd.from_json(doc):\n            Ok(r) ->\n                print(console, r.j + \":\" + r.Ok + \":\" + r.Err + \":\" + r.Some + \":\" + r.None)\n                print(console, \"${r.rest}\")\n            Err(e) -> print(console, \"err \" + e)\n        Err(e) -> print(console, \"parse\")\n";
         let want = ["jay:ok:err:some:none", "Some([Some(1), None, Some(3)])"];
         assert_eq!(link_run(src), want, "interp");
         assert_eq!(wasm_run(src), want, "wasm");

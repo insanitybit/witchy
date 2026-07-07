@@ -1,6 +1,6 @@
-// The witchy standard `Option` type and helpers. `import option` brings the type
-// into scope (so the `?` operator works) and gives the usual combinators. Pure
-// and capability-free.
+// The witchy standard `Option` type and helpers. `Option`, `Some`, and `None`
+// are prelude names and never need an import; `import option` brings in the
+// qualified helper functions such as `option.map`. Pure and capability-free.
 
 // For the `ok_or`/`ok_or_else` conversions to Result.
 

@@ -639,8 +639,9 @@ reflectable (scalars and the built-in containers already are); it is what lets
 `json.stringify` / `json.from_value` encode the type with no per-type code.
 `Deserialize` generates `from_json(j) -> Result(Self, String)` for scalars,
 lists, options, and nested records, and — because the generated body names them
-like handwritten code — needs `import json` **and `import result`** (plus
-`import option` when any field is an `Option`). There is no `Serialize` derive,
+like handwritten code — needs `import json`. `Result`/`Ok`/`Err` and
+`Option`/`Some`/`None` are prelude names, so generated deserialize code can use
+them without redundant imports. There is no `Serialize` derive,
 because reflection already encodes any value (`json.from_value`, `json.stringify`,
 `Into(Json)`); only decoding has to be generated per type.
 

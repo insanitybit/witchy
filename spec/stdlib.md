@@ -1630,7 +1630,7 @@ GET `url` with a `Bearer` access token and parse the JSON body — the "read the
 
 ## `option`
 
-The witchy standard `Option` type and helpers. `import option` brings the type into scope (so the `?` operator works) and gives the usual combinators. Pure and capability-free.
+The witchy standard `Option` type and helpers. `Option`, `Some`, and `None` are prelude names and never need an import; `import option` brings in the qualified helper functions such as `option.map`. Pure and capability-free.
 
 #### `type Option`
 
@@ -1899,7 +1899,7 @@ The matched substrings, leftmost first: extract("\\d+", "a1b22") is ["1", "22"].
 
 ## `result`
 
-The witchy standard `Result` type and helpers. `import result` brings the type into scope (so the `?` operator works) and gives the usual combinators. Pure and capability-free, like every std module.
+The witchy standard `Result` type and helpers. `Result`, `Ok`, and `Err` are prelude names and never need an import; `import result` brings in the qualified helper functions such as `result.map_ok`. Pure and capability-free, like every std module.
 
 #### `type Result`
 

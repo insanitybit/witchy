@@ -9,20 +9,6 @@
 
 use crate::ast::*;
 
-/// Whether an `Option` constructor appears anywhere inside `ty` (the type itself
-/// or any of its argument positions) — a `derive(Deserialize)` field of shape
-/// `Option(T)`, `List(Option(T))`, or `Option(Option(T))` all reach `Some`/`None`
-/// in the generated decoder, so all need the option support in scope.
-fn mentions_option(ty: &Type) -> bool {
-    match ty {
-        Type::Named(n, args) => {
-            (n == "Option" && args.len() == 1) || args.iter().any(mentions_option)
-        }
-        Type::Qualified(_, inner) => mentions_option(inner),
-        _ => false,
-    }
-}
-
 fn contains_concrete_float(ty: &Type) -> bool {
     match ty {
         Type::Named(n, args) => n == "Float" || args.iter().any(contains_concrete_float),
@@ -66,7 +52,6 @@ fn unsupported_deserialize_field(t: &TypeDef) -> Option<(&str, &'static str)> {
 pub fn expand(module: &mut Module) -> Result<(), String> {
     let mut generated: Vec<Item> = Vec::new();
     let mut needs_deserialize = false;
-    let mut needs_option = false;
     let mut needs_reflect = false;
     let mut needs_show = false;
     let explicit_partial_eq_targets: std::collections::HashSet<String> = module
@@ -172,15 +157,6 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                     }
                     generated.push(derive_via_comptime("meta.derive_deserialize", t));
                     needs_deserialize = true;
-                    // `Option` anywhere in a field type — a direct field, a list
-                    // element (`List(Option(T))`), or a nested option
-                    // (`Option(Option(T))`) — makes the generated decoder reach for
-                    // `Some`/`None`, so the import story must account for all of them.
-                    if t.variants.first().is_some_and(|v| {
-                        v.fields.iter().any(mentions_option)
-                    }) {
-                        needs_option = true;
-                    }
                 }
                 // A user-defined derive: route to the witchy generator
                 // `derive_<name>` (lowercased) — which the program defines or imports
@@ -195,17 +171,12 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
             }
         }
     }
-    // The generated `from_json` names `Json`'s decoders and `Result`/`Ok`/`Err`, and
-    // the parser has already qualified calls by the imports it SAW, so the imports
-    // must be written by the user, not injected.
+    // The generated `from_json` names `Json`'s decoders, so `json` must be
+    // imported explicitly. `Result`, `Ok`/`Err`, `Option`, and `Some`/`None` are
+    // prelude names; generated deserialize code follows the same visibility rule
+    // as handwritten source and does not require redundant result/option imports.
     if needs_deserialize && !module.imports.iter().any(|i| i == "json") {
         return Err("derive(Deserialize) needs `import json` in the module".into());
-    }
-    if needs_deserialize && !module.imports.iter().any(|i| i == "result") {
-        return Err("derive(Deserialize) needs `import result` in the module (from_json returns Result)".into());
-    }
-    if needs_option && !module.imports.iter().any(|i| i == "option") {
-        return Err("derive(Deserialize) on a type with an Option field needs `import option`".into());
     }
     if needs_reflect && !module.imports.iter().any(|i| i == "reflect") {
         return Err("derive(Reflect) needs `import reflect` in the module".into());
@@ -214,10 +185,11 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
     // OWN `Show` — `"Name(" + show(self.f1) + ...`. The scalar `Show` impls
     // (`impl Show for Int`/`String`/`Bool`/`Float`/`Duration`) and the `Show`
     // trait itself live in `std/show`, so the generated impl DEPENDS on that
-    // module. Unlike `derive(Deserialize)` (which errors and asks the user to
-    // import json/result), `derive(Show)` is a pervasive, low-friction derive
-    // whose dependency is an implementation detail of the codegen — so inject the
-    // import rather than burden every `derive(Show)` site with an `import show`.
+    // module. `derive(Deserialize)` still asks for explicit `import json`,
+    // because json is not prelude. `derive(Show)` is a pervasive, low-friction
+    // derive whose dependency is an implementation detail of the codegen — so
+    // inject the import rather than burden every `derive(Show)` site with an
+    // `import show`.
     // Runs before the linker's import-pull loop (records-lowering happens first),
     // so the pulled module is linked; a program that already imports show is
     // unaffected (idempotent — the annotation is consumed, imports are a set).
