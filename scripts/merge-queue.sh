@@ -38,8 +38,16 @@
 #   gate.lock/      the lock: pid + what + branch + log + started epoch
 #                   (stale locks — dead pid — are stolen)
 #
-#   scripts/merge-queue.sh submit <branch> [note]   enqueue a local branch (warns if the
-#                                                   diff overlaps another queued branch)
+#   scripts/merge-queue.sh submit [--front] <branch> [note]
+#                                                   enqueue a local branch (warns if the
+#                                                   diff overlaps another queued branch).
+#                                                   --front puts it at the HEAD of the
+#                                                   queue (urgent fixes; use sparingly)
+#   scripts/merge-queue.sh wait <branch> [secs]     block until the branch reaches a
+#                                                   terminal journal event (merged/red/
+#                                                   timeout/conflict/blocked/dropped),
+#                                                   print it as JSON; exit 0 iff merged.
+#                                                   Default timeout 3600s
 #   scripts/merge-queue.sh status                   queue + in-flight gate + recent journal (JSON)
 #   scripts/merge-queue.sh doctor                   human health check: coordinator alive?
 #                                                   lock stale? current stage? log fresh?
@@ -179,7 +187,9 @@ run_gate() { # run_gate <log>
 }
 
 cmd_submit() {
-    local branch="${1:?usage: merge-queue.sh submit <branch> [note]}"
+    local front=0
+    [ "${1:-}" = "--front" ] && { front=1; shift; }
+    local branch="${1:?usage: merge-queue.sh submit [--front] <branch> [note]}"
     local msg="${2:-}"
     git -C "$root" rev-parse --verify --quiet "refs/heads/$branch" >/dev/null \
         || { note "no local branch '$branch'"; exit 2; }
@@ -200,7 +210,11 @@ cmd_submit() {
             note "WARNING: overlaps queued '$other' on: $overlap"
         fi
     done
-    local fname; fname="$(date +%s)-$(echo "$branch" | tr '/' '~').json"
+    # Queue position is the filename's sort order. Normal: epoch seconds.
+    # --front: sort before every epoch timestamp (queue files start with a digit).
+    local stamp; stamp="$(date +%s)"
+    [ "$front" -eq 1 ] && stamp="0front-$stamp"
+    local fname; fname="$stamp-$(echo "$branch" | tr '/' '~').json"
     jq -cn --arg branch "$branch" --arg ts "$(now)" \
            --arg sha "$(git -C "$root" rev-parse "refs/heads/$branch")" \
            --arg by "${USER:-unknown}" --arg note "$msg" \
@@ -312,6 +326,44 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         rm -f "$f"
         return 0
     fi
+
+    # BATCHING: stack further queued branches onto this candidate so ONE gate
+    # validates them all. A branch joins the batch only if it rebases cleanly
+    # onto the stack AND touches no file any earlier batch member touches
+    # (disjoint diffs keep bisection trivial: a red batch re-queues every
+    # member for individual gating, so nothing is ever merged unvalidated).
+    local batch_files=("$f") batch_branches=("$branch")
+    local touched; touched="$(git -C "$gate_wt" diff --name-only "master...HEAD" | sort -u)"
+    local qf cand cdiff csha tip
+    for qf in "$queue_dir"/*.json; do
+        [ -f "$qf" ] || continue
+        [ "$qf" = "$f" ] && continue
+        # A member of a failed batch gates alone until it individually passes
+        # or fails (the .nobatch marker set on batch_red).
+        [ -e "$f.nobatch" ] && break
+        [ -e "$qf.nobatch" ] && continue
+        [ "${#batch_branches[@]}" -ge "${MERGE_QUEUE_BATCH_MAX:-5}" ] && break
+        cand="$(jq -r .branch "$qf")"
+        csha="$(git -C "$root" rev-parse --verify --quiet "refs/heads/$cand")" || continue
+        cdiff="$(git -C "$root" diff --name-only "master...$cand" 2>/dev/null | sort -u)"
+        [ -n "$cdiff" ] || continue
+        if [ -n "$(comm -12 <(echo "$touched") <(echo "$cdiff"))" ]; then continue; fi
+        # Rebase the candidate's SHA (detached — never moves the agent's branch
+        # ref) onto the current stack tip. On failure, abort returns HEAD to the
+        # candidate sha, so re-detach onto the saved tip either way it fails.
+        tip="$(git -C "$gate_wt" rev-parse HEAD)"
+        if git -C "$gate_wt" rebase "$tip" "$csha" >/dev/null 2>&1; then
+            batch_files+=("$qf"); batch_branches+=("$cand")
+            touched="$(printf '%s\n%s\n' "$touched" "$cdiff" | sort -u)"
+        else
+            git -C "$gate_wt" rebase --abort >/dev/null 2>&1 || true
+            git -C "$gate_wt" checkout --detach --quiet "$tip"
+        fi
+    done
+    if [ "${#batch_branches[@]}" -gt 1 ]; then
+        note "batched ${#batch_branches[@]} branches into one gate: ${batch_branches[*]}"
+        echo "batch: ${batch_branches[*]}" >"$lock/what"
+    fi
     local sha; sha="$(git -C "$gate_wt" rev-parse HEAD)"
 
     local log; log="$logs/$(date +%Y%m%d-%H%M%S)-$(echo "$branch" | tr '/' '~').log"
@@ -323,20 +375,37 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
 
     case "$gate_result" in
         green) ;;
-        red)
-            note "$branch is RED after ${took}s — see $log"
-            record red "$branch" sha "$sha" log "$log" elapsed_s "$took" stages "$(stage_summary "$log")"
-            rm -f "$f"
-            return 0
-            ;;
-        timeout:*)
-            note "$branch TIMED OUT after ${took}s — ${gate_result#timeout: } — see $log"
-            record timeout "$branch" sha "$sha" log "$log" elapsed_s "$took" \
-                reason "${gate_result#timeout: }" stages "$(stage_summary "$log")"
+        red | timeout:*)
+            local why="red" extra=""
+            [ "$gate_result" != "red" ] && { why="timeout"; extra="${gate_result#timeout: }"; }
+            if [ "${#batch_branches[@]}" -gt 1 ]; then
+                # A red BATCH indicts no one member: keep every queue file so
+                # each re-gates individually (batching only re-engages when a
+                # solo branch is at the head with others behind it).
+                note "batch of ${#batch_branches[@]} is $(echo "$why" | tr a-z A-Z) after ${took}s — re-queueing members for individual gates; see $log"
+                record batch_red "$branch" members "${batch_branches[*]}" log "$log" \
+                    elapsed_s "$took" reason "$extra"
+                # Mark every member no-batch so the retry gates them one by one.
+                local bf; for bf in "${batch_files[@]}"; do touch "$bf.nobatch"; done
+                return 1
+            fi
+            note "$branch is $(echo "$why" | tr a-z A-Z) after ${took}s — see $log"
+            record "$why" "$branch" sha "$sha" log "$log" elapsed_s "$took" \
+                reason "$extra" stages "$(stage_summary "$log")"
             rm -f "$f"
             return 0
             ;;
     esac
+
+    # TEST-MODE SAFETY: an isolated state dir isolates the queue/journal but
+    # NOT the merge target — without this guard a harness test would ff the
+    # REAL master (it did, once). Tests must opt in explicitly to merging.
+    if [ -n "${MERGE_QUEUE_STATE_DIR:-}" ] && [ "${MERGE_QUEUE_ALLOW_MERGE:-}" != "1" ]; then
+        note "test state dir active and MERGE_QUEUE_ALLOW_MERGE!=1 — gate was GREEN but skipping the real merge"
+        record validated "$branch" sha "$sha" log "$log" reason "test mode: merge skipped"
+        for bf in "${batch_files[@]}"; do rm -f "$bf" "$bf.nobatch"; done
+        return 0
+    fi
 
     if [ "$(git -C "$root" rev-parse master)" != "$base" ]; then
         note "master moved during the gate; requeueing $branch for a fresh rebase"
@@ -354,13 +423,18 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         rm -f "$f"
         return 0
     fi
-    # Point the submitted branch at its merged (rebased) sha so its worktree
-    # sees itself as merged. Fails harmlessly if that branch is checked out.
-    git -C "$root" branch -f "$branch" "$sha" >/dev/null 2>&1 || true
-    note "MERGED $branch → master @ $sha (gate ${took}s)"
-    record merged "$branch" sha "$sha" log "$log" elapsed_s "$took" stages "$(stage_summary "$log")"
-    rm -f "$f"
-    # Reclaim the merged branch's worktree (its multi-GB target/) right away.
+    note "MERGED ${batch_branches[*]} → master @ $sha (gate ${took}s, ${#batch_branches[@]} branch(es))"
+    local i bf
+    for i in "${!batch_branches[@]}"; do
+        record merged "${batch_branches[$i]}" sha "$sha" log "$log" elapsed_s "$took" \
+            batch "${#batch_branches[@]}" stages "$(stage_summary "$log")"
+        bf="${batch_files[$i]}"
+        rm -f "$bf" "$bf.nobatch"
+    done
+    # Reclaim the merged branches' worktrees (their multi-GB target/) right away.
+    # (The branch refs themselves are NOT force-moved: under batching the merged
+    # sha contains OTHER branches' commits, and pointing an agent's branch at it
+    # would hand the agent unrelated work. sweep deletes fully-merged refs.)
     cmd_sweep || true
     return 0
 }
@@ -401,9 +475,13 @@ cmd_sweep() {
         jq -r 'select(.event=="merged") | .branch' "$journal" | grep -qx "$branch" || continue
         if ls "$queue_dir"/*.json >/dev/null 2>&1 && \
            jq -r .branch "$queue_dir"/*.json | grep -qx "$branch"; then continue; fi
-        # Safety: clean and nothing beyond master (i.e. no work since the merge).
+        # Safety: clean and nothing beyond master. Gated merges land a REBASED
+        # sha, so the original commits are often not ancestors — `git cherry`
+        # treats patch-equivalent commits (all "-") as merged too.
         [ -z "$(git -C "$wt" status --porcelain 2>/dev/null)" ] || continue
-        [ "$(git -C "$wt" rev-list --count "master..HEAD" 2>/dev/null || echo 1)" = "0" ] || continue
+        if [ "$(git -C "$wt" rev-list --count "master..HEAD" 2>/dev/null || echo 1)" != "0" ]; then
+            git -C "$wt" cherry master HEAD 2>/dev/null | grep -q '^+' && continue
+        fi
         note "sweep: removing merged+clean worktree $wt (branch $branch)"
         if git -C "$root" worktree remove "$wt" >/dev/null 2>&1; then
             git -C "$root" branch -d "$branch" >/dev/null 2>&1 || true
@@ -420,6 +498,31 @@ cmd_sweep() {
         git -C "$root" branch -d "$b" >/dev/null 2>&1 && note "sweep: deleted merged branch $b"
     done < <(jq -r 'select(.event=="merged") | .branch' "$journal" | sort -u)
     note "sweep: removed $swept worktree(s)"
+}
+
+# Block until <branch> reaches a terminal journal event newer than this call
+# (merged/red/timeout/conflict/blocked/dropped), print that event as JSON.
+# Exit 0 iff merged. For agents: `submit X && wait X` replaces polling loops.
+cmd_wait() {
+    local branch="${1:?usage: merge-queue.sh wait <branch> [timeout-secs]}"
+    local budget="${2:-3600}"
+    local start_line=0
+    [ -f "$journal" ] && start_line="$(wc -l <"$journal" | tr -d ' ')"
+    local waited=0 ev
+    while [ "$waited" -le "$budget" ]; do
+        if [ -f "$journal" ]; then
+            ev="$(tail -n "+$((start_line + 1))" "$journal" | jq -c --arg b "$branch" \
+                'select(.branch==$b) | select(.event=="merged" or .event=="red" or .event=="timeout" or .event=="conflict" or .event=="blocked" or .event=="dropped")' \
+                | tail -1)"
+            if [ -n "$ev" ]; then
+                echo "$ev"
+                [ "$(echo "$ev" | jq -r .event)" = "merged" ] && return 0 || return 1
+            fi
+        fi
+        sleep 10; waited=$((waited + 10))
+    done
+    note "wait: no terminal event for $branch within ${budget}s"
+    return 2
 }
 
 # After a `blocked` event (gate green, ff-merge refused by the main worktree)
@@ -475,6 +578,7 @@ case "${1:-}" in
     doctor)    cmd_doctor ;;
     run)       shift; cmd_run "$@" ;;
     daemon)    cmd_daemon ;;
+    wait)      shift; cmd_wait "$@" ;;
     resolve)   shift; cmd_resolve "$@" ;;
     sweep)     shift; cmd_sweep "$@" ;;
     with-lock) shift; cmd_with_lock "$@" ;;

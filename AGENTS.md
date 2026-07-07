@@ -33,7 +33,14 @@ load-flaky under overlap) and a merge landing mid-gate invalidates that gate.
 - In your worktree run only focused checks: `./scripts/test-for-paths.sh`
   prints the ones matching your diff (`--run` executes them); the building
   blocks are `./scripts/check.sh --fast` / `--e2e` / `--examples` / `--wasm`.
-- When your branch is green on its shard: `./scripts/merge-queue.sh submit <branch>`.
+- When your branch is green on its shard: `./scripts/merge-queue.sh submit <branch>`,
+  then `./scripts/merge-queue.sh wait <branch>` to block until the terminal
+  outcome (prints the journal event as JSON; exit 0 iff merged) instead of
+  hand-rolling a polling loop. The coordinator BATCHES compatible queued
+  branches (clean rebase + disjoint files) into one gate, so deep queues no
+  longer cost one full gate per branch; a red batch re-gates every member
+  individually, so a batch can never blame or block your branch unfairly.
+  `submit --front <branch>` exists for genuinely urgent fixes — use sparingly.
   The coordinator rebases it onto latest master in a warm worktree, runs the
   single serialized full gate, and fast-forwards master on green (re-gating if
   master moved). Watch the outcome with `./scripts/merge-queue.sh status` or
