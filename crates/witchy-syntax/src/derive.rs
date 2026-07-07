@@ -82,19 +82,29 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
         if derives.iter().any(|d| d == "PartialEq" || d == "Eq") {
             t.partial_eq_derived = true;
         }
+        let mut emitted_partial_eq = false;
         for d in &derives {
             match d.as_str() {
                 "Show" => {
                     generated.push(derive_via_comptime("meta.derive_show", t));
                     needs_show = true;
                 }
-                "PartialEq" => generated.push(derive_via_comptime("meta.derive_partial_eq", t)),
+                "PartialEq" => {
+                    if !emitted_partial_eq {
+                        generated.push(derive_via_comptime("meta.derive_partial_eq", t));
+                        emitted_partial_eq = true;
+                    }
+                }
                 "Eq" => {
                     if has_float_field(t) {
                         return Err(format!(
                             "type `{}`: derive(Eq) cannot include `Float` fields because Float is not Eq",
                             t.name
                         ));
+                    }
+                    if !emitted_partial_eq {
+                        generated.push(derive_via_comptime("meta.derive_partial_eq", t));
+                        emitted_partial_eq = true;
                     }
                     generated.push(derive_via_comptime("meta.derive_eq", t));
                 }

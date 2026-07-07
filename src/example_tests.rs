@@ -947,6 +947,21 @@ fn main(console: Console):
         );
     }
 
+    /// (BUG-468) `Eq` refines `PartialEq`, so `derive(Eq)` must generate the
+    /// structural `PartialEq` impl too. The explicit `derive(PartialEq, Eq)`
+    /// spelling remains valid and must not generate duplicate impl heads.
+    #[test]
+    fn derive_eq_alone_implies_partial_eq_on_both_backends() {
+        let src = "import cmp\n\ntype OnlyEq derive(Eq):\n    x: Int\n\ntype Both derive(PartialEq, Eq):\n    x: Int\n\nfn main(console: Console):\n    print(console, __render(OnlyEq(1) == OnlyEq(1)))\n    print(console, __render(OnlyEq(1) == OnlyEq(2)))\n    print(console, __render(Both(1) == Both(1)))\n";
+        let expected = ["true", "false", "true"];
+        assert_eq!(link_run(src), expected, "interp: derive(Eq) implies PartialEq");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: derive(Eq) implies PartialEq",
+        );
+    }
+
     /// (BUG-544) `Ordering` is ordinary std data: it renders through `Show`,
     /// reflects as a nullary variant, and therefore serializes through JSON
     /// reflection, including when it appears in a derived-reflect record.
