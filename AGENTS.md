@@ -27,13 +27,19 @@ Do not run the full `./scripts/check.sh` gate yourself, and do not merge to
 master directly — full gates must be serialized (the publish e2e is
 load-flaky under overlap) and a merge landing mid-gate invalidates that gate.
 
-- In your worktree run only a focused shard: `./scripts/check.sh --fast`, or
-  `--e2e` / `--examples` / `--wasm` for the section your change touches.
+- In your worktree run only focused checks: `./scripts/test-for-paths.sh`
+  prints the ones matching your diff (`--run` executes them); the building
+  blocks are `./scripts/check.sh --fast` / `--e2e` / `--examples` / `--wasm`.
 - When your branch is green on its shard: `./scripts/merge-queue.sh submit <branch>`.
   The coordinator rebases it onto latest master in a warm worktree, runs the
   single serialized full gate, and fast-forwards master on green (re-gating if
   master moved). Watch the outcome with `./scripts/merge-queue.sh status` or
   `scratch/merge-queue/journal.jsonl`; gate logs are in `scratch/merge-queue/logs/`.
+- If `submit` or `./scripts/merge-queue.sh doctor` says NO COORDINATOR RUNNING,
+  start the detached one: `./scripts/merge-queue.sh daemon` (survives your
+  session; log in `scratch/merge-queue/coordinator.log`).
+- `./scripts/worktree-status.sh` is the dashboard of all worktrees/branches
+  (dirty, ahead/behind, queued, merged-and-removable). Report-only.
 - If you genuinely need a heavyweight suite yourself, share the lock:
   `./scripts/merge-queue.sh with-lock -- <cmd>`.
 

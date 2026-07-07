@@ -74,23 +74,26 @@ else
     test_cmd=(cargo test --workspace)
 fi
 
-# A named shard runs exactly one section and exits. nextest builds what it
-# needs, so no separate build step; without nextest the filters don't exist,
-# so the shards require it.
+# A named shard runs exactly one section and exits (reporting elapsed time).
+# nextest builds what it needs, so no separate build step; without nextest the
+# filters don't exist, so the shards require it.
 if [ -n "$shard" ]; then
+    shard_t0=$(date +%s)
     case "$shard" in
         e2e)
             cargo nextest --version >/dev/null 2>&1 || { echo "check.sh: --e2e requires cargo-nextest" >&2; exit 2; }
-            exec cargo nextest run --workspace -E 'binary(e2e)'
+            cargo nextest run --workspace -E 'binary(e2e)'
             ;;
         examples)
             cargo nextest --version >/dev/null 2>&1 || { echo "check.sh: --examples requires cargo-nextest" >&2; exit 2; }
-            exec cargo nextest run --workspace -E 'test(/^example_tests::/)'
+            cargo nextest run --workspace -E 'test(/^example_tests::/)'
             ;;
         wasm)
-            exec "${wasm_cargo[@]}" build --lib --no-default-features --target wasm32-unknown-unknown
+            "${wasm_cargo[@]}" build --lib --no-default-features --target wasm32-unknown-unknown
             ;;
     esac
+    printf '\n\033[1;32mshard %s green\033[0m in %ds\n' "$shard" "$(( $(date +%s) - shard_t0 ))"
+    exit 0
 fi
 
 # The witchy formatter over the stdlib and examples (NOT rustfmt over the Rust —
@@ -105,15 +108,19 @@ witchy_fmt_check() {
 }
 
 # Each stage marker carries its offset from gate start (`==> [2] clippy (t+41s)`),
-# so a redirected log is enough to see per-stage timing and what is running now
-# (merge-queue.sh status/doctor parse these markers).
+# so a redirected log is enough to see what is running now (merge-queue.sh
+# status/doctor parse these markers), and each stage reports its own duration
+# on completion so slow regressions are visible per stage, not just in total.
 step=0
 t_start=$(date +%s)
 run() {
     step=$((step + 1))
-    printf '\n\033[1;34m==> [%d] %s (t+%ds)\033[0m\n' "$step" "$1" "$(( $(date +%s) - t_start ))"
+    local t_stage; t_stage=$(date +%s)
+    printf '\n\033[1;34m==> [%d] %s (t+%ds)\033[0m\n' "$step" "$1" "$(( t_stage - t_start ))"
+    local label="$1"
     shift
     "$@"
+    printf '\033[1;34m    [%d] %s took %ds\033[0m\n' "$step" "$label" "$(( $(date +%s) - t_stage ))"
 }
 
 run "build (workspace)"        cargo build --workspace

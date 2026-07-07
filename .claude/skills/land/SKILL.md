@@ -19,7 +19,8 @@ green *focused shard*, a submission, and a watched outcome.
 
 ## 2. Run the shard that matches the diff
 
-Pick by `git diff master --name-only`:
+`./scripts/test-for-paths.sh` prints the focused checks for your diff
+(`--run` executes them too). Or pick by `git diff master --name-only`:
 
 | Diff touches | Shard |
 |---|---|
@@ -44,10 +45,11 @@ gate — the coordinator runs that once, serialized.
 ./scripts/merge-queue.sh doctor
 ```
 
-If it says `coordinator : NOT RUNNING`, start one yourself in the background:
-`./scripts/merge-queue.sh run` (persistent) or `run --once` (drain and exit).
-A submission with no coordinator sits in the queue forever — this is the most
-common failure mode, so always check.
+If it says `coordinator : NOT RUNNING`, start the detached daemon:
+`./scripts/merge-queue.sh daemon` — it survives your session ending
+(log: `scratch/merge-queue/coordinator.log`). `submit` also warns about this,
+and warns when your diff overlaps another queued branch's files (advisory:
+expect a semantic rebase if the earlier branch merges first).
 
 ## 5. Watch and report
 

@@ -38,11 +38,16 @@
 #   gate.lock/      the lock: pid + what + branch + log + started epoch
 #                   (stale locks — dead pid — are stolen)
 #
-#   scripts/merge-queue.sh submit <branch> [note]   enqueue a local branch
+#   scripts/merge-queue.sh submit <branch> [note]   enqueue a local branch (warns if the
+#                                                   diff overlaps another queued branch)
 #   scripts/merge-queue.sh status                   queue + in-flight gate + recent journal (JSON)
 #   scripts/merge-queue.sh doctor                   human health check: coordinator alive?
 #                                                   lock stale? current stage? log fresh?
 #   scripts/merge-queue.sh run [--once]             coordinator loop (--once: drain and exit)
+#   scripts/merge-queue.sh daemon                   start the coordinator DETACHED (nohup),
+#                                                   surviving the launching session; log →
+#                                                   scratch/merge-queue/coordinator.log; stop
+#                                                   with: kill $(cat .../coordinator.pid)
 #   scripts/merge-queue.sh with-lock -- <cmd...>    run any command under the gate lock
 #
 # The gate command defaults to `./scripts/check.sh` (the push gate minus e2e);
@@ -170,6 +175,23 @@ cmd_submit() {
     local msg="${2:-}"
     git -C "$root" rev-parse --verify --quiet "refs/heads/$branch" >/dev/null \
         || { note "no local branch '$branch'"; exit 2; }
+    # Overlap warning (advisory, never blocking): if a queued branch touches the
+    # same files, the later one will likely need a semantic rebase after the
+    # earlier merges — worth knowing before you walk away.
+    local qf other overlap
+    for qf in "$queue_dir"/*.json; do
+        [ -f "$qf" ] || continue
+        other="$(jq -r .branch "$qf")"
+        [ "$other" = "$branch" ] && continue
+        git -C "$root" rev-parse --verify --quiet "refs/heads/$other" >/dev/null || continue
+        overlap="$(comm -12 \
+            <(git -C "$root" diff --name-only "master...$branch" 2>/dev/null | sort) \
+            <(git -C "$root" diff --name-only "master...$other" 2>/dev/null | sort) \
+            | head -5 | paste -sd' ' -)"
+        if [ -n "$overlap" ]; then
+            note "WARNING: overlaps queued '$other' on: $overlap"
+        fi
+    done
     local fname; fname="$(date +%s)-$(echo "$branch" | tr '/' '~').json"
     jq -cn --arg branch "$branch" --arg ts "$(now)" \
            --arg sha "$(git -C "$root" rev-parse "refs/heads/$branch")" \
@@ -177,7 +199,14 @@ cmd_submit() {
            '{branch: $branch, sha: $sha, submitted: $ts, by: $by, note: $note}' \
         >"$queue_dir/$fname"
     record submitted "$branch" by "${USER:-unknown}"
-    note "queued $branch ($fname); a coordinator running 'merge-queue.sh run' will gate + merge it"
+    note "queued $branch ($fname)"
+    local cpid; cpid="$(cat "$qdir/coordinator.pid" 2>/dev/null || true)"
+    if [ -n "$cpid" ] && kill -0 "$cpid" 2>/dev/null; then
+        note "coordinator (pid $cpid) will gate + merge it"
+    else
+        note "NO COORDINATOR RUNNING — your submission will sit until one starts:"
+        note "  ./scripts/merge-queue.sh daemon"
+    fi
 }
 
 # Shared by status (JSON) and doctor (prose): what is in flight right now?
@@ -343,6 +372,25 @@ cmd_run() {
     done
 }
 
+cmd_daemon() {
+    local cpid; cpid="$(cat "$qdir/coordinator.pid" 2>/dev/null || true)"
+    if [ -n "$cpid" ] && kill -0 "$cpid" 2>/dev/null; then
+        note "coordinator already running (pid $cpid); nothing to do"
+        return 0
+    fi
+    # nohup + setsid-style detach: survives the launching terminal/session.
+    nohup "$root/scripts/merge-queue.sh" run >>"$qdir/coordinator.log" 2>&1 </dev/null &
+    disown
+    sleep 1
+    cpid="$(cat "$qdir/coordinator.pid" 2>/dev/null || true)"
+    if [ -n "$cpid" ] && kill -0 "$cpid" 2>/dev/null; then
+        note "coordinator daemon started (pid $cpid); log: $qdir/coordinator.log; stop: kill $cpid"
+    else
+        note "daemon failed to start — see $qdir/coordinator.log"
+        return 1
+    fi
+}
+
 cmd_with_lock() {
     [ "${1:-}" = "--" ] && shift
     [ "$#" -ge 1 ] || { note "usage: merge-queue.sh with-lock -- <cmd...>"; exit 2; }
@@ -358,7 +406,8 @@ case "${1:-}" in
     status)    cmd_status ;;
     doctor)    cmd_doctor ;;
     run)       shift; cmd_run "$@" ;;
+    daemon)    cmd_daemon ;;
     with-lock) shift; cmd_with_lock "$@" ;;
-    -h | --help | "") sed -n '2,56p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) note "unknown subcommand '${1}' (try submit, status, doctor, run, with-lock)"; exit 2 ;;
+    -h | --help | "") sed -n '2,61p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) note "unknown subcommand '${1}' (try submit, status, doctor, run, daemon, with-lock)"; exit 2 ;;
 esac
