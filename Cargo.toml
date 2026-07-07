@@ -94,3 +94,19 @@ aws-lc-rs = "1"
 # actually need to step through variables.
 [profile.dev]
 debug = "line-tables-only"
+
+# Tests run these crates hard (tree-walking interpreter, witchy->WASM lowering,
+# wasmtime host glue); unoptimized they dominate suite time. Opt just the hot
+# stage crates; the root crate and everything else keeps fast unopt compiles.
+[profile.dev.package.witchy-interp]
+opt-level = 1
+[profile.dev.package.witchy-runtime]
+opt-level = 1
+[profile.dev.package.witchy-lower]
+opt-level = 1
+[profile.dev.package.witchy-wir]
+opt-level = 1
+[profile.dev.package.witchy-types]
+opt-level = 1
+[profile.dev.package.witchy-syntax]
+opt-level = 1

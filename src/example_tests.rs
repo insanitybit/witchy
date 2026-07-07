@@ -4479,16 +4479,30 @@ fn yn(b: Bool) -> String:
     /// result each iteration — O(n^2) time AND allocation, which traps the WASM
     /// bump allocator (out-of-bounds) at ~20k elements. At 50k the linear
     /// push-loop forms stay far under the heap ceiling; an O(n^2) regression would
-    /// trap on the compiled backend and fail here.
+    /// trap on the compiled backend and fail here. The 50k run is compiled-only:
+    /// the guard's teeth are that WASM heap trap, and the interpreter's
+    /// clone-per-push is quadratic by design (it is the semantic oracle, not a
+    /// perf target — see the arena watermark test), so the oracle verifies the
+    /// same program at parity scale instead of burning a minute at 50k.
     #[test]
     fn list_reverse_flatten_flat_map_are_linear_at_scale() {
-        let src = "fn main(console: Console):\n    var xs = []\n    for i in 0..50000:\n        xs = list.push(xs, i)\n    let r = list.reverse(xs)\n    print(console, __render(list.at(r, 0)))\n    print(console, __render(list.at(r, 49999)))\n    print(console, __render(list.flatten([[1, 2], [], [3]])))\n    print(console, __render(list.flat_map([1, 2, 3], fn(x: Int): [x, x * 10])))\n";
-        let want: Vec<String> = ["49999", "0", "[1, 2, 3]", "[1, 10, 2, 20, 3, 30]"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        assert_eq!(link_run(src), want.clone(), "interpreter");
-        assert_eq!(wasm_run(src), want, "compiled WASM must agree");
+        let src = |n: u32| {
+            format!(
+                "fn main(console: Console):\n    var xs = []\n    for i in 0..{n}:\n        xs = list.push(xs, i)\n    let r = list.reverse(xs)\n    print(console, __render(list.at(r, 0)))\n    print(console, __render(list.at(r, {last})))\n    print(console, __render(list.flatten([[1, 2], [], [3]])))\n    print(console, __render(list.flat_map([1, 2, 3], fn(x: Int): [x, x * 10])))\n",
+                last = n - 1
+            )
+        };
+        let want = |n: u32| -> Vec<String> {
+            vec![
+                (n - 1).to_string(),
+                "0".to_string(),
+                "[1, 2, 3]".to_string(),
+                "[1, 10, 2, 20, 3, 30]".to_string(),
+            ]
+        };
+        assert_eq!(link_run(&src(1000)), want(1000), "interpreter");
+        assert_eq!(wasm_run(&src(1000)), want(1000), "compiled WASM must agree");
+        assert_eq!(wasm_run(&src(50000)), want(50000), "compiled at 50k must stay linear");
     }
 
     /// IN-PLACE SET_AT: `xs = list.set_at(xs, i, v)` mutates the owned buffer's
@@ -4499,11 +4513,20 @@ fn yn(b: Bool) -> String:
     /// see `oob_list_set_at_traps_on_both_backends`, BUG-315.)
     #[test]
     fn inplace_set_at_is_fast_and_alias_safe() {
-        let src = "fn main(console: Console):\n    var xs = []\n    for i in 0..5000:\n        xs = list.push(xs, 0)\n    var k = 0\n    while k < 5000:\n        xs = list.set_at(xs, k, k * 2)\n        k = k + 1\n    print(console, __render(list.at(xs, 4999)))\n    xs = list.set_at(xs, 4999, 7)\n    print(console, __render(list.length(xs)))\n    var ys = [1, 2, 3]\n    let alias = ys\n    ys = list.set_at(ys, 1, 99)\n    print(console, __render(list.at(ys, 1)))\n    print(console, __render(list.at(alias, 1)))\n";
-        let want: Vec<String> =
-            ["9998", "5000", "99", "2"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(link_run(src), want.clone(), "interpreter");
-        assert_eq!(wasm_run(src), want, "compiled WASM must agree");
+        let src = |n: u32| {
+            format!(
+                "fn main(console: Console):\n    var xs = []\n    for i in 0..{n}:\n        xs = list.push(xs, 0)\n    var k = 0\n    while k < {n}:\n        xs = list.set_at(xs, k, k * 2)\n        k = k + 1\n    print(console, __render(list.at(xs, {last})))\n    xs = list.set_at(xs, {last}, 7)\n    print(console, __render(list.length(xs)))\n    var ys = [1, 2, 3]\n    let alias = ys\n    ys = list.set_at(ys, 1, 99)\n    print(console, __render(list.at(ys, 1)))\n    print(console, __render(list.at(alias, 1)))\n",
+                last = n - 1
+            )
+        };
+        let want = |n: u32| -> Vec<String> {
+            vec![((n - 1) * 2).to_string(), n.to_string(), "99".to_string(), "2".to_string()]
+        };
+        // Parity (incl. alias semantics) on both backends at small n; the O(n^2)
+        // rebuild trap is compiled-only, so only WASM pays the at-scale run.
+        assert_eq!(link_run(&src(500)), want(500), "interpreter");
+        assert_eq!(wasm_run(&src(500)), want(500), "compiled WASM must agree");
+        assert_eq!(wasm_run(&src(5000)), want(5000), "compiled at 5k must stay in place");
     }
 
     /// IN-PLACE UPDATE_AT: `xs = list.update_at(xs, i, f)` applies the closure to
@@ -4513,11 +4536,20 @@ fn yn(b: Bool) -> String:
     /// out-of-range index traps — see `oob_list_set_at_traps_on_both_backends`, BUG-315.)
     #[test]
     fn inplace_update_at_is_fast_and_alias_safe() {
-        let src = "fn main(console: Console):\n    var xs = []\n    for i in 0..5000:\n        xs = list.push(xs, 1)\n    var k = 0\n    while k < 5000:\n        xs = list.update_at(xs, k, fn(v: Int): v + 1)\n        k = k + 1\n    print(console, __render(list.at(xs, 4999)))\n    xs = list.update_at(xs, 4999, fn(v: Int): v + 1)\n    print(console, __render(list.length(xs)))\n    var ys = [1, 2, 3]\n    let alias = ys\n    ys = list.update_at(ys, 1, fn(v: Int): v + 100)\n    print(console, __render(list.at(ys, 1)))\n    print(console, __render(list.at(alias, 1)))\n";
-        let want: Vec<String> =
-            ["2", "5000", "102", "2"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(link_run(src), want.clone(), "interpreter");
-        assert_eq!(wasm_run(src), want, "compiled WASM must agree");
+        let src = |n: u32| {
+            format!(
+                "fn main(console: Console):\n    var xs = []\n    for i in 0..{n}:\n        xs = list.push(xs, 1)\n    var k = 0\n    while k < {n}:\n        xs = list.update_at(xs, k, fn(v: Int): v + 1)\n        k = k + 1\n    print(console, __render(list.at(xs, {last})))\n    xs = list.update_at(xs, {last}, fn(v: Int): v + 1)\n    print(console, __render(list.length(xs)))\n    var ys = [1, 2, 3]\n    let alias = ys\n    ys = list.update_at(ys, 1, fn(v: Int): v + 100)\n    print(console, __render(list.at(ys, 1)))\n    print(console, __render(list.at(alias, 1)))\n",
+                last = n - 1
+            )
+        };
+        let want = |n: u32| -> Vec<String> {
+            vec!["2".to_string(), n.to_string(), "102".to_string(), "2".to_string()]
+        };
+        // Parity (incl. alias semantics) on both backends at small n; the O(n^2)
+        // rebuild trap is compiled-only, so only WASM pays the at-scale run.
+        assert_eq!(link_run(&src(500)), want(500), "interpreter");
+        assert_eq!(wasm_run(&src(500)), want(500), "compiled WASM must agree");
+        assert_eq!(wasm_run(&src(5000)), want(5000), "compiled at 5k must stay in place");
     }
 
     /// IN-PLACE DICT INSERT: `d = dict.insert(d, k, v)` updates/appends into owned

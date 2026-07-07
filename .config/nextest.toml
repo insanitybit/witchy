@@ -6,6 +6,18 @@
 # the whole suite, and prints a clean per-test summary. There are no doctests
 # in this crate, so `nextest run` covers everything `cargo test` did.
 
+# Setup scripts (nextest experimental, stable in practice; nextest-rs/nextest#978):
+# warm the wasmtime caches for the embedded pm/coven programs ONCE before any
+# server-spawning e2e test runs. The caches are keyed on the witchy binary's
+# mtime+size, so every rebuild invalidates them; without this, the first suite
+# after a rebuild re-compiles the same embedded programs in EVERY spawned
+# subprocess. The script is best-effort and always exits 0.
+experimental = ["setup-scripts"]
+
+[scripts.setup.warm-witchy-caches]
+command = "scripts/warm-witchy-caches.sh"
+slow-timeout = { period = "150s", terminate-after = 1 }
+
 [profile.default]
 # Surface every failure in one run rather than stopping at the first.
 fail-fast = false
@@ -68,6 +80,14 @@ slow-timeout = { period = "120s", terminate-after = 3 }
 filter = 'binary_id(witchy::e2e) & test(/coven|publish|promote|resolv|lifecycle|release|widen|glamour_publishes|pm_add|yank|trusted|api_docs|diamond|cool_down|consent|serves|tuf|vendored|registry|provenance|outdated|tree_shows|std_shadowing|module_name_collision|update_single|upgrade|transitive/)'
 test-group = 'registry-serial'
 retries = 1
+# Start the serialized long pole FIRST so it overlaps the parallel tail
+# instead of running after it (nextest runs same-priority tests in name
+# order; priority range is -100..=100, higher starts earlier).
+priority = 100
+
+[[profile.default.scripts]]
+filter = 'binary_id(witchy::e2e)'
+setup = 'warm-witchy-caches'
 
 [[profile.ci.overrides]]
 filter = 'binary_id(witchy::e2e) & test(/coven|publish|promote|resolv|lifecycle|release|widen|glamour_publishes|pm_add|yank|trusted|api_docs|diamond|cool_down|consent|serves|tuf|vendored|registry|provenance|outdated|tree_shows|std_shadowing|module_name_collision|update_single|upgrade|transitive/)'
