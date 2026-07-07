@@ -1512,6 +1512,14 @@ fn main():
         assert!(meth.contains("method `value` is defined more than once"), "{meth}");
         let trait_dup = check_str("trait Two:\n    fn m(self) -> Int\n    fn m(self) -> Int\n").unwrap_err();
         assert!(trait_dup.contains("method `m` is declared more than once"), "{trait_dup}");
+        let impl_head = check_str(
+            "type Box:\n    Box(Int)\ntrait Label:\n    fn label(self) -> String\nimpl Label for Box:\n    fn label(self) -> String:\n        \"first\"\nimpl Label for Box:\n    fn label(self) -> String:\n        \"second\"\n",
+        )
+        .unwrap_err();
+        assert!(
+            impl_head.contains("impl `Label` for `Box` is defined more than once"),
+            "{impl_head}"
+        );
         // Distinct declarations (incl. same trait for different types) are fine.
         check_str(
             "trait Greet:\n    fn greet(self) -> String\ntype A:\n    A(Int)\ntype B:\n    B(Int)\nimpl Greet for A:\n    fn greet(self) -> String:\n        \"a\"\nimpl Greet for B:\n    fn greet(self) -> String:\n        \"b\"\n",

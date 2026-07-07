@@ -454,9 +454,20 @@ fn check_unique_declarations(module: &Module) -> Result<(), TypeError> {
     // and no duplicate inherent method (same receiver type, same name) across the
     // inherent `impl` blocks of a type.
     let mut inherent: HashSet<(String, String)> = HashSet::new();
+    let mut trait_impls: HashSet<(String, String)> = HashSet::new();
     for item in &module.items {
         match item {
             Item::Impl(im) => {
+                if let Some(trait_name) = &im.trait_name {
+                    if !trait_impls.insert((trait_name.clone(), im.type_name.clone())) {
+                        return terr(format!(
+                            "impl `{}` for `{}` is defined more than once; \
+                             trait impl heads must be unique",
+                            bare(trait_name),
+                            bare(&im.type_name)
+                        ));
+                    }
+                }
                 let mut here: HashSet<String> = HashSet::new();
                 for m in &im.methods {
                     let name = bare(&m.name);
