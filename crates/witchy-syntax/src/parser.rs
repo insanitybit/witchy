@@ -1384,6 +1384,15 @@ impl Parser {
                 }
                 let member = self.ident()?;
                 if self.at(&Tok::LParen) {
+                    if let Expr::Var(module) = &e {
+                        if self.imports.contains(module)
+                            && member.chars().next().is_some_and(|c| c.is_uppercase())
+                            && self.peek_named_record()
+                        {
+                            e = self.record_literal(format!("{module}.{member}"))?;
+                            continue;
+                        }
+                    }
                     let args = self.call_args_labeled()?;
                     match e {
                         // `mod.func(args)` — a module-qualified call on a bare

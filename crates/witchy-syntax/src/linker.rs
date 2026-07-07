@@ -2285,20 +2285,15 @@ mod tests {
         // before the imported type was visible. It now leaves the construction for
         // the merged pass, which resolves it.
         let lib = "type FieldInfo:\n    name: String\n    type_name: String\n";
-        let user = "from rec_lib import FieldInfo\n\n\
+        let user = "import rec_lib\nfrom rec_lib import FieldInfo\n\n\
                     fn main(console: Console):\n    \
                     let fi = FieldInfo(name: \"x\", type_name: \"Int\")\n    print(console, fi.name)\n";
+        let qualified = "import rec_lib\n\n\
+                         fn main(console: Console):\n    \
+                         let fi = rec_lib.FieldInfo(name: \"x\", type_name: \"Int\")\n    print(console, fi.name)\n";
         let libm = crate::parser::parse_module(lib).expect("lib parses");
         let userm = crate::parser::parse_module(user).expect("user parses");
-        let linked = link(
-            vec![("rec_lib".to_string(), libm), ("user".to_string(), userm)],
-            "user",
-            noop_expand,
-        )
-        .expect("links without a false 'not a record type' error");
-        // The merged strict pass (run by typeck/backends) must resolve the leftover
-        // `Expr::Record` to a positional constructor.
-        let lowered = crate::records::lower(linked).expect("merged records pass lowers it");
+        let qualm = crate::parser::parse_module(qualified).expect("qualified user parses");
         fn has_record(m: &Module) -> bool {
             fn e(x: &Expr) -> bool {
                 match x {
@@ -2313,7 +2308,18 @@ mod tests {
                 if f.body.stmts.iter().any(|s| matches!(s,
                     Stmt::Let { value, .. } | Stmt::Expr(value) if e(value)))))
         }
-        assert!(!has_record(&lowered), "imported named-field construction must lower to a Ctor");
+        for (entry, userm) in [("user", userm), ("qualified", qualm)] {
+            let linked = link(
+                vec![("rec_lib".to_string(), libm.clone()), (entry.to_string(), userm)],
+                entry,
+                noop_expand,
+            )
+            .expect("links without a false named-field construction error");
+            // The merged strict pass (run by typeck/backends) must resolve the
+            // leftover `Expr::Record` to a positional constructor.
+            let lowered = crate::records::lower(linked).expect("merged records pass lowers it");
+            assert!(!has_record(&lowered), "{entry}: imported named-field construction must lower to a Ctor");
+        }
     }
 
     #[test]
