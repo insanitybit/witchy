@@ -1056,6 +1056,21 @@ fn main(console: Console):
         );
     }
 
+    /// (BUG-535) Lists are ordinary comparison-protocol values: if their elements
+    /// satisfy `PartialEq`/`Eq`, the list itself satisfies the same bound instead
+    /// of relying on one-off direct-operator magic.
+    #[test]
+    fn list_equality_satisfies_partial_eq_bounds_on_both_backends() {
+        let src = "import cmp\nimport testing\n\ntype Key derive(Show, Eq):\n    id: Int\n    cache: Int\n\nimpl PartialEq for Key:\n    fn eq(self, other: Key) -> Bool:\n        self.id == other.id\n\nfn same(x: a, y: a) -> Bool where a: PartialEq:\n    x == y\n\nfn total_same(x: a, y: a) -> Bool where a: Eq:\n    x == y\n\nfn main(console: Console):\n    print(console, __render(same([1, 2, 3], [1, 2, 3])))\n    print(console, __render(same([Key(1, 10)], [Key(1, 20)])))\n    print(console, __render(total_same([Key(1, 10)], [Key(1, 20)])))\n    testing.assert_value_eq([Key(1, 10)], [Key(1, 20)])\n";
+        let expected = ["true", "true", "true"];
+        assert_eq!(link_run(src), expected, "interp: list PartialEq bounds");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: list PartialEq bounds",
+        );
+    }
+
     /// (BUG-544) `Ordering` is ordinary std data: it renders through `Show`,
     /// reflects as a nullary variant, and therefore serializes through JSON
     /// reflection, including when it appears in a derived-reflect record.

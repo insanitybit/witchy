@@ -2578,6 +2578,14 @@ Abort unless the two strings are equal, showing both. Convert values at the call
 
 Abort if the two strings ARE equal.
 
+#### `fn assert_value_eq(got: a, want: a) where a: PartialEq, a: Show`
+
+Abort unless two protocol values are equal, showing both through `Show`.
+
+#### `fn assert_value_ne(got: a, other: a) where a: PartialEq, a: Show`
+
+Abort if two protocol values ARE equal.
+
 #### `fn assert_int_eq(got: Int, want: Int)`
 
 Abort unless the two Ints are equal, showing both.

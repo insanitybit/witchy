@@ -1138,7 +1138,7 @@ impl Ctx<'_> {
         }
         let is_type_var = head.chars().next().is_some_and(char::is_lowercase) && !head.contains('.');
         if matches!(op, BinOp::Eq | BinOp::NotEq) {
-            if head.starts_with("Tuple") {
+            if head.starts_with("Tuple") || head == "List" || head.starts_with("List<") {
                 return false;
             }
             if is_type_var {
@@ -2869,6 +2869,12 @@ fn pick_rename<'a>(renames: &'a Renames, method: &str, recv: Option<&str>) -> Op
         if let Some(t) = renames.get(&(h.to_string(), method.to_string())) {
             return Some(t);
         }
+        let head = head_of(h);
+        if head != h {
+            if let Some(t) = renames.get(&(head.to_string(), method.to_string())) {
+                return Some(t);
+            }
+        }
     }
     let mut matches = renames.iter().filter(|((_, m), _)| m == method);
     let first = matches.next()?;
@@ -3037,6 +3043,16 @@ fn type_var_list(f: &Function) -> Vec<String> {
         }
         vars
     }
+}
+
+fn type_args_from_receiver(template: &Function, concrete_receiver: &str) -> Option<Vec<String>> {
+    let recv = template.params.first()?.ty.as_ref()?;
+    let concrete = decode_scope_type(concrete_receiver);
+    let mut bindings = HashMap::new();
+    if !bind_type_vars(recv, &concrete, &mut bindings) {
+        return None;
+    }
+    type_var_list(template).into_iter().map(|var| bindings.get(&var).cloned()).collect()
 }
 
 /// (RFC-0053) Whether a concrete type should render through `Show` instead of
@@ -3701,10 +3717,23 @@ impl Mono<'_> {
                         }
                     }
                 }
+                if target == mangled {
+                    if let Some(tmpl) = self.templates.get(&mangled).cloned() {
+                        if let Some(targs_out) =
+                            type_args_from_receiver(&tmpl, concrete)
+                                .filter(|args| !args.is_empty())
+                        {
+                            target = self.specialize(&mangled, targs_out);
+                        }
+                    }
+                }
                 if target != mangled
                     || self.known_fns.contains(&mangled)
                     || self.templates.contains_key(&mangled)
                 {
+                    if target != mangled {
+                        renames.insert((head.clone(), mangled.clone()), target.clone());
+                    }
                     renames.insert((head.clone(), method.clone()), target.clone());
                     renames.insert((head.clone(), static_bound_marker(bvar, method)), target);
                 }
@@ -3726,7 +3755,6 @@ impl Mono<'_> {
             let resolve = move |e: &Expr, sc: &Scope| -> Option<String> {
                 this.type_name(e, sc)
                     .map(|t| apply_subst(&t, osub))
-                    .map(|t| t.split('<').next().unwrap_or(&t).to_string())
             };
             rename_calls_block(&mut f.body, &renames, &mut rename_scope, &resolve);
         }

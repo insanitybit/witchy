@@ -104,14 +104,13 @@ impl Show for Option(a) where a: Show:
 // A result renders as `Ok(x)` / `Err(e)`, each payload through its `Show`.
 impl Show for Result(a, e) where a: Show, e: Show:
     fn show(self) -> String:
-        let ok_elems: List(a) = opt_elems(result.ok(self))
-        let err_elems: List(e) = opt_elems(result.err(self))
-        let oks = show_each(ok_elems)
-        let errs = show_each(err_elems)
-        if result.is_ok(self):
-            "Ok(" + list.join(oks, "") + ")"
-        else:
-            "Err(" + list.join(errs, "") + ")"
+        match self:
+            Ok(v) ->
+                let elems: List(a) = [v]
+                "Ok(" + list.join(show_each(elems), "") + ")"
+            Err(e) ->
+                let elems: List(e) = [e]
+                "Err(" + list.join(show_each(elems), "") + ")"
 
 // A dict renders as `{k1: v1, k2: v2}` (insertion order), keys and values each
 // through their `Show`.

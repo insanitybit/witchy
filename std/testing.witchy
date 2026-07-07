@@ -12,6 +12,9 @@
 //   fn test_truth():
 //       testing.assert(1 < 2, "one is less than two")
 
+import cmp
+import show
+
 // Abort the test with `msg` unless `cond` holds.
 pub fn assert(cond: Bool, msg: String):
     if !cond:
@@ -27,6 +30,16 @@ pub fn assert_eq(got: String, want: String):
 pub fn assert_ne(got: String, other: String):
     if got == other:
         fail("assertion failed: `" + got + "` should differ from `" + other + "`")
+
+// Abort unless two protocol values are equal, showing both through `Show`.
+pub fn assert_value_eq(got: a, want: a) where a: PartialEq, a: Show:
+    if got != want:
+        fail("assertion failed: got `" + show.render(got) + "`, want `" + show.render(want) + "`")
+
+// Abort if two protocol values ARE equal.
+pub fn assert_value_ne(got: a, other: a) where a: PartialEq, a: Show:
+    if got == other:
+        fail("assertion failed: `" + show.render(got) + "` should differ from `" + show.render(other) + "`")
 
 // Abort unless the two Ints are equal, showing both.
 pub fn assert_int_eq(got: Int, want: Int):

@@ -152,6 +152,23 @@ impl PartialOrd for Float:
         else:
             Some(Equal)
 
+// --- structural container impls ---------------------------------------------
+
+// Lists compare element-by-element through the element type's `PartialEq` impl.
+impl PartialEq for List(a) where a: PartialEq:
+    fn eq(self, other: Self) -> Bool:
+        let n = list.length(self)
+        if n != list.length(other):
+            return false
+        var i = 0
+        while i < n:
+            if list.at(self, i) != list.at(other, i):
+                return false
+            i = i + 1
+        true
+
+impl Eq for List(a) where a: Eq
+
 // --- generic helpers over `Ord` ----------------------------------------------
 
 // True when `a` orders strictly before `b` by the type's TOTAL order. Going

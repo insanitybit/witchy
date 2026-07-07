@@ -574,7 +574,9 @@
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
-    "footprint": [],
+    "footprint": [
+      "Console"
+    ],
     "output": [],
     "runnable": false
   },
@@ -1069,7 +1071,9 @@
     "console_only": true,
     "expect_error": false,
     "file": "book/src/testing.md",
-    "footprint": [],
+    "footprint": [
+      "Console"
+    ],
     "output": [],
     "runnable": false
   },
