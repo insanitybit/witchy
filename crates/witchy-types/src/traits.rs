@@ -402,6 +402,29 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     // they have no runnable generic form (their bounded call can't resolve while
     // generic). Their concrete specializations are what gets emitted.
     let no_fallback = no_fallback_template_names(&items);
+    let template_body_diag = if no_fallback.is_empty() {
+        None
+    } else {
+        let probe = Module {
+            modes: Vec::new(),
+            imports: imports.clone(),
+            from_imports: Vec::new(),
+            items: items.clone(),
+            import_lines: Vec::new(),
+            item_lines: Vec::new(),
+        };
+        crate::typeck::check_selected_lowered(&probe, &no_fallback).err().and_then(|e| {
+            // Some bounded trait calls are intentionally unresolved until a
+            // concrete specialization exists (`compare` for `where a: Ord`,
+            // etc.). Keep those lazy, but surface ordinary template-body type
+            // errors now so an uncalled generic cannot make `check` lie.
+            let lazy_template_placeholder = e.message.contains("call to unknown function")
+                || e.message.contains("cannot infer the result type")
+                || e.message.contains("could not resolve the `")
+                || e.message.contains("requires `Ord`");
+            (!lazy_template_placeholder).then_some(e.message)
+        })
+    };
     let mut templates: HashMap<String, Function> = HashMap::new();
     for it in &items {
         if let Item::Function(f) = it {
@@ -634,6 +657,9 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         {
             let mut d = impl_contract_diags;
             d.extend(supertrait_diags);
+            if let Some(msg) = template_body_diag {
+                d.push(msg);
+            }
             // (RFC-0043) A discarded-result error is a definitive diagnostic on a
             // fully-resolved callee — surface it FIRST (ahead of any spurious
             // missing-impl the quiet pass would otherwise report), deduplicated.

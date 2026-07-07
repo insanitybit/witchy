@@ -704,6 +704,21 @@ fn main(console: Console):
     }
 
     #[test]
+    fn uncalled_bounded_generic_bodies_are_checked() {
+        let err = check_str(
+            r#"
+fn broken(x: a) -> Int where a: Ord:
+    x + "oops"
+
+fn main(console: Console):
+    print(console, "ok")
+"#,
+        )
+        .expect_err("a bad generic body is rejected at declaration time");
+        assert!(err.contains("function `broken`"), "{err}");
+    }
+
+    #[test]
     fn duration_is_a_distinct_type() {
         // Durations combine with durations, scale by an Int, divide to an Int
         // ratio, and compare; mixing with a bare Int under +/- is rejected.

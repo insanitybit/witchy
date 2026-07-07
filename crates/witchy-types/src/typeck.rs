@@ -2005,6 +2005,8 @@ struct Checker {
     /// signature rather than a fresh concrete `Named("a")` — which would pin the
     /// generic parameter and trip the "isn't generic" soundness check.
     current_typarams: HashMap<String, u32>,
+    /// Trait bounds declared on the function currently being checked.
+    current_bounds: Vec<(String, String)>,
     subst: HashMap<u32, Ty>,
     next_var: u32,
     /// Each binding carries its type and whether it is mutable.
@@ -4120,6 +4122,9 @@ impl Checker {
                     // (it renders as `?`): `<` on it needs an `Ord` bound to
                     // dispatch through the trait, so point at that instead of a
                     // bare "found `?`".
+                    other @ Ty::Var(_) if self.type_var_has_bound(&other, &["Ord"]) => {
+                        Ok(Ty::Bool)
+                    }
                     other @ Ty::Var(_) => terr(format!(
                         "ordering comparison on `{other}` — if this is a generic type \
                          parameter, bound it with `where T: Ord` so `<` dispatches through \
@@ -4815,6 +4820,21 @@ impl Checker {
         "k".to_string()
     }
 
+    fn type_var_has_bound(&self, ty: &Ty, traits: &[&str]) -> bool {
+        let Some(id) = first_type_var(ty) else { return false };
+        let Some(name) = self
+            .current_typarams
+            .iter()
+            .find_map(|(name, v)| (*v == id).then_some(name.as_str()))
+        else {
+            return false;
+        };
+        self.current_bounds.iter().any(|(var, tr)| {
+            let bare = tr.rsplit('.').next().unwrap_or(tr);
+            var == name && traits.contains(&bare)
+        })
+    }
+
     fn check_function(&mut self, func: &Function) -> Result<(), TypeError> {
         borrow_escape_check(func)?;
         let (params, ret) = self.fn_sigs.get(&func.name).cloned().unwrap();
@@ -4828,6 +4848,11 @@ impl Checker {
             .get(&func.name)
             .map(|ps| ps.iter().map(|(n, v)| (n.clone(), *v)).collect())
             .unwrap_or_default();
+        self.current_bounds = func
+            .bounds
+            .iter()
+            .map(|(var, tr, _)| (var.clone(), tr.clone()))
+            .collect();
         self.dict_key_ops.clear();
         self.cur_line = 0;
         // `func.name` is the canonical `module.fn`; remember the module so home
@@ -4925,7 +4950,7 @@ impl Checker {
                 continue;
             }
             let resolved = self.resolve(&key_ty);
-            if ty_has_var(&resolved) {
+            if ty_has_var(&resolved) && !self.type_var_has_bound(&resolved, &["Eq", "Ord"]) {
                 self.cur_line = line;
                 return terr(format!(
                     "`{}`: a generic `Dict` key must be `Eq` — the key type is used to hash \
@@ -5125,7 +5150,22 @@ fn detect_entry_module(module: &Module) -> String {
     before.unwrap_or_default()
 }
 
+pub(crate) fn check_selected_lowered(
+    module: &Module,
+    names: &HashSet<String>,
+) -> Result<(), TypeError> {
+    run_check_selected(module, false, Some(names)).map(|_| ())
+}
+
 fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeError> {
+    run_check_selected(module, record, None)
+}
+
+fn run_check_selected(
+    module: &Module,
+    record: bool,
+    selected_functions: Option<&HashSet<String>>,
+) -> Result<Option<TypeTable>, TypeError> {
     let module = &module;
     let mut c = Checker {
         type_record: if record { Some(HashMap::new()) } else { None },
@@ -5139,6 +5179,7 @@ fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeErr
         adt_variants: HashMap::new(),
         fn_typarams: HashMap::new(),
         current_typarams: HashMap::new(),
+        current_bounds: Vec::new(),
         subst: HashMap::new(),
         next_var: 0,
         scopes: vec![HashMap::new()],
@@ -5268,14 +5309,15 @@ fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeErr
     // are where build-time authority enters, so they must be build capabilities.
     check_build_signature(module)?;
 
-    // Pass 2: check bodies. `where`-bounded templates are checked through
-    // their monomorphic instantiations (trait-method calls in a template
-    // body only resolve once the bound variable is concrete) — the lowering
-    // extracts them before `check` historically; `annotate` runs earlier in
-    // the pipeline and skips them here for the same reason.
+    // Pass 2: check bodies. Ordinary runs skip bounded generic templates because
+    // their trait-dispatch placeholders are resolved by monomorphization. The
+    // selected-template path above opts back in for declaration-time sanity
+    // checks before trait lowering drops uninstantiated templates.
     for item in &module.items {
         match item {
-            Item::Function(f) if !f.bounds.is_empty() => {}
+            Item::Function(f)
+                if selected_functions.is_some_and(|names| !names.contains(&f.name)) => {}
+            Item::Function(f) if selected_functions.is_none() && !f.bounds.is_empty() => {}
             Item::Function(f) => c
                 .check_function(f)
                 .map_err(|e| at_loc(e, c.cur_line, &f.name, &c.cur_module))?,
