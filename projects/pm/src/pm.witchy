@@ -1913,9 +1913,37 @@ fn verified_incoming_footprint(net: Net, root: Dir, host: String, port: Int, nam
         else if !record_matches_coordinate(http.body(resp), name, version):
             Err("the record identity does not match the requested coordinate")
         else:
-            Ok(recorded_footprint(http.body(resp)))
+            strict_footprint(http.body(resp))
 
-// The `runtime_footprint` array of a signed coven record (JSON), as capability strings.
+// The `runtime_footprint` array of a VERIFIED signed record, decoded strictly: a
+// malformed record, a missing/non-array `runtime_footprint`, or a non-string
+// element is an `Err`, never a silent empty list (BUG-499). This is the footprint
+// the widening gate trusts, so an under-decoded field must block the upgrade
+// rather than read as "demands no authority" and slip past the gate.
+fn strict_footprint(record: String) -> Result(List(String), String):
+    match json.decode(record):
+        Err(_e) -> Err("the signed record is not valid JSON")
+        Ok(doc) ->
+            match json.get(doc, "runtime_footprint"):
+                None -> Err("the signed record has no `runtime_footprint` field")
+                Some(field) ->
+                    match json.as_array(field):
+                        None -> Err("the record's `runtime_footprint` is not an array")
+                        Some(items) -> strict_strings(items)
+
+fn strict_strings(items: List(Json)) -> Result(List(String), String):
+    var out = []
+    for it in items:
+        match json.as_string(it):
+            None -> return Err("the record's `runtime_footprint` has a non-string element")
+            Some(s) -> out = list.push(out, s)
+    Ok(out)
+
+// The `runtime_footprint` array of a signed coven record (JSON), as capability
+// strings; `[]` for a malformed/absent field. Used only where an empty result is
+// FAIL-SAFE — the widening baseline (a smaller baseline blocks more) and lockfile
+// re-serialization of an already-vendored record. The verified widening input uses
+// `strict_footprint` instead (BUG-499).
 fn recorded_footprint(record: String) -> List(String):
     match json.decode(record):
         Ok(doc) -> json.get_strings(doc, "runtime_footprint")

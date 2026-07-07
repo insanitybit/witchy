@@ -14408,6 +14408,62 @@ fn main(console: Console):
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console, Dir[Read]");
     }
 
+    /// The strict decode the PM widening gate uses for a VERIFIED signed record's
+    /// `runtime_footprint` (BUG-499): a well-formed array decodes; malformed JSON,
+    /// a missing/non-array field, or a non-string element must be an `Err`, never a
+    /// silent empty list (which the gate would read as "demands no authority" and
+    /// wave the upgrade through). A genuinely-empty array is still `Ok([])`. This
+    /// pins the contract on both backends; `pm.strict_footprint` implements it.
+    #[test]
+    fn pm_strict_footprint_decode_contract_backends_agree() {
+        let src = r#"import json
+import list
+from json import Json
+
+fn strict_footprint(record: String) -> Result(List(String), String):
+    match json.decode(record):
+        Err(_e) -> Err("not valid JSON")
+        Ok(doc) ->
+            match json.get(doc, "runtime_footprint"):
+                None -> Err("no field")
+                Some(field) ->
+                    match json.as_array(field):
+                        None -> Err("not an array")
+                        Some(items) -> strict_strings(items)
+
+fn strict_strings(items: List(Json)) -> Result(List(String), String):
+    var out = []
+    for it in items:
+        match json.as_string(it):
+            None -> return Err("non-string element")
+            Some(s) -> out = list.push(out, s)
+    Ok(out)
+
+fn show(r: Result(List(String), String)) -> String:
+    match r:
+        Ok(xs) -> "ok:[" + list.join(xs, ",") + "]"
+        Err(e) -> "err:" + e
+
+fn main(console: Console):
+    print(console, show(strict_footprint("{\"runtime_footprint\":[\"Net[Connect]\",\"Dir[Read]\"]}")))
+    print(console, show(strict_footprint("{not json")))
+    print(console, show(strict_footprint("{\"other\":1}")))
+    print(console, show(strict_footprint("{\"runtime_footprint\":\"Net\"}")))
+    print(console, show(strict_footprint("{\"runtime_footprint\":[\"Net\",5]}")))
+    print(console, show(strict_footprint("{\"runtime_footprint\":[]}")))
+"#;
+        let want = vec![
+            "ok:[Net[Connect],Dir[Read]]",
+            "err:not valid JSON",
+            "err:no field",
+            "err:not an array",
+            "err:non-string element",
+            "ok:[]",
+        ];
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "compiled WASM must agree");
+    }
+
     /// `coven_check` is the package manager's `check_declared`, self-hosted: it
     /// reads a rune's `witchy.toml` (`std/toml`) and its source, asks the compiler
     /// what the code demands (`compiler.footprint`), and verifies the manifest's
