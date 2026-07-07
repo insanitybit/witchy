@@ -2558,17 +2558,21 @@ fn unlabel(args: Vec<(Option<String>, Expr)>) -> Vec<Expr> {
 }
 
 /// (RFC-0056) Whether `e` is a *closed constant*: a literal (int/float/duration/
-/// string/bool), `None`/`[]`, a list/tuple of closed constants, a constructor
-/// whose arguments are all closed constants, or a unary op over one (so `-1`
-/// works). Deliberately the smallest useful set — no calls, no variable/parameter
-/// references, no module state — which keeps a default splice hygienic (nothing to
-/// capture) and evaluation-order-free. This also excludes capability values: a
-/// capability cannot be minted from a literal, so it can never be a default.
+/// string/bool), `None`/`[]`, a list/tuple of closed constants, a constructor or
+/// named-field record literal whose arguments are all closed constants, or a
+/// unary op over one (so `-1` works). Deliberately the smallest useful set — no
+/// calls, no variable/parameter references, no module state — which keeps a
+/// default splice hygienic (nothing to capture) and evaluation-order-free. This
+/// also excludes capability values: a capability cannot be minted from a literal,
+/// so it can never be a default.
 fn is_closed_const(e: &Expr) -> bool {
     match e {
         Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_) => true,
         Expr::List(xs) | Expr::Tuple(xs) => xs.iter().all(is_closed_const),
         Expr::Ctor { args, .. } => args.iter().all(is_closed_const),
+        Expr::Record { fields, spread: None, .. } => {
+            fields.iter().all(|(_, value)| is_closed_const(value))
+        }
         Expr::Unary { expr, .. } => is_closed_const(expr),
         _ => false,
     }

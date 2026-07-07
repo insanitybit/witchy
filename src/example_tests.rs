@@ -355,6 +355,17 @@
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
+    /// (BUG-211) Named-field record construction is the same closed-constant
+    /// shape as positional construction when every field value is closed. It is
+    /// valid as a default argument and lowers before either backend sees it.
+    #[test]
+    fn keyword_args_default_accepts_named_field_record_constructor() {
+        let src = "type Pt:\n    x: Int\n    y: Int\n\nfn score(p: Pt = Pt(y: 2, x: 40)) -> Int:\n    p.x + p.y\n\nfn main(console: Console):\n    print(console, __render(score()))\n    print(console, __render(score(Pt(x: 1, y: 2))))\n";
+        let expected = ["42", "3"];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+    }
+
     /// (RFC-0056) A `var` parameter cannot carry a default — there is no caller
     /// variable to write back to. Rejected loudly at parse time, identically for
     /// every consumer (both backends parse the same source).
