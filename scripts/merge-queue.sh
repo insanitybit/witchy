@@ -479,7 +479,21 @@ prewarm_gate() {
 cmd_run() {
     local once=0
     [ "${1:-}" = "--once" ] && once=1
-    echo "$$" >"$qdir/coordinator.pid"
+    # Only the PERSISTENT loop owns coordinator.pid. An ad-hoc `run --once`
+    # used to clobber it, then exit — leaving a dead pid in the file, so
+    # doctor/submit reported NO COORDINATOR while the real daemon was alive,
+    # and the natural reaction (start another daemon) produced TWO coordinators
+    # racing the queue. --once also refuses to run alongside a live daemon.
+    local cpid; cpid="$(cat "$qdir/coordinator.pid" 2>/dev/null || true)"
+    if [ -n "$cpid" ] && [ "$cpid" != "$$" ] && kill -0 "$cpid" 2>/dev/null; then
+        if [ "$once" -eq 1 ]; then
+            note "a persistent coordinator (pid $cpid) is already running — it will drain the queue; not starting a --once run"
+            exit 0
+        fi
+        note "a coordinator is already running (pid $cpid); refusing to start a second"
+        exit 1
+    fi
+    [ "$once" -eq 0 ] && echo "$$" >"$qdir/coordinator.pid"
     note "coordinator up (pid $$, gate: '$gate_cmd', timeouts: ${gate_timeout}s total / ${stall_timeout}s stall); state: $qdir"
     while :; do
         local f
