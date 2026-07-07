@@ -3,7 +3,7 @@
 // type's variant, a list's elements, or a scalar. Code that would otherwise need a
 // per-type `derive` (JSON encoding, debug rendering, structural diffing) is written
 // once against `Mirror`. `MNil` is the unit value and maps to JSON null. Scalars,
-// `Ordering`, and the built-in containers (`List`, `Option`, `Result`, `Set`,
+// `Bytes`, `Ordering`, and the built-in containers (`List`, `Option`, `Result`, `Set`,
 // tuples, `Dict`) are reflectable out of the box; a user `type` becomes
 // reflectable when you add `derive(Reflect)` to it (which needs `import reflect`),
 // much like Zig's `@typeInfo` but opt-in per type — so
@@ -20,6 +20,7 @@ import dict
 import duration
 import cmp
 import set
+import bytes
 
 // The reflected shape of a value.
 type Mirror:
@@ -60,6 +61,19 @@ impl Reflect for Bool:
 impl Reflect for String:
     fn reflect(self) -> Mirror:
         MString(self)
+
+// Bytes are binary data, not text. Reflection exposes their raw byte values as a
+// list of Ints, so JSON/debug consumers can inspect payloads without a lossy
+// UTF-8 decode.
+pub fn reflect_bytes(b: Bytes) -> Mirror:
+    var out = []
+    for n in bytes.to_list(b):
+        out = list.push(out, MInt(n))
+    MList(out)
+
+impl Reflect for Bytes:
+    fn reflect(self) -> Mirror:
+        reflect_bytes(self)
 
 impl Reflect for Nil:
     fn reflect(self) -> Mirror:

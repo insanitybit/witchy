@@ -289,6 +289,7 @@ impl Codegen {
                 | "compiler.diff" | "compiler.doc" | "regex.match_spans" | "recv_line" | "recv_all"
                 | "crypto.sha512" | "crypto.sha3_256" | "crypto.hmac_sha256"
                 | "recv_bytes" => ValType::Str,
+                "__bytes_from_string" | "__bytes_concat" | "__bytes_slice" => ValType::Bytes,
                 "string.starts_with" | "string.ends_with" | "string.contains" | "dict.contains_key"
                 | "exists" | "is_dir" | "crypto.ed25519_verify"
                 | "crypto.ecdsa_p256_verify" | "crypto.ecdsa_p256_verify_hex"

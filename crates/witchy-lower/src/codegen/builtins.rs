@@ -276,9 +276,9 @@ impl Codegen {
                 W::Unary { op: witchy_wir::wir::UnOp::Sqrt, kind: witchy_wir::wir::Kind::F64, arg: Box::new(arg) }
             }
             // `__render` to a String for the scalar shapes: Str passes through,
-            // Int → `$int_to_string`, Bool → an interned "true"/"false" value-if.
-            // Float and compound shapes bail (handled by their dedicated render
-            // helpers). Gated to a WIR-collecting scope (`collect_wir`).
+            // Int → `$int_to_string`, Bool → an interned "true"/"false" value-if,
+            // Bytes → `Bytes(len=N)`. Float and compound shapes route through their
+            // dedicated helpers. Gated to a WIR-collecting scope (`collect_wir`).
             ("__render", 1) if self.collect_wir => match self.val_type_of(&args[0]) {
                 ValType::Str => return self.lower_expr(&args[0]),
                 ValType::Int => {
@@ -305,6 +305,19 @@ impl Codegen {
                     self.uses_float_to_str = true;
                     let arg = self.lower_expr(&args[0])?;
                     call("float_to_str", vec![arg])
+                }
+                ValType::Bytes => {
+                    self.uses_int_to_string = true;
+                    let open = self.intern("Bytes(len=");
+                    let close = self.intern(")");
+                    let arg = self.lower_expr(&args[0])?;
+                    let len = Self::wir_convert(
+                        W::Load { ptr: Box::new(arg), kind: witchy_wir::wir::Kind::I32, offset: 0 },
+                        Kind::I32,
+                        Kind::I64,
+                    );
+                    let len_s = call("int_to_string", vec![len]);
+                    call("concat", vec![call("concat", vec![W::StrPtr(open), len_s]), W::StrPtr(close)])
                 }
                 // Compound (tuple/list/...) `__render` builds its string with the
                 // per-shape WIR `$ts` renderer — or bails (`?`) for shapes the

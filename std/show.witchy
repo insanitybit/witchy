@@ -1,5 +1,5 @@
 // The witchy standard `Show` trait: render a value as a `String`. Built-in impls
-// cover the scalars — `Int`, `Float`, `Bool`, `String`, `Duration` (which
+// cover the scalars — `Int`, `Float`, `Bool`, `String`, `Bytes`, `Duration` (which
 // shows in its human form, `1m30s`, not raw milliseconds) — and the built-in
 // comparison result `Ordering`. A `List`, `Dict`, `Set`, `Option`, `Result`, or
 // tuple whose elements are themselves `Show` renders structurally through each
@@ -14,6 +14,7 @@ import duration
 import cmp
 import set
 import string
+import bytes
 
 trait Show:
     fn show(self) -> String
@@ -32,6 +33,10 @@ impl Show for Bool:
 impl Show for String:
     fn show(self) -> String:
         self
+
+impl Show for Bytes:
+    fn show(self) -> String:
+        "Bytes(len=${bytes.length(self)})"
 
 impl Show for Float:
     fn show(self) -> String:

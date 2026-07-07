@@ -997,6 +997,29 @@ fn main(console: Console):
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: Ordering protocols");
     }
 
+    /// (BUG-539) `Bytes` is ordinary core data, so it must participate in the
+    /// public display and reflection protocols instead of being printable only by
+    /// the interpreter's private `Value::Display` path. `Show` stays concise and
+    /// non-lossy; reflection exposes raw byte values for debug/JSON consumers.
+    #[test]
+    fn bytes_are_showable_reflectable_and_renderable_on_both_backends() {
+        let src = "import bytes\nimport show\nimport reflect\nimport json\n\ntype Packet derive(Reflect):\n    payload: Bytes\n\nfn main(console: Console):\n    let b = bytes.from_string(\"hi\")\n    show.say(console, b)\n    print(console, show.render([b]))\n    print(console, \"${b}\")\n    print(console, reflect.debug(b))\n    print(console, json.stringify(Packet(b)))\n";
+        let expected = [
+            "Bytes(len=2)",
+            "[Bytes(len=2)]",
+            "Bytes(len=2)",
+            "[104, 105]",
+            "{\"payload\":[104,105]}",
+        ];
+        assert_eq!(link_run(src), expected, "interp: Bytes protocols");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: Bytes protocols");
+
+        let raw = "import bytes\n\nfn main(console: Console):\n    let b = bytes.from_string(\"hi\")\n    print(console, \"${b}\")\n    print(console, __render(bytes.concat(b, b)))\n";
+        let raw_expected = ["Bytes(len=2)", "Bytes(len=4)"];
+        assert_eq!(link_run(raw), raw_expected, "interp: raw Bytes rendering");
+        assert_eq!(run_linked_on_wasm(&[("main", raw)], "main"), raw_expected, "compiled: raw Bytes rendering");
+    }
+
     /// (BUG-486) `MNil` is the reflection shape for the language's unit value,
     /// not only for JSON null. Exercise it through a Nil-returning helper so this
     /// stays independent of the separate bare-`Nil` expression backend bug.
