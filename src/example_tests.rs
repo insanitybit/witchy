@@ -4559,11 +4559,11 @@ fn yn(b: Bool) -> String:
     }
 
     /// (BUG-300) Field projection on a method-call-chain result compiles on both
-    /// backends (`cmp.sort(xs).at(0).label`, `[..].at(0).label`) — the record type
+    /// backends (`list.sort(xs).at(0).label`, `[..].at(0).label`) — the record type
     /// of the chain result comes from the type table, not a local-var-only map.
     #[test]
     fn field_projection_on_call_chain_backends_agree() {
-        let src = "import cmp\n\ntype Top derive(Ord, PartialOrd, Eq, PartialEq):\n    label: String\n\nfn main(console: Console):\n    let xs = [Top(label: \"b\"), Top(label: \"a\")]\n    print(console, cmp.sort(xs).at(0).label)\n    print(console, [Top(label: \"b\"), Top(label: \"a\")].at(0).label)\n    print(console, list.at([Top(label: \"b\"), Top(label: \"a\")], 0).label)\n";
+        let src = "import cmp\n\ntype Top derive(Ord, PartialOrd, Eq, PartialEq):\n    label: String\n\nfn main(console: Console):\n    let xs = [Top(label: \"b\"), Top(label: \"a\")]\n    print(console, list.sort(xs).at(0).label)\n    print(console, [Top(label: \"b\"), Top(label: \"a\")].at(0).label)\n    print(console, list.at([Top(label: \"b\"), Top(label: \"a\")], 0).label)\n";
         let want = ["a", "b", "b"];
         assert_eq!(link_run(src), want, "interp");
         assert_eq!(wasm_run(src), want, "wasm");
@@ -10599,7 +10599,7 @@ fn main(console: Console):
     #[test]
     fn std_ord_string_and_sort_backends_agree() {
         // `impl Ord for String` makes strings comparable, and the bounded generic
-        // `cmp.sort` dispatches through the element's Ord impl — so it sorts
+        // `list.sort` dispatches through the element's Ord impl — so it sorts
         // runtime-BUILT strings content-correctly on both backends (a pointer
         // comparison sort would scramble them in compiled code). Also covers
         // Ord-over-String for max_of/maximum and Ints via the same `sort`.
@@ -10617,11 +10617,11 @@ fn build(s: String) -> String:
 
 fn main(console: Console):
     let words = [build("pear"), build("apple"), build("fig"), build("apple")]
-    print(console, list.join(cmp.sort(words), ","))
-    print(console, list.join(cmp.sort(["c", "a", "b"]), ""))
+    print(console, list.join(list.sort(words), ","))
+    print(console, list.join(list.sort(["c", "a", "b"]), ""))
     print(console, cmp.max_of(build("alpha"), build("omega")))
     print(console, cmp.maximum([build("x"), build("a"), build("m")], ""))
-    let nums = cmp.sort([3, 1, 2, 1])
+    let nums = list.sort([3, 1, 2, 1])
     print(console, __render((list.at(nums, 0) + (list.at(nums, 3) * 10))))
 "#;
         let sources = [
@@ -18834,10 +18834,10 @@ fn main(console: Console):
     // The comparison OPERATORS (`== != < > <= >=`) desugar through the derived
     // PartialEq/PartialOrd impls of a user record — no named `eq`/`less` call —
     // and both backends agree. Also covers the `Ordering` result of `compare`,
-    // `cmp.reverse`, and `cmp.sort` over the user type.
+    // `cmp.reverse`, and `list.sort` over the user type.
     #[test]
     fn comparison_operators_dispatch_on_user_types() {
-        let src = "import cmp\n\ntype Coord derive(PartialEq, Eq, PartialOrd, Ord):\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let a = Coord(1, 2)\n    let b = Coord(1, 5)\n    print(console, \"${a == a} ${a == b} ${a != b}\")\n    print(console, \"${a < b} ${b > a} ${a <= a} ${b >= b}\")\n    print(console, __render(compare(a, b)))\n    print(console, __render(cmp.reverse(compare(a, b))))\n    print(console, \"${cmp.sort([Coord(2, 0), Coord(1, 9), Coord(1, 1)])}\")\n";
+        let src = "import cmp\n\ntype Coord derive(PartialEq, Eq, PartialOrd, Ord):\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let a = Coord(1, 2)\n    let b = Coord(1, 5)\n    print(console, \"${a == a} ${a == b} ${a != b}\")\n    print(console, \"${a < b} ${b > a} ${a <= a} ${b >= b}\")\n    print(console, __render(compare(a, b)))\n    print(console, __render(cmp.reverse(compare(a, b))))\n    print(console, \"${list.sort([Coord(2, 0), Coord(1, 9), Coord(1, 1)])}\")\n";
         let want: Vec<String> = [
             "true false true",
             "true true true true",
@@ -18860,10 +18860,10 @@ fn main(console: Console):
         let ok = "import cmp\n\nfn main(console: Console):\n    print(console, \"${1.5 < 2.5} ${2.5 == 2.5} ${2.5 != 1.5}\")\n";
         assert_eq!(link_run(ok), vec!["true true true".to_string()], "Float PartialOrd works");
 
-        let bad = "import cmp\n\nfn main(console: Console):\n    print(console, \"${cmp.sort([3.0, 1.0, 2.0])}\")\n";
+        let bad = "import cmp\n\nfn main(console: Console):\n    print(console, \"${list.sort([3.0, 1.0, 2.0])}\")\n";
         let module = parser::parse_module(bad).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-        let err = typeck::check(&linked).expect_err("Float is not Ord — cmp.sort must reject it").message;
+        let err = typeck::check(&linked).expect_err("Float is not Ord — list.sort must reject it").message;
         assert!(err.contains("Ord"), "error should mention Ord: {err}");
     }
 

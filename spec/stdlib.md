@@ -252,10 +252,6 @@ The largest element of `xs`, or `default` when `xs` is empty. `default` is only 
 
 The smallest element of `xs`, or `default` when `xs` is empty. As with `maximum`, `default` is the empty fallback only, never a competing bound.
 
-#### `fn sort(var xs: List(a)) -> List(a) where a: Ord`
-
-Sort any list of an `Ord` type ascending — a stable insertion sort that dispatches through the element type's `Ord` impl, so it is content-correct on both backends (Int, String, Duration, or your own `Ord` types) without a caller-supplied comparator. For Ints, `list.sort` is the lighter default.
-
 ## `compiler`
 
 compiler — witchy's own toolchain, exposed to witchy programs.

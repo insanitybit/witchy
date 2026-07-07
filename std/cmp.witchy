@@ -274,31 +274,3 @@ pub fn minimum(xs: List(a), default: a) -> a where a: Ord:
             best = x
             seen = true
     best
-
-// Insert `x` into an already-sorted list, keeping it ordered by the type's `Ord`.
-fn insert_ord(sorted: List(a), x: a) -> List(a) where a: Ord:
-    var out = []
-    var placed = false
-    for y in sorted:
-        if placed:
-            out = list.push(out, y)
-        else if lt(x, y):
-            out = list.push(out, x)
-            out = list.push(out, y)
-            placed = true
-        else:
-            out = list.push(out, y)
-    if placed:
-        out
-    else:
-        list.push(out, x)
-
-// Sort any list of an `Ord` type ascending — a stable insertion sort that
-// dispatches through the element type's `Ord` impl, so it is content-correct on
-// both backends (Int, String, Duration, or your own `Ord` types) without a
-// caller-supplied comparator. For Ints, `list.sort` is the lighter default.
-pub fn sort(var xs: List(a)) -> List(a) where a: Ord:
-    var out = []
-    for x in xs:
-        out = insert_ord(out, x)
-    out

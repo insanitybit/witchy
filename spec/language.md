@@ -600,7 +600,7 @@ fn main(console: Console):
 
 The std comparison hierarchy `PartialEq` → `Eq` → `PartialOrd` → `Ord` (in
 `import cmp`, mirroring Rust's `std::cmp`) backs the `== != < > <= >=` operators
-and provides bounded generic algorithms (`list.contains`, `cmp.max_of`, `cmp.sort`,
+and provides bounded generic algorithms (`list.contains`, `list.sort`, `cmp.max_of`,
 ...); `Show` (`import show`) renders.
 
 **`impl Trait` arguments.** When a parameter is generic only so it can carry a

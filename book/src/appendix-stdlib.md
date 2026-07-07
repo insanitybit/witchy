@@ -54,7 +54,7 @@ to_ms` finds `duration.to_milliseconds`.
 | `random` | seeded pseudo-random numbers |
 | `time` / `duration` | civil UTC date-times: `parse_iso8601`, `iso8601`, strftime-style `format`, validated `civil(...)`; `Duration` helpers |
 | `semver` | version parsing and comparison |
-| `cmp` / `show` | the comparison hierarchy (`PartialEq`/`Eq`/`PartialOrd`/`Ord`, backing `== != < > <= >=`) and display trait, plus generic algorithms (`cmp.sort`, `cmp.max_of`, …) |
+| `cmp` / `show` | the comparison hierarchy (`PartialEq`/`Eq`/`PartialOrd`/`Ord`, backing `== != < > <= >=`) and display trait, plus generic algorithms (`list.sort`, `cmp.max_of`, …) |
 | `ascii` | ASCII classification |
 
 ## Capability-gated modules
