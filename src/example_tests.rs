@@ -518,13 +518,28 @@
     }
 
     /// (Bytes) The first-class `Bytes` type: a UTF-8-free flat byte buffer. Exercises
-    /// the round-trip with `String`, length/at/concat/slice/to_list, on both backends
-    /// (linked interp + compiled WASM), which must agree — `Bytes` shares `String`'s
+    /// the round-trip with `String`, length/at/get/concat/slice/to_list/search, on
+    /// both backends (linked interp + compiled WASM), which must agree — `Bytes` shares `String`'s
     /// `[len][bytes]` layout, so the compiled ops are identity/String-reuse.
     #[test]
     fn bytes_type_backends_agree() {
-        let src = "import bytes\nimport list\n\nfn main(console: Console):\n    let b = bytes.from_string(\"hi!\")\n    print(console, __render(bytes.length(b)))\n    print(console, __render(bytes.at(b, 0)))\n    print(console, bytes.to_string(b))\n    let c = bytes.concat(b, bytes.from_string(\"?\"))\n    print(console, bytes.to_string(c))\n    print(console, bytes.to_string(bytes.slice(c, 1, 3)))\n    print(console, __render(bytes.to_list(b)))\n    print(console, __render(bytes.is_empty(b)))\n";
-        let expected = ["3", "104", "hi!", "hi!?", "i!", "[104, 105, 33]", "false"];
+        let src = "import bytes\nimport list\nimport option\n\nfn main(console: Console):\n    let b = bytes.from_string(\"hi!\")\n    print(console, __render(bytes.length(b)))\n    print(console, __render(bytes.at(b, 0)))\n    print(console, __render(bytes.get(b, 1).unwrap_or(0)))\n    print(console, __render(bytes.get(b, 99).unwrap_or(0 - 1)))\n    print(console, bytes.to_string(b))\n    let c = bytes.concat(b, bytes.from_string(\"?\"))\n    print(console, bytes.to_string_lossy(c))\n    print(console, bytes.to_string(bytes.slice(c, 1, 3)))\n    print(console, __render(bytes.to_list(b)))\n    print(console, __render(bytes.is_empty(b)))\n    print(console, __render(bytes.index_of(c, bytes.from_string(\"i!\"))))\n    print(console, __render(bytes.index_of(c, bytes.from_string(\"zz\"))))\n    print(console, __render(bytes.contains(c, bytes.from_string(\"!?\"))))\n    print(console, __render(bytes.starts_with(c, b)))\n    print(console, __render(bytes.ends_with(c, bytes.from_string(\"!?\"))))\n";
+        let expected = [
+            "3",
+            "104",
+            "105",
+            "-1",
+            "hi!",
+            "hi!?",
+            "i!",
+            "[104, 105, 33]",
+            "false",
+            "Some(1)",
+            "None",
+            "true",
+            "true",
+            "true",
+        ];
         assert_eq!(link_run(src), expected, "interp");
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
@@ -588,12 +603,13 @@
     }
 
     /// (parity, SEC-040) `bytes.slice` is BYTE-indexed and `bytes.to_string` is
-    /// LOSSY on BOTH backends. The compiled `bytes.slice` used to route through the
-    /// CHAR-indexed `$str_substring` (so slicing a multibyte payload returned the
-    /// wrong byte count — a binary-corruption primitive) and `bytes.to_string` was
-    /// a raw identity (so invalid UTF-8 came back verbatim instead of the U+FFFD
-    /// the interpreter's `from_utf8_lossy` produces). Both now match the byte-exact
-    /// interpreter oracle. Same family as SEC-038 (the `bytes.at` OOB read).
+    /// LOSSY on BOTH backends, while `bytes.decode_utf8` is strict. The compiled
+    /// `bytes.slice` used to route through the CHAR-indexed `$str_substring` (so
+    /// slicing a multibyte payload returned the wrong byte count — a
+    /// binary-corruption primitive) and `bytes.to_string` was a raw identity (so
+    /// invalid UTF-8 came back verbatim instead of the U+FFFD the interpreter's
+    /// `from_utf8_lossy` produces). Both now match the byte-exact interpreter
+    /// oracle. Same family as SEC-038 (the `bytes.at` OOB read).
     #[test]
     fn bytes_slice_is_byte_indexed_and_to_string_is_lossy() {
         // `é` is 2 UTF-8 bytes (0xC3 0xA9). Byte-slicing [0,1) yields ONE byte
@@ -612,11 +628,11 @@
         // Slicing `é` at [0,1) leaves a lone 0xC3 — invalid UTF-8. `to_string` must
         // lossily decode it to U+FFFD (3 bytes) on both backends, not return the
         // raw invalid byte.
-        let lossy_src = "import bytes\nimport string\n\nfn main(console: Console):\n    let half = bytes.slice(bytes.from_string(\"é\"), 0, 1)\n    let s = bytes.to_string(half)\n    print(console, __render(string.length(s)))\n    print(console, __render(bytes.length(bytes.from_string(s))))\n";
+        let lossy_src = "import bytes\nimport string\n\nfn main(console: Console):\n    let half = bytes.slice(bytes.from_string(\"é\"), 0, 1)\n    let s = bytes.to_string_lossy(half)\n    print(console, __render(string.length(s)))\n    print(console, __render(bytes.length(bytes.from_string(s))))\n    match bytes.decode_utf8(half):\n        Ok(_) -> print(console, \"bad\")\n        Err(e) -> print(console, e)\n    match bytes.decode_utf8(bytes.from_string(\"ok\")):\n        Ok(text) -> print(console, text)\n        Err(e) -> print(console, \"bad\")\n";
         // The lossy decode replaces the lone invalid byte with U+FFFD, which is 3
         // UTF-8 bytes (`string.length` is a BYTE count). The old buggy compiled
         // identity returned the single raw byte, so both readings would be "1".
-        let want_lossy = ["3", "3"];
+        let want_lossy = ["3", "3", "bytes.decode_utf8: invalid UTF-8", "ok"];
         assert_eq!(link_run(lossy_src), want_lossy, "interp bytes.to_string is lossy");
         assert_eq!(
             run_linked_on_wasm(&[("main", lossy_src)], "main"),

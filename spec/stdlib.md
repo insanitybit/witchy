@@ -34,9 +34,17 @@ A `Bytes` is a flat, UTF-8-free sequence of bytes — the type for binary data (
 
 The UTF-8 bytes of a string.
 
+#### `fn to_string_lossy(b: Bytes) -> String`
+
+Decode bytes as UTF-8 text, replacing invalid sequences with U+FFFD. This is explicit about being lossy; use `decode_utf8` when invalid bytes must be an Err.
+
 #### `fn to_string(b: Bytes) -> String`
 
-Decode bytes as UTF-8 text. Invalid sequences are replaced with U+FFFD (lossy), so this never fails; round-tripping a string is exact because witchy strings are always valid UTF-8.
+Decode bytes as UTF-8 text. Invalid sequences are replaced with U+FFFD (lossy), so this never fails; round-tripping a string is exact because witchy strings are always valid UTF-8. Prefer `to_string_lossy` when the lossy boundary matters.
+
+#### `fn decode_utf8(b: Bytes) -> Result(String, String)`
+
+Strict UTF-8 decode. Returns Err instead of replacing invalid byte sequences.
 
 #### `fn length(b: Bytes) -> Int`
 
@@ -50,6 +58,10 @@ Whether `b` has no bytes.
 
 The byte at `index`, as an Int in `0..=255`.
 
+#### `fn get(b: Bytes, index: Int) -> Option(Int)`
+
+The byte at `index`, or None when out of range.
+
 #### `fn concat(first: Bytes, second: Bytes) -> Bytes`
 
 The two byte buffers joined.
@@ -61,6 +73,22 @@ The bytes in `start..end` (clamped to the buffer; `start >= end` yields empty).
 #### `fn to_list(b: Bytes) -> List(Int)`
 
 The bytes as a list of Ints in `0..=255`.
+
+#### `fn contains(b: Bytes, needle: Bytes) -> Bool`
+
+Whether `needle` appears in `b`. The empty needle is always present.
+
+#### `fn index_of(b: Bytes, needle: Bytes) -> Option(Int)`
+
+The first byte index where `needle` appears, or None when absent. The empty needle is found at 0, matching string/list search conventions.
+
+#### `fn starts_with(b: Bytes, prefix: Bytes) -> Bool`
+
+Whether `b` starts with `prefix`.
+
+#### `fn ends_with(b: Bytes, suffix: Bytes) -> Bool`
+
+Whether `b` ends with `suffix`.
 
 ## `chan`
 

@@ -8,16 +8,31 @@
 // boundary (RFC-0032), making it the canonical cross-VM and serialization payload.
 
 import list
+import option
+import result
 
 // The UTF-8 bytes of a string.
 pub fn from_string(s: String) -> Bytes:
     __bytes_from_string(s)
 
+// Decode bytes as UTF-8 text, replacing invalid sequences with U+FFFD. This is
+// explicit about being lossy; use `decode_utf8` when invalid bytes must be an Err.
+pub fn to_string_lossy(b: Bytes) -> String:
+    __bytes_to_string(b)
+
 // Decode bytes as UTF-8 text. Invalid sequences are replaced with U+FFFD (lossy),
 // so this never fails; round-tripping a string is exact because witchy strings are
-// always valid UTF-8.
+// always valid UTF-8. Prefer `to_string_lossy` when the lossy boundary matters.
 pub fn to_string(b: Bytes) -> String:
-    __bytes_to_string(b)
+    to_string_lossy(b)
+
+// Strict UTF-8 decode. Returns Err instead of replacing invalid byte sequences.
+pub fn decode_utf8(b: Bytes) -> Result(String, String):
+    let text = to_string_lossy(b)
+    if to_list(from_string(text)) == to_list(b):
+        Ok(text)
+    else:
+        Err("bytes.decode_utf8: invalid UTF-8")
 
 // The number of bytes.
 pub fn length(b: Bytes) -> Int:
@@ -30,6 +45,13 @@ pub fn is_empty(b: Bytes) -> Bool:
 // The byte at `index`, as an Int in `0..=255`.
 pub fn at(b: Bytes, index: Int) -> Int:
     __bytes_at(b, index)
+
+// The byte at `index`, or None when out of range.
+pub fn get(b: Bytes, index: Int) -> Option(Int):
+    if index < 0 || index >= __bytes_length(b):
+        None
+    else:
+        Some(__bytes_at(b, index))
 
 // The two byte buffers joined.
 pub fn concat(first: Bytes, second: Bytes) -> Bytes:
@@ -47,3 +69,49 @@ pub fn to_list(b: Bytes) -> List(Int):
         out = list.push(out, __bytes_at(b, i))
         i = i + 1
     out
+
+// Whether `needle` appears in `b`. The empty needle is always present.
+pub fn contains(b: Bytes, needle: Bytes) -> Bool:
+    match index_of(b, needle):
+        Some(_) -> true
+        None -> false
+
+// The first byte index where `needle` appears, or None when absent. The empty
+// needle is found at 0, matching string/list search conventions.
+pub fn index_of(b: Bytes, needle: Bytes) -> Option(Int):
+    let n = __bytes_length(needle)
+    if n == 0:
+        Some(0)
+    else:
+        let limit = __bytes_length(b) - n
+        var i = 0
+        while i <= limit:
+            if bytes_match_at(b, needle, i):
+                return Some(i)
+            i = i + 1
+        None
+
+// Whether `b` starts with `prefix`.
+pub fn starts_with(b: Bytes, prefix: Bytes) -> Bool:
+    let n = __bytes_length(prefix)
+    if n > __bytes_length(b):
+        false
+    else:
+        bytes_match_at(b, prefix, 0)
+
+// Whether `b` ends with `suffix`.
+pub fn ends_with(b: Bytes, suffix: Bytes) -> Bool:
+    let n = __bytes_length(suffix)
+    let len = __bytes_length(b)
+    if n > len:
+        false
+    else:
+        bytes_match_at(b, suffix, len - n)
+
+fn bytes_match_at(b: Bytes, needle: Bytes, start: Int) -> Bool:
+    var j = 0
+    while j < __bytes_length(needle):
+        if __bytes_at(b, start + j) != __bytes_at(needle, j):
+            return false
+        j = j + 1
+    true
