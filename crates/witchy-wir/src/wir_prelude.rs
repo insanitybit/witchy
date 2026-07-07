@@ -105,6 +105,7 @@ const HELPER_NAMES: &[&str] = &[
     "f_le",
     "f_gt",
     "f_ge",
+    "float_to_int",
     "split",
     "str_chars",
     "find_byte",

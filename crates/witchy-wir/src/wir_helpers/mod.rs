@@ -1313,6 +1313,41 @@ pub fn float_cmp_helper(name: &str, op: BinOp) -> WirFunc {
     }
 }
 
+/// `$float_to_int(x: f64) -> i64` — `math.to_int`. Finite values and infinities
+/// keep the WebAssembly saturating conversion policy, but NaN is a Witchy
+/// runtime error instead of silently becoming 0.
+pub fn float_to_int_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let is_nan = E::Binary {
+        op: BinOp::Ne,
+        kind: Kind::F64,
+        lhs: Box::new(getl("x")),
+        rhs: Box::new(getl("x")),
+    };
+    WirFunc {
+        name: "float_to_int".into(),
+        params: vec![WirLocal { name: "x".into(), ty: WirTy::Float }],
+        ret: vec![WirTy::Int],
+        locals: vec![],
+        body: vec![
+            N::If {
+                cond: is_nan,
+                then_: abort_nodes(DiagTemplate::NanToInt, E::ConstI64(0), E::ConstI64(0), E::ConstI32(0)),
+                els: vec![],
+                result: None,
+            },
+            N::Push(E::Unary {
+                op: UnOp::ToInt,
+                kind: Kind::I64,
+                arg: Box::new(getl("x")),
+            }),
+        ],
+        raw_body: None,
+    }
+}
+
 /// `$str_cmp(a: i32, b: i32) -> i32` — byte-lexicographic comparison of two
 /// `[len][bytes]` strings: negative if `a < b`, zero if equal, positive if
 /// `a > b`. Compares up to the shorter length, then breaks ties by length.
@@ -5086,6 +5121,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             helper_deps: &["rc_alloc", "ensure", "key_eq"],
             import_deps: &[],
             uses_heap: true,
+            uses_table: false,
+        }),
+        "float_to_int" => Some(WirHelperSpec {
+            func: float_to_int_helper(),
+            helper_deps: &[],
+            import_deps: &["__witchy_abort"],
+            uses_heap: false,
             uses_table: false,
         }),
         "f_lt" => Some(WirHelperSpec {

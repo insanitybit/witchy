@@ -192,8 +192,8 @@ pub enum UnOp {
     BitNot,
     /// `i64 -> f64` numeric conversion (`f64.convert_i64_s`), for `math.to_float`.
     ToFloat,
-    /// `f64 -> i64` saturating truncation (`i64.trunc_sat_f64_s`, non-trapping to
-    /// match the interpreter's `as i64`), for `math.to_int`.
+    /// `f64 -> i64` saturating truncation (`i64.trunc_sat_f64_s`). `math.to_int`
+    /// uses the `float_to_int` helper so NaN can abort before this conversion.
     ToInt,
     /// `f64 -> f64` square root (`f64.sqrt`), for `math.sqrt`.
     Sqrt,

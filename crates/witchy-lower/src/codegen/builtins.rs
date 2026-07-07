@@ -259,9 +259,8 @@ impl Codegen {
                 )
             }
             // Int <-> Float numeric conversions and `sqrt`, lowered only in a
-            // WIR-collecting scope to `f64.convert_i64_s` / `i64.trunc_sat_f64_s` /
-            // `f64.sqrt`. `to_int` is SATURATING to match the interpreter's `as i64`
-            // (NaN -> 0, ±inf clamp), not the trapping trunc.
+            // WIR-collecting scope. `to_int` keeps saturating finite/inf behavior
+            // but routes NaN through the shared runtime-abort diagnostic.
             ("math.to_float", 1) if self.collect_wir => {
                 let ak = self.kind_of(&args[0]);
                 let arg = Self::wir_convert(self.lower_expr(&args[0])?, ak, Kind::I64);
@@ -269,7 +268,7 @@ impl Codegen {
             }
             ("math.to_int", 1) if self.collect_wir => {
                 let arg = self.lower_expr(&args[0])?;
-                W::Unary { op: witchy_wir::wir::UnOp::ToInt, kind: witchy_wir::wir::Kind::I64, arg: Box::new(arg) }
+                W::Call { func: "float_to_int".to_string(), args: vec![arg] }
             }
             ("math.sqrt", 1) if self.collect_wir => {
                 let arg = self.lower_expr(&args[0])?;

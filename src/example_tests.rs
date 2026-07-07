@@ -1515,6 +1515,40 @@ fn main(console: Console):
         );
     }
 
+    /// (BUG-466, RFC-0044) `math.to_int(NaN)` is a loud contract error on both
+    /// backends. Finite values and infinities keep the existing saturating
+    /// truncation behavior.
+    #[test]
+    fn math_to_int_nan_aborts_on_both_backends() {
+        let compile = |src: &str| -> (ast::Module, Vec<u8>) {
+            let linked = resolve_std_src(src);
+            typeck::check(&linked).expect("typecheck");
+            let bytes = codegen::compile_module_binary(&linked)
+                .expect("compile")
+                .expect("the binary path lowers this program");
+            (linked, bytes)
+        };
+        let nan_src = "import math\n\nfn main(console: Console):\n    print(console, __render(math.to_int(0.0 / 0.0)))\n";
+        let (lmod, wasm) = compile(nan_src);
+        let interp_err = interpreter::run_module(lmod, ".", Vec::new())
+            .expect_err("interpreter must abort on math.to_int(NaN)")
+            .to_string();
+        assert!(interp_err.contains("math.to_int: NaN cannot be converted to Int"), "{interp_err}");
+        let wasm_err = crate::run_wasm_bytes(&wasm)
+            .expect_err("WASM must abort on math.to_int(NaN)")
+            .to_string();
+        assert!(wasm_err.contains("math.to_int: NaN cannot be converted to Int"), "{wasm_err}");
+
+        let ok_src = "import math\n\nfn main(console: Console):\n    print(console, __render(math.to_int(3.9)))\n    print(console, __render(math.to_int(0.0 - 3.9)))\n    print(console, __render(math.to_int(1.0 / 0.0)))\n    print(console, __render(math.to_int(0.0 - (1.0 / 0.0))))\n";
+        let expected = ["3", "-3", "9223372036854775807", "-9223372036854775808"];
+        assert_eq!(link_run(ok_src), expected, "interp math.to_int non-NaN cases");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", ok_src)], "main"),
+            expected,
+            "compiled math.to_int non-NaN cases",
+        );
+    }
+
     /// (BUG-306, parity) A user `return` inside a `gen fn` is re-expressed in terms of
     /// the generator's stream contract, NOT passed untranslated into the synthesized
     /// `-> Option(a)` helper. A bare `return` ENDS the stream (both backends), where it
@@ -7462,18 +7496,15 @@ fn main(console: Console, root: Dir):
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
-    /// `float_to_int` on a non-finite or out-of-range Float must saturate the same
-    /// way on both backends. The interpreter uses Rust's `as i64` (NaN -> 0,
-    /// +inf -> i64::MAX, -inf -> i64::MIN, out-of-range clamps); WASM used the
-    /// trapping `i64.trunc_f64_s` and would crash on those, so it now uses the
-    /// saturating `i64.trunc_sat_f64_s`.
+    /// `float_to_int` on infinities or out-of-range finite values must saturate
+    /// the same way on both backends. NaN is deliberately excluded here: BUG-466
+    /// makes NaN a loud contract error, covered by `math_to_int_nan_aborts_on_both_backends`.
     #[test]
     fn wasm_float_to_int_saturates_like_the_interpreter() {
-        let src = "fn main(console: Console):\n    print(console, __render(math.to_int(1.0 / 0.0)))\n    print(console, __render(math.to_int(0.0 - 1.0 / 0.0)))\n    print(console, __render(math.to_int(0.0 / 0.0)))\n    print(console, __render(math.to_int(0.0 - 3.9)))\n";
+        let src = "fn main(console: Console):\n    print(console, __render(math.to_int(1.0 / 0.0)))\n    print(console, __render(math.to_int(0.0 - 1.0 / 0.0)))\n    print(console, __render(math.to_int(0.0 - 3.9)))\n";
         let want = vec![
             "9223372036854775807".to_string(),
             "-9223372036854775808".to_string(),
-            "0".to_string(),
             "-3".to_string(),
         ];
         assert_eq!(interp(src), want.clone(), "interpreter");

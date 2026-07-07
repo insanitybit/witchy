@@ -8,7 +8,8 @@
 pub fn to_float(n: Int) -> Float:
     math.to_float(n)
 
-// Float -> Int, truncating toward zero; NaN -> 0; out-of-range saturates.
+// Float -> Int, truncating toward zero. NaN is a runtime error; out-of-range
+// finite values and infinities saturate.
 pub fn to_int(x: Float) -> Int:
     math.to_int(x)
 

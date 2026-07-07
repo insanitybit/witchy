@@ -1448,7 +1448,7 @@ Int -> Float, exactly (within f64 precision).
 
 #### `fn to_int(x: Float) -> Int`
 
-Float -> Int, truncating toward zero; NaN -> 0; out-of-range saturates.
+Float -> Int, truncating toward zero. NaN is a runtime error; out-of-range finite values and infinities saturate.
 
 #### `fn sqrt(x: Float) -> Float`
 

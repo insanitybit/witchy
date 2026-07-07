@@ -1397,6 +1397,7 @@ impl Interpreter {
                 other => err(format!("int_to_float expects an Int, got `{other}`")),
             },
             "math.to_int" => match one(args)? {
+                Value::Float(x) if x.is_nan() => err(DiagTemplate::NanToInt.render(0, 0, "")),
                 Value::Float(x) => Ok(Some(Value::Int(x as i64))),
                 other => err(format!("float_to_int expects a Float, got `{other}`")),
             },

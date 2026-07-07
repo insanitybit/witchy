@@ -31,6 +31,8 @@ pub enum DiagTemplate {
     ParseInt,
     /// `cannot compare NaN` — ordering (`<`/`<=`/`>`/`>=`) a NaN float.
     NanOrder,
+    /// `math.to_int: NaN cannot be converted to Int`.
+    NanToInt,
     /// `{s}` — a user `fail(msg)`; the message is passed through verbatim.
     Fail,
     /// `required secret `{s}` was not granted` — `SecretStore.require(name)` on a
@@ -50,6 +52,7 @@ impl DiagTemplate {
             DiagTemplate::NanOrder => 4,
             DiagTemplate::Fail => 5,
             DiagTemplate::SecretRequired => 6,
+            DiagTemplate::NanToInt => 7,
         }
     }
 
@@ -64,6 +67,7 @@ impl DiagTemplate {
             4 => Some(DiagTemplate::NanOrder),
             5 => Some(DiagTemplate::Fail),
             6 => Some(DiagTemplate::SecretRequired),
+            7 => Some(DiagTemplate::NanToInt),
             _ => None,
         }
     }
@@ -80,6 +84,7 @@ impl DiagTemplate {
             DiagTemplate::BytesIndexOob => format!("bytes index {a} out of bounds (length {b})"),
             DiagTemplate::ParseInt => format!("cannot parse `{s}` as an Int"),
             DiagTemplate::NanOrder => "cannot compare NaN".to_string(),
+            DiagTemplate::NanToInt => "math.to_int: NaN cannot be converted to Int".to_string(),
             DiagTemplate::Fail => s.to_string(),
             DiagTemplate::SecretRequired => format!("required secret `{s}` was not granted"),
         }
@@ -112,6 +117,7 @@ mod tests {
             DiagTemplate::BytesIndexOob,
             DiagTemplate::ParseInt,
             DiagTemplate::NanOrder,
+            DiagTemplate::NanToInt,
             DiagTemplate::Fail,
             DiagTemplate::SecretRequired,
         ] {
@@ -135,6 +141,10 @@ mod tests {
             "cannot parse `junk` as an Int"
         );
         assert_eq!(DiagTemplate::NanOrder.render(0, 0, ""), "cannot compare NaN");
+        assert_eq!(
+            DiagTemplate::NanToInt.render(0, 0, ""),
+            "math.to_int: NaN cannot be converted to Int"
+        );
         assert_eq!(DiagTemplate::Fail.render(0, 0, "the reason"), "the reason");
         assert_eq!(
             DiagTemplate::SecretRequired.render(0, 0, "signing"),
