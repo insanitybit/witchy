@@ -1894,6 +1894,7 @@ fn builtin_method_module(tn: &str) -> Option<&'static str> {
         "Option" => Some("option"),
         "Result" => Some("result"),
         "Iter" => Some("iter"),
+        "Rand" => Some("rand"),
         // `key.sign(msg)` / `key.public_key()` / `key.reveal()` -> crypto.*;
         // `store.get(name)` -> secretstore.get.
         "Secret" => Some("crypto"),

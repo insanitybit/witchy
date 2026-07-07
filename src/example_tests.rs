@@ -1132,6 +1132,53 @@ fn main(console: Console):
         }
     }
 
+    /// (BUG-216) A local binding with the same name as a prelude/imported module
+    /// owns dotted calls consistently. `string.to_upper("x")` below must dispatch
+    /// to the local `S` method, not silently escape to std `string.to_upper`.
+    #[test]
+    fn shadowing_module_name_keeps_dotted_calls_on_local() {
+        let src = "type S:\n    x: String\n\nimpl S:\n    fn to_upper(self: S, suffix: String) -> String:\n        self.x + suffix\n\nfn module_upper(s: String) -> String:\n    string.to_upper(s)\n\nfn main(console: Console):\n    let string = S(\"s\")\n    print(console, string.to_upper(\"x\"))\n    print(console, module_upper(\"y\"))\n";
+        let expected = ["sx", "Y"];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+    }
+
+    /// `Rand` follows the same receiver-method shape as other capabilities:
+    /// `rand.hex(n)` lowers to `rand.hex(rand, n)`, without needing the ambiguous
+    /// double-receiver spelling `rand.hex(rand, n)`.
+    #[test]
+    fn rand_capability_supports_std_method_syntax() {
+        let src = "import rand\n\nfn main(console: Console, rand: Rand):\n    let token = rand.hex(4)\n    print(console, \"${string.length(token)}\")\n";
+        let expected = ["8"];
+        let linked = resolve_std_src(src);
+        typeck::check(&linked).expect("typecheck");
+        assert_eq!(
+            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp"),
+            expected,
+            "interp"
+        );
+
+        use crate::runtime::{Capabilities, Runtime};
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let mut rt = Runtime::new().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                &bytes,
+                Capabilities {
+                    print: true,
+                    print_int: true,
+                    rand: true,
+                    ..Default::default()
+                },
+                4,
+            )
+            .expect("spawn");
+        actor.run().expect("run");
+        assert_eq!(actor.output(), expected, "wasm");
+    }
+
     /// (BUG-240, parity) `math.abs(Int.MIN)` has no positive `Int`, so both backends
     /// must ABORT rather than silently wrap back to the negative `Int.MIN`. Ordinary
     /// magnitudes still agree. (Was a stable wrong answer: `-Int.MIN == Int.MIN`.)

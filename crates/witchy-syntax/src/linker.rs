@@ -1142,34 +1142,17 @@ fn rewrite_expr(
             // local's type, matching the value-position rule for `local.field`
             // (the `Expr::Field` arm below). The module stays reachable while
             // shadowed via an alias or by renaming the local.
-            //
-            // EXCEPTION: when `base` also names a module in scope that exports
-            // `method` at EXACTLY this arg count, the caller wrote a module-
-            // qualified call with the receiver passed explicitly — the common
-            // capability idiom where the value is named after its module
-            // (`rand.hex(rand, 32)` → the `rand` module's `hex(rand, 32)`, not a
-            // 3-arg `hex` method on the `Rand` value). Keep it a `Call` then; the
-            // arity guard keeps BUG-216's `list.get(2)` (≠ `list.get(xs, i)`'s
-            // arity 2) a method call. (BUG-216 × capability-module shadowing.)
             if let Some((base, method)) = name.split_once('.') {
                 if bound.contains(base) && !method.contains('.') {
-                    let module_qualified = (is_prelude_module(base)
-                        || imps.iter().any(|i| i == base))
-                        && fns
-                            .get(base)
-                            .and_then(|f| f.get(method))
-                            .is_some_and(|sig| sig.public && sig.arity == args.len());
-                    if !module_qualified {
-                        let receiver = Box::new(Expr::Var(base.to_string()));
-                        let method = method.to_string();
-                        let mut call_args = Vec::new();
-                        std::mem::swap(args, &mut call_args);
-                        for a in &mut call_args {
-                            rewrite_expr(a, m, imps, fns, bound)?;
-                        }
-                        *e = Expr::MethodCall { receiver, method, args: call_args };
-                        return Ok(());
+                    let receiver = Box::new(Expr::Var(base.to_string()));
+                    let method = method.to_string();
+                    let mut call_args = Vec::new();
+                    std::mem::swap(args, &mut call_args);
+                    for a in &mut call_args {
+                        rewrite_expr(a, m, imps, fns, bound)?;
                     }
+                    *e = Expr::MethodCall { receiver, method, args: call_args };
+                    return Ok(());
                 }
             }
             *name = resolve_call(name, m, imps, fns, bound)?;

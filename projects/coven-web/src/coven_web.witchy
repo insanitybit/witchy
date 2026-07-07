@@ -220,7 +220,7 @@ fn h_wa_challenge(store: Dir, rand: Rand) -> fn(Request) -> Response:
         let op = wa_field(doc, "op")
         let name = wa_field(doc, "name")
         let version = wa_field(doc, "version")
-        let ch_hex = rand.hex(rand, 32)
+        let ch_hex = rand.hex(32)
         let ch_b64 = result.unwrap_or(encoding.hex_to_base64url(ch_hex), "")
         write(store, "_wa_challenge.json", json.encode(JsonObject([("b64", JsonString(ch_b64)), ("op", JsonString(op)), ("name", JsonString(name)), ("version", JsonString(version))])))
         server.json(200, json.encode(JsonObject([("challengeHex", JsonString(ch_hex))])))
@@ -415,7 +415,7 @@ fn state_ttl_ms() -> Int:
 // into the `state`; `/callback` accepts only a state whose nonce equals the cookie's, so
 // a state minted for one session can't be replayed into another (login CSRF / fixation).
 fn login_nonce(rand: Rand) -> String:
-    rand.hex(rand, 16)
+    rand.hex(16)
 
 fn nonce_cookie(nonce: String) -> String:
     "oauth_nonce=" + nonce + "; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=600"
