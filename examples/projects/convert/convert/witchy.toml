@@ -1,5 +1,5 @@
 [rune]
-name = "convert"
+name = "csvconvert"
 version = "0.1.0"
 
 [dependencies]

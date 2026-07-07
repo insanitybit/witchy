@@ -1812,7 +1812,7 @@ fn example_wordfreq_workspace_ranks_words() {
     );
 }
 
-/// The committed `examples/projects/convert` workspace — a `convert` app that
+/// The committed `examples/projects/convert` workspace — a `csvconvert` app that
 /// reads `input.csv` and WRITES `output.json` through one read-write Dir
 /// capability, converting with the `convertlib` rune (std `csv` + `json`). The
 /// first example project to exercise Dir *Write*: it asserts the file the app

@@ -734,6 +734,7 @@ const BUILTIN_TYPE_NAMES: &[&str] = &[
 ];
 
 const AMBIENT_STD_TYPE_NAMES: &[&str] = &["Ordering", "Set", "Iter"];
+const AMBIENT_TRAIT_NAMES: &[&str] = &["PartialEq", "Eq", "PartialOrd", "Ord"];
 
 fn builtin_type_arity(name: &str) -> Option<usize> {
     match name {
@@ -1196,6 +1197,83 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
             Item::TypeAlias { ty, name } => {
                 validate_type(ty, &known, &arities).map_err(|e| in_ctx(e, name))?;
             }
+        }
+    }
+    Ok(())
+}
+
+/// Reject trait names that do not resolve to a declared trait before trait/impl
+/// lowering turns those names into dispatch strings. A misspelled trait in a
+/// bound or impl head should not become an inert contract.
+fn check_trait_names(module: &Module) -> Result<(), TypeError> {
+    fn bare(name: &str) -> &str {
+        name.rsplit('.').next().unwrap_or(name)
+    }
+
+    let mut known: HashSet<&str> = HashSet::new();
+    known.extend(AMBIENT_TRAIT_NAMES.iter().copied());
+    for item in &module.items {
+        if let Item::Trait(tr) = item {
+            known.insert(tr.name.as_str());
+            known.insert(bare(&tr.name));
+        }
+    }
+
+    let known_trait = |name: &str| known.contains(name) || known.contains(bare(name));
+    let unknown = |trait_name: &str, context: String| -> Result<(), TypeError> {
+        if known_trait(trait_name) {
+            Ok(())
+        } else {
+            terr(format!("unknown trait `{}` in {context}", bare(trait_name)))
+        }
+    };
+
+    for item in &module.items {
+        match item {
+            Item::Trait(tr) => {
+                for supertrait in &tr.supertraits {
+                    unknown(
+                        supertrait,
+                        format!("trait `{}` supertrait list", bare(&tr.name)),
+                    )?;
+                }
+            }
+            Item::Impl(im) => {
+                if let Some(trait_name) = &im.trait_name {
+                    unknown(
+                        trait_name,
+                        format!("impl head for `{}`", bare(&im.type_name)),
+                    )?;
+                }
+                for (_, trait_name, _) in &im.bounds {
+                    unknown(
+                        trait_name,
+                        format!("impl `{}` where clause", bare(&im.type_name)),
+                    )?;
+                }
+                for method in &im.methods {
+                    for (_, trait_name, _) in &method.bounds {
+                        unknown(
+                            trait_name,
+                            format!("method `{}` where clause", bare(&method.name)),
+                        )?;
+                    }
+                }
+            }
+            Item::Function(f) => {
+                for (var, trait_name, _) in &f.bounds {
+                    let bound_kind = if var.starts_with("impltrait_") {
+                        "impl-trait parameter"
+                    } else {
+                        "where clause"
+                    };
+                    unknown(
+                        trait_name,
+                        format!("{bound_kind} of function `{}`", bare(&f.name)),
+                    )?;
+                }
+            }
+            Item::Type(_) | Item::Const { .. } | Item::Comptime(_) | Item::TypeAlias { .. } => {}
         }
     }
     Ok(())
@@ -4902,6 +4980,7 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
     // but covers single-module paths like `check_str`).
     let recs = witchy_syntax::records::lower(module.clone()).map_err(|message| TypeError { message })?;
     check_type_names(&recs)?;
+    check_trait_names(&recs)?;
 
     // Trait/impl declarations are desugared to ordinary functions first, so the
     // checker only ever sees plain functions (a no-op for trait-free modules).

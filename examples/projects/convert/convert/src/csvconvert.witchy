@@ -1,4 +1,4 @@
-// convert — a CSV-to-JSON file converter. It reads `input.csv` and writes
+// csvconvert — a CSV-to-JSON file converter. It reads `input.csv` and writes
 // `output.json` through one read-write Dir capability, doing the conversion with
 // the `convertlib` rune (a path dependency using std `csv` + `json`). Its
 // footprint is exactly `Console, Dir` (Read + Write). Run with:  witchy run

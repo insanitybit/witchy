@@ -221,6 +221,47 @@
     }
 
     #[test]
+    fn unknown_trait_names_are_rejected() {
+        let impl_head = check_str(
+            "type Box:\n    Box(Int)\nimpl Missing for Box:\n    fn label(self) -> String:\n        \"x\"\n",
+        )
+        .unwrap_err();
+        assert!(impl_head.contains("unknown trait `Missing` in impl head"), "{impl_head}");
+
+        let supertrait = check_str("trait Local: Missing:\n    fn f(self) -> Int\n").unwrap_err();
+        assert!(
+            supertrait.contains("unknown trait `Missing` in trait `Local` supertrait list"),
+            "{supertrait}"
+        );
+
+        let where_bound = check_str("fn f(x: a) -> Int where a: Missing:\n    0\n").unwrap_err();
+        assert!(
+            where_bound.contains("unknown trait `Missing` in where clause of function `f`"),
+            "{where_bound}"
+        );
+
+        let impl_trait = check_str("fn f(x: impl Missing) -> Int:\n    0\n").unwrap_err();
+        assert!(
+            impl_trait.contains("unknown trait `Missing` in impl-trait parameter of function `f`"),
+            "{impl_trait}"
+        );
+
+        let impl_bound = check_str(
+            "trait Label:\n    fn label(self) -> String\ntype Box:\n    Box(a)\nimpl Label for Box(a) where a: Missing:\n    fn label(self) -> String:\n        \"x\"\n",
+        )
+        .unwrap_err();
+        assert!(
+            impl_bound.contains("unknown trait `Missing` in impl `Box` where clause"),
+            "{impl_bound}"
+        );
+
+        check_str(
+            "trait Label:\n    fn label(self) -> String\ntype Box:\n    Box(Int)\nimpl Label for Box:\n    fn label(self) -> String:\n        \"ok\"\nfn f(x: a) -> Int where a: Label:\n    0\n",
+        )
+        .expect("locally declared traits are valid in impls and bounds");
+    }
+
+    #[test]
     fn build_entrypoint_takes_only_build_capabilities() {
         // A valid build step: build caps only.
         check_str("fn build(out: BuildOut, schema: BuildRead):\n    write_out(out, \"x.witchy\", read_build(schema, \"a.proto\"))\n")

@@ -1,5 +1,5 @@
 // convertlib — turn CSV text into a JSON array of objects. A pure library rune
-// (a path dependency of `convert`) showcasing std `csv` + `json`: it decodes the
+// (a path dependency of `csvconvert`) showcasing std `csv` + `json`: it decodes the
 // rows, keys each data row by the header (preserving column order), and builds
 // real Json values — integers stay numbers, everything else is a string — then
 // pretty-prints them. `csv.decode` is fallible (RFC-0044), so this returns a
