@@ -215,13 +215,20 @@ pub fn kid(token: String) -> Option(String):
 // Actions): fetch the JWKS, read the token's `kid` (`jwt.kid`), then pick the key.
 pub fn rsa_key_for_kid(jwks: Json, key_id: String) -> Result(String, String):
     match json.get(jwks, "keys"):
+        // A present-but-wrong-typed `keys` is malformed issuer metadata, not an
+        // empty key set: fail with a distinct "not an array" error rather than
+        // defaulting to [] and reporting "no matching key" (BUG-408), so a
+        // provider/config error is diagnosed at the JWKS boundary.
         None -> Err("JWKS has no `keys` array")
         Some(keys) ->
-            match find_rsa_jwk(json.as_array(keys).unwrap_or([]), key_id):
-                None -> Err("no RSA key in the JWKS matches kid `" + key_id + "`")
-                Some(ne) ->
-                    let (n, e) = ne
-                    rsa_key_from_jwk(n, e)
+            match json.as_array(keys):
+                None -> Err("JWKS `keys` is not an array (malformed issuer metadata)")
+                Some(arr) ->
+                    match find_rsa_jwk(arr, key_id):
+                        None -> Err("no RSA key in the JWKS matches kid `" + key_id + "`")
+                        Some(ne) ->
+                            let (n, e) = ne
+                            rsa_key_from_jwk(n, e)
 
 // First RSA JWK whose `kid` matches, as its `(n, e)` base64url pair.
 fn find_rsa_jwk(keys: List(Json), key_id: String) -> Option((String, String)):

@@ -12210,6 +12210,44 @@ fn main(console: Console):
         assert_eq!(run_linked_on_wasm(&[("main", src.as_str())], "main"), expected, "wasm OIDC-via-JWKS");
     }
 
+    /// `jwt.rsa_key_for_kid` distinguishes malformed issuer metadata from a
+    /// non-matching key (BUG-408): a `keys` field that is present but NOT an array
+    /// is a distinct "not an array" error, not a defaulted-empty "no matching key".
+    /// A valid array with no matching kid still reports the no-match error. No key
+    /// material needed — this exercises the JWKS-shape boundary. Both backends.
+    #[test]
+    fn jwt_rsa_key_for_kid_rejects_malformed_keys_backends_agree() {
+        let run = |jwks_json: &str| -> Vec<String> {
+            let lit = jwks_json.replace('"', "\\\"");
+            let src = format!(
+                "import jwt\nimport json\nfn main(console: Console):\n    match json.decode(\"{lit}\"):\n        Err(_e) -> print(console, \"bad json\")\n        Ok(doc) -> match jwt.rsa_key_for_kid(doc, \"k1\"):\n            Ok(_der) -> print(console, \"ok\")\n            Err(e) -> print(console, e)\n"
+            );
+            let interp = link_run(&src);
+            assert_eq!(interp, run_linked_on_wasm(&[("main", src.as_str())], "main"), "backends agree");
+            interp
+        };
+        assert_eq!(
+            run(r#"{"keys":"nope"}"#),
+            vec!["JWKS `keys` is not an array (malformed issuer metadata)".to_string()],
+            "a wrong-typed `keys` is malformed metadata, not an empty key set"
+        );
+        assert_eq!(
+            run(r#"{"keys":42}"#),
+            vec!["JWKS `keys` is not an array (malformed issuer metadata)".to_string()],
+            "a numeric `keys` is malformed metadata"
+        );
+        assert_eq!(
+            run(r#"{"foo":1}"#),
+            vec!["JWKS has no `keys` array".to_string()],
+            "an absent `keys` is still its own error"
+        );
+        assert_eq!(
+            run(r#"{"keys":[{"kty":"RSA","kid":"other","n":"x","e":"y"}]}"#),
+            vec!["no RSA key in the JWKS matches kid `k1`".to_string()],
+            "a valid array with no matching kid still reports no-match"
+        );
+    }
+
     /// `jwt.claims_unverified` decodes a token's payload WITHOUT checking the signature —
     /// for reading `iss` to select the verification key before `verify_oidc`. Both backends.
     #[test]
