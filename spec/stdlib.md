@@ -276,13 +276,13 @@ The list with duplicates removed, keeping the first occurrence of each element (
 
 compiler — witchy's own toolchain, exposed to witchy programs.
 
-A native intrinsic module (implemented in Rust, like `crypto`): it gives a program access to the compiler's capability analyzer, so a (self-hosted) package manager can compute a rune's supply-chain footprint from within witchy — on either backend. The body below is a placeholder the runtime never executes (the call is intercepted by its qualified name). The capability footprint of witchy `source`, as JSON:   {"total":[..],"build":[..],"entries":[{"name":..,"capabilities":[..],"brands":[..]}]} or {"error":".."} if the source does not parse. `build` is the build-time footprint — the build capabilities the rune's `build` entrypoint demands (gated separately from the runtime `total`). Parse it with `import json`.
+A native intrinsic module (implemented in Rust, like `crypto`): it gives a program access to the compiler's capability analyzer, so a (self-hosted) package manager can compute a rune's supply-chain footprint from within witchy — on either backend. The body below is a placeholder the runtime never executes (the call is intercepted by its qualified name). The capability footprint of witchy `source`, as JSON:   {"total":[..],"build":[..],"entries":[{"name":..,"capabilities":[..],"brands":[..]}]} or {"error":".."} if the source does not parse or contains `comptime:` blocks. Use the source-file CLI path for expanded comptime introspection. `build` is the build-time footprint — the build capabilities the rune's `build` entrypoint demands (gated separately from the runtime `total`). Parse it with `import json`.
 
 #### `fn footprint(source: String) -> String`
 
 compiler — witchy's own toolchain, exposed to witchy programs.
 
-A native intrinsic module (implemented in Rust, like `crypto`): it gives a program access to the compiler's capability analyzer, so a (self-hosted) package manager can compute a rune's supply-chain footprint from within witchy — on either backend. The body below is a placeholder the runtime never executes (the call is intercepted by its qualified name). The capability footprint of witchy `source`, as JSON:   {"total":[..],"build":[..],"entries":[{"name":..,"capabilities":[..],"brands":[..]}]} or {"error":".."} if the source does not parse. `build` is the build-time footprint — the build capabilities the rune's `build` entrypoint demands (gated separately from the runtime `total`). Parse it with `import json`.
+A native intrinsic module (implemented in Rust, like `crypto`): it gives a program access to the compiler's capability analyzer, so a (self-hosted) package manager can compute a rune's supply-chain footprint from within witchy — on either backend. The body below is a placeholder the runtime never executes (the call is intercepted by its qualified name). The capability footprint of witchy `source`, as JSON:   {"total":[..],"build":[..],"entries":[{"name":..,"capabilities":[..],"brands":[..]}]} or {"error":".."} if the source does not parse or contains `comptime:` blocks. Use the source-file CLI path for expanded comptime introspection. `build` is the build-time footprint — the build capabilities the rune's `build` entrypoint demands (gated separately from the runtime `total`). Parse it with `import json`.
 
 #### `fn diff(old: String, new: String) -> String`
 
@@ -290,7 +290,7 @@ Compare two sources by capability footprint, as JSON:   {"widened":bool,"added":
 
 #### `fn doc(name: String, source: String) -> String`
 
-Render `source` to Markdown API documentation (the same output as `witchy doc`): the module's public types and functions with their signatures and doc-comments, under a heading titled `name`. This only PARSES the source — it never runs it — so a registry can safely generate browsable docs from a rune's stored source on either backend. A parse error comes back as an HTML comment, never a trap.
+Render `source` to Markdown API documentation (the same output as `witchy doc` for source-only modules): the module's public types and functions with their signatures and doc-comments, under a heading titled `name`. This only PARSES the source — it never runs it — so a registry can safely generate browsable docs from a rune's stored source on either backend. A parse/comptime-boundary error comes back as an HTML comment, never a trap.
 
 ## `convert`
 

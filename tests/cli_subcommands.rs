@@ -207,6 +207,23 @@ fn caps_counts_comptime_emitted_apis() {
 }
 
 #[test]
+fn doc_counts_comptime_emitted_apis() {
+    // BUG-178: docs are release-facing API introspection too; generated public
+    // functions must render like handwritten public functions on the CLI path.
+    let dir = workdir("doc-comptime");
+    let src = write(
+        &dir,
+        "d.witchy",
+        "comptime:\n    emit(\"pub fn generated(net: Net) -> Int:\")\n    emit(\"    7\")\n\npub fn direct() -> Int:\n    0\n",
+    );
+    let out = run(&["doc", &src]);
+    assert!(out.status.success(), "doc should succeed: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("#### `fn generated(net: Net) -> Int`"), "generated API must render: {stdout}");
+    assert!(stdout.contains("#### `fn direct() -> Int`"), "handwritten API must still render: {stdout}");
+}
+
+#[test]
 fn caps_requires_a_typechecking_source() {
     // BUG-179: a footprint over code that doesn't type-check is meaningless.
     let dir = workdir("caps-typeck");

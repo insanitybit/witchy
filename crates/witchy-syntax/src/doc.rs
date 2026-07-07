@@ -7,13 +7,20 @@
 
 use std::fmt::Write;
 
-use crate::ast::{Expr, Item, MethodSig, Param, TraitDef, Type, TypeDef, UnOp, Variant};
+use crate::ast::{Expr, Item, MethodSig, Module, Param, TraitDef, Type, TypeDef, UnOp, Variant};
 use crate::format::type_str;
 
 /// Render Markdown documentation for one module (named `module_name`) from its
 /// source. Errors only if the source does not parse.
 pub fn render(module_name: &str, source: &str) -> Result<String, String> {
     let module = crate::parser::parse_module(source).map_err(|e| e.to_string())?;
+    render_module(module_name, source, &module)
+}
+
+/// Render Markdown documentation for one module from an already-parsed AST.
+/// Callers that run frontend expansion passes first use this so generated public
+/// APIs are rendered through the same AST path as handwritten APIs.
+pub fn render_module(module_name: &str, source: &str, module: &Module) -> Result<String, String> {
     let lines: Vec<&str> = source.lines().collect();
 
     let mut out = String::new();

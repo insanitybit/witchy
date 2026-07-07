@@ -276,7 +276,18 @@ fn main() -> wasmtime::Result<()> {
                     std::process::exit(1);
                 }
             };
-            match doc::render(stem, &src) {
+            let mut module = match parser::parse_module(&src) {
+                Ok(module) => module,
+                Err(e) => {
+                    eprintln!("{f}: {e}");
+                    std::process::exit(1);
+                }
+            };
+            if let Err(e) = comptime::expand(stem, &mut module) {
+                eprintln!("{f}: {e}");
+                std::process::exit(1);
+            }
+            match doc::render_module(stem, &src, &module) {
                 Ok(md) => out.push_str(&md),
                 Err(e) => {
                     eprintln!("{f}: {e}");

@@ -389,6 +389,7 @@ mod crypto {
 mod compiler {
     use super::{type_error, Value};
     use crate::value::NativeError as RuntimeError;
+    use witchy_syntax::ast::{Item, Module};
 
     /// Compute the capability footprint of witchy `source`, returned as JSON:
     /// `{"total":[..],"build":[..],"user_caps":[..],"entries":[{"name":..,"capabilities":[..],"brands":[..]}]}`,
@@ -400,7 +401,7 @@ mod compiler {
         let [Value::Str(src)] = args else {
             return Err(type_error("compiler.footprint expects a String"));
         };
-        let json = match witchy_syntax::parser::parse_module(src) {
+        let json = match parse_source_only_module(src, "compiler.footprint") {
             Ok(module) => {
                 let fp = witchy_caps::capabilities::analyze(&module);
                 let total = arr(fp.total.iter().map(|(n, r)| witchy_caps::capabilities::show_cap(n, r)));
@@ -438,14 +439,18 @@ mod compiler {
     /// Render witchy `source` to Markdown API documentation — the same output as the
     /// `witchy doc` CLI: the module's public types and functions with their signatures
     /// and doc-comments. `name` titles the module heading. Lets a registry generate
-    /// browsable docs from a rune's stored source, on either backend. `witchy doc` only
-    /// *parses* the source (it never runs it), so this is safe on untrusted code; a parse
-    /// error is returned as an HTML comment rather than trapping.
+    /// browsable docs from a rune's stored source, on either backend. This native
+    /// source-string entry point deliberately rejects `comptime:` sources rather
+    /// than rendering an under-approximation; the CLI expands source files before
+    /// rendering. A parse/expansion-boundary error is returned as an HTML comment
+    /// rather than trapping.
     pub fn doc(args: &[Value]) -> Result<Value, RuntimeError> {
         let [Value::Str(name), Value::Str(src)] = args else {
             return Err(type_error("compiler.doc expects (name, source) strings"));
         };
-        let md = witchy_syntax::doc::render(name, src).unwrap_or_else(|e| format!("<!-- doc error: {e} -->"));
+        let md = parse_source_only_module(src, "compiler.doc")
+            .and_then(|module| witchy_syntax::doc::render_module(name, src, &module))
+            .unwrap_or_else(|e| format!("<!-- doc error: {e} -->"));
         Ok(Value::Str(md))
     }
 
@@ -457,7 +462,10 @@ mod compiler {
         let [Value::Str(old_src), Value::Str(new_src)] = args else {
             return Err(type_error("compiler.diff expects (old_source, new_source) strings"));
         };
-        let json = match (witchy_syntax::parser::parse_module(old_src), witchy_syntax::parser::parse_module(new_src)) {
+        let json = match (
+            parse_source_only_module(old_src, "compiler.diff"),
+            parse_source_only_module(new_src, "compiler.diff"),
+        ) {
             (Ok(old), Ok(new)) => {
                 let old_fp = witchy_caps::capabilities::analyze(&old);
                 let new_fp = witchy_caps::capabilities::analyze(&new);
@@ -474,6 +482,16 @@ mod compiler {
             (Err(e), _) | (_, Err(e)) => format!("{{\"error\":{}}}", string(&e.to_string())),
         };
         Ok(Value::Str(json))
+    }
+
+    fn parse_source_only_module(src: &str, op: &str) -> Result<Module, String> {
+        let module = witchy_syntax::parser::parse_module(src).map_err(|e| e.to_string())?;
+        if module.items.iter().any(|item| matches!(item, Item::Comptime(_))) {
+            return Err(format!(
+                "{op} does not support comptime source strings; use the source-file CLI path for expanded introspection"
+            ));
+        }
+        Ok(module)
     }
 
     /// A JSON string literal (quoted, with `"` and `\` escaped).

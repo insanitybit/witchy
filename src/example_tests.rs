@@ -1201,6 +1201,38 @@ fn main(console: Console):
         );
     }
 
+    #[test]
+    fn native_compiler_intrinsics_reject_comptime_source_strings() {
+        use crate::value::NativeValue;
+
+        let src = "comptime:\n    emit(\"pub fn generated(net: Net) -> Int:\")\n    emit(\"    7\")\n";
+        let footprint = crate::native::lookup("compiler.footprint").expect("compiler.footprint native");
+        let NativeValue::Str(json) = footprint(&[NativeValue::Str(src.into())]).expect("native call") else {
+            panic!("compiler.footprint must return a JSON string");
+        };
+        assert!(json.contains("\"error\""), "comptime source must fail closed: {json}");
+        assert!(json.contains("does not support comptime"), "error must name the boundary: {json}");
+
+        let diff = crate::native::lookup("compiler.diff").expect("compiler.diff native");
+        let NativeValue::Str(json) =
+            diff(&[NativeValue::Str("pub fn direct() -> Int:\n    0\n".into()), NativeValue::Str(src.into())])
+                .expect("native diff")
+        else {
+            panic!("compiler.diff must return a JSON string");
+        };
+        assert!(json.contains("\"error\""), "comptime diff must fail closed: {json}");
+        assert!(json.contains("does not support comptime"), "diff error must name the boundary: {json}");
+
+        let doc = crate::native::lookup("compiler.doc").expect("compiler.doc native");
+        let NativeValue::Str(md) =
+            doc(&[NativeValue::Str("generated".into()), NativeValue::Str(src.into())]).expect("native doc")
+        else {
+            panic!("compiler.doc must return a markdown string");
+        };
+        assert!(md.contains("doc error:"), "comptime doc must return an error comment: {md}");
+        assert!(md.contains("does not support comptime"), "doc error must name the boundary: {md}");
+    }
+
     /// (BUG-539) `Bytes` is ordinary core data, so it must participate in the
     /// public display and reflection protocols instead of being printable only by
     /// the interpreter's private `Value::Display` path. `Show` stays concise and
