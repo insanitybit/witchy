@@ -12032,6 +12032,73 @@ fn main(console: Console):
         );
     }
 
+    /// OIDC Core §3.1.3.7 (BUG-270): when an ID token names MORE THAN ONE audience,
+    /// `azp` must be present and must be THIS client. A single-audience token needs
+    /// no `azp`; a multi-audience token is admitted only when `azp` == our client id,
+    /// and rejected when `azp` is absent or names a co-audience — so a token minted
+    /// for several parties cannot be replayed at ours. Real RS256, both backends.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn jwt_verify_oidc_enforces_azp_for_multi_audience_backends_agree() {
+        use aws_lc_rs::signature::KeyPair;
+        fn b64url(bytes: &[u8]) -> String {
+            const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+            let mut out = String::new();
+            for c in bytes.chunks(3) {
+                let n = ((c[0] as u32) << 16)
+                    | ((*c.get(1).unwrap_or(&0) as u32) << 8)
+                    | (*c.get(2).unwrap_or(&0) as u32);
+                out.push(A[(n >> 18 & 63) as usize] as char);
+                out.push(A[(n >> 12 & 63) as usize] as char);
+                if c.len() > 1 {
+                    out.push(A[(n >> 6 & 63) as usize] as char);
+                }
+                if c.len() > 2 {
+                    out.push(A[(n & 63) as usize] as char);
+                }
+            }
+            out
+        }
+        let hexs = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+        let kp = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).expect("keygen");
+        let pk_hex = hexs(kp.public_key().as_ref());
+        let sign_jwt = |payload: &str| -> String {
+            let signed = format!("{}.{}", b64url(br#"{"alg":"RS256","typ":"JWT"}"#), b64url(payload.as_bytes()));
+            let mut sig = vec![0u8; kp.public_modulus_len()];
+            kp.sign(
+                &aws_lc_rs::signature::RSA_PKCS1_SHA256,
+                &aws_lc_rs::rand::SystemRandom::new(),
+                signed.as_bytes(),
+                &mut sig,
+            )
+            .expect("sign");
+            format!("{signed}.{}", b64url(&sig))
+        };
+        let iss = "https://accounts.google.com";
+        // Single audience "myclient" — no azp required.
+        let single = sign_jwt(r#"{"iss":"https://accounts.google.com","aud":"myclient","sub":"u1","nbf":0,"exp":9999}"#);
+        // Multi-audience including us, azp == us: admitted.
+        let multi_ok = sign_jwt(r#"{"iss":"https://accounts.google.com","aud":["myclient","other"],"azp":"myclient","sub":"u2","nbf":0,"exp":9999}"#);
+        // Multi-audience including us, but azp names a CO-AUDIENCE: rejected.
+        let multi_wrong = sign_jwt(r#"{"iss":"https://accounts.google.com","aud":["myclient","other"],"azp":"other","sub":"u3","nbf":0,"exp":9999}"#);
+        // Multi-audience including us, azp ABSENT: rejected.
+        let multi_missing = sign_jwt(r#"{"iss":"https://accounts.google.com","aud":["myclient","other"],"sub":"u4","nbf":0,"exp":9999}"#);
+        // audience = "myclient", now = 1000.
+        let run = |tok: &str| -> Vec<String> {
+            let src = format!(
+                "import jwt\nimport json\nfn main(console: Console):\n    match jwt.verify_oidc(\"{tok}\", \"{pk_hex}\", \"{iss}\", \"myclient\", 1000):\n        Ok(claims) -> print(console, json.get_string(claims, \"sub\").unwrap_or(\"?\"))\n        Err(e) -> print(console, e)\n"
+            );
+            let interp = link_run(&src);
+            assert_eq!(interp, run_linked_on_wasm(&[("main", src.as_str())], "main"), "backends agree");
+            interp
+        };
+        assert_eq!(run(&single), vec!["u1".to_string()], "single-audience token needs no azp");
+        assert_eq!(run(&multi_ok), vec!["u2".to_string()], "multi-audience with matching azp is admitted");
+        let azp_err = "JWT `azp` mismatch: a multi-audience OIDC token must name this client as the authorized party".to_string();
+        assert_eq!(run(&multi_wrong), vec![azp_err.clone()], "azp naming a co-audience is rejected");
+        assert_eq!(run(&multi_missing), vec![azp_err], "multi-audience with no azp is rejected");
+    }
+
     /// The full OIDC-via-JWKS verification (how "Log in with Google" / GitHub-Actions
     /// publishing checks an id_token): read the token's `kid`, pick the matching RSA key
     /// from the provider's published JWKS, and `verify_oidc`. Exercised against a REAL
