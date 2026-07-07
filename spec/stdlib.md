@@ -1817,7 +1817,7 @@ A uniformly-chosen element of `xs` (None if empty) and the next state.
 
 ## `reflect`
 
-Reflection: a value's structure as data, so one function can work over any type. `reflect(x)` returns a `Mirror` describing `x`: a record's named fields, a sum type's variant, a list's elements, or a scalar. Code that would otherwise need a per-type `derive` (JSON encoding, debug rendering, structural diffing) is written once against `Mirror`. Scalars, `Ordering`, and the built-in containers (`List`, `Option`, `Result`, `Set`, tuples, `Dict`) are reflectable out of the box; a user `type` becomes reflectable when you add `derive(Reflect)` to it (which needs `import reflect`), much like Zig's `@typeInfo` but opt-in per type — so `reflect(x)` / `json.stringify(x)` work without a per-type macro once the type derives it.
+Reflection: a value's structure as data, so one function can work over any type. `reflect(x)` returns a `Mirror` describing `x`: a record's named fields, a sum type's variant, a list's elements, or a scalar. Code that would otherwise need a per-type `derive` (JSON encoding, debug rendering, structural diffing) is written once against `Mirror`. `MNil` is the unit value and maps to JSON null. Scalars, `Ordering`, and the built-in containers (`List`, `Option`, `Result`, `Set`, tuples, `Dict`) are reflectable out of the box; a user `type` becomes reflectable when you add `derive(Reflect)` to it (which needs `import reflect`), much like Zig's `@typeInfo` but opt-in per type — so `reflect(x)` / `json.stringify(x)` work without a per-type macro once the type derives it.
 
 `reflect` is a trait method; `derive(Reflect)` generates `impl Reflect for T`, building the `Mirror` from the declared fields and variants. The scalar impls below are the leaves.
 
@@ -1837,7 +1837,7 @@ The reflected shape of a value.
 
 #### `trait Reflect`
 
-The unit/`Nil` value.
+Values that can describe themselves as a `Mirror`.
 
 - `fn reflect(self) -> Mirror`
 

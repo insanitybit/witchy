@@ -2,10 +2,11 @@
 // `reflect(x)` returns a `Mirror` describing `x`: a record's named fields, a sum
 // type's variant, a list's elements, or a scalar. Code that would otherwise need a
 // per-type `derive` (JSON encoding, debug rendering, structural diffing) is written
-// once against `Mirror`. Scalars, `Ordering`, and the built-in containers (`List`,
-// `Option`, `Result`, `Set`, tuples, `Dict`) are reflectable out of the box; a user `type`
-// becomes reflectable when you add `derive(Reflect)` to it (which needs
-// `import reflect`), much like Zig's `@typeInfo` but opt-in per type — so
+// once against `Mirror`. `MNil` is the unit value and maps to JSON null. Scalars,
+// `Ordering`, and the built-in containers (`List`, `Option`, `Result`, `Set`,
+// tuples, `Dict`) are reflectable out of the box; a user `type` becomes
+// reflectable when you add `derive(Reflect)` to it (which needs `import reflect`),
+// much like Zig's `@typeInfo` but opt-in per type — so
 // `reflect(x)` / `json.stringify(x)` work without a per-type macro once the type
 // derives it.
 //
@@ -40,7 +41,7 @@ type Mirror:
 
 // A sum-type value: type name, variant name, reflected payloads in order.
 
-// The unit/`Nil` value.
+// Values that can describe themselves as a `Mirror`.
 trait Reflect:
     fn reflect(self) -> Mirror
 
@@ -59,6 +60,10 @@ impl Reflect for Bool:
 impl Reflect for String:
     fn reflect(self) -> Mirror:
         MString(self)
+
+impl Reflect for Nil:
+    fn reflect(self) -> Mirror:
+        MNil
 
 impl Reflect for Duration:
     fn reflect(self) -> Mirror:

@@ -901,6 +901,17 @@
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: Ordering protocols");
     }
 
+    /// (BUG-486) `MNil` is the reflection shape for the language's unit value,
+    /// not only for JSON null. Exercise it through a Nil-returning helper so this
+    /// stays independent of the separate bare-`Nil` expression backend bug.
+    #[test]
+    fn nil_is_reflectable_on_both_backends() {
+        let src = "import reflect\nimport json\n\nfn unit() -> Nil:\n    return\n\nfn main(console: Console):\n    print(console, reflect.debug(unit()))\n    print(console, json.stringify(unit()))\n";
+        let expected = ["nil", "null"];
+        assert_eq!(link_run(src), expected, "interp: Nil reflection");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: Nil reflection");
+    }
+
     /// (BUG-240, parity) `math.abs(Int.MIN)` has no positive `Int`, so both backends
     /// must ABORT rather than silently wrap back to the negative `Int.MIN`. Ordinary
     /// magnitudes still agree. (Was a stable wrong answer: `-Int.MIN == Int.MIN`.)
