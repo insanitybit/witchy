@@ -17,39 +17,39 @@
 
 use witchy_syntax::ast::{Block, Expr, Function, Item, Module, Param, Stmt, Type};
 
+const MAX_COMPTIME_BLOCKS: usize = 256;
+
 /// Expand every `comptime:` block in `module` (consuming the items), running
 /// each and appending the items its output parses to. `name` is the module's
 /// name, for error messages.
 pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
-    // Each block paired with the REAL source line of its `comptime:` declaration
-    // (`u32::MAX`/absent → 0, "unknown"), so a type error in the emitted code can
-    // be attributed to the block that produced it instead of a phantom offset into
-    // the invisible emitted text (BUG-341).
-    let blocks: Vec<(Block, u32)> = {
-        let mut out = Vec::new();
-        let mut i = 0;
-        while i < module.items.len() {
-            if matches!(module.items[i], Item::Comptime(_)) {
-                let Item::Comptime(b) = module.items.remove(i) else {
-                    unreachable!()
-                };
-                let block_line = if module.item_lines.len() > i {
-                    let l = module.item_lines.remove(i);
-                    if l == u32::MAX { 0 } else { l }
-                } else {
-                    0
-                };
-                out.push((b, block_line));
-            } else {
-                i += 1;
-            }
+    let mut i = 0;
+    let mut expanded = 0;
+    while i < module.items.len() {
+        if !matches!(module.items[i], Item::Comptime(_)) {
+            i += 1;
+            continue;
         }
-        out
-    };
-    if blocks.is_empty() {
-        return Ok(());
-    }
-    for (mut body, block_line) in blocks {
+        expanded += 1;
+        if expanded > MAX_COMPTIME_BLOCKS {
+            return Err(format!(
+                "module `{name}`: comptime expansion exceeded {MAX_COMPTIME_BLOCKS} blocks"
+            ));
+        }
+        // Use the REAL source line of the `comptime:` declaration
+        // (`u32::MAX`/absent -> 0, "unknown"), so errors in emitted code can be
+        // attributed to the block that produced it instead of a phantom offset into
+        // the invisible emitted text (BUG-341).
+        let Item::Comptime(mut body) = module.items.remove(i) else {
+            unreachable!()
+        };
+        let block_line = if module.item_lines.len() > i {
+            let l = module.item_lines.remove(i);
+            if l == u32::MAX { 0 } else { l }
+        } else {
+            0
+        };
+
         // The block becomes `fn main(console: Console)` of a synthetic
         // program carrying the enclosing module's imports. `emit(line)` is
         // the surface emit channel (a prepended closure over the console);
@@ -170,40 +170,20 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
                  parse: {e}\n--- emitted ---\n{src}"
             )
         })?;
-        if emitted.items.iter().any(|it| matches!(it, Item::Comptime(_))) {
-            return Err(format!(
-                "module `{name}`: a comptime block may not emit another `comptime` block"
-            ));
-        }
-        for imp in emitted.imports {
-            if !module.imports.contains(&imp) {
-                module.imports.push(imp);
-                if !module.import_lines.is_empty() {
-                    module.import_lines.push(u32::MAX);
-                }
-            }
-        }
-        merge_from_imports(&mut module.from_imports, emitted.from_imports);
-        let n = emitted.items.len();
-        for mut item in emitted.items {
-            // The emitted items were parsed from a standalone blob, so every line
-            // number they carry is relative to that invisible text — a phantom
-            // offset that can point PAST the real file's EOF in a later type error
-            // (BUG-341). Re-stamp them to the `comptime:` block's own source line, so
-            // a body type error is attributed to the block that generated the code
-            // rather than a nonexistent absolute line. (The parse-error path already
-            // shows the emitted source; the type-error path now at least reports a
-            // real, in-file location.)
-            stamp_item_lines(&mut item, block_line);
-            module.items.push(item);
-        }
-        for _ in 0..n {
-            if !module.item_lines.is_empty() {
-                module.item_lines.push(block_line);
-            }
-        }
+        merge_emitted_module(module, emitted, block_line);
+        *module = normalize_generated_module(module.clone())
+            .map_err(|e| format!("module `{name}`: comptime generated source: {e}"))?;
+        // Do not increment `i`: removing the block shifted the next original item
+        // into this slot, and normalization may also have appended derive-generated
+        // comptime blocks for this same pass to consume.
     }
     Ok(())
+}
+
+fn normalize_generated_module(module: Module) -> Result<Module, String> {
+    let module = witchy_syntax::generators::lower(module)?;
+    let module = witchy_syntax::async_lower::lower(module)?;
+    witchy_syntax::records::lower_lenient(module)
 }
 
 fn module_type_infos(module: &Module) -> Vec<Expr> {
@@ -215,6 +195,32 @@ fn module_type_infos(module: &Module) -> Vec<Expr> {
             _ => None,
         })
         .collect()
+}
+
+fn merge_emitted_module(module: &mut Module, emitted: Module, block_line: u32) {
+    for imp in emitted.imports {
+        if !module.imports.contains(&imp) {
+            module.imports.push(imp);
+            if !module.import_lines.is_empty() {
+                module.import_lines.push(u32::MAX);
+            }
+        }
+    }
+    merge_from_imports(&mut module.from_imports, emitted.from_imports);
+    let n = emitted.items.len();
+    for mut item in emitted.items {
+        // The emitted items were parsed from a standalone blob, so every line
+        // number they carry is relative to that invisible text — a phantom offset
+        // that can point past the real file's EOF in a later type error (BUG-341).
+        // Re-stamp them to the `comptime:` block's own source line.
+        stamp_item_lines(&mut item, block_line);
+        module.items.push(item);
+    }
+    for _ in 0..n {
+        if !module.item_lines.is_empty() {
+            module.item_lines.push(block_line);
+        }
+    }
 }
 
 fn merge_from_imports(
@@ -438,5 +444,90 @@ fn main(console: Console):
         let module = witchy_syntax::parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         witchy_types::typeck::check(&linked).expect("typecheck");
+    }
+
+    #[test]
+    fn emitted_named_field_construction_is_lowered() {
+        let src = r#"
+type Point:
+    x: Int
+    y: Int
+
+comptime:
+    emit("fn made() -> Point:")
+    emit("    Point(x: 1, y: 2)")
+
+fn main(console: Console):
+    let p = made()
+    print(console, __render(p.x))
+    print(console, __render(p.y))
+"#;
+
+        let module = witchy_syntax::parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
+        witchy_types::typeck::check(&linked).expect("typecheck");
+        let out = crate::interpreter::run_module(linked, ".", Vec::new()).expect("run");
+        assert_eq!(out, ["1", "2"]);
+    }
+
+    #[test]
+    fn emitted_derive_blocks_are_expanded() {
+        let src = r#"
+import show
+
+comptime:
+    emit("type Generated derive(Show):")
+    emit("    value: Int")
+
+fn main(console: Console):
+    print(console, show.render(Generated(value: 7)))
+"#;
+
+        let module = witchy_syntax::parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
+        witchy_types::typeck::check(&linked).expect("typecheck");
+        let out = crate::interpreter::run_module(linked, ".", Vec::new()).expect("run");
+        assert_eq!(out, ["Generated(7)"]);
+    }
+
+    #[test]
+    fn emitted_generators_are_lowered() {
+        let src = r#"
+import iter
+
+comptime:
+    emit("gen fn generated() -> Iter(Int):")
+    emit("    yield 1")
+    emit("    yield 2")
+
+fn main(console: Console):
+    let xs: List(Int) = iter.collect(generated())
+    print(console, __render(xs))
+"#;
+
+        let module = witchy_syntax::parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
+        witchy_types::typeck::check(&linked).expect("typecheck");
+        let out = crate::interpreter::run_module(linked, ".", Vec::new()).expect("run");
+        assert_eq!(out, ["[1, 2]"]);
+    }
+
+    #[test]
+    fn emitted_async_functions_are_lowered() {
+        let src = r#"
+comptime:
+    emit("async fn generated() -> Int:")
+    emit("    7")
+
+async fn main(console: Console):
+    let n = generated().await
+    print(console, __render(n))
+"#;
+
+        let module = witchy_syntax::parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
+        witchy_types::typeck::check(&linked).expect("typecheck");
+        let out = crate::interpreter::run_module(linked, ".", Vec::new()).expect("run");
+        assert_eq!(out, ["7"]);
     }
 }
