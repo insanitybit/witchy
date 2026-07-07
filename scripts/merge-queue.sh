@@ -193,6 +193,19 @@ cmd_submit() {
     local msg="${2:-}"
     git -C "$root" rev-parse --verify --quiet "refs/heads/$branch" >/dev/null \
         || { note "no local branch '$branch'"; exit 2; }
+    # Submit-time conflict pre-check (instant, in-memory): a branch that cannot
+    # even merge with current master would burn a queue slot only to journal
+    # `conflict` minutes later. git merge-tree does a real 3-way merge without
+    # touching any worktree. Advisory-fail: refuse with the reason; --force to
+    # override (e.g. master is about to change under you anyway).
+    if [ "${MERGE_QUEUE_SKIP_PRECHECK:-}" != "1" ]; then
+        if ! git -C "$root" merge-tree --write-tree --name-only master "refs/heads/$branch" >/dev/null 2>&1; then
+            note "REFUSED: $branch does not merge cleanly with current master — rebase it first"
+            note "(the gate would only journal 'conflict'; MERGE_QUEUE_SKIP_PRECHECK=1 to submit anyway)"
+            exit 1
+        fi
+    fi
+
     # Overlap warning (advisory, never blocking): if a queued branch touches the
     # same files, the later one will likely need a semantic rebase after the
     # earlier merges — worth knowing before you walk away.
@@ -328,12 +341,13 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     fi
 
     # BATCHING: stack further queued branches onto this candidate so ONE gate
-    # validates them all. A branch joins the batch only if it rebases cleanly
-    # onto the stack AND touches no file any earlier batch member touches
-    # (disjoint diffs keep bisection trivial: a red batch re-queues every
-    # member for individual gating, so nothing is ever merged unvalidated).
+    # validates them all. A branch joins the batch if it rebases CLEANLY onto
+    # the stack — textual overlap that rebases fine is allowed (nearly every
+    # language branch touches example_tests.rs; requiring disjoint files
+    # forfeited batching exactly where queues run deepest). A red batch
+    # re-queues every member for individual gating (.nobatch), so nothing is
+    # ever merged unvalidated and no member is blamed by association.
     local batch_files=("$f") batch_branches=("$branch")
-    local touched; touched="$(git -C "$gate_wt" diff --name-only "master...HEAD" | sort -u)"
     local qf cand cdiff csha tip
     for qf in "$queue_dir"/*.json; do
         [ -f "$qf" ] || continue
@@ -347,14 +361,12 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         csha="$(git -C "$root" rev-parse --verify --quiet "refs/heads/$cand")" || continue
         cdiff="$(git -C "$root" diff --name-only "master...$cand" 2>/dev/null | sort -u)"
         [ -n "$cdiff" ] || continue
-        if [ -n "$(comm -12 <(echo "$touched") <(echo "$cdiff"))" ]; then continue; fi
         # Rebase the candidate's SHA (detached — never moves the agent's branch
         # ref) onto the current stack tip. On failure, abort returns HEAD to the
         # candidate sha, so re-detach onto the saved tip either way it fails.
         tip="$(git -C "$gate_wt" rev-parse HEAD)"
         if git -C "$gate_wt" rebase "$tip" "$csha" >/dev/null 2>&1; then
             batch_files+=("$qf"); batch_branches+=("$cand")
-            touched="$(printf '%s\n%s\n' "$touched" "$cdiff" | sort -u)"
         else
             git -C "$gate_wt" rebase --abort >/dev/null 2>&1 || true
             git -C "$gate_wt" checkout --detach --quiet "$tip"
@@ -402,8 +414,11 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     # REAL master (it did, once). Tests must opt in explicitly to merging.
     if [ -n "${MERGE_QUEUE_STATE_DIR:-}" ] && [ "${MERGE_QUEUE_ALLOW_MERGE:-}" != "1" ]; then
         note "test state dir active and MERGE_QUEUE_ALLOW_MERGE!=1 — gate was GREEN but skipping the real merge"
-        record validated "$branch" sha "$sha" log "$log" reason "test mode: merge skipped"
-        for bf in "${batch_files[@]}"; do rm -f "$bf" "$bf.nobatch"; done
+        local vi
+        for vi in "${!batch_branches[@]}"; do
+            record validated "${batch_branches[$vi]}" sha "$sha" log "$log" reason "test mode: merge skipped"
+            rm -f "${batch_files[$vi]}" "${batch_files[$vi]}.nobatch"
+        done
         return 0
     fi
 
@@ -439,6 +454,28 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     return 0
 }
 
+# Idle prewarm: with the queue empty, move the gate worktree to current master
+# and rebuild + warm the embedded-program caches so the NEXT gate starts hot
+# (saves the incremental rebuild + first-spawn compiles it would otherwise pay
+# inside its own wall-clock). Runs under the gate lock so an ad-hoc with-lock
+# run can't collide; skipped instantly if anything is queued or already warm.
+prewarm_gate() {
+    [ -d "$gate_wt" ] || return 0
+    ls "$queue_dir"/*.json >/dev/null 2>&1 && return 0
+    local m; m="$(git -C "$root" rev-parse master)"
+    [ -f "$qdir/prewarmed" ] && [ "$(cat "$qdir/prewarmed")" = "$m" ] && return 0
+    acquire_lock "prewarm: master @ ${m:0:9}"
+    # Re-check under the lock — a submit may have raced us.
+    if ls "$queue_dir"/*.json >/dev/null 2>&1; then release_lock; return 0; fi
+    note "idle: prewarming gate worktree at master ${m:0:9}"
+    git -C "$gate_wt" rebase --abort >/dev/null 2>&1 || true
+    git -C "$gate_wt" checkout --detach --quiet "$m" 2>/dev/null || { release_lock; return 0; }
+    ( cd "$gate_wt" && cargo build --workspace >/dev/null 2>&1 \
+        && { [ -x scripts/warm-witchy-caches.sh ] && ./scripts/warm-witchy-caches.sh >/dev/null 2>&1 || true; } ) \
+        && echo "$m" >"$qdir/prewarmed" || true
+    release_lock
+}
+
 cmd_run() {
     local once=0
     [ "${1:-}" = "--once" ] && once=1
@@ -449,6 +486,7 @@ cmd_run() {
         f="$(ls -1 "$queue_dir" 2>/dev/null | sort | head -1 || true)"
         if [ -z "$f" ]; then
             if [ "$once" -eq 1 ]; then note "queue drained"; break; fi
+            prewarm_gate
             sleep 15
             continue
         fi
@@ -525,6 +563,32 @@ cmd_wait() {
     return 2
 }
 
+# Journal analytics: outcome counts, gate-time trend, suspected-flaky tests
+# (failed in one gate, passed in a later one), repeat-red branches.
+cmd_stats() {
+    [ -f "$journal" ] || { note "no journal yet"; exit 0; }
+    echo "== outcomes:"
+    jq -r '.event' "$journal" | sort | uniq -c | sort -rn
+    echo
+    echo "== gate seconds (last 10 merged):"
+    jq -r 'select(.event=="merged" and .elapsed_s != null) | "\(.ts)  \(.elapsed_s)s  \(.branch)\(if .batch and (.batch != "1") then "  [batch \(.batch)]" else "" end)"' "$journal" | tail -10
+    echo
+    echo "== repeat offenders (red/timeout more than once):"
+    jq -r 'select(.event=="red" or .event=="timeout") | .branch' "$journal" | sort | uniq -c | sort -rn | awk '$1 > 1'
+    echo
+    echo "== suspected flaky tests (FAILED in a red gate, then absent from later failures):"
+    # Pull per-test FAIL/TIMEOUT lines out of red-gate logs; a test that fails in
+    # exactly one log but ran in several is flake-shaped. Cheap heuristic, not proof.
+    local names
+    names="$(jq -r 'select(.event=="red" or .event=="timeout" or .event=="batch_red") | .log // empty' "$journal" \
+        | while IFS= read -r lg; do
+            [ -f "$lg" ] || continue
+            sed "s/$(printf '\033')\[[0-9;]*m//g" "$lg" | grep -E '^[[:space:]]*(FAIL|TIMEOUT) \[' \
+                | sed -E 's/^[[:space:]]*(FAIL|TIMEOUT) \[[^]]*\] \([^)]*\) //'
+          done | sort | uniq -c | sort -rn)"
+    if [ -n "$names" ]; then echo "$names" | head -15; else echo "  (none recorded)"; fi
+}
+
 # After a `blocked` event (gate green, ff-merge refused by the main worktree)
 # the operator merges manually — which leaves the journal's last word as
 # "blocked" and misleads every agent reading it. `resolve` closes the record:
@@ -579,6 +643,7 @@ case "${1:-}" in
     run)       shift; cmd_run "$@" ;;
     daemon)    cmd_daemon ;;
     wait)      shift; cmd_wait "$@" ;;
+    stats)     cmd_stats ;;
     resolve)   shift; cmd_resolve "$@" ;;
     sweep)     shift; cmd_sweep "$@" ;;
     with-lock) shift; cmd_with_lock "$@" ;;
