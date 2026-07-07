@@ -256,22 +256,6 @@ The smallest element of `xs`, or `default` when `xs` is empty. As with `maximum`
 
 Sort any list of an `Ord` type ascending — a stable insertion sort that dispatches through the element type's `Ord` impl, so it is content-correct on both backends (Int, String, Duration, or your own `Ord` types) without a caller-supplied comparator. For Ints, `list.sort` is the lighter default.
 
-#### `fn member(xs: List(a), x: a) -> Bool where a: Eq`
-
-Whether `x` is in `xs`, by the element type's `Eq` impl — correct on both backends, unlike a generic `==`-based search reached through a type variable.
-
-#### `fn index_of(xs: List(a), x: a) -> Int where a: Eq`
-
-The index of the first element equal to `x`, or -1 if absent.
-
-#### `fn count(xs: List(a), x: a) -> Int where a: Eq`
-
-How many elements equal `x` (by the element type's `Eq`).
-
-#### `fn unique(xs: List(a)) -> List(a) where a: Eq`
-
-The list with duplicates removed, keeping the first occurrence of each element (by the element type's `Eq`), in original order. Equivalent to `list.unique`, which is also `Eq`-bound and content-correct on both backends.
-
 ## `compiler`
 
 compiler — witchy's own toolchain, exposed to witchy programs.
@@ -1385,6 +1369,10 @@ Sort any list whose elements are `Ord` ascending — a stable merge sort (O(n lo
 #### `fn contains(xs: List(a), target: a) -> Bool where a: Eq`
 
 Whether `target` appears in the list, by the element type's `Eq` impl. The `where a: Eq` bound monomorphizes the equality per element type, so the comparison is content-correct on both backends — including user record element types, which the compiled backend cannot compare through an unbounded generic `==` (RFC-0046).
+
+#### `fn count(xs: List(a), target: a) -> Int where a: Eq`
+
+How many elements equal `target`, by the element type's `Eq` impl.
 
 #### `fn unique(xs: List(a)) -> List(a) where a: Eq`
 

@@ -8348,12 +8348,12 @@ fn main(console: Console):
 
     #[test]
     fn std_eq_member_backends_agree() {
-        // The Eq trait + the bounded `member` / `index_of` give content-correct
+        // The Eq trait + the bounded list `contains` / `index_of` give content-correct
         // equality on BOTH backends — even for runtime-BUILT strings, where a
         // generic `==` search does pointer comparison in compiled code and would
         // wrongly miss. A user `impl Eq` (Box) works, as does the default `ne`.
         let client = r#"
-import cmp
+import list
 
 type Box:
     Box(Int)
@@ -8376,29 +8376,31 @@ fn build(s: String) -> String:
 
 fn main(console: Console):
     let words = [build("apple"), build("banana")]
-    print(console, __render(cmp.member(words, build("banana"))))
-    print(console, __render(cmp.member(words, build("cherry"))))
-    print(console, __render(cmp.index_of([10, 20, 30], 20)))
-    print(console, __render(cmp.index_of([10, 20, 30], 99)))
-    print(console, __render(cmp.member([Box(1), Box(2)], Box(2))))
+    print(console, __render(list.contains(words, build("banana"))))
+    print(console, __render(list.contains(words, build("cherry"))))
+    print(console, __render(list.index_of([10, 20, 30], 20)))
+    print(console, __render(list.index_of([10, 20, 30], 99)))
+    print(console, __render(list.contains([Box(1), Box(2)], Box(2))))
     print(console, __render(ne(Box(1), Box(2))))
     print(console, __render(ne(Box(2), Box(2))))
 "#;
-        let sources = [("cmp", crate::bundled_module("cmp").unwrap()), ("main", client)];
+        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
         assert_eq!(interpreted, compiled, "std eq member/index_of diverged");
-        assert_eq!(compiled, vec!["true", "false", "1", "-1", "true", "true", "false"]);
+        assert_eq!(
+            compiled,
+            vec!["true", "false", "Some(1)", "None", "true", "true", "false"]
+        );
     }
 
     #[test]
     fn std_eq_count_unique_backends_agree() {
-        // `eq.count` / `eq.unique` dispatch through the element type's Eq impl, so
+        // `list.count` / `list.unique` dispatch through the element type's Eq impl, so
         // they are content-correct on BOTH backends — including runtime-built
-        // strings, where `list.unique`'s generic `==` compares pointers and fails
-        // to dedupe in compiled code. A user `impl Eq` works too (Tag).
+        // strings and user `impl Eq` types (Tag).
         let client = r#"
-import cmp
+import list
 import string
 
 type Tag:
@@ -8422,14 +8424,14 @@ fn build(s: String) -> String:
 
 fn main(console: Console):
     let words = [build("a"), build("b"), build("a"), build("c"), build("b"), build("a")]
-    print(console, __render(cmp.count(words, build("a"))))
-    print(console, __render(cmp.count(words, build("z"))))
-    print(console, list.join(cmp.unique(words), ","))
-    print(console, __render(list.length(cmp.unique([Tag(1), Tag(2), Tag(1), Tag(2), Tag(3)]))))
-    print(console, __render(cmp.count([Tag(1), Tag(2), Tag(1)], Tag(1))))
+    print(console, __render(list.count(words, build("a"))))
+    print(console, __render(list.count(words, build("z"))))
+    print(console, list.join(list.unique(words), ","))
+    print(console, __render(list.length(list.unique([Tag(1), Tag(2), Tag(1), Tag(2), Tag(3)]))))
+    print(console, __render(list.count([Tag(1), Tag(2), Tag(1)], Tag(1))))
 "#;
         let sources = [
-            ("cmp", crate::bundled_module("cmp").unwrap()),
+            ("list", crate::bundled_module("list").unwrap()),
             ("string", crate::bundled_module("string").unwrap()),
             ("main", client),
         ];
@@ -17974,7 +17976,7 @@ fn main(console: Console):
     /// shape must compile without the fixpoint fanning out.)
     #[test]
     fn rfc0046_bug013_derive_and_bounded_generic_lower_without_stale_table() {
-        let src = "import cmp\n\ntype Color derive(PartialEq, Eq, Show):\n    Red\n    Green\n    Blue\n\ntype Tag derive(PartialEq, Eq, Show):\n    Tag(Int)\n\nfn dedup_count(xs: List(a), y: a) -> Int where a: Eq:\n    cmp.count(cmp.unique(xs), y)\n\nfn main(console: Console):\n    let cs = [Red, Green, Red, Blue, Green, Red]\n    print(console, \"${cmp.unique(cs)}\")\n    print(console, \"${dedup_count(cs, Red)}\")\n    let ts = [Tag(1), Tag(2), Tag(1), Tag(3)]\n    print(console, \"${cmp.unique(ts)}\")\n    print(console, \"${dedup_count(ts, Tag(1))}\")\n";
+        let src = "import list\n\ntype Color derive(PartialEq, Eq, Show):\n    Red\n    Green\n    Blue\n\ntype Tag derive(PartialEq, Eq, Show):\n    Tag(Int)\n\nfn dedup_count(xs: List(a), y: a) -> Int where a: Eq:\n    list.count(list.unique(xs), y)\n\nfn main(console: Console):\n    let cs = [Red, Green, Red, Blue, Green, Red]\n    print(console, \"${list.unique(cs)}\")\n    print(console, \"${dedup_count(cs, Red)}\")\n    let ts = [Tag(1), Tag(2), Tag(1), Tag(3)]\n    print(console, \"${list.unique(ts)}\")\n    print(console, \"${dedup_count(ts, Tag(1))}\")\n";
         let want = vec![
             "[Red, Green, Blue]".to_string(),
             "1".to_string(),

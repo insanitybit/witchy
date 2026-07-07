@@ -457,6 +457,14 @@ pub fn contains(xs: List(a), target: a) -> Bool where a: Eq:
             return true
     false
 
+// How many elements equal `target`, by the element type's `Eq` impl.
+pub fn count(xs: List(a), target: a) -> Int where a: Eq:
+    var n = 0
+    for x in xs:
+        if x == target:
+            n = n + 1
+    n
+
 // The list with duplicates removed, keeping the first occurrence of each
 // element (by the element type's `Eq`), in original order. `contains` here is
 // this module's own list function — a same-module function shadows the
