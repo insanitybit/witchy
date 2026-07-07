@@ -1780,7 +1780,7 @@ impl Ctx<'_> {
             Expr::WhileLet { pattern, scrutinee, body } => {
                 self.rewrite_expr(scrutinee, scope);
                 let mut s = scope.clone();
-                bind_ctor_pattern(pattern, self.ctor_fields, &mut s);
+                bind_ctor_pattern(pattern, self.ctor_fields, &HashMap::new(), &mut s);
                 // A loop evaluates to Nil, so its body's tail value is discarded.
                 self.rewrite_block(body, &mut s, false);
             }
@@ -1825,7 +1825,7 @@ impl Ctx<'_> {
                 self.rewrite_expr(scrutinee, scope);
                 for arm in arms.iter_mut() {
                     let mut s = scope.clone();
-                    bind_ctor_pattern(&arm.pattern, self.ctor_fields, &mut s);
+                    bind_ctor_pattern(&arm.pattern, self.ctor_fields, &HashMap::new(), &mut s);
                     if let Some(g) = &mut arm.guard {
                         self.rewrite_expr(g, &mut s);
                     }
@@ -2459,22 +2459,35 @@ fn concrete_scope_name(t: &Type) -> Option<String> {
 /// resolves. Recurses into nested constructor patterns. Conservative: only
 /// concrete fields are bound (see `concrete_scope_name`); a wrong guess would in
 /// any case be caught by the type checker, never miscompiled.
-fn bind_ctor_pattern(pat: &Pattern, ctor_fields: &HashMap<String, Vec<Type>>, scope: &mut Scope) {
+fn bind_ctor_pattern(
+    pat: &Pattern,
+    ctor_fields: &HashMap<String, Vec<Type>>,
+    subst: &HashMap<String, String>,
+    scope: &mut Scope,
+) {
     if let Pattern::Ctor { name, args } = pat {
         if let Some(fields) = ctor_fields.get(name) {
             for (arg, fty) in args.iter().zip(fields) {
                 match arg {
-                    Pattern::Var(v) => match concrete_scope_name(fty) {
+                    Pattern::Var(v) => match pattern_field_scope_name(fty, subst) {
                         Some(sn) => scope.insert(v.clone(), sn),
                         // A generic-typed binder is still a bound local, so a
                         // call on it is a first-class invocation, not a dispatch.
                         None => scope.bind_local(v),
                     },
-                    Pattern::Ctor { .. } => bind_ctor_pattern(arg, ctor_fields, scope),
+                    Pattern::Ctor { .. } => bind_ctor_pattern(arg, ctor_fields, subst, scope),
                     _ => {}
                 }
             }
         }
+    }
+}
+
+fn pattern_field_scope_name(fty: &Type, subst: &HashMap<String, String>) -> Option<String> {
+    if subst.is_empty() {
+        concrete_scope_name(fty)
+    } else {
+        type_to_scope_name(fty).map(|name| apply_subst(&name, subst))
     }
 }
 
@@ -4046,7 +4059,7 @@ impl Mono<'_> {
             Expr::WhileLet { pattern, scrutinee, body } => {
                 self.walk_expr(scrutinee, scope);
                 let mut s = scope.clone();
-                bind_ctor_pattern(pattern, self.ctor_fields, &mut s);
+                bind_ctor_pattern(pattern, self.ctor_fields, &self.cur_subst, &mut s);
                 self.walk_block(body, &mut s);
             }
             Expr::If {
@@ -4067,14 +4080,14 @@ impl Mono<'_> {
             Expr::For { var, iter, body } => {
                 self.walk_expr(iter, scope);
                 let mut s = scope.clone();
-                bind_loop_var(var, self.type_name(iter, scope), &mut s);
+                bind_loop_var(var, self.type_name_subst(iter, scope), &mut s);
                 self.walk_block(body, &mut s);
             }
             Expr::Match { scrutinee, arms } => {
                 self.walk_expr(scrutinee, scope);
                 for arm in arms.iter_mut() {
                     let mut s = scope.clone();
-                    bind_ctor_pattern(&arm.pattern, self.ctor_fields, &mut s);
+                    bind_ctor_pattern(&arm.pattern, self.ctor_fields, &self.cur_subst, &mut s);
                     if let Some(g) = &mut arm.guard {
                         self.walk_expr(g, &mut s);
                     }

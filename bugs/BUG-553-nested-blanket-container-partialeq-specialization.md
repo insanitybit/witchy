@@ -1,17 +1,18 @@
 # BUG-553: nested blanket container PartialEq impls do not specialize reliably
 
 Severity: MED
-Status: OPEN
+Status: FIXED
+Fixed: 2026-07-07
 Component: trait dispatch, monomorphization, std/cmp container protocols
 
 ## Problem
 
-`List(a)` can now satisfy `PartialEq` and `Eq` bounds, but extending the same
-blanket protocol style to nested containers exposed a deeper specialization gap.
-When `Option(List(T))`, `Result(List(T), E)`, or similar shapes call through a
-generic blanket impl body, monomorphization can leave an unspecialized nested
-container protocol call behind instead of resolving the concrete helper for the
-inner receiver type.
+`List(a)` could satisfy `PartialEq` and `Eq` bounds, but extending the same
+blanket protocol style to nested containers exposed a deeper specialization
+gap. When `Option(List(T))`, `Result(List(T), E)`, or similar shapes called
+through a generic blanket impl body, the impl body could fall back to structural
+payload equality instead of resolving the concrete helper for the inner receiver
+type.
 
 The practical symptom is that additive stdlib impls such as:
 
@@ -20,8 +21,8 @@ impl PartialEq for Option(a) where a: PartialEq:
     ...
 ```
 
-can typecheck, but compiled execution may fail during linking or dispatch once
-the body compares nested generic payloads.
+could typecheck, but did not compose correctly once the body compared nested
+generic payloads.
 
 ## Why this matters
 
@@ -31,15 +32,26 @@ compose naturally. Leaving this unresolved pushes stdlib authors toward ad hoc
 helpers and special cases, which is exactly the inconsistency the 0.1 cleanup is
 trying to remove.
 
-## Suggested fix
+## Fix
 
-Teach trait-call rewriting/monomorphization to specialize nested blanket impl
-calls from the concrete receiver type all the way through generic impl bodies.
-Then add stdlib blanket impls and backend-parity tests for at least:
+`std/cmp` now provides blanket impls for:
 
 - `Option(a): PartialEq/Eq`
 - `Result(a, e): PartialEq/Eq`
-- `Dict(k, v): PartialEq/Eq` where keys and values satisfy the required bounds
+
+The impl bodies compare payloads with ordinary bounded equality, and
+monomorphization now carries concrete constructor-pattern payload shapes through
+specialized generic impl bodies. That makes nested protocol calls specialize
+instead of falling back to structural equality for concrete containers such as
+`List(Key)`.
+
+`Dict(k, v)` keeps direct equality coverage, but compiled equality through a
+generic `PartialEq` bound still needs a separate codegen/helper pass before it
+can be claimed as a fully compositional protocol value.
+
+Regression coverage:
+
+- `example_tests::nested_container_equality_satisfies_protocol_bounds_on_both_backends`
 
 ## Related work
 

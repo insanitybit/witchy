@@ -1071,6 +1071,21 @@ fn main(console: Console):
         );
     }
 
+    /// (BUG-553) Container comparison protocols compose: nested `Option` and
+    /// `Result` values satisfy `PartialEq`/`Eq` when their payloads do, and
+    /// compiled monomorphization specializes the nested payload calls.
+    #[test]
+    fn nested_container_equality_satisfies_protocol_bounds_on_both_backends() {
+        let src = "import cmp\nimport testing\n\ntype Key derive(Show, Eq):\n    id: Int\n    cache: Int\n\nimpl PartialEq for Key:\n    fn eq(self, other: Key) -> Bool:\n        self.id == other.id\n\nfn same(x: a, y: a) -> Bool where a: PartialEq:\n    x == y\n\nfn total_same(x: a, y: a) -> Bool where a: Eq:\n    x == y\n\nfn main(console: Console):\n    let o1: Option(List(Key)) = Some([Key(1, 10)])\n    let o2: Option(List(Key)) = Some([Key(1, 20)])\n    let r1: Result(List(Key), String) = Ok([Key(1, 10)])\n    let r2: Result(List(Key), String) = Ok([Key(1, 20)])\n    print(console, __render(same(o1, o2)))\n    print(console, __render(total_same(o1, o2)))\n    print(console, __render(same(r1, r2)))\n    print(console, __render(total_same(r1, r2)))\n    testing.assert_value_eq(o1, o2)\n    testing.assert_value_eq(r1, r2)\n";
+        let expected = ["true", "true", "true", "true"];
+        assert_eq!(link_run(src), expected, "interp: nested container PartialEq bounds");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: nested container PartialEq bounds",
+        );
+    }
+
     /// (BUG-544) `Ordering` is ordinary std data: it renders through `Show`,
     /// reflects as a nullary variant, and therefore serializes through JSON
     /// reflection, including when it appears in a derived-reflect record.
@@ -6948,11 +6963,11 @@ fn main(console: Console, root: Dir):
     /// `Option` `==` is structural on both backends: a single-parameter generic
     /// ADT is instantiated at the comparison site from a constructor literal
     /// (sound for both operands — the type checker guarantees they share a
-    /// type). Dict `==` compares entries pairwise in insertion order, exactly
-    /// like the interpreter. (Closes the former loud-error gaps.)
+    /// type). Dict `==` compares by key/value contents, not insertion order.
+    /// (Closes the former loud-error gaps.)
     #[test]
     fn option_and_dict_equality_agree_on_both_backends() {
-        let src = "import option\n\nfn main(console: Console):\n    print(console, __render(Some(5) == Some(5)))\n    print(console, __render(Some(5) == Some(6)))\n    print(console, __render(Some(5) == None))\n    print(console, __render(None == None))\n    print(console, __render(Some(\"a\") == Some(\"a\")))\n    print(console, __render(Some(\"a\") == Some(\"b\")))\n    let a = dict.insert(dict.insert(dict.new(), \"k\", 1), \"j\", 2)\n    let b = dict.insert(dict.insert(dict.new(), \"k\", 1), \"j\", 2)\n    let c = dict.insert(dict.insert(dict.new(), \"k\", 1), \"j\", 9)\n    let rev = dict.insert(dict.insert(dict.new(), \"j\", 2), \"k\", 1)\n    print(console, __render(a == b))\n    print(console, __render(a == c))\n    print(console, __render(a == rev))\n";
+        let src = "import option\n\nfn main(console: Console):\n    let none_i: Option(Int) = None\n    print(console, __render(Some(5) == Some(5)))\n    print(console, __render(Some(5) == Some(6)))\n    print(console, __render(Some(5) == None))\n    print(console, __render(none_i == None))\n    print(console, __render(Some(\"a\") == Some(\"a\")))\n    print(console, __render(Some(\"a\") == Some(\"b\")))\n    let a = dict.insert(dict.insert(dict.new(), \"k\", 1), \"j\", 2)\n    let b = dict.insert(dict.insert(dict.new(), \"k\", 1), \"j\", 2)\n    let c = dict.insert(dict.insert(dict.new(), \"k\", 1), \"j\", 9)\n    let rev = dict.insert(dict.insert(dict.new(), \"j\", 2), \"k\", 1)\n    print(console, __render(a == b))\n    print(console, __render(a == c))\n    print(console, __render(a == rev))\n";
         let want = vec![
             "true".to_string(),
             "false".to_string(),
@@ -6962,10 +6977,10 @@ fn main(console: Console, root: Dir):
             "false".to_string(),
             "true".to_string(),  // identical insert order + contents
             "false".to_string(), // differing value
-            "false".to_string(), // same pairs, different insertion order
+            "true".to_string(),  // same pairs, different insertion order
         ];
-        // Dict `==` now lowers on the binary path — an insertion-order pairwise
-        // compare of the entries, matching the interpreter.
+        // Dict `==` now lowers on the binary path as a content comparison,
+        // matching the interpreter and the std `PartialEq` contract.
         assert_eq!(link_run(src), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
@@ -6978,7 +6993,7 @@ fn main(console: Console, root: Dir):
     /// the last loud equality gap.)
     #[test]
     fn result_equality_agrees_on_both_backends() {
-        let src = "import result\n\nfn classify(n: Int) -> Result(Int, String):\n    if n >= 0: Ok(n) else: Err(\"negative\")\n\nfn same(a: Result(Int, String), b: Result(Int, String)) -> Bool:\n    a == b\n\nfn main(console: Console):\n    print(console, __render(classify(5) == Ok(5)))\n    print(console, __render(classify(5) == Ok(6)))\n    print(console, __render(classify(0 - 1) == Err(\"negative\")))\n    print(console, __render(classify(0 - 1) == Err(\"positive\")))\n    print(console, __render(classify(5) == Err(\"negative\")))\n    print(console, __render(same(Ok(1), Ok(1))))\n    print(console, __render(same(Err(\"a\"), Err(\"a\"))))\n    print(console, __render(same(Ok(1), Err(\"a\"))))\n    print(console, __render(Ok([1, 2]) == Ok([1, 2])))\n    print(console, __render(Ok([1, 2]) == Ok([1, 3])))\n";
+        let src = "import result\n\nfn classify(n: Int) -> Result(Int, String):\n    if n >= 0: Ok(n) else: Err(\"negative\")\n\nfn same(a: Result(Int, String), b: Result(Int, String)) -> Bool:\n    a == b\n\nfn main(console: Console):\n    let xs: Result(List(Int), String) = Ok([1, 2])\n    let xs_same: Result(List(Int), String) = Ok([1, 2])\n    let xs_diff: Result(List(Int), String) = Ok([1, 3])\n    print(console, __render(classify(5) == Ok(5)))\n    print(console, __render(classify(5) == Ok(6)))\n    print(console, __render(classify(0 - 1) == Err(\"negative\")))\n    print(console, __render(classify(0 - 1) == Err(\"positive\")))\n    print(console, __render(classify(5) == Err(\"negative\")))\n    print(console, __render(same(Ok(1), Ok(1))))\n    print(console, __render(same(Err(\"a\"), Err(\"a\"))))\n    print(console, __render(same(Ok(1), Err(\"a\"))))\n    print(console, __render(xs == xs_same))\n    print(console, __render(xs == xs_diff))\n";
         let want: Vec<String> =
             ["true", "false", "true", "false", "false", "true", "true", "false", "true", "false"]
                 .iter()
@@ -7005,22 +7020,21 @@ fn main(console: Console, root: Dir):
     }
 
     /// The boundary of structural equality stays LOUD where the payload is
-    /// genuinely unresolvable — and return-position inference has moved that
-    /// boundary: a list-literal payload now RESOLVES (and compares content-
-    /// correctly on both backends), while an empty-list payload, with nothing
-    /// to pin its element type, stays a codegen error — never a silent
-    /// pointer compare.
+    /// genuinely unresolvable. Return-position inference resolves non-empty list
+    /// payloads and compares them by element. An empty-list payload still has no
+    /// element evidence, so the checked pipeline rejects it before codegen —
+    /// never silently pointer-comparing.
     #[test]
     fn unsupported_compound_equality_is_a_loud_error_not_silent() {
         let resolved = "import result\n\nfn wrap(x: a) -> Result(a, String):\n    Ok(x)\n\nfn main(console: Console):\n    print(console, __render(wrap([1]) == wrap([2])))\n";
         assert_eq!(interp(resolved), vec!["false"]);
         assert_eq!(wasm_run(resolved), vec!["false"], "backends agree");
-        let unresolvable = "import result\n\nfn wrap(x: a) -> Result(a, String):\n    Ok(x)\n\nfn main(console: Console):\n    print(console, __render(wrap([]) == wrap([])))\n";
-        let rm = parser::parse_module(unresolvable).expect("parse");
+        let empty = "import result\n\nfn wrap(x: a) -> Result(a, String):\n    Ok(x)\n\nfn main(console: Console):\n    print(console, __render(wrap([]) == wrap([])))\n";
+        let rm = parser::parse_module(empty).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), rm)], "main").expect("link");
         assert!(
-            codegen::compile_module_binary(&linked).is_err(),
-            "an unresolvable generic payload must stay a loud codegen error"
+            typeck::check(&linked).is_err(),
+            "an empty generic payload must stay a loud checked-pipeline error"
         );
     }
 
@@ -11594,7 +11608,7 @@ fn main(console: Console):
     /// equality, and equal/unequal nested-String payloads.
     #[test]
     fn wir_enum_eq_binary_path() {
-        let src = "type CalcError:\n    StackUnderflow\n    UnknownToken(String)\n    DivByZero\n\nfn main(console: Console):\n    let a: Option(CalcError) = None\n    let b: Option(CalcError) = Some(StackUnderflow)\n    let c: Option(CalcError) = Some(UnknownToken(\"x\"))\n    let d: Option(CalcError) = Some(UnknownToken(\"y\"))\n    let cx: Option(CalcError) = Some(UnknownToken(\"x\"))\n    print(console, \"${a == None}\")\n    print(console, \"${b == None}\")\n    print(console, \"${b == Some(StackUnderflow)}\")\n    print(console, \"${c == cx}\")\n    print(console, \"${c == d}\")\n    print(console, \"${b == c}\")\n";
+        let src = "type CalcError derive(PartialEq):\n    StackUnderflow\n    UnknownToken(String)\n    DivByZero\n\nfn main(console: Console):\n    let a: Option(CalcError) = None\n    let b: Option(CalcError) = Some(StackUnderflow)\n    let c: Option(CalcError) = Some(UnknownToken(\"x\"))\n    let d: Option(CalcError) = Some(UnknownToken(\"y\"))\n    let cx: Option(CalcError) = Some(UnknownToken(\"x\"))\n    print(console, \"${a == None}\")\n    print(console, \"${b == None}\")\n    print(console, \"${b == Some(StackUnderflow)}\")\n    print(console, \"${c == cx}\")\n    print(console, \"${c == d}\")\n    print(console, \"${b == c}\")\n";
         let want = vec![
             "true".to_string(),
             "false".to_string(),

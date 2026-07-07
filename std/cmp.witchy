@@ -169,6 +169,53 @@ impl PartialEq for List(a) where a: PartialEq:
 
 impl Eq for List(a) where a: Eq
 
+impl PartialEq for Option(a) where a: PartialEq:
+    fn eq(self, other: Self) -> Bool:
+        match self:
+            Some(left) ->
+                match other:
+                    Some(right) -> left == right
+                    None -> false
+            None ->
+                match other:
+                    Some(_) -> false
+                    None -> true
+
+impl Eq for Option(a) where a: Eq
+
+impl PartialEq for Result(a, e) where a: PartialEq, e: PartialEq:
+    fn eq(self, other: Self) -> Bool:
+        match self:
+            Ok(left) ->
+                match other:
+                    Ok(right) -> left == right
+                    Err(_) -> false
+            Err(left) ->
+                match other:
+                    Ok(_) -> false
+                    Err(right) -> left == right
+
+impl Eq for Result(a, e) where a: Eq, e: Eq
+
+impl PartialEq for Dict(k, v) where k: Eq, v: PartialEq:
+    fn eq(self, other: Self) -> Bool:
+        if dict.length(self) != dict.length(other):
+            return false
+        for left_entry in dict.pairs(self):
+            let (left_key, left_value) = left_entry
+            var found = false
+            for right_entry in dict.pairs(other):
+                let (right_key, right_value) = right_entry
+                if left_key == right_key:
+                    found = true
+                    if !(left_value == right_value):
+                        return false
+            if !found:
+                return false
+        true
+
+impl Eq for Dict(k, v) where k: Eq, v: Eq
+
 // --- generic helpers over `Ord` ----------------------------------------------
 
 // True when `a` orders strictly before `b` by the type's TOTAL order. Going

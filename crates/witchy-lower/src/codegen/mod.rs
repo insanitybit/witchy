@@ -363,6 +363,16 @@ fn valtype_kind(vt: ValType) -> Kind {
     }
 }
 
+fn shape_val_type(shape: &EqShape) -> Option<ValType> {
+    match shape {
+        EqShape::Int => Some(ValType::Int),
+        EqShape::Bool => Some(ValType::Bool),
+        EqShape::Float => Some(ValType::Float),
+        EqShape::Str => Some(ValType::Str),
+        _ => None,
+    }
+}
+
 fn ty_to_valtype(t: &Type) -> ValType {
     match t {
         Type::Named(n, _) if n == "Int" || n == "Duration" => ValType::Int,
@@ -1677,6 +1687,18 @@ impl Codegen {
                     // its variables at those types (a `JsonFloat(x)` payload is
                     // f64, not the default i32 that would mangle the bits).
                     if let Pattern::Ctor { name, args } = &arm.pattern {
+                        let scrut_shape = self.eq_shape_of(scrutinee);
+                        if let (
+                            Some((tag, _)),
+                            Some(EqShape::AdtInst(_, variant_shapes)),
+                        ) = (self.ctors.get(name).copied(), scrut_shape)
+                        {
+                            if let Some(field_shapes) = variant_shapes.get(tag as usize) {
+                                for (sub, shape) in args.iter().zip(field_shapes) {
+                                    self.bind_pattern_eq_shape(sub, shape);
+                                }
+                            }
+                        }
                         let fields = self
                             .ctors
                             .get(name)
@@ -5780,6 +5802,26 @@ impl Codegen {
         let mut ok = true;
         self.scan_escapes_block(body, &inner, &mut ok);
         ok
+    }
+
+    fn bind_pattern_eq_shape(&mut self, pat: &Pattern, shape: &EqShape) {
+        match pat {
+            Pattern::Var(v) => {
+                self.local_shape.insert(v.clone(), shape.clone());
+                if let Some(vt) = shape_val_type(shape) {
+                    self.locals.insert(v.clone(), valtype_kind(vt));
+                    self.local_val_types.insert(v.clone(), vt);
+                }
+            }
+            Pattern::Tuple(parts) => {
+                if let EqShape::Tuple(shapes) = shape {
+                    for (part, subshape) in parts.iter().zip(shapes) {
+                        self.bind_pattern_eq_shape(part, subshape);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     fn scan_escapes_block(&self, b: &Block, inner: &HashSet<String>, ok: &mut bool) {
