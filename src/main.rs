@@ -2369,14 +2369,17 @@ fn active_opt_key() -> String {
 /// capability grant and every security check still run from `linked` on every run —
 /// only the wasm is cached.
 fn compile_linked_to_wasm_cached(linked: &ast::Module) -> Result<Vec<u8>, String> {
-    use sha2::{Digest, Sha256};
     // The AST reaches the hasher STREAMING through a `fmt::Write` adapter: the
     // Debug rendering of a std-linked module runs hundreds of KB, and `format!`
     // used to materialize all of it as a heap String on EVERY run, warm or
     // cold, just to be hashed and dropped. Each formatted fragment now goes
-    // straight into the hasher instead — the hashed bytes are IDENTICAL, so
-    // existing cache entries stay valid.
-    struct HashWriter(Sha256);
+    // straight into the hasher instead. blake3, not sha2: this key is an
+    // INTERNAL content-address — its soundness comes from what it depends on
+    // (AST + compiler fingerprint + opt set), not from adversarial collision
+    // resistance (the cache dir is user-writable anyway) — and blake3 hashes
+    // large inputs several times faster. Security-relevant hashing (crypto.*,
+    // signing, TUF) stays on sha2/aws-lc untouched.
+    struct HashWriter(blake3::Hasher);
     impl std::fmt::Write for HashWriter {
         fn write_str(&mut self, s: &str) -> std::fmt::Result {
             self.0.update(s.as_bytes());
@@ -2385,7 +2388,7 @@ fn compile_linked_to_wasm_cached(linked: &ast::Module) -> Result<Vec<u8>, String
     }
     let key = {
         use std::fmt::Write as _;
-        let mut w = HashWriter(Sha256::new());
+        let mut w = HashWriter(blake3::Hasher::new());
         // Infallible: the adapter never errors, and the AST's derived Debug has
         // no failing formatter.
         let _ = write!(w, "{linked:?}");
@@ -2394,7 +2397,7 @@ fn compile_linked_to_wasm_cached(linked: &ast::Module) -> Result<Vec<u8>, String
         h.update(compiler_fingerprint().as_bytes());
         h.update(b"\0");
         h.update(active_opt_key().as_bytes());
-        h.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>()
+        h.finalize().to_hex().to_string()
     };
     let path = (|| -> Option<std::path::PathBuf> {
         let base = std::env::var_os("XDG_CACHE_HOME")
