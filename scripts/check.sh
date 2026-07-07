@@ -9,6 +9,13 @@
 #   ./scripts/check.sh         build, clippy, fmt, tests, and the wasm playground build
 #   ./scripts/check.sh --full  the PUSH gate: also the e2e suite + from-scratch acceptance
 #
+# Shards — ONE named section, for a focused pre-queue run in your own worktree.
+# A green shard does not replace the full gate; scripts/merge-queue.sh runs that
+# once, serialized, at merge time:
+#   ./scripts/check.sh --e2e       just the e2e nextest binary (coven/pm/glamour)
+#   ./scripts/check.sh --examples  just the example differential matrix (example_tests::*)
+#   ./scripts/check.sh --wasm      just the wasm playground build
+#
 # rustfmt is deliberately NOT part of the gate: the Rust in this repo is
 # hand-formatted, so `cargo fmt` would fight the intended style.
 #
@@ -23,14 +30,19 @@ cd "$(dirname "$0")/.."
 
 full=0
 fast=0
+shard=""
 for arg in "$@"; do
     case "$arg" in
         --full) full=1 ;;
         --fast) fast=1 ;;
-        -h | --help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-        *) echo "check.sh: unknown argument '$arg' (try --fast, --full, or --help)" >&2; exit 2 ;;
+        --e2e | --examples | --wasm) shard="${arg#--}" ;;
+        -h | --help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "check.sh: unknown argument '$arg' (try --fast, --full, --e2e, --examples, --wasm, or --help)" >&2; exit 2 ;;
     esac
 done
+if [ -n "$shard" ] && { [ "$full" -eq 1 ] || [ "$fast" -eq 1 ]; }; then
+    echo "check.sh: --$shard cannot be combined with --fast/--full" >&2; exit 2
+fi
 
 # Honor a custom CARGO_TARGET_DIR (concurrent agents run with per-agent target
 # dirs, e.g. CARGO_TARGET_DIR=target-claude): the cargo build below writes the
@@ -62,6 +74,25 @@ else
     test_cmd=(cargo test --workspace)
 fi
 
+# A named shard runs exactly one section and exits. nextest builds what it
+# needs, so no separate build step; without nextest the filters don't exist,
+# so the shards require it.
+if [ -n "$shard" ]; then
+    case "$shard" in
+        e2e)
+            cargo nextest --version >/dev/null 2>&1 || { echo "check.sh: --e2e requires cargo-nextest" >&2; exit 2; }
+            exec cargo nextest run --workspace -E 'binary(e2e)'
+            ;;
+        examples)
+            cargo nextest --version >/dev/null 2>&1 || { echo "check.sh: --examples requires cargo-nextest" >&2; exit 2; }
+            exec cargo nextest run --workspace -E 'test(/^example_tests::/)'
+            ;;
+        wasm)
+            exec "${wasm_cargo[@]}" build --lib --no-default-features --target wasm32-unknown-unknown
+            ;;
+    esac
+fi
+
 # The witchy formatter over the stdlib and examples (NOT rustfmt over the Rust —
 # that's hand-formatted and out of scope). Uses the binary built in step 1.
 witchy_fmt_check() {
@@ -73,10 +104,14 @@ witchy_fmt_check() {
     return "$fail"
 }
 
+# Each stage marker carries its offset from gate start (`==> [2] clippy (t+41s)`),
+# so a redirected log is enough to see per-stage timing and what is running now
+# (merge-queue.sh status/doctor parse these markers).
 step=0
+t_start=$(date +%s)
 run() {
     step=$((step + 1))
-    printf '\n\033[1;34m==> [%d] %s\033[0m\n' "$step" "$1"
+    printf '\n\033[1;34m==> [%d] %s (t+%ds)\033[0m\n' "$step" "$1" "$(( $(date +%s) - t_start ))"
     shift
     "$@"
 }

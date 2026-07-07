@@ -29,6 +29,17 @@ Don't file a bug as an RFC or an ad-hoc design doc as a bug; security findings s
   looks like your change did nothing. Either run `./target/debug/witchy …`, or
   `cargo build --release` to refresh the PATH binary. (Check with
   `which witchy` vs. your build output path if results look stale.)
+- **Fresh worktree? Seed its build cache before building.** Agent worktrees get
+  this automatically: the `WorktreeCreate` hook (`.claude/settings.json`) runs
+  `scripts/worktree-create.sh`, which creates the worktree AND seeds it. (That
+  hook REPLACES the built-in creation — it must print the new worktree's path as
+  its only stdout; everything else goes to stderr.) For a manual
+  `git worktree add`, run `./scripts/worktree-warm.sh <worktree-path>` yourself:
+  it APFS-CoW-clones the main tree's `target/` (seconds, ~zero disk), so all
+  dependency crates (wasmtime included) come up warm and only the 8 workspace
+  crates rebuild. Don't point `CARGO_TARGET_DIR` at a shared dir instead —
+  cargo's build lock would serialize concurrent agents. When your worktree's
+  work is merged, remove the worktree (its multi-GB `target/` goes with it).
 - **`spec/stdlib.md` is GENERATED — never hand-edit it.** It is rendered from
   the doc-comments in `std/*.witchy`; a test (`stdlib_docs_are_current`)
   fails if it drifts. Edit the `std/*.witchy` comment, then regenerate:
@@ -91,3 +102,55 @@ table **quiet pre-mono pass** still uses `head_type_name` for local judgment
 (literals/ctors/params) and `cap_op_return_type` for chained cap-op results
 (bare intrinsics the checker types but the empty table can't surface); those are
 the documented residual, not an invitation to grow the shape tables.
+
+## Concurrent agents
+
+This checkout is often shared by multiple coding agents at once. Treat the
+worktree and `target/` as shared state, not scratch space.
+
+- Run `git status --short --branch` before editing and again before you claim
+  the repo is clean. If files changed while you were working, assume another
+  agent or the user made those changes and work with them.
+- State which files you are editing in progress updates. If another agent edits
+  the same file or hunk, stop and ask for coordination instead of overwriting it.
+- Never revert, delete, or format changes you did not make. In particular, do
+  not use `git checkout --`, `git reset --hard`, `cargo fmt`, or `rm -rf target`
+  as a cleanup shortcut.
+- Avoid sharing Cargo's default `target/` for long checks. Use a per-agent
+  target dir when running build, clippy, tests, or nextest concurrently:
+
+```sh
+CARGO_TARGET_DIR=target-claude cargo nextest run --workspace
+CARGO_TARGET_DIR=target-codex cargo test --workspace
+CARGO_TARGET_DIR=target-codex cargo clippy --workspace --all-targets -- -D warnings
+```
+
+  The normal `./scripts/check.sh` gate is still authoritative, but coordinate
+  before running it in the shared `target/` tree. If you need to run it while
+  another agent is active, prefer `CARGO_TARGET_DIR=target-<agent> ./scripts/check.sh --fast`.
+- Do not kill Cargo, nextest, dev-server, or browser processes unless you
+  started them or the user explicitly asks. Check process ownership first.
+- Clean up only artifacts you created (`target-codex/`, temp reports, local
+  logs). Do not delete another agent's target dir or generated output.
+
+### Merging: the gate coordinator (`scripts/merge-queue.sh`)
+
+Never run two full gates at once (the long-tail e2e tests stretch each other
+and the publish e2e is load-flaky), and never merge to master while a full gate
+is running (it invalidates that gate). The coordinator enforces both:
+
+- **In your worktree, run only a focused shard**: `./scripts/check.sh --fast`
+  (build+clippy+tests minus e2e), or one of `--e2e` / `--examples` / `--wasm`
+  for the section your change touches. A green shard qualifies you for the
+  queue; it does not replace the full gate.
+- **When your branch is ready**: `./scripts/merge-queue.sh submit <branch>`.
+  One coordinator session runs `./scripts/merge-queue.sh run`; it rebases each
+  candidate onto latest master in a dedicated warm worktree
+  (`.claude/worktrees/merge-gate`), runs the full gate under a lock, and
+  fast-forwards master on green. If master moves mid-gate, it re-rebases and
+  re-gates instead of merging a stale validation.
+- **Any ad-hoc heavyweight suite** (a manual full `check.sh`, `--full`, e2e)
+  should share the same lock: `./scripts/merge-queue.sh with-lock -- <cmd>`.
+- Queue, journal (`journal.jsonl`), gate logs, and lock all live under
+  gitignored `scratch/merge-queue/`; `./scripts/merge-queue.sh status` prints
+  the machine-readable state.
