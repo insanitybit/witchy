@@ -242,7 +242,7 @@ Flip an ordering — `Less` <-> `Greater`, `Equal` unchanged — for reverse sor
 
 #### `fn clamp(x: a, lo: a, hi: a) -> a where a: Ord`
 
-`x` confined to the range [lo, hi].
+`x` confined to the range [lo, hi]. `lo` must not exceed `hi` (RFC-0044 rule 3): inverted bounds describe an empty range, so they fail loudly instead of silently returning `lo` (matching `math.clamp`).
 
 #### `fn maximum(xs: List(a), default: a) -> a where a: Ord`
 
@@ -602,9 +602,9 @@ fs — small directory helpers over the `Dir` capability. Each function's author
 
 Create each level of `path` under `root` (the confined `Dir`'s `make_dir` is not recursive). Idempotent. Needs a writable `Dir`.
 
-#### `fn parent_dir(path: String) -> String`
+#### `fn parent_dir(path: String) -> Option(String)`
 
-The parent component of a relative path: "a/b/c" -> "a/b"; "a" -> "".
+The parent component of a relative path as `Some`: "a/b/c" -> Some("a/b"). A single component has no parent, so "a" is `None` (RFC-0044 rule 1: absence is `Option`, never an empty-string sentinel). Callers ensuring a parent exists can default explicitly: `fs.parent_dir(p) ?? ""` (ensure_dir of "" creates nothing).
 
 #### `fn collect_files(root: Dir, path: String, rel: String, ext: String) -> List((String, String))`
 
@@ -1467,7 +1467,7 @@ The absolute value of `n`. `Int.MIN` (`-9223372036854775808`) is the one input w
 
 #### `fn clamp(x: Int, lo: Int, hi: Int) -> Int`
 
-Constrain `x` to the inclusive range [lo, hi].
+Constrain `x` to the inclusive range [lo, hi]. `lo` must not exceed `hi` (RFC-0044 rule 3): inverted bounds describe an empty range, so they fail loudly instead of silently returning `lo`.
 
 #### `fn pow(base: Int, exp: Int) -> Int`
 
@@ -1475,11 +1475,11 @@ Constrain `x` to the inclusive range [lo, hi].
 
 #### `fn ceil_div(a: Int, b: Int) -> Int`
 
-Ceiling division: the smallest integer >= a / b (e.g. items split into pages of `b`). For a positive divisor `b`; `ceil_div(7, 3)` is 3, `ceil_div(6, 3)` is 2.
+Ceiling division: the smallest integer >= a / b (e.g. items split into pages of `b`). The divisor must be positive (RFC-0044 rule 3): a non-positive `b` fails loudly rather than trapping raw or computing off-contract values. `ceil_div(7, 3)` is 3, `ceil_div(6, 3)` is 2.
 
 #### `fn round_div(a: Int, b: Int) -> Int`
 
-Division rounded to the nearest integer (ties away from zero), for a positive `b`: `round_div(7, 2)` is 4, `round_div(5, 3)` is 2, `round_div(-7, 2)` is -4.
+Division rounded to the nearest integer (ties away from zero). The divisor must be positive (RFC-0044 rule 3; a non-positive `b` fails loudly): `round_div(7, 2)` is 4, `round_div(5, 3)` is 2, `round_div(-7, 2)` is -4.
 
 #### `fn gcd(a: Int, b: Int) -> Int`
 
@@ -1610,7 +1610,7 @@ oauth — the OAuth 2.0 Authorization Code flow (RFC 6749 §4.1), the basis of "
 
 #### `fn authorize_url(authorize_endpoint: String, client_id: String, redirect_uri: String, scope: String, state: String) -> String`
 
-The provider authorization-endpoint URL to redirect the user to. After the user approves, the provider redirects to `redirect_uri?code=...&state=...`. `scope` is the provider's space-separated permission list (e.g. GitHub `read:user`, OIDC `openid email`).
+The provider authorization-endpoint URL to redirect the user to. After the user approves, the provider redirects to `redirect_uri?code=...&state=...`. `scope` is the provider's space-separated permission list (e.g. GitHub `read:user`, OIDC `openid email`). An endpoint that already carries fixed parameters (a tenant, `prompt`, ...) is extended with `&`, never a second `?`.
 
 #### `fn exchange_code(net: Net[Connect, Tcp], token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, String)`
 
@@ -2032,7 +2032,7 @@ A version constraint (requirement).
 
 #### `fn version(major: Int, minor: Int, patch: Int) -> Version`
 
---- constructors ------------------------------------------------------------ A convenience constructor for known-good components (e.g. a computed bump). It does not validate — untrusted input belongs in `parse`, which rejects negatives. (Sealing removes the raw `Version(...)` forge; making `version` itself checked would fully close BUG-191 but force every caller to unwrap a `Result`.)
+--- constructors ------------------------------------------------------------ A convenience constructor for known-good components (e.g. a computed bump). A negative component is not a version at all, so it is a contract violation (RFC-0044 rule 3): fail loudly naming the bad coordinate rather than minting an impossible one. Untrusted input belongs in `parse`, which returns `Err` instead of aborting.
 
 #### `fn parse(s: String) -> Result(Version, String)`
 
@@ -2332,7 +2332,7 @@ Whether `needle` occurs in `s`.
 
 #### `fn index_of(s: String, needle: String) -> Option(Int)`
 
-The character index (counted by Unicode scalar) of the first occurrence of `needle` as `Some`, or `None` when `needle` does not occur (RFC-0044 rule 1: absence is `Option`, never a -1 sentinel). For a bare yes/no, use `contains`.
+The character index (counted by Unicode scalar) of the first occurrence of `needle` as `Some`, or `None` when `needle` does not occur (RFC-0044 rule 1: absence is `Option`, never a -1 sentinel). An empty `needle` matches nothing (the module-wide empty-pattern rule, matching `last_index_of`/`count`). For a bare yes/no, use `contains`.
 
 #### `fn replace(var s: String, from: String, to: String) -> String`
 
@@ -2410,11 +2410,11 @@ The whitespace-separated words of `text`: tabs, newlines, and carriage returns a
 
 #### `fn replace_first(var s: String, from: String, to: String) -> String`
 
-Replace only the first occurrence of `from` with `to`; return `s` unchanged when `from` is absent. (The `replace` builtin replaces every occurrence.)
+Replace only the first occurrence of `from` with `to`; return `s` unchanged when `from` is absent. An empty `from` matches nothing (the module-wide empty-pattern rule: `count`/`index_of`/`last_index_of` treat it as absent). (The `replace` builtin replaces every occurrence.)
 
 #### `fn split_once(s: String, sep: String) -> (String, String)`
 
-Split at the first occurrence of `sep` into `(before, after)`, with `sep` itself dropped. When `sep` is absent, returns `(s, "")`. Handy for parsing `key=value` or `host:port`. Counted by Unicode scalar.
+Split at the first occurrence of `sep` into `(before, after)`, with `sep` itself dropped. When `sep` is absent — including the empty separator, which matches nothing (mirroring `rsplit_once`) — returns `(s, "")`. Handy for parsing `key=value` or `host:port`. Counted by Unicode scalar.
 
 #### `fn last_index_of(s: String, sep: String) -> Option(Int)`
 

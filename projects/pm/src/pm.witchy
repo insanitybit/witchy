@@ -803,7 +803,7 @@ fn vendor_one(root: Dir, dep_dir: String, vendor: String, name: String) -> Int:
     var count = 0
     for f in fs.collect_files(root, join_path(dep_dir, "src"), "src", ".witchy"):
         let (relpath, contents) = f
-        fs.ensure_dir(root, join_path(dest, fs.parent_dir(relpath)))
+        fs.ensure_dir(root, join_path(dest, fs.parent_dir(relpath) ?? ""))
         write(root, join_path(dest, relpath), contents)
         count = count + 1
     if exists(root, join_path(dep_dir, "witchy.toml")):
@@ -2422,7 +2422,7 @@ fn write_vendored_source(console: Console, root: Dir, dest: String, name: String
             for f in files:
                 let (path, text) = f
                 let full = join_path(base, path)
-                fs.ensure_dir(root, fs.parent_dir(full))
+                fs.ensure_dir(root, fs.parent_dir(full) ?? "")
                 write(root, full, text)
             write(root, join_path(base, "coven.json"), record)
             print(console, "added " + name + "@" + version + " -> " + base)

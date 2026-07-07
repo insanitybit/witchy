@@ -17,8 +17,11 @@ from json import Json
 // The provider authorization-endpoint URL to redirect the user to. After the user
 // approves, the provider redirects to `redirect_uri?code=...&state=...`. `scope` is the
 // provider's space-separated permission list (e.g. GitHub `read:user`, OIDC `openid email`).
+// An endpoint that already carries fixed parameters (a tenant, `prompt`, ...) is
+// extended with `&`, never a second `?`.
 pub fn authorize_url(authorize_endpoint: String, client_id: String, redirect_uri: String, scope: String, state: String) -> String:
-    authorize_endpoint + "?response_type=code" + "&client_id=" + url.encode(client_id) + "&redirect_uri=" + url.encode(redirect_uri) + "&scope=" + url.encode(scope) + "&state=" + url.encode(state)
+    let joiner = if string.contains(authorize_endpoint, "?"): "&" else: "?"
+    authorize_endpoint + joiner + "response_type=code" + "&client_id=" + url.encode(client_id) + "&redirect_uri=" + url.encode(redirect_uri) + "&scope=" + url.encode(scope) + "&state=" + url.encode(state)
 
 // Exchange an authorization `code` for an access token at the provider's token endpoint
 // — an HTTPS POST with a form-encoded body and `Accept: application/json`. Returns the

@@ -49,8 +49,12 @@ pub fn sign(n: Int) -> Int:
     else:
         0
 
-// Constrain `x` to the inclusive range [lo, hi].
+// Constrain `x` to the inclusive range [lo, hi]. `lo` must not exceed `hi`
+// (RFC-0044 rule 3): inverted bounds describe an empty range, so they fail
+// loudly instead of silently returning `lo`.
 pub fn clamp(x: Int, lo: Int, hi: Int) -> Int:
+    if lo > hi:
+        fail("math.clamp: lo `${lo}` exceeds hi `${hi}`")
     max(lo, min(x, hi))
 
 // `base` raised to a non-negative `exp` (`pow(base, 0)` is 1). A negative `exp`
@@ -67,16 +71,23 @@ pub fn pow(base: Int, exp: Int) -> Int:
     r
 
 // Ceiling division: the smallest integer >= a / b (e.g. items split into pages
-// of `b`). For a positive divisor `b`; `ceil_div(7, 3)` is 3, `ceil_div(6, 3)` is 2.
+// of `b`). The divisor must be positive (RFC-0044 rule 3): a non-positive `b`
+// fails loudly rather than trapping raw or computing off-contract values.
+// `ceil_div(7, 3)` is 3, `ceil_div(6, 3)` is 2.
 pub fn ceil_div(a: Int, b: Int) -> Int:
+    if b <= 0:
+        fail("math.ceil_div: divisor `${b}` must be positive")
     if a >= 0:
         (a + b - 1) / b
     else:
         0 - (0 - a) / b
 
-// Division rounded to the nearest integer (ties away from zero), for a positive
-// `b`: `round_div(7, 2)` is 4, `round_div(5, 3)` is 2, `round_div(-7, 2)` is -4.
+// Division rounded to the nearest integer (ties away from zero). The divisor
+// must be positive (RFC-0044 rule 3; a non-positive `b` fails loudly):
+// `round_div(7, 2)` is 4, `round_div(5, 3)` is 2, `round_div(-7, 2)` is -4.
 pub fn round_div(a: Int, b: Int) -> Int:
+    if b <= 0:
+        fail("math.round_div: divisor `${b}` must be positive")
     if a >= 0:
         (a + b / 2) / b
     else:

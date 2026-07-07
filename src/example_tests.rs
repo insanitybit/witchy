@@ -5233,6 +5233,26 @@ fn yn(b: Bool) -> String:
                 "import string\nfn main(console: Console):\n    print(console, string.center(\"x\", 3, \"\"))\n",
                 "string.center: empty `fill` cannot pad to width 3",
             ),
+            (
+                "import math\nfn main(console: Console):\n    print(console, __render(math.clamp(5, 10, 0)))\n",
+                "math.clamp: lo `10` exceeds hi `0`",
+            ),
+            (
+                "import cmp\nfn main(console: Console):\n    print(console, __render(cmp.clamp(5, 10, 0)))\n",
+                "cmp.clamp: lo exceeds hi (an empty range)",
+            ),
+            (
+                "import math\nfn main(console: Console):\n    print(console, __render(math.ceil_div(7, 0)))\n",
+                "math.ceil_div: divisor `0` must be positive",
+            ),
+            (
+                "import math\nfn main(console: Console):\n    print(console, __render(math.round_div(7, -2)))\n",
+                "math.round_div: divisor `-2` must be positive",
+            ),
+            (
+                "import semver\nfn main(console: Console):\n    print(console, semver.format(semver.version(-1, 2, 3)))\n",
+                "semver.version: components `-1.2.3` must be non-negative",
+            ),
         ];
         for (src, want_core) in cases {
             // The interpreter resolves the std bodies at run time only when they are
@@ -5308,6 +5328,57 @@ fn main(console: Console):
                 "-0:00:01|1:01:01",
                 "false|true|false|true|false|true",
                 "None|Some(7)|false",
+            ]
+        );
+    }
+
+    /// Batch-2 stdlib edge contracts, pinned on both backends: the string
+    /// module's empty-pattern rule is uniform (an empty pattern matches
+    /// NOTHING — `index_of`/`split_once`/`replace_first` now agree with
+    /// `count`/`last_index_of`/`rsplit_once`); semver rejects plus-signed
+    /// components and still parses/orders normally; base64url (the no-padding
+    /// JWT/WebAuthn form) rejects padded input that plain base64 accepts;
+    /// oauth.authorize_url extends a query-bearing endpoint with `&`.
+    #[test]
+    fn stdlib_edge_contracts_batch2_backends_agree() {
+        let src = r#"import string
+import semver
+import encoding
+import oauth
+import option
+
+fn ok_err(r: Result(String, String)) -> String:
+    match r:
+        Ok(_) -> "ok"
+        Err(_) -> "err"
+
+fn ver(s: String) -> String:
+    match semver.parse(s):
+        Ok(v) -> semver.format(v)
+        Err(_) -> "err"
+
+fn main(console: Console):
+    let (a1, a2) = string.split_once("abc", "")
+    print(console, string.replace_first("abc", "", "X") + "|" + a1 + "," + a2 + "|" + "${string.index_of("abc", "")}" + "|" + "${string.count("abc", "")}")
+    let (b1, b2) = string.split_once("k=v", "=")
+    print(console, string.replace_first("aXc", "X", "b") + "|" + b1 + "," + b2)
+    print(console, ver("1.2.3") + "|" + ver("+1.2.3") + "|" + ver("1.+2.3") + "|" + ver("-1.2.3"))
+    print(console, ok_err(encoding.base64url_decode("SGk")) + "|" + ok_err(encoding.base64url_decode("SGk=")) + "|" + ok_err(encoding.base64_decode("SGk=")))
+    print(console, oauth.authorize_url("https://idp/auth?prompt=consent", "c", "https://app/cb", "openid", "s"))
+    print(console, oauth.authorize_url("https://idp/auth", "c", "https://app/cb", "openid", "s"))
+"#;
+        let interpreted = link_run(src);
+        let compiled = wasm_run(src);
+        assert_eq!(interpreted, compiled, "batch-2 edge contracts diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                "abc|abc,|None|0",
+                "abc|k,v",
+                "1.2.3|err|err|err",
+                "ok|err|ok",
+                "https://idp/auth?prompt=consent&response_type=code&client_id=c&redirect_uri=https%3A%2F%2Fapp%2Fcb&scope=openid&state=s",
+                "https://idp/auth?response_type=code&client_id=c&redirect_uri=https%3A%2F%2Fapp%2Fcb&scope=openid&state=s",
             ]
         );
     }
@@ -6905,8 +6976,8 @@ fn oi(o: Option(Int)) -> String:
     /// here for the pure part to confirm the module's functions resolve on import.
     #[test]
     fn fs_module_parent_dir_resolves() {
-        let src = "import fs\nfn main(console: Console):\n    print(console, fs.parent_dir(\"a/b/c\"))\n    print(console, fs.parent_dir(\"top\"))\n";
-        assert_eq!(link_run(src), vec!["a/b", ""]);
+        let src = "import fs\nimport option\nfn main(console: Console):\n    print(console, fs.parent_dir(\"a/b/c\") ?? \"<none>\")\n    print(console, fs.parent_dir(\"top\") ?? \"<none>\")\n";
+        assert_eq!(link_run(src), vec!["a/b", "<none>"]);
     }
 
     /// `std/rights` matches capability strings rights-precisely (the logic the pm
