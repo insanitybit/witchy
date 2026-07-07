@@ -32,16 +32,31 @@ path = "junit.xml"
 # subprocess, then poll for readiness. Run concurrently across the whole suite,
 # many servers compile + start under heavy CPU contention and a few overrun
 # their readiness window — false failures that always pass in isolation (the
-# long-standing "don't run two suites at once" flakiness). Serialize them into
-# one group so at most one registry server spawns at a time; the rest of the
-# suite still parallelizes fully.
+# long-standing "don't run two suites at once" flakiness). Bound them to a
+# small group so server spawns stay rare; the rest of the suite still
+# parallelizes fully.
+#
+# Width 2 (was 1): the merge-queue coordinator now guarantees at most ONE
+# heavyweight suite runs at a time (scripts/merge-queue.sh), which removes the
+# machine-wide contention that motivated full serialization — and ~40% of the
+# spawning tests had drifted out of the old keyword filter and were running
+# concurrently anyway, without flaking. The group is ~90% of the gate's test
+# stage, so width 2 nearly halves gate wall-clock. The single per-group retry
+# absorbs a rare readiness overrun without masking real failures (a genuinely
+# red test fails twice).
 [test-groups]
-registry-serial = { max-threads = 1 }
+registry-serial = { max-threads = 2 }
 
+# Keyword filter: nextest can only match on names, so this must cover every
+# test that spawns a registry/coven server (RegistryServer::start() or raw
+# coven dispatch in tests/e2e.rs). If you add a spawning test, either match an
+# existing keyword or extend this list — `cargo nextest show-config test-groups`
+# shows current membership.
 [[profile.default.overrides]]
-filter = 'binary_id(witchy::e2e) & test(/coven|publish|promote|resolv|lifecycle|release|widening|glamour_publishes|pm_add|yank|trusted|api_docs|diamond|cool_down|consent|serves/)'
+filter = 'binary_id(witchy::e2e) & test(/coven|publish|promote|resolv|lifecycle|release|widen|glamour_publishes|pm_add|yank|trusted|api_docs|diamond|cool_down|consent|serves|tuf|vendored|registry|provenance|outdated|tree_shows|std_shadowing|module_name_collision|update_single|upgrade|transitive/)'
 test-group = 'registry-serial'
+retries = 1
 
 [[profile.ci.overrides]]
-filter = 'binary_id(witchy::e2e) & test(/coven|publish|promote|resolv|lifecycle|release|widening|glamour_publishes|pm_add|yank|trusted|api_docs|diamond|cool_down|consent|serves/)'
+filter = 'binary_id(witchy::e2e) & test(/coven|publish|promote|resolv|lifecycle|release|widen|glamour_publishes|pm_add|yank|trusted|api_docs|diamond|cool_down|consent|serves|tuf|vendored|registry|provenance|outdated|tree_shows|std_shadowing|module_name_collision|update_single|upgrade|transitive/)'
 test-group = 'registry-serial'
