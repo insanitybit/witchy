@@ -49,6 +49,14 @@
 #                                                   scratch/merge-queue/coordinator.log; stop
 #                                                   with: kill $(cat .../coordinator.pid)
 #   scripts/merge-queue.sh with-lock -- <cmd...>    run any command under the gate lock
+#   scripts/merge-queue.sh sweep                    remove worktrees whose branch this
+#                                                   queue MERGED (journal-verified) and
+#                                                   whose tree is clean — each holds a
+#                                                   multi-GB target/, so disk fills fast.
+#                                                   Also -d's those merged branches. The
+#                                                   coordinator sweeps after every merge;
+#                                                   worktree-status.sh reports what sweep
+#                                                   can't judge (abandoned/dirty trees).
 #
 # The gate command defaults to `./scripts/check.sh` (the push gate minus e2e);
 # override with MERGE_QUEUE_GATE_CMD (e.g. "./scripts/check.sh --full").
@@ -352,6 +360,8 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     note "MERGED $branch → master @ $sha (gate ${took}s)"
     record merged "$branch" sha "$sha" log "$log" elapsed_s "$took" stages "$(stage_summary "$log")"
     rm -f "$f"
+    # Reclaim the merged branch's worktree (its multi-GB target/) right away.
+    cmd_sweep || true
     return 0
 }
 
@@ -370,6 +380,46 @@ cmd_run() {
         fi
         process_one "$queue_dir/$f" || sleep 5
     done
+}
+
+# Remove worktrees whose branch this queue has MERGED (per journal.jsonl) and
+# whose tree is clean + fully contained in master. Journal-merged is the load-
+# bearing guard: a FRESH agent worktree (branch at master, no commits yet) is
+# indistinguishable from a merged one by ahead-count alone — sweeping on that
+# heuristic would delete a working agent's checkout. Never touches the main
+# worktree or the gate worktree. Each removal frees a multi-GB target/.
+cmd_sweep() {
+    if [ ! -f "$journal" ]; then note "sweep: no journal; nothing merged yet"; return 0; fi
+    local swept=0
+    while IFS= read -r wt; do
+        [ "$wt" = "$root" ] && continue
+        [ "$wt" = "$gate_wt" ] && continue
+        [ -d "$wt" ] || continue
+        local branch; branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+        case "$branch" in '?' | HEAD) continue ;; esac
+        # The guard: only branches this queue merged, and not re-queued since.
+        jq -r 'select(.event=="merged") | .branch' "$journal" | grep -qx "$branch" || continue
+        if ls "$queue_dir"/*.json >/dev/null 2>&1 && \
+           jq -r .branch "$queue_dir"/*.json | grep -qx "$branch"; then continue; fi
+        # Safety: clean and nothing beyond master (i.e. no work since the merge).
+        [ -z "$(git -C "$wt" status --porcelain 2>/dev/null)" ] || continue
+        [ "$(git -C "$wt" rev-list --count "master..HEAD" 2>/dev/null || echo 1)" = "0" ] || continue
+        note "sweep: removing merged+clean worktree $wt (branch $branch)"
+        if git -C "$root" worktree remove "$wt" >/dev/null 2>&1; then
+            git -C "$root" branch -d "$branch" >/dev/null 2>&1 || true
+            record swept "$branch" worktree "$wt"
+            swept=$((swept + 1))
+        else
+            note "sweep: git worktree remove refused $wt; leaving it"
+        fi
+    done < <(git -C "$root" worktree list --porcelain | awk '/^worktree /{print $2}')
+    # Journal-merged branches with no worktree left behind are safe to drop too.
+    local b
+    while IFS= read -r b; do
+        git -C "$root" show-ref --verify --quiet "refs/heads/$b" || continue
+        git -C "$root" branch -d "$b" >/dev/null 2>&1 && note "sweep: deleted merged branch $b"
+    done < <(jq -r 'select(.event=="merged") | .branch' "$journal" | sort -u)
+    note "sweep: removed $swept worktree(s)"
 }
 
 cmd_daemon() {
@@ -407,7 +457,8 @@ case "${1:-}" in
     doctor)    cmd_doctor ;;
     run)       shift; cmd_run "$@" ;;
     daemon)    cmd_daemon ;;
+    sweep)     shift; cmd_sweep "$@" ;;
     with-lock) shift; cmd_with_lock "$@" ;;
-    -h | --help | "") sed -n '2,61p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) note "unknown subcommand '${1}' (try submit, status, doctor, run, daemon, with-lock)"; exit 2 ;;
+    -h | --help | "") sed -n '2,68p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) note "unknown subcommand '${1}' (try submit, status, doctor, run, daemon, sweep, with-lock)"; exit 2 ;;
 esac

@@ -40,6 +40,11 @@ load-flaky under overlap) and a merge landing mid-gate invalidates that gate.
   session; log in `scratch/merge-queue/coordinator.log`).
 - `./scripts/worktree-status.sh` is the dashboard of all worktrees/branches
   (dirty, ahead/behind, queued, merged-and-removable). Report-only.
+- Worktrees hold multi-GB `target/` dirs, so clean up after merge: the
+  coordinator auto-sweeps journal-merged, clean worktrees after every merge
+  (`./scripts/merge-queue.sh sweep` runs the same thing manually). It will
+  never touch dirty/unmerged/queued trees — remove those yourself with
+  `git worktree remove <path>` once you're done with them.
 - If you genuinely need a heavyweight suite yourself, share the lock:
   `./scripts/merge-queue.sh with-lock -- <cmd>`.
 
