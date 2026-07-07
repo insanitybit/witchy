@@ -49,7 +49,9 @@
 //! disqualifies a candidate, so SROA only ever sees read-only aggregates.
 
 use crate::analysis::Summaries;
-use std::collections::{HashMap, HashSet};
+// foldhash (not SipHash): all keys are compiler-internal names/ids, never
+// attacker-chosen collections — see the note in witchy-types/src/typeck.rs.
+use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 use witchy_syntax::ast::{Block, Expr, Function, Stmt};
 
 /// Immutable locals bound to a fixed-shape aggregate (record `Ctor` or tuple)

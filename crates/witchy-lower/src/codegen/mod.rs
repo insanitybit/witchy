@@ -41,7 +41,9 @@ use passes::{alpha_rename_module, flip_string_add_module, rewrite_try_ctx_module
 
 use crate::analysis::{self};
 use witchy_syntax::lambda_scan::{collect_pattern_vars, scan_lambda};
-use std::collections::{HashMap, HashSet};
+// foldhash (not SipHash): all keys are compiler-internal names/ids, never
+// attacker-chosen collections — see the note in witchy-types/src/typeck.rs.
+use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 use std::fmt;
 
 use witchy_syntax::ast::{
@@ -886,31 +888,31 @@ struct Codegen {
     eq_wir_helpers: std::collections::BTreeMap<String, witchy_wir::wir::WirFunc>,
     /// Names of eq helpers currently being built — a cycle guard so a recursive
     /// type's structural eq bails to WAT instead of looping in codegen.
-    eq_building: std::collections::HashSet<String>,
+    eq_building: HashSet<String>,
     /// WIR-native twin of `ts_helpers` (per-shape `to_string`/`__render`
     /// renderers), keyed identically (`ts_{id}`), for the binary path. Includes
     /// tuples/lists with Int/Bool/String fields (built via `$concat` +
     /// `$int_to_string`); Float/Record fields and enums defer to WAT.
     ts_wir_helpers: std::collections::BTreeMap<String, witchy_wir::wir::WirFunc>,
     /// Cycle guard for `ensure_ts_wir_helper`, mirroring `eq_building`.
-    ts_building: std::collections::HashSet<String>,
+    ts_building: HashSet<String>,
     /// WIR-native twin of `rcopy_helpers` (per-shape `region:` copy-out deep-copy),
     /// keyed identically (`rcopy_{id}`), for the binary path.
     rcopy_wir_helpers: std::collections::BTreeMap<String, witchy_wir::wir::WirFunc>,
     /// Cycle guard for `ensure_rcopy_wir_helper`, mirroring `eq_building`.
-    rcopy_building: std::collections::HashSet<String>,
+    rcopy_building: HashSet<String>,
     /// Lifted lambda bodies for the binary path, in table-index order — the WIR
     /// twin of `lambdas`. Each is a `WirFunc $__lamw{i}`; the closure object
     /// stores `i` as its code index and `CallIndirect` uses it as the table slot.
     lambda_wir_funcs: Vec<witchy_wir::wir::WirFunc>,
     /// Maps a lambda's content hash to its index in `lambda_wir_funcs`, so the
     /// many lowering passes register each lambda exactly once (idempotent).
-    lambda_wir_index: std::collections::HashMap<u64, usize>,
+    lambda_wir_index: HashMap<u64, usize>,
     /// (RFC-0062) Maps an ELIDED closure lambda's content hash to its THREADED lifted
     /// body index (a `$__lamt{i}` in `lambda_wir_funcs`), so an identical tier-1 lambda
     /// registers one threaded body across the many lowering passes. A global registry
     /// like `lambda_wir_index` (NOT scope-saved).
-    lambda_threaded_index: std::collections::HashMap<u64, usize>,
+    lambda_threaded_index: HashMap<u64, usize>,
     /// Generated per-shape `to_string` renderers, keyed by `EqShape::id` (a
     /// `ts_` prefix on the function name). Parallels `eq_helpers`: each compound
     /// shape that flows into `to_string` (or string interpolation) gets one
@@ -1060,14 +1062,14 @@ impl Codegen {
             uses_dict_iter: false,
             eq_helpers: std::collections::BTreeMap::new(),
             eq_wir_helpers: std::collections::BTreeMap::new(),
-            eq_building: std::collections::HashSet::new(),
+            eq_building: HashSet::new(),
             ts_wir_helpers: std::collections::BTreeMap::new(),
-            ts_building: std::collections::HashSet::new(),
+            ts_building: HashSet::new(),
             rcopy_wir_helpers: std::collections::BTreeMap::new(),
-            rcopy_building: std::collections::HashSet::new(),
+            rcopy_building: HashSet::new(),
             lambda_wir_funcs: Vec::new(),
-            lambda_wir_index: std::collections::HashMap::new(),
-            lambda_threaded_index: std::collections::HashMap::new(),
+            lambda_wir_index: HashMap::new(),
+            lambda_threaded_index: HashMap::new(),
             ts_helpers: std::collections::BTreeMap::new(),
             adt_variant_names: HashMap::new(),
             clos_arities: HashSet::new(),
@@ -6802,7 +6804,7 @@ pub(crate) const STRING_EXPORT_PREFIX: &str = "export_";
 /// JS-callable boundary is named, not implicit. It adds no import and no authority;
 /// the wrapper only reads/writes guest memory (RFC-0007 §"Data marshaling",
 /// RFC-0008's run loop).
-pub(crate) fn is_string_export(f: &Function, grantable: &std::collections::HashSet<&str>) -> bool {
+pub(crate) fn is_string_export(f: &Function, grantable: &HashSet<&str>) -> bool {
     let is_string = |t: &Option<Type>| matches!(t, Some(Type::Named(n, a)) if n == "String" && a.is_empty());
     // After linking a function is named `{module}.{name}` (the entry module's
     // `main` is the one exception). Match the unqualified tail against the prefix.

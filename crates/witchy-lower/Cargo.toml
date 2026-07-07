@@ -13,6 +13,8 @@ description = "witchy compiler — AST→WIR lowering (the compiled backend's fr
 witchy-syntax = { path = "../witchy-syntax" }
 witchy-types = { path = "../witchy-types" }
 witchy-wir = { path = "../witchy-wir" }
+# Fast non-DoS-resistant hasher for internal tables (see witchy-types).
+foldhash = "0.2.0"
 # Validates the emitted module; pure Rust, so the lowering path stays wasm-clean.
 wasmparser = "0.251"
 

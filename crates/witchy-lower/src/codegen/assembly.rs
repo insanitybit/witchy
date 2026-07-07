@@ -21,7 +21,7 @@ fn string_export_functions(module: &Module) -> Vec<String> {
 }
 
 /// (RFC-0040) The bare grantable capability type names declared in the module.
-fn grantable_cap_names(module: &Module) -> std::collections::HashSet<&str> {
+fn grantable_cap_names(module: &Module) -> HashSet<&str> {
     module
         .items
         .iter()
@@ -343,14 +343,14 @@ pub fn compile_module_binary(
     // `assemble`'s prelude/wir-helper resolution doesn't account for — bail with
     // `Ok(None)` rather than panic in the encoder's func-index lookup.
     {
-        let mut defined: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut defined: HashSet<String> = HashSet::new();
         for imp in &wir_module.imports {
             defined.insert(imp.name.clone());
         }
         for f in &wir_module.funcs {
             defined.insert(f.name.clone());
         }
-        let mut called: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut called: HashSet<String> = HashSet::new();
         for f in &wir_module.funcs {
             collect_called_funcs(&f.body, &mut called);
         }
@@ -442,7 +442,7 @@ pub fn assemble_wir_module(
     // (its record is minted at the root); `None` otherwise.
     let mut main_param_user_cap: Vec<Option<(String, usize)>> = Vec::new();
     // Grantable capability name -> field count, to detect + size a grantable param.
-    let grantable_caps: std::collections::HashMap<&str, usize> = module
+    let grantable_caps: HashMap<&str, usize> = module
         .items
         .iter()
         .filter_map(|it| match it {
@@ -570,10 +570,10 @@ pub fn assemble_wir_module(
     // "all features on" raw-body prelude (which would over-import and break the
     // capability model). Falls through to the raw-body path otherwise.
     {
-        let helper_names: std::collections::HashSet<&str> =
+        let helper_names: HashSet<&str> =
             prelude.funcs.iter().map(|f| f.name.as_str()).collect();
-        let mut called = std::collections::HashSet::new();
-        let mut user_host_imports = std::collections::HashSet::new();
+        let mut called = HashSet::new();
+        let mut user_host_imports = HashSet::new();
         for name in &user_order {
             if let Some(wf) = cg.wir_funcs.get(name) {
                 collect_called_funcs(&wf.body, &mut called);
@@ -1056,9 +1056,9 @@ pub fn assemble_wir_module(
 /// Collect every function name a `WirSeq` calls directly (`Call{func}`),
 /// recursively. Used by `assemble_wir_module` to find which prelude helpers a
 /// program reaches.
-fn collect_called_funcs(seq: &witchy_wir::wir::WirSeq, out: &mut std::collections::HashSet<String>) {
+fn collect_called_funcs(seq: &witchy_wir::wir::WirSeq, out: &mut HashSet<String>) {
     use witchy_wir::wir::{WirExpr as E, WirNode as N};
-    fn expr(e: &E, out: &mut std::collections::HashSet<String>) {
+    fn expr(e: &E, out: &mut HashSet<String>) {
         match e {
             E::Call { func, args } => {
                 out.insert(func.clone());
@@ -1100,7 +1100,7 @@ fn collect_called_funcs(seq: &witchy_wir::wir::WirSeq, out: &mut std::collection
             | E::GetLocal(_) | E::GetGlobal(_) | E::RefNull(_) => {}
         }
     }
-    fn node(n: &N, out: &mut std::collections::HashSet<String>) {
+    fn node(n: &N, out: &mut HashSet<String>) {
         match n {
             N::SetLocal { value, .. } | N::SetGlobal { value, .. } => expr(value, out),
             N::Store { ptr, value, .. } | N::Store8 { ptr, value, .. } => {
@@ -1148,9 +1148,9 @@ fn collect_called_funcs(seq: &witchy_wir::wir::WirSeq, out: &mut std::collection
 /// calls in USER code (e.g. `dir.subdir`, `now`, `recv_*`) — which the pruned
 /// path can't account for, so such programs return `Ok(None)`. (Helper
 /// host calls are accounted for via the registry's `import_deps` instead.)
-fn collect_called_host_imports(seq: &witchy_wir::wir::WirSeq, out: &mut std::collections::HashSet<String>) {
+fn collect_called_host_imports(seq: &witchy_wir::wir::WirSeq, out: &mut HashSet<String>) {
     use witchy_wir::wir::{WirExpr as E, WirNode as N};
-    fn expr(e: &E, out: &mut std::collections::HashSet<String>) {
+    fn expr(e: &E, out: &mut HashSet<String>) {
         match e {
             E::CallHost { import, args } => {
                 out.insert(import.clone());
@@ -1192,7 +1192,7 @@ fn collect_called_host_imports(seq: &witchy_wir::wir::WirSeq, out: &mut std::col
             | E::GetLocal(_) | E::GetGlobal(_) | E::RefNull(_) => {}
         }
     }
-    fn node(n: &N, out: &mut std::collections::HashSet<String>) {
+    fn node(n: &N, out: &mut HashSet<String>) {
         match n {
             N::SetLocal { value, .. } | N::SetGlobal { value, .. } => expr(value, out),
             N::Store { ptr, value, .. } | N::Store8 { ptr, value, .. } => {

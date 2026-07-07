@@ -26,7 +26,9 @@
 //! that every kill was consumed — a cloned-subtree bug surfaces as a loud
 //! compile error, never a lost kill.
 
-use std::collections::{HashMap, HashSet};
+// foldhash (not SipHash): all keys are compiler-internal names/ids, never
+// attacker-chosen collections — see the note in witchy-types/src/typeck.rs.
+use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 
 use witchy_syntax::ast::{BinOp, Block, Convention, Expr, Item, Module, Stmt, Type, UnOp};
 
@@ -366,7 +368,7 @@ impl Summaries {
         // abstractions, not just the three builtins. Scalars (Int/Bool/Float/
         // Duration are `Type::Named` too) are excluded: they own no buffer, and
         // threading a cap for them would be unsound.
-        let heap_types: std::collections::HashSet<String> = ["List", "Dict", "String", "Bytes"]
+        let heap_types: HashSet<String> = ["List", "Dict", "String", "Bytes"]
             .into_iter()
             .map(String::from)
             .chain(module.items.iter().filter_map(|it| match it {
@@ -1121,8 +1123,8 @@ fn expr(e: &Expr, accs: &HashSet<String>, out: &mut HashSet<String>) {
 /// the field's list buffer is never aliased and may be grown in place. Any other read
 /// of `var.field` disables it (conservative + sound). Whole-record aliasing is handled
 /// separately by the record ownership token.
-pub fn field_push_safe_set(body: &Block) -> std::collections::HashSet<(String, String)> {
-    let mut cands = std::collections::HashSet::new();
+pub fn field_push_safe_set(body: &Block) -> HashSet<(String, String)> {
+    let mut cands = HashSet::new();
     collect_field_push_candidates(body, &mut cands);
     cands
         .into_iter()
@@ -1149,7 +1151,7 @@ fn stmt_value(s: &Stmt) -> Option<&Expr> {
 /// and branches are found.
 fn collect_field_push_candidates(
     body: &Block,
-    out: &mut std::collections::HashSet<(String, String)>,
+    out: &mut HashSet<(String, String)>,
 ) {
     for stmt in &body.stmts {
         if let Stmt::Assign { name, value: Expr::RecordUpdate { name: _, base, fields } } = stmt {
@@ -1177,7 +1179,7 @@ fn collect_field_push_candidates(
 /// Find nested blocks reachable from an expression and recurse into them (mutually
 /// with `collect_field_push_candidates`). Covers every `Expr` variant — model on the
 /// `expr` walker above.
-fn collect_candidates_in_expr(e: &Expr, out: &mut std::collections::HashSet<(String, String)>) {
+fn collect_candidates_in_expr(e: &Expr, out: &mut HashSet<(String, String)>) {
     match e {
         Expr::If { cond, then_block, else_block } => {
             collect_candidates_in_expr(cond, out);

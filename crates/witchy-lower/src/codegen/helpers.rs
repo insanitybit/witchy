@@ -441,7 +441,7 @@ impl Codegen {
                         collect_type_vars(f, &mut params);
                     }
                 }
-                let subst: std::collections::HashMap<String, EqShape> =
+                let subst: HashMap<String, EqShape> =
                     params.iter().cloned().zip(args.iter().cloned()).collect();
                 let mut all: Vec<Vec<EqShape>> = Vec::new();
                 for fs in &variants {
@@ -802,7 +802,7 @@ impl Codegen {
                         collect_type_vars(f, &mut params);
                     }
                 }
-                let subst: std::collections::HashMap<String, EqShape> =
+                let subst: HashMap<String, EqShape> =
                     params.iter().cloned().zip(args.iter().cloned()).collect();
                 let mut all: Vec<Vec<EqShape>> = Vec::new();
                 for fs in &variants {
