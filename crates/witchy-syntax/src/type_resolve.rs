@@ -314,8 +314,9 @@ impl<'a> Scope<'a> {
                         }
                     }
                 }
-                // A from-imported FUNCTION needs no type/ctor entry — the linker's
-                // ordinary bare-call resolution already reaches it via `import X`.
+                // A from-imported FUNCTION needs no type/ctor entry; the linker
+                // owns direct-call resolution for explicit `from X import f`
+                // bindings.
             }
         }
         Ok(Scope { home, imports, world, type_map, ctor_map })

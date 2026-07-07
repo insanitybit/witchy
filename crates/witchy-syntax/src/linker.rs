@@ -2,11 +2,11 @@
 //!
 //! Combines a set of named modules into one flat `Module`, qualifying each
 //! module's function names (`mod.func`) and rewriting call sites so an
-//! unqualified call resolves to the same module and a `mod.func` call resolves
-//! to an imported module. Importing is purely declarative: it brings names into
-//! scope, runs no code, and confers no authority — a dependency can only act
-//! through capabilities the caller passes to its functions (visible in their
-//! types).
+//! unqualified call resolves to the same module or an explicit `from` import,
+//! and a `mod.func` call resolves to an imported module. Importing is purely
+//! declarative: it brings names into scope, runs no code, and confers no
+//! authority — a dependency can only act through capabilities the caller passes
+//! to its functions (visible in their types).
 //!
 //! v1: functions are module-scoped; types/constructors share one global
 //! namespace.
@@ -96,6 +96,10 @@ const BUILTINS: &[&str] = &[
 /// see the `Expr::Field` arm of `rewrite_expr`). Membership (`contains_key`) is
 /// still the "does module X export `f`" question the rest of the linker asks.
 type FnTable = HashMap<String, HashMap<String, EtaSig>>;
+
+/// For each module, the bare function names introduced explicitly by
+/// `from X import f`, mapped to their exporting module.
+type BareFnImports = HashMap<String, HashMap<String, String>>;
 
 /// The per-function facts eta-expansion consumes (RFC-0050 Part 2).
 #[derive(Clone, Copy)]
@@ -582,6 +586,22 @@ pub fn link(
         }
         fns.insert(name.clone(), names);
     }
+    let mut bare_fn_imports: BareFnImports = HashMap::new();
+    for (name, m) in &modules {
+        let mut bare = HashMap::new();
+        for (srcmod, names) in &m.from_imports {
+            for imported in names {
+                if fns
+                    .get(srcmod)
+                    .and_then(|s| s.get(imported))
+                    .is_some_and(|sig| sig.public)
+                {
+                    bare.insert(imported.clone(), srcmod.clone());
+                }
+            }
+        }
+        bare_fn_imports.insert(name.clone(), bare);
+    }
 
     if !modules.iter().any(|(n, _)| n == entry) {
         return lerr(format!("entry module `{entry}` not found"));
@@ -638,7 +658,14 @@ pub fn link(
                         bound.insert(p.name.clone());
                     }
                     collect_bound_block(&f2.body, &mut bound);
-                    rewrite_block(&mut f2.body, mname, &m.imports, &fns, &bound)?;
+                    rewrite_block(
+                        &mut f2.body,
+                        mname,
+                        &m.imports,
+                        bare_fn_imports.get(mname),
+                        &fns,
+                        &bound,
+                    )?;
                     items.push(Item::Function(f2));
                 }
                 Item::Type(t) => items.push(Item::Type(t.clone())),
@@ -658,7 +685,14 @@ pub fn link(
                                 bound.insert(p.name.clone());
                             }
                             collect_bound_block(body, &mut bound);
-                            rewrite_block(body, mname, &m.imports, &fns, &bound)?;
+                            rewrite_block(
+                                body,
+                                mname,
+                                &m.imports,
+                                bare_fn_imports.get(mname),
+                                &fns,
+                                &bound,
+                            )?;
                         }
                     }
                     items.push(Item::Trait(t2));
@@ -671,7 +705,14 @@ pub fn link(
                             bound.insert(p.name.clone());
                         }
                         collect_bound_block(&method.body, &mut bound);
-                        rewrite_block(&mut method.body, mname, &m.imports, &fns, &bound)?;
+                        rewrite_block(
+                            &mut method.body,
+                            mname,
+                            &m.imports,
+                            bare_fn_imports.get(mname),
+                            &fns,
+                            &bound,
+                        )?;
                     }
                     items.push(Item::Impl(im2));
                 }
@@ -1113,6 +1154,7 @@ fn rewrite_block(
     b: &mut Block,
     m: &str,
     imps: &[String],
+    bare_imports: Option<&HashMap<String, String>>,
     fns: &FnTable,
     bound: &HashSet<String>,
 ) -> Result<(), LinkError> {
@@ -1120,8 +1162,10 @@ fn rewrite_block(
         match stmt {
             Stmt::Let { value, .. }
             | Stmt::Assign { value, .. }
-            | Stmt::LetPattern { value, .. } => rewrite_expr(value, m, imps, fns, bound)?,
-            Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => rewrite_expr(e, m, imps, fns, bound)?,
+            | Stmt::LetPattern { value, .. } => rewrite_expr(value, m, imps, bare_imports, fns, bound)?,
+            Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => {
+                rewrite_expr(e, m, imps, bare_imports, fns, bound)?
+            }
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
     }
@@ -1132,6 +1176,7 @@ fn rewrite_expr(
     e: &mut Expr,
     m: &str,
     imps: &[String],
+    bare_imports: Option<&HashMap<String, String>>,
     fns: &FnTable,
     bound: &HashSet<String>,
 ) -> Result<(), LinkError> {
@@ -1151,24 +1196,24 @@ fn rewrite_expr(
                     let mut call_args = Vec::new();
                     std::mem::swap(args, &mut call_args);
                     for a in &mut call_args {
-                        rewrite_expr(a, m, imps, fns, bound)?;
+                        rewrite_expr(a, m, imps, bare_imports, fns, bound)?;
                     }
                     *e = Expr::MethodCall { receiver, method, args: call_args };
                     return Ok(());
                 }
             }
-            *name = resolve_call(name, m, imps, fns, bound)?;
+            *name = resolve_call(name, m, imps, bare_imports, fns, bound)?;
             for a in args {
-                rewrite_expr(a, m, imps, fns, bound)?;
+                rewrite_expr(a, m, imps, bare_imports, fns, bound)?;
             }
         }
         // (RFC-0056) A labeled direct call: qualify the callee exactly like a plain
         // call so `keyword_args::resolve` can look up its declaration, and rewrite
         // the argument values. The labels ride along untouched until then.
         Expr::LabeledCall { name, args } => {
-            *name = resolve_call(name, m, imps, fns, bound)?;
+            *name = resolve_call(name, m, imps, bare_imports, fns, bound)?;
             for (_, a) in args {
-                rewrite_expr(a, m, imps, fns, bound)?;
+                rewrite_expr(a, m, imps, bare_imports, fns, bound)?;
             }
         }
         // A bare name matching a same-module function is a first-class reference
@@ -1182,18 +1227,18 @@ fn rewrite_expr(
             }
         }
         Expr::Apply { func, args } => {
-            rewrite_expr(func, m, imps, fns, bound)?;
+            rewrite_expr(func, m, imps, bare_imports, fns, bound)?;
             for a in args {
-                rewrite_expr(a, m, imps, fns, bound)?;
+                rewrite_expr(a, m, imps, bare_imports, fns, bound)?;
             }
         }
         Expr::Ctor { args, .. } | Expr::List(args) | Expr::Tuple(args) => {
             for a in args {
-                rewrite_expr(a, m, imps, fns, bound)?;
+                rewrite_expr(a, m, imps, bare_imports, fns, bound)?;
             }
         }
         Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } => {
-            rewrite_expr(expr, m, imps, fns, bound)?
+            rewrite_expr(expr, m, imps, bare_imports, fns, bound)?
         }
         // (RFC-0050 Part 2) A bare `module.fn` in value (non-call) position is a
         // first-class function value, produced by eta-expansion: `list.length`
@@ -1222,7 +1267,8 @@ fn rewrite_expr(
                 // checked, so `resolve_call` returns the qualified callee or the
                 // precise "module `X` has no function `Y`" error — "unbound
                 // variable" never names a module again.
-                let qualified = resolve_call(&format!("{modname}.{field}"), m, imps, fns, bound)?;
+                let qualified =
+                    resolve_call(&format!("{modname}.{field}"), m, imps, bare_imports, fns, bound)?;
                 let sig = fns
                     .get(&modname)
                     .and_then(|s| s.get(&field))
@@ -1257,73 +1303,73 @@ fn rewrite_expr(
                     ));
                 }
             }
-            rewrite_expr(base, m, imps, fns, bound)?;
+            rewrite_expr(base, m, imps, bare_imports, fns, bound)?;
         }
         Expr::RecordUpdate { name: _, base, fields } => {
-            rewrite_expr(base, m, imps, fns, bound)?;
+            rewrite_expr(base, m, imps, bare_imports, fns, bound)?;
             for (_, value) in fields {
-                rewrite_expr(value, m, imps, fns, bound)?;
+                rewrite_expr(value, m, imps, bare_imports, fns, bound)?;
             }
         }
         Expr::Record { fields, spread, .. } => {
             for (_, value) in fields {
-                rewrite_expr(value, m, imps, fns, bound)?;
+                rewrite_expr(value, m, imps, bare_imports, fns, bound)?;
             }
             if let Some(s) = spread {
-                rewrite_expr(s, m, imps, fns, bound)?;
+                rewrite_expr(s, m, imps, bare_imports, fns, bound)?;
             }
         }
         Expr::Binary { lhs, rhs, .. } => {
-            rewrite_expr(lhs, m, imps, fns, bound)?;
-            rewrite_expr(rhs, m, imps, fns, bound)?;
+            rewrite_expr(lhs, m, imps, bare_imports, fns, bound)?;
+            rewrite_expr(rhs, m, imps, bare_imports, fns, bound)?;
         }
         Expr::Range { lo, hi, .. } => {
-            rewrite_expr(lo, m, imps, fns, bound)?;
-            rewrite_expr(hi, m, imps, fns, bound)?;
+            rewrite_expr(lo, m, imps, bare_imports, fns, bound)?;
+            rewrite_expr(hi, m, imps, bare_imports, fns, bound)?;
         }
         Expr::Index { base, index } => {
-            rewrite_expr(base, m, imps, fns, bound)?;
-            rewrite_expr(index, m, imps, fns, bound)?;
+            rewrite_expr(base, m, imps, bare_imports, fns, bound)?;
+            rewrite_expr(index, m, imps, bare_imports, fns, bound)?;
         }
         // Lowered to a plain `Call` before this runs; recurse for safety.
         Expr::MethodCall { receiver, args, .. } => {
-            rewrite_expr(receiver, m, imps, fns, bound)?;
+            rewrite_expr(receiver, m, imps, bare_imports, fns, bound)?;
             for a in args {
-                rewrite_expr(a, m, imps, fns, bound)?;
+                rewrite_expr(a, m, imps, bare_imports, fns, bound)?;
             }
         }
         Expr::WhileLet { scrutinee, body, .. } => {
-            rewrite_expr(scrutinee, m, imps, fns, bound)?;
-            rewrite_block(body, m, imps, fns, bound)?;
+            rewrite_expr(scrutinee, m, imps, bare_imports, fns, bound)?;
+            rewrite_block(body, m, imps, bare_imports, fns, bound)?;
         }
         Expr::If {
             cond,
             then_block,
             else_block,
         } => {
-            rewrite_expr(cond, m, imps, fns, bound)?;
-            rewrite_block(then_block, m, imps, fns, bound)?;
+            rewrite_expr(cond, m, imps, bare_imports, fns, bound)?;
+            rewrite_block(then_block, m, imps, bare_imports, fns, bound)?;
             if let Some(b) = else_block {
-                rewrite_block(b, m, imps, fns, bound)?;
+                rewrite_block(b, m, imps, bare_imports, fns, bound)?;
             }
         }
-        Expr::Lambda { body, .. } => rewrite_block(body, m, imps, fns, bound)?,
-        Expr::Block(b) => rewrite_block(b, m, imps, fns, bound)?,
+        Expr::Lambda { body, .. } => rewrite_block(body, m, imps, bare_imports, fns, bound)?,
+        Expr::Block(b) => rewrite_block(b, m, imps, bare_imports, fns, bound)?,
         Expr::While { cond, body } => {
-            rewrite_expr(cond, m, imps, fns, bound)?;
-            rewrite_block(body, m, imps, fns, bound)?;
+            rewrite_expr(cond, m, imps, bare_imports, fns, bound)?;
+            rewrite_block(body, m, imps, bare_imports, fns, bound)?;
         }
         Expr::For { iter, body, .. } => {
-            rewrite_expr(iter, m, imps, fns, bound)?;
-            rewrite_block(body, m, imps, fns, bound)?;
+            rewrite_expr(iter, m, imps, bare_imports, fns, bound)?;
+            rewrite_block(body, m, imps, bare_imports, fns, bound)?;
         }
         Expr::Match { scrutinee, arms } => {
-            rewrite_expr(scrutinee, m, imps, fns, bound)?;
+            rewrite_expr(scrutinee, m, imps, bare_imports, fns, bound)?;
             for arm in arms {
                 if let Some(g) = &mut arm.guard {
-                    rewrite_expr(g, m, imps, fns, bound)?;
+                    rewrite_expr(g, m, imps, bare_imports, fns, bound)?;
                 }
-                rewrite_expr(&mut arm.body, m, imps, fns, bound)?;
+                rewrite_expr(&mut arm.body, m, imps, bare_imports, fns, bound)?;
             }
         }
         Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::TaggedLit { .. } => {}
@@ -1596,6 +1642,7 @@ fn resolve_call(
     name: &str,
     m: &str,
     imps: &[String],
+    bare_imports: Option<&HashMap<String, String>>,
     fns: &FnTable,
     bound: &HashSet<String>,
 ) -> Result<String, LinkError> {
@@ -1626,22 +1673,19 @@ fn resolve_call(
     if BUILTINS.contains(&name) {
         return Ok(name.to_string());
     }
-    // A bare name (e.g. from `recv.method(...)` UFCS sugar) may name a function
-    // in an imported module. Resolve it when exactly one import provides it and
-    // it isn't shadowed by a local binding; ambiguity across imports is an error.
     if !bound.contains(name) {
-        let mut providers: Vec<&str> = Vec::new();
-        for imp in imps {
-            if fns.get(imp).and_then(|s| s.get(name)).is_some_and(|sig| sig.public) {
-                providers.push(imp.as_str());
-            }
+        if let Some(srcmod) = bare_imports.and_then(|imports| imports.get(name)) {
+            return Ok(format!("{srcmod}.{name}"));
         }
-        // Exactly one import provides it -> resolve. If several do, it's an
-        // overloaded method name (e.g. http.get / server.get / json.get): leave
-        // it unqualified for the post-link `resolve_methods` pass to pick by the
-        // receiver's type.
-        if providers.len() == 1 {
-            return Ok(format!("{}.{name}", providers[0]));
+        if let Some(srcmod) = imps
+            .iter()
+            .find(|imp| fns.get(*imp).and_then(|s| s.get(name)).is_some_and(|sig| sig.public))
+        {
+            return lerr(format!(
+                "`{name}(...)` is not in scope as a bare function. `import {srcmod}` keeps \
+                 functions qualified; write `{srcmod}.{name}(...)` or add \
+                 `from {srcmod} import {name}`"
+            ));
         }
     }
     // Not a function here and not a builtin: a local binding being applied (e.g.
@@ -2149,6 +2193,31 @@ mod tests {
                           fn main(console: Console):\n    let f = sealed_lib.hidden\n    print(console, \"x\")\n";
         let err = link_lib_user(lib, hidden_ref).expect_err("private function must not be a module value");
         assert!(err.contains("function `sealed_lib.hidden` is private"), "{err}");
+    }
+
+    #[test]
+    fn plain_import_does_not_bind_bare_functions() {
+        // RFC-0042 / BUG-452: `import X` keeps functions qualified. A bare
+        // imported call exists only when the source wrote `from X import f`.
+        let lib = "pub fn shown(n: Int) -> Int:\n    n + 1\n";
+
+        let plain = "import sealed_lib\n\n\
+                     fn main(console: Console):\n    print(console, __render(shown(1)))\n";
+        let err = link_lib_user(lib, plain).expect_err("plain import must not bind `shown` bare");
+        assert!(
+            err.contains("`shown(...)` is not in scope as a bare function")
+                && err.contains("sealed_lib.shown(...)")
+                && err.contains("from sealed_lib import shown"),
+            "{err}"
+        );
+
+        let from_import = "from sealed_lib import shown\n\n\
+                           fn main(console: Console):\n    print(console, __render(shown(1)))\n";
+        link_lib_user(lib, from_import).expect("from-imported public function is callable bare");
+
+        let qualified = "import sealed_lib\n\n\
+                         fn main(console: Console):\n    print(console, __render(sealed_lib.shown(1)))\n";
+        link_lib_user(lib, qualified).expect("plain import keeps qualified calls available");
     }
 
     #[test]
