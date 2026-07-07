@@ -454,7 +454,7 @@ fn expand_one(
     // Parse the generated source as an expression. The tag emits QUALIFIED
     // constructors (`glamour.text(…)`), so the throwaway parse must know the
     // qualifier module names — else `glamour.text(…)` parses as a UFCS method call.
-    let mut e = parse_splice_expr(&src, &ctx.qualifiers)
+    let mut e = parse_generated_splice_expr(&src, &ctx.qualifiers)
         .map_err(|e| format!("{}: generated source: {e}\n--- generated ---\n{src}", where_()))?;
 
     // Parse each hole's ORIGINAL source ONCE, into an expression carrying the
@@ -526,6 +526,52 @@ fn reindent_body(src: &str) -> String {
             // A structural newline: keep the body indented under `__tagsplice`.
             '\n' => out.push_str("\n    "),
             _ => out.push(c),
+        }
+    }
+    out
+}
+
+fn parse_generated_splice_expr(src: &str, qualifiers: &[String]) -> Result<Expr, String> {
+    parse_splice_expr(&escape_generated_string_interpolations(src), qualifiers)
+}
+
+/// Tag output is generated expression source, but RFC-0006 hygiene says only the
+/// original `${...}` holes resolve at the call site. A tag-emitted string literal
+/// containing raw `${...}` is therefore static text, not a fresh interpolation
+/// opportunity. Escape those sigils before the throwaway parse; hole source uses
+/// `parse_splice_expr` directly and keeps normal interpolation semantics.
+fn escape_generated_string_interpolations(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut chars = src.chars().peekable();
+    let mut in_string = false;
+    let mut escaped = false;
+    while let Some(c) = chars.next() {
+        if in_string {
+            if escaped {
+                out.push(c);
+                escaped = false;
+                continue;
+            }
+            match c {
+                '\\' => {
+                    out.push(c);
+                    escaped = true;
+                }
+                '"' => {
+                    out.push(c);
+                    in_string = false;
+                }
+                '$' if chars.peek() == Some(&'{') => {
+                    out.push('\\');
+                    out.push('$');
+                }
+                _ => out.push(c),
+            }
+        } else {
+            out.push(c);
+            if c == '"' {
+                in_string = true;
+            }
         }
     }
     out
@@ -1011,7 +1057,7 @@ fn collect_refs_expr(e: &Expr, out: &mut HashSet<String>) {
 
 #[cfg(test)]
 mod tests {
-    use super::reindent_body;
+    use super::{escape_generated_string_interpolations, reindent_body};
 
     #[test]
     fn reindents_structural_newlines_only() {
@@ -1031,6 +1077,22 @@ mod tests {
         assert_eq!(
             reindent_body("\"a\\\"\nb\"\nc"),
             "\"a\\\"\nb\"\n    c"
+        );
+    }
+
+    #[test]
+    fn generated_string_interpolation_is_escaped() {
+        assert_eq!(
+            escape_generated_string_interpolations(r#"glamour.text("${price}")"#),
+            r#"glamour.text("\${price}")"#
+        );
+        assert_eq!(
+            escape_generated_string_interpolations(r#""${a}" + __render(x) + "\${b}""#),
+            r#""\${a}" + __render(x) + "\${b}""#
+        );
+        assert_eq!(
+            escape_generated_string_interpolations("\"line\n${x}\""),
+            "\"line\n\\${x}\""
         );
     }
 }

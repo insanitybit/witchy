@@ -726,6 +726,57 @@
         assert_eq!(run_linked_on_wasm(&[("tag-hyphen", src)], "tag-hyphen"), ["ok"], "wasm");
     }
 
+    /// (BUG-338) An escaped `\${...}` inside a tagged literal is static text, not
+    /// a hole and not a second chance to capture a call-site binding when the tag's
+    /// generated source is parsed. This pins both a minimal source-emitting tag and
+    /// the flagship glamour `html` tag.
+    #[test]
+    fn tagged_literal_escaped_dollar_stays_literal_on_both_backends() {
+        let plain = r#"fn lit(parts: List(String), holes: List(String)) -> String:
+    "\"" + list.at(parts, 0) + "\""
+
+fn main(console: Console):
+    let price = "CAPTURED"
+    print(console, lit"cost \${price}")
+"#;
+        let expected_plain = ["cost ${price}"];
+        assert_eq!(link_run(plain), expected_plain, "interp plain tag");
+        assert_eq!(run_linked_on_wasm(&[("main", plain)], "main"), expected_plain, "wasm plain tag");
+
+        let glamour = r#"import glamour
+from glamour import VNode
+
+type Msg:
+    Click
+
+fn main(console: Console):
+    let price = "CAPTURED"
+    let node: VNode(Msg) = html"<p>literal: \${price}</p>"
+    print(console, glamour.to_html(node))
+"#;
+        let expected_glamour = ["<p>literal: ${price}</p>"];
+        let glamour_src = include_str!("../projects/glamour/src/glamour.witchy");
+        let linked = crate::pipeline::link(
+            vec![
+                ("glamour".into(), parser::parse_module(glamour_src).expect("glamour parse")),
+                ("main".into(), parser::parse_module(glamour).expect("main parse")),
+            ],
+            "main",
+        )
+        .expect("link glamour");
+        typeck::check(&linked).expect("typecheck glamour");
+        assert_eq!(
+            interpreter::run_module(linked, ".", Vec::new()).expect("run glamour"),
+            expected_glamour,
+            "interp glamour html"
+        );
+        assert_eq!(
+            run_linked_on_wasm(&[("glamour", glamour_src), ("main", glamour)], "main"),
+            expected_glamour,
+            "wasm glamour html"
+        );
+    }
+
     /// (BUG-319, parity) Implicit structural `==` on a GENERIC record instantiation
     /// (`Box(Int)`, std `Set(Int)`) works on BOTH backends. The compiled record-eq
     /// arm dropped the type arguments (unlike the ADT arm), so a fully-annotated
