@@ -135,15 +135,15 @@ fn encode_object(pairs: List((String, Json))) -> String:
         out = out + encode_string(k) + ":" + encode(v)
     out + "}"
 
-// Render a Float as a JSON number. `inf`/`-inf`/`NaN` are not JSON tokens (a
-// conformant parser rejects them), so a non-finite value serializes to `null` —
-// valid JSON, matching how mainstream encoders (e.g. serde_json) handle it —
-// rather than emitting the invalid `inf`/`NaN` the old `"${x}"` produced.
+// Render a Float as a JSON number. `inf`/`-inf`/`NaN` are not JSON tokens; a
+// core JSON encoder must fail loudly rather than erase the numeric value as
+// `null`, which already means an intentional JSON null / `Option.None`.
 fn encode_float(x: Float) -> String:
     if is_finite(x):
         "${x}"
     else:
-        "null"
+        fail("json.encode: non-finite Float cannot be encoded as JSON")
+        ""
 
 // Wrap `s` in quotes, escaping the characters JSON requires.
 fn encode_string(s: String) -> String:

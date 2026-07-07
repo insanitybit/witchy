@@ -20904,9 +20904,8 @@ pub fn serve(console: Console, net: Net) -> Int:
     /// std/json: `decode` rejects an overflowing exponent (BUG-241), an invalid
     /// string escape (BUG-243), a leading-zero number and a raw control character
     /// (BUG-244), and a duplicate object key (BUG-262); `float_of` accepts an
-    /// integer JSON number as a Float (BUG-356), and `encode` renders a non-finite
-    /// Float as `null` rather than the invalid `inf`/`NaN` token (BUG-374). Both
-    /// backends agree.
+    /// integer JSON number as a Float (BUG-356), and finite JsonFloat values still
+    /// encode as JSON numbers. Both backends agree.
     #[test]
     fn json_rejects_malformed_and_handles_floats_on_both_backends() {
         let src = "import json\n\
@@ -20927,8 +20926,6 @@ pub fn serve(console: Console, net: Net) -> Int:
                    \x20   match json.float_of(JsonInt(1)):\n\
                    \x20       Ok(f) -> print(console, \"float_of_int: ${f}\")\n\
                    \x20       Err(e) -> print(console, \"float_of_int: ERR\")\n\
-                   \x20   print(console, \"encode_inf: \" + json.encode(JsonFloat(1.0 / 0.0)))\n\
-                   \x20   print(console, \"encode_nan: \" + json.encode(JsonFloat(0.0 / 0.0)))\n\
                    \x20   print(console, \"encode_finite: \" + json.encode(JsonFloat(1.5)))\n";
         let expected = [
             "exp_overflow: ERR",
@@ -20940,12 +20937,76 @@ pub fn serve(console: Console, net: Net) -> Int:
             "dup_key: ERR",
             "exp_ok: 1500.0",
             "float_of_int: 1.0",
-            "encode_inf: null",
-            "encode_nan: null",
             "encode_finite: 1.5",
         ];
         assert_eq!(link_run(src), expected, "interp");
         assert_eq!(wasm_run(src), expected, "wasm");
+    }
+
+    /// (BUG-374) JSON has no NaN/Infinity tokens, and Witchy already uses
+    /// JsonNull for intentional null / Option.None. Encoding a non-finite Float
+    /// must therefore be a loud boundary error, not silent data erasure to null.
+    #[test]
+    fn json_encode_rejects_nonfinite_floats_on_both_backends() {
+        let cases = [
+            (
+                "encode_nan",
+                "import json\nfrom json import Json\nfn main(console: Console):\n    print(console, json.encode(JsonFloat(0.0 / 0.0)))\n",
+            ),
+            (
+                "encode_inf",
+                "import json\nfrom json import Json\nfn main(console: Console):\n    print(console, json.encode(JsonFloat(1.0 / 0.0)))\n",
+            ),
+            (
+                "encode_neg_inf",
+                "import json\nfrom json import Json\nfn main(console: Console):\n    print(console, json.encode(JsonFloat(0.0 - (1.0 / 0.0))))\n",
+            ),
+            (
+                "encode_nested_object",
+                "import json\nfrom json import Json\nfn main(console: Console):\n    print(console, json.encode(JsonObject([(\"ratio\", JsonFloat(0.0 / 0.0))])))\n",
+            ),
+        ];
+        for (label, src) in cases {
+            let linked = resolve_std_src(src);
+            typeck::check(&linked).unwrap_or_else(|e| panic!("{label} typecheck: {e}"));
+            let ierr = interpreter::run_module(linked.clone(), ".", Vec::new())
+                .expect_err("interpreter must abort")
+                .to_string();
+            assert!(
+                ierr.contains("json.encode: non-finite Float cannot be encoded as JSON"),
+                "{label} interpreter mismatch: {ierr}"
+            );
+            let bytes = codegen::compile_module_binary(&linked)
+                .expect("compile")
+                .unwrap_or_else(|| panic!("{label}: the binary path lowers this program"));
+            let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort").to_string();
+            assert!(
+                cerr.contains("json.encode: non-finite Float cannot be encoded as JSON"),
+                "{label} compiled mismatch: {cerr}"
+            );
+        }
+
+        let interpreter_only = [
+            (
+                "stringify_reflected",
+                "import json\nfn main(console: Console):\n    print(console, json.stringify(.{ratio: 0.0 / 0.0}))\n",
+            ),
+            (
+                "server_send_reflected",
+                "import server\nfn main(console: Console):\n    let _r = server.send(200, .{ratio: 1.0 / 0.0})\n    print(console, \"unreachable\")\n",
+            ),
+        ];
+        for (label, src) in interpreter_only {
+            let linked = resolve_std_src(src);
+            typeck::check(&linked).unwrap_or_else(|e| panic!("{label} typecheck: {e}"));
+            let ierr = interpreter::run_module(linked, ".", Vec::new())
+                .expect_err("public helper must abort before producing JSON")
+                .to_string();
+            assert!(
+                ierr.contains("json.encode: non-finite Float cannot be encoded as JSON"),
+                "{label} interpreter mismatch: {ierr}"
+            );
+        }
     }
 
     #[test]
