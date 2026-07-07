@@ -422,6 +422,24 @@ cmd_sweep() {
     note "sweep: removed $swept worktree(s)"
 }
 
+# After a `blocked` event (gate green, ff-merge refused by the main worktree)
+# the operator merges manually — which leaves the journal's last word as
+# "blocked" and misleads every agent reading it. `resolve` closes the record:
+# it verifies the journaled sha actually IS on master, then journals `merged`.
+cmd_resolve() {
+    local branch="${1:?usage: merge-queue.sh resolve <branch>}"
+    local sha
+    sha="$(jq -r --arg b "$branch" 'select(.event=="blocked" and .branch==$b) | .sha' "$journal" 2>/dev/null | tail -1)"
+    [ -n "$sha" ] || { note "no blocked event for '$branch' in the journal"; exit 2; }
+    if ! git -C "$root" merge-base --is-ancestor "$sha" master; then
+        note "$sha is NOT on master — merge it first: git merge --ff-only $sha"
+        exit 1
+    fi
+    record merged "$branch" sha "$sha" via "manual ff after blocked"
+    note "journaled merged for $branch @ $sha"
+    cmd_sweep || true
+}
+
 cmd_daemon() {
     local cpid; cpid="$(cat "$qdir/coordinator.pid" 2>/dev/null || true)"
     if [ -n "$cpid" ] && kill -0 "$cpid" 2>/dev/null; then
@@ -457,6 +475,7 @@ case "${1:-}" in
     doctor)    cmd_doctor ;;
     run)       shift; cmd_run "$@" ;;
     daemon)    cmd_daemon ;;
+    resolve)   shift; cmd_resolve "$@" ;;
     sweep)     shift; cmd_sweep "$@" ;;
     with-lock) shift; cmd_with_lock "$@" ;;
     -h | --help | "") sed -n '2,68p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;

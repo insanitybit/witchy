@@ -10,9 +10,12 @@ When another agent or developer is active in the same checkout:
   file or hunk, stop and ask instead of rewriting over it.
 - Do not revert, delete, or reformat changes you did not make.
 - Use an isolated Cargo target directory for long checks so agents do not fight
-  over `target/`:
+  over `target/` — and SEED it first so it isn't a cold multi-minute build
+  (CoW clone, seconds, ~zero disk; workspace crates stay warm too since the
+  source path is identical):
 
 ```sh
+./scripts/worktree-warm.sh --target-dir target-codex
 CARGO_TARGET_DIR=target-codex cargo test --workspace
 CARGO_TARGET_DIR=target-codex cargo clippy --workspace --all-targets -- -D warnings
 ```

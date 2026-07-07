@@ -15,13 +15,60 @@
 # tiny files), which is what makes a naive `cp -Rc target` take minutes instead
 # of seconds.
 #
-#   ./scripts/worktree-warm.sh            # warm the current worktree
-#   ./scripts/worktree-warm.sh <path>     # warm the worktree at <path>
+#   ./scripts/worktree-warm.sh                     # warm the current worktree
+#   ./scripts/worktree-warm.sh <path>              # warm the worktree at <path>
+#   ./scripts/worktree-warm.sh --target-dir <dir>  # seed a per-agent
+#                                                  # CARGO_TARGET_DIR (e.g.
+#                                                  # target-codex) from ./target
+#
+# The --target-dir form is for agents sharing the MAIN checkout with an
+# isolated target dir (the CLAUDE.md concurrency rule). Because the workspace
+# path is identical there, even the workspace-crate fingerprints stay valid —
+# the seeded dir is warmer than a worktree seed.
 #
 # Do NOT share one CARGO_TARGET_DIR across worktrees instead: cargo's build lock
 # would serialize concurrent agents, and the local gates assume ./target
 # (BUG-020). Per-worktree target + CoW seed keeps builds parallel AND warm.
 set -euo pipefail
+
+clone_target() { # clone_target <src-target> <dest-target>
+    local src="$1" dst="$2"
+    mkdir "$dst"
+    # CACHEDIR.TAG (written by cargo) marks target/ for backup tools to skip.
+    [[ -f "$src/CACHEDIR.TAG" ]] && cp -c "$src/CACHEDIR.TAG" "$dst/" 2>/dev/null || true
+    # Clone each profile dir (debug, release, per-target triples), skipping
+    # incremental/. `cp -Rc` requests a CoW clone (APFS); on a non-CoW
+    # filesystem it falls back to a real copy — still correct, just slower.
+    local profile name entry base
+    for profile in "$src"/*/; do
+        name="$(basename "$profile")"
+        [[ "$name" == "tmp" ]] && continue
+        mkdir "$dst/$name"
+        for entry in "$profile".??* "$profile"*; do
+            base="$(basename "$entry")"
+            [[ -e "$entry" ]] || continue
+            [[ "$base" == "incremental" || "$base" == "." || "$base" == ".." ]] && continue
+            cp -Rc "$entry" "$dst/$name/$base"
+        done
+    done
+}
+
+if [[ "${1:-}" == "--target-dir" ]]; then
+    dest="${2:?usage: worktree-warm.sh --target-dir <dir>}"
+    root="$(git rev-parse --show-toplevel)"
+    case "$dest" in /*) ;; *) dest="$root/$dest" ;; esac
+    if [[ -e "$dest" ]]; then
+        echo "worktree-warm: $dest already exists; leaving it alone" >&2
+        exit 0
+    fi
+    if [[ ! -d "$root/target" ]]; then
+        echo "worktree-warm: no $root/target to clone (run a build first)" >&2
+        exit 1
+    fi
+    clone_target "$root/target" "$dest"
+    echo "worktree-warm: seeded $dest from $root/target (CoW clone, incremental/ skipped)"
+    exit 0
+fi
 
 dest="${1:-$(pwd)}"
 dest="$(cd "$dest" && pwd)"
@@ -42,22 +89,5 @@ if [[ ! -d "$main/target" ]]; then
     exit 1
 fi
 
-mkdir "$dest/target"
-# CACHEDIR.TAG (written by cargo) marks target/ for backup tools to skip.
-[[ -f "$main/target/CACHEDIR.TAG" ]] && cp -c "$main/target/CACHEDIR.TAG" "$dest/target/" 2>/dev/null || true
-
-# Clone each profile dir (debug, release, per-target triples), skipping
-# incremental/. `cp -Rc` requests a CoW clone (APFS); on a non-CoW filesystem it
-# falls back to a real copy — still correct, just slower.
-for profile in "$main"/target/*/; do
-    name="$(basename "$profile")"
-    [[ "$name" == "tmp" ]] && continue
-    mkdir "$dest/target/$name"
-    for entry in "$profile".??* "$profile"*; do
-        base="$(basename "$entry")"
-        [[ -e "$entry" ]] || continue
-        [[ "$base" == "incremental" || "$base" == "." || "$base" == ".." ]] && continue
-        cp -Rc "$entry" "$dest/target/$name/$base"
-    done
-done
+clone_target "$main/target" "$dest/target"
 echo "worktree-warm: seeded $dest/target from $main/target (CoW clone, incremental/ skipped)"
