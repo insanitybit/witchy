@@ -34,6 +34,10 @@ A `Bytes` is a flat, UTF-8-free sequence of bytes — the type for binary data (
 
 The UTF-8 bytes of a string.
 
+#### `fn from_list(xs: List(Int)) -> Result(Bytes, String)`
+
+Build raw bytes from integers in `0..=255`, or Err on the first invalid byte.
+
 #### `fn to_string_lossy(b: Bytes) -> String`
 
 Decode bytes as UTF-8 text, replacing invalid sequences with U+FFFD. This is explicit about being lossy; use `decode_utf8` when invalid bytes must be an Err.

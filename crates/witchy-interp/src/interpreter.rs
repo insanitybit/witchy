@@ -1237,6 +1237,22 @@ impl Interpreter {
                 Value::Str(s) => Ok(Some(Value::Bytes(s.into_bytes()))),
                 other => err(format!("bytes.from_string expects a String, got `{other}`")),
             },
+            "__bytes_from_list" => match one(args)? {
+                Value::List(xs) => {
+                    let mut out = Vec::with_capacity(xs.len());
+                    for x in xs {
+                        let Value::Int(n) = x else {
+                            return err("bytes.from_list expects a List(Int)");
+                        };
+                        if !(0..=255).contains(&n) {
+                            return err(format!("bytes.from_list: value {n} is outside 0..=255"));
+                        }
+                        out.push(n as u8);
+                    }
+                    Ok(Some(Value::Bytes(out)))
+                }
+                other => err(format!("bytes.from_list expects a List(Int), got `{other}`")),
+            },
             "__bytes_to_string" => match one(args)? {
                 Value::Bytes(b) => Ok(Some(Value::Str(String::from_utf8_lossy(&b).into_owned()))),
                 other => err(format!("bytes.to_string expects Bytes, got `{other}`")),

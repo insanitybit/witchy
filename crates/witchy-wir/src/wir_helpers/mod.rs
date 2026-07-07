@@ -862,6 +862,59 @@ pub fn bytes_at_helper() -> WirFunc {
     }
 }
 
+/// `$bytes_from_list(xs) -> i32` — build a flat `Bytes` buffer from a
+/// `List(Int)`. The public `std/bytes.from_list` wrapper validates every slot is
+/// in `0..=255`; this helper performs the representation copy.
+pub fn bytes_from_list_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let load_len = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    let slot_ptr = || b(BinOp::Add, b(BinOp::Add, getl("xs"), i32c(4)), b(BinOp::Mul, getl("i"), i32c(8)));
+    let byte_value = || E::Convert {
+        from: Kind::I64,
+        to: Kind::I32,
+        arg: Box::new(E::Load { ptr: Box::new(slot_ptr()), kind: Kind::I64, offset: 0 }),
+    };
+    WirFunc {
+        name: "bytes_from_list".into(),
+        params: vec![WirLocal { name: "xs".into(), ty: WirTy::Bool }],
+        ret: vec![WirTy::Str],
+        locals: ["len", "res", "i"]
+            .iter()
+            .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
+            .collect(),
+        body: vec![
+            setl("len", load_len(getl("xs"))),
+            setl("res", E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] }),
+            N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            setl("i", i32c(0)),
+            N::Block {
+                label: "done".into(),
+                result: None,
+                body: vec![N::Loop {
+                    label: "l".into(),
+                    body: vec![
+                        N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("i"), getl("len"))) },
+                        N::Store8 {
+                            ptr: b(BinOp::Add, getl("res"), getl("i")),
+                            value: byte_value(),
+                            offset: 4,
+                        },
+                        setl("i", b(BinOp::Add, getl("i"), i32c(1))),
+                        N::Br { target: "l".into(), cond: None },
+                    ],
+                }],
+            },
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
 // Helpers below realize a confined slice *view* (RFC-0028 confined Views): a
 // `let w = list.slice(src, lo, hi)` whose copy was elided keeps only `src`, `lo`,
 // `hi`, and reads through them. Both recompute the clamped window
@@ -4286,6 +4339,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             helper_deps: &[],
             import_deps: &["__witchy_abort"],
             uses_heap: false,
+            uses_table: false,
+        }),
+        "bytes_from_list" => Some(WirHelperSpec {
+            func: bytes_from_list_helper(),
+            helper_deps: &["rc_alloc"],
+            import_deps: &[],
+            uses_heap: true,
             uses_table: false,
         }),
         "list_len_view" => Some(WirHelperSpec {

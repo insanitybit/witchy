@@ -518,12 +518,12 @@
     }
 
     /// (Bytes) The first-class `Bytes` type: a UTF-8-free flat byte buffer. Exercises
-    /// the round-trip with `String`, length/at/get/concat/slice/to_list/search, on
+    /// the round-trip with `String`, checked `from_list`, length/at/get/concat/slice/to_list/search, on
     /// both backends (linked interp + compiled WASM), which must agree — `Bytes` shares `String`'s
     /// `[len][bytes]` layout, so the compiled ops are identity/String-reuse.
     #[test]
     fn bytes_type_backends_agree() {
-        let src = "import bytes\nimport list\nimport option\n\nfn main(console: Console):\n    let b = bytes.from_string(\"hi!\")\n    print(console, __render(bytes.length(b)))\n    print(console, __render(bytes.at(b, 0)))\n    print(console, __render(bytes.get(b, 1).unwrap_or(0)))\n    print(console, __render(bytes.get(b, 99).unwrap_or(0 - 1)))\n    print(console, bytes.to_string(b))\n    let c = bytes.concat(b, bytes.from_string(\"?\"))\n    print(console, bytes.to_string_lossy(c))\n    print(console, bytes.to_string(bytes.slice(c, 1, 3)))\n    print(console, __render(bytes.to_list(b)))\n    print(console, __render(bytes.is_empty(b)))\n    print(console, __render(bytes.index_of(c, bytes.from_string(\"i!\"))))\n    print(console, __render(bytes.index_of(c, bytes.from_string(\"zz\"))))\n    print(console, __render(bytes.contains(c, bytes.from_string(\"!?\"))))\n    print(console, __render(bytes.starts_with(c, b)))\n    print(console, __render(bytes.ends_with(c, bytes.from_string(\"!?\"))))\n";
+        let src = "import bytes\nimport list\nimport option\nimport result\n\nfn main(console: Console):\n    let b = bytes.from_string(\"hi!\")\n    print(console, __render(bytes.length(b)))\n    print(console, __render(bytes.at(b, 0)))\n    print(console, __render(bytes.get(b, 1).unwrap_or(0)))\n    print(console, __render(bytes.get(b, 99).unwrap_or(0 - 1)))\n    print(console, bytes.to_string(b))\n    let c = bytes.concat(b, bytes.from_string(\"?\"))\n    print(console, bytes.to_string_lossy(c))\n    print(console, bytes.to_string(bytes.slice(c, 1, 3)))\n    print(console, __render(bytes.to_list(b)))\n    let raw = result.unwrap_or(bytes.from_list([0, 255, 65]), bytes.from_string(\"\"))\n    print(console, __render(bytes.to_list(raw)))\n    match bytes.decode_utf8(raw):\n        Ok(_) -> print(console, \"bad\")\n        Err(e) -> print(console, e)\n    match bytes.from_list([0 - 1]):\n        Ok(_) -> print(console, \"bad\")\n        Err(e) -> print(console, e)\n    match bytes.from_list([256]):\n        Ok(_) -> print(console, \"bad\")\n        Err(e) -> print(console, e)\n    print(console, __render(bytes.is_empty(b)))\n    print(console, __render(bytes.index_of(c, bytes.from_string(\"i!\"))))\n    print(console, __render(bytes.index_of(c, bytes.from_string(\"zz\"))))\n    print(console, __render(bytes.contains(c, bytes.from_string(\"!?\"))))\n    print(console, __render(bytes.starts_with(c, b)))\n    print(console, __render(bytes.ends_with(c, bytes.from_string(\"!?\"))))\n";
         let expected = [
             "3",
             "104",
@@ -533,6 +533,10 @@
             "hi!?",
             "i!",
             "[104, 105, 33]",
+            "[0, 255, 65]",
+            "bytes.decode_utf8: invalid UTF-8",
+            "bytes.from_list: value -1 is outside 0..=255",
+            "bytes.from_list: value 256 is outside 0..=255",
             "false",
             "Some(1)",
             "None",

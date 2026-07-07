@@ -15,6 +15,13 @@ import result
 pub fn from_string(s: String) -> Bytes:
     __bytes_from_string(s)
 
+// Build raw bytes from integers in `0..=255`, or Err on the first invalid byte.
+pub fn from_list(xs: List(Int)) -> Result(Bytes, String):
+    for n in xs:
+        if n < 0 || n > 255:
+            return Err("bytes.from_list: value ${n} is outside 0..=255")
+    Ok(__bytes_from_list(xs))
+
 // Decode bytes as UTF-8 text, replacing invalid sequences with U+FFFD. This is
 // explicit about being lossy; use `decode_utf8` when invalid bytes must be an Err.
 pub fn to_string_lossy(b: Bytes) -> String:

@@ -827,6 +827,9 @@ impl Codegen {
             // `from_string` is identity — every witchy `String` is already valid
             // UTF-8, so its bytes are the buffer verbatim.
             ("__bytes_from_string", 1) => self.lower_expr(&args[0])?,
+            ("__bytes_from_list", 1) => {
+                call("bytes_from_list", vec![self.lower_expr(&args[0])?])
+            }
             // (parity, SEC-042) `to_string` is NOT identity: `Bytes` has no UTF-8
             // contract, so invalid sequences must be lossily normalized to U+FFFD to
             // match the interpreter's `String::from_utf8_lossy`. Route through the

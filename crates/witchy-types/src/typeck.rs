@@ -2538,6 +2538,7 @@ impl Checker {
             // `String` share the flat `[len][bytes]` layout, so the representation-level
             // ops are identity/reuse on the compiled backend.
             "__bytes_from_string" => Some((vec![Ty::String], Ty::Bytes)),
+            "__bytes_from_list" => Some((vec![Ty::List(Box::new(Ty::Int))], Ty::Bytes)),
             "__bytes_to_string" => Some((vec![Ty::Bytes], Ty::String)),
             // (RFC-0055) The channel-endpoint erasure bridge. `__erase` casts any
             // typed message to the executor's opaque `__Msg`; `__unerase` recovers
