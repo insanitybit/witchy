@@ -635,9 +635,10 @@ composes with an explicit `where` clause. The std library uses it for
 
 `derive(...)` generates trait impls for a type. The generated code is appended to
 the module before type-checking, so both backends and the footprint analysis treat
-it like handwritten code. The supported derives are `Show`, `Eq`, `Ord`, `Reflect`,
-and `Deserialize`. `Reflect` needs `import reflect` and makes a user type
-reflectable (scalars and the built-in containers already are); it is what lets
+it like handwritten code. The supported derives are `Show`, `PartialEq`, `Eq`,
+`PartialOrd`, `Ord`, `Reflect`, and `Deserialize`. `Reflect` needs
+`import reflect` and makes a user type reflectable (scalars and the built-in
+containers already are); it is what lets
 `json.stringify` / `json.from_value` encode the type with no per-type code.
 `Deserialize` generates `from_json(j) -> Result(Self, String)` for scalars,
 lists, options, and nested records, and — because the generated body names them
