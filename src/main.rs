@@ -59,7 +59,7 @@ witchy — a capability-secure language with twin interpreter and WASM backends
 
 USAGE:
     witchy [--net <host:port>]... <file.witchy>   run a program
-    witchy check    <file.witchy>                 type-check without running
+    witchy check    <file.witchy>                 check + verify compiled acceptance without running
     witchy parity   <file.witchy>                 run on both backends, confirm identical output
                                                   (a verify-the-compiler tool, not a workflow step)
     witchy test     <file.witchy|dir>             run in-language tests (zero-param `test_*` functions)
@@ -490,8 +490,9 @@ fn main() -> wasmtime::Result<()> {
         }
         return Ok(());
     }
-    // `witchy check <file>` parses, links, and type-checks without running —
-    // exits non-zero on any error. Validates programs you can't run (servers).
+    // `witchy check <file>` parses, links, type-checks, and verifies compiled
+    // backend acceptance without running — exits non-zero on any error. Validates
+    // programs you can't run (servers).
     if std::env::args().nth(1).as_deref() == Some("check") {
         let Some(path) = std::env::args().nth(2) else {
             eprintln!("usage: witchy check <file.witchy>");
@@ -1358,14 +1359,26 @@ fn link_file_with_deps(
     Ok((linked, entry_stem))
 }
 
-/// Parse, link, and type-check a file WITHOUT running it (`witchy check`). Useful
-/// for CI and for validating programs you don't want to run — e.g. servers,
-/// which never return.
+/// Parse, link, type-check, and verify compiled-backend acceptance WITHOUT
+/// running the program (`witchy check`). Useful for CI and for validating
+/// programs you don't want to run — e.g. servers, which never return.
 fn check_file(path: &str) -> Result<(), String> {
     let (linked, stem) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
     enforce_performance_modes(&linked, &stem)?;
+    if linked_has_main(&linked) {
+        let _ = compile_linked_to_wasm(&linked)?;
+    }
     Ok(())
+}
+
+/// Whether a linked module contains a runnable `main`. Library-only files are
+/// valid `witchy check` inputs, but there is no program artifact to compile.
+fn linked_has_main(linked: &ast::Module) -> bool {
+    linked
+        .items
+        .iter()
+        .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"))
 }
 
 /// Whether a linked function originated in the entry file. The linker keeps the
@@ -1585,11 +1598,7 @@ fn execute_file_exit(
 
     // No `main` means there's nothing to run directly — but the file still
     // compiled. Explain rather than failing with "unknown function `main`".
-    let has_main = linked
-        .items
-        .iter()
-        .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"));
-    if !has_main {
+    if !linked_has_main(&linked) {
         let msg = format!(
             "`{entry_stem}` compiled OK — it's a library (no `main`); import it from another module."
         );
@@ -2005,11 +2014,7 @@ fn parity_check(path: &str) -> ParityOutcome {
     if let Err(e) = enforce_performance_modes(&linked, &stem) {
         unexpected!("{e}");
     }
-    let has_main = linked
-        .items
-        .iter()
-        .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"));
-    if !has_main {
+    if !linked_has_main(&linked) {
         unexpected!("`{path}` has no `main` to run");
     }
     // Compile first (borrows `linked`), then run the interpreter (consumes it).
@@ -2404,11 +2409,7 @@ fn run_file_sandboxed(
     let (linked, stem) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
     enforce_performance_modes(&linked, &stem)?;
-    let has_main = linked
-        .items
-        .iter()
-        .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"));
-    if !has_main {
+    if !linked_has_main(&linked) {
         return Err(format!("`{path}` has no `main` to run"));
     }
     // The sandbox grants EXACTLY what a run gives `main` (see `run_grant`) — not the

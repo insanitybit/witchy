@@ -120,6 +120,30 @@ fn mode_opt_enforced_across_subcommands() {
     assert!(!run(&["test", &bad]).status.success(), "BUG-177: test must enforce mode opt");
 }
 
+#[test]
+fn check_rejects_programs_the_compiled_backend_cannot_accept() {
+    // RFC-0070 D2: `check` is the acceptance boundary for runnable programs. A
+    // program that typechecks but cannot be compiled must fail at `check`, not
+    // surprise the user later at `run`/`emit-wasm`.
+    let dir = workdir("check-compiled-acceptance");
+    let bad = write(
+        &dir,
+        "dict_record_key.witchy",
+        "type Key:\n    Key(Int)\n\nfn main(console: Console):\n    var d = dict.new()\n    d = dict.insert(d, Key(1), \"one\")\n    print(console, dict.get_or(d, Key(1), \"missing\"))\n",
+    );
+    let out = run(&["check", &bad]);
+    assert!(!out.status.success(), "check must fail for a compiled-backend reject");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("cannot compile to WASM") && stderr.contains("Dict key type"),
+        "check should surface the compiled acceptance error, got: {stderr}"
+    );
+
+    let lib = write(&dir, "lib.witchy", "pub fn answer() -> Int:\n    42\n");
+    let out = run(&["check", &lib]);
+    assert!(out.status.success(), "library-only files remain valid check inputs: {}", String::from_utf8_lossy(&out.stderr));
+}
+
 // ---- BUG-120 / BUG-184 / BUG-185: `witchy test` ----
 
 #[test]

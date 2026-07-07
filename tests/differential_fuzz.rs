@@ -8,8 +8,10 @@
 //!
 //! `witchy parity <file>` is the oracle: it runs both backends and prints `DIVERGE` on a real
 //! mismatch (incl. interp-ok / compiled-trap), `agree (both error)` when both reject (so we
-//! need not avoid runtime traps), and a plain exit-1 for a compile error (a generator miss,
-//! tolerated). A crash (terminated by signal) means the host itself died — also a bug.
+//! need not avoid runtime traps), and a plain exit-1 for a compile error. A compile miss is
+//! tolerated only when `witchy check` rejects the same generated source; if `check` accepts it,
+//! every optimizer config must reach both backends. A crash (terminated by signal) means the
+//! host itself died — also a bug.
 //!
 //! Two RFC-0037 upgrades live here. (§2) CROSS-LEVER DIFFERENTIAL: every program is run under a
 //! SET of `WITCHY_OPT` configurations (baseline `none`, the production default, each opt-in
@@ -608,6 +610,23 @@ fn run_parity_t(src: &str, cfg: &str, prefix: &str, timeout: std::time::Duration
     }
 }
 
+/// Whether `witchy check` accepts `src`. The differential fuzzer may skip sources
+/// that fail the public acceptance gate, but a source that passes `check` must run
+/// on both backends; otherwise the acceptance set has drifted.
+fn check_accepts(src: &str, prefix: &str) -> Result<bool, String> {
+    let path = unique_temp_path(prefix);
+    std::fs::File::create(&path).unwrap().write_all(src.as_bytes()).unwrap();
+    let out = Command::new(BIN).args(["check", path.to_str().unwrap()]).output().unwrap();
+    let _ = std::fs::remove_file(&path);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    match out.status.code() {
+        Some(0) => Ok(true),
+        Some(_) => Ok(false),
+        None => Err(format!("{stdout}{stderr}")),
+    }
+}
+
 /// (RFC-0037 §6) Greedily minimize a failing program: drop body lines one at a time, keeping any
 /// drop under which `fails` still holds, to a fixpoint. A structural line whose removal stops the
 /// failure (an import, a `let` a later line needs) is kept automatically — the predicate returns
@@ -676,6 +695,9 @@ fn differential_fuzz_interpreter_vs_compiled() {
     for seed in 0..programs as u64 {
         let (src, used) = gen_program(seed.wrapping_mul(0x1234_5678_9ABC_DEF1).wrapping_add(1), statements);
         kinds_used |= used;
+        let check_ok = check_accepts(&src, &format!("check_s{seed}")).unwrap_or_else(|out| {
+            panic!("witchy check CRASHED (signal) on generated seed {seed}.\n--- program ---\n{src}\n--- output ---\n{out}")
+        });
         // Per-config outcome for THIS seed, for the cross-config consistency check below.
         let mut seed_outcomes: Vec<&'static str> = Vec::with_capacity(CONFIGS.len());
         // Cross-lever differential: `parity` reads `WITCHY_OPT` for its compiled side; the
@@ -723,6 +745,10 @@ fn differential_fuzz_interpreter_vs_compiled() {
                     }
                 }
                 ParityResult::Skip => {
+                    assert!(
+                        !check_ok,
+                        "`witchy check` accepted generated seed {seed}, but parity skipped it under WITCHY_OPT={label} — check and the compiled backend have different acceptance sets.\n--- program ---\n{src}"
+                    );
                     tallies[ci].skip += 1;
                     seed_outcomes.push("skip");
                     if cfg.is_empty() {

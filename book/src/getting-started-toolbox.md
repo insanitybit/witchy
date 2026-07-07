@@ -7,16 +7,16 @@ constantly; here they are, roughly in the order you meet them.
 
 ```sh
 witchy program.witchy            # compile and run
-witchy check program.witchy      # type-check only, don't run (also prints
-                                 # performance notes, e.g. copy-path loops)
+witchy check program.witchy      # check + verify compiled acceptance, don't run
+                                 # (also prints performance notes)
 witchy fmt program.witchy        # reformat in place (canonical layout)
 witchy fmt --check program.witchy  # verify formatting (for CI); exit 1 if not
 ```
 
-`check` is fast and catches everything the type system can — including
-capability and exhaustiveness errors — without running anything. `fmt` is the
-canonical formatter; it preserves your comments and is idempotent, so there's
-one true layout and no style arguments.
+`check` catches type errors, capability/exhaustiveness errors, performance-mode
+violations, and compiled-backend acceptance failures without running the program.
+`fmt` is the canonical formatter; it preserves your comments and is idempotent,
+so there's one true layout and no style arguments.
 
 Know that `fmt` canonicalizes *forms*, not just whitespace: a
 pre-migration rendering call prints back as the interpolation `"a ${x}"`,

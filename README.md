@@ -216,7 +216,7 @@ cargo build --release
 ```
 witchy [--net <host:port>]... <file.witchy>   run a program
                                               ([--signing-key <seed-file>] grants the root Secret)
-witchy check    <file.witchy>                 type-check without running
+witchy check    <file.witchy>                 check + verify compiled acceptance without running
 witchy parity   <file.witchy>                 run on both backends, confirm identical output
                                               (a verify-the-compiler tool, not a workflow step)
 witchy sandbox [--dir <root>] [--net <addr>]... <file.witchy> [args...]
