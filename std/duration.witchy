@@ -105,28 +105,38 @@ pub fn part_milliseconds(d: Duration) -> Int:
 // ---- Formatting ----
 
 // A clock string "H:MM:SS": minutes and seconds zero-padded, hours in full (so a
-// long span reads as e.g. "100:00:00"); the sub-second part is dropped.
+// long span reads as e.g. "100:00:00"); the sub-second part is dropped. A
+// negative span renders as a single leading "-" over the absolute components
+// ("-0:00:01"), never as negative fields inside the clock.
 pub fn clock(d: Duration) -> String:
-    "${part_hours(d)}" + ":" + pad2(part_minutes(d)) + ":" + pad2(part_seconds(d))
+    if duration_to_int(d) < 0:
+        "-" + clock(abs(d))
+    else:
+        "${part_hours(d)}" + ":" + pad2(part_minutes(d)) + ":" + pad2(part_seconds(d))
 
 fn pad2(n: Int) -> String:
     string.pad_left("${n}", 2, "0")
 
 // A compact label that omits leading zero units: `1h1m1s`, `1m30s`, `5s`, and
-// `500ms` for a pure sub-second span.
+// `500ms` for a pure sub-second span. A negative span (e.g. from subtraction)
+// keeps its sign as a single leading "-" over the absolute magnitude: `-1s`,
+// `-1m30s` — not the truncated-division fields of the raw negative count.
 pub fn human(d: Duration) -> String:
-    let h = part_hours(d)
-    let m = part_minutes(d)
-    let s = part_seconds(d)
-    let r = part_milliseconds(d)
-    if h > 0:
-        "${h}" + "h" + "${m}" + "m" + "${s}" + "s"
-    else if m > 0:
-        "${m}" + "m" + "${s}" + "s"
-    else if s > 0:
-        "${s}" + "s"
+    if duration_to_int(d) < 0:
+        "-" + human(abs(d))
     else:
-        "${r}" + "ms"
+        let h = part_hours(d)
+        let m = part_minutes(d)
+        let s = part_seconds(d)
+        let r = part_milliseconds(d)
+        if h > 0:
+            "${h}" + "h" + "${m}" + "m" + "${s}" + "s"
+        else if m > 0:
+            "${m}" + "m" + "${s}" + "s"
+        else if s > 0:
+            "${s}" + "s"
+        else:
+            "${r}" + "ms"
 
 // Parse a duration string to a `Duration` — the inverse of `human`. Accepts
 // unit-tagged input ("1h2m3s", "500ms", "2hr", any subset) using ms/s/m/h/hr/d/w,

@@ -169,11 +169,12 @@ pub fn is_perfect_square(n: Int) -> Bool:
         r * r == n
 
 // Render `n` in `base` (2..16) with lowercase digits; a negative `n` gets a
-// leading "-". An out-of-range base yields "" (so callers can detect misuse).
+// leading "-". A base outside 2..16 has no digit alphabet, so it fails loudly
+// naming the bad argument (RFC-0044 rule 3) rather than returning "".
 pub fn to_base(n: Int, base: Int) -> String:
     if base < 2 || base > 16:
-        ""
-    else if n == 0:
+        fail("math.to_base: base `${base}` is outside 2..16")
+    if n == 0:
         "0"
     else if n < 0:
         "-" + to_base_neg(n, base)

@@ -10,14 +10,16 @@ import string
 pub fn u64(rand: Rand) -> Int:
     rand_u64(rand)
 
-// A non-negative integer in `[0, n)` (and `0` when `n <= 0`). Clears the sign bit, then
-// takes the remainder; the modulo bias is negligible for ordinary small ranges. For
-// cryptographic uniformity draw bytes with `hex` instead.
+// A non-negative integer in `[0, n)`. `n` must be positive (RFC-0044 rule 3):
+// `[0, 0)` is an impossible range, so a non-positive bound fails loudly naming
+// the bad argument (matching `random.next_below`) instead of returning a
+// plausible-looking `0`. Clears the sign bit, then takes the remainder; the
+// modulo bias is negligible for ordinary small ranges. For cryptographic
+// uniformity draw bytes with `hex` instead.
 pub fn below(rand: Rand, n: Int) -> Int:
     if n <= 0:
-        0
-    else:
-        (rand_u64(rand) & 9223372036854775807) % n
+        fail("rand.below: bound `${n}` must be positive")
+    (rand_u64(rand) & 9223372036854775807) % n
 
 // A fair coin.
 pub fn bool(rand: Rand) -> Bool:
