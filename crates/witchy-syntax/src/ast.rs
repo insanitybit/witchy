@@ -685,15 +685,15 @@ pub fn collect_type_names<S: Extend<String>>(t: &Type, out: &mut S) {
 /// `PartialEq` impl in the linked module — a whole-program fact both backends
 /// consume so `==`/`!=` honor a custom impl at every depth (inside a `List`,
 /// `Option`, tuple, `Dict`, record, …). A type whose `PartialEq` comes from
-/// `derive(PartialEq)`/`derive(Eq)` is the STRUCTURAL default and is NOT in the
-/// set, so containers of it keep the fast structural compare (identical code to
-/// today). Called on the single linked module, so `derive::expand` has already run
-/// and stamped `TypeDef::partial_eq_derived`.
+/// `derive(PartialEq)` or an Eq-implied structural PartialEq is the STRUCTURAL
+/// default and is NOT in the set, so containers of it keep the fast structural
+/// compare (identical code to today). Called on the single linked module, so
+/// `derive::expand` has already run and stamped `TypeDef::partial_eq_derived`.
 ///
 /// A type is "custom-eq" when there is an `impl PartialEq for T` AND `T`'s
-/// declaration did not derive PartialEq/Eq. (A type with a hand impl has
-/// `partial_eq_derived == false`; a derived one has it `true`; the two are
-/// mutually exclusive in practice since deriving generates the impl.)
+/// declaration did not generate a structural PartialEq. (A type with a hand impl
+/// plus marker `derive(Eq)` has `partial_eq_derived == false`; a derived
+/// structural PartialEq has it `true`.)
 pub fn custom_partial_eq_types(module: &Module) -> std::collections::HashSet<String> {
     // Types that DERIVED their PartialEq — their generated impl is structural.
     let mut derived: std::collections::HashSet<&str> = std::collections::HashSet::new();

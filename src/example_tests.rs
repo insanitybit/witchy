@@ -962,6 +962,25 @@ fn main(console: Console):
         );
     }
 
+    /// (BUG-478) `derive(Eq)` is a marker when the type already has a custom
+    /// `PartialEq`. It must not mark that `PartialEq` as structural, because
+    /// nested equality then stops calling the hand-written semantics.
+    #[test]
+    fn derive_eq_marker_preserves_custom_partial_eq_at_depth_on_both_backends() {
+        let src = "import cmp\n\ntype Key derive(Eq):\n    id: Int\n    cache: Int\n\nimpl PartialEq for Key:\n    fn eq(self, other: Key) -> Bool:\n        self.id == other.id\n\ntype Wrapper derive(PartialEq, Eq):\n    key: Key\n\nfn a() -> Key:\n    Key(1, 10)\n\nfn b() -> Key:\n    Key(1, 20)\n\nfn main(console: Console):\n    print(console, __render(a() == b()))\n    print(console, __render([a()] == [b()]))\n    print(console, __render(Some(a()) == Some(b())))\n    print(console, __render((a(), 1) == (b(), 1)))\n    print(console, __render(Wrapper(a()) == Wrapper(b())))\n";
+        let expected = ["true", "true", "true", "true", "true"];
+        assert_eq!(
+            link_run(src),
+            expected,
+            "interp: derive(Eq) marker must preserve custom PartialEq",
+        );
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: derive(Eq) marker must preserve custom PartialEq",
+        );
+    }
+
     /// (BUG-544) `Ordering` is ordinary std data: it renders through `Show`,
     /// reflects as a nullary variant, and therefore serializes through JSON
     /// reflection, including when it appears in a derived-reflect record.

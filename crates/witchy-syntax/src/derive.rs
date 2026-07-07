@@ -69,17 +69,31 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
     let mut needs_option = false;
     let mut needs_reflect = false;
     let mut needs_show = false;
+    let explicit_partial_eq_targets: std::collections::HashSet<String> = module
+        .items
+        .iter()
+        .filter_map(|item| {
+            let Item::Impl(im) = item else { return None };
+            (im.trait_name.as_deref() == Some("PartialEq")).then(|| im.type_name.clone())
+        })
+        .collect();
     for item in &mut module.items {
         let Item::Type(t) = item else { continue };
         // CONSUME the annotation: this pass runs at every pipeline entry
         // (records::lower is called per stage) and must be idempotent.
         let derives = std::mem::take(&mut t.derives);
-        // (RFC-0047) Record that this type's PartialEq is the STRUCTURAL derive, so
-        // the whole-program `==`-through-PartialEq rule keeps the fast path for it
-        // (a container of `T` recurses structurally rather than calling an impl).
+        let has_explicit_partial_eq = explicit_partial_eq_targets.contains(&t.name);
+        // (RFC-0047) Record that this type's PartialEq is the STRUCTURAL derive,
+        // so whole-program container equality can keep its structural fast path.
+        // `derive(Eq)` only implies structural PartialEq when no hand-written
+        // `impl PartialEq for T` exists; in that case the Eq derive below emits
+        // the missing structural PartialEq. If the user wrote PartialEq, Eq is
+        // just the marker and nested equality must keep calling the custom impl.
         // Set (never cleared): `derives` was just consumed, so a later idempotent
         // re-run sees an empty list — the flag must survive that.
-        if derives.iter().any(|d| d == "PartialEq" || d == "Eq") {
+        if derives.iter().any(|d| d == "PartialEq")
+            || (derives.iter().any(|d| d == "Eq") && !has_explicit_partial_eq)
+        {
             t.partial_eq_derived = true;
         }
         let mut emitted_partial_eq = false;
@@ -102,7 +116,7 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                             t.name
                         ));
                     }
-                    if !emitted_partial_eq {
+                    if !has_explicit_partial_eq && !emitted_partial_eq {
                         generated.push(derive_via_comptime("meta.derive_partial_eq", t));
                         emitted_partial_eq = true;
                     }
