@@ -183,6 +183,7 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
                 }
             }
         }
+        merge_from_imports(&mut module.from_imports, emitted.from_imports);
         let n = emitted.items.len();
         for mut item in emitted.items {
             // The emitted items were parsed from a standalone blob, so every line
@@ -214,6 +215,23 @@ fn module_type_infos(module: &Module) -> Vec<Expr> {
             _ => None,
         })
         .collect()
+}
+
+fn merge_from_imports(
+    target: &mut Vec<(String, Vec<String>)>,
+    emitted: Vec<(String, Vec<String>)>,
+) {
+    for (module, names) in emitted {
+        if let Some((_, existing)) = target.iter_mut().find(|(m, _)| m == &module) {
+            for name in names {
+                if !existing.contains(&name) {
+                    existing.push(name);
+                }
+            }
+        } else {
+            target.push((module, names));
+        }
+    }
 }
 
 /// Re-stamp every source line an item carries to `line`. See the call site: the
@@ -402,5 +420,23 @@ fn main(console: Console):
         witchy_types::typeck::check(&linked).expect("typecheck");
         let out = crate::interpreter::run_module(linked, ".", Vec::new()).expect("run");
         assert_eq!(out, ["true", "true", "7"]);
+    }
+
+    #[test]
+    fn emitted_from_imports_bind_generated_items() {
+        let src = r#"
+comptime:
+    emit("from json import Json")
+    emit("")
+    emit("pub fn generated(j: Json) -> Int:")
+    emit("    1")
+
+fn main(console: Console):
+    print(console, "ok")
+"#;
+
+        let module = witchy_syntax::parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
+        witchy_types::typeck::check(&linked).expect("typecheck");
     }
 }
