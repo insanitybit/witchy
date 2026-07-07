@@ -526,6 +526,16 @@ const BUILTIN_TYPE_NAMES: &[&str] = &[
     "Dict", "BuildOut", "BuildRead", "BuildEnv", "BuildNet", "BuildExec",
 ];
 
+const AMBIENT_STD_TYPE_NAMES: &[&str] = &["Ordering", "Set", "Iter"];
+
+fn is_synthetic_type_name(name: &str) -> bool {
+    name.strip_prefix("__anon").is_some_and(|n| {
+        !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())
+    }) || name.strip_prefix("Tuple").is_some_and(|n| {
+        !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())
+    })
+}
+
 /// Validate that every named type in `t` is known — a builtin, a declared type,
 /// or a lowercase generic parameter — so a typo like `fn f(x: Flarb)` is a clear
 /// "unknown type" error rather than an opaque type that mis-unifies later.
@@ -3214,6 +3224,15 @@ impl Checker {
                     self.reject_externref_cap_aggregate_ty(&result, &format!("constructor `{name}`"))?;
                     Ok(result)
                 } else {
+                    if self.adt_variants.contains_key(name)
+                        || BUILTIN_TYPE_NAMES.contains(&name.as_str())
+                        || AMBIENT_STD_TYPE_NAMES.contains(&name.as_str())
+                        || is_synthetic_type_name(name)
+                    {
+                        return terr(format!(
+                            "type `{name}` is not a value; use it in a type annotation or call a real constructor/function"
+                        ));
+                    }
                     // Unknown constructor: still check its arguments, but don't
                     // constrain the result type.
                     for arg in args {

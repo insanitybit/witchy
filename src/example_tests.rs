@@ -951,6 +951,48 @@
         );
     }
 
+    /// Type heads are not runtime values. The resolver may keep ambient type
+    /// names bare (`Int`, `Set`, `Tuple2`, a local sum type name), but type
+    /// checking must reject them before codegen instead of letting them look like
+    /// unknown constructors with fresh result types.
+    #[test]
+    fn type_names_are_rejected_as_values_after_linking() {
+        let cases = [
+            (
+                "builtin constructor-looking call",
+                "fn main(console: Console):\n    Int(1)\n    print(console, \"bad\")\n",
+                "type `Int` is not a value",
+            ),
+            (
+                "ambient std type",
+                "fn main(console: Console):\n    Set([])\n    print(console, \"bad\")\n",
+                "type `Set` is not a value",
+            ),
+            (
+                "synthetic tuple type",
+                "fn main(console: Console):\n    Tuple2(1, 2)\n    print(console, \"bad\")\n",
+                "type `Tuple2` is not a value",
+            ),
+            (
+                "local sum type name",
+                "type Color:\n    Red\n    Blue\n\nfn main(console: Console):\n    Color\n    print(console, \"bad\")\n",
+                "type `Color` is not a value",
+            ),
+        ];
+
+        for (label, src, want) in cases {
+            let module = parser::parse_module(src).expect(label);
+            let linked = crate::pipeline::link(vec![("main".into(), module)], "main")
+                .unwrap_or_else(|e| panic!("{label}: link failed: {}", e.message));
+            let err = typeck::check(&linked).expect_err(label);
+            assert!(
+                err.message.contains(want),
+                "{label}: expected `{want}`, got `{}`",
+                err.message
+            );
+        }
+    }
+
     /// (BUG-240, parity) `math.abs(Int.MIN)` has no positive `Int`, so both backends
     /// must ABORT rather than silently wrap back to the negative `Int.MIN`. Ordinary
     /// magnitudes still agree. (Was a stable wrong answer: `-Int.MIN == Int.MIN`.)
