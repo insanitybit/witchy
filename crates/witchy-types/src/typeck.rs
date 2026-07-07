@@ -11,7 +11,11 @@
 //! perform output" is simply visible in its type, and code that never received
 //! the capability cannot type-check a call that needs it.
 
-use std::collections::{HashMap, HashSet};
+// foldhash (not SipHash): every key in these tables is compiler-internal
+// (names, spans, expr identities) — never an attacker-chosen collection — so
+// the checker's hot maps skip DoS-resistant hashing. The `*Ext` traits supply
+// `::new()`/`::with_capacity()` for the aliased types.
+use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 use std::fmt;
 
 use witchy_syntax::ast::{
@@ -1635,7 +1639,7 @@ fn check_main_signature(module: &Module) -> Result<(), TypeError> {
     // RFC-0038: a library-defined capability marked `grantable` may also enter at
     // the root (the host mints it from a `[user_caps]` grant). Bareness is enforced
     // separately by `check_grantable_caps`, so here we only recognize the name.
-    let grantable: std::collections::HashSet<&str> = module
+    let grantable: HashSet<&str> = module
         .items
         .iter()
         .filter_map(|it| match it {
@@ -1710,7 +1714,7 @@ fn check_main_signature(module: &Module) -> Result<(), TypeError> {
 /// signature change). Reject any grantable cap that reaches a host capability
 /// through its fields, directly or through nested user types.
 fn check_grantable_caps(module: &Module) -> Result<(), TypeError> {
-    let types: std::collections::HashMap<&str, &ast::TypeDef> = module
+    let types: HashMap<&str, &ast::TypeDef> = module
         .items
         .iter()
         .filter_map(|it| match it {
@@ -1723,7 +1727,7 @@ fn check_grantable_caps(module: &Module) -> Result<(), TypeError> {
         if !t.grantable {
             continue;
         }
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = HashSet::new();
         if let Some(host) = grantable_host_taint(t, &types, &mut seen) {
             return terr(format!(
                 "`grantable capability {}` carries host capability `{host}`; a \
@@ -1741,8 +1745,8 @@ fn check_grantable_caps(module: &Module) -> Result<(), TypeError> {
 /// (transitively through user-type fields), or `None` if the type is bare.
 fn grantable_host_taint<'a>(
     t: &'a ast::TypeDef,
-    types: &std::collections::HashMap<&'a str, &'a ast::TypeDef>,
-    seen: &mut std::collections::HashSet<&'a str>,
+    types: &HashMap<&'a str, &'a ast::TypeDef>,
+    seen: &mut HashSet<&'a str>,
 ) -> Option<String> {
     if !seen.insert(t.name.as_str()) {
         return None; // cycle guard
@@ -1759,8 +1763,8 @@ fn grantable_host_taint<'a>(
 
 fn type_host_taint<'a>(
     ty: &'a ast::Type,
-    types: &std::collections::HashMap<&'a str, &'a ast::TypeDef>,
-    seen: &mut std::collections::HashSet<&'a str>,
+    types: &HashMap<&'a str, &'a ast::TypeDef>,
+    seen: &mut HashSet<&'a str>,
 ) -> Option<String> {
     match ty {
         ast::Type::Named(n, args) => {
@@ -1789,7 +1793,7 @@ fn type_host_taint<'a>(
 /// 2-param `[Named, String] -> String` export whose leading type isn't grantable)
 /// with a clear error instead of silently not exporting the function.
 fn check_export_signatures(module: &Module) -> Result<(), TypeError> {
-    let grantable: std::collections::HashSet<&str> = module
+    let grantable: HashSet<&str> = module
         .items
         .iter()
         .filter_map(|it| match it {

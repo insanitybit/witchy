@@ -10,3 +10,8 @@ description = "witchy compiler — type checking, trait resolution, and monomorp
 # wasmtime), so this crate builds on every target including the wasm playground.
 [dependencies]
 witchy-syntax = { path = "../witchy-syntax" }
+# Fast non-DoS-resistant hasher for the checker's internal tables (keys are
+# compiler-internal strings/ids, never attacker-controlled collections).
+# Matches the runtime dict's foldhash-style choice (8dc801c). no_std-clean
+# (ASLR-seeded, no getrandom), so the wasm playground build keeps working.
+foldhash = "0.2.0"

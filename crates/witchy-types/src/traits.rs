@@ -25,7 +25,9 @@
 //! consume (via `lower`/`lower_for_wasm`) and the checker consumes (via
 //! `lower_checked`), so parity holds by construction.
 
-use std::collections::{HashMap, HashSet};
+// foldhash (not SipHash): all keys are compiler-internal names/ids, never
+// attacker-chosen collections — see the note in typeck.rs.
+use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 
 use witchy_syntax::ast::*;
 
@@ -421,7 +423,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         let (ctor_results, fn_rets, fn_sigs) = build_tables(&items);
         let ctor_fields = build_ctor_fields(&items);
         let record_fields = build_record_fields(&items);
-        let free_fns: std::collections::HashSet<String> = items
+        let free_fns: HashSet<String> = items
             .iter()
             .filter_map(|it| match it {
                 Item::Function(f) => Some(f.name.clone()),
@@ -541,7 +543,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     // whose concrete type is here, or whose container transitively contains one,
     // can render through `show.render`. The rewrite is gated on that helper being
     // linked, so modules that never import `show` keep structural `__render`.
-    let show_types: std::collections::HashSet<String> = trait_impl_table
+    let show_types: HashSet<String> = trait_impl_table
         .keys()
         .filter(|(owner, method, _)| owner == "Show" && method == "show")
         .map(|(_, _, ty)| ty.rsplit_once('.').map_or(ty.clone(), |(_, s)| s.to_string()))
@@ -576,7 +578,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             let (ctor_results, fn_rets, fn_sigs) = build_tables(&items);
             let ctor_fields = build_ctor_fields(&items);
             let record_fields = build_record_fields(&items);
-            let known_fns: std::collections::HashSet<String> = items
+            let known_fns: HashSet<String> = items
                 .iter()
                 .filter_map(|it| match it {
                     Item::Function(f) => Some(f.name.clone()),
@@ -685,7 +687,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     let (ctor_results, fn_rets, fn_sigs) = build_tables(&items);
     let ctor_fields = build_ctor_fields(&items);
         let record_fields = build_record_fields(&items);
-    let free_fns: std::collections::HashSet<String> = items
+    let free_fns: HashSet<String> = items
         .iter()
         .filter_map(|it| match it {
             Item::Function(f) => Some(f.name.clone()),
@@ -755,7 +757,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             // (RFC-0043) A discarded-result error is a definitive diagnostic on a
             // fully-resolved callee — surface it FIRST (ahead of any spurious
             // missing-impl the quiet pass would otherwise report), deduplicated.
-            let mut seen = std::collections::HashSet::new();
+            let mut seen = HashSet::new();
             let mut discards = discard_errors.into_inner();
             discards.retain(|m| seen.insert(m.clone()));
             d.extend(discards);
@@ -1089,10 +1091,10 @@ struct Ctx<'a> {
     /// Plain (non-method) function names: a trait-method call that ALSO names
     /// a free function may legitimately resolve to it, so it is never a
     /// missing-impl error.
-    free_fns: &'a std::collections::HashSet<String>,
+    free_fns: &'a HashSet<String>,
     /// Public receiver-first functions whose first parameter is owned by the
     /// function's module. These are the RFC-0050 Part 1 owner methods.
-    owner_methods: &'a std::collections::HashSet<String>,
+    owner_methods: &'a HashSet<String>,
     /// Trait-method calls whose receiver type is KNOWN but has no impl —
     /// surfaced by the type checker as a clean "T does not implement Trait"
     /// instead of a post-lowering unknown-function error.
@@ -1106,7 +1108,7 @@ struct Ctx<'a> {
     /// non-mutator statement call whose result is non-Nil is a discard error.
     /// The fact is read from the RESOLVED CALLEE's declaration (per receiver
     /// type), replacing the linker's whole-program name census.
-    mutators: &'a std::collections::HashSet<String>,
+    mutators: &'a HashSet<String>,
     /// (RFC-0043) Resolved function name -> whether it returns `Nil`/nothing.
     /// A statement-position non-mutator method call whose callee returns a
     /// non-Nil value is a discard error (the RFC's Failure-2 fix).
@@ -2327,8 +2329,8 @@ fn build_tables(
     (ctor_results, fn_rets, fn_sigs)
 }
 
-fn build_owner_methods(items: &[Item]) -> std::collections::HashSet<String> {
-    let mut methods = std::collections::HashSet::new();
+fn build_owner_methods(items: &[Item]) -> HashSet<String> {
+    let mut methods = HashSet::new();
     for item in items {
         let Item::Function(f) = item else { continue };
         if !f.public {
@@ -2363,8 +2365,8 @@ fn build_owner_methods(items: &[Item]) -> std::collections::HashSet<String> {
 /// the decision consults the exact resolved callee — never a bare name census.
 fn build_mutation_tables(
     items: &[Item],
-) -> (std::collections::HashSet<String>, HashMap<String, bool>) {
-    let mut mutators = std::collections::HashSet::new();
+) -> (HashSet<String>, HashMap<String, bool>) {
+    let mut mutators = HashSet::new();
     let mut returns_nil = HashMap::new();
     for item in items {
         if let Item::Function(f) = item {
@@ -3269,7 +3271,7 @@ fn type_args_from_receiver(template: &Function, concrete_receiver: &str) -> Opti
 /// interpolation's structural fallback. Primitive `Show` impls are byte-identical
 /// to structural rendering, so they stay on `__render`. `Set` is different even
 /// over primitives (`Set([1, 2])` structurally versus `{1, 2}` through `Show`).
-fn render_needs_show(ty: &crate::typeck::Ty, show_types: &std::collections::HashSet<String>) -> bool {
+fn render_needs_show(ty: &crate::typeck::Ty, show_types: &HashSet<String>) -> bool {
     use crate::typeck::Ty;
     match ty {
         Ty::Duration => true,
@@ -3509,7 +3511,7 @@ struct Mono<'a> {
     /// Every function name in the module — a dispatch rewrite only fires
     /// when its target actually exists (a missing impl stays a bare call,
     /// which the post-mono pass diagnoses properly).
-    known_fns: &'a std::collections::HashSet<String>,
+    known_fns: &'a HashSet<String>,
     /// method name -> owning trait(s), and the concrete impl methods available
     /// for substitution-directed dispatch through bounds.
     trait_methods: &'a HashMap<String, Vec<TraitMethodInfo>>,
@@ -3546,11 +3548,11 @@ struct Mono<'a> {
     /// generic — walking them would try, and fail, to resolve their own bounded
     /// calls — so they are skipped here and removed from the module after the
     /// fixpoint. Their concrete SPECIALIZATIONS (in `generated`) are walked.
-    skip_walk: &'a std::collections::HashSet<String>,
+    skip_walk: &'a HashSet<String>,
     /// (RFC-0053) Bare type names carrying a `Show` impl. The typed interpolation
     /// rewrite uses this to route values with a meaningful display protocol
     /// through `show.render`.
-    show_types: &'a std::collections::HashSet<String>,
+    show_types: &'a HashSet<String>,
     /// Whether `show.render` is linked as a monomorphizable template. Without it,
     /// interpolation keeps the structural fallback and never emits a dangling call.
     render_available: bool,
