@@ -1135,9 +1135,11 @@ Build a JSON object whose keys are sorted (matching a serialized BTreeMap), e.g.
 
 The string array at `key` as a `List(String)`, dropping any non-string element; `[]` when the key is absent or not an array. Collapses the very common "decode an object's array-of-strings field" pattern into one call.
 
+LENIENT BY DESIGN (RFC-0044): a missing key, a non-array value, and a non-string element all collapse to the same empty/filtered result — ergonomic for display, but it cannot tell "absent" from "malformed". At a trust boundary (package, registry, or security code) where a wrong shape must be an ERROR, use the strict path instead: `get(j, key)` then `array_of` (`Result`), coercing each element with `as_string`.
+
 #### `fn strings(j: Json) -> List(String)`
 
-A JSON array value as a `List(String)` (non-strings dropped).
+A JSON array value as a `List(String)`, dropping any non-string element. Lenient by design (RFC-0044), like `get_strings`; for a strict decode use `array_of` (`Result`) and coerce each element with `as_string`.
 
 #### `fn index_string(j: Json, i: Int) -> Option(String)`
 
@@ -2668,6 +2670,8 @@ The string value of `path` (e.g. "rune.name"), or None if absent. Surrounding do
 #### `fn get_array(text: String, path: String) -> List(String)`
 
 The string-array value of `path` (e.g. "capabilities.runtime"), or [] if absent. Each element is unquoted.
+
+LENIENT BY DESIGN (RFC-0044): an absent path and a malformed/empty array both return `[]`, so this cannot tell "not declared" from "declared wrong" — convenient for reading config, but wrong for a trust boundary. Where a malformed array must be an ERROR, use the strict path: `decode(text)` (a `Result`) then match the `TomlArray` at the path.
 
 #### `fn table(text: String, section: String) -> List((String, String))`
 

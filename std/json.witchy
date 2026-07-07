@@ -719,12 +719,21 @@ pub fn get_bool(j: Json, key: String) -> Option(Bool):
 // The string array at `key` as a `List(String)`, dropping any non-string element;
 // `[]` when the key is absent or not an array. Collapses the very common
 // "decode an object's array-of-strings field" pattern into one call.
+//
+// LENIENT BY DESIGN (RFC-0044): a missing key, a non-array value, and a non-string
+// element all collapse to the same empty/filtered result — ergonomic for display,
+// but it cannot tell "absent" from "malformed". At a trust boundary (package,
+// registry, or security code) where a wrong shape must be an ERROR, use the strict
+// path instead: `get(j, key)` then `array_of` (`Result`), coercing each element
+// with `as_string`.
 pub fn get_strings(j: Json, key: String) -> List(String):
     match get(j, key):
         Some(arr) -> strings(arr)
         None -> []
 
-// A JSON array value as a `List(String)` (non-strings dropped).
+// A JSON array value as a `List(String)`, dropping any non-string element. Lenient
+// by design (RFC-0044), like `get_strings`; for a strict decode use `array_of`
+// (`Result`) and coerce each element with `as_string`.
 pub fn strings(j: Json) -> List(String):
     var out = []
     if let Some(items) = as_array(j):

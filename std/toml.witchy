@@ -212,6 +212,12 @@ pub fn get(text: String, path: String) -> Option(String):
 
 // The string-array value of `path` (e.g. "capabilities.runtime"), or [] if
 // absent. Each element is unquoted.
+//
+// LENIENT BY DESIGN (RFC-0044): an absent path and a malformed/empty array both
+// return `[]`, so this cannot tell "not declared" from "declared wrong" —
+// convenient for reading config, but wrong for a trust boundary. Where a
+// malformed array must be an ERROR, use the strict path: `decode(text)` (a
+// `Result`) then match the `TomlArray` at the path.
 pub fn get_array(text: String, path: String) -> List(String):
     match lookup(text, path):
         Some(raw) -> parse_array(raw)
