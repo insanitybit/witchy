@@ -137,10 +137,12 @@ doctrine std/cmp.witchy:27–29 already states. Consequences:
   The teaching error suggests the standard escapes: an Int key (scaled), or a
   String rendering.
 - Reconciliation with the compiled backend's current surface: codegen today
-  *allows* Int/Float/String keys and rejects everything else at lowering
-  ("could not determine the Dict key type for WASM; use Int, Float, or String
-  keys", codegen/mod.rs:5322) while the interpreter accepts more (tuple and
-  record keys run interpreter-only — a check-passes-codegen-fails class). The
+  supports Int/Bool/Duration/String keys and rejects everything else at lowering
+  ("could not determine the Dict key type for WASM; use Int, Bool, Duration, or
+  String keys", codegen/mod.rs) while the interpreter accepts more (tuple and
+  record keys run interpreter-only). The public `witchy check` path verifies
+  compiled-backend acceptance, so these are loud check failures rather than
+  check-passes-codegen-fails surprises. The
   Eq bound moves this whole decision to **one type-level rule in the checker**:
   Float leaves the key set; Int/String/Bool/Duration and Eq-deriving
   records/enums are admissible *in the type system*, with the compiled

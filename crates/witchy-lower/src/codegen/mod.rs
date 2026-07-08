@@ -5732,15 +5732,16 @@ impl Codegen {
 
     /// The `$key_eq` comparison mode for a Dict key expression: 0 for Int/Bool
     /// (i64 bit equality), 1 for String (`$str_eq`), 2 for Float (`f64.eq` on the
-    /// reinterpreted slot — matches the interpreter's `==`, so -0.0 == 0.0 and
-    /// NaN != NaN). Other key types, including raw Bytes, are rejected.
+    /// reinterpreted slot). Float reaches this only in already-lowered/internal
+    /// code; the public checker rejects Float dict keys because Float is not Eq.
+    /// Other key types, including raw Bytes, are rejected.
     fn dict_key_mode(&self, key: &Expr) -> Result<u32, CodegenError> {
         match self.val_type_of(key) {
             ValType::Int | ValType::Bool => Ok(0),
             ValType::Str => Ok(1),
             ValType::Float => Ok(2),
             ValType::Bytes | ValType::Other => cerr(
-                "could not determine the Dict key type for WASM; use Int, Float, or String keys (annotate if needed)",
+                "could not determine the Dict key type for WASM; use Int, Bool, Duration, or String keys (annotate if needed)",
             ),
         }
     }

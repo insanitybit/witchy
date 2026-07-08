@@ -324,6 +324,27 @@ fn main() -> Int:
         );
     }
 
+    #[test]
+    fn dict_key_diagnostic_names_supported_public_key_types() {
+        let src = r#"
+type Key:
+    Key(Int)
+
+fn main() -> Int:
+    var d = dict.new()
+    d = dict.insert(d, Key(1), 1)
+    dict.get_or(d, Key(1), 0)
+"#;
+        let module = parse_module(src).expect("parse");
+        let err = compile_module_binary(&module).expect_err("record key should not lower yet");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("use Int, Bool, Duration, or String keys"),
+            "unexpected diagnostic: {msg}"
+        );
+        assert!(!msg.contains("Float, or String"), "stale Float recommendation: {msg}");
+    }
+
     /// Build a wasmtime instance whose `print` captures strings from memory.
     fn instantiate_with_print(
         bytes: &[u8],
