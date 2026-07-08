@@ -1244,6 +1244,30 @@ fn main(console: Console):
         );
     }
 
+    /// Field-contained containers mutated through a `var` record parameter keep
+    /// their headers intact across write-back, including the interpolation reads
+    /// that previously exposed stale lengths. This pins both the free-function
+    /// shape and the `var self` method shape needed by the stdlib method sweep.
+    #[test]
+    fn var_record_container_field_updates_keep_headers_on_both_backends() {
+        let list_free = "type Buf:\n    items: List(Int)\n\nfn add(var b: Buf, x: Int):\n    b.items = list.push(b.items, x)\n\nfn main(console: Console):\n    var b = Buf([])\n    var i = 0\n    while i < 16:\n        add(b, i)\n        i = i + 1\n    print(console, \"${list.at(b.items, 15)}\")\n    print(console, \"${list.length(b.items)}\")\n";
+        let list_method = "type Buf:\n    items: List(Int)\n\nimpl Buf:\n    fn add(var self, x: Int) -> Nil:\n        self.items = list.push(self.items, x)\n        return\n\nfn main(console: Console):\n    var b = Buf([])\n    var i = 0\n    while i < 16:\n        b.add(i)\n        i = i + 1\n    print(console, \"${list.at(b.items, 15)}\")\n    print(console, \"${list.length(b.items)}\")\n";
+        let dict_field = "import dict\n\ntype Tally:\n    counts: Dict(Int, Int)\n\nfn bump(var t: Tally, k: Int):\n    t.counts = dict.insert(t.counts, k, k * 2)\n\nfn main(console: Console):\n    var t = Tally(dict.new())\n    var i = 0\n    while i < 50:\n        bump(t, i)\n        i = i + 1\n    print(console, \"${dict.get_or(t.counts, 49, 0)}\")\n    print(console, \"${dict.length(t.counts)}\")\n";
+
+        for (label, src, expected) in [
+            ("list free function", list_free, vec!["15", "16"]),
+            ("list var self method", list_method, vec!["15", "16"]),
+            ("dict free function", dict_field, vec!["98", "50"]),
+        ] {
+            assert_eq!(link_run(src), expected, "interp: {label}");
+            assert_eq!(
+                run_linked_on_wasm(&[("main", src)], "main"),
+                expected,
+                "compiled: {label}",
+            );
+        }
+    }
+
     /// (RFC-0074) Lists have the same remove-by-value affordance as set/dict,
     /// with first-occurrence semantics; all-occurrences removal remains `filter`.
     #[test]
