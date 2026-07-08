@@ -40,10 +40,10 @@ pub fn and_then(o: Option(a), f: fn(a) -> Option(b)) -> Option(b):
         Some(v) -> f(v)
         None -> None
 
-// Keep the Some value only if it satisfies `pred`; otherwise None.
-pub fn filter(o: Option(a), pred: fn(a) -> Bool) -> Option(a):
+// Keep the Some value only if it satisfies `keep`; otherwise None.
+pub fn filter(o: Option(a), keep: fn(a) -> Bool) -> Option(a):
     match o:
-        Some(v) -> if pred(v): Some(v) else: None
+        Some(v) -> if keep(v): Some(v) else: None
         None -> None
 
 // The Some value, or the result of calling `f` (a lazily-computed default).

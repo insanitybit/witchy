@@ -210,11 +210,11 @@ pub fn last(xs: List(a)) -> Option(a):
     else:
         Some(list.at(xs, list.length(xs) - 1))
 
-// The element at index `i` as `Some`, or `None` when `i` is out of range — a
+// The element at `index` as `Some`, or `None` when `index` is out of range — a
 // total, bounds-checked alternative to the `at` builtin.
-pub fn get(xs: List(a), i: Int) -> Option(a):
-    if i >= 0 && i < list.length(xs):
-        Some(list.at(xs, i))
+pub fn get(xs: List(a), index: Int) -> Option(a):
+    if index >= 0 && index < list.length(xs):
+        Some(list.at(xs, index))
     else:
         None
 

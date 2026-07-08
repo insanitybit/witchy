@@ -1326,9 +1326,9 @@ The first element as `Some`, or `None` for the empty list.
 
 The last element as `Some`, or `None` for the empty list.
 
-#### `fn get(xs: List(a), i: Int) -> Option(a)`
+#### `fn get(xs: List(a), index: Int) -> Option(a)`
 
-The element at index `i` as `Some`, or `None` when `i` is out of range — a total, bounds-checked alternative to the `at` builtin.
+The element at `index` as `Some`, or `None` when `index` is out of range — a total, bounds-checked alternative to the `at` builtin.
 
 #### `fn find(xs: List(a), pred: fn(a) -> Bool) -> Option(a)`
 
@@ -1704,9 +1704,9 @@ True if the option holds no value.
 
 Chain a fallible step: apply `f` (which itself yields an Option) to the Some value, or short-circuit on None.
 
-#### `fn filter(o: Option(a), pred: fn(a) -> Bool) -> Option(a)`
+#### `fn filter(o: Option(a), keep: fn(a) -> Bool) -> Option(a)`
 
-Keep the Some value only if it satisfies `pred`; otherwise None.
+Keep the Some value only if it satisfies `keep`; otherwise None.
 
 #### `fn unwrap_or_else(o: Option(a), f: fn() -> a) -> a`
 
