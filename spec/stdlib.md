@@ -1856,7 +1856,7 @@ A pseudo-randomly chosen element of `xs` (`None` if empty) and the next state. T
 
 ## `reflect`
 
-Reflection: a value's structure as data, so one function can work over any type. `reflect(x)` returns a `Mirror` describing `x`: a record's named fields, a sum type's variant, a list's elements, or a scalar. Code that would otherwise need a per-type `derive` (JSON encoding, debug rendering, structural diffing) is written once against `Mirror`. `MNil` is the unit value and maps to JSON null. Scalars, `Bytes`, `Ordering`, and the built-in containers (`List`, `Option`, `Result`, `Set`, tuples through arity 8, `Dict`) are reflectable out of the box; a user `type` becomes reflectable when you add `derive(Reflect)` to it (which needs `import reflect`), much like Zig's `@typeInfo` but opt-in per type — so `reflect(x)` / `json.stringify(x)` work without a per-type macro once the type derives it.
+Reflection: a value's structure as data, so one function can work over any type. `reflect(x)` returns a `Mirror` describing `x`: a record's named fields, a sum type's variant, a list's elements, or a scalar. Code that would otherwise need a per-type `derive` (JSON encoding, debug rendering, structural diffing) is written once against `Mirror`. `MNil` is the unit value and maps to JSON null. Scalars, `Bytes`, `Ordering`, and the built-in containers (`List`, `Option`, `Result`, `Set`, tuples through arity 8, `Dict`) are reflectable out of the box. Container reflection is an encoding/debug protocol, not a promise that `derive(Deserialize)` can rebuild every container shape: `Dict` reflects as a string-keyed object. A user `type` becomes reflectable when you add `derive(Reflect)` to it (which needs `import reflect`), much like Zig's `@typeInfo` but opt-in per type — so `reflect(x)` / `json.stringify(x)` work without a per-type macro once the type derives it.
 
 `reflect` is a trait method; `derive(Reflect)` generates `impl Reflect for T`, building the `Mirror` from the declared fields and variants. The scalar impls below are the leaves.
 
@@ -1906,7 +1906,7 @@ A `Set` reflects to the same `MList` shape as its insertion-order `to_list` view
 
 #### `fn reflect_dict(d: Dict(k, v)) -> Mirror where k: Reflect, v: Reflect`
 
-A `Dict` reflects to an `MRecord` — the same shape a record uses, so `json` encodes it as an object and `debug` renders it record-style. Each key is rendered to a string (an object/record key is always a string), each value reflects through the `v: Reflect` bound. A free function for the same reason `reflect_list` is: a `Dict` receiver's `.reflect()` would bind to the `dict` module, so the generated `reflect` for a `Dict` field routes here.
+A `Dict` reflects to an `MRecord` — the same string-keyed shape a record uses, so `json` encodes it as an object and `debug` renders it record-style. Each key is rendered to a string (an object/record key is always a string), each value reflects through the `v: Reflect` bound. This is intentionally one-way for encoding/debug: reflection does not preserve enough key structure for a general `Dict(k, v)` deserialize round trip. A free function for the same reason `reflect_list` is: a `Dict` receiver's `.reflect()` would bind to the `dict` module, so the generated `reflect` for a `Dict` field routes here.
 
 #### `fn debug(x: a) -> String where a: Reflect`
 
