@@ -2143,13 +2143,21 @@ A router: its routes plus the middleware layers wrapping the whole dispatch.
 
 The request path, percent-decoded for the handler (BUG-375). Routing itself runs on the RAW path (`raw_path_of`) and decodes each segment individually, so a `%2F` in a segment can't forge an extra path separator; this accessor decodes the whole path for display/logging.
 
-#### `fn param(req: Request, name: String) -> String`
+#### `fn param(req: Request, name: String) -> Option(String)`
 
-A captured path parameter (`:name`), or "" if absent.
+A captured path parameter (`:name`), or None if absent.
 
-#### `fn query(req: Request, name: String) -> String`
+#### `fn param_or(req: Request, name: String, default: String) -> String`
 
-A query-string parameter (`?name=...`), or "" if absent.
+A captured path parameter, or `default` if absent.
+
+#### `fn query(req: Request, name: String) -> Option(String)`
+
+A query-string parameter (`?name=...`), or None if absent.
+
+#### `fn query_or(req: Request, name: String, default: String) -> String`
+
+A query-string parameter, or `default` if absent.
 
 #### `fn request_header(req: Request, name: String) -> Option(String)`
 
@@ -2165,9 +2173,13 @@ Decode the request body as JSON — the role of axum's `Json` extractor. Returns
 
 Parse an `application/x-www-form-urlencoded` body (`a=1&b=2`) into key/value pairs — for HTML form POSTs.
 
-#### `fn form_field(req: Request, name: String) -> String`
+#### `fn form_field(req: Request, name: String) -> Option(String)`
 
-A single form field, or "" if absent.
+A single form field, or None if absent.
+
+#### `fn form_field_or(req: Request, name: String, default: String) -> String`
+
+A single form field, or `default` if absent.
 
 #### `fn text(code: Int, b: String) -> Response`
 

@@ -2284,7 +2284,7 @@ import option
 from http import Request, Response
 
 fn hi(req: Request) -> Response:
-    server.text(200, "id=" + server.param(req, "id") + " path=" + server.path(req))
+    server.text(200, "id=" + server.param_or(req, "id", "") + " path=" + server.path(req))
 
 fn tag(inner: fn(Request) -> Response) -> fn(Request) -> Response:
     fn(req: Request):
@@ -2319,6 +2319,50 @@ fn main(console: Console):
             "chunked=hello world".to_string(),
             "cl=1".to_string(),
             "true".to_string(),
+        ];
+        assert_eq!(link_run(src), expected, "interpreter");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+    }
+
+    /// Server accessors distinguish a present empty value from an absent one.
+    /// BUG-464: the primary API returns Option; callers that want the old sentinel
+    /// behavior must opt in with the `_or` helpers.
+    #[test]
+    fn server_accessors_return_option_for_absence_on_both_backends() {
+        let src = r#"import server
+from http import Request
+
+fn show(console: Console, label: String, value: Option(String)):
+    match value:
+        Some(v) -> print(console, label + "=Some(" + v + ")")
+        None -> print(console, label + "=None")
+
+fn main(console: Console):
+    let req = Request("POST", "/x", [("id", "")], [("code", ""), ("state", "ready")], [], "a=&b=2")
+    show(console, "param-empty", server.param(req, "id"))
+    show(console, "param-missing", server.param(req, "missing"))
+    show(console, "query-empty", server.query(req, "code"))
+    show(console, "query-present", server.query(req, "state"))
+    show(console, "query-missing", server.query(req, "missing"))
+    show(console, "form-empty", server.form_field(req, "a"))
+    show(console, "form-present", server.form_field(req, "b"))
+    show(console, "form-missing", server.form_field(req, "missing"))
+    print(console, "param_or=" + server.param_or(req, "missing", "fallback"))
+    print(console, "query_or=" + server.query_or(req, "missing", "fallback"))
+    print(console, "form_field_or=" + server.form_field_or(req, "missing", "fallback"))
+"#;
+        let expected = vec![
+            "param-empty=Some()".to_string(),
+            "param-missing=None".to_string(),
+            "query-empty=Some()".to_string(),
+            "query-present=Some(ready)".to_string(),
+            "query-missing=None".to_string(),
+            "form-empty=Some()".to_string(),
+            "form-present=Some(2)".to_string(),
+            "form-missing=None".to_string(),
+            "param_or=fallback".to_string(),
+            "query_or=fallback".to_string(),
+            "form_field_or=fallback".to_string(),
         ];
         assert_eq!(link_run(src), expected, "interpreter");
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");

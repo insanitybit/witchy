@@ -278,7 +278,7 @@ impl Coven:
 
     fn route_versions(self) -> fn(Request) -> Response:
         fn(req: Request):
-            let name = coven_validate.unwire(server.query(req, "name"))
+            let name = coven_validate.unwire(server.query_or(req, "name", ""))
             var recs: List(Json) = []
             for v in coven_store.versions_of(self.store, name):
                 if let Some(r) = coven_store.read_record(self.store, name, v):
@@ -287,8 +287,8 @@ impl Coven:
 
     fn route_record(self) -> fn(Request) -> Response:
         guard(fn(req: Request) -> Result(Response, CovenError):
-            let name = coven_validate.unwire(server.query(req, "name"))
-            let version = server.query(req, "version")
+            let name = coven_validate.unwire(server.query_or(req, "name", ""))
+            let version = server.query_or(req, "version", "")
             self.validate_ref(name, version)?
             match coven_store.read_record(self.store, name, version):
                 Some(rec) -> Ok(server.json(200, rec))
@@ -297,8 +297,8 @@ impl Coven:
 
     fn route_source(self) -> fn(Request) -> Response:
         guard(fn(req: Request) -> Result(Response, CovenError):
-            let name = coven_validate.unwire(server.query(req, "name"))
-            let version = server.query(req, "version")
+            let name = coven_validate.unwire(server.query_or(req, "name", ""))
+            let version = server.query_or(req, "version", "")
             self.validate_ref(name, version)?
             require(coven_store.record_exists(self.store, name, version), 404, name + "@" + version + " not found")?
             self.source_response(name, version)
@@ -306,8 +306,8 @@ impl Coven:
 
     fn route_doc(self) -> fn(Request) -> Response:
         guard(fn(req: Request) -> Result(Response, CovenError):
-            let name = coven_validate.unwire(server.query(req, "name"))
-            let version = server.query(req, "version")
+            let name = coven_validate.unwire(server.query_or(req, "name", ""))
+            let version = server.query_or(req, "version", "")
             self.validate_ref(name, version)?
             require(coven_store.record_exists(self.store, name, version), 404, name + "@" + version + " not found")?
             self.doc_response(name, version)
@@ -321,8 +321,8 @@ impl Coven:
 
     fn route_compartments(self) -> fn(Request) -> Response:
         guard(fn(req: Request) -> Result(Response, CovenError):
-            let name = coven_validate.unwire(server.query(req, "name"))
-            let version = server.query(req, "version")
+            let name = coven_validate.unwire(server.query_or(req, "name", ""))
+            let version = server.query_or(req, "version", "")
             self.validate_ref(name, version)?
             require(coven_store.record_exists(self.store, name, version), 404, name + "@" + version + " not found")?
             let files = coven_store.read_source(self.store, name, version)

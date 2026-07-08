@@ -16,7 +16,7 @@ fn home(req: Request) -> Response:
     server.text(200, "hello, witchy")
 
 fn show_user(req: Request) -> Response:
-    server.text(200, "user " + server.param(req, "id"))
+    server.text(200, "user " + server.param_or(req, "id", ""))
 
 fn main(console: Console, net: Net):
     let app = server.router()

@@ -23,7 +23,7 @@ fn home(req: Request) -> Response:
 
 // Returns a JSON document built with the std `json` module.
 fn greet(req: Request) -> Response:
-    server.json_value(200, JsonObject([("hello", JsonString(server.param(req, "name")))]))
+    server.json_value(200, JsonObject([("hello", JsonString(server.param_or(req, "name", "")))]))
 
 fn main(console: Console, net: Net):
     let app = server.router().get("/", home).get("/hello/:name", greet).layer(logging(console))

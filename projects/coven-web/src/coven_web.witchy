@@ -474,7 +474,7 @@ fn h_github_login(key: Secret, clock: Clock, rand: Rand, gh_base: String, client
         server.with_header(server.redirect(url), "set-cookie", nonce_cookie(nonce))
 
 fn h_github_callback(store: Dir, net: Net, key: Secret, clock: Clock, secrets: SecretStore, gh_base: String, gh_api: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
-    fn(req: Request): github_callback(store, net, key, clock, secrets, gh_base, gh_api, client_id, redirect_uri, server.query(req, "code"), server.query(req, "state"), cookie_nonce(req))
+    fn(req: Request): github_callback(store, net, key, clock, secrets, gh_base, gh_api, client_id, redirect_uri, server.query_or(req, "code", ""), server.query_or(req, "state", ""), cookie_nonce(req))
 
 fn github_callback(store: Dir, net: Net, key: Secret, clock: Clock, secrets: SecretStore, gh_base: String, gh_api: String, client_id: String, redirect_uri: String, code: String, state: String, expected_nonce: String) -> Response:
     if code == "" || !valid_state(key, clock, state, expected_nonce):
@@ -519,7 +519,7 @@ fn h_google_login(key: Secret, clock: Clock, rand: Rand, authorize_url: String, 
         server.with_header(server.redirect(url), "set-cookie", nonce_cookie(nonce))
 
 fn h_google_callback(store: Dir, net: Net, key: Secret, clock: Clock, secrets: SecretStore, token_url: String, jwks_url: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
-    fn(req: Request): google_callback(store, net, key, clock, secrets, token_url, jwks_url, client_id, redirect_uri, server.query(req, "code"), server.query(req, "state"), cookie_nonce(req))
+    fn(req: Request): google_callback(store, net, key, clock, secrets, token_url, jwks_url, client_id, redirect_uri, server.query_or(req, "code", ""), server.query_or(req, "state", ""), cookie_nonce(req))
 
 fn google_callback(store: Dir, net: Net, key: Secret, clock: Clock, secrets: SecretStore, token_url: String, jwks_url: String, client_id: String, redirect_uri: String, code: String, state: String, expected_nonce: String) -> Response:
     if code == "" || !valid_state(key, clock, state, expected_nonce):

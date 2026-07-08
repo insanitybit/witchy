@@ -11,7 +11,7 @@ from http import Request, Response
 from server import Router
 
 fn file_server(dir: Dir) -> fn(Request) -> Response:
-    fn(req: Request): serve_file(dir, server.param(req, "path"))
+    fn(req: Request): serve_file(dir, server.param_or(req, "path", ""))
 
 fn serve_file(dir: Dir, p: String) -> Response:
     if exists(dir, p):

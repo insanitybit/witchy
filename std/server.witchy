@@ -38,15 +38,23 @@ fn raw_path_of(req: Request) -> String:
     match req:
         Request(_m, p, _pa, _q, _h, _b) -> p
 
-// A captured path parameter (`:name`), or "" if absent.
-pub fn param(req: Request, name: String) -> String:
+// A captured path parameter (`:name`), or None if absent.
+pub fn param(req: Request, name: String) -> Option(String):
     match req:
-        Request(_m, _p, pa, _q, _h, _b) -> lookup_or(pa, name, "")
+        Request(_m, _p, pa, _q, _h, _b) -> lookup(pa, name)
 
-// A query-string parameter (`?name=...`), or "" if absent.
-pub fn query(req: Request, name: String) -> String:
+// A captured path parameter, or `default` if absent.
+pub fn param_or(req: Request, name: String, default: String) -> String:
+    option.unwrap_or(param(req, name), default)
+
+// A query-string parameter (`?name=...`), or None if absent.
+pub fn query(req: Request, name: String) -> Option(String):
     match req:
-        Request(_m, _p, _pa, q, _h, _b) -> lookup_or(q, name, "")
+        Request(_m, _p, _pa, q, _h, _b) -> lookup(q, name)
+
+// A query-string parameter, or `default` if absent.
+pub fn query_or(req: Request, name: String, default: String) -> String:
+    option.unwrap_or(query(req, name), default)
 
 // A request header, looked up case-insensitively, or None.
 pub fn request_header(req: Request, name: String) -> Option(String):
@@ -68,16 +76,20 @@ pub fn json_body(req: Request) -> Result(Json, String):
 pub fn form_body(req: Request) -> List((String, String)):
     parse_query(request_body(req))
 
-// A single form field, or "" if absent.
-pub fn form_field(req: Request, name: String) -> String:
-    lookup_or(form_body(req), name, "")
+// A single form field, or None if absent.
+pub fn form_field(req: Request, name: String) -> Option(String):
+    lookup(form_body(req), name)
 
-fn lookup_or(pairs: List((String, String)), name: String, default: String) -> String:
+// A single form field, or `default` if absent.
+pub fn form_field_or(req: Request, name: String, default: String) -> String:
+    option.unwrap_or(form_field(req, name), default)
+
+fn lookup(pairs: List((String, String)), name: String) -> Option(String):
     for p in pairs:
         let (k, v) = p
         if k == name:
-            return v
-    default
+            return Some(v)
+    None
 
 // ---- Response constructors (an axum `IntoResponse` in spirit) ----
 pub fn text(code: Int, b: String) -> Response:

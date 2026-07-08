@@ -639,7 +639,7 @@ from http import Request, Response
 fn main(console: Console, net: Net):
     let app = server.router()
         .get("/", fn(req: Request): server.text(200, "home"))
-        .get("/users/:id", fn(req: Request): server.text(200, "user " + server.param(req, "id")))
+        .get("/users/:id", fn(req: Request): server.text(200, "user " + server.param_or(req, "id", "")))
         .post("/echo", fn(req: Request): server.text(201, server.request_body(req)))
     server.serve_n(net, "{addr}", app, 3)
 "#
@@ -987,7 +987,7 @@ import json
 from http import Request, Response
 from json import Json
 fn greet(req: Request) -> Response:
-    server.json_value(200, JsonObject([("hello", JsonString(server.param(req, "name")))]))
+    server.json_value(200, JsonObject([("hello", JsonString(server.param_or(req, "name", "")))]))
 fn main(console: Console, net: Net):
     let app = server.router().get("/hello/:name", greet)
     server.serve_n(net, "{addr}", app, 1)
@@ -1085,7 +1085,7 @@ import http
 import server
 from http import Request, Response
 fn main(console: Console, net: Net):
-    let app = server.router().post("/", fn(req: Request): server.text(200, server.form_field(req, "name")))
+    let app = server.router().post("/", fn(req: Request): server.text(200, server.form_field_or(req, "name", "")))
     server.serve_n(net, "{addr}", app, 1)
 "#
         );
@@ -1131,7 +1131,7 @@ import http
 import server
 from http import Request, Response
 fn file_server(dir: Dir) -> fn(Request) -> Response:
-    fn(req: Request): serve_file(dir, server.param(req, "path"))
+    fn(req: Request): serve_file(dir, server.param_or(req, "path", ""))
 fn serve_file(dir: Dir, p: String) -> Response:
     if exists(dir, p):
         server.text(200, read(dir, p))
