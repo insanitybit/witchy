@@ -4,8 +4,8 @@
 // builtins; these are the conveniences built on top of them.
 
 import option
+import list
 
-// Join a list of strings with a separator between each.
 // --- Native primitives (intercepted by both backends; self-recursive
 // placeholder bodies give the type checker the signatures). ---
 
@@ -32,6 +32,12 @@ pub fn from_code(code: Int) -> String:
 // Split on every occurrence of `sep`.
 pub fn split(s: String, sep: String) -> List(String):
     string.split(s, sep)
+
+// Join `parts` with `sep` between adjacent strings. This is the string-side
+// inverse of `split`; `list.join` remains as the receiver-first spelling that
+// powers `parts.join(sep)`.
+pub fn join(parts: List(String), sep: String) -> String:
+    list.join(parts, sep)
 
 // Whether `needle` occurs in `s`.
 pub fn contains(s: String, needle: String) -> Bool:

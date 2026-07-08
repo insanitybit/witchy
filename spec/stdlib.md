@@ -2423,6 +2423,10 @@ The single character (as a String) for a Unicode scalar value — the inverse of
 
 Split on every occurrence of `sep`.
 
+#### `fn join(parts: List(String), sep: String) -> String`
+
+Join `parts` with `sep` between adjacent strings. This is the string-side inverse of `split`; `list.join` remains as the receiver-first spelling that powers `parts.join(sep)`.
+
 #### `fn contains(s: String, needle: String) -> Bool`
 
 Whether `needle` occurs in `s`.

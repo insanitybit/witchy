@@ -581,6 +581,20 @@
         );
     }
 
+    /// `string.join` is the module-symmetric inverse of `string.split`, while
+    /// the existing `list.join`/`parts.join` spellings remain valid.
+    #[test]
+    fn string_join_alias_backends_agree() {
+        let src = "import string\n\nfn main(console: Console):\n    let parts = string.split(\"a,b,c\", \",\")\n    print(console, string.join(parts, \"-\"))\n    print(console, parts.join(\"|\"))\n    print(console, string.join([], \",\"))\n";
+        let expected = ["a-b-c", "a|b|c", ""];
+        assert_eq!(link_run(src), expected, "interp: string.join");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: string.join",
+        );
+    }
+
     /// RFC-0050 Part 1: for ordinary module-scoped types, method ownership is
     /// derived from the canonical `module.Type` name, so package/user modules get
     /// receiver-first methods without being listed in the compiler.
