@@ -883,7 +883,7 @@ Whether `s` contains a CR or LF — the response/request-splitting bytes.
 
 #### `fn check_field(what: String, value: String)`
 
-Trap unless `value` (a header value, request path, or host) is free of CR/LF. The single check used everywhere a value is concatenated into the wire form.
+Trap unless `value` (a header value) is free of forbidden controls. HTAB is allowed in header values; all other C0 controls and DEL are rejected. Request method/path/host use `check_request_field`, which is stricter.
 
 #### `fn check_header_name(name: String)`
 
@@ -891,11 +891,11 @@ Trap unless `name` is a valid header-name token (rejects `:`, space, and CR/LF).
 
 #### `fn check_header(name: String, value: String)`
 
-Validate one `(name, value)` header pair — the name is a token, the value is CR/LF-free. Shared by the client request builder and the server renderer.
+Validate one `(name, value)` header pair — the name is a token, the value has no forbidden controls. Shared by the client request builder and server renderer.
 
 #### `fn check_request_field(what: String, value: String)`
 
-(BUG-364) Trap unless `value` is safe to splice into the request LINE — no CR/LF AND no space or tab. The request line is space-delimited (`METHOD SP TARGET SP HTTP/1.1`), so a space or tab in the method/path/host would split it into extra tokens (request smuggling). Stricter than `check_field` (CR/LF only), which stays for header VALUES — those legitimately contain spaces.
+(BUG-364/506) Trap unless `value` is safe to splice into the request LINE: no C0 controls, DEL, space, or tab. The request line is space-delimited (`METHOD SP TARGET SP HTTP/1.1`), so a space/tab in method/path/host would split it into extra tokens (request smuggling). Stricter than `check_field`, because header values legitimately contain spaces and may contain HTAB.
 
 #### `fn is_framing_header(name: String) -> Bool`
 

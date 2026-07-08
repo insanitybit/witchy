@@ -2190,7 +2190,10 @@ fn main(console: Console):
     #[test]
     fn http_crlf_header_validators_trap_on_both_backends() {
         let prog = |call: &str| {
-            format!("import http\n\nfn main(console: Console):\n    {call}\n    print(console, \"ok\")\n")
+            format!("import http\nimport string\n\nfn main(console: Console):\n    {call}\n    print(console, \"ok\")\n")
+        };
+        let server_prog = |call: &str| {
+            format!("import server\nimport string\n\nfn main(console: Console):\n    {call}\n    print(console, \"ok\")\n")
         };
         // A header VALUE with an embedded CRLF must error on both backends.
         let crlf_value = prog("http.check_header(\"x-test\", \"a\\r\\nInjected: 1\")");
@@ -2226,8 +2229,55 @@ fn main(console: Console):
             .expect("lowers");
         assert!(crate::run_wasm_bytes(&cp).is_err(), "WASM must trap on a CRLF path");
 
+        // BUG-506: NUL and other non-CR/LF controls are also forbidden at this
+        // raw HTTP rendering boundary.
+        let nul_value = prog("let nul = string.from_code(0)\n    http.check_header(\"x-test\", \"a\" + nul + \"b\")");
+        assert!(
+            interpreter::run_module(resolve_std_src(&nul_value), ".", Vec::new()).is_err(),
+            "interpreter must trap on a NUL header value"
+        );
+        let nv = codegen::compile_module_binary(&resolve_std_src(&nul_value))
+            .expect("compile")
+            .expect("lowers");
+        assert!(crate::run_wasm_bytes(&nv).is_err(), "WASM must trap on a NUL header value");
+
+        let soh_path = prog("let soh = string.from_code(1)\n    http.check_request_field(\"request path\", \"/a\" + soh + \"b\")");
+        assert!(
+            interpreter::run_module(resolve_std_src(&soh_path), ".", Vec::new()).is_err(),
+            "interpreter must trap on a SOH request field"
+        );
+        let sp = codegen::compile_module_binary(&resolve_std_src(&soh_path))
+            .expect("compile")
+            .expect("lowers");
+        assert!(crate::run_wasm_bytes(&sp).is_err(), "WASM must trap on a SOH request field");
+
+        let del_value = prog("let del = string.from_code(127)\n    http.check_header(\"x-test\", \"a\" + del + \"b\")");
+        assert!(
+            interpreter::run_module(resolve_std_src(&del_value), ".", Vec::new()).is_err(),
+            "interpreter must trap on a DEL header value"
+        );
+        let dv = codegen::compile_module_binary(&resolve_std_src(&del_value))
+            .expect("compile")
+            .expect("lowers");
+        assert!(crate::run_wasm_bytes(&dv).is_err(), "WASM must trap on a DEL header value");
+
+        let nul_response = server_prog(
+            "let nul = string.from_code(0)\n    let r = server.with_header(server.text(200, \"ok\"), \"x-test\", \"a\" + nul + \"b\")\n    let _wire = server.render(r)"
+        );
+        assert!(
+            interpreter::run_module(resolve_std_src(&nul_response), ".", Vec::new()).is_err(),
+            "interpreter must trap before rendering a response header with NUL"
+        );
+        let nr = codegen::compile_module_binary(&resolve_std_src(&nul_response))
+            .expect("compile")
+            .expect("lowers");
+        assert!(
+            crate::run_wasm_bytes(&nr).is_err(),
+            "WASM must trap before rendering a response header with NUL"
+        );
+
         // A clean header + field passes on both backends (no false positives).
-        let clean = prog("http.check_header(\"content-type\", \"application/json\")\n    http.check_field(\"request path\", \"/api/v1/users\")");
+        let clean = prog("http.check_header(\"content-type\", \"application/json\")\n    http.check_header(\"x-tab\", \"a\\tb\")\n    http.check_request_field(\"request path\", \"/api/v1/users\")");
         assert_eq!(link_run(&clean), ["ok"], "interp accepts a clean header/path");
         assert_eq!(run_linked_on_wasm(&[("main", &clean)], "main"), ["ok"], "wasm accepts a clean header/path");
     }

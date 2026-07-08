@@ -324,30 +324,42 @@ fn is_header_name(name: String) -> Bool:
                 ok = false
         ok
 
-// Trap unless `value` (a header value, request path, or host) is free of CR/LF.
-// The single check used everywhere a value is concatenated into the wire form.
+// Whether `s` contains any control byte that is forbidden in an outbound HTTP
+// field. Header values may contain HTAB; request-line fields may not.
+fn has_forbidden_control(s: String, allow_tab: Bool) -> Bool:
+    var bad = false
+    for c in string.chars(s):
+        let c0 = string.char_count(c) == 1 && c < " "
+        let del = c == string.from_code(127)
+        if del || c0 && !(allow_tab && c == "\t"):
+            bad = true
+    bad
+
+// Trap unless `value` (a header value) is free of forbidden controls. HTAB is
+// allowed in header values; all other C0 controls and DEL are rejected. Request
+// method/path/host use `check_request_field`, which is stricter.
 pub fn check_field(what: String, value: String):
-    if has_crlf(value):
-        fail("HTTP " + what + " contains a CR/LF control character (request/response splitting): " + value)
+    if has_forbidden_control(value, true):
+        fail("HTTP " + what + " contains a forbidden control character: " + value)
 
 // Trap unless `name` is a valid header-name token (rejects `:`, space, and CR/LF).
 pub fn check_header_name(name: String):
     if !is_header_name(name):
         fail("invalid HTTP header name (must be a non-empty RFC 7230 token): " + name)
 
-// Validate one `(name, value)` header pair — the name is a token, the value is
-// CR/LF-free. Shared by the client request builder and the server renderer.
+// Validate one `(name, value)` header pair — the name is a token, the value has
+// no forbidden controls. Shared by the client request builder and server renderer.
 pub fn check_header(name: String, value: String):
     check_header_name(name)
     check_field("header value", value)
 
-// (BUG-364) Trap unless `value` is safe to splice into the request LINE — no CR/LF
-// AND no space or tab. The request line is space-delimited (`METHOD SP TARGET SP
-// HTTP/1.1`), so a space or tab in the method/path/host would split it into extra
-// tokens (request smuggling). Stricter than `check_field` (CR/LF only), which stays
-// for header VALUES — those legitimately contain spaces.
+// (BUG-364/506) Trap unless `value` is safe to splice into the request LINE: no
+// C0 controls, DEL, space, or tab. The request line is space-delimited (`METHOD SP
+// TARGET SP HTTP/1.1`), so a space/tab in method/path/host would split it into
+// extra tokens (request smuggling). Stricter than `check_field`, because header
+// values legitimately contain spaces and may contain HTAB.
 pub fn check_request_field(what: String, value: String):
-    if has_crlf(value) || string.contains(value, " ") || string.contains(value, "\t"):
+    if has_forbidden_control(value, false) || string.contains(value, " "):
         fail("HTTP " + what + " contains a whitespace/control character that would break the request line: " + value)
 
 // (BUG-358 / BUG-393) Whether `name` is a message-FRAMING header — Content-Length,
