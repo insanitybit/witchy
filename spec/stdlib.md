@@ -2337,7 +2337,7 @@ Whether the two sets share no members.
 
 ## `show`
 
-The witchy standard `Show` trait: render a value as a `String`. Built-in impls cover the scalars — `Int`, `Float`, `Bool`, `String`, `Bytes`, `Duration` (which shows in its human form, `1m30s`, not raw milliseconds) — and the built-in comparison result `Ordering`. A `List`, `Dict`, `Set`, `Option`, `Result`, or tuple through arity 8 whose elements are themselves `Show` renders structurally through each element's `Show` (`[a, b]`, `{k: v}`, `Some(x)`), so `say(console, [1, 2, 3])` and `say(console, someSet)` just work — and a custom element `Show` is honored (`[P<1,2>, P<3,4>]`). Implement `Show` for your own types to give them a custom readable form. Interpolation (`"${x}"`) uses `Show` when the helper below is linked, and otherwise keeps the structural fallback for values whose module never imports `show`. Pure except `say`, which takes the `Console` it prints to.
+The witchy standard `Show` trait: render a value as a `String`. Built-in impls cover the scalars — `Int`, `Float`, `Bool`, `String`, `Bytes`, `Duration` (which shows in its human form, `1m30s`, not raw milliseconds) — and the built-in comparison result `Ordering`. A `List`, `Dict`, `Set`, `Option`, `Result`, or tuple through arity 8 whose elements are themselves `Show` renders structurally through each element's `Show` (`[a, b]`, `{k: v}`, `Some(x)`), so `show.say(console, [1, 2, 3])` and `show.say(console, someSet)` just work — and a custom element `Show` is honored (`[P<1,2>, P<3,4>]`). Implement `Show` for your own types to give them a custom readable form. Interpolation (`"${x}"`) uses `Show` when the helper below is linked, and otherwise keeps the structural fallback for values whose module never imports `show`. Pure except `say`, which takes the `Console` it prints to.
 
 #### `trait Show`
 
@@ -2345,11 +2345,11 @@ The witchy standard `Show` trait: render a value as a `String`. Built-in impls c
 
 #### `fn render(x: impl Show) -> String`
 
-Render one `Show` value to a `String` — `render(point)`, `render(90000ms)`, `render([1, 2, 3])`. This is the one public renderer (RFC-0053): string interpolation `"${x}"` lowers to `render(x)` for any `x` whose concrete type has a relevant `Show` impl, so interpolation and `say` agree. A type without a linked `Show` path keeps interpolation's byte-identical structural fallback.
+Render one `Show` value to a `String` — `render(point)`, `render(90000ms)`, `render([1, 2, 3])`. This is the one public renderer (RFC-0053): string interpolation `"${x}"` lowers to `render(x)` for any `x` whose concrete type has a relevant `Show` impl, so interpolation and `show.say` agree. A type without a linked `Show` path keeps interpolation's byte-identical structural fallback.
 
 #### `fn say(console: Console, x: impl Show)`
 
-Print any `Show` value without converting it by hand — `say(console, 42)`, `say(console, point)`, `say(console, [1, 2, 3])`. The Show-accepting `print` you reach for instead of `print(console, "${n}")`. (A thin wrapper kept out of the `print` builtin so a builtin never depends on a std trait.)
+Print any `Show` value without converting it by hand — `show.say(console, 42)`, `show.say(console, point)`, `show.say(console, [1, 2, 3])`. The Show-accepting `print` you reach for instead of `print(console, "${n}")`. (A thin wrapper kept out of the `print` builtin so a builtin never depends on a std trait.)
 
 ## `string`
 

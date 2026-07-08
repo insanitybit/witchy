@@ -3247,7 +3247,7 @@ fn main(console: Console):
     /// the expanded program).
     #[test]
     fn derive_show_eq_ord_generates_working_impls() {
-        let src = "import show\nimport cmp\nimport list\n\ntype Point derive(Show, PartialEq, Eq, PartialOrd, Ord):\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let a = Point(1, 2)\n    let b = Point(1, 3)\n    say(console, a)\n    print(console, \"${eq(a, Point(1, 2))} ${eq(a, b)}\")\n    print(console, \"${less(a, b)} ${less(b, a)}\")\n    print(console, \"${list.contains([a, b], Point(1, 3))}\")\n";
+        let src = "import show\nimport cmp\nimport list\n\ntype Point derive(Show, PartialEq, Eq, PartialOrd, Ord):\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let a = Point(1, 2)\n    let b = Point(1, 3)\n    show.say(console, a)\n    print(console, \"${eq(a, Point(1, 2))} ${eq(a, b)}\")\n    print(console, \"${less(a, b)} ${less(b, a)}\")\n    print(console, \"${list.contains([a, b], Point(1, 3))}\")\n";
         let want: Vec<String> = ["Point(1, 2)", "true false", "true false", "true"]
             .iter()
             .map(|s| s.to_string())
@@ -3306,7 +3306,7 @@ fn main(console: Console):
     fn derive_links_alongside_a_project_local_import() {
         let sibling = parser::parse_module("pub fn helper() -> Int:\n    7\n").expect("parse sibling");
         let main = parser::parse_module(
-            "import sibling\nimport json\nimport result\n\ntype Foo derive(Deserialize):\n    x: Int\n\nfn main(console: Console):\n    print(console, \"${helper()}\")\n",
+            "import sibling\nimport json\nimport result\n\ntype Foo derive(Deserialize):\n    x: Int\n\nfn main(console: Console):\n    print(console, \"${sibling.helper()}\")\n",
         )
         .expect("parse main");
         let linked = crate::pipeline::link(
@@ -3787,12 +3787,12 @@ fn main(console: Console):
     /// "unknown function" artifact.
     #[test]
     fn show_scalars_and_missing_impl_diagnostic() {
-        let src = "import show\n\nfn main(console: Console):\n    say(console, 42)\n    say(console, 3.5)\n    say(console, 90s)\n    say(console, true)\n";
+        let src = "import show\n\nfn main(console: Console):\n    show.say(console, 42)\n    show.say(console, 3.5)\n    show.say(console, 90s)\n    show.say(console, true)\n";
         let want: Vec<String> =
             ["42", "3.5", "1m30s", "true"].iter().map(|s| s.to_string()).collect();
         assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
-        let missing = "import show\n\ntype Blob:\n    n: Int\n\nfn main(console: Console):\n    say(console, Blob(1))\n";
+        let missing = "import show\n\ntype Blob:\n    n: Int\n\nfn main(console: Console):\n    show.say(console, Blob(1))\n";
         let module = parser::parse_module(missing).expect("parse");
         let linked =
             crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
@@ -7264,12 +7264,12 @@ fn main(console: Console, root: Dir):
     fn imported_tag_in_non_main_fn_agrees_on_both_backends() {
         use crate::runtime::{Capabilities, Runtime};
         // The tag-defining module: a tiny `box"…"` tag that emits source wrapping
-        // each hole in `unwrap(wrap(…))`. The `Wrapped` type + `wrap`/`unwrap`
+        // each hole in `widget.unwrap(widget.wrap(…))`. The `Wrapped` type + `wrap`/`unwrap`
         // helpers exercise the reachable-TYPES half of the prune (the tag's
         // signature/body reach `Wrapped`, so it must be kept for the comptime
         // program to type-check), and prove a tag works when defined in an
         // IMPORTED rune, not just locally.
-        let widget = "type Wrapped:\n    Wrap(String)\n\npub fn unwrap(w: Wrapped) -> String:\n    match w:\n        Wrap(s) -> s\n\npub fn wrap(s: String) -> Wrapped:\n    Wrap(s)\n\npub fn box(parts: List(String), holes: List(String)) -> String:\n    var out = \"unwrap(wrap(\\\"\"\n    var i = 0\n    let n = list.length(parts)\n    for p in parts:\n        out = out + p\n        if i < n - 1:\n            out = out + \"\\\" + \" + list.at(holes, i) + \" + \\\"\"\n        i = i + 1\n    out + \"\\\"))\"\n";
+        let widget = "type Wrapped:\n    Wrap(String)\n\npub fn unwrap(w: Wrapped) -> String:\n    match w:\n        Wrap(s) -> s\n\npub fn wrap(s: String) -> Wrapped:\n    Wrap(s)\n\npub fn box(parts: List(String), holes: List(String)) -> String:\n    var out = \"widget.unwrap(widget.wrap(\\\"\"\n    var i = 0\n    let n = list.length(parts)\n    for p in parts:\n        out = out + p\n        if i < n - 1:\n            out = out + \"\\\" + \" + list.at(holes, i) + \" + \\\"\"\n        i = i + 1\n    out + \"\\\"))\"\n";
         // The CONSUMER: the tag appears in `render`, a NON-`main` function. This is
         // the exact shape that recursed before the fix (cf. glamour's `view`).
         let app = "import widget\n\nfn render(x: String) -> String:\n    box\"[${x}]\"\n\nfn main(console: Console):\n    print(console, render(\"hi\"))\n";
@@ -18194,7 +18194,7 @@ fn main(console: Console):
     /// `show` resolves — identically on both backends.
     #[test]
     fn rfc0046_trait_call_on_builtin_result_resolves_show() {
-        let src = "import show\nimport string\nimport list\n\nfn main(console: Console):\n    let parts = string.split(\"a,b,c\", \",\")\n    say(console, list.at(parts, 1))\n    say(console, list.at(string.split(\"x-y\", \"-\"), 0))\n";
+        let src = "import show\nimport string\nimport list\n\nfn main(console: Console):\n    let parts = string.split(\"a,b,c\", \",\")\n    show.say(console, list.at(parts, 1))\n    show.say(console, list.at(string.split(\"x-y\", \"-\"), 0))\n";
         let want = vec!["b".to_string(), "x".to_string()];
         assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
@@ -20435,7 +20435,7 @@ pub fn serve(console: Console, net: Net) -> Int:
                    \x20   let title = \"Witchy\"\n\
                    \x20   let body = \"<script>x</script>\"\n\
                    \x20   let view = html\"<div class=${cls}><h2>${title}</h2><span class=\\\"cap\\\">${body}</span></div>\"\n\
-                   \x20   print(console, to_html(view))\n";
+                   \x20   print(console, glamour.to_html(view))\n";
         let out = glamour_run_both(src);
         assert_eq!(
             out,
@@ -20469,7 +20469,7 @@ pub fn serve(console: Console, net: Net) -> Int:
                    \n\
                    fn main(console: Console):\n\
                    \x20   let view = html\"<button on:click=${Inc}>+</button>\"\n\
-                   \x20   print(console, to_html(view))\n";
+                   \x20   print(console, glamour.to_html(view))\n";
         let out = glamour_run_both(src);
         assert_eq!(out, vec!["<button data-on-click=\"[msg]\">+</button>".to_string()]);
     }
@@ -20495,11 +20495,11 @@ pub fn serve(console: Console, net: Net) -> Int:
                    \x20   json.from_value(m)\n\
                    \n\
                    fn main(console: Console):\n\
-                   \x20   let view = element(\"div\", [prop(\"class\", \"c\")], [\n\
-                   \x20       element(\"button\", [on(\"click\", Inc)], [text(\"+\")]),\n\
-                   \x20       text(\"hi\"),\n\
+                   \x20   let view = glamour.element(\"div\", [glamour.prop(\"class\", \"c\")], [\n\
+                   \x20       glamour.element(\"button\", [glamour.on(\"click\", Inc)], [glamour.text(\"+\")]),\n\
+                   \x20       glamour.text(\"hi\"),\n\
                    \x20   ])\n\
-                   \x20   print(console, to_json(view, msg_to_json))\n";
+                   \x20   print(console, glamour.to_json(view, msg_to_json))\n";
         let out = glamour_run_both(src);
         assert_eq!(
             out,
@@ -20623,7 +20623,7 @@ pub fn serve(console: Console, net: Net) -> Int:
                    fn main(console: Console):\n\
                    \x20   let t = \"div\"\n\
                    \x20   let view = html\"<${t}>hi</${t}>\"\n\
-                   \x20   print(console, to_html(view))\n";
+                   \x20   print(console, glamour.to_html(view))\n";
         let entry = parser::parse_module(src).expect("parse entry");
         let glamour = parser::parse_module(GLAMOUR_SRC).expect("parse glamour");
         let modules = vec![("main".to_string(), entry), ("glamour".to_string(), glamour)];
@@ -20648,7 +20648,7 @@ pub fn serve(console: Console, net: Net) -> Int:
                    \n\
                    fn main(console: Console):\n\
                    \x20   let view = html\"<span>${5}</span>\"\n\
-                   \x20   print(console, to_html(view))\n";
+                   \x20   print(console, glamour.to_html(view))\n";
         let entry = parser::parse_module(src).expect("parse entry");
         let glamour = parser::parse_module(GLAMOUR_SRC).expect("parse glamour");
         let modules = vec![("main".to_string(), entry), ("glamour".to_string(), glamour)];

@@ -158,7 +158,7 @@ fn msg_to_json(m: Msg) -> Json:
 pub fn export_step(ui: UiRoot, input: String) -> String:
     let route = glamour.route_scope(ui, "/", "push")
     let upd = fn(m: String, msg: Msg): update(m, msg, route)
-    step_with(input, view, upd, parse_model, parse_msg, model_to_json, msg_to_json)
+    glamour.step_with(input, view, upd, parse_model, parse_msg, model_to_json, msg_to_json)
 
 fn main(console: Console, ui: UiRoot):
     print(console, export_step(ui, "{\\"model\\": \\"/\\"}"))

@@ -111,7 +111,7 @@ pub fn export_step(ui: UiRoot, input: String) -> String:
     // curried into `update` via a closure — only code holding it can navigate.
     let route = glamour.route_scope(ui, "/p", "push")
     let upd = fn(query: String, msg: Msg): update(query, msg, route)
-    step_with(input, view, upd, parse_model, parse_msg, model_to_json, msg_to_json)
+    glamour.step_with(input, view, upd, parse_model, parse_msg, model_to_json, msg_to_json)
 
 fn main(console: Console, ui: UiRoot):
     print(console, export_step(ui, "{\"model\": \"\"}") + "\n")

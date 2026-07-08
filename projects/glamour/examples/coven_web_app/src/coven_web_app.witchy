@@ -391,7 +391,7 @@ pub fn export_step(ui: UiRoot, input: String) -> String:
         glamour.credential_port(ui, "yank"),
     )
     let upd = fn(m: Model, msg: Msg): update(m, msg, caps)
-    step_with(input, view, upd, parse_model, parse_msg, model_to_json, msg_to_json)
+    glamour.step_with(input, view, upd, parse_model, parse_msg, model_to_json, msg_to_json)
 
 fn main(console: Console, ui: UiRoot):
     print(console, export_step(ui, "{\"model\": {\"route\": \"/\", \"session\": \"\", \"data\": \"\", \"notice\": \"\"}}") + "\n")

@@ -111,7 +111,7 @@ pub fn export_step(ui: UiRoot, raw: String) -> String:
     let cred = glamour.credential_port(ui, "passkeyLogin")
     let v = fn(m: String): view(m, input)
     let u = fn(m: String, msg: Msg): update(m, msg, input, cred)
-    step_with(raw, v, u, parse_model, parse_msg, model_to_json, msg_to_json)
+    glamour.step_with(raw, v, u, parse_model, parse_msg, model_to_json, msg_to_json)
 
 fn main(console: Console, ui: UiRoot):
     print(console, export_step(ui, "{\\"model\\": \\"\\"}") + "\\n")

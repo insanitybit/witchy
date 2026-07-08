@@ -86,7 +86,7 @@ pub fn export_step(ui: UiRoot, input: String) -> String:
     // only code holding the token can arm the self-sustaining tick.
     let timer = glamour.timer_scope(ui, 1000)
     let upd = fn(count: Int, msg: Msg): update(count, msg, timer)
-    step_with(input, view, upd, parse_model, parse_msg, model_to_json, msg_to_json)
+    glamour.step_with(input, view, upd, parse_model, parse_msg, model_to_json, msg_to_json)
 
 // A `main` so the rune also runs as a CLI program (and the compiled module gets a
 // `run` export): render the initial model (count 0) and print the wire JSON. The

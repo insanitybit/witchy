@@ -121,7 +121,7 @@ fn announce(console: Console, label: String, x: impl Show):
 fn main(console: Console):
     announce(console, "now", Temp(21))   // uses Temp's Show
     announce(console, "count", 42)       // and Int's
-    show.say(console, Temp(5))           // `say` = the Show-accepting `print`
+    show.say(console, Temp(5))           // Show-accepting `print`
 ```
 
 ```text
@@ -130,7 +130,7 @@ count: 42
 5 deg C
 ```
 
-`say(console, x)` is the `Show`-accepting `print` — reach for it instead of
+`show.say(console, x)` is the `Show`-accepting `print` — reach for it instead of
 `print(console, "${x}")`. Note the division of labor: interpolation and the
 built-in rendering already covers *every* value structurally (including bare
 lists, tuples, and dicts, which can't carry a `Show` impl); `Show` is for giving

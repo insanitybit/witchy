@@ -78,7 +78,7 @@ fn msg_to_json(m: Msg) -> Json:
 // it parses the input, runs `update` when a `msg` is present, then `view`, and
 // returns `{"model": ..., "vnode": ...}`.
 pub fn export_step(input: String) -> String:
-    step_with(input, view, update, parse_model, parse_msg, model_to_json, msg_to_json)
+    glamour.step_with(input, view, update, parse_model, parse_msg, model_to_json, msg_to_json)
 
 // A `main` so the rune also runs as a CLI program (and the compiled module gets a
 // `run` export): render the initial model (count 0) and print the wire JSON.

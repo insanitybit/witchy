@@ -35,9 +35,9 @@ backend.
 
 A `Duration` is carried as whole milliseconds. On its own — as in the program
 above, which links no `Show` — `${timeout}` prints that raw count. Bring the
-`show` module into the program (an `import show`, a `say`, or any `impl Show`) and
+`show` module into the program (an `import show`, a `show.say`, or any `impl Show`) and
 interpolation renders a `Duration` through its `Show` impl instead: the human form
-(`30s`, `1m30s`), the same on both backends and identical to `say(console,
+(`30s`, `1m30s`), the same on both backends and identical to `show.say(console,
 timeout)`. For explicit control, reach for `duration.human(timeout)` or
 `duration.clock(timeout)` (`"0:00:30"`) — both need an `import duration`.
 

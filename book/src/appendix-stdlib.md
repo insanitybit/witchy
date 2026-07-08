@@ -21,7 +21,7 @@ always current — is
 |---|---|
 | `list` *(prelude)* | `map`, `filter`, `fold`, `zip`, `sort`, … |
 | `dict` *(prelude)* | map operations over `Dict(k, v)` |
-| `set` | the `Set(a)` type — distinct values, `union`/`intersection`/`difference`, `for x in set` iteration, and `let s: Set(Int) = iter.collect(it)` (its `FromIterator` is a conditional impl `where a: Eq`). Render a set with `"${s}"` interpolation or `say(console, s)` — both work identically on both backends and honor the elements' `Show`. |
+| `set` | the `Set(a)` type — distinct values, `union`/`intersection`/`difference`, `for x in set` iteration, and `let s: Set(Int) = iter.collect(it)` (its `FromIterator` is a conditional impl `where a: Eq`). Render a set with `"${s}"` interpolation or `show.say(console, s)` — both work identically on both backends and honor the elements' `Show`. |
 | `string` *(prelude)* | `split`, `lines`, `join`, `trim`, case, search, … |
 | `path` | path-*string* manipulation (join, normalize, base/dir/ext) — pure; the `Dir`-using half lives in `fs` |
 | `iter` | lazy iterator combinators (`take`, `collect`, …) |

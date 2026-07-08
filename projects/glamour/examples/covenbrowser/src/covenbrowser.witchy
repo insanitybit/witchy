@@ -497,7 +497,7 @@ fn msg_to_json(m: Msg) -> Json:
 // The single JS-callable export — glamour's reusable MVU engine wired to this
 // app's view/update and its model/msg parsers + serializers.
 pub fn export_step(input: String) -> String:
-    step_with(input, view, update, parse_model, parse_msg, model_to_json, msg_to_json)
+    glamour.step_with(input, view, update, parse_model, parse_msg, model_to_json, msg_to_json)
 
 // A `main` so the rune also runs as a CLI program (and the compiled module gets a
 // `run` export): render the initial model (the index) and print the wire JSON.

@@ -70,7 +70,7 @@ and any nesting — identically on both backends. Tuple `Show`/`Reflect` protoco
 impls are provided through arity 8; larger tuples still exist as structural
 values, but should be modeled as records or lists when they need
 protocol-backed display or reflection. You rarely need to call a conversion by hand. To print
-one value, `print(console, "${x}")`, or `say(console, x)` — the `Show`-accepting
+one value, `print(console, "${x}")`, or `show.say(console, x)` — the `Show`-accepting
 `print` from `import show`, for any `Show` value (the built-in scalars and your
 own types). The **`Show` trait** (`fn show(self) -> String`) is the trait-method
 route: implement it to give a type a *custom* rendering (interpolation already
@@ -549,7 +549,7 @@ fn total(xs: frozen List(Int)) -> Int:
 
 fn main(console: Console):
     let table: frozen List(Int) = [10, 20, 30]
-    say(console, "${total(table)}")
+    show.say(console, "${total(table)}")
 ```
 
 These restate, as enforced contracts, guarantees witchy's value semantics already
@@ -629,7 +629,8 @@ Each `impl Trait` parameter introduces its own type variable, so two of them are
 two independent types. It is argument-position only (not a return type), and it
 composes with an explicit `where` clause. The std library uses it for
 `show.say(console, x: impl Show)` — a `Show`-accepting `print`, so you write
-`say(console, value)` instead of converting by hand.
+`show.say(console, value)` after `import show`, or `from show import say` when
+you want a bare `say(...)` call.
 
 ### Deriving the standard traits
 
@@ -657,7 +658,7 @@ type Point derive(Show, PartialEq, Eq, PartialOrd, Ord):
     y: Int
 
 fn main(console: Console):
-    say(console, Point(1, 2))
+    show.say(console, Point(1, 2))
     print(console, "${Point(1, 2) < Point(1, 3)}")
 ```
 
