@@ -1397,6 +1397,21 @@ fn main(console: Console):
         );
     }
 
+    /// Dicts should be ordinary protocol values too: direct dict equality is not
+    /// enough if a generic helper cannot ask for `PartialEq`/`Eq` over a concrete
+    /// `Dict(k, v)`.
+    #[test]
+    fn dict_equality_satisfies_protocol_bounds_on_both_backends() {
+        let src = "import cmp\nimport dict\nimport testing\n\ntype Key derive(Show, Eq):\n    id: Int\n    cache: Int\n\nimpl PartialEq for Key:\n    fn eq(self, other: Key) -> Bool:\n        self.id == other.id\n\ntype Val derive(Show, Eq):\n    label: String\n    noise: Int\n\nimpl PartialEq for Val:\n    fn eq(self, other: Val) -> Bool:\n        self.label == other.label\n\nfn same(x: a, y: a) -> Bool where a: PartialEq:\n    x == y\n\nfn total_same(x: a, y: a) -> Bool where a: Eq:\n    x == y\n\nfn make_left() -> Dict(Key, Val):\n    var d = dict.new()\n    d = dict.insert(d, Key(1, 10), Val(\"one\", 100))\n    d = dict.insert(d, Key(2, 20), Val(\"two\", 200))\n    d\n\nfn make_right() -> Dict(Key, Val):\n    var d = dict.new()\n    d = dict.insert(d, Key(2, 99), Val(\"two\", 999))\n    d = dict.insert(d, Key(1, 42), Val(\"one\", 111))\n    d\n\nfn main(console: Console):\n    let left = make_left()\n    let right = make_right()\n    print(console, __render(left == right))\n    print(console, __render(same(left, right)))\n    print(console, __render(total_same(left, right)))\n    testing.assert_value_eq(left, right)\n";
+        let expected = ["true", "true", "true"];
+        assert_eq!(link_run(src), expected, "interp: dict PartialEq bounds");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: dict PartialEq bounds",
+        );
+    }
+
     /// (BUG-557) A generic container equality specialization can need a second
     /// generated generic impl for the element type. List(tuple5) must therefore
     /// emit the tuple `PartialEq` specialization even when no source call compares
