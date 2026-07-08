@@ -23,7 +23,9 @@ implementation-notes: |
   - Modules that never import/link `show` keep structural `__render`. This preserves
     the current no-ambient-`show` policy: `"${90000ms}"` remains raw milliseconds
     unless `show` is linked, while `import show` makes interpolation agree with
-    `show.render`/`show.say`.
+    `show.render`/`show.say`. BUG-559 is therefore not a backend defect under the
+    shipped contract; the release invariant is that both modes are explicit and
+    parity-tested.
   - The rewrite predicate keeps primitives structural, flips `Duration`, flips any
     named type carrying a `Show` impl, recurses through `List`, `Option`, `Result`,
     `Dict`, and tuples, and always flips `Set` once `show.render` is available

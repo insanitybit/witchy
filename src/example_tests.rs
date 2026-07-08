@@ -1067,6 +1067,31 @@ fn main(console: Console):
         );
     }
 
+    /// RFC-0053's interpolation flip is deliberately `show`-gated. Without
+    /// `show`, a Duration keeps the structural millisecond render; once `show`
+    /// is linked, interpolation, `show.render`, and `show.say` agree on the
+    /// human form.
+    #[test]
+    fn rfc0053_duration_interpolation_is_show_gated_on_both_backends() {
+        let structural = "fn main(console: Console):\n    print(console, \"${90000ms}\")\n";
+        let structural_expected = ["90000"];
+        assert_eq!(link_run(structural), structural_expected, "interp: bare Duration interpolation");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", structural)], "main"),
+            structural_expected,
+            "compiled: bare Duration interpolation",
+        );
+
+        let with_show = "import show\nimport duration\n\nfn main(console: Console):\n    print(console, \"${90000ms}\")\n    print(console, show.render(90000ms))\n    show.say(console, 90000ms)\n";
+        let show_expected = ["1m30s", "1m30s", "1m30s"];
+        assert_eq!(link_run(with_show), show_expected, "interp: Duration interpolation honors Show");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", with_show)], "main"),
+            show_expected,
+            "compiled: Duration interpolation honors Show",
+        );
+    }
+
     /// (BUG-326) Whole-valued Float rendering keeps a Float marker without using
     /// Rust's exact fixed-point expansion for large magnitudes. This shared
     /// formatter feeds interpolation, `show`, JSON reflection, the interpreter,
