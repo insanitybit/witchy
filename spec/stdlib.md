@@ -1607,7 +1607,7 @@ One constructor of a sum type: its name and its positional payload types, expose
 
 #### `type TypeInfo`
 
-A type's structure. `kind` is "record" (one constructor with named fields), "sum" (one or more positional constructors), or "unit". `fields` is populated for records, `variants` for sums.
+A type's structure. `kind` is "record" (one constructor with named fields), "sum" (one or more positional constructors), or "unit" (a fieldless type with no constructors). `fields` is populated for records, `variants` for sums.
 
 - `TypeInfo { name: String, kind: String, params: List(String), fields: List(FieldInfo), variants: List(VariantInfo) }`
 

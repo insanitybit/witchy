@@ -57,6 +57,10 @@ not the semantic representation.
   `TypeExpr`, not `string.starts_with`.
 - `std/meta.derive_deserialize` recursively decodes `List` and `Option` from
   `TypeExpr`, not prefix-stripped strings.
+- Fieldless declarations such as `type Marker:` are reported as `kind: "unit"`:
+  they are uninhabited types with no constructors, not singleton empty records.
+  Built-in structural derives reject them at the source-shape gate instead of
+  generating vacuous record implementations.
 - Existing custom derives that read `FieldInfo.type_name` or
   `VariantInfo.field_types` continue to work.
 

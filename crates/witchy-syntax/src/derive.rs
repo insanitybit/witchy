@@ -48,6 +48,13 @@ fn unsupported_deserialize_field(t: &TypeDef) -> Option<(&str, &'static str)> {
         })
 }
 
+fn builtin_derive_on_fieldless_type(d: &str) -> bool {
+    matches!(
+        d,
+        "Show" | "PartialEq" | "Eq" | "PartialOrd" | "Ord" | "Reflect" | "Deserialize"
+    )
+}
+
 /// Expand every `type T derive(...)` into a comptime call of the matching witchy
 /// generator. Unsupported shapes for the built-ins are loud errors; an unknown
 /// derive routes to a user-provided `derive_<name>` (a comptime error if absent).
@@ -69,6 +76,14 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
         // CONSUME the annotation: this pass runs at every pipeline entry
         // (records::lower is called per stage) and must be idempotent.
         let derives = std::mem::take(&mut t.derives);
+        if t.variants.is_empty() {
+            if let Some(d) = derives.iter().find(|d| builtin_derive_on_fieldless_type(d)) {
+                return Err(format!(
+                    "type `{}`: derive({d}) does not support fieldless types because they have no constructors",
+                    t.name
+                ));
+            }
+        }
         let has_explicit_partial_eq = explicit_partial_eq_targets.contains(&t.name);
         // (RFC-0047) Record that this type's PartialEq is the STRUCTURAL derive,
         // so whole-program container equality can keep its structural fast path.

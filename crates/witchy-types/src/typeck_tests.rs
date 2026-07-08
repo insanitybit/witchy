@@ -743,6 +743,28 @@
     }
 
     #[test]
+    fn fieldless_types_are_uninhabited_and_builtin_derives_reject() {
+        // `type Marker:` is a fieldless, uninhabited type. It has no constructor,
+        // so an empty match is exhaustive, but structural built-in derives must not
+        // generate empty `match self:` implementations as if it were a singleton.
+        check_str("type Marker:\n\nfn absurd(m: Marker) -> Int:\n    match m:\n\nfn main(console: Console):\n    print(console, \"ok\")\n")
+            .expect("empty match over an uninhabited fieldless type is exhaustive");
+
+        let value = check_str("type Marker:\n\nfn main(console: Console):\n    print(console, \"${Marker()}\")\n")
+            .expect_err("a fieldless type has no constructor");
+        assert!(value.contains("type `Marker` is not a value"), "{value}");
+
+        for derive_name in ["Show", "PartialEq", "Eq", "PartialOrd", "Ord", "Reflect", "Deserialize"] {
+            let src = format!("type Marker derive({derive_name}):\n\nfn main(console: Console):\n    print(console, \"ok\")\n");
+            let err = check_str(&src).expect_err("built-in derives reject fieldless types");
+            assert!(
+                err.contains(&format!("derive({derive_name})")) && err.contains("fieldless types"),
+                "{derive_name}: {err}"
+            );
+        }
+    }
+
+    #[test]
     fn accepts_a_well_typed_program() {
         let src = r#"
 fn double(n: Int) -> Int:

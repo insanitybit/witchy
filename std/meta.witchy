@@ -32,8 +32,8 @@ type VariantInfo:
     field_type_exprs: List(TypeExpr)
 
 // A type's structure. `kind` is "record" (one constructor with named fields),
-// "sum" (one or more positional constructors), or "unit". `fields` is populated
-// for records, `variants` for sums.
+// "sum" (one or more positional constructors), or "unit" (a fieldless type with
+// no constructors). `fields` is populated for records, `variants` for sums.
 type TypeInfo:
     name: String
     kind: String
@@ -102,8 +102,8 @@ pub fn derive_show(t: TypeInfo) -> String:
             arms = list.push(arms, variant_show_arm(v))
         head + "        match self:\n" + list.join(arms, "\n") + "\n"
 
-// The rendered body of a record's `show`: `"Name"` for a fieldless record, else
-// `"Name(" + show(self.f1) + ", " + show(self.f2) + ")"`.
+// The rendered body of a record's `show`: `"Name"` for a defensive empty-field
+// record input, else `"Name(" + show(self.f1) + ", " + show(self.f2) + ")"`.
 fn record_show_body(name: String, fields: List(FieldInfo)) -> String:
     if list.is_empty(fields):
         "\"" + name + "\""
@@ -148,7 +148,8 @@ pub fn derive_partial_eq(t: TypeInfo) -> String:
             arms = list.push(arms, variant_eq_arm(v))
         head + "        match self:\n" + list.join(arms, "\n") + "\n"
 
-// The `&&`-chained field comparison of a record's `eq`, or `true` for a unit.
+// The `&&`-chained field comparison of a record's `eq`, or `true` for a
+// defensive empty-field record input.
 fn record_eq_body(fields: List(FieldInfo)) -> String:
     if list.is_empty(fields):
         "true"
