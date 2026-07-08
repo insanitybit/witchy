@@ -1909,6 +1909,21 @@ fn main(console: Console):
         );
     }
 
+    /// (BUG-324) The lexer admits the Int.MIN magnitude as a wrapped token so
+    /// expression literals can spell `-9223372036854775808`; pattern parsing must
+    /// use the same wraparound negation instead of panicking in debug builds.
+    #[test]
+    fn int_min_literal_patterns_work_on_both_backends() {
+        let src = "fn main(console: Console):\n    let n = -9223372036854775808\n    match n:\n        -9223372036854775808 -> print(console, \"min\")\n        _ -> print(console, \"other\")\n    let m = -9223372036854775807\n    match m:\n        -9223372036854775808..=-9223372036854775807 -> print(console, \"range\")\n        _ -> print(console, \"miss\")\n";
+        let expected = ["min", "range"];
+        assert_eq!(link_run(src), expected, "interp: Int.MIN pattern");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: Int.MIN pattern",
+        );
+    }
+
     /// (BUG-466, RFC-0044) `math.to_int(NaN)` is a loud contract error on both
     /// backends. Finite values and infinities keep the existing saturating
     /// truncation behavior.

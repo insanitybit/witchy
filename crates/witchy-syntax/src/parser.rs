@@ -2035,7 +2035,7 @@ impl Parser {
         match self.kind().clone() {
             Tok::Int(n) => {
                 self.advance();
-                Ok(if neg { -n } else { n })
+                Ok(if neg { n.wrapping_neg() } else { n })
             }
             other => Err(self.error(format!(
                 "expected an integer bound in a range pattern, found `{other}`"
@@ -2170,11 +2170,11 @@ impl Parser {
                 match self.kind().clone() {
                     Tok::Int(n) => {
                         self.advance();
-                        Ok(Pattern::Int(-n))
+                        Ok(Pattern::Int(n.wrapping_neg()))
                     }
                     Tok::Duration(ms) => {
                         self.advance();
-                        Ok(Pattern::Duration(-ms))
+                        Ok(Pattern::Duration(ms.wrapping_neg()))
                     }
                     Tok::Float(_) => Err(self.error(
                         "Float literals cannot be matched — exact Float equality is a \
