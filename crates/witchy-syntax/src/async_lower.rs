@@ -152,6 +152,15 @@ struct Ctx<'a> {
     segments: Vec<Function>,
 }
 
+#[derive(Clone, Copy)]
+struct Continuation<'a> {
+    rest: &'a [Stmt],
+    rest_lines: &'a [u32],
+    scope: &'a [Local],
+    tail: &'a Tail,
+    line: u32,
+}
+
 impl<'a> Ctx<'a> {
     fn fresh_seg(&mut self) -> String {
         let n = *self.counter;
@@ -174,17 +183,26 @@ impl<'a> Ctx<'a> {
     /// for a value, become-the-task for a tail `await`, `task.ready_unit()` on
     /// falling off the end); a `for`/`for await`/`while` body is transformed the
     /// same way and coerced to `Task(Nil)` by its caller.
-    fn go(&mut self, stmts: &[Stmt], scope: &[Local], tail: &Tail) -> Result<Expr, String> {
+    fn go(
+        &mut self,
+        stmts: &[Stmt],
+        lines: &[u32],
+        scope: &[Local],
+        tail: &Tail,
+    ) -> Result<Expr, String> {
         let Some((head, rest)) = stmts.split_first() else {
             return Ok(self.end(tail));
         };
+        let line = line_at(lines, 0);
+        let rest_lines = remaining_lines(lines);
+        let cont = Continuation { rest, rest_lines, scope, tail, line };
         match head {
             Stmt::Let { name, value, mutable, ty } => {
                 if let Some(inner) = as_await(value) {
                     reject_await(inner, &self.fname)?;
                     // `let x = E.await` — suspend, then continue with `x` bound.
                     let bind = Local { name: name.clone(), ty: ty.clone(), mutable: *mutable };
-                    self.suspend(inner.clone(), Some(bind), rest, scope, tail)
+                    self.suspend(inner.clone(), Some(bind), cont)
                 } else {
                     reject_await(value, &self.fname)?;
                     let mut scope2 = scope.to_vec();
@@ -193,7 +211,13 @@ impl<'a> Ctx<'a> {
                         ty: ty.clone().or_else(|| derive_type(value)),
                         mutable: *mutable,
                     });
-                    Ok(prefix_stmt(head.clone(), self.go(rest, &scope2, tail)?))
+                    let cont2 = Continuation { scope: &scope2, ..cont };
+                    Ok(prefix_stmt_at(
+                        head.clone(),
+                        self.go(cont2.rest, cont2.rest_lines, cont2.scope, cont2.tail)?,
+                        line,
+                        next_line(rest_lines, line),
+                    ))
                 }
             }
             Stmt::LetPattern { pattern, value } if as_await(value).is_some() => {
@@ -215,7 +239,11 @@ impl<'a> Ctx<'a> {
                     value: Expr::Var(tmp),
                 });
                 new_stmts.extend_from_slice(rest);
-                self.go(&new_stmts, scope, tail)
+                let mut new_lines = Vec::with_capacity(new_stmts.len());
+                new_lines.push(line);
+                new_lines.push(line);
+                new_lines.extend_from_slice(rest_lines);
+                self.go(&new_stmts, &new_lines, scope, tail)
             }
             Stmt::LetPattern { pattern, value } => {
                 reject_await(value, &self.fname)?;
@@ -225,14 +253,25 @@ impl<'a> Ctx<'a> {
                 for b in &binds {
                     scope2.push(Local { name: b.clone(), ty: None, mutable: false });
                 }
-                Ok(prefix_stmt(head.clone(), self.go(rest, &scope2, tail)?))
+                let cont2 = Continuation { scope: &scope2, ..cont };
+                Ok(prefix_stmt_at(
+                    head.clone(),
+                    self.go(cont2.rest, cont2.rest_lines, cont2.scope, cont2.tail)?,
+                    line,
+                    next_line(rest_lines, line),
+                ))
             }
             Stmt::Assign { value, .. } => {
                 reject_await(value, &self.fname)?;
                 // A plain reassignment of an in-scope `var` (a mutable local or an
                 // `own` segment/loop parameter). Kept verbatim; if the var is
                 // carried across a later await / loop-back it rides a parameter.
-                Ok(prefix_stmt(head.clone(), self.go(rest, scope, tail)?))
+                Ok(prefix_stmt_at(
+                    head.clone(),
+                    self.go(cont.rest, cont.rest_lines, cont.scope, cont.tail)?,
+                    line,
+                    next_line(rest_lines, line),
+                ))
             }
             Stmt::Return(Some(e)) => {
                 // `return e` exits the function early with its value, regardless of
@@ -240,7 +279,7 @@ impl<'a> Ctx<'a> {
                 self.tail_expr(e, scope, &Tail::Return)
             }
             Stmt::Return(None) => Ok(call("task.ready_unit", vec![])),
-            Stmt::Expr(e) => self.expr_stmt(e, rest, scope, tail),
+            Stmt::Expr(e) => self.expr_stmt(e, cont),
             Stmt::Yield(_) => Err(self.err("`yield` is not allowed in an async fn")),
             Stmt::Break | Stmt::Continue => {
                 Err(self.err("`break`/`continue` across `await` is not yet supported"))
@@ -262,18 +301,16 @@ impl<'a> Ctx<'a> {
     fn expr_stmt(
         &mut self,
         e: &Expr,
-        rest: &[Stmt],
-        scope: &[Local],
-        tail: &Tail,
+        cont: Continuation<'_>,
     ) -> Result<Expr, String> {
-        let is_last = rest.is_empty();
+        let is_last = cont.rest.is_empty();
         // A loop whose body (or receiver) drives the executor.
         if let Expr::For { var, iter, body } = e {
             if let Some(src) = as_recv_stream(iter) {
-                return self.lower_for_await(var, src, body, rest, scope, tail);
+                return self.lower_for_await(var, src, body, cont);
             } else if block_contains_await(body) {
-                let loop_future = self.lower_for(var, iter, body, scope)?;
-                return self.sequence_loop(loop_future, vec![], rest, scope, tail);
+                let loop_future = self.lower_for(var, iter, body, cont.scope)?;
+                return self.sequence_loop(loop_future, vec![], cont);
             }
         }
         if let Expr::While { cond, body } = e {
@@ -281,19 +318,24 @@ impl<'a> Ctx<'a> {
                 return Err(self.err("`await` in a `while` condition is not yet supported"));
             }
             if block_contains_await(body) {
-                return self.lower_while(cond, body, rest, scope, tail);
+                return self.lower_while(cond, body, cont);
             }
         }
 
         if is_last {
-            self.tail_expr(e, scope, tail)
+            self.tail_expr(e, cont.scope, cont.tail)
         } else if let Some(inner) = as_await(e) {
             // A non-last `await E` runs E for effect and continues.
             reject_await(inner, &self.fname)?;
-            self.suspend(inner.clone(), None, rest, scope, tail)
+            self.suspend(inner.clone(), None, cont)
         } else {
             reject_await(e, &self.fname)?;
-            Ok(prefix_stmt(Stmt::Expr(e.clone()), self.go(rest, scope, tail)?))
+            Ok(prefix_stmt_at(
+                Stmt::Expr(e.clone()),
+                self.go(cont.rest, cont.rest_lines, cont.scope, cont.tail)?,
+                cont.line,
+                next_line(cont.rest_lines, cont.line),
+            ))
         }
     }
 
@@ -304,36 +346,39 @@ impl<'a> Ctx<'a> {
         &mut self,
         loop_future: Expr,
         accs: Vec<Local>,
-        rest: &[Stmt],
-        scope: &[Local],
-        tail: &Tail,
+        cont: Continuation<'_>,
     ) -> Result<Expr, String> {
         if accs.is_empty() {
             // `Task(Nil)` loop. In tail-return position it IS the result.
-            if rest.is_empty() && matches!(tail, Tail::Return) {
+            if cont.rest.is_empty() && matches!(cont.tail, Tail::Return) {
                 return Ok(loop_future);
             }
-            return self.suspend(RawTask(loop_future), None, rest, scope, tail);
+            return self.suspend(RawTask(loop_future), None, cont);
         }
         // The loop yields its accumulators; rebind them, then continue.
         let acc_bind = self.fresh_tmp();
         let rebind = rebind_accs(&accs, &acc_bind);
-        let mut cont_scope = scope.to_vec();
+        let mut cont_scope = cont.scope.to_vec();
         for a in &accs {
             // After the loop the accumulator is a fresh (mutable) local.
             cont_scope.push(Local { name: a.name.clone(), ty: a.ty.clone(), mutable: true });
         }
+        let rebind_count = rebind.len();
         let mut cont_stmts = rebind;
-        let cont_expr = self.go(rest, &cont_scope, tail)?;
+        let cont2 = Continuation { scope: &cont_scope, ..cont };
+        let cont_expr = self.go(cont2.rest, cont2.rest_lines, cont2.scope, cont2.tail)?;
         cont_stmts.push(Stmt::Expr(cont_expr));
         let n = cont_stmts.len();
+        let mut cont_lines = vec![cont.line; rebind_count];
+        cont_lines.push(next_line(cont.rest_lines, cont.line));
+        debug_assert_eq!(cont_lines.len(), n);
         let cont_block = Expr::Block(Block {
             stmts: cont_stmts,
-            lines: vec![0; n],
+            lines: cont_lines,
             region: None,
         });
         let bind = Local { name: acc_bind, ty: None, mutable: false };
-        self.lift_suspend(RawTask(loop_future), Some(bind), cont_block, scope)
+        self.lift_suspend(RawTask(loop_future), Some(bind), cont_block, cont.scope, cont.line)
     }
 
     /// The sequence's tail expression under `tail`. For `Tail::Return`: `await E`
@@ -359,7 +404,7 @@ impl<'a> Ctx<'a> {
                 if then_block.region.is_some() {
                     return Err(self.err("`region:` in an async tail branch is not yet supported"));
                 }
-                let then_f = self.go(&then_block.stmts, scope, tail)?;
+                let then_f = self.go(&then_block.stmts, &then_block.lines, scope, tail)?;
                 let else_f = match else_block {
                     Some(b) => {
                         if b.region.is_some() {
@@ -367,14 +412,19 @@ impl<'a> Ctx<'a> {
                                 self.err("`region:` in an async tail branch is not yet supported")
                             );
                         }
-                        self.go(&b.stmts, scope, tail)?
+                        self.go(&b.stmts, &b.lines, scope, tail)?
                     }
                     None => self.end(tail),
                 };
                 Ok(Expr::If {
                     cond: cond.clone(),
-                    then_block: tail_block(then_f),
-                    else_block: Some(tail_block(else_f)),
+                    then_block: tail_block_at(then_f, first_line(&then_block.lines)),
+                    else_block: Some(tail_block_at(
+                        else_f,
+                        else_block.as_ref().map_or(first_line(&then_block.lines), |b| {
+                            first_line(&b.lines)
+                        }),
+                    )),
                 })
             }
             Expr::Match { scrutinee, arms } => {
@@ -402,7 +452,7 @@ impl<'a> Ctx<'a> {
                 if b.region.is_some() {
                     return Err(self.err("`region:` in an async tail expression is not yet supported"));
                 }
-                self.go(&b.stmts, scope, tail)
+                self.go(&b.stmts, &b.lines, scope, tail)
             }
             _ => {
                 reject_await(e, &self.fname)?;
@@ -411,7 +461,7 @@ impl<'a> Ctx<'a> {
                     Tail::Loop { .. } => {
                         // Run `e` for its effect (bound so the result is not a
                         // discarded value), then loop back.
-                        Ok(prefix_stmt(
+                        Ok(prefix_stmt_at(
                             Stmt::Let {
                                 name: self.fresh_tmp(),
                                 ty: None,
@@ -419,6 +469,8 @@ impl<'a> Ctx<'a> {
                                 value: e.clone(),
                             },
                             self.end(tail),
+                            0,
+                            0,
                         ))
                     }
                 }
@@ -434,16 +486,15 @@ impl<'a> Ctx<'a> {
         &mut self,
         inner: impl IntoTask,
         bind: Option<Local>,
-        rest: &[Stmt],
-        scope: &[Local],
-        tail: &Tail,
+        cont: Continuation<'_>,
     ) -> Result<Expr, String> {
-        let mut cont_scope = scope.to_vec();
+        let mut cont_scope = cont.scope.to_vec();
         if let Some(b) = &bind {
             cont_scope.push(b.clone());
         }
-        let cont_expr = self.go(rest, &cont_scope, tail)?;
-        self.lift_suspend(inner, bind, cont_expr, scope)
+        let cont2 = Continuation { scope: &cont_scope, ..cont };
+        let cont_expr = self.go(cont2.rest, cont2.rest_lines, cont2.scope, cont2.tail)?;
+        self.lift_suspend(inner, bind, cont_expr, cont.scope, next_line(cont.rest_lines, cont.line))
     }
 
     /// Lift `cont_expr` (the continuation) to a top-level segment function whose
@@ -455,6 +506,7 @@ impl<'a> Ctx<'a> {
         bind: Option<Local>,
         cont_expr: Expr,
         scope: &[Local],
+        line: u32,
     ) -> Result<Expr, String> {
         // Carried = live locals of `cont_expr` that are in `scope` (excluding the
         // resume bind, which is passed separately).
@@ -476,7 +528,7 @@ impl<'a> Ctx<'a> {
             name: seg_name.clone(),
             params,
             ret: None,
-            body: tail_block(cont_expr),
+            body: tail_block_at(cont_expr, line),
             bounds: vec![],
             is_gen: false,
             is_async: false,
@@ -503,7 +555,7 @@ impl<'a> Ctx<'a> {
         };
         let cont_lambda = Expr::Lambda {
             params: lam_params,
-            body: tail_block(call(&seg_name, call_args)),
+            body: tail_block_at(call(&seg_name, call_args), line),
             ret: None,
         };
         Ok(call("task.and_then", vec![inner.into_task(), cont_lambda]))
@@ -525,7 +577,7 @@ impl<'a> Ctx<'a> {
         let list_expr = for_iter_list(iter);
         let mut scope2 = scope.to_vec();
         scope2.push(Local { name: var.to_string(), ty: None, mutable: false });
-        let body_future = self.go(&body.stmts, &scope2, &Tail::Return)?;
+        let body_future = self.go(&body.stmts, &body.lines, &scope2, &Tail::Return)?;
         let body_nil = and_then(body_future, self.fresh_tmp(), call("task.ready_unit", vec![]));
         let f = Expr::Lambda {
             params: vec![Param {
@@ -534,7 +586,7 @@ impl<'a> Ctx<'a> {
                 convention: Convention::Let,
                 default: None,
             }],
-            body: tail_block(body_nil),
+            body: tail_block_at(body_nil, first_line(&body.lines)),
             ret: None,
         };
         Ok(call("task.for_each", vec![list_expr, f]))
@@ -551,16 +603,14 @@ impl<'a> Ctx<'a> {
         var: &str,
         src: &Expr,
         body: &Block,
-        rest: &[Stmt],
-        scope: &[Local],
-        tail: &Tail,
+        cont: Continuation<'_>,
     ) -> Result<Expr, String> {
         reject_await(src, &self.fname)?;
-        if !body_folds(body, scope) {
+        if !body_folds(body, cont.scope) {
             // Drain / effect body: keep `chan.consume` (interleaving preserved).
-            let mut scope2 = scope.to_vec();
+            let mut scope2 = cont.scope.to_vec();
             scope2.push(Local { name: var.to_string(), ty: None, mutable: false });
-            let body_future = self.go(&body.stmts, &scope2, &Tail::Return)?;
+            let body_future = self.go(&body.stmts, &body.lines, &scope2, &Tail::Return)?;
             let body_nil =
                 and_then(body_future, self.fresh_tmp(), call("task.ready_unit", vec![]));
             let f = Expr::Lambda {
@@ -570,21 +620,21 @@ impl<'a> Ctx<'a> {
                     convention: Convention::Let,
                     default: None,
                 }],
-                body: tail_block(body_nil),
+                body: tail_block_at(body_nil, first_line(&body.lines)),
                 ret: None,
             };
             let consume = call("chan.consume", vec![src.clone(), f]);
-            return self.sequence_loop(consume, vec![], rest, scope, tail);
+            return self.sequence_loop(consume, vec![], cont);
         }
         // Folding receive loop.
-        let want_accs = !(rest.is_empty() && matches!(tail, Tail::Return));
+        let want_accs = !(cont.rest.is_empty() && matches!(cont.tail, Tail::Return));
         let (entry, accs) = self.build_loop_seg(
             LoopHeader::Recv { src: src.clone(), var: var.to_string() },
             body,
-            scope,
+            cont.scope,
             want_accs,
         )?;
-        self.sequence_loop(entry, accs, rest, scope, tail)
+        self.sequence_loop(entry, accs, cont)
     }
 
     /// `while cond:` whose body awaits — a recursive segment loop that threads its
@@ -594,14 +644,16 @@ impl<'a> Ctx<'a> {
         &mut self,
         cond: &Expr,
         body: &Block,
-        rest: &[Stmt],
-        scope: &[Local],
-        tail: &Tail,
+        cont: Continuation<'_>,
     ) -> Result<Expr, String> {
-        let want_accs = !(rest.is_empty() && matches!(tail, Tail::Return));
-        let (entry, accs) =
-            self.build_loop_seg(LoopHeader::While { cond: cond.clone() }, body, scope, want_accs)?;
-        self.sequence_loop(entry, accs, rest, scope, tail)
+        let want_accs = !(cont.rest.is_empty() && matches!(cont.tail, Tail::Return));
+        let (entry, accs) = self.build_loop_seg(
+            LoopHeader::While { cond: cond.clone() },
+            body,
+            cont.scope,
+            want_accs,
+        )?;
+        self.sequence_loop(entry, accs, cont)
     }
 
     /// The core recursive-segment loop builder shared by `while` and folding
@@ -652,11 +704,11 @@ impl<'a> Ctx<'a> {
 
         let loop_body = match &header {
             LoopHeader::While { cond } => {
-                let body_expr = self.go(&body.stmts, &carried, &loop_tail)?;
+                let body_expr = self.go(&body.stmts, &body.lines, &carried, &loop_tail)?;
                 Expr::If {
                     cond: Box::new(cond.clone()),
-                    then_block: tail_block(body_expr),
-                    else_block: Some(tail_block(exit)),
+                    then_block: tail_block_at(body_expr, first_line(&body.lines)),
+                    else_block: Some(tail_block_at(exit, first_line(&body.lines))),
                 }
             }
             LoopHeader::Recv { src, var } => {
@@ -665,7 +717,7 @@ impl<'a> Ctx<'a> {
                 // carried mutation is a real `own`-parameter reassignment.
                 let mut body_scope = carried.clone();
                 body_scope.push(Local { name: var.clone(), ty: None, mutable: false });
-                let body_expr = self.go(&body.stmts, &body_scope, &loop_tail)?;
+                let body_expr = self.go(&body.stmts, &body.lines, &body_scope, &loop_tail)?;
                 let recv_name = self.fresh_seg();
                 let o = self.fresh_tmp();
                 let recv_arms = vec![
@@ -698,7 +750,7 @@ impl<'a> Ctx<'a> {
                     name: recv_name.clone(),
                     params: recv_params,
                     ret: None,
-                    body: tail_block(recv_match),
+                    body: tail_block_at(recv_match, first_line(&body.lines)),
                     bounds: vec![],
                     is_gen: false,
                     is_async: false,
@@ -714,7 +766,7 @@ impl<'a> Ctx<'a> {
                         convention: Convention::Let,
                         default: None,
                     }],
-                    body: tail_block(call(&recv_name, recv_args)),
+                    body: tail_block_at(call(&recv_name, recv_args), first_line(&body.lines)),
                     ret: None,
                 };
                 call("task.and_then", vec![call("chan.recv", vec![src.clone()]), recv_lambda])
@@ -726,7 +778,7 @@ impl<'a> Ctx<'a> {
             name: seg_name.clone(),
             params,
             ret: None,
-            body: tail_block(loop_body),
+            body: tail_block_at(loop_body, first_line(&body.lines)),
             bounds: vec![],
             is_gen: false,
             is_async: false,
@@ -784,10 +836,15 @@ fn lower_async_fn_with(
             mutable: p.convention.binds_mutable(),
         })
         .collect();
-    let body_future = ctx.go(&f.body.stmts, &scope, &Tail::Return)?;
+    let body_line = first_line(&f.body.lines);
+    let body_future = ctx.go(&f.body.stmts, &f.body.lines, &scope, &Tail::Return)?;
     let lazy_body = call(
         "task.lazy",
-        vec![Expr::Lambda { params: vec![], body: tail_block(body_future), ret: None }],
+        vec![Expr::Lambda {
+            params: vec![],
+            body: tail_block_at(body_future, body_line),
+            ret: None,
+        }],
     );
     let entry_body = if is_entry {
         // The runtime calls `main` directly and cannot drive a task, so an async
@@ -801,7 +858,7 @@ fn lower_async_fn_with(
         name: f.name,
         params: f.params,
         ret: None,
-        body: tail_block(entry_body),
+        body: tail_block_at(entry_body, body_line),
         bounds: f.bounds,
         is_gen: false,
         is_async: false,
@@ -1207,10 +1264,10 @@ fn and_then(inner: Expr, bind: String, k: Expr) -> Expr {
 
 /// A block whose value is `head` (a normal statement) followed by the
 /// continuation future `k` as the tail expression.
-fn prefix_stmt(head: Stmt, k: Expr) -> Expr {
+fn prefix_stmt_at(head: Stmt, k: Expr, head_line: u32, tail_line: u32) -> Expr {
     Expr::Block(Block {
         stmts: vec![head, Stmt::Expr(k)],
-        lines: vec![0, 0],
+        lines: vec![head_line, tail_line],
         region: None,
     })
 }
@@ -1222,5 +1279,25 @@ fn call(name: &str, args: Vec<Expr>) -> Expr {
 /// A single-expression block (the body shape for a function/branch whose value is
 /// exactly `e`).
 fn tail_block(e: Expr) -> Block {
-    Block { stmts: vec![Stmt::Expr(e)], lines: vec![0], region: None }
+    tail_block_at(e, 0)
+}
+
+fn tail_block_at(e: Expr, line: u32) -> Block {
+    Block { stmts: vec![Stmt::Expr(e)], lines: vec![line], region: None }
+}
+
+fn line_at(lines: &[u32], idx: usize) -> u32 {
+    lines.get(idx).copied().unwrap_or(0)
+}
+
+fn first_line(lines: &[u32]) -> u32 {
+    line_at(lines, 0)
+}
+
+fn remaining_lines(lines: &[u32]) -> &[u32] {
+    lines.get(1..).unwrap_or(&[])
+}
+
+fn next_line(lines: &[u32], fallback: u32) -> u32 {
+    first_line(lines).max(fallback)
 }

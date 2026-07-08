@@ -429,6 +429,27 @@
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
+    /// (BUG-312) Async lowering runs before typeck, so synthesized wrapper blocks
+    /// must preserve the source line of the statement they wrap. Otherwise type
+    /// errors inside an async body lose the normal `fn`, line N prefix.
+    #[test]
+    fn async_lowered_type_errors_keep_source_locations() {
+        let before_await = "import list\nimport chan\n\nasync fn work(console: Console) -> Nil:\n    var xs: List(Int) = []\n    xs = list.push(xs, \"bad\")\n    chan.yield_now().await\n    return\n\nasync fn main(console: Console):\n    work(console).await\n";
+        let err = typeck::check(&resolve_std_src(before_await))
+            .expect_err("async type error before await must be rejected")
+            .to_string();
+        assert!(err.contains("`main.work`, line 6:"), "async diagnostic lost location: {err}");
+        assert!(err.contains("expected `Int`, found `String`"), "{err}");
+
+        let after_await = "import list\nimport chan\n\nasync fn work(console: Console) -> Nil:\n    var xs: List(Int) = []\n    chan.yield_now().await\n    xs = list.push(xs, \"bad\")\n    return\n\nasync fn main(console: Console):\n    work(console).await\n";
+        let err = typeck::check(&resolve_std_src(after_await))
+            .expect_err("async type error after await must be rejected")
+            .to_string();
+        assert!(err.contains("`async_work_"), "continuation diagnostic must name segment: {err}");
+        assert!(err.contains("`, line 7:"), "continuation diagnostic lost source line: {err}");
+        assert!(err.contains("expected `Int`, found `String`"), "{err}");
+    }
+
     /// (BUG-310/BUG-311) Channel close is quiescence-based, not sender-refcount
     /// based. A parked recv resumes as `None` when every live task is parked; a
     /// retained sender may still send later. Likewise a bounded parked send and a
