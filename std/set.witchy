@@ -52,6 +52,15 @@ pub fn remove(var s: Set(a), x: a) -> Set(a) where a: Eq:
             out = list.push(out, y)
     Set(out)
 
+// Real methods mirror the primary mutator surface while the module functions
+// remain as stable, first-class values.
+impl Set(a) where a: Eq:
+    pub fn insert(var self, x: a) -> Set(a):
+        insert(self, x)
+
+    pub fn remove(var self, x: a) -> Set(a):
+        remove(self, x)
+
 // Whether `x` is a member of `s`.
 pub fn contains(s: Set(a), x: a) -> Bool where a: Eq:
     let items = s.items

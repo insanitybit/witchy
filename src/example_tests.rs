@@ -4204,6 +4204,24 @@ fn main(console: Console):
         assert_eq!(wasm_run(src), expected, "wasm: std List impl/free methods");
     }
 
+    /// The same owner-module method pattern applies to the other mutable core
+    /// containers: receiver syntax is available, but the stable `dict.*`/`set.*`
+    /// functions still exist and remain the in-place backend target.
+    #[test]
+    fn std_dict_set_impl_methods_and_free_functions_coexist_on_both_backends() {
+        let src = "import dict\nimport set\n\ntype Bag:\n    counts: Dict(String, Int)\n    seen: Set(String)\n\nfn inc(n: Int) -> Int:\n    n + 1\n\nfn main(console: Console):\n    var bag = Bag(dict.new(), set.new())\n    var i = 0\n    while i < 20:\n        bag.counts.update(\"hit\", 0, inc)\n        bag.seen.insert(\"k${i}\")\n        i = i + 1\n    bag.counts.insert(\"extra\", 7)\n    bag.counts.remove(\"extra\")\n    bag.seen.remove(\"k0\")\n    print(console, \"${dict.get_or(bag.counts, \"hit\", 0)}\")\n    print(console, \"${dict.length(bag.counts)}\")\n    print(console, \"${set.length(bag.seen)}\")\n    print(console, \"${set.contains(bag.seen, \"k0\")}\")\n\n    let d = dict.remove(dict.insert(dict.new(), \"x\", 1), \"missing\")\n    let s = set.remove(set.insert(set.new(), \"x\"), \"missing\")\n    print(console, \"${dict.get_or(d, \"x\", 0)}\")\n    print(console, \"${set.contains(s, \"x\")}\")\n";
+        let expected = vec![
+            "20".to_string(),
+            "1".to_string(),
+            "19".to_string(),
+            "false".to_string(),
+            "1".to_string(),
+            "true".to_string(),
+        ];
+        assert_eq!(link_run(src), expected, "interpreter: std Dict/Set impl/free methods");
+        assert_eq!(wasm_run(src), expected, "wasm: std Dict/Set impl/free methods");
+    }
+
     /// RFC-0030 DIFFERENTIAL DE-OPT SWEEP: a program's output must be identical
     /// under every `WITCHY_OPT` setting — `none`, `all`, the production default,
     /// and the default with each optimization individually removed — and must

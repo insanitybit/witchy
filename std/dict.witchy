@@ -43,6 +43,18 @@ pub fn contains_key(d: Dict(k, v), key: k) -> Bool where k: Eq:
 pub fn remove(var d: Dict(k, v), key: k) -> Dict(k, v) where k: Eq:
     dict.remove(d, key)
 
+// Real methods mirror the primary mutator surface while the module functions
+// remain as stable, first-class values.
+impl Dict(k, v) where k: Eq:
+    pub fn insert(var self, key: k, val: v) -> Dict(k, v):
+        dict.insert(self, key, val)
+
+    pub fn update(var self, key: k, default: v, f: fn(v) -> v) -> Dict(k, v):
+        dict.update(self, key, default, f)
+
+    pub fn remove(var self, key: k) -> Dict(k, v):
+        dict.remove(self, key)
+
 // The keys, in insertion order.
 pub fn keys(d: Dict(k, v)) -> List(k):
     dict.keys(d)

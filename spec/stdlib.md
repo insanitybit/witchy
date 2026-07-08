@@ -464,6 +464,18 @@ Swap keys and values. With duplicate values, a later entry wins.
 
 The values whose keys satisfy `pred`, in the Dict's iteration order.
 
+#### `Dict.insert(key: k, val: v) -> Dict(k, v)`
+
+A new dict with `key` set to `val` (replacing any existing entry). Insertion order of first appearance is preserved. The `d[key] = val` sugar (RFC-0022) desugars to this: the shared `set_at` place-assign is retargeted to `insert` once the receiver is known to be a Dict (RFC-0049).
+
+#### `Dict.update(key: k, default: v, f: fn(v) -> v) -> Dict(k, v)`
+
+Single-lookup upsert: apply `f` to the current value (or `default` when `key` is absent) and store the result under `key`.
+
+#### `Dict.remove(key: k) -> Dict(k, v)`
+
+A new dict with `key` (and its value) removed; unchanged when absent.
+
 ## `duration`
 
 Pure helpers for the built-in `Duration` type — a length of time, written as a literal like `30s`, `2hr`, or `500ms`. Durations are combined and compared with the language operators (`a + b`, `d * 3`, `a < b`); this module adds construction from plain numbers, component access, and human formatting. Capability-free, so it compiles to WASM. A Duration is carried as whole milliseconds (`int_to_duration`/`duration_to_int` are the Int<->Duration bridge).
@@ -2362,6 +2374,14 @@ Whether every member of `s` is also in `t`.
 #### `fn is_disjoint(s: Set(a), t: Set(a)) -> Bool where a: Eq`
 
 Whether the two sets share no members.
+
+#### `Set.insert(x: a) -> Set(a)`
+
+`s` with `x` added (a no-op if already present).
+
+#### `Set.remove(x: a) -> Set(a)`
+
+`s` with `x` removed (a no-op if absent).
 
 ## `show`
 
