@@ -4171,6 +4171,22 @@ fn main(console: Console):
         assert_eq!(wasm_run(src), expected, "wasm");
     }
 
+    /// (BUG-558 sharpened) The same loop-watermark escape must be rejected when
+    /// the `var` callee writes back a record field directly. The list case used
+    /// to corrupt the length header; the dict case read garbage memory.
+    #[test]
+    fn loop_watermark_rejects_outer_var_record_field_writeback() {
+        let list_src = "import list\n\ntype Buf:\n    items: List(Int)\n\nfn add(var b: Buf, x: Int):\n    b.items = list.push(b.items, x)\n\nfn main(console: Console):\n    var b = Buf([])\n    var i = 0\n    while i < 16:\n        add(b, i)\n        i = i + 1\n    print(console, \"${list.at(b.items, 15)}\")\n    print(console, \"${list.length(b.items)}\")\n";
+        let list_expected = vec!["15".to_string(), "16".to_string()];
+        assert_eq!(link_run(list_src), list_expected, "interpreter: list field");
+        assert_eq!(wasm_run(list_src), list_expected, "wasm: list field");
+
+        let dict_src = "import dict\n\ntype Tally:\n    counts: Dict(Int, Int)\n\nfn bump(var t: Tally, k: Int):\n    t.counts = dict.insert(t.counts, k, k * 2)\n\nfn main(console: Console):\n    var t = Tally(dict.new())\n    var i = 0\n    while i < 50:\n        bump(t, i)\n        i = i + 1\n    print(console, \"${dict.get_or(t.counts, 49, 0)}\")\n    print(console, \"${dict.length(t.counts)}\")\n";
+        let dict_expected = vec!["98".to_string(), "50".to_string()];
+        assert_eq!(link_run(dict_src), dict_expected, "interpreter: dict field");
+        assert_eq!(wasm_run(dict_src), dict_expected, "wasm: dict field");
+    }
+
     /// RFC-0030 DIFFERENTIAL DE-OPT SWEEP: a program's output must be identical
     /// under every `WITCHY_OPT` setting — `none`, `all`, the production default,
     /// and the default with each optimization individually removed — and must
