@@ -3,8 +3,7 @@
 // through these traits, so `a == b` and `x < y` work on your own types once you
 // implement (or derive) them — there is no separate `compare`/`greater` to call
 // by name. Built-in impls cover the primitives; `Self` in a method signature
-// stands for the implementing type. Pure and capability-free, like every std
-// module.
+// stands for the implementing type. Pure and capability-free.
 
 import option
 

@@ -1,7 +1,6 @@
 // The witchy standard `Result` type and helpers. `Result`, `Ok`, and `Err` are
 // prelude names and never need an import; `import result` brings in the qualified
-// helper functions such as `result.map_ok`. Pure and capability-free, like every
-// std module.
+// helper functions such as `result.map_ok`. Pure and capability-free.
 
 // For the `ok`/`err` conversions to Option.
 

@@ -698,7 +698,7 @@ pub fn optional(o: Option(Json), each: fn(Json) -> Result(a, String)) -> Result(
 
 // Build a JSON object whose keys are sorted (matching a serialized BTreeMap),
 // e.g. TUF `targets`. Use this only for dynamic key/value sets whose order must
-// be deterministic for signing; records that derive(Json) keep their declared
+// be deterministic for signing; reflectively-encoded records keep their declared
 // field order instead.
 pub fn object_sorted(pairs: List((String, Json))) -> Json:
     var sorted: List((String, Json)) = []
@@ -858,7 +858,7 @@ fn mirror_fields(fields: List((String, Mirror))) -> List((String, Json)):
         out = list.push(out, (k, mirror_to_json(m)))
     out
 
-// An `Option` encodes as payload-or-`null` (matching `derive(Json)`); any other
+// An `Option` encodes as payload-or-`null`; any other
 // sum-type variant as a tagged object `{"$variant": name, "$values": [...]}`.
 fn mirror_variant_to_json(tyname: String, variant: String, payload: List(Mirror)) -> Json:
     if tyname == "Option":

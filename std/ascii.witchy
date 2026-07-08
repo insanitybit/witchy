@@ -1,5 +1,5 @@
 // ASCII character predicates over single-character strings (such as those
-// `string.char_at` returns). Pure and capability-free, like every std module.
+// `string.char_at` returns). Pure and capability-free.
 // Classification is by code point in the ASCII range; the comparisons use the
 // standard string ordering, so every function here is correct on both the
 // interpreter and the compiled backend. The rough equivalent of Go's `unicode`

@@ -122,8 +122,8 @@ pub fn is_even(n: Int) -> Bool:
 pub fn is_odd(n: Int) -> Bool:
     n % 2 != 0
 
-// `n!` — the product 1*2*...*n (1 for n in {0, 1}). Watch the 32-bit range:
-// factorial grows past it quickly (13! already overflows). `n < 0` has no
+// `n!` — the product 1*2*...*n (1 for n in {0, 1}). Watch the 64-bit range:
+// factorial is exact through 20!; 21! overflows and wraps. `n < 0` has no
 // factorial, so it is a contract violation (RFC-0044 rule 3): abort naming the
 // bad argument rather than silently returning 1.
 pub fn factorial(n: Int) -> Int:

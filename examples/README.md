@@ -73,7 +73,6 @@ cooperative executor written in pure witchy (`std/task`, `std/chan`).
 |---|---|
 | [async_tasks](async_tasks/), [channels](channels/), [for_await](for_await/) | `async fn`/`await`, spawning tasks, sending/receiving over channels |
 | [worker_pool](worker_pool/), [select](select/), [request_reply](request_reply/) | A worker pool (mpmc), `select` over channels, request/reply |
-| [actors_async](actors_async/), [async_executor](async_executor/), [counter_serve](counter_serve/) | Actor-style message loops and a stateful server, built from channels |
 
 ## Multi-package projects ([projects/](projects/))
 

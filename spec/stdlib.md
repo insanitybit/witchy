@@ -2,7 +2,7 @@
 
 ## `ascii`
 
-ASCII character predicates over single-character strings (such as those `string.char_at` returns). Pure and capability-free, like every std module. Classification is by code point in the ASCII range; the comparisons use the standard string ordering, so every function here is correct on both the interpreter and the compiled backend. The rough equivalent of Go's `unicode` helpers for the ASCII subset.
+ASCII character predicates over single-character strings (such as those `string.char_at` returns). Pure and capability-free. Classification is by code point in the ASCII range; the comparisons use the standard string ordering, so every function here is correct on both the interpreter and the compiled backend. The rough equivalent of Go's `unicode` helpers for the ASCII subset.
 
 #### `fn is_digit(c: String) -> Bool`
 
@@ -226,7 +226,7 @@ Drive `root` through the canonical `std/task` executor. `chan` keeps this facade
 
 ## `cmp`
 
-The witchy standard comparison hierarchy, mirroring Rust's `std::cmp`: `PartialEq` → `Eq` → `PartialOrd` → `Ord`. The comparison operators desugar through these traits, so `a == b` and `x < y` work on your own types once you implement (or derive) them — there is no separate `compare`/`greater` to call by name. Built-in impls cover the primitives; `Self` in a method signature stands for the implementing type. Pure and capability-free, like every std module.
+The witchy standard comparison hierarchy, mirroring Rust's `std::cmp`: `PartialEq` → `Eq` → `PartialOrd` → `Ord`. The comparison operators desugar through these traits, so `a == b` and `x < y` work on your own types once you implement (or derive) them — there is no separate `compare`/`greater` to call by name. Built-in impls cover the primitives; `Self` in a method signature stands for the implementing type. Pure and capability-free.
 
 #### `type Ordering`
 
@@ -1156,7 +1156,7 @@ Decode an optional field: an absent key or an explicit `null` is `None`; otherwi
 
 #### `fn object_sorted(pairs: List((String, Json))) -> Json`
 
-Build a JSON object whose keys are sorted (matching a serialized BTreeMap), e.g. TUF `targets`. Use this only for dynamic key/value sets whose order must be deterministic for signing; records that derive(Json) keep their declared field order instead.
+Build a JSON object whose keys are sorted (matching a serialized BTreeMap), e.g. TUF `targets`. Use this only for dynamic key/value sets whose order must be deterministic for signing; reflectively-encoded records keep their declared field order instead.
 
 #### `fn get_string(j: Json, key: String) -> Option(String)`
 
@@ -1540,7 +1540,7 @@ Whether `n` is odd.
 
 #### `fn factorial(n: Int) -> Int`
 
-`n!` — the product 1*2*...*n (1 for n in {0, 1}). Watch the 32-bit range: factorial grows past it quickly (13! already overflows). `n < 0` has no factorial, so it is a contract violation (RFC-0044 rule 3): abort naming the bad argument rather than silently returning 1.
+`n!` — the product 1*2*...*n (1 for n in {0, 1}). Watch the 64-bit range: factorial is exact through 20!; 21! overflows and wraps. `n < 0` has no factorial, so it is a contract violation (RFC-0044 rule 3): abort naming the bad argument rather than silently returning 1.
 
 #### `fn is_prime(n: Int) -> Bool`
 
@@ -1944,7 +1944,7 @@ The matched substrings, leftmost first: extract("\\d+", "a1b22") is ["1", "22"].
 
 ## `result`
 
-The witchy standard `Result` type and helpers. `Result`, `Ok`, and `Err` are prelude names and never need an import; `import result` brings in the qualified helper functions such as `result.map_ok`. Pure and capability-free, like every std module.
+The witchy standard `Result` type and helpers. `Result`, `Ok`, and `Err` are prelude names and never need an import; `import result` brings in the qualified helper functions such as `result.map_ok`. Pure and capability-free.
 
 #### `type Result`
 
