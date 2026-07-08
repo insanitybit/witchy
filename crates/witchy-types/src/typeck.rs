@@ -4653,8 +4653,8 @@ impl Checker {
                             "or-pattern alternatives must bind the same names — `{}` \
                              binds {{{}}} but another alternative binds {{{}}}",
                             describe_pattern(alt),
-                            names_a.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "),
                             names_b.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "),
+                            names_a.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "),
                         ));
                     }
                     for ((n, ta), (_, tb)) in first_binds.iter().zip(&alt_binds) {

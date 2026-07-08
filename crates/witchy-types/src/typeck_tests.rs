@@ -1794,6 +1794,35 @@ fn main():
     }
 
     #[test]
+    fn or_pattern_binding_diagnostic_names_the_actual_alt_bindings() {
+        let missing = check_str(
+            "type Shape:\n    Circle(Int)\n    Square(Int)\n\nfn f(s: Shape) -> Int:\n    match s:\n        Circle(r) | Square(_) -> r\n",
+        )
+        .unwrap_err();
+        assert!(
+            missing.contains("Square(_)` binds {} but another alternative binds {r}"),
+            "{missing}"
+        );
+        assert!(
+            !missing.contains("Square(_)` binds {r} but another alternative binds {}"),
+            "{missing}"
+        );
+
+        let extra = check_str(
+            "type Shape:\n    Circle(Int)\n    Square(Int)\n\nfn f(s: Shape) -> Int:\n    match s:\n        Circle(_) | Square(q) -> q\n",
+        )
+        .unwrap_err();
+        assert!(
+            extra.contains("Square(q)` binds {q} but another alternative binds {}"),
+            "{extra}"
+        );
+        assert!(
+            !extra.contains("Square(q)` binds {} but another alternative binds {q}"),
+            "{extra}"
+        );
+    }
+
+    #[test]
     fn non_exhaustive_tuple_and_list_matches_are_rejected() {
         // (BUG-293) tuple/list scrutinees are exhaustiveness-checked at check time
         // instead of trapping at runtime.
