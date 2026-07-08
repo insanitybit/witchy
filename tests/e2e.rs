@@ -1251,6 +1251,44 @@ fn signature_detects_registry_metadata_tampering() {
     assert!(stdout(&out).contains("BLOCK"), "verify-rune: {}", stdout(&out));
 }
 
+/// BUG-363: capability strings can contain commas (`Net[Connect, Tcp]`). The
+/// signed record payload must therefore bind the JSON array shape, not only the
+/// comma-joined projection of its elements.
+#[test]
+fn signature_detects_runtime_footprint_shape_tampering() {
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "rtshape");
+    let app = fe.new_app();
+    let lib = fe.lib("acme/netcap", "1.0.0", "pub fn f(net: Net[Connect, Tcp]) -> Int:\n    1\n");
+    std::fs::write(
+        lib.join("witchy.toml"),
+        "[rune]\nname = \"acme/netcap\"\nversion = \"1.0.0\"\n\n[capabilities]\nruntime = [\"Net[Connect, Tcp]\"]\n",
+    )
+    .unwrap();
+    fe.publish_promote(&lib, "acme/netcap", "1.0.0");
+    let out = fe.pm(&app, &["add", "acme/netcap", "--allow-cap", "Net[Connect, Tcp]"], None);
+    assert!(out.status.success(), "add failed:\nstdout: {}\nstderr: {}", stdout(&out), stderr(&out));
+
+    let rootpub = server.rootpub();
+    let out = fe.pm(&app, &["verify-rune", "vendor/netcap", &rootpub], None);
+    assert!(out.status.success() && stdout(&out).contains("verified"), "healthy verify: {}", stdout(&out));
+    let out = fe.pm(&app, &["verify"], None);
+    assert!(out.status.success(), "healthy TUF verify failed: {}", stdout(&out));
+
+    let meta = app.join("vendor/netcap/coven.json");
+    let json = std::fs::read_to_string(&meta)
+        .unwrap()
+        .replace("\"runtime_footprint\":[\"Net[Connect, Tcp]\"]", "\"runtime_footprint\":[\"Net[Connect\",\" Tcp]\"]");
+    std::fs::write(&meta, json).unwrap();
+
+    let out = fe.pm(&app, &["verify-rune", "vendor/netcap", &rootpub], None);
+    assert!(!out.status.success(), "shape-tampered footprint must fail verify");
+    assert!(stdout(&out).contains("BLOCK"), "verify-rune: {}", stdout(&out));
+    let out = fe.pm(&app, &["verify"], None);
+    assert!(!out.status.success(), "shape-tampered footprint must fail TUF verify");
+    assert!(stdout(&out).contains("vendored record digest does not match"), "verify: {}", stdout(&out));
+}
+
 /// A fetched rune carries its signed provenance and re-verifies offline: `pm add`
 /// vendors `coven.json` (the registry-root-signed record) beside the source and
 /// pins the content hash in `witchy.lock`; `pm verify-rune <dir> <rootpub>` then

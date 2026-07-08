@@ -1345,9 +1345,12 @@ fn check_targets(console: Console, root: Dir, dir: String, snap_env: String) -> 
             Ok(doc) ->
                 let key = jget(doc, "name") + "@" + jget(doc, "version")
                 let want = target_digest(targets, key)
-                let have = "sha256:" + crypto.sha256(record_payload(doc))
-                if want != have:
-                    bad = list.push(bad, key)
+                match record_payload(doc):
+                    Some(payload) ->
+                        let have = "sha256:" + crypto.sha256(payload)
+                        if want != have:
+                            bad = list.push(bad, key)
+                    None -> bad = list.push(bad, key + " (malformed coven.json)")
             Err(_e) -> bad = list.push(bad, entry + " (unparseable coven.json)")
     if list.length(bad) == 0:
         print(console, "OK: TUF chain verified (snapshot + timestamp signatures, content binding, no rollback)")
@@ -2536,18 +2539,21 @@ fn report_rune_verify(console: Console, root: Dir, dir: String, rootpub: String,
 
         0
 
-// Verify a registry record is signed by the root key over its canonical payload
-// (byte-identical to coven's Record signing payload).
+// Verify a registry record is signed by the root key over coven's canonical
+// payload. A malformed `runtime_footprint` cannot be projected into a payload.
 fn record_signature_valid(rootpub: String, text: String) -> Bool:
     match json.decode(text):
         Ok(doc) ->
             if record_field_has_newline(doc):
                 false
             else:
-                match crypto.ed25519_verify(rootpub, record_payload(doc), jget(doc, "sig")):
-                    Ok(true) -> true
-                    Ok(false) -> false
-                    Err(_e) -> false
+                match record_payload(doc):
+                    None -> false
+                    Some(payload) ->
+                        match crypto.ed25519_verify(rootpub, payload, jget(doc, "sig")):
+                            Ok(true) -> true
+                            Ok(false) -> false
+                            Err(_e) -> false
         Err(e) -> false
 
 // SEC-013: refuse a record whose free-form fields embed the payload line separator
@@ -2557,8 +2563,25 @@ fn record_signature_valid(rootpub: String, text: String) -> Bool:
 fn record_field_has_newline(doc: Json) -> Bool:
     string.contains(jget(doc, "uploaded_by"), "\n") || string.contains(jget(doc, "promoted_by"), "\n") || string.contains(jget(doc, "second_factor"), "\n") || string.contains(jget(doc, "provenance"), "\n")
 
-fn record_payload(doc: Json) -> String:
-    "coven-v1\nname=" + jget(doc, "name") + "\nversion=" + jget(doc, "version") + "\nstate=" + jget(doc, "state") + "\nhash=" + jget(doc, "hash") + "\nrt=" + list.join(json.get_strings(doc, "runtime_footprint"), ",") + "\nbuild=\nuploaded_by=" + jget(doc, "uploaded_by") + "\npromoted_by=" + jget(doc, "promoted_by") + "\nfactor=" + jget(doc, "second_factor") + "\nprovenance=" + jget(doc, "provenance") + "\nreleased_at=" + "${jget_int(doc, "released_at")}"
+fn record_payload(doc: Json) -> Option(String):
+    match string_list_payload(doc, "runtime_footprint"):
+        None -> None
+        Some(rt) -> Some("coven-v1\nname=" + jget(doc, "name") + "\nversion=" + jget(doc, "version") + "\nstate=" + jget(doc, "state") + "\nhash=" + jget(doc, "hash") + "\nrt=" + rt + "\nbuild=\nuploaded_by=" + jget(doc, "uploaded_by") + "\npromoted_by=" + jget(doc, "promoted_by") + "\nfactor=" + jget(doc, "second_factor") + "\nprovenance=" + jget(doc, "provenance") + "\nreleased_at=" + "${jget_int(doc, "released_at")}")
+
+fn string_list_payload(doc: Json, key: String) -> Option(String):
+    match json.get(doc, key):
+        None -> None
+        Some(field) ->
+            match field:
+                JsonArray(items) ->
+                    var out: List(Json) = []
+                    for item in items:
+                        if let JsonString(s) = item:
+                            out = list.push(out, JsonString(s))
+                        else:
+                            return None
+                    Some(json.encode(JsonArray(out)))
+                _ -> None
 
 fn jget_int(doc: Json, key: String) -> Int:
     match json.get(doc, key):

@@ -68,6 +68,15 @@ fn test_state_round_trips():
     testing.assert(coven_record.state_of("nonsense") == Unknown, "an unknown state maps to Unknown, not Staged")
     testing.assert(coven_record.state_of("staged") == Staged, "the staged wire string still parses to Staged")
 
+// BUG-363: the signed footprint payload must commit to list element boundaries.
+// Capability strings themselves may contain commas (`Net[Connect, Tcp]`), so a raw
+// comma join would make `["A,B"]` and `["A", "B"]` indistinguishable.
+fn test_runtime_footprint_payload_is_injective():
+    let one = coven_record.signing_payload("acme/net", "1.0.0", "released", "sha256:x", ["Net[Connect, Tcp]"], "ci", "alice", "webauthn", "prov", 1)
+    let split = coven_record.signing_payload("acme/net", "1.0.0", "released", "sha256:x", ["Net[Connect", " Tcp]"], "ci", "alice", "webauthn", "prov", 1)
+    testing.assert(one != split, "different footprint list shapes must produce different signed payloads")
+    testing.assert(string.contains(one, "rt=[\"Net[Connect, Tcp]\"]"), "the runtime footprint is encoded as a JSON array")
+
 // --- proto builders carry the identity token (BUG-225) -----------------------
 // The client builders must emit `id_token` when a trusted-publishing token is present
 // (the parsers already read it), and omit it for an anonymous registry.
