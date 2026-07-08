@@ -1,6 +1,6 @@
 # BUG-557: List-of-tuple generic equality does not generate tuple equality
 
-Status: OPEN
+Status: FIXED
 Severity: MED
 Component: trait monomorphization, tuple `PartialEq`, container equality
 
@@ -45,3 +45,9 @@ Trait monomorphization should discover and generate nested protocol
 specializations required by generated generic bodies, so `List((...))` equality
 works exactly like `List(Key)` and `List(Option(Key))`.
 
+## Resolution
+
+Fixed by making concrete tuple type arguments use the same `TupleN<...>` scope
+encoding everywhere monomorphization binds and replays them. The regression
+`list_of_tuple_equality_satisfies_protocol_bounds_on_both_backends` covers
+`Eq` over `List((Int, String, Bool, Duration, Ordering))` on both backends.

@@ -1234,6 +1234,22 @@ fn main(console: Console):
         );
     }
 
+    /// (BUG-557) A generic container equality specialization can need a second
+    /// generated generic impl for the element type. List(tuple5) must therefore
+    /// emit the tuple `PartialEq` specialization even when no source call compares
+    /// the tuple directly.
+    #[test]
+    fn list_of_tuple_equality_satisfies_protocol_bounds_on_both_backends() {
+        let src = "import cmp\n\nfn total_same(x: a, y: a) -> Bool where a: Eq:\n    x == y\n\nfn main(console: Console):\n    let xs = [(1, \"x\", true, 90s, Greater)]\n    let ys = [(1, \"x\", true, 90s, Greater)]\n    let zs = [(1, \"x\", false, 90s, Greater)]\n    print(console, __render(total_same(xs, ys)))\n    print(console, __render(total_same(xs, zs)))\n";
+        let expected = ["true", "false"];
+        assert_eq!(link_run(src), expected, "interp: List(tuple5) Eq");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: List(tuple5) Eq",
+        );
+    }
+
     /// (BUG-395 / RFC-0047) Public `std/dict` helpers expose the same key
     /// equality contract as direct native dict operations. Concrete key/value
     /// types without `Eq` cannot route through `dict.get`, `from_pairs`,

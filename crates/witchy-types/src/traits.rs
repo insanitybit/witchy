@@ -2636,9 +2636,8 @@ fn pattern_field_scope_name(fty: &Type, subst: &HashMap<String, String>) -> Opti
     }
 }
 
-/// Replace each bound type variable in a type with its concrete instantiation.
-/// Encode a CONCRETE `Type` as the scope naming ("List<Int>", "(String, Int)").
-/// None when a type variable or unencodable form remains.
+/// Encode a CONCRETE `Type` as the scope naming (`List<Int>`,
+/// `Tuple2<String,Int>`). None when a type variable or unencodable form remains.
 fn encode_scope_type(t: &Type) -> Option<String> {
     match t {
         Type::Named(n, args) if args.is_empty() => {
@@ -2650,11 +2649,11 @@ fn encode_scope_type(t: &Type) -> Option<String> {
         }
         Type::Named(n, args) => {
             let inner: Option<Vec<String>> = args.iter().map(encode_scope_type).collect();
-            Some(format!("{n}<{}>", inner?.join(", ")))
+            Some(format!("{n}<{}>", inner?.join(",")))
         }
         Type::Tuple(ts) => {
             let inner: Option<Vec<String>> = ts.iter().map(encode_scope_type).collect();
-            Some(format!("({})", inner?.join(", ")))
+            Some(format!("Tuple{}<{}>", ts.len(), inner?.join(",")))
         }
         _ => None,
     }
@@ -2936,15 +2935,16 @@ fn simple_ty_name(t: &crate::typeck::Ty) -> Option<String> {
         Ty::Duration => Some("Duration".into()),
         Ty::Named(n, args) if args.is_empty() => Some(n.clone()),
         // Compound types use the same scope encoding `head_type_name`
-        // produces ("List<Int>"), so list_elem/head-splitting reads them.
+        // produces (`List<Int>`, `Tuple2<Int,String>`), so monomorphization
+        // can feed them back into dispatch and receiver specialization.
         Ty::List(e) => Some(format!("List<{}>", simple_ty_name(e)?)),
         Ty::Tuple(ts) => {
             let inner: Option<Vec<String>> = ts.iter().map(simple_ty_name).collect();
-            Some(format!("({})", inner?.join(", ")))
+            Some(format!("Tuple{}<{}>", ts.len(), inner?.join(",")))
         }
         Ty::Named(n, args) => {
             let inner: Option<Vec<String>> = args.iter().map(simple_ty_name).collect();
-            Some(format!("{n}<{}>", inner?.join(", ")))
+            Some(format!("{n}<{}>", inner?.join(",")))
         }
         Ty::Fn(params, ret) => {
             let ps: Option<Vec<String>> = params.iter().map(simple_ty_name).collect();
