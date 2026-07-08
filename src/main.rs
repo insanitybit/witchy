@@ -153,8 +153,10 @@ fn run_embedded_pm(raw: Vec<String>) -> ! {
             net_allow.push(hp.to_string());
         }
     }
-    // Link the embedded front-end against the bundled std modules.
-    let link_result = (|| -> Result<ast::Module, String> {
+    // The embedded front-end's wasm: whole-pipeline cached (parse+link+check+
+    // codegen all skipped on a warm hit — the sources are include_str! constants,
+    // so the binary fingerprint keys them exactly; see embedded_wasm_cached).
+    let wasm = embedded_wasm_cached("pm", || {
         let mut modules: Vec<(String, ast::Module)> = Vec::new();
         let mut loaded: HashSet<String> = HashSet::new();
         let mut queue: VecDeque<(String, String)> = VecDeque::new();
@@ -175,18 +177,14 @@ fn run_embedded_pm(raw: Vec<String>) -> ! {
             modules.push((name, module));
         }
         pipeline::link(modules, "pm").map_err(|e| e.to_string())
-    })();
-    let module = match link_result {
-        Ok(m) => m,
+    });
+    let wasm = match wasm {
+        Ok(bytes) => bytes,
         Err(e) => {
             eprintln!("{e}");
             std::process::exit(1);
         }
     };
-    if let Err(e) = typeck::check(&module) {
-        eprintln!("{e}");
-        std::process::exit(1);
-    }
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     // Canonicalize first: the launcher is commonly a symlink (the cargo-install
     // layout points `~/.cargo/bin/witchy` at `target/release/witchy`). Without
@@ -205,17 +203,6 @@ fn run_embedded_pm(raw: Vec<String>) -> ! {
     // `Dir`/`Net`/`Env`/`Clock` — have host functions, so it lowers cleanly.
     // `run_wasm_module` grants exactly the same authority (handle 0 = cwd, handle
     // 1 = bin so `Exec` finds the compiler) and surfaces `main`'s `Int` exit code.
-    let wasm = match codegen::compile_module_binary(&module) {
-        Ok(Some(bytes)) => bytes,
-        Ok(None) => {
-            eprintln!("the pm front-end does not lower to the compiled backend");
-            std::process::exit(1);
-        }
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
-    };
     match run_wasm_module(&wasm, vec![cwd, bin], Vec::new(), net_allow, pm_args, None, Vec::new(), false) {
         Ok((lines, code)) => {
             for l in &lines {
@@ -684,7 +671,8 @@ fn main() -> wasmtime::Result<()> {
             ("coven_proto", include_str!("../projects/coven/src/coven_proto.witchy")),
             ("coven_meta", include_str!("../projects/coven/src/coven_meta.witchy")),
         ];
-        let link_result = (|| -> Result<ast::Module, String> {
+        // Whole-pipeline cached like `witchy pm` above (see embedded_wasm_cached).
+        let wasm_result = embedded_wasm_cached("coven", || {
             let embedded: std::collections::HashMap<&str, &str> = coven_modules.iter().copied().collect();
             let mut modules: Vec<(String, ast::Module)> = Vec::new();
             let mut loaded: HashSet<String> = HashSet::new();
@@ -712,15 +700,11 @@ fn main() -> wasmtime::Result<()> {
                 modules.push((name, module));
             }
             pipeline::link(modules, "coven").map_err(|e| e.to_string())
-        })();
-        let module = match link_result {
-            Ok(m) => m,
+        });
+        let wasm = match wasm_result {
+            Ok(bytes) => bytes,
             Err(e) => { eprintln!("{e}"); std::process::exit(1); }
         };
-        if let Err(e) = typeck::check(&module) {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
         // coven runs on the COMPILED WASM tier — the production tier. It has no
         // interpreter-only dependency (`compiler.footprint`/`diff`/`doc` all have host
         // functions; networking and live logging work compiled), so a registry server
@@ -747,17 +731,6 @@ fn main() -> wasmtime::Result<()> {
             // also reachable via `SecretStore.get("signing")`.
             caps.secrets.push(runtime::SecretGrant::new("signing", seed.to_vec()));
         }
-        let wasm = match codegen::compile_module_binary(&module) {
-            Ok(Some(bytes)) => bytes,
-            Ok(None) => {
-                eprintln!("coven does not lower to the compiled backend");
-                std::process::exit(1);
-            }
-            Err(e) => {
-                eprintln!("{e}");
-                std::process::exit(1);
-            }
-        };
         // `batch()` (no preemption): a server blocks in host accept calls, and we never
         // want the preemption watchdog to interrupt a long-running request.
         let mut rt = match runtime::Runtime::batch() {
@@ -2357,6 +2330,62 @@ fn active_opt_key() -> String {
         .map(|o| o.name())
         .collect::<Vec<_>>()
         .join(",")
+}
+
+/// The wasm for an EMBEDDED program (`witchy pm`, `coven-serve`), cached across
+/// the WHOLE front-end pipeline — parse, link, typecheck, AND codegen. The
+/// embedded sources are `include_str!` constants, so the binary fingerprint
+/// covers them exactly: a hit proves THIS binary already parsed/linked/checked/
+/// compiled THESE sources successfully, and the ~300ms front-end cost (which
+/// dominates a warm `pm` invocation — the source cache below only skips
+/// codegen, the last ~90ms) is skipped entirely. Sound by construction like
+/// the source cache: a stale key just misses. The capability grant is host
+/// policy (CLI flags), never derived from the AST, so skipping the front end
+/// changes no authority decision.
+fn embedded_wasm_cached(
+    name: &str,
+    link: impl FnOnce() -> Result<ast::Module, String>,
+) -> Result<Vec<u8>, String> {
+    let key = {
+        let mut h = blake3::Hasher::new();
+        h.update(name.as_bytes());
+        h.update(b"\0");
+        h.update(compiler_fingerprint().as_bytes());
+        h.update(b"\0");
+        h.update(active_opt_key().as_bytes());
+        h.finalize().to_hex().to_string()
+    };
+    let path = (|| -> Option<std::path::PathBuf> {
+        let base = std::env::var_os("XDG_CACHE_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))?;
+        let dir = base.join("witchy").join("embedded");
+        std::fs::create_dir_all(&dir).ok()?;
+        Some(dir.join(format!("{key}.wasm")))
+    })();
+    if let Some(p) = &path {
+        if let Ok(bytes) = std::fs::read(p) {
+            if !bytes.is_empty() {
+                return Ok(bytes);
+            }
+        }
+    }
+    let module = link()?;
+    typeck::check(&module).map_err(|e| e.to_string())?;
+    let wasm = match codegen::compile_module_binary(&module) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return Err(format!("the embedded {name} does not lower to the compiled backend")),
+        Err(e) => return Err(e.to_string()),
+    };
+    if let Some(p) = &path {
+        // Write-then-rename, pid-tagged temp: same publish discipline as the
+        // source cache below.
+        let tmp = p.with_extension(format!("{}.tmp", std::process::id()));
+        if std::fs::write(&tmp, &wasm).is_ok() {
+            let _ = std::fs::rename(&tmp, p);
+        }
+    }
+    Ok(wasm)
 }
 
 /// Compile `linked` to wasm, reusing a SOURCE-keyed cache to skip codegen on warm
