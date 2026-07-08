@@ -2528,6 +2528,41 @@ fn main(console: Console):
         );
     }
 
+    /// (BUG-489) The blessed NetPolicy constructors reject impossible ports at
+    /// the std boundary. Raw `NetPolicy(...)` remains a separate surface tracked
+    /// by BUG-484, but `Net.tcp`/`Net.cidr` should only build meaningful policy
+    /// values.
+    #[test]
+    fn net_policy_constructors_reject_out_of_range_ports_on_both_backends() {
+        let ok = "fn main(console: Console):\n    print(console, Net.tcp(\"example.com\", 0).pattern)\n    print(console, Net.cidr(\"10.0.0.0/8\", 65535).pattern)\n";
+        let expected = ["example.com:0", "10.0.0.0/8:65535"];
+        assert_eq!(link_run(ok), expected, "interp: edge ports");
+        assert_eq!(run_linked_on_wasm(&[("main", ok)], "main"), expected, "wasm: edge ports");
+
+        for call in [
+            "Net.tcp(\"example.com\", -1)",
+            "Net.tcp(\"example.com\", 70000)",
+            "Net.cidr(\"10.0.0.0/8\", -1)",
+            "Net.cidr(\"10.0.0.0/8\", 70000)",
+        ] {
+            let src = format!("fn main(console: Console):\n    let p = {call}\n    print(console, p.pattern)\n");
+            let linked = resolve_std_src(&src);
+            typeck::check(&linked).expect("typecheck");
+            let interp_err = interpreter::run_module(linked.clone(), ".", Vec::new())
+                .expect_err("interpreter must reject out-of-range NetPolicy port")
+                .to_string();
+            assert!(interp_err.contains("policy: net port must be in 0..65535"), "{call}: {interp_err}");
+
+            let wasm = codegen::compile_module_binary(&linked)
+                .expect("out-of-range NetPolicy program should compile")
+                .expect("out-of-range NetPolicy program should lower");
+            let wasm_err = crate::run_wasm_bytes(&wasm)
+                .expect_err("WASM must reject out-of-range NetPolicy port")
+                .to_string();
+            assert!(wasm_err.contains("policy: net port must be in 0..65535"), "{call}: {wasm_err}");
+        }
+    }
+
     #[test]
     fn net_private_denies_internal_addresses_on_both_backends() {
         // RFC-0020: `net.deny(Net.private())` is the one-line SSRF/rebinding

@@ -27,6 +27,11 @@ fn checked_component(value: String) -> String:
         fail("policy: a pattern component may not contain a newline")
     value
 
+fn checked_port(port: Int) -> String:
+    if port < 0 || port > 65535:
+        fail("policy: net port must be in 0..65535")
+    __render(port)
+
 // A typed `Net` address policy — one allowlist pattern (`host:port`, with `:*` / CIDR forms).
 type NetPolicy:
     pattern: String
@@ -40,16 +45,16 @@ type DirPolicy:
 
 impl Net:
     pub fn tcp(host: String, port: Int) -> NetPolicy:
-        // A plaintext TCP endpoint: `<host>:<port>`.
-        NetPolicy(checked_component(host) + ":" + "${port}")
+        // A plaintext TCP endpoint: `<host>:<port>`. `port` must be in 0..65535.
+        NetPolicy(checked_component(host) + ":" + checked_port(port))
 
     pub fn any_port(host: String) -> NetPolicy:
         // Any port on a host: `<host>:*`.
         NetPolicy(checked_component(host) + ":*")
 
     pub fn cidr(block: String, port: Int) -> NetPolicy:
-        // An IPv4 CIDR block (rebinding-proof — matched against the resolved IP): `<a.b.c.d/bits>:<port>`.
-        NetPolicy(checked_component(block) + ":" + "${port}")
+        // An IPv4 CIDR block (rebinding-proof — matched against the resolved IP): `<a.b.c.d/bits>:<port>`. `port` must be in 0..65535.
+        NetPolicy(checked_component(block) + ":" + checked_port(port))
 
     pub fn cidr_any(block: String) -> NetPolicy:
         // An IPv4 CIDR block, any port: `<a.b.c.d/bits>:*`.
