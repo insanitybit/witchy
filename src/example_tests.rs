@@ -1303,6 +1303,52 @@ fn main(console: Console):
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: Json debug object shape");
     }
 
+    /// (BUG-374) JSON has no NaN/Infinity tokens, and `null` already means an
+    /// intentional JSON null / `Option.None`. Strict JSON boundaries must fail
+    /// loudly instead of silently erasing non-finite Float values to null.
+    #[test]
+    fn json_nonfinite_float_encoding_aborts_on_both_backends() {
+        let compile = |src: &str| -> (ast::Module, Vec<u8>) {
+            let linked = resolve_std_src(src);
+            typeck::check(&linked).expect("typecheck");
+            let bytes = codegen::compile_module_binary(&linked)
+                .expect("compile")
+                .expect("the binary path lowers this program");
+            (linked, bytes)
+        };
+        let cases = [
+            (
+                "direct NaN",
+                "import json\n\nfn main(console: Console):\n    print(console, json.encode(json.JsonFloat(0.0 / 0.0)))\n",
+            ),
+            (
+                "direct infinity",
+                "import json\n\nfn main(console: Console):\n    print(console, json.encode(json.JsonFloat(1.0 / 0.0)))\n",
+            ),
+            (
+                "reflective field",
+                "import json\nimport reflect\n\ntype Reading derive(Reflect):\n    ratio: Float\n\nfn main(console: Console):\n    print(console, json.stringify(Reading(0.0 / 0.0)))\n",
+            ),
+        ];
+        for (label, src) in cases {
+            let (linked, wasm) = compile(src);
+            let interp_err = interpreter::run_module(linked, ".", Vec::new())
+                .expect_err("interpreter must abort on non-finite JSON Float")
+                .to_string();
+            assert!(
+                interp_err.contains("json.encode: non-finite Float cannot be encoded as JSON"),
+                "{label}: {interp_err}"
+            );
+            let wasm_err = crate::run_wasm_bytes(&wasm)
+                .expect_err("WASM must abort on non-finite JSON Float")
+                .to_string();
+            assert!(
+                wasm_err.contains("json.encode: non-finite Float cannot be encoded as JSON"),
+                "{label}: {wasm_err}"
+            );
+        }
+    }
+
     /// (BUG-370) `reflect.debug` strings escape every C0 control, matching JSON's
     /// discipline instead of emitting raw terminal controls into structural text.
     #[test]
