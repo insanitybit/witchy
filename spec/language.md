@@ -48,8 +48,8 @@ types and constructors. A lowercase, argument-less name in type position
 | `3.5`, `0.5` | `Float` | IEEE-754 double; `${...}` renders the shortest round-trip form |
 | `true` / `false` | `Bool` | |
 | `"hi\n"` | `String` | UTF-8; escapes `\n \t \r \0 \\ \" \$` |
-| `"sum: ${a + b}"` | `String` | interpolation — `${expr}` renders *any* value (see below); inner strings may be bare (`"${f("x")}"`) or escaped (`"${f(\"x\")}"`) |
-| `30s`, `250ms`, `5m`, `2h`/`2hr`, `1d`, `1w` | `Duration` | a distinct type carried as milliseconds; not mixable with bare `Int`; `${d}` prints the raw milliseconds — `duration.human`/`clock` (or `say`) for display |
+| `"sum: ${a + b}"` | `String` | interpolation — `${expr}` renders data values (see below); inner strings may be bare (`"${f("x")}"`) or escaped (`"${f(\"x\")}"`) |
+| `30s`, `250ms`, `5m`, `2h`/`2hr`, `1d`, `1w` | `Duration` | a distinct type carried as milliseconds; not mixable with bare `Int`; structural interpolation prints raw milliseconds, while `import show` makes `${d}` use `Duration`'s `Show` impl (`duration.human`) |
 | `[1, 2, 3]` | `List(Int)` | immutable |
 | `(1, "a")` | tuple | fixed arity, mixed types; elements read by position (`pair.0`, `grid.0.1`) or destructured (`let (n, s) = pair`) |
 
@@ -65,16 +65,21 @@ fn main(console: Console):
 ```
 
 **Rendering values to strings.** Reach for interpolation first: `"${x}"` renders
-*any* value — scalars, record fields, lists, tuples, records, sum types, dicts,
-and any nesting — identically on both backends. Tuple `Show`/`Reflect` protocol
-impls are provided through arity 8; larger tuples still exist as structural
-values, but should be modeled as records or lists when they need
-protocol-backed display or reflection. You rarely need to call a conversion by hand. To print
-one value, `print(console, "${x}")`, or `show.say(console, x)` — the `Show`-accepting
-`print` from `import show`, for any `Show` value (the built-in scalars and your
-own types). The **`Show` trait** (`fn show(self) -> String`) is the trait-method
-route: implement it to give a type a *custom* rendering (interpolation already
-gives every value a structural default like `Point(1, 2)`).
+ordinary data values — scalars, record fields, lists, tuples, records, sum types,
+dicts, and their supported nesting — identically on both backends. Function
+values are not data rendering targets and are rejected before runtime. Without
+`show` linked, interpolation uses the structural renderer; for example, a
+`Duration` renders as its raw millisecond count. With `import show`,
+interpolation for values with a relevant `Show` path routes through `Show`, so
+`"${90000ms}"`, `show.render(90000ms)`, and `show.say(console, 90000ms)` all
+produce `1m30s`. Tuple `Show`/`Reflect` protocol impls are provided through
+arity 8; larger tuples still exist as structural values, but should be modeled as
+records or lists when they need protocol-backed display or reflection. You rarely
+need to call a conversion by hand. To print one value, use
+`print(console, "${x}")`, or `show.say(console, x)` for any `Show` value (the
+built-in scalars and your own types). The **`Show` trait**
+(`fn show(self) -> String`) is the trait-method route: implement it to give a
+type a custom rendering.
 
 ## 2. Types
 
