@@ -27,9 +27,12 @@ async fn main(console: Console):
 ## Spawning tasks
 
 `chan.spawn` starts a task running concurrently and returns a handle; `chan.join`
-waits for it to finish. No channel is involved — spawning is just concurrency.
-Each task yields control at `chan.yield_now().await`, so the others get a turn —
-that is what interleaves their output.
+waits for it while the executor can make progress. No channel is involved —
+spawning is just concurrency. Each task yields control at `chan.yield_now().await`,
+so the others get a turn — that is what interleaves their output. If every live
+task parks with no progress, the executor runs its quiescence close pass; a
+parked join resumes then, even if the joined task has a continuation that will
+run afterward.
 
 ```witchy
 import chan
@@ -53,10 +56,13 @@ async fn main(console: Console):
 
 `chan.channel(cap)` creates a channel and returns a `(Sender, Receiver)` pair —
 two ends of the same conduit, which you pass to whichever tasks need them. A
-bounded channel blocks the sender when it is full (backpressure); pass `0`, or use
-`chan.unbounded()`, for no limit. `chan.recv(rx).await` yields the next message, or
-`None` once the channel is closed — which happens automatically when no task can
-send to it anymore. `chan.consume` writes that receive-until-closed loop for you.
+bounded channel blocks the sender when it is full while some task can make
+progress (backpressure); pass `0`, or use `chan.unbounded()`, for no limit. If
+every live task parks with no progress, the executor runs a quiescence close pass:
+parked receives resume as `None`, parked sends are released, and parked joins
+resume. That is the close condition `chan.recv(rx).await` and `chan.consume` see;
+witchy does not refcount sender values, so "closed" does not mean no `Sender`
+value can ever be used again.
 
 ```witchy
 import chan

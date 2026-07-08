@@ -1107,16 +1107,18 @@ async fn main(console: Console):
     chan.consume(rx, fn(n): chan.done(print(console, "got ${n}"))).await
 ```
 
-`chan.channel(cap)` is a bounded channel — the sender blocks when it is full;
-pass `0`, or use `chan.unbounded()`, for no backpressure. `chan.recv(rx).await`
-yields the next message or `None` once the channel closes (no task can send to it
-anymore). `chan.consume`/`chan.serve` write the receive-loop for you (`serve`
-threads state through each message). A channel can be shared by many receivers
-(a worker pool) or many senders. Each channel is typed independently — a program
-may use channels of many different message types (the executor carries messages
-erased and each endpoint recovers its own type). A spawned task returns `Nil`,
-reporting results over a channel. See the book's *Concurrency* chapter and
-`std/chan` for the full model.
+`chan.channel(cap)` is a bounded channel — the sender blocks when it is full
+while the executor can make progress; pass `0`, or use `chan.unbounded()`, for no
+backpressure. If every live task parks with no progress, the executor runs its
+quiescence close pass: parked receives/selects resume as `None`, parked sends are
+released, and parked joins resume. That is the close condition
+`chan.recv(rx).await` and `chan.consume` observe; witchy does not refcount sender
+values, so "closed" does not mean no `Sender` value can ever be used again. A
+channel can be shared by many receivers (a worker pool) or many senders. Each
+channel is typed independently — a program may use channels of many different
+message types (the executor carries messages erased and each endpoint recovers
+its own type). A spawned task returns `Nil`, reporting results over a channel.
+See the book's *Concurrency* chapter and `std/chan` for the full model.
 
 ## 15. In-language tests
 

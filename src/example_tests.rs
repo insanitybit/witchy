@@ -429,6 +429,41 @@
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
+    /// (BUG-310/BUG-311) Channel close is quiescence-based, not sender-refcount
+    /// based. A parked recv resumes as `None` when every live task is parked; a
+    /// retained sender may still send later. Likewise a bounded parked send and a
+    /// parked join are released by the close pass. This pins the shipped executor
+    /// contract the docs describe.
+    #[test]
+    fn channel_quiescence_close_contract_backends_agree() {
+        let recv_then_send = "import chan\n\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(0).await\n    let r1 = chan.recv(rx).await\n    print(console, __render(r1))\n    chan.send(tx, 42).await\n    let r2 = chan.recv(rx).await\n    print(console, __render(r2))\n";
+        let recv_expected = ["None", "Some(42)"];
+        assert_eq!(link_run(recv_then_send), recv_expected, "interp recv quiescence");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", recv_then_send)], "main"),
+            recv_expected,
+            "wasm recv quiescence",
+        );
+
+        let bounded_release = "import chan\n\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(1).await\n    chan.send(tx, 1).await\n    chan.send(tx, 2).await\n    let a = chan.recv(rx).await\n    let b = chan.recv(rx).await\n    print(console, __render(a))\n    print(console, __render(b))\n";
+        let bounded_expected = ["Some(1)", "Some(2)"];
+        assert_eq!(link_run(bounded_release), bounded_expected, "interp bounded release");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", bounded_release)], "main"),
+            bounded_expected,
+            "wasm bounded release",
+        );
+
+        let join_release = "import chan\nfrom chan import Sender\n\nasync fn producer(console: Console, tx: Sender(Int)) -> Nil:\n    chan.send(tx, 1).await\n    chan.send(tx, 2).await\n    print(console, \"producer finished\")\n\nasync fn main(console: Console):\n    let (tx, _rx) = chan.channel(1).await\n    let h = chan.spawn(producer(console, tx)).await\n    chan.join(h).await\n    print(console, \"join returned\")\n";
+        let join_expected = ["join returned", "producer finished"];
+        assert_eq!(link_run(join_release), join_expected, "interp join release");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", join_release)], "main"),
+            join_expected,
+            "wasm join release",
+        );
+    }
+
     /// (BUG-007) The trait-method edge is rejected LOUDLY at parse time rather than
     /// half-supported: the current trait machinery can't express a `gen`/`async`
     /// method as a trait method (async's inferred phantom-`Task` return has no

@@ -17,7 +17,12 @@
 // typed `JoinHandle(T)` would force a native runtime and break the parity
 // contract). `send`/`recv` are always `await`ed because messaging is an effect on
 // the executor-owned buffer; a *bounded* channel additionally blocks the sender
-// when full (backpressure), an unbounded one never does.
+// when full while the executor is making progress (backpressure), an unbounded
+// one never does. If every live task parks with no progress, the executor runs
+// its quiescence close pass: parked receivers/selects resume with `None`, parked
+// senders are released, and parked joins resume. This replaces sender
+// refcounting and destructors; it is deterministic on both backends, but
+// "closed" means quiescent, not "no `Sender` value can ever be used again".
 //
 // The `async`/`await` CPS transform lowers onto the `std/task` executor
 // (task.lazy/and_then/done/run); channel ops (`await chan.recv(rx)` /
@@ -102,15 +107,20 @@ pub fn unbounded() -> Task((Sender(m), Receiver(m))):
 fn open_raw(capacity: Int) -> Task(Int):
     Task(fn(): Open(capacity, fn(c): Task(fn(): Done(c))))
 
-// Send `msg`; on a bounded channel this blocks until there is room. Always awaited.
-// The message is erased to the executor's opaque slot at this boundary.
+// Send `msg`; on a bounded channel this blocks until there is room while some
+// task can make progress. If the whole executor reaches quiescence with this
+// send parked, the close pass releases it and stores the message, even if that
+// temporarily exceeds the logical capacity. Always awaited. The message is
+// erased to the executor's opaque slot at this boundary.
 pub fn send(tx: Sender(m), msg: m) -> Task(Nil):
     match tx:
         Sender(id) -> Task(fn(): Push(id, __erase(msg), fn(u): Task(fn(): Done(u))))
 
-// Receive the next message, or `None` once the channel is closed — i.e. once no
-// task can send to it anymore. `for await x in rx:` loops until this `None`. The
-// erased value is recovered at `m` at this boundary.
+// Receive the next message, or `None` when the executor reaches quiescence with
+// this receive parked. `for await x in rx:` loops until this `None`. Because
+// witchy does not refcount sender values, a `Sender` retained by later code may
+// still send after such a quiescent close. The erased value is recovered at `m`
+// at this boundary.
 pub fn recv(rx: Receiver(m)) -> Task(Option(m)):
     match rx:
         Receiver(id) -> Task(fn(): Pull(id, fn(o): Task(fn(): Done(unerase_option(o)))))
@@ -119,7 +129,9 @@ pub fn recv(rx: Receiver(m)) -> Task(Option(m)):
 pub fn spawn(child: Task(Nil)) -> Task(Handle):
     task.spawn(child)
 
-// Block until the spawned task behind `h` finishes.
+// Wait for the spawned task behind `h` while the executor can make progress. If
+// the whole executor reaches quiescence with this join parked, the close pass
+// releases it even if the joined task has a continuation that will run afterward.
 pub fn join(h: Handle) -> Task(Nil):
     task.join(h)
 
@@ -147,7 +159,9 @@ fn spawn_all_into(children: List(Task(Nil)), i: Int, hs: List(Handle)) -> Task(L
     else:
         and_then(spawn(list.at(children, i)), fn(h): spawn_all_into(children, i + 1, list.push(hs, h)))
 
-// Join every handle in `hs` — block until they have all finished.
+// Join every handle in `hs` while the executor can make progress. Like `join`,
+// quiescence releases a parked join even if a child has a continuation that will
+// run afterward.
 pub fn join_all(hs: List(Handle)) -> Task(Nil):
     for_each(hs, fn(h): join(h))
 
@@ -158,12 +172,13 @@ pub fn cancel_all(hs: List(Handle)) -> Task(Nil):
     for_each(hs, fn(h): cancel(h))
 
 // STRUCTURED concurrency (a "nursery"): run every task in `children`
-// concurrently and return only once they have ALL finished. No handle escapes
-// the call, so a child cannot outlive the scope and there are no leaked tasks —
-// prefer this over a bare `spawn` whose handle you must remember to `join`. The
-// children interleave on the cooperative executor, so a concurrent run is
-// byte-identical on both backends (the parity contract). Results flow out over
-// channels, as with any task (a child returns `Nil`).
+// concurrently and wait for their handles while the executor can make progress.
+// No handle escapes the call, so the normal case has no leaked tasks; if the
+// whole executor reaches quiescence, `join_all` releases just like `join`. Prefer
+// this over a bare `spawn` whose handle you must remember to `join`. The children
+// interleave on the cooperative executor, so a concurrent run is byte-identical
+// on both backends (the parity contract). Results flow out over channels, as with
+// any task (a child returns `Nil`).
 pub fn scope(children: List(Task(Nil))) -> Task(Nil):
     and_then(spawn_all(children), fn(hs): join_all(hs))
 
@@ -189,11 +204,12 @@ fn recv_n_into(rx: Receiver(m), n: Int, acc: List(m)) -> Task(List(m)):
         )
 
 // STRUCTURED fan-out-and-collect: run every task in `jobs` concurrently and return
-// all of their results once they have ALL finished. Each job produces a value of
-// the message type `m` (results ride the same channels), so `gather` is the typed
-// companion to `scope` — the same leak-free, no-escaping-handle guarantee, with the
-// results handed back. Results are in COMPLETION order (deterministic on the
-// cooperative executor, hence byte-identical on both backends), not input order.
+// the results that arrive before the collecting channel quiesces. In the normal
+// case every job completes and sends exactly one result. Each job produces a value
+// of the message type `m` (results ride the same channels), so `gather` is the
+// typed companion to `scope` — the same no-escaping-handle shape, with the results
+// handed back. Results are in COMPLETION order (deterministic on the cooperative
+// executor, hence byte-identical on both backends), not input order.
 pub fn gather(jobs: List(Task(m))) -> Task(List(m)):
     and_then(channel(0), fn(pair):
         let (tx, rx) = pair

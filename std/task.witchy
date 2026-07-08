@@ -115,7 +115,9 @@ type Handle:
 pub fn spawn(child: Task(Nil)) -> Task(Handle):
     Task(fn(): Fork(child, fn(h): Task(fn(): Done(Handle(h)))))
 
-// Block until the spawned task behind `h` finishes.
+// Wait for the spawned task behind `h` while the executor can make progress. If
+// the whole executor reaches quiescence with this join parked, the close pass
+// releases it even if the joined task has a continuation that will run afterward.
 pub fn join(h: Handle) -> Task(Nil):
     match h:
         Handle(id) -> Task(fn(): Wait(id, fn(u): Task(fn(): Done(u))))

@@ -98,7 +98,7 @@ Whether `b` ends with `suffix`.
 
 std/chan — decoupled concurrency: `spawn` concurrent tasks, communicate over first-class `channel`s. Spawning and channels are independent — you can spawn without a channel, and a channel is a value you create and pass around, not a task's mailbox. Built on a pure-witchy cooperative executor with a deterministic round-robin schedule, so a concurrent run is byte-identical on the interpreter and the compiled WebAssembly — no scheduler state in the runtime, no `Pin`.
 
-Messages: channels are per-type generic (RFC-0055). A `Sender(m)`/`Receiver(m)` pair carries values of ITS OWN type `m`, and independent channels in one program may carry different types — a library may pipeline work through a private channel without forcing its message type on the whole program. Under the hood the executor is ERASED: its effects and buffers carry the opaque `__Msg`; the typed endpoints erase a message on `send` and recover it on `recv`. The erasure is representationally the identity on both backends (a message already rides the universal slot), so interleavings stay byte-identical. Spawned tasks return `Nil`; a task reports a result by sending it on a channel, not by returning it (a typed `JoinHandle(T)` would force a native runtime and break the parity contract). `send`/`recv` are always `await`ed because messaging is an effect on the executor-owned buffer; a *bounded* channel additionally blocks the sender when full (backpressure), an unbounded one never does.
+Messages: channels are per-type generic (RFC-0055). A `Sender(m)`/`Receiver(m)` pair carries values of ITS OWN type `m`, and independent channels in one program may carry different types — a library may pipeline work through a private channel without forcing its message type on the whole program. Under the hood the executor is ERASED: its effects and buffers carry the opaque `__Msg`; the typed endpoints erase a message on `send` and recover it on `recv`. The erasure is representationally the identity on both backends (a message already rides the universal slot), so interleavings stay byte-identical. Spawned tasks return `Nil`; a task reports a result by sending it on a channel, not by returning it (a typed `JoinHandle(T)` would force a native runtime and break the parity contract). `send`/`recv` are always `await`ed because messaging is an effect on the executor-owned buffer; a *bounded* channel additionally blocks the sender when full while the executor is making progress (backpressure), an unbounded one never does. If every live task parks with no progress, the executor runs its quiescence close pass: parked receivers/selects resume with `None`, parked senders are released, and parked joins resume. This replaces sender refcounting and destructors; it is deterministic on both backends, but "closed" means quiescent, not "no `Sender` value can ever be used again".
 
 The `async`/`await` CPS transform lowers onto the `std/task` executor (task.lazy/and_then/done/run); channel ops (`await chan.recv(rx)` / `await chan.send(tx, x)`) run on the same protocol.
 
@@ -154,11 +154,11 @@ An unbounded channel — `send` never blocks (the buffer grows without limit).
 
 #### `fn send(tx: Sender(m), msg: m) -> Task(Nil)`
 
-Send `msg`; on a bounded channel this blocks until there is room. Always awaited. The message is erased to the executor's opaque slot at this boundary.
+Send `msg`; on a bounded channel this blocks until there is room while some task can make progress. If the whole executor reaches quiescence with this send parked, the close pass releases it and stores the message, even if that temporarily exceeds the logical capacity. Always awaited. The message is erased to the executor's opaque slot at this boundary.
 
 #### `fn recv(rx: Receiver(m)) -> Task(Option(m))`
 
-Receive the next message, or `None` once the channel is closed — i.e. once no task can send to it anymore. `for await x in rx:` loops until this `None`. The erased value is recovered at `m` at this boundary.
+Receive the next message, or `None` when the executor reaches quiescence with this receive parked. `for await x in rx:` loops until this `None`. Because witchy does not refcount sender values, a `Sender` retained by later code may still send after such a quiescent close. The erased value is recovered at `m` at this boundary.
 
 #### `fn spawn(child: Task(Nil)) -> Task(Handle)`
 
@@ -166,7 +166,7 @@ Start `child` as a concurrent task; the returned handle completes when it does.
 
 #### `fn join(h: Handle) -> Task(Nil)`
 
-Block until the spawned task behind `h` finishes.
+Wait for the spawned task behind `h` while the executor can make progress. If the whole executor reaches quiescence with this join parked, the close pass releases it even if the joined task has a continuation that will run afterward.
 
 #### `fn cancel(h: Handle) -> Task(Nil)`
 
@@ -178,7 +178,7 @@ Spawn every task in `children` concurrently, returning their handles. The childr
 
 #### `fn join_all(hs: List(Handle)) -> Task(Nil)`
 
-Join every handle in `hs` — block until they have all finished.
+Join every handle in `hs` while the executor can make progress. Like `join`, quiescence releases a parked join even if a child has a continuation that will run afterward.
 
 #### `fn cancel_all(hs: List(Handle)) -> Task(Nil)`
 
@@ -186,11 +186,11 @@ Cancel every handle in `hs` — the companion to `spawn_all`/`join_all`. Each is
 
 #### `fn scope(children: List(Task(Nil))) -> Task(Nil)`
 
-STRUCTURED concurrency (a "nursery"): run every task in `children` concurrently and return only once they have ALL finished. No handle escapes the call, so a child cannot outlive the scope and there are no leaked tasks — prefer this over a bare `spawn` whose handle you must remember to `join`. The children interleave on the cooperative executor, so a concurrent run is byte-identical on both backends (the parity contract). Results flow out over channels, as with any task (a child returns `Nil`).
+STRUCTURED concurrency (a "nursery"): run every task in `children` concurrently and wait for their handles while the executor can make progress. No handle escapes the call, so the normal case has no leaked tasks; if the whole executor reaches quiescence, `join_all` releases just like `join`. Prefer this over a bare `spawn` whose handle you must remember to `join`. The children interleave on the cooperative executor, so a concurrent run is byte-identical on both backends (the parity contract). Results flow out over channels, as with any task (a child returns `Nil`).
 
 #### `fn gather(jobs: List(Task(m))) -> Task(List(m))`
 
-STRUCTURED fan-out-and-collect: run every task in `jobs` concurrently and return all of their results once they have ALL finished. Each job produces a value of the message type `m` (results ride the same channels), so `gather` is the typed companion to `scope` — the same leak-free, no-escaping-handle guarantee, with the results handed back. Results are in COMPLETION order (deterministic on the cooperative executor, hence byte-identical on both backends), not input order.
+STRUCTURED fan-out-and-collect: run every task in `jobs` concurrently and return the results that arrive before the collecting channel quiesces. In the normal case every job completes and sends exactly one result. Each job produces a value of the message type `m` (results ride the same channels), so `gather` is the typed companion to `scope` — the same no-escaping-handle shape, with the results handed back. Results are in COMPLETION order (deterministic on the cooperative executor, hence byte-identical on both backends), not input order.
 
 #### `fn par_map(items: List(a), f: fn(a) -> Task(m)) -> Task(List(m))`
 
@@ -2634,7 +2634,7 @@ Start `child` as a concurrent task; the returned handle completes when it does.
 
 #### `fn join(h: Handle) -> Task(Nil)`
 
-Block until the spawned task behind `h` finishes.
+Wait for the spawned task behind `h` while the executor can make progress. If the whole executor reaches quiescence with this join parked, the close pass releases it even if the joined task has a continuation that will run afterward.
 
 #### `fn cancel(h: Handle) -> Task(Nil)`
 
