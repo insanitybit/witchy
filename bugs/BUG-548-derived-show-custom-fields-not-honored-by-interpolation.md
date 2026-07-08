@@ -1,8 +1,8 @@
 # BUG-548: `derive(Show)` with custom-Show fields was ignored by interpolation
 
-- **Severity:** MED
-- **Status:** FIXED
-- **Component:** `derive(Show)`, interpolation, `Show`, RFC-0053 render semantics
+Severity: MED
+Status: FIXED
+Component: `derive(Show)`, interpolation, `Show`, RFC-0053 render semantics
 
 ## Problem
 
@@ -35,4 +35,3 @@ pins the coherent contract:
 
 - `cargo test rfc0053_ -- --nocapture`
 - `NEXTEST_TEST_THREADS=2 ./scripts/check.sh`
-

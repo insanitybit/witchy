@@ -1,10 +1,10 @@
 # BUG-547: `module_types` omits types emitted by earlier `comptime:` blocks
 
-- **Severity:** MED
-- **Status:** FIXED
-- **Fixed:** 2026-07-07
-- **Verified:** 2026-07-07 CODE on branch `fix/comptime-module-types`
-- **Component:** `comptime`, `std/meta`, compile-time reflection, generated types
+Severity: MED
+Status: FIXED
+Fixed: 2026-07-07
+Verified: 2026-07-07 CODE on branch `fix/comptime-module-types`
+Component: `comptime`, `std/meta`, compile-time reflection, generated types
 
 ## Summary
 

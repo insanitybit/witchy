@@ -1,8 +1,8 @@
 # BUG-533: `comptime:` dropped source `from` imports while executing the block
 
-- **Severity:** MED
-- **Status:** FIXED
-- **Component:** `comptime`, source `from` imports, RFC-0042 module bindings, `module_types`
+Severity: MED
+Status: FIXED
+Component: `comptime`, source `from` imports, RFC-0042 module bindings, `module_types`
 
 ## Problem
 
@@ -30,4 +30,3 @@ The regression `comptime_preserves_std_from_imports_on_both_backends` covers
 
 - `cargo test comptime_preserves_std_from_imports_on_both_backends -- --nocapture`
 - `NEXTEST_TEST_THREADS=2 ./scripts/check.sh`
-

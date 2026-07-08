@@ -1,8 +1,8 @@
 # BUG-496: `derive(Deserialize)` reused source field names as generated locals
 
-- **Severity:** MED
-- **Status:** FIXED
-- **Component:** `std/meta`, `derive(Deserialize)`, generated-source hygiene, JSON reconstruction
+Severity: MED
+Status: FIXED
+Component: `std/meta`, `derive(Deserialize)`, generated-source hygiene, JSON reconstruction
 
 ## Problem
 
@@ -34,4 +34,3 @@ the original JSON object.
 
 - `cargo test derive_deserialize_field_names_are_hygienic_on_both_backends -- --nocapture`
 - `NEXTEST_TEST_THREADS=2 ./scripts/check.sh`
-
