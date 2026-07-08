@@ -1769,11 +1769,28 @@ fn main():
         )
         .unwrap_err();
         assert!(err.contains("unreachable match arm"), "{err}");
+        assert!(err.contains("`1s`"), "{err}");
+        assert!(!err.contains("1000ms"), "{err}");
         // Distinct Duration arms remain reachable.
         check_str(
             "fn f(d: Duration) -> Int:\n    match d:\n        1s -> 1\n        2s -> 2\n        _ -> 0\n",
         )
         .expect("distinct Duration arms are reachable");
+    }
+
+    #[test]
+    fn duration_pattern_diagnostics_use_human_units() {
+        let simple = check_str("fn f(d: Duration):\n    let 1s = d\n").unwrap_err();
+        assert!(simple.contains("`let 1s ="), "{simple}");
+        assert!(!simple.contains("1000ms"), "{simple}");
+
+        let compound = check_str("fn f(d: Duration):\n    let 90s = d\n").unwrap_err();
+        assert!(compound.contains("`let 1m30s ="), "{compound}");
+        assert!(!compound.contains("90000ms"), "{compound}");
+
+        let negative = check_str("fn f(d: Duration):\n    let -1s = d\n").unwrap_err();
+        assert!(negative.contains("`let -1s ="), "{negative}");
+        assert!(!negative.contains("-1000ms"), "{negative}");
     }
 
     #[test]

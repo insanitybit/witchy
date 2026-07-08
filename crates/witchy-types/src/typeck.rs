@@ -5857,11 +5857,32 @@ fn describe_pattern(p: &Pattern) -> String {
             format!("({})", ps.iter().map(describe_pattern).collect::<Vec<_>>().join(", "))
         }
         Pattern::List { .. } => "list pattern".to_string(),
-        Pattern::Duration(ms) => format!("{ms}ms"),
+        Pattern::Duration(ms) => describe_duration_pattern(*ms),
         Pattern::IntRange { lo, hi, inclusive } => {
             format!("{lo}{}{hi}", if *inclusive { "..=" } else { ".." })
         }
         Pattern::Or(alts) => alts.iter().map(describe_pattern).collect::<Vec<_>>().join(" | "),
+    }
+}
+
+fn describe_duration_pattern(ms: i64) -> String {
+    if ms < 0 {
+        return format!("-{}", describe_duration_pattern(ms.saturating_abs()));
+    }
+
+    let hours = ms / 3_600_000;
+    let minutes = (ms / 60_000) % 60;
+    let seconds = (ms / 1_000) % 60;
+    let millis = ms % 1_000;
+
+    if hours > 0 {
+        format!("{hours}h{minutes}m{seconds}s")
+    } else if minutes > 0 {
+        format!("{minutes}m{seconds}s")
+    } else if seconds > 0 {
+        format!("{seconds}s")
+    } else {
+        format!("{millis}ms")
     }
 }
 
