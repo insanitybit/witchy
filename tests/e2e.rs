@@ -3654,6 +3654,44 @@ fn grant_document_run_binds_by_name_and_cross_checks() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn grant_document_file_rights_are_parameter_exact() {
+    let dir = unique("grant-rights");
+    let input = dir.join("input.txt");
+    let output = dir.join("output.txt");
+    std::fs::write(&input, "in").unwrap();
+    let prog = dir.join("prog.witchy");
+    std::fs::write(
+        &prog,
+        "fn main(console: Console, input: File[Read], output: File[Write]):\n    print(console, read(input))\n    write(output, \"out\")\n",
+    )
+    .unwrap();
+
+    let swapped = dir.join("swapped.toml");
+    std::fs::write(
+        &swapped,
+        format!(
+            "[files]\ninput = {{ path = \"{}\", rights = [\"Write\"] }}\noutput = {{ path = \"{}\", rights = [\"Read\"] }}\n",
+            input.display(),
+            output.display()
+        ),
+    )
+    .unwrap();
+
+    let out = Command::new(BIN)
+        .args(["sandbox", "--grants", swapped.to_str().unwrap(), prog.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "swapped grant rights must abort the run");
+    assert!(
+        stderr(&out).contains("do not match") || stdout(&out).contains("do not match"),
+        "expected exact-rights mismatch: out={} err={}",
+        stdout(&out),
+        stderr(&out)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// RFC-0005 Stage 2 / RFC-0012: direct `--file` grants are minted as File
 /// externrefs in the compiled sandbox path, for both read and write leaf ops.
 #[test]

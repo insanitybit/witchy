@@ -2204,6 +2204,7 @@ fn run_linked_compiled(
     if grant.contains_key("Exec") {
         caps.exec = true;
     }
+    let (dir_param_rights, file_param_rights) = main_fs_param_rights(linked);
     if let Some(rights) = grant.get("Dir") {
         let mut roots = dir_roots;
         if roots.is_empty() {
@@ -2222,6 +2223,7 @@ fn run_linked_compiled(
         caps.dir_roots = roots;
         caps.dir_read = rights.contains("Read");
         caps.dir_write = rights.contains("Write");
+        caps.dir_rights = dir_param_rights;
     }
     // RFC-0012: direct `File` grants — `main`'s `File` params are filled from
     // `--file` positionally (read/write is the param's compile-time right).
@@ -2232,6 +2234,7 @@ fn run_linked_compiled(
             );
         }
         caps.file_grants = file_grants;
+        caps.file_rights = file_param_rights;
     }
     if let Some(rights) = grant.get("Net") {
         caps.net_allow = Some(net_allow);
@@ -2453,6 +2456,61 @@ fn compile_linked_to_wasm_cached(linked: &ast::Module) -> Result<Vec<u8>, String
     Ok(wasm)
 }
 
+fn fs_rights_from_type_args(args: &[ast::Type]) -> runtime::FsRights {
+    if args.is_empty() {
+        return runtime::FsRights::new(true, true);
+    }
+    let has = |needle: &str| {
+        args.iter()
+            .any(|a| matches!(a, ast::Type::Named(n, inner) if n == needle && inner.is_empty()))
+    };
+    runtime::FsRights::new(has("Read"), has("Write"))
+}
+
+fn main_fs_param_rights(linked: &ast::Module) -> (Vec<runtime::FsRights>, Vec<runtime::FsRights>) {
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+    if let Some(ast::Item::Function(main)) =
+        linked.items.iter().find(|it| matches!(it, ast::Item::Function(f) if f.name == "main"))
+    {
+        for p in &main.params {
+            match &p.ty {
+                Some(ast::Type::Named(n, args)) if n == "Dir" => dirs.push(fs_rights_from_type_args(args)),
+                Some(ast::Type::Named(n, args)) if n == "File" => files.push(fs_rights_from_type_args(args)),
+                _ => {}
+            }
+        }
+    }
+    (dirs, files)
+}
+
+fn grant_fs_rights(label: &str, rights: &[String]) -> Result<runtime::FsRights, String> {
+    let mut out = runtime::FsRights::new(false, false);
+    for r in rights {
+        match r.as_str() {
+            "Read" => out.read = true,
+            "Write" => out.write = true,
+            other => return Err(format!("grant `{label}` names unknown filesystem right `{other}`")),
+        }
+    }
+    Ok(out)
+}
+
+fn require_exact_fs_rights(
+    label: &str,
+    declared: runtime::FsRights,
+    required: runtime::FsRights,
+) -> Result<(), String> {
+    if declared == required {
+        Ok(())
+    } else {
+        Err(format!(
+            "grant `{label}` rights {:?} do not match `main` parameter rights {:?}",
+            declared, required
+        ))
+    }
+}
+
 /// Compile a program and run it in the WASM VM granted EXACTLY its computed
 /// footprint, announcing the grant on stderr. The `Dir` root and `Net` allowlist
 /// are host policy (the `--dir`/`--net` flags); the program's footprint decides
@@ -2578,12 +2636,24 @@ fn run_file_grants(
                     let g = doc.files.get(&p.name).ok_or_else(|| {
                         format!("grant `{grants_path}` has no `[files].{}` for `main` parameter `{}`", p.name, p.name)
                     })?;
+                    let declared = grant_fs_rights(&format!("[files].{}", p.name), &g.rights)?;
+                    let required = match &p.ty {
+                        Some(ast::Type::Named(_, args)) => fs_rights_from_type_args(args),
+                        _ => runtime::FsRights::new(false, false),
+                    };
+                    require_exact_fs_rights(&format!("[files].{}", p.name), declared, required)?;
                     file_grants.push(std::path::PathBuf::from(&g.path));
                 }
                 Some(ast::Type::Named(n, _)) if n == "Dir" => {
                     let g = doc.dirs.get(&p.name).ok_or_else(|| {
                         format!("grant `{grants_path}` has no `[dirs].{}` for `main` parameter `{}`", p.name, p.name)
                     })?;
+                    let declared = grant_fs_rights(&format!("[dirs].{}", p.name), &g.rights)?;
+                    let required = match &p.ty {
+                        Some(ast::Type::Named(_, args)) => fs_rights_from_type_args(args),
+                        _ => runtime::FsRights::new(false, false),
+                    };
+                    require_exact_fs_rights(&format!("[dirs].{}", p.name), declared, required)?;
                     dir_roots.push(std::path::PathBuf::from(&g.root));
                 }
                 Some(ast::Type::Named(n, _)) if grantable.contains_key(n.as_str()) => {

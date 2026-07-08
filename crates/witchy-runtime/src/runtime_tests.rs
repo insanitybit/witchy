@@ -30,6 +30,15 @@
             (drop (call $file_read_len (ref.null extern)))))
     "#;
 
+    const DIRECT_FILE_WRITE: &str = r#"
+        (module
+          (import "witchy" "mint_file" (func $mint_file (param i32) (result externref)))
+          (import "witchy" "file_write" (func $file_write (param externref i32)))
+          (memory (export "memory") 1)
+          (func (export "run")
+            (call $file_write (call $mint_file (i32.const 0)) (i32.const 0))))
+    "#;
+
     /// The core thesis: a capability that was not granted simply does not exist
     /// for the VM, so it cannot even be instantiated.
     #[test]
@@ -110,6 +119,38 @@
         assert!(
             detail.contains("File externref is null"),
             "expected null File externref rejection, got: {detail}"
+        );
+    }
+
+    #[test]
+    fn read_only_direct_file_does_not_link_write() {
+        let path = std::env::temp_dir().join(format!(
+            "witchy-readonly-file-grant-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, "host-owned").unwrap();
+
+        let mut rt = Runtime::new().unwrap();
+        let err = rt
+            .spawn(
+                DIRECT_FILE_WRITE,
+                Capabilities {
+                    file_grants: vec![path.clone()],
+                    file_rights: vec![FsRights::new(true, false)],
+                    ..Default::default()
+                },
+                4,
+            )
+            .map(|_| ())
+            .unwrap_err();
+        let _ = std::fs::remove_file(path);
+        assert!(
+            err.to_string().contains("unknown import"),
+            "read-only File grants must not link file_write, got: {err}"
         );
     }
 
