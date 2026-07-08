@@ -53,7 +53,6 @@ carries a doc comment *apologizing* for one of them. The same audit
 - **Result mimicry**: `toml.decode` returns `Result` but cannot fail — its own
   doc says so ("Always succeeds — malformed lines are skipped — so the result
   is `Ok`; the `Result` shape mirrors `json.decode`", `std/toml.witchy:24-27`).
-  `csv.parse` absorbs malformed rows the same way.
 - **Shape defector**: `duration.parse` → `Option` where `semver`/`time`/`url`/
   `json` all return `Result` for the identical failure concept.
 - **Doc-vs-impl contradiction**: `std/regex.witchy:1-3` promises "a loud
@@ -121,11 +120,10 @@ rules on `E`'s rendering).
   (they already return `Result`, so `?` composes). This is a security fix as
   much as a shape fix: today a truncated hex key verifies as `false`, which
   reads as "tampered token" instead of "your key loading is broken".
-- **toml/csv honesty**: `toml.decode`'s `Err` becomes reachable (malformed
-  line → `Err` naming the line and what was expected, rule-2 voice);
-  `csv.parse` (renamed `decode` by RFC-0049) returns
-  `Result(List(List(String)), String)` and errors on structurally malformed
-  input (e.g. an unterminated quote) instead of absorbing it.
+- **toml honesty**: `toml.decode`'s `Err` becomes reachable (malformed
+  line → `Err` naming the line and what was expected, rule-2 voice). CSV is
+  deliberately not part of the first-class stdlib surface for 0.1; any future
+  CSV package should still follow this error policy.
 
 ### The migration table (one cut, ordered by user impact)
 
@@ -137,7 +135,7 @@ rules on `E`'s rendering).
 | `math.to_int(NaN)`, `math.isqrt(neg)`, `math.factorial(neg)`, `math.pow(x, neg)` | 0 / 0 / 1 / 1 | abort with a message naming the bad argument (`to_int`'s out-of-range *saturation* stays, documented — rule-5 grandfather) | 3 |
 | `list.set_at`, `list.update_at` (OOB) | silent no-op | trap, matching `list.at` — read and write agree on loud | 3 |
 | `duration.parse` | `Option(Duration)` | `Result(Duration, String)` | 2 |
-| `toml.decode`, `csv.parse` | always-`Ok` `Result` / total | genuinely fallible `Result` (above) | 2 |
+| `toml.decode` | always-`Ok` `Result` / total | genuinely fallible `Result` (above) | 2 |
 | `server.param`, `server.query`, `server.form_field` | `""` | `Option(String)`, aligning with `request_header` | 1 |
 | `encoding.hex_decode`, `base64_decode`, `base64url_decode`, `base64url_to_hex` | `""` on bad input | `Result(String, String)`; jwt/webauthn/oauth callers updated in-cut | 2 |
 | `time.days_in_month(y, mo)` (mo ∉ 1..12) | 31 | abort: ``month `13` is out of range (expected 1..12)`` | 3 |
@@ -209,11 +207,13 @@ RFC-0048 shipped (drawback 2 moot); RFC-0045 shipped (drawback 3 moot); the
 cmp-quadruplet freeze is obsolete (the RFC-0046 gate landed — delete the
 quadruplet in the same cut).
 
-**Required revisions.** (1) The three staleness fixes above. (2) Add a
-`csv.parse_records` row. (3) Call out that the `xs[i] = v` out-of-bounds
-behavior change (silent no-op → trap) is syntax-level. Note: the crypto-verify
-and set_at rows are correctness/security defects, not style. Blast radius was
-measured one-sitting-sized.
+**Required revisions.** (1) The three staleness fixes above. (2) Call out that
+the `xs[i] = v` out-of-bounds behavior change (silent no-op → trap) is
+syntax-level. Note: the crypto-verify and set_at rows are correctness/security
+defects, not style. Blast radius was measured one-sitting-sized. CSV references
+from the review were later de-scoped from core std: Witchy 0.1 treats JSON as
+the first-class interchange exception and keeps TOML only for manifest
+ergonomics; CSV belongs in a package if/when needed.
 
 **Verdict.** Implement-now after small revision — as ONE coordinated release cut
 with RFC-0049 (shapes and names touch the same 20+ files); regenerate

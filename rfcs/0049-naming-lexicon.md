@@ -88,7 +88,7 @@ Maintainer-reviewed decisions (amending the reviewer's raw list):
 | `semver.lt` | → `less` | Aligns with the cmp trait's spelled-out vocabulary; callers: pm/coven resolution code, one cut. |
 | `rights.covered` | → `any_covers` | `covered(declared, demanded)` reads backwards (what is covered?); `any_covers` states the quantifier and the direction. |
 | `json.value_of` | → `from_value` | The only direction-inverted `_of` (it *constructs* Json from a value). Callers include glamour examples — wide but mechanical. |
-| `csv.parse` / `csv.parse_records` | → `decode` / `decode_records` | Serialization formats decode, paired with `encode` (which csv already has); aligns with json/toml. The Result-shape change rides in RFC-0044's same cut. |
+| `csv.parse` / `csv.parse_records` | **OUT OF CORE STD** | CSV is not a first-class 0.1 stdlib format. A future package may use `decode` / `decode_records`, but the core rename cut does not promise or ship `std/csv`. |
 | `encoding.base64url_of_hex` | → `hex_to_base64url` | Now reads as `base64url_to_hex`'s inverse, in the same direction. jwt/webauthn callers updated in-cut. |
 | json extraction `int_of`/`string_of`/… | **KEEP for this cut** | `_of` is banned for *new* API; churning the whole json accessor surface exceeds this RFC's blast-radius budget and json self-consistently uses it. Revisit only if [RFC-0054](0054-structured-errors.md) reshapes them anyway. |
 | `cmp.max_of`/`min_of`, `maximum`/`minimum` | **KEEP, documented** | The min/max sextet's names are collision-driven (flat function namespace within a module family); a satisfying fix is overload-by-module, which is [RFC-0042](0042-module-namespaces.md)'s territory, not a rename. |
@@ -142,8 +142,9 @@ Recommendation adopted: rename the pure seeded module `random` → `prng`, keep
 - The `dict.set_at` deletion requires the desugar retarget in the same
   commit (the sugar must never dangle).
 - RFC-0044's shape changes and this RFC's renames to the *same* functions
-  (`index_of` family, `csv.parse`) land in one release cut so callers are
-  touched once.
+  (`index_of` family) land in one release cut so callers are touched once.
+  The stale `csv.parse` row from the original survey is explicitly out of core
+  std for 0.1.
 
 ### 5. The three CONTRIBUTING.md rules (final form, verbatim-adoptable)
 
