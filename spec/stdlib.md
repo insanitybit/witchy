@@ -903,7 +903,11 @@ Validate one `(name, value)` header pair — the name is a token, the value has 
 
 #### `fn parse_response(raw: String) -> Response`
 
-Parse a raw HTTP/1.1 response string into a `Response`: split at the blank line separating headers from body, parse the header lines into (lowercased name, trimmed value) pairs, decode a `chunked` body, and read the status code totally (a non-numeric or overflowing code becomes 0 rather than trapping). Public so a proxy or test can parse a response it obtained by other means.
+Parse a raw HTTP/1.1 response string into a `Response`: split at the blank line separating headers from body, parse the header lines into (lowercased name, trimmed value) pairs, decode a `chunked` body, and read the status code totally (a non-numeric or overflowing code becomes 0 rather than trapping). Public so a proxy or test can parse a response it obtained by other means. This total helper keeps the historical lossy chunked behavior; use `try_parse_response` at trust boundaries where malformed framing must be an error.
+
+#### `fn try_parse_response(raw: String) -> Result(Response, String)`
+
+Strict response parsing for public client paths. In particular, malformed `Transfer-Encoding: chunked` bodies return `Err` instead of handing callers a recovered prefix that may look like valid JSON.
 
 #### `RequestBuilder.with_header(name: String, value: String) -> RequestBuilder`
 

@@ -2507,6 +2507,12 @@ fn main(console: Console):
         Err(resp) -> print(console, "rejected " + __render(http.status(resp)))
     print(console, "status=" + __render(http.status(http.parse_response("HTTP/1.1 999999999999999999999999 X\r\n\r\nb"))))
     print(console, "chunked=" + http.body(http.parse_response("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n")))
+    match http.try_parse_response("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nX\r\nhello\r\n0\r\n\r\n"):
+        Ok(_) -> print(console, "bad-size=parsed")
+        Err(e) -> print(console, "bad-size=" + e)
+    match http.try_parse_response("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhe"):
+        Ok(_) -> print(console, "truncated=parsed")
+        Err(e) -> print(console, "truncated=" + e)
     let r1 = server.with_header(server.text(200, "hi"), "content-length", "999")
     print(console, "cl=" + __render(string.count(string.to_lower(server.render(r1)), "content-length")))
     print(console, __render(http.is_framing_header("Content-Length")))
@@ -2519,6 +2525,8 @@ fn main(console: Console):
             "rejected 400".to_string(),
             "status=0".to_string(),
             "chunked=hello world".to_string(),
+            "bad-size=chunked response has invalid chunk size `X`".to_string(),
+            "truncated=chunked response ended before the declared chunk size".to_string(),
             "cl=1".to_string(),
             "true".to_string(),
         ];
