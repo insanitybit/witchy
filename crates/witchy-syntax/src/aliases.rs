@@ -65,6 +65,24 @@ fn dfs_cycle(
 
 /// Expand every type alias and drop the alias items. A no-op without aliases.
 pub fn resolve(mut module: Module) -> Module {
+    let map = resolved_map(&module);
+    if map.is_empty() {
+        return module;
+    }
+
+    for item in &mut module.items {
+        resolve_item(item, &map);
+    }
+
+    module.items.retain(|it| !matches!(it, Item::TypeAlias { .. }));
+    module
+}
+
+/// Build the same fixpoint-resolved alias map [`resolve`] uses, without mutating
+/// the module. Consumers that only need normalized type facts, such as
+/// `derive(...)` TypeInfo construction, can apply this to a clone while leaving
+/// the linker's later alias-cycle diagnostics and alias-erasure pass intact.
+pub(crate) fn resolved_map(module: &Module) -> HashMap<String, Type> {
     let mut map: HashMap<String, Type> = HashMap::new();
     for item in &module.items {
         if let Item::TypeAlias { name, ty } = item {
@@ -72,7 +90,7 @@ pub fn resolve(mut module: Module) -> Module {
         }
     }
     if map.is_empty() {
-        return module;
+        return map;
     }
 
     // Resolve alias-to-alias references to a fixpoint, so each alias maps to an
@@ -89,41 +107,44 @@ pub fn resolve(mut module: Module) -> Module {
         }
     }
 
-    for item in &mut module.items {
-        match item {
-            Item::Function(f) => resolve_function(f, &map),
-            Item::Type(t) => {
-                for v in &mut t.variants {
-                    for ft in &mut v.fields {
-                        resolve_type(ft, &map);
-                    }
-                }
-            }
-            Item::Trait(t) => {
-                for m in &mut t.methods {
-                    resolve_methodsig(m, &map);
-                }
-            }
-            Item::Impl(im) => {
-                // The impl head is itself a written-type position: `impl Show
-                // for Id` targets an alias, and `impl FromIterator(Id) for
-                // Set(Id) where a: Bound(Id)` writes aliases in its trait/target
-                // arguments and `where` clause.
-                resolve_impl_target(&mut im.type_name, &mut im.target_args, &map);
-                for t in &mut im.trait_args {
-                    resolve_type(t, &map);
-                }
-                resolve_bounds(&mut im.bounds, &map);
-                for m in &mut im.methods {
-                    resolve_function(m, &map);
-                }
-            }
-            Item::TypeAlias { .. } | Item::Const { .. } | Item::Comptime(_) => {}
-        }
-    }
+    map
+}
 
-    module.items.retain(|it| !matches!(it, Item::TypeAlias { .. }));
-    module
+fn resolve_item(item: &mut Item, map: &HashMap<String, Type>) {
+    match item {
+        Item::Function(f) => resolve_function(f, map),
+        Item::Type(t) => {
+            for v in &mut t.variants {
+                for ft in &mut v.fields {
+                    resolve_type(ft, map);
+                }
+            }
+        }
+        Item::Trait(t) => {
+            for m in &mut t.methods {
+                resolve_methodsig(m, map);
+            }
+        }
+        Item::Impl(im) => {
+            // The impl head is itself a written-type position: `impl Show
+            // for Id` targets an alias, and `impl FromIterator(Id) for
+            // Set(Id) where a: Bound(Id)` writes aliases in its trait/target
+            // arguments and `where` clause.
+            resolve_impl_target(&mut im.type_name, &mut im.target_args, map);
+            for t in &mut im.trait_args {
+                resolve_type(t, map);
+            }
+            resolve_bounds(&mut im.bounds, map);
+            for m in &mut im.methods {
+                resolve_function(m, map);
+            }
+        }
+        Item::TypeAlias { .. } | Item::Const { .. } | Item::Comptime(_) => {}
+    }
+}
+
+pub(crate) fn resolve_type_aliases(ty: &mut Type, map: &HashMap<String, Type>) -> bool {
+    resolve_type(ty, map)
 }
 
 /// Expand alias names appearing anywhere in a type. The `map` is already

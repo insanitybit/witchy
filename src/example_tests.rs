@@ -806,6 +806,36 @@
         );
     }
 
+    /// (BUG-518) `module_types` is a normalized type fact, not a pre-typeck parse
+    /// artifact: aliases are expanded and implicit record type parameters are
+    /// inferred before TypeInfo reaches comptime code.
+    #[test]
+    fn comptime_typeinfo_normalizes_aliases_and_implicit_params_on_both_backends() {
+        let src = "import list\nimport meta\n\ntype UserId = String\n\ntype Box:\n    value: a\n\ntype Config:\n    id: UserId\n\ncomptime:\n    for t in module_types:\n        if t.name == \"Box\":\n            emit(\"fn generated_box_params() -> String:\")\n            emit(\"    \\\"\" + list.join(t.params, \",\") + \"\\\"\")\n        if t.name == \"Config\":\n            let f = list.at(t.fields, 0)\n            emit(\"fn generated_config_field() -> String:\")\n            emit(\"    \\\"\" + meta.type_source(f.type_expr) + \"\\\"\")\n\nfn main(console: Console):\n    print(console, generated_box_params())\n    print(console, generated_config_field())\n";
+        let expected = ["a", "String"];
+        assert_eq!(link_run(src), expected, "interp sees normalized TypeInfo");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled code generated from normalized TypeInfo must agree",
+        );
+    }
+
+    /// (BUG-518) Built-in derives consume the same normalized TypeInfo as
+    /// comptime reflection. Alias-typed fields derive the aliased decoder, and an
+    /// implicit generic record derives a parameterized `Reflect` impl with bounds.
+    #[test]
+    fn derives_use_normalized_typeinfo_on_both_backends() {
+        let src = "import json\nimport list\nimport reflect\n\ntype UserId = String\n\ntype Person derive(Deserialize):\n    id: UserId\n\ntype Box derive(Reflect):\n    value: a\n\nfn main(console: Console):\n    match Person.from_json(json.JsonObject([(\"id\", json.JsonString(\"ada\"))])):\n        Ok(p) -> print(console, p.id)\n        Err(e) -> print(console, e)\n    match Box(3).reflect():\n        reflect.MRecord(_name, fields) -> print(console, \"${list.length(fields)}\")\n        _ -> print(console, \"bad\")\n";
+        let expected = ["ada", "1"];
+        assert_eq!(link_run(src), expected, "interp derive sees normalized TypeInfo");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled derive output from normalized TypeInfo must agree",
+        );
+    }
+
     /// (BUG-533) A `comptime:` block runs in a synthetic std-only module, but it
     /// must keep the source module's std `from X import Y` bindings. Otherwise
     /// comptime code is a smaller import language than ordinary Witchy source.

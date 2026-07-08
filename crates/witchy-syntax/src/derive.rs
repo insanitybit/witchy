@@ -63,6 +63,7 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
     let mut needs_deserialize = false;
     let mut needs_reflect = false;
     let mut needs_show = false;
+    let aliases = crate::aliases::resolved_map(module);
     let explicit_partial_eq_targets: HashSet<String> = module
         .items
         .iter()
@@ -84,6 +85,7 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                 ));
             }
         }
+        let derive_type = crate::reflect::normalized_type_for_typeinfo(t, &aliases);
         let has_explicit_partial_eq = explicit_partial_eq_targets.contains(&t.name);
         // (RFC-0047) Record that this type's PartialEq is the STRUCTURAL derive,
         // so whole-program container equality can keep its structural fast path.
@@ -102,56 +104,58 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
         for d in &derives {
             match d.as_str() {
                 "Show" => {
-                    generated.push(derive_via_comptime("meta.derive_show", t));
+                    generated.push(derive_via_comptime("meta.derive_show", &derive_type));
                     needs_show = true;
                 }
                 "PartialEq" => {
                     if !emitted_partial_eq {
-                        generated.push(derive_via_comptime("meta.derive_partial_eq", t));
+                        generated.push(derive_via_comptime("meta.derive_partial_eq", &derive_type));
                         emitted_partial_eq = true;
                     }
                 }
                 "Eq" => {
-                    if has_float_field(t) {
+                    if has_float_field(&derive_type) {
                         return Err(format!(
                             "type `{}`: derive(Eq) cannot include `Float` fields because Float is not Eq",
                             t.name
                         ));
                     }
                     if !has_explicit_partial_eq && !emitted_partial_eq {
-                        generated.push(derive_via_comptime("meta.derive_partial_eq", t));
+                        generated.push(derive_via_comptime("meta.derive_partial_eq", &derive_type));
                         emitted_partial_eq = true;
                     }
-                    generated.push(derive_via_comptime("meta.derive_eq", t));
+                    generated.push(derive_via_comptime("meta.derive_eq", &derive_type));
                 }
                 "PartialOrd" => {
-                    let is_record = t.variants.len() == 1 && !t.variants[0].field_names.is_empty();
+                    let is_record =
+                        derive_type.variants.len() == 1 && !derive_type.variants[0].field_names.is_empty();
                     if !is_record {
                         return Err(format!(
                             "type `{}`: derive(PartialOrd) supports record types (one constructor with named fields)",
                             t.name
                         ));
                     }
-                    generated.push(derive_via_comptime("meta.derive_partial_ord", t));
+                    generated.push(derive_via_comptime("meta.derive_partial_ord", &derive_type));
                 }
                 "Ord" => {
-                    let is_record = t.variants.len() == 1 && !t.variants[0].field_names.is_empty();
+                    let is_record =
+                        derive_type.variants.len() == 1 && !derive_type.variants[0].field_names.is_empty();
                     if !is_record {
                         return Err(format!(
                             "type `{}`: derive(Ord) supports record types (one constructor with named fields)",
                             t.name
                         ));
                     }
-                    if has_float_field(t) {
+                    if has_float_field(&derive_type) {
                         return Err(format!(
                             "type `{}`: derive(Ord) cannot include `Float` fields because Float is not Ord",
                             t.name
                         ));
                     }
-                    generated.push(derive_via_comptime("meta.derive_ord", t));
+                    generated.push(derive_via_comptime("meta.derive_ord", &derive_type));
                 }
                 "Reflect" => {
-                    generated.push(derive_via_comptime("meta.derive_reflect", t));
+                    generated.push(derive_via_comptime("meta.derive_reflect", &derive_type));
                     needs_reflect = true;
                 }
                 // Decode only: reflection (json.value_of / stringify / Into(Json))
@@ -159,20 +163,21 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                 // reconstruction is per-type (reflection is one-directional), so it is
                 // the one derive that remains.
                 "Deserialize" => {
-                    let is_record = t.variants.len() == 1 && !t.variants[0].field_names.is_empty();
+                    let is_record =
+                        derive_type.variants.len() == 1 && !derive_type.variants[0].field_names.is_empty();
                     if !is_record {
                         return Err(format!(
                             "type `{}`: derive(Deserialize) supports record types (one constructor with named fields)",
                             t.name
                         ));
                     }
-                    if let Some((field, shape)) = unsupported_deserialize_field(t) {
+                    if let Some((field, shape)) = unsupported_deserialize_field(&derive_type) {
                         return Err(format!(
                             "type `{}`: derive(Deserialize) does not support {} field `{}`; decode it manually",
                             t.name, shape, field
                         ));
                     }
-                    generated.push(derive_via_comptime("meta.derive_deserialize", t));
+                    generated.push(derive_via_comptime("meta.derive_deserialize", &derive_type));
                     needs_deserialize = true;
                 }
                 // A user-defined derive: route to the witchy generator
@@ -182,7 +187,7 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                 other => {
                     generated.push(derive_via_comptime(
                         &format!("derive_{}", other.to_lowercase()),
-                        t,
+                        &derive_type,
                     ));
                 }
             }

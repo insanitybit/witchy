@@ -99,7 +99,7 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
                 ty: None,
                 name: "module_types".into(),
                 mutable: false,
-                value: Expr::List(module_type_infos(module)),
+                value: Expr::List(witchy_syntax::reflect::module_type_info_exprs(module)),
             },
         );
         if let Some(first) = body.lines.first().copied() {
@@ -184,17 +184,6 @@ fn normalize_generated_module(module: Module) -> Result<Module, String> {
     let module = witchy_syntax::generators::lower(module)?;
     let module = witchy_syntax::async_lower::lower(module)?;
     witchy_syntax::records::lower_lenient(module)
-}
-
-fn module_type_infos(module: &Module) -> Vec<Expr> {
-    module
-        .items
-        .iter()
-        .filter_map(|it| match it {
-            Item::Type(t) => Some(witchy_syntax::reflect::type_info_expr(t)),
-            _ => None,
-        })
-        .collect()
 }
 
 fn merge_emitted_module(module: &mut Module, emitted: Module, block_line: u32) {

@@ -9,6 +9,48 @@
 //! to) build it, so it lives in this shared leaf rather than in either stage.
 
 use crate::ast::*;
+// foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
+use foldhash::HashMap;
+
+pub(crate) fn normalized_type_for_typeinfo(t: &TypeDef, aliases: &HashMap<String, Type>) -> TypeDef {
+    let mut out = t.clone();
+    for variant in &mut out.variants {
+        for field in &mut variant.fields {
+            crate::aliases::resolve_type_aliases(field, aliases);
+        }
+    }
+    if out.params.is_empty() {
+        let mut params = Vec::new();
+        for variant in &out.variants {
+            for field in &variant.fields {
+                collect_type_vars(field, &mut params);
+            }
+        }
+        out.params = params;
+    }
+    out
+}
+
+/// Build normalized `meta.TypeInfo` expressions for every type in `module`.
+///
+/// This is the public compile-time fact model: aliases are expanded in the
+/// reflected field types and omitted generic parameters are inferred from the
+/// fields, matching the type checker's later view without mutating the source
+/// module or consuming alias declarations.
+pub fn module_type_info_exprs(module: &Module) -> Vec<Expr> {
+    let aliases = crate::aliases::resolved_map(module);
+    module
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            Item::Type(t) => {
+                let normalized = normalized_type_for_typeinfo(t, &aliases);
+                Some(type_info_expr(&normalized))
+            }
+            _ => None,
+        })
+        .collect()
+}
 
 /// Build the `meta.TypeInfo(...)` constructor expression describing `t`.
 pub fn type_info_expr(t: &TypeDef) -> Expr {

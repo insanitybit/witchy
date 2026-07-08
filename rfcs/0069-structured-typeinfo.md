@@ -53,6 +53,10 @@ not the semantic representation.
 
 - `crates/witchy-syntax/src/reflect.rs` constructs both the legacy strings and
   the structured `TypeExpr` tree for `module_types` and derive inputs.
+- TypeInfo construction normalizes type aliases in field types and infers omitted
+  generic parameters from those fields before either `module_types` or built-in
+  derives see the shape. Compile-time reflection is therefore the same type fact
+  model the checker later uses, not the raw parsed spelling.
 - `std/meta.derive_reflect` dispatches `List`/`Option` handling from
   `TypeExpr`, not `string.starts_with`.
 - `std/meta.derive_deserialize` recursively decodes `List` and `Option` from
