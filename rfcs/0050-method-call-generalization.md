@@ -384,3 +384,25 @@ mutators (`loop_watermark_rejects_outer_var_writeback` and
 `loop_watermark_rejects_outer_var_record_field_writeback`); any broad stdlib
 conversion to `var self` methods should keep those tests green and add at least
 one differential test per converted mutator family.
+
+### Probe result (2026-07-08): std methods need one more compiler rule
+
+A narrow attempt to add real `impl List(a)` methods for `push` and `concat`
+proved the desired end state but exposed two prerequisites that must land before
+the stdlib conversion:
+
+- Inherent methods are currently callable as bare functions (`push([1], 2)`).
+  That is acceptable for local user APIs, but it reopens the exact stdlib global
+  fallback that RFC-0070 D5 closed. Std-owned inherent methods must not leak
+  unqualified names from prelude/imported modules, or the method sweep
+  invalidates the plain-import/no-bare-functions cleanup.
+- The in-place optimization recognizes the existing std mutator path, but a
+  delegating `impl List(a).push(var self, ...)` no longer satisfies
+  `stats::tests::mutating_method_statement_is_in_place`. The conversion must
+  either teach the in-place classifier about resolved std inherent methods or
+  move the primitive body behind the method without losing the optimization.
+
+So the migration pattern is still right, but the next implementation step is
+compiler support, not a mechanical stdlib edit. Keep the existing free functions
+until both prerequisites are pinned by tests; then convert one mutator family at
+a time.
