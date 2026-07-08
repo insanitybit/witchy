@@ -316,7 +316,14 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                         mangled.clone(),
                     );
                 } else {
-                    inherent_methods.insert(method.name.clone());
+                    // Ambient std-owned types (`List`, `Dict`, `String`, ...)
+                    // are always in scope through prelude modules. Their future
+                    // inherent methods must be reachable as receiver methods,
+                    // but must not resurrect retired global builtins such as
+                    // bare `push([1], 2)`.
+                    if !is_ambient_std_owned_type(&im.type_name) {
+                        inherent_methods.insert(method.name.clone());
+                    }
                     inherent_impl_table
                         .insert((method.name.clone(), im.type_name.clone()), mangled.clone());
                 }
@@ -2140,6 +2147,10 @@ fn type_owner_module(tn: &str) -> Option<&str> {
 
 fn is_ambient_owned_type(tn: &str) -> bool {
     !tn.split('<').next().unwrap_or(tn).contains('.')
+}
+
+fn is_ambient_std_owned_type(tn: &str) -> bool {
+    is_ambient_owned_type(tn) && type_owner_module(tn).is_some()
 }
 
 // A `MethodCall` anywhere means the lowering pass must run (to resolve it via

@@ -509,6 +509,21 @@
     }
 
     #[test]
+    fn ambient_std_inherent_methods_do_not_become_bare_functions() {
+        let methods = "impl List(a):\n    fn push(var self, x: a) -> List(a):\n        self\n";
+        check_str(&format!(
+            "{methods}\nfn main(console: Console):\n    var xs = [1]\n    xs.push(2)\n"
+        ))
+        .expect("ambient std-owned inherent methods remain available through receiver syntax");
+
+        let err = check_str(&format!(
+            "{methods}\nfn main(console: Console):\n    let xs = push([1], 2)\n"
+        ))
+        .expect_err("ambient std-owned inherent methods must not resurrect bare std functions");
+        assert!(err.contains("`push` moved to `list.push`"), "{err}");
+    }
+
+    #[test]
     fn duplicate_parameter_names_are_rejected() {
         let top = check_str("fn pick(x: Int, x: Int) -> Int:\n    x\n")
             .expect_err("duplicate function parameters must be rejected");

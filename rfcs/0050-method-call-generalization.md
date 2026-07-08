@@ -406,3 +406,11 @@ So the migration pattern is still right, but the next implementation step is
 compiler support, not a mechanical stdlib edit. Keep the existing free functions
 until both prerequisites are pinned by tests; then convert one mutator family at
 a time.
+
+Follow-up progress: the bare-dispatch prerequisite is now pinned by
+`ambient_std_inherent_methods_do_not_become_bare_functions`. Ambient std-owned
+inherent methods remain receiver-callable, but they do not enter the bare
+function dispatch set, so a future `impl List(a).push` cannot make
+`push([1], 2)` type-check again. The remaining blocker for the first real
+stdlib conversion is the in-place classifier recognizing resolved std inherent
+mutators without losing `mutating_method_statement_is_in_place`.
