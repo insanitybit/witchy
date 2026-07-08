@@ -34,7 +34,8 @@ pub fn at(d: Dict(k, v), key: k) -> v where k: Eq:
 pub fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) -> Dict(k, v) where k: Eq:
     dict.update(d, key, default, f)
 
-// Whether `key` is present.
+// Whether `key` is present. The `_key` suffix is deliberate: a Dict contains
+// key/value pairs, so bare `contains` would be ambiguous between keys and values.
 pub fn contains_key(d: Dict(k, v), key: k) -> Bool where k: Eq:
     dict.contains_key(d, key)
 

@@ -412,7 +412,7 @@ Single-lookup upsert: apply `f` to the current value (or `default` when `key` is
 
 #### `fn contains_key(d: Dict(k, v), key: k) -> Bool where k: Eq`
 
-Whether `key` is present.
+Whether `key` is present. The `_key` suffix is deliberate: a Dict contains key/value pairs, so bare `contains` would be ambiguous between keys and values.
 
 #### `fn remove(var d: Dict(k, v), key: k) -> Dict(k, v) where k: Eq`
 
@@ -1409,6 +1409,10 @@ Sort any list whose elements are `Ord` ascending — a stable merge sort (O(n lo
 #### `fn contains(xs: List(a), target: a) -> Bool where a: Eq`
 
 Whether `target` appears in the list, by the element type's `Eq` impl. The `where a: Eq` bound monomorphizes the equality per element type, so the comparison is content-correct on both backends — including user record element types, which the compiled backend cannot compare through an unbounded generic `==` (RFC-0046).
+
+#### `fn remove(var xs: List(a), target: a) -> List(a) where a: Eq`
+
+A new list with the first occurrence of `target` removed; unchanged when absent. To remove every occurrence, use `filter(xs, fn(y): y != target)`.
 
 #### `fn count(xs: List(a), target: a) -> Int where a: Eq`
 

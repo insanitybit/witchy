@@ -1219,6 +1219,20 @@ fn main(console: Console):
         );
     }
 
+    /// (RFC-0074) Lists have the same remove-by-value affordance as set/dict,
+    /// with first-occurrence semantics; all-occurrences removal remains `filter`.
+    #[test]
+    fn list_remove_removes_first_occurrence_on_both_backends() {
+        let src = "import list\n\nfn main(console: Console):\n    var xs = [1, 2, 3, 2]\n    xs.remove(2)\n    print(console, \"${xs}\")\n    xs.remove(9)\n    print(console, \"${xs}\")\n    print(console, \"${list.remove([\"a\", \"b\", \"a\"], \"a\")}\")\n";
+        let expected = ["[1, 3, 2]", "[1, 3, 2]", "[b, a]"];
+        assert_eq!(link_run(src), expected, "interp: list.remove");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: list.remove",
+        );
+    }
+
     /// (BUG-535) Lists are ordinary comparison-protocol values: if their elements
     /// satisfy `PartialEq`/`Eq`, the list itself satisfies the same bound instead
     /// of relying on one-off direct-operator magic.

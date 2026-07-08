@@ -84,7 +84,7 @@ const PRELUDE_MODULES: &[&str] =
 /// import line (the linker always bundles these modules).
 const PRELUDE_FNS: &[&str] = &[
     "list.push", "list.at", "list.length", "list.concat", "list.map", "list.filter",
-    "list.fold", "list.sort_by", "list.contains", "list.index_of",
+    "list.fold", "list.sort_by", "list.contains", "list.remove", "list.index_of",
     "string.split", "string.trim", "string.length", "string.char_count", "string.chars",
     "string.contains", "string.starts_with", "string.ends_with", "string.replace",
     "string.substring", "string.index_of", "string.to_upper", "string.to_lower",

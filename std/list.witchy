@@ -457,6 +457,18 @@ pub fn contains(xs: List(a), target: a) -> Bool where a: Eq:
             return true
     false
 
+// A new list with the first occurrence of `target` removed; unchanged when
+// absent. To remove every occurrence, use `filter(xs, fn(y): y != target)`.
+pub fn remove(var xs: List(a), target: a) -> List(a) where a: Eq:
+    var out = []
+    var removed = false
+    for x in xs:
+        if !removed && x == target:
+            removed = true
+        else:
+            out = list.push(out, x)
+    out
+
 // How many elements equal `target`, by the element type's `Eq` impl.
 pub fn count(xs: List(a), target: a) -> Int where a: Eq:
     var n = 0
