@@ -359,7 +359,7 @@ fn at_loc(e: TypeError, line: u32, func: &str, home: &str) -> TypeError {
     let where_ = if func.is_empty() {
         format!("line {line}")
     } else {
-        format!("`{func}`, line {line}")
+        format!("`{}`, line {line}", diagnostic_callable_name(func))
     };
     // The location prefix already names the home module, so render home-module
     // type/variant names bare in the body — the spelling the reader wrote — while
@@ -2219,6 +2219,49 @@ fn strip_home_qualifiers(message: &str, home: &str) -> String {
     out
 }
 
+fn diagnostic_segment(segment: &str) -> &str {
+    segment.rsplit('.').next().unwrap_or(segment)
+}
+
+fn starts_lowercase(segment: &str) -> bool {
+    segment
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_lowercase())
+}
+
+/// Render a lowered function/method symbol as a source-facing callable name.
+///
+/// Method and trait dispatch names use the compiler-private `__` namespace
+/// (`Type__method`, `Trait__Type__method`). User source is not allowed to spell
+/// those names, so diagnostics should translate them back to dotted surface
+/// names rather than exposing lowering artifacts. Generic free-function
+/// specializations such as `smallest__Int` are rendered as the original function.
+fn diagnostic_callable_name(name: &str) -> String {
+    if !name.contains("__") {
+        return name.to_string();
+    }
+    let parts: Vec<&str> = name
+        .split("__")
+        .map(diagnostic_segment)
+        .filter(|part| !part.is_empty())
+        .collect();
+    match parts.as_slice() {
+        [] => name.to_string(),
+        [only] => (*only).to_string(),
+        // `fn_name__Int` is a monomorphized free function, not a method.
+        [func, _] if starts_lowercase(func) => (*func).to_string(),
+        [ty, method] => format!("{ty}.{method}"),
+        // Prefer the concrete receiver/implementor when a lowered trait method
+        // carries both the trait and type arguments: `Trait__Type__method`.
+        many => {
+            let owner = many[many.len() - 2];
+            let method = many[many.len() - 1];
+            format!("{owner}.{method}")
+        }
+    }
+}
+
 impl Checker {
     fn fresh(&mut self) -> Ty {
         let v = self.next_var;
@@ -3836,16 +3879,18 @@ impl Checker {
                     match self.resolve(&vty) {
                         Ty::Fn(param_tys, ret) => {
                             if param_tys.len() != args.len() {
+                                let display = diagnostic_callable_name(name);
                                 return terr(format!(
-                                    "`{name}` expects {} argument(s) but got {}",
+                                    "`{display}` expects {} argument(s) but got {}",
                                     param_tys.len(),
                                     args.len()
                                 ));
                             }
+                            let display = diagnostic_callable_name(name);
                             for (arg, pty) in args.iter().zip(&param_tys) {
                                 let at = self.infer(arg)?;
                                 self.coerce_arg(pty, &at).map_err(|e| TypeError {
-                                    message: format!("in call to `{name}`: {}", e.message),
+                                    message: format!("in call to `{display}`: {}", e.message),
                                 })?;
                             }
                             return Ok(*ret);
@@ -3888,12 +3933,14 @@ impl Checker {
                         }
                     };
                 if params.len() != args.len() {
+                    let display = diagnostic_callable_name(name);
                     return terr(format!(
-                        "`{name}` expects {} argument(s) but got {}",
+                        "`{display}` expects {} argument(s) but got {}",
                         params.len(),
                         args.len()
                     ));
                 }
+                let display = diagnostic_callable_name(name);
                 for (arg, param_ty) in args.iter().zip(&params) {
                     let at = self.infer(arg)?;
                     // (BUG-305) `"${f}"` on a function value is rejected HERE, at
@@ -3915,7 +3962,7 @@ impl Checker {
                         }
                     }
                     self.coerce_arg(param_ty, &at)
-                        .map_err(|e| TypeError { message: format!("in call to `{name}`: {}", e.message) })?;
+                        .map_err(|e| TypeError { message: format!("in call to `{display}`: {}", e.message) })?;
                 }
                 for (bound_ty, trait_name) in &call_bounds {
                     self.require_call_bound(name, bound_ty, trait_name)?;
@@ -5180,7 +5227,11 @@ impl Checker {
         // (`-> Net[Connect]` returning a full `Net`), mirroring call-argument
         // narrowing; `coerce_arg` falls back to unification for everything else.
         self.coerce_arg(&ret, &body).map_err(|e| TypeError {
-            message: format!("function `{}` body: {}", func.name, e.message),
+            message: format!(
+                "function `{}` body: {}",
+                diagnostic_callable_name(&func.name),
+                e.message
+            ),
         })?;
         // (RFC-0064 Checks 1+2) A `var`-param function with an ELIDED return. An
         // elided return is INFERRED from the body tail — it does NOT imply `Nil`,

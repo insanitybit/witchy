@@ -305,6 +305,34 @@ mod typecheck {
     }
 
     #[test]
+    fn inherent_method_arity_uses_surface_name() {
+        insta::assert_snapshot!(type_diag(
+            "type Point:\n    x: Int\n\nimpl Point:\n    fn scaled(self, factor: Int) -> Int:\n        self.x * factor\n\nfn main(console: Console):\n    let p = Point(3)\n    print(console, __render(p.scaled(2, 3)))\n"
+        ));
+    }
+
+    #[test]
+    fn static_method_arity_uses_surface_name() {
+        insta::assert_snapshot!(type_diag(
+            "type Score:\n    value: Int\n\nimpl Score:\n    fn zero() -> Score:\n        Score(0)\n\nfn main(console: Console):\n    print(console, __render(Score.zero(1)))\n"
+        ));
+    }
+
+    #[test]
+    fn trait_method_arity_uses_surface_name() {
+        insta::assert_snapshot!(type_diag(
+            "trait Greet:\n    fn hi(self) -> String\n\ntype Person:\n    name: String\n\nimpl Greet for Person:\n    fn hi(self) -> String:\n        self.name\n\nfn main(console: Console):\n    let p = Person(\"Ada\")\n    print(console, p.hi(1))\n"
+        ));
+    }
+
+    #[test]
+    fn generic_trait_dispatch_arity_uses_surface_name() {
+        insta::assert_snapshot!(type_diag(
+            "trait Lessable:\n    fn less(self, other: Self) -> Bool\n\nimpl Lessable for Int:\n    fn less(self, other: Int) -> Bool:\n        self < other\n\nfn smallest(a: a, b: a) -> a where a: Lessable:\n    if less(a, b, 1):\n        a\n    else:\n        b\n\nfn main(console: Console):\n    print(console, __render(smallest(1, 2)))\n"
+        ));
+    }
+
+    #[test]
     fn unknown_function() {
         insta::assert_snapshot!(type_diag(
             "fn main(console: Console):\n    print(console, __render(mystery(1)))\n"

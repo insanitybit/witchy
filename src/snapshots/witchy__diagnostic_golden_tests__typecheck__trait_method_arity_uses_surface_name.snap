@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"trait Greet:\\n    fn hi(self) -> String\\n\\ntype Person:\\n    name: String\\n\\nimpl Greet for Person:\\n    fn hi(self) -> String:\\n        self.name\\n\\nfn main(console: Console):\\n    let p = Person(\\\"Ada\\\")\\n    print(console, p.hi(1))\\n\")"
+---
+type error: `main`, line 13: `Person.hi` expects 1 argument(s) but got 2
