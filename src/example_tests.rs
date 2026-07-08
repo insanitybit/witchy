@@ -1697,6 +1697,47 @@ fn main(console: Console):
         );
     }
 
+    /// (BUG-481) Numeric duration constructors are convenience contracts, not
+    /// wrapping arithmetic. Oversized counts abort before the intermediate Int
+    /// multiplication/addition can wrap; ordinary negative spans remain valid.
+    #[test]
+    fn duration_numeric_constructors_abort_on_overflow_on_both_backends() {
+        let ok = "import duration\n\nfn main(console: Console):\n    print(console, duration.human(duration.seconds(0 - 90)))\n    print(console, duration.human(duration.from_clock(1, 2, 3)))\n";
+        let expected = ["-1m30s", "1h2m3s"];
+        assert_eq!(link_run(ok), expected, "interp: duration constructor controls");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", ok)], "main"),
+            expected,
+            "compiled: duration constructor controls",
+        );
+
+        for (label, call) in [
+            ("seconds", "duration.seconds(9223372036854776)"),
+            ("days", "duration.days(200000000000)"),
+            ("from_clock", "duration.from_clock(2562047788015, 13, 0)"),
+        ] {
+            let src = format!("import duration\n\nfn main(console: Console):\n    print(console, __render({call}))\n");
+            let linked = resolve_std_src(&src);
+            let interp_err = interpreter::run_module(linked.clone(), ".", Vec::new())
+                .expect_err("interpreter must abort on duration overflow")
+                .to_string();
+            assert!(
+                interp_err.contains("duration.") && interp_err.contains("overflow"),
+                "{label}: {interp_err}"
+            );
+            let wasm = codegen::compile_module_binary(&linked)
+                .expect("duration overflow program should compile")
+                .expect("duration overflow program should lower");
+            let wasm_err = crate::run_wasm_bytes(&wasm)
+                .expect_err("WASM must abort on duration overflow")
+                .to_string();
+            assert!(
+                wasm_err.contains("duration.") && wasm_err.contains("overflow"),
+                "{label}: {wasm_err}"
+            );
+        }
+    }
+
     /// (BUG-486) `MNil` is the reflection shape for the language's unit value,
     /// not only for JSON null. Exercise it through a Nil-returning helper so this
     /// stays independent of the separate bare-`Nil` expression backend bug.

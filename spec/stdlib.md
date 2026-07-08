@@ -466,7 +466,7 @@ Pure helpers for the built-in `Duration` type — a length of time, written as a
 
 #### `fn milliseconds(n: Int) -> Duration`
 
----- Construction from a count of one unit ----
+Construct from a count of one unit. Numeric constructors are convenience contracts: they return `Duration`, but abort on overflow instead of wrapping. Use `parse` for fallible user input.
 
 #### `fn seconds(n: Int) -> Duration`
 
@@ -480,7 +480,7 @@ Pure helpers for the built-in `Duration` type — a length of time, written as a
 
 #### `fn from_clock(h: Int, m: Int, s: Int) -> Duration`
 
-Build a duration from hours, minutes, and seconds.
+Build a duration from hours, minutes, and seconds. Components may be negative, but scaling and addition abort if the total millisecond count would overflow.
 
 #### `fn to_milliseconds(d: Duration) -> Int`
 

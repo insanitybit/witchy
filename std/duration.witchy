@@ -9,28 +9,54 @@
 import string
 import option
 
-// ---- Construction from a count of one unit ----
+// Construct from a count of one unit. Numeric constructors are convenience
+// contracts: they return `Duration`, but abort on overflow instead of wrapping.
+// Use `parse` for fallible user input.
 pub fn milliseconds(n: Int) -> Duration:
-    int_to_duration(n)
+    checked_unit("duration.milliseconds", n, 1)
 
 pub fn seconds(n: Int) -> Duration:
-    int_to_duration(n * 1000)
+    checked_unit("duration.seconds", n, 1000)
 
 pub fn minutes(n: Int) -> Duration:
-    int_to_duration(n * 60000)
+    checked_unit("duration.minutes", n, 60000)
 
 pub fn hours(n: Int) -> Duration:
-    int_to_duration(n * 3600000)
+    checked_unit("duration.hours", n, 3600000)
 
 pub fn days(n: Int) -> Duration:
-    int_to_duration(n * 86400000)
+    checked_unit("duration.days", n, 86400000)
 
 pub fn weeks(n: Int) -> Duration:
-    int_to_duration(n * 604800000)
+    checked_unit("duration.weeks", n, 604800000)
 
-// Build a duration from hours, minutes, and seconds.
+// Build a duration from hours, minutes, and seconds. Components may be negative,
+// but scaling and addition abort if the total millisecond count would overflow.
 pub fn from_clock(h: Int, m: Int, s: Int) -> Duration:
-    int_to_duration((h * 3600 + m * 60 + s) * 1000)
+    let hh = checked_scaled_millis("duration.from_clock", h, 3600000)
+    let mm = checked_scaled_millis("duration.from_clock", m, 60000)
+    let ss = checked_scaled_millis("duration.from_clock", s, 1000)
+    let hm = checked_add_millis("duration.from_clock", hh, mm)
+    int_to_duration(checked_add_millis("duration.from_clock", hm, ss))
+
+fn checked_unit(name: String, n: Int, mult: Int) -> Duration:
+    int_to_duration(checked_scaled_millis(name, n, mult))
+
+fn checked_scaled_millis(name: String, n: Int, mult: Int) -> Int:
+    let max = 9223372036854775807
+    let min = 0 - 9223372036854775807 - 1
+    if n > max / mult || n < min / mult:
+        fail(name + ": `${n}` overflows a 64-bit millisecond duration")
+    n * mult
+
+fn checked_add_millis(name: String, a: Int, b: Int) -> Int:
+    let max = 9223372036854775807
+    let min = 0 - 9223372036854775807 - 1
+    if b > 0 && a > max - b:
+        fail(name + ": components overflow a 64-bit millisecond duration")
+    if b < 0 && a < min - b:
+        fail(name + ": components overflow a 64-bit millisecond duration")
+    a + b
 
 // ---- Total conversions (whole units, truncated toward zero) ----
 pub fn to_milliseconds(d: Duration) -> Int:
