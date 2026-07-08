@@ -107,15 +107,14 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
         } else {
             body.lines.push(0);
         }
-        // The comptime program carries only the enclosing module's STD imports: it
-        // runs in the isolated, zero-capability `comptime` link, which resolves the
-        // bundled std modules but not the project's own sibling modules — and a
-        // comptime block (a link-time, capability-free eval) cannot use sibling
-        // runtime code in any case. Dropping the project-local imports lets a module
-        // that both `derive`s and imports a sibling (e.g. a rune's test module)
-        // still run its comptime. Preserve matching STD `from X import Y` bindings
-        // so the block sees the same unqualified std names as its enclosing source.
-        // `module_types` is `meta.TypeInfo`s, so meta is always present.
+        // The comptime program runs in an isolated, zero-capability `comptime`
+        // link: it resolves bundled std modules and a pruned closure of reachable
+        // same-module helper functions/types, but not project sibling modules.
+        // Dropping project-local imports lets a module that both `derive`s and
+        // imports a sibling (e.g. a rune's test module) still run its comptime.
+        // Preserve matching STD `from X import Y` bindings so the block sees the
+        // same unqualified std names as its enclosing source. `module_types` is
+        // `meta.TypeInfo`s, so meta is always present.
         let mut prog_imports: Vec<String> = module
             .imports
             .iter()
@@ -131,25 +130,27 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
         if !prog_imports.iter().any(|i| i == "meta") {
             prog_imports.push("meta".into());
         }
+        let mut prog_items = reachable_local_items(&module.items, &body);
+        prog_items.push(Item::Function(Function {
+            public: false,
+            name: "main".into(),
+            params: vec![Param {
+                name: "console".into(),
+                ty: Some(Type::Named("Console".into(), Vec::new())),
+                convention: Default::default(),
+                default: None,
+            }],
+            ret: None,
+            body,
+            bounds: Vec::new(),
+            is_gen: false,
+            is_async: false,
+        }));
         let prog = Module {
             modes: Vec::new(),
             imports: prog_imports,
             from_imports: prog_from_imports,
-            items: vec![Item::Function(Function {
-                public: false,
-                name: "main".into(),
-                params: vec![Param {
-                    name: "console".into(),
-                    ty: Some(Type::Named("Console".into(), Vec::new())),
-                    convention: Default::default(),
-                    default: None,
-                }],
-                ret: None,
-                body,
-                bounds: Vec::new(),
-                is_gen: false,
-                is_async: false,
-            })],
+            items: prog_items,
             import_lines: Vec::new(),
             item_lines: Vec::new(),
         };
@@ -178,6 +179,31 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
         // comptime blocks for this same pass to consume.
     }
     Ok(())
+}
+
+fn reachable_local_items(items: &[Item], root: &Block) -> Vec<Item> {
+    let keep = crate::reachability::reachable_from_block(items, root);
+    let mut out = Vec::new();
+    for item in items {
+        match item {
+            Item::Function(f) if f.name != "main" && keep.contains(&f.name) => {
+                out.push(Item::Function(f.clone()));
+            }
+            Item::Type(t) if keep.contains(&t.name) => {
+                let mut t = t.clone();
+                // The enclosing module has already expanded derives before
+                // comptime runs. Do not reintroduce derive-generated comptime
+                // blocks inside the helper-only synthetic program.
+                t.derives.clear();
+                out.push(Item::Type(t));
+            }
+            Item::TypeAlias { name, ty } if keep.contains(name) => {
+                out.push(Item::TypeAlias { name: name.clone(), ty: ty.clone() });
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 fn normalize_generated_module(module: Module) -> Result<Module, String> {

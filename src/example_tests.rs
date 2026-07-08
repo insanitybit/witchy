@@ -868,6 +868,30 @@
         );
     }
 
+    /// (BUG-180) Comptime is isolated from authority, but not from pure local
+    /// helper code. A block can call a same-module generator helper, and a custom
+    /// derive routes through the same reachable helper closure.
+    #[test]
+    fn comptime_and_custom_derives_can_call_local_helpers_on_both_backends() {
+        let comptime_src = "fn make_source() -> String:\n    \"pub fn generated() -> Int:\\n    1\"\n\ncomptime:\n    emit(make_source())\n\nfn main(console: Console):\n    print(console, \"${generated()}\")\n";
+        let expected = ["1"];
+        assert_eq!(link_run(comptime_src), expected, "interp comptime local helper");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", comptime_src)], "main"),
+            expected,
+            "compiled comptime local helper",
+        );
+
+        let derive_src = "from meta import TypeInfo\n\nfn derive_hello(t: TypeInfo) -> String:\n    \"pub fn generated() -> Int:\\n    2\"\n\ntype Marker derive(Hello):\n    value: Int\n\nfn main(console: Console):\n    print(console, \"${generated()}\")\n";
+        let expected = ["2"];
+        assert_eq!(link_run(derive_src), expected, "interp custom derive local helper");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", derive_src)], "main"),
+            expected,
+            "compiled custom derive local helper",
+        );
+    }
+
     /// (BUG-182) A tagged literal in a standalone file whose stem is NOT a valid
     /// identifier (`tag-hyphen`) must still expand and run on both backends. Tag
     /// expansion seeds a throwaway parse with `import <qualifier>` lines built from

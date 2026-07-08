@@ -36,9 +36,7 @@
 //! `comptime`/`derive`. `Expr::TaggedLit` is therefore UNREACHABLE after this
 //! pass; typeck, the interpreter, and both codegen backends panic on it.
 
-use witchy_syntax::ast::{
-    collect_type_names, Block, Expr, Function, Item, MatchArm, Module, Param, Pattern, Stmt, Type,
-};
+use witchy_syntax::ast::{Block, Expr, Function, Item, MatchArm, Module, Param, Stmt, Type};
 use std::collections::{HashMap, HashSet};
 
 /// A tag may emit a tag (re-expansion); cap the nesting so a self-referential or
@@ -78,7 +76,7 @@ pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) ->
     // std imports stay declared as `imports` (the bundled std is a search path the
     // comptime link resolves on its own). Note this `items` set is the SEARCH
     // POOL; `expand_one` then prunes it per-tag to only what the tag actually
-    // reaches (`reachable_from_tag`) before linking — which is what keeps the
+    // reaches before linking — which is what keeps the
     // comptime program free of the consumer's own tagged literals (else linking
     // it would re-enter this pass forever; see linker.rs and `expand_one`).
     let by_name: HashMap<&str, &Module> =
@@ -407,7 +405,7 @@ fn expand_one(
     // EMITS as source (`element`/`text`/`prop`) live in the GENERATED expression,
     // which is spliced into the consumer and type-checked there — they are not
     // roots of this program, so pruning them out is correct.
-    let keep = reachable_from_tag(&ctx.items, tag);
+    let keep = crate::reachability::reachable_from_function(&ctx.items, tag);
     let mut items: Vec<Item> = ctx
         .items
         .iter()
@@ -797,262 +795,6 @@ fn substitute_holes_block(
         }
     }
     Ok(())
-}
-
-/// The names of every item (function OR type) REACHABLE from the tag function
-/// `root`, transitively. A comptime program built from exactly this set still
-/// type-checks (every type a kept function's signature/variants names is kept)
-/// AND contains no tagged literals (the consumer's own tag-bearing functions —
-/// `view`/`update`/`main` — are unreachable from the tag and so are dropped),
-/// which is what breaks the `tagged::expand` → `link` → `tagged::expand`
-/// recursion. Names are resolved against three lookups: functions by name, types
-/// by name, and constructor → owning-type (so a `Ctor` use / pattern pulls in its
-/// type). Unknown names (builtins, std functions resolved by the link's search
-/// path, parameter/local binders) are simply ignored.
-fn reachable_from_tag(items: &[Item], root: &str) -> HashSet<String> {
-    let mut fns: HashMap<&str, &Function> = HashMap::new();
-    let mut types: HashMap<&str, &witchy_syntax::ast::TypeDef> = HashMap::new();
-    let mut ctor_owner: HashMap<&str, &str> = HashMap::new();
-    for item in items {
-        match item {
-            Item::Function(f) => {
-                fns.insert(f.name.as_str(), f);
-            }
-            Item::Type(t) => {
-                types.insert(t.name.as_str(), t);
-                for v in &t.variants {
-                    ctor_owner.insert(v.name.as_str(), t.name.as_str());
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let mut keep: HashSet<String> = HashSet::new();
-    let mut work: Vec<String> = vec![root.to_string()];
-    keep.insert(root.to_string());
-    while let Some(name) = work.pop() {
-        // A reachable function: pull in the names its body references and the
-        // types its signature names.
-        if let Some(f) = fns.get(name.as_str()) {
-            let mut names: HashSet<String> = HashSet::new();
-            collect_refs_block(&f.body, &mut names);
-            for p in &f.params {
-                if let Some(t) = &p.ty {
-                    collect_type_names(t, &mut names);
-                }
-            }
-            if let Some(t) = &f.ret {
-                collect_type_names(t, &mut names);
-            }
-            for r in names {
-                push_ref(&r, &fns, &types, &ctor_owner, &mut keep, &mut work);
-            }
-        }
-        // A reachable type: pull in the types its variants' fields name.
-        if let Some(t) = types.get(name.as_str()) {
-            let mut names: HashSet<String> = HashSet::new();
-            for v in &t.variants {
-                for field in &v.fields {
-                    collect_type_names(field, &mut names);
-                }
-            }
-            for r in names {
-                push_ref(&r, &fns, &types, &ctor_owner, &mut keep, &mut work);
-            }
-        }
-    }
-    keep
-}
-
-/// Resolve a referenced NAME against the item lookups and enqueue whatever it
-/// designates: a function, a type, or a constructor (→ its owning type).
-fn push_ref(
-    name: &str,
-    fns: &HashMap<&str, &Function>,
-    types: &HashMap<&str, &witchy_syntax::ast::TypeDef>,
-    ctor_owner: &HashMap<&str, &str>,
-    keep: &mut HashSet<String>,
-    work: &mut Vec<String>,
-) {
-    let mut enqueue = |n: &str| {
-        if keep.insert(n.to_string()) {
-            work.push(n.to_string());
-        }
-    };
-    if fns.contains_key(name) {
-        enqueue(name);
-    }
-    if types.contains_key(name) {
-        enqueue(name);
-    }
-    if let Some(owner) = ctor_owner.get(name) {
-        enqueue(owner);
-    }
-}
-
-/// Collect every NAME a block references — callees, variable/constructor names,
-/// constructor names appearing in patterns, and types named in `as`/closure
-/// annotations. A superset of the true call graph is fine: `push_ref` discards
-/// any name that designates nothing in the item set.
-fn collect_refs_block(b: &Block, out: &mut HashSet<String>) {
-    for stmt in &b.stmts {
-        match stmt {
-            Stmt::Let { ty, value, .. } => {
-                if let Some(t) = ty {
-                    collect_type_names(t, out);
-                }
-                collect_refs_expr(value, out);
-            }
-            Stmt::Assign { value, .. } | Stmt::LetPattern { value, .. } => {
-                collect_refs_expr(value, out)
-            }
-            Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => collect_refs_expr(e, out),
-            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
-        }
-    }
-}
-
-fn collect_refs_pattern(p: &Pattern, out: &mut HashSet<String>) {
-    match p {
-        Pattern::Ctor { name, args } => {
-            out.insert(name.clone());
-            for a in args {
-                collect_refs_pattern(a, out);
-            }
-        }
-        Pattern::Tuple(args) | Pattern::List { elems: args, .. } | Pattern::Or(args) => {
-            for a in args {
-                collect_refs_pattern(a, out);
-            }
-        }
-        Pattern::Wildcard
-        | Pattern::Var(_)
-        | Pattern::Int(_)
-        | Pattern::Str(_)
-        | Pattern::Bool(_)
-        | Pattern::Duration(_)
-        | Pattern::IntRange { .. } => {}
-    }
-}
-
-fn collect_refs_expr(e: &Expr, out: &mut HashSet<String>) {
-    match e {
-        Expr::Call { name, args } | Expr::Ctor { name, args } => {
-            out.insert(name.clone());
-            for a in args {
-                collect_refs_expr(a, out);
-            }
-        }
-        Expr::LabeledCall { name, args } => {
-            out.insert(name.clone());
-            for (_, a) in args {
-                collect_refs_expr(a, out);
-            }
-        }
-        Expr::Var(name) => {
-            out.insert(name.clone());
-        }
-        Expr::MethodCall { receiver, args, .. } => {
-            collect_refs_expr(receiver, out);
-            for a in args {
-                collect_refs_expr(a, out);
-            }
-        }
-        Expr::Apply { func, args } => {
-            collect_refs_expr(func, out);
-            for a in args {
-                collect_refs_expr(a, out);
-            }
-        }
-        Expr::List(xs) | Expr::Tuple(xs) => {
-            for x in xs {
-                collect_refs_expr(x, out);
-            }
-        }
-        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
-            collect_refs_expr(expr, out)
-        }
-        Expr::As { expr, ty } => {
-            collect_refs_expr(expr, out);
-            collect_type_names(ty, out);
-        }
-        Expr::RecordUpdate { name: _, base, fields } => {
-            collect_refs_expr(base, out);
-            for (_, v) in fields {
-                collect_refs_expr(v, out);
-            }
-        }
-        Expr::Record { name, fields, spread } => {
-            out.insert(name.clone());
-            for (_, v) in fields {
-                collect_refs_expr(v, out);
-            }
-            if let Some(s) = spread {
-                collect_refs_expr(s, out);
-            }
-        }
-        Expr::Binary { lhs, rhs, .. } => {
-            collect_refs_expr(lhs, out);
-            collect_refs_expr(rhs, out);
-        }
-        Expr::If { cond, then_block, else_block } => {
-            collect_refs_expr(cond, out);
-            collect_refs_block(then_block, out);
-            if let Some(b) = else_block {
-                collect_refs_block(b, out);
-            }
-        }
-        Expr::Match { scrutinee, arms } => {
-            collect_refs_expr(scrutinee, out);
-            for arm in arms {
-                collect_refs_pattern(&arm.pattern, out);
-                if let Some(g) = &arm.guard {
-                    collect_refs_expr(g, out);
-                }
-                collect_refs_expr(&arm.body, out);
-            }
-        }
-        Expr::While { cond, body } => {
-            collect_refs_expr(cond, out);
-            collect_refs_block(body, out);
-        }
-        Expr::For { iter, body, .. } => {
-            collect_refs_expr(iter, out);
-            collect_refs_block(body, out);
-        }
-        Expr::Range { lo, hi, .. } => {
-            collect_refs_expr(lo, out);
-            collect_refs_expr(hi, out);
-        }
-        Expr::Index { base, index } => {
-            collect_refs_expr(base, out);
-            collect_refs_expr(index, out);
-        }
-        Expr::WhileLet { pattern, scrutinee, body } => {
-            collect_refs_pattern(pattern, out);
-            collect_refs_expr(scrutinee, out);
-            collect_refs_block(body, out);
-        }
-        Expr::Lambda { params, body, ret } => {
-            for p in params {
-                if let Some(t) = &p.ty {
-                    collect_type_names(t, out);
-                }
-            }
-            if let Some(t) = ret {
-                collect_type_names(t, out);
-            }
-            collect_refs_block(body, out);
-        }
-        Expr::Block(b) => collect_refs_block(b, out),
-        Expr::Int(_)
-        | Expr::Float(_)
-        | Expr::Duration(_)
-        | Expr::Str(_)
-        | Expr::Bool(_)
-        | Expr::TaggedLit { .. } => {}
-    }
 }
 
 #[cfg(test)]
