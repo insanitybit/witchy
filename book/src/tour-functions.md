@@ -113,7 +113,7 @@ one is a compile error. Ranges are never materialized into a list — `for n in
 0..1000000` allocates nothing.
 
 A `var` collection updates in place by subscript or field — `xs[i] = v`,
-`d[k] = v`, `acct.balance = b` (and the compound `xs[i] += v`). It's shorthand for
+`d[k] = v`, `acct.balance = b` (and compound forms like `xs[i] += v` / `d[k] += v`). It's shorthand for
 the value update (`xs = xs.set_at(i, v)`), so witchy's value semantics hold while
 it reads like mutation, and the optimizer keeps it in place:
 

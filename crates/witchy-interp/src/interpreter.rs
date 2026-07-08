@@ -1489,6 +1489,13 @@ impl Interpreter {
                 }
                 _ => err("get_or expects a Dict, a key, and a default value"),
             },
+            "dict.at" => match args {
+                [Value::Dict(entries), k] => match entries.iter().find(|(ek, _)| ek == k) {
+                    Some((_, v)) => Ok(Some(v.clone())),
+                    None => err(DiagTemplate::DictMissing.render(0, 0, "")),
+                },
+                _ => err("at expects a Dict and a key"),
+            },
             "dict.contains_key" => match args {
                 [Value::Dict(entries), k] => {
                     Ok(Some(Value::Bool(entries.iter().any(|(ek, _)| ek == k))))

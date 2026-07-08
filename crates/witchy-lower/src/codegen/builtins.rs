@@ -1008,6 +1008,22 @@ impl Codegen {
                 ];
                 W::FromSlot(Box::new(call("dict_get_or", inner)), Self::wir_kind(dk))
             }
+            ("dict.at", 2) => {
+                self.uses_dict = true;
+                let mode = self.dict_key_mode_wir(&args[1])?;
+                let kk = self.kind_of(&args[1]);
+                let vk = self
+                    .dict_value_valtype_of(&args[0])
+                    .map(valtype_kind)
+                    .map(Self::wir_kind)
+                    .unwrap_or(witchy_wir::wir::Kind::I32);
+                let inner = vec![
+                    self.lower_expr(&args[0])?,
+                    W::ToSlot(Box::new(self.lower_expr(&args[1])?), Self::wir_kind(kk)),
+                    W::ConstI32(mode as i32),
+                ];
+                W::FromSlot(Box::new(call("dict_at", inner)), vk)
+            }
             ("dict.contains_key", 2) => {
                 self.uses_dict = true;
                 let mode = self.dict_key_mode_wir(&args[1])?;

@@ -388,7 +388,7 @@ HMAC-SHA256 (FIPS 198-1). `key` is hex (so binary keys are representable); `mess
 
 dict — the associative map.
 
-The core operations are native primitives (intercepted by both backends; the bodies are self-recursive placeholders giving the type checker their signatures): `dict.new`, `dict.insert`, `dict.get_or`, `dict.update`, `dict.contains_key`, `dict.remove`, `dict.keys`, `dict.values`, `dict.pairs`, `dict.length`. The rest is the compositional layer — a lookup returning `Option`, constructors from pairs, and the map/filter/merge transforms.
+The core operations are native primitives (intercepted by both backends; the bodies are self-recursive placeholders giving the type checker their signatures): `dict.new`, `dict.insert`, `dict.get_or`, `dict.at`, `dict.update`, `dict.contains_key`, `dict.remove`, `dict.keys`, `dict.values`, `dict.pairs`, `dict.length`. The rest is the compositional layer — a lookup returning `Option`, constructors from pairs, and the map/filter/merge transforms.
 
 #### `fn new() -> Dict(k, v)`
 
@@ -401,6 +401,10 @@ A new dict with `key` set to `val` (replacing any existing entry). Insertion ord
 #### `fn get_or(d: Dict(k, v), key: k, default: v) -> v where k: Eq`
 
 The value for `key`, or `default` when absent.
+
+#### `fn at(d: Dict(k, v), key: k) -> v where k: Eq`
+
+The value for `key`, or a runtime error when absent. This is the read half of the `d[key]` subscript surface; use `get`/`get_or` when absence is ordinary.
 
 #### `fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) -> Dict(k, v) where k: Eq`
 

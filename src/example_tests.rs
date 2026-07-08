@@ -1204,6 +1204,21 @@ fn main(console: Console):
         );
     }
 
+    /// (BUG-317/BUG-336) Dict subscripts are real read places, not a list-only
+    /// parser desugar. That makes direct reads, compound assignment, and nested
+    /// place assignment through a Dict agree on both backends.
+    #[test]
+    fn dict_subscript_read_and_nested_place_assignment_work_on_both_backends() {
+        let src = "import dict\n\nfn main(console: Console):\n    var counts: Dict(String, Int) = dict.new()\n    counts[\"a\"] = 1\n    counts[\"a\"] += 2\n    print(console, \"${counts[\"a\"]}\")\n\n    var nested: Dict(String, Dict(String, Int)) = dict.new()\n    nested[\"outer\"] = dict.insert(dict.new(), \"inner\", 1)\n    nested[\"outer\"][\"inner\"] = 7\n    print(console, \"${nested[\"outer\"][\"inner\"]}\")\n\n    var rows: Dict(String, List(Int)) = dict.new()\n    rows[\"r\"] = [1, 2, 3]\n    rows[\"r\"][1] = 9\n    print(console, \"${rows[\"r\"]}\")\n";
+        let expected = ["3", "7", "[1, 9, 3]"];
+        assert_eq!(link_run(src), expected, "interp: dict subscript read");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: dict subscript read",
+        );
+    }
+
     /// (BUG-535) Lists are ordinary comparison-protocol values: if their elements
     /// satisfy `PartialEq`/`Eq`, the list itself satisfies the same bound instead
     /// of relying on one-off direct-operator magic.

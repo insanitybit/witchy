@@ -1141,6 +1141,15 @@ impl Codegen {
             Expr::Var(v) => self.local_dict_value_valtype.get(v).copied(),
             _ => None,
         }
+        .or_else(|| match self.type_table.type_of(value).and_then(witchy_types::typeck::ty_to_ast) {
+            Some(Type::Named(n, args)) if n == "Dict" && args.len() == 2 => {
+                match ty_to_valtype(&args[1]) {
+                    ValType::Other => None,
+                    vt => Some(vt),
+                }
+            }
+            _ => None,
+        })
     }
 
     /// The scalar KEY type a Dict holds (the `insert`'s key, or a Dict variable's

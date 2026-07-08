@@ -33,6 +33,8 @@ pub enum DiagTemplate {
     NanOrder,
     /// `math.to_int: NaN cannot be converted to Int`.
     NanToInt,
+    /// `dict.at: missing key` — strict `d[k]` dictionary reads.
+    DictMissing,
     /// `{s}` — a user `fail(msg)`; the message is passed through verbatim.
     Fail,
     /// `required secret `{s}` was not granted` — `SecretStore.require(name)` on a
@@ -53,6 +55,7 @@ impl DiagTemplate {
             DiagTemplate::Fail => 5,
             DiagTemplate::SecretRequired => 6,
             DiagTemplate::NanToInt => 7,
+            DiagTemplate::DictMissing => 8,
         }
     }
 
@@ -68,6 +71,7 @@ impl DiagTemplate {
             5 => Some(DiagTemplate::Fail),
             6 => Some(DiagTemplate::SecretRequired),
             7 => Some(DiagTemplate::NanToInt),
+            8 => Some(DiagTemplate::DictMissing),
             _ => None,
         }
     }
@@ -85,6 +89,7 @@ impl DiagTemplate {
             DiagTemplate::ParseInt => format!("cannot parse `{s}` as an Int"),
             DiagTemplate::NanOrder => "cannot compare NaN".to_string(),
             DiagTemplate::NanToInt => "math.to_int: NaN cannot be converted to Int".to_string(),
+            DiagTemplate::DictMissing => "dict.at: missing key".to_string(),
             DiagTemplate::Fail => s.to_string(),
             DiagTemplate::SecretRequired => format!("required secret `{s}` was not granted"),
         }
@@ -118,6 +123,7 @@ mod tests {
             DiagTemplate::ParseInt,
             DiagTemplate::NanOrder,
             DiagTemplate::NanToInt,
+            DiagTemplate::DictMissing,
             DiagTemplate::Fail,
             DiagTemplate::SecretRequired,
         ] {
@@ -145,6 +151,7 @@ mod tests {
             DiagTemplate::NanToInt.render(0, 0, ""),
             "math.to_int: NaN cannot be converted to Int"
         );
+        assert_eq!(DiagTemplate::DictMissing.render(0, 0, ""), "dict.at: missing key");
         assert_eq!(DiagTemplate::Fail.render(0, 0, "the reason"), "the reason");
         assert_eq!(
             DiagTemplate::SecretRequired.render(0, 0, "signing"),

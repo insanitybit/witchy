@@ -1626,7 +1626,7 @@ fn float_key_position(t: &Ty) -> Option<FloatKeyKind> {
 /// argument unification.
 fn dict_key_op_index(name: &str) -> Option<usize> {
     match name {
-        "dict.insert" | "dict.get_or" | "dict.update" | "dict.contains_key" | "dict.remove" => {
+        "dict.insert" | "dict.get_or" | "dict.at" | "dict.update" | "dict.contains_key" | "dict.remove" => {
             Some(1)
         }
         _ => None,
@@ -2822,6 +2822,12 @@ impl Checker {
                 let d = Ty::Named("Dict".into(), vec![k.clone(), v.clone()]);
                 Some((vec![d, k, v.clone()], v))
             }
+            "dict.at" => {
+                let k = self.fresh();
+                let v = self.fresh();
+                let d = Ty::Named("Dict".into(), vec![k.clone(), v.clone()]);
+                Some((vec![d, k], v))
+            }
             // dict.update(dict, key, default, f) -> dict: a single-lookup upsert. `f`
             // maps the current value (or `default` when the key is absent) to the
             // new value — like Go's `m[k]++` in one operation.
@@ -3670,9 +3676,19 @@ impl Checker {
                 let d = witchy_syntax::parser::desugar_range((**lo).clone(), (**hi).clone(), *inclusive);
                 self.infer_transient(&d)
             }
-            // A subscript lowers to an `list.at(base, index)` call; type it as that.
+            // A subscript lowers to a type-directed read: `list.at(xs, i)` for
+            // lists, `dict.at(d, k)` for dicts. Keep the call-shaped transient so
+            // the ordinary function signature enforces index/key types and bounds.
             Expr::Index { base, index } => {
-                let d = witchy_syntax::parser::desugar_index((**base).clone(), (**index).clone());
+                let base_ty = self.infer(base)?;
+                let d = if matches!(base_ty, Ty::Named(ref name, _) if name == "Dict") {
+                    Expr::Call {
+                        name: "dict.at".to_string(),
+                        args: vec![(**base).clone(), (**index).clone()],
+                    }
+                } else {
+                    witchy_syntax::parser::desugar_index((**base).clone(), (**index).clone())
+                };
                 self.infer_transient(&d)
             }
             Expr::MethodCall { method, .. } => {
@@ -5692,7 +5708,7 @@ pub fn intrinsic(name: &str) -> bool {
     matches!(
         name,
         "list.push" | "list.at" | "list.length" | "list.concat"
-            | "dict.new" | "dict.insert" | "dict.get_or" | "dict.contains_key" | "dict.remove"
+            | "dict.new" | "dict.insert" | "dict.get_or" | "dict.at" | "dict.contains_key" | "dict.remove"
             | "dict.update" | "dict.keys" | "dict.values" | "dict.pairs" | "dict.length"
             | "string.split" | "string.trim" | "string.contains" | "string.starts_with"
             | "string.ends_with" | "string.replace" | "string.find" | "string.substring"

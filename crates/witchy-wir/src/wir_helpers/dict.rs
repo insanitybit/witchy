@@ -4,6 +4,8 @@
 //! parent re-exports these so consumers keep using `wir_helpers::dict_*`.
 
 use crate::wir::*;
+use super::abort_nodes;
+use witchy_syntax::diag::DiagTemplate;
 
 /// `$key_eq(a, b, mode) -> i32` — slot equality under the key's compile-time
 /// type: mode 0 = raw i64 (Int/Bool), 1 = `$str_eq` on the pointers (String),
@@ -669,6 +671,43 @@ pub fn dict_get_or_helper() -> WirFunc {
             N::If {
                 cond: b(BinOp::Lt, getl("found"), i32c(0)),
                 then_: vec![N::Return(Some(getl("default")))],
+                els: vec![],
+                result: None,
+            },
+            // value slot: d + 12 + found*16.
+            N::Push(E::Load {
+                ptr: Box::new(b(BinOp::Add, getl("d"), b(BinOp::Mul, getl("found"), i32c(16)))),
+                kind: Kind::I64,
+                offset: 12,
+            }),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$dict_at(d, k, mode) -> i64` — the value slot for `k`, or a routed runtime
+/// error when absent. This is the compiled half of strict `d[k]` reads.
+pub fn dict_at_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let i64c = E::ConstI64;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "dict_at".into(),
+        params: vec![
+            WirLocal { name: "d".into(), ty: WirTy::Bool },
+            WirLocal { name: "k".into(), ty: WirTy::Int },
+            WirLocal { name: "mode".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Int],
+        locals: vec![WirLocal { name: "found".into(), ty: WirTy::Bool }],
+        body: vec![
+            N::SetLocal { local: "found".into(), value: E::Call { func: "dict_find".into(), args: vec![getl("d"), getl("k"), getl("mode")] } },
+            N::If {
+                cond: b(BinOp::Lt, getl("found"), i32c(0)),
+                then_: abort_nodes(DiagTemplate::DictMissing, i64c(0), i64c(0), i32c(0)),
                 els: vec![],
                 result: None,
             },

@@ -153,7 +153,7 @@ subscript or a field — `xs[i] = v`, `d[k] = v`, `acct.balance = b` (the bindin
 must be a `var`). Each is sugar for reassigning the variable
 (`xs = xs.set_at(i, v)`, `acct = Account(balance: b, ..acct)`), so it keeps value
 semantics while reading like in-place mutation — and the uniqueness analysis makes
-it an in-place update. Compound forms (`xs[i] += v`) work too.
+it an in-place update. Compound forms (`xs[i] += v`, `d[k] += v`) work too.
 
 ```witchy
 type Account:
@@ -209,7 +209,7 @@ Everything is an expression; a block's value is its final expression.
 | `??` | the **fallback** operator: `Option(T) ?? T -> T` unwraps `Some` or yields the fallback on `None`; `Result(T, e) ?? T -> T` unwraps `Ok` or yields the fallback on `Err` (the error is discarded — reach for `?` / `match` when it matters). The fallback is evaluated **lazily** (only on `None`/`Err`). Right-associative and the loosest binary operator, so `d.get(k1) ?? d.get(k2) ?? 0` chains and `d.get(k) ?? n + 1` is `d.get(k) ?? (n + 1)`. There is no truthiness: `""` and `[]` are values, not absences — default them with an explicit test (`if name.is_empty(): "anon" else: name`) |
 | `!` | negation |
 | `& \| ^ ~ << >>` | bitwise on `Int` (shifts mask the count to 6 bits) |
-| `xs[i]` | list indexing, sugar for `list.at(xs, i)`; out of bounds is a runtime error on every backend |
+| `xs[i]`, `d[k]` | strict indexing, sugar for `list.at(xs, i)` / `dict.at(d, k)`; out of bounds or missing-key reads are runtime errors on every backend |
 | `lo..hi` | a half-open range (for-loop iteration; never materialized) |
 | `x.f(args)` | a method call: an `impl`/trait method on `x`, **or** the stdlib UFCS form `module.f(x, args)` for a built-in type (so `xs.map(f)` *is* `list.map(xs, f)`) |
 | `e?` | unwrap `Ok`/`Some` or return the `Err`/`None` from the enclosing function |

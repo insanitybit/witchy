@@ -1682,6 +1682,17 @@ impl Ctx<'_> {
             Expr::Index { base, index } => {
                 self.rewrite_expr(base, scope);
                 self.rewrite_expr(index, scope);
+                let receiver_ty = self.type_name(base, scope).or_else(|| {
+                    self.table
+                        .type_of(base)
+                        .and_then(crate::typeck::ty_to_ast)
+                        .and_then(|t| type_to_scope_name(&t))
+                });
+                if receiver_ty.as_deref().and_then(type_owner_module) == Some("dict") {
+                    let base = std::mem::replace(base.as_mut(), Expr::Bool(false));
+                    let index = std::mem::replace(index.as_mut(), Expr::Bool(false));
+                    *e = Expr::Call { name: "dict.at".to_string(), args: vec![base, index] };
+                }
             }
             // METHOD RESOLUTION (rfcs/language-evolution.md Phase 3):
             // `x.f(a)` resolves to a real method — an impl for x's type, a

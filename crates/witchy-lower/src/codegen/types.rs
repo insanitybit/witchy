@@ -75,6 +75,11 @@ impl Codegen {
             Expr::Call { name, args } if name == "dict.get_or" && args.len() == 3 => {
                 self.kind_of(&args[2])
             }
+            // `at(d, k)` returns the dict's value slot at the value's recovered
+            // kind, so `Int` dictionary reads stay i64 instead of the generic i32.
+            Expr::Call { name, args } if name == "dict.at" && args.len() == 2 => {
+                self.dict_value_valtype_of(&args[0]).map(valtype_kind).unwrap_or(Kind::I32)
+            }
             // (RFC-0055) `__erase`/`__unerase` are the identity on both value and
             // kind: the message passes through unchanged, so the ctor/slot that
             // stores it uses the ARGUMENT's real kind (a `send`'d `Int` stays i64
@@ -279,6 +284,9 @@ impl Codegen {
             // tracks `v`, and `v` can in turn be used as a Dict key.
             Expr::Call { name, args } if name == "dict.get_or" && args.len() == 3 => {
                 self.val_type_of(&args[2])
+            }
+            Expr::Call { name, args } if name == "dict.at" && args.len() == 2 => {
+                self.dict_value_valtype_of(&args[0]).unwrap_or(ValType::Other)
             }
             Expr::Call { name, .. } => match name.as_str() {
                 "__render" | "string.to_upper" | "string.to_lower" | "string.trim"

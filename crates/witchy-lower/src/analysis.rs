@@ -1524,6 +1524,7 @@ fn builtin_arg_liveness(name: &str, argc: usize) -> Option<Vec<bool>> {
         | ("string.length", 1)
         | ("string.char_count", 1)
         | ("list.at", 2)
+        | ("dict.at", 2)
         | ("dict.contains_key", 2)
         | ("string.contains", 2)
         | ("string.find", 2)

@@ -5124,6 +5124,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
+        "dict_at" => Some(WirHelperSpec {
+            func: dict_at_helper(),
+            helper_deps: &["dict_find"],
+            import_deps: &["__witchy_abort"],
+            uses_heap: false,
+            uses_table: false,
+        }),
         "dict_update" => Some(WirHelperSpec {
             func: dict_update_helper(),
             helper_deps: &["dict_get_or", "dict_insert"],
