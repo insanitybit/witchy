@@ -398,12 +398,13 @@ fn check_unique_functions(module: &Module) -> Result<(), TypeError> {
     Ok(())
 }
 
-/// (BUG-230) Reject duplicate top-level declarations in the type/constructor/method
-/// namespaces — the same "defined more than once" quality of error the function
-/// namespace already gets from [`check_unique_functions`]. Runs pre-lowering (while
-/// `impl`/`type` items are still distinct) on the merged module, whose type and
-/// constructor names are already module-qualified, so a genuine cross-module name
-/// is distinct and only same-module duplicates (a typo or copy-paste) collide.
+/// (BUG-230) Reject duplicate top-level declarations in the const/type/constructor/
+/// method namespaces — the same "defined more than once" quality of error the
+/// function namespace already gets from [`check_unique_functions`]. Runs
+/// pre-lowering (while `const`/`alias`/`impl`/`type` items are still distinct) on
+/// the merged module, whose type and constructor names are already
+/// module-qualified, so a genuine cross-module name is distinct and only
+/// same-module duplicates (a typo or copy-paste) collide.
 fn check_unique_declarations(module: &Module) -> Result<(), TypeError> {
     let bare = |n: &str| n.rsplit('.').next().unwrap_or(n).to_string();
     let impl_trait_display = |name: &str, args: &[String]| {
@@ -422,6 +423,13 @@ fn check_unique_declarations(module: &Module) -> Result<(), TypeError> {
             format!("{base}({})", args.join(", "))
         }
     };
+    let line_suffix = |first: u32, second: u32| {
+        if first != 0 && second != 0 {
+            format!(" (lines {first} and {second})")
+        } else {
+            String::new()
+        }
+    };
     let check_type_params = |context: String, params: &[String]| -> Result<(), TypeError> {
         let mut seen: HashSet<&str> = HashSet::new();
         for param in params {
@@ -434,40 +442,100 @@ fn check_unique_declarations(module: &Module) -> Result<(), TypeError> {
         }
         Ok(())
     };
+    let check_fields = |t: &witchy_syntax::ast::TypeDef, v: &witchy_syntax::ast::Variant| -> Result<(), TypeError> {
+        let mut seen: HashSet<&str> = HashSet::new();
+        for field in &v.field_names {
+            if !seen.insert(field.as_str()) {
+                let noun = if t.is_capability { "capability" } else { "type" };
+                return terr(format!(
+                    "field `{field}` is declared more than once in {noun} `{}`; \
+                     record field names must be unique",
+                    bare(&t.name)
+                ));
+            }
+        }
+        Ok(())
+    };
+    let mut consts: HashMap<String, u32> = HashMap::new();
+    let mut aliases: HashMap<String, u32> = HashMap::new();
     let mut types: HashMap<String, &witchy_syntax::ast::TypeDef> = HashMap::new();
     // Constructor name -> its owning type, so a cross-type duplicate names both.
     let mut ctors: HashMap<String, String> = HashMap::new();
-    for item in &module.items {
-        let Item::Type(t) = item else { continue };
-        check_type_params(format!("type `{}`", bare(&t.name)), &t.params)?;
-        if let Some(prev) = types.insert(t.name.clone(), t) {
-            // A structurally-IDENTICAL re-declaration is a harmless shadow — a user
-            // module may redefine a prelude-injected type (`Result`/`Option`) with
-            // the same shape (examples/try teaches exactly this). Only a CONFLICTING
-            // redefinition (a different shape under the same name) is an error; the
-            // identical one is skipped so its constructors aren't double-counted.
-            if prev.params == t.params && prev.variants == t.variants {
-                continue;
+    for (idx, item) in module.items.iter().enumerate() {
+        let line = module.item_lines.get(idx).copied().unwrap_or(0);
+        match item {
+            Item::Const { name, .. } => {
+                if let Some(first) = consts.insert(name.clone(), line) {
+                    return terr(format!(
+                        "constant `{}` is defined more than once{}; \
+                         top-level constant names must be unique",
+                        bare(name),
+                        line_suffix(first, line)
+                    ));
+                }
             }
-            return terr(format!(
-                "type `{}` is defined more than once; top-level type names must be unique",
-                bare(&t.name)
-            ));
-        }
-        for v in &t.variants {
-            if let Some(prev) = ctors.insert(v.name.clone(), t.name.clone()) {
-                let (a, b) = (bare(&prev), bare(&t.name));
-                let where_ = if a == b {
-                    format!("in type `{a}`")
-                } else {
-                    format!("in types `{a}` and `{b}`")
-                };
-                return terr(format!(
-                    "constructor `{}` is defined more than once ({where_}); \
-                     constructor names must be unique",
-                    bare(&v.name)
-                ));
+            Item::TypeAlias { name, .. } => {
+                if types.contains_key(name) {
+                    return terr(format!(
+                        "type alias `{}` conflicts with type `{}`; \
+                         top-level type names must be unique",
+                        bare(name),
+                        bare(name)
+                    ));
+                }
+                if let Some(first) = aliases.insert(name.clone(), line) {
+                    return terr(format!(
+                        "type alias `{}` is defined more than once{}; \
+                         top-level type names must be unique",
+                        bare(name),
+                        line_suffix(first, line)
+                    ));
+                }
             }
+            Item::Type(t) => {
+                check_type_params(format!("type `{}`", bare(&t.name)), &t.params)?;
+                for v in &t.variants {
+                    check_fields(t, v)?;
+                }
+                if aliases.contains_key(&t.name) {
+                    return terr(format!(
+                        "type `{}` conflicts with type alias `{}`; \
+                         top-level type names must be unique",
+                        bare(&t.name),
+                        bare(&t.name)
+                    ));
+                }
+                if let Some(prev) = types.insert(t.name.clone(), t) {
+                    // A structurally-IDENTICAL re-declaration is a harmless shadow — a user
+                    // module may redefine a prelude-injected type (`Result`/`Option`) with
+                    // the same shape (examples/try teaches exactly this). Only a CONFLICTING
+                    // redefinition (a different shape under the same name) is an error; the
+                    // identical one is skipped so its constructors aren't double-counted.
+                    if prev.params == t.params && prev.variants == t.variants {
+                        continue;
+                    }
+                    return terr(format!(
+                        "type `{}` is defined more than once; top-level type names must be unique",
+                        bare(&t.name)
+                    ));
+                }
+                for v in &t.variants {
+                    if let Some(prev) = ctors.insert(v.name.clone(), t.name.clone()) {
+                        let (a, b) = (bare(&prev), bare(&t.name));
+                        let where_ = if a == b {
+                            format!("in type `{a}`")
+                        } else {
+                            format!("in types `{a}` and `{b}`")
+                        };
+                        return terr(format!(
+                            "constructor `{}` is defined more than once ({where_}); \
+                             constructor names must be unique",
+                            bare(&v.name)
+                        ));
+                    }
+                }
+            }
+            _ => {}
         }
     }
     // Methods: no two methods with the same name in one `impl` block or `trait`,

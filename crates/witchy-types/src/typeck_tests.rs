@@ -1840,6 +1840,23 @@ fn main():
             trait_param.contains("type parameter `a` is declared more than once in trait `Codec`"),
             "{trait_param}"
         );
+        let konst = check_str("let ANSWER = 1\nlet ANSWER = 2\nfn main(console: Console):\n    print(console, \"${ANSWER}\")\n")
+            .unwrap_err();
+        assert!(konst.contains("constant `ANSWER` is defined more than once"), "{konst}");
+        let alias = check_str("type Id = Int\ntype Id = String\nfn f(x: Id) -> Id:\n    x\n").unwrap_err();
+        assert!(alias.contains("type alias `Id` is defined more than once"), "{alias}");
+        let alias_type = check_str("type Id = Int\ntype Id:\n    Id(String)\n").unwrap_err();
+        assert!(alias_type.contains("type `Id` conflicts with type alias `Id`"), "{alias_type}");
+        let fields = check_str("type Point:\n    x: Int\n    x: String\nfn main(console: Console):\n    print(console, \"ok\")\n")
+            .unwrap_err();
+        assert!(fields.contains("field `x` is declared more than once in type `Point`"), "{fields}");
+        let cap_fields =
+            check_str("capability Store:\n    dir: Dir[Read]\n    dir: String\nfn main(console: Console):\n    print(console, \"ok\")\n")
+                .unwrap_err();
+        assert!(
+            cap_fields.contains("field `dir` is declared more than once in capability `Store`"),
+            "{cap_fields}"
+        );
         let same = check_str("type T:\n    Same(Int)\n    Same(String)\n").unwrap_err();
         assert!(same.contains("constructor `Same`"), "{same}");
         let cross = check_str("type A:\n    Same(Int)\ntype B:\n    Same(String)\n").unwrap_err();
