@@ -1189,6 +1189,21 @@ fn main(console: Console):
         );
     }
 
+    /// (BUG-321) Dict keys are any concrete `Eq` value, not just scalar slots.
+    /// The compiled backend dispatches key equality through the same structural
+    /// helpers as `==`, including String fields and enum payloads.
+    #[test]
+    fn compound_dict_keys_work_on_both_backends() {
+        let src = "import cmp\nimport dict\n\ntype Pair derive(PartialEq, Eq):\n    id: Int\n    label: String\n\ntype Tag derive(PartialEq, Eq):\n    ById(Int)\n    ByName(String)\n\nfn main(console: Console):\n    var records = dict.new()\n    records = dict.insert(records, Pair(100000, \"a\"), 10)\n    records = dict.insert(records, Pair(100000, \"a\"), 20)\n    print(console, __render(dict.get_or(records, Pair(100000, \"a\"), 0)))\n    print(console, __render(dict.contains_key(records, Pair(100000, \"a\"))))\n    print(console, __render(dict.length(records)))\n\n    var tags = dict.new()\n    tags = dict.insert(tags, ById(7), \"id\")\n    tags = dict.insert(tags, ByName(\"x\"), \"name\")\n    tags = dict.insert(tags, ById(7), \"id2\")\n    print(console, dict.get_or(tags, ById(7), \"missing\"))\n    print(console, dict.get_or(tags, ByName(\"x\"), \"missing\"))\n    print(console, __render(dict.length(tags)))\n";
+        let expected = ["20", "true", "1", "id2", "name", "2"];
+        assert_eq!(link_run(src), expected, "interp: compound dict keys");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: compound dict keys",
+        );
+    }
+
     /// (BUG-535) Lists are ordinary comparison-protocol values: if their elements
     /// satisfy `PartialEq`/`Eq`, the list itself satisfies the same bound instead
     /// of relying on one-off direct-operator magic.
@@ -13881,12 +13896,12 @@ fn main(console: Console):
 
     #[test]
     fn dict_undetermined_key_is_rejected() {
-        // A key whose type codegen can't pin down (here a list) errors clearly
+        // A key with no `Eq` implementation errors clearly
         // rather than picking a wrong comparison.
         let src = r#"
 fn main(console: Console):
     var d = dict.new()
-    d = dict.insert(d, [1, 2], 5)
+    d = dict.insert(d, console, 5)
     print(console, __render(dict.length(d)))
 "#;
         let module = parser::parse_module(src).expect("parse");

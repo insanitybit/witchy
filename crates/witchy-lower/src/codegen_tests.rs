@@ -325,7 +325,7 @@ fn main() -> Int:
     }
 
     #[test]
-    fn dict_key_diagnostic_names_supported_public_key_types() {
+    fn record_dict_keys_without_eq_are_rejected() {
         let src = r#"
 type Key:
     Key(Int)
@@ -336,13 +336,11 @@ fn main() -> Int:
     dict.get_or(d, Key(1), 0)
 "#;
         let module = parse_module(src).expect("parse");
-        let err = compile_module_binary(&module).expect_err("record key should not lower yet");
-        let msg = err.to_string();
+        let err = compile_module_binary(&module).expect_err("plain record key should not lower");
         assert!(
-            msg.contains("use Int, Bool, Duration, or String keys"),
-            "unexpected diagnostic: {msg}"
+            err.to_string().contains("resolved Eq compound key"),
+            "unexpected diagnostic: {err}"
         );
-        assert!(!msg.contains("Float, or String"), "stale Float recommendation: {msg}");
     }
 
     /// Build a wasmtime instance whose `print` captures strings from memory.

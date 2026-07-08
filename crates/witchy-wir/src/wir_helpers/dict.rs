@@ -437,7 +437,11 @@ pub fn dict_insert_cap_helper() -> WirFunc {
         // index was built at the last grow sized ≥ 2× cap, so it has a free slot.
         N::SetLocal { local: "idx".into(), value: E::Load { ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))), kind: Kind::I32, offset: 0 } },
         N::If {
-            cond: getl("idx"),
+            cond: b(
+                BinOp::And,
+                b(BinOp::Ne, getl("idx"), i32c(0)),
+                b(BinOp::Le, getl("mode"), i32c(2)),
+            ),
             then_: vec![N::Do(E::Call {
                 func: "dict_index_put".into(),
                 args: vec![
@@ -485,60 +489,67 @@ pub fn dict_insert_cap_helper() -> WirFunc {
             ],
             result: None,
         },
-        // Build a fresh hash index for the copied buffer, sized to the smallest
-        // power of two ≥ 2× newcap (and ≥ 16) so subsequent in-place appends into
-        // the slack never overflow it (load factor stays ≤ 0.5). Populated by
-        // probing every live entry; this O(count) build amortizes against the copy.
-        N::SetLocal { local: "icount".into(), value: E::Load { ptr: Box::new(getl("new")), kind: Kind::I32, offset: 0 } },
-        N::SetLocal { local: "islots".into(), value: i32c(16) },
-        N::Block {
-            label: "isz".into(),
-            result: None,
-            body: vec![N::Loop {
-                label: "isl".into(),
-                body: vec![
-                    N::Br { target: "isz".into(), cond: Some(b(BinOp::Ge, getl("islots"), b(BinOp::Mul, getl("newcap"), i32c(2)))) },
-                    N::SetLocal { local: "islots".into(), value: b(BinOp::Mul, getl("islots"), i32c(2)) },
-                    N::Br { target: "isl".into(), cond: None },
-                ],
-            }],
-        },
-        // (RFC-0051 I2) Allocate the index block through `$bump_alloc` — the single
-        // ensure-prefixed allocator — instead of a raw ensure+bump pair here. The
-        // index block is header-less scratch (rebuilt on every grow), so it takes
-        // the bump core, not `$rc_alloc`.
-        N::SetLocal {
-            local: "iptr".into(),
-            value: E::Call {
-                func: "bump_alloc".into(),
-                args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("islots"), i32c(4)))],
-            },
-        },
-        N::Store { ptr: getl("iptr"), value: getl("islots"), kind: Kind::I32, offset: 0 },
-        N::MemoryFill { dest: b(BinOp::Add, getl("iptr"), i32c(4)), value: i32c(0), len: b(BinOp::Mul, getl("islots"), i32c(4)) },
-        N::Store { ptr: b(BinOp::Sub, getl("new"), i32c(4)), value: getl("iptr"), kind: Kind::I32, offset: 0 },
-        N::SetLocal { local: "ie".into(), value: i32c(0) },
-        N::Block {
-            label: "ipd".into(),
-            result: None,
-            body: vec![N::Loop {
-                label: "ipl".into(),
-                body: vec![
-                    N::Br { target: "ipd".into(), cond: Some(b(BinOp::Ge, getl("ie"), getl("icount"))) },
-                    N::Do(E::Call {
-                        func: "dict_index_put".into(),
-                        args: vec![
-                            getl("iptr"),
-                            getl("islots"),
-                            getl("ie"),
-                            E::Load { ptr: Box::new(entry("new", "ie")), kind: Kind::I64, offset: 4 },
-                            getl("mode"),
+        // Build a fresh hash index only for modes `$dict_hash` understands
+        // (0 = bits, 1 = string, 2 = float). Structural key modes use the hidden
+        // index word's zero value and `dict_find`'s linear scan; hashing a record
+        // pointer as a string would be both wrong and unsafe.
+        N::If {
+            cond: b(BinOp::Le, getl("mode"), i32c(2)),
+            then_: vec![
+                N::SetLocal { local: "icount".into(), value: E::Load { ptr: Box::new(getl("new")), kind: Kind::I32, offset: 0 } },
+                N::SetLocal { local: "islots".into(), value: i32c(16) },
+                N::Block {
+                    label: "isz".into(),
+                    result: None,
+                    body: vec![N::Loop {
+                        label: "isl".into(),
+                        body: vec![
+                            N::Br { target: "isz".into(), cond: Some(b(BinOp::Ge, getl("islots"), b(BinOp::Mul, getl("newcap"), i32c(2)))) },
+                            N::SetLocal { local: "islots".into(), value: b(BinOp::Mul, getl("islots"), i32c(2)) },
+                            N::Br { target: "isl".into(), cond: None },
                         ],
-                    }),
-                    N::SetLocal { local: "ie".into(), value: b(BinOp::Add, getl("ie"), i32c(1)) },
-                    N::Br { target: "ipl".into(), cond: None },
-                ],
-            }],
+                    }],
+                },
+                // (RFC-0051 I2) Allocate the index block through `$bump_alloc` — the single
+                // ensure-prefixed allocator — instead of a raw ensure+bump pair here. The
+                // index block is header-less scratch (rebuilt on every grow), so it takes
+                // the bump core, not `$rc_alloc`.
+                N::SetLocal {
+                    local: "iptr".into(),
+                    value: E::Call {
+                        func: "bump_alloc".into(),
+                        args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("islots"), i32c(4)))],
+                    },
+                },
+                N::Store { ptr: getl("iptr"), value: getl("islots"), kind: Kind::I32, offset: 0 },
+                N::MemoryFill { dest: b(BinOp::Add, getl("iptr"), i32c(4)), value: i32c(0), len: b(BinOp::Mul, getl("islots"), i32c(4)) },
+                N::Store { ptr: b(BinOp::Sub, getl("new"), i32c(4)), value: getl("iptr"), kind: Kind::I32, offset: 0 },
+                N::SetLocal { local: "ie".into(), value: i32c(0) },
+                N::Block {
+                    label: "ipd".into(),
+                    result: None,
+                    body: vec![N::Loop {
+                        label: "ipl".into(),
+                        body: vec![
+                            N::Br { target: "ipd".into(), cond: Some(b(BinOp::Ge, getl("ie"), getl("icount"))) },
+                            N::Do(E::Call {
+                                func: "dict_index_put".into(),
+                                args: vec![
+                                    getl("iptr"),
+                                    getl("islots"),
+                                    getl("ie"),
+                                    E::Load { ptr: Box::new(entry("new", "ie")), kind: Kind::I64, offset: 4 },
+                                    getl("mode"),
+                                ],
+                            }),
+                            N::SetLocal { local: "ie".into(), value: b(BinOp::Add, getl("ie"), i32c(1)) },
+                            N::Br { target: "ipl".into(), cond: None },
+                        ],
+                    }],
+                },
+            ],
+            els: vec![],
+            result: None,
         },
         N::SetLocal { local: "ret_ptr".into(), value: getl("new") },
         N::SetLocal { local: "ret_cap".into(), value: getl("newcap") },

@@ -119,6 +119,86 @@ impl Codegen {
         Some(name)
     }
 
+    /// A program-specific `$key_eq` replacement for Dicts whose key type is a
+    /// compound `Eq` shape. The static prelude helper handles only scalar modes
+    /// 0..=2; this keeps those fast paths and appends shape-mode dispatch arms.
+    pub(crate) fn dict_key_eq_wir_helper(&self) -> Option<witchy_wir::wir::WirFunc> {
+        if self.dict_key_shapes.is_empty() {
+            return None;
+        }
+        use witchy_wir::wir::{BinOp, Kind, UnOp, WirExpr as W, WirLocal, WirNode as N, WirTy};
+        let getl = |n: &str| W::GetLocal(n.into());
+        let i32c = W::ConstI32;
+        let wrap = |n: &str| W::FromSlot(Box::new(getl(n)), Kind::I32);
+        let mode_is = |m: i32| W::Binary {
+            op: BinOp::Eq,
+            kind: Kind::I32,
+            lhs: Box::new(getl("mode")),
+            rhs: Box::new(i32c(m)),
+        };
+        let mut body = vec![
+            N::If {
+                cond: W::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("mode")) },
+                then_: vec![N::Return(Some(W::Binary {
+                    op: BinOp::Eq,
+                    kind: Kind::I64,
+                    lhs: Box::new(getl("a")),
+                    rhs: Box::new(getl("b")),
+                }))],
+                els: vec![],
+                result: None,
+            },
+            N::If {
+                cond: mode_is(1),
+                then_: vec![N::Return(Some(W::Call {
+                    func: "str_eq".into(),
+                    args: vec![wrap("a"), wrap("b")],
+                }))],
+                els: vec![],
+                result: None,
+            },
+            N::If {
+                cond: mode_is(2),
+                then_: vec![N::Return(Some(W::Binary {
+                    op: BinOp::Eq,
+                    kind: Kind::F64,
+                    lhs: Box::new(W::FromSlot(Box::new(getl("a")), Kind::F64)),
+                    rhs: Box::new(W::FromSlot(Box::new(getl("b")), Kind::F64)),
+                }))],
+                els: vec![],
+                result: None,
+            },
+        ];
+        for (mode, shape) in &self.dict_key_shapes {
+            let func = self
+                .custom_eq_type_of_shape(shape)
+                .map(|ty| format!("PartialEq__{ty}__eq"))
+                .unwrap_or_else(|| format!("eq_{}", shape.id()));
+            body.push(N::If {
+                cond: mode_is(*mode as i32),
+                then_: vec![N::Return(Some(W::Call {
+                    func,
+                    args: vec![wrap("a"), wrap("b")],
+                }))],
+                els: vec![],
+                result: None,
+            });
+        }
+        body.push(N::Unreachable);
+        Some(witchy_wir::wir::WirFunc {
+            name: "key_eq".into(),
+            params: vec![
+                WirLocal { name: "a".into(), ty: WirTy::Int },
+                WirLocal { name: "b".into(), ty: WirTy::Int },
+                WirLocal { name: "mode".into(), ty: WirTy::Bool },
+            ],
+            ret: vec![WirTy::Bool],
+            locals: vec![],
+            body,
+            raw_body: None,
+        })
+    }
+
     /// The i64 a copied-out slot holds, given the SOURCE slot ADDRESS `src`: a scalar
     /// verbatim (`i64.load`), a pointer shape through its (biased) rcopy helper
     /// (`i64.extend_i32_u(rcopy_h(i32.wrap_i64(i64.load src)))`). Mirrors `slot_rcopy`.

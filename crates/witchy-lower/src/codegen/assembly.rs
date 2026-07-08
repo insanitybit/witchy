@@ -94,6 +94,17 @@ fn reachable_functions_with(module: &Module, extra_roots: &[String]) -> HashSet<
     reachable
 }
 
+fn eq_impl_types(module: &Module) -> HashSet<String> {
+    module
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            Item::Impl(im) if im.trait_name.as_deref() == Some("Eq") => Some(im.type_name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Register every item's compile-time metadata (parameter conventions,
 /// return kinds/types, record fields, generic shape hints, ...) on `cg`.
 fn register_module_items(cg: &mut Codegen, module: &Module) {
@@ -389,6 +400,7 @@ pub fn assemble_wir_module(
     use witchy_wir::wir_prelude::WasmTy;
     // Front-end, identical to `compile_module_with`.
     let recs = witchy_syntax::records::lower(module.clone()).map_err(|message| CodegenError { message })?;
+    let eq_types = eq_impl_types(&recs);
     let mut lowered = witchy_types::traits::lower_for_wasm(recs);
     witchy_syntax::parser::lower_sugar_module(&mut lowered);
     alpha_rename_module(&mut lowered);
@@ -407,6 +419,7 @@ pub fn assemble_wir_module(
     flip_string_add_module(&mut lowered, &cg.type_table);
     let module = &lowered;
     register_module_items(&mut cg, module);
+    cg.eq_types = eq_types;
     cg.summaries = analysis::Summaries::of_module(module);
 
     // (RFC-0047) A custom-`PartialEq` type's `PartialEq__T__eq` may be called only
@@ -580,11 +593,15 @@ pub fn assemble_wir_module(
                 collect_called_host_imports(&wf.body, &mut user_host_imports);
             }
         }
+        let custom_key_eq = cg.dict_key_eq_wir_helper();
         // The generated structural-eq / render helpers (included below) call
         // prelude helpers themselves — a Str field eq via `$str_eq`, a renderer via
         // `$concat`/`$int_to_string`. Pull those (and nested eq_*/ts_* calls) into
         // the reached set so the resolution loop declares them.
         for f in cg.eq_wir_helpers.values() {
+            collect_called_funcs(&f.body, &mut called);
+        }
+        if let Some(f) = &custom_key_eq {
             collect_called_funcs(&f.body, &mut called);
         }
         for f in cg.ts_wir_helpers.values() {
@@ -718,7 +735,13 @@ pub fn assemble_wir_module(
                     }
                 })
                 .collect();
+            if custom_key_eq.is_some() {
+                resolved.remove("key_eq");
+            }
             let mut pruned_funcs: Vec<WirFunc> = resolved.into_values().map(|s| s.func).collect();
+            if let Some(f) = custom_key_eq {
+                pruned_funcs.push(f);
+            }
             // The program-specific structural-equality / render helpers reached by
             // user `==` / `__render`.
             for f in cg.eq_wir_helpers.values() {

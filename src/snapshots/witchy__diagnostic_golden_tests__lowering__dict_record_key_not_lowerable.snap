@@ -2,4 +2,4 @@
 source: src/diagnostic_golden_tests.rs
 expression: "lower_diag(\"import dict\\n\\ntype K:\\n    a: Int\\n    b: Int\\n\\nfn main(console: Console):\\n    var d = dict.new()\\n    d = dict.insert(d, K(a: 1, b: 2), \\\"v\\\")\\n    print(console, \\\"hi\\\")\\n\")"
 ---
-codegen error: could not determine the Dict key type for WASM; use Int, Bool, Duration, or String keys (annotate if needed)
+codegen error: could not determine the Dict key type for WASM; use Int, Bool, Duration, String, or a resolved Eq compound key (annotate if needed)

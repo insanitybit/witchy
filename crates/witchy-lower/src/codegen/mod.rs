@@ -768,6 +768,11 @@ struct Codegen {
     /// helper — byte-identical code to before. A whole-program fact set once at
     /// module setup (module-global; not part of `SavedScope`).
     custom_eq_types: HashSet<String>,
+    /// Type names with a visible `Eq` impl in the source program after derive
+    /// expansion but before trait lowering erases marker impls. Dict keys use
+    /// this as a backend acceptance guard so a plain record does not become a
+    /// valid key merely because codegen can synthesize structural comparison.
+    eq_types: HashSet<String>,
     /// Variables (params / let-bound constructors) known to hold a record of a
     /// given type, so `var.field` can resolve a field index.
     local_records: HashMap<String, String>,
@@ -886,6 +891,12 @@ struct Codegen {
     /// a `==` lowers without the eq-helper bail. Str/nested-compound fields still
     /// defer to WAT (their slot compare would need $str_eq / a nested eq call).
     eq_wir_helpers: std::collections::BTreeMap<String, witchy_wir::wir::WirFunc>,
+    /// Structural Dict key modes, keyed by the numeric mode passed to `$key_eq`.
+    /// Modes 0..=2 are reserved by the scalar prelude helper; modes >=3 dispatch
+    /// to per-shape equality helpers in a program-specific `$key_eq` override.
+    dict_key_shapes: std::collections::BTreeMap<u32, EqShape>,
+    /// Reverse index for `dict_key_shapes`, keyed by `EqShape::id`.
+    dict_key_shape_modes: std::collections::BTreeMap<String, u32>,
     /// Names of eq helpers currently being built — a cycle guard so a recursive
     /// type's structural eq bails to WAT instead of looping in codegen.
     eq_building: HashSet<String>,
@@ -958,6 +969,7 @@ impl Codegen {
             record_field_types: HashMap::new(),
             record_generics: HashMap::new(),
             custom_eq_types: HashSet::new(),
+            eq_types: HashSet::new(),
             packed_types: HashSet::new(),
             adt_variants: HashMap::new(),
             ctor_type_name: HashMap::new(),
@@ -1062,6 +1074,8 @@ impl Codegen {
             uses_dict_iter: false,
             eq_helpers: std::collections::BTreeMap::new(),
             eq_wir_helpers: std::collections::BTreeMap::new(),
+            dict_key_shapes: std::collections::BTreeMap::new(),
+            dict_key_shape_modes: std::collections::BTreeMap::new(),
             eq_building: HashSet::new(),
             ts_wir_helpers: std::collections::BTreeMap::new(),
             ts_building: HashSet::new(),
@@ -5730,19 +5744,42 @@ impl Codegen {
         self.elide_index_list = s.elide_index_list;
     }
 
-    /// The `$key_eq` comparison mode for a Dict key expression: 0 for Int/Bool
-    /// (i64 bit equality), 1 for String (`$str_eq`), 2 for Float (`f64.eq` on the
-    /// reinterpreted slot). Float reaches this only in already-lowered/internal
-    /// code; the public checker rejects Float dict keys because Float is not Eq.
-    /// Other key types, including raw Bytes, are rejected.
-    fn dict_key_mode(&self, key: &Expr) -> Result<u32, CodegenError> {
+    /// The scalar `$key_eq` comparison mode for a Dict key expression: 0 for
+    /// Int/Bool (i64 bit equality), 1 for String (`$str_eq`), 2 for Float
+    /// (`f64.eq` on the reinterpreted slot). Float reaches this only in
+    /// already-lowered/internal code; the public checker rejects Float dict keys
+    /// because Float is not Eq.
+    fn scalar_dict_key_mode(&self, key: &Expr) -> Option<u32> {
         match self.val_type_of(key) {
-            ValType::Int | ValType::Bool => Ok(0),
-            ValType::Str => Ok(1),
-            ValType::Float => Ok(2),
-            ValType::Bytes | ValType::Other => cerr(
-                "could not determine the Dict key type for WASM; use Int, Bool, Duration, or String keys (annotate if needed)",
-            ),
+            ValType::Int | ValType::Bool => Some(0),
+            ValType::Str => Some(1),
+            ValType::Float => Some(2),
+            ValType::Bytes | ValType::Other => None,
+        }
+    }
+
+    fn dict_key_mode_error() -> CodegenError {
+        CodegenError {
+            message: "could not determine the Dict key type for WASM; use Int, Bool, Duration, String, or a resolved Eq compound key (annotate if needed)".to_string(),
+        }
+    }
+
+    fn shape_has_eq_impl(&self, shape: &EqShape) -> bool {
+        match shape {
+            EqShape::Int | EqShape::Bool | EqShape::Str => true,
+            EqShape::Float => false,
+            EqShape::Record(name)
+            | EqShape::RecInst(name, _)
+            | EqShape::Adt(name)
+            | EqShape::AdtInst(name, _)
+            | EqShape::AdtRec(name, _) => self.eq_types.contains(name),
+            EqShape::List(elem) => self.eq_types.contains("List") && self.shape_has_eq_impl(elem),
+            EqShape::Dict(k, v) => {
+                self.eq_types.contains("Dict")
+                    && self.shape_has_eq_impl(k)
+                    && self.shape_has_eq_impl(v)
+            }
+            EqShape::Tuple(fields) => fields.iter().all(|f| self.shape_has_eq_impl(f)),
         }
     }
 
@@ -5751,11 +5788,36 @@ impl Codegen {
     /// — `compile_function` turns that into a diagnostic `Err` rather than letting
     /// the function silently bail as "unsupported".
     fn dict_key_mode_wir(&mut self, key: &Expr) -> Option<u32> {
-        match self.dict_key_mode(key) {
-            Ok(m) => Some(m),
-            Err(e) => {
-                self.reject_reason.get_or_insert(e);
-                None
+        if let Some(mode) = self.scalar_dict_key_mode(key) {
+            return Some(mode);
+        }
+        let Some(shape) = self.eq_operand_shape(key) else {
+            self.reject_reason.get_or_insert_with(Self::dict_key_mode_error);
+            return None;
+        };
+        match shape {
+            EqShape::Int | EqShape::Bool => Some(0),
+            EqShape::Str => Some(1),
+            EqShape::Float => Some(2),
+            shape => {
+                if !self.shape_has_eq_impl(&shape) {
+                    self.reject_reason.get_or_insert_with(Self::dict_key_mode_error);
+                    return None;
+                }
+                if self.custom_eq_type_of_shape(&shape).is_none()
+                    && self.ensure_eq_wir_helper(&shape).is_none()
+                {
+                    self.reject_reason.get_or_insert_with(Self::dict_key_mode_error);
+                    return None;
+                }
+                let id = shape.id();
+                if let Some(mode) = self.dict_key_shape_modes.get(&id).copied() {
+                    return Some(mode);
+                }
+                let mode = 3 + self.dict_key_shapes.len() as u32;
+                self.dict_key_shapes.insert(mode, shape);
+                self.dict_key_shape_modes.insert(id, mode);
+                Some(mode)
             }
         }
     }
