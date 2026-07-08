@@ -4187,6 +4187,23 @@ fn main(console: Console):
         assert_eq!(wasm_run(dict_src), dict_expected, "wasm: dict field");
     }
 
+    /// Std containers may expose real inherent methods without reopening bare
+    /// std functions or losing the owner-module in-place path. `List.push` and
+    /// `List.concat` are declared as `impl List(a)` methods, but receiver calls
+    /// resolve to `list.push`/`list.concat` when those owner functions exist.
+    #[test]
+    fn std_list_impl_methods_and_free_functions_coexist_on_both_backends() {
+        let src = "import list\n\ntype Buf:\n    items: List(Int)\n\nfn main(console: Console):\n    var b = Buf([])\n    var i = 0\n    while i < 16:\n        b.items.push(i)\n        i = i + 1\n    print(console, \"${list.at(b.items, 15)}\")\n    print(console, \"${list.length(b.items)}\")\n\n    var xs = [1]\n    xs.push(2)\n    xs.concat([3, 4])\n    print(console, \"${xs}\")\n\n    let ys = list.concat(list.push(xs, 5), [6])\n    print(console, \"${ys}\")\n";
+        let expected = vec![
+            "15".to_string(),
+            "16".to_string(),
+            "[1, 2, 3, 4]".to_string(),
+            "[1, 2, 3, 4, 5, 6]".to_string(),
+        ];
+        assert_eq!(link_run(src), expected, "interpreter: std List impl/free methods");
+        assert_eq!(wasm_run(src), expected, "wasm: std List impl/free methods");
+    }
+
     /// RFC-0030 DIFFERENTIAL DE-OPT SWEEP: a program's output must be identical
     /// under every `WITCHY_OPT` setting — `none`, `all`, the production default,
     /// and the default with each optimization individually removed — and must

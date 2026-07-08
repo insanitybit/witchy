@@ -1486,6 +1486,14 @@ Split a list of pairs into a pair of lists — the inverse of `zip`.
 
 Pair each element with its index: `[a, b]` -> `[(0, a), (1, b)]`.
 
+#### `List.push(x: a) -> List(a)`
+
+A new list with `x` appended (lists are values; the original is unchanged).
+
+#### `List.concat(ys: List(a)) -> List(a)`
+
+A new list that is `xs` followed by `ys`.
+
 ## `math`
 
 The witchy standard math library: small integer helpers, pure and capability-free. (Comparison can't be generic without type classes, so these are Int-specific.) --- Native primitives (intercepted by both backends; self-recursive placeholder bodies give the type checker the signatures). ---

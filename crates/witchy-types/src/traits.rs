@@ -1273,6 +1273,15 @@ impl Ctx<'_> {
         self.trait_methods.contains_key(method) || self.inherent_methods.contains(method)
     }
 
+    fn std_owner_method_alias(&self, method: &str, tn: &str) -> Option<String> {
+        if !is_ambient_std_owned_type(tn) || self.lookup_inherent_impl(method, tn).is_none() {
+            return None;
+        }
+        let module = type_owner_module(tn)?;
+        let func = format!("{module}.{method}");
+        self.free_fns.contains(&func).then_some(func)
+    }
+
     /// Record the current function's type-variable bounds, so the operator
     /// rewrite can tell a bounded generic (dispatch) from an unbounded one (keep
     /// the native structural comparison).
@@ -1746,6 +1755,15 @@ impl Ctx<'_> {
                             .and_then(|t| type_to_scope_name(&t))
                     });
                 if let Some(tn) = &tn {
+                    if let Some(func) = self.std_owner_method_alias(method, tn) {
+                        let mut call_args = vec![std::mem::replace(
+                            receiver.as_mut(),
+                            Expr::Bool(false),
+                        )];
+                        call_args.append(args);
+                        *e = Expr::Call { name: func, args: call_args };
+                        return;
+                    }
                     match self.lookup_impl(method, tn) {
                         Some(MethodResolution::Found(mangled)) => {
                             let mut call_args = vec![std::mem::replace(

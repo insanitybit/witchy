@@ -35,6 +35,15 @@ pub fn push(var xs: List(a), x: a) -> List(a):
 pub fn concat(var xs: List(a), ys: List(a)) -> List(a):
     list.concat(xs, ys)
 
+// Real methods mirror the primary mutator surface while the module functions
+// remain as stable, first-class values.
+impl List(a):
+    pub fn push(var self, x: a) -> List(a):
+        list.push(self, x)
+
+    pub fn concat(var self, ys: List(a)) -> List(a):
+        list.concat(self, ys)
+
 // Concatenate the strings in `parts`, inserting `sep` between adjacent
 // elements: `["a", "b", "c"].join("-")` is `"a-b-c"`, and `[].join(sep)` is `""`.
 pub fn join(parts: List(String), sep: String) -> String:

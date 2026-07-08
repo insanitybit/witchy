@@ -414,3 +414,13 @@ function dispatch set, so a future `impl List(a).push` cannot make
 `push([1], 2)` type-check again. The remaining blocker for the first real
 stdlib conversion is the in-place classifier recognizing resolved std inherent
 mutators without losing `mutating_method_statement_is_in_place`.
+
+That second blocker is now closed for the owner-function migration pattern:
+ambient std-owned inherent methods alias to the existing owner-module function
+when that function exists. So `xs.push(i)` dispatches through the real
+`impl List(a)` method surface but lowers to `list.push(xs, i)`, preserving the
+established in-place self-assign shape. `List.push` and `List.concat` are the
+first converted slice, with
+`std_list_impl_methods_and_free_functions_coexist_on_both_backends` pinning
+record-field write-back, statement-form write-back, module function calls, and
+compiled/interpreter parity.
