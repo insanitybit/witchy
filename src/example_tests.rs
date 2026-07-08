@@ -1067,6 +1067,26 @@ fn main(console: Console):
         );
     }
 
+    /// (BUG-326) Whole-valued Float rendering keeps a Float marker without using
+    /// Rust's exact fixed-point expansion for large magnitudes. This shared
+    /// formatter feeds interpolation, `show`, JSON reflection, the interpreter,
+    /// and compiled wasm.
+    #[test]
+    fn whole_float_rendering_uses_shortest_round_trip_on_both_backends() {
+        let src = "import show\nimport json\nimport reflect\n\ntype Reading derive(Reflect):\n    value: Float\n\nfn main(console: Console):\n    let big = 1234567890123456789.0\n    print(console, \"${big}\")\n    print(console, show.render(big))\n    print(console, json.stringify(Reading(big)))\n";
+        let expected = [
+            "1.2345678901234568e18",
+            "1.2345678901234568e18",
+            "{\"value\":1.2345678901234568e18}",
+        ];
+        assert_eq!(link_run(src), expected, "interp: whole Float rendering");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: whole Float rendering",
+        );
+    }
+
     /// (RFC-0053, coherence) Generic container `Show` impls are part of the same
     /// rendering model as concrete custom impls. In particular, `Set(Int)` has a
     /// structural fallback (`Set([1, 2])`) but a public display form (`{1, 2}`), so
