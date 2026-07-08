@@ -2263,7 +2263,7 @@ Return `resp` with its status code replaced.
 
 #### `fn parse_request(raw: String) -> Result(Request, Response)`
 
-Parse a whole raw HTTP/1.1 request string into a `Request` (or a 400 `Response` when it is malformed, e.g. conflicting Content-Length) — the network-free mirror of the socket reader and of `http.parse_response`. Public so a router can be tested, or a request framed by another transport re-parsed, without a socket.
+Parse a whole raw HTTP/1.1 request string into a `Request` (or a 400 `Response` when it is malformed, e.g. conflicting Content-Length or unsupported Transfer-Encoding) — the network-free mirror of the socket reader and of `http.parse_response`. Public so a router can be tested, or a request framed by another transport re-parsed, without a socket.
 
 #### `fn handle(app: Router, req: Request) -> Response`
 

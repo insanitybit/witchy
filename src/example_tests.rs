@@ -2505,6 +2505,15 @@ fn main(console: Console):
     match server.parse_request("POST /x HTTP/1.1\r\nContent-Length: 3\r\nContent-Length: 5\r\n\r\nabc"):
         Ok(_r) -> print(console, "PARSED")
         Err(resp) -> print(console, "rejected " + __render(http.status(resp)))
+    match server.parse_request("POST /upload HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n4\r\ntest\r\n0\r\n\r\n"):
+        Ok(_r) -> print(console, "chunked-request=parsed")
+        Err(resp) -> print(console, "chunked-request=" + __render(http.status(resp)))
+    match server.parse_request("POST /upload HTTP/1.1\r\nTransfer-Encoding: gzip\r\n\r\nbody"):
+        Ok(_r) -> print(console, "gzip-request=parsed")
+        Err(resp) -> print(console, "gzip-request=" + __render(http.status(resp)))
+    match server.parse_request("POST /upload HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 4\r\n\r\nbody"):
+        Ok(_r) -> print(console, "mixed-framing=parsed")
+        Err(resp) -> print(console, "mixed-framing=" + __render(http.status(resp)))
     print(console, "status=" + __render(http.status(http.parse_response("HTTP/1.1 999999999999999999999999 X\r\n\r\nb"))))
     print(console, "chunked=" + http.body(http.parse_response("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n")))
     match http.try_parse_response("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nX\r\nhello\r\n0\r\n\r\n"):
@@ -2523,6 +2532,9 @@ fn main(console: Console):
             "200".to_string(),
             "[wrapped]id= path=/api/inner".to_string(),
             "rejected 400".to_string(),
+            "chunked-request=400".to_string(),
+            "gzip-request=400".to_string(),
+            "mixed-framing=400".to_string(),
             "status=0".to_string(),
             "chunked=hello world".to_string(),
             "bad-size=chunked response has invalid chunk size `X`".to_string(),

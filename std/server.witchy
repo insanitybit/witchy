@@ -337,8 +337,9 @@ fn read_request(sock: Socket) -> Result(Request, Response):
     let raw_path = before(target, "?")
     let q = parse_query(after(target, "?"))
     let headers = read_headers(sock)
-    // (BUG-390) A request with conflicting Content-Length headers is answered 400,
-    // not processed first-wins — that mismatch is the request-smuggling primitive.
+    // Ambiguous or unsupported request framing is answered 400, not processed
+    // first-wins. In particular, `Transfer-Encoding` request bodies are rejected
+    // until the server has a strict chunked decoder for them.
     match framed_length(headers):
         Err(msg) -> Err(bad_request(msg))
         Ok(len) ->
@@ -371,9 +372,10 @@ fn parse_header_line(line: String) -> Option((String, String)):
         Some((name, value))
 
 // Parse a whole raw HTTP/1.1 request string into a `Request` (or a 400 `Response`
-// when it is malformed, e.g. conflicting Content-Length) — the network-free mirror
-// of the socket reader and of `http.parse_response`. Public so a router can be
-// tested, or a request framed by another transport re-parsed, without a socket.
+// when it is malformed, e.g. conflicting Content-Length or unsupported
+// Transfer-Encoding) — the network-free mirror of the socket reader and of
+// `http.parse_response`. Public so a router can be tested, or a request framed by
+// another transport re-parsed, without a socket.
 pub fn parse_request(raw: String) -> Result(Request, Response):
     let sep = string.index_of(raw, "\r\n\r\n") ?? -1
     let head = if sep < 0: raw else: string.substring(raw, 0, sep)
@@ -399,13 +401,14 @@ pub fn parse_request(raw: String) -> Result(Request, Response):
             Ok(Request(m, raw_path, [], q, headers, body))
 
 fn framed_length(headers: List((String, String))) -> Result(Int, String):
-    // (BUG-390) Content-Length is attacker-controlled. Two Content-Length headers
-    // with DIFFERENT values (or one header carrying a differing comma list) is a
-    // request-smuggling ambiguity — reject it (400) rather than pick first-wins.
-    // A repeated header with the SAME value is collapsed and allowed. A non-numeric
-    // OR out-of-range value must not trap (SEC-045): `string.parse_int` returns None
-    // on non-digit, empty, or i64 overflow, and any such rejection means no body.
+    // Content-Length and Transfer-Encoding are attacker-controlled framing. Two
+    // Content-Length headers with DIFFERENT values (or one header carrying a
+    // differing comma list) is a request-smuggling ambiguity — reject it (400)
+    // rather than pick first-wins. Any Transfer-Encoding is rejected for now:
+    // pretending it has no body would desynchronize the handler from the wire, and
+    // mixed Transfer-Encoding/Content-Length is explicitly ambiguous.
     var seen = false
+    var transfer = false
     var value = ""
     var conflict = false
     for h in headers:
@@ -418,7 +421,11 @@ fn framed_length(headers: List((String, String))) -> Result(Int, String):
             else:
                 seen = true
                 value = tv
-    if conflict:
+        else if k == "transfer-encoding":
+            transfer = true
+    if transfer:
+        Err("unsupported Transfer-Encoding")
+    else if conflict:
         Err("conflicting Content-Length headers")
     else if !seen:
         Ok(0)
