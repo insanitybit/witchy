@@ -1230,6 +1230,15 @@ fn main(console: Console):
             }
         }
 
+        let erased_wrapper = "import dict\n\npub fn wrapped(d: Dict(k, v), key: k) -> Option(v):\n    dict.get(d, key)\n";
+        let linked = resolve_fs_std(erased_wrapper);
+        let err = typeck::check(&linked).expect_err("generic wrapper must forward dict.get's Eq bound");
+        assert!(err.message.contains("requires `k: Eq`"), "expected forwarded Eq-bound error, got: {}", err.message);
+
+        let bounded_wrapper = "import dict\n\npub fn wrapped(d: Dict(k, v), key: k) -> Option(v) where k: Eq:\n    dict.get(d, key)\n";
+        let linked = resolve_fs_std(bounded_wrapper);
+        typeck::check(&linked).expect("generic wrapper can forward dict.get's Eq bound");
+
         let accepted = "import dict\n\nfn id(x: Int) -> Int:\n    x\n\nfn keep(_k: String, _v: Int) -> Bool:\n    true\n\nfn main(console: Console):\n    let d: Dict(String, Int) = dict.new()\n    let values: Dict(String, Int) = dict.new()\n    let _a = dict.get(d, \"one\")\n    let _b = dict.from_pairs([(\"one\", 1)])\n    let _c = dict.map_values(d, id)\n    let _d = dict.filter(d, keep)\n    let _e = dict.merge(d, d)\n    let _f = dict.invert(values)\n    print(console, \"ok\")\n";
         let linked = resolve_fs_std(accepted);
         typeck::check(&linked).expect("bounded dict wrappers type-check");

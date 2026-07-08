@@ -2079,6 +2079,8 @@ fn collect_type_params(t: &ast::Type, acc: &mut Vec<String>) {
 /// as `(name, type)`. Field types may mention the parameters, instantiated with
 /// the value's actual type arguments on access.
 type RecordInfo = (Vec<u32>, Vec<(String, Ty)>);
+type CallObligations = Vec<(Ty, String)>;
+type UserCallSig = (Vec<Ty>, Ty, CallObligations);
 
 struct Checker {
     /// When annotating (see `annotate`): expression identity -> inferred type,
@@ -2110,6 +2112,11 @@ struct Checker {
     /// Per-function type parameters (name, var id), from lowercase type names in
     /// signatures. Generalized: instantiated fresh at each call site.
     fn_typarams: HashMap<String, Vec<(String, u32)>>,
+    /// Per-function call obligations from `where` clauses, keyed to the same
+    /// signature type-parameter var ids as `fn_typarams`. These are checked at a
+    /// generic call site so wrapper functions cannot erase a callee's public
+    /// protocol bounds.
+    fn_bounds: HashMap<String, Vec<(u32, String)>>,
     /// (BUG-308) The type parameters (name -> var id) of the function whose body is
     /// currently being checked, so a body `let`/`var` ascription's lowercase name
     /// (`let out: List(a) = …`) resolves to the SAME type-parameter var as the
@@ -2341,6 +2348,30 @@ impl Checker {
     /// parameters with fresh vars, so each call site is independent. Other
     /// (inference) vars stay shared, keeping un-annotated functions monomorphic.
     fn instantiate(&mut self, params: &[Ty], ret: &Ty, typarams: &HashSet<u32>) -> (Vec<Ty>, Ty) {
+        let fresh_map = self.fresh_typeparam_map(typarams);
+        let p = params.iter().map(|t| self.subst_vars(t, &fresh_map)).collect();
+        let r = self.subst_vars(ret, &fresh_map);
+        (p, r)
+    }
+
+    fn instantiate_with_bounds(
+        &mut self,
+        params: &[Ty],
+        ret: &Ty,
+        typarams: &HashSet<u32>,
+        bounds: &[(u32, String)],
+    ) -> UserCallSig {
+        let fresh_map = self.fresh_typeparam_map(typarams);
+        let p = params.iter().map(|t| self.subst_vars(t, &fresh_map)).collect();
+        let r = self.subst_vars(ret, &fresh_map);
+        let bs = bounds
+            .iter()
+            .map(|(var, tr)| (self.subst_vars(&Ty::Var(*var), &fresh_map), tr.clone()))
+            .collect();
+        (p, r, bs)
+    }
+
+    fn fresh_typeparam_map(&mut self, typarams: &HashSet<u32>) -> HashMap<u32, Ty> {
         let mut fresh_map: HashMap<u32, Ty> = HashMap::new();
         for &v in typarams {
             // Checking the function's body may have *bound* the type-param var to
@@ -2354,9 +2385,7 @@ impl Checker {
                 fresh_map.entry(rv).or_insert_with(|| self.fresh());
             }
         }
-        let p = params.iter().map(|t| self.subst_vars(t, &fresh_map)).collect();
-        let r = self.subst_vars(ret, &fresh_map);
-        (p, r)
+        fresh_map
     }
 
     fn subst_vars(&self, t: &Ty, map: &HashMap<u32, Ty>) -> Ty {
@@ -2582,6 +2611,82 @@ impl Checker {
     }
     fn is_mutable(&self, name: &str) -> Option<bool> {
         self.resolve_binding(name).map(|(_, m)| *m)
+    }
+
+    fn user_call_sig_with_bounds(&mut self, name: &str) -> Option<UserCallSig> {
+        let (params, ret) = self.fn_sigs.get(name).cloned()?;
+        let typarams: HashSet<u32> = self
+            .fn_typarams
+            .get(name)
+            .into_iter()
+            .flatten()
+            .map(|(_, id)| *id)
+            .collect();
+        let bounds = self.fn_bounds.get(name).cloned().unwrap_or_default();
+        Some(self.instantiate_with_bounds(&params, &ret, &typarams, &bounds))
+    }
+
+    fn unknown_call(&self, name: &str, args: &[Expr]) -> Result<Ty, TypeError> {
+        // `to_string` was removed from the surface: interpolation IS the
+        // rendering (it desugars to the internal __render).
+        if name == "to_string" || name == "int_to_string" {
+            return terr(format!(
+                "`{name}` was removed — render with `\"${{x}}\"` \
+                 interpolation (it works on every value), or \
+                 `say(console, x)` to print a `Show` value"
+            ));
+        }
+        // `show` is the `Show` trait method, not a free function: a bare
+        // `show(x)` resolves only when x's concrete type is statically known
+        // here. Point at the renderers that always work, rather than the
+        // misleading `import set` near-miss (`set.show` is an unrelated
+        // same-named module function).
+        if name == "show" && args.len() == 1 {
+            return terr(
+                "could not resolve the `Show` method `show` on this \
+                 value — a bare `show(x)` needs x's concrete type to be \
+                 statically known. Render any value with `\"${x}\"` \
+                 interpolation or `say(console, x)`, or bind x via a \
+                 `for` loop or a typed parameter so dispatch resolves",
+            );
+        }
+        // A retired global builtin: name the module-qualified spelling that
+        // replaced it (the one-cut migration).
+        if let Some(moved) = witchy_syntax::aliases::moved_builtin(name) {
+            return terr(format!(
+                "`{name}` moved to `{moved}` — pure data operations are \
+                 module-qualified now (no import needed; the core modules \
+                 are always available)"
+            ));
+        }
+        // `<` `<=` `>` `>=` desugar to these trait-method calls; an unresolved one
+        // means the operand's type lacks `Ord`, so name the operator and the fix
+        // rather than leaking the desugar name.
+        if let Some(op) = match name {
+            "less" => Some("<"),
+            "greater" => Some(">"),
+            "less_equal" => Some("<="),
+            "greater_equal" => Some(">="),
+            _ => None,
+        } {
+            return terr(format!(
+                "`{op}` is not defined for this type — it requires `Ord`; derive it \
+                 with `derive(PartialEq, Eq, PartialOrd, Ord)` or implement it"
+            ));
+        }
+        // If the name is an unimported stdlib function, point the way; otherwise
+        // suggest a near-miss stdlib name (a likely typo).
+        let hint = match witchy_syntax::linker::std_modules_for_function(name).as_slice() {
+            [m] => format!(" — did you forget `import {m}`?"),
+            many if !many.is_empty() => {
+                format!(" — did you forget to import one of: {}?", many.join(", "))
+            }
+            _ => match witchy_syntax::linker::closest_std_function(name) {
+                Some((cand, m)) => format!(" — did you mean `{cand}` (`import {m}`)?"),
+                None => String::new(),
+            },
+        };
+        terr(format!("call to unknown function `{name}`{hint}"))
     }
 
     fn call_sig(&mut self, name: &str) -> Option<(Vec<Ty>, Ty)> {
@@ -3734,69 +3839,16 @@ impl Checker {
                 if let Some(t) = self.check_try_ctx(name, args)? {
                     return Ok(t);
                 }
-                let Some((params, ret)) = self.call_sig(name) else {
-                    // `to_string` was removed from the surface: interpolation
-                    // IS the rendering (it desugars to the internal __render).
-                    if name == "to_string" || name == "int_to_string" {
-                        return terr(format!(
-                            "`{name}` was removed — render with `\"${{x}}\"` \
-                             interpolation (it works on every value), or \
-                             `say(console, x)` to print a `Show` value"
-                        ));
-                    }
-                    // `show` is the `Show` trait method, not a free function: a
-                    // bare `show(x)` resolves only when x's concrete type is
-                    // statically known here. Point at the renderers that always
-                    // work, rather than the misleading `import set` near-miss
-                    // (`set.show` is an unrelated same-named module function).
-                    if name == "show" && args.len() == 1 {
-                        return terr(
-                            "could not resolve the `Show` method `show` on this \
-                             value — a bare `show(x)` needs x's concrete type to be \
-                             statically known. Render any value with `\"${x}\"` \
-                             interpolation or `say(console, x)`, or bind x via a \
-                             `for` loop or a typed parameter so dispatch resolves",
-                        );
-                    }
-                    // A retired global builtin: name the module-qualified
-                    // spelling that replaced it (the one-cut migration).
-                    if let Some(moved) = witchy_syntax::aliases::moved_builtin(name) {
-                        return terr(format!(
-                            "`{name}` moved to `{moved}` — pure data operations are \
-                             module-qualified now (no import needed; the core modules \
-                             are always available)"
-                        ));
-                    }
-                    // `<` `<=` `>` `>=` desugar to these trait-method calls; an
-                    // unresolved one means the operand's type lacks `Ord`, so name
-                    // the operator and the fix rather than leaking the desugar name
-                    // (and suggesting an unrelated `list` function as a "typo").
-                    if let Some(op) = match name.as_str() {
-                        "less" => Some("<"),
-                        "greater" => Some(">"),
-                        "less_equal" => Some("<="),
-                        "greater_equal" => Some(">="),
-                        _ => None,
-                    } {
-                        return terr(format!(
-                            "`{op}` is not defined for this type — it requires `Ord`; derive it \
-                             with `derive(PartialEq, Eq, PartialOrd, Ord)` or implement it"
-                        ));
-                    }
-                    // If the name is an unimported stdlib function, point the way;
-                    // otherwise suggest a near-miss stdlib name (a likely typo).
-                    let hint = match witchy_syntax::linker::std_modules_for_function(name).as_slice() {
-                        [m] => format!(" — did you forget `import {m}`?"),
-                        many if !many.is_empty() => {
-                            format!(" — did you forget to import one of: {}?", many.join(", "))
+                let (params, ret, call_bounds) =
+                    match self.user_call_sig_with_bounds(name) {
+                        Some(sig) => sig,
+                        None => {
+                            let Some((params, ret)) = self.call_sig(name) else {
+                                return self.unknown_call(name, args);
+                            };
+                            (params, ret, Vec::new())
                         }
-                        _ => match witchy_syntax::linker::closest_std_function(name) {
-                            Some((cand, m)) => format!(" — did you mean `{cand}` (`import {m}`)?"),
-                            None => String::new(),
-                        },
                     };
-                    return terr(format!("call to unknown function `{name}`{hint}"));
-                };
                 if params.len() != args.len() {
                     return terr(format!(
                         "`{name}` expects {} argument(s) but got {}",
@@ -3826,6 +3878,9 @@ impl Checker {
                     }
                     self.coerce_arg(param_ty, &at)
                         .map_err(|e| TypeError { message: format!("in call to `{name}`: {}", e.message) })?;
+                }
+                for (bound_ty, trait_name) in &call_bounds {
+                    self.require_call_bound(name, bound_ty, trait_name)?;
                 }
                 // (BUG-395) A generic `Dict` key operation's key must be `Eq` — record
                 // the (post-unification) key type and its line; validated once the
@@ -4984,6 +5039,58 @@ impl Checker {
         })
     }
 
+    fn trait_alternatives(trait_name: &str) -> &'static [&'static str] {
+        match trait_name.rsplit('.').next().unwrap_or(trait_name) {
+            "PartialEq" => &["PartialEq", "Eq", "PartialOrd", "Ord"],
+            "Eq" => &["Eq", "Ord"],
+            "PartialOrd" => &["PartialOrd", "Ord"],
+            "Ord" => &["Ord"],
+            "Show" => &["Show"],
+            "Reflect" => &["Reflect"],
+            "Deserialize" => &["Deserialize"],
+            "From" => &["From"],
+            "Into" => &["Into"],
+            _ => &[],
+        }
+    }
+
+    fn require_call_bound(
+        &self,
+        callee: &str,
+        bound_ty: &Ty,
+        trait_name: &str,
+    ) -> Result<(), TypeError> {
+        let resolved = self.resolve(bound_ty);
+        if !ty_has_var(&resolved) {
+            return Ok(());
+        }
+        let Some(id) = first_type_var(&resolved) else {
+            return Ok(());
+        };
+        let Some(var_name) = self
+            .current_typarams
+            .iter()
+            .find_map(|(name, v)| (*v == id).then_some(name.as_str()))
+        else {
+            return Ok(());
+        };
+        let alternatives = Self::trait_alternatives(trait_name);
+        let ok = self.current_bounds.iter().any(|(var, tr)| {
+            let bare = tr.rsplit('.').next().unwrap_or(tr);
+            var == var_name && alternatives.contains(&bare)
+        });
+        if ok {
+            return Ok(());
+        }
+        let bare_trait = trait_name.rsplit('.').next().unwrap_or(trait_name);
+        terr(format!(
+            "`{}` requires `{var_name}: {bare_trait}` at this call to `{}` — add \
+             `where {var_name}: {bare_trait}` to the enclosing generic function",
+            callee.rsplit('.').next().unwrap_or(callee),
+            callee
+        ))
+    }
+
     fn check_function(&mut self, func: &Function) -> Result<(), TypeError> {
         borrow_escape_check(func)?;
         let (params, ret) = self.fn_sigs.get(&func.name).cloned().unwrap();
@@ -5327,6 +5434,7 @@ fn run_check_selected(
         sealed_types: HashSet::new(),
         adt_variants: HashMap::new(),
         fn_typarams: HashMap::new(),
+        fn_bounds: HashMap::new(),
         current_typarams: HashMap::new(),
         current_bounds: Vec::new(),
         subst: HashMap::new(),
@@ -5360,13 +5468,22 @@ fn run_check_selected(
                 };
                 c.fn_sigs.insert(f.name.clone(), (params, ret));
                 let typarams: Vec<(String, u32)> = vars
-                    .into_iter()
+                    .iter()
                     .filter_map(|(name, ty)| match ty {
-                        Ty::Var(v) => Some((name, v)),
+                        Ty::Var(v) => Some((name.clone(), *v)),
+                        _ => None,
+                    })
+                    .collect();
+                let bounds: Vec<(u32, String)> = f
+                    .bounds
+                    .iter()
+                    .filter_map(|(var, tr, _)| match vars.get(var) {
+                        Some(Ty::Var(v)) => Some((*v, tr.clone())),
                         _ => None,
                     })
                     .collect();
                 c.fn_typarams.insert(f.name.clone(), typarams);
+                c.fn_bounds.insert(f.name.clone(), bounds);
                 c.fn_conventions
                     .insert(f.name.clone(), f.params.iter().map(|p| p.convention).collect());
                 if f.is_mutator() {

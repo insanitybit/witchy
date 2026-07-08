@@ -1906,6 +1906,28 @@ fn main():
     }
 
     #[test]
+    fn bounded_generic_call_requires_wrapper_to_forward_bound() {
+        // A public bounded helper's `where` clause is part of its call contract.
+        // A generic wrapper must forward that obligation instead of exporting an
+        // apparently unbounded signature.
+        let err = check_str(
+            "fn needs_eq(x: a) -> a where a: Eq:\n    x\n\nfn wrapper(x: a) -> a:\n    needs_eq(x)\n",
+        )
+        .expect_err("unbounded wrapper must not erase callee Eq obligation");
+        assert!(err.contains("requires `a: Eq`"), "{err}");
+
+        check_str(
+            "fn needs_eq(x: a) -> a where a: Eq:\n    x\n\nfn wrapper(x: a) -> a where a: Eq:\n    needs_eq(x)\n",
+        )
+        .expect("forwarding the Eq bound satisfies the call contract");
+
+        check_str(
+            "fn needs_eq(x: a) -> a where a: Eq:\n    x\n\nfn wrapper(x: a) -> a where a: Ord:\n    needs_eq(x)\n",
+        )
+        .expect("Ord discharges its Eq supertrait obligation");
+    }
+
+    #[test]
     fn dequalify_home_strips_only_the_home_module() {
         // BUG-292: a home-module name renders bare; a cross-module name keeps its
         // qualifier (it disambiguates a same-named type from another module).
