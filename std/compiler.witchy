@@ -5,6 +5,11 @@
 // package manager can compute a rune's supply-chain footprint from within
 // witchy — on either backend. The body below is a placeholder the runtime never
 // executes (the call is intercepted by its qualified name).
+
+import json
+import option
+import result
+
 // The capability footprint of witchy `source`, as JSON:
 //   {"total":[..],"build":[..],"entries":[{"name":..,"capabilities":[..],"brands":[..]}]}
 // or {"error":".."} if the source does not parse or contains `comptime:` blocks.
@@ -21,12 +26,32 @@ pub fn footprint(source: String) -> String:
 pub fn diff(old: String, new: String) -> String:
     old
 
+fn __doc_result_json(name: String, source: String) -> String:
+    name
+
+// Render `source` to Markdown API documentation, or return a parse/comptime
+// boundary error as `Err`. This is the tooling API for registries and package
+// managers: it gives callers an inspectable error channel instead of hiding a
+// failure inside presentation Markdown.
+pub fn try_doc(name: String, source: String) -> Result(String, String):
+    match json.decode(__doc_result_json(name, source)):
+        Err(e) -> Err("compiler.try_doc internal JSON error: " + json.decode_error_message(e))
+        Ok(doc_result) ->
+            match json.get_string(doc_result, "ok"):
+                Some(md) -> Ok(md)
+                None ->
+                    match json.get_string(doc_result, "error"):
+                        Some(message) -> Err(message)
+                        None -> Err("compiler.try_doc internal JSON error: missing `ok` or `error`")
+
 // Render `source` to Markdown API documentation (the same output as `witchy doc`
 // for source-only modules):
 // the module's public types and functions with their signatures and doc-comments,
 // under a heading titled `name`. This only PARSES the source — it never runs it —
 // so a registry can safely generate browsable docs from a rune's stored source on
-// either backend. A parse/comptime-boundary error comes back as an HTML comment,
-// never a trap.
+// either backend. Display callers get parse/comptime-boundary errors as an HTML
+// comment; tooling should prefer `try_doc`.
 pub fn doc(name: String, source: String) -> String:
-    source
+    match try_doc(name, source):
+        Ok(md) -> md
+        Err(e) -> "<!-- doc error: " + e + " -->"

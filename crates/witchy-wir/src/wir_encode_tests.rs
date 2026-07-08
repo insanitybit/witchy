@@ -144,6 +144,7 @@
             "regex_match_spans", "dir_list", "net_resolve", "get_env", "float_to_str", "string_from_code", "build_args",
             "crypto_sha256", "crypto_sha512", "crypto_sha3_256", "crypto_hmac_sha256", "crypto_rune_hash",
             "crypto_sign", "crypto_public_key", "compiler_footprint", "compiler_diff", "compiler_doc",
+            "compiler_doc_result_json",
             "net_recv_line", "net_recv_all", "net_recv_bytes",
             "vm_par_map", "vm_par_map_bytes", "vm_serve", "vm_with_dir",
         ];

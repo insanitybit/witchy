@@ -44,6 +44,7 @@ pub fn lookup(qualified: &str) -> Option<NativeFn> {
         "compiler.footprint" => Some(compiler::footprint),
         "compiler.diff" => Some(compiler::diff),
         "compiler.doc" => Some(compiler::doc),
+        "compiler.__doc_result_json" => Some(compiler::doc_result_json),
         "encoding.utf8_lossy" => Some(encoding::utf8_lossy),
         "encoding.hex_encode" => Some(encoding::hex_encode),
         "encoding.hex_encode_bytes" => Some(encoding::hex_encode_bytes),
@@ -585,10 +586,22 @@ mod compiler {
         let [Value::Str(name), Value::Str(src)] = args else {
             return Err(type_error("compiler.doc expects (name, source) strings"));
         };
-        let md = parse_source_only_module(src, "compiler.doc")
-            .and_then(|module| witchy_syntax::doc::render_module(name, src, &module))
+        let md = render_doc_result(name, src, "compiler.doc")
             .unwrap_or_else(|e| format!("<!-- doc error: {e} -->"));
         Ok(Value::Str(md))
+    }
+
+    /// Fallible docs as inspectable JSON for `compiler.try_doc`:
+    /// `{"ok":"markdown"}` or `{"error":"message"}`.
+    pub fn doc_result_json(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::Str(name), Value::Str(src)] = args else {
+            return Err(type_error("compiler.__doc_result_json expects (name, source) strings"));
+        };
+        let json = match render_doc_result(name, src, "compiler.try_doc") {
+            Ok(md) => format!("{{\"ok\":{}}}", string(&md)),
+            Err(e) => format!("{{\"error\":{}}}", string(&e)),
+        };
+        Ok(Value::Str(json))
     }
 
     /// Compare two witchy sources by capability footprint, as JSON:
@@ -629,6 +642,10 @@ mod compiler {
             ));
         }
         Ok(module)
+    }
+
+    fn render_doc_result(name: &str, src: &str, op: &str) -> Result<String, String> {
+        parse_source_only_module(src, op).and_then(|module| witchy_syntax::doc::render_module(name, src, &module))
     }
 
     /// A JSON string literal (quoted, with `"` and `\` escaped).

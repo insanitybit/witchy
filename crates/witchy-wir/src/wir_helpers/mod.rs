@@ -4580,6 +4580,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: true,
             uses_table: false,
         }),
+        "compiler_doc_result_json" => Some(WirHelperSpec {
+            func: compiler_introspect_helper("compiler_doc_result_json", "compiler_doc_result_json_len", 2),
+            helper_deps: &["rc_alloc"],
+            import_deps: &["compiler_doc_result_json_len", "fill_pending"],
+            uses_heap: true,
+            uses_table: false,
+        }),
         "now" => Some(WirHelperSpec {
             func: host_call_helper_ret("now", "now", 0, WirTy::Int),
             helper_deps: &[],

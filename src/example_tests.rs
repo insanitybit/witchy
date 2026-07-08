@@ -1510,6 +1510,21 @@ fn main(console: Console):
         assert!(md.contains("does not support comptime"), "doc error must name the boundary: {md}");
     }
 
+    #[test]
+    fn compiler_try_doc_reports_parse_errors_as_result_on_both_backends() {
+        let src = "import compiler\n\nfn main(console: Console):\n    match compiler.try_doc(\"bad\", \"fn broken( ->\"):\n        Ok(_) -> print(console, \"unexpected ok\")\n        Err(e) -> print(console, e)\n    print(console, compiler.doc(\"bad\", \"fn broken( ->\"))\n";
+        let expected = [
+            "parse error at 1:12: expected an identifier, found `->`",
+            "<!-- doc error: parse error at 1:12: expected an identifier, found `->` -->",
+        ];
+        assert_eq!(link_run(src), expected, "interp: compiler.try_doc error channel");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: compiler.try_doc error channel",
+        );
+    }
+
     /// (BUG-539) `Bytes` is ordinary core data, so it must participate in the
     /// public display and reflection protocols instead of being printable only by
     /// the interpreter's private `Value::Display` path. `Show` stays concise and

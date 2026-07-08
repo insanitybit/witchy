@@ -82,6 +82,7 @@ const HELPER_NAMES: &[&str] = &[
     "compiler_footprint",
     "compiler_diff",
     "compiler_doc",
+    "compiler_doc_result_json",
     "build_user_cap_field",
     "float_to_str",
     "encoding",
@@ -216,6 +217,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "compiler_footprint_len" (func $compiler_footprint_len_host (param i32) (result i32)))
   (import "witchy" "compiler_diff_len" (func $compiler_diff_len_host (param i32 i32) (result i32)))
   (import "witchy" "compiler_doc_len" (func $compiler_doc_len_host (param i32 i32) (result i32)))
+  (import "witchy" "compiler_doc_result_json_len" (func $compiler_doc_result_json_len_host (param i32 i32) (result i32)))
   (import "witchy" "user_cap_field_len" (func $user_cap_field_len_host (param i32 i32) (result i32)))
   (import "witchy" "field_str_len" (func $field_str_len_host (param i32) (result i32)))
   (import "witchy" "field_intlist_len" (func $field_intlist_len_host (param i32) (result i32)))
@@ -296,7 +298,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 82;
+pub const IMPORT_COUNT: usize = 83;
 
 /// The full ordered name list for the funcs section: `$mk0..$mk{MAX_MK}` then
 /// the static helper names. Matches the order the prelude emits bodies, so

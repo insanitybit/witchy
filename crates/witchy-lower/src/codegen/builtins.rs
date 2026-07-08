@@ -188,6 +188,9 @@ impl Codegen {
                 call("compiler_diff", self.lower_args(&[&args[0], &args[1]])?)
             }
             ("compiler.doc", 2) => call("compiler_doc", self.lower_args(&[&args[0], &args[1]])?),
+            ("compiler.__doc_result_json", 2) => {
+                call("compiler_doc_result_json", self.lower_args(&[&args[0], &args[1]])?)
+            }
             ("regex.match_spans", 2) => {
                 self.uses_regex_spans = true;
                 call("regex_match_spans", self.lower_args(&[&args[0], &args[1]])?)

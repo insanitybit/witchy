@@ -794,6 +794,7 @@ pub(crate) fn link_capability_imports(
     linker.func_wrap("witchy", "compiler_footprint_len", host_compiler_footprint_len)?;
     linker.func_wrap("witchy", "compiler_diff_len", host_compiler_diff_len)?;
     linker.func_wrap("witchy", "compiler_doc_len", host_compiler_doc_len)?;
+    linker.func_wrap("witchy", "compiler_doc_result_json_len", host_compiler_doc_result_json_len)?;
     linker.func_wrap("witchy", "user_cap_field_len", host_user_cap_field_len)?;
     linker.func_wrap("witchy", "regex_match_spans_len", host_regex_match_spans_len)?;
     // Float -> string formatting is pure; done in the host so it is byte-
@@ -1143,6 +1144,29 @@ fn host_compiler_doc_len(
     };
     let len = md.len() as i32;
     caller.data_mut().pending = Some(md.into_bytes());
+    Ok(len)
+}
+
+/// `compiler_doc_result_json_len(name_ptr, src_ptr) -> Int`: render the
+/// inspectable `compiler.try_doc` JSON result, stage it for `fill_pending`, and
+/// report its byte length.
+fn host_compiler_doc_result_json_len(
+    mut caller: Caller<'_, VmState>,
+    name_ptr: i32,
+    src_ptr: i32,
+) -> Result<i32> {
+    use crate::value::NativeValue as Value;
+    let mem = memory_of(&mut caller)?;
+    let name = read_wstr(mem.data(&caller), name_ptr)?;
+    let src = read_wstr(mem.data(&caller), src_ptr)?;
+    let f = crate::native::lookup("compiler.__doc_result_json")
+        .ok_or_else(|| Error::msg("compiler.__doc_result_json is not registered"))?;
+    let json = match f(&[Value::Str(name), Value::Str(src)]).map_err(|e| Error::msg(e.message))? {
+        Value::Str(s) => s,
+        _ => return Err(Error::msg("compiler.__doc_result_json did not return a String")),
+    };
+    let len = json.len() as i32;
+    caller.data_mut().pending = Some(json.into_bytes());
     Ok(len)
 }
 

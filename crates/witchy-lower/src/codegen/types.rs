@@ -286,7 +286,7 @@ impl Codegen {
                 | "crypto.public_key" | "crypto.reveal" | "read" | "read_build" | "crypto.rune_hash"
                 | "exec"
                 | "compiler.footprint"
-                | "compiler.diff" | "compiler.doc" | "regex.match_spans" | "recv_line" | "recv_all"
+                | "compiler.diff" | "compiler.doc" | "compiler.__doc_result_json" | "regex.match_spans" | "recv_line" | "recv_all"
                 | "crypto.sha512" | "crypto.sha3_256" | "crypto.hmac_sha256"
                 | "encoding.hex_encode_bytes" | "encoding.base64_encode_bytes"
                 | "encoding.base64url_encode_bytes"
