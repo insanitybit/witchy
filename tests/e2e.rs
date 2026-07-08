@@ -922,6 +922,42 @@ fn promote_requires_distinct_identity() {
     assert!(stdout(&out).contains("promote: 403"), "expected 403: {}", stdout(&out));
 }
 
+/// BUG-379: maintainer policy is durable authority state. If
+/// `_policy/<ns>/maintainers.json` is malformed or wrong-shaped, coven must report
+/// registry corruption (500), not silently decode it as an empty maintainer set
+/// and return the misleading authorization denial (403).
+#[test]
+fn corrupt_maintainer_policy_is_registry_state_error() {
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "corrupt-maintainers");
+    let dir = fe.lib("acme/corrupt", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
+    let ci = server.ci_token("acme-corrupt-repo", "release.yml");
+    let out = fe.pm(&dir, &["publish", "."], Some(&ci));
+    assert!(out.status.success() && stdout(&out).contains("publish: 200"), "publish: {}", stdout(&out));
+
+    let alice = server.human_token("alice");
+    let out = fe.pm(&dir, &["promote", "acme/corrupt", "1.0.0"], Some(&alice));
+    assert!(out.status.success() && stdout(&out).contains("promote: 200"), "promote: {}", stdout(&out));
+
+    let policy = server.regroot.join("registry/_policy/acme/maintainers.json");
+    assert!(policy.exists(), "first promotion must bind maintainer policy at {}", policy.display());
+    std::fs::write(&policy, "{\"maintainers\":[]}").unwrap();
+
+    std::fs::write(dir.join("witchy.toml"), "[rune]\nname = \"acme/corrupt\"\nversion = \"1.1.0\"\n").unwrap();
+    let ci2 = server.ci_token("acme-corrupt-repo", "release.yml");
+    let out = fe.pm(&dir, &["publish", "."], Some(&ci2));
+    assert!(out.status.success() && stdout(&out).contains("publish: 200"), "republish: {}", stdout(&out));
+
+    let addr = format!("127.0.0.1:{}", server.port);
+    let body = format!(
+        "{{\"name\":\"acme/corrupt\",\"version\":\"1.1.0\",\"second_factor\":\"webauthn\",\"promoted_by\":\"alice\",\"id_token\":{}}}",
+        json_str(&alice),
+    );
+    let (status, body) = http_post(&addr, "/coven/promote", &body);
+    assert_eq!(status, 500, "corrupt maintainer policy must fail as registry state: {body}");
+    assert!(body.contains("corrupt maintainer policy"), "expected corruption message, got: {body}");
+}
+
 /// The supply-chain gate on a DIRECT `add` (§10): adding a rune that introduces a
 /// capability the project does not already admit BLOCKS and writes nothing, until
 /// the consumer consents with `--allow-cap <Cap>`. The front-end diffs the rune's

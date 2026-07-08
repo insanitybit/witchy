@@ -487,10 +487,12 @@ impl Coven:
         let id = coven_json.str(claims, "iss") + "|" + coven_json.str(claims, "sub")
         if !exists(self.store, mfile):
             Ok(coven_json.str(claims, "sub"))
-        else if coven_footprint.member(coven_trust.string_array(read(self.store, mfile)), id):
-            Ok(coven_json.str(claims, "sub"))
         else:
-            Err(CovenError(403, "`" + coven_json.str(claims, "sub") + "` is not a maintainer of namespace `" + ns + "`"))
+            let maintainers = self.maintainer_ids(ns, mfile)?
+            if coven_footprint.member(maintainers, id):
+                Ok(coven_json.str(claims, "sub"))
+            else:
+                Err(CovenError(403, "`" + coven_json.str(claims, "sub") + "` is not a maintainer of namespace `" + ns + "`"))
 
     fn bind_maintainer(self, name: String, claims: Json):
         // Commit the trust-on-first-use maintainer binding, only for an as-yet-unclaimed
@@ -511,8 +513,12 @@ impl Coven:
             let mfile = "_policy/" + ns + "/maintainers.json"
             require(exists(self.store, mfile), 403, "namespace `" + ns + "` has no registered maintainers; nothing may be yanked")?
             let id = coven_json.str(claims, "iss") + "|" + coven_json.str(claims, "sub")
-            require(coven_footprint.member(coven_trust.string_array(read(self.store, mfile)), id), 403, "`" + coven_json.str(claims, "sub") + "` is not a maintainer of namespace `" + ns + "`")?
+            let maintainers = self.maintainer_ids(ns, mfile)?
+            require(coven_footprint.member(maintainers, id), 403, "`" + coven_json.str(claims, "sub") + "` is not a maintainer of namespace `" + ns + "`")?
             Ok(coven_json.str(claims, "sub"))
+
+    fn maintainer_ids(self, ns: String, path: String) -> Result(List(String), CovenError):
+        coven_trust.string_array(read(self.store, path)).map_err(fn(e: String): CovenError(500, "corrupt maintainer policy for namespace `" + ns + "` (" + e + "); it must be repaired or rebound out of band"))
 
     fn load_record(self, name: String, version: String) -> Result(Record, CovenError):
         match coven_store.read_record(self.store, name, version):

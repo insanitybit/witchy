@@ -41,9 +41,29 @@ pub fn claim(claims: Json, key: String) -> String:
 pub fn attestation(claims: Json, digest: String, now: Int) -> String:
     "trusted-publisher|issuer=" + coven_json.str(claims, "iss") + "|sub=" + coven_json.str(claims, "sub") + "|repository=" + claim(claims, "repository") + "|workflow_ref=" + claim(claims, "workflow_ref") + "|ref=" + claim(claims, "ref") + "|digest=" + digest + "|verified_at=" + "${now}"
 
-// A JSON string array (e.g. a namespace's maintainers.json) as a list of strings.
-pub fn string_array(text: String) -> List(String):
-    json.decode(text).map_ok(fn(doc: Json): json.strings(doc)).unwrap_or([])
+// A durable trust-policy JSON string array (e.g. a namespace's maintainers.json).
+// Unlike coven's request-body helpers, malformed or wrong-shaped policy state is
+// corruption, not an empty policy.
+pub fn string_array(text: String) -> Result(List(String), String):
+    match json.decode(text):
+        Err(e) -> Err(json.decode_error_message(e))
+        Ok(doc) -> strict_string_array(doc)
+
+fn strict_string_array(doc: Json) -> Result(List(String), String):
+    match doc:
+        JsonArray(items) -> strict_strings(items)
+        _ -> Err("expected a JSON array of strings")
+
+fn strict_strings(items: List(Json)) -> Result(List(String), String):
+    var out: List(String) = []
+    var index = 0
+    for item in items:
+        if let JsonString(s) = item:
+            out = list.push(out, s)
+        else:
+            return Err("expected a string at index ${index}")
+        index = index + 1
+    Ok(out)
 
 // Verify a request's identity token (a compact OIDC JWT): the token's `iss` selects the
 // trusted issuer's pinned key, then `verify_oidc` checks the RS256 signature, that the

@@ -1622,6 +1622,34 @@ fn main(console: Console):
     }
 
     #[test]
+    fn coven_maintainer_policy_string_array_is_strict() {
+        let src = "import coven_trust\nimport list\n\nfn report(text: String) -> String:\n    match coven_trust.string_array(text):\n        Ok(xs) -> \"ok:\" + list.join(xs, \",\")\n        Err(e) -> \"err:\" + e\n\nfn main(console: Console):\n    print(console, report(\"[\\\"gha|alice\\\",\\\"gha|bob\\\"]\"))\n    print(console, report(\"{\\\"maintainers\\\":[]}\"))\n    print(console, report(\"[\\\"gha|alice\\\",7]\"))\n    print(console, report(\"[\"))\n";
+        let sources = [
+            ("coven_json", include_str!("../projects/coven/src/coven_json.witchy")),
+            ("coven_trust", include_str!("../projects/coven/src/coven_trust.witchy")),
+            ("main", src),
+        ];
+        let modules: Vec<(String, ast::Module)> = sources
+            .iter()
+            .map(|(name, source)| ((*name).to_string(), parser::parse_module(source).expect("parse")))
+            .collect();
+        let linked = crate::pipeline::link(modules, "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let interp = interpreter::run_module(linked, ".", Vec::new()).expect("interp");
+        let wasm = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interp, wasm, "strict maintainer policy decode must be backend-stable");
+        assert_eq!(
+            wasm,
+            [
+                "ok:gha|alice,gha|bob",
+                "err:expected a JSON array of strings",
+                "err:expected a string at index 1",
+                "err:unexpected end of input",
+            ],
+        );
+    }
+
+    #[test]
     fn native_compiler_intrinsics_reject_comptime_source_strings() {
         use crate::value::NativeValue;
 
