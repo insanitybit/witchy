@@ -5,6 +5,7 @@
 // by name. Built-in impls cover the primitives; `Self` in a method signature
 // stands for the implementing type. Pure and capability-free.
 
+import bytes
 import option
 
 // The result of a comparison: `a` is `Less` than, `Equal` to, or `Greater` than
@@ -64,6 +65,27 @@ pub fn reverse(o: Ordering) -> Ordering:
         Equal -> Equal
 
 // --- primitive impls ---------------------------------------------------------
+impl PartialEq for Ordering:
+    fn eq(self, other: Self) -> Bool:
+        match self:
+            Less ->
+                match other:
+                    Less -> true
+                    _ -> false
+            Equal ->
+                match other:
+                    Equal -> true
+                    _ -> false
+            Greater ->
+                match other:
+                    Greater -> true
+                    _ -> false
+
+    fn ne(self, other: Self) -> Bool:
+        !eq(self, other)
+
+impl Eq for Ordering
+
 impl PartialEq for Int:
     fn eq(self, other: Self) -> Bool:
         self == other
@@ -109,6 +131,25 @@ impl Ord for String:
             Greater
         else:
             Equal
+
+// Byte buffers compare by byte contents, matching direct `==` and String's
+// content equality. `Bytes` deliberately has equality but no ordering protocol.
+impl PartialEq for Bytes:
+    fn eq(self, other: Self) -> Bool:
+        let n = bytes.length(self)
+        if n != bytes.length(other):
+            return false
+        var i = 0
+        while i < n:
+            if bytes.at(self, i) != bytes.at(other, i):
+                return false
+            i = i + 1
+        true
+
+    fn ne(self, other: Self) -> Bool:
+        !eq(self, other)
+
+impl Eq for Bytes
 
 impl PartialEq for Duration:
     fn eq(self, other: Self) -> Bool:
@@ -161,7 +202,7 @@ impl PartialEq for List(a) where a: PartialEq:
             return false
         var i = 0
         while i < n:
-            if list.at(self, i) != list.at(other, i):
+            if !(list.at(self, i) == list.at(other, i)):
                 return false
             i = i + 1
         true
@@ -214,6 +255,85 @@ impl PartialEq for Dict(k, v) where k: Eq, v: PartialEq:
         true
 
 impl Eq for Dict(k, v) where k: Eq, v: Eq
+
+// Tuples compare slot-by-slot through each slot's equality protocol. The tuple
+// protocol surface is explicit through arity 8, matching `Show` and `Reflect`.
+impl PartialEq for (a, b) where a: PartialEq, b: PartialEq:
+    fn eq(self, other: Self) -> Bool:
+        let (x0, x1) = self
+        let (y0, y1) = other
+        x0 == y0 && x1 == y1
+
+    fn ne(self, other: Self) -> Bool:
+        !eq(self, other)
+
+impl Eq for (a, b) where a: Eq, b: Eq
+
+impl PartialEq for (a, b, c) where a: PartialEq, b: PartialEq, c: PartialEq:
+    fn eq(self, other: Self) -> Bool:
+        let (x0, x1, x2) = self
+        let (y0, y1, y2) = other
+        x0 == y0 && x1 == y1 && x2 == y2
+
+    fn ne(self, other: Self) -> Bool:
+        !eq(self, other)
+
+impl Eq for (a, b, c) where a: Eq, b: Eq, c: Eq
+
+impl PartialEq for (a, b, c, d) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq:
+    fn eq(self, other: Self) -> Bool:
+        let (x0, x1, x2, x3) = self
+        let (y0, y1, y2, y3) = other
+        x0 == y0 && x1 == y1 && x2 == y2 && x3 == y3
+
+    fn ne(self, other: Self) -> Bool:
+        !eq(self, other)
+
+impl Eq for (a, b, c, d) where a: Eq, b: Eq, c: Eq, d: Eq
+
+impl PartialEq for (a, b, c, d, e) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq, e: PartialEq:
+    fn eq(self, other: Self) -> Bool:
+        let (x0, x1, x2, x3, x4) = self
+        let (y0, y1, y2, y3, y4) = other
+        x0 == y0 && x1 == y1 && x2 == y2 && x3 == y3 && x4 == y4
+
+    fn ne(self, other: Self) -> Bool:
+        !eq(self, other)
+
+impl Eq for (a, b, c, d, e) where a: Eq, b: Eq, c: Eq, d: Eq, e: Eq
+
+impl PartialEq for (a, b, c, d, e, f) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq, e: PartialEq, f: PartialEq:
+    fn eq(self, other: Self) -> Bool:
+        let (x0, x1, x2, x3, x4, x5) = self
+        let (y0, y1, y2, y3, y4, y5) = other
+        x0 == y0 && x1 == y1 && x2 == y2 && x3 == y3 && x4 == y4 && x5 == y5
+
+    fn ne(self, other: Self) -> Bool:
+        !eq(self, other)
+
+impl Eq for (a, b, c, d, e, f) where a: Eq, b: Eq, c: Eq, d: Eq, e: Eq, f: Eq
+
+impl PartialEq for (a, b, c, d, e, f, g) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq, e: PartialEq, f: PartialEq, g: PartialEq:
+    fn eq(self, other: Self) -> Bool:
+        let (x0, x1, x2, x3, x4, x5, x6) = self
+        let (y0, y1, y2, y3, y4, y5, y6) = other
+        x0 == y0 && x1 == y1 && x2 == y2 && x3 == y3 && x4 == y4 && x5 == y5 && x6 == y6
+
+    fn ne(self, other: Self) -> Bool:
+        !eq(self, other)
+
+impl Eq for (a, b, c, d, e, f, g) where a: Eq, b: Eq, c: Eq, d: Eq, e: Eq, f: Eq, g: Eq
+
+impl PartialEq for (a, b, c, d, e, f, g, h) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq, e: PartialEq, f: PartialEq, g: PartialEq, h: PartialEq:
+    fn eq(self, other: Self) -> Bool:
+        let (x0, x1, x2, x3, x4, x5, x6, x7) = self
+        let (y0, y1, y2, y3, y4, y5, y6, y7) = other
+        x0 == y0 && x1 == y1 && x2 == y2 && x3 == y3 && x4 == y4 && x5 == y5 && x6 == y6 && x7 == y7
+
+    fn ne(self, other: Self) -> Bool:
+        !eq(self, other)
+
+impl Eq for (a, b, c, d, e, f, g, h) where a: Eq, b: Eq, c: Eq, d: Eq, e: Eq, f: Eq, g: Eq, h: Eq
 
 // --- generic helpers over `Ord` ----------------------------------------------
 

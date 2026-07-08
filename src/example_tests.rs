@@ -1603,6 +1603,84 @@ fn main(console: Console):
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: tuple protocol arity");
     }
 
+    /// (BUG-538 / D9) Core values should compose through the public protocols,
+    /// not through backend magic. This is the release gate over the protocol
+    /// matrix: representative std values must have deliberate `Show`, `Reflect`,
+    /// and `PartialEq`/`Eq` behavior, including when nested inside containers.
+    #[test]
+    fn core_protocol_matrix_composes_on_both_backends() {
+        let src = r#"import bytes
+import cmp
+import json
+import reflect
+import set
+import show
+
+type ProtocolRow derive(Reflect):
+    payload: Bytes
+    wait: Duration
+    order: Ordering
+    choices: Set(Int)
+    outcome: Result(Bytes, String)
+    tupled: (Int, String, Bool, Duration, Ordering)
+
+fn same(x: a, y: a) -> Bool where a: PartialEq:
+    x == y
+
+fn total_same(x: a, y: a) -> Bool where a: Eq:
+    x == y
+
+fn main(console: Console):
+    let b = bytes.from_string("hi")
+    let other_b = bytes.from_string("hi")
+    let s = set.from_list([1, 2, 2])
+    let other_s = set.from_list([2, 1])
+    let outcome: Result(Bytes, String) = Ok(b)
+    let other_outcome: Result(Bytes, String) = Ok(other_b)
+    let tup = (7, "x", true, 90s, Greater)
+    let other_tup = (7, "x", true, 90s, Greater)
+    let row = ProtocolRow(b, 90s, Greater, s, outcome, tup)
+
+    print(console, show.render(b))
+    print(console, show.render(90s))
+    print(console, show.render(Greater))
+    print(console, show.render(s))
+    print(console, show.render(outcome))
+    print(console, show.render(tup))
+    print(console, json.stringify(row))
+
+    print(console, __render(same(b, other_b)))
+    print(console, __render(total_same(b, other_b)))
+    print(console, __render(same(Some(Greater), Some(Greater))))
+    print(console, __render(same(outcome, other_outcome)))
+    print(console, __render(total_same(s, other_s)))
+    print(console, __render(same(tup, other_tup)))
+    print(console, __render(total_same(tup, other_tup)))
+"#;
+        let expected = [
+            "Bytes(len=2)",
+            "1m30s",
+            "Greater",
+            "{1, 2}",
+            "Ok(Bytes(len=2))",
+            "(7, x, true, 1m30s, Greater)",
+            "{\"payload\":[104,105],\"wait\":90000,\"order\":{\"$variant\":\"Greater\",\"$values\":[]},\"choices\":[1,2],\"outcome\":{\"$variant\":\"Ok\",\"$values\":[[104,105]]},\"tupled\":[7,\"x\",true,90000,{\"$variant\":\"Greater\",\"$values\":[]}]}",
+            "true",
+            "true",
+            "true",
+            "true",
+            "true",
+            "true",
+            "true",
+        ];
+        assert_eq!(link_run(src), expected, "interp: core protocol matrix");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: core protocol matrix",
+        );
+    }
+
     /// (BUG-486) `MNil` is the reflection shape for the language's unit value,
     /// not only for JSON null. Exercise it through a Nil-returning helper so this
     /// stays independent of the separate bare-`Nil` expression backend bug.
