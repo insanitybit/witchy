@@ -1175,6 +1175,69 @@ fn main(console: Console):
         );
     }
 
+    /// (BUG-395 / RFC-0047) Public `std/dict` helpers expose the same key
+    /// equality contract as direct native dict operations. Concrete key/value
+    /// types without `Eq` cannot route through `dict.get`, `from_pairs`,
+    /// `map_values`, `filter`, `merge`, or `invert` on the public `witchy check`
+    /// path (type check + compiled-backend acceptance); supported `Eq` key
+    /// shapes can.
+    #[test]
+    fn dict_wrapper_key_operations_require_visible_eq_bounds() {
+        let resolve_fs_std = |src: &str| -> ast::Module {
+            use std::collections::{HashSet, VecDeque};
+            let entry = parser::parse_module(src).expect("parse");
+            let mut modules: Vec<(String, ast::Module)> = vec![("main".to_string(), entry.clone())];
+            let mut loaded: HashSet<String> = HashSet::from(["main".to_string()]);
+            let mut queue: VecDeque<ast::Module> = VecDeque::from([entry]);
+            while let Some(module) = queue.pop_front() {
+                for name in module.imports.clone() {
+                    if !loaded.insert(name.clone()) {
+                        continue;
+                    }
+                    let source = std::fs::read_to_string(format!("std/{name}.witchy"))
+                        .expect("std module source");
+                    let parsed = parser::parse_module(&source).expect("parse std module");
+                    queue.push_back(parsed.clone());
+                    modules.push((name, parsed));
+                }
+            }
+            crate::pipeline::link(modules, "main").expect("link")
+        };
+
+        let rejected = [
+            "import dict\n\ntype Key:\n    Key(Int)\n\nfn main(console: Console):\n    let d: Dict(Key, Int) = dict.new()\n    let _x = dict.get(d, Key(1))\n    print(console, \"bad\")\n",
+            "import dict\n\ntype Key:\n    Key(Int)\n\nfn main(console: Console):\n    let _x = dict.from_pairs([(Key(1), 1)])\n    print(console, \"bad\")\n",
+            "import dict\n\ntype Key:\n    Key(Int)\n\nfn id(x: Int) -> Int:\n    x\n\nfn main(console: Console):\n    let d: Dict(Key, Int) = dict.new()\n    let _x = dict.map_values(d, id)\n    print(console, \"bad\")\n",
+            "import dict\n\ntype Key:\n    Key(Int)\n\nfn keep(_k: Key, _v: Int) -> Bool:\n    true\n\nfn main(console: Console):\n    let d: Dict(Key, Int) = dict.new()\n    let _x = dict.filter(d, keep)\n    print(console, \"bad\")\n",
+            "import dict\n\ntype Key:\n    Key(Int)\n\nfn main(console: Console):\n    let d: Dict(Key, Int) = dict.new()\n    let _x = dict.merge(d, d)\n    print(console, \"bad\")\n",
+            "import dict\n\ntype Value:\n    Value(Int)\n\nfn main(console: Console):\n    let d: Dict(String, Value) = dict.new()\n    let _x = dict.invert(d)\n    print(console, \"bad\")\n",
+        ];
+        for src in rejected {
+            let linked = resolve_fs_std(src);
+            match typeck::check(&linked) {
+                Err(err) => assert!(
+                    err.message.contains("Eq"),
+                    "expected visible Eq-bound error, got: {}",
+                    err.message
+                ),
+                Ok(()) => {
+                    let result = codegen::compile_module_binary(&linked);
+                    assert!(
+                        result.is_err() || matches!(result, Ok(None)),
+                        "non-Eq dict wrapper must fail compiled verification"
+                    );
+                }
+            }
+        }
+
+        let accepted = "import dict\n\nfn id(x: Int) -> Int:\n    x\n\nfn keep(_k: String, _v: Int) -> Bool:\n    true\n\nfn main(console: Console):\n    let d: Dict(String, Int) = dict.new()\n    let values: Dict(String, Int) = dict.new()\n    let _a = dict.get(d, \"one\")\n    let _b = dict.from_pairs([(\"one\", 1)])\n    let _c = dict.map_values(d, id)\n    let _d = dict.filter(d, keep)\n    let _e = dict.merge(d, d)\n    let _f = dict.invert(values)\n    print(console, \"ok\")\n";
+        let linked = resolve_fs_std(accepted);
+        typeck::check(&linked).expect("bounded dict wrappers type-check");
+        codegen::compile_module_binary(&linked)
+            .expect("bounded dict wrappers compile")
+            .expect("bounded dict wrappers lower");
+    }
+
     /// (BUG-544) `Ordering` is ordinary std data: it renders through `Show`,
     /// reflects as a nullary variant, and therefore serializes through JSON
     /// reflection, including when it appears in a derived-reflect record.

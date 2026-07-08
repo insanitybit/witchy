@@ -428,29 +428,29 @@ The (key, value) pairs, in insertion order.
 
 The number of entries.
 
-#### `fn get(d: Dict(k, v), key: k) -> Option(v)`
+#### `fn get(d: Dict(k, v), key: k) -> Option(v) where k: Eq`
 
 A lookup that says whether the key was present, rather than forcing a default.
 
 #### `fn is_empty(d: Dict(k, v)) -> Bool`
 
-#### `fn from_pairs(entries: List((k, v))) -> Dict(k, v)`
+#### `fn from_pairs(entries: List((k, v))) -> Dict(k, v) where k: Eq`
 
 Build a Dict from (key, value) pairs; a later pair overrides an earlier one.
 
-#### `fn map_values(d: Dict(k, v), f: fn(v) -> w) -> Dict(k, w)`
+#### `fn map_values(d: Dict(k, v), f: fn(v) -> w) -> Dict(k, w) where k: Eq`
 
 A new Dict with every value passed through `f` (keys unchanged).
 
-#### `fn filter(d: Dict(k, v), keep: fn(k, v) -> Bool) -> Dict(k, v)`
+#### `fn filter(d: Dict(k, v), keep: fn(k, v) -> Bool) -> Dict(k, v) where k: Eq`
 
 Keep only the entries for which `keep(key, value)` holds.
 
-#### `fn merge(var a: Dict(k, v), b: Dict(k, v)) -> Dict(k, v)`
+#### `fn merge(var a: Dict(k, v), b: Dict(k, v)) -> Dict(k, v) where k: Eq`
 
 `a` with `b`'s entries laid over it (on a key collision, `b` wins).
 
-#### `fn invert(d: Dict(k, v)) -> Dict(v, k)`
+#### `fn invert(d: Dict(k, v)) -> Dict(v, k) where v: Eq`
 
 Swap keys and values. With duplicate values, a later entry wins.
 
