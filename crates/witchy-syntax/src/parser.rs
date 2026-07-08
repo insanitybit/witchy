@@ -1326,10 +1326,11 @@ impl Parser {
                 // `LParen` case). A string/`(` immediately after `?` on the same line
                 // is otherwise a syntax error everywhere, so consuming it here is a
                 // conservative extension. Desugars to `(__try_ctx(e, msg))?`: the
-                // `__try_ctx` intrinsic turns the operand — an `Option` OR a `Result`
-                // — into a `Result(T, String)` carrying `msg` (prepended to a Result's
-                // existing error), which `?` then unwraps. Generic over both, so the
-                // message form works wherever bare `?` does.
+                // `__try_ctx` intrinsic turns an `Option(T)` or `Result(T, String)`
+                // into a `Result(T, String)` carrying `msg` (prepended to a Result's
+                // existing String error), which `?` then unwraps. Bare `?` is
+                // generic over typed Result errors; the message form is the
+                // string-error convenience boundary tracked by RFC-0054.
                 if self.on_same_line_as_prev()
                     && (matches!(self.kind(), Tok::Str(_)) || *self.kind() == Tok::LParen)
                 {

@@ -813,11 +813,13 @@ fn main(console: Console):
     print(console, show(ratio(100, 0, 2)))
 ```
 
-`?` optionally takes a context message — `e? "msg"` — and works wherever bare `?`
-does. On a `Result`, it prepends `"msg: "` to a propagated `String` error; on an
-`Option`, a propagated `None` becomes `Err("msg")`. Either way the enclosing
-function propagates a `String` error. The message may interpolate. Bare `e?`
-propagates unchanged.
+Bare `e?` propagates `Option(T)` or `Result(T, e)` unchanged. The contextual
+form `e? "msg"` is the string-error convenience: it accepts `Option(T)` or
+`Result(T, String)` and yields `Result(T, String)`. On a `Result`, it prepends
+`"msg: "` to a propagated `String` error; on an `Option`, a propagated `None`
+becomes `Err("msg")`. The enclosing function therefore propagates a `String`
+error. The message may interpolate. Richer typed-error context wrapping is
+tracked by RFC-0054.
 
 ```witchy
 import result
