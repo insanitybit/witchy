@@ -24,6 +24,31 @@ has the precise semantics; this is the cheat sheet.
 | `cap as T` | capability narrowing (drop rights; never widen) |
 | `..base` | record spread / list rest-pattern |
 
+## Precedence
+
+Tightest to loosest — an operator higher in the table binds before one below it,
+so `1 + 2 * 3` is `1 + (2 * 3)` and `a & b == c` is `(a & b) == c`. Postfix
+operators bind tighter than everything: `f(x)?` is `(f(x))?` and `p.x + 1` is
+`(p.x) + 1`. When in doubt, parenthesize.
+
+| Level | Operators | Associativity |
+|---|---|---|
+| tightest | `x.f` `x.f(a)` `xs[i]` `e?` (call / index / field / propagate) | left |
+| | `- x` `! x` `~ x` (prefix negate / not / bitwise-not) | — |
+| | `* / %` | left |
+| | `+ -` | left |
+| | `<< >>` (bit shift) | left |
+| | `&` (bitwise and) | left |
+| | `^` (bitwise xor) | left |
+| | `\|` (bitwise or) | left |
+| | `== != < <= > >=` (comparison) | left |
+| | `&&` | left |
+| | `\|\|` | left |
+| | `??` (unwrap-or) | **right** — `a ?? b ?? c` is `a ?? (b ?? c)` |
+| loosest | `lo..hi` `lo..=hi` (range) | — |
+
+Comparison does not chain: write `0 <= x && x < n`, not `0 <= x < n`.
+
 ## Keywords
 
 | Keyword | Use |

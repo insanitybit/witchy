@@ -187,5 +187,47 @@ too — `0 -> return Err("zero")` to bail out of the enclosing function, or
 `Some(v) -> total = total + v` to update a `var`. For more than one statement,
 put the body on its own indented lines after the `->`.
 
+## Sealed types
+
+By default any code that can see a type can also build one — `Percent(140)` is a
+valid expression even if 140 is a nonsense percentage. Prefix the declaration
+with `sealed` and construction becomes the private business of the defining
+module: outside code can no longer call the data constructor, so it must go
+through the module's public functions. Those functions ("smart constructors")
+are then the single place an invariant is established — and, because nothing can
+bypass them, a value of the type is *proof* the invariant holds.
+
+```witchy
+sealed type Percent:
+    value: Int
+
+// The one choke point. Every Percent in the program came through here, so
+// `0 <= value <= 100` holds everywhere without re-checking.
+pub fn percent(n: Int) -> Percent:
+    if n < 0:
+        Percent(0)
+    else if n > 100:
+        Percent(100)
+    else:
+        Percent(n)
+
+fn main(console: Console):
+    let p = percent(140)
+    print(console, "clamped to ${p.value}")
+```
+
+```text
+clamped to 100
+```
+
+Sealing restricts **construction only** — reading fields (`p.value`) and
+`match`ing on the value work exactly as before, from anywhere. Inside the
+declaring module the constructor is still available, which is how `percent`
+builds one. This is the same mechanism that makes capabilities unforgeable (only
+the host mints a `Net`); a `sealed type` just opens it to your own types. The
+standard library uses it widely — `Set` guarantees distinct members,
+`semver.Version` non-negative components, `time.DateTime` a real calendar date —
+each an invariant its smart constructor enforces and its type then carries.
+
 With records and enums in hand, we can talk about the witchy way to handle
 things going wrong.

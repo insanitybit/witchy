@@ -155,6 +155,50 @@ Because `PinnedUrl` is a sealed capability — only `std/http` can mint one — 
 value of that type is unforgeable proof that the policy ran: a function that asks
 for a `PinnedUrl` cannot be handed an unchecked target.
 
+## Sign with a secret without ever seeing its bytes
+
+A `SecretStore` is a capability that holds named secrets whose bytes stay
+host-side — the guest asks the host to *use* a secret, never to hand it over.
+The host grants secrets with `--signing-key <path>` (the protected `signing`
+key, usable only for signing) and `--secret name=value` / `--secret-file
+name=path` (ordinary named secrets; append `,use-only` to forbid reading them
+back). Ask for a `SecretStore` in `main`, then:
+
+- `secrets.require("name")` returns the `Secret` directly, failing loudly if it
+  was not granted — use it when absence is a configuration error.
+- `secrets.get("name")` returns `Option(Secret)` — `None` when it was not
+  granted — for secrets that are genuinely optional.
+
+A `Secret` is opaque: you pass it to an operation that consumes it. `crypto.sign`
+signs a message with an Ed25519 signing key; `crypto.reveal` returns a value
+secret's bytes — but it *errors* on the `signing` key and on any `use-only`
+secret, so a signing key can sign and nothing else.
+
+```witchy
+import crypto
+import secretstore
+import string
+
+fn main(console: Console, secrets: SecretStore):
+    // A required signing key: sign a message with it. The key's bytes never
+    // enter the program — the host signs on its behalf and returns the signature.
+    let signing = secrets.require("signing")
+    let sig = crypto.sign(signing, "release v1.2.3")
+    print(console, "signature length ${string.length(sig)}")
+
+    // An optional, revealable value secret. `reveal` works here because this is
+    // an ordinary named secret — it would error on the signing key above.
+    match secrets.get("api-token"):
+        Some(tok) -> print(console, "token: ${crypto.reveal(tok)}")
+        None -> print(console, "no api-token granted")
+```
+
+Run it with `witchy run sign.witchy --signing-key key.seed --secret
+api-token=sk-live-abc`. Because the secret bytes live in the host, a program that
+loses the `SecretStore` capability (or was never granted it) cannot sign or
+reveal at all — the authority to use a secret is itself a value you can withhold
+or [narrow](capabilities-narrowing.md).
+
 ## Render HTML with Glamour
 
 [Glamour](https://github.com/insanitybit/witchy) is witchy's frontend framework
