@@ -1816,29 +1816,9 @@ A typed `Dir` ENTRY policy (RFC-0011): which entries the Dir may read/write/open
 
 #### `Dir.dirs() -> DirPolicy`
 
-## `rand`
+## `prng`
 
-The witchy randomness library. Every draw comes from the `Rand` capability's source: the OS CSPRNG host-side (`getrandom` on the compiled backend), or — when `WITCHY_RAND_SEED` is set — a shared deterministic sequence both backends agree on, so randomness-using programs stay parity-stable and reproducible for tests.
-
-#### `fn u64(rand: Rand) -> Int`
-
-A fresh 64-bit draw spanning the full `Int` range (it may be negative). The primitive both other helpers build on.
-
-#### `fn below(rand: Rand, n: Int) -> Int`
-
-A non-negative integer in `[0, n)`. `n` must be positive (RFC-0044 rule 3): `[0, 0)` is an impossible range, so a non-positive bound fails loudly naming the bad argument (matching `random.next_below`) instead of returning a plausible-looking `0`. Clears the sign bit, then takes the remainder; the modulo bias is negligible for ordinary small ranges. For cryptographic uniformity draw bytes with `hex` instead.
-
-#### `fn bool(rand: Rand) -> Bool`
-
-A fair coin.
-
-#### `fn hex(rand: Rand, nbytes: Int) -> String`
-
-`nbytes` random bytes rendered as lowercase hex (2 chars per byte) — the form a WebAuthn challenge, a CSRF nonce, or a session/token id wants. Draws full 64-bit words and truncates to the requested length.
-
-## `random`
-
-A small, deterministic pseudo-random generator: the Park-Miller "minimal standard" LCG, `state' = state * 16807 mod (2^31 - 1)`. The intermediate fits in i64 (no overflow), so it is content-correct on both backends. State is threaded explicitly — the same seed always replays the same sequence, which is what you want for tests, sampling, and games. NOT for cryptography. Pure and capability-free.
+A small deterministic PRNG: the Park-Miller "minimal standard" LCG, `state' = state * 16807 mod (2^31 - 1)`. The intermediate fits in i64 (no overflow), so it is content-correct on both backends. State is threaded explicitly — the same seed always replays the same sequence, which is what you want for tests, sampling, and games. NOT for cryptography. Pure and capability-free.
 
 #### `sealed type Rng`
 
@@ -1863,6 +1843,26 @@ A pseudo-random Bool (true ~half the time) and the next state.
 #### `fn choice(xs: List(a), r: Rng) -> (Option(a), Rng)`
 
 A pseudo-randomly chosen element of `xs` (`None` if empty) and the next state. The index comes from `next_below`, whose `% len` reducer carries a negligible modulo bias for ordinary list lengths — plenty for tests, sampling, and games, but not a strict uniform distribution (see `next_below`).
+
+## `rand`
+
+The witchy randomness library. Every draw comes from the `Rand` capability's source: the OS CSPRNG host-side (`getrandom` on the compiled backend), or — when `WITCHY_RAND_SEED` is set — a shared deterministic sequence both backends agree on, so randomness-using programs stay parity-stable and reproducible for tests.
+
+#### `fn u64(rand: Rand) -> Int`
+
+A fresh 64-bit draw spanning the full `Int` range (it may be negative). The primitive both other helpers build on.
+
+#### `fn below(rand: Rand, n: Int) -> Int`
+
+A non-negative integer in `[0, n)`. `n` must be positive (RFC-0044 rule 3): `[0, 0)` is an impossible range, so a non-positive bound fails loudly naming the bad argument (matching `prng.next_below`) instead of returning a plausible-looking `0`. Clears the sign bit, then takes the remainder; the modulo bias is negligible for ordinary small ranges. For cryptographic uniformity draw bytes with `hex` instead.
+
+#### `fn bool(rand: Rand) -> Bool`
+
+A fair coin.
+
+#### `fn hex(rand: Rand, nbytes: Int) -> String`
+
+`nbytes` random bytes rendered as lowercase hex (2 chars per byte) — the form a WebAuthn challenge, a CSRF nonce, or a session/token id wants. Draws full 64-bit words and truncates to the requested length.
 
 ## `reflect`
 

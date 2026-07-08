@@ -12,7 +12,7 @@ pub fn u64(rand: Rand) -> Int:
 
 // A non-negative integer in `[0, n)`. `n` must be positive (RFC-0044 rule 3):
 // `[0, 0)` is an impossible range, so a non-positive bound fails loudly naming
-// the bad argument (matching `random.next_below`) instead of returning a
+// the bad argument (matching `prng.next_below`) instead of returning a
 // plausible-looking `0`. Clears the sign bit, then takes the remainder; the
 // modulo bias is negligible for ordinary small ranges. For cryptographic
 // uniformity draw bytes with `hex` instead.

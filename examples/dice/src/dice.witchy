@@ -1,19 +1,19 @@
-// Deterministic pseudo-randomness with the std `random` module: a seed replays
+// Deterministic pseudo-randomness with the std `prng` module: a seed replays
 // the same sequence, so this prints the same rolls every run — and identically on
 // the interpreter and compiled to WASM. The generator state is threaded
 // explicitly through an `Rng` value (no hidden global, no capability needed).
 // Run: witchy examples/dice.witchy
 
-import random
+import prng
 import string
 import list
 
 fn main(console: Console):
-    var r = random.seed(7)
+    var r = prng.seed(7)
     var rolls = []
     var i = 0
     while i < 10:
-        let (face, next) = random.next_below(r, 6)
+        let (face, next) = prng.next_below(r, 6)
         rolls = rolls.push(face + 1)
         r = next
         i = i + 1

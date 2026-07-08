@@ -123,7 +123,7 @@ struct EtaSig {
 /// Names of all bundled standard-library modules.
 pub const STD_MODULES: &[&str] = &[
     "list", "string", "math", "result", "option", "func", "cmp", "ascii", "set", "server",
-    "show", "http", "json", "url", "duration", "random", "regex", "crypto", "compiler", "toml",
+    "show", "http", "json", "url", "duration", "prng", "regex", "crypto", "compiler", "toml",
     "iter", "semver", "rights", "fs", "dict", "time", "encoding", "path", "testing",
     "future", "task", "chan", "webauthn", "secretstore", "reflect", "meta", "convert", "exec",
     "policy", "jwt", "oauth", "rand", "vm", "bytes",
@@ -293,6 +293,9 @@ pub fn closest_std_function(name: &str) -> Option<(String, &'static str)> {
 /// The closest bundled std-module name to `name` within a small edit distance —
 /// used to suggest a correction for a misspelled `import`.
 pub fn closest_std_module(name: &str) -> Option<&'static str> {
+    if name == "random" {
+        return Some("prng");
+    }
     if name.len() < 3 {
         return None; // too short for a meaningful suggestion
     }
@@ -342,7 +345,7 @@ pub fn std_source(name: &str) -> Option<&'static str> {
         "json" => Some(include_str!("../../../std/json.witchy")),
         "url" => Some(include_str!("../../../std/url.witchy")),
         "duration" => Some(include_str!("../../../std/duration.witchy")),
-        "random" => Some(include_str!("../../../std/random.witchy")),
+        "prng" => Some(include_str!("../../../std/prng.witchy")),
         "rand" => Some(include_str!("../../../std/rand.witchy")),
         "regex" => Some(include_str!("../../../std/regex.witchy")),
         "crypto" => Some(include_str!("../../../std/crypto.witchy")),
@@ -2097,6 +2100,9 @@ mod tests {
         assert!(!STD_MODULES.contains(&"csv"));
         assert_eq!(std_source("csv"), None);
         assert_eq!(closest_std_module("csv"), None);
+        assert!(STD_MODULES.contains(&"prng"));
+        assert_eq!(std_source("random"), None);
+        assert_eq!(closest_std_module("random"), Some("prng"));
 
         // `map` lives in list (and option); a near miss resolves to a real name.
         assert!(closest_std_function("mep").is_some());

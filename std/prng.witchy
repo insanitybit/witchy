@@ -1,4 +1,4 @@
-// A small, deterministic pseudo-random generator: the Park-Miller "minimal
+// A small deterministic PRNG: the Park-Miller "minimal
 // standard" LCG, `state' = state * 16807 mod (2^31 - 1)`. The intermediate fits
 // in i64 (no overflow), so it is content-correct on both backends. State is
 // threaded explicitly — the same seed always replays the same sequence, which is
@@ -49,9 +49,9 @@ pub fn next(r: Rng) -> (Int, Rng):
 // uniform bounded draw, use the `Rand` capability's byte-oriented helpers.
 pub fn next_below(r: Rng, bound: Int) -> (Int, Rng):
     if bound <= 0:
-        fail("random.next_below: bound `${bound}` must be positive")
+        fail("prng.next_below: bound `${bound}` must be positive")
     if bound >= modulus():
-        fail("random.next_below: bound `${bound}` is at or above the generator range (2^31-1) and cannot be covered")
+        fail("prng.next_below: bound `${bound}` is at or above the generator range (2^31-1) and cannot be covered")
     let (n, r2) = next(r)
     (n % bound, r2)
 

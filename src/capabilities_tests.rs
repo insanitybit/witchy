@@ -435,7 +435,7 @@ pub fn serve(console: Console) -> Int:
     fn std_module_footprints_are_pinned() {
         let pure = [
             "list", "string", "math", "option", "result", "func", "cmp", "ascii", "set",
-            "json", "url", "duration", "random", "regex", "compiler", "toml", "semver",
+            "json", "url", "duration", "prng", "regex", "compiler", "toml", "semver",
             "rights", "dict", "time", "encoding", "path", "policy",
         ];
         for name in pure {

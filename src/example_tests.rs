@@ -6599,7 +6599,7 @@ fn main(console: Console, root: Dir):
     }
 
     /// `rand.below` fails loudly for an impossible range (RFC-0044 rule 3,
-    /// matching `random.next_below`) — and still draws for a valid bound.
+    /// matching `prng.next_below`) — and still draws for a valid bound.
     #[test]
     fn rand_below_rejects_nonpositive_bound_on_both_backends() {
         let bad = "import rand\nfn main(console: Console, r: Rand):\n    print(console, __render(rand.below(r, 0)))\n";
@@ -9625,14 +9625,14 @@ fn main(console: Console):
     }
 
     #[test]
-    fn random_next_below_rejects_uncoverable_bound_backends_agree() {
+    fn prng_next_below_rejects_uncoverable_bound_backends_agree() {
         // The Park-Miller reducer is `n % bound`; a bound at or above the generator
         // range (2^31-1) cannot cover its own range, so it fails loudly (BUG-482)
         // — like the non-positive guard. An ordinary small bound still draws.
         let bad = r#"
-import random
+import prng
 fn main(console: Console):
-    let (_i, _r) = random.next_below(random.seed(1), 2147483647)
+    let (_i, _r) = prng.next_below(prng.seed(1), 2147483647)
     print(console, "unreachable")
 "#;
         let linked = resolve_std_src(bad);
@@ -9649,7 +9649,7 @@ fn main(console: Console):
         let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort");
         assert!(cerr.contains("cannot be covered"), "compiled core mismatch: {cerr}");
 
-        let ok = "import random\nfn main(console: Console):\n    let (i, _r) = random.next_below(random.seed(1), 6)\n    print(console, __render(i >= 0 && i < 6))\n";
+        let ok = "import prng\nfn main(console: Console):\n    let (i, _r) = prng.next_below(prng.seed(1), 6)\n    print(console, __render(i >= 0 && i < 6))\n";
         assert_eq!(link_run(ok), vec!["true"], "interpreter small bound");
         assert_eq!(wasm_run(ok), vec!["true"], "compiled small bound");
     }
@@ -9919,38 +9919,38 @@ fn main(console: Console):
     }
 
     #[test]
-    fn random_module_backends_agree() {
+    fn prng_module_backends_agree() {
         // The Park-Miller LCG replays a deterministic sequence (the canonical
         // seed-1 values) identically on both backends; next_below bounds it.
         let client = r#"
-import random
+import prng
 import list
 import string
 fn main(console: Console):
-    var r = random.seed(1)
+    var r = prng.seed(1)
     var out = []
     var i = 0
     while i < 4:
-        let (n, r2) = random.next(r)
+        let (n, r2) = prng.next(r)
         out = list.push(out, n)
         r = r2
         i = i + 1
     print(console, list.join(list.map(out, fn(n: Int): __render(n)), ","))
-    let (d, _r3) = random.next_below(random.seed(42), 6)
+    let (d, _r3) = prng.next_below(prng.seed(42), 6)
     print(console, __render(d))
-    let (b, _r4) = random.next_bool(random.seed(2))
+    let (b, _r4) = prng.next_bool(prng.seed(2))
     print(console, if b: "even" else: "odd")
 "#;
         let sources = [
             ("option", crate::bundled_module("option").unwrap()),
             ("list", crate::bundled_module("list").unwrap()),
             ("string", crate::bundled_module("string").unwrap()),
-            ("random", crate::bundled_module("random").unwrap()),
+            ("prng", crate::bundled_module("prng").unwrap()),
             ("main", client),
         ];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "random diverged");
+        assert_eq!(interpreted, compiled, "prng diverged");
         assert_eq!(
             compiled,
             vec!["16807,282475249,1622650073,984943658", "0", "even"]
@@ -9959,13 +9959,13 @@ fn main(console: Console):
 
     #[test]
     fn dice_example_runs_on_wasm() {
-        // The dice example (seeded random.next_below, threaded Rng) prints the
+        // The dice example (seeded prng.next_below, threaded Rng) prints the
         // same deterministic rolls on both backends.
         let sources = [
             ("option", crate::bundled_module("option").unwrap()),
             ("list", crate::bundled_module("list").unwrap()),
             ("string", crate::bundled_module("string").unwrap()),
-            ("random", crate::bundled_module("random").unwrap()),
+            ("prng", crate::bundled_module("prng").unwrap()),
             ("main", include_str!("../examples/dice/src/dice.witchy")),
         ];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -10038,26 +10038,26 @@ fn main(console: Console):
     }
 
     #[test]
-    fn random_choice_backends_agree() {
-        // choice picks a uniformly-random element (None for an empty list),
+    fn prng_choice_backends_agree() {
+        // choice picks a pseudo-random element (None for an empty list),
         // deterministically for a given seed, identically on both backends.
         let client = r#"
-import random
+import prng
 import option
 fn main(console: Console):
-    let (c, _r) = random.choice(["a", "b", "c", "d"], random.seed(1))
+    let (c, _r) = prng.choice(["a", "b", "c", "d"], prng.seed(1))
     print(console, option.unwrap_or(c, "?"))
-    let (e, _r2) = random.choice([], random.seed(1))
+    let (e, _r2) = prng.choice([], prng.seed(1))
     print(console, option.unwrap_or(e, "empty"))
 "#;
         let sources = [
             ("option", crate::bundled_module("option").unwrap()),
-            ("random", crate::bundled_module("random").unwrap()),
+            ("prng", crate::bundled_module("prng").unwrap()),
             ("main", client),
         ];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "random.choice diverged");
+        assert_eq!(interpreted, compiled, "prng.choice diverged");
         assert_eq!(compiled, vec!["d", "empty"]);
     }
 

@@ -13,7 +13,7 @@ tracking: |
   BUG-313); matching and field-read stay unaffected (a `sealed type` restricts
   building, not inspection — the design's key refinement over `capability`, which
   also seals destructure + hides fields). Both backends reject at link time (parity
-  by construction). Applied to Set (BUG-238), time.DateTime (BUG-252), random.Rng
+  by construction). Applied to Set (BUG-238), time.DateTime (BUG-252), prng.Rng
   (BUG-256), url.Url (BUG-460) — zero migration; smart constructors already existed.
   semver.Version (BUG-191) is now sealed too — the first DERIVED + container-carried
   sealed type (the tutorial `Version` types don't import semver, so no collision); its
@@ -44,7 +44,7 @@ public:
   (BUG-238) — the invariant lives only in `set.from_list`, not in the type.
 - `DateTime(2026, 13, 40, …)` formats an impossible date while `time.civil(…)`
   rejects it (BUG-252): validation is in the smart constructor, not the type.
-- `random.Rng(0)` / a negative seed break the PRNG contract that `random.seed`
+- `prng.Rng(0)` / a negative seed break the PRNG contract that `prng.seed`
   would have upheld (BUG-256).
 - `url.Url("", "", -1, "bad")` can manufacture values the checked parser would
   reject or normalize, and `url.format` then trusts those raw fields (BUG-460).
@@ -102,7 +102,7 @@ pub fn from_list(xs: List(a)) -> Set(a):
    backends, and a shape/behaviour test pins it.
 3. The invariant-bearing stdlib/package types are sealed behind smart
    constructors or otherwise made explicitly unchecked: `Set` (BUG-238),
-   `time.DateTime` (BUG-252), `random.Rng` (BUG-256), `url.Url` (BUG-460),
+   `time.DateTime` (BUG-252), `prng.Rng` (BUG-256), `url.Url` (BUG-460),
    `semver.Version` (BUG-191), and the coven envelope/record-state types
    (BUG-367, BUG-224). Each closes or narrows its bug with a regression test
    that invalid raw construction is unreachable, or with clear docs/tests if a
