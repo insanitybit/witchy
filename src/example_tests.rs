@@ -2675,8 +2675,8 @@ fn main(console: Console):
     }
 
     /// `crypto.ed25519_verify` — a native intrinsic of the `crypto` module — is a
-    /// total signature check: it accepts a genuine signature and rejects a
-    /// tampered message and malformed input.
+    /// fallible signature check: it accepts a genuine signature, rejects a
+    /// tampered message, and reports malformed input.
     #[test]
     fn crypto_ed25519_verify_checks_signatures() {
         use ed25519_dalek::{Signer, SigningKey};
@@ -2688,7 +2688,7 @@ fn main(console: Console):
 
         let prog = |pubk: &str, m: &str, s: &str| {
             format!(
-                "import crypto\nfn main(console: Console):\n    print(console, if crypto.ed25519_verify(\"{pubk}\", \"{m}\", \"{s}\"): \"ok\" else: \"bad\")\n"
+                "import crypto\nfn main(console: Console):\n    match crypto.ed25519_verify(\"{pubk}\", \"{m}\", \"{s}\"):\n        Ok(true) -> print(console, \"ok\")\n        Ok(false) -> print(console, \"bad\")\n        Err(_e) -> print(console, \"err\")\n"
             )
         };
         assert_eq!(link_run(&prog(&pk, msg, &sig)), vec!["ok"], "valid signature must verify");
@@ -2697,11 +2697,11 @@ fn main(console: Console):
             vec!["bad"],
             "tampered message must fail"
         );
-        assert_eq!(link_run(&prog(&pk, msg, "00")), vec!["bad"], "malformed sig must fail, not panic");
+        assert_eq!(link_run(&prog(&pk, msg, "00")), vec!["err"], "malformed sig must be an error");
     }
 
     /// `crypto.ecdsa_p256_verify` (WebAuthn "ES256") verifies a real P-256/SHA-256
-    /// signature, rejects a tampered message, and is total on a malformed signature.
+    /// signature, rejects a tampered message, and reports malformed signatures.
     /// KAT: SEC1-uncompressed pubkey + ASN.1-DER sig (generated with the `cryptography` lib).
     #[test]
     fn crypto_ecdsa_p256_verify_checks_signatures() {
@@ -2710,12 +2710,12 @@ fn main(console: Console):
         let sig = "304402203260029f4c6beb2e78afdd906c057c63f8828e2b03820de7053d97254577fb8c02204478b9b75f8fd7a1ce4298f0d119e12926dafda116ae4c197b0048dc117bc9de";
         let prog = |pubk: &str, m: &str, s: &str| {
             format!(
-                "import crypto\nfn main(console: Console):\n    print(console, if crypto.ecdsa_p256_verify(\"{pubk}\", \"{m}\", \"{s}\"): \"ok\" else: \"bad\")\n"
+                "import crypto\nfn main(console: Console):\n    match crypto.ecdsa_p256_verify(\"{pubk}\", \"{m}\", \"{s}\"):\n        Ok(true) -> print(console, \"ok\")\n        Ok(false) -> print(console, \"bad\")\n        Err(_e) -> print(console, \"err\")\n"
             )
         };
         assert_eq!(link_run(&prog(pk, msg, sig)), vec!["ok"], "valid ES256 signature must verify");
         assert_eq!(link_run(&prog(pk, "wrong-message", sig)), vec!["bad"], "tampered message must fail");
-        assert_eq!(link_run(&prog(pk, msg, "30060201010201ff")), vec!["bad"], "malformed sig must fail, not panic");
+        assert_eq!(link_run(&prog(pk, msg, "00")), vec!["err"], "malformed sig must be an error");
     }
 
     /// `crypto.sha512` and `crypto.hmac_sha256` against standard known-answer vectors
@@ -2749,8 +2749,14 @@ fn main(console: Console):
     print(console, crypto.sha512(\"abc\"))
     print(console, crypto.sha3_256(\"abc\"))
     print(console, crypto.hmac_sha256(\"0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\", \"Hi There\"))
-    print(console, if crypto.ecdsa_p256_verify(\"{pk}\", \"webauthn-es256-test-message\", \"{sig}\"): \"ok\" else: \"bad\")
-    print(console, if crypto.ecdsa_p256_verify(\"{pk}\", \"tampered\", \"{sig}\"): \"ok\" else: \"bad\")
+    match crypto.ecdsa_p256_verify(\"{pk}\", \"webauthn-es256-test-message\", \"{sig}\"):
+        Ok(true) -> print(console, \"ok\")
+        Ok(false) -> print(console, \"bad\")
+        Err(_e) -> print(console, \"err\")
+    match crypto.ecdsa_p256_verify(\"{pk}\", \"tampered\", \"{sig}\"):
+        Ok(true) -> print(console, \"ok\")
+        Ok(false) -> print(console, \"bad\")
+        Err(_e) -> print(console, \"err\")
 "
         );
         let expected = vec![
@@ -2872,7 +2878,7 @@ fn main(console: Console):
         let sig = hex(&sk.sign(msg.as_bytes()).to_bytes());
         let prog = |m: &str| {
             format!(
-                "import crypto\nfn main(console: Console):\n    print(console, if crypto.ed25519_verify(\"{pk}\", \"{m}\", \"{sig}\"): \"ok\" else: \"bad\")\n"
+                "import crypto\nfn main(console: Console):\n    match crypto.ed25519_verify(\"{pk}\", \"{m}\", \"{sig}\"):\n        Ok(true) -> print(console, \"ok\")\n        Ok(false) -> print(console, \"bad\")\n        Err(_e) -> print(console, \"err\")\n"
             )
         };
         let wasm = |src: &str| -> Vec<String> {
@@ -4050,7 +4056,7 @@ fn main(console: Console):
     /// surfaces in the footprint.
     #[test]
     fn crypto_signing_round_trips_in_witchy() {
-        let src = "import crypto\nfn main(console: Console, signer: Secret):\n    let msg = \"sign me\"\n    let sig = crypto.sign(signer, msg)\n    print(console, if crypto.ed25519_verify(crypto.public_key(signer), msg, sig): \"verified\" else: \"FAILED\")\n";
+        let src = "import crypto\nfn main(console: Console, signer: Secret):\n    let msg = \"sign me\"\n    let sig = crypto.sign(signer, msg)\n    match crypto.ed25519_verify(crypto.public_key(signer), msg, sig):\n        Ok(true) -> print(console, \"verified\")\n        Ok(false) -> print(console, \"FAILED\")\n        Err(_e) -> print(console, \"FAILED\")\n";
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
@@ -5320,7 +5326,7 @@ fn yn(b: Bool) -> String:
     #[test]
     fn signing_key_compiles_to_wasm_and_is_gated() {
         use crate::runtime::{Capabilities, Runtime};
-        let src = "import crypto\nfn main(console: Console, signer: Secret):\n    let msg = \"sign me\"\n    let sig = crypto.sign(signer, msg)\n    print(console, crypto.public_key(signer))\n    print(console, sig)\n    print(console, if crypto.ed25519_verify(crypto.public_key(signer), msg, sig): \"verified\" else: \"FAILED\")\n";
+        let src = "import crypto\nfn main(console: Console, signer: Secret):\n    let msg = \"sign me\"\n    let sig = crypto.sign(signer, msg)\n    print(console, crypto.public_key(signer))\n    print(console, sig)\n    match crypto.ed25519_verify(crypto.public_key(signer), msg, sig):\n        Ok(true) -> print(console, \"verified\")\n        Ok(false) -> print(console, \"FAILED\")\n        Err(_e) -> print(console, \"FAILED\")\n";
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
@@ -11919,14 +11925,15 @@ fn main(console: Console):
     }
 
     /// `crypto.ecdsa_p256_verify` on the binary path — a P-256 ECDSA verify host
-    /// import (`$crypto_ecdsa_p256_verify`, three string headers → i32 bool,
-    /// no capability). A valid (pubkey, message, signature) triple verifies; a
-    /// tampered message does not. Compared against the linked interpreter oracle.
+    /// status import (`$crypto_ecdsa_p256_verify_status`, three string headers →
+    /// i64 status, no capability). A valid (pubkey, message, signature) triple
+    /// verifies; a tampered message does not. Compared against the linked
+    /// interpreter oracle.
     #[test]
     fn wir_crypto_ecdsa_verify_binary_path() {
         let pk = "048f81cd9fca785a42a6f5dd58972cc0f702e83b1c960b5912354471496597e227fec81ff1d52530b06d7091649e6beb49dba70968b4b727bb24e3ceb7dd01a039";
         let sig = "304402203260029f4c6beb2e78afdd906c057c63f8828e2b03820de7053d97254577fb8c02204478b9b75f8fd7a1ce4298f0d119e12926dafda116ae4c197b0048dc117bc9de";
-        let src = format!("import crypto\nfn main(console: Console):\n    print(console, if crypto.ecdsa_p256_verify(\"{pk}\", \"webauthn-es256-test-message\", \"{sig}\"): \"ok\" else: \"bad\")\n    print(console, if crypto.ecdsa_p256_verify(\"{pk}\", \"tampered\", \"{sig}\"): \"ok\" else: \"bad\")\n");
+        let src = format!("import crypto\nfn main(console: Console):\n    match crypto.ecdsa_p256_verify(\"{pk}\", \"webauthn-es256-test-message\", \"{sig}\"):\n        Ok(true) -> print(console, \"ok\")\n        Ok(false) -> print(console, \"bad\")\n        Err(_e) -> print(console, \"err\")\n    match crypto.ecdsa_p256_verify(\"{pk}\", \"tampered\", \"{sig}\"):\n        Ok(true) -> print(console, \"ok\")\n        Ok(false) -> print(console, \"bad\")\n        Err(_e) -> print(console, \"err\")\n");
         let module = parser::parse_module(&src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
@@ -11971,7 +11978,7 @@ fn main(console: Console):
     /// self-hosted package manager (coven/pm) uses, and the construct whose
     /// missing wir_helper made `pm.witchy` fall back to WAT. Sign a message with
     /// the granted Secret, then verify: the valid (pubkey, message, signature)
-    /// triple verifies true, a tampered message false.
+    /// triple verifies `Ok(true)`, a tampered message `Ok(false)`.
     #[test]
     fn wir_crypto_ed25519_verify_binary_path() {
         use crate::runtime::{Capabilities, Runtime};
@@ -11997,7 +12004,7 @@ fn main(console: Console):
             )
             .expect("spawn with signing key");
         actor.run().expect("run");
-        assert_eq!(actor.output(), vec!["true".to_string(), "false".to_string()]);
+        assert_eq!(actor.output(), vec!["Ok(true)".to_string(), "Ok(false)".to_string()]);
     }
 
     /// `$dir_read` (read a file) on the binary path — the two-phase
@@ -12204,19 +12211,19 @@ fn main(console: Console):
     }
 
     /// RS256 (`crypto.rsa_pkcs1_sha256_verify`, the OIDC/JWT signature algorithm) is
-    /// reachable and TOTAL on both backends — a malformed key/signature yields `false`,
-    /// never a trap. (The verify LOGIC is proven by `rs256_native_roundtrip_verifies`.)
+    /// reachable on both backends — a malformed key/signature yields `Err`, never
+    /// a trap. (The verify LOGIC is proven by `rs256_native_roundtrip_verifies`.)
     #[test]
     fn rsa_pkcs1_sha256_verify_total_backends_agree() {
-        let src = "import crypto\nfn main(console: Console):\n    if crypto.rsa_pkcs1_sha256_verify(\"00\", \"msg\", \"00\"):\n        print(console, \"valid\")\n    else:\n        print(console, \"invalid\")\n";
-        let expected = vec!["invalid".to_string()];
+        let src = "import crypto\nfn main(console: Console):\n    match crypto.rsa_pkcs1_sha256_verify(\"00\", \"msg\", \"00\"):\n        Err(_e) -> print(console, \"malformed\")\n        Ok(true) -> print(console, \"valid\")\n        Ok(false) -> print(console, \"invalid\")\n";
+        let expected = vec!["malformed".to_string()];
         assert_eq!(link_run(src), expected, "interp");
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
     /// RS256 verify LOGIC is correct: a real RSA-2048 PKCS#1 signature over a message
-    /// verifies, a wrong message is rejected, and a malformed key is total — exercising
-    /// the native aws-lc path both backends route through.
+    /// verifies, a wrong message is rejected, and a malformed key is reported —
+    /// exercising the native aws-lc path both backends route through.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn rs256_native_roundtrip_verifies() {
@@ -12235,14 +12242,15 @@ fn main(console: Console):
         )
         .expect("sign");
         let sig_hex = hexs(&sig);
-        // Reach the intrinsic through the PUBLIC native registry (the path both backends use).
-        let f = crate::native::lookup("crypto.rsa_pkcs1_sha256_verify").expect("registered");
+        // Reach the private intrinsic through the native registry; std/crypto maps
+        // this status into the public Result API.
+        let f = crate::native::lookup("crypto.__rsa_pkcs1_sha256_verify_status").expect("registered");
         let verify = |pk: &str, m: &str, s: &str| {
             f(&[NV::Str(pk.into()), NV::Str(m.into()), NV::Str(s.into())]).unwrap()
         };
-        assert_eq!(verify(&pk_hex, msg, &sig_hex), NV::Bool(true), "valid RS256 signature verifies");
-        assert_eq!(verify(&pk_hex, "tampered", &sig_hex), NV::Bool(false), "wrong message rejected");
-        assert_eq!(verify("00", msg, &sig_hex), NV::Bool(false), "malformed key is total (false)");
+        assert_eq!(verify(&pk_hex, msg, &sig_hex), NV::Int(1), "valid RS256 signature verifies");
+        assert_eq!(verify(&pk_hex, "tampered", &sig_hex), NV::Int(0), "wrong message rejected");
+        assert_eq!(verify("00", msg, &sig_hex), NV::Int(-1), "malformed key is reported");
     }
 
     /// End-to-end `std/jwt`: a REAL aws-lc-signed compact RS256 JWT, embedded as a

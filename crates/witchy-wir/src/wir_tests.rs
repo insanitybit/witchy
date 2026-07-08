@@ -348,9 +348,9 @@
             .map(|f| f.name.clone())
             .collect();
         for extra in [
-            "__heap_reclaim", "bump_alloc", "char_count", "crypto_ecdsa_p256_verify",
-            "crypto_ecdsa_p256_verify_hex", "crypto_ed25519_verify", "crypto_hmac_sha256",
-            "crypto_rsa_pkcs1_sha256_verify", "crypto_sha3_256", "crypto_sha512",
+            "__heap_reclaim", "bump_alloc", "char_count", "crypto_ecdsa_p256_verify_hex_status",
+            "crypto_ecdsa_p256_verify_status", "crypto_ed25519_verify_status", "crypto_hmac_sha256",
+            "crypto_rsa_pkcs1_sha256_verify_status", "crypto_sha3_256", "crypto_sha512",
             "dir_append", "dir_create", "dir_exists", "dir_is_dir", "dir_make_dir",
             "dir_only", "dir_open", "dir_subdir", "dir_write", "exec", "file_write",
             "list_at_view", "list_len_view", "list_set_cap", "list_update_cap",

@@ -71,7 +71,7 @@ fn check_auth_and_sig(stored_pubkey_hex: String, auth_data_hex: String, client_d
         else:
             // The signed message is authenticatorData || SHA256(clientDataJSON).
             let msg_hex = auth_data_hex + crypto.sha256(client_data_json)
-            if crypto.ecdsa_p256_verify_hex(stored_pubkey_hex, msg_hex, signature_hex):
-                Ok(true)
-            else:
-                Err("signature invalid")
+            match crypto.ecdsa_p256_verify_hex(stored_pubkey_hex, msg_hex, signature_hex):
+                Err(e) -> Err("signature input malformed: " + e)
+                Ok(true) -> Ok(true)
+                Ok(false) -> Err("signature invalid")

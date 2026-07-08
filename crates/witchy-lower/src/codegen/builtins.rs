@@ -50,9 +50,9 @@ impl Codegen {
                     Kind::I64,
                 )
             }
-            ("crypto.ed25519_verify", 3) => {
+            ("crypto.__ed25519_verify_status", 3) => {
                 self.uses_crypto_ed25519_verify = true;
-                call("crypto_ed25519_verify", self.lower_args(&[&args[0], &args[1], &args[2]])?)
+                call("crypto_ed25519_verify_status", self.lower_args(&[&args[0], &args[1], &args[2]])?)
             }
             ("crypto.sha256", 1) => {
                 self.uses_crypto_sha256 = true;
@@ -77,21 +77,21 @@ impl Codegen {
                 self.uses_crypto_rune_hash = true;
                 call("crypto_rune_hash", self.lower_args(&[&args[0], &args[1]])?)
             }
-            ("crypto.ecdsa_p256_verify", 3) => {
-                self.used_crypto_ops.insert("ecdsa_p256_verify");
-                call("crypto_ecdsa_p256_verify", self.lower_args(&[&args[0], &args[1], &args[2]])?)
+            ("crypto.__ecdsa_p256_verify_status", 3) => {
+                self.used_crypto_ops.insert("ecdsa_p256_verify_status");
+                call("crypto_ecdsa_p256_verify_status", self.lower_args(&[&args[0], &args[1], &args[2]])?)
             }
-            ("crypto.rsa_pkcs1_sha256_verify", 3) => {
-                self.used_crypto_ops.insert("rsa_pkcs1_sha256_verify");
+            ("crypto.__rsa_pkcs1_sha256_verify_status", 3) => {
+                self.used_crypto_ops.insert("rsa_pkcs1_sha256_verify_status");
                 call(
-                    "crypto_rsa_pkcs1_sha256_verify",
+                    "crypto_rsa_pkcs1_sha256_verify_status",
                     self.lower_args(&[&args[0], &args[1], &args[2]])?,
                 )
             }
-            ("crypto.ecdsa_p256_verify_hex", 3) => {
-                self.used_crypto_ops.insert("ecdsa_p256_verify_hex");
+            ("crypto.__ecdsa_p256_verify_hex_status", 3) => {
+                self.used_crypto_ops.insert("ecdsa_p256_verify_hex_status");
                 call(
-                    "crypto_ecdsa_p256_verify_hex",
+                    "crypto_ecdsa_p256_verify_hex_status",
                     self.lower_args(&[&args[0], &args[1], &args[2]])?,
                 )
             }

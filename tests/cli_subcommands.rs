@@ -31,6 +31,33 @@ fn run(args: &[&str]) -> std::process::Output {
     Command::new(BIN).args(args).output().expect("spawn witchy")
 }
 
+#[test]
+fn crypto_verify_malformed_inputs_are_result_errors() {
+    let dir = workdir("crypto-verify-result");
+    let p256_basepoint = "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5";
+    let src = write(
+        &dir,
+        "crypto_result.witchy",
+        &format!(
+            "import crypto\nfn main(console: Console):\n    match crypto.ed25519_verify(\"not-hex\", \"msg\", \"00\"):\n        Err(e) -> print(console, e)\n        Ok(_v) -> print(console, \"unexpected ed25519\")\n    match crypto.ecdsa_p256_verify_hex(\"{p256_basepoint}\", \"zz\", \"00\"):\n        Err(e) -> print(console, e)\n        Ok(_v) -> print(console, \"unexpected ecdsa\")\n"
+        ),
+    );
+    let out = run(&[&src]);
+    assert!(out.status.success(), "run failed: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Ed25519 public key is malformed\nECDSA P-256 message is malformed\n"
+    );
+
+    let parity = run(&["parity", &src]);
+    assert!(
+        parity.status.success() && String::from_utf8_lossy(&parity.stdout).contains("outcome=agree"),
+        "parity failed: {}{}",
+        String::from_utf8_lossy(&parity.stdout),
+        String::from_utf8_lossy(&parity.stderr)
+    );
+}
+
 // A file that violates `mode opt` (a heap parameter with no ownership convention).
 // `check` rejects it; every other compile-ish path must too.
 const BAD_OPT: &str = "mode opt\n\nfn helper(xs: List(Int)) -> Int:\n    var acc = 0\n    for x in xs:\n        acc = acc + x\n    acc\n\nfn main(console: Console):\n    print(console, \"sum: ${helper([1, 2, 3])}\")\n";

@@ -773,11 +773,11 @@ pub(crate) fn link_capability_imports(
     // Native-stdlib functions are pure (no authority), so they're always
     // available — the same `crypto` module the interpreter exposes, here as a
     // host import that bridges to the shared `native` registry.
-    linker.func_wrap("witchy", "crypto.ed25519_verify", host_ed25519_verify)?;
+    linker.func_wrap("witchy", "crypto.__ed25519_verify_status", host_ed25519_verify_status)?;
     linker.func_wrap("witchy", "crypto.sha256", host_sha256)?;
-    linker.func_wrap("witchy", "crypto.ecdsa_p256_verify", host_ecdsa_p256_verify)?;
-    linker.func_wrap("witchy", "crypto.ecdsa_p256_verify_hex", host_ecdsa_p256_verify_hex)?;
-    linker.func_wrap("witchy", "crypto.rsa_pkcs1_sha256_verify", host_rsa_pkcs1_sha256_verify)?;
+    linker.func_wrap("witchy", "crypto.__ecdsa_p256_verify_status", host_ecdsa_p256_verify_status)?;
+    linker.func_wrap("witchy", "crypto.__ecdsa_p256_verify_hex_status", host_ecdsa_p256_verify_hex_status)?;
+    linker.func_wrap("witchy", "crypto.__rsa_pkcs1_sha256_verify_status", host_rsa_pkcs1_sha256_verify_status)?;
     linker.func_wrap("witchy", "crypto.sha512", host_sha512)?;
     linker.func_wrap("witchy", "crypto.sha3_256", host_sha3_256)?;
     linker.func_wrap("witchy", "crypto.hmac_sha256", host_hmac_sha256)?;
@@ -879,15 +879,15 @@ fn host_print_float(caller: Caller<'_, VmState>, x: f64) -> Result<()> {
     Ok(())
 }
 
-/// `crypto.ed25519_verify(pk, msg, sig) -> Bool`, bridged to the shared native
+/// `crypto.__ed25519_verify_status(pk, msg, sig) -> Int`, bridged to the shared native
 /// registry (the same implementation the interpreter uses). Each argument is a
 /// pointer to a witchy string header (`[i32 len][bytes]`).
-fn host_ed25519_verify(
+fn host_ed25519_verify_status(
     mut caller: Caller<'_, VmState>,
     pk: i32,
     msg: i32,
     sig: i32,
-) -> Result<i32> {
+) -> Result<i64> {
     use crate::value::NativeValue as Value;
     let mem = memory_of(&mut caller)?;
     let data = mem.data(&caller);
@@ -896,11 +896,11 @@ fn host_ed25519_verify(
         Value::Str(read_wstr(data, msg)?),
         Value::Str(read_wstr(data, sig)?),
     ];
-    let f = crate::native::lookup("crypto.ed25519_verify")
-        .ok_or_else(|| Error::msg("crypto.ed25519_verify is not registered"))?;
+    let f = crate::native::lookup("crypto.__ed25519_verify_status")
+        .ok_or_else(|| Error::msg("crypto.__ed25519_verify_status is not registered"))?;
     match f(&args).map_err(|e| Error::msg(e.message))? {
-        Value::Bool(b) => Ok(b as i32),
-        _ => Err(Error::msg("crypto.ed25519_verify did not return a Bool")),
+        Value::Int(n) => Ok(n),
+        _ => Err(Error::msg("crypto.__ed25519_verify_status did not return an Int")),
     }
 }
 
@@ -955,17 +955,16 @@ fn host_sha256(mut caller: Caller<'_, VmState>, in_ptr: i32, out_ptr: i32) -> Re
         .map_err(|e| Error::msg(format!("writing sha256 result into guest memory: {e}")))
 }
 
-/// Shared bridge for the three-string crypto verifies (`ecdsa_p256_verify` and
-/// its hex variant): read three string headers, dispatch through the shared
-/// native registry (the SAME aws-lc-rs impl the interpreter uses), return an
-/// i32 bool. Parameterized by the native name so each verify is a thin wrapper.
-fn host_crypto_verify3(
+/// Shared bridge for private three-string crypto verifier status intrinsics:
+/// read three string headers, dispatch through the shared native registry (the
+/// SAME aws-lc-rs impl the interpreter uses), return an Int status.
+fn host_crypto_verify_status3(
     mut caller: Caller<'_, VmState>,
     native: &str,
     pk: i32,
     msg: i32,
     sig: i32,
-) -> Result<i32> {
+) -> Result<i64> {
     use crate::value::NativeValue as Value;
     let mem = memory_of(&mut caller)?;
     let data = mem.data(&caller);
@@ -977,8 +976,8 @@ fn host_crypto_verify3(
     let f = crate::native::lookup(native)
         .ok_or_else(|| Error::msg(format!("{native} is not registered")))?;
     match f(&args).map_err(|e| Error::msg(e.message))? {
-        Value::Bool(b) => Ok(b as i32),
-        _ => Err(Error::msg(format!("{native} did not return a Bool"))),
+        Value::Int(n) => Ok(n),
+        _ => Err(Error::msg(format!("{native} did not return an Int"))),
     }
 }
 
@@ -1013,16 +1012,16 @@ fn host_crypto_digest(
         .map_err(|e| Error::msg(format!("writing {native} result into guest memory: {e}")))
 }
 
-fn host_ecdsa_p256_verify(caller: Caller<'_, VmState>, pk: i32, msg: i32, sig: i32) -> Result<i32> {
-    host_crypto_verify3(caller, "crypto.ecdsa_p256_verify", pk, msg, sig)
+fn host_ecdsa_p256_verify_status(caller: Caller<'_, VmState>, pk: i32, msg: i32, sig: i32) -> Result<i64> {
+    host_crypto_verify_status3(caller, "crypto.__ecdsa_p256_verify_status", pk, msg, sig)
 }
 
-fn host_ecdsa_p256_verify_hex(caller: Caller<'_, VmState>, pk: i32, msg: i32, sig: i32) -> Result<i32> {
-    host_crypto_verify3(caller, "crypto.ecdsa_p256_verify_hex", pk, msg, sig)
+fn host_ecdsa_p256_verify_hex_status(caller: Caller<'_, VmState>, pk: i32, msg: i32, sig: i32) -> Result<i64> {
+    host_crypto_verify_status3(caller, "crypto.__ecdsa_p256_verify_hex_status", pk, msg, sig)
 }
 
-fn host_rsa_pkcs1_sha256_verify(caller: Caller<'_, VmState>, pk: i32, msg: i32, sig: i32) -> Result<i32> {
-    host_crypto_verify3(caller, "crypto.rsa_pkcs1_sha256_verify", pk, msg, sig)
+fn host_rsa_pkcs1_sha256_verify_status(caller: Caller<'_, VmState>, pk: i32, msg: i32, sig: i32) -> Result<i64> {
+    host_crypto_verify_status3(caller, "crypto.__rsa_pkcs1_sha256_verify_status", pk, msg, sig)
 }
 
 fn host_sha512(caller: Caller<'_, VmState>, in_ptr: i32, out_ptr: i32) -> Result<()> {

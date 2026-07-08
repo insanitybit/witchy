@@ -1388,7 +1388,11 @@ fn signed_canonical(envelope: String) -> String:
 // Verify a `Signed{signed, sig}` envelope against the root pubkey over its canonical bytes.
 fn signed_valid(rootpub: String, envelope: String) -> Bool:
     match json.decode(envelope):
-        Ok(doc) -> crypto.ed25519_verify(rootpub, signed_canonical(envelope), jget(doc, "sig"))
+        Ok(doc) ->
+            match crypto.ed25519_verify(rootpub, signed_canonical(envelope), jget(doc, "sig")):
+                Ok(true) -> true
+                Ok(false) -> false
+                Err(_e) -> false
         Err(_e) -> false
 
 // A string field of the `signed` member of a `Signed{...}` envelope.
@@ -2540,7 +2544,10 @@ fn record_signature_valid(rootpub: String, text: String) -> Bool:
             if record_field_has_newline(doc):
                 false
             else:
-                crypto.ed25519_verify(rootpub, record_payload(doc), jget(doc, "sig"))
+                match crypto.ed25519_verify(rootpub, record_payload(doc), jget(doc, "sig")):
+                    Ok(true) -> true
+                    Ok(false) -> false
+                    Err(_e) -> false
         Err(e) -> false
 
 // SEC-013: refuse a record whose free-form fields embed the payload line separator

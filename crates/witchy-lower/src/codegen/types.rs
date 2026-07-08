@@ -295,12 +295,13 @@ impl Codegen {
                 | "encoding.hex_decode_bytes_raw" | "encoding.base64_decode_bytes_raw"
                 | "encoding.base64url_decode_bytes_raw" => ValType::Bytes,
                 "string.starts_with" | "string.ends_with" | "string.contains" | "dict.contains_key"
-                | "exists" | "is_dir" | "crypto.ed25519_verify"
-                | "crypto.ecdsa_p256_verify" | "crypto.ecdsa_p256_verify_hex"
-                | "crypto.rsa_pkcs1_sha256_verify" => ValType::Bool,
+                | "exists" | "is_dir" => ValType::Bool,
                 "string.length" | "string.char_count" | "string.find" | "list.length"
                 | "dict.length" | "math.to_int" | "string.to_int" | "int_to_duration"
-                | "duration_to_int" | "now" | "now_monotonic" | "rand_u64" => ValType::Int,
+                | "duration_to_int" | "now" | "now_monotonic" | "rand_u64"
+                | "crypto.__ed25519_verify_status" | "crypto.__ecdsa_p256_verify_status"
+                | "crypto.__ecdsa_p256_verify_hex_status"
+                | "crypto.__rsa_pkcs1_sha256_verify_status" => ValType::Int,
                 "math.to_float" | "math.sqrt" => ValType::Float,
                 other => self.fn_ret_valtype.get(other).copied().unwrap_or(ValType::Other),
             },

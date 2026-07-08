@@ -330,21 +330,21 @@ Conversion traits, following Rust's `std::convert`. `From(a)` builds the impleme
 
 crypto — cryptographic hashing and signatures.
 
-Like Go's `crypto/*` packages, these are *native intrinsics*: SHA-256 and Ed25519 cannot be expressed in witchy itself (no byte access; elliptic-curve field arithmetic), so they are implemented in Rust. They are reachable only through this module — there is no global builtin. The function bodies below are placeholders the runtime never executes: the interpreter intercepts each call by its qualified name (`crypto.sha256`), and the WASM backend bridges it to the same implementation as a host import. SHA-256 of a string's UTF-8 bytes, as 64 lowercase hex characters.
+Like Go's `crypto/*` packages, these are *native intrinsics*: SHA-256 and Ed25519 cannot be expressed in witchy itself (no byte access; elliptic-curve field arithmetic), so they are implemented in Rust. They are reachable only through this module — there is no global builtin. The function bodies below are placeholders the runtime never executes for native-backed functions: the interpreter intercepts their qualified names (`crypto.sha256`, `crypto.__ed25519_verify_status`, ...), and the WASM backend bridges them to the same implementation as host imports. Fallible public verify functions are ordinary Witchy wrappers around private native status intrinsics. SHA-256 of a string's UTF-8 bytes, as 64 lowercase hex characters.
 
 #### `fn sha256(data: String) -> String`
 
 crypto — cryptographic hashing and signatures.
 
-Like Go's `crypto/*` packages, these are *native intrinsics*: SHA-256 and Ed25519 cannot be expressed in witchy itself (no byte access; elliptic-curve field arithmetic), so they are implemented in Rust. They are reachable only through this module — there is no global builtin. The function bodies below are placeholders the runtime never executes: the interpreter intercepts each call by its qualified name (`crypto.sha256`), and the WASM backend bridges it to the same implementation as a host import. SHA-256 of a string's UTF-8 bytes, as 64 lowercase hex characters.
+Like Go's `crypto/*` packages, these are *native intrinsics*: SHA-256 and Ed25519 cannot be expressed in witchy itself (no byte access; elliptic-curve field arithmetic), so they are implemented in Rust. They are reachable only through this module — there is no global builtin. The function bodies below are placeholders the runtime never executes for native-backed functions: the interpreter intercepts their qualified names (`crypto.sha256`, `crypto.__ed25519_verify_status`, ...), and the WASM backend bridges them to the same implementation as host imports. Fallible public verify functions are ordinary Witchy wrappers around private native status intrinsics. SHA-256 of a string's UTF-8 bytes, as 64 lowercase hex characters.
 
 #### `fn rune_hash(paths: List(String), contents: List(String)) -> String`
 
 The canonical content hash of a rune's source tree, as `sha256:<hex>`. Pass parallel lists — one entry per file (`witchy.toml` plus each `src/**/*.witchy`): `paths[i]` is the relative path, `contents[i]` its text. Entries are sorted and length-prefixed before hashing, so the result is the rune's stable content address — the package manager's tamper-evident identity.
 
-#### `fn ed25519_verify(public_key: String, message: String, signature: String) -> Bool`
+#### `fn ed25519_verify(public_key: String, message: String, signature: String) -> Result(Bool, String)`
 
-Verify an Ed25519 signature. `public_key` and `signature` are hex-encoded; `message` is the raw string. Total: malformed input or a bad signature yields `false`, never an error.
+Verify an Ed25519 signature. `public_key` and `signature` are hex-encoded; `message` is the raw string. Malformed inputs are `Err`; a well-formed but non-matching signature is `Ok(false)`.
 
 #### `fn sign(key: Secret, message: String) -> String`
 
@@ -358,17 +358,17 @@ The hex Ed25519 public key for a `Secret` — what verifiers check against.
 
 Reveal a `Secret`'s raw bytes as a string — for revealable value secrets (tokens, passwords) that must be handed to an external sink. Errors on secrets that are not revealable: signing keys (granted with `--signing-key`, used via `sign`/`public_key`) and any secret granted use-only (`--secret-file name=path,use-only`, e.g. a TLS private key).
 
-#### `fn ecdsa_p256_verify(public_key: String, message: String, signature: String) -> Bool`
+#### `fn ecdsa_p256_verify(public_key: String, message: String, signature: String) -> Result(Bool, String)`
 
-Verify an ECDSA P-256 / SHA-256 signature — WebAuthn "ES256" (COSE alg -7). `public_key` is the hex SEC1 uncompressed point (`04 || x || y`); `signature` is the hex ASN.1-DER signature; `message` is the raw bytes it covers. Total: bad input or a bad signature yields `false`. (Native/interpreter-only.)
+Verify an ECDSA P-256 / SHA-256 signature — WebAuthn "ES256" (COSE alg -7). `public_key` is the hex SEC1 uncompressed point (`04 || x || y`); `signature` is the hex ASN.1-DER signature; `message` is the raw bytes it covers. Malformed inputs are `Err`; a well-formed but non-matching signature is `Ok(false)`. (Native/interpreter-only.)
 
-#### `fn ecdsa_p256_verify_hex(public_key: String, message: String, signature: String) -> Bool`
+#### `fn ecdsa_p256_verify_hex(public_key: String, message: String, signature: String) -> Result(Bool, String)`
 
-Like `ecdsa_p256_verify` but the message is also hex — for binary messages such as WebAuthn's `authenticatorData || SHA256(clientDataJSON)`. (Native-only.)
+Like `ecdsa_p256_verify` but the message is also hex — for binary messages such as WebAuthn's `authenticatorData || SHA256(clientDataJSON)`. Malformed message hex is `Err`, not a false signature. (Native-only.)
 
-#### `fn rsa_pkcs1_sha256_verify(public_key: String, message: String, signature: String) -> Bool`
+#### `fn rsa_pkcs1_sha256_verify(public_key: String, message: String, signature: String) -> Result(Bool, String)`
 
-Verify an RSASSA-PKCS1-v1_5 / SHA-256 signature — JWT/OIDC "RS256" (the algorithm GitHub Actions and Google sign their identity tokens with). `public_key` is the hex of a DER-encoded RSA public key (PKCS#1 `RSAPublicKey`); `signature` is hex; `message` is the raw signed bytes (`header.payload` for a JWT). Total: bad input or a bad signature yields `false`. (Native-only.)
+Verify an RSASSA-PKCS1-v1_5 / SHA-256 signature — JWT/OIDC "RS256" (the algorithm GitHub Actions and Google sign their identity tokens with). `public_key` is the hex of a DER-encoded RSA public key (PKCS#1 `RSAPublicKey`); `signature` is hex; `message` is the raw signed bytes (`header.payload` for a JWT). Malformed inputs are `Err`; a well-formed but non-matching signature is `Ok(false)`. (Native-only.)
 
 #### `fn sha512(data: String) -> String`
 

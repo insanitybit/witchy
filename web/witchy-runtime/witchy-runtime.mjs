@@ -122,7 +122,7 @@ function hmacSha256Bytes(key, msg) {
 }
 
 // Try to load Node's `node:crypto` synchronously (for sha512 / sha3_256 /
-// ed25519_verify / the p256 verifies). Returns null in a plain browser, where
+// crypto verify status / the p256 verifies). Returns null in a plain browser, where
 // only the pure-JS SHA-256 core is available. A capability-free rune that uses
 // only sha256/hmac/rune_hash never needs this; one that uses sha512/sha3/verify
 // gets a clear error in a browser (rather than silently wrong output).
@@ -159,7 +159,7 @@ function makeCryptoBackend(nodeCrypto) {
     sha3_256: (bytes) => new Uint8Array(need("crypto.sha3_256").createHash("sha3-256").update(bytes).digest()),
     // Ed25519: pk/sig are RAW bytes (the host decodes the hex before calling).
     ed25519Verify: (pk, msg, sig) => {
-      const c = need("crypto.ed25519_verify");
+      const c = need("crypto.__ed25519_verify_status");
       try {
         const key = c.createPublicKey({
           key: Buffer.concat([
@@ -218,8 +218,8 @@ const B64URL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_
 // (whitespace included) is a hard reject — returns `null`, never a silently
 // filtered/truncated buffer. The old lossy codec dropped non-hex chars and an
 // odd tail, so the browser accepted keys/signatures native REJECTS — a
-// parity/security divergence (BUG-276). Callers mirror native's None-handling:
-// crypto.ed25519_verify → false, everything else → error.
+// parity/security divergence (BUG-276). Crypto verifier status imports map
+// malformed hex to negative status codes, matching native.
 export function hexToBytes(s) {
   const nib = (c) => {
     if (c >= 48 && c <= 57) return c - 48;
@@ -564,19 +564,21 @@ export async function instantiate(wasmBytes, opts = {}) {
       const hash = runeHash(readWstrList(pathsPtr), readWstrList(contentsPtr));
       writeAt(utf8.encode(hash), outPtr);
     },
-    "crypto.ed25519_verify"(pkPtr, msgPtr, sigPtr) {
+    "crypto.__ed25519_verify_status"(pkPtr, msgPtr, sigPtr) {
       const pk = hexToBytes(readWstrText(pkPtr));
       const sig = hexToBytes(readWstrText(sigPtr));
-      // Malformed hex → verification fails (false), matching native
-      // ed25519_verify (`hex_decode(...)?`...`.unwrap_or(false)`) (BUG-276).
-      if (pk === null || sig === null) return 0;
-      return crypto.ed25519Verify(pk, readWstr(msgPtr), sig) ? 1 : 0;
+      if (pk === null || pk.length !== 32) return -1n;
+      if (sig === null || sig.length !== 64) return -3n;
+      return crypto.ed25519Verify(pk, readWstr(msgPtr), sig) ? 1n : 0n;
     },
-    "crypto.ecdsa_p256_verify"(_pk, _msg, _sig) {
-      throw new Error("witchy-runtime: crypto.ecdsa_p256_verify is not supported in the pure-compute host");
+    "crypto.__ecdsa_p256_verify_status"(_pk, _msg, _sig) {
+      return -4n;
     },
-    "crypto.ecdsa_p256_verify_hex"(_pk, _msg, _sig) {
-      throw new Error("witchy-runtime: crypto.ecdsa_p256_verify_hex is not supported in the pure-compute host");
+    "crypto.__ecdsa_p256_verify_hex_status"(_pk, _msg, _sig) {
+      return -4n;
+    },
+    "crypto.__rsa_pkcs1_sha256_verify_status"(_pk, _msg, _sig) {
+      return -4n;
     },
 
     // --- reflection field-length stubs (pure reads; ordinary programs never

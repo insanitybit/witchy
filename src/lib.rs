@@ -205,16 +205,24 @@ pub fn regex_spans(pattern: &str, text: &str) -> String {
     }
 }
 
-/// Signature verification (op 0 ed25519, 1 ecdsa_p256, 2 ecdsa_p256_hex); all are
-/// pure (hex inputs, no Secret), so they run in the browser.
-pub fn crypto_verify(op: i32, pk: &str, msg: &str, sig: &str) -> bool {
+/// Signature verification status (op 0 ed25519, 1 ecdsa_p256, 2 ecdsa_p256_hex);
+/// private std wrappers map the status into `Result(Bool, String)`.
+pub fn crypto_verify_status(op: i32, pk: &str, msg: &str, sig: &str) -> i64 {
     let name = match op {
-        0 => "crypto.ed25519_verify",
-        1 => "crypto.ecdsa_p256_verify",
-        2 => "crypto.ecdsa_p256_verify_hex",
-        _ => return false,
+        0 => "crypto.__ed25519_verify_status",
+        1 => "crypto.__ecdsa_p256_verify_status",
+        2 => "crypto.__ecdsa_p256_verify_hex_status",
+        _ => return -4,
     };
-    matches!(native_call(name, &[pk, msg, sig]), Ok(crate::value::NativeValue::Bool(true)))
+    match native_call(name, &[pk, msg, sig]) {
+        Ok(crate::value::NativeValue::Int(n)) => n,
+        _ => -4,
+    }
+}
+
+/// Back-compat for older playground hosts that still ask only for a bool.
+pub fn crypto_verify(op: i32, pk: &str, msg: &str, sig: &str) -> bool {
+    crypto_verify_status(op, pk, msg, sig) == 1
 }
 
 // --- the browser ABI (no wasm-bindgen; hand-marshaled UTF-8) -----------------
@@ -345,6 +353,21 @@ mod wasm_abi {
         pack(super::regex_spans(&raw(p_ptr, p_len), &raw(t_ptr, t_len)).as_bytes())
     }
 
+    /// Signature verify status (op 0 ed25519, 1/2 ecdsa): 1 valid, 0 invalid
+    /// signature, negative malformed input/unavailable.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn witchy_verify_status(
+        op: i32,
+        pk_ptr: *const u8,
+        pk_len: usize,
+        m_ptr: *const u8,
+        m_len: usize,
+        s_ptr: *const u8,
+        s_len: usize,
+    ) -> i64 {
+        super::crypto_verify_status(op, &raw(pk_ptr, pk_len), &raw(m_ptr, m_len), &raw(s_ptr, s_len))
+    }
+
     /// Signature verify (op 0 ed25519, 1/2 ecdsa) → 1 if valid, else 0.
     #[unsafe(no_mangle)]
     pub extern "C" fn witchy_verify(
@@ -356,6 +379,6 @@ mod wasm_abi {
         s_ptr: *const u8,
         s_len: usize,
     ) -> i32 {
-        super::crypto_verify(op, &raw(pk_ptr, pk_len), &raw(m_ptr, m_len), &raw(s_ptr, s_len)) as i32
+        (super::crypto_verify_status(op, &raw(pk_ptr, pk_len), &raw(m_ptr, m_len), &raw(s_ptr, s_len)) == 1) as i32
     }
 }

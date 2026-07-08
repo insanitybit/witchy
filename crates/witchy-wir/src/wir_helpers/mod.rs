@@ -4887,35 +4887,53 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: true,
             uses_table: false,
         }),
-        // The P-256 ECDSA verifies read three string headers (pubkey, message,
-        // signature) and return an i32 bool — no capability, no allocation.
-        "crypto_ecdsa_p256_verify" => Some(WirHelperSpec {
-            func: host_call_helper("crypto_ecdsa_p256_verify", "crypto.ecdsa_p256_verify", 3),
+        // The verifier status helpers read three string headers and return an
+        // Int status: 1 valid, 0 invalid signature, negative malformed input.
+        "crypto_ecdsa_p256_verify_status" => Some(WirHelperSpec {
+            func: host_call_helper_ret(
+                "crypto_ecdsa_p256_verify_status",
+                "crypto.__ecdsa_p256_verify_status",
+                3,
+                WirTy::Int,
+            ),
             helper_deps: &[],
-            import_deps: &["crypto.ecdsa_p256_verify"],
+            import_deps: &["crypto.__ecdsa_p256_verify_status"],
             uses_heap: false,
             uses_table: false,
         }),
-        "crypto_ecdsa_p256_verify_hex" => Some(WirHelperSpec {
-            func: host_call_helper("crypto_ecdsa_p256_verify_hex", "crypto.ecdsa_p256_verify_hex", 3),
+        "crypto_ecdsa_p256_verify_hex_status" => Some(WirHelperSpec {
+            func: host_call_helper_ret(
+                "crypto_ecdsa_p256_verify_hex_status",
+                "crypto.__ecdsa_p256_verify_hex_status",
+                3,
+                WirTy::Int,
+            ),
             helper_deps: &[],
-            import_deps: &["crypto.ecdsa_p256_verify_hex"],
+            import_deps: &["crypto.__ecdsa_p256_verify_hex_status"],
             uses_heap: false,
             uses_table: false,
         }),
-        "crypto_rsa_pkcs1_sha256_verify" => Some(WirHelperSpec {
-            func: host_call_helper("crypto_rsa_pkcs1_sha256_verify", "crypto.rsa_pkcs1_sha256_verify", 3),
+        "crypto_rsa_pkcs1_sha256_verify_status" => Some(WirHelperSpec {
+            func: host_call_helper_ret(
+                "crypto_rsa_pkcs1_sha256_verify_status",
+                "crypto.__rsa_pkcs1_sha256_verify_status",
+                3,
+                WirTy::Int,
+            ),
             helper_deps: &[],
-            import_deps: &["crypto.rsa_pkcs1_sha256_verify"],
+            import_deps: &["crypto.__rsa_pkcs1_sha256_verify_status"],
             uses_heap: false,
             uses_table: false,
         }),
-        // ed25519 signature verify — three string headers → i32 bool, no
-        // capability. Reached by the self-hosted package manager (coven/pm).
-        "crypto_ed25519_verify" => Some(WirHelperSpec {
-            func: host_call_helper("crypto_ed25519_verify", "crypto.ed25519_verify", 3),
+        "crypto_ed25519_verify_status" => Some(WirHelperSpec {
+            func: host_call_helper_ret(
+                "crypto_ed25519_verify_status",
+                "crypto.__ed25519_verify_status",
+                3,
+                WirTy::Int,
+            ),
             helper_deps: &[],
-            import_deps: &["crypto.ed25519_verify"],
+            import_deps: &["crypto.__ed25519_verify_status"],
             uses_heap: false,
             uses_table: false,
         }),

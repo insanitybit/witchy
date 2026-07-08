@@ -25,16 +25,16 @@ pub fn lookup(qualified: &str) -> Option<NativeFn> {
     match qualified {
         "crypto.sha256" => Some(crypto::sha256),
         "crypto.rune_hash" => Some(crypto::rune_hash),
-        "crypto.ed25519_verify" => Some(crypto::ed25519_verify),
+        "crypto.__ed25519_verify_status" => Some(crypto::ed25519_verify_status),
         "crypto.sign" => Some(crypto::sign),
         "crypto.public_key" => Some(crypto::public_key),
         "crypto.reveal" => Some(crypto::reveal),
         #[cfg(not(target_arch = "wasm32"))]
-        "crypto.ecdsa_p256_verify" => Some(crypto::ecdsa_p256_verify),
+        "crypto.__ecdsa_p256_verify_status" => Some(crypto::ecdsa_p256_verify_status),
         #[cfg(not(target_arch = "wasm32"))]
-        "crypto.ecdsa_p256_verify_hex" => Some(crypto::ecdsa_p256_verify_hex),
+        "crypto.__ecdsa_p256_verify_hex_status" => Some(crypto::ecdsa_p256_verify_hex_status),
         #[cfg(not(target_arch = "wasm32"))]
-        "crypto.rsa_pkcs1_sha256_verify" => Some(crypto::rsa_pkcs1_sha256_verify),
+        "crypto.__rsa_pkcs1_sha256_verify_status" => Some(crypto::rsa_pkcs1_sha256_verify_status),
         #[cfg(not(target_arch = "wasm32"))]
         "crypto.sha512" => Some(crypto::sha512),
         #[cfg(not(target_arch = "wasm32"))]
@@ -132,21 +132,27 @@ mod crypto {
         out
     }
 
-    /// Verify an Ed25519 signature. `public_key`/`signature` are hex; `message`
-    /// is the raw string. Total — malformed input or a bad signature is `false`.
-    pub fn ed25519_verify(args: &[Value]) -> Result<Value, RuntimeError> {
+    /// Verify an Ed25519 signature. Status codes: 1 valid, 0 invalid signature,
+    /// -1 malformed public key, -3 malformed signature.
+    pub fn ed25519_verify_status(args: &[Value]) -> Result<Value, RuntimeError> {
         let [Value::Str(pk_hex), Value::Str(msg), Value::Str(sig_hex)] = args else {
             return Err(type_error(
-                "crypto.ed25519_verify expects (pubkey_hex, message, sig_hex) strings",
+                "crypto.__ed25519_verify_status expects (pubkey_hex, message, sig_hex) strings",
             ));
         };
-        let ok = (|| {
-            let pk = hex_decode(pk_hex)?;
-            let sig = hex_decode(sig_hex)?;
-            Some(ed25519_verify_raw(&pk, msg.as_bytes(), &sig))
-        })()
-        .unwrap_or(false);
-        Ok(Value::Bool(ok))
+        let Some(pk) = hex_decode(pk_hex) else {
+            return Ok(Value::Int(-1));
+        };
+        if pk.len() != 32 {
+            return Ok(Value::Int(-1));
+        }
+        let Some(sig) = hex_decode(sig_hex) else {
+            return Ok(Value::Int(-3));
+        };
+        if sig.len() != 64 {
+            return Ok(Value::Int(-3));
+        }
+        Ok(Value::Int(ed25519_verify_raw(&pk, msg.as_bytes(), &sig) as i64))
     }
 
     /// Normalize a secret's raw bytes to a 32-byte Ed25519 seed: accept the seed
@@ -196,77 +202,96 @@ mod crypto {
     /// Verify an ECDSA P-256 / SHA-256 ("ES256", WebAuthn COSE alg -7) signature.
     /// `public_key`/`signature` are hex (a SEC1 uncompressed point `04||x||y`; an
     /// ASN.1-DER signature); `message` is the raw bytes the signature covers (the
-    /// curve hashes it with SHA-256). Total — malformed input or a bad signature is
-    /// `false`. Native-only: aws-lc-rs has no wasm32 build, and this is not bridged
-    /// to the WASM backend (WebAuthn verification runs on the interpreter).
+    /// curve hashes it with SHA-256). Malformed input is a negative status; a bad
+    /// signature is 0. Native-only: aws-lc-rs has no wasm32 build.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn ecdsa_p256_verify(args: &[Value]) -> Result<Value, RuntimeError> {
+    pub fn ecdsa_p256_verify_status(args: &[Value]) -> Result<Value, RuntimeError> {
         let [Value::Str(pk_hex), Value::Str(msg), Value::Str(sig_hex)] = args else {
             return Err(type_error(
-                "crypto.ecdsa_p256_verify expects (pubkey_hex, message, sig_hex) strings",
+                "crypto.__ecdsa_p256_verify_status expects (pubkey_hex, message, sig_hex) strings",
             ));
         };
-        let ok = (|| {
-            let pk = hex_decode(pk_hex)?;
-            let sig = hex_decode(sig_hex)?;
-            use aws_lc_rs::signature::{UnparsedPublicKey, ECDSA_P256_SHA256_ASN1};
-            Some(
-                UnparsedPublicKey::new(&ECDSA_P256_SHA256_ASN1, pk)
-                    .verify(msg.as_bytes(), &sig)
-                    .is_ok(),
-            )
-        })()
-        .unwrap_or(false);
-        Ok(Value::Bool(ok))
+        let Some(pk) = hex_decode(pk_hex) else {
+            return Ok(Value::Int(-1));
+        };
+        if !is_sec1_p256_public_key(&pk) {
+            return Ok(Value::Int(-1));
+        }
+        let Some(sig) = hex_decode(sig_hex) else {
+            return Ok(Value::Int(-3));
+        };
+        if !is_der_ecdsa_signature(&sig) {
+            return Ok(Value::Int(-3));
+        }
+        use aws_lc_rs::signature::{UnparsedPublicKey, ECDSA_P256_SHA256_ASN1};
+        Ok(Value::Int(
+            UnparsedPublicKey::new(&ECDSA_P256_SHA256_ASN1, pk)
+                .verify(msg.as_bytes(), &sig)
+                .is_ok() as i64,
+        ))
     }
 
     /// Verify an RSASSA-PKCS1-v1_5 / SHA-256 signature — JWT/OIDC "RS256". The
     /// `public_key` is the hex of a DER-encoded RSA public key (PKCS#1 `RSAPublicKey`);
-    /// `signature` is hex; `message` is the raw signed bytes. Total: malformed input or
-    /// a bad signature yields `false`, never an error. (Native/aws-lc only.)
+    /// `signature` is hex; `message` is the raw signed bytes. Malformed input is a
+    /// negative status; a bad signature is 0. (Native/aws-lc only.)
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn rsa_pkcs1_sha256_verify(args: &[Value]) -> Result<Value, RuntimeError> {
+    pub fn rsa_pkcs1_sha256_verify_status(args: &[Value]) -> Result<Value, RuntimeError> {
         let [Value::Str(pk_hex), Value::Str(msg), Value::Str(sig_hex)] = args else {
             return Err(type_error(
-                "crypto.rsa_pkcs1_sha256_verify expects (pubkey_der_hex, message, sig_hex) strings",
+                "crypto.__rsa_pkcs1_sha256_verify_status expects (pubkey_der_hex, message, sig_hex) strings",
             ));
         };
-        let ok = (|| {
-            let pk = hex_decode(pk_hex)?;
-            let sig = hex_decode(sig_hex)?;
-            use aws_lc_rs::signature::{UnparsedPublicKey, RSA_PKCS1_2048_8192_SHA256};
-            Some(
-                UnparsedPublicKey::new(&RSA_PKCS1_2048_8192_SHA256, pk)
-                    .verify(msg.as_bytes(), &sig)
-                    .is_ok(),
-            )
-        })()
-        .unwrap_or(false);
-        Ok(Value::Bool(ok))
+        let Some(pk) = hex_decode(pk_hex) else {
+            return Ok(Value::Int(-1));
+        };
+        if !is_rsa_pkcs1_public_key(&pk) {
+            return Ok(Value::Int(-1));
+        }
+        let Some(sig) = hex_decode(sig_hex) else {
+            return Ok(Value::Int(-3));
+        };
+        if sig.is_empty() {
+            return Ok(Value::Int(-3));
+        }
+        use aws_lc_rs::signature::{UnparsedPublicKey, RSA_PKCS1_2048_8192_SHA256};
+        Ok(Value::Int(
+            UnparsedPublicKey::new(&RSA_PKCS1_2048_8192_SHA256, pk)
+                .verify(msg.as_bytes(), &sig)
+                .is_ok() as i64,
+        ))
     }
 
     /// Like `ecdsa_p256_verify` but the message is also hex — for binary messages
-    /// such as WebAuthn's `authenticatorData ‖ SHA256(clientDataJSON)`. Total.
+    /// such as WebAuthn's `authenticatorData ‖ SHA256(clientDataJSON)`.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn ecdsa_p256_verify_hex(args: &[Value]) -> Result<Value, RuntimeError> {
+    pub fn ecdsa_p256_verify_hex_status(args: &[Value]) -> Result<Value, RuntimeError> {
         let [Value::Str(pk_hex), Value::Str(msg_hex), Value::Str(sig_hex)] = args else {
             return Err(type_error(
-                "crypto.ecdsa_p256_verify_hex expects (pubkey_hex, message_hex, sig_hex) strings",
+                "crypto.__ecdsa_p256_verify_hex_status expects (pubkey_hex, message_hex, sig_hex) strings",
             ));
         };
-        let ok = (|| {
-            let pk = hex_decode(pk_hex)?;
-            let msg = hex_decode(msg_hex)?;
-            let sig = hex_decode(sig_hex)?;
-            use aws_lc_rs::signature::{UnparsedPublicKey, ECDSA_P256_SHA256_ASN1};
-            Some(
-                UnparsedPublicKey::new(&ECDSA_P256_SHA256_ASN1, pk)
-                    .verify(&msg, &sig)
-                    .is_ok(),
-            )
-        })()
-        .unwrap_or(false);
-        Ok(Value::Bool(ok))
+        let Some(pk) = hex_decode(pk_hex) else {
+            return Ok(Value::Int(-1));
+        };
+        if !is_sec1_p256_public_key(&pk) {
+            return Ok(Value::Int(-1));
+        }
+        let Some(msg) = hex_decode(msg_hex) else {
+            return Ok(Value::Int(-2));
+        };
+        let Some(sig) = hex_decode(sig_hex) else {
+            return Ok(Value::Int(-3));
+        };
+        if !is_der_ecdsa_signature(&sig) {
+            return Ok(Value::Int(-3));
+        }
+        use aws_lc_rs::signature::{UnparsedPublicKey, ECDSA_P256_SHA256_ASN1};
+        Ok(Value::Int(
+            UnparsedPublicKey::new(&ECDSA_P256_SHA256_ASN1, pk)
+                .verify(&msg, &sig)
+                .is_ok() as i64,
+        ))
     }
 
     /// SHA-512 (FIPS 180-4) of a string's UTF-8 bytes, as 128 lowercase hex chars.
@@ -323,6 +348,112 @@ mod crypto {
             .step_by(2)
             .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
             .collect()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn is_sec1_p256_public_key(pk: &[u8]) -> bool {
+        pk.len() == 65 && pk.first() == Some(&0x04)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn der_len(data: &[u8], pos: &mut usize) -> Option<usize> {
+        let first = *data.get(*pos)?;
+        *pos += 1;
+        if first & 0x80 == 0 {
+            return Some(first as usize);
+        }
+        let count = (first & 0x7f) as usize;
+        if count == 0 || count > 4 || *pos + count > data.len() {
+            return None;
+        }
+        let mut len = 0usize;
+        for _ in 0..count {
+            len = len.checked_mul(256)?.checked_add(*data.get(*pos)? as usize)?;
+            *pos += 1;
+        }
+        if len < 128 {
+            return None;
+        }
+        Some(len)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn der_tlv<'a>(data: &'a [u8], pos: &mut usize, tag: u8) -> Option<&'a [u8]> {
+        if *data.get(*pos)? != tag {
+            return None;
+        }
+        *pos += 1;
+        let len = der_len(data, pos)?;
+        let end = pos.checked_add(len)?;
+        let out = data.get(*pos..end)?;
+        *pos = end;
+        Some(out)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn der_positive_int(data: &[u8]) -> bool {
+        if data.is_empty() {
+            return false;
+        }
+        if data[0] & 0x80 != 0 {
+            return false;
+        }
+        if data.len() > 1 && data[0] == 0 && data[1] & 0x80 == 0 {
+            return false;
+        }
+        true
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn is_der_ecdsa_signature(sig: &[u8]) -> bool {
+        let mut pos = 0;
+        let Some(seq) = der_tlv(sig, &mut pos, 0x30) else {
+            return false;
+        };
+        if pos != sig.len() {
+            return false;
+        }
+        let mut inner = 0;
+        let Some(r) = der_tlv(seq, &mut inner, 0x02) else {
+            return false;
+        };
+        let Some(s) = der_tlv(seq, &mut inner, 0x02) else {
+            return false;
+        };
+        inner == seq.len() && der_positive_int(r) && der_positive_int(s)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn is_rsa_pkcs1_public_key(der: &[u8]) -> bool {
+        let mut pos = 0;
+        let Some(seq) = der_tlv(der, &mut pos, 0x30) else {
+            return false;
+        };
+        if pos != der.len() {
+            return false;
+        }
+        let mut inner = 0;
+        let Some(n) = der_tlv(seq, &mut inner, 0x02) else {
+            return false;
+        };
+        let Some(e) = der_tlv(seq, &mut inner, 0x02) else {
+            return false;
+        };
+        if inner != seq.len() || !der_positive_int(n) || !der_positive_int(e) {
+            return false;
+        }
+        let modulus = if n.first() == Some(&0) { &n[1..] } else { n };
+        if !(256..=1024).contains(&modulus.len()) || e.len() > 8 {
+            return false;
+        }
+        let mut exp = 0u64;
+        for b in e {
+            exp = match exp.checked_mul(256).and_then(|v| v.checked_add(*b as u64)) {
+                Some(v) => v,
+                None => return false,
+            };
+        }
+        exp > 1 && exp % 2 == 1
     }
 
     // Crypto primitives. On native they are FIPS-approved algorithms via aws-lc-rs;

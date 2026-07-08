@@ -76,7 +76,11 @@ fn timestamp_fresh(text: String, now_seconds: Int) -> String:
 fn verify_signed_doc(text: String, rootpub: String) -> String:
     match json.decode(text):
         Ok(doc) -> match json.get(doc, "signed"):
-            Some(signed) -> if crypto.ed25519_verify(rootpub, json.encode(signed), field(text, "sig")): "true" else: "false"
+            Some(signed) ->
+                match crypto.ed25519_verify(rootpub, json.encode(signed), field(text, "sig")):
+                    Ok(true) -> "true"
+                    Ok(false) -> "false"
+                    Err(_e) -> "false"
             None -> "no-signed"
         Err(_e) -> "decode-err"
 

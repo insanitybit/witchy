@@ -12,7 +12,7 @@
 // Lib C ABI: witchy_alloc / witchy_free for marshaling; witchy_compile(ptr,len) ->
 // `[u32 status][u32 len][payload]` (status 0 = wasm bytes, 1 = utf-8 error); and
 // witchy_render_float / witchy_string_from_code / witchy_encoding /
-// witchy_crypto_hash / witchy_hmac_sha256 / witchy_regex / witchy_verify.
+// witchy_crypto_hash / witchy_hmac_sha256 / witchy_regex / witchy_verify_status.
 
 // Compile `source` to a wasm binary (a detached copy), or throw the compiler's
 // error message.
@@ -89,7 +89,7 @@ export async function runWitchy(wasm, source) {
   const verifyOp = (op) => (pkPtr, msgPtr, sigPtr) => {
     const a = readWstr(pkPtr), b = readWstr(msgPtr), c = readWstr(sigPtr);
     const ap = toLib(a), bp = toLib(b), cp = toLib(c);
-    const r = wasm.witchy_verify(op, ap, a.length, bp, b.length, cp, c.length);
+    const r = wasm.witchy_verify_status(op, ap, a.length, bp, b.length, cp, c.length);
     wasm.witchy_free(ap, a.length || 1);
     wasm.witchy_free(bp, b.length || 1);
     wasm.witchy_free(cp, c.length || 1);
@@ -130,9 +130,10 @@ export async function runWitchy(wasm, source) {
       wasm.witchy_free(mp, m.length || 1);
       return writeInner(takeLibBytes(res), outPtr);
     },
-    "crypto.ed25519_verify": verifyOp(0),
-    "crypto.ecdsa_p256_verify": verifyOp(1),
-    "crypto.ecdsa_p256_verify_hex": verifyOp(2),
+    "crypto.__ed25519_verify_status": verifyOp(0),
+    "crypto.__ecdsa_p256_verify_status": verifyOp(1),
+    "crypto.__ecdsa_p256_verify_hex_status": verifyOp(2),
+    "crypto.__rsa_pkcs1_sha256_verify_status": () => -4n,
     regex_match_spans_len(patPtr, textPtr) {
       const p = readWstr(patPtr), t = readWstr(textPtr);
       const pp = toLib(p), tp = toLib(t);
