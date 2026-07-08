@@ -5878,6 +5878,28 @@ impl Codegen {
         ok
     }
 
+    fn outer_write_can_escape_heap(&self, name: &str, inner: &HashSet<String>) -> bool {
+        if inner.contains(name) {
+            return false;
+        }
+        let scalar_kind = matches!(self.locals.get(name), Some(Kind::I64) | Some(Kind::F64));
+        let scalar_type = matches!(
+            self.local_val_types.get(name),
+            Some(ValType::Int) | Some(ValType::Bool) | Some(ValType::Float)
+        );
+        !scalar_kind && !scalar_type
+    }
+
+    fn call_writes_outer_heap(&self, name: &str, args: &[Expr], inner: &HashSet<String>) -> bool {
+        let Some(convs) = self.fn_conventions.get(name) else {
+            return false;
+        };
+        convs.iter().enumerate().any(|(i, conv)| {
+            *conv == Convention::Var
+                && matches!(args.get(i), Some(Expr::Var(v)) if self.outer_write_can_escape_heap(v, inner))
+        })
+    }
+
     fn bind_pattern_eq_shape(&mut self, pat: &Pattern, shape: &EqShape) {
         match pat {
             Pattern::Var(v) => {
@@ -5902,18 +5924,8 @@ impl Codegen {
         for stmt in &b.stmts {
             match stmt {
                 Stmt::Assign { name, value } => {
-                    if !inner.contains(name) {
-                        let scalar_kind = matches!(
-                            self.locals.get(name),
-                            Some(Kind::I64) | Some(Kind::F64)
-                        );
-                        let scalar_type = matches!(
-                            self.local_val_types.get(name),
-                            Some(ValType::Int) | Some(ValType::Bool) | Some(ValType::Float)
-                        );
-                        if !scalar_kind && !scalar_type {
-                            *ok = false;
-                        }
+                    if self.outer_write_can_escape_heap(name, inner) {
+                        *ok = false;
                     }
                     self.scan_escapes_expr(value, inner, ok);
                 }
@@ -5963,8 +5975,15 @@ impl Codegen {
             | Expr::Try(expr)
             | Expr::As { expr, .. }
             | Expr::Field { base: expr, .. } => self.scan_escapes_expr(expr, inner, ok),
-            Expr::Call { args, .. }
-            | Expr::Ctor { args, .. }
+            Expr::Call { name, args } => {
+                if self.call_writes_outer_heap(name, args, inner) {
+                    *ok = false;
+                }
+                for a in args {
+                    self.scan_escapes_expr(a, inner, ok);
+                }
+            }
+            Expr::Ctor { args, .. }
             | Expr::List(args)
             | Expr::Tuple(args) => {
                 for a in args {
