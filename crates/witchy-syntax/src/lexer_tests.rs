@@ -115,7 +115,7 @@
                 Tok::Ident("__render".into()),
                 Tok::LParen,
                 Tok::Ident("x".into()),
-                Tok::RParen,
+                Tok::InterpRBrace,
                 Tok::Plus,
                 Tok::Str("b".into()),
                 Tok::RParen,
@@ -126,6 +126,21 @@
         assert_eq!(kinds(r#""plain""#), vec![Tok::Str("plain".into()), Tok::Eof]);
         // `\$` is a literal dollar, not an interpolation.
         assert_eq!(kinds(r#""\${x}""#), vec![Tok::Str("${x}".into()), Tok::Eof]);
+    }
+
+    #[test]
+    fn interpolation_tokens_keep_hole_spans() {
+        let toks = tokenize("fn f():\n    \"pre ${value + } post\"\n").unwrap();
+        let plus = toks
+            .iter()
+            .find(|t| t.kind == Tok::Plus && t.line == 2 && t.col == 18)
+            .expect("operator inside interpolation keeps source span");
+        assert_eq!((plus.line, plus.col), (2, 18));
+        let close = toks
+            .iter()
+            .find(|t| t.kind == Tok::InterpRBrace)
+            .expect("interpolation close token is synthetic");
+        assert_eq!((close.line, close.col), (2, 20));
     }
 
     #[test]

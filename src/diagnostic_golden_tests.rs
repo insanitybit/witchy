@@ -200,6 +200,13 @@ mod parse {
     }
 
     #[test]
+    fn interpolation_hole_parse_error() {
+        insta::assert_snapshot!(parse_diag(
+            "fn main(console: Console):\n    print(console, \"pre ${value + } post\")\n"
+        ));
+    }
+
+    #[test]
     fn unknown_performance_mode() {
         insta::assert_snapshot!(parse_diag(
             "mode turbo\n\nfn main(console: Console):\n    print(console, \"hi\")\n"

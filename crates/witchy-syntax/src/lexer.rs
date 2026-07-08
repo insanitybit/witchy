@@ -10,6 +10,14 @@ use std::fmt;
 /// source (the diagnostics channel — see `tag_literal` / `Tok::TagLit`).
 type TagLiteralParts = (Vec<String>, Vec<String>, Vec<(u32, u32)>);
 
+struct InterpSource {
+    src: String,
+    start_line: u32,
+    start_col: u32,
+    close_line: u32,
+    close_col: u32,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tok {
     // Literals
@@ -69,6 +77,10 @@ pub enum Tok {
     // Grouping / punctuation
     LParen,
     RParen,
+    /// Synthetic close token for a `${...}` interpolation hole after it has been
+    /// desugared to `__render(<expr>)`. It parses as that generated call's `)`
+    /// but displays as the user's `}` in diagnostics.
+    InterpRBrace,
     LBrace,
     RBrace,
     /// `.{` — opens an anonymous struct `.{ field: expr, … }`. The only place a
@@ -161,6 +173,7 @@ impl fmt::Display for Tok {
             Capability => write!(f, "capability"),
             LParen => write!(f, "("),
             RParen => write!(f, ")"),
+            InterpRBrace => write!(f, "}}"),
             LBrace => write!(f, "{{"),
             RBrace => write!(f, "}}"),
             DotLBrace => write!(f, ".{{"),
@@ -229,6 +242,19 @@ impl fmt::Display for LexError {
 }
 
 impl std::error::Error for LexError {}
+
+fn rebase_inner_position(
+    start_line: u32,
+    start_col: u32,
+    inner_line: u32,
+    inner_col: u32,
+) -> (u32, u32) {
+    if inner_line == 1 {
+        (start_line, start_col + inner_col.saturating_sub(1))
+    } else {
+        (start_line + inner_line - 1, inner_col)
+    }
+}
 
 struct Lexer {
     chars: Vec<char>,
@@ -345,18 +371,14 @@ impl Lexer {
             // A string literal may expand into several tokens (interpolation),
             // so it pushes directly; everything else yields a single token.
             if c == '"' {
-                for kind in self.string(false)? {
-                    out.push(Token { kind, line, col });
-                }
+                out.extend(self.string(false, line, col)?);
                 continue;
             }
             // `f"..."` is an f-string: `{expr}` interpolates (Python style),
             // `{{`/`}}` are literal braces.
             if c == 'f' && self.peek2() == Some('"') {
                 self.bump(); // consume the `f`
-                for kind in self.string(true)? {
-                    out.push(Token { kind, line, col });
-                }
+                out.extend(self.string(true, line, col)?);
                 continue;
             }
             let kind = match c {
@@ -629,10 +651,15 @@ impl Lexer {
     /// `( lit0 + __render(expr0) + lit1 + ... )`, so the parser needs no
     /// special handling and interpolation works in both backends (`to_string` +
     /// concat). Write `\$` for a literal `$`.
-    fn string(&mut self, fstring: bool) -> Result<Vec<Tok>, LexError> {
+    fn string(
+        &mut self,
+        fstring: bool,
+        literal_line: u32,
+        literal_col: u32,
+    ) -> Result<Vec<Token>, LexError> {
         self.bump(); // opening quote
         let mut text = String::new();
-        let mut out: Vec<Tok> = Vec::new();
+        let mut out: Vec<Token> = Vec::new();
         let mut interpolated = false;
         loop {
             match self.bump() {
@@ -679,12 +706,12 @@ impl Lexer {
             }
         }
         if interpolated {
-            out.push(Tok::Plus);
-            out.push(Tok::Str(text));
-            out.push(Tok::RParen);
+            out.push(Token { kind: Tok::Plus, line: literal_line, col: literal_col });
+            out.push(Token { kind: Tok::Str(text), line: literal_line, col: literal_col });
+            out.push(Token { kind: Tok::RParen, line: literal_line, col: literal_col });
             Ok(out)
         } else {
-            Ok(vec![Tok::Str(text)])
+            Ok(vec![Token { kind: Tok::Str(text), line: literal_line, col: literal_col }])
         }
     }
 
@@ -727,8 +754,9 @@ impl Lexer {
                     // The hole's source begins at the current position (just past
                     // `${`): record where the `${…}` body opens so diagnostics land
                     // on the interpolated expression, not the literal's start.
-                    hole_spans.push((self.line, self.col));
-                    holes.push(self.interp_source()?);
+                    let span = self.interp_source()?;
+                    hole_spans.push((span.start_line, span.start_col));
+                    holes.push(span.src);
                 }
                 Some(c) => text.push(c),
             }
@@ -742,39 +770,63 @@ impl Lexer {
     /// the embedded expression up to its matching `}`.
     fn emit_interpolation(
         &mut self,
-        out: &mut Vec<Tok>,
+        out: &mut Vec<Token>,
         text: &mut String,
         interpolated: &mut bool,
     ) -> Result<(), LexError> {
         if *interpolated {
-            out.push(Tok::Plus);
+            out.push(Token { kind: Tok::Plus, line: self.line, col: self.col });
         } else {
-            out.push(Tok::LParen);
+            out.push(Token { kind: Tok::LParen, line: self.line, col: self.col });
             *interpolated = true;
         }
-        out.push(Tok::Str(std::mem::take(text)));
-        let src = self.interp_source()?;
-        let expr_toks = Lexer::new(&src).tokenize()?;
-        out.push(Tok::Plus);
-        out.push(Tok::Ident("__render".into()));
-        out.push(Tok::LParen);
+        out.push(Token { kind: Tok::Str(std::mem::take(text)), line: self.line, col: self.col });
+        let span = self.interp_source()?;
+        let expr_toks = Lexer::new(&span.src).tokenize().map_err(|err| {
+            let (line, col) = rebase_inner_position(
+                span.start_line,
+                span.start_col,
+                err.line,
+                err.col,
+            );
+            LexError { message: err.message, line, col }
+        })?;
+        out.push(Token { kind: Tok::Plus, line: span.start_line, col: span.start_col });
+        out.push(Token {
+            kind: Tok::Ident("__render".into()),
+            line: span.start_line,
+            col: span.start_col,
+        });
+        out.push(Token { kind: Tok::LParen, line: span.start_line, col: span.start_col });
         for t in expr_toks {
             if t.kind == Tok::Eof {
                 break;
             }
-            out.push(t.kind);
+            let (line, col) = rebase_inner_position(
+                span.start_line,
+                span.start_col,
+                t.line,
+                t.col,
+            );
+            out.push(Token { kind: t.kind, line, col });
         }
-        out.push(Tok::RParen);
+        out.push(Token {
+            kind: Tok::InterpRBrace,
+            line: span.close_line,
+            col: span.close_col,
+        });
         Ok(())
     }
 
     /// Read the source of a `${ ... }` interpolation (the opening `${` already
     /// consumed) up to the matching `}`. Tracks brace depth and skips over nested
     /// string literals so their braces and quotes don't confuse the match.
-    fn interp_source(&mut self) -> Result<String, LexError> {
+    fn interp_source(&mut self) -> Result<InterpSource, LexError> {
+        let (start_line, start_col) = (self.line, self.col);
         let mut depth = 1;
         let mut src = String::new();
         loop {
+            let (char_line, char_col) = (self.line, self.col);
             match self.bump() {
                 None => return Err(self.err("unterminated `${` interpolation")),
                 Some('{') => {
@@ -784,7 +836,13 @@ impl Lexer {
                 Some('}') => {
                     depth -= 1;
                     if depth == 0 {
-                        return Ok(src);
+                        return Ok(InterpSource {
+                            src,
+                            start_line,
+                            start_col,
+                            close_line: char_line,
+                            close_col: char_col,
+                        });
                     }
                     src.push('}');
                 }
@@ -1027,7 +1085,7 @@ pub fn apply_layout(tokens: Vec<Token>) -> Vec<Token> {
         }
         match kind {
             Tok::LParen | Tok::LBracket | Tok::LBrace | Tok::DotLBrace => depth += 1,
-            Tok::RParen | Tok::RBracket | Tok::RBrace => depth -= 1,
+            Tok::RParen | Tok::InterpRBrace | Tok::RBracket | Tok::RBrace => depth -= 1,
             _ => {}
         }
     }
@@ -1081,7 +1139,7 @@ pub fn apply_layout(tokens: Vec<Token>) -> Vec<Token> {
                 break;
             }
             match t.kind {
-                Tok::RParen | Tok::RBracket | Tok::RBrace => {
+                Tok::RParen | Tok::InterpRBrace | Tok::RBracket | Tok::RBrace => {
                     let new_bd = bdepth - 1;
                     while block_bd.last().is_some_and(|bd| *bd > new_bd) {
                         let near = out.last().cloned().unwrap_or_else(|| t.clone());

@@ -208,6 +208,19 @@ impl Parser {
         }
     }
 
+    fn at_call_close(&self) -> bool {
+        self.at(&Tok::RParen) || self.at(&Tok::InterpRBrace)
+    }
+
+    fn expect_call_close(&mut self) -> Result<(), ParseError> {
+        if self.at_call_close() {
+            self.advance();
+            Ok(())
+        } else {
+            Err(self.error(format!("expected `)`, found `{}`", self.kind())))
+        }
+    }
+
     fn error(&self, message: impl Into<String>) -> ParseError {
         ParseError {
             message: message.into(),
@@ -1781,7 +1794,7 @@ impl Parser {
                 break;
             }
         }
-        self.expect(&Tok::RParen)?;
+        self.expect_call_close()?;
         Ok(args)
     }
 
