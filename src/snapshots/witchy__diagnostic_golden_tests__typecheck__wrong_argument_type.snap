@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"fn add(a: Int, b: Int) -> Int:\\n    a + b\\n\\nfn main(console: Console):\\n    print(console, __render(add(1, \\\"two\\\")))\\n\")"
+---
+type error: `main`, line 5: in call to `main.add`: expected `Int`, found `String`

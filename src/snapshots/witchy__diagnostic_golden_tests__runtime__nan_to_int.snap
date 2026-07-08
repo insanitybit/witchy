@@ -1,0 +1,6 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "trap_pair(\"import math\\n\\nfn main(console: Console):\\n    print(console, __render(math.to_int(0.0 / 0.0)))\\n\")"
+---
+interp: runtime error: `main`, line 4: math.to_int: NaN cannot be converted to Int
+wasm:   runtime error: math.to_int: NaN cannot be converted to Int

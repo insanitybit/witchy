@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"fn main(console: Console, out: BuildOut):\\n    print(console, \\\"hi\\\")\\n\")"
+---
+type error: `main` parameter `out` has type `BuildOut`, but `main` may only take host capabilities (Console, Clock, Env, Dir, Net, Exec, Secret, SecretStore), a `grantable` library capability, or `List(String)` for command-line args

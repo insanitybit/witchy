@@ -1,0 +1,597 @@
+//! RFC-0072: verbatim diagnostic goldens over witchy's full error surface.
+//!
+//! Every error assertion elsewhere in the suite is a loose `.contains(...)`; a
+//! message can silently degrade — drop its hint, lose its position — and stay
+//! green. This file locks the ACTUAL text of each diagnostic class (parse,
+//! layout, link, type, capability, `mode opt` enforcement, lowering-reject, and
+//! runtime trap) with `insta` snapshots, the way rustc's `ui`/`.stderr` goldens
+//! do. A message change is now a visible, reviewed diff in `src/snapshots/`.
+//!
+//! Scope is RFC-0072 **Phase 1** only: capture the surface as it is *today*,
+//! truthfully, warts included. Where a captured message is genuinely wrong, it
+//! is flagged `// KNOWN-BAD (BUG-NNN)` and the golden locks the current
+//! (imperfect) behavior so its eventual fix shows up as a deliberate golden
+//! update — Phase 2 (message polish) is out of scope here.
+//!
+//! Parity note: every runtime-trap golden captures BOTH the interpreter and the
+//! compiled-WASM output in one snapshot, so a diverging pair is a parity failure
+//! caught at the message level. Today the compiled backend omits the trap's
+//! source position (BUG-107 / RFC-0045 residual) and surfaces integer
+//! divide-by-zero as a raw wasm trap; those accepted differences are recorded
+//! here so any *further* drift is loud.
+
+use crate::{codegen, interpreter, parser, pipeline, typeck};
+
+// ---------------------------------------------------------------------------
+// Pipeline plumbing — reuses the same stages the CLI and `example_tests.rs`
+// drive (`parse_module` -> `pipeline::link` -> `typeck::check` ->
+// `compile_module_binary` / `interpreter::run_module` / `run_wasm_bytes`).
+// Each helper returns the diagnostic STRING for the first stage that rejects.
+// Snapshots must be deterministic: sources carry no absolute paths, and no
+// helper surfaces a timestamp, address, or filesystem path.
+// ---------------------------------------------------------------------------
+
+/// A parse error (or `<unexpectedly parsed>` if the source was accepted).
+fn parse_diag(src: &str) -> String {
+    match parser::parse_module(src) {
+        Ok(_) => "<unexpectedly parsed>".to_string(),
+        Err(e) => e.to_string(),
+    }
+}
+
+/// A link error, driving parse then `pipeline::link` (which pulls in any
+/// imported std module, exactly like the CLI's `link_file`).
+fn link_diag(src: &str) -> String {
+    let module = match parser::parse_module(src) {
+        Ok(m) => m,
+        Err(e) => return format!("<parse error>: {e}"),
+    };
+    match pipeline::link(vec![("main".into(), module)], "main") {
+        Ok(_) => "<unexpectedly linked>".to_string(),
+        Err(e) => e.to_string(),
+    }
+}
+
+/// A link error over several named modules (the multi-file case).
+fn multi_link_diag(sources: &[(&str, &str)], entry: &str) -> String {
+    let mut mods = Vec::new();
+    for (n, s) in sources {
+        match parser::parse_module(s) {
+            Ok(m) => mods.push(((*n).to_string(), m)),
+            Err(e) => return format!("<parse error in {n}>: {e}"),
+        }
+    }
+    match pipeline::link(mods, entry) {
+        Ok(_) => "<unexpectedly linked>".to_string(),
+        Err(e) => e.to_string(),
+    }
+}
+
+/// A type error, driving parse -> link -> `typeck::check`.
+fn type_diag(src: &str) -> String {
+    let module = match parser::parse_module(src) {
+        Ok(m) => m,
+        Err(e) => return format!("<parse error>: {e}"),
+    };
+    let linked = match pipeline::link(vec![("main".into(), module)], "main") {
+        Ok(m) => m,
+        Err(e) => return format!("<link error>: {e}"),
+    };
+    match typeck::check(&linked) {
+        Ok(()) => "<unexpectedly type-checked>".to_string(),
+        Err(e) => e.to_string(),
+    }
+}
+
+/// A `mode opt` enforcement error (the ownership-convention surface), driving
+/// parse -> link -> `enforce_performance_modes` — the CLI's perf-mode gate.
+fn mode_diag(src: &str) -> String {
+    let module = match parser::parse_module(src) {
+        Ok(m) => m,
+        Err(e) => return format!("<parse error>: {e}"),
+    };
+    let linked = match pipeline::link(vec![("main".into(), module)], "main") {
+        Ok(m) => m,
+        Err(e) => return format!("<link error>: {e}"),
+    };
+    match crate::enforce_performance_modes(&linked, "main") {
+        Ok(()) => "<unexpectedly accepted>".to_string(),
+        Err(e) => e,
+    }
+}
+
+/// A lowering (codegen) rejection, driving the whole front end then
+/// `compile_module_binary`; `Ok(None)` is the "does not lower" reject channel,
+/// `Err` a hard `codegen error:` diagnostic.
+fn lower_diag(src: &str) -> String {
+    let module = match parser::parse_module(src) {
+        Ok(m) => m,
+        Err(e) => return format!("<parse error>: {e}"),
+    };
+    let linked = match pipeline::link(vec![("main".into(), module)], "main") {
+        Ok(m) => m,
+        Err(e) => return format!("<link error>: {e}"),
+    };
+    if let Err(e) = typeck::check(&linked) {
+        return format!("<type error>: {e}");
+    }
+    match codegen::compile_module_binary(&linked) {
+        Ok(Some(_)) => "<unexpectedly compiled>".to_string(),
+        Ok(None) => "<reject: does not lower to the compiled backend>".to_string(),
+        Err(e) => e.to_string(),
+    }
+}
+
+/// Run a program to a runtime trap on the interpreter, returning the trap
+/// string. Panics on any earlier-stage failure (the source must be valid up to
+/// the trap — these are runtime goldens).
+fn interp_trap(src: &str) -> String {
+    let module = parser::parse_module(src).expect("parse");
+    let linked = pipeline::link(vec![("main".into(), module)], "main").expect("link");
+    typeck::check(&linked).expect("typecheck");
+    match interpreter::run_module(linked, ".", Vec::new()) {
+        Ok(out) => format!("<ran without trapping -> {out:?}>"),
+        Err(e) => e.to_string(),
+    }
+}
+
+/// Run the same program to a runtime trap on the compiled-WASM backend.
+fn wasm_trap(src: &str) -> String {
+    let module = parser::parse_module(src).expect("parse");
+    let linked = pipeline::link(vec![("main".into(), module)], "main").expect("link");
+    typeck::check(&linked).expect("typecheck");
+    let bytes = codegen::compile_module_binary(&linked)
+        .expect("compile")
+        .expect("the binary path lowers this program");
+    match crate::run_wasm_bytes(&bytes) {
+        Ok(out) => format!("<ran without trapping -> {out:?}>"),
+        Err(e) => e,
+    }
+}
+
+/// Snapshot the interpreter+compiled trap PAIR for one program (RFC-0072's
+/// parity rule): both backends' trap text in one golden, so a divergence is a
+/// message-level parity failure. `interp:`/`wasm:` prefixes make an accepted
+/// difference (e.g. the compiled backend's missing source position, BUG-107)
+/// legible in the snapshot.
+fn trap_pair(src: &str) -> String {
+    format!("interp: {}\nwasm:   {}", interp_trap(src), wasm_trap(src))
+}
+
+// ===========================================================================
+// Parse & layout diagnostics
+// ===========================================================================
+mod parse {
+    use super::*;
+
+    #[test]
+    fn unclosed_paren() {
+        insta::assert_snapshot!(parse_diag(
+            "fn main(console: Console):\n    print(console, (1 + 2)\n"
+        ));
+    }
+
+    #[test]
+    fn unexpected_token() {
+        insta::assert_snapshot!(parse_diag(
+            "fn main(console: Console):\n    let x = = 3\n"
+        ));
+    }
+
+    #[test]
+    fn braces_are_not_syntax() {
+        insta::assert_snapshot!(parse_diag(
+            "fn main(console: Console) {\n    print(console, \"hi\")\n}\n"
+        ));
+    }
+
+    #[test]
+    fn missing_header_colon() {
+        insta::assert_snapshot!(parse_diag(
+            "fn main(console: Console)\n    print(console, \"hi\")\n"
+        ));
+    }
+
+    #[test]
+    fn unterminated_string() {
+        insta::assert_snapshot!(parse_diag(
+            "fn main(console: Console):\n    print(console, \"unterminated)\n"
+        ));
+    }
+
+    #[test]
+    fn unknown_performance_mode() {
+        insta::assert_snapshot!(parse_diag(
+            "mode turbo\n\nfn main(console: Console):\n    print(console, \"hi\")\n"
+        ));
+    }
+
+    #[test]
+    fn top_level_item_expected() {
+        insta::assert_snapshot!(parse_diag(
+            "fn f() -> Int:\n    1\nimport list\n"
+        ));
+    }
+
+    // --- layout / off-side rule ---
+
+    #[test]
+    fn tab_in_leading_indentation() {
+        insta::assert_snapshot!(parse_diag(
+            "fn main(console: Console):\n\tprint(console, \"hi\")\n"
+        ));
+    }
+}
+
+// ===========================================================================
+// Link diagnostics (unknown module / missing function / unknown type /
+// module-qualified-reference-without-import, incl. did-you-mean hints)
+// ===========================================================================
+mod link {
+    use super::*;
+
+    #[test]
+    fn unknown_imported_module() {
+        insta::assert_snapshot!(link_diag(
+            "import wibble\n\nfn main(console: Console):\n    print(console, \"hi\")\n"
+        ));
+    }
+
+    #[test]
+    fn module_has_no_such_function() {
+        insta::assert_snapshot!(link_diag(
+            "import list\n\nfn main(console: Console):\n    print(console, __render(list.nonexistent([1])))\n"
+        ));
+    }
+
+    #[test]
+    fn unknown_type_qualify_hint() {
+        insta::assert_snapshot!(link_diag(
+            "type Wrapper:\n    inner: Wibble\n\nfn main(console: Console):\n    print(console, \"hi\")\n"
+        ));
+    }
+
+    #[test]
+    fn module_qualified_reference_not_imported() {
+        insta::assert_snapshot!(link_diag(
+            "fn main(console: Console):\n    let f = iter.count\n    print(console, \"x\")\n"
+        ));
+    }
+
+    #[test]
+    fn multi_module_unknown_import() {
+        insta::assert_snapshot!(multi_link_diag(
+            &[(
+                "main",
+                "import helper\n\nfn main(console: Console):\n    print(console, __render(helper.missing()))\n",
+            )],
+            "main",
+        ));
+    }
+}
+
+// ===========================================================================
+// Type diagnostics
+// ===========================================================================
+mod typecheck {
+    use super::*;
+
+    #[test]
+    fn annotation_value_mismatch() {
+        insta::assert_snapshot!(type_diag(
+            "fn main(console: Console):\n    let x: Int = \"hello\"\n    print(console, __render(x))\n"
+        ));
+    }
+
+    #[test]
+    fn arity_too_many_arguments() {
+        insta::assert_snapshot!(type_diag(
+            "fn add(a: Int, b: Int) -> Int:\n    a + b\n\nfn main(console: Console):\n    print(console, __render(add(1, 2, 3)))\n"
+        ));
+    }
+
+    #[test]
+    fn arity_too_few_arguments() {
+        insta::assert_snapshot!(type_diag(
+            "fn add(a: Int, b: Int) -> Int:\n    a + b\n\nfn main(console: Console):\n    print(console, __render(add(1)))\n"
+        ));
+    }
+
+    #[test]
+    fn unknown_function() {
+        insta::assert_snapshot!(type_diag(
+            "fn main(console: Console):\n    print(console, __render(mystery(1)))\n"
+        ));
+    }
+
+    #[test]
+    fn unknown_function_did_you_mean() {
+        insta::assert_snapshot!(type_diag(
+            "fn main(console: Console):\n    let xs = [1, 2, 3]\n    print(console, __render(lenght(xs)))\n"
+        ));
+    }
+
+    #[test]
+    // KNOWN-BAD (BUG-162): this module-qualified-call type error is the one probed
+    // message with NO position (`main`, line N) — RFC-0072's polish item 2. The
+    // golden locks the current position-less text so the fix is a deliberate diff.
+    fn module_qualified_call_not_imported() {
+        insta::assert_snapshot!(type_diag(
+            "fn main(console: Console):\n    print(console, json.stringify(42))\n"
+        ));
+    }
+
+    #[test]
+    fn retired_global_builtin_now_module_qualified() {
+        insta::assert_snapshot!(type_diag(
+            "fn main(console: Console):\n    print(console, __render(push([1], 2)))\n"
+        ));
+    }
+
+    #[test]
+    fn wrong_argument_type() {
+        insta::assert_snapshot!(type_diag(
+            "fn add(a: Int, b: Int) -> Int:\n    a + b\n\nfn main(console: Console):\n    print(console, __render(add(1, \"two\")))\n"
+        ));
+    }
+
+    #[test]
+    fn function_body_return_mismatch() {
+        insta::assert_snapshot!(type_diag(
+            "fn f() -> Int:\n    \"nope\"\n\nfn main(console: Console):\n    print(console, __render(f()))\n"
+        ));
+    }
+
+    #[test]
+    fn if_branches_disagree() {
+        insta::assert_snapshot!(type_diag(
+            "fn main(console: Console):\n    let x = if true: 1 else: \"two\"\n    print(console, __render(x))\n"
+        ));
+    }
+
+    #[test]
+    fn if_condition_not_bool() {
+        insta::assert_snapshot!(type_diag(
+            "fn main(console: Console):\n    if 3: print(console, \"hi\")\n"
+        ));
+    }
+
+    #[test]
+    fn unbound_variable() {
+        insta::assert_snapshot!(type_diag(
+            "fn main(console: Console):\n    print(console, __render(undefined_var))\n"
+        ));
+    }
+
+    #[test]
+    fn unbound_capability_without_parameter() {
+        insta::assert_snapshot!(type_diag(
+            "fn main():\n    print(console, \"hi\")\n"
+        ));
+    }
+
+    #[test]
+    fn record_has_no_such_field() {
+        insta::assert_snapshot!(type_diag(
+            "type Point:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let p = Point(x: 1, y: 2)\n    print(console, __render(p.z))\n"
+        ));
+    }
+
+    #[test]
+    fn duplicate_parameter_names() {
+        insta::assert_snapshot!(type_diag(
+            "fn f(a: Int, a: Int) -> Int:\n    a\n\nfn main(console: Console):\n    print(console, \"hi\")\n"
+        ));
+    }
+
+    #[test]
+    fn trait_method_has_no_function_value() {
+        insta::assert_snapshot!(type_diag(
+            "import show\n\nfn main(console: Console):\n    let f = show\n    print(console, \"x\")\n"
+        ));
+    }
+
+    #[test]
+    fn use_after_move_own_parameter() {
+        insta::assert_snapshot!(type_diag(
+            "import list\n\nfn take(own xs: List(Int)) -> Int:\n    list.length(xs)\n\nfn main(console: Console):\n    let xs = [1, 2, 3]\n    let a = take(xs)\n    let b = take(xs)\n    print(console, __render(a + b))\n"
+        ));
+    }
+
+    #[test]
+    fn interpolate_a_function_value() {
+        insta::assert_snapshot!(type_diag(
+            "fn main(console: Console):\n    let f = fn(n: Int): n + 1\n    print(console, \"${f}\")\n"
+        ));
+    }
+
+    #[test]
+    fn float_does_not_implement_ord() {
+        insta::assert_snapshot!(type_diag(
+            "import list\n\nfn main(console: Console):\n    let xs = [3.0, 1.0]\n    print(console, __render(list.length(list.sort(xs))))\n"
+        ));
+    }
+
+    #[test]
+    fn ordering_requires_ord() {
+        insta::assert_snapshot!(type_diag(
+            "type Widget:\n    n: Int\n\nfn main(console: Console):\n    let a = Widget(n: 1)\n    let b = Widget(n: 2)\n    if a < b: print(console, \"lt\") else: print(console, \"ge\")\n"
+        ));
+    }
+}
+
+// ===========================================================================
+// Capability diagnostics
+// ===========================================================================
+mod capability {
+    use super::*;
+
+    #[test]
+    fn main_takes_only_grantable_root_capabilities() {
+        insta::assert_snapshot!(type_diag(
+            "type Config:\n    Config(Int)\n\nfn main(console: Console, c: Config):\n    print(console, \"hi\")\n"
+        ));
+    }
+
+    #[test]
+    fn main_rejects_a_build_capability() {
+        insta::assert_snapshot!(type_diag(
+            "fn main(console: Console, out: BuildOut):\n    print(console, \"hi\")\n"
+        ));
+    }
+
+    #[test]
+    fn cap_gated_export_leads_with_grantable() {
+        insta::assert_snapshot!(type_diag(
+            "type Config:\n    Config(Int)\n\npub fn export_step(c: Config, input: String) -> String:\n    input\n"
+        ));
+    }
+
+    #[test]
+    fn dir_read_capability_cannot_write() {
+        insta::assert_snapshot!(type_diag(
+            "fn main(dir: Dir[Read]):\n    dir.write(\"x\", \"y\")\n"
+        ));
+    }
+}
+
+// ===========================================================================
+// `mode opt` enforcement (ownership-convention) diagnostics
+// ===========================================================================
+mod perf_mode {
+    use super::*;
+
+    #[test]
+    fn ownership_convention_required_in_mode_opt() {
+        insta::assert_snapshot!(mode_diag(
+            "mode opt\n\nimport list\n\nfn tag(xs: List(Int)) -> Int:\n    list.length(xs)\n\nfn main(console: Console):\n    print(console, __render(tag([1, 2, 3])))\n"
+        ));
+    }
+}
+
+// ===========================================================================
+// Lowering-reject (codegen) diagnostics
+// ===========================================================================
+mod lowering {
+    use super::*;
+
+    #[test]
+    fn dict_record_key_not_lowerable() {
+        insta::assert_snapshot!(lower_diag(
+            "import dict\n\ntype K:\n    a: Int\n    b: Int\n\nfn main(console: Console):\n    var d = dict.new()\n    d = dict.insert(d, K(a: 1, b: 2), \"v\")\n    print(console, \"hi\")\n"
+        ));
+    }
+}
+
+// ===========================================================================
+// Comptime-generated code diagnostics
+// ===========================================================================
+mod comptime {
+    use super::*;
+
+    #[test]
+    // Historically BUG-341: a type error in comptime-emitted code reported a
+    // phantom line past EOF. FIXED (commit 7375442) — the error now attributes to
+    // the emitted function's own line 1. This golden locks the fixed behavior so a
+    // regression to a past-EOF phantom line is caught.
+    fn type_error_in_emitted_code() {
+        insta::assert_snapshot!(type_diag(
+            "comptime:\n    emit(\"fn broken() -> Int:\")\n    emit(\"    \\\"nope\\\"\")\n\nfn main(console: Console):\n    print(console, __render(broken()))\n"
+        ));
+    }
+}
+
+// ===========================================================================
+// Runtime traps — interpreter + compiled-WASM PAIR (parity locked)
+// ===========================================================================
+mod runtime {
+    use super::*;
+
+    #[test]
+    // KNOWN-BAD (BUG-107): the compiled backend omits the trap's source position
+    // (`main`, line N) that the interpreter carries — RFC-0045's lenient slice.
+    // The golden records the accepted interp/wasm difference so further drift is
+    // loud and BUG-107's eventual fix is a deliberate golden update.
+    fn list_index_out_of_bounds() {
+        insta::assert_snapshot!(trap_pair(
+            "import list\n\nfn main(console: Console):\n    let xs = [1, 2]\n    print(console, __render(list.at(xs, 9)))\n"
+        ));
+    }
+
+    #[test]
+    // KNOWN-BAD (BUG-107): compiled backend omits the source position (see above).
+    fn index_operator_out_of_bounds() {
+        insta::assert_snapshot!(trap_pair(
+            "fn main(console: Console):\n    let xs = [1, 2]\n    print(console, __render(xs[9]))\n"
+        ));
+    }
+
+    #[test]
+    // KNOWN-BAD (BUG-107): compiled backend omits the source position (see above).
+    fn parse_int_of_junk() {
+        insta::assert_snapshot!(trap_pair(
+            "import string\n\nfn main(console: Console):\n    print(console, __render(string.to_int(\"notanumber\")))\n"
+        ));
+    }
+
+    #[test]
+    // KNOWN-BAD (BUG-107): compiled backend omits the source position (see above).
+    fn user_fail() {
+        insta::assert_snapshot!(trap_pair(
+            "fn main(console: Console):\n    fail(\"something broke\")\n"
+        ));
+    }
+
+    #[test]
+    // KNOWN-BAD (BUG-107): the interp/wasm messages DIVERGE here, not just in
+    // position: the interpreter reports `runtime error: ... division by zero`
+    // while the compiled backend surfaces the raw `wasm trap: integer divide by
+    // zero`. This integer trap is not routed through RFC-0045's `__witchy_abort`
+    // template set, so the pair is not message-parity. The golden locks the
+    // current divergence; closing BUG-107 should make both read identically.
+    fn integer_division_by_zero() {
+        insta::assert_snapshot!(trap_pair(
+            "fn main(console: Console):\n    let z = 0\n    print(console, __render(10 / z))\n"
+        ));
+    }
+
+    #[test]
+    // KNOWN-BAD (BUG-107): compiled backend omits the source position (see above).
+    fn nan_to_int() {
+        insta::assert_snapshot!(trap_pair(
+            "import math\n\nfn main(console: Console):\n    print(console, __render(math.to_int(0.0 / 0.0)))\n"
+        ));
+    }
+
+    #[test]
+    // KNOWN-BAD (BUG-107): compiled backend omits the source position (see above).
+    fn nan_comparison_order() {
+        insta::assert_snapshot!(trap_pair(
+            "fn main(console: Console):\n    let a = 0.0 / 0.0\n    let b = 1.0\n    if a < b: print(console, \"lt\") else: print(console, \"ge\")\n"
+        ));
+    }
+
+    #[test]
+    fn required_secret_not_granted() {
+        // A `SecretStore` is granted, but the named secret `signing` is not — the
+        // eager require-site trap (BUG-394). Interpreter-only capture: the trap is
+        // driven through `run_module_exit_secrets` (the compiled twin needs a
+        // `SecretGrant` wiring the differential harness covers elsewhere).
+        let src = "import secretstore\n\nfn main(console: Console, secrets: SecretStore):\n    let s = secretstore.require(secrets, \"signing\")\n    print(console, \"got it\")\n";
+        let module = parser::parse_module(src).expect("parse");
+        let linked = pipeline::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let diag = match interpreter::run_module_exit_secrets(
+            linked,
+            ".",
+            Vec::new(),
+            Vec::new(),
+            None,
+            Vec::new(),
+        ) {
+            Ok(out) => format!("<ran without trapping -> {out:?}>"),
+            Err(e) => e.to_string(),
+        };
+        insta::assert_snapshot!(diag);
+    }
+}

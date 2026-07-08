@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "link_diag(\"fn main(console: Console):\\n    let f = iter.count\\n    print(console, \\\"x\\\")\\n\")"
+---
+link error: `iter.count` looks like a module-qualified reference, but `iter` is not imported — add `import iter`

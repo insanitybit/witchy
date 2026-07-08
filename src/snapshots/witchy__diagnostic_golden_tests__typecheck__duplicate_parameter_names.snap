@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"fn f(a: Int, a: Int) -> Int:\\n    a\\n\\nfn main(console: Console):\\n    print(console, \\\"hi\\\")\\n\")"
+---
+type error: parameter `a` is declared more than once in function `f`; parameter names must be unique

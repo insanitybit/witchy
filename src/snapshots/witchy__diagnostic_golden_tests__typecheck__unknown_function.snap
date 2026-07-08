@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"fn main(console: Console):\\n    print(console, __render(mystery(1)))\\n\")"
+---
+type error: `main`, line 2: call to unknown function `mystery`

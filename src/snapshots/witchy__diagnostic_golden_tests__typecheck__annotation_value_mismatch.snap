@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"fn main(console: Console):\\n    let x: Int = \\\"hello\\\"\\n    print(console, __render(x))\\n\")"
+---
+type error: `main`, line 2: `x` is declared `Int` but the value disagrees: expected `Int`, found `String`

@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "link_diag(\"import list\\n\\nfn main(console: Console):\\n    print(console, __render(list.nonexistent([1])))\\n\")"
+---
+link error: module `list` has no function `nonexistent`

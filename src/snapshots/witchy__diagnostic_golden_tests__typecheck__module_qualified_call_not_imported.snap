@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"fn main(console: Console):\\n    print(console, json.stringify(42))\\n\")"
+---
+type error: `json.stringify` looks like a module-qualified call, but `json` is not imported — add `import json`

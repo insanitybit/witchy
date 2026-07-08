@@ -3380,3 +3380,8 @@ mod cli_flag_tests {
 /// expected result (interpreted), or type-check and compile to valid WASM.
 #[cfg(test)]
 mod example_tests;
+
+/// RFC-0072: verbatim diagnostic goldens over the full error surface (parse,
+/// layout, link, type, capability, lowering-reject, runtime trap) via `insta`.
+#[cfg(test)]
+mod diagnostic_golden_tests;

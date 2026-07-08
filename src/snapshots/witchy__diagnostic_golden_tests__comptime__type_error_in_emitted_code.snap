@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"comptime:\\n    emit(\\\"fn broken() -> Int:\\\")\\n    emit(\\\"    \\\\\\\"nope\\\\\\\"\\\")\\n\\nfn main(console: Console):\\n    print(console, __render(broken()))\\n\")"
+---
+type error: `main.broken`, line 1: function `main.broken` body: expected `Int`, found `String`

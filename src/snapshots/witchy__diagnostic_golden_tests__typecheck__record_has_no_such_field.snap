@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "type_diag(\"type Point:\\n    x: Int\\n    y: Int\\n\\nfn main(console: Console):\\n    let p = Point(x: 1, y: 2)\\n    print(console, __render(p.z))\\n\")"
+---
+type error: `main`, line 7: record `Point` has no field `z`

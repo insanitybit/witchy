@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "mode_diag(\"mode opt\\n\\nimport list\\n\\nfn tag(xs: List(Int)) -> Int:\\n    list.length(xs)\\n\\nfn main(console: Console):\\n    print(console, __render(tag([1, 2, 3])))\\n\")"
+---
+error: in `main.tag`: parameter `xs` has no ownership convention — `mode opt` requires an explicit `let` (read-only borrow), `own` (consumed), or `var` (mutated in place)

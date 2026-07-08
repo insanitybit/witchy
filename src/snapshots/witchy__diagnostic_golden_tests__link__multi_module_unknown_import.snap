@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "multi_link_diag(&[(\"main\",\n\"import helper\\n\\nfn main(console: Console):\\n    print(console, __render(helper.missing()))\\n\",)],\n\"main\",)"
+---
+link error: module `main` imports unknown module `helper`
