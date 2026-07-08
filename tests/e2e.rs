@@ -1755,23 +1755,6 @@ fn example_config_workspace_runs_with_result_error_handling() {
     );
 }
 
-/// The committed `examples/projects/sales` workspace — a `sales` app that reads a
-/// CSV of sales (via a read-only `Dir`) and aggregates per-product revenue with
-/// the `salelib` rune (a path dependency using std `csv` + `dict`). It builds and
-/// runs, parsing a quoted field with an embedded comma and folding into a Dict.
-#[test]
-fn example_sales_workspace_aggregates_csv_with_dict() {
-    let work = lift_example("sales");
-    let out = pm_fe(&work, &["run", "sales"]);
-    assert!(out.status.success(), "run failed: {}", stderr(&out));
-    let s = stdout(&out);
-    assert!(s.contains("gadget          $125"), "gadget total: {s}");
-    // The CSV field "gizmo, deluxe" is quoted; its embedded comma survives parsing.
-    assert!(s.contains("gizmo, deluxe   $200"), "quoted-field product: {s}");
-    assert!(s.contains("widget          $150"), "widget total: {s}");
-    assert!(s.contains("Total: $475"), "grand total: {s}");
-}
-
 /// The committed `examples/projects/wordfreq` workspace — a `wordfreq` app that
 /// reads a text file (via a read-only `Dir`) and ranks the most common words with
 /// the `wordlib` rune (a path dependency using std `string`/`ascii`/`dict`/
@@ -1788,28 +1771,6 @@ fn example_wordfreq_workspace_ranks_words() {
         collapsed.contains("Top words: the 6 fox 4 dog 3 quick 3 brown 2"),
         "ranking wrong: {collapsed}"
     );
-}
-
-/// The committed `examples/projects/convert` workspace — a `csvconvert` app that
-/// reads `input.csv` and WRITES `output.json` through one read-write Dir
-/// capability, converting with the `convertlib` rune (std `csv` + `json`). The
-/// first example project to exercise Dir *Write*: it asserts the file the app
-/// produced — header column order preserved, integers as JSON numbers.
-#[test]
-fn example_convert_workspace_writes_json_via_dir_write() {
-    let work = lift_example("convert");
-    let app = work.join("convert");
-    let out = pm_fe(&work, &["run", "convert"]);
-    assert!(out.status.success(), "run failed: {}", stderr(&out));
-    assert!(stdout(&out).contains("wrote output.json"), "stdout: {}", stdout(&out));
-    // The program writes through its read-write Dir, rooted at the app subdir.
-    let written = std::fs::read_to_string(app.join("output.json")).expect("app must write output.json");
-    assert!(written.trim_start().starts_with('['), "must be a JSON array: {written}");
-    assert!(written.contains("\"name\": \"Ada\""), "name field: {written}");
-    // An integer column becomes an unquoted JSON number, not a string.
-    assert!(written.contains("\"age\": 36"), "age must be a number: {written}");
-    assert!(written.contains("\"city\": \"London\""), "city field: {written}");
-    assert!(written.contains("Grace") && written.contains("NYC"), "second row: {written}");
 }
 
 /// A published rune must be self-contained (registry-only): a manifest carrying a

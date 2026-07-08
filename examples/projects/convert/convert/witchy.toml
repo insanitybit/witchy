@@ -1,6 +1,0 @@
-[rune]
-name = "csvconvert"
-version = "0.1.0"
-
-[dependencies]
-"convertlib" = { path = "../convertlib" }

@@ -1,5 +1,0 @@
-[rune]
-name = "convertlib"
-version = "0.1.0"
-
-[dependencies]

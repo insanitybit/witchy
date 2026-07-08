@@ -382,24 +382,6 @@ SHA3-256 (FIPS 202) of a string's UTF-8 bytes, as 64 hex characters. (Native-onl
 
 HMAC-SHA256 (FIPS 198-1). `key` is hex (so binary keys are representable); `message` is raw text. Returns the 64-hex-char tag. (Native-only.)
 
-## `csv`
-
-csv — comma-separated values, decode and encode (RFC 4180-ish).
-
-Fields are separated by commas and rows by newlines. A field that contains a comma, a quote, or a newline is wrapped in double quotes, and a literal quote inside such a field is doubled (`""`). The decoder is a small character state machine, so embedded commas/newlines/quotes round-trip through `encode`.
-
-#### `fn decode(text: String) -> Result(List(List(String)), String)`
-
-Decode CSV text into rows of fields. A trailing newline is ignored; `\r\n` and `\n` line endings both work. Genuinely fallible (RFC-0044 rule 2): a field that opens a quote and never closes it, or a bare `"` in the middle of an unquoted field (`a"b`) / text after a closing quote (`"a"b`), is structurally malformed, so decoding returns `Err` naming the fault rather than silently mangling it. A lone `\r` (not part of a `\r\n`) is a literal data byte, kept rather than silently deleted. Paired with `encode`, aligned with `json`/`toml`.
-
-#### `fn encode(rows: List(List(String))) -> String`
-
-Encode rows back to CSV text (each row newline-terminated), quoting any field that needs it.
-
-#### `fn decode_records(text: String) -> Result(List(Dict(String, String)), String)`
-
-Decode with the first row as a header: each remaining row becomes a Dict keyed by the header columns. Fallible (RFC-0044): besides `decode`'s faults, a duplicate header column (`a,b,a`) would silently collapse in the Dict, and a ragged data row (a field count other than the header's) would silently drop or invent columns — both are rejected with an `Err` naming the fault instead.
-
 ## `dict`
 
 dict — the associative map.

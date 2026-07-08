@@ -40,7 +40,6 @@ to_ms` finds `duration.to_milliseconds`.
 | Module | What it gives you |
 |---|---|
 | `json` | parse and encode JSON — `json.decode(s)` returns `Result(Json, String)` (the parsed `Json` sum type, or a parse-error message), so thread it with `?`; `json.stringify(x)` / `json.from_value(x)` encode *any* value reflectively (give your own types `derive(Reflect)`); `derive(Deserialize)` generates `from_json` to parse a record back. There is no `derive(Json)`. |
-| `csv` | RFC 4180 CSV |
 | `toml` | TOML parsing |
 | `url` | URL parsing |
 | `encoding` | hex and base64 |

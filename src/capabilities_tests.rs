@@ -436,7 +436,7 @@ pub fn serve(console: Console) -> Int:
         let pure = [
             "list", "string", "math", "option", "result", "func", "cmp", "ascii", "set",
             "json", "url", "duration", "random", "regex", "compiler", "toml", "semver",
-            "rights", "dict", "csv", "time", "encoding", "path", "policy",
+            "rights", "dict", "time", "encoding", "path", "policy",
         ];
         for name in pure {
             let src = crate::linker::std_source(name).expect("bundled module");

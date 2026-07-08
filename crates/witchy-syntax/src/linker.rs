@@ -120,7 +120,7 @@ struct EtaSig {
 pub const STD_MODULES: &[&str] = &[
     "list", "string", "math", "result", "option", "func", "cmp", "ascii", "set", "server",
     "show", "http", "json", "url", "duration", "random", "regex", "crypto", "compiler", "toml",
-    "iter", "semver", "rights", "fs", "dict", "csv", "time", "encoding", "path", "testing",
+    "iter", "semver", "rights", "fs", "dict", "time", "encoding", "path", "testing",
     "future", "task", "chan", "webauthn", "secretstore", "reflect", "meta", "convert", "exec",
     "policy", "jwt", "oauth", "rand", "vm", "bytes",
 ];
@@ -295,7 +295,8 @@ pub fn closest_std_module(name: &str) -> Option<&'static str> {
     let mut best: Option<(usize, &'static str)> = None;
     for m in STD_MODULES {
         let d = levenshtein(name, m);
-        if d <= 2 && d < name.len() && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
+        let max_distance = if name.len() <= 3 { 1 } else { 2 };
+        if d <= max_distance && d < name.len() && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
             best = Some((d, m));
         }
     }
@@ -350,7 +351,6 @@ pub fn std_source(name: &str) -> Option<&'static str> {
         "rights" => Some(include_str!("../../../std/rights.witchy")),
         "fs" => Some(include_str!("../../../std/fs.witchy")),
         "dict" => Some(include_str!("../../../std/dict.witchy")),
-        "csv" => Some(include_str!("../../../std/csv.witchy")),
         "time" => Some(include_str!("../../../std/time.witchy")),
         "encoding" => Some(include_str!("../../../std/encoding.witchy")),
         "path" => Some(include_str!("../../../std/path.witchy")),
@@ -2050,6 +2050,9 @@ mod tests {
         assert_eq!(closest_std_module("str/ng"), Some("string"));
         assert_eq!(closest_std_module("zzz"), None); // not close to anything
         assert_eq!(closest_std_module("qq"), None); // too short to over-match
+        assert!(!STD_MODULES.contains(&"csv"));
+        assert_eq!(std_source("csv"), None);
+        assert_eq!(closest_std_module("csv"), None);
 
         // `map` lives in list (and option); a near miss resolves to a real name.
         assert!(closest_std_function("mep").is_some());

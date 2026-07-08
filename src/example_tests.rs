@@ -2625,18 +2625,6 @@ fn main(console: Console):
                 prop_assert_eq!(link_run(&src), vec!["y".to_string()]);
             }
 
-            /// A single CSV field round-trips through encode/decode — including
-            /// embedded commas, quotes, and newlines (the cases that need quoting).
-            /// `csv.encode` never emits an unterminated quote, so `decode` is `Ok`.
-            #[test]
-            fn csv_field_roundtrips(s in "[a-zA-Z0-9 ,\"\n]{0,24}") {
-                let src = format!(
-                    "import csv\nfn ok_rows(r: Result(List(List(String)), String)) -> List(List(String)):\n    match r:\n        Ok(rows) -> rows\n        Err(_) -> []\nfn main(console: Console):\n    let s = \"{}\"\n    let rows = ok_rows(csv.decode(csv.encode([[s]])))\n    print(console, yn(list.length(rows) == 1 && list.length(list.at(rows, 0)) == 1 && list.at(list.at(rows, 0), 0) == s))\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n",
-                    esc(&s)
-                );
-                prop_assert_eq!(link_run(&src), vec!["y".to_string()]);
-            }
-
             /// `semver.format` after `parse` reproduces the canonical version.
             #[test]
             fn semver_roundtrips(a in 0i64..2000, b in 0i64..2000, c in 0i64..2000) {
@@ -7656,45 +7644,6 @@ fn yn(b: Bool) -> String:
                 "yny",
                 "y",
             ]
-        );
-    }
-
-    /// `std/csv` round-trips RFC-4180-ish CSV: quoted fields with embedded commas,
-    /// doubled quotes (`""`), proper re-quoting on encode, and header records.
-    /// `decode`/`decode_records` return `Result` (RFC-0044 rule 2) — the last two
-    /// lines exercise the reachable `Err` on an unterminated quoted field.
-    #[test]
-    fn csv_module_parses_quotes_and_encodes() {
-        let src = r#"import csv
-import string
-
-fn ok_rows(r: Result(List(List(String)), String)) -> List(List(String)):
-    match r:
-        Ok(rows) -> rows
-        Err(_) -> []
-
-fn main(console: Console):
-    let text = "name,city\nAda,\"London, UK\"\nGrace,\"NY\"\"C\"\"\"\n"
-    let rows = ok_rows(csv.decode(text))
-    print(console, __render(list.length(rows)))
-    print(console, list.at(list.at(rows, 1), 1))
-    print(console, list.at(list.at(rows, 2), 1))
-    let enc = csv.encode([["a", "b,c"], ["d\"e", "f"]])
-    print(console, bs(enc == "a,\"b,c\"\n\"d\"\"e\",f\n"))
-    print(console, bs(csv.encode(ok_rows(csv.decode(enc))) == enc))
-    match csv.decode_records(text):
-        Ok(recs) -> print(console, __render(list.length(recs)) + ":" + dict.get_or(list.at(recs, 0), "city", "?"))
-        Err(msg) -> print(console, "err:" + msg)
-    match csv.decode("a,\"unterminated\n"):
-        Ok(_) -> print(console, "unexpected-ok")
-        Err(_) -> print(console, "err")
-
-fn bs(b: Bool) -> String:
-    if b: "y" else: "n"
-"#;
-        assert_eq!(
-            link_run(src),
-            vec!["3", "London, UK", "NY\"C\"", "y", "y", "2:London, UK", "err"]
         );
     }
 
@@ -18167,17 +18116,16 @@ fn main(console: Console):
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
-    /// RFC-0046 step 5 (acceptance d, second clause): three std modules now use
-    /// `Iter` internally — `path` (`drop_last` via `iter.take`), `csv`
-    /// (`encode_row` via `iter.map`), and `semver` (`best` via `iter.filter` +
-    /// `iter.fold`) — proving the stdlib can consume its own lazy layer. The
+    /// RFC-0046 step 5 (acceptance d, second clause): std modules can consume
+    /// `Iter` internally — `path` (`drop_last` via `iter.take`) and `semver`
+    /// (`best` via `iter.filter` + `iter.fold`) dogfood the lazy layer. The
     /// observable output is unchanged AND identical on both backends (the generic
     /// iter pipelines monomorphize for the compiled path). Before RFC-0046, no std
     /// module imported iter because inference through it was unreliable.
     #[test]
-    fn rfc0046_std_dogfoods_iter_in_path_csv_semver() {
-        let src = "import path\nimport csv\nimport semver\n\nfn main(console: Console):\n    print(console, path.normalize(\"a/b/c/../../d\"))\n    print(console, csv.encode([[\"a\", \"b,c\"], [\"d\", \"e\"]]))\n    let vs = [semver.version(1, 2, 0), semver.version(1, 5, 3), semver.version(2, 0, 0)]\n    match semver.parse_req(\"^1.0.0\"):\n        Ok(req) ->\n            match semver.best(vs, req):\n                Some(v) -> print(console, semver.format(v))\n                None -> print(console, \"none\")\n        Err(e) -> print(console, e)\n";
-        let want = vec!["a/d".to_string(), "a,\"b,c\"\nd,e".to_string(), "1.5.3".to_string()];
+    fn rfc0046_std_dogfoods_iter_in_path_semver() {
+        let src = "import path\nimport semver\n\nfn main(console: Console):\n    print(console, path.normalize(\"a/b/c/../../d\"))\n    let vs = [semver.version(1, 2, 0), semver.version(1, 5, 3), semver.version(2, 0, 0)]\n    match semver.parse_req(\"^1.0.0\"):\n        Ok(req) ->\n            match semver.best(vs, req):\n                Some(v) -> print(console, semver.format(v))\n                None -> print(console, \"none\")\n        Err(e) -> print(console, e)\n";
+        let want = vec!["a/d".to_string(), "1.5.3".to_string()];
         assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
     }
@@ -20877,46 +20825,6 @@ pub fn serve(console: Console, net: Net) -> Int:
             "url_ok: OK",
             "bad_hex: ERR",
             "good_hex: OK",
-        ];
-        assert_eq!(link_run(src), expected, "interp");
-        assert_eq!(wasm_run(src), expected, "wasm");
-    }
-
-    /// std/csv: the decoder rejects a bare `"` in an unquoted field / text after a
-    /// closing quote (BUG-188) and keeps a lone `\r` as literal data rather than
-    /// deleting it (BUG-416); `decode_records` rejects duplicate header columns
-    /// (BUG-264) and ragged rows (BUG-378). Both backends agree.
-    #[test]
-    fn csv_rejects_malformed_input_on_both_backends() {
-        let src = "import csv\n\
-                   import list\n\
-                   import string\n\
-                   fn rows(label: String, r: Result(List(List(String)), String), console: Console):\n\
-                   \x20   match r:\n\
-                   \x20       Ok(rs) -> print(console, label + \": OK n=${list.length(rs)}\")\n\
-                   \x20       Err(e) -> print(console, label + \": ERR\")\n\
-                   fn recs(label: String, r: Result(List(Dict(String, String)), String), console: Console):\n\
-                   \x20   match r:\n\
-                   \x20       Ok(rs) -> print(console, label + \": OK n=${list.length(rs)}\")\n\
-                   \x20       Err(e) -> print(console, label + \": ERR\")\n\
-                   fn main(console: Console):\n\
-                   \x20   rows(\"bare_quote\", csv.decode(\"a\\\"b\\\",c\"), console)\n\
-                   \x20   rows(\"after_quote\", csv.decode(\"\\\"a\\\"b\"), console)\n\
-                   \x20   match csv.decode(\"a\\rb\"):\n\
-                   \x20       Ok(rs) -> print(console, \"lone_cr: len=${string.char_count(list.at(list.at(rs, 0), 0))}\")\n\
-                   \x20       Err(e) -> print(console, \"lone_cr: ERR\")\n\
-                   \x20   rows(\"crlf\", csv.decode(\"a\\r\\nb\"), console)\n\
-                   \x20   recs(\"dup_header\", csv.decode_records(\"a,b,a\\n1,2,3\"), console)\n\
-                   \x20   recs(\"ragged\", csv.decode_records(\"a,b\\n1,2,3\"), console)\n\
-                   \x20   recs(\"clean\", csv.decode_records(\"a,b\\n1,2\"), console)\n";
-        let expected = [
-            "bare_quote: ERR",
-            "after_quote: ERR",
-            "lone_cr: len=3",
-            "crlf: OK n=2",
-            "dup_header: ERR",
-            "ragged: ERR",
-            "clean: OK n=1",
         ];
         assert_eq!(link_run(src), expected, "interp");
         assert_eq!(wasm_run(src), expected, "wasm");

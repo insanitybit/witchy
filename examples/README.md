@@ -84,8 +84,8 @@ lockfiles, and capability manifests — built and run through the package manage
 - **todo** — a todo CLI over a persistence rune
 - **ledger** — double-entry bookkeeping with a shared core
 - **dashboard** — a diamond dependency graph (two runes sharing a base)
-- **report**, **sales**, **convert**, **config**, **wordfreq** — data pipelines
-  exercising Dir/CSV/JSON across rune boundaries
+- **report**, **config**, **wordfreq** — data pipelines exercising Dir/JSON/text
+  processing across rune boundaries
 
 The package manager itself is also written in witchy: see
 [`projects/pm`](../projects/pm) (the client) and
