@@ -13,6 +13,7 @@ import option
 import result
 import url
 import ascii
+import bytes
 
 // A response: status code, headers (name lowercased for case-insensitive
 // lookup), and body. Shared by the client and the `server` framework.
@@ -449,22 +450,25 @@ fn status_code(line: String) -> Int:
         // with `string.parse_int` (None on non-digit, empty, or overflow) → 0.
         string.parse_int(code) ?? 0
 
-// (BUG-269) Decode a `chunked` transfer-coding body: a sequence of
+// Decode a `chunked` transfer-coding body: a sequence of
 // `<hex-size>[;ext]CRLF <size bytes> CRLF`, ending at a `0`-sized chunk. Total —
 // a malformed/truncated stream stops decoding and returns what was recovered
-// rather than trapping. (Chunk sizes are byte counts; witchy indexes by character,
-// so this is exact for the ASCII/UTF-8 bodies HTTP text payloads use in practice.)
+// rather than trapping. Chunk sizes are byte counts, so framing is decoded on
+// `Bytes`; only the recovered payload is converted back to text.
 fn dechunk(body: String) -> String:
-    var out = ""
+    let raw = bytes.from_string(body)
+    let crlf = bytes.from_string("\r\n")
+    var out = bytes.from_string("")
     var i = 0
-    let n = string.char_count(body)
+    let n = bytes.length(raw)
     var done = false
     while !done:
-        let nl = index_from(body, "\r\n", i)
+        let nl = bytes_index_from(raw, crlf, i)
         if nl < 0:
             done = true
         else:
-            match parse_hex_size(chunk_size_hex(string.substring(body, i, nl))):
+            let line = bytes.to_string_lossy(bytes.slice(raw, i, nl))
+            match parse_hex_size(chunk_size_hex(line)):
                 None -> done = true
                 Some(sz) ->
                     if sz <= 0:
@@ -473,46 +477,49 @@ fn dechunk(body: String) -> String:
                         let start = nl + 2
                         let stop = start + sz
                         if stop > n:
-                            out = out + string.substring(body, start, n)
+                            out = bytes.concat(out, bytes.slice(raw, start, n))
                             done = true
                         else:
-                            out = out + string.substring(body, start, stop)
+                            out = bytes.concat(out, bytes.slice(raw, start, stop))
                             i = stop + 2
-    out
+    bytes.to_string_lossy(out)
 
 fn dechunk_strict(body: String) -> Result(String, String):
-    var out = ""
+    let raw = bytes.from_string(body)
+    let crlf = bytes.from_string("\r\n")
+    var out = bytes.from_string("")
     var i = 0
-    let n = string.char_count(body)
+    let n = bytes.length(raw)
     while true:
-        let nl = index_from(body, "\r\n", i)
+        let nl = bytes_index_from(raw, crlf, i)
         if nl < 0:
             return Err("chunked response missing chunk-size terminator")
-        let line = string.substring(body, i, nl)
+        let line = bytes.to_string_lossy(bytes.slice(raw, i, nl))
         match parse_hex_size(chunk_size_hex(line)):
             None -> return Err("chunked response has invalid chunk size `" + line + "`")
             Some(sz) ->
                 let start = nl + 2
                 if sz <= 0:
-                    if start + 2 > n || string.substring(body, start, start + 2) != "\r\n":
+                    if start + 2 > n || bytes.slice(raw, start, start + 2) != crlf:
                         return Err("chunked response missing final CRLF")
-                    return Ok(out)
+                    match bytes.decode_utf8(out):
+                        Ok(text) -> return Ok(text)
+                        Err(_e) -> return Err("chunked response body is not valid UTF-8")
                 let stop = start + sz
                 if stop > n:
                     return Err("chunked response ended before the declared chunk size")
-                if stop + 2 > n || string.substring(body, stop, stop + 2) != "\r\n":
+                if stop + 2 > n || bytes.slice(raw, stop, stop + 2) != crlf:
                     return Err("chunked response missing chunk delimiter")
-                out = out + string.substring(body, start, stop)
+                out = bytes.concat(out, bytes.slice(raw, start, stop))
                 i = stop + 2
     Err("unreachable chunked decoder state")
 
-// The index of `needle` in `s` at or after `from`, or -1. (No offset variant of
-// `string.index_of` exists, so search the suffix and re-base the result.)
-fn index_from(s: String, needle: String, from: Int) -> Int:
-    if from >= string.char_count(s):
+// The byte index of `needle` in `b` at or after `from`, or -1.
+fn bytes_index_from(b: Bytes, needle: Bytes, from: Int) -> Int:
+    if from >= bytes.length(b):
         -1
     else:
-        match string.index_of(string.substring(s, from, string.char_count(s)), needle):
+        match bytes.index_of(bytes.slice(b, from, bytes.length(b)), needle):
             Some(k) -> from + k
             None -> -1
 

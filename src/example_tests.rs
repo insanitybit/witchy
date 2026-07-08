@@ -2516,6 +2516,10 @@ fn main(console: Console):
         Err(resp) -> print(console, "mixed-framing=" + __render(http.status(resp)))
     print(console, "status=" + __render(http.status(http.parse_response("HTTP/1.1 999999999999999999999999 X\r\n\r\nb"))))
     print(console, "chunked=" + http.body(http.parse_response("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n")))
+    print(console, "unicode-chunk=" + http.body(http.parse_response("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\né\r\n0\r\n\r\n")))
+    match http.try_parse_response("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\né\r\n0\r\n\r\n"):
+        Ok(resp) -> print(console, "unicode-strict=" + http.body(resp))
+        Err(e) -> print(console, "unicode-strict=" + e)
     match http.try_parse_response("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nX\r\nhello\r\n0\r\n\r\n"):
         Ok(_) -> print(console, "bad-size=parsed")
         Err(e) -> print(console, "bad-size=" + e)
@@ -2537,6 +2541,8 @@ fn main(console: Console):
             "mixed-framing=400".to_string(),
             "status=0".to_string(),
             "chunked=hello world".to_string(),
+            "unicode-chunk=é".to_string(),
+            "unicode-strict=é".to_string(),
             "bad-size=chunked response has invalid chunk size `X`".to_string(),
             "truncated=chunked response ended before the declared chunk size".to_string(),
             "cl=1".to_string(),
