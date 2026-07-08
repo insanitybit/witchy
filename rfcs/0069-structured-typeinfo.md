@@ -57,6 +57,10 @@ not the semantic representation.
   generic parameters from those fields before either `module_types` or built-in
   derives see the shape. Compile-time reflection is therefore the same type fact
   model the checker later uses, not the raw parsed spelling.
+- Constructor expressions preserve those normalized generic arguments when they
+  feed generated helpers. A value such as `Box(3)` is treated as `Box<Int>` for
+  `show.render(Box(3))` and `json.stringify(Box(3))`, matching the direct
+  receiver path (`Box(3).reflect()`).
 - `std/meta.derive_reflect` dispatches `List`/`Option` handling from
   `TypeExpr`, not `string.starts_with`.
 - `std/meta.derive_deserialize` recursively decodes `List` and `Option` from

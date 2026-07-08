@@ -421,6 +421,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     let discard_errors = std::cell::RefCell::new(Vec::new());
     {
         let (ctor_results, fn_rets, fn_sigs) = build_tables(&items);
+        let ctor_infos = build_ctor_infos(&items);
         let ctor_fields = build_ctor_fields(&items);
         let record_fields = build_record_fields(&items);
         let free_fns: HashSet<String> = items
@@ -441,6 +442,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             trait_impl_table: &trait_impl_table,
             inherent_impl_table: &inherent_impl_table,
             ctor_results: &ctor_results,
+            ctor_infos: &ctor_infos,
             fn_rets: &fn_rets,
             fn_sigs: &fn_sigs,
             ctor_fields: &ctor_fields,
@@ -576,6 +578,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         let mut any_generated = false;
         for round in 0..MONO_ROUNDS {
             let (ctor_results, fn_rets, fn_sigs) = build_tables(&items);
+            let ctor_infos = build_ctor_infos(&items);
             let ctor_fields = build_ctor_fields(&items);
             let record_fields = build_record_fields(&items);
             let known_fns: HashSet<String> = items
@@ -593,6 +596,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                 trait_impl_table: &trait_impl_table,
                 diagnostics: Vec::new(),
                 ctor_results: &ctor_results,
+                ctor_infos: &ctor_infos,
                 ctor_fields: &ctor_fields,
                 record_fields: &record_fields,
                 fn_rets,
@@ -685,8 +689,9 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
 
     // Tables used to determine a receiver's type at a trait-method call site.
     let (ctor_results, fn_rets, fn_sigs) = build_tables(&items);
+    let ctor_infos = build_ctor_infos(&items);
     let ctor_fields = build_ctor_fields(&items);
-        let record_fields = build_record_fields(&items);
+    let record_fields = build_record_fields(&items);
     let free_fns: HashSet<String> = items
         .iter()
         .filter_map(|it| match it {
@@ -704,6 +709,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         trait_impl_table: &trait_impl_table,
         inherent_impl_table: &inherent_impl_table,
         ctor_results: &ctor_results,
+        ctor_infos: &ctor_infos,
         fn_rets: &fn_rets,
         fn_sigs: &fn_sigs,
         ctor_fields: &ctor_fields,
@@ -1081,6 +1087,7 @@ struct Ctx<'a> {
     trait_impl_table: &'a TraitImplTable,
     inherent_impl_table: &'a HashMap<(String, String), String>,
     ctor_results: &'a HashMap<String, String>,
+    ctor_infos: &'a HashMap<String, CtorInfo>,
     fn_rets: &'a HashMap<String, String>,
     /// Function -> (param types, return type), for recovering a generic call's
     /// concrete result type (e.g. the element of `list.at(xs, i)`).
@@ -1148,7 +1155,7 @@ impl Ctx<'_> {
             // (`let above = table.at(i - 1)`), so a method call on it resolves
             // BEFORE annotate needs a fully-resolved module.
             .or_else(|| declared_call_result(e, self.fn_sigs, &|a| self.type_name(a, scope)))
-            .or_else(|| head_type_name(e, scope, self.ctor_results, self.fn_rets, self.record_fields))
+            .or_else(|| head_type_name(e, scope, self.ctor_results, self.ctor_infos, self.fn_rets, self.record_fields))
             // A host capability OP is a BARE intrinsic (`net.deny`, `dir.subtree`),
             // so the QUIET pre-mono pass (which runs with an empty table) cannot
             // type its result from the table — it needs this to resolve a chained
@@ -1920,6 +1927,7 @@ fn head_type_name(
     e: &Expr,
     scope: &Scope,
     ctor_results: &HashMap<String, String>,
+    ctor_infos: &HashMap<String, CtorInfo>,
     fn_rets: &HashMap<String, String>,
     record_fields: &HashMap<String, Vec<(String, Type)>>,
 ) -> Option<String> {
@@ -1933,7 +1941,7 @@ fn head_type_name(
         // `self.home` — a record field of a known record type, when the field
         // type is concrete (so generated method bodies dispatch on fields).
         Expr::Field { base, field } => {
-            let base_ty = head_type_name(base, scope, ctor_results, fn_rets, record_fields)?;
+            let base_ty = head_type_name(base, scope, ctor_results, ctor_infos, fn_rets, record_fields)?;
             // The base may be an encoded generic (`Box<Int>`, `Set<String>`); record
             // fields are keyed by the bare head. The field's declared type stays
             // generic (`a`) and the caller's substitution makes it concrete.
@@ -1941,22 +1949,21 @@ fn head_type_name(
             let (_, ft) = fields.iter().find(|(n, _)| n == field)?;
             type_to_scope_name(ft)
         }
-        // `Some(x)` encodes its payload (`Option<Int>`), mirroring a list literal,
-        // so monomorphization recovers an option's element from the call site.
-        Expr::Ctor { name, args } if name == "Some" => {
-            let elem = args
-                .first()
-                .and_then(|a| head_type_name(a, scope, ctor_results, fn_rets, record_fields))
-                .unwrap_or_else(|| "_".to_string());
-            Some(format!("Option<{elem}>"))
-        }
-        Expr::Ctor { name, .. } => ctor_results.get(name).cloned(),
+        Expr::Ctor { name, args } => constructor_type_name(
+            name,
+            args,
+            scope,
+            ctor_results,
+            ctor_infos,
+            fn_rets,
+            record_fields,
+        ),
         Expr::Call { name, .. } => fn_rets.get(name).cloned(),
-        Expr::RecordUpdate { base, .. } => head_type_name(base, scope, ctor_results, fn_rets, record_fields),
+        Expr::RecordUpdate { base, .. } => head_type_name(base, scope, ctor_results, ctor_infos, fn_rets, record_fields),
         // `!` yields Bool; `-`/`~` preserve the operand's type (so `-5` is Int).
         Expr::Unary { op, expr } => match op {
             UnOp::Not => Some("Bool".into()),
-            UnOp::Neg | UnOp::BitNot | UnOp::Move | UnOp::Await => head_type_name(expr, scope, ctor_results, fn_rets, record_fields),
+            UnOp::Neg | UnOp::BitNot | UnOp::Move | UnOp::Await => head_type_name(expr, scope, ctor_results, ctor_infos, fn_rets, record_fields),
         },
         // Comparisons/logic yield Bool; `<>` yields String; arithmetic and
         // bitwise ops have the type of their (left) operand.
@@ -1967,8 +1974,8 @@ fn head_type_name(
             // `a ?? b` (RFC-0048) unwraps: its type is the fallback's (the
             // Option/Result payload — the two agree by the typing rule, and the
             // rhs is the side whose head is recoverable here).
-            BinOp::Coalesce => head_type_name(rhs, scope, ctor_results, fn_rets, record_fields),
-            _ => head_type_name(lhs, scope, ctor_results, fn_rets, record_fields),
+            BinOp::Coalesce => head_type_name(rhs, scope, ctor_results, ctor_infos, fn_rets, record_fields),
+            _ => head_type_name(lhs, scope, ctor_results, ctor_infos, fn_rets, record_fields),
         },
         // A list literal's type encodes its element type when determinable from
         // the first element, e.g. `List<Int>`, so a `for` loop over it can type
@@ -1976,7 +1983,7 @@ fn head_type_name(
         Expr::List(items) => Some(
             match items
                 .first()
-                .and_then(|e| head_type_name(e, scope, ctor_results, fn_rets, record_fields))
+                .and_then(|e| head_type_name(e, scope, ctor_results, ctor_infos, fn_rets, record_fields))
             {
                 Some(elem) => format!("List<{elem}>"),
                 None => "List".to_string(),
@@ -1987,7 +1994,7 @@ fn head_type_name(
         Expr::Tuple(items) => Some(
             match items
                 .iter()
-                .map(|e| head_type_name(e, scope, ctor_results, fn_rets, record_fields))
+                .map(|e| head_type_name(e, scope, ctor_results, ctor_infos, fn_rets, record_fields))
                 .collect::<Option<Vec<_>>>()
             {
                 Some(es) => format!("Tuple{}<{}>", items.len(), es.join(",")),
@@ -2299,6 +2306,13 @@ fn mutator_needs_place_msg(method: &str) -> String {
 /// type variable from an argument — e.g. `list.at(xs: List(a), Int) -> a`.
 type FnSig = (Vec<Option<Type>>, Type);
 
+#[derive(Clone, Debug)]
+struct CtorInfo {
+    owner: String,
+    params: Vec<String>,
+    fields: Vec<Type>,
+}
+
 /// Constructor -> its type name, function -> its (named) return type head, and
 /// function -> its full signature (params + return) for generic-return recovery.
 fn build_tables(
@@ -2327,6 +2341,37 @@ fn build_tables(
         }
     }
     (ctor_results, fn_rets, fn_sigs)
+}
+
+fn build_ctor_infos(items: &[Item]) -> HashMap<String, CtorInfo> {
+    let mut map = HashMap::new();
+    for item in items {
+        let Item::Type(t) = item else { continue };
+        let mut implicit_params = Vec::new();
+        if t.params.is_empty() {
+            for v in &t.variants {
+                for field in &v.fields {
+                    collect_type_vars(field, &mut implicit_params);
+                }
+            }
+        }
+        let params = if t.params.is_empty() {
+            implicit_params
+        } else {
+            t.params.clone()
+        };
+        for v in &t.variants {
+            map.insert(
+                v.name.clone(),
+                CtorInfo {
+                    owner: t.name.clone(),
+                    params: params.clone(),
+                    fields: v.fields.clone(),
+                },
+            );
+        }
+    }
+    map
 }
 
 fn build_owner_methods(items: &[Item]) -> HashSet<String> {
@@ -2440,6 +2485,43 @@ fn declared_call_result(
             type_to_scope_name(&subst_vars(ret, &subst))
         }
         _ => None,
+    }
+}
+
+fn constructor_type_name(
+    name: &str,
+    args: &[Expr],
+    scope: &Scope,
+    ctor_results: &HashMap<String, String>,
+    ctor_infos: &HashMap<String, CtorInfo>,
+    fn_rets: &HashMap<String, String>,
+    record_fields: &HashMap<String, Vec<(String, Type)>>,
+) -> Option<String> {
+    let info = ctor_infos.get(name)?;
+    if info.params.is_empty() {
+        return Some(info.owner.clone());
+    }
+    let mut binds: HashMap<String, String> = HashMap::new();
+    for (field, arg) in info.fields.iter().zip(args) {
+        let Some(arg_type) =
+            head_type_name(arg, scope, ctor_results, ctor_infos, fn_rets, record_fields)
+        else {
+            continue;
+        };
+        let _ = bind_type_vars(field, &decode_scope_type(&arg_type), &mut binds);
+    }
+    if info.params.iter().all(|param| binds.contains_key(param)) {
+        Some(format!(
+            "{}<{}>",
+            info.owner,
+            info.params
+                .iter()
+                .map(|param| binds.get(param).cloned())
+                .collect::<Option<Vec<_>>>()?
+                .join(",")
+        ))
+    } else {
+        ctor_results.get(name).cloned()
     }
 }
 
@@ -3522,6 +3604,7 @@ struct Mono<'a> {
     /// Loud failures (an uninferrable bounded call) surfaced as check errors.
     diagnostics: Vec<String>,
     ctor_results: &'a HashMap<String, String>,
+    ctor_infos: &'a HashMap<String, CtorInfo>,
     ctor_fields: &'a HashMap<String, Vec<Type>>,
     record_fields: &'a HashMap<String, Vec<(String, Type)>>,
     fn_rets: HashMap<String, String>,
@@ -3598,7 +3681,7 @@ impl Mono<'_> {
         // judgment (freshly-generated clones have no table entries mid-round).
         table_scope_name(self.table, e)
             .or_else(|| declared_call_result(e, &self.fn_sigs, &|a| self.type_name(a, scope)))
-            .or_else(|| head_type_name(e, scope, self.ctor_results, &self.fn_rets, self.record_fields))
+            .or_else(|| head_type_name(e, scope, self.ctor_results, self.ctor_infos, &self.fn_rets, self.record_fields))
     }
 
     /// Like `type_name`, but rewrites the current instantiation's type variables
@@ -3658,7 +3741,7 @@ impl Mono<'_> {
                 seed_params(params, &mut s);
                 match body.stmts.last() {
                     Some(Stmt::Expr(e)) | Some(Stmt::Return(Some(e))) => {
-                        head_type_name(e, &s, self.ctor_results, &self.fn_rets, self.record_fields)
+                        head_type_name(e, &s, self.ctor_results, self.ctor_infos, &self.fn_rets, self.record_fields)
                     }
                     _ => None,
                 }

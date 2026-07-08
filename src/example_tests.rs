@@ -836,6 +836,23 @@
         );
     }
 
+    /// (RFC-0046/RFC-0069) A constructor expression carries its concrete generic
+    /// arguments into generated free helpers. Direct methods (`Box(3).reflect()`)
+    /// already had a receiver to bind; helpers such as `show.render(Box(3))` and
+    /// `json.stringify(Box(3))` need the constructor itself to resolve as
+    /// `Box<Int>`, not the bare generic head `Box`.
+    #[test]
+    fn generic_constructor_calls_specialize_generated_helpers_on_both_backends() {
+        let src = "import json\nimport reflect\nimport show\n\ntype Box derive(Reflect, Show):\n    value: a\n\nfn main(console: Console):\n    print(console, show.render(Box(3)))\n    print(console, json.stringify(Box(3)))\n";
+        let expected = ["Box(3)", "{\"value\":3}"];
+        assert_eq!(link_run(src), expected, "interp generated helpers keep constructor type args");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled generated helpers keep constructor type args",
+        );
+    }
+
     /// (BUG-533) A `comptime:` block runs in a synthetic std-only module, but it
     /// must keep the source module's std `from X import Y` bindings. Otherwise
     /// comptime code is a smaller import language than ordinary Witchy source.

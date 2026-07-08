@@ -19,6 +19,13 @@ predecessors:
 > deleted — RFC steps 1/4 remain. A follow-up pass must remove the dead shadow
 > encoder to finish the RFC (tracked separately). Verified by the two-eval
 > triage (scratch/deep-eval/MERGED-TRIAGE.md item 22).
+>
+> 2026-07-08 bridge fix: the residual `head_type_name` path now derives generic
+> constructor results from type declarations instead of hard-coding `Some(x)`.
+> This keeps generated helpers coherent after RFC-0069 normalization
+> (`show.render(Box(3))`/`json.stringify(Box(3))` see `Box<Int>`), but it is
+> still a bridge inside the string-scope fallback. The RFC's final target remains
+> deleting the fallback and reading structured checker types directly.
 
 # RFC-0046: Typed trait dispatch — retire the string shadow type system
 
