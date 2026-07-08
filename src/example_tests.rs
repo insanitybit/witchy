@@ -1331,6 +1331,21 @@ fn main(console: Console):
         );
     }
 
+    /// (RFC-0050/RFC-0074) The list operations that act like value-mutators have
+    /// real inherent methods, so statement form writes back consistently instead
+    /// of depending on the older free-function UFCS path.
+    #[test]
+    fn list_mutator_methods_write_back_on_both_backends() {
+        let src = "import list\n\nfn main(console: Console):\n    var xs = [3, 1, 2]\n    xs.sort()\n    print(console, \"${xs}\")\n    xs.reverse()\n    print(console, \"${xs}\")\n    xs.set_at(1, 9)\n    print(console, \"${xs}\")\n    xs.update_at(2, fn(n: Int): n + 10)\n    print(console, \"${xs}\")\n    xs.remove(9)\n    print(console, \"${xs}\")\n    var ys = [3, 1, 2]\n    ys.sort_by(fn(x: Int, y: Int): x > y)\n    print(console, \"${ys}\")\n";
+        let expected = ["[1, 2, 3]", "[3, 2, 1]", "[3, 9, 1]", "[3, 9, 11]", "[3, 11]", "[3, 2, 1]"];
+        assert_eq!(link_run(src), expected, "interp: list mutator methods");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: list mutator methods",
+        );
+    }
+
     /// (BUG-535) Lists are ordinary comparison-protocol values: if their elements
     /// satisfy `PartialEq`/`Eq`, the list itself satisfies the same bound instead
     /// of relying on one-off direct-operator magic.

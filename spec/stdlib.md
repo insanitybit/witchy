@@ -1408,23 +1408,15 @@ Insert `sep` between adjacent elements: [a, b, c] -> [a, sep, b, sep, c].
 
 #### `fn reverse(var xs: List(a)) -> List(a)`
 
-The list, reversed.
-
 #### `fn sort_by(var xs: List(a), less: fn(a, a) -> Bool) -> List(a)`
 
-Sort using a caller-supplied "is-less-than" comparator — a stable merge sort (O(n log n)), so equal elements keep their original order. Generic over the element type.
-
 #### `fn sort(var xs: List(a)) -> List(a) where a: Ord`
-
-Sort any list whose elements are `Ord` ascending — a stable merge sort (O(n log n)) that dispatches through the element type's total order, so `xs.sort()` works for `Int`, `String`, `Duration`, or your own derived-`Ord` records, content-correct on both backends (RFC-0046). A merely-partial type like `Float` (not `Ord`) is rejected at the bound; sort those with `sort_by`.
 
 #### `fn contains(xs: List(a), target: a) -> Bool where a: Eq`
 
 Whether `target` appears in the list, by the element type's `Eq` impl. The `where a: Eq` bound monomorphizes the equality per element type, so the comparison is content-correct on both backends — including user record element types, which the compiled backend cannot compare through an unbounded generic `==` (RFC-0046).
 
 #### `fn remove(var xs: List(a), target: a) -> List(a) where a: Eq`
-
-A new list with the first occurrence of `target` removed; unchanged when absent. To remove every occurrence, use `filter(xs, fn(y): y != target)`.
 
 #### `fn count(xs: List(a), target: a) -> Int where a: Eq`
 
@@ -1476,11 +1468,7 @@ The elements in the half-open index range [start, end), clamped to bounds. `slic
 
 #### `fn set_at(var xs: List(a), index: Int, value: a) -> List(a)`
 
-A copy of `xs` with the element at `index` replaced by `value`. An out-of-range (or negative) index is a runtime error on both backends, exactly like `list.at` and `xs[i]` read — a write that would silently vanish is a contract violation (RFC-0044 rule 3), so it aborts rather than discarding the value. (Lists are immutable, so this returns a new list rather than mutating in place.)
-
 #### `fn update_at(var xs: List(a), index: Int, f: fn(a) -> a) -> List(a)`
-
-A copy of `xs` with the function `f` applied to the element at `index`. An out-of-range (or negative) index is a runtime error on both backends, exactly like `list.at` — a silently discarded update is a contract violation (RFC-0044 rule 3), so it aborts rather than leaving the list unchanged.
 
 #### `fn windows(xs: List(a), n: Int) -> List(List(a))`
 
@@ -1505,6 +1493,18 @@ A new list with `x` appended (lists are values; the original is unchanged).
 #### `List.concat(ys: List(a)) -> List(a)`
 
 A new list that is `xs` followed by `ys`.
+
+#### `List.reverse() -> List(a)`
+
+#### `List.sort_by(less: fn(a, a) -> Bool) -> List(a)`
+
+#### `List.set_at(index: Int, value: a) -> List(a)`
+
+#### `List.update_at(index: Int, f: fn(a) -> a) -> List(a)`
+
+#### `List.remove(target: a) -> List(a)`
+
+#### `List.sort() -> List(a)`
 
 ## `math`
 

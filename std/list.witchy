@@ -44,6 +44,26 @@ impl List(a):
     pub fn concat(var self, ys: List(a)) -> List(a):
         list.concat(self, ys)
 
+    pub fn reverse(var self) -> List(a):
+        list.reverse(self)
+
+    pub fn sort_by(var self, less: fn(a, a) -> Bool) -> List(a):
+        list.sort_by(self, less)
+
+    pub fn set_at(var self, index: Int, value: a) -> List(a):
+        list.set_at(self, index, value)
+
+    pub fn update_at(var self, index: Int, f: fn(a) -> a) -> List(a):
+        list.update_at(self, index, f)
+
+impl List(a) where a: Eq:
+    pub fn remove(var self, target: a) -> List(a):
+        list.remove(self, target)
+
+impl List(a) where a: Ord:
+    pub fn sort(var self) -> List(a):
+        list.sort(self)
+
 // Concatenate the strings in `parts`, inserting `sep` between adjacent
 // elements: `["a", "b", "c"].join("-")` is `"a-b-c"`, and `[].join(sep)` is `""`.
 pub fn join(parts: List(String), sep: String) -> String:
