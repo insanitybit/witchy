@@ -355,3 +355,32 @@ Acceptance tests cover Bytes/Duration methods, a user `matrix.Matrix` module
 whose public receiver-first functions become methods without a compiler entry,
 and the privacy boundary: a private receiver-first helper in the owner module is
 not callable as a cross-module method.
+
+## Post-implementation note (2026-07-08): std container methods are a separate cut
+
+The compiler-level RFC is implemented, but this should not be read as saying the
+standard library's container API is already idiomatic `impl`-method API. `List`,
+`Dict`, `Set`, `String`, and friends still expose most operations as receiver-
+first free functions (`list.push(xs, x)`, `dict.insert(d, k, v)`,
+`set.remove(s, x)`) that *also* work through dot-call because RFC-0050's UFCS
+fallback resolves public owner-module functions as methods.
+
+That is a compatibility bridge, not the final design decision for std. User
+types and trait protocols already use real `impl` methods with `self` /
+`var self` / `own self`; leaving std containers permanently in a different
+idiom would keep the flagship library slightly second-class in its own
+language. The follow-up decision belongs here because it is about the public
+method model, not about one container operation:
+
+- either convert the std container surface to real `impl` methods, keeping only
+  genuinely useful free-function aliases;
+- or explicitly bless receiver-first free functions as the stdlib house style
+  and document why user-defined APIs should imitate it.
+
+The current coherence direction is the first option, but it must be sequenced
+after the in-place `var` write-back path is pinned. The BUG-558 regressions now
+cover loop-watermark write-back through both whole-record and record-field
+mutators (`loop_watermark_rejects_outer_var_writeback` and
+`loop_watermark_rejects_outer_var_record_field_writeback`); any broad stdlib
+conversion to `var self` methods should keep those tests green and add at least
+one differential test per converted mutator family.
