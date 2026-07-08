@@ -2075,6 +2075,19 @@ fn collect_type_params(t: &ast::Type, acc: &mut Vec<String>) {
     }
 }
 
+fn collect_trait_method_names(module: &Module) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for item in &module.items {
+        if let Item::Trait(tr) = item {
+            for method in &tr.methods {
+                let bare = method.name.rsplit('.').next().unwrap_or(&method.name);
+                names.insert(bare.to_string());
+            }
+        }
+    }
+    names
+}
+
 /// A record type's layout: its type-parameter var ids (in order) and its fields
 /// as `(name, type)`. Field types may mention the parameters, instantiated with
 /// the value's actual type arguments on access.
@@ -2117,6 +2130,10 @@ struct Checker {
     /// generic call site so wrapper functions cannot erase a callee's public
     /// protocol bounds.
     fn_bounds: HashMap<String, Vec<(u32, String)>>,
+    /// Bare trait method names declared in the linked module. Trait methods do
+    /// not have one first-class function value; value-position references need a
+    /// targeted RFC-0050 diagnostic instead of the generic unbound-variable one.
+    trait_method_names: HashSet<String>,
     /// (BUG-308) The type parameters (name -> var id) of the function whose body is
     /// currently being checked, so a body `let`/`var` ascription's lowercase name
     /// (`let out: List(a) = …`) resolves to the SAME type-parameter var as the
@@ -3734,6 +3751,11 @@ impl Checker {
                     let (params, ret) = self.instantiate(&params, &ret, &typarams);
                     return Ok(Ty::Fn(params, Box::new(ret)));
                 }
+                if self.trait_method_names.contains(name) {
+                    return terr(format!(
+                        "trait method `{name}` has no single function value to reference — wrap the receiver dispatch in a lambda, e.g. `fn(x): x.{name}()`"
+                    ));
+                }
                 terr(format!("unbound variable `{name}`"))
             }
             Expr::Lambda { params, body, ret } => {
@@ -5262,6 +5284,7 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
     let recs = witchy_syntax::records::lower(module.clone()).map_err(|message| TypeError { message })?;
     check_type_names(&recs)?;
     check_trait_names(&recs)?;
+    let trait_method_names = collect_trait_method_names(&recs);
 
     // Trait/impl declarations are desugared to ordinary functions first, so the
     // checker only ever sees plain functions (a no-op for trait-free modules).
@@ -5271,7 +5294,7 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
         Ok(lowered) => {
             check_unique_parameters(&lowered)?;
             check_var_conventions(&lowered)?;
-            run_check(&lowered, false).map(|_| ())
+            run_check_with_trait_methods(&lowered, false, &trait_method_names).map(|_| ())
         }
         Err(message) => {
             // (BUG-307) Mono's "cannot infer the result type" fallback fires when
@@ -5284,7 +5307,9 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
             // (genuine) dispatch errors are surfaced unchanged, preserving their
             // teaching message.
             if message.contains("cannot infer the result type") {
-                if let Err(real) = run_check(&crate::traits::lower(recs), false) {
+                if let Err(real) =
+                    run_check_with_trait_methods(&crate::traits::lower(recs), false, &trait_method_names)
+                {
                     // Plain lowering can't resolve the un-inferable bounded call and
                     // leaves it as an unknown function — that artifact IS the same
                     // problem the mono message already describes (and better), so
@@ -5410,17 +5435,26 @@ pub(crate) fn check_selected_lowered(
     module: &Module,
     names: &HashSet<String>,
 ) -> Result<(), TypeError> {
-    run_check_selected(module, false, Some(names)).map(|_| ())
+    run_check_selected(module, false, Some(names), None).map(|_| ())
 }
 
 fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeError> {
-    run_check_selected(module, record, None)
+    run_check_selected(module, record, None, None)
+}
+
+fn run_check_with_trait_methods(
+    module: &Module,
+    record: bool,
+    trait_method_names: &HashSet<String>,
+) -> Result<Option<TypeTable>, TypeError> {
+    run_check_selected(module, record, None, Some(trait_method_names))
 }
 
 fn run_check_selected(
     module: &Module,
     record: bool,
     selected_functions: Option<&HashSet<String>>,
+    trait_method_names: Option<&HashSet<String>>,
 ) -> Result<Option<TypeTable>, TypeError> {
     let module = &module;
     let mut c = Checker {
@@ -5435,6 +5469,7 @@ fn run_check_selected(
         adt_variants: HashMap::new(),
         fn_typarams: HashMap::new(),
         fn_bounds: HashMap::new(),
+        trait_method_names: trait_method_names.cloned().unwrap_or_else(|| collect_trait_method_names(module)),
         current_typarams: HashMap::new(),
         current_bounds: Vec::new(),
         subst: HashMap::new(),

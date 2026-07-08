@@ -462,6 +462,18 @@
     }
 
     #[test]
+    fn trait_method_value_position_names_the_lambda_fix() {
+        let err = check_str(
+            "trait Showy:\n    fn show(self) -> String\n\nfn main(console: Console):\n    let f = show\n    print(console, \"x\")\n",
+        )
+        .expect_err("trait methods are not first-class values");
+        assert!(err.contains("trait method `show`"), "{err}");
+        assert!(err.contains("no single function value"), "{err}");
+        assert!(err.contains("fn(x): x.show()"), "{err}");
+        assert!(!err.contains("unbound variable"), "{err}");
+    }
+
+    #[test]
     fn build_entrypoint_takes_only_build_capabilities() {
         // A valid build step: build caps only.
         check_str("fn build(out: BuildOut, schema: BuildRead):\n    write_out(out, \"x.witchy\", read_build(schema, \"a.proto\"))\n")

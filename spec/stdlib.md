@@ -655,7 +655,7 @@ Return the argument unchanged.
 
 #### `fn on_key(op: fn(b, b) -> c, key: fn(a) -> b) -> fn(a, a) -> c`
 
-`on_key(op, key)` is the function `(x, y) -> op(key(x), key(y))` — run a two-argument `op` on the projections of two values. Pairs with the comparator-taking list functions: `list.sort_by(people, func.on_key(less, age))` sorts by age. (Named `on_key` because bare `on` is a keyword.)
+`on_key(op, key)` is the function `(x, y) -> op(key(x), key(y))` — run a two-argument `op` on the projections of two values. Pairs with the comparator-taking list functions: `list.sort_by(people, func.on_key(fn(a, b): a < b, person_age))` sorts by age. (Named `on_key` because bare `on` is a keyword.)
 
 #### `fn constant(x: a) -> fn(b) -> a`
 
