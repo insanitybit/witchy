@@ -209,8 +209,8 @@
     }
 
     /// In a mode file, an accumulator that reverts to the copying path inside a
-    /// loop (a `Cliff`) is a hard error; in an ordinary file the same shape only
-    /// warns (no error).
+    /// loop (a `Cliff`) is a hard error; in an ordinary file the same shape is
+    /// accepted silently.
     #[test]
     fn mode_rejects_accumulator_cliff() {
         let cliff = "mode opt\n\nfn main(console: Console):\n    var xs = []\n    var snaps = []\n    for i in [1, 2, 3]:\n        snaps = list.push(snaps, xs)\n        xs = list.push(xs, i)\n    print(console, __render(list.length(xs)))\n";
@@ -218,9 +218,9 @@
             .expect_err("a repeated copy-revert in a mode file must be rejected");
         assert!(err.contains("rebuilt by copy"), "{err}");
 
-        // The same body without the mode directive is accepted (a note, not an error).
+        // The same body without the mode directive is accepted silently.
         let plain = cliff.replacen("mode opt\n\n", "", 1);
-        crate::enforce_performance_modes(&link_mode(&plain), "t").expect("non-mode file only warns");
+        crate::enforce_performance_modes(&link_mode(&plain), "t").expect("non-mode file is accepted");
     }
 
     /// A clean `mode opt` program — properly annotated, accumulator stays

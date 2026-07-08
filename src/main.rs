@@ -1375,8 +1375,8 @@ fn is_entry_function(name: &str, entry_stem: &str) -> bool {
 
 /// Performance-mode enforcement. The uniqueness analysis flags accumulation that
 /// reverts to the copying path inside a loop (O(n²)). In an ordinary file this is
-/// a check-time *note* — the copying path IS the semantics, so a perf-shape
-/// warning must never block a build. In a file that declares `mode opt`
+/// still valid code, so the CLI stays silent; the LSP surfaces non-blocking
+/// advisories through its own diagnostics path. In a file that declares `mode opt`
 /// the cliff is a hard error, AND every ownership-relevant parameter must carry
 /// an explicit `let`/`own`/`var` convention — so the interprocedural summaries
 /// are declared contracts rather than inferences, and the optimization is powered
@@ -1387,11 +1387,11 @@ fn enforce_performance_modes(linked: &ast::Module, entry_stem: &str) -> Result<(
     let mut errors = Vec::new();
 
     // Body contract: accumulators must stay on the in-place fast path.
-    for (func, c) in analysis::module_cliffs(linked) {
-        if !is_entry_function(&func, entry_stem) {
-            continue;
-        }
-        if enforce {
+    if enforce {
+        for (func, c) in analysis::module_cliffs(linked) {
+            if !is_entry_function(&func, entry_stem) {
+                continue;
+            }
             errors.push(format!(
                 "error: in `{func}` (line {}): `{}` is rebuilt by copy on every \
                  iteration of this loop — it is {} [mode {}]\n  keep `{}` on the \
@@ -1399,12 +1399,6 @@ fn enforce_performance_modes(linked: &ast::Module, entry_stem: &str) -> Result<(
                  not alias it out, and do not share it mid-loop",
                 c.line, c.var, c.reason, linked.modes.join(", "), c.var,
             ));
-        } else {
-            eprintln!(
-                "note: in `{func}` (line {}): `{}` is rebuilt by copy on every \
-                 iteration of this loop — it is {}",
-                c.line, c.var, c.reason
-            );
         }
     }
 

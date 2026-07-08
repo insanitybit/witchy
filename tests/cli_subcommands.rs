@@ -148,6 +148,24 @@ fn mode_opt_enforced_across_subcommands() {
 }
 
 #[test]
+fn plain_run_does_not_emit_copy_cliff_notes_for_comprehensions() {
+    // BUG-560: the plain CLI path used to print a performance note for ordinary
+    // code and could expose the parser's synthetic comprehension accumulator
+    // (`__comprN`) on stderr. Non-`mode` code is valid; editor advisories belong
+    // to the LSP path, not `witchy run`.
+    let dir = workdir("plain-compr-note");
+    let src = write(
+        &dir,
+        "compr.witchy",
+        "fn main(console: Console):\n    let squares = [n * n for n in 1..6]\n    print(console, __render(squares))\n",
+    );
+    let out = run(&[&src]);
+    assert!(out.status.success(), "run failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "[1, 4, 9, 16, 25]\n");
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "");
+}
+
+#[test]
 fn check_rejects_programs_the_compiled_backend_cannot_accept() {
     // RFC-0070 D2: `check` is the acceptance boundary for runnable programs. A
     // program that typechecks but cannot be compiled must fail at `check`, not
