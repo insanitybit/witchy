@@ -346,6 +346,24 @@ mod typecheck {
         ));
     }
 
+    // (RFC-0072 phase 2) The two jargon-class messages the audit flagged: each
+    // now names a fix instead of leaking a checker internal (d7a37976). Locked
+    // so the guidance can't silently regress back into jargon.
+
+    #[test]
+    fn type_parameter_pinned_is_not_generic() {
+        insta::assert_snapshot!(type_diag(
+            "fn f(x: a) -> Int:\n    x + 1\n\nfn main(console: Console):\n    print(console, __render(f(1)))\n"
+        ));
+    }
+
+    #[test]
+    fn field_access_on_unresolved_type() {
+        insta::assert_snapshot!(type_diag(
+            "fn get(p: a) -> Int:\n    p.x\n\nfn main(console: Console):\n    print(console, __render(get(.{x: 7})))\n"
+        ));
+    }
+
     #[test]
     // KNOWN-BAD (BUG-162): this module-qualified-call type error is the one probed
     // message with NO position (`main`, line N) — RFC-0072's polish item 2. The
