@@ -727,9 +727,11 @@ fn main(console: Console):
     console.print("${Point(1, 2) < Point(1, 3)}")
 ```
 
-`Show` renders a value structurally (the same form `${...}` uses); `PartialEq`/`Eq`
-are structural equality (backing `==`/`!=`), and `PartialOrd`/`Ord` compare record
-fields in order (records only) and back `<` `>` `<=` `>=`.
+`Show` renders a value as a string; derived `Show` is structural, and
+interpolation uses it for values with a relevant impl once `show` is linked.
+`PartialEq`/`Eq` are structural equality (backing `==`/`!=`), and
+`PartialOrd`/`Ord` compare record fields in order (records only) and back
+`<` `>` `<=` `>=`.
 Derives also work on a generic type. `type Box(a) derive(Reflect)` generates an impl
 that carries the type parameters and their bounds and specializes per type argument.
 

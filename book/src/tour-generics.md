@@ -134,11 +134,12 @@ count: 42
 5 deg C
 ```
 
-`show.say(console, x)` is the `Show`-accepting `print` — reach for it instead of
-`console.print("${x}")`. Note the division of labor: interpolation and the
-built-in rendering already covers *every* value structurally (including bare
-lists, tuples, and dicts, which can't carry a `Show` impl); `Show` is for giving
-*your own* types a rendering you choose.
+`show.say(console, x)` is the `Show`-accepting print helper. Interpolation is the
+usual inline rendering form, and once `show` is imported it uses the same `Show`
+path for values with a relevant impl: `console.print("${Temp(5)}")`,
+`show.render(Temp(5))`, and `show.say(console, Temp(5))` all print `5 deg C`.
+Without `show` linked, interpolation keeps the structural fallback, so modules
+that do not need custom display pay no protocol cost.
 
 ## Deriving the common traits
 
@@ -167,8 +168,8 @@ true
 Score(12, beta)
 ```
 
-- `derive(Show)` renders the record structurally (`Score(12, beta)`), which
-  also feeds `${...}` and `say`.
+- `derive(Show)` gives the record a structural `Show` impl (`Score(12, beta)`),
+  which feeds `show.say`, `show.render`, and `${...}` once `show` is linked.
 - `derive(PartialEq)` is field-by-field structural equality (it backs `==`/`!=`);
   `derive(Eq)` marks it as a total equality, usable as a `Set`/`Dict` key.
 - `derive(PartialOrd)`/`derive(Ord)` compare fields lexicographically, in
