@@ -35,6 +35,10 @@ fn anon_record_type_name(fields: &[String]) -> String {
     format!("__anon{suffix}")
 }
 
+fn reserved_source_identifier(name: &str) -> bool {
+    name.contains("__")
+}
+
 pub fn parse_module(src: &str) -> Result<Module, ParseError> {
     let tokens = tokenize(src).map_err(|e| ParseError {
         message: e.message,
@@ -1604,6 +1608,11 @@ impl Parser {
                 // (a write-back form, not a pattern context — RFC-0043/0052).
                 if mutable {
                     let name = self.ident()?;
+                    if reserved_source_identifier(&name) {
+                        return Err(self.error(format!(
+                            "identifier `{name}` is reserved for the compiler"
+                        )));
+                    }
                     self.expect(&Tok::In)?;
                     let iter = self.expr(0)?;
                     let body = self.block()?;
@@ -1632,6 +1641,11 @@ impl Parser {
                 // A single plain variable is the common fast path — bind it
                 // directly as the loop variable (no destructuring wrapper).
                 if let Pattern::Var(name) = &pattern {
+                    if reserved_source_identifier(name) {
+                        return Err(self.error(format!(
+                            "identifier `{name}` is reserved for the compiler"
+                        )));
+                    }
                     return Ok(Expr::For {
                         var: name.clone(),
                         iter: Box::new(wrap(iter)),

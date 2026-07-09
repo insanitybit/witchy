@@ -1812,6 +1812,10 @@ fn is_generated_local_name(name: &str) -> bool {
     })
 }
 
+fn is_synthetic_source_line(line: Option<u32>) -> bool {
+    matches!(line, Some(0 | u32::MAX))
+}
+
 fn check_reserved_source_names(modules: &[(String, Module)]) -> Result<(), LinkError> {
     for (module_name, module) in modules {
         if STD_MODULES.contains(&module_name.as_str()) {
@@ -1839,14 +1843,14 @@ fn check_reserved_item(module_name: &str, item: &Item, line: Option<u32>) -> Res
                 return reserved_name_error(module_name, "type", &t.name);
             }
             for param in &t.params {
-                check_reserved_binding(module_name, "type parameter", param)?;
+                check_reserved_binding(module_name, "type parameter", param, line)?;
             }
             for variant in &t.variants {
                 if is_reserved_user_identifier(&variant.name) && !generated_anon {
                     return reserved_name_error(module_name, "constructor", &variant.name);
                 }
                 for field_name in &variant.field_names {
-                    check_reserved_binding(module_name, "field", field_name)?;
+                    check_reserved_binding(module_name, "field", field_name, line)?;
                 }
             }
             Ok(())
@@ -1856,7 +1860,7 @@ fn check_reserved_item(module_name: &str, item: &Item, line: Option<u32>) -> Res
                 return reserved_name_error(module_name, "trait", &t.name);
             }
             for param in &t.typarams {
-                check_reserved_binding(module_name, "type parameter", param)?;
+                check_reserved_binding(module_name, "type parameter", param, line)?;
             }
             for method in &t.methods {
                 if is_reserved_user_identifier(&method.name) {
@@ -1865,7 +1869,7 @@ fn check_reserved_item(module_name: &str, item: &Item, line: Option<u32>) -> Res
                 for p in &method.params {
                     check_reserved_param(module_name, p)?;
                     if let Some(default) = &p.default {
-                        check_reserved_expr(module_name, default)?;
+                        check_reserved_expr(module_name, default, line)?;
                     }
                 }
                 if let Some(body) = &method.default {
@@ -1892,11 +1896,11 @@ fn check_reserved_item(module_name: &str, item: &Item, line: Option<u32>) -> Res
             Ok(())
         }
         Item::Const { name, value } => {
-            check_reserved_binding(module_name, "constant", name)?;
-            check_reserved_expr(module_name, value)
+            check_reserved_binding(module_name, "constant", name, line)?;
+            check_reserved_expr(module_name, value, line)
         }
         Item::TypeAlias { name, ty, .. } => {
-            check_reserved_binding(module_name, "type alias", name)?;
+            check_reserved_binding(module_name, "type alias", name, line)?;
             check_reserved_type(module_name, ty)
         }
         Item::Comptime(body) => check_reserved_block(module_name, body),
@@ -1911,18 +1915,24 @@ fn check_reserved_function(module_name: &str, f: &Function) -> Result<(), LinkEr
 }
 
 fn check_reserved_param(module_name: &str, p: &Param) -> Result<(), LinkError> {
-    check_reserved_binding(module_name, "parameter", &p.name)?;
+    check_reserved_binding(module_name, "parameter", &p.name, None)?;
     if let Some(ty) = &p.ty {
         check_reserved_type(module_name, ty)?;
     }
     if let Some(default) = &p.default {
-        check_reserved_expr(module_name, default)?;
+        check_reserved_expr(module_name, default, None)?;
     }
     Ok(())
 }
 
-fn check_reserved_binding(module_name: &str, kind: &str, name: &str) -> Result<(), LinkError> {
-    if is_reserved_user_identifier(name) && !is_generated_local_name(name) {
+fn check_reserved_binding(
+    module_name: &str,
+    kind: &str,
+    name: &str,
+    line: Option<u32>,
+) -> Result<(), LinkError> {
+    let generated_local = is_generated_local_name(name) && is_synthetic_source_line(line);
+    if is_reserved_user_identifier(name) && !generated_local {
         return reserved_name_error(module_name, kind, name);
     }
     Ok(())
@@ -1962,63 +1972,63 @@ fn check_reserved_type(module_name: &str, ty: &Type) -> Result<(), LinkError> {
 }
 
 fn check_reserved_block(module_name: &str, block: &Block) -> Result<(), LinkError> {
-    for stmt in &block.stmts {
-        check_reserved_stmt(module_name, stmt)?;
+    for (idx, stmt) in block.stmts.iter().enumerate() {
+        check_reserved_stmt(module_name, stmt, block.lines.get(idx).copied())?;
     }
     Ok(())
 }
 
-fn check_reserved_stmt(module_name: &str, stmt: &Stmt) -> Result<(), LinkError> {
+fn check_reserved_stmt(module_name: &str, stmt: &Stmt, line: Option<u32>) -> Result<(), LinkError> {
     match stmt {
         Stmt::Let { name, ty, value, .. } => {
-            check_reserved_binding(module_name, "binding", name)?;
+            check_reserved_binding(module_name, "binding", name, line)?;
             if let Some(ty) = ty {
                 check_reserved_type(module_name, ty)?;
             }
-            check_reserved_expr(module_name, value)
+            check_reserved_expr(module_name, value, line)
         }
         Stmt::Assign { name, value } => {
-            check_reserved_binding(module_name, "assignment target", name)?;
-            check_reserved_expr(module_name, value)
+            check_reserved_binding(module_name, "assignment target", name, line)?;
+            check_reserved_expr(module_name, value, line)
         }
         Stmt::LetPattern { pattern, value } => {
-            check_reserved_pattern(module_name, pattern)?;
-            check_reserved_expr(module_name, value)
+            check_reserved_pattern(module_name, pattern, line)?;
+            check_reserved_expr(module_name, value, line)
         }
         Stmt::Return(Some(value)) | Stmt::Expr(value) | Stmt::Yield(value) => {
-            check_reserved_expr(module_name, value)
+            check_reserved_expr(module_name, value, line)
         }
         Stmt::Return(None) | Stmt::Break | Stmt::Continue => Ok(()),
     }
 }
 
-fn check_reserved_expr(module_name: &str, expr: &Expr) -> Result<(), LinkError> {
+fn check_reserved_expr(module_name: &str, expr: &Expr, line: Option<u32>) -> Result<(), LinkError> {
     match expr {
         Expr::List(items) | Expr::Tuple(items) | Expr::Ctor { args: items, .. } => {
             for item in items {
-                check_reserved_expr(module_name, item)?;
+                check_reserved_expr(module_name, item, line)?;
             }
         }
         Expr::Call { args, .. } => {
             for arg in args {
-                check_reserved_expr(module_name, arg)?;
+                check_reserved_expr(module_name, arg, line)?;
             }
         }
         Expr::LabeledCall { args, .. } => {
             for (_, arg) in args {
-                check_reserved_expr(module_name, arg)?;
+                check_reserved_expr(module_name, arg, line)?;
             }
         }
         Expr::MethodCall { receiver, args, .. } => {
-            check_reserved_expr(module_name, receiver)?;
+            check_reserved_expr(module_name, receiver, line)?;
             for arg in args {
-                check_reserved_expr(module_name, arg)?;
+                check_reserved_expr(module_name, arg, line)?;
             }
         }
         Expr::Apply { func, args } => {
-            check_reserved_expr(module_name, func)?;
+            check_reserved_expr(module_name, func, line)?;
             for arg in args {
-                check_reserved_expr(module_name, arg)?;
+                check_reserved_expr(module_name, arg, line)?;
             }
         }
         Expr::Lambda { params, body, ret } => {
@@ -2031,66 +2041,67 @@ fn check_reserved_expr(module_name: &str, expr: &Expr) -> Result<(), LinkError> 
             check_reserved_block(module_name, body)?;
         }
         Expr::RecordUpdate { name: _, base, fields } => {
-            check_reserved_expr(module_name, base)?;
+            check_reserved_expr(module_name, base, line)?;
             for (field, value) in fields {
-                check_reserved_binding(module_name, "field", field)?;
-                check_reserved_expr(module_name, value)?;
+                check_reserved_binding(module_name, "field", field, line)?;
+                check_reserved_expr(module_name, value, line)?;
             }
         }
         Expr::Record { fields, spread, .. } => {
             for (field, value) in fields {
-                check_reserved_binding(module_name, "field", field)?;
-                check_reserved_expr(module_name, value)?;
+                check_reserved_binding(module_name, "field", field, line)?;
+                check_reserved_expr(module_name, value, line)?;
             }
             if let Some(spread) = spread {
-                check_reserved_expr(module_name, spread)?;
+                check_reserved_expr(module_name, spread, line)?;
             }
         }
         Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
-            check_reserved_expr(module_name, expr)?
+            check_reserved_expr(module_name, expr, line)?
         }
         Expr::Binary { lhs, rhs, .. } => {
-            check_reserved_expr(module_name, lhs)?;
-            check_reserved_expr(module_name, rhs)?;
+            check_reserved_expr(module_name, lhs, line)?;
+            check_reserved_expr(module_name, rhs, line)?;
         }
         Expr::If { cond, then_block, else_block } => {
-            check_reserved_expr(module_name, cond)?;
+            check_reserved_expr(module_name, cond, line)?;
             check_reserved_block(module_name, then_block)?;
             if let Some(block) = else_block {
                 check_reserved_block(module_name, block)?;
             }
         }
         Expr::Match { scrutinee, arms } => {
-            check_reserved_expr(module_name, scrutinee)?;
+            check_reserved_expr(module_name, scrutinee, line)?;
             for arm in arms {
-                check_reserved_pattern(module_name, &arm.pattern)?;
+                check_reserved_pattern(module_name, &arm.pattern, line)?;
                 if let Some(guard) = &arm.guard {
-                    check_reserved_expr(module_name, guard)?;
+                    check_reserved_expr(module_name, guard, line)?;
                 }
-                check_reserved_expr(module_name, &arm.body)?;
+                check_reserved_expr(module_name, &arm.body, line)?;
             }
         }
         Expr::Block(block) => check_reserved_block(module_name, block)?,
         Expr::While { cond, body } => {
-            check_reserved_expr(module_name, cond)?;
+            check_reserved_expr(module_name, cond, line)?;
             check_reserved_block(module_name, body)?;
         }
         Expr::For { var, iter, body } => {
-            check_reserved_binding(module_name, "loop binding", var)?;
-            check_reserved_expr(module_name, iter)?;
+            let loop_line = if is_generated_local_name(var) { Some(0) } else { line };
+            check_reserved_binding(module_name, "loop binding", var, loop_line)?;
+            check_reserved_expr(module_name, iter, line)?;
             check_reserved_block(module_name, body)?;
         }
         Expr::Range { lo, hi, .. } => {
-            check_reserved_expr(module_name, lo)?;
-            check_reserved_expr(module_name, hi)?;
+            check_reserved_expr(module_name, lo, line)?;
+            check_reserved_expr(module_name, hi, line)?;
         }
         Expr::Index { base, index } => {
-            check_reserved_expr(module_name, base)?;
-            check_reserved_expr(module_name, index)?;
+            check_reserved_expr(module_name, base, line)?;
+            check_reserved_expr(module_name, index, line)?;
         }
         Expr::WhileLet { pattern, scrutinee, body } => {
-            check_reserved_pattern(module_name, pattern)?;
-            check_reserved_expr(module_name, scrutinee)?;
+            check_reserved_pattern(module_name, pattern, line)?;
+            check_reserved_expr(module_name, scrutinee, line)?;
             check_reserved_block(module_name, body)?;
         }
         Expr::Int(_)
@@ -2104,27 +2115,31 @@ fn check_reserved_expr(module_name: &str, expr: &Expr) -> Result<(), LinkError> 
     Ok(())
 }
 
-fn check_reserved_pattern(module_name: &str, pattern: &Pattern) -> Result<(), LinkError> {
+fn check_reserved_pattern(
+    module_name: &str,
+    pattern: &Pattern,
+    line: Option<u32>,
+) -> Result<(), LinkError> {
     match pattern {
-        Pattern::Var(name) => check_reserved_binding(module_name, "pattern binding", name),
+        Pattern::Var(name) => check_reserved_binding(module_name, "pattern binding", name, line),
         Pattern::Ctor { args, .. } | Pattern::Tuple(args) => {
             for arg in args {
-                check_reserved_pattern(module_name, arg)?;
+                check_reserved_pattern(module_name, arg, line)?;
             }
             Ok(())
         }
         Pattern::List { elems, rest } => {
             for elem in elems {
-                check_reserved_pattern(module_name, elem)?;
+                check_reserved_pattern(module_name, elem, line)?;
             }
             if let Some(Some(name)) = rest {
-                check_reserved_binding(module_name, "pattern binding", name)?;
+                check_reserved_binding(module_name, "pattern binding", name, line)?;
             }
             Ok(())
         }
         Pattern::Or(alts) => {
             for alt in alts {
-                check_reserved_pattern(module_name, alt)?;
+                check_reserved_pattern(module_name, alt, line)?;
             }
             Ok(())
         }
@@ -2269,6 +2284,40 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("binding `user__target`"), "{err}");
+
+        let err = link_main(
+            "fn main(console: Console):\n    let __compr0 = 1\n    console.print(__render(__compr0))\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("binding `__compr0`"), "{err}");
+
+        let err = crate::parser::parse_module(
+            "fn main(console: Console):\n    for __fv0 in [1]:\n        console.print(__render(__fv0))\n",
+        )
+        .expect_err("source loop variables cannot use generated compiler names");
+        assert!(err.message.contains("identifier `__fv0` is reserved for the compiler"), "{err:?}");
+
+        let err = crate::parser::parse_module(
+            "fn main(console: Console):\n    var xs = [1]\n    for var __fv0 in xs:\n        __fv0 = __fv0 + 1\n",
+        )
+        .expect_err("source for-var variables cannot use generated compiler names");
+        assert!(err.message.contains("identifier `__fv0` is reserved for the compiler"), "{err:?}");
+
+        let err = link_main(
+            "fn main(console: Console):\n    let (__fortuple0, n) = (1, 2)\n    console.print(__render(n))\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("pattern binding `__fortuple0`"), "{err}");
+
+        link_main(
+            "fn main(console: Console):\n    let xs = [n * 2 for n in [1, 2, 3]]\n    console.print(__render(xs))\n",
+        )
+        .expect("parser-generated list-comprehension names stay legal");
+
+        link_main(
+            "fn main(console: Console):\n    var xs = [1, 2, 3]\n    for var n in xs:\n        n = n + 1\n    console.print(\"ok\")\n",
+        )
+        .expect("parser-generated for-var index names stay legal");
     }
 
     #[test]
