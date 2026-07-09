@@ -8,9 +8,10 @@ tracking: >
   Error, and ? accepts/lowers Result(_, Ein) -> Result(_, Eout) through an
   ordinary From(Ein) for Eout impl. std/json and std/toml now expose typed
   decode-error values; std/crypto, std/webauthn, and std/jwt expose typed
-  trust-boundary verification errors. All convert to String through From at
-  existing application boundaries. Remaining 0.1 work: finish or explicitly
-  defer typed errors for grant/TUF/package-manager trust boundaries.
+  trust-boundary verification errors; the package manager's TUF pinning gate
+  uses typed errors internally. All convert to String through From at existing
+  application boundaries. Remaining 0.1 work: finish or explicitly defer typed
+  errors for grant/package-manager record-decode trust boundaries.
 ---
 
 # RFC-0054: Structured errors (design-first)
@@ -236,8 +237,14 @@ the module helper (`json.decode_error_message`, `toml.decode_error_message`,
 `crypto.verify_error_message`, `webauthn.assertion_error_message`, or
 `jwt.jwt_error_message`).
 
+The package manager's TUF pinning boundary is also typed internally:
+`snapshot_pin` / `verified_snapshot_line` return a local `TufError` after
+checking the registry root key, timestamp/snapshot signatures, role schemas,
+snapshot hash binding, and version agreement. CLI-facing code still renders
+the existing messages before refusing to write unverified trust metadata.
+
 This does not complete the RFC. The remaining release-blocking work is the std
-and core-library migration: grant/TUF/package-manager trust boundaries still
-need typed decoder errors or an explicit 0.1 deferral, and broader convenience
-parsers/codecs (`encoding`, `url`, `semver`, `time`, `http`) remain
-string-error APIs until demand justifies their own typed cuts.
+and core-library migration: grant/package-manager record-decode trust
+boundaries still need typed decoder errors or an explicit 0.1 deferral, and
+broader convenience parsers/codecs (`encoding`, `url`, `semver`, `time`,
+`http`) remain string-error APIs until demand justifies their own typed cuts.

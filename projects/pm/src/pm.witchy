@@ -24,6 +24,9 @@ import fs
 import http
 import rights
 import string
+import show
+import error
+import convert
 from json import Json
 from semver import Version, Req
 from toml import Toml
@@ -1799,8 +1802,8 @@ fn update_vendored(console: Console, net: Net, root: Dir, host: String, port: In
         1
     else:
         match snapshot_pin(net, root, host, port):
-            Err(m) ->
-                console.print("BLOCK: cannot pin registry metadata — " + m)
+            Err(e) ->
+                console.print("BLOCK: cannot pin registry metadata — " + tuf_error_message(e))
                 2
             Ok(snapline) ->
                 root.write("witchy.lock", vendor_lock(root, snapline + rootpub_pin(net, host, port)))
@@ -2081,13 +2084,47 @@ fn split_spec(spec: String) -> (String, String):
 // every currently-vendored rune so repeated `add`s accumulate, not clobber.
 fn pin_lock(console: Console, net: Net, root: Dir, host: String, port: Int, name: String) -> Int:
     match snapshot_pin(net, root, host, port):
-        Err(m) ->
-            console.print("BLOCK: cannot pin registry metadata for " + basename(name) + " — " + m)
+        Err(e) ->
+            console.print("BLOCK: cannot pin registry metadata for " + basename(name) + " — " + tuf_error_message(e))
             2
         Ok(snapline) ->
             root.write("witchy.lock", vendor_lock(root, snapline + rootpub_pin(net, host, port)))
             console.print("locked " + basename(name) + " -> witchy.lock")
             0
+
+// Matchable failures from the TUF pinning gate. `add`/`update` only write a
+// registry_snapshot_version lock pin after this boundary verifies signatures,
+// schemas, content hash binding, and role version agreement.
+type TufError:
+    RootKeyMismatch
+    SnapshotWithoutTimestamp
+    TimestampBadSignature
+    SnapshotBadSignature
+    SnapshotMalformed
+    TimestampMalformed
+    SnapshotHashMismatch
+    SnapshotVersionMismatch
+
+fn tuf_error_message(e: TufError) -> String:
+    match e:
+        RootKeyMismatch -> "registry root key does not match the key pinned in witchy.lock (possible MITM / hostile mirror)"
+        SnapshotWithoutTimestamp -> "registry served a snapshot but no timestamp role — cannot verify the TUF chain"
+        TimestampBadSignature -> "the timestamp role is not validly signed by the registry root key"
+        SnapshotBadSignature -> "the snapshot role is not validly signed by the registry root key"
+        SnapshotMalformed -> "the snapshot role is structurally malformed (needs an integer `version` and an object `targets`)"
+        TimestampMalformed -> "the timestamp role is structurally malformed (needs an integer `snapshot_version`, a string `snapshot_hash`, and an integer `expires`)"
+        SnapshotHashMismatch -> "the snapshot does not match the timestamp's pinned hash"
+        SnapshotVersionMismatch -> "the snapshot and timestamp disagree on the snapshot version"
+
+impl Show for TufError:
+    fn show(self) -> String:
+        tuf_error_message(self)
+
+impl Error for TufError
+
+impl From(TufError) for String:
+    fn from(value: TufError) -> Self:
+        tuf_error_message(value)
 
 // The `registry_snapshot_version = N` top-level line pinning the registry's current
 // TUF snapshot version into the lock — the rollback baseline `verify` enforces.
@@ -2097,7 +2134,7 @@ fn pin_lock(console: Console, net: Net, root: Dir, host: String, port: Int, name
 // agreement — so a malformed/unsigned/split response cannot under- or over-pin the
 // rollback floor. `Ok("")` when the registry serves no snapshot (nothing to pin);
 // `Err` aborts the add/update rather than writing an unverified pin.
-fn snapshot_pin(net: Net, root: Dir, host: String, port: Int) -> Result(String, String):
+fn snapshot_pin(net: Net, root: Dir, host: String, port: Int) -> Result(String, TufError):
     let snap_resp = http.get(net, host, port, "/coven/snapshot")
     if http.status(snap_resp) != 200:
         Ok("")
@@ -2105,11 +2142,11 @@ fn snapshot_pin(net: Net, root: Dir, host: String, port: Int) -> Result(String, 
         let rootpub = http.body(http.get(net, host, port, "/coven/rootpub"))
         let pinned_pub = if root.exists("witchy.lock"): pinned_rootpub(root.read("witchy.lock")) else: ""
         if pinned_pub != "" && pinned_pub != rootpub:
-            Err("registry root key does not match the key pinned in witchy.lock (possible MITM / hostile mirror)")
+            Err(RootKeyMismatch)
         else:
             let ts_resp = http.get(net, host, port, "/coven/timestamp")
             if http.status(ts_resp) != 200:
-                Err("registry served a snapshot but no timestamp role — cannot verify the TUF chain")
+                Err(SnapshotWithoutTimestamp)
             else:
                 verified_snapshot_line(rootpub, http.body(snap_resp), http.body(ts_resp))
 
@@ -2117,19 +2154,19 @@ fn snapshot_pin(net: Net, root: Dir, host: String, port: Int) -> Result(String, 
 // snapshot/timestamp pair (the same gate `verify`/`check_chain` applies) and, only
 // if they all pass, produce the `registry_snapshot_version` line for the verified
 // snapshot version. Freshness (`expires`) is enforced at `verify` time, not pinned.
-fn verified_snapshot_line(rootpub: String, snap_env: String, ts_env: String) -> Result(String, String):
+fn verified_snapshot_line(rootpub: String, snap_env: String, ts_env: String) -> Result(String, TufError):
     if !signed_valid(rootpub, ts_env):
-        Err("the timestamp role is not validly signed by the registry root key")
+        Err(TimestampBadSignature)
     else if !signed_valid(rootpub, snap_env):
-        Err("the snapshot role is not validly signed by the registry root key")
+        Err(SnapshotBadSignature)
     else if !snapshot_schema_ok(snap_env):
-        Err("the snapshot role is structurally malformed (needs an integer `version` and an object `targets`)")
+        Err(SnapshotMalformed)
     else if !timestamp_schema_ok(ts_env):
-        Err("the timestamp role is structurally malformed (needs an integer `snapshot_version`, a string `snapshot_hash`, and an integer `expires`)")
+        Err(TimestampMalformed)
     else if "sha256:" + crypto.sha256(signed_canonical(snap_env)) != signed_field_str(ts_env, "snapshot_hash"):
-        Err("the snapshot does not match the timestamp's pinned hash")
+        Err(SnapshotHashMismatch)
     else if signed_field_int(snap_env, "version") != signed_field_int(ts_env, "snapshot_version"):
-        Err("the snapshot and timestamp disagree on the snapshot version")
+        Err(SnapshotVersionMismatch)
     else:
         Ok("registry_snapshot_version = ${signed_field_int(snap_env, "version")}\n")
 
