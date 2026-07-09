@@ -188,6 +188,10 @@ log output), `MERGE_QUEUE_BATCH_MAX` (5), `MERGE_QUEUE_STATE_DIR` +
   dropped a just-merged real commit, also restored). Hence: state-dir set
   and `MERGE_QUEUE_ALLOW_MERGE != 1` → gate runs, merge is SKIPPED,
   journal `validated`.
+- **Main worktree may be on an agent branch:** the coordinator must not
+  `git merge <validated-sha>` into whatever branch is checked out and then
+  journal it as a master merge. If `master` is not checked out, it atomically
+  moves only `refs/heads/master`, guarded by the base SHA that was gated.
 - **bash 3.2:** macOS ships bash 3.2 — no `${var^^}`, no associative arrays.
   The uppercase-via-`tr` is deliberate.
 - **The daemon holds its script's inode.** To edit merge-queue.sh while the

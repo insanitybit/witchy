@@ -428,15 +428,28 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         return 1 # keep the queue file; the loop will re-process it
     fi
 
-    if ! git -C "$root" merge --ff-only "$sha" >/dev/null 2>&1; then
-        # Don't requeue: that would re-run the whole gate for a problem that is
-        # in the MAIN worktree (not on master, or dirty files colliding with the
-        # update). The sha is already validated — surface it for a manual ff.
-        note "fast-forward of master to $sha FAILED (main worktree not on master, or dirty collision)."
-        note "the gate was GREEN — merge manually with: git merge --ff-only $sha"
-        record blocked "$branch" sha "$sha" reason "ff-merge failed in main worktree" log "$log"
-        rm -f "$f"
-        return 0
+    local current_branch
+    current_branch="$(git -C "$root" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+    if [ "$current_branch" = "master" ]; then
+        if ! git -C "$root" merge --ff-only "$sha" >/dev/null 2>&1; then
+            # Don't requeue: that would re-run the whole gate for a problem that is
+            # in the MAIN worktree (dirty files colliding with the update). The
+            # sha is already validated — surface it for a manual ff after cleanup.
+            note "fast-forward of master to $sha FAILED (dirty collision in main worktree)."
+            note "the gate was GREEN — merge manually with: git merge --ff-only $sha"
+            record blocked "$branch" sha "$sha" reason "ff-merge failed in main worktree" log "$log"
+            rm -f "$f"
+            return 0
+        fi
+    else
+        # The main worktree is allowed to be on an agent branch. Do not merge the
+        # validated commit into that branch and then journal a false master merge;
+        # move only refs/heads/master, guarded by the base SHA that was gated.
+        if ! git -C "$root" update-ref refs/heads/master "$sha" "$base" >/dev/null 2>&1; then
+            note "fast-forward of refs/heads/master to $sha FAILED (master moved or ref lock failed)."
+            record requeued "$branch" sha "$sha" reason "master ref update failed"
+            return 1
+        fi
     fi
     note "MERGED ${batch_branches[*]} → master @ $sha (gate ${took}s, ${#batch_branches[@]} branch(es))"
     local i bf
