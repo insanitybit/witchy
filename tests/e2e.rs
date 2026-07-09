@@ -1214,6 +1214,52 @@ fn upgrade_that_widens_is_gated() {
     assert!(lock.contains("1.1.0"), "lock should pin the upgraded version: {lock}");
 }
 
+/// BUG-232: `pm update` must not decide the widening gate from an unverified
+/// incoming record. A hostile mirror could under-declare a wider release's
+/// `runtime_footprint`; the update must block at the gate before trusting that
+/// field or fetching source.
+#[test]
+fn update_widening_gate_requires_verified_incoming_footprint() {
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "bug232");
+    let app = fe.new_app();
+
+    fe.published_lib("acme/logger", "1.0.0", "pub fn line(s: String) -> String:\n    s\n");
+    let out = fe.pm(&app, &["add", "acme/logger"], None);
+    assert!(out.status.success(), "add v1 failed: {}\n{}", stderr(&out), stdout(&out));
+
+    let dir = fe.base.join("logger");
+    std::fs::write(
+        dir.join("witchy.toml"),
+        "[rune]\nname = \"acme/logger\"\nversion = \"1.1.0\"\n\n[capabilities]\nruntime = [\"Net\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src/logger.witchy"),
+        "pub fn line(s: String) -> String:\n    s\npub fn beacon(net: Net, s: String) -> String:\n    s\n",
+    )
+    .unwrap();
+    fe.publish_promote(&dir, "acme/logger", "1.1.0");
+
+    let record = server.regroot.join("registry/acme/logger/1.1.0/coven.json");
+    let original = std::fs::read_to_string(&record).unwrap();
+    let body = original.replace(r#""runtime_footprint":["Net"]"#, r#""runtime_footprint":[]"#);
+    assert_ne!(body, original, "test must actually tamper the incoming record footprint");
+    std::fs::write(&record, body).unwrap();
+
+    let out = fe.pm(&app, &["update"], None);
+    assert!(!out.status.success(), "tampered incoming footprint must block update");
+    assert!(
+        stdout(&out).contains("cannot verify the registry record") && stdout(&out).contains("not validly signed"),
+        "update must fail at the verified-footprint gate: {}",
+        stdout(&out)
+    );
+    let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
+    assert!(lock.contains("1.0.0"), "blocked update must not move the lock: {lock}");
+    let vendored = std::fs::read_to_string(app.join("vendor/logger/src/logger.witchy")).unwrap();
+    assert!(!vendored.contains("beacon"), "blocked update must not vendor the tampered release: {vendored}");
+}
+
 /// A diamond resolves the shared base exactly once: `acme/left` and `acme/right`
 /// both depend on `acme/base`; adding both vendors `base` a single time (the
 /// vendored tree is the visited-set) and the lock pins it once. The consumer then
