@@ -104,6 +104,24 @@ analyzer (`crates/witchy-caps/src/capabilities.rs`), the runtime gating
 [spec/capabilities.md](spec/capabilities.md) together — and add an
 *enforcement* test (an ungranted module must fail to instantiate).
 
+## Adding a semantic
+
+For a new value type, binary operator, builtin, host import, or runtime trap,
+make the change across the whole pipeline in one commit series:
+
+1. syntax/AST and formatter if the surface changes;
+2. type checking, including capability rights and trait/protocol obligations;
+3. interpreter semantics, because it is the oracle;
+4. lowering, WIR kind/layout helpers, and wasm encoding;
+5. runtime host import or trap plumbing when authority or host state is involved;
+6. shared diagnostics/templates for any new error text;
+7. differential coverage in `src/example_tests.rs` or the fuzzer;
+8. spec/book examples, plus generated docs if `std/` changes.
+
+Use [spec/value-model.md](spec/value-model.md) as the compiled representation
+checklist. If the new semantic does not fit that table, update the table and
+make both backends prove the new representation with tests.
+
 ## Generated and derived docs
 
 Treat generated and derived documentation as build artifacts with source of

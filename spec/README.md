@@ -33,6 +33,8 @@ needs to know to use witchy *right now*:
   `std/*.witchy` doc-comments — never hand-edit it.
 - [`architecture.md`](architecture.md) — the compile/run pipeline, the file map,
   and the parity discipline between the two backends.
+- [`value-model.md`](value-model.md) — the compiled value representation shared
+  by lowering, WIR, and the wasmtime runtime.
 - [`wasm-abi.md`](wasm-abi.md) — the WebAssembly ABI: the host imports, the value
   representation, and which imports carry authority.
 - [`performance.md`](performance.md) — the ownership/clone-elision model and its

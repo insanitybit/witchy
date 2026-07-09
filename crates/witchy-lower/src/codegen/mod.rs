@@ -9,7 +9,8 @@
 //! bit-reinterpreted into the slot; pointers and Bools are `i32` widened to it
 //! (`to_slot`/`from_slot` convert at typed boundaries). A string is an `i32`
 //! pointer to a length-prefixed record in linear memory: `[len: i32][utf8
-//! bytes...]`.
+//! bytes...]`. The backend-wide representation map is documented in
+//! `spec/value-model.md`.
 //!
 //! Capabilities are host imports (`print`, `print_int`, `dir_*`, `net_*`, …) that
 //! the runtime links only when granted, so an ungranted compiled module cannot
