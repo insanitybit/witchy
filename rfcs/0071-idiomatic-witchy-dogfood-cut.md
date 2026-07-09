@@ -1,7 +1,7 @@
 ---
 rfc: 0071
 title: "Idiomatic witchy: the house style and the dogfood modernization cut"
-status: planned
+status: accepted
 created: 2026-07-07
 # Accepted 2026-07-08 with a split: the idiom canon (§1, §3's CONTRIBUTING rule)
 # is effective immediately for all new witchy code; the mechanical sweep (§2)
@@ -36,7 +36,7 @@ features — all of which exist, are specced, and are tested**:
 | --- | --- |
 | error propagation (`?`) | `e?` / `e? "msg"` — `spec/language.md` §9 |
 | string interpolation | `"${expr}"` is general syntax |
-| `for (k, v) in pairs:` | `spec/language.md:397` |
+| `for k, v in pairs:` | `spec/language.md:460` |
 | `fold`/`any`/`all`/`zip` | `std/iter.witchy` (+ eager `fold`/`any`/`all` on list) |
 | list-append sugar | statement-form mutator: `xs.push(v)` *is* `xs = list.push(xs, v)` (RFC-0022) |
 | `string.cut` | `string.split_once` |
@@ -82,7 +82,7 @@ enforcement). It canonizes, with a before/after pair each:
    `e?` / `e? "context"`. **`Option(String)`-with-`Some`-as-error is banned**;
    it inverts polarity and blocks `?`.
 4. **Combinators where they clarify** — `iter`/`list` `filter`/`map`/`fold`/
-   `any`/`all` over index-threaded `while` loops; `for (a, b) in pairs:` over
+   `any`/`all` over index-threaded `while` loops; `for a, b in pairs:` over
    `let (a, b) = pair` in the body.
 5. **std helpers over hand-rolls** — `json.get_string`/`*_of`,
    `string.split_once`, `list.contains` etc.; a private wrapper around a std
@@ -110,7 +110,7 @@ payoff (pm is 2,805 lines and the worst offender). Mechanical passes:
 - hand-rolled helpers that duplicate std (`signed_field_str`,
   `split_once_opt`-style wrappers, manual `while` scans) → std calls or
   combinators;
-- `for pair in …: let (a, b) = pair` → `for (a, b) in …:`.
+- `for pair in …: let (a, b) = pair` → `for a, b in …:`.
 
 **Not in the sweep:** anything that changes behavior, output bytes, on-wire or
 on-disk formats, or error *text* that tests assert on; restructuring that fights
@@ -130,6 +130,23 @@ After **RFC-0070 D8** (fmt round-trip fidelity): fmt is the declared one-cut
 vehicle, and today it eats comments (BUG-330–334), which disqualifies it from
 sweeping 5,000 lines of commented code. If D8 slips, the sweep proceeds
 hand-edited (it is mostly local rewrites) and only the *gate* step waits on D8.
+
+### Implementation progress
+
+As of 2026-07-09, D8 is complete and the `projects/pm` slice is implemented:
+
+- all reassignment-form list mutators use statement-form methods;
+- tuple-valued loops destructure in the loop binder;
+- presentation strings use interpolation, while cache keys, lockfiles, signed
+  payloads, generated TOML/source, and path joins retain explicit byte assembly
+  with `idiom-exempt` comments;
+- the two inverted `Option(String)` error channels became fail-fast
+  `Result(Nil, String)` validations; and
+- the complete e2e shard passes against the embedded compiled-WASM PM.
+
+The RFC remains accepted, not implemented, until coven, coven-web, glamour,
+and docs receive the same pass and `projects/**/src/*.witchy` joins the format
+gate.
 
 ### Verification
 
