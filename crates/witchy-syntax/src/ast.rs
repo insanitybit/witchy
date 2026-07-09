@@ -168,14 +168,28 @@ pub struct TypeDef {
     pub partial_eq_derived: bool,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Variant {
     pub name: String,
+    /// Source line for the variant/record constructor header. Used by the formatter
+    /// to attach comments to the right variant instead of flushing all comments at
+    /// the top of the type body.
+    pub line: u32,
     pub fields: Vec<Type>,
     /// For a *record* type (`type Point { x: Int, y: Int }`), the name of each
     /// field, parallel to `fields`. Empty for ordinary positional variants
     /// (`Circle(Int)`). A record is a single constructor with named fields.
     pub field_names: Vec<String>,
+    /// Source lines for record fields, parallel to `field_names`/`fields`.
+    pub field_lines: Vec<u32>,
+}
+
+impl PartialEq for Variant {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+            && self.fields == other.fields
+            && self.field_names == other.field_names
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -590,11 +604,20 @@ pub enum BinOp {
     Shr,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct MatchArm {
+    /// Source line for the arm pattern. Used by the formatter for comment
+    /// attachment inside match bodies.
+    pub line: u32,
     pub pattern: Pattern,
     pub guard: Option<Expr>,
     pub body: Expr,
+}
+
+impl PartialEq for MatchArm {
+    fn eq(&self, other: &Self) -> bool {
+        self.pattern == other.pattern && self.guard == other.guard && self.body == other.body
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

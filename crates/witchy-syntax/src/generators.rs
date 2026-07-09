@@ -339,6 +339,7 @@ fn rewrite_expr(e: Expr, gen_name: &str, in_region: bool) -> Result<Expr, String
             let mut new_arms = Vec::with_capacity(arms.len());
             for a in arms {
                 new_arms.push(MatchArm {
+                    line: a.line,
                     pattern: a.pattern,
                     guard: a.guard,
                     body: rewrite_expr(a.body, gen_name, in_region)?,

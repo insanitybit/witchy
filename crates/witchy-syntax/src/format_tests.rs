@@ -235,6 +235,17 @@
     }
 
     #[test]
+    fn preserves_comments_inside_type_and_match_bodies() {
+        // BUG-332: body comments used to flush all at the top of the type/match,
+        // so comments above later variants, fields, or arms attached to the first.
+        let src = "type Shape:\n    Square\n    // circle docs\n    Circle\n\ntype Point:\n    x: Int\n    // y docs\n    y: Int\n\nfn pick(s: Shape) -> Int:\n    match s:\n        Square -> 1\n        // circle arm\n        Circle -> 2\n";
+        let out = reformat(src).expect("round-trips");
+        assert!(out.contains("Square\n    // circle docs\n    Circle"), "{out}");
+        assert!(out.contains("x: Int\n    // y docs\n    y: Int"), "{out}");
+        assert!(out.contains("Square -> 1\n        // circle arm\n        Circle -> 2"), "{out}");
+    }
+
+    #[test]
     fn preserves_in_body_and_nested_comments() {
         let src = "fn main(console: Console):\n    // before x\n    let x = 5\n    while x > 0:\n        // inside loop\n        x = x - 1\n";
         let out = reformat(src).expect("round-trips");

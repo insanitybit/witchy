@@ -5779,6 +5779,7 @@ fn flatten_or_arms(arms: &[MatchArm]) -> Vec<MatchArm> {
             Pattern::Or(alts) => {
                 for alt in alts {
                     out.push(MatchArm {
+                        line: arm.line,
                         pattern: alt.clone(),
                         guard: arm.guard.clone(),
                         body: Expr::Bool(false),

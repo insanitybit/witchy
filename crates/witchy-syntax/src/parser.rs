@@ -631,14 +631,17 @@ impl Parser {
         let mut variants = Vec::new();
         let mut rec_names: Vec<String> = Vec::new();
         let mut rec_types: Vec<crate::ast::Type> = Vec::new();
+        let mut rec_lines: Vec<u32> = Vec::new();
         let mut is_record = false;
         while !self.at(&Tok::RBrace) && !self.at(&Tok::Eof) {
+            let line = self.cur().line;
             let ident = self.ident()?;
             if is_record || self.at(&Tok::Colon) {
                 // Record field: `name: Type`. The whole type is one constructor.
                 is_record = true;
                 self.expect(&Tok::Colon)?;
                 rec_names.push(ident);
+                rec_lines.push(line);
                 rec_types.push(self.ty()?);
             } else {
                 // Sum-type variant: `Name` or `Name(Type, ...)`.
@@ -654,8 +657,10 @@ impl Parser {
                 }
                 variants.push(Variant {
                     name: ident,
+                    line,
                     fields,
                     field_names: vec![],
+                    field_lines: vec![],
                 });
             }
             self.eat(&Tok::Comma); // optional separator
@@ -669,8 +674,10 @@ impl Parser {
                 params,
                 variants: vec![Variant {
                     name,
+                    line: rec_lines.first().copied().unwrap_or(0),
                     fields: rec_types,
                     field_names: rec_names,
+                    field_lines: rec_lines,
                 }],
                 derives,
                 sealed,
@@ -720,7 +727,9 @@ impl Parser {
             self.advance();
             let mut field_names = Vec::new();
             let mut fields = Vec::new();
+            let mut field_lines = Vec::new();
             while !self.at(&Tok::RBrace) && !self.at(&Tok::Eof) {
+                field_lines.push(self.cur().line);
                 field_names.push(self.ident()?);
                 self.expect(&Tok::Colon)?;
                 fields.push(self.ty()?);
@@ -733,7 +742,13 @@ impl Parser {
             return Ok(Item::Type(TypeDef {
                 name: name.clone(),
                 params: vec![],
-                variants: vec![Variant { name, fields, field_names }],
+                variants: vec![Variant {
+                    name,
+                    line: field_lines.first().copied().unwrap_or(0),
+                    fields,
+                    field_names,
+                    field_lines,
+                }],
                 derives: vec![],
                 sealed: true,
                 is_capability: true,
@@ -766,7 +781,13 @@ impl Parser {
         Ok(Item::Type(TypeDef {
             name: name.clone(),
             params: vec![],
-            variants: vec![Variant { name, fields, field_names: vec![] }],
+            variants: vec![Variant {
+                name,
+                line: 0,
+                fields,
+                field_names: vec![],
+                field_lines: vec![],
+            }],
             derives: vec![],
             sealed: true,
             is_capability: true,
@@ -1953,8 +1974,8 @@ impl Parser {
             return Ok(Expr::Match {
                 scrutinee: Box::new(scrutinee),
                 arms: vec![
-                    MatchArm { pattern, guard: None, body: Expr::Block(then_block) },
-                    MatchArm { pattern: Pattern::Wildcard, guard: None, body: fallback },
+                    MatchArm { line: 0, pattern, guard: None, body: Expr::Block(then_block) },
+                    MatchArm { line: 0, pattern: Pattern::Wildcard, guard: None, body: fallback },
                 ],
             });
         }
@@ -1997,6 +2018,7 @@ impl Parser {
             // a real `Pattern::Or` and `..`/`..=` into a real `Pattern::IntRange`
             // at any depth — no parse-time arm duplication, no synthesized range
             // guard (the checker/backends reason about both nodes directly).
+            let line = self.cur().line;
             let pattern = self.pattern()?;
             let guard = if self.eat(&Tok::If) {
                 Some(self.expr(0)?)
@@ -2025,7 +2047,7 @@ impl Parser {
                 self.expr(0)?
             };
             self.in_match_arm = outer;
-            arms.push(MatchArm { pattern, guard, body });
+            arms.push(MatchArm { line, pattern, guard, body });
             self.eat(&Tok::Comma); // optional separator
         }
         self.expect(&Tok::RBrace)?;
@@ -2617,8 +2639,9 @@ pub fn desugar_while_let(pattern: Pattern, scrutinee: Expr, body: Block) -> Expr
     let dispatch = Expr::Match {
         scrutinee: Box::new(scrutinee),
         arms: vec![
-            MatchArm { pattern, guard: None, body: Expr::Block(body) },
+            MatchArm { line: 0, pattern, guard: None, body: Expr::Block(body) },
             MatchArm {
+                line: 0,
                 pattern: Pattern::Wildcard,
                 guard: None,
                 body: Expr::Block(Block { stmts: vec![Stmt::Break], lines: vec![0], region: None }),

@@ -441,6 +441,7 @@ impl<'a> Ctx<'a> {
                         scope2.push(Local { name: b.clone(), ty: None, mutable: false });
                     }
                     new_arms.push(MatchArm {
+                        line: a.line,
                         pattern: a.pattern.clone(),
                         guard: a.guard.clone(),
                         body: self.tail_expr(&a.body, &scope2, tail)?,
@@ -722,6 +723,7 @@ impl<'a> Ctx<'a> {
                 let o = self.fresh_tmp();
                 let recv_arms = vec![
                     MatchArm {
+                        line: 0,
                         pattern: Pattern::Ctor {
                             name: "Some".to_string(),
                             args: vec![Pattern::Var(var.clone())],
@@ -730,6 +732,7 @@ impl<'a> Ctx<'a> {
                         body: body_expr,
                     },
                     MatchArm {
+                        line: 0,
                         pattern: Pattern::Ctor { name: "None".to_string(), args: vec![] },
                         guard: None,
                         body: exit,

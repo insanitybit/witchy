@@ -349,14 +349,15 @@ fn type_def(s: &mut String, t: &TypeDef, c: &mut Comments, upper: u32) {
         // RFC-0011 record form (`capability X:` with named fields, carried state).
         if !v.field_names.is_empty() {
             s.push_str(":\n");
-            c.before_body(s, 1, HEADER_COL, upper);
-            for (n, ty) in v.field_names.iter().zip(&v.fields) {
+            for (idx, (n, ty)) in v.field_names.iter().zip(&v.fields).enumerate() {
+                c.before_body(s, 1, HEADER_COL, v.field_lines.get(idx).copied().unwrap_or(v.line));
                 pad(s, 1);
                 s.push_str(n);
                 s.push_str(": ");
                 s.push_str(&type_str(ty));
                 s.push('\n');
             }
+            c.before_body(s, 1, HEADER_COL, upper);
             return;
         }
         // RFC-0002 `capability X from U` — a sealed brand. Its single variant's
@@ -400,19 +401,21 @@ fn type_def(s: &mut String, t: &TypeDef, c: &mut Comments, upper: u32) {
         s.push(')');
     }
     s.push_str(":\n");
-    c.before_body(s, 1, HEADER_COL, upper);
     let is_record = t.variants.len() == 1 && !t.variants[0].field_names.is_empty();
     if is_record {
         let v = &t.variants[0];
-        for (n, ty) in v.field_names.iter().zip(&v.fields) {
+        for (idx, (n, ty)) in v.field_names.iter().zip(&v.fields).enumerate() {
+            c.before_body(s, 1, HEADER_COL, v.field_lines.get(idx).copied().unwrap_or(v.line));
             pad(s, 1);
             s.push_str(n);
             s.push_str(": ");
             s.push_str(&type_str(ty));
             s.push('\n');
         }
+        c.before_body(s, 1, HEADER_COL, upper);
     } else {
         for v in &t.variants {
+            c.before_body(s, 1, HEADER_COL, v.line);
             pad(s, 1);
             s.push_str(&v.name);
             if !v.fields.is_empty() {
@@ -427,6 +430,7 @@ fn type_def(s: &mut String, t: &TypeDef, c: &mut Comments, upper: u32) {
             }
             s.push('\n');
         }
+        c.before_body(s, 1, HEADER_COL, upper);
     }
 }
 
@@ -1035,12 +1039,9 @@ fn multiline(s: &mut String, e: &Expr, depth: usize, c: &mut Comments, upper: u3
             s.push_str("match ");
             s.push_str(&expr(scrutinee));
             s.push_str(":\n");
-            // A comment written inside the match (above an arm) is indented past
-            // the `match` header column; flush it here so it stays with the match
-            // rather than being relocated to the next statement/item (BUG-332).
             let header_col = depth as u32 * 4 + 1;
-            c.before_body(s, depth + 1, header_col, upper);
             for a in arms {
+                c.before_body(s, depth + 1, header_col, a.line);
                 pad(s, depth + 1);
                 s.push_str(&pattern(&a.pattern));
                 if let Some(g) = &a.guard {
@@ -1050,6 +1051,7 @@ fn multiline(s: &mut String, e: &Expr, depth: usize, c: &mut Comments, upper: u3
                 s.push_str(" ->");
                 arm_body(s, &a.body, depth + 1, c, upper);
             }
+            c.before_body(s, depth + 1, header_col, upper);
         }
         _ => {
             s.push_str(&expr(e));
