@@ -41,6 +41,7 @@ pub fn claim(claims: Json, key: String) -> String:
 // separators, and `verified_at` units must match so the signed `provenance` is the
 // same bytes — a record published here verifies under the Rust verifier, and the
 // tamper test that greps the signed record for `trusted-publisher` applies unchanged.
+// idiom-exempt: concatenation defines the signed provenance byte format.
 pub fn attestation(claims: Json, digest: String, now: Int) -> String:
     "trusted-publisher|issuer=" + coven_json.str(claims, "iss") + "|sub=" + coven_json.str(claims, "sub") + "|repository=" + claim(claims, "repository") + "|workflow_ref=" + claim(claims, "workflow_ref") + "|ref=" + claim(claims, "ref") + "|digest=" + digest + "|verified_at=" + "${now}"
 
@@ -86,7 +87,7 @@ fn strict_strings(items: List(Json)) -> Result(List(String), TrustPolicyError):
     var index = 0
     for item in items:
         if let JsonString(s) = item:
-            out = list.push(out, s)
+            out.push(s)
         else:
             return Err(PolicyNonString(index))
         index = index + 1
@@ -120,9 +121,9 @@ type TokenError:
 
 pub fn token_error_message(e: TokenError) -> String:
     match e:
-        TokenMalformedIdentity(reason) -> "malformed identity token: " + reason
-        TokenUntrustedIssuer(iss) -> "issuer `" + iss + "` is not trusted by this registry"
-        TokenMissingKid(id) -> "issuer `" + id + "` publishes a JWKS but the token has no `kid` header"
+        TokenMalformedIdentity(reason) -> "malformed identity token: ${reason}"
+        TokenUntrustedIssuer(iss) -> "issuer `${iss}` is not trusted by this registry"
+        TokenMissingKid(id) -> "issuer `${id}` publishes a JWKS but the token has no `kid` header"
         TokenJwksKey(reason) -> reason
         TokenOidc(reason) -> reason
 

@@ -103,7 +103,7 @@ fn test_publish_body_round_trips_id_token():
             match coven_proto.publish_of(doc).id_token:
                 Some(t) -> testing.assert_eq(t, "tok123")
                 None -> testing.assert(false, "id_token should round-trip as Some")
-        Err(e) -> testing.assert(false, "decode failed: " + json.decode_error_message(e))
+        Err(e) -> testing.assert(false, "decode failed: ${json.decode_error_message(e)}")
 
 fn test_publish_body_omits_id_token_when_anonymous():
     let body = coven_proto.publish_body("[rune]\n", [], "ci-bot", None)
@@ -116,10 +116,10 @@ fn test_yank_body_carries_id_token():
             match coven_proto.yank_of(doc).id_token:
                 Some(t) -> testing.assert_eq(t, "ytok")
                 None -> testing.assert(false, "yank_body id_token should round-trip as Some")
-        Err(e) -> testing.assert(false, "decode failed: " + json.decode_error_message(e))
+        Err(e) -> testing.assert(false, "decode failed: ${json.decode_error_message(e)}")
 
 fn unsigned_token(iss: String) -> String:
-    "eyJhbGciOiJSUzI1NiJ9." + json_b64_payload(iss) + ".sig"
+    "eyJhbGciOiJSUzI1NiJ9.${json_b64_payload(iss)}.sig"
 
 fn json_b64_payload(iss: String) -> String:
     if iss == "rogue":
@@ -158,7 +158,7 @@ fn test_computed_footprint_fails_closed_on_bad_source():
 fn test_computed_footprint_ok_for_pure_source():
     match coven_footprint.computed_footprint([("src/x.witchy", "pub fn f(n: Int) -> Int:\n    n\n")]):
         Ok(caps) -> testing.assert(list.length(caps) == 0, "a pure library has an empty footprint")
-        Err(e) -> testing.assert(false, "a valid pure source should compute: " + coven_footprint.footprint_error_message(e))
+        Err(e) -> testing.assert(false, "a valid pure source should compute: ${coven_footprint.footprint_error_message(e)}")
 
 // --- encode (reflection) + derive(Deserialize) round-trip ------
 type Sample derive(Reflect, Deserialize):
@@ -175,7 +175,7 @@ fn test_json_roundtrip():
             testing.assert_int_eq(b.count, 2)
             testing.assert_int_eq(list.length(b.versions), 2)
             testing.assert(option.is_some(b.note), "the optional note round-trips as Some")
-        Err(e) -> testing.assert(false, "round-trip failed: " + e)
+        Err(e) -> testing.assert(false, "round-trip failed: ${e}")
 
 fn test_json_missing_field_errors():
     match Sample.from_json(JsonObject([("name", JsonString("x"))])):
@@ -186,4 +186,4 @@ fn test_json_null_optional_is_none():
     let s = Sample("a/b", [], None, 0)
     match Sample.from_json(json.from_value(s)):
         Ok(b) -> testing.assert(option.is_none(b.note), "an absent optional decodes to None")
-        Err(e) -> testing.assert(false, "round-trip failed: " + e)
+        Err(e) -> testing.assert(false, "round-trip failed: ${e}")

@@ -144,9 +144,23 @@ As of 2026-07-09, D8 is complete and the `projects/pm` slice is implemented:
   `Result(Nil, String)` validations; and
 - the complete e2e shard passes against the embedded compiled-WASM PM.
 
-The RFC remains accepted, not implemented, until coven, coven-web, glamour,
-and docs receive the same pass and `projects/**/src/*.witchy` joins the format
-gate.
+The `projects/coven` slice is also implemented:
+
+- presentation, path, and identity strings use interpolation; only signed
+  payload/provenance and rendered-doc byte assembly remain explicit joins;
+- list mutation and tuple loops use the canonical forms, and simple collection
+  transforms use `map`/`zip_with`;
+- private `member`/`add_unique`, `toml_field`, and client JSON-field wrappers
+  were deleted in favor of std helpers; and
+- 19 pure Coven tests, compiled `coven-serve` startup, and all 74 e2e tests pass.
+
+The sweep also exposed BUG-564: method dispatch loses a `List(String)` receiver
+type after binding it through `Result(List(String), E)?`. The two affected Coven
+authorization checks use a documented `list.contains` exemption until the
+RFC-0046 residual is fixed.
+
+The RFC remains accepted, not implemented, until coven-web, glamour, and docs
+receive the same pass and `projects/**/src/*.witchy` joins the format gate.
 
 ### Verification
 

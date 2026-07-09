@@ -67,14 +67,12 @@ pub fn state_of(s: String) -> State:
 // The canonical, signed view of a record — every security-relevant field except the
 // signature. List fields are encoded as canonical JSON so their element boundaries
 // are part of what the signature commits to.
+// idiom-exempt: concatenation defines the signed coven-v1 payload byte format.
 pub fn signing_payload(name: String, version: String, state: String, hash: String, rt: List(String), uploaded_by: String, promoted_by: String, factor: String, provenance: String, released_at: Int) -> String:
     "coven-v1\nname=" + name + "\nversion=" + version + "\nstate=" + state + "\nhash=" + hash + "\nrt=" + string_list_payload(rt) + "\nbuild=\nuploaded_by=" + uploaded_by + "\npromoted_by=" + promoted_by + "\nfactor=" + factor + "\nprovenance=" + provenance + "\nreleased_at=" + "${released_at}"
 
 fn string_list_payload(xs: List(String)) -> String:
-    var items: List(Json) = []
-    for x in xs:
-        items = list.push(items, JsonString(x))
-    json.encode(JsonArray(items))
+    json.encode(JsonArray(list.map(xs, fn(x: String): JsonString(x))))
 
 // Build + sign a record, returning its coven.json text. `released_at` (unix seconds;
 // 0 = not yet released) is part of the signed payload — tamper-evident.
@@ -126,7 +124,7 @@ pub fn record_signing_payload(text: String) -> String:
 // the damage. Fail loudly instead. `fail` aborts, so the trailing "" is unreachable —
 // it only gives this the `String` type the caller needs.
 fn corrupt_record(reason: String) -> String:
-    fail("coven: corrupt stored record — cannot reconstruct its signing payload (" + reason + "); refusing to hash an empty payload into the snapshot")
+    fail("coven: corrupt stored record — cannot reconstruct its signing payload (${reason}); refusing to hash an empty payload into the snapshot")
     ""
 
 // Empty string <-> absent (`null`): keeps the optional fields' JSON byte-identical.

@@ -74,7 +74,4 @@ fn with_id_token(fields: List((String, Json)), id_token: Option(String)) -> List
         None -> fields
 
 fn file_jsons(files: List((String, String))) -> List(Json):
-    var out = []
-    for path, text in files:
-        out = list.push(out, JsonArray([JsonString(path), JsonString(text)]))
-    out
+    list.map(files, fn(file: (String, String)): JsonArray([JsonString(file.0), JsonString(file.1)]))
