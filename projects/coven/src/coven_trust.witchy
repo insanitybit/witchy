@@ -97,25 +97,54 @@ fn strict_strings(items: List(Json)) -> Result(List(String), TrustPolicyError):
 // audience is this registry, and that it has not expired. Reading `iss` BEFORE verifying
 // is safe — `verify_oidc` re-checks `iss` and the signature, so only a token actually
 // signed by the issuer it names (and trusted here) passes. Returns the verified claims, or
-// a reason the server renders as 401.
-pub fn verify_token(issuers: List(Issuer), token: String, now: Int) -> Result(Json, String):
-    let unverified = jwt.claims_unverified(token).map_err(fn(e: jwt.JwtError): "malformed identity token: " + jwt.jwt_error_message(e))?
+// a matchable reason the server renders as 401.
+pub fn verify_token(issuers: List(Issuer), token: String, now: Int) -> Result(Json, TokenError):
+    let unverified = jwt.claims_unverified(token).map_err(fn(e: jwt.JwtError): TokenMalformedIdentity(jwt.jwt_error_message(e)))?
     let iss = coven_json.str(unverified, "iss")
     match find_issuer(issuers, iss):
-        None -> Err("issuer `" + iss + "` is not trusted by this registry")
+        None -> Err(TokenUntrustedIssuer(iss))
         Some(entry) ->
             let pubkey = signing_key(entry, token)?
-            jwt.verify_oidc(token, pubkey, iss, "coven-registry", now).map_err(fn(e: jwt.JwtError): jwt.jwt_error_message(e))
+            jwt.verify_oidc(token, pubkey, iss, "coven-registry", now).map_err(fn(e: jwt.JwtError): TokenOidc(jwt.jwt_error_message(e)))
+
+// Matchable trusted-publishing identity-token failures. These sit above
+// `jwt.JwtError`: the registry also owns issuer trust and JWKS key-selection
+// policy, so callers should not have to parse HTTP-facing strings to distinguish
+// malformed tokens, untrusted issuers, missing `kid`, or OIDC rejection.
+type TokenError:
+    TokenMalformedIdentity(String)
+    TokenUntrustedIssuer(String)
+    TokenMissingKid(String)
+    TokenJwksKey(String)
+    TokenOidc(String)
+
+pub fn token_error_message(e: TokenError) -> String:
+    match e:
+        TokenMalformedIdentity(reason) -> "malformed identity token: " + reason
+        TokenUntrustedIssuer(iss) -> "issuer `" + iss + "` is not trusted by this registry"
+        TokenMissingKid(id) -> "issuer `" + id + "` publishes a JWKS but the token has no `kid` header"
+        TokenJwksKey(reason) -> reason
+        TokenOidc(reason) -> reason
+
+impl Show for TokenError:
+    fn show(self) -> String:
+        token_error_message(self)
+
+impl Error for TokenError
+
+impl From(TokenError) for String:
+    fn from(value: TokenError) -> Self:
+        token_error_message(value)
 
 fn find_issuer(issuers: List(Issuer), iss: String) -> Option(Issuer):
     list.find_map(issuers, fn(entry: Issuer): if entry.id == iss: Some(entry) else: None)
 
 // The RS256 public key to verify a token against: for a JWKS issuer, the key whose `kid`
 // matches the token header (so key rotation is tolerated); otherwise the single pinned key.
-fn signing_key(entry: Issuer, token: String) -> Result(String, String):
+fn signing_key(entry: Issuer, token: String) -> Result(String, TokenError):
     match entry.jwks:
         Some(jwks) ->
             match jwt.kid(token):
-                Some(k) -> jwt.rsa_key_for_kid(jwks, k).map_err(fn(e: jwt.JwtError): jwt.jwt_error_message(e))
-                None -> Err("issuer `" + entry.id + "` publishes a JWKS but the token has no `kid` header")
+                Some(k) -> jwt.rsa_key_for_kid(jwks, k).map_err(fn(e: jwt.JwtError): TokenJwksKey(jwt.jwt_error_message(e)))
+                None -> Err(TokenMissingKid(entry.id))
         None -> Ok(entry.pubkey)

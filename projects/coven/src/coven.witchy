@@ -547,7 +547,7 @@ impl Coven:
 
 fn verified_claims(issuers: List(Issuer), id_token: Option(String), now: Int, missing: String) -> Result(Json, CovenError):
     let token = id_token.ok_or(CovenError(401, missing))?
-    coven_trust.verify_token(issuers, token, now).map_err(fn(e: String): CovenError(401, e))
+    coven_trust.verify_token(issuers, token, now).map_err(fn(e: coven_trust.TokenError): CovenError(401, coven_trust.token_error_message(e)))
 
 fn enforce_publish_policy(policy: Json, claims: Json, ns: String) -> Result(String, CovenError):
     if string.is_empty(coven_json.str(policy, "repository")) || string.is_empty(coven_json.str(policy, "workflow_ref")):

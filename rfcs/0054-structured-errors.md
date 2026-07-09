@@ -11,10 +11,10 @@ tracking: >
   trust-boundary verification errors; the package manager's TUF pinning,
   verified registry-record footprint, and lock snapshot-pin gates use typed
   errors internally, and Coven maintainer-policy state, stored-record parsing,
-  and source-footprint recomputation have typed corruption errors. All convert
-  to String through From at existing application boundaries. Remaining 0.1 work:
-  finish or explicitly defer typed errors for other package-manager trust
-  boundaries.
+  source-footprint recomputation, and trusted-publishing token verification have
+  typed corruption/authentication errors. All convert to String through From at
+  existing application boundaries. Remaining 0.1 work: finish or explicitly
+  defer typed errors for other package-manager trust boundaries.
 ---
 
 # RFC-0054: Structured errors (design-first)
@@ -259,7 +259,10 @@ well-formed JSON value with the wrong record shape before the registry maps it
 to a corrupt-record response. Coven source-footprint recomputation returns
 `coven_footprint.FootprintError`, so malformed compiler footprint reports and
 uncompilable source are matchable before publish maps them to the existing 400
-response.
+response. Coven trusted-publishing token verification returns
+`coven_trust.TokenError`, preserving the distinction between malformed identity
+tokens, untrusted issuers, missing JWKS `kid`, JWKS key-selection failures, and
+OIDC claim/signature rejection before the server maps them to 401 responses.
 
 This does not complete the RFC. The remaining release-blocking work is the std
 and core-library migration: other package-manager trust boundaries still need

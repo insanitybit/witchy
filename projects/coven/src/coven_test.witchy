@@ -7,6 +7,7 @@ import testing
 import coven_validate
 import coven_proto
 import coven_footprint
+import coven_trust
 import string
 import reflect
 import result
@@ -116,6 +117,31 @@ fn test_yank_body_carries_id_token():
                 Some(t) -> testing.assert_eq(t, "ytok")
                 None -> testing.assert(false, "yank_body id_token should round-trip as Some")
         Err(e) -> testing.assert(false, "decode failed: " + json.decode_error_message(e))
+
+fn unsigned_token(iss: String) -> String:
+    "eyJhbGciOiJSUzI1NiJ9." + json_b64_payload(iss) + ".sig"
+
+fn json_b64_payload(iss: String) -> String:
+    if iss == "rogue":
+        "eyJpc3MiOiJyb2d1ZSJ9"
+    else:
+        "eyJpc3MiOiJnaGEifQ"
+
+fn test_verify_token_errors_are_typed():
+    match coven_trust.verify_token([], unsigned_token("rogue"), 0):
+        Ok(_claims) -> testing.assert(false, "untrusted issuer must fail")
+        Err(e) ->
+            match e:
+                coven_trust.TokenUntrustedIssuer(iss) -> testing.assert_eq(iss, "rogue")
+                _ -> testing.assert(false, "untrusted issuer should be TokenUntrustedIssuer")
+
+    let jwks_issuer = coven_trust.Issuer("gha", "", Some(JsonObject([])))
+    match coven_trust.verify_token([jwks_issuer], unsigned_token("gha"), 0):
+        Ok(_claims) -> testing.assert(false, "JWKS issuer without kid must fail")
+        Err(e) ->
+            match e:
+                coven_trust.TokenMissingKid(id) -> testing.assert_eq(id, "gha")
+                _ -> testing.assert(false, "missing kid should be TokenMissingKid")
 
 // --- footprint recompute fails closed (BUG-422) ------------------------------
 // A source whose footprint cannot be computed (it does not compile) must be a hard
