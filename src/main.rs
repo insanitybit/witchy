@@ -1367,7 +1367,10 @@ fn link_file_with_deps(
 /// programs you don't want to run — e.g. servers, which never return.
 fn check_file(path: &str) -> Result<(), String> {
     let (linked, stem) = link_file(path)?;
-    typeck::check(&linked).map_err(|e| e.to_string())?;
+    // Parse/link errors carry a `file:` prefix from `link_file`; give type
+    // errors the same file context here at the CLI boundary (RFC-0072 phase 2)
+    // — the library keeps messages path-free so goldens stay deterministic.
+    typeck::check(&linked).map_err(|e| format!("{path}: {e}"))?;
     enforce_performance_modes(&linked, &stem)?;
     if linked_has_main(&linked) {
         let _ = compile_linked_to_wasm(&linked)?;
@@ -1590,7 +1593,9 @@ fn execute_file_exit(
     named_secrets: Vec<runtime::SecretGrant>,
 ) -> Result<(Vec<String>, i32), String> {
     let (linked, entry_stem) = link_file(path)?;
-    typeck::check(&linked).map_err(|e| e.to_string())?;
+    // Same file-context prefix as `check_file` (RFC-0072 phase 2): the CLI
+    // names the file, the library message stays path-free.
+    typeck::check(&linked).map_err(|e| format!("{path}: {e}"))?;
     enforce_performance_modes(&linked, &entry_stem)?;
 
     // No `main` means there's nothing to run directly — but the file still
@@ -2280,8 +2285,17 @@ fn run_linked_compiled(
         // (the emitted name section makes frames readable) for debugging traps.
         if std::env::var_os("WITCHY_WASM_BACKTRACE").is_some() {
             eprintln!("{e:?}");
+            e.root_cause().to_string()
+        } else {
+            // (RFC-0072 phase 2) Advertise the switch where it's needed: on the
+            // trap itself. One line, only when the var is unset, only at the
+            // CLI boundary — the message CORE stays identical across backends
+            // (the parity harness compares the core, not this trailer).
+            format!(
+                "{}\n(re-run with WITCHY_WASM_BACKTRACE=1 for a full backtrace)",
+                e.root_cause()
+            )
         }
-        e.root_cause().to_string()
     })?;
     let mut lines = vm.output();
     // At the process boundary an Int-returning `main` is the exit code (the
