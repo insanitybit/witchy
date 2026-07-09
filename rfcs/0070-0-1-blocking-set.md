@@ -1,9 +1,9 @@
 ---
 rfc: 0070
 title: the 0.1 blocking set — decisions that close the coherence map
-status: proposed
+status: accepted
 created: 2026-07-06
-tracking: decides the in/out calls RFC-0067 ordered; evidence base is the full
+tracking: accepted decision record for the in/out calls RFC-0067 ordered; evidence base is the full
   open-RFC + 273-open-bug read of 2026-07-06 (scratch/backlog-report-2026-07-06.md)
 related:
   - "0061 (mechanical release gate)"
@@ -123,12 +123,12 @@ relationship; the duplicated combinators and executor copy are deleted
 (BUG-254). Generators/`iter` own lazy sequences; they are not a second
 concurrency story.
 
-RFC-0059 Increment-2 Step 2 (scalar executor synthesis) is in-if-time. The
-heap-payload OOM ceiling (~10k messages) is an **accepted, documented 0.1
-limitation** either way — stated in the book's concurrency chapter, not
-discovered by users. RFC-0036's recursive `$rdrop` / move-borrow oracle stays
-deferred: it is UAF-risk compiler-central work ("a wrong dec is a
-use-after-free"), the wrong risk profile for a release push.
+RFC-0059 Increment-2 Step 2 (scalar executor synthesis) is deferred beyond 0.1.
+The heap-payload OOM ceiling (~10k messages) is an **accepted, documented 0.1
+limitation** — stated in the book's concurrency chapter, not discovered by
+users. RFC-0036's recursive `$rdrop` / move-borrow oracle also stays deferred:
+it is UAF-risk compiler-central work ("a wrong dec is a use-after-free"), the
+wrong risk profile for a release push.
 
 ### D5 — Delete the second language
 
@@ -202,8 +202,8 @@ silent holes.
 | --- | --- | --- |
 | RFC-0005 stage 4 (GC aggregates) | deferred, reject-first enforced | SECURITY + book caps chapter |
 | RFC-0036 $rdrop / move-borrow oracle | deferred | RFC tracking note |
-| RFC-0059 Increment-2 Step 2 | in-if-time; ceiling documented | book concurrency chapter |
-| RFC-0031 SIMD | **rejected** (conflicts with 0005 step-7 `wasm_simd(false)`) | RFC status flip |
+| RFC-0059 Increment-2 Step 2 | deferred beyond 0.1; ceiling documented | book concurrency chapter |
+| RFC-0031 SIMD | deferred with explicit revival conditions | RFC tracking note |
 | RFC-0062 closure elision | **implemented**; default-on after one full-matrix soak | RFC status flip |
 | Structured TypeInfo (full model) | deferred; string-parsing named a known limitation | spec metaprogramming note |
 | LSP depth (reuse the `check` pipeline) | deferred; only mode-opt enforcement holes fixed | bugs stay open below LOW gate |

@@ -1,7 +1,7 @@
 ---
 rfc: 0059
 title: State-machine async — frames, an owning executor, and ring channels
-status: planned
+status: deferred
 created: 2026-07-04
 tracking: >
   Increment 1 SHIPPED: defunctionalized state-machine lowering — closure tower gone,
@@ -10,7 +10,7 @@ tracking: >
   fixed-capacity ring channels (send = in-place set_at, recv = advance head, no
   list.tail rebuild), determinism byte-identical, all concurrency parity+heap gates
   green. Increment-2 STEP 2 (scalar SoA frames = eliminate the CPS closure churn)
-  REMAINS — its flat target is proven in-tree
+  is DEFERRED beyond 0.1 — its flat target is proven in-tree
   (chan_throughput_scalar_soa_reference_is_flat: 13 live cells flat to N=20k, ~11
   ns/msg flat to N=1M, both backends), re-scoped 2026-07-05 to a whole-program
   scalar-executor synthesis bounded to all-scalar programs (a multi-session

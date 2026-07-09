@@ -1,9 +1,9 @@
 ---
 rfc: 0067
 title: 0.1 coherence map — one public story for each core concept
-status: proposed
+status: accepted
 created: 2026-07-06
-tracking: reconciles RFC-0061/RFC-0063 with the current bug/RFC backlog before the 0.1 push
+tracking: accepted as the active ordering contract reconciling RFC-0061/RFC-0063 with the 0.1 backlog
 ---
 
 # RFC-0067: 0.1 coherence map
@@ -314,8 +314,8 @@ implementation accident.
 - RFC-0053 is the destination for rendering.
 - RFC-0047 is the destination for equality.
 - RFC-0044 and RFC-0054 define the current and future error-shape direction.
-- RFC-0059 and RFC-0036 define the async/executor direction but still need
-  public-surface reconciliation.
+- RFC-0059 and RFC-0036 define the async/executor direction; their 0.1 residual
+  is documented publicly and the remaining memory work is deferred.
 - RFC-0065 is the destination for stdlib/domain invariants.
 
 This RFC does not supersede those decisions. It orders them.

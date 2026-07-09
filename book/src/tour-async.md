@@ -309,6 +309,24 @@ trait Fetcher:
     fn fetch(self, url: String) -> Task(String)
 ```
 
+## The 0.1 memory ceiling
+
+Channels provide deterministic scheduling and backpressure, but `unbounded`
+describes the channel's logical capacity, not infinite process memory. The 0.1
+compiled executor still boxes a continuation around each task resume. Its
+shell-only reclamation cannot yet recursively reclaim every captured child, so a
+single long-running producer/consumer loop exhausts the current linear-memory
+arena at roughly 10,000 message resumptions (the exact point varies with the
+program and payload). The interpreter oracle may continue past that point; this
+is a compiled-memory limitation, not a semantic difference in channel order or
+results.
+
+Use the current executor for bounded task graphs and bounded streams. Do not use
+0.1 channels as an indefinitely running service queue. The deferred follow-up is
+a synthesized scalar scheduler for qualifying scalar programs and recursive drop
+for boxed/heap payloads; both retain the same `chan` surface and deterministic
+schedule.
+
 ## Why this stays deterministic
 
 The executor is ordinary witchy code (see `std/task`): it owns the channel buffers

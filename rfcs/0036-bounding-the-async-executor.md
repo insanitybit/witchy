@@ -1,14 +1,14 @@
 ---
 rfc: 0036
 title: Bounding the async executor — ownership-threaded state and recursive drop
-status: planned
+status: deferred
 created: 2026-07-01
 predecessors:
   - "0035 (completing the RC floor — the Perceus dup/drop floor this builds on)"
   - "0034 (closing the compute gap — where the executor leak was first diagnosed)"
   - "0033 (place-based uniqueness — the own-ABI this must extend)"
   - "0016 (reference-counted memory — the reclamation design)"
-tracking: "Design B landed 2026-07-04; recursive $rdrop remains (NOT a blocker); the located blocker (2026-07-05) is the per-capture move/borrow oracle. RFC-0035 shipped the per-object RC floor (universal [rc][size] header +
+tracking: "Design B landed 2026-07-04; recursive $rdrop is deferred beyond 0.1 (NOT a blocker); the located blocker (2026-07-05) is the per-capture move/borrow oracle. RFC-0035 shipped the per-object RC floor (universal [rc][size] header +
   Perceus dup/drop) and bounds every CONFINED-UNIQUE churn pattern (a set_at / read-out
   / match-on-read loop reclaims to ~roots: 20006 -> 7 live cells). It does NOT bound the
   async executor (chan_throughput: ~1.1M live cells, unbounded). This RFC scopes the one
