@@ -615,10 +615,11 @@ impl Parser {
             }
             self.expect(&Tok::RParen)?;
         }
-        // A type alias: `type Id = Int`. Expanded to its target before later stages.
+        // A type alias: `type Id = Int` or `type Pair(a) = (a, a)`. Expanded to
+        // its target before later stages.
         if self.eat(&Tok::Eq) {
             let ty = self.ty()?;
-            return Ok(Item::TypeAlias { name, ty });
+            return Ok(Item::TypeAlias { name, params, ty });
         }
         // `type Point packed:` (RFC-0027) — inline/unboxed layout. A contextual
         // modifier (like `derive`), so `packed` stays usable as an ordinary ident.

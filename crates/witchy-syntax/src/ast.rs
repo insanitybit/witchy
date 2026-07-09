@@ -50,10 +50,10 @@ pub enum Item {
     /// `crate::consts` before type-checking/codegen, so later stages never see
     /// this variant.
     Const { name: String, value: Expr },
-    /// A type alias: `type Id = Int`. Expanded to its target everywhere by
+    /// A type alias: `type Id = Int` or `type Pair(a) = (a, a)`. Expanded to its target everywhere by
     /// `crate::aliases` before type-checking/codegen, so later stages never see
     /// this variant.
-    TypeAlias { name: String, ty: Type },
+    TypeAlias { name: String, params: Vec<String>, ty: Type },
     /// `comptime:` — a block executed AT COMPILE TIME with no capabilities
     /// (deterministic by construction); everything it prints is parsed as
     /// witchy source and appended to the module as ADDITIVE items before

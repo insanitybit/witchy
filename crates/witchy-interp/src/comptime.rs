@@ -197,8 +197,8 @@ fn reachable_local_items(items: &[Item], root: &Block) -> Vec<Item> {
                 t.derives.clear();
                 out.push(Item::Type(t));
             }
-            Item::TypeAlias { name, ty } if keep.contains(name) => {
-                out.push(Item::TypeAlias { name: name.clone(), ty: ty.clone() });
+            Item::TypeAlias { name, params, ty } if keep.contains(name) => {
+                out.push(Item::TypeAlias { name: name.clone(), params: params.clone(), ty: ty.clone() });
             }
             _ => {}
         }

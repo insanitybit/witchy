@@ -59,7 +59,7 @@ impl<'a> Reachability<'a> {
                         ctor_owner.insert(v.name.as_str(), t.name.as_str());
                     }
                 }
-                Item::TypeAlias { name, ty } => {
+                Item::TypeAlias { name, ty, .. } => {
                     aliases.insert(name.as_str(), ty);
                 }
                 _ => {}

@@ -6,13 +6,20 @@
 //! (`impl T for Id`), and every type written inside a body: `let`/`var`
 //! ascriptions (`let x: Id = …`), `as` casts (`… as Id`), and lambda
 //! parameter/return annotations — and then dropped, so the type checker and code
-//! generator only ever see concrete types. Aliases may chain (`type B = A`,
-//! resolved to a fixpoint first). Aliases are simple (non-parameterized): a name
-//! standing for one fully-written type.
+//! generator only ever see concrete types. Generic aliases substitute their
+//! arguments before expansion (`type Pair(a) = (a, a)`; `Pair(Int)` →
+//! `(Int, Int)`). Aliases may chain (`type B = A`, resolved to a fixpoint
+//! first).
 
 use crate::ast::{collect_type_names, Block, Expr, Function, Item, MethodSig, Module, Stmt, Type};
 // foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
 use foldhash::{HashMap, HashMapExt as _, HashSet};
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Alias {
+    pub(crate) params: Vec<String>,
+    pub(crate) ty: Type,
+}
 
 /// The name of a type alias defined in terms of itself (directly or through a
 /// chain), if any — so the linker can report it rather than letting the alias
@@ -20,7 +27,7 @@ use foldhash::{HashMap, HashMapExt as _, HashSet};
 pub fn find_cycle(module: &Module) -> Option<String> {
     let mut edges: HashMap<String, Vec<String>> = HashMap::new();
     for item in &module.items {
-        if let Item::TypeAlias { name, ty } = item {
+        if let Item::TypeAlias { name, ty, .. } = item {
             let mut refs = Vec::new();
             collect_type_names(ty, &mut refs);
             edges.insert(name.clone(), refs);
@@ -82,11 +89,11 @@ pub fn resolve(mut module: Module) -> Module {
 /// the module. Consumers that only need normalized type facts, such as
 /// `derive(...)` TypeInfo construction, can apply this to a clone while leaving
 /// the linker's later alias-cycle diagnostics and alias-erasure pass intact.
-pub(crate) fn resolved_map(module: &Module) -> HashMap<String, Type> {
-    let mut map: HashMap<String, Type> = HashMap::new();
+pub(crate) fn resolved_map(module: &Module) -> HashMap<String, Alias> {
+    let mut map: HashMap<String, Alias> = HashMap::new();
     for item in &module.items {
-        if let Item::TypeAlias { name, ty } = item {
-            map.insert(name.clone(), ty.clone());
+        if let Item::TypeAlias { name, params, ty } = item {
+            map.insert(name.clone(), Alias { params: params.clone(), ty: ty.clone() });
         }
     }
     if map.is_empty() {
@@ -99,8 +106,8 @@ pub(crate) fn resolved_map(module: &Module) -> HashMap<String, Type> {
     for _ in 0..rounds {
         let snapshot = map.clone();
         let mut changed = false;
-        for t in map.values_mut() {
-            changed |= resolve_type(t, &snapshot);
+        for alias in map.values_mut() {
+            changed |= resolve_type(&mut alias.ty, &snapshot);
         }
         if !changed {
             break;
@@ -110,7 +117,7 @@ pub(crate) fn resolved_map(module: &Module) -> HashMap<String, Type> {
     map
 }
 
-fn resolve_item(item: &mut Item, map: &HashMap<String, Type>) {
+fn resolve_item(item: &mut Item, map: &HashMap<String, Alias>) {
     match item {
         Item::Function(f) => resolve_function(f, map),
         Item::Type(t) => {
@@ -143,26 +150,34 @@ fn resolve_item(item: &mut Item, map: &HashMap<String, Type>) {
     }
 }
 
-pub(crate) fn resolve_type_aliases(ty: &mut Type, map: &HashMap<String, Type>) -> bool {
+pub(crate) fn resolve_type_aliases(ty: &mut Type, map: &HashMap<String, Alias>) -> bool {
     resolve_type(ty, map)
 }
 
 /// Expand alias names appearing anywhere in a type. The `map` is already
 /// fixpoint-resolved, so a single replacement yields an alias-free type. Returns
 /// whether anything changed.
-fn resolve_type(ty: &mut Type, map: &HashMap<String, Type>) -> bool {
+fn resolve_type(ty: &mut Type, map: &HashMap<String, Alias>) -> bool {
     match ty {
         Type::Qualified(_, inner) => resolve_type(inner, map),
         Type::Named(name, args) => {
-            if args.is_empty() {
-                if let Some(target) = map.get(name) {
-                    *ty = target.clone();
+            let mut changed = false;
+            for a in args.iter_mut() {
+                changed |= resolve_type(a, map);
+            }
+            if let Some(alias) = map.get(name) {
+                if alias.params.len() == args.len() {
+                    let subst: HashMap<String, Type> = alias
+                        .params
+                        .iter()
+                        .cloned()
+                        .zip(args.iter().cloned())
+                        .collect();
+                    let mut target = alias.ty.clone();
+                    substitute_alias_params(&mut target, &subst);
+                    *ty = target;
                     return true;
                 }
-            }
-            let mut changed = false;
-            for a in args {
-                changed |= resolve_type(a, map);
             }
             changed
         }
@@ -184,7 +199,41 @@ fn resolve_type(ty: &mut Type, map: &HashMap<String, Type>) -> bool {
     }
 }
 
-fn resolve_function(f: &mut Function, map: &HashMap<String, Type>) {
+fn substitute_alias_params(ty: &mut Type, subst: &HashMap<String, Type>) -> bool {
+    match ty {
+        Type::Qualified(_, inner) => substitute_alias_params(inner, subst),
+        Type::Named(name, args) => {
+            if args.is_empty() {
+                if let Some(target) = subst.get(name) {
+                    *ty = target.clone();
+                    return true;
+                }
+            }
+            let mut changed = false;
+            for a in args {
+                changed |= substitute_alias_params(a, subst);
+            }
+            changed
+        }
+        Type::Tuple(ts) => {
+            let mut changed = false;
+            for t in ts {
+                changed |= substitute_alias_params(t, subst);
+            }
+            changed
+        }
+        Type::Fn(params, ret) => {
+            let mut changed = false;
+            for p in params {
+                changed |= substitute_alias_params(p, subst);
+            }
+            changed |= substitute_alias_params(ret, subst);
+            changed
+        }
+    }
+}
+
+fn resolve_function(f: &mut Function, map: &HashMap<String, Alias>) {
     for p in &mut f.params {
         if let Some(t) = &mut p.ty {
             resolve_type(t, map);
@@ -200,7 +249,7 @@ fn resolve_function(f: &mut Function, map: &HashMap<String, Type>) {
 /// Resolve aliases in a `where`-clause's trait type-arguments (`where c:
 /// FromIterator(Id)` → `… FromIterator(Int)`). The bound's variable and trait
 /// names are never type aliases, so only the trait arguments are rewritten.
-fn resolve_bounds(bounds: &mut [(String, String, Vec<Type>)], map: &HashMap<String, Type>) {
+fn resolve_bounds(bounds: &mut [(String, String, Vec<Type>)], map: &HashMap<String, Alias>) {
     for (_, _, trait_args) in bounds.iter_mut() {
         for t in trait_args {
             resolve_type(t, map);
@@ -213,9 +262,12 @@ fn resolve_bounds(bounds: &mut [(String, String, Vec<Type>)], map: &HashMap<Stri
 /// arguments; the (already-written) `args` are then resolved in place. An alias
 /// to a non-named target (tuple/function type) is not a valid impl target, so it
 /// is left untouched for the checker to report — this stays fail-closed.
-fn resolve_impl_target(name: &mut String, args: &mut Vec<Type>, map: &HashMap<String, Type>) {
+fn resolve_impl_target(name: &mut String, args: &mut Vec<Type>, map: &HashMap<String, Alias>) {
     if args.is_empty() {
-        if let Some(Type::Named(target_name, target_args)) = map.get(name) {
+        if let Some(Alias { params, ty: Type::Named(target_name, target_args) }) = map.get(name) {
+            if !params.is_empty() {
+                return;
+            }
             *name = target_name.clone();
             *args = target_args.clone();
         }
@@ -225,7 +277,7 @@ fn resolve_impl_target(name: &mut String, args: &mut Vec<Type>, map: &HashMap<St
     }
 }
 
-fn resolve_methodsig(m: &mut MethodSig, map: &HashMap<String, Type>) {
+fn resolve_methodsig(m: &mut MethodSig, map: &HashMap<String, Alias>) {
     for p in &mut m.params {
         if let Some(t) = &mut p.ty {
             resolve_type(t, map);
@@ -242,7 +294,7 @@ fn resolve_methodsig(m: &mut MethodSig, map: &HashMap<String, Type>) {
 /// Walk a block, resolving aliases in every type written inside a body: `let`/`var`
 /// ascriptions, `as`-cast targets, and lambda parameter/return annotations (the
 /// last two reached through `resolve_in_expr`).
-fn resolve_in_block(block: &mut Block, map: &HashMap<String, Type>) {
+fn resolve_in_block(block: &mut Block, map: &HashMap<String, Alias>) {
     for stmt in &mut block.stmts {
         match stmt {
             Stmt::Let { ty, value, .. } => {
@@ -261,7 +313,7 @@ fn resolve_in_block(block: &mut Block, map: &HashMap<String, Type>) {
     }
 }
 
-fn resolve_in_expr(e: &mut Expr, map: &HashMap<String, Type>) {
+fn resolve_in_expr(e: &mut Expr, map: &HashMap<String, Alias>) {
     match e {
         Expr::Lambda { params, body, ret } => {
             for p in params.iter_mut() {
@@ -532,6 +584,38 @@ mod tests {
             Some(Type::Named(
                 "List".into(),
                 vec![Type::Named("List".into(), vec![Type::Named("Int".into(), vec![])])]
+            ))
+        );
+    }
+
+    #[test]
+    fn expands_generic_aliases_by_substitution() {
+        // BUG-563: the parser accepted `type Pair(a) = ...` but uses such as
+        // `Pair(Int)` used to survive alias resolution and then fail as an
+        // unknown type. A generic alias is just transparent substitution.
+        let src = "type Pair(a) = (a, a)\ntype Rows(a) = List(Pair(a))\nfn first(p: Pair(Int), rows: Rows(String)) -> Int:\n    p.0\n";
+        let m = resolve(crate::parser::parse_module(src).expect("parse"));
+        assert!(!m.items.iter().any(|it| matches!(it, Item::TypeAlias { .. })));
+        let f = m
+            .items
+            .iter()
+            .find_map(|it| match it {
+                Item::Function(f) => Some(f),
+                _ => None,
+            })
+            .expect("function");
+        assert_eq!(
+            f.params[0].ty,
+            Some(Type::Tuple(vec![Type::Named("Int".into(), vec![]), Type::Named("Int".into(), vec![])]))
+        );
+        assert_eq!(
+            f.params[1].ty,
+            Some(Type::Named(
+                "List".into(),
+                vec![Type::Tuple(vec![
+                    Type::Named("String".into(), vec![]),
+                    Type::Named("String".into(), vec![]),
+                ])],
             ))
         );
     }

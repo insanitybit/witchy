@@ -276,9 +276,14 @@ fn item_str(s: &mut String, item: &Item, c: &mut Comments, next_item_line: u32) 
             s.push_str(&expr(value));
             s.push('\n');
         }
-        Item::TypeAlias { name, ty } => {
+        Item::TypeAlias { name, params, ty } => {
             s.push_str("type ");
             s.push_str(name);
+            if !params.is_empty() {
+                s.push('(');
+                s.push_str(&params.join(", "));
+                s.push(')');
+            }
             s.push_str(" = ");
             s.push_str(&type_str(ty));
             s.push('\n');

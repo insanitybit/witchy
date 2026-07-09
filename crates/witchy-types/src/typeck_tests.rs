@@ -1918,6 +1918,16 @@ fn main():
         assert!(konst.contains("constant `ANSWER` is defined more than once"), "{konst}");
         let alias = check_str("type Id = Int\ntype Id = String\nfn f(x: Id) -> Id:\n    x\n").unwrap_err();
         assert!(alias.contains("type alias `Id` is defined more than once"), "{alias}");
+        let alias_param = check_str("type Pair(a, a) = (a, a)\n").unwrap_err();
+        assert!(
+            alias_param.contains("type parameter `a` is declared more than once in type alias `Pair`"),
+            "{alias_param}"
+        );
+        let alias_unbound_param = check_str("type Bad(a) = (a, b)\n").unwrap_err();
+        assert!(
+            alias_unbound_param.contains("type alias `Bad` uses type parameter `b` but does not declare it"),
+            "{alias_unbound_param}"
+        );
         let alias_type = check_str("type Id = Int\ntype Id:\n    Id(String)\n").unwrap_err();
         assert!(alias_type.contains("type `Id` conflicts with type alias `Id`"), "{alias_type}");
         let fields = check_str("type Point:\n    x: Int\n    x: String\nfn main(console: Console):\n    print(console, \"ok\")\n")

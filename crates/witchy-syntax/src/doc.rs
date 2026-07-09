@@ -59,12 +59,18 @@ pub fn render_module(module_name: &str, source: &str, module: &Module) -> Result
         }
         let _ = writeln!(out);
     }
-    // Type aliases — `type Id = Int` — are part of the vocabulary too (BUG-170).
+    // Type aliases — `type Id = Int` / `type Pair(a) = (a, a)` — are part of
+    // the vocabulary too (BUG-170).
     for item in &module.items {
-        let Item::TypeAlias { name, ty } = item else { continue };
+        let Item::TypeAlias { name, params, ty } = item else { continue };
         any = true;
-        let _ = writeln!(out, "#### `type {name} = {}`\n", type_str(ty));
-        let doc = doc_above(&lines, &format!("type {name} ="));
+        let head = if params.is_empty() {
+            name.clone()
+        } else {
+            format!("{name}({})", params.join(", "))
+        };
+        let _ = writeln!(out, "#### `type {head} = {}`\n", type_str(ty));
+        let doc = doc_above(&lines, &format!("type {head} ="));
         if !doc.is_empty() {
             let _ = writeln!(out, "{doc}\n");
         }

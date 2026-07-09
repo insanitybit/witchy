@@ -12,7 +12,7 @@ use crate::ast::*;
 // foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
 use foldhash::HashMap;
 
-pub(crate) fn normalized_type_for_typeinfo(t: &TypeDef, aliases: &HashMap<String, Type>) -> TypeDef {
+pub(crate) fn normalized_type_for_typeinfo(t: &TypeDef, aliases: &HashMap<String, crate::aliases::Alias>) -> TypeDef {
     let mut out = t.clone();
     for variant in &mut out.variants {
         for field in &mut variant.fields {

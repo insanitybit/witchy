@@ -282,9 +282,31 @@ type Id = Int
         )
         .expect("type alias should parse");
         match &m.items[0] {
-            Item::TypeAlias { name, ty } => {
+            Item::TypeAlias { name, params, ty } => {
                 assert_eq!(name, "Id");
+                assert!(params.is_empty());
                 assert_eq!(*ty, Type::Named("Int".into(), vec![]));
+            }
+            other => panic!("expected a type alias, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn generic_type_alias_head_parses() {
+        let m = parse_module(
+            r#"
+type Pair(a) = (a, a)
+"#,
+        )
+        .expect("generic type alias should parse");
+        match &m.items[0] {
+            Item::TypeAlias { name, params, ty } => {
+                assert_eq!(name, "Pair");
+                assert_eq!(params, &vec!["a".to_string()]);
+                assert_eq!(
+                    *ty,
+                    Type::Tuple(vec![Type::Named("a".into(), vec![]), Type::Named("a".into(), vec![])])
+                );
             }
             other => panic!("expected a type alias, got {other:?}"),
         }

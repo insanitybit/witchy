@@ -1895,7 +1895,7 @@ fn check_reserved_item(module_name: &str, item: &Item, line: Option<u32>) -> Res
             check_reserved_binding(module_name, "constant", name)?;
             check_reserved_expr(module_name, value)
         }
-        Item::TypeAlias { name, ty } => {
+        Item::TypeAlias { name, ty, .. } => {
             check_reserved_binding(module_name, "type alias", name)?;
             check_reserved_type(module_name, ty)
         }

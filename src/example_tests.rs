@@ -114,6 +114,14 @@
         assert!(parser::parse_module("fn main(console: Console):\n    let mode = 3\n    print(console, __render(mode))\n").is_ok());
     }
 
+    #[test]
+    fn generic_type_aliases_resolve_on_linked_path() {
+        // BUG-563: parameterized aliases were accepted at the declaration site
+        // but every `Pair(Int)` use reached type resolution as an unknown type.
+        let src = "type Pair(a) = (a, a)\ntype Rows(a) = List(Pair(a))\n\nfn first(p: Pair(Int)) -> Int:\n    p.0\n\nfn main(console: Console):\n    let rows: Rows(String) = [(\"a\", \"b\")]\n    print(console, \"${first((1, 2))}:${list.length(rows)}\")\n";
+        assert_eq!(link_run(src), vec!["1:1"]);
+    }
+
     /// The bundled stdlib must stay on the in-place fast path: a performance cliff
     /// (an accumulator that reverts to copy-per-iteration, i.e. O(n²)) anywhere in
     /// std silently slows every program that touches it. This applies `mode opt`'s

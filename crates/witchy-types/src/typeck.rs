@@ -475,7 +475,20 @@ fn check_unique_declarations(module: &Module) -> Result<(), TypeError> {
                     ));
                 }
             }
-            Item::TypeAlias { name, .. } => {
+            Item::TypeAlias { name, params, ty } => {
+                check_type_params(format!("type alias `{}`", bare(name)), params)?;
+                let mut used_params = Vec::new();
+                collect_type_params(ty, &mut used_params);
+                for param in used_params {
+                    if !params.contains(&param) {
+                        return terr(format!(
+                            "type alias `{}` uses type parameter `{param}` but does not declare it; \
+                             declare it in the alias head, e.g. `type {}({param}) = ...`",
+                            bare(name),
+                            bare(name)
+                        ));
+                    }
+                }
                 if types.contains_key(name) {
                     return terr(format!(
                         "type alias `{}` conflicts with type `{}`; \
@@ -1298,7 +1311,7 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
             Item::Comptime(block) => {
                 validate_block_types(block, &known, &arities, "comptime", &in_ctx)?;
             }
-            Item::TypeAlias { ty, name } => {
+            Item::TypeAlias { ty, name, .. } => {
                 validate_type(ty, &known, &arities).map_err(|e| in_ctx(e, name))?;
             }
         }
