@@ -1,11 +1,14 @@
 ---
 rfc: 0076
 title: "Capability ops are methods: one spelling for the effect surface"
-status: planned
+status: implemented
 created: 2026-07-08
-# Accepted 2026-07-08. Sequencing note: land after the RFC-0072 golden harness
-# covers the cap-op diagnostics (the new bare-form rejection message and the
-# sweep both want the net), and after the BUG-216-class dispatch fixes soak.
+# Shipped 2026-07-09 (32e85aa0): method form is the only spelling; bare
+# `print(console, …)` is a check-time error ("capability operation `print` is
+# method-only; write `console.print(message)` instead"). Landed after the
+# RFC-0072 golden harness covered the cap-op diagnostics and the fmt-migration
+# tooling swept std/examples/embedded/docs to method form, exactly as the
+# sequencing note planned.
 tracking: quality-audit follow-on (scratch/audit-2026-07-07-quality/REPORT.md discussion); executes RFC-0070 rule 2 for the cap-op verbs
 related:
   - "0046 (typed trait dispatch — cap_op_return_type is the residual this shrinks)"
