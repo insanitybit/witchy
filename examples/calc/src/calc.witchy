@@ -30,7 +30,7 @@ type Parse:
 
 fn main(console: Console):
     for source in ["2 + 3 * 4", "(2 + 3) * 4", "100 - 2 - 3", "2 * (10 - 1)", "8 / (4 - 4)", "2 * (3 +"]:
-        print(console, source.pad_right(16, " ") + "=> " + run(source))
+        console.print(source.pad_right(16, " ") + "=> " + run(source))
 
 // Evaluate a source string end to end, rendering the result or the first error.
 pub fn run(source: String) -> String:

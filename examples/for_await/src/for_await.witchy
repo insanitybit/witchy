@@ -14,7 +14,7 @@ async fn producer(tx: Sender(Int)) -> Nil:
 
 async fn worker(console: Console, rx: Receiver(Int)) -> Nil:
     for await n in rx:
-        print(console, "n*n = ${n * n}")
+        console.print("n*n = ${n * n}")
 
 async fn main(console: Console):
     let (tx, rx) = chan.channel(4).await

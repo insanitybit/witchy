@@ -31,9 +31,9 @@ fn run_pipeline(plugins: List(fn(Int) -> Int), x: Int) -> Int:
 fn main(console: Console):
     let plugins = [double, bonus]
     for n in [1, 5, 10]:
-        print(console, "${n}" + " -> " + "${run_pipeline(plugins, n)}")
+        console.print("${n}" + " -> " + "${run_pipeline(plugins, n)}")
     // Granting authority is by capture: this logger closes over `console`, so the
     // host can hand a *logging* power to otherwise-pure code without surrendering
     // the Console itself.
-    let log = fn(msg: String): print(console, "[log] " + msg)
+    let log = fn(msg: String): console.print("[log] " + msg)
     log("ran the pipeline")

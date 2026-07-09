@@ -10,10 +10,10 @@ import tasklib
 import string
 
 fn main(console: Console, root: Dir[Read]):
-    let tasks = tasklib.parse(read(root, "tasks.md"))
-    print(console, "TODO")
-    print(console, tasklib.render(tasks))
-    print(console, "")
+    let tasks = tasklib.parse(root.read("tasks.md"))
+    console.print("TODO")
+    console.print(tasklib.render(tasks))
+    console.print("")
     let summary = list.join(["${tasklib.done_count(tasks)}", "/", "${tasklib.count(tasks)}", "done"], " ")
 
-    print(console, summary)
+    console.print(summary)

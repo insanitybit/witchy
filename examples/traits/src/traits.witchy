@@ -53,7 +53,7 @@ fn total_area(shapes: List(s)) -> Int where s: Shape:
     sum
 
 fn main(console: Console):
-    print(console, describe(Square(5)))
-    print(console, describe(Rect(3, 4)))
-    print(console, describe(RightTriangle(6, 4)))
-    print(console, "total of three squares: " + "${total_area([Square(2), Square(3), Square(4)])}")
+    console.print(describe(Square(5)))
+    console.print(describe(Rect(3, 4)))
+    console.print(describe(RightTriangle(6, 4)))
+    console.print("total of three squares: " + "${total_area([Square(2), Square(3), Square(4)])}")

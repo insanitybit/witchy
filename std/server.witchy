@@ -331,7 +331,7 @@ fn join_segs(xs: List(String)) -> String:
 
 // ---- Request parsing from the socket ----
 fn read_request(sock: Socket) -> Result(Request, Response):
-    let request_line = recv_line(sock)
+    let request_line = sock.recv_line()
     let m = first_word(request_line)
     let target = second_word(request_line)
     let raw_path = before(target, "?")
@@ -343,14 +343,14 @@ fn read_request(sock: Socket) -> Result(Request, Response):
     match framed_length(headers):
         Err(msg) -> Err(bad_request(msg))
         Ok(len) ->
-            let body = if len > 0: recv_bytes(sock, len) else: ""
+            let body = if len > 0: sock.recv_bytes(len) else: ""
             Ok(Request(m, raw_path, [], q, headers, body))
 
 fn read_headers(sock: Socket) -> List((String, String)):
     var hdrs = []
     var done = false
     while !done:
-        let line = string.trim(recv_line(sock))
+        let line = string.trim(sock.recv_line())
         if line == "":
             done = true
         else:
@@ -617,7 +617,7 @@ fn wrap_layers(handler: fn(Request) -> Response, layers: List(fn(fn(Request) -> 
     h
 
 fn handle_one(server: Listener, handler: fn(Request) -> Response):
-    let sock = accept(server)
+    let sock = server.accept()
     // A malformed request (e.g. conflicting Content-Length, BUG-390) short-circuits
     // to its error Response without ever reaching a handler. The request method is
     // retained for rendering: a HEAD response must not carry body bytes (BUG-376).
@@ -625,8 +625,8 @@ fn handle_one(server: Listener, handler: fn(Request) -> Response):
         Ok(req) -> (method(req), handler(req))
         Err(err_resp) -> ("", err_resp)
 
-    send_bytes(sock, render_for(resp, m))
-    close(sock)
+    sock.send_bytes(render_for(resp, m))
+    sock.close()
 
 // Serve `app` on `addr` forever, using ALL cores. Needs the `Net` capability to
 // listen; handlers never receive it. `serve_pool` spawns one worker VM per core, each
@@ -636,8 +636,8 @@ fn handle_one(server: Listener, handler: fn(Request) -> Response):
 // in their captured capabilities (e.g. a store `Dir` = the filesystem), so the workers
 // are interchangeable. (For a single-threaded server, use `serve_one`.)
 pub fn serve(net: Net[Listen, Tcp], addr: String, app: Router):
-    let server = listen(net, addr)
-    serve_pool(server)
+    let server = net.listen(addr)
+    server.serve_pool()
     let handler = handler_of(app)
     var running = true
     while running:
@@ -646,7 +646,7 @@ pub fn serve(net: Net[Listen, Tcp], addr: String, app: Router):
 // Serve `app` on `addr` forever on a SINGLE core (one accept loop, no worker pool) —
 // for servers with per-process in-memory state, or when one core is plenty.
 pub fn serve_one(net: Net[Listen, Tcp], addr: String, app: Router):
-    let server = listen(net, addr)
+    let server = net.listen(addr)
     let handler = handler_of(app)
     var running = true
     while running:
@@ -654,7 +654,7 @@ pub fn serve_one(net: Net[Listen, Tcp], addr: String, app: Router):
 
 // Serve exactly `n` requests then return — for tests and one-shot servers.
 pub fn serve_n(net: Net[Listen, Tcp], addr: String, app: Router, n: Int):
-    let server = listen(net, addr)
+    let server = net.listen(addr)
     let handler = handler_of(app)
     var i = 0
     while i < n:
@@ -673,8 +673,8 @@ pub fn serve_n(net: Net[Listen, Tcp], addr: String, app: Router, n: Int):
 // `Router`, and `Request`/`Response` are unchanged — TLS is transparent above the
 // accepted connection.
 pub fn serve_tls(net: Net[Listen, Tcp], addr: String, cert_pem: String, key: Secret, app: Router):
-    let server = listen_tls(net, addr, cert_pem, key)
-    serve_pool(server)
+    let server = net.listen_tls(addr, cert_pem, key)
+    server.serve_pool()
     let handler = handler_of(app)
     var running = true
     while running:
@@ -683,7 +683,7 @@ pub fn serve_tls(net: Net[Listen, Tcp], addr: String, cert_pem: String, key: Sec
 // Serve exactly `n` HTTPS requests then return — `serve_tls`'s one-shot/test twin
 // (the TLS handling and key discipline of `serve_tls`, the loop shape of `serve_n`).
 pub fn serve_tls_n(net: Net[Listen, Tcp], addr: String, cert_pem: String, key: Secret, app: Router, n: Int):
-    let server = listen_tls(net, addr, cert_pem, key)
+    let server = net.listen_tls(addr, cert_pem, key)
     let handler = handler_of(app)
     var i = 0
     while i < n:

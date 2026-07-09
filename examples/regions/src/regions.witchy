@@ -16,4 +16,4 @@ fn main(console: Console):
         for i in 0..1000:
             words = words.push("w" + "${i}")
         summarize(words)
-    print(console, summary)
+    console.print(summary)

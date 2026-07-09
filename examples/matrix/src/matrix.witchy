@@ -8,11 +8,11 @@ import string
 fn main(console: Console):
     let a = [[1, 2, 3], [4, 5, 6]]
     let b = [[7, 8], [9, 10], [11, 12]]
-    print(console, "A x B =")
+    console.print("A x B =")
     show(console, multiply(a, b))
-    print(console, "transpose(A) =")
+    console.print("transpose(A) =")
     show(console, transpose(a))
-    print(console, "identity(3) =")
+    console.print("identity(3) =")
     show(console, identity(3))
 
 fn show(console: Console, m: List(List(Int))):
@@ -21,7 +21,7 @@ fn show(console: Console, m: List(List(Int))):
         var cells = []
         for value in row:
             cells = cells.push(string.pad_left("${value}", width, " "))
-        print(console, "[ " + cells.join(" ") + " ]")
+        console.print("[ " + cells.join(" ") + " ]")
 
 // The widest decimal cell, so every column lines up.
 pub fn cell_width(m: List(List(Int))) -> Int:

@@ -1755,6 +1755,20 @@ impl Ctx<'_> {
                             .and_then(|t| type_to_scope_name(&t))
                     });
                 if let Some(tn) = &tn {
+                    // Host-capability intrinsics are authority-bearing methods,
+                    // even when the capability type also has a std owner module
+                    // (`Rand` -> `rand`). Try this before owner-module UFCS so
+                    // `rand.rand_u64()` lowers to the host op, while ordinary
+                    // std helpers like `rand.hex(n)` still resolve below.
+                    if is_host_capability(tn) && cap_ops::is_op_name(method) {
+                        let mut call_args = vec![std::mem::replace(
+                            receiver.as_mut(),
+                            Expr::Bool(false),
+                        )];
+                        call_args.append(args);
+                        *e = Expr::Call { name: cap_ops::call_name(method), args: call_args };
+                        return;
+                    }
                     if let Some(func) = self.std_owner_method_alias(method, tn) {
                         let mut call_args = vec![std::mem::replace(
                             receiver.as_mut(),
@@ -2121,7 +2135,7 @@ fn cap_op_return_type(e: &Expr) -> Option<String> {
             "subtree" | "make_dir" => Some("Dir".to_string()),
             "read_file" | "write_file" => Some("File".to_string()),
             "connect" | "connect_pinned" | "accept" => Some("Socket".to_string()),
-            "listen" => Some("Listener".to_string()),
+            "listen" | "listen_tls" => Some("Listener".to_string()),
             _ => None,
         },
         _ => None,

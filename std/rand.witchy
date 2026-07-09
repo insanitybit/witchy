@@ -8,7 +8,7 @@ import string
 // A fresh 64-bit draw spanning the full `Int` range (it may be negative). The
 // primitive both other helpers build on.
 pub fn u64(rand: Rand) -> Int:
-    rand_u64(rand)
+    rand.rand_u64()
 
 // A non-negative integer in `[0, n)`. `n` must be positive (RFC-0044 rule 3):
 // `[0, 0)` is an impossible range, so a non-positive bound fails loudly naming
@@ -19,11 +19,11 @@ pub fn u64(rand: Rand) -> Int:
 pub fn below(rand: Rand, n: Int) -> Int:
     if n <= 0:
         fail("rand.below: bound `${n}` must be positive")
-    (rand_u64(rand) & 9223372036854775807) % n
+    (rand.rand_u64() & 9223372036854775807) % n
 
 // A fair coin.
 pub fn bool(rand: Rand) -> Bool:
-    rand_u64(rand) & 1 == 1
+    rand.rand_u64() & 1 == 1
 
 // `nbytes` random bytes rendered as lowercase hex (2 chars per byte) — the form a
 // WebAuthn challenge, a CSRF nonce, or a session/token id wants. Draws full 64-bit
@@ -39,7 +39,7 @@ pub fn hex(rand: Rand, nbytes: Int) -> String:
     else:
         var out = ""
         while string.length(out) < nbytes * 2:
-            out = out + word_hex(rand_u64(rand))
+            out = out + word_hex(rand.rand_u64())
         string.substring(out, 0, nbytes * 2)
 
 // The 16 lowercase hex characters of a 64-bit word, most-significant nibble first.

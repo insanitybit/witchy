@@ -98,7 +98,7 @@ fn endpoint(secure: Bool, host: String, port: Int) -> String:
 // content-type, ...). `secure` selects HTTPS (TLS). `Connection: close` ends
 // `recv_all` after the body.
 pub fn request_with(net: Net[Connect, Tcp], secure: Bool, method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Response:
-    send_on(connect(net, endpoint(secure, host, port)), method, host, path, headers, body)
+    send_on(net.connect(endpoint(secure, host, port)), method, host, path, headers, body)
 
 fn render_and_send(sock: Socket, method: String, host: String, path: String, headers: List((String, String)), body: String):
     // (SEC-043 / BUG-364) Validate everything spliced into the request line/headers
@@ -124,7 +124,7 @@ fn render_and_send(sock: Socket, method: String, host: String, path: String, hea
             head = head + k + ": " + v + "\r\n"
     let req = head + "Content-Length: " + "${string.length(body)}" + "\r\n" + "Connection: close\r\n\r\n" + body
 
-    send_bytes(sock, req)
+    sock.send_bytes(req)
 
 // Build an HTTP/1.1 request and send it on an already-connected socket, then parse the
 // response. Shared by `request_with` (a fresh `connect`) and `send_pinned` (a pinned
@@ -138,7 +138,7 @@ fn send_on(sock: Socket, method: String, host: String, path: String, headers: Li
 
 fn send_on_result(sock: Socket, method: String, host: String, path: String, headers: List((String, String)), body: String) -> Result(Response, String):
     render_and_send(sock, method, host, path, headers, body)
-    try_parse_response(recv_all(sock))
+    try_parse_response(sock.recv_all())
 
 fn request(net: Net[Connect, Tcp], method: String, host: String, port: Int, path: String, body: String) -> Response:
     request_with(net, false, method, host, port, path, [], body)
@@ -149,7 +149,7 @@ fn request(net: Net[Connect, Tcp], method: String, host: String, port: Int, path
 // down peer — the caller decides what to do (e.g. answer 502) instead of the VM
 // aborting. A successful dial sends the request and parses the response as usual.
 pub fn try_request_with(net: Net[Connect, Tcp], secure: Bool, method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Result(Response, String):
-    match try_connect(net, endpoint(secure, host, port)):
+    match net.try_connect(endpoint(secure, host, port)):
         None -> Err("connect to " + host + ":" + "${port}" + " failed (unreachable)")
         Some(sock) -> send_on_result(sock, method, host, path, headers, body)
 
@@ -180,7 +180,7 @@ pub fn pin(net: Net[Connect, Tcp], raw: String, allow_ip: fn(String) -> Bool) ->
             match scheme_secure(url.scheme(u)):
                 Err(e) -> Err(e)
                 Ok(secure) ->
-                    match first_allowed(resolve(net, url.host(u)), allow_ip):
+                    match first_allowed(net.resolve(url.host(u)), allow_ip):
                         None -> Err("no resolved address for " + url.host(u) + " passed the pin policy")
                         Some(ip) -> Ok(PinnedUrl(url.host(u), url.port(u), secure, url.path(u), ip))
 
@@ -212,7 +212,7 @@ pub fn get_pinned(net: Net[Connect, Tcp], p: PinnedUrl) -> Result(Response, Stri
 pub fn send_pinned(net: Net[Connect, Tcp], p: PinnedUrl, method: String, headers: List((String, String)), body: String) -> Result(Response, String):
     match p:
         PinnedUrl(host, port, secure, path, ip) ->
-            match try_connect_pinned(net, ip, host, port, secure):
+            match net.try_connect_pinned(ip, host, port, secure):
                 None -> Err("connect to " + host + " (" + ip + ":" + "${port}" + ") failed")
                 Some(sock) -> send_on_result(sock, method, host, path, headers, body)
 

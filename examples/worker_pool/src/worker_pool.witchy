@@ -13,7 +13,7 @@ async fn worker(jobs: Receiver(Int), results: Sender(Int)) -> Nil:
     chan.consume(jobs, fn(n): chan.send(results, n * n)).await
 
 async fn printer(console: Console, results: Receiver(Int)) -> Nil:
-    chan.consume(results, fn(r): chan.done(print(console, "result ${r}"))).await
+    chan.consume(results, fn(r): chan.done(console.print("result ${r}"))).await
 
 async fn main(console: Console):
     let (jobs_tx, jobs_rx) = chan.channel(2).await

@@ -50,7 +50,7 @@ fn main(console: Console):
     let convert: Converter = fn(c: Celsius) -> Fahrenheit: to_fahrenheit(c)
     // `as` narrowing through a capability alias.
     let out: Out = console as Out
-    print(out, "avg C = " + "${average(week)}")
-    print(out, "25C = ${to_fahrenheit(25)}F")
-    print(out, "0C  = ${to_fahrenheit(0)}F")
-    print(out, "hottest = ${hottest.describe()} = ${convert(hottest)}F")
+    out.print("avg C = " + "${average(week)}")
+    out.print("25C = ${to_fahrenheit(25)}F")
+    out.print("0C  = ${to_fahrenheit(0)}F")
+    out.print("hottest = ${hottest.describe()} = ${convert(hottest)}F")

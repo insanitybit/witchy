@@ -30,4 +30,4 @@ pub fn show_row(row: List(Int)) -> String:
 fn main(console: Console):
     let rows: List(List(Int)) = iter.collect(iter.take(pascal(), 6))
     for row in rows:
-        print(console, show_row(row))
+        console.print(show_row(row))

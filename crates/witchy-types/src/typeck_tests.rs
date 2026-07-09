@@ -1556,6 +1556,38 @@ fn main(console: Console, f: File[Read]):
     }
 
     #[test]
+    fn capability_methods_prefer_host_ops_over_std_owner_modules() {
+        use witchy_syntax::ast::{Expr, Item, Stmt};
+
+        let src = r#"
+fn main(rand: Rand, net: Net[Listen, Tcp]):
+    rand.rand_u64()
+    let listener = net.listen("127.0.0.1:0")
+    listener.serve_pool()
+"#;
+        assert!(check_str(src).is_ok());
+
+        let module = witchy_syntax::parser::parse_module(src).expect("parse");
+        let lowered = crate::traits::lower_checked(module).expect("lower");
+        let main = lowered
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(f) if f.name == "main" => Some(f),
+                _ => None,
+            })
+            .expect("main");
+        let Some(Stmt::Expr(Expr::Call { name: rand_name, .. })) = main.body.stmts.first() else {
+            panic!("expected lowered rand.rand_u64 call");
+        };
+        assert_eq!(rand_name, "__capop.rand_u64");
+        let Some(Stmt::Expr(Expr::Call { name: serve_name, .. })) = main.body.stmts.last() else {
+            panic!("expected lowered listener.serve_pool call");
+        };
+        assert_eq!(serve_name, "__capop.serve_pool");
+    }
+
+    #[test]
     fn checks_adt_constructors_and_exhaustive_match() {
         let src = r#"
 type Event:

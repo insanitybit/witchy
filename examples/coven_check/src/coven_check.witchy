@@ -14,18 +14,18 @@ import rights
 from json import Json
 
 fn main(console: Console, root: Dir[Read]) -> Int:
-    let manifest = read(root, "examples/data/rune_manifest.toml")
-    let source = read(root, "examples/data/sample_rune_v2.witchy")
+    let manifest = root.read("examples/data/rune_manifest.toml")
+    let source = root.read("examples/data/sample_rune_v2.witchy")
     let declared = toml.get_array(manifest, "capabilities.runtime")
     let demanded = total_caps(compiler.footprint(source))
     // The demanded capabilities the manifest does not admit, rights-precisely
     // (std/rights): a declared `Net[Connect]` does NOT cover a demanded full `Net`.
     let missing = list.join(rights.uncovered(declared, demanded), ", ")
     if missing.is_empty():
-        print(console, "OK: manifest admits everything the code demands")
+        console.print("OK: manifest admits everything the code demands")
         0
     else:
-        print(console, "UNDER-DECLARED: code demands " + missing + " not admitted by [capabilities]")
+        console.print("UNDER-DECLARED: code demands " + missing + " not admitted by [capabilities]")
         1
 
 // The capability names in a footprint report's "total" array.

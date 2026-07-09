@@ -9,7 +9,7 @@ pub fn step(direction: Int) -> String:
         _ -> "?"
 
 fn main(console: Console):
-    print(console, step(-1))
-    print(console, step(1))
-    print(console, step(0))
-    print(console, step(2))
+    console.print(step(-1))
+    console.print(step(1))
+    console.print(step(0))
+    console.print(step(2))

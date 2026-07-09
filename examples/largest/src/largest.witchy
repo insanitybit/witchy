@@ -23,8 +23,8 @@ type Version derive(PartialEq, Eq, PartialOrd, Ord):
 
 fn main(console: Console):
     let numbers = [34, 50, 25, 100, 65]
-    print(console, "largest number: " + "${largest(numbers)}")
+    console.print("largest number: " + "${largest(numbers)}")
 
     let versions = [Version(1, 9), Version(2, 0), Version(1, 12), Version(2, 0)]
     let latest = largest(versions)
-    print(console, "latest version: ${latest.major}.${latest.minor}")
+    console.print("latest version: ${latest.major}.${latest.minor}")

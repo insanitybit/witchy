@@ -33,7 +33,7 @@ impl Eq for Color
 
 fn main(console: Console):
     let palette = [Red, Green, Blue]
-    print(console, "${list.contains(palette, Green)}")
-    print(console, "${list.index_of(palette, Blue)}")
-    print(console, "${list.contains([1, 2, 3], 4)}")
-    print(console, "${Red != Blue}")
+    console.print("${list.contains(palette, Green)}")
+    console.print("${list.index_of(palette, Blue)}")
+    console.print("${list.contains([1, 2, 3], 4)}")
+    console.print("${Red != Blue}")

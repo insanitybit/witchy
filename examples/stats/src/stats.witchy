@@ -20,7 +20,7 @@ fn main(console: Console):
     report(console, "max", math.format_float(maximum(data), 2))
 
 fn report(console: Console, label: String, value: String):
-    print(console, label.pad_right(9, " ") + value)
+    console.print(label.pad_right(9, " ") + value)
 
 pub fn mean(xs: List(Float)) -> Float:
     var total = 0.0

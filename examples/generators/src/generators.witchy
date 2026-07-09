@@ -40,7 +40,7 @@ pub fn show(xs: List(Int)) -> String:
 
 fn main(console: Console):
     let fib10: List(Int) = iter.collect(iter.take(fibs(), 10))
-    print(console, "fib[0..10): " + show(fib10))
+    console.print("fib[0..10): " + show(fib10))
     let path: List(Int) = iter.collect(collatz(6))
-    print(console, "collatz(6): " + show(path))
-    print(console, "collatz(27) length: " + "${iter.count(collatz(27))}")
+    console.print("collatz(6): " + show(path))
+    console.print("collatz(27) length: " + "${iter.count(collatz(27))}")

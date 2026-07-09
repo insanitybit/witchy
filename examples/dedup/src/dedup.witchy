@@ -22,4 +22,4 @@ pub fn show(xs: List(Int)) -> String:
 fn main(console: Console):
     let xs = iter.from_list([1, 1, 2, 3, 3, 3, 2, 2, 4])
     let unique: List(Int) = iter.collect(dedup(xs))
-    print(console, show(unique))
+    console.print(show(unique))

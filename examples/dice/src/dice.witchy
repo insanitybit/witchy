@@ -17,5 +17,5 @@ fn main(console: Console):
         rolls = rolls.push(face + 1)
         r = next
         i = i + 1
-    print(console, list.join(rolls.map(fn(n: Int): "${n}"), " "))
-    print(console, "total: " + "${rolls.sum()}")
+    console.print(list.join(rolls.map(fn(n: Int): "${n}"), " "))
+    console.print("total: " + "${rolls.sum()}")

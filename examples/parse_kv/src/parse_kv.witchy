@@ -9,8 +9,8 @@ fn main(console: Console):
         Some(eq) ->
             let key = setting.substring(0, eq)
             let value = setting.substring(eq + 1, setting.length())
-            print(console, key)
-            print(console, value)
-            print(console, "${setting.ends_with("30")}")
+            console.print(key)
+            console.print(value)
+            console.print("${setting.ends_with("30")}")
         None ->
-            print(console, "no `=` in setting")
+            console.print("no `=` in setting")

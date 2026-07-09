@@ -30,7 +30,7 @@ impl Bag:
 async fn adder(console: Console, rx: Receiver(List(Int))) -> Nil:
     chan.serve(rx, 0, fn(sum, batch):
         let running = sum + sum_from(batch, 0)
-        print(console, "running sum: " + "${running}")
+        console.print("running sum: " + "${running}")
         chan.done(running)
     ).await
 
@@ -42,18 +42,18 @@ async fn main(console: Console):
     var count = 0
     bump(count)
     bump(count)
-    print(console, "count: " + "${count}")
+    console.print("count: " + "${count}")
 
     let nums = [1, 2, 3, 4]
-    print(console, "sum: " + "${sum_from(nums, 0)}")
-    print(console, "doubled first: " + "${doubled_first(nums)}")
-    print(console, "nums still here, length: " + "${nums.length()}")
+    console.print("sum: " + "${sum_from(nums, 0)}")
+    console.print("doubled first: " + "${doubled_first(nums)}")
+    console.print("nums still here, length: " + "${nums.length()}")
 
     let bag = Bag([10, 20, 30])
-    print(console, "bag total: " + "${bag.total()}")
+    console.print("bag total: " + "${bag.total()}")
 
     let gone = [5, 6, 7]
-    print(console, "drained length: " + "${drain(move gone)}")
+    console.print("drained length: " + "${drain(move gone)}")
 
     let (tx, rx) = chan.channel(4).await
     let h = chan.spawn(adder(console, rx)).await

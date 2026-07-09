@@ -7,4 +7,4 @@ pub fn into_label(own name: String) -> String:
 
 fn main(console: Console):
     let name = "witchy"
-    print(console, into_label(name))
+    console.print(into_label(name))

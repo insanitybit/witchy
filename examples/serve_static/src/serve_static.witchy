@@ -14,15 +14,15 @@ fn file_server(dir: Dir) -> fn(Request) -> Response:
     fn(req: Request): serve_file(dir, server.param_or(req, "path", ""))
 
 fn serve_file(dir: Dir, p: String) -> Response:
-    if exists(dir, p):
-        server.text(200, read(dir, p))
+    if dir.exists(p):
+        server.text(200, dir.read(p))
     else:
         server.not_found()
 
 fn main(console: Console, net: Net, root: Dir):
-    let examples = subtree(root, "examples")
-    let data = subtree(examples, "data")
+    let examples = root.subtree("examples")
+    let data = examples.subtree("data")
     let app = server.router().get("/files/*path", file_server(data))
 
-    print(console, "serving files on 127.0.0.1:8080")
+    console.print("serving files on 127.0.0.1:8080")
     server.serve(net, "127.0.0.1:8080", app)

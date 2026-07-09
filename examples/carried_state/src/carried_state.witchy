@@ -41,7 +41,7 @@ pub fn count_rows(pg: Postgres, requested: String) -> String:
 fn main(console: Console, net: Net):
     // Connect, then scope the handle to the `users` table.
     let users = use_table(connect(net), "users")
-    print(console, count_rows(users, "users"))
+    console.print(count_rows(users, "users"))
     // The carried filter refuses anything else, even though the underlying `Net`
     // could physically reach it — that is the soft, library-enforced policy.
-    print(console, count_rows(users, "secrets"))
+    console.print(count_rows(users, "secrets"))

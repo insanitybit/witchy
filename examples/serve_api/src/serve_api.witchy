@@ -15,7 +15,7 @@ from server import Router
 fn logging(console: Console) -> fn(fn(Request) -> Response) -> fn(Request) -> Response:
     fn(next: fn(Request) -> Response):
         fn(req: Request):
-            print(console, server.method(req) + " " + server.path(req))
+            console.print(server.method(req) + " " + server.path(req))
             next(req)
 
 fn home(req: Request) -> Response:
@@ -28,5 +28,5 @@ fn greet(req: Request) -> Response:
 fn main(console: Console, net: Net):
     let app = server.router().get("/", home).get("/hello/:name", greet).layer(logging(console))
 
-    print(console, "serving on 127.0.0.1:8080")
+    console.print("serving on 127.0.0.1:8080")
     server.serve(net, "127.0.0.1:8080", app)

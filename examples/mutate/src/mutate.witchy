@@ -10,4 +10,4 @@ fn main(console: Console):
     bump(total)
     bump(total)
     bump(total)
-    print(console, "bumped to " + "${total}")
+    console.print("bumped to " + "${total}")

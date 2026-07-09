@@ -183,4 +183,4 @@ pub fn render(x: impl Show) -> String:
 // you reach for instead of `print(console, "${n}")`. (A thin wrapper kept out of
 // the `print` builtin so a builtin never depends on a std trait.)
 pub fn say(console: Console, x: impl Show):
-    print(console, show(x))
+    console.print(show(x))

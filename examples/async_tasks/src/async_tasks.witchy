@@ -14,9 +14,9 @@ import chan
 
 async fn ticker(console: Console, name: String, n: Int) -> Nil:
     if n <= 0:
-        print(console, name + " done")
+        console.print(name + " done")
     else:
-        print(console, "${name} ${n}")
+        console.print("${name} ${n}")
         chan.yield_now().await
         ticker(console, name, n - 1).await
 

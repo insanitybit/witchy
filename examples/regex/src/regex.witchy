@@ -12,7 +12,7 @@ fn main(console: Console):
     for probe in cases():
         let (pattern, text) = probe
         let shown = string.pad_right("/" + pattern + "/", 10, " ") + string.pad_right("\"" + text + "\"", 16, " ")
-        print(console, shown + verdict(matches(pattern, text)))
+        console.print(shown + verdict(matches(pattern, text)))
 
 fn cases() -> List((String, String)):
     [("abc", "abc"), ("a.c", "axc"), ("a.c", "ac"), ("a*b", "aaab"), ("a*b", "b"), ("^hello", "hello world"), ("world\$", "hello world"), ("^a.*z\$", "abcz"), ("^a.*z\$", "abc")]

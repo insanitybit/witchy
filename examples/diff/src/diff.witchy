@@ -12,7 +12,7 @@ fn main(console: Console):
     let old = ["apple", "banana", "cherry", "date", "fig"]
     let new = ["apple", "cherry", "date", "elderberry", "fig"]
     for marked in diff(old, new):
-        print(console, marked)
+        console.print(marked)
 
 pub fn diff(old: List(String), new: List(String)) -> List(String):
     let table = lcs_table(old, new)

@@ -10,7 +10,7 @@ from json import Json
 fn main(console: Console):
     let document = "{\"user\":{\"name\":\"Ada\",\"roles\":[\"admin\",\"dev\"]},\"active\":true,\"count\":42}"
     for path in ["user.name", "user.roles", "user.roles.0", "user.roles.1", "count", "active", "user.missing"]:
-        print(console, path.pad_right(16, " ") + "=> " + query(document, path))
+        console.print(path.pad_right(16, " ") + "=> " + query(document, path))
 
 pub fn query(document: String, path: String) -> String:
     match json.decode(document):

@@ -20,12 +20,12 @@ async fn collector(console: Console, a: Receiver(Int), b: Receiver(Int)) -> Nil:
     let s = chan.select(a, b).await
     match s:
         First(x) ->
-            print(console, "tick ${x}")
+            console.print("tick ${x}")
             collector(console, a, b).await
         Second(y) ->
-            print(console, "beat ${y}")
+            console.print("beat ${y}")
             collector(console, a, b).await
-        Closed -> print(console, "both done")
+        Closed -> console.print("both done")
 
 async fn main(console: Console):
     let (tick_tx, tick_rx) = chan.channel(4).await

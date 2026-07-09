@@ -11,11 +11,11 @@ fn main(console: Console):
     var total = 0
     for v in dict.values(prices):
         total = total + v
-    print(console, "total = ${total}")
+    console.print("total = ${total}")
 
     var pricey = 0
     for entry in dict.pairs(prices):
         let (name, price) = entry
         if price > 2:
             pricey = pricey + 1
-    print(console, "over 2: ${pricey}")
+    console.print("over 2: ${pricey}")

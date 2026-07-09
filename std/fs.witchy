@@ -13,8 +13,8 @@ pub fn ensure_dir(root: Dir, path: String):
     for seg in string.split(path, "/"):
         if seg != "":
             acc = if string.is_empty(acc): seg else: acc + "/" + seg
-            if !exists(root, acc):
-                make_dir(root, acc)
+            if !root.exists(acc):
+                root.make_dir(acc)
 
 // The parent component of a relative path as `Some`: "a/b/c" -> Some("a/b").
 // A single component has no parent, so "a" is `None` (RFC-0044 rule 1: absence
@@ -34,16 +34,16 @@ pub fn parent_dir(path: String) -> Option(String):
 // Dir root itself. Needs a readable `Dir`.
 pub fn collect_files(root: Dir, path: String, rel: String, ext: String) -> List((String, String)):
     var out = []
-    if exists(root, path):
-        for entry in list(subtree(root, path)):
+    if root.exists(path):
+        for entry in root.subtree(path).list():
             // At the root (empty `path`/`rel`) the child is the bare entry name,
             // never "/entry": the confinement resolver rejects absolute-looking
             // paths, so raw concatenation would skip or trap on root-level entries.
             let child = if string.is_empty(path): entry else: path + "/" + entry
             let child_rel = if string.is_empty(rel): entry else: rel + "/" + entry
-            if is_dir(root, child):
+            if root.is_dir(child):
                 for f in collect_files(root, child, child_rel, ext):
                     out = list.push(out, f)
             else if string.ends_with(entry, ext):
-                out = list.push(out, (child_rel, read(root, child)))
+                out = list.push(out, (child_rel, root.read(child)))
     out

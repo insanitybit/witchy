@@ -47,4 +47,4 @@ pub fn from_roman(s: String) -> Int:
 fn main(console: Console):
     for n in [4, 9, 49, 90, 1994, 2024]:
         let r = to_roman(n)
-        print(console, "${n}" + " = " + r + " -> " + "${from_roman(r)}")
+        console.print("${n}" + " = " + r + " -> " + "${from_roman(r)}")

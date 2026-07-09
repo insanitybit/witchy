@@ -11,9 +11,9 @@
 // cannot see any other file. (`main` can also receive a `File` directly via the
 // `--file` grant; here we navigate one from a `Dir` so the example is self-contained.)
 pub fn load_config(f: File(Read)) -> String:
-    read(f)
+    f.read()
 
 fn main(console: Console, root: Dir):
     // Narrow the granted Dir down to this example's data dir, then open ONE file.
     let data = root.subtree("examples").subtree("file_capability").subtree("data")
-    print(console, "config: " + load_config(data.read_file("config.txt")))
+    console.print("config: " + load_config(data.read_file("config.txt")))

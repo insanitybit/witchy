@@ -7,5 +7,5 @@ pub fn swap(p: (a, b)) -> (b, a):
 
 fn main(console: Console):
     let (s, n) = swap((42, "answer"))
-    print(console, s)
-    print(console, "${n}")
+    console.print(s)
+    console.print("${n}")

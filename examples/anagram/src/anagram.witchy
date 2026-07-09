@@ -11,7 +11,7 @@ import list
 fn main(console: Console):
     let words = ["listen", "silent", "enlist", "cat", "act", "dog", "god", "tac"]
     for group in group_anagrams(words):
-        print(console, list.join(group, ", "))
+        console.print(list.join(group, ", "))
 
 pub fn group_anagrams(words: List(String)) -> List(List(String)):
     var signatures = []

@@ -15,9 +15,9 @@ pub fn reduce(xs: List(Int), f: fn(Int, Int) -> Int, init: Int) -> Int:
 
 fn main(console: Console):
     let add10 = make_adder(10)
-    print(console, "${apply(add10, 5)}")
-    print(console, "${apply(fn(x: Int): x * x, 9)}")
+    console.print("${apply(add10, 5)}")
+    console.print("${apply(fn(x: Int): x * x, 9)}")
 
     let nums = [1, 2, 3, 4, 5]
-    print(console, "${reduce(nums, fn(a: Int, b: Int): a + b, 0)}")
-    print(console, "${reduce(nums, fn(a: Int, b: Int): a * b, 1)}")
+    console.print("${reduce(nums, fn(a: Int, b: Int): a + b, 0)}")
+    console.print("${reduce(nums, fn(a: Int, b: Int): a * b, 1)}")

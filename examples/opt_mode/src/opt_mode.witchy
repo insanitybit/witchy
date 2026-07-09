@@ -21,8 +21,8 @@ fn main(console: Console):
     var xs = []
     for i in [1, 2, 3, 4, 5]:
         xs = xs.push(i * i)
-    print(console, "squares: ${xs}")
-    print(console, "sum:     ${sum(xs)}")
+    console.print("squares: ${xs}")
+    console.print("sum:     ${sum(xs)}")
 
 // `let xs` borrows the list immutably — the type checker proves `sum` never lets
 // it escape, so the caller passes a reference with no defensive copy. Drop the

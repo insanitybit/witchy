@@ -18,6 +18,6 @@ fn main(console: Console):
     let acc2 = deposit(acc, 50)
     let acc3 = rename(acc2, "alice smith")
 
-    print(console, acc.name + " " + "${acc.balance}")
-    print(console, acc2.name + " " + "${acc2.balance}")
-    print(console, acc3.name + " " + "${acc3.balance}")
+    console.print(acc.name + " " + "${acc.balance}")
+    console.print(acc2.name + " " + "${acc2.balance}")
+    console.print(acc3.name + " " + "${acc3.balance}")

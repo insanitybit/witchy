@@ -10,8 +10,8 @@ fn main(console: Console):
 
     let fields = row.split(",")
     let loud = fields.map(fn(name: String): name.to_upper())
-    print(console, loud.join(" | "))
+    console.print(loud.join(" | "))
 
-    print(console, string.repeat("=", 3))
+    console.print(string.repeat("=", 3))
 
-    print(console, row.replace("bob", "***"))
+    console.print(row.replace("bob", "***"))

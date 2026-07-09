@@ -11,10 +11,10 @@ import string
 from json import Json
 
 fn main(console: Console, root: Dir[Read]) -> Int:
-    let old = read(root, "examples/data/sample_rune.witchy")
-    let new = read(root, "examples/data/sample_rune_v2.witchy")
+    let old = root.read("examples/data/sample_rune.witchy")
+    let new = root.read("examples/data/sample_rune_v2.witchy")
     let report = compiler.diff(old, new)
-    print(console, gate(report))
+    console.print(gate(report))
     exit_code(report)
 
 // The process exit status: 2 on a blocked widening, 1 on a malformed diff, else 0

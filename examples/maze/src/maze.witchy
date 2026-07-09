@@ -18,7 +18,7 @@ fn main(console: Console):
     if prev.contains_key(goal):
         render_path(console, maze, prev, start, goal, width)
     else:
-        print(console, "no path from S to E")
+        console.print("no path from S to E")
 
 // BFS from `start`, returning the `prev` map (position -> the position we reached
 // it from). The goal appears in the map exactly when it is reachable.
@@ -83,7 +83,7 @@ fn render_path(console: Console, maze: List(String), prev: Dict(Int, Int), start
         route = route.insert(at_pos, 1)
         at_pos = prev.get_or(at_pos, start)
         steps_count = steps_count + 1
-    print(console, "shortest path: ${steps_count} steps")
+    console.print("shortest path: ${steps_count} steps")
     var r = 0
     for row in maze:
         var line = ""
@@ -92,7 +92,7 @@ fn render_path(console: Console, maze: List(String), prev: Dict(Int, Int), start
             let here = r * width + c
             line = line + glyph(row.substring(c, c + 1), route.contains_key(here))
             c = c + 1
-        print(console, line)
+        console.print(line)
         r = r + 1
 
 fn glyph(original: String, on_route: Bool) -> String:

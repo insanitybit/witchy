@@ -5,4 +5,4 @@
 import strutil
 
 fn main(console: Console):
-    print(console, strutil.shout("witchy"))
+    console.print(strutil.shout("witchy"))

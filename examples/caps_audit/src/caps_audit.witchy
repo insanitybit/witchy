@@ -11,8 +11,8 @@ from json import Json
 
 fn main(console: Console, root: Dir[Read]):
     let target = "examples/data/sample_rune.witchy"
-    let report = compiler.footprint(read(root, target))
-    print(console, target + " demands: " + total_of(report))
+    let report = compiler.footprint(root.read(target))
+    console.print(target + " demands: " + total_of(report))
 
 // Pull the "total" array out of the footprint JSON and render it.
 fn total_of(report: String) -> String:

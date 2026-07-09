@@ -24,9 +24,9 @@ fn main(console: Console):
     // A retry schedule: 1s, 2s, 4s, ... capped at 5s.
     var attempt = 0
     while attempt < 5:
-        print(console, duration.human(backoff(attempt, 1s, 5s)))
+        console.print(duration.human(backoff(attempt, 1s, 5s)))
         attempt = attempt + 1
     // Combine and compare durations directly.
-    print(console, duration.clock(1h + 30m))
-    print(console, "${90s < 2m}")
-    print(console, duration.human(duration.from_clock(0, 2, 30)))
+    console.print(duration.clock(1h + 30m))
+    console.print("${90s < 2m}")
+    console.print(duration.human(duration.from_clock(0, 2, 30)))

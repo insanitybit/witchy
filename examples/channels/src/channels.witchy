@@ -13,10 +13,10 @@ async fn producer(tx: Sender(Int)) -> Nil:
         chan.send(tx, n).await
 
 async fn consumer(console: Console, rx: Receiver(Int)) -> Nil:
-    chan.consume(rx, fn(v): chan.done(print(console, "got ${v}"))).await
+    chan.consume(rx, fn(v): chan.done(console.print("got ${v}"))).await
 
 async fn main(console: Console):
     let (tx, rx) = chan.channel(4).await
     chan.spawn(producer(tx)).await
     consumer(console, rx).await
-    print(console, "channel drained")
+    console.print("channel drained")

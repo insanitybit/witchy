@@ -18,5 +18,5 @@ pub fn show(r: Result(Int, String)) -> String:
         Err(msg) -> "err " + msg
 
 fn main(console: Console):
-    print(console, show(safe_div(10, 2)))
-    print(console, show(safe_div(10, 0)))
+    console.print(show(safe_div(10, 2)))
+    console.print(show(safe_div(10, 0)))

@@ -12,7 +12,7 @@ fn main(console: Console):
     for sample in ["aaabbbbc", "wwwwww", "abcdef", "mississippi", ""]:
         let encoded = encode(sample)
         let restored = decode(encoded)
-        print(console, render(sample) + " -> " + render(encoded) + "  roundtrip " + yes_no(restored == sample))
+        console.print(render(sample) + " -> " + render(encoded) + "  roundtrip " + yes_no(restored == sample))
 
 // Collapse each maximal run into "<count><char>".
 pub fn encode(text: String) -> String:

@@ -9,11 +9,11 @@ import list
 fn main(console: Console):
     let xs = [10, 20, 30, 40]
 
-    print(console, "${xs.contains(30)}")
-    print(console, "${xs.index_of(40) ?? -1}")
-    print(console, "${xs.index_of(99) ?? -1}")
+    console.print("${xs.contains(30)}")
+    console.print("${xs.index_of(40) ?? -1}")
+    console.print("${xs.index_of(99) ?? -1}")
 
     let head2 = xs.take(2)
     let tail2 = xs.drop(2)
-    print(console, "${head2.at(1)}")
-    print(console, "${tail2.at(0)}")
+    console.print("${head2.at(1)}")
+    console.print("${tail2.at(0)}")

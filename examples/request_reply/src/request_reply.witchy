@@ -24,9 +24,9 @@ async fn client(console: Console, srv: Sender(Msg)) -> Nil:
     chan.send(srv, Square(9, reply_tx)).await
     let r = chan.recv(reply_rx).await
     match r:
-        Some(Result(v)) -> print(console, "9 squared is ${v}")
-        Some(Square(_n, _s)) -> print(console, "(unreachable)")
-        None -> print(console, "(no reply)")
+        Some(Result(v)) -> console.print("9 squared is ${v}")
+        Some(Square(_n, _s)) -> console.print("(unreachable)")
+        None -> console.print("(no reply)")
 
 async fn main(console: Console):
     let (srv_tx, srv_rx) = chan.channel(4).await

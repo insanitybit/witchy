@@ -11,11 +11,11 @@ fn main(console: Console):
     let nodes = ["boot", "config", "db", "cache", "api", "web"]
     let edges = [("boot", "config"), ("config", "db"), ("config", "cache"), ("db", "api"), ("cache", "api"), ("api", "web")]
 
-    print(console, "build order: " + show(toposort(nodes, edges)))
+    console.print("build order: " + show(toposort(nodes, edges)))
 
     let cyclic = ["egg", "chicken"]
     let cyclic_edges = [("egg", "chicken"), ("chicken", "egg")]
-    print(console, "cyclic:      " + show(toposort(cyclic, cyclic_edges)))
+    console.print("cyclic:      " + show(toposort(cyclic, cyclic_edges)))
 
 fn show(result: Result(List(String), String)) -> String:
     match result:

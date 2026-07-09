@@ -10,9 +10,9 @@ import string
 
 fn main(console: Console):
     // The canonical "Hello World!" program.
-    print(console, run("++++++++[>++++[>++>+++>+++>+<<<<-]>+>+>->>+[<]<-]>>.>---.+++++++..+++.>>.<-.<.+++.------.--------.>>+.>++."))
+    console.print(run("++++++++[>++++[>++>+++>+++>+<<<<-]>+>+>->>+[<]<-]>>.>---.+++++++..+++.>>.<-.<.+++.------.--------.>>+.>++."))
     // 8 * 8 = 64, then +1 = 65 = 'A'.
-    print(console, run("++++++++[>++++++++<-]>+."))
+    console.print(run("++++++++[>++++++++<-]>+."))
 
 pub fn run(program: String) -> String:
     let code = program.chars()

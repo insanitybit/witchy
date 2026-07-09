@@ -5,4 +5,4 @@ pub fn shout(name: String) -> String:
     "hello, " + name
 
 fn main(console: Console):
-    print(console, shout("compiled witchy") + "\n")
+    console.print(shout("compiled witchy") + "\n")

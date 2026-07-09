@@ -14,7 +14,7 @@ type Outcome:
 
 fn main(console: Console):
     for expr in ["3 4 +", "5 1 2 + 4 * + 3 -", "10 2 /", "1 0 /", "1 +"]:
-        print(console, string.pad_right(expr, 20, " ") + "=> " + run(expr))
+        console.print(string.pad_right(expr, 20, " ") + "=> " + run(expr))
 
 pub fn run(expr: String) -> String:
     match eval(string.words(expr)):

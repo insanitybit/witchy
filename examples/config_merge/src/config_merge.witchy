@@ -17,5 +17,5 @@ fn main(console: Console):
     // `production` wins on the keys it sets (host, port) and adds `workers`;
     // `base`'s own `debug` is preserved because the overlay doesn't mention it.
     let merged = json.merge(base(), production())
-    print(console, json.encode_pretty(merged))
-    print(console, if json.contains_key(merged, "workers"): "has workers" else: "no workers")
+    console.print(json.encode_pretty(merged))
+    console.print(if json.contains_key(merged, "workers"): "has workers" else: "no workers")

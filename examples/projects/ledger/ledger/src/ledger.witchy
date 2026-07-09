@@ -14,11 +14,11 @@ async fn account(console: Console, rx: Receiver(Op)) -> Nil:
         match op:
             Deposit(amount) ->
                 let bal = cents + amount
-                print(console, "deposit  " + money.format(amount) + "  -> balance " + money.format(bal))
+                console.print("deposit  " + money.format(amount) + "  -> balance " + money.format(bal))
                 chan.done(bal)
             Withdraw(amount) ->
                 let bal = cents - amount
-                print(console, "withdraw " + money.format(amount) + "  -> balance " + money.format(bal))
+                console.print("withdraw " + money.format(amount) + "  -> balance " + money.format(bal))
                 chan.done(bal)
     ).await
 

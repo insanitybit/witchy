@@ -10,8 +10,8 @@ fn main(console: Console):
     var grid = glider(8)
     var generation = 0
     while generation < 4:
-        print(console, "generation ${generation}:")
-        print(console, render(grid))
+        console.print("generation ${generation}:")
+        console.print(render(grid))
         grid = step(grid)
         generation = generation + 1
 

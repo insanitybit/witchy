@@ -14,6 +14,6 @@ fn shift(p: Point, dx: Int) -> Point:
 fn main(console: Console):
     let origin = Point(2, 3)
     let moved = shift(origin, 10)
-    print(console, "origin.x = " + "${origin.x}")
-    print(console, "moved = (${moved.x}, ${moved.y})")
-    print(console, "manhattan(moved) = " + "${manhattan(moved)}")
+    console.print("origin.x = " + "${origin.x}")
+    console.print("moved = (${moved.x}, ${moved.y})")
+    console.print("manhattan(moved) = " + "${manhattan(moved)}")

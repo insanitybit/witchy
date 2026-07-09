@@ -9,9 +9,9 @@ import string
 fn main(console: Console):
     let text = "The quick brown fox jumps over the lazy dog and then keeps on running far away"
     let width = 20
-    print(console, "wrapped to ${width} columns:")
+    console.print("wrapped to ${width} columns:")
     for line in wrap(text, width):
-        print(console, "| " + string.pad_right(line, width, " ") + " |")
+        console.print("| " + string.pad_right(line, width, " ") + " |")
 
 pub fn wrap(text: String, width: Int) -> List(String):
     var lines = []

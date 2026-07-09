@@ -17,24 +17,24 @@
 // this function provably only reads — and a caller may hand it a full `Dir`,
 // which narrows implicitly at the call boundary.
 pub fn load(dir: Dir[Read], name: String) -> String:
-    read(dir, name)
+    dir.read(name)
 
 // A TCP client. `Net[Connect, Tcp]` can dial out over TCP but cannot `listen`,
 // and is pinned to TCP (`Udp`/`Uds` are type-level markers — not implemented).
 pub fn fetch(net: Net[Connect, Tcp], addr: String) -> String:
-    recv_all(connect(net, addr))
+    net.connect(addr).recv_all()
 
 // A server. `Net[Listen]` can accept inbound connections but cannot dial out;
 // `connect(net, ..)` here would be a compile error.
 pub fn serve(net: Net[Listen], addr: String) -> Listener:
-    listen(net, addr)
+    net.listen(addr)
 
 fn main(console: Console, root: Dir):
-    let data = subtree(subtree(root, "examples"), "data")
+    let data = root.subtree("examples").subtree("data")
     // Implicit narrowing: `load` asks for `Dir[Read]`; the full `data` capability
     // narrows automatically at the call — no cast needed.
-    print(console, "implicit: " + load(data, "greeting.txt"))
+    console.print("implicit: " + load(data, "greeting.txt"))
     // Explicit narrowing: name a read-only handle with `as`. Passing `ro` where a
     // full `Dir` is wanted would be a compile error.
     let ro = data as Dir[Read]
-    print(console, "explicit: " + load(ro, "greeting.txt"))
+    console.print("explicit: " + load(ro, "greeting.txt"))

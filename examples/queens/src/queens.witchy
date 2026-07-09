@@ -6,10 +6,10 @@
 //   witchy examples/queens.witchy
 fn main(console: Console):
     let n = 8
-    print(console, "${n}" + "-queens solutions: " + "${count(n, [])}")
-    print(console, "first solution:")
+    console.print("${n}" + "-queens solutions: " + "${count(n, [])}")
+    console.print("first solution:")
     for queen_col in solve(n, []):
-        print(console, row_string(queen_col, n))
+        console.print(row_string(queen_col, n))
 
 // Total number of complete placements reachable from `placed`.
 pub fn count(n: Int, placed: List(Int)) -> Int:

@@ -15,4 +15,4 @@ pub fn eval(e: Expr) -> Int:
 fn main(console: Console):
     // (2 + 3) * 4
     let e = Mul(Add(Num(2), Num(3)), Num(4))
-    print(console, "${eval(e)}")
+    console.print("${eval(e)}")

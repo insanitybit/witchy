@@ -23,6 +23,6 @@ pub fn show(r: Result(Int, String)) -> String:
         Err(e) -> "error: " + e
 
 fn main(console: Console):
-    print(console, show(compute(100, 5, 2)))
-    print(console, show(compute(100, 0, 2)))
-    print(console, show(compute(100, 5, 0)))
+    console.print(show(compute(100, 5, 2)))
+    console.print(show(compute(100, 0, 2)))
+    console.print(show(compute(100, 5, 0)))

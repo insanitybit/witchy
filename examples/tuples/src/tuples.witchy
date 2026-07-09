@@ -12,13 +12,13 @@ pub fn divmod(a: Int, b: Int) -> (Int, Int):
 fn main(console: Console):
     // Destructure when you want every element...
     let (q, r) = divmod(17, 5)
-    print(console, "${q} remainder ${r}")
+    console.print("${q} remainder ${r}")
 
     // ...or read one by position, on a binding or straight off a call.
     let pair = (7, "seven")
-    print(console, "${pair.0} spells ${pair.1}")
-    print(console, "just the remainder: ${divmod(17, 5).1}")
+    console.print("${pair.0} spells ${pair.1}")
+    console.print("just the remainder: ${divmod(17, 5).1}")
 
     // Access chains through nesting; each element keeps its own type.
     let grid = ((1, 2), (3, 4))
-    print(console, "${grid.0.1} ${grid.1.0}")
+    console.print("${grid.0.1} ${grid.1.0}")

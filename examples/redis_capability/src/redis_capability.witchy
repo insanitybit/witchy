@@ -26,4 +26,4 @@ pub fn ping(r: Redis) -> Int:
 
 fn main(console: Console, net: Net):
     let db = open(net)
-    print(console, "redis ping: ${ping(db)}")
+    console.print("redis ping: ${ping(db)}")

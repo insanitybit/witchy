@@ -4,8 +4,8 @@
 import math
 
 fn main(console: Console):
-    print(console, "${math.max(3, 7)}")
-    print(console, "${math.abs(-5)}")
-    print(console, "${math.clamp(12, 0, 10)}")
-    print(console, "${math.pow(2, 10)}")
-    print(console, "${math.gcd(24, 36)}")
+    console.print("${math.max(3, 7)}")
+    console.print("${math.abs(-5)}")
+    console.print("${math.clamp(12, 0, 10)}")
+    console.print("${math.pow(2, 10)}")
+    console.print("${math.gcd(24, 36)}")

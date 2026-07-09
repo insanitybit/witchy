@@ -10,5 +10,5 @@ pub fn first(xs: List(Int)) -> Option(Int):
         [head, ..] -> Some(head)
 
 fn main(console: Console):
-    print(console, "${option.unwrap_or(first([10, 20, 30]), 0)}")
-    print(console, "${option.unwrap_or(first([]), 0 - 1)}")
+    console.print("${option.unwrap_or(first([10, 20, 30]), 0)}")
+    console.print("${option.unwrap_or(first([]), 0 - 1)}")

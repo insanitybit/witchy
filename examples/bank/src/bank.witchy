@@ -32,6 +32,6 @@ fn show(r: Result(Int, String)) -> String:
 
 fn main(console: Console):
     let accounts = [Account("alice", 100), Account("bob", 50)]
-    print(console, "total = " + "${total(accounts)}")
-    print(console, show(pay_both(Account("alice", 100), Account("bob", 50), 30)))
-    print(console, show(pay_both(Account("alice", 100), Account("bob", 50), 70)))
+    console.print("total = " + "${total(accounts)}")
+    console.print(show(pay_both(Account("alice", 100), Account("bob", 50), 30)))
+    console.print(show(pay_both(Account("alice", 100), Account("bob", 50), 70)))

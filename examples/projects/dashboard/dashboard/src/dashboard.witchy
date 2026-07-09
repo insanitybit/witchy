@@ -8,6 +8,6 @@ import tasks
 import coverage
 
 fn main(console: Console):
-    print(console, "── status ──")
-    print(console, tasks.summary(3, 6))
-    print(console, coverage.summary(6, 8))
+    console.print("── status ──")
+    console.print(tasks.summary(3, 6))
+    console.print(coverage.summary(6, 8))
