@@ -2071,8 +2071,8 @@ fn cmd_add_pkg(console: Console, net: Net, root: Dir, env: Env, clock: Clock, ar
 fn add_pkg_gated(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, req: String, cooldown: (Int, Int, Bool), allowed: List(String)) -> Int:
     match resolve_version(net, host, port, name, req, cooldown):
         // BUG-232: gate on a VERIFIED, coordinate-bound record footprint.
-        Err(msg) ->
-            console.print(name + ": " + msg)
+        Err(e) ->
+            console.print(name + ": " + version_resolve_error_message(e))
             1
         Ok(chosen) ->
             let baseline = union_all(project_baseline(root), allowed)
@@ -2283,26 +2283,52 @@ fn add_rune(console: Console, net: Net, root: Dir, host: String, port: Int, name
         match resolve_version(net, host, port, name, req, cooldown):
             Ok(chosen) -> fetch_then_deps(console, net, root, host, port, name, chosen, dest, cooldown, allowed)
             Err(e) ->
-                console.print(name + ": " + e)
+                console.print(name + ": " + version_resolve_error_message(e))
                 1
 
 // Resolve `req` against the registry's released versions, honoring the staging
 // cooldown: a release younger than the cooldown window is not resolvable (the
 // compromised-release window, §8) unless `--allow-fresh` was passed. If the only
 // matching versions are still cooling, the error explains the window + override.
-fn resolve_version(net: Net, host: String, port: Int, name: String, req: String, cooldown: (Int, Int, Bool)) -> Result(String, String):
+fn resolve_version(net: Net, host: String, port: Int, name: String, req: String, cooldown: (Int, Int, Bool)) -> Result(String, VersionResolveError):
     let resp = http.get(net, host, port, "/coven/versions?name=" + wire(name))
     if http.status(resp) != 200:
-        Err("registry error fetching versions")
+        Err(VersionRegistryFetchFailed(http.status(resp)))
     else:
         let body = http.body(resp)
         match pick_version_cooled(body, req, cooldown):
             Ok(v) -> Ok(v)
             Err(e) ->
                 if has_cooling_match(body, req, cooldown):
-                    Err("a release satisfying `" + req + "` is inside its staging cooldown and not resolvable yet (compromised-release protection) — re-run with --allow-fresh to accept it now")
+                    Err(VersionCooling(req))
                 else:
                     Err(e)
+
+// Matchable failures from the registry version-resolution boundary. This is the
+// first PM decision point after untrusted registry data, semver parsing, and
+// staging-cooldown policy are combined; keep it typed until the CLI renders it.
+type VersionResolveError:
+    VersionRegistryFetchFailed(Int)
+    VersionBadRequirement(String, String)
+    VersionCooling(String)
+    VersionNoMatch(String)
+
+fn version_resolve_error_message(e: VersionResolveError) -> String:
+    match e:
+        VersionRegistryFetchFailed(_status) -> "registry error fetching versions"
+        VersionBadRequirement(req, cause) -> "bad requirement `" + req + "`: " + cause
+        VersionCooling(req) -> "a release satisfying `" + req + "` is inside its staging cooldown and not resolvable yet (compromised-release protection) — re-run with --allow-fresh to accept it now"
+        VersionNoMatch(req) -> "no released version satisfies `" + req + "`"
+
+impl Show for VersionResolveError:
+    fn show(self) -> String:
+        version_resolve_error_message(self)
+
+impl Error for VersionResolveError
+
+impl From(VersionResolveError) for String:
+    fn from(value: VersionResolveError) -> Self:
+        version_resolve_error_message(value)
 
 // Fetch a resolved version, then recurse into the version deps its manifest
 // declares. The exit code is the first failure (0 if the whole tree resolves).
@@ -2328,15 +2354,15 @@ fn add_deps(console: Console, net: Net, root: Dir, host: String, port: Int, name
 // error. A release still inside its staging cooldown is excluded (unless
 // `--allow-fresh`) — `resolve_version` distinguishes "none satisfy" from "the
 // only match is cooling" for a clearer message.
-fn pick_version_cooled(body: String, req: String, cooldown: (Int, Int, Bool)) -> Result(String, String):
+fn pick_version_cooled(body: String, req: String, cooldown: (Int, Int, Bool)) -> Result(String, VersionResolveError):
     match semver.parse_req(req):
         Ok(r) -> choose(eligible_versions(body, cooldown), r, req)
-        Err(e) -> Err("bad requirement `" + req + "`: " + e)
+        Err(e) -> Err(VersionBadRequirement(req, e))
 
-fn choose(versions: List(Version), r: Req, req: String) -> Result(String, String):
+fn choose(versions: List(Version), r: Req, req: String) -> Result(String, VersionResolveError):
     match semver.best(versions, r):
         Some(v) -> Ok(semver.format(v))
-        None -> Err("no released version satisfies `" + req + "`")
+        None -> Err(VersionNoMatch(req))
 
 // The released versions in a /coven/versions response, parsed (cooldown-agnostic;
 // used by `outdated`/`update` which report the latest, not resolve-for-install).

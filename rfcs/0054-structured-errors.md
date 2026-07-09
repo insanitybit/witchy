@@ -9,12 +9,13 @@ tracking: >
   ordinary From(Ein) for Eout impl. std/json and std/toml now expose typed
   decode-error values; std/crypto, std/webauthn, and std/jwt expose typed
   trust-boundary verification errors; the package manager's TUF pinning,
-  verified registry-record footprint, and lock snapshot-pin gates use typed
-  errors internally, and Coven maintainer-policy state, stored-record parsing,
-  source-footprint recomputation, and trusted-publishing token verification have
-  typed corruption/authentication errors. All convert to String through From at
-  existing application boundaries. Remaining 0.1 work: finish or explicitly
-  defer typed errors for other package-manager trust boundaries.
+  verified registry-record footprint, lock snapshot-pin, and registry version
+  resolution gates use typed errors internally, and Coven maintainer-policy
+  state, stored-record parsing, source-footprint recomputation, and
+  trusted-publishing token verification have typed corruption/authentication
+  errors. All convert to String through From at existing application
+  boundaries. Remaining 0.1 work: finish or explicitly defer typed errors for
+  other package-manager trust boundaries.
 ---
 
 # RFC-0054: Structured errors (design-first)
@@ -253,7 +254,10 @@ state uses `coven_trust.TrustPolicyError` for invalid JSON, non-array policy
 state, and non-string maintainer entries before the server maps corruption to a
 500 `CovenError`. The PM lockfile's `registry_snapshot_version` parser now
 returns a local `LockPinError` for non-integer or negative pins before `pm verify`
-renders the existing `BLOCK:` diagnostic. Stored Coven records parse through
+renders the existing `BLOCK:` diagnostic. The PM registry version resolver now
+returns a local `VersionResolveError`, keeping registry fetch failure, malformed
+requirements, cooldown blocks, and no-match outcomes matchable until the CLI
+renders the existing user-facing message. Stored Coven records parse through
 `coven_record.RecordParseError`, keeping malformed JSON distinct from a
 well-formed JSON value with the wrong record shape before the registry maps it
 to a corrupt-record response. Coven source-footprint recomputation returns
