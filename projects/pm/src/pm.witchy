@@ -1850,10 +1850,10 @@ fn update_vendored(console: Console, net: Net, root: Dir, host: String, port: In
         // supply-chain attack the gate exists to stop.
         2
     else if failed:
-        // BUG-371: a refetch failed (bad signature / integrity / missing source). Do
-        // NOT repin the registry root key or rewrite the lock as if the update
-        // succeeded — a partial/failed update must not mint fresh trust metadata.
-        console.print("BLOCK: an update failed to fetch or verify — leaving witchy.lock and the pinned registry key untouched")
+        // BUG-371/569: a resolution, refetch, or verification failed. Do NOT repin
+        // the registry root key or rewrite the lock as if the update succeeded — a
+        // partial/failed update must not mint fresh trust metadata.
+        console.print("BLOCK: an update failed to resolve, fetch, or verify — leaving witchy.lock and the pinned registry key untouched")
         1
     else:
         match snapshot_pin(net, root, host, port):
@@ -1868,9 +1868,9 @@ fn update_vendored(console: Console, net: Net, root: Dir, host: String, port: In
 // Re-fetch one vendored rune if the registry has a newer eligible version than the
 // one currently vendored. Returns (changed, blocked, failed): `changed` is 1 if it
 // moved, `blocked` is true if the newer version WIDENS authority beyond the baseline
-// (the gate), `failed` is true if a fetch/verify was attempted and failed. The target
-// version is resolved WITHIN the consumer's declared requirement (BUG-092) and past
-// the staging cooldown (BUG-090).
+// (the gate), `failed` is true if resolution, fetch, or verification failed. The
+// target version is resolved WITHIN the consumer's declared requirement (BUG-092)
+// and past the staging cooldown (BUG-090).
 fn update_one(console: Console, net: Net, root: Dir, host: String, port: Int, entry: String, allowed: List(String), cooldown: (Int, Int, Bool), manifest: String) -> (Int, Bool, Bool):
     let rune_dir = join_path("vendor", entry)
     if !root.exists(join_path(rune_dir, "coven.json")):
@@ -1881,7 +1881,14 @@ fn update_one(console: Console, net: Net, root: Dir, host: String, port: Int, en
         let current = recorded_field(record, "version")
         let req = dep_req(manifest, fullname, entry)
         match resolve_version(net, host, port, fullname, req, cooldown):
-            Err(_e) -> (0, false, false)
+            // Cooling and no-match mean there is no eligible update today. Every
+            // other resolver error means the registry/manifest could not be
+            // trusted, so preserve the lock and report a failed update (BUG-569).
+            Err(VersionCooling(_req)) -> (0, false, false)
+            Err(VersionNoMatch(_req)) -> (0, false, false)
+            Err(e) ->
+                console.print("BLOCK: cannot resolve an update for ${fullname}: ${version_resolve_error_message(e)}")
+                (0, false, true)
             Ok(latest) ->
                 if string.is_empty(latest) || latest == current:
                     (0, false, false)

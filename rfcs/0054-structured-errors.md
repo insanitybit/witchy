@@ -10,8 +10,8 @@ tracking: >
   decode-error values; std/crypto, std/webauthn, and std/jwt expose typed
   trust-boundary verification errors; the package manager's TUF pinning,
   verified registry-record footprint, lock snapshot-pin, strict registry
-  version-response/resolution, and compiler-footprint consumption gates use
-  typed errors internally, and Coven maintainer-policy
+  version-response/resolution/update-consumption, and compiler-footprint
+  consumption gates use typed errors internally, and Coven maintainer-policy
   state, stored-record parsing, source-footprint recomputation, and
   trusted-publishing token verification have typed corruption/authentication
   errors. All convert to String through From at existing application
@@ -259,8 +259,11 @@ renders the existing `BLOCK:` diagnostic. The PM registry version resolver now
 returns a local `VersionResolveError`, keeping registry fetch failure, malformed
 JSON/record shape, noncanonical coordinates, malformed requirements, cooldown
 blocks, and no-match outcomes matchable until the CLI renders the user-facing
-message. Malformed `/coven/versions` data is never projected to an empty release
-set in install/update decisions; only `pm list` keeps a deliberately fail-soft
+message. Add and update both preserve that typed result: update treats only
+cooldown/no-match as ordinary no-op outcomes, while malformed/fetch/requirement
+errors fail without rewriting the lock or repinning trust metadata. Malformed
+`/coven/versions` data is never projected to an empty release set in
+install/update decisions; only `pm list` keeps a deliberately fail-soft
 presentation projection. The PM offline vendored-record
 verification path now returns a local `RecordVerifyError`, keeping malformed
 `coven.json`, malformed signed payload shape, malformed verifier input, and bad

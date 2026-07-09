@@ -1056,22 +1056,16 @@ fn resolver_rejects_whitespace_padded_registry_versions() {
     assert!(!app.join("vendor/coord").exists(), "nothing should be vendored on a failed add");
 }
 
-/// BUG-567: malformed registry data is not an empty registry. Version
-/// resolution must preserve that distinction through its typed boundary and
-/// stop before any record or source request.
-#[test]
-fn pm_add_rejects_malformed_versions_response() {
+/// Serve exactly one malformed `/coven/versions` response. Both add and update
+/// tests use this boundary probe; any second request is evidence that PM erased
+/// the first response instead of returning its typed error.
+fn versions_mirror_once(body: &'static str) -> (String, std::thread::JoinHandle<()>) {
     use std::io::{ErrorKind, Read, Write};
-
-    let app = unique("badversions-app");
-    std::fs::create_dir_all(app.join("src")).unwrap();
-    std::fs::write(app.join("witchy.toml"), "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n").unwrap();
-    std::fs::write(app.join("src/app.witchy"), "fn main(console: Console):\n    console.print(\"app\")\n").unwrap();
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
-    let mirror_addr = listener.local_addr().unwrap().to_string();
-    let mirror = std::thread::spawn(move || {
+    let addr = listener.local_addr().unwrap().to_string();
+    let server = std::thread::spawn(move || {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let (mut stream, _) = loop {
             match listener.accept() {
@@ -1088,7 +1082,6 @@ fn pm_add_rejects_malformed_versions_response() {
         let path = req.split_whitespace().nth(1).unwrap_or("/");
         assert!(path.starts_with("/coven/versions"), "unexpected first registry request: {path}");
 
-        let body = "{\"records\":42}";
         let resp = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             body.len(),
@@ -1096,6 +1089,20 @@ fn pm_add_rejects_malformed_versions_response() {
         );
         stream.write_all(resp.as_bytes()).unwrap();
     });
+    (addr, server)
+}
+
+/// BUG-567: malformed registry data is not an empty registry. Version
+/// resolution must preserve that distinction through its typed boundary and
+/// stop before any record or source request.
+#[test]
+fn pm_add_rejects_malformed_versions_response() {
+    let app = unique("badversions-app");
+    std::fs::create_dir_all(app.join("src")).unwrap();
+    std::fs::write(app.join("witchy.toml"), "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n").unwrap();
+    std::fs::write(app.join("src/app.witchy"), "fn main(console: Console):\n    console.print(\"app\")\n").unwrap();
+
+    let (mirror_addr, mirror) = versions_mirror_once("{\"records\":42}");
 
     let out = Command::new(BIN)
         .current_dir(&app)
@@ -1111,6 +1118,48 @@ fn pm_add_rejects_malformed_versions_response() {
         "expected typed versions-response error, got: {msg}"
     );
     assert!(!app.join("vendor/bad").exists(), "malformed versions response must not be vendored");
+    mirror.join().unwrap();
+    std::fs::remove_dir_all(app).unwrap();
+}
+
+/// BUG-569: `pm update` must consume the same typed resolver error as `add`.
+/// A malformed registry response is a failed update, not a successful no-op;
+/// in particular it must not repin trust metadata or rewrite the lockfile.
+#[test]
+fn pm_update_preserves_malformed_versions_error() {
+    let app = unique("badversions-update");
+    std::fs::create_dir_all(app.join("src")).unwrap();
+    std::fs::create_dir_all(app.join("vendor/bad")).unwrap();
+    std::fs::write(app.join("witchy.toml"), "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n").unwrap();
+    std::fs::write(app.join("src/app.witchy"), "fn main(console: Console):\n    console.print(\"app\")\n").unwrap();
+    std::fs::write(
+        app.join("vendor/bad/coven.json"),
+        r#"{"name":"acme/bad","version":"1.0.0","runtime_footprint":[]}"#,
+    )
+    .unwrap();
+    let original_lock = "registry_snapshot_version = 7\nrootpub = \"pinned\"\n";
+    std::fs::write(app.join("witchy.lock"), original_lock).unwrap();
+
+    let (mirror_addr, mirror) = versions_mirror_once("{\"records\":42}");
+    let out = Command::new(BIN)
+        .current_dir(&app)
+        .env("COVEN_URL", format!("http://{mirror_addr}"))
+        .env("WITCHY_COOLDOWN_SECS", "0")
+        .args(["pm", "update"])
+        .output()
+        .expect("spawn witchy pm update");
+
+    assert!(!out.status.success(), "malformed versions response must fail update");
+    let msg = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        msg.contains("cannot resolve an update") && msg.contains("malformed versions response"),
+        "expected the typed resolver error at the update boundary, got: {msg}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(app.join("witchy.lock")).unwrap(),
+        original_lock,
+        "failed update must not rewrite or repin the lock"
+    );
     mirror.join().unwrap();
     std::fs::remove_dir_all(app).unwrap();
 }
