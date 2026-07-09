@@ -108,14 +108,14 @@ pub fn parse_iso8601(text: String) -> Result(DateTime, String):
     let base = civil(y, mo, da, h, mi, s)?
     // The rest: optional `.fraction` (truncated), then `Z`, an offset, or
     // nothing (read as UTC).
-    var rest = string.substring(t, 19, string.length(t))
+    var rest = string.drop(t, 19)
     if string.starts_with(rest, "."):
         var i = 1
-        while i < string.length(rest) && ascii.is_digit(string.substring(rest, i, i + 1)):
+        while i < string.char_count(rest) && ascii.is_digit(string.substring(rest, i, i + 1)):
             i = i + 1
         if i == 1:
             return Err("empty fractional seconds in `${t}`")
-        rest = string.substring(rest, i, string.length(rest))
+        rest = string.drop(rest, i)
     if rest == "" || rest == "Z" || rest == "z":
         return Ok(base)
     let sign = string.substring(rest, 0, 1)

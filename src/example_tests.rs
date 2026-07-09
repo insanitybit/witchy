@@ -637,6 +637,21 @@
         );
     }
 
+    /// (BUG-231) Tail slices after a matched prefix are character-indexed. Code
+    /// must derive the start from `char_count`, not `length`'s UTF-8 byte count,
+    /// or non-ASCII keys skip past the value.
+    #[test]
+    fn string_tail_slices_use_character_counts_on_both_backends() {
+        let src = "import string\n\nfn value_after_eq(kv: String, name: String) -> String:\n    if string.starts_with(kv, name + \"=\"):\n        string.drop(kv, string.char_count(name) + 1)\n    else:\n        \"\"\n\nfn main(console: Console):\n    print(console, value_after_eq(\"naïve=x\", \"naïve\"))\n    print(console, string.drop(\"éclair\", 1))\n";
+        let expected = ["x", "clair"];
+        assert_eq!(link_run(src), expected, "interp: char-count tail slice");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: char-count tail slice",
+        );
+    }
+
     /// `string.join` is the module-symmetric inverse of `string.split`, while
     /// the existing `list.join`/`parts.join` spellings remain valid.
     #[test]

@@ -147,11 +147,11 @@ fn sandbox_bootstrap() -> String:
 fn h_proxy(net: Net, upstream: String, base: String) -> fn(Request) -> Response:
     fn(req: Request):
         match req:
+            // SEC-021: query values are forwarded verbatim into the upstream HTTP
+            // request line; a CR/LF would inject headers / smuggle a request. Rune
+            // names/versions never contain control characters, so refuse them.
             Request(_m, _p, _pa, q, _h, _b) ->
                 if query_has_control(q):
-                    // SEC-021: query values are forwarded verbatim into the upstream HTTP
-                    // request line; a CR/LF would inject headers / smuggle a request. Rune
-                    // names/versions never contain control characters, so refuse them.
                     server.bad_request("{\"error\":\"invalid query\"}")
                 else:
                     let qs = encode_query(q)
@@ -357,7 +357,7 @@ fn session_subject(key: Secret, clock: Clock, req: Request) -> String:
         Some(h) -> verify_bearer(key, clock, h)
 
 fn verify_bearer(key: Secret, clock: Clock, header: String) -> String:
-    let bearer = if string.starts_with(header, "Bearer "): string.substring(header, 7, string.length(header)) else: ""
+    let bearer = if string.starts_with(header, "Bearer "): string.drop(header, 7) else: ""
     let parts = string.split(bearer, ".")
     if list.length(parts) != 3:
         ""
@@ -426,7 +426,7 @@ fn cookie_value(cookies: String, name: String) -> String:
     for part in string.split(cookies, ";"):
         let kv = string.trim(part)
         if string.starts_with(kv, name + "="):
-            out = string.substring(kv, string.length(name) + 1, string.length(kv))
+            out = string.drop(kv, string.char_count(name) + 1)
     out
 
 fn cookie_nonce(req: Request) -> String:
@@ -494,11 +494,11 @@ fn github_callback(store: Dir, net: Net, key: Secret, clock: Clock, secrets: Sec
 
 fn github_finish(net: Net, key: Secret, clock: Clock, gh_api: String, token: String) -> Response:
     match oauth.bearer_get_json(net, gh_api + "/user", token):
+        // BUG-410: require a non-empty verified provider identity before minting a session.
+        // An empty `login` (a malformed/mock `/user` response) must NOT become a signed-in
+        // session with an empty subject — fail closed.
         Err(_) -> server.json(502, json.encode(JsonObject([("error", JsonString("user fetch failed"))])))
         Ok(user) ->
-            // BUG-410: require a non-empty verified provider identity before minting a session.
-            // An empty `login` (a malformed/mock `/user` response) must NOT become a signed-in
-            // session with an empty subject — fail closed.
             let login = wa_field(user, "login")
             if login == "":
                 server.json(403, json.encode(JsonObject([("error", JsonString("GitHub identity missing"))])))
@@ -552,12 +552,12 @@ fn email_is_verified(claims: Json) -> Bool:
 
 fn google_finish(key: Secret, clock: Clock, jwks: Json, client_id: String, id_token: String, expected_nonce: String) -> Response:
     match select_and_verify(clock, jwks, client_id, id_token):
+        // SEC-008: the id_token's `nonce` must equal the one we sent (bound to this
+        // session's cookie) — an anti-replay check distinct from the `email_verified`
+        // gate below, which admits only a VERIFIED Google email so an account asserting
+        // an unverified email equal to a maintainer's can't be let in as that maintainer.
         Err(_) -> server.json(403, json.encode(JsonObject([("error", JsonString("id_token rejected"))])))
         Ok(claims) ->
-            // SEC-008: the id_token's `nonce` must equal the one we sent (bound to this
-            // session's cookie) — an anti-replay check distinct from the `email_verified`
-            // gate below, which admits only a VERIFIED Google email so an account asserting
-            // an unverified email equal to a maintainer's can't be let in as that maintainer.
             let email = wa_field(claims, "email")
             if expected_nonce == "" || !ct_eq(wa_field(claims, "nonce"), expected_nonce):
                 server.json(403, json.encode(JsonObject([("error", JsonString("id_token nonce mismatch"))])))

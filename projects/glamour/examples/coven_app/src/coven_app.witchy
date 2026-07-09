@@ -7,16 +7,14 @@
 // the rune holds no Net and no token). This is the trusted shell — XSS-immune by
 // construction; foreign code (the d3 chart) would live in a compartment, never here.
 
-import glamour
 import markdown
-import json
 import list
 import reflect
 from glamour import VNode, Cmd, UiFetch, UiRoute, UiRoot
 from json import Json
 
 type Model:
-    Model(String, String, String)   // route, catalog response, package(doc) response
+    Model(String, String, String)
 
 type Msg derive(Reflect):
     Route(String)
@@ -30,7 +28,7 @@ fn update(m: Model, msg: Msg, fetch: UiFetch, route_cap: UiRoute) -> (Model, Cmd
             match msg:
                 Route(path) ->
                     if string.starts_with(path, "/p/"):
-                        let name = string.substring(path, 3, string.length(path))
+                        let name = string.drop(path, 3)
                         (Model(path, cat, pkg), glamour.http_get(fetch, "/api/coven/doc?name=" + name, "GotPackage"))
                     else:
                         (Model("/", cat, pkg), glamour.http_get(fetch, "/api/coven/catalog", "GotCatalog"))
@@ -56,10 +54,7 @@ fn catalog_view(body: String) -> VNode(Msg):
     for name in catalog_names(body):
         let btn = glamour.element("button", [glamour.prop("class", "rune-name"), glamour.on("click", Goto(name))], [glamour.text(name)])
         items = list.push(items, glamour.keyed(name, glamour.element("li", [glamour.prop("class", "rune-row")], [btn])))
-    glamour.element("section", [glamour.prop("class", "catalog")], [
-        glamour.element("h1", [], [glamour.text("Runes")]),
-        glamour.element("ul", [glamour.prop("class", "rune-list")], items),
-    ])
+    glamour.element("section", [glamour.prop("class", "catalog")], [glamour.element("h1", [], [glamour.text("Runes")]), glamour.element("ul", [glamour.prop("class", "rune-list")], items)])
 
 fn doc_markdown(body: String) -> String:
     match json.decode(body):
@@ -67,10 +62,7 @@ fn doc_markdown(body: String) -> String:
         Err(_e) -> "loading…"
 
 fn package_view(pkg: String) -> VNode(Msg):
-    glamour.element("article", [glamour.prop("class", "package")], [
-        glamour.element("button", [glamour.prop("class", "back"), glamour.on("click", Route("/"))], [glamour.text("← all runes")]),
-        glamour.element("section", [glamour.prop("class", "apidocs")], [markdown.to_vnode(doc_markdown(pkg))]),
-    ])
+    glamour.element("article", [glamour.prop("class", "package")], [glamour.element("button", [glamour.prop("class", "back"), glamour.on("click", Route("/"))], [glamour.text("← all runes")]), glamour.element("section", [glamour.prop("class", "apidocs")], [markdown.to_vnode(doc_markdown(pkg))])])
 
 fn view(m: Model) -> VNode(Msg):
     match m:
@@ -93,7 +85,7 @@ fn model_to_json(m: Model) -> Json:
             JsonObject([("route", JsonString(route)), ("catalog", JsonString(cat)), ("package", JsonString(pkg))])
 
 fn arg_int(j: Json, i: Int) -> Int:
-    match json.get(j, "$values"):
+    match json.get(j, "\$values"):
         Some(arr) ->
             match json.index(arr, i):
                 Some(v) -> json.as_int(v).unwrap_or(0)
@@ -101,7 +93,7 @@ fn arg_int(j: Json, i: Int) -> Int:
         None -> 0
 
 fn arg_str(j: Json, i: Int) -> String:
-    match json.get(j, "$values"):
+    match json.get(j, "\$values"):
         Some(arr) ->
             match json.index(arr, i):
                 Some(v) -> json.as_string(v).unwrap_or("")
@@ -109,7 +101,7 @@ fn arg_str(j: Json, i: Int) -> String:
         None -> ""
 
 fn parse_msg(j: Json) -> Msg:
-    match json.get_string(j, "$variant"):
+    match json.get_string(j, "\$variant"):
         Some(v) ->
             if v == "Goto":
                 Goto(arg_str(j, 0))

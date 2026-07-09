@@ -25,14 +25,14 @@ fn blocks(lines: List(String)) -> List(VNode(msg)):
             i = i + 1
         else if heading_level(line) > 0:
             let lvl = heading_level(line)
-            let body = string.substring(line, lvl + 1, string.length(line))
+            let body = string.drop(line, lvl + 1)
             acc = list.push(acc, glamour.element("h${lvl}", [], inline(body)))
             i = i + 1
         else if string.starts_with(line, "```"):
             // Preserve the fence's INFO STRING (its language) as a `language-<lang>` class on
             // the `<code>`, so a host can find runnable `witchy` blocks and highlight by
             // language — the value is still inert text, so no sink is introduced.
-            let lang = string.trim(string.substring(line, 3, string.length(line)))
+            let lang = string.trim(string.drop(line, 3))
             var code = []
             var j = i + 1
             while j < n && !string.starts_with(list.at(lines, j), "```"):
@@ -46,7 +46,7 @@ fn blocks(lines: List(String)) -> List(VNode(msg)):
             var items = []
             var j = i
             while j < n && is_list_item(list.at(lines, j)):
-                let text = string.substring(list.at(lines, j), 2, string.length(list.at(lines, j)))
+                let text = string.drop(list.at(lines, j), 2)
                 items = list.push(items, glamour.element("li", [], inline(text)))
                 j = j + 1
             acc = list.push(acc, glamour.element("ul", [], items))
@@ -159,28 +159,28 @@ fn inline(s: String) -> List(VNode(msg)):
 // `tag` the wrapping element. An unclosed marker renders as literal text.
 fn span(s: String, at: Int, dlen: Int, marker: String, tag: String, head: List(VNode(msg))) -> List(VNode(msg)):
     let body_start = at + dlen
-    let rest_from_body = string.substring(s, body_start, string.length(s))
+    let rest_from_body = string.drop(s, body_start)
     let close = string.index_of(rest_from_body, marker) ?? -1
     if close < 0:
-        list.concat(head, [glamour.text(string.substring(s, at, string.length(s)))])
+        list.concat(head, [glamour.text(string.drop(s, at))])
     else:
         let body = string.substring(rest_from_body, 0, close)
         let inner = if tag == "code": [glamour.text(body)] else: inline(body)
         let node = glamour.element(tag, [], inner)
-        let rest = string.substring(rest_from_body, close + dlen, string.length(rest_from_body))
+        let rest = string.drop(rest_from_body, close + dlen)
         list.concat(list.concat(head, [node]), inline(rest))
 
 // A `[label](url)` link, with the href scheme-checked. A malformed link renders the
 // `[` as a literal character and continues.
 fn link(s: String, at: Int, head: List(VNode(msg))) -> List(VNode(msg)):
-    let tail = string.substring(s, at, string.length(s))
+    let tail = string.drop(s, at)
     let close_br = string.index_of(tail, "](") ?? -1
     if close_br < 0:
         as_text_bracket(s, at, head)
     else:
         let label = string.substring(tail, 1, close_br)
         let url_start = close_br + 2
-        let rest_tail = string.substring(tail, url_start, string.length(tail))
+        let rest_tail = string.drop(tail, url_start)
         let close_par = string.index_of(rest_tail, ")") ?? -1
         if close_par < 0:
             as_text_bracket(s, at, head)
@@ -188,11 +188,11 @@ fn link(s: String, at: Int, head: List(VNode(msg))) -> List(VNode(msg)):
             let url = string.substring(rest_tail, 0, close_par)
             let node = glamour.element("a", [glamour.prop("href", safe_href(url))], inline(label))
             let consumed = at + url_start + close_par + 1
-            let rest = string.substring(s, consumed, string.length(s))
+            let rest = string.drop(s, consumed)
             list.concat(list.concat(head, [node]), inline(rest))
 
 fn as_text_bracket(s: String, at: Int, head: List(VNode(msg))) -> List(VNode(msg)):
-    list.concat(list.concat(head, [glamour.text("[")]), inline(string.substring(s, at + 1, string.length(s))))
+    list.concat(list.concat(head, [glamour.text("[")]), inline(string.drop(s, at + 1)))
 
 // Neutralize dangerous URL schemes. (BUG-409) This is an ALLOWLIST, not a denylist: only
 // `http`/`https`/`mailto`/`tel` schemes and scheme-less relative URLs pass; every other scheme
@@ -208,13 +208,13 @@ fn safe_href(url: String) -> String:
     else:
         let lower = string.to_lower(trimmed)
         if string.starts_with(lower, "//"):
-            "#"                                     // protocol-relative → off-origin navigation
+            "#"
         else if allowed_scheme(lower):
-            trimmed                                 // http/https/mailto/tel
+            trimmed
         else if has_scheme(trimmed):
-            "#"                                     // any OTHER scheme (allowlist: reject)
+            "#"
         else:
-            trimmed                                 // scheme-less relative: path/#/?/.
+            trimmed
 
 fn allowed_scheme(lower: String) -> Bool:
     string.starts_with(lower, "http://") || string.starts_with(lower, "https://") || string.starts_with(lower, "mailto:") || string.starts_with(lower, "tel:")

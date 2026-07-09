@@ -962,7 +962,7 @@ fn is_attr_name_end(c: String) -> Bool:
 
 fn hole_attr(name: String, idx: Int) -> HAttr:
     if string.starts_with(name, "on:"):
-        HOn(string.substring(name, 3, string.length(name)), idx)
+        HOn(string.drop(name, 3), idx)
     else:
         HProp(name, idx)
 

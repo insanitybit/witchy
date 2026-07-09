@@ -25,7 +25,7 @@ type Msg derive(Reflect):
 // The slug for a route: `/p/<slug>` -> `<slug>`; anything else is the home page.
 fn slug_of(route: String) -> String:
     if string.starts_with(route, "/p/"):
-        string.substring(route, 3, string.length(route))
+        string.drop(route, 3)
     else:
         "introduction"
 
@@ -69,14 +69,14 @@ fn nav_pages(nav: List(Nav)) -> List((String, String)):
 
 fn update(m: Model, msg: Msg, fetch: UiFetch, route_cap: UiRoute) -> (Model, Cmd(Msg)):
     match m:
+        // A sidebar click is a real navigation; the shell echoes it back as `Route`.
+
+        // The route changed: fetch that page. On the FIRST route (no nav yet) also
+        // fetch SUMMARY.md, batched — the host performs both (it holds the Net).
         Model(route, summary, content) ->
             match msg:
                 Visit(path) -> (m, glamour.navigate(route_cap, path))
                 Route(path) ->
-                    // A sidebar click is a real navigation; the shell echoes it back as `Route`.
-
-                    // The route changed: fetch that page. On the FIRST route (no nav yet) also
-                    // fetch SUMMARY.md, batched — the host performs both (it holds the Net).
                     let slug = slug_of(path)
                     let page = glamour.http_get(fetch, "/content/" + slug + ".md", "GotPage")
                     let cmd = if string.is_empty(summary): Batch([glamour.http_get(fetch, "/content/SUMMARY.md", "GotNav"), page]) else: page
@@ -162,6 +162,15 @@ fn runnable_markdown(md: String) -> VNode(Msg):
 
 fn to_runnable(block: VNode(Msg)) -> VNode(Msg):
     match block:
+        // A Run cell ONLY where the snippet actually runs in the cell;
+        // a capability example is highlighted static code (no Run
+        // button, so no misleading "capability denied" error).
+
+        // The fence body NAMES a bundled demo app; the host mounts it
+        // live (via the book's own glamour-dom runtime, network denied).
+
+        // `text` (program output / diagrams) and untagged fences stay
+        // as plain styled blocks — not code to syntax-highlight.
         Element(tag, _attrs, kids) ->
             if tag == "pre" && list.length(kids) == 1:
                 match list.at(kids, 0):
@@ -170,9 +179,6 @@ fn to_runnable(block: VNode(Msg)) -> VNode(Msg):
                             let code = code_text(ckids)
                             let lang = code_language(cattrs)
                             if lang == "witchy":
-                                // A Run cell ONLY where the snippet actually runs in the cell;
-                                // a capability example is highlighted static code (no Run
-                                // button, so no misleading "capability denied" error).
                                 let kind = if runs_in_browser(code): "witchy-runnable" else: "witchy-static"
                                 glamour.slot(kind, code)
                             else if lang == "sh":
@@ -180,12 +186,8 @@ fn to_runnable(block: VNode(Msg)) -> VNode(Msg):
                             else if lang == "toml":
                                 glamour.slot("toml-static", code)
                             else if lang == "glamour-app":
-                                // The fence body NAMES a bundled demo app; the host mounts it
-                                // live (via the book's own glamour-dom runtime, network denied).
                                 glamour.slot("glamour-app", string.trim(code))
                             else:
-                                // `text` (program output / diagrams) and untagged fences stay
-                                // as plain styled blocks — not code to syntax-highlight.
                                 block
                         else:
                             block
@@ -216,7 +218,7 @@ fn attr_language(a: Attr(Msg)) -> String:
     match a:
         Prop(name, value) ->
             if name == "class" && string.starts_with(value, "language-"):
-                string.substring(value, 9, string.length(value))
+                string.drop(value, 9)
             else:
                 ""
         On(_e, _m) -> ""

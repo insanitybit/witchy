@@ -55,7 +55,7 @@ pub fn replace_all(pattern: String, text: String, replacement: String) -> String
         let (s, e) = span
         out = out + string.substring(text, prev, s) + replacement
         prev = e
-    out + string.substring(text, prev, string.length(text))
+    out + string.drop(text, prev)
 
 // `text` split on every match: split(",\\s*", "a, b,c") is ["a", "b", "c"].
 pub fn split(pattern: String, text: String) -> List(String):
@@ -65,4 +65,4 @@ pub fn split(pattern: String, text: String) -> List(String):
         let (s, e) = span
         out = list.push(out, string.substring(text, prev, s))
         prev = e
-    list.push(out, string.substring(text, prev, string.length(text)))
+    list.push(out, string.drop(text, prev))

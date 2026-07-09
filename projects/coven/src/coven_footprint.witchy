@@ -70,10 +70,10 @@ fn scan_compartments(s: String) -> List(String):
     if i < 0:
         []
     else:
-        let after = string.substring(s, i + string.length(marker), string.length(s))
+        let after = string.drop(s, i + string.char_count(marker))
         let close = string.index_of(after, "\"") ?? -1
         if close < 0:
             []
         else:
             let id = string.substring(after, 0, close)
-            list.push(scan_compartments(string.substring(after, close, string.length(after))), id)
+            list.push(scan_compartments(string.drop(after, close)), id)

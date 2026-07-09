@@ -19,7 +19,7 @@ pub fn wrap(text: String, width: Int) -> List(String):
     for word in string.words(text):
         if string.length(current) == 0:
             current = word
-        else if string.length(current) + 1 + string.length(word) <= width:
+        else if string.char_count(current) + 1 + string.char_count(word) <= width:
             current = current + " " + word
         else:
             lines = list.push(lines, current)

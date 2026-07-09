@@ -21,7 +21,7 @@ pub fn run(e: Exec, dir: Dir[Read], path: String, args: List(String), stdin: Str
     let payload = exec(e, dir, path, joined, stdin)
     let nl = string.index_of(payload, "\n") ?? -1
     let code = string.to_int(string.substring(payload, 0, nl))
-    let output = string.substring(payload, nl + 1, string.length(payload))
+    let output = string.drop(payload, nl + 1)
     (code, output)
 
 // Run `path` with `args` and no stdin — the common case.
