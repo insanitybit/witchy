@@ -262,7 +262,7 @@ fn wa_do_promote(store: Dir, net: Net, upstream: String, origin: String, rp_id: 
             server.json(403, "{\"error\":\"challenge is not bound to this promote\"}")
         else:
             match webauthn.verify_assertion(pk, wa_field(doc, "authData"), wa_field(doc, "clientData"), wa_field(doc, "signature"), ch_b64, origin, rp_id, true):
-                Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("2FA failed: " + reason))])))
+                Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("2FA failed: " + webauthn.assertion_error_message(reason)))])))
                 Ok(_) ->
                     store.write("_wa_challenge.json", "{}")
                     let body = json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version)), ("second_factor", JsonString("webauthn")), ("promoted_by", JsonString(promoter))]))
@@ -299,7 +299,7 @@ fn wa_do_yank(store: Dir, net: Net, upstream: String, origin: String, rp_id: Str
             server.json(403, "{\"error\":\"challenge is not bound to this yank\"}")
         else:
             match webauthn.verify_assertion(pk, wa_field(doc, "authData"), wa_field(doc, "clientData"), wa_field(doc, "signature"), ch_b64, origin, rp_id, true):
-                Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("2FA failed: " + reason))])))
+                Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("2FA failed: " + webauthn.assertion_error_message(reason)))])))
                 Ok(_) ->
                     store.write("_wa_challenge.json", "{}")
                     let body = json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version))]))
@@ -394,7 +394,7 @@ fn wa_do_login(store: Dir, key: Secret, clock: Clock, origin: String, rp_id: Str
             server.json(403, "{\"error\":\"challenge is not bound to sign-in\"}")
         else:
             match webauthn.verify_assertion(pk, wa_field(doc, "authData"), wa_field(doc, "clientData"), wa_field(doc, "signature"), ch_b64, origin, rp_id, true):
-                Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("sign-in failed: " + reason))])))
+                Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("sign-in failed: " + webauthn.assertion_error_message(reason)))])))
                 Ok(_) ->
                     store.write("_wa_challenge.json", "{}")
                     let (tok, exp) = issue_session(key, clock, "passkey")

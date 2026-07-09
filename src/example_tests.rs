@@ -2713,24 +2713,30 @@ fn main(console: Console):
     let malformed = crypto.sha256(rp) + "zz00000000"
     match webauthn.verify_assertion("00", malformed, client, "00", "c", "https://example.com", rp, true):
         Ok(v) -> console.print("ok ${v}")
-        Err(e) -> console.print(e)
+        Err(e) ->
+            match e:
+                webauthn.AuthenticatorDataHex(_) -> console.print("typed")
+                _ -> console.print("wrong")
+            console.print(webauthn.assertion_error_message(e))
 "#;
 
         let interp = link_run(src);
-        assert_eq!(interp.len(), 1, "interpreter produced unexpected output: {interp:?}");
+        assert_eq!(interp.len(), 2, "interpreter produced unexpected output: {interp:?}");
+        assert_eq!(interp[0], "typed", "interpreter must expose typed malformed-authenticatorData error");
         assert!(
-            interp[0].starts_with("authenticatorData is not valid hex:"),
+            interp[1].starts_with("authenticatorData is not valid hex:"),
             "interpreter must reject malformed authenticatorData as malformed hex: {interp:?}"
         );
         assert!(
-            !interp[0].contains("user-presence flag not set"),
+            !interp[1].contains("user-presence flag not set"),
             "interpreter must not report a semantic flag error for malformed hex: {interp:?}"
         );
 
         let wasm = run_linked_on_wasm(&[("main", src)], "main");
-        assert_eq!(wasm.len(), 1, "WASM produced unexpected output: {wasm:?}");
+        assert_eq!(wasm.len(), 2, "WASM produced unexpected output: {wasm:?}");
+        assert_eq!(wasm[0], "typed", "WASM must expose typed malformed-authenticatorData error");
         assert!(
-            wasm[0].starts_with("authenticatorData is not valid hex:"),
+            wasm[1].starts_with("authenticatorData is not valid hex:"),
             "WASM must reject malformed authenticatorData as malformed hex: {wasm:?}"
         );
         assert!(
@@ -3993,10 +3999,10 @@ fn main(console: Console):
         let prog = |ad: &str, sig: &str, uv: &str| {
             format!(
 "import webauthn
-fn show(r: Result(Bool, String)) -> String:
+fn show(r: Result(Bool, webauthn.AssertionError)) -> String:
     match r:
         Ok(_) -> \"ok\"
-        Err(e) -> e
+        Err(e) -> webauthn.assertion_error_message(e)
 fn main(console: Console):
     console.print(show(webauthn.verify_assertion(\"{pubkey}\", \"{ad}\", \"{client}\", \"{sig}\", \"dGVzdC1jaGFsbGVuZ2U\", \"https://coven.example\", \"coven.example\", {uv})))
 "

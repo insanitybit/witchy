@@ -2951,7 +2951,27 @@ webauthn — server-side verification of a WebAuthn *assertion* (the credential 
 
 The browser hands every BINARY value to the server HEX-ENCODED (it holds them as ArrayBuffers, so this is free). The server then INDEPENDENTLY re-derives and checks everything that matters — it trusts none of the client's interpretation:   * clientDataJSON.type == "webauthn.get"   * clientDataJSON.challenge == the exact challenge the server issued (anti-replay)   * clientDataJSON.origin == the expected origin (anti-phishing)   * authenticatorData.rpIdHash == SHA-256(expected RP id) (wrong relying party)   * the user-presence (and, for 2FA, user-verification) flags are set   * the ECDSA-P256 signature over `authenticatorData || SHA256(clientDataJSON)`     verifies under the public key bound to this credential at registration. A forged or replayed assertion fails one of these and is rejected here.
 
-#### `fn verify_assertion(stored_pubkey_hex: String, auth_data_hex: String, client_data_json: String, signature_hex: String, expected_challenge: String, expected_origin: String, expected_rp_id: String, require_uv: Bool) -> Result(Bool, String)`
+#### `type AssertionError`
 
-Verify an assertion. All `*_hex` arguments are hex-encoded bytes; `client_data_json` is the exact clientDataJSON text the browser signed over (it must be re-hashed verbatim, never re-serialized). `require_uv` demands user verification — pass `true` for a genuine second-factor gate. Returns `Ok(true)` when every check passes, or `Err(reason)`.
+Matchable assertion-verification failures. Malformed wire inputs are distinct from semantic rejection of a well-formed but replayed, phishing, or forged assertion.
+
+- `ClientDataJson(String)`
+- `WrongClientType`
+- `ChallengeMismatch`
+- `OriginMismatch`
+- `AuthenticatorDataHex(String)`
+- `AuthenticatorDataTooShort`
+- `RpIdHashMismatch`
+- `UserPresenceRequired`
+- `UserVerificationRequired`
+- `SignatureInputMalformed(String)`
+- `SignatureInvalid`
+
+#### `fn assertion_error_message(e: AssertionError) -> String`
+
+Human-readable assertion failure text for logs and HTTP responses.
+
+#### `fn verify_assertion(stored_pubkey_hex: String, auth_data_hex: String, client_data_json: String, signature_hex: String, expected_challenge: String, expected_origin: String, expected_rp_id: String, require_uv: Bool) -> Result(Bool, AssertionError)`
+
+Verify an assertion. All `*_hex` arguments are hex-encoded bytes; `client_data_json` is the exact clientDataJSON text the browser signed over (it must be re-hashed verbatim, never re-serialized). `require_uv` demands user verification — pass `true` for a genuine second-factor gate. Returns `Ok(true)` when every check passes, or a typed `Err`.
 
