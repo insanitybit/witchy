@@ -104,6 +104,11 @@ analyzer (`crates/witchy-caps/src/capabilities.rs`), the runtime gating
 [spec/capabilities.md](spec/capabilities.md) together — and add an
 *enforcement* test (an ungranted module must fail to instantiate).
 
+Terminology in docs and diagnostics: a **capability** is the unforgeable
+value (`Console`, `Dir`); a **right** is a permission within one
+(`Dir[Read]`); a **verb** is an operation checked against rights (`read`,
+`connect`). Don't use the three interchangeably.
+
 ## Adding a semantic
 
 For a new value type, binary operator, builtin, host import, or runtime trap,

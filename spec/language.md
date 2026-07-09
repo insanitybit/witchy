@@ -16,6 +16,24 @@ Companion documents: [capabilities.md](capabilities.md) (the security model),
 [stdlib.md](stdlib.md) (the module-by-module API), [architecture.md](architecture.md)
 (how the compiler is built).
 
+**Index:**
+[1. Lexical structure](#1-lexical-structure) ·
+[2. Types](#2-types) ·
+[3. Bindings and assignment](#3-bindings-and-assignment) ·
+[4. Expressions and operators](#4-expressions-and-operators) ·
+[5. Control flow](#5-control-flow) ·
+[6. Pattern matching](#6-pattern-matching) ·
+[7. Functions](#7-functions) ·
+[8. Generics and traits](#8-generics-and-traits) ·
+[9. Errors, `Option`/`Result`, and failure](#9-errors-optionresult-and-failure) ·
+[10. Comprehensions](#10-comprehensions) ·
+[11. Generators](#11-generators) ·
+[12. Modules and the standard library](#12-modules-and-the-standard-library) ·
+[13. Entry point](#13-entry-point) ·
+[14. Concurrency](#14-concurrency-async-spawn-and-channels) ·
+[15. In-language tests](#15-in-language-tests) ·
+[16. Semantics guarantees](#16-semantics-guarantees-the-parity-contract)
+
 ## 1. Lexical structure
 
 **Layout.** Blocks are indentation-delimited (the off-side rule), opened by a
@@ -123,7 +141,41 @@ record (overrides first, then `..base`).
 `Option(a)` (`Some(x)` / `None`) and `Result(a, e)` (`Ok(x)` / `Err(e)`) come
 from `import option` / `import result`.
 
-**Type aliases.** `type Id = Int` names a type without creating a new one.
+**Type aliases.** `type X = …` names a shape without creating a new type —
+`type Id = Int` makes `Id` and `Int` fully interchangeable, and the alias may
+be generic (`type Pair(a) = (a, a)`; `Pair(Int)` is `(Int, Int)`). The `=` vs
+`:` distinction is the rule to remember: **`type X = …` names a shape and
+never mints a type; `type X: …` mints a nominal type with constructors** —
+only the latter can be sealed, carry `impl`s, or hold an invariant. Alias
+cycles are a link-time error.
+
+**Sealed types.** Prefixing a declaration with `sealed` makes construction the
+private business of the defining module: outside code cannot call the data
+constructor and must go through the module's public functions — so those
+"smart constructors" are the one place an invariant is established, and a
+value of the type is *proof* the invariant holds. Sealing restricts
+**construction only**: field reads and `match` work from anywhere.
+
+```witchy
+sealed type Percent:
+    value: Int
+
+// The one choke point: every Percent in the program came through here,
+// so `0 <= value <= 100` holds everywhere without re-checking.
+pub fn percent(n: Int) -> Percent:
+    if n < 0: Percent(0) else if n > 100: Percent(100) else: Percent(n)
+
+fn main(console: Console):
+    let p = percent(140)
+    print(console, "${p.value}")
+```
+
+This is the same mechanism that makes capabilities unforgeable (only the host
+mints a `Net`); `sealed type` opens it to your own types, and the standard
+library uses it widely — `Set` (distinct members), `semver.Version`
+(non-negative components), `time.DateTime` (a real calendar date). See
+[capabilities.md](capabilities.md) for the capability-specific form
+(`capability X from U`).
 
 ## 3. Bindings and assignment
 

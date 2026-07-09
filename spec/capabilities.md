@@ -32,6 +32,13 @@ The consequence: **a function with no capability parameters provably has no
 effects**, and a function with `Dir[Read]` provably cannot write a file. You
 audit witchy code by reading signatures, not by tracing call graphs.
 
+**Vocabulary.** Three words are used precisely throughout the docs: a
+**capability** is the unforgeable value itself (`Console`, `Dir`, `Net`); a
+**right** is a permission parameter *within* one (`Dir[Read]` grants the
+`Read` right); a **verb** is an operation checked against rights (`read`,
+`write`, `connect`). So `Dir[Read]` is a capability carrying one right, and
+`read(dir, path)` is a verb that requires it.
+
 ## The capability types
 
 | Type | Grants | Operations |
