@@ -8,12 +8,12 @@ tracking: >
   Error, and ? accepts/lowers Result(_, Ein) -> Result(_, Eout) through an
   ordinary From(Ein) for Eout impl. std/json and std/toml now expose typed
   decode-error values; std/crypto, std/webauthn, and std/jwt expose typed
-  trust-boundary verification errors; the package manager's TUF pinning and
-  verified registry-record footprint gates use typed errors internally, and
-  Coven maintainer-policy state has a typed corruption error. All convert to
-  String through From at existing application boundaries. Remaining 0.1 work:
-  finish or explicitly defer typed errors for other package-manager trust
-  boundaries.
+  trust-boundary verification errors; the package manager's TUF pinning,
+  verified registry-record footprint, and lock snapshot-pin gates use typed
+  errors internally, and Coven maintainer-policy state has a typed corruption
+  error. All convert to String through From at existing application boundaries.
+  Remaining 0.1 work: finish or explicitly defer typed errors for other
+  package-manager trust boundaries.
 ---
 
 # RFC-0054: Structured errors (design-first)
@@ -250,7 +250,9 @@ bad signature, coordinate mismatch, malformed JSON, missing/non-array
 `runtime_footprint`, and non-string footprint elements. Coven maintainer-policy
 state uses `coven_trust.TrustPolicyError` for invalid JSON, non-array policy
 state, and non-string maintainer entries before the server maps corruption to a
-500 `CovenError`.
+500 `CovenError`. The PM lockfile's `registry_snapshot_version` parser now
+returns a local `LockPinError` for non-integer or negative pins before `pm verify`
+renders the existing `BLOCK:` diagnostic.
 
 This does not complete the RFC. The remaining release-blocking work is the std
 and core-library migration: other package-manager trust boundaries still need

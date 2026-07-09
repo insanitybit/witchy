@@ -745,6 +745,40 @@ fn tuf_chain_verified_and_snapshot_tamper_rejected() {
     assert!(stdout(&out).contains("FAIL"), "verify out: {}", stdout(&out));
 }
 
+/// A hand-edited lockfile snapshot pin is a package-manager diagnostic, not a
+/// trap or a value that flows into TUF rollback comparison.
+#[test]
+fn witchy_pm_verify_rejects_malformed_registry_snapshot_pin() {
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "badpin");
+    let app = fe.new_app();
+    fe.published_lib("acme/badpin", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
+    let out = fe.pm(&app, &["add", "acme/badpin"], None);
+    assert!(out.status.success(), "add failed: {}\n{}", stderr(&out), stdout(&out));
+
+    let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
+    let corrupted = lock
+        .lines()
+        .map(|l| {
+            if l.trim_start().starts_with("registry_snapshot_version") {
+                "registry_snapshot_version = nope".to_string()
+            } else {
+                l.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(app.join("witchy.lock"), corrupted).unwrap();
+
+    let out = fe.pm(&app, &["verify"], None);
+    assert!(!out.status.success(), "malformed pin must fail verify");
+    assert!(
+        stdout(&out).contains("BLOCK: invalid witchy.lock registry_snapshot_version `nope` (not an integer)"),
+        "out: {}",
+        stdout(&out)
+    );
+}
+
 /// BUG-386: a TUF role can be validly signed yet structurally incomplete. The
 /// verifier must reject that before old defaulting helpers can turn absent fields
 /// into `0`, `""`, or `JsonNull`.

@@ -1264,8 +1264,8 @@ fn verify_tuf(console: Console, net: Net, root: Dir, env: Env, clock: Clock, dir
         // internal `string.to_int` runtime abort.
 
         // No registry deps were added (no pinned snapshot) — nothing to verify.
-        Err(msg) ->
-            console.print("BLOCK: " + msg)
+        Err(e) ->
+            console.print("BLOCK: " + lock_pin_error_message(e))
             2
         Ok(pinned) ->
             if pinned < 0:
@@ -1480,16 +1480,35 @@ fn timestamp_schema_ok(envelope: String) -> Bool:
 // registry deps), `Ok(n)` for a valid non-negative pin, or `Err` for a malformed
 // pin. Parsed through the total `string.parse_int` so a corrupt or hand-edited
 // lockfile yields a diagnostic rather than a `string.to_int` trap (BUG-204).
-fn pinned_snapshot_version(lock: String) -> Result(Int, String):
+fn pinned_snapshot_version(lock: String) -> Result(Int, LockPinError):
     match toml.get(lock, "registry_snapshot_version"):
         None -> Ok(-1)
         Some(v) -> match string.parse_int(v):
             Some(n) ->
                 if n < 0:
-                    Err("invalid witchy.lock registry_snapshot_version `" + v + "` (must not be negative)")
+                    Err(LockPinNegative(v))
                 else:
                     Ok(n)
-            None -> Err("invalid witchy.lock registry_snapshot_version `" + v + "` (not an integer)")
+            None -> Err(LockPinNotInteger(v))
+
+type LockPinError:
+    LockPinNegative(String)
+    LockPinNotInteger(String)
+
+fn lock_pin_error_message(e: LockPinError) -> String:
+    match e:
+        LockPinNegative(v) -> "invalid witchy.lock registry_snapshot_version `" + v + "` (must not be negative)"
+        LockPinNotInteger(v) -> "invalid witchy.lock registry_snapshot_version `" + v + "` (not an integer)"
+
+impl Show for LockPinError:
+    fn show(self) -> String:
+        lock_pin_error_message(self)
+
+impl Error for LockPinError
+
+impl From(LockPinError) for String:
+    fn from(value: LockPinError) -> Self:
+        lock_pin_error_message(value)
 
 // The `registry_rootpub` (Ed25519 root public key hex) pinned in the lock, or "" if
 // none — older locks predate the pin and fall back to trust-on-first-use. (SEC-002)
