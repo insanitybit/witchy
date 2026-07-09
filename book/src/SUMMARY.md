@@ -29,6 +29,7 @@
   - [Build Steps: `build.witchy`](packages-build.md)
 - [Frontend Apps with Glamour](frontend.md)
 - [Under the Hood: Two Backends, One Meaning](backends.md)
+- [Idiomatic witchy](idioms.md)
 - [Testing](testing.md)
 
 ---

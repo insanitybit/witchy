@@ -982,6 +982,76 @@
   },
   {
     "block": 1,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/idioms.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "dialing example.com:8080",
+      "dialing example.com:8080"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 2,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/idioms.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "[1, 4, 9] 2"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 3,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/idioms.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "example.com:8080",
+      "bad endpoint: `banana` is not a number"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 4,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/idioms.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "[9, 1, 1, 25, 81]",
+      "true",
+      "23"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 5,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/idioms.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "ada",
+      "3"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 1,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/introduction.md",
