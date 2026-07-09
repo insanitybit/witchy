@@ -84,7 +84,14 @@ impl RegistryServer {
             .port();
         let addr = format!("127.0.0.1:{port}");
 
-        let child = Command::new(BIN)
+        // Capture the server's stderr to a file rather than discarding it, so a
+        // readiness-timeout panic can report WHY (a crash / port race) instead of
+        // a bare "never started" after 2 minutes — the long-flaky coven-serve e2e
+        // gave no diagnostics because stderr went to /dev/null. Diagnostics only:
+        // no timing or parallelism change.
+        let errlog = regroot.join("coven-serve.stderr");
+        let errfile = std::fs::File::create(&errlog).expect("create server stderr log");
+        let mut child = Command::new(BIN)
             .args([
                 "coven-serve",
                 "--addr",
@@ -98,7 +105,7 @@ impl RegistryServer {
             ])
             .env("WITCHY_HOME", &home)
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::from(errfile))
             .spawn()
             .expect("spawn coven-serve");
 
@@ -111,7 +118,25 @@ impl RegistryServer {
             }
             std::thread::sleep(std::time::Duration::from_millis(SERVER_START_POLL_MS));
         }
-        assert!(up, "witchy coven-serve never started listening on {addr}");
+        if !up {
+            // Distinguish a crash (child already exited, with its stderr) from a
+            // genuine slow-bind (still running past the readiness window).
+            let exited = child.try_wait().ok().flatten();
+            let stderr = std::fs::read_to_string(&errlog).unwrap_or_default();
+            let stderr = stderr.trim();
+            let detail = match exited {
+                Some(status) => format!("child EXITED with {status} before binding"),
+                None => "child still running (slow bind under load, or wedged)".to_string(),
+            };
+            panic!(
+                "witchy coven-serve never started listening on {addr} — {detail}{}",
+                if stderr.is_empty() {
+                    " (no stderr captured)".to_string()
+                } else {
+                    format!("\n--- coven-serve stderr ---\n{stderr}")
+                }
+            );
+        }
 
         RegistryServer {
             child,
