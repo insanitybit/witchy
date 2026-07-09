@@ -85,3 +85,33 @@ fn fmt_preserves_trailing_comments() {
     let _ = std::fs::remove_dir_all(&work);
     assert!(got.contains("let x = 1 // keep me"), "trailing comment lost: {got}");
 }
+
+#[test]
+fn fmt_cap_methods_rewrites_legacy_cap_ops() {
+    let work = std::env::temp_dir().join(format!("witchy-fmt-cap-methods-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+
+    let file = work.join("p.witchy");
+    let src = "fn main(console: Console, dir: Dir):\n    print(console, read(dir.read_file(\"note.txt\")))\n";
+    std::fs::write(&file, src).unwrap();
+
+    let check = Command::new(BIN)
+        .args(["fmt", "--check", "--cap-methods", file.to_str().unwrap()])
+        .output()
+        .expect("spawn witchy fmt --check --cap-methods");
+    assert!(!check.status.success(), "legacy cap spelling should fail migration check");
+
+    let out = Command::new(BIN)
+        .args(["fmt", "--cap-methods", file.to_str().unwrap()])
+        .output()
+        .expect("spawn witchy fmt --cap-methods");
+    assert!(
+        out.status.success(),
+        "witchy fmt --cap-methods should exit 0: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let got = std::fs::read_to_string(&file).unwrap();
+    let _ = std::fs::remove_dir_all(&work);
+    assert!(got.contains("console.print(dir.read_file(\"note.txt\").read())"), "{got}");
+}

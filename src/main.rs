@@ -69,7 +69,8 @@ USAGE:
     witchy caps     [file.witchy]                 report the capability footprint (defaults to the project entry)
     witchy caps-diff <old.witchy> <new.witchy>    fail if the footprint widened
     witchy which    <name>                        find a function in the standard library by (partial) name
-    witchy fmt [--check] <file.witchy>            reformat in place (--check: verify only, exit 1 if not)
+    witchy fmt [--check] [--cap-methods] <file.witchy>
+                                                   reformat in place (--check: verify only, --cap-methods: RFC-0076 migration)
     witchy lsp                                    run the language server
 
 Package commands: new, init, add, build, run [args...], update, audit, tree,
@@ -975,23 +976,36 @@ fn main() -> wasmtime::Result<()> {
     }
     // `witchy fmt <file>` rewrites a source file in canonical brace-free form.
     if std::env::args().nth(1).as_deref() == Some("fmt") {
-        // `witchy fmt [--check] <file.witchy>...` formats (or, with `--check`,
-        // verifies) EVERY file argument — a shell glob like `witchy fmt std/*.witchy`
+        // `witchy fmt [--check] [--cap-methods] <file.witchy>...` formats (or,
+        // with `--check`, verifies) EVERY file argument — a shell glob like
+        // `witchy fmt std/*.witchy`
         // expands to many paths, and silently dropping all but the first was a
         // no-op that made callers believe files were formatted (BUG-012).
         // `--check` verifies without rewriting (for CI): exit 1 if any file would
         // change; otherwise 0. Every file is processed even if an earlier one
         // fails, and the exit code is 1 iff any file failed.
-        let check = std::env::args().nth(2).as_deref() == Some("--check");
-        let paths: Vec<String> = std::env::args().skip(if check { 3 } else { 2 }).collect();
+        let mut check = false;
+        let mut cap_methods = false;
+        let mut paths = Vec::new();
+        for arg in std::env::args().skip(2) {
+            match arg.as_str() {
+                "--check" => check = true,
+                "--cap-methods" => cap_methods = true,
+                _ => paths.push(arg),
+            }
+        }
         if paths.is_empty() {
-            eprintln!("usage: witchy fmt [--check] <file.witchy>...");
+            eprintln!("usage: witchy fmt [--check] [--cap-methods] <file.witchy>...");
             std::process::exit(1);
         }
         let mut failed = false;
         for path in &paths {
             match std::fs::read_to_string(path) {
-                Ok(src) => match format::reformat(&src) {
+                Ok(src) => match if cap_methods {
+                    format::reformat_cap_methods(&src)
+                } else {
+                    format::reformat(&src)
+                } {
                     Some(out) => {
                         if check {
                             if out != src {

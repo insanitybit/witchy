@@ -1802,6 +1802,31 @@ fn local_fn(name: &str) -> bool {
     LOCAL_FNS.with(|s| s.borrow().contains(name))
 }
 
+fn seed_local_fns(module: &Module) {
+    LOCAL_FNS.with(|s| {
+        let mut s = s.borrow_mut();
+        s.clear();
+        for it in &module.items {
+            match it {
+                Item::Function(f) => {
+                    s.insert(f.name.clone());
+                }
+                Item::Impl(i) => {
+                    for m in &i.methods {
+                        s.insert(m.name.clone());
+                    }
+                }
+                Item::Trait(t) => {
+                    for m in &t.methods {
+                        s.insert(m.name.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
+}
+
 // --- Round-trip canonicalization -----------------------------------------
 //
 // The semantic guard in `reformat` compares the input AST to the output's,
@@ -1982,34 +2007,162 @@ fn canon_expr(e: &mut Expr) {
     }
 }
 
+fn rewrite_cap_method_module(m: &mut Module) {
+    seed_local_fns(m);
+    for it in &mut m.items {
+        match it {
+            Item::Function(f) => rewrite_cap_method_block(&mut f.body),
+            Item::Const { value, .. } => rewrite_cap_method_expr(value),
+            Item::Trait(t) => {
+                for method in &mut t.methods {
+                    if let Some(body) = &mut method.default {
+                        rewrite_cap_method_block(body);
+                    }
+                }
+            }
+            Item::Impl(im) => {
+                for method in &mut im.methods {
+                    rewrite_cap_method_block(&mut method.body);
+                }
+            }
+            Item::Comptime(body) => rewrite_cap_method_block(body),
+            Item::Type(_) | Item::TypeAlias { .. } => {}
+        }
+    }
+}
+
+fn rewrite_cap_method_block(b: &mut Block) {
+    for stmt in &mut b.stmts {
+        match stmt {
+            Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetPattern { value, .. } => {
+                rewrite_cap_method_expr(value)
+            }
+            Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => rewrite_cap_method_expr(e),
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+fn rewrite_cap_method_expr(e: &mut Expr) {
+    match e {
+        Expr::Call { name, args } => {
+            for arg in args.iter_mut() {
+                rewrite_cap_method_expr(arg);
+            }
+            if !name.contains('.')
+                && !local_fn(name)
+                && crate::cap_ops::is_op_name(name)
+                && !args.is_empty()
+            {
+                let receiver = Box::new(args.remove(0));
+                let method = name.clone();
+                let rest = std::mem::take(args);
+                *e = Expr::MethodCall {
+                    receiver,
+                    method,
+                    args: rest,
+                };
+            }
+        }
+        Expr::LabeledCall { args, .. } => {
+            for (_, arg) in args {
+                rewrite_cap_method_expr(arg);
+            }
+        }
+        Expr::List(xs) | Expr::Tuple(xs) | Expr::Ctor { args: xs, .. } => {
+            for x in xs {
+                rewrite_cap_method_expr(x);
+            }
+        }
+        Expr::Apply { func, args } => {
+            rewrite_cap_method_expr(func);
+            for x in args {
+                rewrite_cap_method_expr(x);
+            }
+        }
+        Expr::Unary { expr, .. }
+        | Expr::Try(expr)
+        | Expr::As { expr, .. }
+        | Expr::Field { base: expr, .. } => rewrite_cap_method_expr(expr),
+        Expr::Binary { lhs, rhs, .. } => {
+            rewrite_cap_method_expr(lhs);
+            rewrite_cap_method_expr(rhs);
+        }
+        Expr::Range { lo, hi, .. } => {
+            rewrite_cap_method_expr(lo);
+            rewrite_cap_method_expr(hi);
+        }
+        Expr::Index { base, index } => {
+            rewrite_cap_method_expr(base);
+            rewrite_cap_method_expr(index);
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            rewrite_cap_method_expr(receiver);
+            for a in args {
+                rewrite_cap_method_expr(a);
+            }
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            rewrite_cap_method_expr(scrutinee);
+            rewrite_cap_method_block(body);
+        }
+        Expr::Lambda { body, .. } => rewrite_cap_method_block(body),
+        Expr::RecordUpdate { name: _, base, fields } => {
+            rewrite_cap_method_expr(base);
+            for (_, v) in fields {
+                rewrite_cap_method_expr(v);
+            }
+        }
+        Expr::Record { fields, spread, .. } => {
+            for (_, v) in fields {
+                rewrite_cap_method_expr(v);
+            }
+            if let Some(s) = spread {
+                rewrite_cap_method_expr(s);
+            }
+        }
+        Expr::If { cond, then_block, else_block } => {
+            rewrite_cap_method_expr(cond);
+            rewrite_cap_method_block(then_block);
+            if let Some(b) = else_block {
+                rewrite_cap_method_block(b);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            rewrite_cap_method_expr(scrutinee);
+            for a in arms {
+                if let Some(g) = &mut a.guard {
+                    rewrite_cap_method_expr(g);
+                }
+                rewrite_cap_method_expr(&mut a.body);
+            }
+        }
+        Expr::Block(b) => rewrite_cap_method_block(b),
+        Expr::While { cond, body } => {
+            rewrite_cap_method_expr(cond);
+            rewrite_cap_method_block(body);
+        }
+        Expr::For { iter, body, .. } => {
+            rewrite_cap_method_expr(iter);
+            rewrite_cap_method_block(body);
+        }
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Duration(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::TaggedLit { .. }
+        | Expr::Var(_) => {}
+    }
+}
+
 /// Reformat witchy source (brace or off-side) as canonical brace-free source,
 /// returning `None` unless the output re-parses and formats to itself
 /// (idempotence). That guard makes the printer safe to apply in bulk: anything
 /// it cannot yet render faithfully is simply left untouched.
 pub fn reformat(src: &str) -> Option<String> {
     let original = crate::parser::parse_module(src).ok()?;
-    LOCAL_FNS.with(|s| {
-        let mut s = s.borrow_mut();
-        s.clear();
-        for it in &original.items {
-            match it {
-                Item::Function(f) => {
-                    s.insert(f.name.clone());
-                }
-                Item::Impl(i) => {
-                    for m in &i.methods {
-                        s.insert(m.name.clone());
-                    }
-                }
-                Item::Trait(t) => {
-                    for m in &t.methods {
-                        s.insert(m.name.clone());
-                    }
-                }
-                _ => {}
-            }
-        }
-    });
+    seed_local_fns(&original);
     let out = module_with_trailing(
         &original,
         &crate::lexer::own_line_comments(src),
@@ -2033,6 +2186,40 @@ pub fn reformat(src: &str) -> Option<String> {
     }
     let again = module_with_trailing(
         &reparsed,
+        &crate::lexer::own_line_comments(&out),
+        &crate::lexer::trailing_comments(&out),
+    )?;
+    if out == again {
+        Some(out)
+    } else {
+        None
+    }
+}
+
+/// One-time RFC-0076 migration helper: reformat source and rewrite legacy bare
+/// capability ops (`print(console, x)`) to method form (`console.print(x)`).
+/// A module-local function/method/trait method with the same name suppresses the
+/// rewrite, so ordinary user functions can reclaim names like `read`.
+pub fn reformat_cap_methods(src: &str) -> Option<String> {
+    let mut target = crate::parser::parse_module(src).ok()?;
+    rewrite_cap_method_module(&mut target);
+    let out = module_with_trailing(
+        &target,
+        &crate::lexer::own_line_comments(src),
+        &crate::lexer::trailing_comments(src),
+    )?;
+    let reparsed = crate::parser::parse_module(&out).ok()?;
+    let mut want = target;
+    let mut got = reparsed.clone();
+    canon_module(&mut want);
+    canon_module(&mut got);
+    if want != got {
+        return None;
+    }
+    let mut again_module = reparsed;
+    rewrite_cap_method_module(&mut again_module);
+    let again = module_with_trailing(
+        &again_module,
         &crate::lexer::own_line_comments(&out),
         &crate::lexer::trailing_comments(&out),
     )?;

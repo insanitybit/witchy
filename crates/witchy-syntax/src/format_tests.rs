@@ -376,6 +376,27 @@
     }
 
     #[test]
+    fn cap_method_migration_rewrites_bare_cap_ops() {
+        let src = "fn main(console: Console, dir: Dir):\n    print(console, read(dir.read_file(\"note.txt\")))\n";
+        let out = reformat_cap_methods(src).expect("migration formatter should converge");
+        assert!(out.contains("console.print(dir.read_file(\"note.txt\").read())"), "{out}");
+        assert_eq!(
+            reformat_cap_methods(&out).as_deref(),
+            Some(out.as_str()),
+            "migration formatter must be idempotent"
+        );
+    }
+
+    #[test]
+    fn cap_method_migration_respects_local_shadowing_function() {
+        let src = "fn read(x: Int) -> Int:\n    x + 1\n\nfn main(console: Console):\n    print(console, __render(read(1)))\n";
+        let out = reformat_cap_methods(src).expect("migration formatter should converge");
+        assert!(out.contains("console.print(__render(read(1)))"), "{out}");
+        assert!(out.contains("read(1)"), "local function call must stay bare: {out}");
+        assert!(!out.contains("1.read()"), "local function call was rewritten: {out}");
+    }
+
+    #[test]
     fn preserves_default_parameter() {
         // BUG-206: `fmt` used to drop `= <const>` on a defaulted parameter, so
         // the round-trip guard rejected any file with one. It now renders back.
