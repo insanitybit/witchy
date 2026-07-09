@@ -50,23 +50,34 @@ impl fmt::Display for DirRights {
     }
 }
 
-/// Interpret a `Dir`'s type arguments as its rights. Bare `Dir` (no args) is the
-/// full set; `Dir[Read]`/`Dir[Write]`/`Dir[Read, Write]` narrow it.
-fn dir_rights(args: &[ast::Type]) -> DirRights {
+/// Parse the `[Read, Write]` rights arguments shared by the read/write
+/// capability family (`Dir`, `File`) — one parser, so a new right is added in
+/// exactly one place (RFC-0073). `None` means "no args": the full set, by the
+/// family's bare-name convention.
+fn read_write_args(args: &[ast::Type]) -> Option<(bool, bool)> {
     if args.is_empty() {
-        return DirRights::full();
+        return None;
     }
-    let mut r = DirRights { read: false, write: false };
+    let (mut read, mut write) = (false, false);
     for a in args {
         if let ast::Type::Named(n, _) = a {
             match n.as_str() {
-                "Read" => r.read = true,
-                "Write" => r.write = true,
+                "Read" => read = true,
+                "Write" => write = true,
                 _ => {}
             }
         }
     }
-    r
+    Some((read, write))
+}
+
+/// Interpret a `Dir`'s type arguments as its rights. Bare `Dir` (no args) is the
+/// full set; `Dir[Read]`/`Dir[Write]`/`Dir[Read, Write]` narrow it.
+fn dir_rights(args: &[ast::Type]) -> DirRights {
+    match read_write_args(args) {
+        None => DirRights::full(),
+        Some((read, write)) => DirRights { read, write },
+    }
 }
 
 /// The operations a `File` capability permits — the *leaf* of the same hierarchy
@@ -99,20 +110,10 @@ impl fmt::Display for FileRights {
 
 /// Interpret a `File`'s type arguments as its rights (bare `File` is the full set).
 fn file_rights(args: &[ast::Type]) -> FileRights {
-    if args.is_empty() {
-        return FileRights::full();
+    match read_write_args(args) {
+        None => FileRights::full(),
+        Some((read, write)) => FileRights { read, write },
     }
-    let mut r = FileRights { read: false, write: false };
-    for a in args {
-        if let ast::Type::Named(n, _) = a {
-            match n.as_str() {
-                "Read" => r.read = true,
-                "Write" => r.write = true,
-                _ => {}
-            }
-        }
-    }
-    r
 }
 
 /// The rights a `Net` capability permits, on two independent axes. **Verbs**:
@@ -2269,26 +2270,18 @@ impl Checker {
         Ty::Var(v)
     }
 
-    // `&mut self` because resolving an unknown type can mint fresh type vars via
-    // `self.fresh()`, despite the `to_` name.
-    #[allow(clippy::wrong_self_convention)]
-    fn to_ty(&mut self, t: &ast::Type) -> Ty {
-        let (name, args) = match t {
-            // (RFC-0025/0026) Ownership/immutability qualifiers are compile-time
-            // contracts with no runtime type — lower to the inner type.
-            ast::Type::Qualified(_, inner) => return self.to_ty(inner),
-            ast::Type::Named(name, args) => (name, args),
-            ast::Type::Tuple(ts) => {
-                return Ty::Tuple(ts.iter().map(|t| self.to_ty(t)).collect());
-            }
-            ast::Type::Fn(params, ret) => {
-                return Ty::Fn(
-                    params.iter().map(|t| self.to_ty(t)).collect(),
-                    Box::new(self.to_ty(ret)),
-                );
-            }
-        };
-        match name.as_str() {
+    /// The one builtin-name table (RFC-0073): resolve a named type against the
+    /// language's builtins, or `None` for a user/parameter name. Shared by
+    /// `to_ty` and `to_ty_generic` — which differ only in how they recurse into
+    /// generic arguments (`elem`) and in their non-builtin fallback — so a new
+    /// builtin type or capability is added in exactly one place.
+    fn named_builtin(
+        &mut self,
+        name: &str,
+        args: &[ast::Type],
+        elem: &mut dyn FnMut(&mut Self, &ast::Type) -> Ty,
+    ) -> Option<Ty> {
+        Some(match name {
             "Int" => Ty::Int,
             "Float" => Ty::Float,
             "Duration" => Ty::Duration,
@@ -2314,28 +2307,52 @@ impl Checker {
             "BuildNet" => Ty::BuildNet,
             "BuildExec" => Ty::BuildExec,
             "List" => {
-                let elem = match args.first() {
-                    Some(a) => self.to_ty(a),
+                let e = match args.first() {
+                    Some(a) => elem(self, a),
                     None => self.fresh(),
                 };
-                Ty::List(Box::new(elem))
+                Ty::List(Box::new(e))
             }
-            // (BUG-308) A lowercase, argument-less name that names one of the
-            // enclosing function's type parameters is that parameter's var — so a
-            // body ascription refines the generic parameter instead of pinning it
-            // to a distinct concrete `Named`. (Matches the signature-only rule in
-            // `to_ty_generic`; outside a generic fn `current_typarams` is empty, so
-            // top-level `let` and non-parameter names are unaffected.)
-            other
-                if args.is_empty()
-                    && other.chars().next().is_some_and(|c| c.is_lowercase())
-                    && !other.contains('.')
-                    && self.current_typarams.contains_key(other) =>
-            {
-                Ty::Var(self.current_typarams[other])
+            _ => return None,
+        })
+    }
+
+    // `&mut self` because resolving an unknown type can mint fresh type vars via
+    // `self.fresh()`, despite the `to_` name.
+    #[allow(clippy::wrong_self_convention)]
+    fn to_ty(&mut self, t: &ast::Type) -> Ty {
+        let (name, args) = match t {
+            // (RFC-0025/0026) Ownership/immutability qualifiers are compile-time
+            // contracts with no runtime type — lower to the inner type.
+            ast::Type::Qualified(_, inner) => return self.to_ty(inner),
+            ast::Type::Named(name, args) => (name, args),
+            ast::Type::Tuple(ts) => {
+                return Ty::Tuple(ts.iter().map(|t| self.to_ty(t)).collect());
             }
-            _ => Ty::Named(name.clone(), args.iter().map(|a| self.to_ty(a)).collect()),
+            ast::Type::Fn(params, ret) => {
+                return Ty::Fn(
+                    params.iter().map(|t| self.to_ty(t)).collect(),
+                    Box::new(self.to_ty(ret)),
+                );
+            }
+        };
+        if let Some(t) = self.named_builtin(name, args, &mut |c, a| c.to_ty(a)) {
+            return t;
         }
+        // (BUG-308) A lowercase, argument-less name that names one of the
+        // enclosing function's type parameters is that parameter's var — so a
+        // body ascription refines the generic parameter instead of pinning it
+        // to a distinct concrete `Named`. (Matches the signature-only rule in
+        // `to_ty_generic`; outside a generic fn `current_typarams` is empty, so
+        // top-level `let` and non-parameter names are unaffected.)
+        if args.is_empty()
+            && name.chars().next().is_some_and(|c| c.is_lowercase())
+            && !name.contains('.')
+            && self.current_typarams.contains_key(name.as_str())
+        {
+            return Ty::Var(self.current_typarams[name.as_str()]);
+        }
+        Ty::Named(name.clone(), args.iter().map(|a| self.to_ty(a)).collect())
     }
 
     /// Like `to_ty`, but a lowercase, argument-less type name becomes a type
@@ -2351,56 +2368,28 @@ impl Checker {
                 params.iter().map(|t| self.to_ty_generic(t, vars)).collect(),
                 Box::new(self.to_ty_generic(ret, vars)),
             ),
-            ast::Type::Named(name, args) => match name.as_str() {
-                "Int" => Ty::Int,
-                "Float" => Ty::Float,
-                "Duration" => Ty::Duration,
-                "String" => Ty::String,
-            "Bytes" => Ty::Bytes,
-            "__Msg" => Ty::Msg,
-                "Bool" => Ty::Bool,
-                "Nil" => Ty::Nil,
-                "Console" => Ty::Console,
-            "Clock" => Ty::Clock,
-            "Rand" => Ty::Rand,
-            "Env" => Ty::Env,
-            "Secret" => Ty::Secret,
-                "Exec" => Ty::Exec,
-                "Dir" => Ty::Dir(dir_rights(args)),
-                "File" => Ty::File(file_rights(args)),
-                "Net" => Ty::Net(net_rights(args)),
-                "Socket" => Ty::Socket,
-                "Listener" => Ty::Listener,
-                "BuildOut" => Ty::BuildOut,
-                "BuildRead" => Ty::BuildRead,
-                "BuildEnv" => Ty::BuildEnv,
-                "BuildNet" => Ty::BuildNet,
-                "BuildExec" => Ty::BuildExec,
-                "List" => {
-                    let elem = match args.first() {
-                        Some(a) => self.to_ty_generic(a, vars),
-                        None => self.fresh(),
-                    };
-                    Ty::List(Box::new(elem))
-                }
-                other
-                    if args.is_empty()
-                        && other.chars().next().is_some_and(|c| c.is_lowercase())
-                        && !other.contains('.') =>
+            ast::Type::Named(name, args) => {
+                if let Some(t) =
+                    self.named_builtin(name, args, &mut |c, a| c.to_ty_generic(a, vars))
                 {
-                    if let Some(v) = vars.get(other) {
-                        v.clone()
-                    } else {
-                        let v = self.fresh();
-                        vars.insert(other.to_string(), v.clone());
-                        v
-                    }
+                    return t;
                 }
-                other => Ty::Named(
-                    other.to_string(),
+                if args.is_empty()
+                    && name.chars().next().is_some_and(|c| c.is_lowercase())
+                    && !name.contains('.')
+                {
+                    if let Some(v) = vars.get(name.as_str()) {
+                        return v.clone();
+                    }
+                    let v = self.fresh();
+                    vars.insert(name.clone(), v.clone());
+                    return v;
+                }
+                Ty::Named(
+                    name.clone(),
                     args.iter().map(|a| self.to_ty_generic(a, vars)).collect(),
-                ),
-            },
+                )
+            }
         }
     }
 

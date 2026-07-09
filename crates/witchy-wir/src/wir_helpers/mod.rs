@@ -1543,6 +1543,22 @@ pub fn concat_helper() -> WirFunc {
     }
 }
 
+// ---------------------------------------------------------------------------
+// (RFC-0051 / RFC-0073) THE IN-PLACE `*_cap` FAMILY — retained, and CLOSED to
+// extension. Each `self_*` shape recognizer in
+// `crates/witchy-lower/src/analysis.rs` (self_push_elem, self_insert_args,
+// self_update_args, self_set_at, self_update_at, self_concat_pieces) pairs
+// with one `*_cap` helper here: list_push_cap, dict_insert_cap,
+// dict_update_cap, list_set_cap, list_update_cap, str_append_cap. RFC-0051
+// (I3) measured deleting this family and found the general reclamation path
+// perf-negative (OOM-traps several benchmarks), so the family is load-bearing
+// — but the forward rule stands: add NO new per-method fast paths; the
+// general ownership mechanism (let/var/own + escape analysis, RFC-0016) must
+// absorb every NEW operation. The recognizers' contracts are unit-tested in
+// analysis.rs `shape_matcher_tests`. Full rationale: RFC-0051 and the
+// retention note at the top of analysis.rs.
+// ---------------------------------------------------------------------------
+
 /// `$list_push_cap(list: i32, x: i64, cap: i32) -> (i32, i32)` — the in-place
 /// list append: if `cap > len` mutate `list` in place (return it + `cap`), else
 /// grow to a doubled buffer (return the new ptr + newcap). Increments the

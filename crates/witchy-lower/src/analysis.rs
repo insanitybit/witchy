@@ -2332,3 +2332,116 @@ pub fn module_cliffs(module: &Module) -> Vec<(String, Cliff)> {
     }
     out
 }
+
+// ---------------------------------------------------------------------------
+// (RFC-0073) Shape-matcher contract tests. The `self_*` recognizers gate every
+// in-place emission (RFC-0051's retained family), so each one gets an
+// isolated accepting case plus rejecting near-misses — previously they were
+// exercised only end-to-end through codegen + the parity suite. A regression
+// here is a UAF-class risk (a wrong match mutates a value someone else still
+// holds), which is exactly why the contract deserves direct tests.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod shape_matcher_tests {
+    use super::*;
+
+    fn var(name: &str) -> Expr {
+        Expr::Var(name.to_string())
+    }
+
+    fn int(n: i64) -> Expr {
+        Expr::Int(n)
+    }
+
+    fn call(name: &str, args: Vec<Expr>) -> Expr {
+        Expr::Call { name: name.to_string(), args }
+    }
+
+    // ---- self_push_elem: `xs = list.push(xs, e)` ----
+
+    #[test]
+    fn push_matches_self_append() {
+        let v = call("list.push", vec![var("xs"), int(1)]);
+        assert!(self_push_elem("xs", &v).is_some());
+    }
+
+    #[test]
+    fn push_rejects_wrong_receiver_var() {
+        // `xs = list.push(ys, e)` copies from ANOTHER list — mutating in place
+        // would corrupt `ys`.
+        let v = call("list.push", vec![var("ys"), int(1)]);
+        assert!(self_push_elem("xs", &v).is_none());
+    }
+
+    #[test]
+    fn push_rejects_wrong_callee_and_arity() {
+        // A same-shaped call to a different function must not be treated as an
+        // append; nor a push with a computed receiver.
+        assert!(self_push_elem("xs", &call("list.concat", vec![var("xs"), int(1)])).is_none());
+        assert!(self_push_elem("xs", &call("list.push", vec![int(0), int(1)])).is_none());
+        assert!(self_push_elem("xs", &call("list.push", vec![var("xs")])).is_none());
+    }
+
+    // ---- self_insert_args / self_update_args: dict upserts ----
+
+    #[test]
+    fn insert_matches_self_upsert_and_rejects_alias() {
+        let ok = call("dict.insert", vec![var("d"), int(1), int(2)]);
+        assert!(self_insert_args("d", &ok).is_some());
+        let alias = call("dict.insert", vec![var("e"), int(1), int(2)]);
+        assert!(self_insert_args("d", &alias).is_none());
+    }
+
+    #[test]
+    fn update_matches_arity_four_only() {
+        let ok = call("dict.update", vec![var("d"), int(1), int(0), var("f")]);
+        assert!(self_update_args("d", &ok).is_some());
+        let short = call("dict.update", vec![var("d"), int(1), int(0)]);
+        assert!(self_update_args("d", &short).is_none());
+    }
+
+    // ---- self_set_at / self_update_at: monomorphized stdlib names ----
+
+    #[test]
+    fn set_at_matches_bare_and_monomorphized_names() {
+        for f in ["list.set_at", "list.set_at__Int"] {
+            let v = call(f, vec![var("xs"), int(0), int(9)]);
+            assert!(self_set_at("xs", &v).is_some(), "{f} should match");
+        }
+        // A user function that merely CONTAINS the name must not match: the
+        // recognizer requires the exact monomorphization prefix `list.set_at__`.
+        let imposter = call("mylib.list.set_at_extra", vec![var("xs"), int(0), int(9)]);
+        assert!(self_set_at("xs", &imposter).is_none());
+    }
+
+    #[test]
+    fn update_at_rejects_wrong_receiver() {
+        let v = call("list.update_at", vec![var("ys"), int(0), var("f")]);
+        assert!(self_update_at("xs", &v).is_none());
+    }
+
+    // ---- self_concat_pieces: `s = s + a + b` left spines ----
+
+    fn concat(lhs: Expr, rhs: Expr) -> Expr {
+        Expr::Binary { op: BinOp::Concat, lhs: Box::new(lhs), rhs: Box::new(rhs) }
+    }
+
+    #[test]
+    fn concat_spine_collects_pieces_in_order() {
+        // s + "a" + "b" — leftmost leaf is the assigned var.
+        let v = concat(concat(var("s"), int(1)), int(2));
+        let pieces = self_concat_pieces("s", &v).expect("spine matches");
+        assert_eq!(pieces.len(), 2);
+    }
+
+    #[test]
+    fn concat_rejects_var_not_at_spine_head() {
+        // "a" + s — the assigned var is a RHS piece, not the spine head: this
+        // PREPENDS, and appending in place would produce the wrong string.
+        let v = concat(int(1), var("s"));
+        assert!(self_concat_pieces("s", &v).is_none());
+        // Bare `s` with no appended pieces is not a concat either.
+        assert!(self_concat_pieces("s", &var("s")).is_none());
+    }
+}
