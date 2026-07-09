@@ -54,6 +54,36 @@ fn main(console: Console):
 A method without `self` is a *static*, called on the type itself:
 `Score.zero()` — handy for constructors with defaults.
 
+## Labels and defaults
+
+A direct call to a free or module function may **label** its arguments by
+parameter name, and a suffix parameter may declare a **default** (a
+compile-time constant), so a caller can omit it:
+
+```witchy
+fn greet(name: String, greeting: String = "hello") -> String:
+    "${greeting}, ${name}"
+
+fn main(console: Console):
+    console.print(greet("ada"))                     // default greeting
+    console.print(greet("bob", greeting: "hi"))     // override by label
+    console.print(greet(greeting: "yo", name: "cy")) // labels may reorder
+```
+
+```text
+hello, ada
+hi, bob
+yo, cy
+```
+
+Two rules keep this predictable. **Arguments always evaluate in source order**,
+left to right, even when labels reorder them relative to the parameter list —
+so a call reads the way it runs. And labels/defaults are a feature of *direct*
+free and module calls only: **method calls (`x.f(...)`) and calls through a
+function value are positional in v1**. When in doubt, positional always works;
+reach for labels when a call site has several same-typed arguments and the
+names make it readable.
+
 ## `if` is an expression
 
 ```witchy
