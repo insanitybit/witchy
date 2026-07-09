@@ -346,7 +346,7 @@ impl Coven:
         // BUG-422: a footprint that cannot be computed (source does not compile / bad
         // report) is a hard 400, never a silently-empty footprint that trivially passes
         // the under-declaration gate.
-        let computed = coven_footprint.computed_footprint(files).map_err(fn(e: String): CovenError(400, "coven could not compute the capability footprint from source: " + e))?
+        let computed = coven_footprint.computed_footprint(files).map_err(fn(e: coven_footprint.FootprintError): CovenError(400, "coven could not compute the capability footprint from source: " + coven_footprint.footprint_error_message(e)))?
         let gap = rights.uncovered(toml.get_array(manifest, "capabilities.runtime"), computed)
         require(string.is_empty(list.join(gap, ", ")), 400, "declared [capabilities] does not cover what the source demands (" + list.join(gap, ", ") + ") — coven recomputes and will not publish an under-declared rune")?
         let hash = coven_store.content_hash(files)

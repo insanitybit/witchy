@@ -6,13 +6,16 @@
 import json
 import compiler
 import string
+import show
+import error
+import convert
 
 // The capabilities the uploaded source actually demands — the union over its
 // `src/**/*.witchy` modules, computed via `compiler.footprint`. A module whose footprint
 // cannot be computed (the source does not compile, or the report does not parse) is a
 // HARD failure: returning an empty footprint would let an uncomputable rune slip past the
 // under-declaration gate (empty is trivially covered), so the publish is refused instead.
-pub fn computed_footprint(files: List((String, String))) -> Result(List(String), String):
+pub fn computed_footprint(files: List((String, String))) -> Result(List(String), FootprintError):
     var out = []
     for path, text in files:
         if is_src_module(path):
@@ -26,13 +29,35 @@ fn is_src_module(path: String) -> Bool:
 
 // The `total` array of a `compiler.footprint` report, or an Err if the report does not
 // parse or is an `{"error":..}` report (the source did not compile). Never silently [].
-fn footprint_total(report: String) -> Result(List(String), String):
+fn footprint_total(report: String) -> Result(List(String), FootprintError):
     match json.decode(report):
-        Err(_e) -> Err("the compiler footprint report did not parse")
+        Err(_e) -> Err(FootprintReportJson)
         Ok(doc) ->
             match json.get(doc, "error"):
-                Some(_e) -> Err("the rune source does not compile — its capability footprint is uncomputable")
+                Some(_e) -> Err(FootprintSourceDoesNotCompile)
                 None -> Ok(json.get_strings(doc, "total"))
+
+// Matchable errors for the registry's recomputed source footprint. This is the
+// server-side under-declaration gate; an uncomputable footprint must be a typed
+// hard failure before the HTTP layer renders it.
+type FootprintError:
+    FootprintReportJson
+    FootprintSourceDoesNotCompile
+
+pub fn footprint_error_message(e: FootprintError) -> String:
+    match e:
+        FootprintReportJson -> "the compiler footprint report did not parse"
+        FootprintSourceDoesNotCompile -> "the rune source does not compile — its capability footprint is uncomputable"
+
+impl Show for FootprintError:
+    fn show(self) -> String:
+        footprint_error_message(self)
+
+impl Error for FootprintError
+
+impl From(FootprintError) for String:
+    fn from(value: FootprintError) -> Self:
+        footprint_error_message(value)
 
 // Append `x` to `xs` only if absent (a small ordered set over strings).
 pub fn add_unique(xs: List(String), x: String) -> List(String):

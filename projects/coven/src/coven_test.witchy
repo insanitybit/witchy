@@ -124,12 +124,15 @@ fn test_yank_body_carries_id_token():
 fn test_computed_footprint_fails_closed_on_bad_source():
     match coven_footprint.computed_footprint([("src/x.witchy", "fn broken( ->")]):
         Ok(_caps) -> testing.assert(false, "a non-compiling source must not yield a footprint")
-        Err(_e) -> testing.assert(true, "an uncomputable footprint is a hard error")
+        Err(e) ->
+            match e:
+                coven_footprint.FootprintSourceDoesNotCompile -> testing.assert(true, "an uncomputable footprint is a typed hard error")
+                _ -> testing.assert(false, "a non-compiling source should be FootprintSourceDoesNotCompile")
 
 fn test_computed_footprint_ok_for_pure_source():
     match coven_footprint.computed_footprint([("src/x.witchy", "pub fn f(n: Int) -> Int:\n    n\n")]):
         Ok(caps) -> testing.assert(list.length(caps) == 0, "a pure library has an empty footprint")
-        Err(e) -> testing.assert(false, "a valid pure source should compute: " + e)
+        Err(e) -> testing.assert(false, "a valid pure source should compute: " + coven_footprint.footprint_error_message(e))
 
 // --- encode (reflection) + derive(Deserialize) round-trip ------
 type Sample derive(Reflect, Deserialize):
