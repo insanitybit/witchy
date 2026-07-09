@@ -74,10 +74,10 @@
     #[test]
     fn lexes_operators_and_literals() {
         assert_eq!(
-            kinds("x |> f(1, 2.5) <- _"),
+            kinds("x + f(1, 2.5) <- _"),
             vec![
                 Tok::Ident("x".into()),
-                Tok::Pipe,
+                Tok::Plus,
                 Tok::Ident("f".into()),
                 Tok::LParen,
                 Tok::Int(1),
@@ -233,9 +233,11 @@
     }
 
     #[test]
-    fn bar_distinct_from_pipe_and_oror() {
-        // `|` (or-patterns) vs `|>` (pipe) vs `||` (logical or).
+    fn bar_distinct_from_oror() {
+        // `|` (or-patterns) vs `||` (logical or). There is no `|>` pipe operator
+        // (removed, BUG-564): `|>` lexes as `Bar` then `Gt`, so it parses as an
+        // unexpected `>` rather than sugar.
         assert_eq!(kinds("a | b"), vec![Tok::Ident("a".into()), Tok::Bar, Tok::Ident("b".into()), Tok::Eof]);
-        assert_eq!(kinds("a |> b"), vec![Tok::Ident("a".into()), Tok::Pipe, Tok::Ident("b".into()), Tok::Eof]);
         assert_eq!(kinds("a || b"), vec![Tok::Ident("a".into()), Tok::OrOr, Tok::Ident("b".into()), Tok::Eof]);
+        assert_eq!(kinds("a |> b"), vec![Tok::Ident("a".into()), Tok::Bar, Tok::Gt, Tok::Ident("b".into()), Tok::Eof]);
     }

@@ -108,7 +108,6 @@ pub enum Tok {
     Star,    // *
     Slash,   // /
     Percent, // %
-    Pipe,   // |>
     Bar,    // |  (or-patterns)
     PlusEq,    // +=
     MinusEq,   // -=
@@ -197,7 +196,6 @@ impl fmt::Display for Tok {
             Star => write!(f, "*"),
             Slash => write!(f, "/"),
             Percent => write!(f, "%"),
-            Pipe => write!(f, "|>"),
             Bar => write!(f, "|"),
             PlusEq => write!(f, "+="),
             MinusEq => write!(f, "-="),
@@ -960,10 +958,6 @@ impl Lexer {
             ('%', Some('=')) => {
                 self.bump();
                 Tok::PercentEq
-            }
-            ('|', Some('>')) => {
-                self.bump();
-                Tok::Pipe
             }
             ('&', Some('&')) => {
                 self.bump();
