@@ -1028,6 +1028,31 @@ fn staged_dependency_is_not_resolvable() {
     assert!(!app.join("vendor/json").exists(), "nothing should be vendored on a failed add");
 }
 
+/// BUG-391: registry version coordinates are identity, not display text. If a
+/// corrupt `/coven/versions` record says a released coordinate is `" 1.0.0 "`,
+/// the PM must not trim it, select it as `1.0.0`, and then fetch a different
+/// coordinate from `/coven/record`.
+#[test]
+fn resolver_rejects_whitespace_padded_registry_versions() {
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "coord");
+    let app = fe.new_app();
+    let lib = fe.lib("acme/coord", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
+    fe.publish_promote(&lib, "acme/coord", "1.0.0");
+
+    let meta = server.regroot.join("registry/acme/coord/1.0.0/coven.json");
+    let record = std::fs::read_to_string(&meta).unwrap();
+    let tampered = record.replace("\"version\":\"1.0.0\"", "\"version\":\" 1.0.0 \"");
+    assert!(tampered.contains("\"version\":\" 1.0.0 \""), "test must tamper the version field: {tampered}");
+    std::fs::write(&meta, tampered).unwrap();
+
+    let out = fe.pm(&app, &["add", "acme/coord"], None);
+    assert!(!out.status.success(), "noncanonical registry coordinate must not resolve");
+    let msg = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(msg.contains("no released version"), "expected resolver rejection, got: {msg}");
+    assert!(!app.join("vendor/coord").exists(), "nothing should be vendored on a failed add");
+}
+
 /// Promotion enforces separation of duties: the promoter must be a DISTINCT human
 /// identity from the CI that uploaded it, and presents the out-of-band second
 /// factor. The front-end stages with a CI token, then releases with a distinct

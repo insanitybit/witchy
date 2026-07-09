@@ -2381,15 +2381,14 @@ fn eligible_versions(body: String, cooldown: (Int, Int, Bool)) -> List(Version):
     out
 
 // Parse a registry version string, but ONLY if it is already the canonical SemVer
-// coordinate (BUG-391). `semver.parse` normalizes `01.2.3`/`1.2` away, so the
-// resolver would otherwise select one released record and then fetch a DIFFERENT
-// `&version=` coordinate. Requiring `format(parse(s)) == s` keeps the resolved
-// coordinate byte-identical to the record it came from; noncanonical strings are
-// simply not resolvable.
+// coordinate (BUG-391). `semver.parse` normalizes `01.2.3`/`1.2` and trims
+// whitespace away, so the resolver would otherwise select one released record
+// and then fetch a DIFFERENT `&version=` coordinate. Requiring
+// `format(parse(raw)) == raw` keeps the resolved coordinate byte-identical to the
+// record it came from; noncanonical strings are simply not resolvable.
 fn canonical_version(raw: String) -> Option(Version):
-    let s = string.trim(raw)
-    match semver.parse(s):
-        Ok(v) -> if semver.format(v) == s: Some(v) else: None
+    match semver.parse(raw):
+        Ok(v) -> if semver.format(v) == raw: Some(v) else: None
         Err(_e) -> None
 
 // Whether any released version satisfying `req` exists but is still cooling — so
