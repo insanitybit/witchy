@@ -3424,6 +3424,70 @@ fn witchy_pm_check_accepts_net_axis_omission() {
     );
 }
 
+/// BUG-568: `compiler.footprint` reports invalid source as an error document.
+/// PM trust decisions must preserve that error instead of projecting it to an
+/// empty capability set and minting a successful check or lock.
+#[test]
+fn witchy_pm_rejects_uninspectable_source_footprints() {
+    let work = unique("witchy-pm-bad-footprint");
+    let app = work.join("app");
+    let bad = work.join("bad");
+    std::fs::create_dir_all(app.join("src")).unwrap();
+    std::fs::create_dir_all(bad.join("src")).unwrap();
+    std::fs::write(
+        app.join("witchy.toml"),
+        "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nbad = { path = \"../bad\" }\n",
+    )
+    .unwrap();
+    std::fs::write(app.join("src/app.witchy"), "fn main(console: Console):\n    console.print(\"app\")\n").unwrap();
+    std::fs::write(bad.join("witchy.toml"), "[rune]\nname = \"bad\"\nversion = \"0.1.0\"\n").unwrap();
+    std::fs::write(bad.join("src/bad.witchy"), "pub fn broken() -> Int:\n    missing()\n").unwrap();
+    std::fs::write(work.join("old.witchy"), "fn main(console: Console):\n    console.print(\"ok\")\n").unwrap();
+    std::fs::write(work.join("new.witchy"), "fn main(console: Console):\n    missing(console)\n").unwrap();
+
+    let check = Command::new(BIN)
+        .args(["pm", "check", "bad"])
+        .current_dir(&work)
+        .output()
+        .expect("run pm check");
+    let lock = Command::new(BIN)
+        .args(["pm", "lock", "app"])
+        .current_dir(&work)
+        .output()
+        .expect("run pm lock");
+    let guard = Command::new(BIN)
+        .args(["pm", "guard", "old.witchy", "new.witchy"])
+        .current_dir(&work)
+        .output()
+        .expect("run pm guard");
+
+    assert!(!check.status.success(), "pm check must reject uninspectable source");
+    assert!(
+        stdout(&check).contains("cannot compute the code's capability footprint")
+            && stdout(&check).contains("compiler rejected the source"),
+        "pm check erased the compiler error: out={} err={}",
+        stdout(&check),
+        stderr(&check)
+    );
+    assert!(!lock.status.success(), "pm lock must reject an uninspectable path dependency");
+    assert!(
+        stdout(&lock).contains("cannot lock an uninspectable dependency")
+            && stdout(&lock).contains("compiler rejected the source"),
+        "pm lock erased the compiler error: out={} err={}",
+        stdout(&lock),
+        stderr(&lock)
+    );
+    assert!(!app.join("witchy.lock").exists(), "an uninspectable dependency must not be pinned");
+    assert!(!guard.status.success(), "pm guard must reject an uninspectable update");
+    assert!(
+        stdout(&guard).contains("compiler rejected the source"),
+        "pm guard erased the compiler error: out={} err={}",
+        stdout(&guard),
+        stderr(&guard)
+    );
+    std::fs::remove_dir_all(work).unwrap();
+}
+
 /// The witchy pm's LOCAL lifecycle, end to end and offline: scaffold two runes
 /// (`new`), wire a path dependency, pin it (`lock`), confirm the pin (`verify`)
 /// and the authority baseline (`gate`) — then tamper with the dependency so it

@@ -122,7 +122,9 @@ fn cmd_info(console: Console, root: Dir, dir: String):
         console.print("name:     ${field(manifest, "rune.name")}")
         console.print("version:  ${field(manifest, "rune.version")}")
         console.print("declared: ${list.join(declared_caps(manifest), ", ")}")
-        console.print("actual:   ${list.join(rune_footprint(root, dir), ", ")}")
+        match rune_footprint(root, dir):
+            Ok(actual) -> console.print("actual:   ${list.join(actual, ", ")}")
+            Err(e) -> console.print("actual:   ERROR — ${footprint_error_message(e)}")
 
 // run <file|dir> — compile and run a program by driving the compiler. Given a
 // project directory (or, with no argument, the current directory) that carries a
@@ -502,7 +504,12 @@ fn run_one_build_step(console: Console, runner: Exec, root: Dir, bin: Dir, dir: 
         (1, [])
     else:
         let buildfile = join_path(join_path(depdir, "src"), "build.witchy")
-        let demanded = build_footprint(root.read(buildfile))
+        let demanded = match build_footprint(root.read(buildfile)):
+            Err(e) ->
+                console.print("`${name}` build step has no trustworthy capability footprint: ${footprint_error_message(e)}")
+                return (1, [])
+            Ok(caps) -> caps
+
         let granted = granted_build_kinds(manifest, name)
         let missing = rights.uncovered(granted, demanded)
         if list.length(missing) > 0:
@@ -531,13 +538,24 @@ fn exec_build_step(console: Console, runner: Exec, root: Dir, bin: Dir, dir: Str
 // shipped source PLUS the generated source must not widen beyond what it shipped.
 // Generated code cannot introduce authority the version was not accepted with.
 fn audit_then_flags(console: Console, root: Dir, dir: String, name: String, depdir: String, gendir: String) -> (Int, List(String)):
-    let shipped = rune_footprint(root, depdir)
+    let shipped = match rune_footprint(root, depdir):
+        Err(e) ->
+            console.print("`${name}` has no trustworthy shipped capability footprint: ${footprint_error_message(e)}")
+            return (1, [])
+        Ok(caps) -> caps
+
     var generated = []
     var flags = []
     for f in root.subtree(gendir).list():
         if string.ends_with(f, ".witchy"):
             let path = join_path(gendir, f)
-            for c in footprint_total(compiler.footprint(root.read(path))):
+            let caps = match footprint_values(compiler.footprint(root.read(path)), "total"):
+                Err(e) ->
+                    console.print("`${name}` generated `${path}` without a trustworthy capability footprint: ${footprint_error_message(e)}")
+                    return (1, [])
+                Ok(values) -> values
+
+            for c in caps:
                 generated = add_unique(generated, c)
             flags = dep_flag(flags, module_stem(f), path)
     let widened = rights.uncovered(shipped, generated)
@@ -641,13 +659,8 @@ fn grant_flags(manifest: String, name: String, dir: String) -> List(String):
 
 // The build-axis footprint of a source: the build capabilities its `build`
 // entrypoint demands (`compiler.footprint`'s `build` array).
-fn build_footprint(source: String) -> List(String):
-    build_total(source)
-
-fn build_total(source: String) -> List(String):
-    match json.decode(compiler.footprint(source)):
-        Ok(doc) -> json.get_strings(doc, "build")
-        Err(_e) -> []
+fn build_footprint(source: String) -> Result(List(String), FootprintError):
+    footprint_values(compiler.footprint(source), "build")
 
 // `greet.witchy` → module name `greet`.
 fn module_stem(file: String) -> String:
@@ -659,7 +672,9 @@ fn cmd_audit(console: Console, root: Dir, file: String):
         console.print("usage: pm audit <file>")
     else:
         let report = compiler.footprint(root.read(file))
-        console.print("${file} demands: ${list.join(footprint_total(report), ", ")}")
+        match footprint_values(report, "total"):
+            Ok(caps) -> console.print("${file} demands: ${list.join(caps, ", ")}")
+            Err(e) -> console.print("${file} footprint error: ${footprint_error_message(e)}")
 
 // --- check: declared footprint must admit the actual footprint ---------------
 // The manifest's declared caps are *not trusted*: pm recomputes the footprint
@@ -673,7 +688,12 @@ fn cmd_check(console: Console, root: Dir, dir: String) -> Int:
     else:
         let manifest = root.read(join_path(dir, "witchy.toml"))
         let declared = declared_caps(manifest)
-        let demanded = rune_footprint(root, dir)
+        let demanded = match rune_footprint(root, dir):
+            Err(e) ->
+                console.print("BLOCK: cannot compute the code's capability footprint: ${footprint_error_message(e)}")
+                return 2
+            Ok(caps) -> caps
+
         let undeclared = rights.uncovered(declared, demanded)
         let unused = unused_caps(declared, demanded)
         report_check(console, undeclared, unused)
@@ -710,19 +730,17 @@ fn cmd_guard(console: Console, root: Dir, old: String, new: String) -> Int:
         console.print("usage: pm guard <old-file> <new-file>")
         1
     else:
-        let report = compiler.diff(root.read(old), root.read(new))
-        console.print(verdict(report))
-        exit_for(report)
-
-fn verdict(report: String) -> String:
-    match json.decode(report):
-        Ok(doc) -> if widened(doc): "BLOCK: upgrade widens authority by ${added(doc)}" else: "OK: no new authority"
-        Err(e) -> "error: ${json.decode_error_message(e)}"
-
-fn exit_for(report: String) -> Int:
-    match json.decode(report):
-        Ok(doc) -> if widened(doc): 2 else: 0
-        Err(e) -> 1
+        match footprint_diff_values(compiler.diff(root.read(old), root.read(new))):
+            Err(e) ->
+                console.print("error: ${footprint_error_message(e)}")
+                1
+            Ok(diff) ->
+                if diff.0:
+                    console.print("BLOCK: upgrade widens authority by ${list.join(diff.1, ", ")}")
+                    2
+                else:
+                    console.print("OK: no new authority")
+                    0
 
 // --- deps: list a rune's dependencies ---------------------------------------
 fn cmd_deps(console: Console, root: Dir, dir: String):
@@ -1086,13 +1104,17 @@ fn cmd_why_cap(console: Console, root: Dir, dir: String, cap: String) -> Int:
         console.print("usage: pm why-cap <dir> <Cap>")
         1
     else:
-        let who = gate_contributors(root, dir, cap)
-        if list.length(who) == 0:
-            console.print("no dependency demands ${cap}")
-        else:
-            for name in who:
-                console.print("${name} demands ${cap}")
-        0
+        match gate_contributors(root, dir, cap):
+            Err(e) ->
+                console.print("cannot inspect dependency authority: ${footprint_error_message(e)}")
+                1
+            Ok(who) ->
+                if list.length(who) == 0:
+                    console.print("no dependency demands ${cap}")
+                else:
+                    for name in who:
+                        console.print("${name} demands ${cap}")
+                0
 
 // init [name] — add a manifest + src stub to the CURRENT directory (vs `new`,
 // which creates a new subdirectory). No-op if it is already a rune.
@@ -1145,11 +1167,16 @@ fn cmd_lock(console: Console, root: Dir, dir: String) -> Int:
         else:
             // BUG-047/101/135: pin the full transitive path-dep closure — count what
             // was actually locked, not just the direct manifest entries.
-            let n = list.length(path_closure(root, dir))
-            let lockpath = join_path(dir, "witchy.lock")
-            root.write(lockpath, generate_lock(root, dir))
-            console.print("locked ${n} dependencies -> ${lockpath}")
-            0
+            match generate_lock(root, dir):
+                Err(e) ->
+                    console.print("BLOCK: cannot lock an uninspectable dependency: ${footprint_error_message(e)}")
+                    2
+                Ok(lock) ->
+                    let n = list.length(path_closure(root, dir))
+                    let lockpath = join_path(dir, "witchy.lock")
+                    root.write(lockpath, lock)
+                    console.print("locked ${n} dependencies -> ${lockpath}")
+                    0
 
 // The transitive path-dependency closure of the rune at `dir`, as (import-name,
 // resolved-dir) pairs. Walks each dependency's own manifest, deduplicated by import
@@ -1575,8 +1602,11 @@ fn cmd_gate(console: Console, root: Dir, args: List(String)) -> Int:
     else:
         let lock = root.read(join_path(dir, "witchy.lock"))
         let baseline = union_all(lock_baseline(lock), args_from(args, 2))
-        let demanded = resolution_footprint(root, dir)
-        report_gate(console, root, dir, rights.uncovered(baseline, demanded))
+        match resolution_footprint(root, dir):
+            Err(e) ->
+                console.print("BLOCK: cannot inspect dependency authority: ${footprint_error_message(e)}")
+                2
+            Ok(demanded) -> report_gate(console, root, dir, rights.uncovered(baseline, demanded))
 
 fn report_gate(console: Console, root: Dir, dir: String, widened: List(String)) -> Int:
     if list.length(widened) == 0:
@@ -1585,7 +1615,10 @@ fn report_gate(console: Console, root: Dir, dir: String, widened: List(String)) 
     else:
         console.print("BLOCK: dependencies demand new authority: ${list.join(widened, ", ")}")
         for cap in widened:
-            console.print("  ${cap} <- ${list.join(gate_contributors(root, dir, cap), ", ")}")
+            match gate_contributors(root, dir, cap):
+                Ok(who) -> console.print("  ${cap} <- ${list.join(who, ", ")}")
+                Err(e) -> console.print("  ${cap} <- inspection error: ${footprint_error_message(e)}")
+
         2
 
 // The capabilities the lockfile already records (union of every [[rune]] entry's
@@ -1602,21 +1635,23 @@ fn lock_baseline(lock: String) -> List(String):
 // the union over ALL its src modules (rune_footprint, BUG-085) — matching coven's
 // computed_footprint, so the local gate can't miss a capability a transitive dep or
 // a non-entry module reaches for.
-fn resolution_footprint(root: Dir, dir: String) -> List(String):
+fn resolution_footprint(root: Dir, dir: String) -> Result(List(String), FootprintError):
     var out = []
     for _name, dep_dir in path_closure(root, dir):
-        for cap in rune_footprint(root, dep_dir):
+        let caps = rune_footprint(root, dep_dir)?
+        for cap in caps:
             out = add_unique(out, cap)
-    out
+    Ok(out)
 
 // The dependencies whose own footprint covers `cap` — who introduced it. Walks the
 // transitive closure (BUG-080/134), so `why-cap` names a deep contributor too.
-fn gate_contributors(root: Dir, dir: String, cap: String) -> List(String):
+fn gate_contributors(root: Dir, dir: String, cap: String) -> Result(List(String), FootprintError):
     var who = []
     for name, dep_dir in path_closure(root, dir):
-        if rights.any_covers(rune_footprint(root, dep_dir), cap):
+        let caps = rune_footprint(root, dep_dir)?
+        if rights.any_covers(caps, cap):
             who.push(name)
-    who
+    Ok(who)
 
 // The arguments at index `start` and beyond (a positional slice). Used both to
 // collect a gate's trailing accepted-cap list and to forward a program's own argv
@@ -1649,15 +1684,16 @@ fn add_unique(xs: List(String), x: String) -> List(String):
 // an informational placeholder (pm lock is path-only; `lock_problems` blocks them
 // before this runs, but the marker is kept for completeness).
 // idiom-exempt: concatenation in this section is canonical lockfile serialization.
-fn generate_lock(root: Dir, dir: String) -> String:
+fn generate_lock(root: Dir, dir: String) -> Result(String, FootprintError):
     let manifest = root.read(join_path(dir, "witchy.toml"))
     var out = "# witchy.lock — generated by `pm lock`. Pins every dependency by content\n# hash. Regenerate with `pm lock`; verify with `pm verify`. Do not edit by hand.\n"
     for name, inline in toml.table(manifest, "dependencies"):
         if is_none(toml.inline_get(inline, "path")):
             out = out + registry_placeholder(name)
     for name, dep_dir in path_closure(root, dir):
-        out = out + closure_path_entry(root, name, dep_dir)
-    out
+        let entry = closure_path_entry(root, name, dep_dir)?
+        out = out + entry
+    Ok(out)
 
 fn registry_placeholder(name: String) -> String:
     "\n[[rune]]\nname = \"" + name + "\"\nsource = \"coven\"\n# unresolved: registry deps need coven (pm publish/fetch)\n"
@@ -1665,12 +1701,13 @@ fn registry_placeholder(name: String) -> String:
 // A `[[rune]]` block for a resolved path-closure member. `dep_dir` is the resolved
 // directory (relative to the project); the `source` records it so the entry is
 // self-describing. `hash`/`runtime_footprint` are recomputed from the dep's source.
-fn closure_path_entry(root: Dir, name: String, dep_dir: String) -> String:
+fn closure_path_entry(root: Dir, name: String, dep_dir: String) -> Result(String, FootprintError):
     let dep_manifest = root.read(join_path(dep_dir, "witchy.toml"))
     let version = field(dep_manifest, "rune.version")
     let hash = rune_hash(root, dep_dir)
-    let fp = footprint_toml(rune_footprint(root, dep_dir))
-    "\n[[rune]]\nname = \"" + name + "\"\nversion = \"" + version + "\"\nsource = \"path:" + dep_dir + "\"\nhash = \"" + hash + "\"\nruntime_footprint = [" + fp + "]\n"
+    let caps = rune_footprint(root, dep_dir)?
+    let fp = footprint_toml(caps)
+    Ok("\n[[rune]]\nname = \"" + name + "\"\nversion = \"" + version + "\"\nsource = \"path:" + dep_dir + "\"\nhash = \"" + hash + "\"\nruntime_footprint = [" + fp + "]\n")
 
 // The rune's content address: the canonical hash over `witchy.toml` plus every
 // `src/**/*.witchy` (recursively), matching coven's store byte-for-byte (so a
@@ -2096,13 +2133,18 @@ fn add_pkg_gate_widen(console: Console, net: Net, root: Dir, host: String, port:
             // transitive dep can carry a capability the direct rune's footprint
             // never showed. Blocked here, the files stay vendored but unpinned;
             // re-running with `--allow-cap` consents and completes the add.
-            let closure_widened = rights.uncovered(baseline, vendored_closure_footprint(root))
-            if list.length(closure_widened) > 0:
-                console.print("BLOCKED: a dependency of `${name}` would widen your project's capability footprint: ${list.join(closure_widened, ", ")}")
-                console.print("  re-run with --allow-cap ${list.join(closure_widened, " --allow-cap ")} to consent to the whole dependency tree")
-                2
-            else:
-                pin_lock(console, net, root, host, port, name)
+            match vendored_closure_footprint(root):
+                Err(e) ->
+                    console.print("BLOCKED: a dependency of `${name}` has no trustworthy capability footprint: ${footprint_error_message(e)}")
+                    2
+                Ok(closure) ->
+                    let closure_widened = rights.uncovered(baseline, closure)
+                    if list.length(closure_widened) > 0:
+                        console.print("BLOCKED: a dependency of `${name}` would widen your project's capability footprint: ${list.join(closure_widened, ", ")}")
+                        console.print("  re-run with --allow-cap ${list.join(closure_widened, " --allow-cap ")} to consent to the whole dependency tree")
+                        2
+                    else:
+                        pin_lock(console, net, root, host, port, name)
 
 // The capability authority the project already admits: its own declared runtime
 // caps (from witchy.toml, if any) plus every capability the lockfile already
@@ -2937,25 +2979,30 @@ fn src_stub(let name: String) -> String:
 // `computed_footprint`. Footprinting only the first module would miss a capability
 // a non-entry helper module reaches for (an under-report a supply-chain attacker
 // could hide behind).
-fn rune_footprint(root: Dir, dir: String) -> List(String):
+fn rune_footprint(root: Dir, dir: String) -> Result(List(String), FootprintError):
     var out = []
-    for _relpath, text in fs.collect_files(root, join_path(dir, "src"), "src", ".witchy"):
-        for cap in footprint_total(compiler.footprint(text)):
+    for relpath, text in fs.collect_files(root, join_path(dir, "src"), "src", ".witchy"):
+        let values = match footprint_values(compiler.footprint(text), "total"):
+            Err(e) -> return Err(FootprintSourceError(relpath, footprint_error_message(e)))
+            Ok(caps) -> caps
+
+        for cap in values:
             out = add_unique(out, cap)
-    out
+    Ok(out)
 
 // SEC-006: the union footprint of EVERY vendored rune — the full resolved closure. A
 // registry record's footprint is single-rune, so a direct add's gate never sees a
 // transitive dep's capabilities; summing the on-disk closure does.
-fn vendored_closure_footprint(root: Dir) -> List(String):
+fn vendored_closure_footprint(root: Dir) -> Result(List(String), FootprintError):
     var out = []
     if root.exists("vendor"):
         for entry in root.subtree("vendor").list():
             let rune_dir = join_path("vendor", entry)
             if root.exists(join_path(rune_dir, "coven.json")):
-                for cap in rune_footprint(root, rune_dir):
+                let caps = rune_footprint(root, rune_dir)?
+                for cap in caps:
                     out = add_unique(out, cap)
-    out
+    Ok(out)
 
 fn first_witchy(let files: List(String)) -> Option(String):
     var found = None
@@ -2964,11 +3011,75 @@ fn first_witchy(let files: List(String)) -> Option(String):
             found = Some(f)
     found
 
-// Pull the "total" array out of a footprint JSON report.
-fn footprint_total(let report: String) -> List(String):
+// Matchable failures at the compiler-footprint consumer boundary. The compiler
+// reports source rejection as JSON too; callers must not confuse either form of
+// failure with a valid program that demands no authority.
+type FootprintError:
+    FootprintCompilerRejected(String)
+    FootprintMalformedReport(String)
+    FootprintSourceError(String, String)
+
+fn footprint_error_message(e: FootprintError) -> String:
+    match e:
+        FootprintCompilerRejected(reason) -> "compiler rejected the source: ${reason}"
+        FootprintMalformedReport(reason) -> "compiler returned a malformed footprint report: ${reason}"
+        FootprintSourceError(path, reason) -> "`${path}`: ${reason}"
+
+impl Show for FootprintError:
+    fn show(self) -> String:
+        footprint_error_message(self)
+
+impl Error for FootprintError
+
+impl From(FootprintError) for String:
+    fn from(value: FootprintError) -> Self:
+        footprint_error_message(value)
+
+// Pull a required string-array field from a compiler footprint report. Reports
+// shaped as {"error": "..."}, malformed JSON, missing/wrong-shaped arrays, and
+// non-string elements all remain errors at every authority decision.
+fn footprint_values(let report: String, field: String) -> Result(List(String), FootprintError):
+    let doc = compiler_report_document(report)?
+    footprint_string_field(doc, field)
+
+fn footprint_diff_values(let report: String) -> Result((Bool, List(String)), FootprintError):
+    let doc = compiler_report_document(report)?
+    let widened = match json.get(doc, "widened"):
+        None -> return Err(FootprintMalformedReport("missing `widened` boolean"))
+        Some(raw) ->
+            match json.as_bool(raw):
+                None -> return Err(FootprintMalformedReport("`widened` is not a boolean"))
+                Some(value) -> value
+
+    let added = footprint_string_field(doc, "added")?
+    Ok((widened, added))
+
+fn compiler_report_document(let report: String) -> Result(Json, FootprintError):
     match json.decode(report):
-        Ok(doc) -> json.get_strings(doc, "total")
-        Err(e) -> []
+        Err(e) -> Err(FootprintMalformedReport(json.decode_error_message(e)))
+        Ok(doc) ->
+            match json.get_string(doc, "error"):
+                Some(reason) -> Err(FootprintCompilerRejected(reason))
+                None -> Ok(doc)
+
+fn footprint_string_field(doc: Json, field: String) -> Result(List(String), FootprintError):
+    match json.get(doc, field):
+        None -> Err(FootprintMalformedReport("missing `${field}` array"))
+        Some(raw) ->
+            match json.as_array(raw):
+                None -> Err(FootprintMalformedReport("`${field}` is not an array"))
+                Some(items) -> footprint_string_values(items, field)
+
+fn footprint_string_values(items: List(Json), field: String) -> Result(List(String), FootprintError):
+    var out = []
+    var index = 0
+    for item in items:
+        match json.as_string(item):
+            None -> return Err(FootprintMalformedReport("`${field}` item ${index} is not a string"))
+            Some(value) -> out = list.push(out, value)
+
+        index = index + 1
+    Ok(out)
 
 fn declared_caps(let manifest: String) -> List(String):
     toml.get_array(manifest, "capabilities.runtime")
@@ -2977,20 +3088,6 @@ fn field(let manifest: String, path: String) -> String:
     match toml.get(manifest, path):
         Some(v) -> v
         None -> "(none)"
-
-// --- compiler.diff JSON helpers ---------------------------------------------
-fn widened(doc: Json) -> Bool:
-    match json.get(doc, "widened"):
-        Some(w) -> bool_or(w, false)
-        None -> false
-
-fn bool_or(j: Json, default: Bool) -> Bool:
-    match json.as_bool(j):
-        Some(b) -> b
-        None -> default
-
-fn added(doc: Json) -> String:
-    list.join(json.get_strings(doc, "added"), ", ")
 
 // --- small generic helpers ---------------------------------------------------
 fn arg(let args: List(String), i: Int) -> String:

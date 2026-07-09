@@ -9,9 +9,9 @@ tracking: >
   ordinary From(Ein) for Eout impl. std/json and std/toml now expose typed
   decode-error values; std/crypto, std/webauthn, and std/jwt expose typed
   trust-boundary verification errors; the package manager's TUF pinning,
-  verified registry-record footprint, lock snapshot-pin, and strict registry
-  version-response/resolution gates use typed errors internally, and Coven
-  maintainer-policy
+  verified registry-record footprint, lock snapshot-pin, strict registry
+  version-response/resolution, and compiler-footprint consumption gates use
+  typed errors internally, and Coven maintainer-policy
   state, stored-record parsing, source-footprint recomputation, and
   trusted-publishing token verification have typed corruption/authentication
   errors. All convert to String through From at existing application
@@ -268,6 +268,11 @@ signatures distinct until `verify-rune` / `verify-vendor` render their existing
 BLOCK diagnostics. PM source fetches now decode the `/coven/source` response
 through a local `SourceResponseError`, so malformed JSON, missing/wrong-shaped
 `files`, and malformed file entries fail before source hashing or vendoring.
+PM consumption of `compiler.footprint` / `compiler.diff` now uses a local
+`FootprintError` across build grants, generated-source audits, source
+checks/diffs, path lock generation, and dependency gates; compiler rejection or
+malformed report shape can no longer become an empty authority set or a
+no-widening decision.
 Stored Coven records parse through
 `coven_record.RecordParseError`, keeping malformed JSON distinct from a
 well-formed JSON value with the wrong record shape before the registry maps it
