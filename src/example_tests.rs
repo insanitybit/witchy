@@ -1961,6 +1961,25 @@ fn main(console: Console):
     }
 
     #[test]
+    fn toml_decode_rejects_empty_table_path_segments() {
+        let src = "import string\nimport toml\n\nfn status(text: String) -> String:\n    match toml.decode(text):\n        Ok(_) -> \"ok\"\n        Err(e) ->\n            let msg = toml.decode_error_message(e)\n            if string.contains(msg, \"empty path segment\"):\n                \"err:empty\"\n            else:\n                \"err:\" + msg\n\nfn main(console: Console):\n    console.print(\"empty_header=\" + status(\"[]\\nroot = 1\\n\"))\n    console.print(\"empty_mid=\" + status(\"[a..b]\\nx = 1\\n\"))\n    console.print(\"empty_tail=\" + status(\"[a.]\\nx = 1\\n\"))\n    console.print(\"empty_head=\" + status(\"[.a]\\nx = 1\\n\"))\n    console.print(\"array_empty_mid=\" + status(\"[[a..b]]\\nx = 1\\n\"))\n    console.print(\"quoted_dot=\" + status(\"[\\\"a..b\\\"]\\nx = 1\\n\"))\n";
+        let expected = [
+            "empty_header=err:empty",
+            "empty_mid=err:empty",
+            "empty_tail=err:empty",
+            "empty_head=err:empty",
+            "array_empty_mid=err:empty",
+            "quoted_dot=ok",
+        ];
+        assert_eq!(link_run(src), expected, "interp: TOML empty table path segments");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: TOML empty table path segments",
+        );
+    }
+
+    #[test]
     fn rfc0054_crypto_verify_uses_typed_error_and_converts_to_string() {
         let src = "import crypto\nimport show\n\nfn via_string() -> Result(Bool, String):\n    let ok = crypto.ed25519_verify(\"not-hex\", \"msg\", \"00\")?\n    Ok(ok)\n\nfn main(console: Console):\n    match crypto.ed25519_verify(\"not-hex\", \"msg\", \"00\"):\n        Ok(_) -> console.print(\"bad\")\n        Err(e) ->\n            match e:\n                crypto.MalformedPublicKey(name) -> console.print(\"key:\" + name)\n                crypto.MalformedMessage(name) -> console.print(\"msg:\" + name)\n                crypto.MalformedSignature(name) -> console.print(\"sig:\" + name)\n                crypto.VerifierUnavailable(name) -> console.print(\"down:\" + name)\n            console.print(crypto.verify_error_message(e))\n            console.print(show.render(e))\n    match via_string():\n        Ok(_) -> console.print(\"bad\")\n        Err(e) -> console.print(e)\n";
         let expected = [

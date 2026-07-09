@@ -61,12 +61,13 @@ pub fn decode(text: String) -> Result(Toml, TomlDecodeError):
         let t = string.trim(line)
         if is_array_header(t):
             aot = array_header_name(t)
+            let _path = header_path(aot)?
             in_aot = true
             aot_seq = aot_seq + 1
             section = []
             root = append_aot_table(root, aot)
         else if is_header(t):
-            let path = header_path(header_name(t))
+            let path = header_path(header_name(t))?
             let id = list.join(path, ".")
             if list.contains(seen_tables, id):
                 return Err(decode_error("duplicate TOML table `[" + id + "]`"))
@@ -134,17 +135,20 @@ fn update_last(arr: List(Toml), kv_key: String, value: Toml) -> List(Toml):
         i = i + 1
     out
 
-// "a.b.c" -> ["a", "b", "c"]; "" -> [].
-fn header_path(name: String) -> List(String):
+// "a.b.c" -> ["a", "b", "c"]. Strict decode rejects empty unquoted segments
+// (`[]`, `[a..b]`, `[a.]`, `[.a]`) rather than normalizing them away.
+fn header_path(name: String) -> Result(List(String), TomlDecodeError):
     // (BUG-447) Split dotted table paths on `.` OUTSIDE quotes, so a quoted
     // literal-dot key `["a.b"]` stays one segment `a.b` rather than nesting into
     // `a` -> `b`. Shares the one quote-aware grammar with values/arrays.
     var out = []
     for seg in split_outside_quotes(name, "."):
         let s = string.trim(seg)
-        if !string.is_empty(s):
+        if string.is_empty(s):
+            return Err(decode_error("malformed TOML table header `" + name + "` (empty path segment)"))
+        else:
             out = list.push(out, unquote_key(s))
-    out
+    Ok(out)
 
 // Type a raw value string into a Toml leaf, or `Err` when the value is malformed
 // — an opening `"` with no closing `"`, or an opening `[` with no closing `]`
