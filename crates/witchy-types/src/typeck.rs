@@ -3940,8 +3940,21 @@ impl Checker {
                     };
                 if params.len() != args.len() {
                     let display = diagnostic_callable_name(name);
+                    // (RFC-0072 phase 2) Show WHAT the arguments are, not just
+                    // how many — the reader shouldn't have to hunt the signature.
+                    // (Zero-arg callees skip the empty parenthetical.)
+                    let sig = if params.is_empty() {
+                        String::new()
+                    } else {
+                        let types = params
+                            .iter()
+                            .map(|p| self.resolve(p).to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!(" ({types})")
+                    };
                     return terr(format!(
-                        "`{display}` expects {} argument(s) but got {}",
+                        "`{display}` expects {} argument(s){sig} but got {}",
                         params.len(),
                         args.len()
                     ));

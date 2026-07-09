@@ -1,5 +1,6 @@
 ---
 source: src/diagnostic_golden_tests.rs
+assertion_line: 330
 expression: "type_diag(\"trait Lessable:\\n    fn less(self, other: Self) -> Bool\\n\\nimpl Lessable for Int:\\n    fn less(self, other: Int) -> Bool:\\n        self < other\\n\\nfn smallest(a: a, b: a) -> a where a: Lessable:\\n    if less(a, b, 1):\\n        a\\n    else:\\n        b\\n\\nfn main(console: Console):\\n    print(console, __render(smallest(1, 2)))\\n\")"
 ---
-type error: `smallest`, line 9: `Int.less` expects 2 argument(s) but got 3
+type error: `smallest`, line 9: `Int.less` expects 2 argument(s) (Int, Int) but got 3
