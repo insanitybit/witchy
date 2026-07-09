@@ -163,13 +163,25 @@ fn spawn_all_into(children: List(Task(Nil)), i: Int, hs: List(Handle)) -> Task(L
 // quiescence releases a parked join even if a child has a continuation that will
 // run afterward.
 pub fn join_all(hs: List(Handle)) -> Task(Nil):
-    for_each(hs, fn(h): join(h))
+    join_all_from(hs, 0)
+
+fn join_all_from(hs: List(Handle), i: Int) -> Task(Nil):
+    if i >= list.length(hs):
+        ready_unit()
+    else:
+        and_then(join(list.at(hs, i)), fn(_done): join_all_from(hs, i + 1))
 
 // Cancel every handle in `hs` — the companion to `spawn_all`/`join_all`. Each is
 // stopped and treated as finished; idempotent, so cancelling an already-finished
 // handle is a no-op. Used by `race_n` to drop the losers.
 pub fn cancel_all(hs: List(Handle)) -> Task(Nil):
-    for_each(hs, fn(h): cancel(h))
+    cancel_all_from(hs, 0)
+
+fn cancel_all_from(hs: List(Handle), i: Int) -> Task(Nil):
+    if i >= list.length(hs):
+        ready_unit()
+    else:
+        and_then(cancel(list.at(hs, i)), fn(_done): cancel_all_from(hs, i + 1))
 
 // STRUCTURED concurrency (a "nursery"): run every task in `children`
 // concurrently and wait for their handles while the executor can make progress.

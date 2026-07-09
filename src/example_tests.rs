@@ -518,6 +518,28 @@
         );
     }
 
+    /// (BUG-396) Structured channel helpers sequence multi-handle lists without
+    /// routing join/cancel through the recursive generic `for_each` helper.
+    #[test]
+    fn channel_structured_join_cancel_indexed_fanouts_backends_agree() {
+        let cases = [
+            (
+                "scope",
+                "import chan\nimport list\n\nasync fn noop(_n: Int) -> Nil:\n    return\n\nasync fn main(console: Console):\n    let items = list.range(40)\n    chan.scope(list.map(items, fn(n): noop(n))).await\n    print(console, \"scoped ${list.length(items)}\")\n",
+                ["scoped 40"],
+            ),
+            (
+                "race_n",
+                "import chan\nimport list\nimport option\n\nasync fn value(n: Int) -> Int:\n    n\n\nasync fn main(console: Console):\n    let items = list.range(40)\n    let raced = chan.race_n(list.map(items, fn(n): value(n))).await\n    let winner = option.unwrap_or(raced, 0 - 1)\n    print(console, __render(winner))\n",
+                ["0"],
+            ),
+        ];
+        for (label, src, expected) in cases {
+            assert_eq!(link_run(src), expected, "interp: {label}");
+            assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: {label}");
+        }
+    }
+
     /// (BUG-007) The trait-method edge is rejected LOUDLY at parse time rather than
     /// half-supported: the current trait machinery can't express a `gen`/`async`
     /// method as a trait method (async's inferred phantom-`Task` return has no
