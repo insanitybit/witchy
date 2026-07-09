@@ -29,7 +29,7 @@
 // attacker-chosen collections — see the note in typeck.rs.
 use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 
-use witchy_syntax::ast::*;
+use witchy_syntax::{ast::*, cap_ops};
 
 #[derive(Clone, Debug)]
 struct ImplTraitMethod {
@@ -1847,17 +1847,15 @@ impl Ctx<'_> {
                         return;
                     }
                 }
-                // UFCS for host-capability operations, which are BARE intrinsics
-                // (`restrict`, `connect`, `subdir`, `read`, …) rather than module
-                // functions: `net.restrict(a)` lowers to `restrict(net, a)`, so a
-                // capability narrows or uses itself with method syntax — the same
-                // surface a library capability's own `impl` methods already get. An
-                // unknown op is validated downstream as an unknown call.
+                // UFCS for host-capability operations. Keep a private marker on
+                // the lowered call so the compiler still knows the user wrote
+                // method syntax (`dir.read("x")`) rather than the legacy bare
+                // intrinsic form (`read(dir, "x")`).
                 if tn.as_deref().is_some_and(is_host_capability) {
                     let mut call_args =
                         vec![std::mem::replace(receiver.as_mut(), Expr::Bool(false))];
                     call_args.append(args);
-                    *e = Expr::Call { name: method.clone(), args: call_args };
+                    *e = Expr::Call { name: cap_ops::call_name(method), args: call_args };
                     return;
                 }
                 match tn {
@@ -2118,7 +2116,7 @@ fn tuple_args(type_name: &str) -> Option<Vec<&str>> {
 /// so a user function of the same name still wins.
 fn cap_op_return_type(e: &Expr) -> Option<String> {
     match e {
-        Expr::Call { name, .. } => match name.as_str() {
+        Expr::Call { name, .. } => match cap_ops::surface_name(name) {
             "only" | "deny" => Some("Net".to_string()),
             "subtree" | "make_dir" => Some("Dir".to_string()),
             "read_file" | "write_file" => Some("File".to_string()),
@@ -2133,7 +2131,21 @@ fn cap_op_return_type(e: &Expr) -> Option<String> {
 fn is_host_capability(tn: &str) -> bool {
     matches!(
         tn.split(['[', '<']).next().unwrap_or(tn).trim(),
-        "Net" | "Dir" | "File" | "Console" | "Clock" | "Env" | "Exec"
+        "Net"
+            | "Dir"
+            | "File"
+            | "Console"
+            | "Clock"
+            | "Rand"
+            | "Env"
+            | "Exec"
+            | "Socket"
+            | "Listener"
+            | "BuildOut"
+            | "BuildRead"
+            | "BuildEnv"
+            | "BuildNet"
+            | "BuildExec"
     )
 }
 

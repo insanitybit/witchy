@@ -14,6 +14,7 @@ pub mod aliases;
 pub mod ast;
 pub mod async_lower;
 pub mod build_entry;
+pub mod cap_ops;
 pub mod consts;
 pub mod derive;
 pub mod diag;

@@ -9,6 +9,7 @@
 use super::{name_kind, promote_kind, valtype_kind, ty_to_valtype};
 use super::{Codegen, Kind, ValType};
 use witchy_syntax::ast::{BinOp, Block, Expr, Pattern, Stmt, Type, UnOp};
+use witchy_syntax::cap_ops;
 
 impl Codegen {
     /// The WASM kind a compiled expression evaluates to.
@@ -72,12 +73,12 @@ impl Codegen {
                 .fold(Kind::I32, |acc, a| promote_kind(acc, self.kind_of(&a.body))),
             // `get_or(d, k, default)` returns the dict's value at the default's
             // kind (the i64 value slot is recovered to it at the call site).
-            Expr::Call { name, args } if name == "dict.get_or" && args.len() == 3 => {
+            Expr::Call { name, args } if cap_ops::surface_name(name) == "dict.get_or" && args.len() == 3 => {
                 self.kind_of(&args[2])
             }
             // `at(d, k)` returns the dict's value slot at the value's recovered
             // kind, so `Int` dictionary reads stay i64 instead of the generic i32.
-            Expr::Call { name, args } if name == "dict.at" && args.len() == 2 => {
+            Expr::Call { name, args } if cap_ops::surface_name(name) == "dict.at" && args.len() == 2 => {
                 self.dict_value_valtype_of(&args[0]).map(valtype_kind).unwrap_or(Kind::I32)
             }
             // (RFC-0055) `__erase`/`__unerase` are the identity on both value and
@@ -86,15 +87,21 @@ impl Codegen {
             // in its 8-byte slot). The executor then reads the opaque `__Msg` field
             // at the universal i32 width — the same truncation the former generic
             // `m` field took, so both backends stay byte-identical.
-            Expr::Call { name, args } if (name == "__erase" || name == "__unerase") && args.len() == 1 => {
+            Expr::Call { name, args }
+                if matches!(cap_ops::surface_name(name), "__erase" | "__unerase")
+                    && args.len() == 1 =>
+            {
                 self.kind_of(&args[0])
             }
             // RFC-0012/RFC-0005 Stage 2: Dir navigation yields an unforgeable File
             // externref, not an integer handle.
-            Expr::Call { name, args } if (name == "read_file" || name == "write_file") && args.len() == 2 => {
+            Expr::Call { name, args }
+                if matches!(cap_ops::surface_name(name), "read_file" | "write_file")
+                    && args.len() == 2 =>
+            {
                 Kind::ExternRef
             }
-            Expr::Call { name, .. } => match name.as_str() {
+            Expr::Call { name, .. } => match cap_ops::surface_name(name) {
                 "math.to_float" => Kind::F64,
                 "math.to_int" | "string.length" | "string.char_count" | "string.find"
                 | "list.length" | "dict.length" | "string.to_int" | "int_to_duration"
@@ -128,7 +135,7 @@ impl Codegen {
     /// width always agree.
     pub(crate) fn elem_kind_of_list_arg(&self, e: &Expr) -> Kind {
         if let Expr::Call { name, args } = e {
-            if name == "list.at" {
+            if cap_ops::surface_name(name) == "list.at" {
                 if let Some(arg) = args.first() {
                     return self.list_elem_kind(arg);
                 }
@@ -276,19 +283,19 @@ impl Codegen {
                 .unwrap_or(ValType::Other),
             // `at(xs, i)` has the list's element type, so a String element
             // compares by content (`$str_eq`) rather than by pointer.
-            Expr::Call { name, args } if name == "list.at" && !args.is_empty() => {
+            Expr::Call { name, args } if cap_ops::surface_name(name) == "list.at" && !args.is_empty() => {
                 self.elem_val_type_of(&args[0])
             }
             // `get_or(d, k, default)` returns the Dict's value type, which is the
             // default's type — so a `let v = get_or(d, k, 0)` (or a String default)
             // tracks `v`, and `v` can in turn be used as a Dict key.
-            Expr::Call { name, args } if name == "dict.get_or" && args.len() == 3 => {
+            Expr::Call { name, args } if cap_ops::surface_name(name) == "dict.get_or" && args.len() == 3 => {
                 self.val_type_of(&args[2])
             }
-            Expr::Call { name, args } if name == "dict.at" && args.len() == 2 => {
+            Expr::Call { name, args } if cap_ops::surface_name(name) == "dict.at" && args.len() == 2 => {
                 self.dict_value_valtype_of(&args[0]).unwrap_or(ValType::Other)
             }
-            Expr::Call { name, .. } => match name.as_str() {
+            Expr::Call { name, .. } => match cap_ops::surface_name(name) {
                 "__render" | "string.to_upper" | "string.to_lower" | "string.trim"
                 | "string.replace" | "string.substring" | "crypto.sha256" | "crypto.sign"
                 | "crypto.public_key" | "crypto.reveal" | "read" | "read_build" | "crypto.rune_hash"

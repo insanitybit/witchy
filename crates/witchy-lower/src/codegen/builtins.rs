@@ -9,6 +9,7 @@ impl Codegen {
     pub(crate) fn lower_call(&mut self, name: &str, args: &[Expr]) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::WirExpr as W;
         use witchy_wir::wir::WirNode as N;
+        let name = witchy_syntax::cap_ops::surface_name(name);
         let call = |func: &str, a: Vec<W>| W::Call { func: func.to_string(), args: a };
         // A direct host-import call (a `_host` import is the authority surface).
         let host = |import: &str, a: Vec<W>| W::CallHost { import: import.to_string(), args: a };

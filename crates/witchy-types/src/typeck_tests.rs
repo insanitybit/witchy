@@ -1523,6 +1523,39 @@ fn shout(console: Console, s: String) -> Nil:
     }
 
     #[test]
+    fn capability_methods_keep_method_origin_after_lowering() {
+        use witchy_syntax::ast::{Expr, Item, Stmt};
+
+        let src = r#"
+fn read(f: File[Read]) -> String:
+    "shadow"
+
+fn main(console: Console, f: File[Read]):
+    console.print(f.read())
+"#;
+        assert!(check_str(src).is_ok());
+
+        let module = witchy_syntax::parser::parse_module(src).expect("parse");
+        let lowered = crate::traits::lower_checked(module).expect("lower");
+        let main = lowered
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(f) if f.name == "main" => Some(f),
+                _ => None,
+            })
+            .expect("main");
+        let Some(Stmt::Expr(Expr::Call { name, args })) = main.body.stmts.last() else {
+            panic!("expected lowered console.print call");
+        };
+        assert_eq!(name, "__capop.print");
+        let Some(Expr::Call { name: inner, .. }) = args.get(1) else {
+            panic!("expected lowered f.read call");
+        };
+        assert_eq!(inner, "__capop.read");
+    }
+
+    #[test]
     fn checks_adt_constructors_and_exhaustive_match() {
         let src = r#"
 type Event:

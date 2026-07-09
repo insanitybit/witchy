@@ -1023,6 +1023,7 @@ impl Interpreter {
         // calls in the arguments move `cur_line`, so capturing it later (e.g. once
         // we're inside the callee) would report the wrong line.
         self.note_assert_crossing(name);
+        let name = witchy_syntax::cap_ops::surface_name(name);
         let argvals = args
             .iter()
             .map(|a| self.eval(a, env))

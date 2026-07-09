@@ -22,6 +22,7 @@ use witchy_syntax::ast::{
     self, Block, Convention, Expr, Function, Item, MatchArm, Module, Pattern, Stmt, UnOp,
 };
 use witchy_syntax::build_entry::{build_entrypoint, is_build_capability_type};
+use witchy_syntax::cap_ops;
 
 /// The operations a `Dir` capability permits. Decomposing the capability by
 /// right makes the footprint distinguish read-only from writing code, and an op
@@ -2252,6 +2253,7 @@ fn starts_lowercase(segment: &str) -> bool {
 /// names rather than exposing lowering artifacts. Generic free-function
 /// specializations such as `smallest__Int` are rendered as the original function.
 fn diagnostic_callable_name(name: &str) -> String {
+    let name = cap_ops::surface_name(name);
     if !name.contains("__") {
         return name.to_string();
     }
@@ -3874,10 +3876,12 @@ impl Checker {
                 Ok(Ty::Fn(param_tys, Box::new(lambda_ret)))
             }
             Expr::Call { name, args } => {
+                let is_cap_op = cap_ops::is_marked(name);
+                let call_name = cap_ops::surface_name(name);
                 // A local binding (parameter or `let`) holding a function value:
                 // apply it. Handles both an explicit `fn(..)->..` type and an as
                 // yet unconstrained variable (which we pin to a function type).
-                if let Some(vty) = self.lookup(name) {
+                if !is_cap_op && let Some(vty) = self.lookup(name) {
                     match self.resolve(&vty) {
                         Ty::Fn(param_tys, ret) => {
                             if param_tys.len() != args.len() {
@@ -3909,27 +3913,27 @@ impl Checker {
                         _ => {} // a non-function local with this name: fall through
                     }
                 }
-                if let Some(t) = self.check_file_op(name, args)? {
+                if let Some(t) = self.check_file_op(call_name, args)? {
                     return Ok(t);
                 }
-                if let Some(t) = self.check_dir_op(name, args)? {
+                if let Some(t) = self.check_dir_op(call_name, args)? {
                     return Ok(t);
                 }
-                if let Some(t) = self.check_exec_op(name, args)? {
+                if let Some(t) = self.check_exec_op(call_name, args)? {
                     return Ok(t);
                 }
-                if let Some(t) = self.check_net_op(name, args)? {
+                if let Some(t) = self.check_net_op(call_name, args)? {
                     return Ok(t);
                 }
-                if let Some(t) = self.check_try_ctx(name, args)? {
+                if let Some(t) = self.check_try_ctx(call_name, args)? {
                     return Ok(t);
                 }
                 let (params, ret, call_bounds) =
-                    match self.user_call_sig_with_bounds(name) {
+                    match (!is_cap_op).then(|| self.user_call_sig_with_bounds(name)).flatten() {
                         Some(sig) => sig,
                         None => {
-                            let Some((params, ret)) = self.call_sig(name) else {
-                                return self.unknown_call(name, args);
+                            let Some((params, ret)) = self.call_sig(call_name) else {
+                                return self.unknown_call(call_name, args);
                             };
                             (params, ret, Vec::new())
                         }
@@ -3953,7 +3957,7 @@ impl Checker {
                     // printable form; interpolation renders DATA. `__render` is the
                     // desugaring of `"${…}"`, so the message speaks in the user's
                     // terms and never names `Set`/records for a function operand.
-                    if name == "__render" {
+                    if call_name == "__render" {
                         if let Ty::Fn(..) = self.resolve(&at) {
                             return terr(
                                 "cannot render a function value with `\"${…}\"` — a \
@@ -3967,19 +3971,19 @@ impl Checker {
                         .map_err(|e| TypeError { message: format!("in call to `{display}`: {}", e.message) })?;
                 }
                 for (bound_ty, trait_name) in &call_bounds {
-                    self.require_call_bound(name, bound_ty, trait_name)?;
+                    self.require_call_bound(call_name, bound_ty, trait_name)?;
                 }
                 // (BUG-395) A generic `Dict` key operation's key must be `Eq` — record
                 // the (post-unification) key type and its line; validated once the
                 // whole body is inferred (so a key var pinned later is seen concrete).
-                if let Some(i) = dict_key_op_index(name) {
+                if let Some(i) = dict_key_op_index(call_name) {
                     if let Some(key_ty) = params.get(i) {
                         self.dict_key_ops.push((key_ty.clone(), self.cur_line));
                     }
                 }
                 // Enforce conventions: a `var` parameter needs a mutable variable;
                 // `own` consumes its argument (use-after-move becomes an error).
-                if let Some(convs) = self.fn_conventions.get(name).cloned() {
+                if !is_cap_op && let Some(convs) = self.fn_conventions.get(name).cloned() {
                     let is_mutator = self.fn_mutators.contains(name);
                     for (i, (arg, conv)) in args.iter().zip(&convs).enumerate() {
                         match conv {
@@ -4011,7 +4015,7 @@ impl Checker {
                         }
                     }
                 }
-                self.reject_externref_cap_aggregate_ty(&ret, &format!("call to `{name}`"))?;
+                self.reject_externref_cap_aggregate_ty(&ret, &format!("call to `{call_name}`"))?;
                 Ok(ret)
             }
             Expr::Apply { func, args } => {
