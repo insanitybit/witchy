@@ -103,6 +103,26 @@ table **quiet pre-mono pass** still uses `head_type_name` for local judgment
 (bare intrinsics the checker types but the empty table can't surface); those are
 the documented residual, not an invitation to grow the shape tables.
 
+## Work selection (release push)
+
+- **Work `scratch/RELEASE-QUEUE.md` top-down.** It is the 0.1 blocking set
+  (RFC-0070) as an ordered queue with verify commands and done criteria. Do
+  not self-select bugs from `bugs/README.md` outside it without asking — the
+  ledger does not encode priority; the queue does. Its §CLOSE-ONLY section
+  lists rows already verified fixed: close them, don't re-fix them.
+- **Do not touch `impl/rfc-0005-stage2` or any externref work** — main-loop-led
+  (RFC-0070 D1).
+- **Fix the generator, not the output.** A mistake made twice by an agent is a
+  prompt/docs bug: fix it with a line here, in the relevant RFC, or in the
+  queue entry — never by only hand-patching the latest instance.
+- **Adversarial review is selective.** Before submitting a branch that touches
+  parity-sensitive contracts (typeck, codegen, interpreter, analysis.rs, the
+  wasm ABI), have a fresh-context reviewer read ONLY the diff and try to
+  reject it: every hunk must trace to the stated task, and green tests are not
+  proof for changes the differential suite doesn't adjudicate. Skip this
+  ceremony for changes the existing suites already adjudicate (docs, std
+  functions with differential tests, ledger closes).
+
 ## Concurrent agents
 
 This checkout is often shared by multiple coding agents at once. Treat the

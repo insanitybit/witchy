@@ -1,8 +1,15 @@
 ---
 rfc: 0077
 title: "Test doubles in witchy — tests are permissive; the VM sandbox is the only boundary"
-status: proposed
+status: planned
 created: 2026-07-08
+# Accepted 2026-07-08 after verifying the safety claim against the shipped
+# runtime rather than RFC-0005's future state: host functions are linked
+# per-grant (runtime.rs:657-687, "only granted host functions are defined"),
+# so under plain `witchy test` (zero real grants beyond print/clock/env) a
+# forged or mock capability is inert TODAY, independent of the i32→externref
+# migration — deny-by-omission linking, not handle unforgeability, is what
+# holds the plain-test tier. Two riders recorded below (§Riders).
 tracking: design conversation 2026-07-08 (witchy test ergonomics + capability model); no prior test-double RFC
 related:
   - "0002 (user-definable capabilities — sealing is a correctness contract, not the security boundary)"
@@ -205,6 +212,24 @@ without opening production.
 3. Sealed relaxation (§2, construction) + mock backends (§2, capabilities) +
    test-mode gate (§3).
 4. Lock the `witchy test` surface with RFC-0072 goldens.
+
+## Riders (acceptance conditions, 2026-07-08)
+
+1. **The `--integration` tier is gated on RFC-0005 stages 2/3 merging.** The
+   plain-test tier is safe today by deny-by-omission host linking (see the
+   acceptance note in the header): with zero real grants, no host function
+   exists for a forged value to reach. But under `--integration` the VM DOES
+   hold real handles, and in the shipped i32 representation a forged
+   capability is an integer that could collide with a real handle-table
+   index. The RFC's "a forged value has no host reach" claim is
+   unconditionally true only post-externref. Plain-test features (§1 docs,
+   §2 mocks/relaxation, §3 gating, §4's zero-grant dependency floor) may land
+   now; `--integration` real-grant passing waits for 0005.
+2. **The test-mode gate must be closed against every non-test entry**, and
+   its absence goldened (RFC-0072): `run`, `compile`, `build` steps, comptime
+   evaluation, and `pm`-driven builds each get a golden proving `testing.*`
+   and sealed-construction-outside-home are rejected there. The gate is a
+   linker attribute; the goldens are what keep it from silently widening.
 
 ## Prior art
 
