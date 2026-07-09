@@ -142,13 +142,16 @@ witchy build-step genlib/src/build.witchy --out gen/ --read proto/ --exec protoc
 Either way the step runs with zero ambient authority — only the minted, confined
 caps. A `write_out` to `../escape.txt` is rejected by the same path-confinement
 the runtime `Dir` uses; an un-allow-listed tool is refused before it starts; an
-ungranted `BuildRead` never gets minted at all. A **deterministic** step (one that
-only writes generated source and reads project files) runs in the **zero-ambient
-WASM sandbox**: it is compiled and instantiated with *only* its `write_out` /
-`read_build` host functions linked, so the dangerous host functions don't even
-exist for it to call. Steps that `exec` a tool or hit the network run on the
-interpreter, where the WASM boundary adds nothing — the dangerous operation is a
-native process or socket, gated identically by the allow-list either way.
+ungranted `BuildRead` never gets minted at all. Every build step runs the same
+way: it is compiled to WASM and instantiated in the **zero-ambient sandbox** with
+*only* the host functions its granted caps allow. A **deterministic** step (one
+that only writes generated source and reads project files) gets *just* its
+`write_out` / `read_build` host functions linked, so the dangerous operations
+don't even exist for it to call. A step that `exec`s a tool or hits the network
+runs in the same compiled sandbox, only with the `run_tool` / `fetch_build` host
+functions linked — and each of those is gated by the allow-list before the native
+process or socket is touched. The confinement is the linked host-function set, not
+a choice of backend.
 
 ## Determinism, tiered
 

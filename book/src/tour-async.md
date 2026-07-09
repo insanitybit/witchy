@@ -107,7 +107,7 @@ async fn client(console: Console, srv: Sender(Msg)) -> Nil:
     chan.send(srv, Get(reply_tx)).await
     let r = chan.recv(reply_rx).await
     match r:
-        Some(Total(t)) -> console.print("total is " + "${t}")
+        Some(Total(t)) -> console.print("total is ${t}")
         Some(Add(_n)) -> console.print("(unreachable)")
         Some(Get(_s)) -> console.print("(unreachable)")
         None -> console.print("(no reply)")
@@ -145,6 +145,65 @@ async fn main(console: Console):
         chan.send(jobs_tx, n).await
     chan.consume(out_rx, fn(r): chan.done(console.print("sq ${r}"))).await
 ```
+
+## Structured concurrency: the form to reach for first
+
+A bare `chan.spawn` hands you a task handle you must remember to `join` — forget
+it, or return early past it, and the worker outlives the code that started it.
+The `chan` module gives you a *structured* layer on top, where the tasks are
+never visible and the join is guaranteed. Prefer these over a raw `spawn`:
+
+- `chan.gather(tasks)` fans out result-producing tasks and returns every result
+  once they all finish.
+- `chan.par_map(items, f)` maps a task over a list concurrently and returns the
+  results **in input order**, regardless of which finished first.
+- `chan.par_reduce(items, f, init, combine)` folds those results.
+- `chan.race(a, b)` returns the first result and cancels the loser.
+- `chan.scope(tasks)` runs a batch of side-effecting tasks and joins them all.
+
+No task handle escapes any of these, so nothing leaks. And because the executor
+schedules deterministically — `par_map` reorders results back to input order, a
+`race` tie favours the first racer — the run is byte-identical on both backends.
+
+```witchy
+import list
+import option
+from chan import Sender
+
+async fn square(n: Int) -> Int:
+    n * n
+
+async fn announce(tx: Sender(Int), n: Int) -> Nil:
+    chan.send(tx, n).await
+
+async fn main(console: Console):
+    let squares = chan.gather([square(1), square(2), square(3)]).await
+    console.print("gathered: ${squares}")
+
+    let mapped = chan.par_map([1, 2, 3, 4], fn(n): square(n)).await
+    console.print("par_map: ${mapped}")
+
+    let winner = chan.race(square(7), square(8)).await
+    console.print("race: ${option.unwrap_or(winner, 0)}")
+
+    let (tx, rx) = chan.channel(0).await
+    chan.scope([announce(tx, 10), announce(tx, 20)]).await
+    let a = chan.recv(rx).await
+    let b = chan.recv(rx).await
+    console.print("scoped: ${list.length([a, b])} workers ran")
+```
+
+```text
+gathered: [1, 4, 9]
+par_map: [1, 4, 9, 16]
+race: 49
+scoped: 2 workers ran
+```
+
+Reach for a bare `spawn`/`join` (or the worker-pool pattern above) only when you
+need a long-lived task whose lifetime genuinely outlives a single scope — a
+server loop, say. For fan-out-and-collect, the structured combinators are the
+idiom.
 
 ## Iterating with `await`
 

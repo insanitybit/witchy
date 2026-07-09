@@ -43,8 +43,9 @@ sequential body):
 - `f` must be a **top-level function** (capture-free): a worker has its own memory, so
   a captured parent-heap value would not be reachable there.
 
-On the benchmark suite this lands within ~25% of Go goroutines on CPU-bound work — the
-gap is the per-call cost of spinning up worker instances.
+On CPU-bound work this scales close to linearly with core count; the residual
+overhead is the per-call cost of spinning up worker instances, so it pays off
+when each task does real work rather than for tiny per-element calls.
 
 ## `Bytes`: the binary payload
 

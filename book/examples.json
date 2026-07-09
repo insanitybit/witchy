@@ -1255,9 +1255,10 @@
       "Console"
     ],
     "output": [
-      "got 1",
-      "got 4",
-      "got 9"
+      "gathered: [1, 4, 9]",
+      "par_map: [1, 4, 9, 16]",
+      "race: 49",
+      "scoped: 2 workers ran"
     ],
     "runnable": true
   },
@@ -1270,7 +1271,9 @@
       "Console"
     ],
     "output": [
-      "sum is 10"
+      "got 1",
+      "got 4",
+      "got 9"
     ],
     "runnable": true
   },
@@ -1283,12 +1286,25 @@
       "Console"
     ],
     "output": [
-      "110"
+      "sum is 10"
     ],
     "runnable": true
   },
   {
     "block": 9,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-async.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "110"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 10,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-async.md",

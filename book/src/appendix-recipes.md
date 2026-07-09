@@ -80,7 +80,7 @@ case explicitly.
 ```witchy
 fn main(console: Console, env: Env):
     match env.get_env("HOME"):
-        Some(h) -> console.print("HOME is " + h)
+        Some(h) -> console.print("HOME is ${h}")
         None -> console.print("HOME is unset")
 ```
 
@@ -95,7 +95,7 @@ fn main(console: Console, args: List(String)) -> Int:
         console.print("usage: prog <name>")
         1
     else:
-        console.print("hello, " + args.at(0))
+        console.print("hello, ${args.at(0)}")
         0
 ```
 
@@ -109,7 +109,7 @@ import http
 
 fn main(console: Console, net: Net):
     let resp = http.get(net, "localhost", 80, "/")
-    console.print("status " + "${http.status(resp)}")
+    console.print("status ${http.status(resp)}")
     if http.is_success(resp):
         console.print(http.body(resp))
 ```
@@ -139,11 +139,11 @@ import http
 fn main(console: Console, net: Net[Connect, Tcp]):
     let safe = net.deny(Net.private())
     match http.pin(safe, "http://example.com/status", public_ok):
-        Err(e) -> console.print("blocked: " + e)
+        Err(e) -> console.print("blocked: ${e}")
         Ok(target) ->
             match http.get_pinned(safe, target):
-                Ok(resp) -> console.print("status " + "${http.status(resp)}")
-                Err(e) -> console.print("fetch failed: " + e)
+                Ok(resp) -> console.print("status ${http.status(resp)}")
+                Err(e) -> console.print("fetch failed: ${e}")
 
 // Your policy: inspect a resolved IP literal and approve or reject it. Returning
 // `false` for every candidate makes `pin` fail closed.

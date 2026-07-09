@@ -32,5 +32,4 @@ compile error. Reach for `for var` only when you intend to update elements.
 In this first version the body must run straight through: a `break`, `continue`,
 `return`, or `?` that belongs to the loop is a compile error, because it would
 skip the write-back of the current element. Use an index loop
-(`for i in 0..xs.length(): ...`) if you need an early exit. Loss-free write-back
-across early exit is a planned refinement (RFC-0028).
+(`for i in 0..xs.length(): ...`) if you need an early exit.

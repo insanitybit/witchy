@@ -17,7 +17,7 @@ fn matches(query: String, contents: String) -> List(String):
     var hits = []
     for line in string.lines(contents):
         if string.contains(line, query):
-            hits = list.push(hits, line)
+            hits.push(line)
     hits
 
 // Case-insensitive variant: fold both sides to lower case first.
@@ -26,7 +26,7 @@ fn matches_ci(query: String, contents: String) -> List(String):
     let needle = string.to_lower(query)
     for line in string.lines(contents):
         if string.contains(string.to_lower(line), needle):
-            hits = list.push(hits, line)
+            hits.push(line)
     hits
 
 fn main(console: Console):
@@ -58,7 +58,7 @@ fn matches(query: String, contents: String) -> List(String):
     var hits = []
     for line in string.lines(contents):
         if string.contains(line, query):
-            hits = list.push(hits, line)
+            hits.push(line)
     hits
 
 fn matches_ci(query: String, contents: String) -> List(String):
@@ -66,7 +66,7 @@ fn matches_ci(query: String, contents: String) -> List(String):
     let needle = string.to_lower(query)
     for line in string.lines(contents):
         if string.contains(string.to_lower(line), needle):
-            hits = list.push(hits, line)
+            hits.push(line)
     hits
 
 // The entry point: Console to print, Dir[Read] to read the log, Env to check a

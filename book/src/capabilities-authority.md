@@ -15,6 +15,7 @@ capabilities:
 | `File` | access to a single file (the leaf of `Dir`) |
 | `Net` | access to the network |
 | `Exec` | spawning a native subprocess (the sharpest authority) |
+| `Rand` | drawing cryptographically-secure randomness |
 | `SecretStore` / `Secret` | named host secrets, and signing with one |
 
 Each is *right-typed* where that matters — `Dir[Read]` vs `Dir[Write]`,

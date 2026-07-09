@@ -8,7 +8,6 @@ constantly; here they are, roughly in the order you meet them.
 ```sh
 witchy program.witchy            # compile and run
 witchy check program.witchy      # check + verify compiled acceptance, don't run
-                                 # (also prints performance notes)
 witchy fmt program.witchy        # reformat in place (canonical layout)
 witchy fmt --check program.witchy  # verify formatting (for CI); exit 1 if not
 ```
@@ -25,7 +24,6 @@ escaped quotes inside `${...}` become bare, nullary constructors lose their
 `if let`. Every rewrite is meaning-preserving — the formatter refuses to emit
 anything that doesn't parse back to the same program — but the bytes may
 change more than you expect the first time you run it.
-utput is the perfect reproduction).
 
 ## Seeing and enforcing authority
 

@@ -189,10 +189,11 @@ Score(12, beta)
   (`.{field: expr}`) is reflectable too, so `json.stringify(.{ok: true})` works
   with no declaration at all. [Reflection](tour-reflection.md) covers the full
   story — the `Mirror` type and writing your own reflective consumers.
-- `derive(Deserialize)` (with `import json`, `import result`, and `import
-  option` if any field is `Option`) generates the inverse,
-  `from_json(j) -> Result(Self, String)`, so `Score.from_json(j)` rebuilds a
-  record from a parsed `Json` and reports a bad shape as `Err`.
+- `derive(Deserialize)` (just `import json` — `Result`, `Option`, and their
+  constructors are prelude names, so no extra imports even when a field is
+  `Option`) generates the inverse, `from_json(j) -> Result(Self, String)`, so
+  `Score.from_json(j)` rebuilds a record from a parsed `Json` and reports a bad
+  shape as `Err`.
 
 Because an operator dispatches on its operands' type, a comparison works
 wherever the value comes from — including one you just bound in a `match` arm, an

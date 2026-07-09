@@ -63,10 +63,14 @@ The `testing` module gives you:
 | `assert_eq(got, want)` | the two strings are equal |
 | `assert_ne(got, other)` | the two strings differ |
 | `assert_int_eq(got, want)` | the two `Int`s are equal |
+| `assert_value_eq(got, want)` | the two values are equal (`where a: PartialEq, a: Show`) |
+| `assert_value_ne(got, other)` | the two values differ (`where a: PartialEq, a: Show`) |
 | `fail_with(msg)` | (always — an unconditional failure) |
 
-Render values to strings at the call site (`"${x}"`) so the
-failure message stays readable. Under the hood these all call the `fail`
+`assert_value_eq` / `assert_value_ne` are the idiomatic choice for records,
+enums, and other typed values: they compare with `==` and render the mismatch
+through `Show` for you, so you don't hand-stringify at the call site. Reach for
+`assert_eq` when you already have strings. Under the hood these all call the `fail`
 primitive you met in the errors chapter, so a failing assertion is just a loud,
 message-carrying abort — and because aborts are part of parity, a test behaves
 the same whichever backend runs it.

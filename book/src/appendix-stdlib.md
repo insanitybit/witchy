@@ -39,7 +39,7 @@ to_ms` finds `duration.to_milliseconds`.
 
 | Module | What it gives you |
 |---|---|
-| `json` | parse and encode JSON — `json.decode(s)` returns `Result(Json, String)` (the parsed `Json` sum type, or a parse-error message), so thread it with `?`; `json.stringify(x)` / `json.from_value(x)` encode *any* value reflectively (give your own types `derive(Reflect)`); `derive(Deserialize)` generates `from_json` to parse a record back. There is no `derive(Json)`. |
+| `json` | parse and encode JSON — `json.decode(s)` returns `Result(Json, DecodeError)` (the parsed `Json` sum type, or a structured decode error; `json.decode_error_message(e)` renders it), so thread it with `?`; `json.stringify(x)` / `json.from_value(x)` encode *any* value reflectively (give your own types `derive(Reflect)`); `derive(Deserialize)` generates `from_json` to parse a record back. There is no `derive(Json)`. |
 | `toml` | TOML parsing |
 | `url` | URL parsing |
 | `encoding` | hex and base64 |
@@ -49,12 +49,23 @@ to_ms` finds `duration.to_milliseconds`.
 
 | Module | What it gives you |
 |---|---|
-| `math` *(prelude)* | `sqrt`, `pow`, trig, `abs`, … |
-| `prng` | seeded pseudo-random numbers |
+| `math` *(prelude)* | `sqrt`, `abs`, `min`/`max`, integer `pow`/`isqrt`/`factorial`, `to_int`/`to_float`, … (no trig) |
+| `prng` | seeded pseudo-random numbers (deterministic, no capability) |
+| `rand` | cryptographically-secure randomness — needs the `Rand` capability |
 | `time` / `duration` | civil UTC date-times: `parse_iso8601`, `iso8601`, strftime-style `format`, validated `civil(...)`; `Duration` helpers |
 | `semver` | version parsing and comparison |
 | `cmp` / `show` | the comparison hierarchy (`PartialEq`/`Eq`/`PartialOrd`/`Ord`, backing `== != < > <= >=`) and display trait, plus generic algorithms (`list.sort`, `cmp.max_of`, …) |
 | `ascii` | ASCII classification |
+
+## Concurrency
+
+| Module | What it gives you |
+|---|---|
+| `chan` | typed channels and the structured-concurrency ladder: `chan.scope` (a nursery that joins or cancels its children on exit — prefer it over a bare `spawn`), `chan.gather`, `chan.par_map` / `chan.par_reduce`, `chan.race`, `chan.select`, and `chan.cancel`. Each channel carries its own message type. |
+| `task` | the core task combinators `chan` builds on — `spawn`, `join`, `cancel` — over a pure-witchy deterministic executor |
+| `future` | `Future(a)` and the `await` surface |
+
+`vm` (multi-core) is capability-gated — see below.
 
 ## Capability-gated modules
 

@@ -69,6 +69,9 @@ Comparison does not chain: write `0 <= x && x < n`, not `0 <= x < n`.
 | `async` / `await` | concurrency: declare an async function / suspend on a future (`spawn` and channels are stdlib functions in `std/task` and `std/chan`, not keywords) |
 | `gen` / `yield` | a generator function that yields a lazy `Iter` |
 | `as` | capability rights narrowing |
+| `comptime` | a compile-time item-generation block (`comptime:`) |
+| `capability` | declare a user-defined capability (`capability X from U`) |
+| `region` | a scoped temporary-allocation region (`region:` / `region -> T:`) |
 | `true` / `false` | boolean literals |
 
 ## Literals

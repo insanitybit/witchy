@@ -71,8 +71,9 @@ run `witchy update --allow-cap Net` to accept, or pin the old version
 A dependency cannot silently start touching the network between versions. The
 gate forces the new authority to be seen and accepted — a code-review signal
 that's verb-precise (`Net[Listen]` is different from `Net[Connect]`) and
-impossible to miss. `witchy audit` shows the whole tree's aggregate authority at
-any time.
+impossible to miss. `witchy tree` shows the whole dependency tree's authority at
+any time — each rune's recorded footprint alongside it — and `witchy why-cap
+<dir> <Cap>` traces which dependency pulls a given capability in.
 
 ## Trusted publishing, two-phase release
 

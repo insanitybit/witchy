@@ -76,10 +76,9 @@ Field access (`point.x`) works exactly as on a named record, and because an
 anonymous record is reflectable, `json.stringify` — and the other reflection-based
 encoders (see [Generics](tour-generics.md)) — serialize it with no per-type code.
 That's the payoff: you can hand structured data to a JSON response or an encoder
-without declaring a one-off `type`. One limit to know: a bare `"${rec}"`
-*structural* print works for a named record but not an anonymous one on the
-compiled backend — render an anonymous record with `json.stringify`, or field by
-field.
+without declaring a one-off `type`. A bare `"${rec}"` structural print works too
+— an anonymous record renders as `.{x: 1, y: hi}`, exactly the way a named one
+does.
 
 ## Enums and sum types
 
@@ -128,8 +127,8 @@ type Event:
 
 fn describe(e: Event) -> String:
     match e:
-        Click(x, y) -> "click at " + "${x}" + "," + "${y}"
-        Key(k) -> "key " + k
+        Click(x, y) -> "click at ${x},${y}"
+        Key(k) -> "key ${k}"
         Close -> "close"
 
 fn main(console: Console):
@@ -151,8 +150,8 @@ destructure lists (`[]`, `[first, ..rest]`), and add a guard condition:
 fn head(xs: List(Int)) -> String:
     match xs:
         [] -> "empty"
-        [only] -> "one: " + "${only}"
-        [first, ..rest] -> "first " + "${first}" + " then " + "${list.length(rest)}"
+        [only] -> "one: ${only}"
+        [first, ..rest] -> "first ${first} then ${list.length(rest)}"
 
 fn sign(n: Int) -> String:
     match n:

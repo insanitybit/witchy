@@ -90,9 +90,11 @@ by copy-out. Hot paths
 avoid allocating at all: an ownership analysis proves where accumulation
 (`xs = list.push(xs, e)`, `s = s + p`, `d = dict.insert(d, k, v)`,
 `x = f(move x)`) can mutate in place — aliases cost one copy where they
-happen, never the whole loop — and dicts carry a hidden hash index. The result benches at native-class speed — strings 4–5.7×
-faster than Go, lists/dicts/compute at parity (`bench/BASELINE.md`) — while
-staying a sandbox. The repository's `spec/architecture.md` has the full
+happen, never the whole loop — and dicts carry a hidden hash index. The result
+runs at native-class throughput: a string builder stays linear instead of
+O(n²), and list/dict/compute loops carry no per-iteration allocation overhead —
+all inside the sandbox (`bench/BASELINE.md` has the numbers). The repository's
+`spec/architecture.md` has the full
 memory-model story and the honest list of current limitations.
 
 That's the engine room. One more practical chapter: proving your own programs
