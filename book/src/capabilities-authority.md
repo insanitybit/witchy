@@ -28,7 +28,8 @@ the ones the host mints and hands to `main`:
 
 ```witchy
 fn main(console: Console, clock: Clock):
-    let t = now(clock)        // ms since the unix epoch; needs the Clock
+    // Milliseconds since the unix epoch; needs the Clock.
+    let t = now(clock)
     print(console, if t > 0: "the clock is ticking" else: "epoch")
 ```
 

@@ -42,7 +42,8 @@ annotations** — it triggers on shapes the compiler can prove unaliased:
       xs = xs.push(n)
       xs
 
-  // 100k iterations, one owned buffer end to end — O(n), ~8 ms compiled.
+  // 100k iterations, one owned buffer end to end.
+  // O(n), ~8 ms compiled.
   xs = grow(move xs, i)
   ```
 
@@ -85,9 +86,10 @@ anywhere a burst of temporaries would otherwise live until the enclosing
 boundary:
 
 ```witchy
-let summary = region -> String:
-    let parsed = parse_huge_input(text)
-    summarize(parsed)
+fn summarize_text(text: String) -> String:
+    region -> String:
+        let parsed = text + "!"
+        parsed
 ```
 
 The compiler already inserts the same machinery for free where it can prove

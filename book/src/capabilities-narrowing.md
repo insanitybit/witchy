@@ -65,7 +65,8 @@ to keep using it locally, or to make the attenuation obvious — ascribe it with
 
 ```witchy
 fn main(console: Console, dir: Dir):
-    let ro = dir as Dir[Read]      // a read-only view of the same subtree
+    // A read-only view of the same subtree.
+    let ro = dir as Dir[Read]
     print(console, read(ro, "log.txt"))
     // `ro` cannot write; `write(ro, ...)` would be a compile error.
 ```
@@ -111,7 +112,8 @@ fn read_logs(logs: Dir[Read], name: String) -> String:
     read(logs, name)
 
 fn main(console: Console, dir: Dir):
-    let logs = dir.only(Dir.ext(".log"))       // entry policy: only `.log` files
+    // Entry policy: only `.log` files.
+    let logs = dir.only(Dir.ext(".log"))
     print(console, read_logs(logs, "app.log"))
 ```
 
@@ -128,11 +130,14 @@ fn read_config(f: File[Read]) -> String:
     read(f)
 
 fn main(console: Console, dir: Dir):
-    let cfg = dir.read_file("config.toml")     // File[Read] — needs Dir[Read], must exist
+    // File[Read]: needs Dir[Read], must exist.
+    let cfg = dir.read_file("config.toml")
     print(console, read_config(cfg))
 
-    let log = dir.write_file("run.log")        // File[Write] — needs Dir[Write]
-    write(log, "started")                       // a File op takes no path — it IS the file
+    // File[Write]: needs Dir[Write].
+    let log = dir.write_file("run.log")
+    // A File op takes no path; it IS the file.
+    write(log, "started")
 ```
 
 The **name states the conferred right**, and it's all checked statically:
@@ -161,7 +166,8 @@ fn talk_to_db(db: Net[Connect, Tcp]):
     send_line(sock, "PING")
 
 fn main(console: Console, net: Net):
-    let db = net.only(Net.tcp("10.0.0.5", 6379))       // intersect down to one endpoint
+    // Intersect down to one endpoint.
+    let db = net.only(Net.tcp("10.0.0.5", 6379))
     talk_to_db(db)
     print(console, "done")
 ```
@@ -271,8 +277,10 @@ pub fn count(t: Table, requested: String) -> String:
 
 fn main(console: Console, net: Net):
     let users = open_table(net, "users")
-    print(console, count(users, "users"))      // ok: users
-    print(console, count(users, "secrets"))    // denied: secrets
+    // ok: users
+    print(console, count(users, "users"))
+    // denied: secrets
+    print(console, count(users, "secrets"))
 ```
 
 `witchy caps` sees straight through the record: `Table` audits as exactly `Net`,

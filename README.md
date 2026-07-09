@@ -4,11 +4,13 @@ A capability-secure language where a program's authority is a **typed, auditable
 diffable, enforceable artifact**.
 
 ```witchy
-fn load(dir: Dir[Read], name: String) -> String:    // provably cannot write
+// Provably cannot write.
+fn load(dir: Dir[Read], name: String) -> String:
     read(dir, name)
 
 fn main(console: Console, dir: Dir):
-    print(console, load(dir, "notes.txt"))           // full Dir narrows to Dir[Read]
+    // Full Dir narrows to Dir[Read].
+    print(console, load(dir, "notes.txt"))
 ```
 
 
@@ -152,14 +154,16 @@ type Shape:
     Square(Int)
 
 fn area(s: Shape) -> Int:
-    match s:                       // exhaustiveness-checked
+    // Exhaustiveness-checked.
+    match s:
         Circle(r) -> 3 * r * r
         Square(w) -> w * w
 
 fn main(console: Console):
     let shapes = [Circle(2), Square(3)]
     for s in shapes:
-        print(console, "area: ${area(s)}")    // string interpolation
+        // String interpolation.
+        print(console, "area: ${area(s)}")
 ```
 
 - `Int` (64-bit), `Float`, `Bool`, `String`, `Duration` (native literals: `30s`,

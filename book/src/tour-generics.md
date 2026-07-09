@@ -113,15 +113,19 @@ type Temp:
 
 impl Show for Temp:
     fn show(self) -> String:
-        "${self.celsius} deg C"          // a custom rendering for Temp
+        // A custom rendering for Temp.
+        "${self.celsius} deg C"
 
 fn announce(console: Console, label: String, x: impl Show):
     print(console, "${label}: ${show(x)}")
 
 fn main(console: Console):
-    announce(console, "now", Temp(21))   // uses Temp's Show
-    announce(console, "count", 42)       // and Int's
-    show.say(console, Temp(5))           // Show-accepting `print`
+    // Uses Temp's Show.
+    announce(console, "now", Temp(21))
+    // And Int's.
+    announce(console, "count", 42)
+    // Show-accepting `print`.
+    show.say(console, Temp(5))
 ```
 
 ```text
@@ -152,8 +156,10 @@ type Score derive(Show, PartialEq, Eq, PartialOrd, Ord):
 fn main(console: Console):
     let a = Score(10, "alpha")
     let b = Score(12, "beta")
-    print(console, "${a == Score(10, "alpha")}")   // derived PartialEq
-    print(console, "${cmp.max_of(a, b)}")          // derived Ord (field order)
+    // Derived PartialEq.
+    print(console, "${a == Score(10, "alpha")}")
+    // Derived Ord, using field order.
+    print(console, "${cmp.max_of(a, b)}")
 ```
 
 ```text
@@ -205,7 +211,8 @@ fn parse(s: String) -> Option(Version):
 
 fn main(console: Console):
     if let Some(v) = parse("1.4"):
-        print(console, "${v == Version(1, 4)}")   // `v` is bound by `if let`
+        // `v` is bound by `if let`.
+        print(console, "${v == Version(1, 4)}")
         print(console, "${v < Version(2, 0)}")
 ```
 

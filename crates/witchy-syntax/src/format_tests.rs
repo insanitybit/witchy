@@ -1,7 +1,45 @@
     use super::*;
 
     fn roundtrips(src: &str) -> bool {
-        reformat(src).is_some()
+        let Some(out) = reformat(src) else {
+            return false;
+        };
+        crate::lexer::own_line_comments(src)
+            .into_iter()
+            .all(|(_, _, text)| out.contains(text.trim()))
+    }
+
+    fn collect_witchy_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                collect_witchy_files(&path, out);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("witchy") {
+                out.push(path);
+            }
+        }
+    }
+
+    fn collect_witchy_fences(path: &std::path::Path, out: &mut Vec<(String, String)>) {
+        let text = std::fs::read_to_string(path).unwrap();
+        let mut in_witchy = false;
+        let mut start_line = 0usize;
+        let mut body = String::new();
+        for (idx, line) in text.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if in_witchy {
+                if trimmed.starts_with("```") {
+                    out.push((format!("{}:{}", path.display(), start_line), std::mem::take(&mut body)));
+                    in_witchy = false;
+                } else {
+                    body.push_str(line);
+                    body.push('\n');
+                }
+            } else if trimmed.starts_with("```witchy") {
+                in_witchy = true;
+                start_line = idx + 2;
+            }
+        }
     }
 
     #[test]
@@ -93,22 +131,34 @@
 
     #[test]
     fn reformats_every_std_and_example_to_an_equal_ast() {
-        // The printer must faithfully round-trip every shipped source file.
-        // The shipped std/ + examples/ trees live at the workspace root (two
-        // levels up from this crate's manifest dir).
+        // The printer must faithfully round-trip every shipped source file and
+        // parseable book/README `witchy` fence. The shipped trees live at the
+        // workspace root (two levels up from this crate's manifest dir).
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let dirs = ["std", "examples"];
         let mut failures = Vec::new();
         for dir in dirs {
-            for entry in std::fs::read_dir(root.join(dir)).unwrap() {
-                let path = entry.unwrap().path();
-                if path.extension().and_then(|e| e.to_str()) != Some("witchy") {
-                    continue;
-                }
+            let mut files = Vec::new();
+            collect_witchy_files(&root.join(dir), &mut files);
+            for path in files {
                 let src = std::fs::read_to_string(&path).unwrap();
                 if crate::parser::parse_module(&src).is_ok() && !roundtrips(&src) {
                     failures.push(path.display().to_string());
                 }
+            }
+        }
+        let mut fences = Vec::new();
+        collect_witchy_fences(&root.join("README.md"), &mut fences);
+        let book = root.join("book/src");
+        for entry in std::fs::read_dir(book).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) == Some("md") {
+                collect_witchy_fences(&path, &mut fences);
+            }
+        }
+        for (label, src) in fences {
+            if crate::parser::parse_module(&src).is_ok() && !roundtrips(&src) {
+                failures.push(label);
             }
         }
         assert!(failures.is_empty(), "did not round-trip: {failures:?}");
