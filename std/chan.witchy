@@ -84,10 +84,10 @@ pub fn for_each(xs: List(a), f: fn(a) -> Task(Nil)) -> Task(Nil):
     task.for_each(xs, f)
 
 // ---- spawn + channels (the surface) ----
-type Sender(m):
+sealed type Sender(m):
     Sender(Int)
 
-type Receiver(m):
+sealed type Receiver(m):
     Receiver(Int)
 
 // `Handle` is task's (from-imported above) — a spawned child's join handle.

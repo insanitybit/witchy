@@ -1,19 +1,25 @@
 # BUG-064: Forgeable channel endpoints break typed-message invariant
 
 - **Severity:** HIGH
-- **Status:** OPEN
-- **Verified:** 2026-07-09 REPRO on master `1e9626cb`
+- **Status:** FIXED
+- **Verified:** 2026-07-09 SOURCE+TEST on branch fix/bug064-sealed-chan-endpoints
 - **Component:** `std/chan`, RFC-0055 typed channels, compiled backend erasure
 - **Found:** 2026-07-05
 - **Source:** `security-eval/findings/SEC-046-forgeable-channel-endpoints.md`
 
 ## Summary
 
-`std/chan` exposes `Sender(m)` and `Receiver(m)` as ordinary public ADTs around a
-raw `Int` channel id. User code outside `std/chan` can destructure a
-`Sender(Int)`, recover the id, and construct a `Sender(String)` with the same id.
-That violates RFC-0055's pairing invariant: a message no longer necessarily
-leaves the channel at the same type it entered.
+`std/chan` used to expose `Sender(m)` and `Receiver(m)` as ordinary public ADTs
+around a raw `Int` channel id. User code outside `std/chan` could destructure a
+`Sender(Int)`, recover the id, and construct a `Sender(String)` with the same
+id. That violated RFC-0055's pairing invariant: a message no longer necessarily
+left the channel at the same type it entered.
+
+`Sender` and `Receiver` are now `sealed type`s. Per RFC-0065, external code may
+still name, pass, and inspect endpoint values, but it cannot construct endpoint
+values from raw channel ids. That closes the unsafe operation: leaking the id no
+longer lets user code rebuild the id at a different message type and make
+`__unerase` lie.
 
 The compiled backend lowers `__erase` / `__unerase` to identity, so a forged
 endpoint can reinterpret an off-type heap value as another type. The security
@@ -27,16 +33,17 @@ surface does not enforce that invariant.
 
 ## Evidence
 
-- `std/chan.witchy` defines public `type Sender(m): Sender(Int)` and
-  `type Receiver(m): Receiver(Int)`.
+- `std/chan.witchy` defines `sealed type Sender(m): Sender(Int)` and
+  `sealed type Receiver(m): Receiver(Int)`.
 - `std/chan.witchy` recovers erased values with `__unerase` based on the endpoint
   type parameter.
 - `rfcs/0055-channel-message-types.md` relies on endpoint pairing and says user
   code cannot forge an unerase.
 - `crates/witchy-lower/src/codegen/builtins.rs` lowers `__erase` and
   `__unerase` as identity on the compiled backend.
-- A fresh source probe on master `1e9626cb` still accepts the forbidden
-  destructuring/reconstruction shape:
+- A source probe on master `1e9626cb` accepted the forbidden
+  destructuring/reconstruction shape; after the fix, the same shape is rejected
+  at link time as sealed construction:
 
 ```witchy
 import chan
@@ -51,25 +58,30 @@ async fn main(console: Console):
             console.print("forged")
 ```
 
-## Expected
+## Fixed
 
-Typed channel endpoints must be non-forgeable, or the erase/unerase boundary must
-be checked:
+Typed channel endpoints are non-forgeable at the operation that matters for the
+type invariant:
 
-- preferred design fix: make `Sender` and `Receiver` sealed endpoint types so
-  only `std/chan` can mint or inspect channel ids;
-- acceptable interim hardening: make pattern matching / direct construction of
-  runtime-owned handles illegal outside the defining module;
-- alternate safety fix: carry runtime type tags through `__erase` / `__unerase`
-  and trap on mismatch identically on both backends.
+- `std/chan` is the only module that can mint `Sender(m)` / `Receiver(m)` from
+  a raw executor channel id;
+- a caller cannot convert a `Sender(Int)` into `Sender(String)` or a
+  `Receiver(Int)` into `Receiver(String)`;
+- the erase/unerase boundary can keep relying on RFC-0055's endpoint-pairing
+  invariant without adding runtime tags to every message.
+
+This deliberately uses RFC-0065 `sealed type`, not `capability`: channel
+endpoints are ordinary data handles, not host-authority roots. Sealed type
+construction is enough to prevent typed endpoint forgery while preserving
+existing endpoint passing and pattern-inspection behavior.
 
 ## Acceptance
 
-- The SEC-046 PoC no longer produces a silent compiled success when the
-  interpreter errors.
+- The SEC-046 PoC no longer links: endpoint reconstruction from a recovered raw
+  id is rejected as sealed construction.
 - RFC-0055's pairing invariant is enforced by code, not only by convention in
   `std/chan`.
-- A regression test covers endpoint-forgery attempts on both backends.
-- The fix reconciles with the active channel-runtime work; as of 2026-07-09,
-  `fix/chan-delegates-task-core` is already editing `std/chan.witchy`, so this
-  bug record deliberately does not change channel code.
+- `src/example_tests.rs::chan_endpoints_seal_raw_channel_id_construction`
+  covers both `Sender` and `Receiver` reconstruction attempts.
+- The fix composes with the channel/task dedup: `std/task` owns the executor;
+  `std/chan` owns the typed endpoint brands and channel-facing operations.

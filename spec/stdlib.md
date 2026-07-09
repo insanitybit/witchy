@@ -102,11 +102,11 @@ Messages: channels are per-type generic (RFC-0055). A `Sender(m)`/`Receiver(m)` 
 
 The `async`/`await` CPS transform lowers onto the `std/task` executor (task.lazy/and_then/done/run); channel ops (`await chan.recv(rx)` / `await chan.send(tx, x)`) run on the same protocol.
 
-#### `type Sender`
+#### `sealed type Sender`
 
 - `Sender(Int)`
 
-#### `type Receiver`
+#### `sealed type Receiver`
 
 - `Receiver(Int)`
 

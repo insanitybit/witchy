@@ -1200,6 +1200,26 @@ fn main(console: Console):
         );
     }
 
+    /// (BUG-064) Channel endpoints are sealed brands around executor channel ids:
+    /// user code may name/pass `Sender(m)` and `Receiver(m)`, but it cannot rebuild
+    /// one endpoint at a different message type and make `__unerase` lie.
+    #[test]
+    fn chan_endpoints_seal_raw_channel_id_construction() {
+        let sender_forge = "import chan\nfrom chan import Sender\n\nasync fn main(console: Console):\n    let (tx, _rx) = chan.channel(0).await\n    match tx:\n        Sender(id) ->\n            let forged: Sender(String) = Sender(id)\n            let _ = forged\n            console.print(\"forged\")\n";
+        let err = try_link_std(sender_forge).expect_err("Sender raw-id construction must be sealed");
+        assert!(
+            err.contains("sealed type") && err.contains("Sender") && err.contains("construct"),
+            "diagnostic must name sealed Sender construction: {err}"
+        );
+
+        let receiver_forge = "import chan\nfrom chan import Receiver\n\nasync fn main(console: Console):\n    let (_tx, rx) = chan.channel(0).await\n    match rx:\n        Receiver(id) ->\n            let forged: Receiver(String) = Receiver(id)\n            let _ = forged\n            console.print(\"forged\")\n";
+        let err = try_link_std(receiver_forge).expect_err("Receiver raw-id construction must be sealed");
+        assert!(
+            err.contains("sealed type") && err.contains("Receiver") && err.contains("construct"),
+            "diagnostic must name sealed Receiver construction: {err}"
+        );
+    }
+
     /// (RFC-0053, parity) Interpolation (`"${x}"`) honors a CUSTOM `Show` impl, exactly
     /// as `say` does — the typed lowering rewrites `__render(x)` to `show(x)` when x's
     /// type has a public `Show` model. Primitive-derived values may print the same
