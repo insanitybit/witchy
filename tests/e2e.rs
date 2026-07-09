@@ -10,6 +10,32 @@ use std::process::{Child, Command, Output, Stdio};
 const BIN: &str = env!("CARGO_BIN_EXE_witchy");
 const SERVER_START_ATTEMPTS: usize = 2400;
 const SERVER_START_POLL_MS: u64 = 50;
+const TEST_ROOT_SEED: [u8; 32] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+];
+
+fn hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn sign_test_root(msg: &str) -> String {
+    let kp = aws_lc_rs::signature::Ed25519KeyPair::from_seed_unchecked(&TEST_ROOT_SEED).unwrap();
+    hex(kp.sign(msg.as_bytes()).as_ref())
+}
+
+fn sha256_hex(msg: &str) -> String {
+    hex(aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, msg.as_bytes()).as_ref())
+}
+
+fn signed_test_root_role(signed: &str) -> String {
+    format!(r#"{{"signed":{signed},"sig":"{}"}}"#, sign_test_root(signed))
+}
 
 /// A coven registry server (the real `witchy coven-serve` binary) on a free
 /// local port, for end-to-end testing over HTTP. Trusted publishing is enabled
@@ -692,6 +718,60 @@ fn tuf_chain_verified_and_snapshot_tamper_rejected() {
     let out = fe.pm(&app, &["verify"], None);
     assert!(!out.status.success(), "tampered snapshot must fail verify");
     assert!(stdout(&out).contains("FAIL"), "verify out: {}", stdout(&out));
+}
+
+/// BUG-386: a TUF role can be validly signed yet structurally incomplete. The
+/// verifier must reject that before old defaulting helpers can turn absent fields
+/// into `0`, `""`, or `JsonNull`.
+#[test]
+fn tuf_chain_rejects_validly_signed_malformed_roles() {
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "tufschema");
+    let app = fe.new_app();
+    fe.published_lib("acme/schema", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
+    let out = fe.pm(&app, &["add", "acme/schema"], None);
+    assert!(out.status.success(), "add failed: {}\n{}", stderr(&out), stdout(&out));
+
+    let snap_path = server.regroot.join("registry/snapshot.json");
+    let ts_path = server.regroot.join("registry/timestamp.json");
+    let original_snapshot = std::fs::read_to_string(&snap_path).unwrap();
+    let original_timestamp = std::fs::read_to_string(&ts_path).unwrap();
+    let original_snapshot_json: serde_json::Value = serde_json::from_str(&original_snapshot).unwrap();
+    let original_timestamp_json: serde_json::Value = serde_json::from_str(&original_timestamp).unwrap();
+    let version = original_snapshot_json["signed"]["version"].as_i64().unwrap();
+
+    let malformed_snapshot = format!(r#"{{"version":{version},"created":0}}"#);
+    let malformed_timestamp = format!(
+        r#"{{"snapshot_version":{version},"snapshot_hash":"sha256:{}","expires":9999999999}}"#,
+        sha256_hex(&malformed_snapshot)
+    );
+    std::fs::write(&snap_path, signed_test_root_role(&malformed_snapshot)).unwrap();
+    std::fs::write(&ts_path, signed_test_root_role(&malformed_timestamp)).unwrap();
+
+    let out = fe.pm(&app, &["verify"], None);
+    assert!(!out.status.success(), "malformed snapshot must fail verify");
+    assert!(
+        stdout(&out).contains("snapshot role is structurally malformed"),
+        "out: {}",
+        stdout(&out)
+    );
+
+    std::fs::write(&snap_path, original_snapshot).unwrap();
+    let malformed_timestamp = format!(
+        r#"{{"snapshot_version":{version},"snapshot_hash":"{}"}}"#,
+        original_timestamp_json["signed"]["snapshot_hash"].as_str().unwrap()
+    );
+    std::fs::write(&ts_path, signed_test_root_role(&malformed_timestamp)).unwrap();
+
+    let out = fe.pm(&app, &["verify"], None);
+    assert!(!out.status.success(), "malformed timestamp must fail verify");
+    assert!(
+        stdout(&out).contains("timestamp role is structurally malformed"),
+        "out: {}",
+        stdout(&out)
+    );
+
+    std::fs::write(&ts_path, original_timestamp).unwrap();
 }
 
 /// A registry rollback — serving an OLDER TUF snapshot version than the one the
