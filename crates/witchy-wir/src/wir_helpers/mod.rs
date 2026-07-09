@@ -5029,7 +5029,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: true,
             uses_table: false,
         }),
-        // (RFC-0020) `net.resolve(net, host) -> List(String)` — the resolved IP literals.
+        // (RFC-0020) `net.net.resolve(host) -> List(String)` — the resolved IP literals.
         // The two-phase staged-list protocol, identical shape to `dir_list`: the host
         // resolves the name NOW and reports the marshaled byte size (`net_resolve_size`),
         // then `write_pending_list` lays the `List(String)` into the reserved block.

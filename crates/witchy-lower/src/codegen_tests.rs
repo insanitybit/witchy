@@ -25,7 +25,7 @@
         // the runtime authority. That's the structural zero-ambient guarantee:
         // the dangerous host functions don't exist for the guest to call.
         let module = parse_module(
-            "fn build(out: BuildOut, schema: BuildRead):\n    write_out(out, \"x.witchy\", read_build(schema, \"a.proto\"))\n",
+            "fn build(out: BuildOut, schema: BuildRead):\n    out.write_out(\"x.witchy\", schema.read_build(\"a.proto\"))\n",
         )
         .expect("parse");
         let wasm = compile_build_module(&module).expect("compile build module");
@@ -58,7 +58,7 @@
     #[test]
     fn grantful_build_primitives_compile_to_build_imports_only() {
         let module = parse_module(
-            "import option\nfn build(out: BuildOut, env: BuildEnv, dl: BuildNet, cc: BuildExec):\n    let v = match get_build_env(env, \"WITCHY_BUILD_ALLOWED\"):\n        Some(x) -> x\n        None -> \"unset\"\n    write_out(out, \"x.witchy\", v + fetch_build(dl, \"127.0.0.1:9\", \"/schema\") + run_tool(cc, \"cat\", \"input\"))\n",
+            "import option\nfn build(out: BuildOut, env: BuildEnv, dl: BuildNet, cc: BuildExec):\n    let v = match env.get_build_env(\"WITCHY_BUILD_ALLOWED\"):\n        Some(x) -> x\n        None -> \"unset\"\n    out.write_out(\"x.witchy\", v + dl.fetch_build(\"127.0.0.1:9\", \"/schema\") + cc.run_tool(\"cat\", \"input\"))\n",
         )
         .expect("parse");
         let wasm = compile_build_module(&module).expect("compile build module");
@@ -614,7 +614,7 @@ fn shout(name: String) -> String:
     ("hello, " + name)
 
 fn main(console: Console):
-    print(console, shout("witchy"))
+    console.print(shout("witchy"))
 "#;
         assert_eq!(run_str(src), vec!["hello, witchy"]);
     }
@@ -623,7 +623,7 @@ fn main(console: Console):
     fn compiles_int_to_string() {
         let src = r#"
 fn main(console: Console):
-    print(console, __render(12345))
+    console.print(__render(12345))
 "#;
         assert_eq!(run_str(src), vec!["12345"]);
     }
@@ -632,7 +632,7 @@ fn main(console: Console):
     fn int_to_string_handles_zero() {
         let src = r#"
 fn main(console: Console):
-    print(console, __render(0))
+    console.print(__render(0))
 "#;
         assert_eq!(run_str(src), vec!["0"]);
     }
@@ -876,7 +876,7 @@ fn main(console: Console):
     while (i < 5):
         total = (total + f(i))
         i = (i + 1)
-    print(console, "${total}")
+    console.print("${total}")
 "#;
         let base = witchy_syntax::opt::OptSet::default_set();
         let on = run_str_opt(src, base.with(witchy_syntax::opt::Opt::ClosureElide));

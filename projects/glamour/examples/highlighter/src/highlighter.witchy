@@ -227,4 +227,4 @@ pub fn export_render(input: String) -> String:
 // A `main` so the rune also runs as a CLI program (and the compiled module gets a
 // `run` export): highlight a tiny sample and print the wire JSON.
 fn main(console: Console):
-    print(console, export_render("{\"src\": \"fn main():\\n    // hi\\n    print(\\\"x\\\")\"}") + "\n")
+    console.print(export_render("{\"src\": \"fn main():\\n    // hi\\n    print(\\\"x\\\")\"}") + "\n")

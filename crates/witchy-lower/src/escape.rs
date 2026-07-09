@@ -872,7 +872,7 @@ mod tests {
     fn eviction_accumulator_is_an_rc_floor_candidate() {
         // `d` threads through dict.insert/remove (neither leaks arg0) and is never
         // used as a whole value elsewhere → confined, reclaimable.
-        let src = "import dict\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < 10:\n        d = dict.insert(d, i, i)\n        d = dict.remove(d, i)\n        i = i + 1\n    print(console, __render(dict.length(d)))\n";
+        let src = "import dict\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < 10:\n        d = dict.insert(d, i, i)\n        d = dict.remove(d, i)\n        i = i + 1\n    console.print(__render(dict.length(d)))\n";
         assert!(rc_floor(src).contains("d"), "confined eviction accumulator is a candidate");
     }
 
@@ -880,7 +880,7 @@ mod tests {
     fn whole_value_escape_disqualifies_rc_floor() {
         // `d` is passed WHOLE to a user fn that returns it (its summary leaks arg0),
         // so its buffer may be aliased out → not reclaimable.
-        let src = "import dict\nfn keep(x: Dict) -> Dict:\n    x\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < 10:\n        d = dict.insert(d, i, i)\n        d = keep(d)\n        i = i + 1\n    print(console, __render(dict.length(d)))\n";
+        let src = "import dict\nfn keep(x: Dict) -> Dict:\n    x\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < 10:\n        d = dict.insert(d, i, i)\n        d = keep(d)\n        i = i + 1\n    console.print(__render(dict.length(d)))\n";
         assert!(!rc_floor(src).contains("d"), "a var aliased out by a call escapes");
     }
 

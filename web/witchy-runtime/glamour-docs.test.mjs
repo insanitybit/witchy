@@ -84,7 +84,7 @@ try {
     const title = slug.charAt(0).toUpperCase() + slug.slice(1);
     // Every page carries a runnable `witchy` example, so the docs app's slot-remap has
     // something to turn into a runnable cell (the `language-witchy` fence).
-    const page = `## ${title}\n\nBody text for the **${slug}** page.\n\n\`\`\`witchy\nfn main(console: Console):\n    print(console, "hi from ${slug}")\n\`\`\`\n`;
+    const page = `## ${title}\n\nBody text for the **${slug}** page.\n\n\`\`\`witchy\nfn main(console: Console):\n    console.print("hi from ${slug}")\n\`\`\`\n`;
     return Promise.resolve({ status: 200, text: () => Promise.resolve(page) });
   };
   const location = { pathname: "/" };

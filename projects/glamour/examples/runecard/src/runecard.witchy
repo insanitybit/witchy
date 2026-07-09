@@ -118,4 +118,4 @@ fn field_or(doc: Json, key: String, fallback: String) -> String:
 // `run` export): render a tiny sample card and print the wire JSON.
 fn main(console: Console):
     let sample = "{\"name\": \"acme/widget\", \"version\": \"1.2.0\", \"caps\": [\"Net\", \"Dir\"], \"provenance\": \"trusted-publisher | issuer=ci@acme\"}"
-    print(console, export_render(sample) + "\n")
+    console.print(export_render(sample) + "\n")

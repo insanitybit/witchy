@@ -58,13 +58,13 @@
                 })
                 .expect("main")
         };
-        let secret = params_of("fn main(console: Console, signing: Secret):\n    print(console, \"x\")\n");
+        let secret = params_of("fn main(console: Console, signing: Secret):\n    console.print(\"x\")\n");
         assert!(unmintable_main_cap(&secret, false).is_some(), "no key → refuse");
         assert!(unmintable_main_cap(&secret, true).is_none(), "key → grantable");
         // SecretStore and Net are real even when empty — never refused.
-        let store = params_of("fn main(console: Console, store: SecretStore):\n    print(console, \"x\")\n");
+        let store = params_of("fn main(console: Console, store: SecretStore):\n    console.print(\"x\")\n");
         assert!(unmintable_main_cap(&store, false).is_none());
-        let net = params_of("fn main(console: Console, net: Net):\n    print(console, \"x\")\n");
+        let net = params_of("fn main(console: Console, net: Net):\n    console.print(\"x\")\n");
         assert!(unmintable_main_cap(&net, false).is_none());
     }
 
@@ -85,7 +85,7 @@ pub fn add(a: Int, b: Int) -> Int:
         // The build axis is the `build` entrypoint's build caps; it is separate
         // from the runtime axis (here empty — a pure codegen rune).
         let fp = footprint(
-            "fn build(out: BuildOut, schema: BuildRead, cc: BuildExec):\n    write_out(out, \"x.witchy\", read_build(schema, \"a.proto\"))\n",
+            "fn build(out: BuildOut, schema: BuildRead, cc: BuildExec):\n    out.write_out(\"x.witchy\", schema.read_build(\"a.proto\"))\n",
         );
         assert!(fp.total.is_empty(), "runtime footprint is empty for a pure build step");
         assert_eq!(
@@ -96,8 +96,8 @@ pub fn add(a: Int, b: Int) -> Int:
 
     #[test]
     fn a_build_axis_widening_is_flagged_independently_of_runtime() {
-        let old = footprint("fn build(out: BuildOut, schema: BuildRead):\n    write_out(out, \"x\", read_build(schema, \"a\"))\n");
-        let new = footprint("fn build(out: BuildOut, schema: BuildRead, dl: BuildNet):\n    write_out(out, \"x\", fetch_build(dl, \"h\", \"/a\"))\n");
+        let old = footprint("fn build(out: BuildOut, schema: BuildRead):\n    out.write_out(\"x\", schema.read_build(\"a\"))\n");
+        let new = footprint("fn build(out: BuildOut, schema: BuildRead, dl: BuildNet):\n    out.write_out(\"x\", dl.fetch_build(\"h\", \"/a\"))\n");
         let d = diff(&old, &new);
         assert!(d.build_widened(), "a new build cap is a build-axis widening");
         assert!(d.widened(), "build widening counts as an overall widening (gates)");
@@ -117,7 +117,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     0
 
 fn main(console: Console):
-    print(console, "hi")
+    console.print("hi")
 "#;
         let fp = footprint(src);
         // `total` is the whole-program union over public entry points (the
@@ -202,7 +202,7 @@ pub fn sign(key: Secret, msg: String) -> String:
     msg
 
 fn main(console: Console):
-    print(console, "hi")
+    console.print("hi")
 "#;
         let module = parse_module(src).expect("parse");
         // total unions every public entry (serve's Net, sign's Secret, main's Console)...

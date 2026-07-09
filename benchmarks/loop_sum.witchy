@@ -1,10 +1,10 @@
 fn main(console: Console, clock: Clock):
-    let bench_t0 = now_monotonic(clock)
+    let bench_t0 = clock.now_monotonic()
     var s = 0
     var i = 0
     while i < 100000000:
         s = s + i
         i = i + 1
-    let bench_t1 = now_monotonic(clock)
-    print(console, "${s}")
-    print(console, "bench_ns=${bench_t1 - bench_t0}")
+    let bench_t1 = clock.now_monotonic()
+    console.print("${s}")
+    console.print("bench_ns=${bench_t1 - bench_t0}")

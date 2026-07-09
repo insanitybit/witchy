@@ -13,9 +13,9 @@ fn busy(n: Int) -> Int:
     acc
 
 fn main(console: Console, clock: Clock):
-    let bench_t0 = now_monotonic(clock)
+    let bench_t0 = clock.now_monotonic()
     let xs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
     let ys = vm.par_map(xs, busy)
-    let bench_t1 = now_monotonic(clock)
-    print(console, "${list.sum(ys)}")
-    print(console, "bench_ns=${bench_t1 - bench_t0}")
+    let bench_t1 = clock.now_monotonic()
+    console.print("${list.sum(ys)}")
+    console.print("bench_ns=${bench_t1 - bench_t0}")

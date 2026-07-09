@@ -45,7 +45,7 @@ audit witchy code by reading signatures, not by tracing call graphs.
 |---|---|---|
 | `Console` | write to stdout | `console.print(s)` |
 | `Clock` | read the wall clock | `clock.now() -> Int` (epoch ms) |
-| `Env` | read environment variables | `get_env(env, name) -> Option(String)` |
+| `Env` | read environment variables | `env.get_env(name) -> Option(String)` |
 | `Dir`, `Dir[Read]`, `Dir[Write]` | a directory **subtree** | `read`, `write`, `append`, `exists`, `is_dir`, `list`, `make_dir`, `subtree`, `read_file`/`write_file` (→ `File`) |
 | `File`, `File[Read]`, `File[Write]` | authority to **one file** (the leaf) | `f.read() -> String`, `f.write(data)` (a `Dir` mints one with `read_file`/`write_file`) |
 | `Exec` | spawn a confined native subprocess | `exec.run(e, dir, path, args, stdin) -> (Int, String)` (std `exec`) |
@@ -104,7 +104,7 @@ enforced on the resolved IP, so a name that rebinds to an internal address is
 refused at connect time.
 
 When the URL is dynamic — a webhook target, a user-supplied link — a program can
-resolve and pin explicitly. `resolve(net, host)` returns the host's current IP
+resolve and pin explicitly. `net.resolve(host)` returns the host's current IP
 literals (gated on `Net[Connect]`; it filters nothing, so the program decides), and
 `connect_pinned(net, ip, host, port, secure)` dials that *exact* IP without a second
 lookup, presenting `host` for TLS SNI and the `Host` header. The allowlist is

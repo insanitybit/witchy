@@ -2278,6 +2278,55 @@ fn diagnostic_callable_name(name: &str) -> String {
     }
 }
 
+fn bare_cap_op_error(name: &str, arity: usize) -> Option<String> {
+    if !cap_ops::is_op_name(name) {
+        return None;
+    }
+    let suggestion = match (name, arity) {
+        ("print", _) => "console.print(message)",
+        ("now", _) => "clock.now()",
+        ("now_monotonic", _) => "clock.now_monotonic()",
+        ("rand_u64", _) => "rand.rand_u64()",
+        ("read", 1) => "file.read()",
+        ("read", _) => "dir.read(path)",
+        ("write", 2) => "file.write(data)",
+        ("write", _) => "dir.write(path, data)",
+        ("append", _) => "dir.append(path, data)",
+        ("exists", _) => "dir.exists(path)",
+        ("is_dir", _) => "dir.is_dir(path)",
+        ("list", _) => "dir.list()",
+        ("make_dir", _) => "dir.make_dir(path)",
+        ("read_file", _) => "dir.read_file(path)",
+        ("write_file", _) => "dir.write_file(path)",
+        ("subtree", _) => "dir.subtree(path)",
+        ("connect", _) => "net.connect(addr)",
+        ("try_connect", _) => "net.try_connect(addr)",
+        ("listen", _) => "net.listen(addr)",
+        ("listen_tls", _) => "net.listen_tls(addr, cert_pem, key)",
+        ("only", _) => "cap.only(policy)",
+        ("deny", _) => "net.deny(policy)",
+        ("resolve", _) => "net.resolve(host)",
+        ("exec", _) => "exec.exec(dir, path, args, stdin)",
+        ("get_env", _) => "env.get_env(name)",
+        ("accept", _) => "listener.accept()",
+        ("serve_pool", _) => "listener.serve_pool()",
+        ("send_line", _) => "socket.send_line(line)",
+        ("send_bytes", _) => "socket.send_bytes(bytes)",
+        ("recv_line", _) => "socket.recv_line()",
+        ("recv_all", _) => "socket.recv_all()",
+        ("recv_bytes", _) => "socket.recv_bytes(n)",
+        ("close", _) => "socket.close()",
+        _ => {
+            return Some(format!(
+                "capability operation `{name}` is method-only; call it as `cap.{name}(…)`"
+            ))
+        }
+    };
+    Some(format!(
+        "capability operation `{name}` is method-only; write `{suggestion}` instead"
+    ))
+}
+
 impl Checker {
     fn fresh(&mut self) -> Ty {
         let v = self.next_var;
@@ -2984,7 +3033,7 @@ impl Checker {
     /// Type-check a file-capability op (RFC-0012). A `File` is a leaf, so its ops
     /// take no path: `read(f: File[Read]) -> String` (arity 1) and
     /// `write(f: File[Write], data) -> Nil` (arity 2). Returns `Ok(None)` when the
-    /// name/arity isn't a File op, so the Dir forms (`read(dir, path)` etc.) fall
+    /// name/arity isn't a File op, so the Dir forms (`dir.read(path)` etc.) fall
     /// through — `read`/`write` are disambiguated from `Dir` by arity.
     fn check_file_op(&mut self, name: &str, args: &[Expr]) -> Result<Option<Ty>, TypeError> {
         let arity = match name {
@@ -3738,9 +3787,10 @@ impl Checker {
                 };
                 self.infer_transient(&d)
             }
-            Expr::MethodCall { method, .. } => {
+            Expr::MethodCall { receiver, method, .. } => {
                 // Trait lowering resolves every method call (impl, trait
                 // bound, or static); one that survives is unresolvable.
+                self.infer(receiver)?;
                 terr(format!(
                     "cannot resolve the method call `.{method}(…)` — methods come from \
                      `impl` blocks; a plain function is called as `{method}(value, …)`"
@@ -3913,31 +3963,36 @@ impl Checker {
                         _ => {} // a non-function local with this name: fall through
                     }
                 }
-                if let Some(t) = self.check_file_op(call_name, args)? {
-                    return Ok(t);
-                }
-                if let Some(t) = self.check_dir_op(call_name, args)? {
-                    return Ok(t);
-                }
-                if let Some(t) = self.check_exec_op(call_name, args)? {
-                    return Ok(t);
-                }
-                if let Some(t) = self.check_net_op(call_name, args)? {
-                    return Ok(t);
+                let user_sig = (!is_cap_op).then(|| self.user_call_sig_with_bounds(name)).flatten();
+                if user_sig.is_none() {
+                    if !is_cap_op && let Some(msg) = bare_cap_op_error(call_name, args.len()) {
+                        return terr(msg);
+                    }
+                    if let Some(t) = self.check_file_op(call_name, args)? {
+                        return Ok(t);
+                    }
+                    if let Some(t) = self.check_dir_op(call_name, args)? {
+                        return Ok(t);
+                    }
+                    if let Some(t) = self.check_exec_op(call_name, args)? {
+                        return Ok(t);
+                    }
+                    if let Some(t) = self.check_net_op(call_name, args)? {
+                        return Ok(t);
+                    }
                 }
                 if let Some(t) = self.check_try_ctx(call_name, args)? {
                     return Ok(t);
                 }
-                let (params, ret, call_bounds) =
-                    match (!is_cap_op).then(|| self.user_call_sig_with_bounds(name)).flatten() {
-                        Some(sig) => sig,
-                        None => {
-                            let Some((params, ret)) = self.call_sig(call_name) else {
-                                return self.unknown_call(call_name, args);
-                            };
-                            (params, ret, Vec::new())
-                        }
-                    };
+                let (params, ret, call_bounds) = match user_sig {
+                    Some(sig) => sig,
+                    None => {
+                        let Some((params, ret)) = self.call_sig(call_name) else {
+                            return self.unknown_call(call_name, args);
+                        };
+                        (params, ret, Vec::new())
+                    }
+                };
                 if params.len() != args.len() {
                     let display = diagnostic_callable_name(name);
                     // (RFC-0072 phase 2) Show WHAT the arguments are, not just

@@ -17,7 +17,7 @@ behavior changes, and the learner singled out the migration teaching errors
 as a highlight. The remaining findings are seams, and the sharpest one is an
 API-design lesson rather than a compiler bug:
 
-1. **The unit trap (silent-wrong candidate, FIXED)** — `now(clock)` returns
+1. **The unit trap (silent-wrong candidate, FIXED)** — `clock.now()` returns
    epoch *milliseconds*; `time.from_unix` takes *seconds*; composing them
    produced "the year 58416" with no error. Fixed by meeting the trap at
    both ends: `time.from_millis(ms)` exists (and is named as the idiom for

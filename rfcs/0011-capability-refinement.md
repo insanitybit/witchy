@@ -173,7 +173,7 @@ sealed capability is a **sealed record** carrying one-or-more underlying capabil
 capability Postgres from Net[Connect, Tcp]:        # audits as Net; carries extra state
     tables: TableFilter
 
-pub fn connect(net, host, port) -> Postgres:
+pub fn net.connect(host, port) -> Postgres:
     Postgres(net.only(tcp(host, port)), AnyTable)  # confine the Net + start unfiltered
 pub fn table(db: Postgres, name: String) -> Postgres:
     db with { tables: Only(name) }                 # ≤, monotone; library-enforced
@@ -242,7 +242,7 @@ are scheme-agnostic `host:port`). The as-built surface:
   module functions that rebuild the record with a narrower field — no special
   machinery; the soft-tier check lives in the library's own operations.
 - **`subdir` retired (2026-06-25):** the free-function `subdir(dir, p)` is removed;
-  `dir.subtree(p)` (method) and `subtree(dir, p)` (free) are the only spellings (the
+  `dir.subtree(p)` (method) and `dir.subtree(p)` (free) are the only spellings (the
   underlying `dir_subdir` host op keeps its historical name). Every call site —
   examples, the self-hosted `pm`/`coven` projects, `std/fs`, tests, docs — migrated.
   `restrict` was **not** retired: it survives as the `--net`/config string form (the

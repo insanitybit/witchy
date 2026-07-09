@@ -35,4 +35,4 @@ async fn main(console: Console):
     var sum = 0
     for await v in rx:
         sum = sum + v
-    print(console, "${sum}")
+    console.print("${sum}")

@@ -78,8 +78,8 @@ fn main(console: Console):
     let s: iter.Step(Int) = iter.next(iter.from_list([1]))
     let one = iter.Item(1, iter.empty())     // qualified constructor, expression position
     match s:
-        Item(x, _) -> print(console, "${x}")  // bare variant OK: scrutinee type is known (§4)
-        Empty -> print(console, "empty")
+        Item(x, _) -> console.print("${x}")  // bare variant OK: scrutinee type is known (§4)
+        Empty -> console.print("empty")
 ```
 
 Grammar changes:

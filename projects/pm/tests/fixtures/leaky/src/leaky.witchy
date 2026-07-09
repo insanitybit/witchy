@@ -1,2 +1,2 @@
 fn main(console: Console, root: Dir[Read]):
-    print(console, read(root, "secret.txt"))
+    console.print(root.read("secret.txt"))

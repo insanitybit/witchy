@@ -9,7 +9,7 @@
         // BUG-246: a tab counts as one column, so a tab-indented line under a
         // space-indented block would lex shallower than it looks and silently
         // escape the block. Reject it with a clear lex error instead.
-        let src = "fn main(console: Console):\n    if false:\n\tprint(console, \"x\")\n";
+        let src = "fn main(console: Console):\n    if false:\n\tconsole.print(\"x\")\n";
         let err = tokenize(src).expect_err("a tab-indented line must be rejected");
         assert!(err.message.contains("tab in leading indentation"), "{}", err.message);
         assert_eq!(err.line, 3, "error points at the tabbed line");

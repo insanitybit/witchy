@@ -1010,7 +1010,7 @@ mod tests {
             ("json", "pub fn stringify(j: Int) -> String:\n    \"j\"\n"),
             (
                 "main",
-                "from json import stringify\n\nfn stringify(j: Int) -> String:\n    \"local\"\n\nfn main(console: Console):\n    print(console, stringify(1))\n",
+                "from json import stringify\n\nfn stringify(j: Int) -> String:\n    \"local\"\n\nfn main(console: Console):\n    console.print(stringify(1))\n",
             ),
         ])
         .unwrap_err();
@@ -1028,7 +1028,7 @@ mod tests {
             ("json", "pub fn stringify(j: Int) -> String:\n    \"j\"\n"),
             (
                 "main",
-                "from json import stringify\n\nfn main(console: Console):\n    print(console, stringify(1))\n",
+                "from json import stringify\n\nfn main(console: Console):\n    console.print(stringify(1))\n",
             ),
         ])
         .expect("no collision");
@@ -1040,7 +1040,7 @@ mod tests {
         // called inside its module, but cannot be imported unqualified elsewhere.
         let err = resolve_src(&[
             ("lib", "fn hidden(n: Int) -> Int:\n    n + 1\n\npub fn shown(n: Int) -> Int:\n    hidden(n)\n"),
-            ("main", "from lib import hidden\n\nfn main(console: Console):\n    print(console, \"x\")\n"),
+            ("main", "from lib import hidden\n\nfn main(console: Console):\n    console.print(\"x\")\n"),
         ])
         .unwrap_err();
         assert!(
@@ -1070,7 +1070,7 @@ mod tests {
         // false "exports no type or function named `Ordering`".
         let err = resolve_src(&[
             ("cmp", CMP_STUB),
-            ("main", "from cmp import Ordering\n\nfn main(console: Console):\n    print(console, \"x\")\n"),
+            ("main", "from cmp import Ordering\n\nfn main(console: Console):\n    console.print(\"x\")\n"),
         ])
         .unwrap_err();
         assert!(err.message.contains("ambient prelude name `Ordering`"), "{}", err.message);
@@ -1106,7 +1106,7 @@ mod tests {
         // `module.`/`<Type>` placeholder text.
         let err = resolve_src(&[
             ("json", "type Json:\n    JsonInt(Int)\n    JsonNull\n"),
-            ("main", "import json\n\nfn main(console: Console):\n    let x = JsonInt(5)\n    print(console, \"x\")\n"),
+            ("main", "import json\n\nfn main(console: Console):\n    let x = JsonInt(5)\n    console.print(\"x\")\n"),
         ])
         .unwrap_err();
         assert!(

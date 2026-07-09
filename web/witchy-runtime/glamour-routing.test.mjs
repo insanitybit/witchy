@@ -161,7 +161,7 @@ pub fn export_step(ui: UiRoot, input: String) -> String:
     glamour.step_with(input, view, upd, parse_model, parse_msg, model_to_json, msg_to_json)
 
 fn main(console: Console, ui: UiRoot):
-    print(console, export_step(ui, "{\\"model\\": \\"/\\"}"))
+    console.print(export_step(ui, "{\\"model\\": \\"/\\"}"))
 `;
 
 let failures = 0;

@@ -1,5 +1,5 @@
 fn main(console: Console, clock: Clock):
-    let bench_t0 = now_monotonic(clock)
+    let bench_t0 = clock.now_monotonic()
     var total = 0
     var y = -1.5
     while y < 1.5:
@@ -17,6 +17,6 @@ fn main(console: Console, clock: Clock):
             total = total + i
             x = x + 0.005
         y = y + 0.005
-    let bench_t1 = now_monotonic(clock)
-    print(console, "${total}")
-    print(console, "bench_ns=${bench_t1 - bench_t0}")
+    let bench_t1 = clock.now_monotonic()
+    console.print("${total}")
+    console.print("bench_ns=${bench_t1 - bench_t0}")

@@ -22,7 +22,7 @@ related:
 
 Capability operations — `read`, `write`, `connect`, `listen`, `print`, and the
 rest of the effect verbs — currently have **two spellings**: a bare global call
-(`print(console, "hi")`, `read(dir, path)`) and the receiver-method form
+(`console.print("hi")`, `dir.read(path)`) and the receiver-method form
 (`console.print("hi")`, `dir.read(path)`). Both type-check today; the docs
 teach only the bare form (171 sites in `book/` vs 0 method-form). This RFC
 makes the **method form the only spelling**: the bare global form becomes a
@@ -50,7 +50,7 @@ receiver; user code gets the bare names back.
 
 **The pedagogy.** "Authority is a value; the type tells you what it can do" is
 the language's thesis. `console.print("hi")` *shows* the thesis — the
-operation is visibly an action of the capability. `print(console, "hi")` reads
+operation is visibly an action of the capability. `console.print("hi")` reads
 like an ambient global that happens to take a console. The narrowing chapter
 already drifted to the method form (`dir.read_file("config.toml")`,
 `book/src/capabilities-narrowing.md:131`) because it reads better; the rest of
@@ -65,10 +65,10 @@ Non-goals).
 
 **What was measured** (2026-07-08, master):
 
-- `book/`: 171 bare `print(console, …)`, 19 bare `read(`/`write(`, 0
+- `book/`: 171 bare `console.print(…)`, 19 bare `read(`/`write(`, 0
   method-form `console.print`;
-- `projects/`: 190 bare `print(console, …)`;
-- `std/`: 2 bare sites (`std/fs.witchy` uses bare `read(root, child)`);
+- `projects/`: 190 bare `console.print(…)`;
+- `std/`: 2 bare sites (`std/fs.witchy` uses bare `root.read(child)`);
 - both spellings verified type-checking on master (probe:
   `dir.read("config.toml")` / `console.print("hi")` → ok).
 
@@ -87,8 +87,8 @@ let sock = net.connect("example.com:443")
 let quiet = net.only(policy)              # narrowing ops are methods too
 ```
 
-A pleasant side effect: the `read` arity disambiguation (File `read(f)` vs Dir
-`read(dir, path)`, today resolved by argument count in `check_file_op`)
+A pleasant side effect: the `read` arity disambiguation (File `f.read()` vs Dir
+`dir.read(path)`, today resolved by argument count in `check_file_op`)
 becomes receiver-typed and self-evident — `f.read()` vs `dir.read(path)`.
 
 ### 2. The bare form is deleted, not deprecated
@@ -136,7 +136,7 @@ in one release batch:
    fix-it error above. (Mechanically: the bare-call paths into `check_*_op`
    are removed; the method-call path — which already exists — remains.)
 2. **fmt as the vehicle** (RFC-0070 D8): `witchy fmt` rewrites bare cap-op
-   calls to method form (`print(console, x)` → `console.print(x)`); the sweep
+   calls to method form (`console.print(x)` → `console.print(x)`); the sweep
    over `std/`, `book/`, `examples/`, `spec/`, `projects/` is then mechanical.
    If D8's round-trip fidelity has not landed, the sweep is done by targeted
    rewrite instead — the pattern is regular; fmt is preferred, not required.
@@ -172,7 +172,7 @@ in one release batch:
   body-less/extern function form (FFI surface the language deliberately
   defers), and a std wrapper cannot own rights semantics anyway — the checker
   would still special-case these names; the module home would be a fiction.
-- **A `cap.` pseudo-module (`cap.read(dir, path)`).** Rejected: invents a
+- **A `cap.` pseudo-module (`cap.dir.read(path)`).** Rejected: invents a
   fourth spelling to remove a second one; receiver-method form already exists
   and is the one that teaches the model.
 - **Do nothing.** Rejected: audits keep re-finding the dual spelling; the

@@ -123,7 +123,7 @@ fn split(s: String, sep: String = " ") -> List(String): ...
 fn connect(net: Net, host: String, port: Int = 443, tls: Bool = true) -> ...
 
 split(s)                    # sep = " "
-connect(net, "example.com", tls: false)   # port stays 443
+net.connect("example.com", tls: false)   # port stays 443
 ```
 
 - Defaults are permitted on any suffix of the parameter list (a defaulted

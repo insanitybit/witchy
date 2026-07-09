@@ -73,7 +73,7 @@ impl Bag:
 fn main(console: Console):
     var xs = []
     xs.push(1)
-    print(console, "${xs}")      # prints []  — silently, no warning
+    console.print("${xs}")      # prints []  — silently, no warning
 ```
 
 Adding this `impl Bag` — anywhere in the linked program, including inside a

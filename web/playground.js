@@ -20,7 +20,7 @@ fn area(s: Shape) -> Int:
 
 fn main(console: Console):
     for s in [Circle(2), Square(3)]:
-        print(console, "area: \${area(s)}")
+        console.print("area: \${area(s)}")
 `,
   "FizzBuzz": `// Matching on a tuple of two conditions — no if/else ladder.
 fn fizzbuzz(n: Int) -> String:
@@ -32,15 +32,15 @@ fn fizzbuzz(n: Int) -> String:
 
 fn main(console: Console):
     for n in 1..21:
-        print(console, fizzbuzz(n))
+        console.print(fizzbuzz(n))
 `,
   "Comprehensions": `import list
 
 fn main(console: Console):
     let squares = [n * n for n in 1..6]
-    print(console, list.join(list.map(squares, fn(n: Int): "\${n}"), " "))
+    console.print(list.join(list.map(squares, fn(n: Int): "\${n}"), " "))
     let evens = [n for n in 1..11 if n % 2 == 0]
-    print(console, list.join(list.map(evens, fn(n: Int): "\${n}"), " "))
+    console.print(list.join(list.map(evens, fn(n: Int): "\${n}"), " "))
 `,
   "Generators": `import iter
 import list
@@ -58,7 +58,7 @@ gen fn fibs() -> Iter(Int):
 
 fn main(console: Console):
     let first8 = iter.collect(iter.take(fibs(), 8))
-    print(console, list.join(list.map(first8, fn(n: Int): "\${n}"), " "))
+    console.print(list.join(list.map(first8, fn(n: Int): "\${n}"), " "))
 `,
   "Errors as values": `import result
 
@@ -78,17 +78,17 @@ fn show(r: Result(Int, String)) -> String:
         Err(e) -> "err: \${e}"
 
 fn main(console: Console):
-    print(console, show(ratio(100, 5, 2)))
-    print(console, show(ratio(100, 0, 2)))
+    console.print(show(ratio(100, 5, 2)))
+    console.print(show(ratio(100, 0, 2)))
 `,
   "Capabilities (a type error)": `// \`load\` only holds Dir[Read], so calling write is a COMPILE error — authority is checked
 // at the type level. Delete the write line and it compiles.
 fn load(dir: Dir[Read], name: String) -> String:
-    write(dir, "evil.txt", "nope")
-    read(dir, name)
+    dir.write("evil.txt", "nope")
+    dir.read(name)
 
 fn main(console: Console, dir: Dir[Read]):
-    print(console, load(dir, "x"))
+    console.print(load(dir, "x"))
 `,
 };
 

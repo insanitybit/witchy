@@ -11,7 +11,7 @@ let failures = 0;
 const ok = (cond, msg) => { console.log(`  ${cond ? "ok" : "FAIL"}: ${msg}`); if (!cond) failures++; };
 
 // Keywords + a Title-case type + a builtin.
-const h1 = highlightWitchy('fn main(console: Console):\n    print(console, "hi")');
+const h1 = highlightWitchy('fn main(console: Console):\n    console.print("hi")');
 ok(h1.includes('<span class="t-kw">fn</span>'), "`fn` is a keyword");
 ok(h1.includes('<span class="t-type">Console</span>'), "a Title-case name is a type");
 ok(h1.includes('<span class="t-builtin">print</span>'), "`print` is a builtin");

@@ -25,7 +25,7 @@ pub fn fetch(net: Net[Connect, Tcp], addr: String) -> String:
     net.connect(addr).recv_all()
 
 // A server. `Net[Listen]` can accept inbound connections but cannot dial out;
-// `connect(net, ..)` here would be a compile error.
+// `net.connect(..)` here would be a compile error.
 pub fn serve(net: Net[Listen], addr: String) -> Listener:
     net.listen(addr)
 

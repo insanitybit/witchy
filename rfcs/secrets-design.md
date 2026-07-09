@@ -127,7 +127,7 @@ minimize built-ins), and it generalizes beyond secrets (a `db` rune can define
 
 **The non-negotiable invariant that keeps it sound:** a library may *attenuate / compose*
 authority into a new opaque cap type, but may **never mint authority from nothing**.
-Constructing a cap must *consume* host roots (`secrets.connect(net, root)`), so its
+Constructing a cap must *consume* host roots (`secrets.net.connect(root)`), so its
 authority is rooted in caps the caller already held. The fixed host capability set stays
 the trust anchor; everything else is library-derived.
 

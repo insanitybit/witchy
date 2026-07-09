@@ -215,7 +215,7 @@ fn serve(console: Console, net: Net, root: Dir, key: Secret, clock: Clock, args:
     let addr = if list.length(args) > 0: list.at(args, 0) else: "127.0.0.1:8787"
     let issuers = parse_issuers(args)
     fs.ensure_dir(root, "registry")
-    let c = Coven(subtree(root, "registry"), key, clock, issuers)
+    let c = Coven(root.subtree("registry"), key, clock, issuers)
     let app = server.router()
         .get("/coven/rootpub", c.route_rootpub())
         .get("/coven/index", c.route_index())
@@ -230,7 +230,7 @@ fn serve(console: Console, net: Net, root: Dir, key: Secret, clock: Clock, args:
         .post("/coven/publish", c.route_publish())
         .post("/coven/promote", c.route_promote())
         .post("/coven/yank", c.route_yank())
-    print(console, "coven serving at http://" + addr + "  (root key " + crypto.public_key(key) + "; " + "${list.length(issuers)}" + " trusted issuer(s))")
+    console.print("coven serving at http://" + addr + "  (root key " + crypto.public_key(key) + "; " + "${list.length(issuers)}" + " trusted issuer(s))")
 
     server.serve(net, addr, app)
 
@@ -339,7 +339,7 @@ impl Coven:
         require(coven_validate.valid_name(name), 400, "invalid rune name `" + name + "` (need lowercase `namespace/name`, no traversal)")?
         require(coven_validate.valid_version(version), 400, "invalid version `" + version + "`")?
         require(!coven_store.record_exists(self.store, name, version), 409, name + "@" + version + " already published — versions are immutable, bump the version")?
-        let (uploaded_by, claims) = self.authorized_publisher(req, now(self.clock) / 1000, name)?
+        let (uploaded_by, claims) = self.authorized_publisher(req, self.clock.now() / 1000, name)?
         self.publish_checked(req.manifest, name, version, uploaded_by, claims, req.files)
 
     fn publish_checked(self, manifest: String, name: String, version: String, uploaded_by: String, claims: Option(Json), files: List((String, String))) -> Result(Response, CovenError):
@@ -351,7 +351,7 @@ impl Coven:
         require(string.is_empty(list.join(gap, ", ")), 400, "declared [capabilities] does not cover what the source demands (" + list.join(gap, ", ") + ") — coven recomputes and will not publish an under-declared rune")?
         let hash = coven_store.content_hash(files)
         let provenance = match claims:
-            Some(c) -> coven_trust.attestation(c, hash, now(self.clock) / 1000)
+            Some(c) -> coven_trust.attestation(c, hash, self.clock.now() / 1000)
             None -> "uploader=" + uploaded_by + "|hash=" + hash
 
         require(coven_validate.single_line(uploaded_by) && coven_validate.single_line(provenance), 400, "record fields must not contain newlines")?
@@ -372,7 +372,7 @@ impl Coven:
         require(coven_validate.valid_version(req.version), 400, "invalid version `" + req.version + "`")?
         require(coven_store.record_exists(self.store, req.name, req.version), 404, req.name + "@" + req.version + " not found")?
         require(!string.is_empty(req.second_factor), 400, "promotion requires a second factor (the out-of-band 2FA event) — refusing to release")?
-        let (promoter, claims) = self.authorized_promoter(req, now(self.clock) / 1000)?
+        let (promoter, claims) = self.authorized_promoter(req, self.clock.now() / 1000)?
         require(!string.is_empty(promoter), 400, "promotion requires an authenticated promoter identity")?
         let resp = self.promote_checked(req.name, req.version, req.second_factor, promoter)?
         // BUG-281: bind the TOFU maintainer only now the promote has actually succeeded.
@@ -385,7 +385,7 @@ impl Coven:
         require(coven_record.state_of(rec.state) == Staged, 400, name + "@" + version + " is " + rec.state + "; only a staged version can be promoted")?
         require(promoter != rec.uploaded_by, 403, "separation of duties: the identity that published a version may not promote it")?
         require(coven_validate.single_line(promoter) && coven_validate.single_line(factor), 400, "record fields must not contain newlines")?
-        let signed = coven_record.sign_record(self.key, name, version, Released, rec.hash, rec.runtime_footprint, rec.uploaded_by, promoter, factor, coven_record.str_or_empty(rec.provenance), now(self.clock) / 1000)
+        let signed = coven_record.sign_record(self.key, name, version, Released, rec.hash, rec.runtime_footprint, rec.uploaded_by, promoter, factor, coven_record.str_or_empty(rec.provenance), self.clock.now() / 1000)
         coven_store.write_record(self.store, name, version, signed)
         self.rebuild_metadata()
         let delta = rights.uncovered(coven_store.latest_released_footprint(self.store, name, version), rec.runtime_footprint)
@@ -400,7 +400,7 @@ impl Coven:
         require(coven_validate.valid_name(req.name), 400, "invalid rune name `" + req.name + "`")?
         require(coven_validate.valid_version(req.version), 400, "invalid version `" + req.version + "`")?
         let rec = self.load_record(req.name, req.version)?
-        let _yanker = self.authorized_yanker(req.name, req.id_token, now(self.clock) / 1000)?
+        let _yanker = self.authorized_yanker(req.name, req.id_token, self.clock.now() / 1000)?
         let signed = coven_record.sign_record(self.key, req.name, req.version, Yanked, rec.hash, rec.runtime_footprint, rec.uploaded_by, coven_record.str_or_empty(rec.promoted_by), coven_record.str_or_empty(rec.second_factor), coven_record.str_or_empty(rec.provenance), rec.released_at)
         coven_store.write_record(self.store, req.name, req.version, signed)
         self.rebuild_metadata()
@@ -408,18 +408,18 @@ impl Coven:
 
     fn route_snapshot(self) -> fn(Request) -> Response:
         fn(req: Request):
-            if !exists(self.store, "snapshot.json"):
+            if !self.store.exists("snapshot.json"):
                 self.rebuild_metadata()
-            server.json(200, read(self.store, "snapshot.json"))
+            server.json(200, self.store.read("snapshot.json"))
 
     fn route_timestamp(self) -> fn(Request) -> Response:
         fn(req: Request):
-            if !exists(self.store, "timestamp.json"):
+            if !self.store.exists("timestamp.json"):
                 self.rebuild_metadata()
-            server.json(200, read(self.store, "timestamp.json"))
+            server.json(200, self.store.read("timestamp.json"))
 
     fn rebuild_metadata(self):
-        coven_meta.rebuild(self.store, self.key, now(self.clock) / 1000)
+        coven_meta.rebuild(self.store, self.key, self.clock.now() / 1000)
 
     fn authorized_publisher(self, req: PublishRequest, now: Int, name: String) -> Result((String, Option(Json)), CovenError):
         if list.length(self.issuers) == 0:
@@ -445,27 +445,27 @@ impl Coven:
         let jti = coven_trust.claim(claims, "jti")
         require(!string.is_empty(jti), 403, "identity token has no `jti` claim — a single-use token id is required (replay defense)")?
         let marker = "_policy/_jti/" + crypto.sha256(jti)
-        require(!exists(self.store, marker), 403, "identity token already used — single-use replay refused")?
+        require(!self.store.exists(marker), 403, "identity token already used — single-use replay refused")?
         fs.ensure_dir(self.store, "_policy/_jti")
-        write(self.store, marker, "1")
+        self.store.write(marker, "1")
         Ok(jti)
 
     fn authorize_publish(self, name: String, claims: Json) -> Result(String, CovenError):
         let ns = coven_trust.namespace_of(name)
         let pubfile = "_policy/" + ns + "/publisher.json"
-        if !exists(self.store, pubfile):
+        if !self.store.exists(pubfile):
             let repo = coven_trust.claim(claims, "repository")
             let wf = coven_trust.claim(claims, "workflow_ref")
             require(!string.is_empty(repo) && !string.is_empty(wf), 403, "cannot bind `" + ns + "`: the identity token carries no repository/workflow_ref claims (trusted publishing requires a CI identity)")?
             require(!string.contains(repo, "/") || ns == coven_trust.namespace_of(repo), 403, "namespace `" + ns + "` does not match the token's repository org `" + coven_trust.namespace_of(repo) + "`")?
             fs.ensure_dir(self.store, "_policy/" + ns)
-            write(self.store, pubfile, json.encode(JsonObject([("issuer", JsonString(coven_json.str(claims, "iss"))), ("repository", JsonString(repo)), ("workflow_ref", JsonString(wf))])))
+            self.store.write(pubfile, json.encode(JsonObject([("issuer", JsonString(coven_json.str(claims, "iss"))), ("repository", JsonString(repo)), ("workflow_ref", JsonString(wf))])))
             Ok(coven_json.str(claims, "sub"))
         else:
             // BUG-379: a publisher.json that does not DECODE is corruption/tampering — a
             // distinct hard error (500), not the 403 "incomplete trust policy" that a
             // decoded-but-empty policy yields. Both fail closed; they are not the same fault.
-            match json.decode(read(self.store, pubfile)):
+            match json.decode(self.store.read(pubfile)):
                 Err(e) -> Err(CovenError(500, "corrupt trust policy for namespace `" + ns + "` (" + json.decode_error_message(e) + "); it must be repaired or rebound out of band"))
                 Ok(policy) -> enforce_publish_policy(policy, claims, ns)
 
@@ -485,7 +485,7 @@ impl Coven:
         let ns = coven_trust.namespace_of(name)
         let mfile = "_policy/" + ns + "/maintainers.json"
         let id = coven_json.str(claims, "iss") + "|" + coven_json.str(claims, "sub")
-        if !exists(self.store, mfile):
+        if !self.store.exists(mfile):
             Ok(coven_json.str(claims, "sub"))
         else:
             let maintainers = self.maintainer_ids(ns, mfile)?
@@ -499,10 +499,10 @@ impl Coven:
         // namespace. Called AFTER a successful promote so a rejected one never binds authority.
         let ns = coven_trust.namespace_of(name)
         let mfile = "_policy/" + ns + "/maintainers.json"
-        if !exists(self.store, mfile):
+        if !self.store.exists(mfile):
             let id = coven_json.str(claims, "iss") + "|" + coven_json.str(claims, "sub")
             fs.ensure_dir(self.store, "_policy/" + ns)
-            write(self.store, mfile, json.encode(JsonArray([JsonString(id)])))
+            self.store.write(mfile, json.encode(JsonArray([JsonString(id)])))
 
     fn authorized_yanker(self, name: String, id_token: Option(String), now: Int) -> Result(String, CovenError):
         if list.length(self.issuers) == 0:
@@ -511,14 +511,14 @@ impl Coven:
             let claims = verified_claims(self.issuers, id_token, now, "yanking on a trusted registry requires a short-lived identity token")?
             let ns = coven_trust.namespace_of(name)
             let mfile = "_policy/" + ns + "/maintainers.json"
-            require(exists(self.store, mfile), 403, "namespace `" + ns + "` has no registered maintainers; nothing may be yanked")?
+            require(self.store.exists(mfile), 403, "namespace `" + ns + "` has no registered maintainers; nothing may be yanked")?
             let id = coven_json.str(claims, "iss") + "|" + coven_json.str(claims, "sub")
             let maintainers = self.maintainer_ids(ns, mfile)?
             require(coven_footprint.member(maintainers, id), 403, "`" + coven_json.str(claims, "sub") + "` is not a maintainer of namespace `" + ns + "`")?
             Ok(coven_json.str(claims, "sub"))
 
     fn maintainer_ids(self, ns: String, path: String) -> Result(List(String), CovenError):
-        coven_trust.string_array(read(self.store, path)).map_err(fn(e: String): CovenError(500, "corrupt maintainer policy for namespace `" + ns + "` (" + e + "); it must be repaired or rebound out of band"))
+        coven_trust.string_array(self.store.read(path)).map_err(fn(e: String): CovenError(500, "corrupt maintainer policy for namespace `" + ns + "` (" + e + "); it must be repaired or rebound out of band"))
 
     fn load_record(self, name: String, version: String) -> Result(Record, CovenError):
         match coven_store.read_record(self.store, name, version):

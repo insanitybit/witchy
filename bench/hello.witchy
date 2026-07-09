@@ -1,2 +1,2 @@
 fn main(console: Console):
-    print(console, "hello")
+    console.print("hello")

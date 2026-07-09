@@ -18,18 +18,18 @@ fn meta_path(name: String, version: String) -> String:
 
 // Whether a version's signed record exists.
 pub fn record_exists(store: Dir, name: String, version: String) -> Bool:
-    exists(store, meta_path(name, version))
+    store.exists(meta_path(name, version))
 
 // A version's stored record JSON, or None if absent.
 pub fn read_record(store: Dir, name: String, version: String) -> Option(String):
-    if exists(store, meta_path(name, version)):
-        Some(read(store, meta_path(name, version)))
+    if store.exists(meta_path(name, version)):
+        Some(store.read(meta_path(name, version)))
     else:
         None
 
 // Write (or overwrite) a version's record JSON.
 pub fn write_record(store: Dir, name: String, version: String, record: String):
-    write(store, meta_path(name, version), record)
+    store.write(meta_path(name, version), record)
 
 // A version's record decoded to a typed `Record`, or None if absent or corrupt.
 pub fn read_record_typed(store: Dir, name: String, version: String) -> Option(Record):
@@ -49,15 +49,15 @@ pub fn store_source(store: Dir, name: String, version: String, files: List((Stri
     for rel, text in files:
         let full = rune_path(name, version, rel)
         fs.ensure_dir(store, fs.parent_dir(full) ?? "")
-        write(store, full, text)
+        store.write(full, text)
 
 // Read the stored source back as (relpath, text) pairs: witchy.toml + every
 // src/**/*.witchy (recursively, so a nested module keeps its full path).
 pub fn read_source(store: Dir, name: String, version: String) -> List((String, String)):
     var out = []
     let base = name + "/" + version + "/rune"
-    if exists(store, base + "/witchy.toml"):
-        out = list.push(out, ("witchy.toml", read(store, base + "/witchy.toml")))
+    if store.exists(base + "/witchy.toml"):
+        out = list.push(out, ("witchy.toml", store.read(base + "/witchy.toml")))
     for f in fs.collect_files(store, base + "/src", "src", ".witchy"):
         out = list.push(out, f)
     out
@@ -74,8 +74,8 @@ pub fn content_hash(files: List((String, String))) -> String:
 // --- walking -----------------------------------------------------------------
 // Every published version of a rune.
 pub fn versions_of(store: Dir, name: String) -> List(String):
-    if exists(store, name):
-        list(subtree(store, name))
+    if store.exists(name):
+        store.subtree(name).list()
     else:
         []
 
@@ -83,9 +83,9 @@ pub fn versions_of(store: Dir, name: String) -> List(String):
 // the TUF metadata (*.json) and `_policy` trust state that sit at the root.
 pub fn all_names(store: Dir) -> List(String):
     var out = []
-    for ns in list(store):
+    for ns in store.list():
         if !string.ends_with(ns, ".json") && !string.starts_with(ns, "_"):
-            for nm in list(subtree(store, ns)):
+            for nm in store.subtree(ns).list():
                 out = list.push(out, ns + "/" + nm)
     out
 

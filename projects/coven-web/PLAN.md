@@ -506,7 +506,7 @@ Each is an implementable unit with deliverables and acceptance criteria. Depende
   sha2 to aws-lc-rs for a single backend. **Uncommitted** (alongside the async work; commit
   selectively: `src/native.rs`, `Cargo.toml`, `Cargo.lock`).
 - **2026-06-14 — WS-B B6 (fallible connect / proxy resilience) DONE + verified.** Added a total
-  `try_connect(net, addr) -> Option(Socket)` (`interpreter.rs` + `typeck.rs` `check_net_op`, same
+  `net.try_connect(addr) -> Option(Socket)` (`interpreter.rs` + `typeck.rs` `check_net_op`, same
   `Net[Connect,Tcp]` gating as `connect`; `codegen.rs` emits a clear interpreter-only error — WASM
   support is a follow-up), `std/http` `try_request`/`try_get`/`try_post -> Result(Response,String)`,
   and the coven-web proxy now returns **502** (not a crash) on a down upstream. Verified: kill coven →

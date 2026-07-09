@@ -919,7 +919,7 @@ fn full_lifecycle_publish_promote_add_use() {
     // Use it from main (the vendored basename `strkit` is the import name).
     std::fs::write(
         app.join("src").join("app.witchy"),
-        "import strkit\n\nfn main(console: Console):\n    print(console, strkit.shout(\"witchy\"))\n",
+        "import strkit\n\nfn main(console: Console):\n    console.print(strkit.shout(\"witchy\"))\n",
     )
     .unwrap();
     let out = fe.pm(&app, &["run", "."], None);
@@ -1460,7 +1460,7 @@ fn std_shadowing_dependency_is_refused() {
     assert!(out.status.success(), "add failed: {}\n{}", stderr(&out), stdout(&out));
     std::fs::write(
         app.join("src/app.witchy"),
-        "import list\n\nfn main(console: Console):\n    print(console, \"x\")\n",
+        "import list\n\nfn main(console: Console):\n    console.print(\"x\")\n",
     )
     .unwrap();
     let out = fe.pm(&app, &["build", "."], None);
@@ -1516,7 +1516,7 @@ fn vendored_sources_build_with_no_registry() {
         assert!(out.status.success(), "add failed: {}\n{}", stderr(&out), stdout(&out));
         std::fs::write(
             app.join("src/app.witchy"),
-            "import lib\n\nfn main(console: Console):\n    print(console, lib.f(\"vend\"))\n",
+            "import lib\n\nfn main(console: Console):\n    console.print(lib.f(\"vend\"))\n",
         )
         .unwrap();
         assert!(app.join("vendor/lib/src/lib.witchy").exists(), "the dep source must be vendored");
@@ -1620,7 +1620,7 @@ fn path_dependency_builds_and_runs() {
     .unwrap();
     std::fs::write(
         app.join("src/app.witchy"),
-        "import greet\n\nfn main(console: Console):\n    print(console, greet.hi(\"witchy\"))\n",
+        "import greet\n\nfn main(console: Console):\n    console.print(greet.hi(\"witchy\"))\n",
     )
     .unwrap();
 
@@ -1657,7 +1657,7 @@ fn build_steps_are_default_deny_even_when_safe() {
     // A BuildOut-only build step: writes into its confined sandbox, nothing else.
     std::fs::write(
         lib.join("src/build.witchy"),
-        "fn build(out: BuildOut):\n    write_out(out, \"gen.witchy\", \"// generated\")\n",
+        "fn build(out: BuildOut):\n    out.write_out(\"gen.witchy\", \"// generated\")\n",
     )
     .unwrap();
 
@@ -1670,7 +1670,7 @@ fn build_steps_are_default_deny_even_when_safe() {
     .unwrap();
     std::fs::write(
         app.join("src/app.witchy"),
-        "fn main(console: Console):\n    print(console, \"ok\")\n",
+        "fn main(console: Console):\n    console.print(\"ok\")\n",
     )
     .unwrap();
 
@@ -1764,7 +1764,7 @@ fn build_steps_auto_run_and_generated_source_is_gated() {
     .unwrap();
     std::fs::write(
         lib.join("src/build.witchy"),
-        "fn build(out: BuildOut):\n    let nl = \"\\n\"\n    write_out(out, \"greet.witchy\", \"pub fn greeting() -> String:\" + nl + \"    \\\"hi from generated code\\\"\" + nl)\n",
+        "fn build(out: BuildOut):\n    let nl = \"\\n\"\n    out.write_out(\"greet.witchy\", \"pub fn greeting() -> String:\" + nl + \"    \\\"hi from generated code\\\"\" + nl)\n",
     )
     .unwrap();
 
@@ -1778,7 +1778,7 @@ fn build_steps_auto_run_and_generated_source_is_gated() {
     .unwrap();
     std::fs::write(
         app.join("src/app.witchy"),
-        "import greet\n\nfn main(console: Console):\n    print(console, greet.greeting())\n",
+        "import greet\n\nfn main(console: Console):\n    console.print(greet.greeting())\n",
     )
     .unwrap();
     let out = pm_fe(&work, &["run", "app"]);
@@ -1791,7 +1791,7 @@ fn build_steps_auto_run_and_generated_source_is_gated() {
     // smuggle of new runtime authority (Net) into the consumer's link.
     std::fs::write(
         lib.join("src/build.witchy"),
-        "fn build(out: BuildOut):\n    let nl = \"\\n\"\n    write_out(out, \"greet.witchy\", \"pub fn evil(n: Net, addr: String) -> Socket:\" + nl + \"    connect(n, addr)\" + nl)\n",
+        "fn build(out: BuildOut):\n    let nl = \"\\n\"\n    out.write_out(\"greet.witchy\", \"pub fn evil(n: Net, addr: String) -> Socket:\" + nl + \"    n.connect(addr)\" + nl)\n",
     )
     .unwrap();
     let out = pm_fe(&work, &["run", "app"]);
@@ -1819,7 +1819,7 @@ fn deterministic_build_output_is_cached() {
     std::fs::write(lib.join("src/genlib.witchy"), "pub fn id(s: String) -> String:\n    s\n").unwrap();
     std::fs::write(
         lib.join("src/build.witchy"),
-        "fn build(out: BuildOut):\n    let nl = \"\\n\"\n    write_out(out, \"greet.witchy\", \"pub fn greeting() -> String:\" + nl + \"    \\\"V1\\\"\" + nl)\n",
+        "fn build(out: BuildOut):\n    let nl = \"\\n\"\n    out.write_out(\"greet.witchy\", \"pub fn greeting() -> String:\" + nl + \"    \\\"V1\\\"\" + nl)\n",
     )
     .unwrap();
 
@@ -1832,7 +1832,7 @@ fn deterministic_build_output_is_cached() {
     .unwrap();
     std::fs::write(
         app.join("src/app.witchy"),
-        "import greet\n\nfn main(console: Console):\n    print(console, greet.greeting())\n",
+        "import greet\n\nfn main(console: Console):\n    console.print(greet.greeting())\n",
     )
     .unwrap();
 
@@ -2342,7 +2342,7 @@ fn http_get(addr: &str, path: &str) -> (u16, String) {
 
 /// GET a path and return the WHOLE raw HTTP response (status line + headers + body), so
 /// a test can read a redirect's `Location` header.
-/// The `Rand` capability: `rand_u64(rand)` draws from the OS CSPRNG, but under
+/// The `Rand` capability: `rand.rand_u64()` draws from the OS CSPRNG, but under
 /// `WITCHY_RAND_SEED` both backends draw the SAME deterministic splitmix sequence — so a
 /// program using randomness stays parity-stable and reproducible for tests.
 #[test]
@@ -2352,7 +2352,7 @@ fn rand_capability_seeds_deterministically_and_agrees_across_backends() {
     let src = dir.join("rand.witchy");
     std::fs::write(
         &src,
-        "fn main(console: Console, rand: Rand):\n    print(console, __render(rand_u64(rand)))\n    print(console, __render(rand_u64(rand)))\n",
+        "fn main(console: Console, rand: Rand):\n    console.print(__render(rand.rand_u64()))\n    console.print(__render(rand.rand_u64()))\n",
     )
     .unwrap();
     let path = src.to_str().unwrap();
@@ -3158,7 +3158,7 @@ fn witchy_pm_local_lifecycle_new_lock_verify_gate() {
     // Tamper: the dependency now also demands Net.
     std::fs::write(
         work.join("util/src/util.witchy"),
-        "fn main(console: Console):\n    print(console, \"hello from util\")\n\npub fn fetch(net: Net) -> Int:\n    0\n",
+        "fn main(console: Console):\n    console.print(\"hello from util\")\n\npub fn fetch(net: Net) -> Int:\n    0\n",
     )
     .unwrap();
     let verify_bad = pm(&["verify", "app"]);
@@ -3235,13 +3235,13 @@ fn witchy_coven_promote_delta_immutability_and_error_paths() {
     let ghost_yank =
         http_post(&addr, "/coven/yank", "{\"name\":\"acme~widget\",\"version\":\"9.9.9\"}");
     // First release: the delta against an empty baseline is the whole footprint.
-    let console_module = "pub fn run(console: Console):\n    print(console, \"hi\")\n";
+    let console_module = "pub fn run(console: Console):\n    console.print(\"hi\")\n";
     let pub_v1 = publish("1.0.0", "\"Console\"", console_module);
     let promote_v1 = promote("1.0.0");
     // Immutability: the released version cannot be re-published.
     let republish = publish("1.0.0", "\"Console\"", console_module);
     // An upgrade that widens: only the NEW authority appears in the delta.
-    let net_module = "pub fn run(console: Console):\n    print(console, \"hi\")\n\npub fn fetch(net: Net) -> Int:\n    0\n";
+    let net_module = "pub fn run(console: Console):\n    console.print(\"hi\")\n\npub fn fetch(net: Net) -> Int:\n    0\n";
     let pub_v2 = publish("1.1.0", "\"Console\", \"Net\"", net_module);
     let promote_v2 = promote("1.1.0");
 
@@ -3484,7 +3484,7 @@ fn witchy_pm_add_build_run_consumes_a_fetched_rune() {
     .unwrap();
     std::fs::write(
         app.join("src/app.witchy"),
-        "import lib\n\nfn main(console: Console):\n    print(console, lib.shout(\"net\"))\n",
+        "import lib\n\nfn main(console: Console):\n    console.print(lib.shout(\"net\"))\n",
     )
     .unwrap();
 
@@ -3660,7 +3660,7 @@ fn glamour_publishes_to_coven_empty_footprint_and_renders_through_html() {
          fn int_to_str(n: Int) -> String:\n\
          \x20\x20\x20\x20\"${n}\"\n\n\
          fn main(console: Console):\n\
-         \x20\x20\x20\x20print(console, glamour.to_html(view(7)))\n",
+         \x20\x20\x20\x20console.print(glamour.to_html(view(7)))\n",
     )
     .unwrap();
 
@@ -3745,7 +3745,7 @@ fn grant_document_run_binds_by_name_and_cross_checks() {
     let prog = dir.join("prog.witchy");
     std::fs::write(
         &prog,
-        "fn main(console: Console, config: File[Read]):\n    print(console, read(config))\n",
+        "fn main(console: Console, config: File[Read]):\n    console.print(config.read())\n",
     )
     .unwrap();
 
@@ -3789,7 +3789,7 @@ fn grant_document_file_rights_are_parameter_exact() {
     let prog = dir.join("prog.witchy");
     std::fs::write(
         &prog,
-        "fn main(console: Console, input: File[Read], output: File[Write]):\n    print(console, read(input))\n    write(output, \"out\")\n",
+        "fn main(console: Console, input: File[Read], output: File[Write]):\n    console.print(input.read())\n    output.write(\"out\")\n",
     )
     .unwrap();
 
@@ -3830,7 +3830,7 @@ fn sandbox_direct_file_grants_read_and_write() {
     let read_prog = dir.join("read.witchy");
     std::fs::write(
         &read_prog,
-        "fn main(console: Console, config: File[Read]):\n    print(console, read(config))\n",
+        "fn main(console: Console, config: File[Read]):\n    console.print(config.read())\n",
     )
     .unwrap();
     let out = Command::new(BIN)
@@ -3848,7 +3848,7 @@ fn sandbox_direct_file_grants_read_and_write() {
     let write_prog = dir.join("write.witchy");
     std::fs::write(
         &write_prog,
-        "fn main(console: Console, log: File[Write]):\n    write(log, \"direct-write\")\n    print(console, \"wrote\")\n",
+        "fn main(console: Console, log: File[Write]):\n    log.write(\"direct-write\")\n    console.print(\"wrote\")\n",
     )
     .unwrap();
     let out = Command::new(BIN)
@@ -3878,7 +3878,7 @@ fn sandbox_dir_requires_explicit_grant() {
     let prog = dir.join("prog.witchy");
     std::fs::write(
         &prog,
-        "fn main(console: Console, dir: Dir):\n    let ok = exists(dir, \"prog.witchy\")\n    print(console, \"${ok}\")\n",
+        "fn main(console: Console, dir: Dir):\n    let ok = dir.exists(\"prog.witchy\")\n    console.print(\"${ok}\")\n",
     )
     .unwrap();
 
@@ -3922,7 +3922,7 @@ fn sandbox_dir_list_rejects_non_utf8_names() {
     let prog = dir.join("prog.witchy");
     std::fs::write(
         &prog,
-        "fn main(console: Console, root: Dir):\n    let names = list(root)\n    print(console, \"listed\")\n",
+        "fn main(console: Console, root: Dir):\n    let names = root.list()\n    console.print(\"listed\")\n",
     )
     .unwrap();
 
@@ -3971,7 +3971,7 @@ fn sandbox_reveal_gates_signing_key_only() {
     let named = dir.join("named.witchy");
     std::fs::write(
         &named,
-        "import crypto\nimport secretstore\nfn main(console: Console, store: SecretStore):\n    print(console, crypto.reveal(secretstore.require(store, \"token\")))\n",
+        "import crypto\nimport secretstore\nfn main(console: Console, store: SecretStore):\n    console.print(crypto.reveal(secretstore.require(store, \"token\")))\n",
     )
     .unwrap();
     let out = Command::new(BIN)
@@ -3987,7 +3987,7 @@ fn sandbox_reveal_gates_signing_key_only() {
     let signing = dir.join("signing.witchy");
     std::fs::write(
         &signing,
-        "import crypto\nfn main(console: Console, key: Secret):\n    print(console, crypto.reveal(key))\n",
+        "import crypto\nfn main(console: Console, key: Secret):\n    console.print(crypto.reveal(key))\n",
     )
     .unwrap();
     let out = Command::new(BIN)
@@ -4033,7 +4033,7 @@ fn seeded_divergence_is_inert_on_run_but_fails_parity() {
     let prog = dir.join("p.witchy");
     std::fs::write(
         &prog,
-        "fn main(console: Console):\n    print(console, \"hello\")\n    print(console, \"${1 + 2}\")\n",
+        "fn main(console: Console):\n    console.print(\"hello\")\n    console.print(\"${1 + 2}\")\n",
     )
     .unwrap();
     let p = prog.to_str().unwrap();
@@ -4134,7 +4134,7 @@ fn run_forwards_net_grant_to_the_sandboxed_app() {
     std::fs::write(
         app.join("src/netapp.witchy"),
         format!(
-            "fn main(console: Console, net: Net):\n    let s = connect(net, \"{addr}\")\n    send_line(s, \"ping\")\n    print(console, recv_line(s))\n"
+            "fn main(console: Console, net: Net):\n    let s = net.connect(\"{addr}\")\n    s.send_line(\"ping\")\n    console.print(s.recv_line())\n"
         ),
     )
     .unwrap();
@@ -4192,7 +4192,7 @@ fn build_step_generated_deps_link_and_run() {
     .unwrap();
     std::fs::write(
         app.join("src/app.witchy"),
-        "import genmod\nimport genmod2\n\nfn main(console: Console):\n    print(console, __render(genmod.value() + genmod2.value()))\n",
+        "import genmod\nimport genmod2\n\nfn main(console: Console):\n    console.print(__render(genmod.value() + genmod2.value()))\n",
     )
     .unwrap();
 
@@ -4202,7 +4202,7 @@ fn build_step_generated_deps_link_and_run() {
     // module (deduped by name), not duplicates.
     std::fs::write(
         lib.join("src/build.witchy"),
-        "fn build(out: BuildOut):\n    write_out(out, \"genmod.witchy\", \"pub fn value() -> Int:\\n    40\\n\")\n    write_out(out, \"genmod2.witchy\", \"pub fn value() -> Int:\\n    2\\n\")\n",
+        "fn build(out: BuildOut):\n    out.write_out(\"genmod.witchy\", \"pub fn value() -> Int:\\n    40\\n\")\n    out.write_out(\"genmod2.witchy\", \"pub fn value() -> Int:\\n    2\\n\")\n",
     )
     .unwrap();
 

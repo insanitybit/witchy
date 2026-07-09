@@ -3180,7 +3180,7 @@ mod compiled_build_step_tests {
 
         let allowed = write_source(
             &dir,
-            "import option\nfn build(out: BuildOut, env: BuildEnv):\n    let v = match get_build_env(env, \"WITCHY_BUILD_ALLOWED\"):\n        Some(x) -> x\n        None -> \"unset\"\n    write_out(out, \"g.txt\", v)\n",
+            "import option\nfn build(out: BuildOut, env: BuildEnv):\n    let v = match env.get_build_env(\"WITCHY_BUILD_ALLOWED\"):\n        Some(x) -> x\n        None -> \"unset\"\n    out.write_out(\"g.txt\", v)\n",
         );
         run_build_step_file(
             allowed.to_str().unwrap(),
@@ -3195,7 +3195,7 @@ mod compiled_build_step_tests {
 
         let denied = write_source(
             &dir,
-            "import option\nfn build(out: BuildOut, env: BuildEnv):\n    let v = match get_build_env(env, \"WITCHY_BUILD_SECRET\"):\n        Some(x) -> x\n        None -> \"unset\"\n    write_out(out, \"g.txt\", v)\n",
+            "import option\nfn build(out: BuildOut, env: BuildEnv):\n    let v = match env.get_build_env(\"WITCHY_BUILD_SECRET\"):\n        Some(x) -> x\n        None -> \"unset\"\n    out.write_out(\"g.txt\", v)\n",
         );
         let err = run_build_step_file(
             denied.to_str().unwrap(),
@@ -3231,7 +3231,7 @@ mod compiled_build_step_tests {
         let source = write_source(
             &dir,
             &format!(
-                "fn build(out: BuildOut, dl: BuildNet):\n    write_out(out, \"got.txt\", fetch_build(dl, \"{addr}\", \"/schema\"))\n"
+                "fn build(out: BuildOut, dl: BuildNet):\n    out.write_out(\"got.txt\", dl.fetch_build(\"{addr}\", \"/schema\"))\n"
             ),
         );
         run_build_step_file(
@@ -3265,7 +3265,7 @@ mod compiled_build_step_tests {
         let _ = std::fs::remove_dir_all(&dir);
         let source = write_source(
             &dir,
-            "fn build(out: BuildOut, cc: BuildExec):\n    write_out(out, \"x.txt\", run_tool(cc, \"cat\", \"piped-input\"))\n",
+            "fn build(out: BuildOut, cc: BuildExec):\n    out.write_out(\"x.txt\", cc.run_tool(\"cat\", \"piped-input\"))\n",
         );
         run_build_step_file(
             source.to_str().unwrap(),
@@ -3280,7 +3280,7 @@ mod compiled_build_step_tests {
 
         let denied = write_source(
             &dir,
-            "fn build(out: BuildOut, cc: BuildExec):\n    write_out(out, \"x.txt\", run_tool(cc, \"rm\", \"-rf /\"))\n",
+            "fn build(out: BuildOut, cc: BuildExec):\n    out.write_out(\"x.txt\", cc.run_tool(\"rm\", \"-rf /\"))\n",
         );
         let err = run_build_step_file(
             denied.to_str().unwrap(),

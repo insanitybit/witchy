@@ -22,11 +22,11 @@ fn nsieve(n: Int) -> Int:
     count
 
 fn main(console: Console, clock: Clock):
-    let bench_t0 = now_monotonic(clock)
+    let bench_t0 = clock.now_monotonic()
     var total = 0
     total = total + nsieve(800000)
     total = total + nsieve(400000)
     total = total + nsieve(200000)
-    let bench_t1 = now_monotonic(clock)
-    print(console, "${total}")
-    print(console, "bench_ns=${bench_t1 - bench_t0}")
+    let bench_t1 = clock.now_monotonic()
+    console.print("${total}")
+    console.print("bench_ns=${bench_t1 - bench_t0}")

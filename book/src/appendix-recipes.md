@@ -24,7 +24,7 @@ it grants at the **current working directory** — so relative paths resolve
 against where you launched the program, not where the source file lives. To run
 it confined to a specific subtree instead, use `witchy sandbox --dir <root>
 program.witchy`; the sandbox prints exactly what it granted. Either way the
-program only ever sees paths *under* that root — `subtree(root, "sub")` narrows
+program only ever sees paths *under* that root — `root.subtree("sub")` narrows
 further to a child folder.
 
 ## Read just one file
@@ -62,7 +62,7 @@ fn main(console: Console, root: Dir[Write]):
 
 ## List a directory
 
-`list` returns the entry names in the subtree; `subtree(root, "sub")` mints a
+`list` returns the entry names in the subtree; `root.subtree("sub")` mints a
 capability confined to a child folder if you want to descend.
 
 ```witchy

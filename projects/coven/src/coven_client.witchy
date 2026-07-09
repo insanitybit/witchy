@@ -17,46 +17,46 @@ fn main(console: Console, net: Net, clock: Clock, args: List(String)):
     let (host, port) = hostport(addr)
 
     let rp = http.get(net, host, port, "/coven/rootpub")
-    print(console, "rootpub:" + "${http.status(rp)}")
+    console.print("rootpub:" + "${http.status(rp)}")
 
     // publish acme/money@1.0.0 (a pure library — no capabilities). Anonymous registry:
     // no identity token, so the builders pass `None`.
     let pub1 = http.post(net, host, port, "/coven/publish", coven_proto.publish_body(money_toml(), money_files(), "ci-bot", None))
-    print(console, "publish:${http.status(pub1)} state=" + field(http.body(pub1), "state"))
+    console.print("publish:${http.status(pub1)} state=" + field(http.body(pub1), "state"))
 
     let rec = http.get(net, host, port, "/coven/record?name=acme~money&version=1.0.0")
-    print(console, "record:${http.status(rec)} state=" + field(http.body(rec), "state"))
+    console.print("record:${http.status(rec)} state=" + field(http.body(rec), "state"))
 
     // promote with a DISTINCT identity (separation of duties holds) -> released
     let prom = http.post(net, host, port, "/coven/promote", coven_proto.promote_body("acme~money", "1.0.0", "webauthn", "release-human", None))
-    print(console, "promote:${http.status(prom)} state=" + nested_state(http.body(prom)) + " sod=" + nested_bool(http.body(prom)))
+    console.print("promote:${http.status(prom)} state=" + nested_state(http.body(prom)) + " sod=" + nested_bool(http.body(prom)))
 
     // publish v2, then attempt to promote it as the SAME identity that uploaded
     // it — separation of duties must refuse (403).
     let pub2 = http.post(net, host, port, "/coven/publish", coven_proto.publish_body(money_toml_v2(), money_files_v2(), "ci-bot", None))
-    print(console, "publish2:" + "${http.status(pub2)}")
+    console.print("publish2:" + "${http.status(pub2)}")
     let sod = http.post(net, host, port, "/coven/promote", coven_proto.promote_body("acme~money", "2.0.0", "webauthn", "ci-bot", None))
-    print(console, "selfpromote:" + "${http.status(sod)}")
+    console.print("selfpromote:" + "${http.status(sod)}")
 
     // an under-declared rune: the code demands Net but the manifest declares
     // nothing — the server recomputes the footprint and refuses (400).
     let leak = http.post(net, host, port, "/coven/publish", coven_proto.publish_body(leak_toml(), leak_files(), "attacker", None))
-    print(console, "underdeclared:" + "${http.status(leak)}")
+    console.print("underdeclared:" + "${http.status(leak)}")
 
     let src = http.get(net, host, port, "/coven/source?name=acme~money&version=1.0.0")
-    print(console, "source:" + "${http.status(src)}")
+    console.print("source:" + "${http.status(src)}")
 
     let idx = http.get(net, host, port, "/coven/index")
-    print(console, "index:${http.status(idx)} " + http.body(idx))
+    console.print("index:${http.status(idx)} " + http.body(idx))
 
     // TUF roles: the snapshot pins every target (rollback protection) and the
     // timestamp points at it with an expiry (freeze protection). Verify the
     // snapshot's signature against the registry's published root key.
     let rootpub = http.body(http.get(net, host, port, "/coven/rootpub"))
     let snap = http.get(net, host, port, "/coven/snapshot")
-    print(console, "snapshot:${http.status(snap)} verified=" + verify_signed_doc(http.body(snap), rootpub))
+    console.print("snapshot:${http.status(snap)} verified=" + verify_signed_doc(http.body(snap), rootpub))
     let ts = http.get(net, host, port, "/coven/timestamp")
-    print(console, "timestamp:${http.status(ts)} verified=" + verify_signed_doc(http.body(ts), rootpub) + " fresh=" + timestamp_fresh(http.body(ts), now(clock) / 1000))
+    console.print("timestamp:${http.status(ts)} verified=" + verify_signed_doc(http.body(ts), rootpub) + " fresh=" + timestamp_fresh(http.body(ts), clock.now() / 1000))
 
 // Freeze protection: a verified timestamp is only trustworthy while it is
 // FRESH — replaying an old (validly signed) timestamp would let a mirror
@@ -101,7 +101,7 @@ fn leak_toml() -> String:
     "[rune]\nname = \"acme/leak\"\nversion = \"1.0.0\"\n"
 
 fn leak_files() -> List((String, String)):
-    [("witchy.toml", leak_toml()), ("src/leak.witchy", "fn main(c: Console, net: Net):\n    let s = connect(net, \"example.com:80\")\n    print(c, \"x\")\n")]
+    [("witchy.toml", leak_toml()), ("src/leak.witchy", "fn main(c: Console, net: Net):\n    let s = net.connect(\"example.com:80\")\n    c.print(\"x\")\n")]
 
 // --- response parsing --------------------------------------------------------
 fn hostport(addr: String) -> (String, Int):

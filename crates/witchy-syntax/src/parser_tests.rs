@@ -575,7 +575,7 @@ fn f(var a: Int, own b: Int, c: Int) -> Int:
         // The `let b = ...` and the trailing interpolation are TWO statements.
         assert_eq!(f.body.stmts.len(), 2, "{:?}", f.body.stmts);
         // A genuine call keeps its `(` on the same line, so this still parses as a call.
-        parse_module("fn g(x: Int) -> Int:\n    x\nfn main(console: Console):\n    print(console, \"${g(1)}\")\n")
+        parse_module("fn g(x: Int) -> Int:\n    x\nfn main(console: Console):\n    console.print(\"${g(1)}\")\n")
             .expect("a same-line call is unaffected");
     }
 
@@ -586,11 +586,11 @@ fn f(var a: Int, own b: Int, c: Int) -> Int:
             .unwrap_err();
         assert!(let_mut.to_string().contains("var"), "{let_mut}");
         // `List<Int>` (Rust/TS) — suggest parentheses, not "expected `=`, found `<`".
-        let angle = parse_module("fn main(console: Console):\n    let xs: List<Int> = []\n    print(console, \"x\")\n")
+        let angle = parse_module("fn main(console: Console):\n    let xs: List<Int> = []\n    console.print(\"x\")\n")
             .unwrap_err();
         assert!(angle.to_string().contains("List(…)"), "{angle}");
         // `var mut x` is NOT mistaken for the Rust form (mut is a real binding name here).
-        parse_module("fn main(console: Console):\n    var mut = 0\n    mut = mut + 1\n    print(console, \"${mut}\")\n")
+        parse_module("fn main(console: Console):\n    var mut = 0\n    mut = mut + 1\n    console.print(\"${mut}\")\n")
             .expect("`mut` is a valid identifier on its own");
     }
 
@@ -618,7 +618,7 @@ fn f(var a: Int, own b: Int, c: Int) -> Int:
     fn deeply_nested_parens_error_instead_of_overflowing() {
         let depth = (super::MAX_PARSE_DEPTH as usize) + 50;
         let src = format!(
-            "fn main(console: Console):\n    let x = {}0{}\n    print(console, \"ok\")\n",
+            "fn main(console: Console):\n    let x = {}0{}\n    console.print(\"ok\")\n",
             "(".repeat(depth),
             ")".repeat(depth),
         );
@@ -641,7 +641,7 @@ fn f(var a: Int, own b: Int, c: Int) -> Int:
     fn moderately_nested_parens_still_parse() {
         let depth = (super::MAX_PARSE_DEPTH as usize) - 20;
         let src = format!(
-            "fn main(console: Console):\n    let x = {}0{}\n    print(console, \"ok\")\n",
+            "fn main(console: Console):\n    let x = {}0{}\n    console.print(\"ok\")\n",
             "(".repeat(depth),
             ")".repeat(depth),
         );

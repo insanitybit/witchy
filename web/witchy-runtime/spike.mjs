@@ -31,16 +31,16 @@ fn fib(n: Int) -> Int:
 
 fn main(console: Console):
     let sum = 2 + 3 * 4
-    print(console, "sum = \${sum}\\n")
-    print(console, "fib(15) = \${fib(15)}\\n")
-    print(console, "hello, " + "browser" + "\\n")
-    print(console, "sha256(abc) = \${crypto.sha256("abc")}\\n")
+    console.print("sum = \${sum}\\n")
+    console.print("fib(15) = \${fib(15)}\\n")
+    console.print("hello, " + "browser" + "\\n")
+    console.print("sha256(abc) = \${crypto.sha256("abc")}\\n")
 `;
 
 // A capability-using rune: reads a file via a Dir capability. Non-empty
 // footprint (Dir[Read]) -> imports a capability host fn the shim won't provide.
 const IMPURE = `fn main(console: Console, root: Dir):
-    print(console, read(root, "note.txt"))
+    console.print(root.read("note.txt"))
 `;
 
 const work = mkdtempSync(join(tmpdir(), "witchy-rfc7-spike-"));
@@ -104,7 +104,7 @@ try {
     "echo: " + s
 
 fn main(console: Console):
-    print(console, export_echo("hi") + "\\n")
+    console.print(export_echo("hi") + "\\n")
 `;
   const echoSrc = join(work, "echo.witchy");
   const echoWasm = join(work, "echo.wasm");

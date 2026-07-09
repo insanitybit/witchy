@@ -71,7 +71,7 @@ const ok = (cond, msg) => { console.log(`  ${cond ? "ok" : "FAIL"}: ${msg}`); if
 
 try {
   // 1. A runnable cell: enhance, then Run, and the real output shows.
-  const root = pageWith('fn main(console: Console):\n    print(console, "hello from a runnable cell")');
+  const root = pageWith('fn main(console: Console):\n    console.print("hello from a runnable cell")');
   const cells = enhanceRunnableCells(root, { document: doc, loadCompiler });
   ok(cells.length === 1, "one runnable cell is found and enhanced");
   ok(qsa(root, "button").some((b) => (b.getAttribute("class") || "").includes("witchy-run")), "a Run button is added");
@@ -84,7 +84,7 @@ try {
   ok((cells[0].output.getAttribute("class") || "").includes("ok"), "a successful run is marked ok");
 
   // Editing the textarea and re-running runs the READER'S edited source, not the seed.
-  cells[0].editor.value = 'fn main(console: Console):\n    print(console, "the reader edited this")';
+  cells[0].editor.value = 'fn main(console: Console):\n    console.print("the reader edited this")';
   await cells[0].run();
   ok(cells[0].output.textContent === "the reader edited this", "Run executes the reader's EDITED source");
 
@@ -93,7 +93,7 @@ try {
   ok(again.length === 0, "re-enhancing is idempotent (no double cells)");
 
   // 3. A compile error surfaces as an error cell, not a thrown exception.
-  const bad = pageWith("fn main(console: Console):\n    print(console, nope)");
+  const bad = pageWith("fn main(console: Console):\n    console.print(nope)");
   const badCells = enhanceRunnableCells(bad, { document: doc, loadCompiler });
   await badCells[0].run();
   ok((badCells[0].output.getAttribute("class") || "").includes("err"), "a compile error marks the cell err");

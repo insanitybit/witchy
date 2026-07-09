@@ -113,13 +113,13 @@ fn dispatch_more(console: Console, root: Dir, args: List(String), cmd: String) -
 // --- info: a one-screen summary of a rune -----------------------------------
 fn cmd_info(console: Console, root: Dir, dir: String):
     if string.is_empty(dir):
-        print(console, "usage: pm info <dir>")
+        console.print("usage: pm info <dir>")
     else:
-        let manifest = read(root, join_path(dir, "witchy.toml"))
-        print(console, "name:     " + field(manifest, "rune.name"))
-        print(console, "version:  " + field(manifest, "rune.version"))
-        print(console, "declared: " + list.join(declared_caps(manifest), ", "))
-        print(console, "actual:   " + list.join(rune_footprint(root, dir), ", "))
+        let manifest = root.read(join_path(dir, "witchy.toml"))
+        console.print("name:     " + field(manifest, "rune.name"))
+        console.print("version:  " + field(manifest, "rune.version"))
+        console.print("declared: " + list.join(declared_caps(manifest), ", "))
+        console.print("actual:   " + list.join(rune_footprint(root, dir), ", "))
 
 // run <file|dir> — compile and run a program by driving the compiler. Given a
 // project directory (or, with no argument, the current directory) that carries a
@@ -134,10 +134,10 @@ fn cmd_run(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, clock:
     // BUG-102: everything after `run <file|dir>` is the program's own argv and must
     // be forwarded to the sandboxed run, not dropped.
     let app_args = args_from(args, 2)
-    if exists(root, join_path(dir, "witchy.toml")):
+    if root.exists(join_path(dir, "witchy.toml")):
         run_project(console, runner, root, bin, dir, app_args)
     else if string.is_empty(target):
-        print(console, "usage: pm run <file|dir>")
+        console.print("usage: pm run <file|dir>")
         1
     else:
         run_compiler(console, runner, bin, "run", flatten_argv([target], app_args))
@@ -146,12 +146,12 @@ fn cmd_run(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, clock:
 fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, args: List(String)) -> Int:
     let target = arg(args, 1)
     let dir = if string.is_empty(target): "." else: target
-    if exists(root, join_path(dir, "witchy.toml")):
+    if root.exists(join_path(dir, "witchy.toml")):
         match lock_integrity_error(root, dir):
             // BUG-094: refuse to link a vendored dependency whose on-disk source
             // no longer matches its signed record — before any compile.
             Some(msg) ->
-                print(console, msg)
+                console.print(msg)
                 2
             None ->
                 match project_entry(root, dir):
@@ -162,10 +162,10 @@ fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, args
                         else:
                             run_compiler(console, runner, bin, "build", flatten_argv(["compile", entry], flatten_argv(dep_flags(root, dir), built.1)))
                     None ->
-                        print(console, "no entry source under " + join_path(dir, "src"))
+                        console.print("no entry source under " + join_path(dir, "src"))
                         1
     else if string.is_empty(target):
-        print(console, "usage: pm build <file|dir>")
+        console.print("usage: pm build <file|dir>")
         1
     else:
         run_compiler(console, runner, bin, "build", ["compile", target])
@@ -187,12 +187,12 @@ fn run_project(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String,
         // BUG-094: verify vendored sources against their signed records before
         // linking + running, so a tampered vendored rune never executes.
         Some(msg) ->
-            print(console, msg)
+            console.print(msg)
             2
         None ->
             match project_entry(root, dir):
                 None ->
-                    print(console, "no entry source under " + join_path(dir, "src"))
+                    console.print("no entry source under " + join_path(dir, "src"))
                     1
                 Some(entry) ->
                     let steps = build_step_flags(console, runner, root, bin, dir)
@@ -216,24 +216,24 @@ fn lock_integrity_error(root: Dir, dir: String) -> Option(String):
 fn tampered_vendored(root: Dir, dir: String) -> List(String):
     var bad = []
     let vendor = join_path(dir, "vendor")
-    if exists(root, vendor):
-        for entry in list(subtree(root, vendor)):
+    if root.exists(vendor):
+        for entry in root.subtree(vendor).list():
             let rune_dir = join_path(vendor, entry)
-            if exists(root, join_path(rune_dir, "coven.json")):
-                if rune_hash(root, rune_dir) != recorded_hash(read(root, join_path(rune_dir, "coven.json"))):
+            if root.exists(join_path(rune_dir, "coven.json")):
+                if rune_hash(root, rune_dir) != recorded_hash(root.read(join_path(rune_dir, "coven.json"))):
                     bad = list.push(bad, entry)
     bad
 
 fn compile_then_run(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, entry: String, build_flags: List(String), app_args: List(String)) -> Int:
     let outdir = join_path(dir, "target")
-    if !exists(root, outdir):
-        make_dir(root, outdir)
+    if !root.exists(outdir):
+        root.make_dir(outdir)
     let wasm = join_path(outdir, "app.wasm")
     let deps = flatten_argv(dep_flags(root, dir), build_flags)
     let argv = flatten_argv(["compile", entry], flatten_argv(deps, ["--out", wasm]))
     let built = exec.run_args(runner, bin, "witchy", argv)
     if built.0 != 0:
-        print(console, built.1)
+        console.print(built.1)
         built.0
     else:
         // BUG-406: runtime `--net <addr>` grants (forwarded by the front-end as trailing
@@ -304,13 +304,13 @@ fn dep_flags(root: Dir, dir: String) -> List(String):
 // once per rune (cycles and diamonds both terminate).
 fn collect_deps(root: Dir, dir: String, flags: List(String)) -> List(String):
     var acc = flags
-    if exists(root, join_path(dir, "witchy.toml")):
-        let manifest = read(root, join_path(dir, "witchy.toml"))
+    if root.exists(join_path(dir, "witchy.toml")):
+        let manifest = root.read(join_path(dir, "witchy.toml"))
         for pair in toml.table(manifest, "dependencies"):
             acc = push_path_dep(root, dir, acc, pair)
     let lockpath = join_path(dir, "witchy.lock")
-    if exists(root, lockpath):
-        let lock = read(root, lockpath)
+    if root.exists(lockpath):
+        let lock = root.read(lockpath)
         for block in toml.array_tables(lock, "rune"):
             // The import key is the local alias (basename), distinct from the lock's
             // registry identity `name` (BUG-099). Old-format locks have no `alias`,
@@ -367,14 +367,14 @@ fn vendored_module(root: Dir, dir: String, name: String) -> Option(String):
 // in listing order for a rune whose entry does not follow the convention.
 fn module_in_src(root: Dir, base: String) -> Option(String):
     let srcdir = join_path(base, "src")
-    if !exists(root, srcdir):
+    if !root.exists(srcdir):
         None
     else:
         let conventional = manifest_entry(root, base)
-        if !string.is_empty(conventional) && exists(root, conventional):
+        if !string.is_empty(conventional) && root.exists(conventional):
             Some(conventional)
         else:
-            match first_witchy(list(subtree(root, srcdir))):
+            match first_witchy(root.subtree(srcdir).list()):
                 Some(file) -> Some(join_path(srcdir, file))
                 None -> None
 
@@ -383,10 +383,10 @@ fn module_in_src(root: Dir, base: String) -> Option(String):
 // no `rune.name`. BUG-086.
 fn manifest_entry(root: Dir, base: String) -> String:
     let manifest_path = join_path(base, "witchy.toml")
-    if !exists(root, manifest_path):
+    if !root.exists(manifest_path):
         ""
     else:
-        match toml.get(read(root, manifest_path), "rune.name"):
+        match toml.get(root.read(manifest_path), "rune.name"):
             Some(nm) -> conventional_entry(base, nm)
             None -> ""
 
@@ -408,7 +408,7 @@ fn flatten_argv(head: List(String), tail: List(String)) -> List(String):
 // Exec the compiler with `argv`, printing its output and returning its exit code.
 fn run_compiler(console: Console, runner: Exec, bin: Dir, label: String, argv: List(String)) -> Int:
     let result = exec.run_args(runner, bin, "witchy", argv)
-    print(console, result.1)
+    console.print(result.1)
     result.0
 
 // Drive the compiler (`witchy`) with `argv`, confined to the toolchain-`bin` Dir
@@ -418,11 +418,11 @@ fn run_compiler(console: Console, runner: Exec, bin: Dir, label: String, argv: L
 // cargo→rustc split.
 fn cmd_drive(console: Console, runner: Exec, bin: Dir, verb: String, argv: List(String)) -> Int:
     if string.is_empty(list.at(argv, list.length(argv) - 1)):
-        print(console, "usage: pm " + verb + " <file>")
+        console.print("usage: pm " + verb + " <file>")
         1
     else:
         let result = exec.run_args(runner, bin, "witchy", argv)
-        print(console, result.1)
+        console.print(result.1)
         result.0
 
 // --- build steps (§7.1) -----------------------------------------------------
@@ -454,23 +454,23 @@ fn build_step_flags(console: Console, runner: Exec, root: Dir, bin: Dir, dir: St
 // relative to the project) and its vendored registry dependencies (`vendor/<name>`).
 fn dep_dirs(root: Dir, dir: String) -> List((String, String)):
     var out = []
-    if exists(root, join_path(dir, "witchy.toml")):
-        let manifest = read(root, join_path(dir, "witchy.toml"))
+    if root.exists(join_path(dir, "witchy.toml")):
+        let manifest = root.read(join_path(dir, "witchy.toml"))
         for pair in toml.table(manifest, "dependencies"):
             let (name, inline) = pair
             if let Some(rel) = toml.inline_get(inline, "path"):
                 out = list.push(out, (name, normalize_path(join_path(dir, rel))))
     let vendor = join_path(dir, "vendor")
-    if exists(root, vendor):
+    if root.exists(vendor):
         let lockpath = join_path(dir, "witchy.lock")
-        let lock = if exists(root, lockpath): read(root, lockpath) else: ""
-        for name in list(subtree(root, vendor)):
+        let lock = if root.exists(lockpath): root.read(lockpath) else: ""
+        for name in root.subtree(vendor).list():
             let rune_dir = join_path(vendor, name)
             // BUG-095: only treat a vendored subdir as a real dependency (and thus
             // run its build step) when it carries provenance (coven.json) AND is
             // pinned in witchy.lock. A stray directory dropped under vendor/, or an
             // unpinned partial add, must not have its build step executed.
-            if exists(root, join_path(rune_dir, "coven.json")) && locked_alias(lock, name):
+            if root.exists(join_path(rune_dir, "coven.json")) && locked_alias(lock, name):
                 out = list.push(out, (name, rune_dir))
     out
 
@@ -486,26 +486,26 @@ fn locked_alias(lock: String, alias: String) -> Bool:
 // Whether a dependency ships a `build` step (`src/build.witchy` defining `build`).
 fn has_build_step(root: Dir, depdir: String) -> Bool:
     let path = join_path(join_path(depdir, "src"), "build.witchy")
-    exists(root, path) && string.contains(read(root, path), "fn build")
+    root.exists(path) && string.contains(root.read(path), "fn build")
 
 // Run one dependency's build step under its grant, returning (code, dep_flags).
 // Default-deny layer 1: refuse unless the consumer accepted execution with a
 // `[build.grants."name"]` section. Layer 2: the demanded build caps must all be
 // granted. Then cache-or-exec, audit the generated source, and emit `--dep` flags.
 fn run_one_build_step(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, name: String, depdir: String) -> (Int, List(String)):
-    let manifest = read(root, join_path(dir, "witchy.toml"))
+    let manifest = root.read(join_path(dir, "witchy.toml"))
     if !has_grants_section(manifest, name):
-        print(console, "`" + name + "` ships a build step, and build-time code execution is denied by default.")
-        print(console, "  Add a [build.grants.\"" + name + "\"] section to accept it — an empty section permits only the confined output sandbox (BuildOut); name read/exec/env/net to grant more.")
+        console.print("`" + name + "` ships a build step, and build-time code execution is denied by default.")
+        console.print("  Add a [build.grants.\"" + name + "\"] section to accept it — an empty section permits only the confined output sandbox (BuildOut); name read/exec/env/net to grant more.")
         (1, [])
     else:
         let buildfile = join_path(join_path(depdir, "src"), "build.witchy")
-        let demanded = build_footprint(read(root, buildfile))
+        let demanded = build_footprint(root.read(buildfile))
         let granted = granted_build_kinds(manifest, name)
         let missing = rights.uncovered(granted, demanded)
         if list.length(missing) > 0:
-            print(console, "`" + name + "` build step demands build capabilities you have not granted: " + list.join(missing, ", "))
-            print(console, "  add them to [build.grants.\"" + name + "\"] (read/exec/env/net).")
+            console.print("`" + name + "` build step demands build capabilities you have not granted: " + list.join(missing, ", "))
+            console.print("  add them to [build.grants.\"" + name + "\"] (read/exec/env/net).")
             (1, [])
         else:
             exec_build_step(console, runner, root, bin, dir, name, depdir, manifest)
@@ -514,15 +514,15 @@ fn run_one_build_step(console: Console, runner: Exec, root: Dir, bin: Dir, dir: 
 fn exec_build_step(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, name: String, depdir: String, manifest: String) -> (Int, List(String)):
     let gendir = join_path(join_path(dir, "build-out"), name)
     let buildfile = join_path(join_path(depdir, "src"), "build.witchy")
-    let key = build_cache_key(root, dir, manifest, name, read(root, buildfile))
+    let key = build_cache_key(root, dir, manifest, name, root.read(buildfile))
     if !cache_hit(root, gendir, key):
         let argv = flatten_argv(["build-step", buildfile, "--out", gendir], grant_flags(manifest, name, dir))
         let result = exec.run_args(runner, bin, "witchy", argv)
         if result.0 != 0:
-            print(console, "`" + name + "` build step failed:")
-            print(console, result.1)
+            console.print("`" + name + "` build step failed:")
+            console.print(result.1)
             return (1, [])
-        write(root, join_path(gendir, ".witchy-build-cache"), key)
+        root.write(join_path(gendir, ".witchy-build-cache"), key)
     audit_then_flags(console, root, dir, name, depdir, gendir)
 
 // Post-generation audit (the smuggle gate): the dependency's footprint over its
@@ -532,15 +532,15 @@ fn audit_then_flags(console: Console, root: Dir, dir: String, name: String, depd
     let shipped = rune_footprint(root, depdir)
     var generated = []
     var flags = []
-    for f in list(subtree(root, gendir)):
+    for f in root.subtree(gendir).list():
         if string.ends_with(f, ".witchy"):
             let path = join_path(gendir, f)
-            for c in footprint_total(compiler.footprint(read(root, path))):
+            for c in footprint_total(compiler.footprint(root.read(path))):
                 generated = add_unique(generated, c)
             flags = dep_flag(flags, module_stem(f), path)
     let widened = rights.uncovered(shipped, generated)
     if list.length(widened) > 0:
-        print(console, "`" + name + "`'s build step generated source that WIDENS its footprint (+ " + list.join(widened, ", ") + ") beyond the locked baseline — refusing. Generated code is still code; it cannot smuggle in authority the version was not accepted with.")
+        console.print("`" + name + "`'s build step generated source that WIDENS its footprint (+ " + list.join(widened, ", ") + ") beyond the locked baseline — refusing. Generated code is still code; it cannot smuggle in authority the version was not accepted with.")
         (1, [])
     else:
         (0, flags)
@@ -566,20 +566,20 @@ fn build_cache_key(root: Dir, dir: String, manifest: String, name: String, build
 // directory root) the recursive contents of a directory. Absent inputs hash to a
 // stable sentinel so a later-appearing input still flips the key.
 fn read_input_digest(root: Dir, path: String) -> String:
-    if !exists(root, path):
+    if !root.exists(path):
         "(absent)"
-    else if is_dir(root, path):
+    else if root.is_dir(path):
         var material = ""
         for f in fs.collect_files(root, path, "", ""):
             let (rel, contents) = f
             material = material + rel + "=" + crypto.sha256(contents) + "\n"
         crypto.sha256(material)
     else:
-        crypto.sha256(read(root, path))
+        crypto.sha256(root.read(path))
 
 fn cache_hit(root: Dir, gendir: String, key: String) -> Bool:
     let keyfile = join_path(gendir, ".witchy-build-cache")
-    exists(root, keyfile) && read(root, keyfile) == key
+    root.exists(keyfile) && root.read(keyfile) == key
 
 // Whether the consumer manifest carries a `[build.grants."name"]` section at all —
 // the explicit consent to ANY build-time execution (an empty section is consent to
@@ -650,10 +650,10 @@ fn module_stem(file: String) -> String:
 // --- audit: the footprint a single file demands -----------------------------
 fn cmd_audit(console: Console, root: Dir, file: String):
     if string.is_empty(file):
-        print(console, "usage: pm audit <file>")
+        console.print("usage: pm audit <file>")
     else:
-        let report = compiler.footprint(read(root, file))
-        print(console, file + " demands: " + list.join(footprint_total(report), ", "))
+        let report = compiler.footprint(root.read(file))
+        console.print(file + " demands: " + list.join(footprint_total(report), ", "))
 
 // --- check: declared footprint must admit the actual footprint ---------------
 // The manifest's declared caps are *not trusted*: pm recomputes the footprint
@@ -662,10 +662,10 @@ fn cmd_audit(console: Console, root: Dir, file: String):
 // demanded full `Net` (the under-declaration a supply-chain attacker relies on).
 fn cmd_check(console: Console, root: Dir, dir: String) -> Int:
     if string.is_empty(dir):
-        print(console, "usage: pm check <dir>")
+        console.print("usage: pm check <dir>")
         1
     else:
-        let manifest = read(root, join_path(dir, "witchy.toml"))
+        let manifest = root.read(join_path(dir, "witchy.toml"))
         let declared = declared_caps(manifest)
         let demanded = rune_footprint(root, dir)
         let undeclared = rights.uncovered(declared, demanded)
@@ -674,13 +674,13 @@ fn cmd_check(console: Console, root: Dir, dir: String) -> Int:
 
 fn report_check(console: Console, undeclared: List(String), unused: List(String)) -> Int:
     if !string.is_empty(list.join(undeclared, ", ")):
-        print(console, "BLOCK: code demands authority not admitted by [capabilities]: " + list.join(undeclared, ", "))
+        console.print("BLOCK: code demands authority not admitted by [capabilities]: " + list.join(undeclared, ", "))
         2
     else:
         if !string.is_empty(list.join(unused, ", ")):
-            print(console, "OK (lint): declared but unused: " + list.join(unused, ", "))
+            console.print("OK (lint): declared but unused: " + list.join(unused, ", "))
         else:
-            print(console, "OK: declared footprint admits the code, nothing unused")
+            console.print("OK: declared footprint admits the code, nothing unused")
         0
 
 // Declared capabilities that admit nothing the code demands.
@@ -701,11 +701,11 @@ fn admits_any(declared: String, demanded: List(String)) -> Bool:
 // --- guard: block an upgrade that widens authority --------------------------
 fn cmd_guard(console: Console, root: Dir, old: String, new: String) -> Int:
     if string.is_empty(old) || string.is_empty(new):
-        print(console, "usage: pm guard <old-file> <new-file>")
+        console.print("usage: pm guard <old-file> <new-file>")
         1
     else:
-        let report = compiler.diff(read(root, old), read(root, new))
-        print(console, verdict(report))
+        let report = compiler.diff(root.read(old), root.read(new))
+        console.print(verdict(report))
         exit_for(report)
 
 fn verdict(report: String) -> String:
@@ -721,16 +721,16 @@ fn exit_for(report: String) -> Int:
 // --- deps: list a rune's dependencies ---------------------------------------
 fn cmd_deps(console: Console, root: Dir, dir: String):
     if string.is_empty(dir):
-        print(console, "usage: pm deps <dir>")
+        console.print("usage: pm deps <dir>")
     else:
-        let manifest = read(root, join_path(dir, "witchy.toml"))
+        let manifest = root.read(join_path(dir, "witchy.toml"))
         let deps = toml.table(manifest, "dependencies")
         if list.length(deps) == 0:
-            print(console, "(no dependencies)")
+            console.print("(no dependencies)")
         else:
             for pair in deps:
                 let (name, inline) = pair
-                print(console, name + " -> " + dep_source(inline))
+                console.print(name + " -> " + dep_source(inline))
 
 // tree <dir> — the rune and its dependency tree, indented. BUG-134: recurses into
 // path dependencies (the transitive closure), not just the direct line; a registry
@@ -738,20 +738,20 @@ fn cmd_deps(console: Console, root: Dir, dir: String):
 // diamond/cycle terminates via the visited set.
 fn cmd_tree(console: Console, root: Dir, dir: String):
     if string.is_empty(dir):
-        print(console, "usage: pm tree <dir>")
+        console.print("usage: pm tree <dir>")
     else:
-        let manifest = read(root, join_path(dir, "witchy.toml"))
-        print(console, field(manifest, "rune.name"))
+        let manifest = root.read(join_path(dir, "witchy.toml"))
+        console.print(field(manifest, "rune.name"))
         if list.length(toml.table(manifest, "dependencies")) == 0:
-            print(console, "  (no dependencies)")
+            console.print("  (no dependencies)")
         else:
             tree_children(console, root, dir, "  ", [])
 
 fn tree_children(console: Console, root: Dir, dir: String, indent: String, seen: List(String)):
-    if exists(root, join_path(dir, "witchy.toml")):
-        for pair in toml.table(read(root, join_path(dir, "witchy.toml")), "dependencies"):
+    if root.exists(join_path(dir, "witchy.toml")):
+        for pair in toml.table(root.read(join_path(dir, "witchy.toml")), "dependencies"):
             let (name, inline) = pair
-            print(console, indent + name + " (" + dep_source(inline) + ")")
+            console.print(indent + name + " (" + dep_source(inline) + ")")
             if let Some(rel) = toml.inline_get(inline, "path"):
                 if !has(seen, name):
                     tree_children(console, root, normalize_path(join_path(dir, rel)), indent + "  ", list.push(seen, name))
@@ -760,18 +760,18 @@ fn tree_children(console: Console, root: Dir, dir: String, indent: String, seen:
 // for offline, auditable builds. Copies each dep's src/*.witchy and manifest.
 fn cmd_vendor(console: Console, root: Dir, dir: String) -> Int:
     if string.is_empty(dir):
-        print(console, "usage: pm vendor <dir>")
+        console.print("usage: pm vendor <dir>")
         1
     else:
         let vendor = join_path(dir, "vendor")
-        if !exists(root, vendor):
-            make_dir(root, vendor)
+        if !root.exists(vendor):
+            root.make_dir(vendor)
         // BUG-136: materialize the whole resolved PATH-dependency closure, not just
         // the direct manifest entries — a transitive path dep (`app -> lib -> base`)
         // must be vendored too, or an offline build can't resolve it. Deduplicated by
         // vendored name so a diamond/cycle terminates.
         let (_seen, count) = vendor_closure(root, dir, vendor, [], 0)
-        print(console, "vendored ${count} file(s) into " + vendor)
+        console.print("vendored ${count} file(s) into " + vendor)
         0
 
 // Vendor the path-dependency closure rooted at `base` into `vendor/<name>`, walking
@@ -780,8 +780,8 @@ fn cmd_vendor(console: Console, root: Dir, dir: String) -> Int:
 fn vendor_closure(root: Dir, base: String, vendor: String, seen: List(String), count: Int) -> (List(String), Int):
     var visited = seen
     var total = count
-    if exists(root, join_path(base, "witchy.toml")):
-        for pair in toml.table(read(root, join_path(base, "witchy.toml")), "dependencies"):
+    if root.exists(join_path(base, "witchy.toml")):
+        for pair in toml.table(root.read(join_path(base, "witchy.toml")), "dependencies"):
             let (name, inline) = pair
             if let Some(rel) = toml.inline_get(inline, "path"):
                 if !has(visited, name):
@@ -797,18 +797,18 @@ fn vendor_closure(root: Dir, base: String, vendor: String, seen: List(String), c
 // returning the number of source files written.
 fn vendor_one(root: Dir, dep_dir: String, vendor: String, name: String) -> Int:
     let dest = join_path(vendor, name)
-    if !exists(root, dest):
-        make_dir(root, dest)
-    if !exists(root, join_path(dest, "src")):
-        make_dir(root, join_path(dest, "src"))
+    if !root.exists(dest):
+        root.make_dir(dest)
+    if !root.exists(join_path(dest, "src")):
+        root.make_dir(join_path(dest, "src"))
     var count = 0
     for f in fs.collect_files(root, join_path(dep_dir, "src"), "src", ".witchy"):
         let (relpath, contents) = f
         fs.ensure_dir(root, join_path(dest, fs.parent_dir(relpath) ?? ""))
-        write(root, join_path(dest, relpath), contents)
+        root.write(join_path(dest, relpath), contents)
         count = count + 1
-    if exists(root, join_path(dep_dir, "witchy.toml")):
-        write(root, join_path(dest, "witchy.toml"), read(root, join_path(dep_dir, "witchy.toml")))
+    if root.exists(join_path(dep_dir, "witchy.toml")):
+        root.write(join_path(dest, "witchy.toml"), root.read(join_path(dep_dir, "witchy.toml")))
     count
 
 // publish <dir> [host:port] [identity] — stage a rune to a coven registry. Reads
@@ -818,20 +818,20 @@ fn vendor_one(root: Dir, dep_dir: String, vendor: String, name: String) -> Int:
 fn cmd_publish(console: Console, net: Net, root: Dir, env: Env, args: List(String)) -> Int:
     let dir = arg(args, 1)
     if string.is_empty(dir):
-        print(console, "usage: pm publish <dir> [host:port] [identity]")
+        console.print("usage: pm publish <dir> [host:port] [identity]")
         1
     else:
         let addr = coven_addr(env, arg(args, 2))
         let identity = if string.is_empty(arg(args, 3)): "ci-bot" else: arg(args, 3)
         match parse_hostport(addr):
             Err(m) ->
-                print(console, "invalid registry address: " + m)
+                console.print("invalid registry address: " + m)
                 1
             Ok(hp) ->
                 let (host, port) = hp
-                let manifest = read(root, join_path(dir, "witchy.toml"))
+                let manifest = root.read(join_path(dir, "witchy.toml"))
                 if has_path_dependency(manifest):
-                    print(console, "BLOCK: a published rune must be self-contained — it cannot have a path dependency (a published rune resolves only registry deps): " + list.join(path_deps(manifest), ", "))
+                    console.print("BLOCK: a published rune must be self-contained — it cannot have a path dependency (a published rune resolves only registry deps): " + list.join(path_deps(manifest), ", "))
                     1
                 else:
                     publish_checked(console, net, root, dir, manifest, host, port, identity, env)
@@ -843,7 +843,7 @@ fn publish_checked(console: Console, net: Net, root: Dir, dir: String, manifest:
     let files = publish_files(root, dir, manifest)
     let token = id_token_from_env(env)
     let resp = http.post(net, host, port, "/coven/publish", coven_proto.publish_body(manifest, files, identity, token))
-    print(console, "publish: ${http.status(resp)} state=" + resp_field(http.body(resp), "state"))
+    console.print("publish: ${http.status(resp)} state=" + resp_field(http.body(resp), "state"))
     if http.status(resp) >= 200 && http.status(resp) < 300:
         0
     else:
@@ -868,7 +868,7 @@ fn path_deps(manifest: String) -> List(String):
 // trusted-publishing CLIENT flow: the server verifies the token against its per-namespace
 // trust policy.
 fn id_token_from_env(env: Env) -> Option(String):
-    get_env(env, "COVEN_ID_TOKEN")
+    env.get_env("COVEN_ID_TOKEN")
 
 // The coven registry host:port: the explicit arg if given, else `COVEN_URL` from
 // the environment (the Rust CLI's convention), else the default. The bootstrap
@@ -877,7 +877,7 @@ fn coven_addr(env: Env, arg_addr: String) -> String:
     if !string.is_empty(arg_addr):
         arg_addr
     else:
-        match get_env(env, "COVEN_URL"):
+        match env.get_env("COVEN_URL"):
             Some(u) -> strip_scheme(u)
             None -> "127.0.0.1:8787"
 
@@ -890,20 +890,20 @@ fn cmd_promote(console: Console, net: Net, env: Env, args: List(String)) -> Int:
     let name = arg(args, 1)
     let version = arg(args, 2)
     if string.is_empty(name) || string.is_empty(version):
-        print(console, "usage: pm promote <name> <version> [host:port] [identity]")
+        console.print("usage: pm promote <name> <version> [host:port] [identity]")
         1
     else:
         let addr = coven_addr(env, arg(args, 3))
         let identity = if string.is_empty(arg(args, 4)): "release-human" else: arg(args, 4)
         match parse_hostport(addr):
             Err(m) ->
-                print(console, "invalid registry address: " + m)
+                console.print("invalid registry address: " + m)
                 1
             Ok(hp) ->
                 let (host, port) = hp
                 let body = coven_proto.promote_body(name, version, "webauthn", identity, id_token_from_env(env))
                 let resp = http.post(net, host, port, "/coven/promote", body)
-                print(console, "promote: ${http.status(resp)}")
+                console.print("promote: ${http.status(resp)}")
                 if http.status(resp) >= 200 && http.status(resp) < 300:
                     0
                 else:
@@ -916,16 +916,16 @@ fn cmd_outdated(console: Console, net: Net, root: Dir, args: List(String)) -> In
     let dir = arg(args, 1)
     let addr = arg(args, 2)
     if string.is_empty(dir) || string.is_empty(addr):
-        print(console, "usage: pm outdated <dir> <coven-host:port>")
+        console.print("usage: pm outdated <dir> <coven-host:port>")
         1
     else:
         match parse_hostport(addr):
             Err(m) ->
-                print(console, "invalid registry address: " + m)
+                console.print("invalid registry address: " + m)
                 1
             Ok(hp) ->
                 let (host, port) = hp
-                let manifest = read(root, join_path(dir, "witchy.toml"))
+                let manifest = root.read(join_path(dir, "witchy.toml"))
                 for pair in toml.table(manifest, "dependencies"):
                     report_dep_version(console, net, host, port, pair)
                 0
@@ -934,7 +934,7 @@ fn report_dep_version(console: Console, net: Net, host: String, port: Int, pair:
     let (name, inline) = pair
     if let Some(req) = toml.inline_get(inline, "version"):
         let resp = http.get(net, host, port, "/coven/versions?name=" + wire(name))
-        print(console, name + ": req " + req + ", " + latest_label(http.body(resp), http.status(resp)))
+        console.print(name + ": req " + req + ", " + latest_label(http.body(resp), http.status(resp)))
 
 fn latest_label(body: String, status: Int) -> String:
     if status != 200:
@@ -964,18 +964,18 @@ fn cmd_yank(console: Console, net: Net, env: Env, args: List(String)) -> Int:
     let name = arg(args, 1)
     let version = arg(args, 2)
     if string.is_empty(name) || string.is_empty(version):
-        print(console, "usage: pm yank <name> <version> [host:port]")
+        console.print("usage: pm yank <name> <version> [host:port]")
         1
     else:
         let addr = coven_addr(env, arg(args, 3))
         match parse_hostport(addr):
             Err(m) ->
-                print(console, "invalid registry address: " + m)
+                console.print("invalid registry address: " + m)
                 1
             Ok(hp) ->
                 let (host, port) = hp
                 let resp = http.post(net, host, port, "/coven/yank", coven_proto.yank_body(name, version, id_token_from_env(env)))
-                print(console, "yank: ${http.status(resp)}")
+                console.print("yank: ${http.status(resp)}")
                 if http.status(resp) >= 200 && http.status(resp) < 300:
                     0
                 else:
@@ -988,19 +988,19 @@ fn cmd_yank(console: Console, net: Net, env: Env, args: List(String)) -> Int:
 fn cmd_list(console: Console, net: Net, env: Env, args: List(String)) -> Int:
     let name = arg(args, 1)
     if string.is_empty(name):
-        print(console, "usage: pm list <name> [host:port]")
+        console.print("usage: pm list <name> [host:port]")
         1
     else:
         let addr = coven_addr(env, arg(args, 2))
         match parse_hostport(addr):
             Err(m) ->
-                print(console, "invalid registry address: " + m)
+                console.print("invalid registry address: " + m)
                 1
             Ok(hp) ->
                 let (host, port) = hp
                 let resp = http.get(net, host, port, "/coven/versions?name=" + wire(name))
                 if http.status(resp) != 200:
-                    print(console, "registry error listing " + name)
+                    console.print("registry error listing " + name)
                     1
                 else:
                     print_versions(console, name, http.body(resp))
@@ -1009,9 +1009,9 @@ fn print_versions(console: Console, name: String, body: String) -> Int:
     var any = false
     for rec in version_records(body):
         any = true
-        print(console, name + "@" + jget(rec, "version") + " " + jget(rec, "state"))
+        console.print(name + "@" + jget(rec, "version") + " " + jget(rec, "state"))
     if !any:
-        print(console, name + ": no versions")
+        console.print(name + ": no versions")
     0
 
 // The `records` array of a /coven/versions response, as raw Json values.
@@ -1043,20 +1043,20 @@ fn resp_field(text: String, key: String) -> String:
 // name`), not only a direct match.
 fn cmd_why(console: Console, root: Dir, dir: String, name: String) -> Int:
     if string.is_empty(dir) || string.is_empty(name):
-        print(console, "usage: pm why <dir> <name>")
+        console.print("usage: pm why <dir> <name>")
         1
     else:
-        let manifest = read(root, join_path(dir, "witchy.toml"))
+        let manifest = root.read(join_path(dir, "witchy.toml"))
         var direct = false
         for pair in toml.table(manifest, "dependencies"):
             let (dep, inline) = pair
             if dep == name:
                 direct = true
-                print(console, name + " — direct dependency (" + dep_source(inline) + ")")
+                console.print(name + " — direct dependency (" + dep_source(inline) + ")")
         if !direct:
             match why_path(root, dir, name, []):
-                Some(chain) -> print(console, name + " — transitive dependency (" + chain + ")")
-                None -> print(console, name + " is not a dependency of this rune (directly or transitively)")
+                Some(chain) -> console.print(name + " — transitive dependency (" + chain + ")")
+                None -> console.print(name + " is not a dependency of this rune (directly or transitively)")
 
         0
 
@@ -1064,8 +1064,8 @@ fn cmd_why(console: Console, root: Dir, dir: String, name: String) -> Int:
 // or None if `target` is not reachable through the path-dependency closure.
 fn why_path(root: Dir, dir: String, target: String, seen: List(String)) -> Option(String):
     var found = None
-    if exists(root, join_path(dir, "witchy.toml")):
-        for pair in toml.table(read(root, join_path(dir, "witchy.toml")), "dependencies"):
+    if root.exists(join_path(dir, "witchy.toml")):
+        for pair in toml.table(root.read(join_path(dir, "witchy.toml")), "dependencies"):
             let (name, inline) = pair
             if is_none(found):
                 if name == target:
@@ -1080,15 +1080,15 @@ fn why_path(root: Dir, dir: String, target: String, seen: List(String)) -> Optio
 // why-cap <dir> <Cap> — which dependencies introduce a capability into the tree.
 fn cmd_why_cap(console: Console, root: Dir, dir: String, cap: String) -> Int:
     if string.is_empty(dir) || string.is_empty(cap):
-        print(console, "usage: pm why-cap <dir> <Cap>")
+        console.print("usage: pm why-cap <dir> <Cap>")
         1
     else:
         let who = gate_contributors(root, dir, cap)
         if list.length(who) == 0:
-            print(console, "no dependency demands " + cap)
+            console.print("no dependency demands " + cap)
         else:
             for name in who:
-                print(console, name + " demands " + cap)
+                console.print(name + " demands " + cap)
         0
 
 // init [name] — add a manifest + src stub to the CURRENT directory (vs `new`,
@@ -1097,19 +1097,19 @@ fn cmd_init(console: Console, root: Dir, dir: String) -> Int:
     let name = if string.is_empty(dir): "app" else: dir
     if !valid_scaffold_name(name):
         // BUG-200: same up-front validation as `pm new`.
-        print(console, scaffold_name_error(name))
+        console.print(scaffold_name_error(name))
         1
-    else if exists(root, "witchy.toml"):
-        print(console, "already a rune: witchy.toml")
+    else if root.exists("witchy.toml"):
+        console.print("already a rune: witchy.toml")
         0
     else:
-        if !exists(root, "src"):
-            make_dir(root, "src")
-        write(root, "witchy.toml", manifest_stub(name))
+        if !root.exists("src"):
+            root.make_dir("src")
+        root.write("witchy.toml", manifest_stub(name))
         let stub = join_path("src", module_name(name) + ".witchy")
-        if !exists(root, stub):
-            write(root, stub, src_stub(name))
-        print(console, "initialized rune `" + name + "` in the current directory")
+        if !root.exists(stub):
+            root.write(stub, src_stub(name))
+        console.print("initialized rune `" + name + "` in the current directory")
         0
 
 fn dep_source(let inline: String) -> String:
@@ -1127,25 +1127,25 @@ fn version_source(let inline: String) -> String:
 // bytes on disk: `lock` writes the hashes, `verify` recomputes and compares.
 fn cmd_lock(console: Console, root: Dir, dir: String) -> Int:
     if string.is_empty(dir):
-        print(console, "usage: pm lock <dir>")
+        console.print("usage: pm lock <dir>")
         1
     else:
-        let manifest = read(root, join_path(dir, "witchy.toml"))
+        let manifest = root.read(join_path(dir, "witchy.toml"))
         let problems = lock_problems(root, dir, manifest)
         if list.length(problems) > 0:
             // BUG-192/193/194: fail at the manifest boundary rather than serialize a
             // sentinel version, a mismatched identity, or an unresolved registry
             // placeholder and still report success.
             for p in problems:
-                print(console, p)
+                console.print(p)
             2
         else:
             // BUG-047/101/135: pin the full transitive path-dep closure — count what
             // was actually locked, not just the direct manifest entries.
             let n = list.length(path_closure(root, dir))
             let lockpath = join_path(dir, "witchy.lock")
-            write(root, lockpath, generate_lock(root, dir))
-            print(console, "locked ${n} dependencies -> ${lockpath}")
+            root.write(lockpath, generate_lock(root, dir))
+            console.print("locked ${n} dependencies -> ${lockpath}")
             0
 
 // The transitive path-dependency closure of the rune at `dir`, as (import-name,
@@ -1156,8 +1156,8 @@ fn path_closure(root: Dir, dir: String) -> List((String, String)):
 
 fn path_closure_rec(root: Dir, base: String, acc: List((String, String))) -> List((String, String)):
     var out = acc
-    if exists(root, join_path(base, "witchy.toml")):
-        for pair in toml.table(read(root, join_path(base, "witchy.toml")), "dependencies"):
+    if root.exists(join_path(base, "witchy.toml")):
+        for pair in toml.table(root.read(join_path(base, "witchy.toml")), "dependencies"):
             let (name, inline) = pair
             if let Some(rel) = toml.inline_get(inline, "path"):
                 if !closure_has(out, name):
@@ -1190,10 +1190,10 @@ fn lock_problems(root: Dir, dir: String, manifest: String) -> List(String):
             None -> out = list.push(out, "BLOCK: `" + name + "` is a registry dependency — `pm lock` locks path dependencies only; run `pm add " + name + "` to resolve and pin it")
             Some(rel) ->
                 let dep_toml = join_path(normalize_path(join_path(dir, rel)), "witchy.toml")
-                if !exists(root, dep_toml):
+                if !root.exists(dep_toml):
                     out = list.push(out, "BLOCK: path dependency `" + name + "` has no witchy.toml at " + rel)
                 else:
-                    let dep_manifest = read(root, dep_toml)
+                    let dep_manifest = root.read(dep_toml)
                     out = check_path_identity(out, name, rel, dep_manifest)
     out
 
@@ -1221,11 +1221,11 @@ fn check_path_identity(problems: List(String), name: String, rel: String, dep_ma
 fn cmd_verify(console: Console, net: Net, root: Dir, env: Env, clock: Clock, args: List(String)) -> Int:
     let target = arg(args, 1)
     let dir = if string.is_empty(target): "." else: target
-    if !exists(root, join_path(dir, "witchy.lock")):
-        print(console, "no witchy.lock — run `pm lock " + dir + "` first")
+    if !root.exists(join_path(dir, "witchy.lock")):
+        console.print("no witchy.lock — run `pm lock " + dir + "` first")
         1
     else:
-        let lock = read(root, join_path(dir, "witchy.lock"))
+        let lock = root.read(join_path(dir, "witchy.lock"))
         let hash_code = report_verify(console, hash_mismatches(root, dir, lock))
         let tuf_code = verify_tuf(console, net, root, env, clock, dir, lock)
         if hash_code != 0:
@@ -1235,10 +1235,10 @@ fn cmd_verify(console: Console, net: Net, root: Dir, env: Env, clock: Clock, arg
 
 fn report_verify(console: Console, bad: List(String)) -> Int:
     if list.length(bad) == 0:
-        print(console, "OK: every locked hash matches the dependency sources")
+        console.print("OK: every locked hash matches the dependency sources")
         0
     else:
-        print(console, "BLOCK: lock no longer matches source for: " + list.join(bad, ", "))
+        console.print("BLOCK: lock no longer matches source for: " + list.join(bad, ", "))
         2
 
 // --- TUF chain verification (client side) ------------------------------------
@@ -1262,7 +1262,7 @@ fn verify_tuf(console: Console, net: Net, root: Dir, env: Env, clock: Clock, dir
 
         // No registry deps were added (no pinned snapshot) — nothing to verify.
         Err(msg) ->
-            print(console, "BLOCK: " + msg)
+            console.print("BLOCK: " + msg)
             2
         Ok(pinned) ->
             if pinned < 0:
@@ -1270,7 +1270,7 @@ fn verify_tuf(console: Console, net: Net, root: Dir, env: Env, clock: Clock, dir
             else:
                 match parse_hostport(coven_addr(env, "")):
                     Err(m) ->
-                        print(console, "invalid registry address: " + m)
+                        console.print("invalid registry address: " + m)
                         2
                     Ok(hp) ->
                         let (host, port) = hp
@@ -1283,13 +1283,13 @@ fn verify_chain(console: Console, net: Net, root: Dir, dir: String, host: String
     // refuse a chain rooted in a DIFFERENT key, so a hostile mirror or on-path attacker
     // cannot swap the plaintext-fetched root key and re-sign everything to match.
     if pinned_pub != "" && pinned_pub != rootpub:
-        print(console, "FAIL: TUF chain — registry root key does not match the key pinned in witchy.lock (possible MITM / hostile mirror)")
+        console.print("FAIL: TUF chain — registry root key does not match the key pinned in witchy.lock (possible MITM / hostile mirror)")
         2
     else:
         let snap_resp = http.get(net, host, port, "/coven/snapshot")
         let ts_resp = http.get(net, host, port, "/coven/timestamp")
         if http.status(snap_resp) != 200 || http.status(ts_resp) != 200:
-            print(console, "FAIL: TUF chain — registry served no snapshot/timestamp role")
+            console.print("FAIL: TUF chain — registry served no snapshot/timestamp role")
             2
         else:
             check_chain(console, root, dir, rootpub, http.body(snap_resp), http.body(ts_resp), pinned, clock)
@@ -1298,35 +1298,35 @@ fn check_chain(console: Console, root: Dir, dir: String, rootpub: String, snap_e
     let snap_signed = signed_canonical(snap_env)
     let ts_signed = signed_canonical(ts_env)
     if !signed_valid(rootpub, ts_env):
-        print(console, "FAIL: TUF chain — the timestamp role is not validly signed by the registry root key (tampered)")
+        console.print("FAIL: TUF chain — the timestamp role is not validly signed by the registry root key (tampered)")
         2
     else if !signed_valid(rootpub, snap_env):
-        print(console, "FAIL: TUF chain — the snapshot role is not validly signed by the registry root key (tampered)")
+        console.print("FAIL: TUF chain — the snapshot role is not validly signed by the registry root key (tampered)")
         2
     else if !snapshot_schema_ok(snap_env):
         // BUG-386: a role can be validly signed yet structurally incomplete. Reject a
         // snapshot missing an integer `version` or an object `targets` BEFORE the
         // version/rollback comparisons, so a missing field can't default to 0 and
         // compare equal to a pinned 0 (nor pass with an empty vendor tree).
-        print(console, "FAIL: TUF chain — the snapshot role is structurally malformed (needs an integer `version` and an object `targets`) — refusing")
+        console.print("FAIL: TUF chain — the snapshot role is structurally malformed (needs an integer `version` and an object `targets`) — refusing")
         2
     else if !timestamp_schema_ok(ts_env):
-        print(console, "FAIL: TUF chain — the timestamp role is structurally malformed (needs an integer `snapshot_version`, a string `snapshot_hash`, and an integer `expires`) — refusing")
+        console.print("FAIL: TUF chain — the timestamp role is structurally malformed (needs an integer `snapshot_version`, a string `snapshot_hash`, and an integer `expires`) — refusing")
         2
     else if "sha256:" + crypto.sha256(snap_signed) != signed_field_str(ts_env, "snapshot_hash"):
-        print(console, "FAIL: TUF chain — the snapshot does not match the timestamp's pinned hash (tampered)")
+        console.print("FAIL: TUF chain — the snapshot does not match the timestamp's pinned hash (tampered)")
         2
     else if signed_field_int(snap_env, "version") != signed_field_int(ts_env, "snapshot_version"):
-        print(console, "FAIL: TUF chain — snapshot and timestamp disagree on the snapshot version (tampered)")
+        console.print("FAIL: TUF chain — snapshot and timestamp disagree on the snapshot version (tampered)")
         2
     else if signed_field_int(snap_env, "version") < pinned:
-        print(console, "FAIL: TUF chain — the registry's snapshot version ${signed_field_int(snap_env, "version")} is older than the pinned ${pinned}: the metadata has been rolled back")
+        console.print("FAIL: TUF chain — the registry's snapshot version ${signed_field_int(snap_env, "version")} is older than the pinned ${pinned}: the metadata has been rolled back")
         2
-    else if signed_field_int(ts_env, "expires") < now(clock) / 1000:
+    else if signed_field_int(ts_env, "expires") < clock.now() / 1000:
         // SEC-017: TUF freshness — refuse a stale-but-validly-signed timestamp (a freeze /
         // replay of old metadata up to the pinned floor). coven sets `expires` 24h out; the
         // front-end holds a Clock, so the check that was previously omitted now runs.
-        print(console, "FAIL: TUF chain — the registry timestamp role expired at ${signed_field_int(ts_env, "expires")} (now ${now(clock) / 1000}): stale metadata (freeze/replay)")
+        console.print("FAIL: TUF chain — the registry timestamp role expired at ${signed_field_int(ts_env, "expires")} (now ${clock.now() / 1000}): stale metadata (freeze/replay)")
         2
     else:
         check_targets(console, root, dir, snap_env)
@@ -1338,7 +1338,7 @@ fn check_targets(console: Console, root: Dir, dir: String, snap_env: String) -> 
     let targets = signed_field(snap_env, "targets")
     var bad = []
     for entry in vendored_runes(root, dir):
-        let coven = read(root, join_path(entry, "coven.json"))
+        let coven = root.read(join_path(entry, "coven.json"))
         // BUG-275: a vendored record that exists but does not parse cannot be
         // compared to the snapshot target — fail closed, don't silently skip it.
         match json.decode(coven):
@@ -1353,20 +1353,20 @@ fn check_targets(console: Console, root: Dir, dir: String, snap_env: String) -> 
                     None -> bad = list.push(bad, key + " (malformed coven.json)")
             Err(_e) -> bad = list.push(bad, entry + " (unparseable coven.json)")
     if list.length(bad) == 0:
-        print(console, "OK: TUF chain verified (snapshot + timestamp signatures, content binding, no rollback)")
+        console.print("OK: TUF chain verified (snapshot + timestamp signatures, content binding, no rollback)")
         0
     else:
-        print(console, "FAIL: TUF chain — vendored record digest does not match the snapshot target for: " + list.join(bad, ", "))
+        console.print("FAIL: TUF chain — vendored record digest does not match the snapshot target for: " + list.join(bad, ", "))
         2
 
 // The vendored rune directories (those carrying a coven.json) under <dir>/vendor.
 fn vendored_runes(root: Dir, dir: String) -> List(String):
     var out = []
     let vendor = join_path(dir, "vendor")
-    if exists(root, vendor):
-        for entry in list(subtree(root, vendor)):
+    if root.exists(vendor):
+        for entry in root.subtree(vendor).list():
             let rune_dir = join_path(vendor, entry)
-            if exists(root, join_path(rune_dir, "coven.json")):
+            if root.exists(join_path(rune_dir, "coven.json")):
                 out = list.push(out, rune_dir)
     out
 
@@ -1543,25 +1543,25 @@ fn entry_hash(block: String) -> String:
 fn cmd_gate(console: Console, root: Dir, args: List(String)) -> Int:
     let dir = arg(args, 1)
     if string.is_empty(dir):
-        print(console, "usage: pm gate <dir> [allowed-cap..]")
+        console.print("usage: pm gate <dir> [allowed-cap..]")
         1
-    else if !exists(root, join_path(dir, "witchy.lock")):
-        print(console, "no witchy.lock — run `pm lock " + dir + "` first")
+    else if !root.exists(join_path(dir, "witchy.lock")):
+        console.print("no witchy.lock — run `pm lock " + dir + "` first")
         1
     else:
-        let lock = read(root, join_path(dir, "witchy.lock"))
+        let lock = root.read(join_path(dir, "witchy.lock"))
         let baseline = union_all(lock_baseline(lock), args_from(args, 2))
         let demanded = resolution_footprint(root, dir)
         report_gate(console, root, dir, rights.uncovered(baseline, demanded))
 
 fn report_gate(console: Console, root: Dir, dir: String, widened: List(String)) -> Int:
     if list.length(widened) == 0:
-        print(console, "OK: dependencies demand no authority beyond witchy.lock")
+        console.print("OK: dependencies demand no authority beyond witchy.lock")
         0
     else:
-        print(console, "BLOCK: dependencies demand new authority: " + list.join(widened, ", "))
+        console.print("BLOCK: dependencies demand new authority: " + list.join(widened, ", "))
         for cap in widened:
-            print(console, "  " + cap + " <- " + list.join(gate_contributors(root, dir, cap), ", "))
+            console.print("  " + cap + " <- " + list.join(gate_contributors(root, dir, cap), ", "))
         2
 
 // The capabilities the lockfile already records (union of every [[rune]] entry's
@@ -1627,7 +1627,7 @@ fn add_unique(xs: List(String), x: String) -> List(String):
 // an informational placeholder (pm lock is path-only; `lock_problems` blocks them
 // before this runs, but the marker is kept for completeness).
 fn generate_lock(root: Dir, dir: String) -> String:
-    let manifest = read(root, join_path(dir, "witchy.toml"))
+    let manifest = root.read(join_path(dir, "witchy.toml"))
     var out = "# witchy.lock — generated by `pm lock`. Pins every dependency by content\n# hash. Regenerate with `pm lock`; verify with `pm verify`. Do not edit by hand.\n"
     for pair in toml.table(manifest, "dependencies"):
         let (name, inline) = pair
@@ -1645,7 +1645,7 @@ fn registry_placeholder(name: String) -> String:
 // directory (relative to the project); the `source` records it so the entry is
 // self-describing. `hash`/`runtime_footprint` are recomputed from the dep's source.
 fn closure_path_entry(root: Dir, name: String, dep_dir: String) -> String:
-    let dep_manifest = read(root, join_path(dep_dir, "witchy.toml"))
+    let dep_manifest = root.read(join_path(dep_dir, "witchy.toml"))
     let version = field(dep_manifest, "rune.version")
     let hash = rune_hash(root, dep_dir)
     let fp = footprint_toml(rune_footprint(root, dep_dir))
@@ -1655,7 +1655,7 @@ fn closure_path_entry(root: Dir, name: String, dep_dir: String) -> String:
 // `src/**/*.witchy` (recursively), matching coven's store byte-for-byte (so a
 // witchy-checked lock agrees with a coven-generated one).
 fn rune_hash(root: Dir, dir: String) -> String:
-    var files = [("witchy.toml", read(root, join_path(dir, "witchy.toml")))]
+    var files = [("witchy.toml", root.read(join_path(dir, "witchy.toml")))]
     for f in fs.collect_files(root, join_path(dir, "src"), "src", ".witchy"):
         files = list.push(files, f)
     content_hash(files)
@@ -1719,16 +1719,16 @@ fn cmd_update(console: Console, net: Net, root: Dir, env: Env, clock: Clock, arg
         // release inside its cooldown is not resolvable without --allow-fresh),
         // the same compromised-release protection `add` applies.
         Err(m) ->
-            print(console, "invalid registry address: " + m)
+            console.print("invalid registry address: " + m)
             1
         Ok(hp) ->
             let (host, port) = hp
-            if !exists(root, "vendor"):
-                print(console, "no vendored dependencies to update")
+            if !root.exists("vendor"):
+                console.print("no vendored dependencies to update")
                 0
             else:
                 let cooldown = cooldown_now(env, clock, args)
-                let manifest = if exists(root, "witchy.toml"): read(root, "witchy.toml") else: ""
+                let manifest = if root.exists("witchy.toml"): root.read("witchy.toml") else: ""
                 update_vendored(console, net, root, host, port, only, allowed, cooldown, manifest)
 
 // `update`'s positional args (`[only, addr]`), skipping the command word and any
@@ -1779,7 +1779,7 @@ fn update_vendored(console: Console, net: Net, root: Dir, host: String, port: In
     var changed = 0
     var blocked = false
     var failed = false
-    for entry in list(subtree(root, "vendor")):
+    for entry in root.subtree("vendor").list():
         if string.is_empty(only) || entry == only:
             let outcome = update_one(console, net, root, host, port, entry, allowed, cooldown, manifest)
             changed = changed + outcome.0
@@ -1795,16 +1795,16 @@ fn update_vendored(console: Console, net: Net, root: Dir, host: String, port: In
         // BUG-371: a refetch failed (bad signature / integrity / missing source). Do
         // NOT repin the registry root key or rewrite the lock as if the update
         // succeeded — a partial/failed update must not mint fresh trust metadata.
-        print(console, "BLOCK: an update failed to fetch or verify — leaving witchy.lock and the pinned registry key untouched")
+        console.print("BLOCK: an update failed to fetch or verify — leaving witchy.lock and the pinned registry key untouched")
         1
     else:
         match snapshot_pin(net, root, host, port):
             Err(m) ->
-                print(console, "BLOCK: cannot pin registry metadata — " + m)
+                console.print("BLOCK: cannot pin registry metadata — " + m)
                 2
             Ok(snapline) ->
-                write(root, "witchy.lock", vendor_lock(root, snapline + rootpub_pin(net, host, port)))
-                print(console, "updated ${changed} dependencies -> witchy.lock")
+                root.write("witchy.lock", vendor_lock(root, snapline + rootpub_pin(net, host, port)))
+                console.print("updated ${changed} dependencies -> witchy.lock")
                 0
 
 // Re-fetch one vendored rune if the registry has a newer eligible version than the
@@ -1815,10 +1815,10 @@ fn update_vendored(console: Console, net: Net, root: Dir, host: String, port: In
 // the staging cooldown (BUG-090).
 fn update_one(console: Console, net: Net, root: Dir, host: String, port: Int, entry: String, allowed: List(String), cooldown: (Int, Int, Bool), manifest: String) -> (Int, Bool, Bool):
     let rune_dir = join_path("vendor", entry)
-    if !exists(root, join_path(rune_dir, "coven.json")):
+    if !root.exists(join_path(rune_dir, "coven.json")):
         (0, false, false)
     else:
-        let record = read(root, join_path(rune_dir, "coven.json"))
+        let record = root.read(join_path(rune_dir, "coven.json"))
         let fullname = recorded_field(record, "name")
         let current = recorded_field(record, "version")
         let req = dep_req(manifest, fullname, entry)
@@ -1856,13 +1856,13 @@ fn gated_refetch(console: Console, net: Net, root: Dir, host: String, port: Int,
     // coordinate before trusting its footprint; a verification failure blocks.
     match verified_incoming_footprint(net, root, host, port, fullname, latest):
         Err(msg) ->
-            print(console, "BLOCK: cannot verify the registry record for " + fullname + "@" + latest + " — " + msg)
+            console.print("BLOCK: cannot verify the registry record for " + fullname + "@" + latest + " — " + msg)
             (0, true, false)
         Ok(incoming) ->
             let widened = rights.uncovered(baseline, incoming)
             if list.length(widened) > 0:
-                print(console, "BLOCK: upgrading " + fullname + " " + current + " -> " + latest + " widens authority: " + list.join(widened, ", "))
-                print(console, "  re-run with --allow-cap " + list.join(widened, " --allow-cap ") + " to consent")
+                console.print("BLOCK: upgrading " + fullname + " " + current + " -> " + latest + " widens authority: " + list.join(widened, ", "))
+                console.print("  re-run with --allow-cap " + list.join(widened, " --allow-cap ") + " to consent")
                 (0, true, false)
             else:
                 refetch(console, net, root, host, port, fullname, latest, current, cooldown, allowed)
@@ -1874,7 +1874,7 @@ fn gated_refetch(console: Console, net: Net, root: Dir, host: String, port: Int,
 // trusting an unverified/under-declared footprint.
 fn verified_incoming_footprint(net: Net, root: Dir, host: String, port: Int, name: String, version: String) -> Result(List(String), String):
     let rootpub = http.body(http.get(net, host, port, "/coven/rootpub"))
-    let pinned_pub = if exists(root, "witchy.lock"): pinned_rootpub(read(root, "witchy.lock")) else: ""
+    let pinned_pub = if root.exists("witchy.lock"): pinned_rootpub(root.read("witchy.lock")) else: ""
     if pinned_pub != "" && pinned_pub != rootpub:
         Err("registry root key does not match the key pinned in witchy.lock (possible MITM / hostile mirror)")
     else:
@@ -1934,7 +1934,7 @@ fn refetch(console: Console, net: Net, root: Dir, host: String, port: Int, fulln
     else if add_deps(console, net, root, host, port, fullname, "vendor", cooldown, allowed) != 0:
         (0, false, true)
     else:
-        print(console, "updated " + fullname + " " + current + " -> " + latest)
+        console.print("updated " + fullname + " " + current + " -> " + latest)
         (1, false, false)
 
 // --- add: resolve + fetch a rune (and its deps) from a coven registry --------
@@ -1958,9 +1958,9 @@ fn has_path_flag(args: List(String)) -> Bool:
 
 fn cmd_add(console: Console, net: Net, root: Dir, env: Env, clock: Clock, args: List(String)) -> Int:
     if has_path_flag(args):
-        print(console, "`add --path` is not supported yet. Add the path dependency to witchy.toml by hand, under [dependencies]:")
-        print(console, "    \"<name>\" = { path = \"<relative-path>\" }")
-        print(console, "then run `witchy build`.")
+        console.print("`add --path` is not supported yet. Add the path dependency to witchy.toml by hand, under [dependencies]:")
+        console.print("    \"<name>\" = { path = \"<relative-path>\" }")
+        console.print("then run `witchy build`.")
         1
     else:
         cmd_add_dispatch(console, net, root, env, clock, args)
@@ -1976,7 +1976,7 @@ fn cmd_add_dispatch(console: Console, net: Net, root: Dir, env: Env, clock: Cloc
         let dest = arg(pos, 4)
         match parse_hostport(addr):
             Err(m) ->
-                print(console, "invalid registry address: " + m)
+                console.print("invalid registry address: " + m)
                 1
             Ok(hp) ->
                 let (host, port) = hp
@@ -1993,14 +1993,14 @@ fn cmd_add_pkg(console: Console, net: Net, root: Dir, env: Env, clock: Clock, ar
     let pos = positionals(args)
     let spec = arg(pos, 1)
     if string.is_empty(spec):
-        print(console, "usage: pm add <pkg>[@<ver>] [host:port] [--allow-cap <Cap>]... [--allow-fresh]")
+        console.print("usage: pm add <pkg>[@<ver>] [host:port] [--allow-cap <Cap>]... [--allow-fresh]")
         1
     else:
         let (name, req) = split_spec(spec)
         let addr = coven_addr(env, arg(pos, 2))
         match parse_hostport(addr):
             Err(m) ->
-                print(console, "invalid registry address: " + m)
+                console.print("invalid registry address: " + m)
                 1
             Ok(hp) ->
                 let (host, port) = hp
@@ -2016,21 +2016,21 @@ fn add_pkg_gated(console: Console, net: Net, root: Dir, host: String, port: Int,
     match resolve_version(net, host, port, name, req, cooldown):
         // BUG-232: gate on a VERIFIED, coordinate-bound record footprint.
         Err(msg) ->
-            print(console, name + ": " + msg)
+            console.print(name + ": " + msg)
             1
         Ok(chosen) ->
             let baseline = union_all(project_baseline(root), allowed)
             match verified_incoming_footprint(net, root, host, port, name, chosen):
                 Err(msg) ->
-                    print(console, "BLOCK: cannot verify the registry record for " + name + "@" + chosen + " — " + msg)
+                    console.print("BLOCK: cannot verify the registry record for " + name + "@" + chosen + " — " + msg)
                     2
                 Ok(incoming) ->
                     add_pkg_gate_widen(console, net, root, host, port, name, req, cooldown, baseline, rights.uncovered(baseline, incoming))
 
 fn add_pkg_gate_widen(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, req: String, cooldown: (Int, Int, Bool), baseline: List(String), widened: List(String)) -> Int:
     if list.length(widened) > 0:
-        print(console, "BLOCKED: adding `" + name + "` would widen your project's capability footprint: " + list.join(widened, ", "))
-        print(console, "  re-run with --allow-cap " + list.join(widened, " --allow-cap ") + " to consent")
+        console.print("BLOCKED: adding `" + name + "` would widen your project's capability footprint: " + list.join(widened, ", "))
+        console.print("  re-run with --allow-cap " + list.join(widened, " --allow-cap ") + " to consent")
         2
     else:
         let code = add_rune(console, net, root, host, port, name, req, "vendor", cooldown, [])
@@ -2043,8 +2043,8 @@ fn add_pkg_gate_widen(console: Console, net: Net, root: Dir, host: String, port:
             // re-running with `--allow-cap` consents and completes the add.
             let closure_widened = rights.uncovered(baseline, vendored_closure_footprint(root))
             if list.length(closure_widened) > 0:
-                print(console, "BLOCKED: a dependency of `" + name + "` would widen your project's capability footprint: " + list.join(closure_widened, ", "))
-                print(console, "  re-run with --allow-cap " + list.join(closure_widened, " --allow-cap ") + " to consent to the whole dependency tree")
+                console.print("BLOCKED: a dependency of `" + name + "` would widen your project's capability footprint: " + list.join(closure_widened, ", "))
+                console.print("  re-run with --allow-cap " + list.join(closure_widened, " --allow-cap ") + " to consent to the whole dependency tree")
                 2
             else:
                 pin_lock(console, net, root, host, port, name)
@@ -2055,11 +2055,11 @@ fn add_pkg_gate_widen(console: Console, net: Net, root: Dir, host: String, port:
 // against, so adding a same-or-narrower rune is silent and a widening one gates.
 fn project_baseline(root: Dir) -> List(String):
     var out = []
-    if exists(root, "witchy.toml"):
-        for c in declared_caps(read(root, "witchy.toml")):
+    if root.exists("witchy.toml"):
+        for c in declared_caps(root.read("witchy.toml")):
             out = add_unique(out, c)
-    if exists(root, "witchy.lock"):
-        out = union_all(out, lock_baseline(read(root, "witchy.lock")))
+    if root.exists("witchy.lock"):
+        out = union_all(out, lock_baseline(root.read("witchy.lock")))
     out
 
 // Split `<pkg>[@<ver>]` into a (name, requirement); an absent `@<ver>` resolves to
@@ -2082,11 +2082,11 @@ fn split_spec(spec: String) -> (String, String):
 fn pin_lock(console: Console, net: Net, root: Dir, host: String, port: Int, name: String) -> Int:
     match snapshot_pin(net, root, host, port):
         Err(m) ->
-            print(console, "BLOCK: cannot pin registry metadata for " + basename(name) + " — " + m)
+            console.print("BLOCK: cannot pin registry metadata for " + basename(name) + " — " + m)
             2
         Ok(snapline) ->
-            write(root, "witchy.lock", vendor_lock(root, snapline + rootpub_pin(net, host, port)))
-            print(console, "locked " + basename(name) + " -> witchy.lock")
+            root.write("witchy.lock", vendor_lock(root, snapline + rootpub_pin(net, host, port)))
+            console.print("locked " + basename(name) + " -> witchy.lock")
             0
 
 // The `registry_snapshot_version = N` top-level line pinning the registry's current
@@ -2103,7 +2103,7 @@ fn snapshot_pin(net: Net, root: Dir, host: String, port: Int) -> Result(String, 
         Ok("")
     else:
         let rootpub = http.body(http.get(net, host, port, "/coven/rootpub"))
-        let pinned_pub = if exists(root, "witchy.lock"): pinned_rootpub(read(root, "witchy.lock")) else: ""
+        let pinned_pub = if root.exists("witchy.lock"): pinned_rootpub(root.read("witchy.lock")) else: ""
         if pinned_pub != "" && pinned_pub != rootpub:
             Err("registry root key does not match the key pinned in witchy.lock (possible MITM / hostile mirror)")
         else:
@@ -2150,10 +2150,10 @@ fn rootpub_pin(net: Net, host: String, port: Int) -> String:
 // (a top-level key, emitted BEFORE any `[[rune]]` array-table per TOML rules).
 fn vendor_lock(root: Dir, snapshot_line: String) -> String:
     var out = "# witchy.lock — generated by `pm add`. Pins every vendored dependency\n# by content hash. Regenerate with `pm add`. Do not edit by hand.\n" + snapshot_line
-    if exists(root, "vendor"):
-        for entry in list(subtree(root, "vendor")):
+    if root.exists("vendor"):
+        for entry in root.subtree("vendor").list():
             let rune_dir = join_path("vendor", entry)
-            if exists(root, join_path(rune_dir, "coven.json")):
+            if root.exists(join_path(rune_dir, "coven.json")):
                 out = out + vendor_lock_entry(root, entry, rune_dir)
     out
 
@@ -2162,7 +2162,7 @@ fn vendor_lock(root: Dir, snapshot_line: String) -> String:
 // the lock `name` is the registry identity from the signed record, and `alias`
 // records the basename import key separately — the two are no longer collapsed.
 fn vendor_lock_entry(root: Dir, name: String, rune_dir: String) -> String:
-    let record = read(root, join_path(rune_dir, "coven.json"))
+    let record = root.read(join_path(rune_dir, "coven.json"))
     let full = recorded_field(record, "name")
     let ident = if string.is_empty(full): name else: full
     let version = recorded_field(record, "version")
@@ -2182,10 +2182,10 @@ fn recorded_field(record: String, key: String) -> String:
 // second silently shadows the first. Refuse it — `import util` cannot name both.
 fn add_rune(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, req: String, dest: String, cooldown: (Int, Int, Bool), allowed: List(String)) -> Int:
     let vendored = join_path(dest, basename(name))
-    if exists(root, join_path(vendored, "coven.json")):
-        let existing = recorded_field(read(root, join_path(vendored, "coven.json")), "name")
+    if root.exists(join_path(vendored, "coven.json")):
+        let existing = recorded_field(root.read(join_path(vendored, "coven.json")), "name")
         if !string.is_empty(existing) && existing != name:
-            print(console, "BLOCK: module name collision — `" + name + "` and `" + existing + "` both vendor to `" + vendored + "` (same basename `" + basename(name) + "`)")
+            console.print("BLOCK: module name collision — `" + name + "` and `" + existing + "` both vendor to `" + vendored + "` (same basename `" + basename(name) + "`)")
             2
         else:
             0
@@ -2193,7 +2193,7 @@ fn add_rune(console: Console, net: Net, root: Dir, host: String, port: Int, name
         match resolve_version(net, host, port, name, req, cooldown):
             Ok(chosen) -> fetch_then_deps(console, net, root, host, port, name, chosen, dest, cooldown, allowed)
             Err(e) ->
-                print(console, name + ": " + e)
+                console.print(name + ": " + e)
                 1
 
 // Resolve `req` against the registry's released versions, honoring the staging
@@ -2224,7 +2224,7 @@ fn fetch_then_deps(console: Console, net: Net, root: Dir, host: String, port: In
         add_deps(console, net, root, host, port, name, dest, cooldown, allowed)
 
 fn add_deps(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, dest: String, cooldown: (Int, Int, Bool), allowed: List(String)) -> Int:
-    let manifest = read(root, join_path(join_path(dest, basename(name)), "witchy.toml"))
+    let manifest = root.read(join_path(join_path(dest, basename(name)), "witchy.toml"))
     var code = 0
     for pair in toml.table(manifest, "dependencies"):
         let (depname, inline) = pair
@@ -2318,10 +2318,10 @@ fn cooling(rec: Json, cooldown: (Int, Int, Bool)) -> Bool:
 // a still-cooling release. The wall clock comes from the `Clock` capability (ms →
 // seconds, matching the registry's `released_at` unit).
 fn cooldown_now(env: Env, clock: Clock, args: List(String)) -> (Int, Int, Bool):
-    (now(clock) / 1000, cooldown_window(env), has_flag(args, "--allow-fresh"))
+    (clock.now() / 1000, cooldown_window(env), has_flag(args, "--allow-fresh"))
 
 fn cooldown_window(env: Env) -> Int:
-    match get_env(env, "WITCHY_COOLDOWN_SECS"):
+    match env.get_env("WITCHY_COOLDOWN_SECS"):
         Some(v) -> string.to_int(v)
         None -> 259200
 
@@ -2357,17 +2357,17 @@ fn fetch_source(console: Console, net: Net, root: Dir, host: String, port: Int, 
     // Also closes SEC-005's exploit: a record that fooled the unverified widening gate is
     // rejected HERE — before any source is vendored — because the gate trusts an unverified
     // footprint field but this verifies the record against the pinned trust anchor.
-    let pinned_pub = if exists(root, "witchy.lock"): pinned_rootpub(read(root, "witchy.lock")) else: ""
+    let pinned_pub = if root.exists("witchy.lock"): pinned_rootpub(root.read("witchy.lock")) else: ""
     if pinned_pub != "" && pinned_pub != rootpub:
-        print(console, "BLOCK: registry root key for " + name + "@" + version + " does not match the key pinned in witchy.lock (possible MITM / hostile mirror)")
+        console.print("BLOCK: registry root key for " + name + "@" + version + " does not match the key pinned in witchy.lock (possible MITM / hostile mirror)")
         1
     else:
         let record = http.get(net, host, port, "/coven/record?name=" + wire(name) + "&version=" + version)
         if http.status(record) != 200:
-            print(console, "registry has no record for " + name + "@" + version)
+            console.print("registry has no record for " + name + "@" + version)
             1
         else if !record_signature_valid(rootpub, http.body(record)):
-            print(console, "BLOCK: registry record for " + name + "@" + version + " has an invalid signature — refusing to trust it")
+            console.print("BLOCK: registry record for " + name + "@" + version + " has an invalid signature — refusing to trust it")
             1
         else if !record_matches_coordinate(http.body(record), name, version):
             // BUG-266: the signature proves the record is authentic, not that it is the
@@ -2375,7 +2375,7 @@ fn fetch_source(console: Console, net: Net, root: Dir, host: String, port: Int, 
             // coordinate, so a registry/mirror cannot answer a request for `good@1.0.0`
             // with a validly-signed record for a DIFFERENT coordinate (a mix-up/substitution
             // that would vendor the wrong rune under this basename).
-            print(console, "BLOCK: registry returned a record for `" + recorded_field(http.body(record), "name") + "@" + recorded_field(http.body(record), "version") + "` when `" + name + "@" + version + "` was requested — refusing (coordinate mismatch)")
+            console.print("BLOCK: registry returned a record for `" + recorded_field(http.body(record), "name") + "@" + recorded_field(http.body(record), "version") + "` when `" + name + "@" + version + "` was requested — refusing (coordinate mismatch)")
             1
         else:
             fetch_verified(console, net, root, host, port, name, version, dest, http.body(record))
@@ -2388,19 +2388,19 @@ fn record_matches_coordinate(record: String, name: String, version: String) -> B
 fn fetch_verified(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, version: String, dest: String, record: String) -> Int:
     let resp = http.get(net, host, port, "/coven/source?name=" + wire(name) + "&version=" + version)
     if http.status(resp) != 200:
-        print(console, "registry has no source for " + name + "@" + version)
+        console.print("registry has no source for " + name + "@" + version)
         1
     else:
         let files = source_files(http.body(resp))
         if content_hash(files) != recorded_hash(record):
-            print(console, "BLOCK: integrity failure — fetched source for " + name + "@" + version + " does not match the signed hash (tampered mirror?)")
+            console.print("BLOCK: integrity failure — fetched source for " + name + "@" + version + " does not match the signed hash (tampered mirror?)")
             1
         else if recorded_field(record, "state") != "released":
             // BUG-277: the SIGNED record's lifecycle state — not the unsigned
             // /versions index — is the release authority. A validly signed but
             // staged/yanked record must not be vendored, even when name, version,
             // signature, and source hash all match the requested coordinate.
-            print(console, "BLOCK: registry record for " + name + "@" + version + " is `" + recorded_field(record, "state") + "`, not `released` — refusing to vendor an unreleased version")
+            console.print("BLOCK: registry record for " + name + "@" + version + " is `" + recorded_field(record, "state") + "`, not `released` — refusing to vendor an unreleased version")
             1
         else:
             write_vendored_source(console, root, dest, name, version, files, record)
@@ -2416,7 +2416,7 @@ fn write_vendored_source(console: Console, root: Dir, dest: String, name: String
         // Keep the signed record next to the source, so the vendored rune
         // carries its own provenance and can be re-verified offline.
         Some(msg) ->
-            print(console, msg)
+            console.print(msg)
             1
         None ->
             let base = join_path(dest, basename(name))
@@ -2424,9 +2424,9 @@ fn write_vendored_source(console: Console, root: Dir, dest: String, name: String
                 let (path, text) = f
                 let full = join_path(base, path)
                 fs.ensure_dir(root, fs.parent_dir(full) ?? "")
-                write(root, full, text)
-            write(root, join_path(base, "coven.json"), record)
-            print(console, "added " + name + "@" + version + " -> " + base)
+                root.write(full, text)
+            root.write(join_path(base, "coven.json"), record)
+            console.print("added " + name + "@" + version + " -> " + base)
             0
 
 // `Some(message)` naming the first structural problem with a fetched file set —
@@ -2484,13 +2484,13 @@ fn recorded_hash(text: String) -> String:
 // be validly signed, and the on-disk source must still hash to the signed hash.
 fn cmd_verify_rune(console: Console, root: Dir, dir: String, rootpub: String) -> Int:
     if string.is_empty(dir) || string.is_empty(rootpub):
-        print(console, "usage: pm verify-rune <vendored-rune-dir> <registry-root-pubkey-hex>")
+        console.print("usage: pm verify-rune <vendored-rune-dir> <registry-root-pubkey-hex>")
         1
-    else if !exists(root, join_path(dir, "coven.json")):
-        print(console, "no coven.json in " + dir + " — not a rune fetched with provenance")
+    else if !root.exists(join_path(dir, "coven.json")):
+        console.print("no coven.json in " + dir + " — not a rune fetched with provenance")
         1
     else:
-        report_rune_verify(console, root, dir, rootpub, read(root, join_path(dir, "coven.json")))
+        report_rune_verify(console, root, dir, rootpub, root.read(join_path(dir, "coven.json")))
 
 // --- verify-vendor: re-verify a whole vendored tree offline ------------------
 // Walk every rune under <dir> that carries a coven.json and re-verify it (the
@@ -2498,44 +2498,44 @@ fn cmd_verify_rune(console: Console, root: Dir, dir: String, rootpub: String) ->
 // vendored dependency graph; exits 2 if any rune fails.
 fn cmd_verify_vendor(console: Console, root: Dir, dir: String, rootpub: String) -> Int:
     if string.is_empty(dir) || string.is_empty(rootpub):
-        print(console, "usage: pm verify-vendor <vendor-dir> <registry-root-pubkey-hex>")
+        console.print("usage: pm verify-vendor <vendor-dir> <registry-root-pubkey-hex>")
         1
-    else if !exists(root, dir):
-        print(console, "no such directory: " + dir)
+    else if !root.exists(dir):
+        console.print("no such directory: " + dir)
         1
     else:
         var total = 0
         var failed = 0
-        for entry in list(subtree(root, dir)):
+        for entry in root.subtree(dir).list():
             let rune_dir = join_path(dir, entry)
-            if exists(root, join_path(rune_dir, "coven.json")):
+            if root.exists(join_path(rune_dir, "coven.json")):
                 total = total + 1
-                if report_rune_verify(console, root, rune_dir, rootpub, read(root, join_path(rune_dir, "coven.json"))) != 0:
+                if report_rune_verify(console, root, rune_dir, rootpub, root.read(join_path(rune_dir, "coven.json"))) != 0:
                     failed = failed + 1
         verdict_vendor(console, total, failed)
 
 fn verdict_vendor(console: Console, total: Int, failed: Int) -> Int:
     if total == 0:
-        print(console, "no vendored runes (no coven.json) found")
+        console.print("no vendored runes (no coven.json) found")
         1
     else if failed == 0:
-        print(console, "OK: all ${total} vendored runes verified")
+        console.print("OK: all ${total} vendored runes verified")
         0
     else:
-        print(console, "BLOCK: ${failed} of ${total} vendored runes failed verification")
+        console.print("BLOCK: ${failed} of ${total} vendored runes failed verification")
         2
 
 fn report_rune_verify(console: Console, root: Dir, dir: String, rootpub: String, record: String) -> Int:
     if !record_signature_valid(rootpub, record):
-        print(console, "BLOCK: " + dir + "/coven.json is not validly signed by that root key — refusing")
+        console.print("BLOCK: " + dir + "/coven.json is not validly signed by that root key — refusing")
         2
     else if rune_hash(root, dir) != recorded_hash(record):
-        print(console, "BLOCK: " + dir + " source no longer matches its signed hash (tampered)")
+        console.print("BLOCK: " + dir + " source no longer matches its signed hash (tampered)")
         2
     else:
         match json.decode(record):
-            Ok(doc) -> print(console, "OK: " + jget(doc, "name") + "@" + jget(doc, "version") + " verified (signature + content), no network")
-            Err(e) -> print(console, "OK: verified")
+            Ok(doc) -> console.print("OK: " + jget(doc, "name") + "@" + jget(doc, "version") + " verified (signature + content), no network")
+            Err(e) -> console.print("OK: verified")
 
         0
 
@@ -2643,23 +2643,23 @@ fn json_index_str(j: Json, i: Int) -> String:
 // --- new: scaffold a rune ----------------------------------------------------
 fn cmd_new(console: Console, root: Dir, name: String) -> Int:
     if string.is_empty(name):
-        print(console, "usage: pm new <name>")
+        console.print("usage: pm new <name>")
         1
     else if !valid_scaffold_name(name):
         // BUG-200: reject a name that would be spliced unescaped into the generated
         // TOML + source (a `"`, space, newline, ...) BEFORE writing any files, so
         // `pm new` never produces a project that cannot parse.
-        print(console, scaffold_name_error(name))
+        console.print(scaffold_name_error(name))
         1
     else:
         let srcdir = join_path(name, "src")
         fs.ensure_dir(root, srcdir)
         let srcfile = join_path(srcdir, module_name(name) + ".witchy")
-        write(root, join_path(name, "witchy.toml"), manifest_stub(name))
-        write(root, srcfile, src_stub(name))
-        print(console, "created rune `" + name + "`:")
-        print(console, "  " + join_path(name, "witchy.toml"))
-        print(console, "  " + srcfile)
+        root.write(join_path(name, "witchy.toml"), manifest_stub(name))
+        root.write(srcfile, src_stub(name))
+        console.print("created rune `" + name + "`:")
+        console.print("  " + join_path(name, "witchy.toml"))
+        console.print("  " + srcfile)
         0
 
 // The module identifier for a rune's entry source: the name's basename with `-`
@@ -2708,7 +2708,7 @@ fn manifest_stub(let name: String) -> String:
     "[rune]\nname = \"" + name + "\"\nversion = \"0.1.0\"\n\n[capabilities]\nruntime = [\"Console\"]\n\n[dependencies]\n"
 
 fn src_stub(let name: String) -> String:
-    "fn main(console: Console):\n    print(console, \"hello from " + name + "\")\n"
+    "fn main(console: Console):\n    console.print(\"hello from " + name + "\")\n"
 
 // --- footprint helpers -------------------------------------------------------
 
@@ -2730,10 +2730,10 @@ fn rune_footprint(root: Dir, dir: String) -> List(String):
 // transitive dep's capabilities; summing the on-disk closure does.
 fn vendored_closure_footprint(root: Dir) -> List(String):
     var out = []
-    if exists(root, "vendor"):
-        for entry in list(subtree(root, "vendor")):
+    if root.exists("vendor"):
+        for entry in root.subtree("vendor").list():
             let rune_dir = join_path("vendor", entry)
-            if exists(root, join_path(rune_dir, "coven.json")):
+            if root.exists(join_path(rune_dir, "coven.json")):
                 for cap in rune_footprint(root, rune_dir):
                     out = add_unique(out, cap)
     out
@@ -2796,40 +2796,40 @@ fn is_none(o: Option(String)) -> Bool:
         None -> true
 
 fn usage(console: Console):
-    print(console, "pm — the witchy package manager")
-    print(console, "usage: pm <command> [args]")
-    print(console, "  info  <dir>         summarize a rune")
-    print(console, "  audit <file>        footprint a source file demands")
-    print(console, "  check <dir>         declared footprint must admit the code")
-    print(console, "  guard <old> <new>   BLOCK if <new> widens authority")
-    print(console, "  deps  <dir>         list a rune's dependencies")
-    print(console, "  lock  <dir>         pin dependencies by content hash -> witchy.lock")
-    print(console, "  verify <dir>        witchy.lock must match the dependency sources")
-    print(console, "  gate  <dir> [cap..] BLOCK if deps demand authority beyond the lock")
-    print(console, "  why   <dir> <name>  explain a dependency's presence")
-    print(console, "  why-cap <dir> <Cap> which deps introduce a capability")
-    print(console, "  add <pkg>[@<ver>] [host:port]    fetch + vendor a rune, pin it in witchy.lock")
-    print(console, "  add <name> <req> <coven> <dest>  resolve + fetch a rune into <dest> (explicit)")
-    print(console, "  publish <dir> [host:port] [id]    stage a rune to a coven registry")
-    print(console, "  promote <name> <ver> [host:port] [id]  release a staged version")
-    print(console, "  yank  <name> <ver> [host:port]   flag a released version as yanked")
-    print(console, "  list  <name> [host:port]         every version of a rune and its state")
-    print(console, "  outdated <dir> <host:port>       latest released version of each dep")
-    print(console, "  update [name] [host:port]        re-fetch vendored deps to their latest release")
-    print(console, "  verify-rune <dir> <rootpub>  re-verify a vendored rune offline (coven.json)")
-    print(console, "  verify-vendor <dir> <rootpub>  re-verify every vendored rune offline")
-    print(console, "  vendor <dir>        materialize path deps into <dir>/vendor")
-    print(console, "  new   <name>        scaffold a new rune")
-    print(console, "  init  [name]        add a manifest to an existing directory")
-    print(console, "  tree  <dir>         show a rune and its dependencies")
-    print(console, "  run   <file|dir>    compile and run a program/project (drives the compiler)")
-    print(console, "  build <file|dir>    compile a program/project to verify it builds")
-    print(console, "  typecheck <file>    type-check a program")
-    print(console, "  test  <dir>         run a rune's tests")
-    print(console, "  fmt   <file>        format a source file")
-    print(console, "  doc   <file>        render a module's documentation")
+    console.print("pm — the witchy package manager")
+    console.print("usage: pm <command> [args]")
+    console.print("  info  <dir>         summarize a rune")
+    console.print("  audit <file>        footprint a source file demands")
+    console.print("  check <dir>         declared footprint must admit the code")
+    console.print("  guard <old> <new>   BLOCK if <new> widens authority")
+    console.print("  deps  <dir>         list a rune's dependencies")
+    console.print("  lock  <dir>         pin dependencies by content hash -> witchy.lock")
+    console.print("  verify <dir>        witchy.lock must match the dependency sources")
+    console.print("  gate  <dir> [cap..] BLOCK if deps demand authority beyond the lock")
+    console.print("  why   <dir> <name>  explain a dependency's presence")
+    console.print("  why-cap <dir> <Cap> which deps introduce a capability")
+    console.print("  add <pkg>[@<ver>] [host:port]    fetch + vendor a rune, pin it in witchy.lock")
+    console.print("  add <name> <req> <coven> <dest>  resolve + fetch a rune into <dest> (explicit)")
+    console.print("  publish <dir> [host:port] [id]    stage a rune to a coven registry")
+    console.print("  promote <name> <ver> [host:port] [id]  release a staged version")
+    console.print("  yank  <name> <ver> [host:port]   flag a released version as yanked")
+    console.print("  list  <name> [host:port]         every version of a rune and its state")
+    console.print("  outdated <dir> <host:port>       latest released version of each dep")
+    console.print("  update [name] [host:port]        re-fetch vendored deps to their latest release")
+    console.print("  verify-rune <dir> <rootpub>  re-verify a vendored rune offline (coven.json)")
+    console.print("  verify-vendor <dir> <rootpub>  re-verify every vendored rune offline")
+    console.print("  vendor <dir>        materialize path deps into <dir>/vendor")
+    console.print("  new   <name>        scaffold a new rune")
+    console.print("  init  [name]        add a manifest to an existing directory")
+    console.print("  tree  <dir>         show a rune and its dependencies")
+    console.print("  run   <file|dir>    compile and run a program/project (drives the compiler)")
+    console.print("  build <file|dir>    compile a program/project to verify it builds")
+    console.print("  typecheck <file>    type-check a program")
+    console.print("  test  <dir>         run a rune's tests")
+    console.print("  fmt   <file>        format a source file")
+    console.print("  doc   <file>        render a module's documentation")
 
 fn unknown(console: Console, cmd: String) -> Int:
-    print(console, "unknown command: " + cmd)
+    console.print("unknown command: " + cmd)
     usage(console)
     1

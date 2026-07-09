@@ -24,7 +24,7 @@ tracking:
 >   refuses an internal address at connect time, enforced on the resolved IP. A silent
 >   IPv6 gap in the matcher (its `::1/128`/`fe80::/10`/`fc00::/7` ranges only ever
 >   exact-matched) was closed — `address_admits` now CIDR-matches IPv6.
-> - **Layer 2** — `resolve(net, host) -> List(String)` and
+> - **Layer 2** — `net.resolve(host) -> List(String)` and
 >   `connect_pinned(net, ip, host, port, secure)` / `try_connect_pinned` on both
 >   backends (new host ops, `IMPORT_COUNT` bumped). `resolve` performs no allowlist
 >   filtering; `connect_pinned` dials the literal IP and re-checks it against the Net
@@ -87,7 +87,7 @@ and dials the exact resolved addresses:
   exactly those addresses — it never re-resolves — and validates the TLS
   certificate against the original host name.
 
-So `connect(net, "host:port")` is *already* rebinding-safe for any policy that the
+So `net.connect("host:port")` is *already* rebinding-safe for any policy that the
 **capability allowlist** expresses. What's missing is the ability for a *program*
 to (a) see the resolved IP and apply its own policy, and (b) pin a checked IP
 through a real HTTP request without breaking TLS. Today there is no `resolve`
@@ -255,11 +255,11 @@ pub fn send_pinned(net: Net[Connect, Tcp], p: PinnedUrl, method: String, headers
 
 ```
 http.get_pinned(net, http.pin(user_url, http.public_only))    # lazy: resolve+check+pin+connect, one call
-let p = http.resolve(net, http.pin(user_url, public_only))?    # eager: now Resolved(host, port, secure, ip)
+let p = http.net.resolve(http.pin(user_url, public_only))?    # eager: now Resolved(host, port, secure, ip)
 ... inspect / log p ... ; http.get_pinned(net, p)              # connects to the IP already vetted
 ```
 
-`resolve(net, p)` is where the single resolution happens:
+`net.resolve(p)` is where the single resolution happens:
 
 ```
 match p:
@@ -275,7 +275,7 @@ match p:
 and `get_pinned` connects to the pinned target, never re-resolving the host:
 
 ```
-match resolve(net, p)?:
+match net.resolve(p)?:
     Resolved(host, port, secure, ip) ->
         sock = net.connect_pinned(ip, host, port, secure)      # dial `ip`, SNI/Host = host
         send request with `Host: host`; parse response
@@ -318,7 +318,7 @@ and the client never dials an address the chooser didn't return.
 
 ### Resolved design questions
 
-- **Who resolves, and when?** The client, exactly once, inside `resolve(net, p)`.
+- **Who resolves, and when?** The client, exactly once, inside `net.resolve(p)`.
   The chooser only *selects/validates* among the candidates the client resolved — it
   must not resolve again — so the resolve-once-and-pin invariant lives in one place.
 - **Why does the chooser take `Net` if it doesn't resolve?** For *auxiliary* policy

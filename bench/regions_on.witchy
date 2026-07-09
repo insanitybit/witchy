@@ -11,4 +11,4 @@ fn main(console: Console):
             list.at(row, 499)
         total = total + last
         keep = list.push(keep, i)
-    print(console, "${total}")
+    console.print("${total}")

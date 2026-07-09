@@ -340,7 +340,7 @@ fn expand_one(
     let markers: Vec<String> = (0..holes.len()).map(hole_marker).collect();
 
     // fn main(console: Console):
-    //     let emit = fn(line): print(console, line)
+    //     let emit = fn(line): console.print(line)
     //     emit(<tag>([parts...], [holes...]))
     let emit_closure = Stmt::Let {
         ty: None,
@@ -354,9 +354,10 @@ fn expand_one(
                 default: None,
             }],
             body: Block {
-                stmts: vec![Stmt::Expr(Expr::Call {
-                    name: "print".into(),
-                    args: vec![Expr::Var("console".into()), Expr::Var("line".into())],
+                stmts: vec![Stmt::Expr(Expr::MethodCall {
+                    receiver: Box::new(Expr::Var("console".into())),
+                    method: "print".into(),
+                    args: vec![Expr::Var("line".into())],
                 })],
                 lines: vec![0],
                 region: None,

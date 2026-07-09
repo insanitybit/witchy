@@ -12,7 +12,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_witchy");
 /// (the file content must change). `<tag>` just keeps the two fixtures distinct.
 fn unformatted(tag: &str) -> String {
     format!(
-        "fn main(console: Console):\n    var d = dict.new()\n    d = dict.insert(d, \"{tag}\", 1)\n    for (k, v) in dict.pairs(d):\n        print(console, \"${{k}}=${{v}}\")\n"
+        "fn main(console: Console):\n    var d = dict.new()\n    d = dict.insert(d, \"{tag}\", 1)\n    for (k, v) in dict.pairs(d):\n        console.print(\"${{k}}=${{v}}\")\n"
     )
 }
 
@@ -69,7 +69,7 @@ fn fmt_preserves_trailing_comments() {
     std::fs::create_dir_all(&work).unwrap();
 
     let file = work.join("comments.witchy");
-    let src = "fn main(console: Console):\n    let x = 1 // keep me\n    print(console, __render(x))\n";
+    let src = "fn main(console: Console):\n    let x = 1 // keep me\n    console.print(__render(x))\n";
     std::fs::write(&file, src).unwrap();
 
     let out = Command::new(BIN)
@@ -93,7 +93,7 @@ fn fmt_cap_methods_rewrites_legacy_cap_ops() {
     std::fs::create_dir_all(&work).unwrap();
 
     let file = work.join("p.witchy");
-    let src = "fn main(console: Console, dir: Dir):\n    print(console, read(dir.read_file(\"note.txt\")))\n";
+    let src = "fn main(console: Console, dir: Dir):\n    console.print(read(dir.read_file(\"note.txt\")))\n";
     std::fs::write(&file, src).unwrap();
 
     let check = Command::new(BIN)

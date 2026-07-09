@@ -1,5 +1,5 @@
 ---
 source: src/diagnostic_golden_tests.rs
-expression: "parse_diag(\"fn main(console: Console):\\n    print(console, \\\"pre ${value + } post\\\")\\n\")"
+expression: "parse_diag(\"fn main(console: Console):\\n    console.print(\\\"pre ${value + } post\\\")\\n\")"
 ---
-parse error at 2:35: expected an expression, found `}`
+parse error at 2:34: expected an expression, found `}`

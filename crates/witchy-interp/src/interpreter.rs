@@ -73,7 +73,7 @@ pub enum Value {
     /// A connected socket — a handle into the interpreter's socket table.
     Socket(usize),
     /// A listening server socket — a handle into the interpreter's listener
-    /// table. Obtained from `listen(net, addr)`; `accept` blocks for a `Socket`.
+    /// table. Obtained from `net.listen(addr)`; `accept` blocks for a `Socket`.
     Listener(usize),
     /// A first-class function (closure): its parameters, body, and the
     /// environment captured where it was defined.
@@ -1270,7 +1270,7 @@ impl Interpreter {
                     Ok(Some(Value::Nil))
                 }
                 [_, _] => err("print requires a Console capability as its first argument"),
-                _ => err("print expects a Console capability and a message: print(console, msg)"),
+                _ => err("print expects a Console capability and a message: console.print(msg)"),
             },
             // Pure builtins need no capability.
             "__render" => Ok(Some(Value::Str(self.render_value(&one(args)?)))),
@@ -1834,7 +1834,7 @@ impl Interpreter {
                 _ => err("rand_u64 expects a Rand"),
             },
             // Read a named environment variable through an `Env` capability:
-            // `get_env(env, name) -> Option(String)` (None when unset). Reading the
+            // `env.get_env(name) -> Option(String)` (None when unset). Reading the
             // process environment is ambient authority, so it is capability-gated.
             "get_env" => match args {
                 [Value::Cap(Capability::Env), Value::Str(name)] => Ok(Some(match std::env::var(name) {
@@ -3432,6 +3432,7 @@ pub struct BuildGrants {
 pub fn run_build_step(module: Module, grants: BuildGrants) -> Result<Vec<String>, RuntimeError> {
     std::fs::create_dir_all(&grants.out_dir)
         .map_err(|e| RuntimeError { message: format!("build: cannot create output dir: {e}") })?;
+    let module = witchy_types::traits::lower(module);
     // Find the entrypoint before moving the module in — `build_entrypoint` is
     // robust to the linker's `mod.build` qualification.
     let Some(build) = witchy_syntax::build_entry::build_entrypoint(&module).cloned() else {

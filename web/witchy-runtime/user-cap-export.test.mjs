@@ -25,7 +25,7 @@ try {
     "        UiRoot(p) -> p + \":\" + input",
     "",
     "fn main(console: Console):",
-    "    print(console, \"cli\")",
+    "    console.print(\"cli\")",
     "",
   ].join("\n");
   writeFileSync(join(work, "app.witchy"), src);

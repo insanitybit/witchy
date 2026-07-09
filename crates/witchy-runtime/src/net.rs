@@ -1,7 +1,7 @@
 //! Host-side networking shared by both backends: the `Stream` socket abstraction and
 //! the dialer that completes a plain or TLS connection.
 //!
-//! TLS is the `tls:` address scheme (RFC-0009): `connect(net, "tls:host:443")` performs
+//! TLS is the `tls:` address scheme (RFC-0009): `net.connect("tls:host:443")` performs
 //! a TLS handshake terminated HERE, host-side, so the guest's `send`/`recv` see a
 //! decrypted byte stream and the compiled (WASM) backend needs no new import — it
 //! already routes `connect`/`send`/`recv` through these host ops. rustls is configured

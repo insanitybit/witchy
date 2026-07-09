@@ -313,31 +313,31 @@ fn gen_program(seed: u64, statements: usize) -> (String, u64) {
         let depth = 1 + r.below(4) as u32;
         let dops = 2 + r.below(10) as u32;
         let line = match kind {
-            0 => format!("    print(console, __render({}))\n", gen_int(&mut r, depth)),
-            1 => format!("    print(console, {})\n", gen_str(&mut r, depth)),
-            2 => format!("    print(console, __render({}))\n", gen_intlist(&mut r, 2)),
-            3 => format!("    print(console, \"${{string.length({})}}\")\n", gen_str(&mut r, 2)),
-            4 => format!("    print(console, \"${{list.length({})}}\")\n", gen_intlist(&mut r, 2)),
-            5 => format!("    print(console, __render({}))\n", gen_float(&mut r, depth)),
-            6 => format!("    print(console, __render({}))\n", gen_bool(&mut r, depth)),
-            7 => format!("    print(console, __render({}))\n", gen_option(&mut r)),
-            8 => format!("    print(console, __render({}))\n", gen_cond_int(&mut r, depth)),
-            9 => format!("    print(console, __render({}))\n", gen_strlist(&mut r, depth)),
-            10 => format!("    print(console, __render({}))\n", gen_nested_intlist(&mut r)),
-            11 => format!("    print(console, __render({}))\n", gen_tuple(&mut r)),
-            12 => format!("    print(console, __render({}))\n", gen_dict(&mut r, dops)),
-            13 => format!("    print(console, \"${{dict.length({})}}\")\n", gen_dict(&mut r, dops)),
-            14 => format!("    print(console, __render(dict.pairs({})))\n", gen_dict(&mut r, dops)),
+            0 => format!("    console.print(__render({}))\n", gen_int(&mut r, depth)),
+            1 => format!("    console.print({})\n", gen_str(&mut r, depth)),
+            2 => format!("    console.print(__render({}))\n", gen_intlist(&mut r, 2)),
+            3 => format!("    console.print(\"${{string.length({})}}\")\n", gen_str(&mut r, 2)),
+            4 => format!("    console.print(\"${{list.length({})}}\")\n", gen_intlist(&mut r, 2)),
+            5 => format!("    console.print(__render({}))\n", gen_float(&mut r, depth)),
+            6 => format!("    console.print(__render({}))\n", gen_bool(&mut r, depth)),
+            7 => format!("    console.print(__render({}))\n", gen_option(&mut r)),
+            8 => format!("    console.print(__render({}))\n", gen_cond_int(&mut r, depth)),
+            9 => format!("    console.print(__render({}))\n", gen_strlist(&mut r, depth)),
+            10 => format!("    console.print(__render({}))\n", gen_nested_intlist(&mut r)),
+            11 => format!("    console.print(__render({}))\n", gen_tuple(&mut r)),
+            12 => format!("    console.print(__render({}))\n", gen_dict(&mut r, dops)),
+            13 => format!("    console.print(\"${{dict.length({})}}\")\n", gen_dict(&mut r, dops)),
+            14 => format!("    console.print(__render(dict.pairs({})))\n", gen_dict(&mut r, dops)),
             15 => {
                 let d = gen_dict(&mut r, dops);
                 let k = gen_dkey(&mut r);
-                format!("    print(console, __render(dict.get_or({}, {}, (-1))))\n", d, k)
+                format!("    console.print(__render(dict.get_or({}, {}, (-1))))\n", d, k)
             }
-            16 => format!("    print(console, __render({}))\n", gen_record_r(&mut r)),
-            17 => format!("    print(console, __render({}.a))\n", gen_record_r(&mut r)),
-            18 => format!("    print(console, {}.b)\n", gen_record_r(&mut r)),
-            19 => format!("    print(console, __render({}.c))\n", gen_record_r(&mut r)),
-            20 => format!("    print(console, __render({}))\n", gen_record_p(&mut r)),
+            16 => format!("    console.print(__render({}))\n", gen_record_r(&mut r)),
+            17 => format!("    console.print(__render({}.a))\n", gen_record_r(&mut r)),
+            18 => format!("    console.print({}.b)\n", gen_record_r(&mut r)),
+            19 => format!("    console.print(__render({}.c))\n", gen_record_r(&mut r)),
+            20 => format!("    console.print(__render({}))\n", gen_record_p(&mut r)),
             21 => {
                 // A confined `let`-bound list of a PACKABLE record read only via
                 // `at(_).field` / `length` — the shape the packed `unbox` codegen flattens
@@ -359,7 +359,7 @@ fn gen_program(seed: u64, statements: usize) -> (String, u64) {
                 let j = r.below(m);
                 let reads: Vec<String> = fields.iter().map(|f| format!("list.at(qk{stmt_i}, {j}).{f}")).collect();
                 format!(
-                    "    let qk{stmt_i} = [{}]\n    print(console, __render({} + list.length(qk{stmt_i})))\n",
+                    "    let qk{stmt_i} = [{}]\n    console.print(__render({} + list.length(qk{stmt_i})))\n",
                     elems.join(", "),
                     reads.join(" + "),
                 )
@@ -379,20 +379,20 @@ fn gen_program(seed: u64, statements: usize) -> (String, u64) {
                 let iters = 3 + r.below(5);
                 let elems: Vec<String> = (0..l).map(|_| gen_int(&mut r, 1)).collect();
                 format!(
-                    "    var rv{stmt_i} = [{}]\n    var rj{stmt_i} = 0\n    while rj{stmt_i} < {}:\n        rv{stmt_i} = [{}]\n        rj{stmt_i} = rj{stmt_i} + 1\n    print(console, __render(list.at(rv{stmt_i}, 0) + list.length(rv{stmt_i})))\n",
+                    "    var rv{stmt_i} = [{}]\n    var rj{stmt_i} = 0\n    while rj{stmt_i} < {}:\n        rv{stmt_i} = [{}]\n        rj{stmt_i} = rj{stmt_i} + 1\n    console.print(__render(list.at(rv{stmt_i}, 0) + list.length(rv{stmt_i})))\n",
                     zeros,
                     iters,
                     elems.join(", "),
                 )
             }
-            23 => format!("    print(console, __render({}.x.a))\n", gen_record_p(&mut r)),
+            23 => format!("    console.print(__render({}.x.a))\n", gen_record_p(&mut r)),
             24 => {
                 // Borrow a String into a helper that alias-inits + self-ref-reassigns it, then
                 // RE-READ the shared arg afterward — the exact use-after-free trip-wire. Under a
                 // bad free-at-overwrite the re-read of `sv` sees freed bytes and DIVERGES.
                 let s = gen_str(&mut r, depth.min(2));
                 format!(
-                    "    let sv{stmt_i} = {s}\n    let av{stmt_i} = alias_str(sv{stmt_i})\n    print(console, sv{stmt_i})\n    print(console, av{stmt_i})\n"
+                    "    let sv{stmt_i} = {s}\n    let av{stmt_i} = alias_str(sv{stmt_i})\n    console.print(sv{stmt_i})\n    console.print(av{stmt_i})\n"
                 )
             }
             25 => {
@@ -400,14 +400,14 @@ fn gen_program(seed: u64, statements: usize) -> (String, u64) {
                 // helper, then re-read the borrowed list.
                 let l = gen_intlist(&mut r, 2);
                 format!(
-                    "    let lv{stmt_i} = {l}\n    print(console, __render(alias_list(lv{stmt_i})))\n    print(console, __render(lv{stmt_i}))\n"
+                    "    let lv{stmt_i} = {l}\n    console.print(__render(alias_list(lv{stmt_i})))\n    console.print(__render(lv{stmt_i}))\n"
                 )
             }
             26 => {
                 // Alias a heap FIELD (`var b = rr.b`) then reassign the local; re-read the field.
                 let rec = gen_record_r(&mut r);
                 format!(
-                    "    let fr{stmt_i} = {rec}\n    print(console, alias_field(fr{stmt_i}))\n    print(console, fr{stmt_i}.b)\n"
+                    "    let fr{stmt_i} = {rec}\n    console.print(alias_field(fr{stmt_i}))\n    console.print(fr{stmt_i}.b)\n"
                 )
             }
             27 => {
@@ -416,45 +416,45 @@ fn gen_program(seed: u64, statements: usize) -> (String, u64) {
                 let s1 = gen_str(&mut r, 1);
                 let s2 = gen_str(&mut r, 1);
                 format!(
-                    "    var sc{stmt_i} = {s1}\n    sc{stmt_i} = sc{stmt_i} + {s2}\n    var tc{stmt_i} = sc{stmt_i}\n    tc{stmt_i} = string.to_upper(tc{stmt_i})\n    print(console, sc{stmt_i})\n    print(console, tc{stmt_i})\n"
+                    "    var sc{stmt_i} = {s1}\n    sc{stmt_i} = sc{stmt_i} + {s2}\n    var tc{stmt_i} = sc{stmt_i}\n    tc{stmt_i} = string.to_upper(tc{stmt_i})\n    console.print(sc{stmt_i})\n    console.print(tc{stmt_i})\n"
                 )
             }
             28 => {
                 // `own`-buffer accumulator threaded through a loop (consumes a fresh literal).
                 let l = gen_intlist(&mut r, 1);
                 let n = r.below(5);
-                format!("    print(console, __render(grow({l}, {n})))\n")
+                format!("    console.print(__render(grow({l}, {n})))\n")
             }
             29 => {
                 // Tuple of two OWNED buffers returned + destructured (the RFC-0036 executor shape).
                 let a = gen_intlist(&mut r, 1);
                 let b = gen_intlist(&mut r, 1);
                 format!(
-                    "    let (sp{stmt_i}, sq{stmt_i}) = swap2({a}, {b})\n    print(console, __render(sp{stmt_i}))\n    print(console, __render(sq{stmt_i}))\n"
+                    "    let (sp{stmt_i}, sq{stmt_i}) = swap2({a}, {b})\n    console.print(__render(sp{stmt_i}))\n    console.print(__render(sq{stmt_i}))\n"
                 )
             }
             30 => {
                 // Direct + mutual recursion (small bounded depth).
                 let n1 = r.below(18);
                 let n2 = r.below(18);
-                format!("    print(console, __render(accum({n1})))\n    print(console, __render(even_({n2})))\n")
+                format!("    console.print(__render(accum({n1})))\n    console.print(__render(even_({n2})))\n")
             }
             31 => {
                 // Closure captured + applied through a function-typed parameter.
                 let c = r.below(20) as i64 - 10;
                 let x = r.below(20) as i64 - 10;
                 format!(
-                    "    let cl{stmt_i} = fn(z: Int) -> Int: z + ({c})\n    print(console, __render(apply_twice(cl{stmt_i}, ({x}))))\n"
+                    "    let cl{stmt_i} = fn(z: Int) -> Int: z + ({c})\n    console.print(__render(apply_twice(cl{stmt_i}, ({x}))))\n"
                 )
             }
             32 => {
                 // Construct a `Shape` ADT (heap payload for `Named`) and `match` it in a helper.
-                format!("    print(console, __render(shape_area({})))\n", gen_shape(&mut r))
+                format!("    console.print(__render(shape_area({})))\n", gen_shape(&mut r))
             }
             33 => {
                 // `match` as an EXPRESSION bound to a `let`, with indented arms binding payloads.
                 format!(
-                    "    let sh{stmt_i} = {}\n    let out{stmt_i} = match sh{stmt_i}:\n        Circle(rr) -> rr\n        Rect(w, h) -> w + h\n        Named(nm) -> string.length(nm)\n    print(console, __render(out{stmt_i}))\n",
+                    "    let sh{stmt_i} = {}\n    let out{stmt_i} = match sh{stmt_i}:\n        Circle(rr) -> rr\n        Rect(w, h) -> w + h\n        Named(nm) -> string.length(nm)\n    console.print(__render(out{stmt_i}))\n",
                     gen_shape(&mut r)
                 )
             }
@@ -462,14 +462,14 @@ fn gen_program(seed: u64, statements: usize) -> (String, u64) {
                 // `if let` binding a HEAP payload (`Named(nm)`) then re-reading it — extracts a
                 // heap string out of an ADT and uses it past the destructure.
                 format!(
-                    "    let sh{stmt_i} = Named(string.to_upper(\"{}\"))\n    if let Named(nm{stmt_i}) = sh{stmt_i}:\n        print(console, nm{stmt_i})\n    else:\n        print(console, \"no\")\n",
+                    "    let sh{stmt_i} = Named(string.to_upper(\"{}\"))\n    if let Named(nm{stmt_i}) = sh{stmt_i}:\n        console.print(nm{stmt_i})\n    else:\n        console.print(\"no\")\n",
                     alnum(&mut r)
                 )
             }
             _ => {
                 // A list of ADTs iterated + matched — heap-payload ADTs inside a list buffer.
                 format!(
-                    "    let shs{stmt_i} = [{}, {}, {}]\n    var acc{stmt_i} = 0\n    var jj{stmt_i} = 0\n    while jj{stmt_i} < 3:\n        acc{stmt_i} = acc{stmt_i} + shape_area(shs{stmt_i}[jj{stmt_i}])\n        jj{stmt_i} = jj{stmt_i} + 1\n    print(console, __render(acc{stmt_i}))\n",
+                    "    let shs{stmt_i} = [{}, {}, {}]\n    var acc{stmt_i} = 0\n    var jj{stmt_i} = 0\n    while jj{stmt_i} < 3:\n        acc{stmt_i} = acc{stmt_i} + shape_area(shs{stmt_i}[jj{stmt_i}])\n        jj{stmt_i} = jj{stmt_i} + 1\n    console.print(__render(acc{stmt_i}))\n",
                     gen_shape(&mut r),
                     gen_shape(&mut r),
                     gen_shape(&mut r)
@@ -880,17 +880,17 @@ fn is_sorted(xs: List(Int)) -> Bool:\n\
          \x20   let d = dict.insert(dict.new(), \"seed\", 1)\n\
          \x20   let d2 = dict.insert(dict.insert(dict.new(), {s1}, {v}), {s2}, {v2})\n\
          \x20   let rt = dict.insert(dict.remove(d2, {s1}), {s1}, {v})\n\
-         \x20   print(console, __render(list.reverse(list.reverse(xs)) == xs))\n\
-         \x20   print(console, __render(list.length(list.concat(a, b)) == list.length(a) + list.length(b)))\n\
-         \x20   print(console, __render(list.sort(list.sort(xs)) == list.sort(xs)))\n\
-         \x20   print(console, __render(list.length(list.sort(xs)) == list.length(xs)))\n\
-         \x20   print(console, __render(is_sorted(list.sort(xs))))\n\
-         \x20   print(console, __render(is_perm(list.sort(xs), xs)))\n\
-         \x20   print(console, __render(dict.get_or(dict.insert(d, {k}, {v}), {k}, 0 - 1) == {v}))\n\
-         \x20   print(console, __render((dict.get_or(rt, {s1}, 0 - 1) == {v}) && (dict.length(rt) == dict.length(d2)) && (list.length(dict.pairs(rt)) == dict.length(rt))))\n\
-         \x20   print(console, __render(string.length(s1 + s2) == string.length(s1) + string.length(s2)))\n\
-         \x20   print(console, __render(string.reverse(string.reverse(s1)) == s1))\n\
-         \x20   print(console, __render(string.length(string.repeat(s1, {rep})) == string.length(s1) * {rep}))\n"
+         \x20   console.print(__render(list.reverse(list.reverse(xs)) == xs))\n\
+         \x20   console.print(__render(list.length(list.concat(a, b)) == list.length(a) + list.length(b)))\n\
+         \x20   console.print(__render(list.sort(list.sort(xs)) == list.sort(xs)))\n\
+         \x20   console.print(__render(list.length(list.sort(xs)) == list.length(xs)))\n\
+         \x20   console.print(__render(is_sorted(list.sort(xs))))\n\
+         \x20   console.print(__render(is_perm(list.sort(xs), xs)))\n\
+         \x20   console.print(__render(dict.get_or(dict.insert(d, {k}, {v}), {k}, 0 - 1) == {v}))\n\
+         \x20   console.print(__render((dict.get_or(rt, {s1}, 0 - 1) == {v}) && (dict.length(rt) == dict.length(d2)) && (list.length(dict.pairs(rt)) == dict.length(rt))))\n\
+         \x20   console.print(__render(string.length(s1 + s2) == string.length(s1) + string.length(s2)))\n\
+         \x20   console.print(__render(string.reverse(string.reverse(s1)) == s1))\n\
+         \x20   console.print(__render(string.length(string.repeat(s1, {rep})) == string.length(s1) * {rep}))\n"
     )
 }
 
@@ -937,14 +937,14 @@ fn gen_reclaim_pair(seed: u64) -> (String, String) {
         // strings/lists (computed, not static literals) so the rc machinery is live.
         let unit = if r.below(2) == 0 {
             format!(
-                "    let sv{i} = string.to_upper(\"{}\")\n    let av{i} = alias_str(sv{i})\n    print(console, sv{i})\n    print(console, av{i})\n",
+                "    let sv{i} = string.to_upper(\"{}\")\n    let av{i} = alias_str(sv{i})\n    console.print(sv{i})\n    console.print(av{i})\n",
                 alnum(&mut r)
             )
         } else {
             let n = 1 + r.below(5);
             let e: Vec<String> = (0..n).map(|_| format!("{}", r.below(50))).collect();
             format!(
-                "    let lv{i} = [{}]\n    print(console, __render(alias_list(lv{i})))\n    print(console, __render(lv{i}))\n",
+                "    let lv{i} = [{}]\n    console.print(__render(alias_list(lv{i})))\n    console.print(__render(lv{i}))\n",
                 e.join(", ")
             )
         };

@@ -18,8 +18,8 @@ a `BuildOut`):
 
 ```witchy
 fn build(out: BuildOut, schema: BuildRead, cc: BuildExec):
-    let proto = read_build(schema, "api.proto")
-    write_out(out, "api.witchy", run_tool(cc, "protoc", proto))
+    let proto = schema.read_build("api.proto")
+    out.write_out("api.witchy", cc.run_tool("protoc", proto))
 ```
 
 `build` is to build-time what `main` is to runtime: the single place authority
@@ -30,7 +30,7 @@ writes generated `.witchy` into a confined output sandbox, which then flows into
 the ordinary parse → link → type-check pipeline.
 
 Where does that generated code *land*? Each output file becomes a **new module
-of its own**, named after the file — `write_out(out, "api.witchy", ...)`
+of its own**, named after the file — `out.write_out("api.witchy", ...)`
 produces a module `api` that the rest of the rune uses like any other:
 `import api`, then `api.decode(...)`. Generated functions do **not** get
 spliced into the module that declared the build step; if you expected to call
@@ -42,11 +42,11 @@ directory, which tool, which variable — live in the consumer's grant):
 
 | Capability | Grants | Operation |
 |---|---|---|
-| `BuildOut` | write into this rune's own confined output sandbox — needs no naming once execution is accepted | `write_out(out, name, contents)` |
-| `BuildRead` | read project files, confined to a granted subtree | `read_build(r, name)` |
-| `BuildEnv` | read env vars — but **only the keys named** in the grant, never the whole environment | `get_build_env(e, key)` |
-| `BuildNet` | fetch from an allow-list of hosts | `fetch_build(n, host, path)` |
-| `BuildExec` | invoke a *named* external tool (`protoc`…) — the most sensitive | `run_tool(x, tool, stdin)` |
+| `BuildOut` | write into this rune's own confined output sandbox — needs no naming once execution is accepted | `out.write_out(name, contents)` |
+| `BuildRead` | read project files, confined to a granted subtree | `r.read_build(name)` |
+| `BuildEnv` | read env vars — but **only the keys named** in the grant, never the whole environment | `e.get_build_env(key)` |
+| `BuildNet` | fetch from an allow-list of hosts | `n.fetch_build(host, path)` |
+| `BuildExec` | invoke a *named* external tool (`protoc`…) — the most sensitive | `x.run_tool(tool, stdin)` |
 
 ## Default deny — for *execution itself*
 

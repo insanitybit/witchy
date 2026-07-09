@@ -1059,6 +1059,15 @@ impl Scope {
     }
 }
 
+fn merge_refined_outer_types(parent: &mut Scope, child: &Scope) {
+    for (name, refined) in &child.types {
+        let Some(existing) = parent.types.get(name) else { continue };
+        if existing != refined && head_of(existing) == head_of(refined) && refined.contains('<') {
+            parent.types.insert(name.clone(), refined.clone());
+        }
+    }
+}
+
 fn seed_params(params: &[Param], scope: &mut Scope) {
     for p in params {
         // Every parameter is a bound local — even a function-typed one, whose
@@ -1864,7 +1873,7 @@ impl Ctx<'_> {
                 // UFCS for host-capability operations. Keep a private marker on
                 // the lowered call so the compiler still knows the user wrote
                 // method syntax (`dir.read("x")`) rather than the legacy bare
-                // intrinsic form (`read(dir, "x")`).
+                // intrinsic form (`dir.read("x")`).
                 if tn.as_deref().is_some_and(is_host_capability) {
                     let mut call_args =
                         vec![std::mem::replace(receiver.as_mut(), Expr::Bool(false))];
@@ -1889,6 +1898,9 @@ impl Ctx<'_> {
                              not imported — add `import {m}`"
                         ));
                     }
+                    // Let the ordinary checker infer the receiver expression so
+                    // unbound variable receivers keep function/line context.
+                    None if matches!(receiver.as_ref(), Expr::Var(_)) => {}
                     None => self.missing_impls.borrow_mut().push(format!(
                         "cannot resolve the method call `.{method}(…)` — the receiver's type \
                          is not known here; call the function directly: `{method}(value, …)`"
@@ -1904,6 +1916,15 @@ impl Ctx<'_> {
                     self.type_name(scrutinee, scope).as_deref(),
                 );
                 bind_ctor_pattern(pattern, self.ctor_fields, &subst, &mut s);
+                if !pattern_ctor_name(pattern)
+                    .is_some_and(|name| self.ctor_infos.contains_key(name))
+                {
+                    bind_builtin_payload_pattern(
+                        pattern,
+                        self.type_name(scrutinee, scope).as_deref(),
+                        &mut s,
+                    );
+                }
                 // A loop evaluates to Nil, so its body's tail value is discarded.
                 self.rewrite_block(body, &mut s, false);
             }
@@ -1955,6 +1976,11 @@ impl Ctx<'_> {
                         scrutinee_ty.as_deref(),
                     );
                     bind_ctor_pattern(&arm.pattern, self.ctor_fields, &subst, &mut s);
+                    if !pattern_ctor_name(&arm.pattern)
+                        .is_some_and(|name| self.ctor_infos.contains_key(name))
+                    {
+                        bind_builtin_payload_pattern(&arm.pattern, scrutinee_ty.as_deref(), &mut s);
+                    }
                     if let Some(g) = &mut arm.guard {
                         self.rewrite_expr(g, &mut s);
                     }
@@ -2011,6 +2037,15 @@ fn head_type_name(
         Expr::Ctor { name, args } => constructor_type_name(
             name,
             args,
+            scope,
+            ctor_results,
+            ctor_infos,
+            fn_rets,
+            record_fields,
+        ),
+        Expr::Record { name, fields, spread: _ } => record_literal_type_name(
+            name,
+            fields,
             scope,
             ctor_results,
             ctor_infos,
@@ -2150,6 +2185,7 @@ fn cap_op_return_type(e: &Expr) -> Option<String> {
             "subtree" | "make_dir" => Some("Dir".to_string()),
             "read_file" | "write_file" => Some("File".to_string()),
             "connect" | "connect_pinned" | "accept" => Some("Socket".to_string()),
+            "try_connect" | "try_connect_pinned" => Some("Option<Socket>".to_string()),
             "listen" | "listen_tls" => Some("Listener".to_string()),
             _ => None,
         },
@@ -2394,7 +2430,7 @@ struct CtorInfo {
     fields: Vec<Type>,
 }
 
-/// Constructor -> its type name, function -> its (named) return type head, and
+/// Constructor -> its type name, function -> its scope-encoded return type, and
 /// function -> its full signature (params + return) for generic-return recovery.
 fn build_tables(
     items: &[Item],
@@ -2410,8 +2446,16 @@ fn build_tables(
                 }
             }
             Item::Function(f) => {
-                if let Some(Type::Named(n, _)) = &f.ret {
-                    fn_rets.insert(f.name.clone(), n.clone());
+                if let Some(ret) = &f.ret {
+                    let mut vars = Vec::new();
+                    collect_type_vars(ret, &mut vars);
+                    if vars.is_empty() {
+                        if let Some(scope_name) = type_to_scope_name(ret) {
+                            fn_rets.insert(f.name.clone(), scope_name);
+                        }
+                    } else if let Type::Named(n, _) = ret {
+                        fn_rets.insert(f.name.clone(), n.clone());
+                    }
                 }
                 if let Some(ret) = &f.ret {
                     let ptys = f.params.iter().map(|p| p.ty.clone()).collect();
@@ -2606,6 +2650,47 @@ fn constructor_type_name(
     }
 }
 
+fn record_literal_type_name(
+    name: &str,
+    fields: &[(String, Expr)],
+    scope: &Scope,
+    ctor_results: &HashMap<String, String>,
+    ctor_infos: &HashMap<String, CtorInfo>,
+    fn_rets: &HashMap<String, String>,
+    record_fields: &HashMap<String, Vec<(String, Type)>>,
+) -> Option<String> {
+    let info = ctor_infos.get(name)?;
+    if info.params.is_empty() {
+        return Some(info.owner.clone());
+    }
+    let declared = record_fields.get(&info.owner)?;
+    let mut binds: HashMap<String, String> = HashMap::new();
+    for (field_name, arg) in fields {
+        let Some((_, field_ty)) = declared.iter().find(|(n, _)| n == field_name) else {
+            continue;
+        };
+        let Some(arg_type) =
+            head_type_name(arg, scope, ctor_results, ctor_infos, fn_rets, record_fields)
+        else {
+            continue;
+        };
+        let _ = bind_type_vars(field_ty, &decode_scope_type(&arg_type), &mut binds);
+    }
+    if info.params.iter().all(|param| binds.contains_key(param)) {
+        Some(format!(
+            "{}<{}>",
+            info.owner,
+            info.params
+                .iter()
+                .map(|param| binds.get(param).cloned())
+                .collect::<Option<Vec<_>>>()?
+                .join(",")
+        ))
+    } else {
+        ctor_results.get(name).cloned()
+    }
+}
+
 fn split_scope_args(inner: &str) -> Vec<&str> {
     let mut args = Vec::new();
     let mut depth = 0usize;
@@ -2739,6 +2824,52 @@ fn pattern_subst_from_scrutinee(
     let concrete = decode_scope_type(scrutinee_scope);
     let _ = bind_type_vars(&pattern, &concrete, &mut subst);
     subst
+}
+
+fn bind_builtin_payload_pattern(pat: &Pattern, scrutinee_scope: Option<&str>, scope: &mut Scope) {
+    let Some(scrutinee_scope) = scrutinee_scope else {
+        return;
+    };
+    let Pattern::Ctor { name, args } = pat else {
+        return;
+    };
+    let payload = match name.as_str() {
+        "Some" => generic_arg(scrutinee_scope),
+        "Ok" => tuple_args(scrutinee_scope).and_then(|args| args.first().copied()),
+        "Err" => tuple_args(scrutinee_scope).and_then(|args| args.get(1).copied()),
+        _ => None,
+    };
+    let (Some(payload), Some(arg)) = (payload, args.first()) else {
+        return;
+    };
+    bind_pattern_scope(arg, payload, scope);
+}
+
+fn pattern_ctor_name(pat: &Pattern) -> Option<&str> {
+    match pat {
+        Pattern::Ctor { name, .. } => Some(name.as_str()),
+        _ => None,
+    }
+}
+
+fn bind_pattern_scope(pat: &Pattern, scope_name: &str, scope: &mut Scope) {
+    match pat {
+        Pattern::Var(n) if n != "_" => {
+            if scope.get(n).is_none() {
+                scope.insert(n.clone(), scope_name.to_string());
+            }
+        }
+        Pattern::Tuple(ps) => {
+            let slots = tuple_args(scope_name);
+            for (i, sub) in ps.iter().enumerate() {
+                if let Some(slot) = slots.as_ref().and_then(|s| s.get(i)).copied() {
+                    bind_pattern_scope(sub, slot, scope);
+                }
+            }
+        }
+        Pattern::Ctor { .. } => {}
+        _ => {}
+    }
 }
 
 fn pattern_field_scope_name(fty: &Type, subst: &HashMap<String, String>) -> Option<String> {
@@ -3844,6 +3975,18 @@ impl Mono<'_> {
         None
     }
 
+    fn list_push_assignment_type(&self, assigned: &str, value: &Expr, scope: &Scope) -> Option<String> {
+        let Expr::Call { name, args } = value else { return None };
+        if name != "list.push" || args.len() != 2 {
+            return None;
+        }
+        if !matches!(&args[0], Expr::Var(n) if n == assigned) {
+            return None;
+        }
+        self.type_name_subst(&args[1], scope)
+            .map(|elem| format!("List<{elem}>"))
+    }
+
     /// The return type name of a function-valued argument: a lambda's body type
     /// (its parameters seeded into scope) or a named function's return type.
     /// Resolves a `fn(...) -> b` parameter's `b` for monomorphization.
@@ -4053,8 +4196,16 @@ impl Mono<'_> {
             }
         }
         f.ret = f.ret.as_ref().map(|t| subst_vars(t, &subst));
-        if let Some(Type::Named(n, _)) = &f.ret {
-            self.fn_rets.insert(mangled.clone(), n.clone());
+        if let Some(ret) = &f.ret {
+            let mut vars = Vec::new();
+            collect_type_vars(ret, &mut vars);
+            if vars.is_empty() {
+                if let Some(scope_name) = type_to_scope_name(ret) {
+                    self.fn_rets.insert(mangled.clone(), scope_name);
+                }
+            } else if let Type::Named(n, _) = ret {
+                self.fn_rets.insert(mangled.clone(), n.clone());
+            }
         }
         // Substitute the body's type ANNOTATIONS too (`var items: List(a) = []`,
         // `x as T`), so a specialization's body type-checks at the concrete type.
@@ -4221,7 +4372,17 @@ impl Mono<'_> {
                         }
                     }
                 }
-                Stmt::Assign { value, .. } => self.walk_expr(value, scope),
+                Stmt::Assign { name, value } => {
+                    self.walk_expr(value, scope);
+                    let inferred = self.type_name_subst(value, scope);
+                    let refined = match inferred.as_deref() {
+                        None | Some("List") => self.list_push_assignment_type(name, value, scope),
+                        _ => None,
+                    };
+                    if let Some(t) = refined.or(inferred) {
+                        scope.insert(name.clone(), t);
+                    }
+                }
                 // `let PAT = t` seeds each destructured name from the value's type
                 // so a destructured part monomorphizes (e.g. a tuple impl's
                 // `reflect_one(x0)`). A tuple pattern recurses per slot; other
@@ -4355,9 +4516,13 @@ impl Mono<'_> {
                 else_block,
             } => {
                 self.walk_expr(cond, scope);
-                self.walk_block(then_block, &mut scope.clone());
+                let mut then_scope = scope.clone();
+                self.walk_block(then_block, &mut then_scope);
+                merge_refined_outer_types(scope, &then_scope);
                 if let Some(b) = else_block {
-                    self.walk_block(b, &mut scope.clone());
+                    let mut else_scope = scope.clone();
+                    self.walk_block(b, &mut else_scope);
+                    merge_refined_outer_types(scope, &else_scope);
                 }
             }
             Expr::While { cond, body } => {
@@ -4369,6 +4534,7 @@ impl Mono<'_> {
                 let mut s = scope.clone();
                 bind_loop_var(var, self.type_name_subst(iter, scope), &mut s);
                 self.walk_block(body, &mut s);
+                merge_refined_outer_types(scope, &s);
             }
             Expr::Match { scrutinee, arms } => {
                 self.walk_expr(scrutinee, scope);
@@ -4386,6 +4552,7 @@ impl Mono<'_> {
                         self.walk_expr(g, &mut s);
                     }
                     self.walk_expr(&mut arm.body, &mut s);
+                    merge_refined_outer_types(scope, &s);
                 }
             }
             Expr::Lambda { params, body, .. } => {
@@ -4393,7 +4560,11 @@ impl Mono<'_> {
                 seed_params(params, &mut s);
                 self.walk_block(body, &mut s);
             }
-            Expr::Block(b) => self.walk_block(b, &mut scope.clone()),
+            Expr::Block(b) => {
+                let mut block_scope = scope.clone();
+                self.walk_block(b, &mut block_scope);
+                merge_refined_outer_types(scope, &block_scope);
+            }
             Expr::Var(_) | Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::TaggedLit { .. } => {}
         }
     }

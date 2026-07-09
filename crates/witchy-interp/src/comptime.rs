@@ -53,7 +53,7 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
         // The block becomes `fn main(console: Console)` of a synthetic
         // program carrying the enclosing module's imports. `emit(line)` is
         // the surface emit channel (a prepended closure over the console);
-        // `print(console, ...)` works too. Linked recursively (a comptime
+        // `console.print(...)` works too. Linked recursively (a comptime
         // block cannot itself contain `comptime` — it is an item, not a
         // statement).
         body.stmts.insert(
@@ -70,13 +70,13 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
                         default: None,
                     }],
                     body: Block {
-                        stmts: vec![witchy_syntax::ast::Stmt::Expr(witchy_syntax::ast::Expr::Call {
-                            name: "print".into(),
-                            args: vec![
-                                witchy_syntax::ast::Expr::Var("console".into()),
-                                witchy_syntax::ast::Expr::Var("line".into()),
-                            ],
-                        })],
+                        stmts: vec![witchy_syntax::ast::Stmt::Expr(
+                            witchy_syntax::ast::Expr::MethodCall {
+                                receiver: Box::new(witchy_syntax::ast::Expr::Var("console".into())),
+                                method: "print".into(),
+                                args: vec![witchy_syntax::ast::Expr::Var("line".into())],
+                            },
+                        )],
                         lines: vec![0],
                         region: None,
                     },
@@ -430,10 +430,10 @@ comptime:
     emit("    " + __render(saw_handwritten))
 
 fn main(console: Console):
-    print(console, __render(saw_generated()))
-    print(console, __render(saw_handwritten()))
+    console.print(__render(saw_generated()))
+    console.print(__render(saw_handwritten()))
     let g = Generated(value: 7)
-    print(console, __render(g.value))
+    console.print(__render(g.value))
 "#;
 
         let module = witchy_syntax::parser::parse_module(src).expect("parse");
@@ -453,7 +453,7 @@ comptime:
     emit("    1")
 
 fn main(console: Console):
-    print(console, "ok")
+    console.print("ok")
 "#;
 
         let module = witchy_syntax::parser::parse_module(src).expect("parse");
@@ -474,8 +474,8 @@ comptime:
 
 fn main(console: Console):
     let p = made()
-    print(console, __render(p.x))
-    print(console, __render(p.y))
+    console.print(__render(p.x))
+    console.print(__render(p.y))
 "#;
 
         let module = witchy_syntax::parser::parse_module(src).expect("parse");
@@ -495,7 +495,7 @@ comptime:
     emit("    value: Int")
 
 fn main(console: Console):
-    print(console, show.render(Generated(value: 7)))
+    console.print(show.render(Generated(value: 7)))
 "#;
 
         let module = witchy_syntax::parser::parse_module(src).expect("parse");
@@ -517,7 +517,7 @@ comptime:
 
 fn main(console: Console):
     let xs: List(Int) = iter.collect(generated())
-    print(console, __render(xs))
+    console.print(__render(xs))
 "#;
 
         let module = witchy_syntax::parser::parse_module(src).expect("parse");
@@ -536,7 +536,7 @@ comptime:
 
 async fn main(console: Console):
     let n = generated().await
-    print(console, __render(n))
+    console.print(__render(n))
 "#;
 
         let module = witchy_syntax::parser::parse_module(src).expect("parse");

@@ -4,22 +4,22 @@
     fn packed_type_requires_packable_fields() {
         // (RFC-0027) scalars (and nested packed types) are packable.
         assert!(check_str(
-            "type Point packed:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    print(console, \"${Point(1, 2).x}\")\n"
+            "type Point packed:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    console.print(\"${Point(1, 2).x}\")\n"
         )
         .is_ok());
         assert!(check_str(
-            "type Inner packed:\n    a: Int\n\ntype Outer packed:\n    i: Inner\n    b: Bool\n\nfn main(console: Console):\n    print(console, \"hi\")\n"
+            "type Inner packed:\n    a: Int\n\ntype Outer packed:\n    i: Inner\n    b: Bool\n\nfn main(console: Console):\n    console.print(\"hi\")\n"
         )
         .is_ok());
         // A variable-size field (String) makes the type unpackable — error naming it.
         let err = check_str(
-            "type Bad packed:\n    s: String\n    n: Int\n\nfn main(console: Console):\n    print(console, \"hi\")\n"
+            "type Bad packed:\n    s: String\n    n: Int\n\nfn main(console: Console):\n    console.print(\"hi\")\n"
         )
         .unwrap_err();
         assert!(err.contains("packed") && err.contains("`s`"), "{err}");
         // A non-packed record field is also unpackable.
         let nested = check_str(
-            "type Plain:\n    a: Int\n\ntype Bad2 packed:\n    p: Plain\n\nfn main(console: Console):\n    print(console, \"hi\")\n"
+            "type Plain:\n    a: Int\n\ntype Bad2 packed:\n    p: Plain\n\nfn main(console: Console):\n    console.print(\"hi\")\n"
         )
         .unwrap_err();
         assert!(nested.contains("packed") && nested.contains("`p`"), "{nested}");
@@ -49,18 +49,18 @@
     fn main_accepts_a_grantable_capability() {
         // (RFC-0038) a bare grantable cap may be a root parameter of `main`.
         assert!(check_str(
-            "grantable capability UiRoot:\n    policy: String\n\nfn main(console: Console, ui: UiRoot):\n    print(console, \"ok\")\n"
+            "grantable capability UiRoot:\n    policy: String\n\nfn main(console: Console, ui: UiRoot):\n    console.print(\"ok\")\n"
         )
         .is_ok());
         // An ordinary (non-grantable) user type at `main` is still rejected.
         let err = check_str(
-            "type Config:\n    Config(Int)\n\nfn main(console: Console, c: Config):\n    print(console, \"hi\")\n"
+            "type Config:\n    Config(Int)\n\nfn main(console: Console, c: Config):\n    console.print(\"hi\")\n"
         )
         .unwrap_err();
         assert!(err.contains("main") && err.contains("Config"), "{err}");
         // A non-grantable *capability* (RFC-0002 refinement) is likewise not root-grantable.
         let refined = check_str(
-            "capability Redis from Net[Connect]\n\nfn main(console: Console, r: Redis):\n    print(console, \"hi\")\n"
+            "capability Redis from Net[Connect]\n\nfn main(console: Console, r: Redis):\n    console.print(\"hi\")\n"
         )
         .unwrap_err();
         assert!(refined.contains("main"), "{refined}");
@@ -96,15 +96,15 @@
         // cross-function or stored layout — a `List(P)` in a parameter, return type,
         // or stored field is a clean compile error (never a silent boxed fall-back).
         let param = check_str(
-            "import list\ntype P packed:\n    x: Int\nfn f(ps: List(P)) -> Int:\n    list.length(ps)\nfn main(console: Console):\n    print(console, \"hi\")\n"
+            "import list\ntype P packed:\n    x: Int\nfn f(ps: List(P)) -> Int:\n    list.length(ps)\nfn main(console: Console):\n    console.print(\"hi\")\n"
         ).unwrap_err();
         assert!(param.contains("List(P)") && param.contains("parameter"), "{param}");
         let ret = check_str(
-            "import list\ntype P packed:\n    x: Int\nfn f() -> List(P):\n    [P(1)]\nfn main(console: Console):\n    print(console, \"hi\")\n"
+            "import list\ntype P packed:\n    x: Int\nfn f() -> List(P):\n    [P(1)]\nfn main(console: Console):\n    console.print(\"hi\")\n"
         ).unwrap_err();
         assert!(ret.contains("List(P)") && ret.contains("return"), "{ret}");
         let field = check_str(
-            "type P packed:\n    x: Int\n\ntype Holder:\n    ps: List(P)\n\nfn main(console: Console):\n    print(console, \"hi\")\n"
+            "type P packed:\n    x: Int\n\ntype Holder:\n    ps: List(P)\n\nfn main(console: Console):\n    console.print(\"hi\")\n"
         ).unwrap_err();
         assert!(field.contains("List(P)") && field.contains("field"), "{field}");
     }
@@ -113,7 +113,7 @@
     fn frozen_value_cannot_be_declared_mutable() {
         // (RFC-0025) `frozen` is deeply immutable, so it cannot also be `var`/`own`.
         let var_let = check_str(
-            "fn main(console: Console):\n    var x: frozen List(Int) = [1, 2]\n    print(console, \"hi\")\n",
+            "fn main(console: Console):\n    var x: frozen List(Int) = [1, 2]\n    console.print(\"hi\")\n",
         )
         .unwrap_err();
         assert!(var_let.contains("frozen") && var_let.contains("var"), "{var_let}");
@@ -131,7 +131,7 @@
         // A `let`-bound frozen value and a read-only frozen parameter are valid.
         check_str("fn f(xs: frozen List(Int)) -> Int:\n    list.length(xs)\n")
             .expect("a read-only frozen parameter is valid");
-        check_str("fn main(console: Console):\n    let x: frozen List(Int) = [1, 2]\n    print(console, __render(list.length(x)))\n")
+        check_str("fn main(console: Console):\n    let x: frozen List(Int) = [1, 2]\n    console.print(__render(list.length(x)))\n")
             .expect("a let-bound frozen value is valid");
         // `unique`/`local unique` are compatible with mutation (FBIP) — `var` is
         // fine. A mutator shape (self-typed return) satisfies RFC-0064's row-3
@@ -206,7 +206,7 @@
             "{user_extra}"
         );
 
-        let local = check_str("fn main(console: Console):\n    let xs: List = []\n    print(console, \"bad\")\n")
+        let local = check_str("fn main(console: Console):\n    let xs: List = []\n    console.print(\"bad\")\n")
             .unwrap_err();
         assert!(local.contains("type `List` expects 1 type argument(s) but got 0"), "{local}");
 
@@ -336,7 +336,7 @@
     #[test]
     fn trait_impls_must_match_trait_methods() {
         let misspelled = check_str(
-            "type R:\n    R(Int)\ntrait PartialLike:\n    fn partial_compare(self, other: Self) -> Option(Int)\nimpl PartialLike for R:\n    fn partial_cmp(self, other: R) -> Option(Int):\n        Some(1)\nfn main(console: Console):\n    print(console, \"ok\")\n",
+            "type R:\n    R(Int)\ntrait PartialLike:\n    fn partial_compare(self, other: Self) -> Option(Int)\nimpl PartialLike for R:\n    fn partial_cmp(self, other: R) -> Option(Int):\n        Some(1)\nfn main(console: Console):\n    console.print(\"ok\")\n",
         )
         .unwrap_err();
         assert!(
@@ -382,7 +382,7 @@
              type Box(a):\n    value: a\n\
              impl Label for Box(a):\n    fn label(self) -> String:\n        \"Box\"\n\
              fn id(n: Int) -> Int:\n    n\n\
-             fn main(console: Console):\n    let b: Box(fn(Int) -> Int) = Box(id)\n    print(console, b.label())\n",
+             fn main(console: Console):\n    let b: Box(fn(Int) -> Int) = Box(id)\n    console.print(b.label())\n",
         )
         .expect("generic trait dispatch preserves a function-typed type argument");
 
@@ -391,7 +391,7 @@
              type Box(a):\n    value: a\n\
              impl Label for Box(a):\n    fn label(self) -> String:\n        \"Box\"\n\
              fn id(n: Int) -> Int:\n    n\n\
-             fn main(console: Console):\n    let b: Box(List(fn(Int) -> Int)) = Box([id])\n    print(console, b.label())\n",
+             fn main(console: Console):\n    let b: Box(List(fn(Int) -> Int)) = Box([id])\n    console.print(b.label())\n",
         )
         .expect("nested function-typed type arguments keep their full scope encoding");
 
@@ -400,7 +400,7 @@
              type Box(a):\n    value: a\n\
              impl Label for Box(a):\n    fn label(self) -> String:\n        \"Box\"\n\
              fn choose(n: Int, s: String) -> Int:\n    n\n\
-             fn main(console: Console):\n    let b: Box(fn(Int, String) -> Int) = Box(choose)\n    print(console, b.label())\n",
+             fn main(console: Console):\n    let b: Box(fn(Int, String) -> Int) = Box(choose)\n    console.print(b.label())\n",
         )
         .expect("function-typed type arguments may contain parameter commas");
     }
@@ -414,7 +414,7 @@
              impl Named for A:\n    fn tag() -> String:\n        \"A\"\n\
              impl Named for B:\n    fn tag() -> String:\n        \"B\"\n\
              fn pair_tags(x: a, y: b) -> String where a: Named, b: Named:\n    \"${a.tag()} ${b.tag()}\"\n\
-             fn main(console: Console):\n    print(console, pair_tags(A, B))\n",
+             fn main(console: Console):\n    console.print(pair_tags(A, B))\n",
         )
         .expect("static trait methods dispatch through the bound variable, not the method name");
     }
@@ -430,7 +430,7 @@
                    impl DebugName for User:\n    fn name(self) -> String:\n        \"debug\"\n\
                    fn label(x: a) -> String where a: Label:\n    name(x)\n\
                    fn debug_name(x: a) -> String where a: DebugName:\n    name(x)\n\
-                   fn main(console: Console):\n    print(console, label(User(\"u\")) + debug_name(User(\"u\")))\n";
+                   fn main(console: Console):\n    console.print(label(User(\"u\")) + debug_name(User(\"u\")))\n";
         check_str(src).expect("same-named trait methods are scoped by the active bound");
 
         let module = witchy_syntax::parser::parse_module(src).expect("parse");
@@ -464,7 +464,7 @@
     #[test]
     fn trait_method_value_position_names_the_lambda_fix() {
         let err = check_str(
-            "trait Showy:\n    fn show(self) -> String\n\nfn main(console: Console):\n    let f = show\n    print(console, \"x\")\n",
+            "trait Showy:\n    fn show(self) -> String\n\nfn main(console: Console):\n    let f = show\n    console.print(\"x\")\n",
         )
         .expect_err("trait methods are not first-class values");
         assert!(err.contains("trait method `show`"), "{err}");
@@ -476,15 +476,15 @@
     #[test]
     fn build_entrypoint_takes_only_build_capabilities() {
         // A valid build step: build caps only.
-        check_str("fn build(out: BuildOut, schema: BuildRead):\n    write_out(out, \"x.witchy\", read_build(schema, \"a.proto\"))\n")
+        check_str("fn build(out: BuildOut, schema: BuildRead):\n    out.write_out(\"x.witchy\", schema.read_build(\"a.proto\"))\n")
             .expect("a build step taking build caps is valid");
         // A runtime capability in `build` is rejected — the build sandbox grants
         // only build-time authority.
-        let err = check_str("fn build(out: BuildOut, net: Net):\n    write_out(out, \"x\", \"y\")\n")
+        let err = check_str("fn build(out: BuildOut, net: Net):\n    out.write_out(\"x\", \"y\")\n")
             .expect_err("a runtime cap in build must be rejected");
         assert!(err.contains("build step may only take build-time capabilities"), "{err}");
         // And `main` may not take a build capability.
-        let err = check_str("fn main(console: Console, out: BuildOut):\n    print(console, \"no\")\n")
+        let err = check_str("fn main(console: Console, out: BuildOut):\n    console.print(\"no\")\n")
             .expect_err("a build cap in main must be rejected");
         assert!(err.contains("`main` may only take host capabilities"), "{err}");
         // A `build` function with no build cap is an ordinary function, not the
@@ -530,7 +530,7 @@
         assert!(top.contains("parameter `x`") && top.contains("function `pick`"), "{top}");
 
         let lambda = check_str(
-            "fn main(console: Console):\n    let f = fn(x: Int, x: Int): x\n    print(console, \"bad\")\n",
+            "fn main(console: Console):\n    let f = fn(x: Int, x: Int): x\n    console.print(\"bad\")\n",
         )
         .expect_err("duplicate lambda parameters must be rejected");
         assert!(lambda.contains("parameter `x`") && lambda.contains("lambda"), "{lambda}");
@@ -567,67 +567,67 @@
         // boxed i64-slot representation, so it cannot be wrapped in `Option`/
         // `Result`/`List`/`Dict` — the containers whose payload crosses the slot.
         // A bare `File` param/return stays an `externref` and is fine.
-        check_str("fn ok(console: Console, f: File):\n    print(console, \"ok\")\nfn main(console: Console, f: File):\n    ok(console, f)\n")
+        check_str("fn ok(console: Console, f: File):\n    console.print(\"ok\")\nfn main(console: Console, f: File):\n    ok(console, f)\n")
             .expect("a bare File param/return is a plain externref — allowed");
 
         // Option(File) — the payload is slot-boxed. (The reject fires on the
         // signature, so a trivial body suffices.)
-        let err = check_str("fn find(console: Console, o: Option(File)):\n    print(console, \"x\")\n")
+        let err = check_str("fn find(console: Console, o: Option(File)):\n    console.print(\"x\")\n")
             .expect_err("Option(File) slot-boxes an externref");
         assert!(err.contains("File") && err.contains("Option"), "got: {err}");
 
         // List(File) — the collection stores externref elements (§7).
-        let err = check_str("fn collect(console: Console, xs: List(File)):\n    print(console, \"x\")\n")
+        let err = check_str("fn collect(console: Console, xs: List(File)):\n    console.print(\"x\")\n")
             .expect_err("List(File) stores externref elements");
         assert!(err.contains("File") && err.contains("List"), "got: {err}");
 
         // Result(File, String) — the Ok payload is slot-boxed.
-        let err = check_str("fn open(console: Console, r: Result(File, String)):\n    print(console, \"x\")\n")
+        let err = check_str("fn open(console: Console, r: Result(File, String)):\n    console.print(\"x\")\n")
             .expect_err("Result(File, _) slot-boxes an externref");
         assert!(err.contains("File") && err.contains("Result"), "got: {err}");
 
         // Dict(String, File) — the value is slot-boxed.
-        let err = check_str("fn table(console: Console, d: Dict(String, File)):\n    print(console, \"x\")\n")
+        let err = check_str("fn table(console: Console, d: Dict(String, File)):\n    console.print(\"x\")\n")
             .expect_err("Dict(_, File) slot-boxes an externref value");
         assert!(err.contains("File") && err.contains("Dict"), "got: {err}");
 
         // Cap-carrying aggregates are the later GC-struct path, not part of the
         // bare-File cut. Reject them instead of silently lowering a File through
         // `$mkN`/the i64 slot.
-        let err = check_str("type Handle:\n    f: File\nfn take(console: Console, h: Handle):\n    print(console, \"ok\")\n")
+        let err = check_str("type Handle:\n    f: File\nfn take(console: Console, h: Handle):\n    console.print(\"ok\")\n")
             .expect_err("a File record field needs the GC-struct aggregate path");
         assert!(err.contains("File") && err.contains("GC-struct"), "got: {err}");
 
-        let err = check_str("fn tupled(console: Console, pair: (File, Int)):\n    print(console, \"x\")\n")
+        let err = check_str("fn tupled(console: Console, pair: (File, Int)):\n    console.print(\"x\")\n")
             .expect_err("a File tuple element needs the GC-struct aggregate path");
         assert!(err.contains("File") && err.contains("tuple"), "got: {err}");
 
-        let err = check_str("fn main(console: Console, f: File[Read]):\n    let read_later = fn() -> String: read(f)\n    print(console, \"x\")\n")
+        let err = check_str("fn main(console: Console, f: File[Read]):\n    let read_later = fn() -> String: f.read()\n    console.print(\"x\")\n")
             .expect_err("a closure capture of File needs the GC-struct aggregate path");
         assert!(
             err.contains("closure") && err.contains("f") && err.contains("File") && err.contains("GC-struct"),
             "got: {err}"
         );
 
-        let err = check_str("fn main(console: Console, f: File):\n    let xs = [f]\n    print(console, \"x\")\n")
+        let err = check_str("fn main(console: Console, f: File):\n    let xs = [f]\n    console.print(\"x\")\n")
             .expect_err("an inferred List(File) literal needs the GC-struct aggregate path");
         assert!(err.contains("List") && err.contains("File"), "got: {err}");
 
-        let err = check_str("fn main(console: Console, f: File):\n    let pair = (f, 1)\n    print(console, \"x\")\n")
+        let err = check_str("fn main(console: Console, f: File):\n    let pair = (f, 1)\n    console.print(\"x\")\n")
             .expect_err("an inferred tuple carrying File needs the GC-struct aggregate path");
         assert!(err.contains("tuple") && err.contains("File"), "got: {err}");
 
-        let err = check_str("fn main(console: Console, f: File):\n    let d = dict.insert(dict.new(), \"cfg\", f)\n    print(console, \"x\")\n")
+        let err = check_str("fn main(console: Console, f: File):\n    let d = dict.insert(dict.new(), \"cfg\", f)\n    console.print(\"x\")\n")
             .expect_err("an inferred Dict(String, File) needs the GC-struct aggregate path");
         assert!(err.contains("Dict") && err.contains("File"), "got: {err}");
 
-        let err = check_str("type Box(a):\n    Box(a)\nfn main(console: Console, f: File):\n    let b = Box(f)\n    print(console, \"x\")\n")
+        let err = check_str("type Box(a):\n    Box(a)\nfn main(console: Console, f: File):\n    let b = Box(f)\n    console.print(\"x\")\n")
             .expect_err("a generic user aggregate instantiated with File needs the GC-struct aggregate path");
         assert!(err.contains("Box") && err.contains("File"), "got: {err}");
 
         // Sibling caps still on the i32 path may cross a slot until their own stage:
         // `std/secretstore.get -> Option(Secret)` must keep type-checking.
-        check_str("fn get(console: Console, o: Option(Secret)):\n    print(console, \"x\")\n")
+        check_str("fn get(console: Console, o: Option(Secret)):\n    console.print(\"x\")\n")
             .expect("Secret is still an i32 handle this stage — Option(Secret) allowed");
     }
 
@@ -635,19 +635,19 @@
     fn file_capability_rights_and_narrowing() {
         // RFC-0012: `File` is a host capability `main` may receive, the leaf of the
         // Dir/File hierarchy, right-typed like `Dir`.
-        check_str("fn main(console: Console, config: File[Read], log: File[Write]):\n    print(console, \"ok\")\n")
+        check_str("fn main(console: Console, config: File[Read], log: File[Write]):\n    console.print(\"ok\")\n")
             .expect("File[Read]/File[Write] are valid main capabilities");
         // A full `File` narrows to `File[Read]` implicitly at a call boundary.
-        check_str("fn ro(console: Console, f: File[Read]):\n    print(console, \"r\")\nfn main(console: Console, f: File):\n    ro(console, f)\n")
+        check_str("fn ro(console: Console, f: File[Read]):\n    console.print(\"r\")\nfn main(console: Console, f: File):\n    ro(console, f)\n")
             .expect("full File satisfies a File[Read] parameter");
         // Rights are enforced: `File[Read]` cannot stand in for `File[Write]`.
-        let err = check_str("fn w(console: Console, f: File[Write]):\n    print(console, \"w\")\nfn main(console: Console, f: File[Read]):\n    w(console, f)\n")
+        let err = check_str("fn w(console: Console, f: File[Write]):\n    console.print(\"w\")\nfn main(console: Console, f: File[Read]):\n    w(console, f)\n")
             .expect_err("File[Read] must not satisfy File[Write]");
         assert!(err.contains("File[Write]"), "got: {err}");
         // `as` drops rights but can never add them.
-        check_str("fn main(console: Console, f: File):\n    let ro = f as File[Read]\n    print(console, \"ok\")\n")
+        check_str("fn main(console: Console, f: File):\n    let ro = f as File[Read]\n    console.print(\"ok\")\n")
             .expect("`as` can drop File rights");
-        let err = check_str("fn main(console: Console, f: File[Read]):\n    let w = f as File[Write]\n    print(console, \"no\")\n")
+        let err = check_str("fn main(console: Console, f: File[Read]):\n    let w = f as File[Write]\n    console.print(\"no\")\n")
             .expect_err("`as` cannot add File rights");
         assert!(err.contains("can only drop rights"), "got: {err}");
     }
@@ -666,7 +666,7 @@
         let untyped = check_str("fn main(x):\n    x\n").unwrap_err();
         assert!(untyped.contains("has no type annotation"), "{untyped}");
         // Capabilities (with or without rights) and the args list are all valid.
-        check_str("fn main(console: Console, dir: Dir[Read], args: List(String)):\n    print(console, \"ok\")\n")
+        check_str("fn main(console: Console, dir: Dir[Read], args: List(String)):\n    console.print(\"ok\")\n")
             .expect("capabilities + args is a valid main");
         // A module without `main` is a library and passes.
         check_str("fn helper() -> Int:\n    5\n").expect("a library is valid");
@@ -691,16 +691,16 @@
         // (implicit Nil) all pass. (The `Float`-returning main is a tested feature.)
         check_str("fn main(console: Console) -> Int:\n    0\n").expect("Int exit code is valid");
         check_str("import math\nfn main() -> Float:\n    math.sqrt(4.0)\n").expect("Float main is valid");
-        check_str("fn main(console: Console) -> Nil:\n    print(console, \"x\")\n")
+        check_str("fn main(console: Console) -> Nil:\n    console.print(\"x\")\n")
             .expect("explicit Nil is valid");
-        check_str("fn main(console: Console):\n    print(console, \"x\")\n")
+        check_str("fn main(console: Console):\n    console.print(\"x\")\n")
             .expect("no annotation is valid");
     }
 
     #[test]
     fn unknown_stdlib_function_suggests_import() {
         // Calling an unimported stdlib function points at the module to import.
-        let err = check_str("fn main(console: Console):\n    print(console, __render(minimum([1], 0)))\n")
+        let err = check_str("fn main(console: Console):\n    console.print(__render(minimum([1], 0)))\n")
             .expect_err("minimum is unimported");
         assert!(err.contains("import cmp"), "{err}");
         // A genuine typo (no stdlib match) gets no misleading hint.
@@ -709,7 +709,7 @@
         assert!(!typo.contains("did you forget"), "{typo}");
         assert!(!typo.contains("did you mean"), "{typo}");
         // A near-miss of a stdlib name suggests the correction.
-        let near = check_str("fn main(console: Console):\n    let ys = mep([1], fn(x: Int): x)\n    print(console, \"ok\")\n")
+        let near = check_str("fn main(console: Console):\n    let ys = mep([1], fn(x: Int): x)\n    console.print(\"ok\")\n")
             .expect_err("mep is a typo of map");
         assert!(near.contains("did you mean `map`"), "{near}");
     }
@@ -719,7 +719,7 @@
         // `json.stringify(x)` with no `import json` parses as a method call on the
         // bare name `json`; the error should point at the missing import, not talk
         // about method resolution.
-        let err = check_str("fn main(console: Console):\n    print(console, json.stringify(5))\n")
+        let err = check_str("fn main(console: Console):\n    console.print(json.stringify(5))\n")
             .expect_err("json is unimported");
         assert!(err.contains("import json"), "{err}");
         assert!(!err.contains("method call"), "should not mention method resolution: {err}");
@@ -729,7 +729,7 @@
     fn unbounded_generic_ordering_suggests_ord_bound() {
         // `<` on an unbounded type parameter resolves to a type var (renders `?`);
         // the error should suggest the `where T: Ord` bound, not a bare "found `?`".
-        let err = check_str("fn smallest(xs: List(a)) -> a:\n    var m = list.at(xs, 0)\n    for x in xs:\n        if x < m:\n            m = x\n    m\nfn main(console: Console):\n    print(console, \"${smallest([3, 1, 2])}\")\n")
+        let err = check_str("fn smallest(xs: List(a)) -> a:\n    var m = list.at(xs, 0)\n    for x in xs:\n        if x < m:\n            m = x\n    m\nfn main(console: Console):\n    console.print(\"${smallest([3, 1, 2])}\")\n")
             .expect_err("unbounded generic comparison");
         assert!(err.contains("where T: Ord"), "{err}");
     }
@@ -739,7 +739,7 @@
         // `<` on a concrete type without Ord must point at deriving `Ord`, and
         // must not leak the `less` desugar name (nor mis-suggest the list
         // function `last`, which the post-desugar unknown-function path used to).
-        let err = check_str("type Foo:\n    Foo(Int)\nfn main(console: Console):\n    print(console, \"${Foo(1) < Foo(2)}\")\n")
+        let err = check_str("type Foo:\n    Foo(Int)\nfn main(console: Console):\n    console.print(\"${Foo(1) < Foo(2)}\")\n")
             .expect_err("Foo has no Ord");
         assert!(err.contains("Ord"), "{err}");
         assert!(!err.contains("`less`") && !err.contains("`last`"), "should not leak desugar/typo: {err}");
@@ -774,15 +774,15 @@
         // `type Marker:` is a fieldless, uninhabited type. It has no constructor,
         // so an empty match is exhaustive, but structural built-in derives must not
         // generate empty `match self:` implementations as if it were a singleton.
-        check_str("type Marker:\n\nfn absurd(m: Marker) -> Int:\n    match m:\n\nfn main(console: Console):\n    print(console, \"ok\")\n")
+        check_str("type Marker:\n\nfn absurd(m: Marker) -> Int:\n    match m:\n\nfn main(console: Console):\n    console.print(\"ok\")\n")
             .expect("empty match over an uninhabited fieldless type is exhaustive");
 
-        let value = check_str("type Marker:\n\nfn main(console: Console):\n    print(console, \"${Marker()}\")\n")
+        let value = check_str("type Marker:\n\nfn main(console: Console):\n    console.print(\"${Marker()}\")\n")
             .expect_err("a fieldless type has no constructor");
         assert!(value.contains("type `Marker` is not a value"), "{value}");
 
         for derive_name in ["Show", "PartialEq", "Eq", "PartialOrd", "Ord", "Reflect", "Deserialize"] {
-            let src = format!("type Marker derive({derive_name}):\n\nfn main(console: Console):\n    print(console, \"ok\")\n");
+            let src = format!("type Marker derive({derive_name}):\n\nfn main(console: Console):\n    console.print(\"ok\")\n");
             let err = check_str(&src).expect_err("built-in derives reject fieldless types");
             assert!(
                 err.contains(&format!("derive({derive_name})")) && err.contains("fieldless types"),
@@ -798,7 +798,7 @@ fn double(n: Int) -> Int:
     (n * 2)
 
 fn main(console: Console):
-    print(console, __render(double(21)))
+    console.print(__render(double(21)))
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
@@ -821,12 +821,12 @@ fn f() -> String:
         // unforgeable — the heart of witchy's confinement guarantee.
         let net = check_str(r#"
 fn f(c: Console) -> Nil:
-    connect(c, "host")
+    c.connect("host")
 "#).unwrap_err();
         assert!(net.contains("Net"), "expected a Net mismatch, got: {net}");
         let dir = check_str(r#"
 fn f(c: Console) -> String:
-    read(c, "/etc/passwd")
+    c.read("/etc/passwd")
 "#)
             .unwrap_err();
         assert!(dir.contains("Dir"), "expected a Dir mismatch, got: {dir}");
@@ -868,8 +868,8 @@ fn id(x: a) -> a:
     x
 
 fn main(console: Console):
-    print(console, id("hi"))
-    print(console, __render(id(5)))
+    console.print(id("hi"))
+    console.print(__render(id(5)))
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
@@ -888,7 +888,7 @@ fn broken(x: a) -> Int where a: Ord:
     x + "oops"
 
 fn main(console: Console):
-    print(console, "ok")
+    console.print("ok")
 "#,
         )
         .expect_err("a bad generic body is rejected at declaration time");
@@ -926,8 +926,8 @@ fn unwrap_str(b: Box(String)) -> String:
         Wrap(s) -> s
 
 fn main(console: Console):
-    print(console, __render(unwrap_int(Wrap(5))))
-    print(console, unwrap_str(Wrap("hi")))
+    console.print(__render(unwrap_int(Wrap(5))))
+    console.print(unwrap_str(Wrap("hi")))
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
@@ -947,8 +947,8 @@ fn unwrap(b: Box(a), default: a) -> a:
         Wrap(v) -> v
 
 fn main(console: Console):
-    print(console, __render(unwrap(Wrap(5), 0)))
-    print(console, unwrap(Wrap("hi"), "none"))
+    console.print(__render(unwrap(Wrap(5), 0)))
+    console.print(unwrap(Wrap("hi"), "none"))
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
@@ -1098,7 +1098,7 @@ fn apply(f: fn(Int) -> Int, x: Int) -> Int:
     f(x)
 
 fn main(console: Console):
-    print(console, __render(apply(fn(n: Int): (n + 1), 10)))
+    console.print(__render(apply(fn(n: Int): (n + 1), 10)))
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
@@ -1112,8 +1112,8 @@ fn apply(f: fn(a) -> a, x: a) -> a:
     f(x)
 
 fn main(console: Console):
-    print(console, apply(fn(s: String): s, "hi"))
-    print(console, __render(apply(fn(n: Int): n, 5)))
+    console.print(apply(fn(s: String): s, "hi"))
+    console.print(__render(apply(fn(n: Int): n, 5)))
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
@@ -1126,7 +1126,7 @@ fn run(f: fn(String) -> String, s: String) -> String:
     f(s)
 
 fn main(console: Console):
-    print(console, run(fn(n: Int): (n + 1), "x"))
+    console.print(run(fn(n: Int): (n + 1), "x"))
 "#;
         assert!(check_str(src).is_err());
     }
@@ -1285,7 +1285,7 @@ fn f(xs: List(Int)) -> String:
         let src = r#"
 fn main(console: Console):
     for n in [1, 2, 3]:
-        print(console, __render(n))
+        console.print(__render(n))
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
@@ -1295,7 +1295,7 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     for x in 5:
-        print(console, "x")
+        console.print("x")
 "#;
         assert!(check_str(src).is_err());
     }
@@ -1500,26 +1500,41 @@ fn f() -> Int:
         assert!(check_str(src).is_err());
     }
 
-    /// Capability safety as a type error: `print` needs a `Console`, and a
-    /// `String` is not one. Only a `Console`-typed parameter (ultimately from
-    /// `main`) can satisfy it.
+    /// Capability operations are methods at the source level: old bare spellings
+    /// are rejected before ordinary capability type-checking.
     #[test]
-    fn rejects_print_without_console_capability() {
+    fn rejects_bare_capability_ops() {
         let src = r#"
 fn leak(s: String) -> Nil:
     print(s, s)
 "#;
         let e = check_str(src).unwrap_err();
-        assert!(e.contains("Console"), "expected a Console error, got: {e}");
+        assert!(e.contains("method-only") && e.contains("console.print"), "got: {e}");
     }
 
     #[test]
     fn accepts_print_with_console_capability() {
         let src = r#"
 fn shout(console: Console, s: String) -> Nil:
-    print(console, s)
+    console.print(s)
 "#;
         assert!(check_str(src).is_ok());
+    }
+
+    #[test]
+    fn user_functions_named_like_cap_ops_remain_callable() {
+        let src = r#"
+fn connect(host: String, port: Int) -> String:
+    "${host}:${port}"
+
+fn read(x: Int) -> Int:
+    x + 1
+
+fn main(console: Console):
+    console.print(connect("example.com", 443))
+    console.print("${read(1)}")
+"#;
+        check_str(src).expect("user functions named like cap ops are not host capability calls");
     }
 
     #[test]
@@ -1603,6 +1618,14 @@ fn record(out: Option(Dir[Write]), name: String, line: String) -> Bool:
         None -> false
 "#;
         check_str(option_capability).expect("capability methods resolve on generic pattern payloads");
+
+        let builtin_option_socket = r#"
+fn read_socket(maybe: Option(Socket)) -> String:
+    match maybe:
+        Some(sock) -> sock.recv_line()
+        None -> ""
+"#;
+        check_str(builtin_option_socket).expect("capability methods resolve on builtin Option payloads");
     }
 
     #[test]
@@ -1768,35 +1791,35 @@ fn main():
     fn net_capability_rights_and_narrowing() {
         // RFC-0003: a `Net`'s verbs split `Connect` (dial out) from `Listen`
         // (accept in) — a client is not a server. A connect-only handle dials.
-        check_str("fn f(console: Console, net: Net[Connect]):\n    let s = connect(net, \"example.com:443\")\n    print(console, \"ok\")\n")
+        check_str("fn f(console: Console, net: Net[Connect]):\n    let s = net.connect(\"example.com:443\")\n    console.print(\"ok\")\n")
             .expect("Net[Connect] can connect");
         // ... but it cannot `listen`.
-        let err = check_str("fn f(net: Net[Connect]):\n    listen(net, \"0.0.0.0:80\")\n")
+        let err = check_str("fn f(net: Net[Connect]):\n    net.listen(\"0.0.0.0:80\")\n")
             .expect_err("Net[Connect] must not listen");
         assert!(err.contains("`listen` needs `Listen`") && err.contains("Net[Connect]"), "got: {err}");
         // A listen-only handle accepts inbound.
-        check_str("fn f(console: Console, net: Net[Listen]):\n    let l = listen(net, \"0.0.0.0:80\")\n    print(console, \"ok\")\n")
+        check_str("fn f(console: Console, net: Net[Listen]):\n    let l = net.listen(\"0.0.0.0:80\")\n    console.print(\"ok\")\n")
             .expect("Net[Listen] can listen");
         // ... but it cannot dial out (`connect` or its total sibling `try_connect`).
-        let err = check_str("fn f(net: Net[Listen]):\n    connect(net, \"example.com:443\")\n")
+        let err = check_str("fn f(net: Net[Listen]):\n    net.connect(\"example.com:443\")\n")
             .expect_err("Net[Listen] must not connect");
         assert!(err.contains("`connect` needs `Connect`") && err.contains("Net[Listen]"), "got: {err}");
-        let err = check_str("fn f(net: Net[Listen]):\n    try_connect(net, \"example.com:443\")\n")
+        let err = check_str("fn f(net: Net[Listen]):\n    net.try_connect(\"example.com:443\")\n")
             .expect_err("Net[Listen] must not try_connect");
         assert!(err.contains("`try_connect` needs `Connect`") && err.contains("Net[Listen]"), "got: {err}");
         // The transport axis attenuates independently: `connect`/`listen` are TCP-only,
         // so a UDP-only handle (full verbs, no TCP) cannot dial.
-        let err = check_str("fn f(net: Net[Udp]):\n    connect(net, \"example.com:443\")\n")
+        let err = check_str("fn f(net: Net[Udp]):\n    net.connect(\"example.com:443\")\n")
             .expect_err("Net[Udp] must not connect (TCP-only op)");
         assert!(err.contains("only implemented over `Tcp`") && err.contains("Net[Udp]"), "got: {err}");
         // `as` drops `Net` verbs but can never add them (mirrors the File slice).
-        check_str("fn main(console: Console, net: Net):\n    let dial = net as Net[Connect]\n    print(console, \"ok\")\n")
+        check_str("fn main(console: Console, net: Net):\n    let dial = net as Net[Connect]\n    console.print(\"ok\")\n")
             .expect("`as` can drop Net to Connect-only");
-        let err = check_str("fn main(console: Console, net: Net[Connect]):\n    let l = net as Net[Listen]\n    print(console, \"no\")\n")
+        let err = check_str("fn main(console: Console, net: Net[Connect]):\n    let l = net as Net[Listen]\n    console.print(\"no\")\n")
             .expect_err("`as` cannot add the Listen verb");
         assert!(err.contains("can only drop rights"), "got: {err}");
         // ... and a narrowed handle cannot be re-widened back to the full `Net`.
-        let err = check_str("fn main(console: Console, net: Net[Connect]):\n    let full = net as Net\n    print(console, \"no\")\n")
+        let err = check_str("fn main(console: Console, net: Net[Connect]):\n    let full = net as Net\n    console.print(\"no\")\n")
             .expect_err("`as` cannot re-widen Net[Connect] to full Net");
         assert!(err.contains("can only drop rights"), "got: {err}");
     }
@@ -1807,34 +1830,34 @@ fn main():
     fn dir_capability_rights_and_narrowing() {
         // RFC-0012: a `Dir`'s rights split `Read` from `Write` on independent axes.
         // A read-only handle reads (and lists/exists).
-        check_str("fn f(console: Console, d: Dir[Read]):\n    let s = read(d, \"a.txt\")\n    print(console, s)\n")
+        check_str("fn f(console: Console, d: Dir[Read]):\n    let s = d.read(\"a.txt\")\n    console.print(s)\n")
             .expect("Dir[Read] can read");
         // ... but it cannot `write`, `append`, or `make_dir` (all `Write` verbs).
-        let err = check_str("fn f(d: Dir[Read]):\n    write(d, \"a.txt\", \"x\")\n")
+        let err = check_str("fn f(d: Dir[Read]):\n    d.write(\"a.txt\", \"x\")\n")
             .expect_err("Dir[Read] must not write");
         assert!(err.contains("`write` needs `Write`") && err.contains("Dir[Read]"), "got: {err}");
-        let err = check_str("fn f(d: Dir[Read]):\n    make_dir(d, \"sub\")\n")
+        let err = check_str("fn f(d: Dir[Read]):\n    d.make_dir(\"sub\")\n")
             .expect_err("Dir[Read] must not make_dir");
         assert!(err.contains("`make_dir` needs `Write`") && err.contains("Dir[Read]"), "got: {err}");
         // A write-only handle writes ...
-        check_str("fn f(d: Dir[Write]):\n    write(d, \"a.txt\", \"x\")\n")
+        check_str("fn f(d: Dir[Write]):\n    d.write(\"a.txt\", \"x\")\n")
             .expect("Dir[Write] can write");
         // ... but cannot `read` or `list` (both `Read` verbs). This is the converse
         // the File slice never asserted.
-        let err = check_str("fn f(d: Dir[Write]):\n    read(d, \"a.txt\")\n")
+        let err = check_str("fn f(d: Dir[Write]):\n    d.read(\"a.txt\")\n")
             .expect_err("Dir[Write] must not read");
         assert!(err.contains("`read` needs `Read`") && err.contains("Dir[Write]"), "got: {err}");
-        let err = check_str("fn f(d: Dir[Write]):\n    list(d)\n")
+        let err = check_str("fn f(d: Dir[Write]):\n    d.list()\n")
             .expect_err("Dir[Write] must not list");
         assert!(err.contains("`list` needs `Read`") && err.contains("Dir[Write]"), "got: {err}");
         // `as` drops Dir rights but never adds them.
-        check_str("fn main(console: Console, d: Dir):\n    let ro = d as Dir[Read]\n    print(console, \"ok\")\n")
+        check_str("fn main(console: Console, d: Dir):\n    let ro = d as Dir[Read]\n    console.print(\"ok\")\n")
             .expect("`as` can drop Dir to Read-only");
-        let err = check_str("fn main(console: Console, d: Dir[Read]):\n    let w = d as Dir[Write]\n    print(console, \"no\")\n")
+        let err = check_str("fn main(console: Console, d: Dir[Read]):\n    let w = d as Dir[Write]\n    console.print(\"no\")\n")
             .expect_err("`as` cannot add the Write right");
         assert!(err.contains("can only drop rights"), "got: {err}");
         // ... and cannot re-widen a narrowed handle back to the full `Dir`.
-        let err = check_str("fn main(console: Console, d: Dir[Read]):\n    let full = d as Dir\n    print(console, \"no\")\n")
+        let err = check_str("fn main(console: Console, d: Dir[Read]):\n    let full = d as Dir\n    console.print(\"no\")\n")
             .expect_err("`as` cannot re-widen Dir[Read] to full Dir");
         assert!(err.contains("can only drop rights"), "got: {err}");
     }
@@ -1855,18 +1878,18 @@ fn main():
     fn policy_narrowing_preserves_rights_and_cannot_rewiden() {
         // `net.only(policy)` keeps the receiver's rights: the result is still
         // connect-capable, so `connect` on it type-checks.
-        check_str("type NetPolicy:\n    NetPolicy(String)\nfn f(console: Console, net: Net[Connect]):\n    let scoped = only(net, NetPolicy(\"example.com:443\"))\n    let s = connect(scoped, \"example.com:443\")\n    print(console, \"ok\")\n")
+        check_str("type NetPolicy:\n    NetPolicy(String)\nfn f(console: Console, net: Net[Connect]):\n    let scoped = net.only(NetPolicy(\"example.com:443\"))\n    let s = scoped.connect(\"example.com:443\")\n    console.print(\"ok\")\n")
             .expect("net.only preserves the Connect right");
         // ... and because the rights are preserved (still connect-only, not full),
         // the narrowed handle cannot be re-widened to a full `Net` by a cast.
-        let err = check_str("type NetPolicy:\n    NetPolicy(String)\nfn f(console: Console, net: Net[Connect]):\n    let scoped = only(net, NetPolicy(\"example.com:443\"))\n    let wide = scoped as Net\n    print(console, \"no\")\n")
+        let err = check_str("type NetPolicy:\n    NetPolicy(String)\nfn f(console: Console, net: Net[Connect]):\n    let scoped = net.only(NetPolicy(\"example.com:443\"))\n    let wide = scoped as Net\n    console.print(\"no\")\n")
             .expect_err("a policy-narrowed Net[Connect] must not re-widen to full Net");
         assert!(err.contains("can only drop rights"), "got: {err}");
         // `dir.only(policy)` likewise keeps `Read` ...
-        check_str("type DirPolicy:\n    DirPolicy(String)\nfn f(console: Console, d: Dir[Read]):\n    let scoped = only(d, DirPolicy(\"ext:txt\"))\n    let s = read(scoped, \"a.txt\")\n    print(console, s)\n")
+        check_str("type DirPolicy:\n    DirPolicy(String)\nfn f(console: Console, d: Dir[Read]):\n    let scoped = d.only(DirPolicy(\"ext:txt\"))\n    let s = scoped.read(\"a.txt\")\n    console.print(s)\n")
             .expect("dir.only preserves the Read right");
         // ... and the narrowed `Dir[Read]` cannot be re-widened to a full `Dir`.
-        let err = check_str("type DirPolicy:\n    DirPolicy(String)\nfn f(console: Console, d: Dir[Read]):\n    let scoped = only(d, DirPolicy(\"ext:txt\"))\n    let wide = scoped as Dir\n    print(console, \"no\")\n")
+        let err = check_str("type DirPolicy:\n    DirPolicy(String)\nfn f(console: Console, d: Dir[Read]):\n    let scoped = d.only(DirPolicy(\"ext:txt\"))\n    let wide = scoped as Dir\n    console.print(\"no\")\n")
             .expect_err("a policy-narrowed Dir[Read] must not re-widen to full Dir");
         assert!(err.contains("can only drop rights"), "got: {err}");
     }
@@ -2028,7 +2051,7 @@ fn main():
             trait_param.contains("type parameter `a` is declared more than once in trait `Codec`"),
             "{trait_param}"
         );
-        let konst = check_str("let ANSWER = 1\nlet ANSWER = 2\nfn main(console: Console):\n    print(console, \"${ANSWER}\")\n")
+        let konst = check_str("let ANSWER = 1\nlet ANSWER = 2\nfn main(console: Console):\n    console.print(\"${ANSWER}\")\n")
             .unwrap_err();
         assert!(konst.contains("constant `ANSWER` is defined more than once"), "{konst}");
         let alias = check_str("type Id = Int\ntype Id = String\nfn f(x: Id) -> Id:\n    x\n").unwrap_err();
@@ -2045,11 +2068,11 @@ fn main():
         );
         let alias_type = check_str("type Id = Int\ntype Id:\n    Id(String)\n").unwrap_err();
         assert!(alias_type.contains("type `Id` conflicts with type alias `Id`"), "{alias_type}");
-        let fields = check_str("type Point:\n    x: Int\n    x: String\nfn main(console: Console):\n    print(console, \"ok\")\n")
+        let fields = check_str("type Point:\n    x: Int\n    x: String\nfn main(console: Console):\n    console.print(\"ok\")\n")
             .unwrap_err();
         assert!(fields.contains("field `x` is declared more than once in type `Point`"), "{fields}");
         let cap_fields =
-            check_str("capability Store:\n    dir: Dir[Read]\n    dir: String\nfn main(console: Console):\n    print(console, \"ok\")\n")
+            check_str("capability Store:\n    dir: Dir[Read]\n    dir: String\nfn main(console: Console):\n    console.print(\"ok\")\n")
                 .unwrap_err();
         assert!(
             cap_fields.contains("field `dir` is declared more than once in capability `Store`"),
@@ -2243,28 +2266,28 @@ fn main():
 
         // A user mutator called in free form as a statement: its return is lost.
         let mutator_free = check_str(&format!(
-            "{LOWER}fn add(var xs: List(Int), x: Int) -> List(Int):\n    xs\nfn main(console: Console):\n    var xs: List(Int) = []\n    add(xs, 2)\n    print(console, \"hi\")\n"
+            "{LOWER}fn add(var xs: List(Int), x: Int) -> List(Int):\n    xs\nfn main(console: Console):\n    var xs: List(Int) = []\n    add(xs, 2)\n    console.print(\"hi\")\n"
         ))
         .unwrap_err();
         assert!(mutator_free.contains("is discarded"), "{mutator_free}");
 
         // ANY non-`Nil` free call (not only mutators) whose result is discarded.
         let nonmut_free = check_str(&format!(
-            "{LOWER}fn double(n: Int) -> Int:\n    n * 2\nfn main(console: Console):\n    double(3)\n    print(console, \"hi\")\n"
+            "{LOWER}fn double(n: Int) -> Int:\n    n * 2\nfn main(console: Console):\n    double(3)\n    console.print(\"hi\")\n"
         ))
         .unwrap_err();
         assert!(nonmut_free.contains("is discarded"), "{nonmut_free}");
 
         // `let _ = …` is the explicit-discard escape hatch and still compiles.
         check_str(&format!(
-            "{LOWER}fn double(n: Int) -> Int:\n    n * 2\nfn main(console: Console):\n    let _ = double(3)\n    print(console, \"hi\")\n"
+            "{LOWER}fn double(n: Int) -> Int:\n    n * 2\nfn main(console: Console):\n    let _ = double(3)\n    console.print(\"hi\")\n"
         ))
         .expect("`let _ =` is the explicit discard escape");
 
         // A `Nil`-returning free call in statement position is unaffected — there
         // is no result to discard.
         check_str(&format!(
-            "{LOWER}fn noop(n: Int):\n    let _ = n\nfn main(console: Console):\n    noop(3)\n    print(console, \"hi\")\n"
+            "{LOWER}fn noop(n: Int):\n    let _ = n\nfn main(console: Console):\n    noop(3)\n    console.print(\"hi\")\n"
         ))
         .expect("a `Nil`-returning free call statement is fine");
     }

@@ -2808,7 +2808,7 @@ fn host_net_recv_bytes_len(mut caller: Caller<'_, VmState>, sid: i32, n: i64) ->
     let sock = socket_of(state, sid)?;
     let want = n.max(0) as usize;
     // `want` is guest-supplied (up to i64::MAX); do NOT pre-allocate it — that would let a
-    // module request `recv_bytes(sock, huge)` and ABORT the host with a multi-GB/EB Vec even
+    // module request `sock.recv_bytes(huge)` and ABORT the host with a multi-GB/EB Vec even
     // when the socket holds almost nothing. Read in bounded chunks so memory tracks the bytes
     // actually received, not the claimed count.
     let mut buf = Vec::new();

@@ -401,7 +401,7 @@ impl Codegen {
                 self.uses_substr = true;
                 call("str_chars", self.lower_args(&[&args[0]])?)
             }
-            // `now(clock)`: the Clock arg is type-level; the host import is the
+            // `clock.now()`: the Clock arg is type-level; the host import is the
             // authority and takes no operands.
             ("now", 1) => {
                 self.uses_now = true;
@@ -411,7 +411,7 @@ impl Codegen {
                     W::CallHost { import: "now_host".to_string(), args: vec![] }
                 }
             }
-            // `now_monotonic(clock)`: monotonic elapsed nanoseconds. Like `now`, the
+            // `clock.now_monotonic()`: monotonic elapsed nanoseconds. Like `now`, the
             // Clock arg is type-level and the host import takes no operands.
             ("now_monotonic", 1) => {
                 if self.collect_wir {
@@ -420,7 +420,7 @@ impl Codegen {
                     W::CallHost { import: "now_monotonic_host".to_string(), args: vec![] }
                 }
             }
-            // `rand_u64(rand)`: like `now`, the Rand arg is type-level; the host import
+            // `rand.rand_u64()`: like `now`, the Rand arg is type-level; the host import
             // is the authority and takes no operands, returning a fresh i64 draw.
             ("rand_u64", 1) => {
                 if self.collect_wir {
@@ -429,7 +429,7 @@ impl Codegen {
                     W::CallHost { import: "rand_u64_host".to_string(), args: vec![] }
                 }
             }
-            // `get_env(env, name)`: only the name travels (the Env grant is the host).
+            // `env.get_env(name)`: only the name travels (the Env grant is the host).
             // `fail(msg)`: a deliberate, loud abort. (RFC-0045) The message is no
             // longer dropped — it is handed to the always-linked, authority-free
             // `__witchy_abort` host import (the `Fail` template passes the string
@@ -451,7 +451,7 @@ impl Codegen {
                 self.uses_get_env = true;
                 call("get_env", self.lower_args(&[&args[1]])?)
             }
-            // `print(console, msg)`: the Console arg is type-level; print the msg
+            // `console.print(msg)`: the Console arg is type-level; print the msg
             // (a void host helper), then yield Nil as `i32.const 0`.
             ("print", 2) => {
                 W::Seq(vec![
@@ -701,7 +701,7 @@ impl Codegen {
                     N::Push(choose),
                 ])
             }
-            // (RFC-0020) `net.resolve(net, host) -> List(String)` — resolved IP literals,
+            // (RFC-0020) `net.net.resolve(host) -> List(String)` — resolved IP literals,
             // via the staged list helper (identical shape to `list`/`dir_list`).
             ("resolve", 2) => {
                 self.used_net_ops.insert("resolve");

@@ -30,13 +30,13 @@ The full `Dir` verb set, and the right each one demands:
 
 | Verb | Needs | Semantics |
 |---|---|---|
-| `read(d, path)` | `Read` | file contents; error if missing or outside the subtree |
-| `exists(d, path)` / `is_dir(d, path)` | `Read` | total — a path outside the subtree just reads as `false` |
-| `list(d)` | `Read` | entry names in the directory |
-| `subtree(d, name)` | `Read` | mint a capability confined to a child, keeping the rights (see below) |
-| `write(d, path, contents)` | `Write` | **replace** the whole file, creating it if absent |
-| `append(d, path, contents)` | `Write` | add to the end, creating the file if absent |
-| `make_dir(d, name)` | `Write` | create a subdirectory (idempotent) |
+| `d.read(path)` | `Read` | file contents; error if missing or outside the subtree |
+| `d.exists(path)` / `d.is_dir(path)` | `Read` | total — a path outside the subtree just reads as `false` |
+| `d.list()` | `Read` | entry names in the directory |
+| `d.subtree(name)` | `Read` | mint a capability confined to a child, keeping the rights (see below) |
+| `d.write(path, contents)` | `Write` | **replace** the whole file, creating it if absent |
+| `d.append(path, contents)` | `Write` | add to the end, creating the file if absent |
+| `d.make_dir(name)` | `Write` | create a subdirectory (idempotent) |
 
 Note `write` *overwrites* — for a log you keep adding to, use `append`.
 

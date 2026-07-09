@@ -6,7 +6,7 @@
 // Go's `m[w]++`.
 
 fn main(console: Console, clock: Clock):
-    let bench_t0 = now_monotonic(clock)
+    let bench_t0 = clock.now_monotonic()
     var d = dict.new()
     var i = 0
     while i < 1000000:
@@ -16,6 +16,6 @@ fn main(console: Console, clock: Clock):
     var total = 0
     for v in dict.values(d):
         total = total + v
-    let bench_t1 = now_monotonic(clock)
-    print(console, "${total + dict.length(d)}")
-    print(console, "bench_ns=${bench_t1 - bench_t0}")
+    let bench_t1 = clock.now_monotonic()
+    console.print("${total + dict.length(d)}")
+    console.print("bench_ns=${bench_t1 - bench_t0}")

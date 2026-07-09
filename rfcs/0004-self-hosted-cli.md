@@ -114,7 +114,7 @@ string, so there is no command-injection surface:
 exec.run(dir: Dir[Read], path: String, args: List(String), stdin: String)
     -> ExecResult
 // ExecResult { code: Int, out: String, err: String }
-// `path` resolves within `dir` (same rules as `read(dir, path)`); escaping the
+// `path` resolves within `dir` (same rules as `dir.read(path)`); escaping the
 // Dir subtree, or calling without an Exec right, is a loud runtime error.
 ```
 

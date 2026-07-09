@@ -175,7 +175,7 @@ The proposal's intent shipped; these specifics differ from the prose above:
   factor" requirement plus the separation-of-duties check. So the §4.5 contract holds
   (publish identity ≠ promote identity), just not via a login→maintainer mapping.
 - **A `now`-units bug the e2e caught:** JWT `exp`/`nbf` are unix *seconds*, but
-  `now(clock)` is milliseconds — Google's `verify_oidc` is passed `now(clock) / 1000`.
+  `clock.now()` is milliseconds — Google's `verify_oidc` is passed `clock.now() / 1000`.
 
 ## Alternatives
 

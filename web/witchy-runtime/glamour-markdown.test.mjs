@@ -135,7 +135,7 @@ pub fn export_step(input: String) -> String:
     glamour.step_with(input, view, update, parse_model, parse_msg, model_to_json, msg_to_json)
 
 fn main(console: Console):
-    print(console, export_step("{\\"model\\": 0}") + "\\n")
+    console.print(export_step("{\\"model\\": 0}") + "\\n")
 `;
 
 let failures = 0;

@@ -69,7 +69,7 @@ alias taken before (or around) the block escapes it:
 ```
 let n = net                 // alias created outside the firewall's view
 without net:
-    connect(n, "evil:1")    // `net` is tombstoned, but `n` is not — escape
+    n.connect("evil:1")    // `net` is tombstoned, but `n` is not — escape
 ```
 
 This is the parked "value-taint" gap noted in

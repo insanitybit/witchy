@@ -1036,17 +1036,17 @@ may take **only** build capabilities, and `main` may take none of them.
 
 ```witchy
 fn build(out: BuildOut, schema: BuildRead, cc: BuildExec):
-    let proto = read_build(schema, "api.proto")
-    write_out(out, "api.witchy", run_tool(cc, "protoc", proto))
+    let proto = schema.read_build("api.proto")
+    out.write_out("api.witchy", cc.run_tool("protoc", proto))
 ```
 
 | Capability | Grants | Operations |
 |---|---|---|
-| `BuildOut` | write generated source into this rune's confined output sandbox (needs no naming once the consumer accepts the build step — execution itself is default-deny) | `write_out(out, name, contents)` |
-| `BuildRead` | read project files, confined to a granted subtree | `read_build(r, name) -> String` |
-| `BuildEnv` | read env vars — only keys *named* in the grant, never the whole environment | `get_build_env(e, key) -> Option(String)` |
-| `BuildNet` | HTTP-fetch from hosts on an allow-list (`host:port`, exact) | `fetch_build(n, host, path) -> String` |
-| `BuildExec` | invoke a *named* external tool on an allow-list | `run_tool(x, tool, stdin) -> String` |
+| `BuildOut` | write generated source into this rune's confined output sandbox (needs no naming once the consumer accepts the build step — execution itself is default-deny) | `out.write_out(name, contents)` |
+| `BuildRead` | read project files, confined to a granted subtree | `r.read_build(name) -> String` |
+| `BuildEnv` | read env vars — only keys *named* in the grant, never the whole environment | `e.get_build_env(key) -> Option(String)` |
+| `BuildNet` | HTTP-fetch from hosts on an allow-list (`host:port`, exact) | `n.fetch_build(host, path) -> String` |
+| `BuildExec` | invoke a *named* external tool on an allow-list | `x.run_tool(tool, stdin) -> String` |
 
 The types are kind-only — the specific directory/key/host/tool is the consuming
 project's *grant*, not the type. `witchy caps` reports the build footprint on its

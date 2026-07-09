@@ -7,7 +7,7 @@
     #[test]
     fn completion_includes_keywords_builtins_and_module_fns() {
         let mut docs = HashMap::new();
-        let src = "import string\n\nfn helper(n: Int) -> Int:\n    n\n\nfn main(console: Console):\n    print(console, \"x\")\n";
+        let src = "import string\n\nfn helper(n: Int) -> Int:\n    n\n\nfn main(console: Console):\n    console.print(\"x\")\n";
         docs.insert("file:///t.witchy".to_string(), src.to_string());
         let items = completion_response(
             &docs,
@@ -31,7 +31,7 @@
     #[test]
     fn hover_shows_signature_and_doc() {
         let mut docs = HashMap::new();
-        let src = "// Doubles a number.\n// Twice the input.\nfn double(n: Int) -> Int:\n    n * 2\n\nfn main(console: Console):\n    print(console, __render(double(3)))\n";
+        let src = "// Doubles a number.\n// Twice the input.\nfn double(n: Int) -> Int:\n    n * 2\n\nfn main(console: Console):\n    console.print(__render(double(3)))\n";
         docs.insert("file:///t.witchy".to_string(), src.to_string());
         // Hover over `double` in the call on line 6 (0-based), col 35.
         let col = src.lines().nth(6).unwrap().find("double").unwrap() as u64;
@@ -50,7 +50,7 @@
     #[test]
     fn hover_resolves_imported_module_functions() {
         let mut docs = HashMap::new();
-        let src = "import string\n\nfn main(console: Console):\n    print(console, string.repeat(\"ab\", 2))\n";
+        let src = "import string\n\nfn main(console: Console):\n    console.print(string.repeat(\"ab\", 2))\n";
         docs.insert("file:///t.witchy".to_string(), src.to_string());
         let line = 3u64;
         let col = src.lines().nth(3).unwrap().find("repeat").unwrap() as u64;
@@ -98,14 +98,14 @@
         // code-unit (char) offset; using it as a BYTE index slices off a UTF-8
         // boundary (panic) or returns the wrong word. Here `π` precedes `repeat`;
         // the char offset of `repeat` differs from its byte offset.
-        let line = "    print(console, \"π\" + string.repeat(\"ab\", 2))";
+        let line = "    console.print(\"π\" + string.repeat(\"ab\", 2))";
         let text = format!("fn main(console: Console):\n{line}\n");
         // char offset of the `r` in `repeat` (differs from its byte offset).
-        let repeat_char_idx = "    print(console, \"π\" + string.".chars().count();
+        let repeat_char_idx = "    console.print(\"π\" + string.".chars().count();
         let w = word_at(&text, 1, repeat_char_idx).expect("word found");
         assert_eq!(w, "string.repeat", "got {w:?}");
         // Hovering right on the multibyte char must not panic.
-        let pi_idx = "    print(console, \"".chars().count();
+        let pi_idx = "    console.print(\"".chars().count();
         let _ = word_at(&text, 1, pi_idx); // must not panic
     }
 
@@ -122,7 +122,7 @@
         .unwrap();
         let main = dir.join("main.witchy");
         let main_src =
-            "import helper\n\nfn main(console: Console):\n    print(console, helper.greet(\"x\"))\n";
+            "import helper\n\nfn main(console: Console):\n    console.print(helper.greet(\"x\"))\n";
         std::fs::write(&main, main_src).unwrap();
         let uri = format!("file://{}", main.to_str().unwrap());
 
@@ -162,7 +162,7 @@
         // BUG-388: `from X import Y` binds `Y` unqualified. Completion must offer
         // the bare name, and hover on a bare use must resolve it in module X.
         let mut docs = HashMap::new();
-        let src = "from string import repeat\n\nfn main(console: Console):\n    print(console, repeat(\"ab\", 2))\n";
+        let src = "from string import repeat\n\nfn main(console: Console):\n    console.print(repeat(\"ab\", 2))\n";
         docs.insert("file:///t.witchy".to_string(), src.to_string());
         let items = completion_response(
             &docs,
@@ -238,7 +238,7 @@
     fn clean_program_has_no_diagnostics() {
         let src = r#"
 fn main(console: Console):
-    print(console, "hi")
+    console.print("hi")
 "#;
         assert_eq!(diags(src), Vec::<Value>::new());
     }
@@ -248,7 +248,7 @@ fn main(console: Console):
     /// error instead of silently accepting a program the compiler refuses.
     #[test]
     fn mode_opt_ownership_violation_is_a_diagnostic() {
-        let bad = "mode opt\n\nimport list\n\nfn tag(xs: List(Int)) -> Int:\n    list.length(xs)\n\nfn main(console: Console):\n    print(console, __render(tag([1, 2, 3])))\n";
+        let bad = "mode opt\n\nimport list\n\nfn tag(xs: List(Int)) -> Int:\n    list.length(xs)\n\nfn main(console: Console):\n    console.print(__render(tag([1, 2, 3])))\n";
         let d = diags(bad);
         assert!(
             d.iter().any(|x| x["severity"] == json!(1)
@@ -277,7 +277,7 @@ fn main(console: Console):
     fn importing_std_resolves_without_false_errors() {
         // `string` isn't on disk next to /tmp/main.witchy, so this exercises the
         // bundled-module fallback. A clean program must stay diagnostic-free.
-        let src = "import string\nfn main(console: Console):\n    print(console, string.repeat(\"ab\", 2))\n";
+        let src = "import string\nfn main(console: Console):\n    console.print(string.repeat(\"ab\", 2))\n";
         assert_eq!(diags(src), Vec::<Value>::new());
     }
 
@@ -300,7 +300,7 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     let x = (1 + "two")
-    print(console, "")
+    console.print("")
 "#;
         let d = diags(src);
         assert_eq!(d.len(), 1, "{d:?}");
@@ -320,7 +320,7 @@ fn main(console: Console):
         let dir = std::env::temp_dir().join(format!("witchy-lsp-168-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let main = dir.join("main.witchy");
-        let src = "import helper\n\nfn main(console: Console):\n    print(console, \"x\")\n";
+        let src = "import helper\n\nfn main(console: Console):\n    console.print(\"x\")\n";
         let uri = format!("file://{}", main.to_str().unwrap());
         let mut docs = HashMap::new();
         docs.insert(uri.clone(), src.to_string());
@@ -340,7 +340,7 @@ fn main(console: Console):
         std::fs::create_dir_all(&dir).unwrap();
         let main = dir.join("main.witchy");
         let helper = dir.join("helper.witchy");
-        let src = "import helper\n\nfn main(console: Console):\n    print(console, helper.greet(\"x\"))\n";
+        let src = "import helper\n\nfn main(console: Console):\n    console.print(helper.greet(\"x\"))\n";
         let main_uri = format!("file://{}", main.to_str().unwrap());
         let helper_uri = format!("file://{}", helper.to_str().unwrap());
         let mut docs = HashMap::new();
@@ -362,7 +362,7 @@ fn main(console: Console):
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("helper.witchy"), "pub fn f( -> :\n").unwrap();
         let main = dir.join("main.witchy");
-        let src = "import helper\n\nfn main(console: Console):\n    print(console, \"x\")\n";
+        let src = "import helper\n\nfn main(console: Console):\n    console.print(\"x\")\n";
         let uri = format!("file://{}", main.to_str().unwrap());
         let mut docs = HashMap::new();
         docs.insert(uri.clone(), src.to_string());
@@ -378,7 +378,7 @@ fn main(console: Console):
     fn link_error_maps_to_real_location() {
         // BUG-162: a link error carrying `line N` underlines that line; one that
         // blames an imported module underlines its import; otherwise line 0.
-        let text = "import helper\nimport other\nfn main(console: Console):\n    print(console, \"x\")\n";
+        let text = "import helper\nimport other\nfn main(console: Console):\n    console.print(\"x\")\n";
         assert_eq!(link_error_line("boom at line 3: bad thing", text), 2);
         assert_eq!(
             link_error_line("module `main` imports unknown module `other`", text),

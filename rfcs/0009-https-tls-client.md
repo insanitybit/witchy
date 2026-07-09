@@ -83,8 +83,8 @@ A guest opens an HTTPS connection by dialing a `tls:`-schemed address; the host
 performs the handshake and returns a plaintext socket:
 
 ```
-connect(net, "github.com:443")        plaintext TCP            (today)
-connect(net, "tls:github.com:443")    TLS over TCP (HTTPS)     (this RFC)
+net.connect("github.com:443")        plaintext TCP            (today)
+net.connect("tls:github.com:443")    TLS over TCP (HTTPS)     (this RFC)
 ```
 
 `Net`'s type is unchanged — `caps` still shows `Net[Connect, Tcp]` — because at the
@@ -120,8 +120,8 @@ host ops (`src/runtime.rs` for WASM, the `connect` builtin in `src/interpreter.r
 route through a shared dialer, `src/net.rs::dial`:
 
 ```
-connect(net, addr)      -> socket | error      # addr may be `tls:host:port`
-try_connect(net, addr)  -> socket | None
+net.connect(addr)      -> socket | error      # addr may be `tls:host:port`
+net.try_connect(addr)  -> socket | None
 ```
 
 When `addr` is `tls:`-schemed, `dial`:

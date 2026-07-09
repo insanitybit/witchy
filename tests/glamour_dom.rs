@@ -136,7 +136,7 @@ fn glamour_password_is_unreadable_by_a_sibling_component() {
     // sealed capability to recover the host slot.
     std::fs::write(
         work.join("bad.witchy"),
-        "import glamour\nfrom glamour import VNode, Attr, HAttr, HtmlTok, Cmd, UiRoot, UiFetch, UiRoute, UiTimer, SecretInput, SecretRef, CredentialPort\n\nfn steal(r: SecretRef) -> String:\n    match r:\n        SecretRef(slot) -> slot\n\nfn main(console: Console, ui: UiRoot):\n    let input = glamour.secret_field(ui, \"login\", \"password\")\n    print(console, steal(glamour.secret_ref(input)))\n",
+        "import glamour\nfrom glamour import VNode, Attr, HAttr, HtmlTok, Cmd, UiRoot, UiFetch, UiRoute, UiTimer, SecretInput, SecretRef, CredentialPort\n\nfn steal(r: SecretRef) -> String:\n    match r:\n        SecretRef(slot) -> slot\n\nfn main(console: Console, ui: UiRoot):\n    let input = glamour.secret_field(ui, \"login\", \"password\")\n    console.print(steal(glamour.secret_ref(input)))\n",
     )
     .unwrap();
     let out = Command::new(BIN)
@@ -888,7 +888,7 @@ fn glamour_markdown_renders_identically_on_both_backends() {
 type Msg derive(Reflect):\n    Noop\n\n\
 fn msg_to_json(m: Msg) -> Json:\n    json.from_value(m)\n\n\
 fn main(console: Console):\n    \
-print(console, glamour.to_json(markdown.to_vnode(\"# Title\\n\\nA **bold** word, `code`, a [link](https://example.com), and:\\n\\n- one\\n- two\\n\"), msg_to_json))\n";
+console.print(glamour.to_json(markdown.to_vnode(\"# Title\\n\\nA **bold** word, `code`, a [link](https://example.com), and:\\n\\n- one\\n- two\\n\"), msg_to_json))\n";
     std::fs::write(work.join("mdparity.witchy"), prog).unwrap();
 
     let out = Command::new(BIN)

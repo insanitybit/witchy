@@ -92,7 +92,7 @@ async function main() {
     "fn main(console: Console):",
     "    // greet the world, then try to inject",
     '    let msg = "<script>alert(1)</script>"',
-    "    print(console, msg)",
+    "    console.print(msg)",
   ].join("\n");
 
   const out = callString("__export_export_render", JSON.stringify({ src }));

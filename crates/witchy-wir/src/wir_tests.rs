@@ -285,7 +285,7 @@
 
     #[test]
     fn string_print_roundtrips() {
-        // A self-contained `print(console, "hi")`: data `[2,0,0,0,'h','i']` at
+        // A self-contained `console.print("hi")`: data `[2,0,0,0,'h','i']` at
         // offset 8; print is called with (ptr+4, load_len). Exercises StrPtr,
         // Load, and a void CallHost.
         let mut bytes = (2u32).to_le_bytes().to_vec();

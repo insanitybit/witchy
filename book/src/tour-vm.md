@@ -75,7 +75,7 @@ precisely scoped authority.
 
 ```sh
 fn untrusted(d: Dir, name: Bytes) -> Bytes:
-    bytes.from_string(read(d, bytes.to_string(name)))
+    bytes.from_string(d.read(bytes.to_string(name)))
 
 fn main(dir: Dir):
     # `untrusted` runs in its own VM that can ONLY touch `dir`.

@@ -121,15 +121,15 @@ fn main(console: Console, net: Net, assets: Dir, secrets: SecretStore, clock: Cl
     app = app.layer(sec_fetch_csrf())
     app = app.layer(security_headers())
 
-    print(console, "coven-web serving http://" + listen_addr + "  -> coven " + upstream)
+    console.print("coven-web serving http://" + listen_addr + "  -> coven " + upstream)
     server.serve(net, listen_addr, app)
 
 // ---- Static assets ----------------------------------------------------------
 fn h_index_html(assets: Dir) -> fn(Request) -> Response:
-    fn(req: Request): if exists(assets, "index.html"): server.html(200, read(assets, "index.html")) else: server.not_found()
+    fn(req: Request): if assets.exists("index.html"): server.html(200, assets.read("index.html")) else: server.not_found()
 
 fn h_asset(assets: Dir, file: String, ctype: String) -> fn(Request) -> Response:
-    fn(req: Request): if exists(assets, file): Response(200, [("content-type", ctype)], read(assets, file)) else: server.not_found()
+    fn(req: Request): if assets.exists(file): Response(200, [("content-type", ctype)], assets.read(file)) else: server.not_found()
 
 // ---- The double-iframe sandbox bootstrap ------------------------------------
 // Served from a real same-origin URL so it gets its OWN CSP (sandbox CSP with
@@ -193,7 +193,7 @@ fn h_wa_register(store: Dir) -> fn(Request) -> Response:
         // passkey — never overwrite an existing one. Otherwise an anonymous attacker could
         // replace the maintainer's credential and then sign in as them. Rotating a passkey
         // requires removing `_wa_cred.json` out-of-band (operator action).
-        if exists(store, "_wa_cred.json"):
+        if store.exists("_wa_cred.json"):
             server.json(403, "{\"error\":\"a passkey is already registered; rotation requires removing the credential out-of-band\"}")
         else:
             match server.json_body(req):
@@ -204,7 +204,7 @@ fn h_wa_register(store: Dir) -> fn(Request) -> Response:
                     if cred == "" || pk == "":
                         server.bad_request("{\"error\":\"missing credentialId or publicKey\"}")
                     else:
-                        write(store, "_wa_cred.json", json.encode(JsonObject([("credentialId", JsonString(cred)), ("publicKey", JsonString(pk))])))
+                        store.write("_wa_cred.json", json.encode(JsonObject([("credentialId", JsonString(cred)), ("publicKey", JsonString(pk))])))
                         server.json(200, "{\"ok\":true}")
 
 fn h_wa_challenge(store: Dir, rand: Rand) -> fn(Request) -> Response:
@@ -222,7 +222,7 @@ fn h_wa_challenge(store: Dir, rand: Rand) -> fn(Request) -> Response:
         let version = wa_field(doc, "version")
         let ch_hex = rand.hex(32)
         let ch_b64 = result.unwrap_or(encoding.hex_to_base64url(ch_hex), "")
-        write(store, "_wa_challenge.json", json.encode(JsonObject([("b64", JsonString(ch_b64)), ("op", JsonString(op)), ("name", JsonString(name)), ("version", JsonString(version))])))
+        store.write("_wa_challenge.json", json.encode(JsonObject([("b64", JsonString(ch_b64)), ("op", JsonString(op)), ("name", JsonString(name)), ("version", JsonString(version))])))
         server.json(200, json.encode(JsonObject([("challengeHex", JsonString(ch_hex))])))
 
 fn challenge_request(req: Request) -> Json:
@@ -239,7 +239,7 @@ fn h_wa_promote(store: Dir, net: Net, key: Secret, clock: Clock, upstream: Strin
 fn wa_do_promote(store: Dir, net: Net, upstream: String, origin: String, rp_id: String, doc: Json, promoter: String) -> Response:
     let name = wa_field(doc, "name")
     let version = wa_field(doc, "version")
-    if !exists(store, "_wa_cred.json") || !exists(store, "_wa_challenge.json"):
+    if !store.exists("_wa_cred.json") || !store.exists("_wa_challenge.json"):
         server.json(403, "{\"error\":\"no registered credential or outstanding challenge\"}")
     else if promoter == "":
         // BUG-278: the promoter identity is the AUTHENTICATED session subject (the signed-in
@@ -248,8 +248,8 @@ fn wa_do_promote(store: Dir, net: Net, upstream: String, origin: String, rp_id: 
         // duties on this identity, so it must not be attacker-chosen.
         server.json(403, "{\"error\":\"promote requires a signed-in session\"}")
     else:
-        let ch = decode_or_empty(read(store, "_wa_challenge.json"))
-        let pk = wa_field(decode_or_empty(read(store, "_wa_cred.json")), "publicKey")
+        let ch = decode_or_empty(store.read("_wa_challenge.json"))
+        let pk = wa_field(decode_or_empty(store.read("_wa_cred.json")), "publicKey")
         let ch_b64 = wa_field(ch, "b64")
         if ch_b64 == "":
             // BUG-421: a consumed challenge is cleared to `{}` (no `b64`); the previous code only
@@ -264,7 +264,7 @@ fn wa_do_promote(store: Dir, net: Net, upstream: String, origin: String, rp_id: 
             match webauthn.verify_assertion(pk, wa_field(doc, "authData"), wa_field(doc, "clientData"), wa_field(doc, "signature"), ch_b64, origin, rp_id, true):
                 Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("2FA failed: " + reason))])))
                 Ok(_) ->
-                    write(store, "_wa_challenge.json", "{}")
+                    store.write("_wa_challenge.json", "{}")
                     let body = json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version)), ("second_factor", JsonString("webauthn")), ("promoted_by", JsonString(promoter))]))
                     let (host, port) = split_host_port(upstream)
                     match http.try_post(net, host, port, "/coven/promote", body):
@@ -285,11 +285,11 @@ fn h_wa_yank(store: Dir, net: Net, upstream: String, origin: String, rp_id: Stri
 fn wa_do_yank(store: Dir, net: Net, upstream: String, origin: String, rp_id: String, doc: Json) -> Response:
     let name = wa_field(doc, "name")
     let version = wa_field(doc, "version")
-    if !exists(store, "_wa_cred.json") || !exists(store, "_wa_challenge.json"):
+    if !store.exists("_wa_cred.json") || !store.exists("_wa_challenge.json"):
         server.json(403, "{\"error\":\"no registered credential or outstanding challenge\"}")
     else:
-        let ch = decode_or_empty(read(store, "_wa_challenge.json"))
-        let pk = wa_field(decode_or_empty(read(store, "_wa_cred.json")), "publicKey")
+        let ch = decode_or_empty(store.read("_wa_challenge.json"))
+        let pk = wa_field(decode_or_empty(store.read("_wa_cred.json")), "publicKey")
         let ch_b64 = wa_field(ch, "b64")
         if ch_b64 == "":
             // BUG-421: a consumed/cleared challenge (`{}`) has no `b64`; reject by content.
@@ -301,7 +301,7 @@ fn wa_do_yank(store: Dir, net: Net, upstream: String, origin: String, rp_id: Str
             match webauthn.verify_assertion(pk, wa_field(doc, "authData"), wa_field(doc, "clientData"), wa_field(doc, "signature"), ch_b64, origin, rp_id, true):
                 Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("2FA failed: " + reason))])))
                 Ok(_) ->
-                    write(store, "_wa_challenge.json", "{}")
+                    store.write("_wa_challenge.json", "{}")
                     let body = json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version))]))
                     let (host, port) = split_host_port(upstream)
                     match http.try_post(net, host, port, "/coven/yank", body):
@@ -324,7 +324,7 @@ fn session_ttl_ms() -> Int:
 // `exp:sub`, and `sub` (hex-encoded so it carries no `.` delimiter) travels in the token,
 // so a token minted for one identity cannot be presented as another.
 fn issue_session(key: Secret, clock: Clock, sub: String) -> (String, Int):
-    let exp = now(clock) + session_ttl_ms()
+    let exp = clock.now() + session_ttl_ms()
     let sub_hex = encoding.hex_encode(sub)
     let tok = "${exp}" + "." + sub_hex + "." + crypto.sign(key, "session:" + "${exp}" + ":" + sub)
     (tok, exp)
@@ -368,7 +368,7 @@ fn verify_bearer(key: Secret, clock: Clock, header: String) -> String:
         match encoding.hex_decode(sub_hex):
             Err(_e) -> ""
             Ok(sub) ->
-                if ascii.all_digits(exp_s) && ct_eq(sig, crypto.sign(key, "session:" + exp_s + ":" + sub)) && string.to_int(exp_s) > now(clock):
+                if ascii.all_digits(exp_s) && ct_eq(sig, crypto.sign(key, "session:" + exp_s + ":" + sub)) && string.to_int(exp_s) > clock.now():
                     sub
                 else:
                     ""
@@ -380,11 +380,11 @@ fn h_wa_login(store: Dir, key: Secret, clock: Clock, origin: String, rp_id: Stri
             Ok(doc) -> wa_do_login(store, key, clock, origin, rp_id, doc)
 
 fn wa_do_login(store: Dir, key: Secret, clock: Clock, origin: String, rp_id: String, doc: Json) -> Response:
-    if !exists(store, "_wa_cred.json") || !exists(store, "_wa_challenge.json"):
+    if !store.exists("_wa_cred.json") || !store.exists("_wa_challenge.json"):
         server.json(403, "{\"error\":\"no registered passkey or outstanding challenge\"}")
     else:
-        let ch = decode_or_empty(read(store, "_wa_challenge.json"))
-        let pk = wa_field(decode_or_empty(read(store, "_wa_cred.json")), "publicKey")
+        let ch = decode_or_empty(store.read("_wa_challenge.json"))
+        let pk = wa_field(decode_or_empty(store.read("_wa_cred.json")), "publicKey")
         let ch_b64 = wa_field(ch, "b64")
         if ch_b64 == "":
             // BUG-421: reject a consumed/cleared challenge by content, not existence.
@@ -396,7 +396,7 @@ fn wa_do_login(store: Dir, key: Secret, clock: Clock, origin: String, rp_id: Str
             match webauthn.verify_assertion(pk, wa_field(doc, "authData"), wa_field(doc, "clientData"), wa_field(doc, "signature"), ch_b64, origin, rp_id, true):
                 Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("sign-in failed: " + reason))])))
                 Ok(_) ->
-                    write(store, "_wa_challenge.json", "{}")
+                    store.write("_wa_challenge.json", "{}")
                     let (tok, exp) = issue_session(key, clock, "passkey")
                     server.json(200, json.encode(JsonObject([("token", JsonString(tok)), ("expires", JsonString("${exp}"))])))
 
@@ -437,7 +437,7 @@ fn cookie_nonce(req: Request) -> String:
 // A signed, expiring OAuth `state` carrying the per-login nonce. The signature proves we
 // issued it; the nonce binds it to the issuing session's cookie.
 fn sign_state(key: Secret, clock: Clock, nonce: String) -> String:
-    let exp = now(clock) + state_ttl_ms()
+    let exp = clock.now() + state_ttl_ms()
     "${exp}" + "." + nonce + "." + crypto.sign(key, "oauth-state:" + "${exp}" + ":" + nonce)
 
 fn valid_state(key: Secret, clock: Clock, state: String, expected_nonce: String) -> Bool:
@@ -451,7 +451,7 @@ fn valid_state(key: Secret, clock: Clock, state: String, expected_nonce: String)
         // SEC-024: guard `to_int` (it traps on non-numeric input) against the attacker-supplied
         // expiry half — `&&` short-circuits, so a malformed state is just invalid, never a VM abort.
         // SEC-007: the nonce must be non-empty AND equal the issuing session's cookie.
-        ascii.all_digits(exp_s) && ct_eq(sig, crypto.sign(key, "oauth-state:" + exp_s + ":" + nonce)) && string.to_int(exp_s) > now(clock) && nonce != "" && ct_eq(nonce, expected_nonce)
+        ascii.all_digits(exp_s) && ct_eq(sig, crypto.sign(key, "oauth-state:" + exp_s + ":" + nonce)) && string.to_int(exp_s) > clock.now() && nonce != "" && ct_eq(nonce, expected_nonce)
 
 // BUG-424: server-side single-use of a login nonce. `valid_state` has already proven the nonce
 // is one WE signed and equals the caller's cookie, so it is a server-minted hex string (a safe,
@@ -460,10 +460,10 @@ fn valid_state(key: Secret, clock: Clock, state: String, expected_nonce: String)
 // nonce fails closed.
 fn consume_nonce(store: Dir, nonce: String) -> Bool:
     let marker = "_oauth_used_" + nonce + ".json"
-    if nonce == "" || exists(store, marker):
+    if nonce == "" || store.exists(marker):
         false
     else:
-        write(store, marker, "{\"used\":true}")
+        store.write(marker, "{\"used\":true}")
         true
 
 fn h_github_login(key: Secret, clock: Clock, rand: Rand, gh_base: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
@@ -571,8 +571,8 @@ fn google_finish(key: Secret, clock: Clock, jwks: Json, client_id: String, id_to
 fn select_and_verify(clock: Clock, jwks: Json, client_id: String, id_token: String) -> Result(Json, String):
     let key_id = jwt.kid(id_token).ok_or("id_token header has no `kid`")?
     let der = jwt.rsa_key_for_kid(jwks, key_id)?
-    // JWT `exp`/`nbf` are unix SECONDS; `now(clock)` is milliseconds.
-    jwt.verify_oidc(id_token, der, "https://accounts.google.com", client_id, now(clock) / 1000)
+    // JWT `exp`/`nbf` are unix SECONDS; `clock.now()` is milliseconds.
+    jwt.verify_oidc(id_token, der, "https://accounts.google.com", client_id, clock.now() / 1000)
 
 // Mint a bearer session for `who` and hand it to the SPA in the URL fragment (kept out of
 // logs/Referer) — the shared tail of every social-login callback.
@@ -623,8 +623,8 @@ fn spa_fallback(assets: Dir) -> fn(fn(Request) -> Response) -> fn(Request) -> Re
             let resp = inner(req)
             match resp:
                 Response(code, _h, _b) ->
-                    if code == 404 && server.method(req) == "GET" && is_client_route(server.path(req)) && exists(assets, "index.html"):
-                        server.html(200, read(assets, "index.html"))
+                    if code == 404 && server.method(req) == "GET" && is_client_route(server.path(req)) && assets.exists("index.html"):
+                        server.html(200, assets.read("index.html"))
                     else:
                         resp
 

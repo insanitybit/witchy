@@ -39,7 +39,7 @@ fn crypto_verify_malformed_inputs_are_result_errors() {
         &dir,
         "crypto_result.witchy",
         &format!(
-            "import crypto\nfn main(console: Console):\n    match crypto.ed25519_verify(\"not-hex\", \"msg\", \"00\"):\n        Err(e) -> print(console, e)\n        Ok(_v) -> print(console, \"unexpected ed25519\")\n    match crypto.ecdsa_p256_verify_hex(\"{p256_basepoint}\", \"zz\", \"00\"):\n        Err(e) -> print(console, e)\n        Ok(_v) -> print(console, \"unexpected ecdsa\")\n"
+            "import crypto\nfn main(console: Console):\n    match crypto.ed25519_verify(\"not-hex\", \"msg\", \"00\"):\n        Err(e) -> console.print(e)\n        Ok(_v) -> console.print(\"unexpected ed25519\")\n    match crypto.ecdsa_p256_verify_hex(\"{p256_basepoint}\", \"zz\", \"00\"):\n        Err(e) -> console.print(e)\n        Ok(_v) -> console.print(\"unexpected ecdsa\")\n"
         ),
     );
     let out = run(&[&src]);
@@ -60,7 +60,7 @@ fn crypto_verify_malformed_inputs_are_result_errors() {
 
 // A file that violates `mode opt` (a heap parameter with no ownership convention).
 // `check` rejects it; every other compile-ish path must too.
-const BAD_OPT: &str = "mode opt\n\nfn helper(xs: List(Int)) -> Int:\n    var acc = 0\n    for x in xs:\n        acc = acc + x\n    acc\n\nfn main(console: Console):\n    print(console, \"sum: ${helper([1, 2, 3])}\")\n";
+const BAD_OPT: &str = "mode opt\n\nfn helper(xs: List(Int)) -> Int:\n    var acc = 0\n    for x in xs:\n        acc = acc + x\n    acc\n\nfn main(console: Console):\n    console.print(\"sum: ${helper([1, 2, 3])}\")\n";
 
 // ---- BUG-104 / BUG-106: compiled `.wasm` artifact launch ----
 
@@ -89,7 +89,7 @@ fn wasm_int_main_is_the_exit_code_not_printed() {
 fn wasm_nil_main_int_output_is_not_eaten_as_exit_code() {
     // The BUG-104 guard: a Nil `main` that prints ints keeps every line and exits 0.
     let dir = workdir("wasm-print");
-    let src = write(&dir, "p.witchy", "fn main(console: Console):\n    print(console, \"42\")\n    print(console, \"99\")\n");
+    let src = write(&dir, "p.witchy", "fn main(console: Console):\n    console.print(\"42\")\n    console.print(\"99\")\n");
     let wasm = dir.join("p.wasm");
     assert!(run(&["emit-wasm", &src, "-o", wasm.to_str().unwrap()]).status.success());
     let out = run(&[wasm.to_str().unwrap()]);
@@ -105,7 +105,7 @@ fn sandbox_wasm_requires_explicit_dir_grant() {
     let src = write(
         &dir,
         "d.witchy",
-        "fn main(console: Console, dir: Dir) -> Int:\n    if exists(dir, \"x\"):\n        print(console, \"yes\")\n    else:\n        print(console, \"no\")\n    0\n",
+        "fn main(console: Console, dir: Dir) -> Int:\n    if dir.exists(\"x\"):\n        console.print(\"yes\")\n    else:\n        console.print(\"no\")\n    0\n",
     );
     let wasm = dir.join("d.wasm");
     assert!(run(&["emit-wasm", &src, "-o", wasm.to_str().unwrap()]).status.success());
@@ -125,7 +125,7 @@ fn secretstore_main_runs_without_a_secret() {
     // BUG-112: a `main(Console, SecretStore)` runs on both backends with an empty
     // store, so `run`/`sandbox` must NOT demand `--secret`; align with `parity`.
     let dir = workdir("secretstore");
-    let src = write(&dir, "s.witchy", "fn main(console: Console, store: SecretStore):\n    print(console, \"hi\")\n");
+    let src = write(&dir, "s.witchy", "fn main(console: Console, store: SecretStore):\n    console.print(\"hi\")\n");
     for args in [vec![src.as_str()], vec!["sandbox", "--dir", dir.to_str().unwrap(), src.as_str()], vec!["parity", src.as_str()]] {
         let out = run(&args);
         assert_eq!(out.status.code(), Some(0), "{args:?} should exit 0: {}", String::from_utf8_lossy(&out.stderr));
@@ -192,7 +192,7 @@ fn plain_run_does_not_emit_copy_cliff_notes_for_comprehensions() {
     let src = write(
         &dir,
         "compr.witchy",
-        "fn main(console: Console):\n    let squares = [n * n for n in 1..6]\n    print(console, __render(squares))\n",
+        "fn main(console: Console):\n    let squares = [n * n for n in 1..6]\n    console.print(__render(squares))\n",
     );
     let out = run(&[&src]);
     assert!(out.status.success(), "run failed: {}", String::from_utf8_lossy(&out.stderr));
@@ -209,7 +209,7 @@ fn check_rejects_programs_the_compiled_backend_cannot_accept() {
     let bad = write(
         &dir,
         "dict_record_key.witchy",
-        "type Key:\n    Key(Int)\n\nfn main(console: Console):\n    var d = dict.new()\n    d = dict.insert(d, Key(1), \"one\")\n    print(console, dict.get_or(d, Key(1), \"missing\"))\n",
+        "type Key:\n    Key(Int)\n\nfn main(console: Console):\n    var d = dict.new()\n    d = dict.insert(d, Key(1), \"one\")\n    console.print(dict.get_or(d, Key(1), \"missing\"))\n",
     );
     let out = run(&["check", &bad]);
     assert!(!out.status.success(), "check must fail for a compiled-backend reject");
@@ -278,7 +278,7 @@ fn caps_counts_comptime_emitted_apis() {
     let src = write(
         &dir,
         "c.witchy",
-        "comptime:\n    emit(\"pub fn generated(net: Net, addr: String) -> String:\")\n    emit(\"    recv_all(connect(net, addr))\")\n\nfn main(console: Console):\n    print(console, \"hi\")\n",
+        "comptime:\n    emit(\"pub fn generated(net: Net, addr: String) -> String:\")\n    emit(\"    net.connect(addr).recv_all()\")\n\nfn main(console: Console):\n    console.print(\"hi\")\n",
     );
     let out = run(&["caps", &src]);
     assert!(out.status.success(), "caps should succeed: {}", String::from_utf8_lossy(&out.stderr));
@@ -316,8 +316,8 @@ fn caps_diff_grantable_widening_message_matches_exit_code() {
     // BUG-314: adding a grantable (user) capability is a widening — the message and
     // the exit code (2) must agree (was 'OK: no widening' yet exit 2).
     let dir = workdir("caps-diff-uc");
-    let old = write(&dir, "old.witchy", "grantable capability UiRoot:\n    policy: String\n\nfn main(console: Console):\n    print(console, \"hi\")\n");
-    let new = write(&dir, "new.witchy", "grantable capability UiRoot:\n    policy: String\n\nfn main(console: Console, ui: UiRoot):\n    print(console, \"hi\")\n");
+    let old = write(&dir, "old.witchy", "grantable capability UiRoot:\n    policy: String\n\nfn main(console: Console):\n    console.print(\"hi\")\n");
+    let new = write(&dir, "new.witchy", "grantable capability UiRoot:\n    policy: String\n\nfn main(console: Console, ui: UiRoot):\n    console.print(\"hi\")\n");
     let out = run(&["caps-diff", &old, &new]);
     assert_eq!(out.status.code(), Some(2), "a grantable-cap widening must exit 2");
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -334,7 +334,7 @@ fn grant_document_use_only_blocks_reveal() {
     let prog = write(
         &dir,
         "r.witchy",
-        "import secretstore\nimport crypto\n\nfn main(console: Console, store: SecretStore):\n    let s = secretstore.require(store, \"token\")\n    print(console, crypto.reveal(s))\n",
+        "import secretstore\nimport crypto\n\nfn main(console: Console, store: SecretStore):\n    let s = secretstore.require(store, \"token\")\n    console.print(crypto.reveal(s))\n",
     );
     let use_only = write(&dir, "use_only.toml", "[secrets]\ntoken = { from = \"env:MY_TOKEN\", use-only = true }\n");
     let out = Command::new(BIN)

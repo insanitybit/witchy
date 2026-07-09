@@ -2215,7 +2215,7 @@ mod tests {
         let bytes = crate::parser::parse_module("pub fn unrelated() -> Int:\n    1\n")
             .expect("local bytes parses");
         let main = crate::parser::parse_module(
-            "import bytes\n\nfn main(console: Console):\n    let b = bytes.from_string(\"hi\")\n    print(console, \"${bytes.length(b)}\")\n",
+            "import bytes\n\nfn main(console: Console):\n    let b = bytes.from_string(\"hi\")\n    console.print(\"${bytes.length(b)}\")\n",
         )
         .expect("main parses");
         let user_modules = std::collections::HashSet::from(["bytes".to_string(), "main".to_string()]);
@@ -2259,13 +2259,13 @@ mod tests {
         );
 
         let err = link_main(
-            "fn main(console: Console):\n    let __target = 1\n    print(console, __render(__target))\n",
+            "fn main(console: Console):\n    let __target = 1\n    console.print(__render(__target))\n",
         )
         .unwrap_err();
         assert!(err.contains("binding `__target`"), "{err}");
 
         let err = link_main(
-            "fn main(console: Console):\n    let user__target = 1\n    print(console, __render(user__target))\n",
+            "fn main(console: Console):\n    let user__target = 1\n    console.print(__render(user__target))\n",
         )
         .unwrap_err();
         assert!(err.contains("binding `user__target`"), "{err}");
@@ -2274,7 +2274,7 @@ mod tests {
     #[test]
     fn private_bridge_intrinsics_are_std_only() {
         let err = link_main(
-            "fn main(console: Console):\n    let s = __unerase(__erase(1))\n    print(console, __render(s))\n",
+            "fn main(console: Console):\n    let s = __unerase(__erase(1))\n    console.print(__render(s))\n",
         )
         .unwrap_err();
         assert!(
@@ -2284,7 +2284,7 @@ mod tests {
         );
 
         let err = link_main(
-            "fn main(console: Console):\n    let b = __bytes_from_string(\"x\")\n    print(console, \"x\")\n",
+            "fn main(console: Console):\n    let b = __bytes_from_string(\"x\")\n    console.print(\"x\")\n",
         )
         .unwrap_err();
         assert!(err.contains("`__bytes_from_string` is a compiler-private intrinsic"), "{err}");
@@ -2296,7 +2296,7 @@ mod tests {
 
     #[test]
     fn render_intrinsic_remains_available_for_interpolation_oracles() {
-        link_main("fn main(console: Console):\n    print(console, __render(1))\n")
+        link_main("fn main(console: Console):\n    console.print(__render(1))\n")
             .expect("__render is still the interpolation/oracle spelling");
     }
 
@@ -2306,16 +2306,16 @@ mod tests {
                    pub fn shown(n: Int) -> Int:\n    hidden(n)\n";
 
         let ok = "import sealed_lib\n\n\
-                  fn main(console: Console):\n    print(console, __render(sealed_lib.shown(1)))\n";
+                  fn main(console: Console):\n    console.print(__render(sealed_lib.shown(1)))\n";
         link_lib_user(lib, ok).expect("public function may call its private helper");
 
         let hidden_call = "import sealed_lib\n\n\
-                           fn main(console: Console):\n    print(console, __render(sealed_lib.hidden(1)))\n";
+                           fn main(console: Console):\n    console.print(__render(sealed_lib.hidden(1)))\n";
         let err = link_lib_user(lib, hidden_call).expect_err("private function must not be module-callable");
         assert!(err.contains("function `sealed_lib.hidden` is private"), "{err}");
 
         let hidden_ref = "import sealed_lib\n\n\
-                          fn main(console: Console):\n    let f = sealed_lib.hidden\n    print(console, \"x\")\n";
+                          fn main(console: Console):\n    let f = sealed_lib.hidden\n    console.print(\"x\")\n";
         let err = link_lib_user(lib, hidden_ref).expect_err("private function must not be a module value");
         assert!(err.contains("function `sealed_lib.hidden` is private"), "{err}");
     }
@@ -2327,7 +2327,7 @@ mod tests {
         let lib = "pub fn shown(n: Int) -> Int:\n    n + 1\n";
 
         let plain = "import sealed_lib\n\n\
-                     fn main(console: Console):\n    print(console, __render(shown(1)))\n";
+                     fn main(console: Console):\n    console.print(__render(shown(1)))\n";
         let err = link_lib_user(lib, plain).expect_err("plain import must not bind `shown` bare");
         assert!(
             err.contains("`shown(...)` is not in scope as a bare function")
@@ -2337,11 +2337,11 @@ mod tests {
         );
 
         let from_import = "from sealed_lib import shown\n\n\
-                           fn main(console: Console):\n    print(console, __render(shown(1)))\n";
+                           fn main(console: Console):\n    console.print(__render(shown(1)))\n";
         link_lib_user(lib, from_import).expect("from-imported public function is callable bare");
 
         let qualified = "import sealed_lib\n\n\
-                         fn main(console: Console):\n    print(console, __render(sealed_lib.shown(1)))\n";
+                         fn main(console: Console):\n    console.print(__render(sealed_lib.shown(1)))\n";
         link_lib_user(lib, qualified).expect("plain import keeps qualified calls available");
     }
 
@@ -2357,7 +2357,7 @@ mod tests {
         // CONSTRUCT via `lib.Vault(...)` — rejected.
         let forge = "import sealed_lib\n\n\
                      fn main(console: Console, net: Net):\n    \
-                     let forged = sealed_lib.Vault(net)\n    print(console, \"x\")\n";
+                     let forged = sealed_lib.Vault(net)\n    console.print(\"x\")\n";
         let err = link_lib_user(lib, forge).expect_err("qualified construct must be rejected");
         assert!(err.contains("sealed capability") && err.contains("Vault"), "{err}");
 
@@ -2365,13 +2365,13 @@ mod tests {
         let destr = "import sealed_lib\n\n\
                      fn main(console: Console, net: Net):\n    \
                      let v = sealed_lib.make(net)\n    \
-                     match v:\n        sealed_lib.Vault(inner) -> print(console, \"leak\")\n";
+                     match v:\n        sealed_lib.Vault(inner) -> console.print(\"leak\")\n";
         let err = link_lib_user(lib, destr).expect_err("qualified destructure must be rejected");
         assert!(err.contains("sealed capability") && err.contains("destructure"), "{err}");
 
         // Legit: hold and pass a Vault through the lib's exported functions — allowed.
         let holder = "from sealed_lib import Vault\nimport sealed_lib\n\n\
-                      fn use_it(v: Vault, console: Console):\n    print(console, sealed_lib.zone(v))\n\n\
+                      fn use_it(v: Vault, console: Console):\n    console.print(sealed_lib.zone(v))\n\n\
                       fn main(console: Console, net: Net):\n    \
                       let v = sealed_lib.make(net)\n    use_it(v, console)\n";
         assert!(link_lib_user(lib, holder).is_ok(), "hold+pass must be allowed");
@@ -2384,7 +2384,7 @@ mod tests {
         let lib = "grantable capability UiRoot:\n    policy: String\n";
         let forge = "import sealed_lib\n\n\
                      fn main(console: Console):\n    \
-                     let forged = sealed_lib.UiRoot(\"admin\")\n    print(console, \"x\")\n";
+                     let forged = sealed_lib.UiRoot(\"admin\")\n    console.print(\"x\")\n";
         let err = link_lib_user(lib, forge).expect_err("grantable mint must be rejected");
         assert!(err.contains("sealed capability") && err.contains("UiRoot"), "{err}");
     }
@@ -2405,7 +2405,7 @@ mod tests {
         // "sealed type" (not a "sealed capability").
         let forge = "import sealed_lib\n\n\
                      fn main(console: Console):\n    \
-                     let b = sealed_lib.BoxData(1)\n    print(console, \"x\")\n";
+                     let b = sealed_lib.BoxData(1)\n    console.print(\"x\")\n";
         let err = link_lib_user(lib, forge).expect_err("sealed-type construct must be rejected");
         assert!(
             err.contains("sealed type") && err.contains("BoxData") && err.contains("construct"),
@@ -2418,14 +2418,14 @@ mod tests {
         let destr = "import sealed_lib\n\n\
                      fn main(console: Console):\n    \
                      let b = sealed_lib.wrap(1)\n    \
-                     match b:\n        sealed_lib.BoxData(inner) -> print(console, \"${inner}\")\n";
+                     match b:\n        sealed_lib.BoxData(inner) -> console.print(\"${inner}\")\n";
         assert!(link_lib_user(lib, destr).is_ok(), "sealed-type match must be allowed");
 
         // Legit: build via the smart constructor, hold, pass, and read the value out.
         let ok = "import sealed_lib\n\n\
                   fn main(console: Console):\n    \
                   let b = sealed_lib.wrap(41)\n    \
-                  print(console, \"${sealed_lib.unwrap(b)}\")\n";
+                  console.print(\"${sealed_lib.unwrap(b)}\")\n";
         assert!(link_lib_user(lib, ok).is_ok(), "smart-constructor use must be allowed");
     }
 
@@ -2467,7 +2467,7 @@ mod tests {
         let src = "type R:\n    x: Int\n\n\
                    impl R:\n    fn get(self, n: Int) -> Int:\n        self.x + n\n\n\
                    fn main(console: Console):\n    \
-                   let list = R(x: 1)\n    print(console, __render(list.get(2)))\n";
+                   let list = R(x: 1)\n    console.print(__render(list.get(2)))\n";
         let parsed = crate::parser::parse_module(src).expect("parses");
         let linked = link(vec![("main".to_string(), parsed)], "main", noop_expand)
             .expect("links");
@@ -2486,10 +2486,10 @@ mod tests {
         let lib = "type FieldInfo:\n    name: String\n    type_name: String\n";
         let user = "import rec_lib\nfrom rec_lib import FieldInfo\n\n\
                     fn main(console: Console):\n    \
-                    let fi = FieldInfo(name: \"x\", type_name: \"Int\")\n    print(console, fi.name)\n";
+                    let fi = FieldInfo(name: \"x\", type_name: \"Int\")\n    console.print(fi.name)\n";
         let qualified = "import rec_lib\n\n\
                          fn main(console: Console):\n    \
-                         let fi = rec_lib.FieldInfo(name: \"x\", type_name: \"Int\")\n    print(console, fi.name)\n";
+                         let fi = rec_lib.FieldInfo(name: \"x\", type_name: \"Int\")\n    console.print(fi.name)\n";
         let libm = crate::parser::parse_module(lib).expect("lib parses");
         let userm = crate::parser::parse_module(user).expect("user parses");
         let qualm = crate::parser::parse_module(qualified).expect("qualified user parses");
@@ -2526,7 +2526,7 @@ mod tests {
         // BUG-303: `let f = iter.count` without `import iter` must give the
         // missing-import teaching diagnostic (like the call position), not a bare
         // "unbound variable `iter`".
-        let src = "fn main(console: Console):\n    let f = iter.count\n    print(console, \"x\")\n";
+        let src = "fn main(console: Console):\n    let f = iter.count\n    console.print(\"x\")\n";
         let parsed = crate::parser::parse_module(src).expect("parses");
         let err = link(vec![("main".to_string(), parsed)], "main", noop_expand)
             .expect_err("must be a link error")

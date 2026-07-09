@@ -4,7 +4,7 @@
     fn evaluates_arithmetic_and_precedence() {
         let out = run(r#"
 fn main(console: Console):
-    print(console, __render((1 + (2 * 3))))
+    console.print(__render((1 + (2 * 3))))
 "#)
             .unwrap();
         assert_eq!(out, vec!["7"]);
@@ -14,7 +14,7 @@ fn main(console: Console):
     fn mints_a_grantable_user_cap() {
         // (RFC-0038) a `main` binding a bare grantable cap gets a sealed record
         // minted from the `[user_caps]` grant fields, readable in its own module.
-        let src = "grantable capability UiRoot:\n    policy: String\n\nfn policy_of(u: UiRoot) -> String:\n    match u:\n        UiRoot(p) -> p\n\nfn main(console: Console, ui: UiRoot):\n    print(console, policy_of(ui))\n";
+        let src = "grantable capability UiRoot:\n    policy: String\n\nfn policy_of(u: UiRoot) -> String:\n    match u:\n        UiRoot(p) -> p\n\nfn main(console: Console, ui: UiRoot):\n    console.print(policy_of(ui))\n";
         let module = witchy_syntax::parser::parse_module(src).unwrap();
         let mut fields = std::collections::BTreeMap::new();
         fields.insert("policy".to_string(), "coven-web".to_string());
@@ -42,7 +42,7 @@ fn main(console: Console):
         std::fs::write(src_root.join("api.proto"), "service Foo").unwrap();
 
         let module = witchy_syntax::parser::parse_module(
-            "fn build(out: BuildOut, schema: BuildRead):\n    write_out(out, \"api.witchy\", \"// generated from: \" + read_build(schema, \"api.proto\"))\n",
+            "fn build(out: BuildOut, schema: BuildRead):\n    out.write_out(\"api.witchy\", \"// generated from: \" + schema.read_build(\"api.proto\"))\n",
         )
         .expect("parse");
         let grants = BuildGrants {
@@ -63,7 +63,7 @@ fn main(console: Console):
         let _ = std::fs::remove_dir_all(&dir);
         // BuildRead demanded but not granted ⇒ refused before running.
         let m = witchy_syntax::parser::parse_module(
-            "fn build(out: BuildOut, schema: BuildRead):\n    write_out(out, \"x\", read_build(schema, \"a\"))\n",
+            "fn build(out: BuildOut, schema: BuildRead):\n    out.write_out(\"x\", schema.read_build(\"a\"))\n",
         )
         .unwrap();
         let g = BuildGrants { out_dir: dir.join("out"), ..Default::default() };
@@ -71,7 +71,7 @@ fn main(console: Console):
         assert!(err.message.contains("no read grant"), "{}", err.message);
         // A confined BuildOut cannot write outside its sandbox.
         let m2 = witchy_syntax::parser::parse_module(
-            "fn build(out: BuildOut):\n    write_out(out, \"../escape.txt\", \"nope\")\n",
+            "fn build(out: BuildOut):\n    out.write_out(\"../escape.txt\", \"nope\")\n",
         )
         .unwrap();
         let g2 = BuildGrants { out_dir: dir.join("out2"), ..Default::default() };
@@ -88,7 +88,7 @@ fn main(console: Console):
         let dir = std::env::temp_dir().join(format!("witchy_build_e2e_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let build_mod = witchy_syntax::parser::parse_module(
-            "fn build(out: BuildOut):\n    let nl = \"\\n\"\n    write_out(out, \"greet.witchy\", \"pub fn greeting() -> String:\" + nl + \"    \\\"hi from generated code\\\"\" + nl)\n",
+            "fn build(out: BuildOut):\n    let nl = \"\\n\"\n    out.write_out(\"greet.witchy\", \"pub fn greeting() -> String:\" + nl + \"    \\\"hi from generated code\\\"\" + nl)\n",
         )
         .expect("parse build module");
         let gen_dir = dir.join("gen");
@@ -97,7 +97,7 @@ fn main(console: Console):
         assert_eq!(files, vec!["greet.witchy".to_string()]);
         let generated = std::fs::read_to_string(gen_dir.join("greet.witchy")).unwrap();
         // The generated source links with a consumer and runs.
-        let consumer = "import greet\nfn main(console: Console):\n    print(console, greet.greeting())\n";
+        let consumer = "import greet\nfn main(console: Console):\n    console.print(greet.greeting())\n";
         let out = run_program(&[("greet", generated.as_str()), ("main", consumer)], "main")
             .expect("generated source compiles and runs");
         assert_eq!(out, vec!["hi from generated code"]);
@@ -118,7 +118,7 @@ fn main(console: Console):
         std::fs::write(b.join("from_b.txt"), "BETA").unwrap();
 
         let module = witchy_syntax::parser::parse_module(
-            "fn build(out: BuildOut, src: BuildRead):\n    write_out(out, \"g.txt\", read_build(src, \"from_a.txt\") + \"/\" + read_build(src, \"from_b.txt\"))\n",
+            "fn build(out: BuildOut, src: BuildRead):\n    out.write_out(\"g.txt\", src.read_build(\"from_a.txt\") + \"/\" + src.read_build(\"from_b.txt\"))\n",
         )
         .unwrap();
         let grants = BuildGrants {
@@ -131,7 +131,7 @@ fn main(console: Console):
 
         // A file in neither root is refused.
         let m2 = witchy_syntax::parser::parse_module(
-            "fn build(out: BuildOut, src: BuildRead):\n    write_out(out, \"g.txt\", read_build(src, \"nope.txt\"))\n",
+            "fn build(out: BuildOut, src: BuildRead):\n    out.write_out(\"g.txt\", src.read_build(\"nope.txt\"))\n",
         )
         .unwrap();
         let g2 = BuildGrants { out_dir: dir.join("out2"), read_roots: vec![a, b], ..Default::default() };
@@ -150,7 +150,7 @@ fn main(console: Console):
         unsafe { std::env::set_var("WITCHY_BUILD_ALLOWED", "yes") };
         unsafe { std::env::set_var("WITCHY_BUILD_SECRET", "leak?") };
         let granted = witchy_syntax::parser::parse_module(
-            "import option\nfn build(out: BuildOut, env: BuildEnv):\n    let v = match get_build_env(env, \"WITCHY_BUILD_ALLOWED\"):\n        Some(x) -> x\n        None -> \"unset\"\n    write_out(out, \"g.txt\", v)\n",
+            "import option\nfn build(out: BuildOut, env: BuildEnv):\n    let v = match env.get_build_env(\"WITCHY_BUILD_ALLOWED\"):\n        Some(x) -> x\n        None -> \"unset\"\n    out.write_out(\"g.txt\", v)\n",
         )
         .unwrap();
         let g = BuildGrants {
@@ -163,7 +163,7 @@ fn main(console: Console):
 
         // The same grant cannot read a key it didn't name.
         let denied = witchy_syntax::parser::parse_module(
-            "import option\nfn build(out: BuildOut, env: BuildEnv):\n    let v = match get_build_env(env, \"WITCHY_BUILD_SECRET\"):\n        Some(x) -> x\n        None -> \"unset\"\n    write_out(out, \"g.txt\", v)\n",
+            "import option\nfn build(out: BuildOut, env: BuildEnv):\n    let v = match env.get_build_env(\"WITCHY_BUILD_SECRET\"):\n        Some(x) -> x\n        None -> \"unset\"\n    out.write_out(\"g.txt\", v)\n",
         )
         .unwrap();
         let g2 = BuildGrants {
@@ -199,7 +199,7 @@ fn main(console: Console):
         let _ = std::fs::remove_dir_all(&dir);
         let module = witchy_syntax::parser::parse_module(
             &format!(
-                "fn build(out: BuildOut, dl: BuildNet):\n    write_out(out, \"got.txt\", fetch_build(dl, \"{addr}\", \"/schema\"))\n"
+                "fn build(out: BuildOut, dl: BuildNet):\n    out.write_out(\"got.txt\", dl.fetch_build(\"{addr}\", \"/schema\"))\n"
             ),
         )
         .unwrap();
@@ -215,7 +215,7 @@ fn main(console: Console):
         // A host NOT on the allow-list is refused — even one that exists.
         let m2 = witchy_syntax::parser::parse_module(
             &format!(
-                "fn build(out: BuildOut, dl: BuildNet):\n    write_out(out, \"x\", fetch_build(dl, \"{addr}\", \"/\"))\n"
+                "fn build(out: BuildOut, dl: BuildNet):\n    out.write_out(\"x\", dl.fetch_build(\"{addr}\", \"/\"))\n"
             ),
         )
         .unwrap();
@@ -236,7 +236,7 @@ fn main(console: Console):
         let dir = std::env::temp_dir().join(format!("witchy_build_exec_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let module = witchy_syntax::parser::parse_module(
-            "fn build(out: BuildOut, cc: BuildExec):\n    write_out(out, \"x.txt\", run_tool(cc, \"cat\", \"piped-input\"))\n",
+            "fn build(out: BuildOut, cc: BuildExec):\n    out.write_out(\"x.txt\", cc.run_tool(\"cat\", \"piped-input\"))\n",
         )
         .unwrap();
         let grants = BuildGrants {
@@ -250,7 +250,7 @@ fn main(console: Console):
 
         // A tool NOT on the allow-list is refused before it runs.
         let m2 = witchy_syntax::parser::parse_module(
-            "fn build(out: BuildOut, cc: BuildExec):\n    write_out(out, \"x.txt\", run_tool(cc, \"rm\", \"-rf /\"))\n",
+            "fn build(out: BuildOut, cc: BuildExec):\n    out.write_out(\"x.txt\", cc.run_tool(\"rm\", \"-rf /\"))\n",
         )
         .unwrap();
         let g2 = BuildGrants {
@@ -287,7 +287,7 @@ fn double(n: Int) -> Int:
     (n * 2)
 
 fn main(console: Console):
-    print(console, ("doubled: " + __render(double(21))))
+    console.print(("doubled: " + __render(double(21))))
 "#;
         assert_eq!(run(src).unwrap(), vec!["doubled: 42"]);
     }
@@ -300,7 +300,7 @@ fn double(n: Int) -> Int:
 
 fn main(console: Console):
     let result = __render(double(4))
-    print(console, result)
+    console.print(result)
 "#;
         assert_eq!(run(src).unwrap(), vec!["8"]);
     }
@@ -316,9 +316,9 @@ fn describe(e: Event) -> String:
         _ -> "unknown"
 
 fn main(console: Console):
-    print(console, describe(Click(5, 9)))
-    print(console, describe(Click((-1), 0)))
-    print(console, describe(Closed))
+    console.print(describe(Click(5, 9)))
+    console.print(describe(Click((-1), 0)))
+    console.print(describe(Closed))
 "#;
         assert_eq!(
             run(src).unwrap(),
@@ -334,8 +334,8 @@ fn sign(n: Int) -> String:
     label
 
 fn main(console: Console):
-    print(console, sign(3))
-    print(console, sign((-2)))
+    console.print(sign(3))
+    console.print(sign((-2)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["positive", "non-positive"]);
     }
@@ -349,7 +349,7 @@ fn fact(n: Int) -> Int:
         _ -> (n * fact((n - 1)))
 
 fn main(console: Console):
-    print(console, __render(fact(5)))
+    console.print(__render(fact(5)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["120"]);
     }
@@ -388,7 +388,7 @@ fn main(console: Console):
     fn capability_can_be_threaded_to_a_helper() {
         let src = r#"
 fn announce(console: Console, who: String) -> Nil:
-    print(console, ("hello, " + who))
+    console.print(("hello, " + who))
 
 fn main(console: Console):
     announce(console, "witchy")
@@ -405,25 +405,25 @@ fn main(console: Console):
         // Attenuate to a subdir and read a file within it.
         let ok = r#"
 fn main(console: Console, root: Dir):
-    let d = subtree(root, "sub")
-    print(console, read(d, "hi.txt"))
+    let d = root.subtree("sub")
+    console.print(d.read("hi.txt"))
 "#;
         assert_eq!(run_in(ok, &root).unwrap(), vec!["hi!"]);
 
         // Confinement: `..` cannot escape the granted subtree.
         let escape = r#"
 fn main(console: Console, root: Dir):
-    print(console, read(root, "../secret"))
+    console.print(root.read("../secret"))
 "#;
         assert!(run_in(escape, &root).is_err());
 
         // A function with no Dir cannot read (no way to obtain the capability).
         let no_cap = r#"
 fn sneaky() -> String:
-    read(root, "sub/hi.txt")
+    root.read("sub/hi.txt")
 
 fn main(console: Console, root: Dir):
-    print(console, sneaky())
+    console.print(sneaky())
 "#;
         assert!(run_in(no_cap, &root).is_err());
 
@@ -436,8 +436,8 @@ fn main(console: Console, root: Dir):
             std::os::unix::fs::symlink(&outside, root.join("sub/escape")).ok();
             let via_symlink = r#"
 fn main(console: Console, root: Dir):
-    let d = subtree(root, "sub")
-    print(console, read(d, "escape"))
+    let d = root.subtree("sub")
+    console.print(d.read("escape"))
 "#;
             assert!(run_in(via_symlink, &root).is_err());
             std::fs::remove_file(&outside).ok();
@@ -474,8 +474,8 @@ fn main(console: Console, root: Dir):
 
         let src = r#"
 fn main(console: Console, root: Dir):
-    let names = list(root)
-    print(console, "${list.length(names)}")
+    let names = root.list()
+    console.print("${list.length(names)}")
 "#;
         let err = run_in(src, &root).expect_err("non-UTF-8 names must be loud");
         assert!(
@@ -509,9 +509,9 @@ fn main(console: Console, root: Dir):
             r#"
 fn main(console: Console, net: Net):
     let only = net.only(Net.tcp("{host}", {port}))
-    let s = connect(only, "{addr}")
-    send_line(s, "ping")
-    print(console, recv_line(s))
+    let s = only.connect("{addr}")
+    s.send_line("ping")
+    console.print(s.recv_line())
 "#
         );
         // Link in the bundled std (`policy` is preluded), then run.
@@ -526,8 +526,8 @@ fn main(console: Console, net: Net):
         // Denied: connecting to an address not in the allow-list.
         let denied = r#"
 fn main(console: Console, net: Net):
-    let s = connect(net, "10.255.255.1:80")
-    send_line(s, "x")
+    let s = net.connect("10.255.255.1:80")
+    s.send_line("x")
 "#;
         assert!(run_with(denied, ".", vec![addr.clone()]).is_err());
 
@@ -535,7 +535,7 @@ fn main(console: Console, net: Net):
         let bad_restrict = r#"
 fn main(console: Console, net: Net):
     let bad = net.only(Net.tcp("10.255.255.1", 80))
-    print(console, "unreachable")
+    console.print("unreachable")
 "#;
         let linked_bad = crate::pipeline::link(
             vec![("main".to_string(), witchy_syntax::parser::parse_module(bad_restrict).expect("parse"))],
@@ -555,12 +555,12 @@ fn main(console: Console, net: Net):
         let src = format!(
             r#"
 fn main(console: Console, net: Net):
-    let server = listen(net, "{addr}")
-    let sock = accept(server)
-    let line = recv_line(sock)
-    print(console, line)
-    send_bytes(sock, "HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhello witchy")
-    close(sock)
+    let server = net.listen("{addr}")
+    let sock = server.accept()
+    let line = sock.recv_line()
+    console.print(line)
+    sock.send_bytes("HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhello witchy")
+    sock.close()
 "#
         );
         let allow = vec![addr.clone()];
@@ -588,7 +588,7 @@ fn main(console: Console, net: Net):
 
     #[test]
     fn recv_bytes_does_not_preallocate_attacker_count() {
-        // (BUG-065) `recv_bytes(sock, n)` must NOT pre-allocate `n` bytes up front —
+        // (BUG-065) `sock.recv_bytes(n)` must NOT pre-allocate `n` bytes up front —
         // `n` is an attacker-controlled count (an HTTP Content-Length up to i64::MAX),
         // so `vec![0u8; n]` before reading a single byte is a remote OOM. The fix reads
         // in bounded chunks: a huge `n` against a peer that sends only a few bytes then
@@ -612,8 +612,8 @@ fn main(console: Console, net: Net):
             r#"
 fn main(console: Console, net: Net):
     let only = net.only(Net.tcp("{host}", {port}))
-    let s = connect(only, "{addr}")
-    print(console, recv_bytes(s, 2000000000))
+    let s = only.connect("{addr}")
+    console.print(s.recv_bytes(2000000000))
 "#
         );
         let linked = crate::pipeline::link(
@@ -712,10 +712,10 @@ fn main(console: Console, net: Net):
         .with_query("q", "hi")
     match req.send(net):
         Ok(resp) ->
-            print(console, __render(http.status(resp)))
-            print(console, http.body(resp))
-            print(console, __render(http.is_success(resp)))
-        Err(e) -> print(console, "err: " + e)
+            console.print(__render(http.status(resp)))
+            console.print(http.body(resp))
+            console.print(__render(http.is_success(resp)))
+        Err(e) -> console.print("err: " + e)
 "#
         );
         let parsed = witchy_syntax::parser::parse_module(&src).expect("parse");
@@ -1133,12 +1133,12 @@ from http import Request, Response
 fn file_server(dir: Dir) -> fn(Request) -> Response:
     fn(req: Request): serve_file(dir, server.param_or(req, "path", ""))
 fn serve_file(dir: Dir, p: String) -> Response:
-    if exists(dir, p):
-        server.text(200, read(dir, p))
+    if dir.exists(p):
+        server.text(200, dir.read(p))
     else:
         server.not_found()
 fn main(console: Console, net: Net, root: Dir):
-    let examples = subtree(root, "examples")
+    let examples = root.subtree("examples")
     let data = subtree(examples, "data")
     let app = server.router().get("/files/*path", file_server(data))
     server.serve_n(net, "{addr}", app, 2)
@@ -1179,7 +1179,7 @@ fn main(console: Console, net: Net, root: Dir):
 import server
 from http import Request, Response
 fn evil(req: Request) -> Response:
-    let s = connect(net, "10.0.0.1:80")
+    let s = net.connect("10.0.0.1:80")
     server.text(200, "leaked")
 fn main(console: Console, net: Net):
     let app = server.router().get("/", evil)
@@ -1206,7 +1206,7 @@ fn pick(c: Color) -> Int:
         Red -> 1
 
 fn main(console: Console):
-    print(console, "${pick(Red)}")
+    console.print("${pick(Red)}")
 "#;
         let parsed = witchy_syntax::parser::parse_module(src).expect("parse");
         let linked =
@@ -1231,7 +1231,7 @@ pub fn shout(name: String) -> String:
 import strutil
 
 fn main(console: Console):
-    print(console, strutil.shout("witchy"))
+    console.print(strutil.shout("witchy"))
 "#;
         assert_eq!(
             run_program(&[("strutil", strutil), ("app", app)], "app").unwrap(),
@@ -1244,7 +1244,7 @@ fn main(console: Console):
         // The app chooses to hand the logger its Console.
         let logger = r#"
 pub fn log(console: Console, msg: String):
-    print(console, ("[log] " + msg))
+    console.print(("[log] " + msg))
 "#;
         let app = r#"
 import logger
@@ -1264,13 +1264,13 @@ fn main(console: Console):
         // time as an unbound variable (no ambient authority to grab).
         let evil = r#"
 pub fn steal(secret: String) -> String:
-    print(console, secret)
+    console.print(secret)
 "#;
         let app = r#"
 import evil
 
 fn main(console: Console):
-    print(console, evil.steal("data"))
+    console.print(evil.steal("data"))
 "#;
         let linked = crate::pipeline::link(
             vec![
@@ -1287,7 +1287,7 @@ fn main(console: Console):
     fn calling_unimported_module_is_a_link_error() {
         let app = r#"
 fn main(console: Console):
-    print(console, other.foo())
+    console.print(other.foo())
 "#;
         assert!(run_program(&[("app", app)], "app").is_err());
     }
@@ -1299,7 +1299,7 @@ fn half(x: Float) -> Float:
     (x / 2.0)
 
 fn main(console: Console):
-    print(console, __render(half(7.0)))
+    console.print(__render(half(7.0)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["3.5"]);
     }
@@ -1316,9 +1316,9 @@ fn classify(n: Int) -> String:
         "other"
 
 fn main(console: Console):
-    print(console, classify(5))
-    print(console, classify((-1)))
-    print(console, classify(50))
+    console.print(classify(5))
+    console.print(classify((-1)))
+    console.print(classify(50))
 "#;
         assert_eq!(
             run(src).unwrap(),
@@ -1334,11 +1334,11 @@ fn divmod(a: Int, b: Int) -> (Int, Int):
 
 fn main(console: Console):
     let (q, r) = divmod(17, 5)
-    print(console, __render(q))
-    print(console, __render(r))
+    console.print(__render(q))
+    console.print(__render(r))
     let pair = (1, "one")
     match pair:
-        (n, name) -> print(console, ((__render(n) + "=") + name))
+        (n, name) -> console.print(((__render(n) + "=") + name))
 "#;
         assert_eq!(run(src).unwrap(), vec!["3", "2", "1=one"]);
     }
@@ -1350,8 +1350,8 @@ fn id(x: a) -> a:
     x
 
 fn main(console: Console):
-    print(console, id("hi"))
-    print(console, __render(id(5)))
+    console.print(id("hi"))
+    console.print(__render(id(5)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["hi", "5"]);
     }
@@ -1369,8 +1369,8 @@ fn show(r: Result(Int, String)) -> String:
         Err(msg) -> ("err " + msg)
 
 fn main(console: Console):
-    print(console, show(Ok(7)))
-    print(console, show(Err("boom")))
+    console.print(show(Ok(7)))
+    console.print(show(Err("boom")))
 "#;
         assert_eq!(run(src).unwrap(), vec!["ok 7", "err boom"]);
     }
@@ -1395,8 +1395,8 @@ fn first_even(xs: List(Int)) -> Int:
     (0 - 1)
 
 fn main(console: Console):
-    print(console, __render(first_even([1, 3, 8, 5])))
-    print(console, __render(first_even([1, 3, 5])))
+    console.print(__render(first_even([1, 3, 8, 5])))
+    console.print(__render(first_even([1, 3, 5])))
 "#;
         assert_eq!(run(src).unwrap(), vec!["8", "-1"]);
     }
@@ -1411,9 +1411,9 @@ fn classify(n: Int) -> String:
         _ -> "other"
 
 fn main(console: Console):
-    print(console, classify((-1)))
-    print(console, classify(0))
-    print(console, classify(3))
+    console.print(classify((-1)))
+    console.print(classify(0))
+    console.print(classify(3))
 "#;
         assert_eq!(run(src).unwrap(), vec!["neg one", "zero", "other"]);
     }
@@ -1430,7 +1430,7 @@ fn rec(n: Int) -> Int:
         rec((n - 1))
 
 fn main(console: Console):
-    print(console, __render(rec(5000000)))
+    console.print(__render(rec(5000000)))
 "#;
         let e = run(src).unwrap_err();
         assert!(e.message.contains("too deep"), "got: {}", e.message);
@@ -1447,7 +1447,7 @@ fn rec(n: Int) -> Int:
         rec((n - 1))
 
 fn main(console: Console):
-    print(console, __render(rec(10000)))
+    console.print(__render(rec(10000)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["0"]);
     }
@@ -1459,7 +1459,7 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     let big = 9999999999
-    print(console, __render((big * big)))
+    console.print(__render((big * big)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["7766279611452241921"]);
     }
@@ -1471,7 +1471,7 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     let lo = ((0 - 9223372036854775807) - 1)
-    print(console, __render((-lo)))
+    console.print(__render((-lo)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["-9223372036854775808"]);
     }
@@ -1479,7 +1479,7 @@ fn main(console: Console):
     #[test]
     fn runtime_errors_report_their_source_line() {
         // Division by zero happens on the third line.
-        let src = "fn main(console: Console):\n    let a = 1\n    print(console, __render(a / 0))\n";
+        let src = "fn main(console: Console):\n    let a = 1\n    console.print(__render(a / 0))\n";
         let e = run(src).unwrap_err();
         assert!(e.message.contains("line 3"), "got: {}", e.message);
     }
@@ -1492,7 +1492,7 @@ fn risky(n: Int) -> Int:
     (n / 0)
 
 fn main(console: Console):
-    print(console, __render(risky(5)))
+    console.print(__render(risky(5)))
 "#;
         let e = run(src).unwrap_err();
         assert!(e.message.contains("risky"), "got: {}", e.message);
@@ -1553,12 +1553,12 @@ fn main(console: Console):
     var sum = 0
     for v in dict.values(d):
         sum = (sum + v)
-    print(console, __render(sum))
+    console.print(__render(sum))
     var report = ""
     for e in dict.pairs(d):
         let (k, v) = e
         report = ((((report + k) + "=") + __render(v)) + ";")
-    print(console, report)
+    console.print(report)
 "#;
         assert_eq!(run(src).unwrap(), vec!["30", "a=10;b=20;"]);
     }
@@ -1570,13 +1570,13 @@ fn main(console: Console):
     let a = dict.insert(dict.new(), "x", 1)
     let b = dict.insert(a, "y", 2)
     let c = dict.insert(b, "x", 9)
-    print(console, __render(dict.get_or(c, "x", 0)))
-    print(console, __render(dict.get_or(c, "y", 0)))
-    print(console, __render(dict.get_or(c, "z", 0)))
-    print(console, __render(dict.length(c)))
-    print(console, __render(dict.get_or(a, "x", 0)))
-    print(console, __render(dict.contains_key(c, "y")))
-    print(console, __render(list.length(dict.keys(c))))
+    console.print(__render(dict.get_or(c, "x", 0)))
+    console.print(__render(dict.get_or(c, "y", 0)))
+    console.print(__render(dict.get_or(c, "z", 0)))
+    console.print(__render(dict.length(c)))
+    console.print(__render(dict.get_or(a, "x", 0)))
+    console.print(__render(dict.contains_key(c, "y")))
+    console.print(__render(list.length(dict.keys(c))))
 "#;
         assert_eq!(
             run(src).unwrap(),
@@ -1588,8 +1588,8 @@ fn main(console: Console):
     fn sqrt_builtin_computes() {
         let src = r#"
 fn main(console: Console):
-    print(console, __render(math.sqrt(2.0)))
-    print(console, __render(math.to_int(math.sqrt(144.0))))
+    console.print(__render(math.sqrt(2.0)))
+    console.print(__render(math.to_int(math.sqrt(144.0))))
 "#;
         assert_eq!(
             run(src).unwrap(),
@@ -1602,12 +1602,12 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     let s = "abcdef"
-    print(console, string.substring(s, 1, 4))
-    print(console, string.substring(s, 4, 100))
-    print(console, string.substring(s, 3, 1))
-    print(console, __render(string.find(s, "cd")))
-    print(console, __render(string.find(s, "z")))
-    print(console, __render(string.ends_with(s, "ef")))
+    console.print(string.substring(s, 1, 4))
+    console.print(string.substring(s, 4, 100))
+    console.print(string.substring(s, 3, 1))
+    console.print(__render(string.find(s, "cd")))
+    console.print(__render(string.find(s, "z")))
+    console.print(__render(string.ends_with(s, "ef")))
 "#;
         assert_eq!(
             run(src).unwrap(),
@@ -1621,7 +1621,7 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     let s = "héllo"
-    print(console, string.substring(s, 0, 2))
+    console.print(string.substring(s, 0, 2))
 "#;
         assert_eq!(run(src).unwrap(), vec!["hé"]);
     }
@@ -1631,10 +1631,10 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     let parts = string.split("a,b,c", ",")
-    print(console, __render(list.length(parts)))
-    print(console, list.at(parts, 1))
-    print(console, string.replace("a,b,c", ",", "-"))
-    print(console, __render(string.contains("hello", "ell")))
+    console.print(__render(list.length(parts)))
+    console.print(list.at(parts, 1))
+    console.print(string.replace("a,b,c", ",", "-"))
+    console.print(__render(string.contains("hello", "ell")))
 "#;
         assert_eq!(run(src).unwrap(), vec!["3", "b", "a-b-c", "true"]);
     }
@@ -1645,10 +1645,10 @@ fn main(console: Console):
 fn main(console: Console):
     let a = [1, 2]
     let b = list.push(a, 3)
-    print(console, __render(list.length(a)))
-    print(console, __render(list.length(b)))
+    console.print(__render(list.length(a)))
+    console.print(__render(list.length(b)))
     let c = list.concat(a, [9, 9])
-    print(console, __render(list.at(c, 3)))
+    console.print(__render(list.at(c, 3)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["2", "3", "9"]);
     }
@@ -1665,8 +1665,8 @@ fn apply(f: fn(Int) -> Int, x: Int) -> Int:
 fn main(console: Console):
     let inc = adder(1)
     let plus100 = adder(100)
-    print(console, __render(apply(inc, 5)))
-    print(console, __render(apply(plus100, 5)))
+    console.print(__render(apply(inc, 5)))
+    console.print(__render(apply(plus100, 5)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["6", "105"]);
     }
@@ -1688,8 +1688,8 @@ fn main(console: Console):
     let g = fn(o: Option(Int)):
         let n = o?
         Some(n + 1)
-    print(console, render(run(g, Some(7))))
-    print(console, render(run(g, None)))
+    console.print(render(run(g, Some(7))))
+    console.print(render(run(g, None)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["8", "none"]);
     }
@@ -1704,8 +1704,8 @@ type Point:
 fn main(console: Console):
     let p = Point(1, 2)
     let q = Point(x: 10, y: ((p).y + 1), ..p)
-    print(console, (__render((p).x) + __render((p).y)))
-    print(console, (__render((q).x) + __render((q).y)))
+    console.print((__render((p).x) + __render((p).y)))
+    console.print((__render((q).x) + __render((q).y)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["12", "103"]);
     }
@@ -1719,7 +1719,7 @@ type Person:
 
 fn main(console: Console):
     let p = Person("witchy", 7)
-    print(console, (((p).name + " is ") + __render((p).age)))
+    console.print((((p).name + " is ") + __render((p).age)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["witchy is 7"]);
     }
@@ -1733,7 +1733,7 @@ fn len(xs: List(Int)) -> Int:
         [_, ..tail] -> (1 + len(tail))
 
 fn main(console: Console):
-    print(console, __render(len([5, 6, 7, 8])))
+    console.print(__render(len([5, 6, 7, 8])))
 "#;
         assert_eq!(run(src).unwrap(), vec!["4"]);
     }
@@ -1745,7 +1745,7 @@ fn main(console: Console):
     var total = 0
     for n in [10, 20, 30]:
         total = (total + n)
-    print(console, __render(total))
+    console.print(__render(total))
 "#;
         assert_eq!(run(src).unwrap(), vec!["60"]);
     }
@@ -1768,8 +1768,8 @@ fn render(o: Option(Int)) -> String:
         None -> "none"
 
 fn main(console: Console):
-    print(console, render(head(Some(1))))
-    print(console, render(head(None)))
+    console.print(render(head(Some(1))))
+    console.print(render(head(None)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["101", "none"]);
     }
@@ -1778,9 +1778,9 @@ fn main(console: Console):
     fn conversions() {
         let src = r#"
 fn main(console: Console):
-    print(console, __render(math.to_float(7)))
-    print(console, __render(math.to_int(3.9)))
-    print(console, __render(string.to_int("42")))
+    console.print(__render(math.to_float(7)))
+    console.print(__render(math.to_int(3.9)))
+    console.print(__render(string.to_int("42")))
 "#;
         assert_eq!(run(src).unwrap(), vec!["7.0", "3", "42"]);
     }
@@ -1789,13 +1789,13 @@ fn main(console: Console):
     fn string_stdlib() {
         let src = r#"
 fn main(console: Console):
-    print(console, string.to_upper("witchy"))
-    print(console, __render(string.length("hello")))
-    print(console, string.trim("  hi  "))
+    console.print(string.to_upper("witchy"))
+    console.print(__render(string.length("hello")))
+    console.print(string.trim("  hi  "))
     if string.starts_with("witchy", "wit"):
-        print(console, "yes")
+        console.print("yes")
     else:
-        print(console, "no")
+        console.print("no")
 "#;
         assert_eq!(run(src).unwrap(), vec!["WITCHY", "5", "hi", "yes"]);
     }
@@ -1809,8 +1809,8 @@ fn main(console: Console):
     while (i <= 5):
         total = (total + i)
         i = (i + 1)
-    print(console, __render(total))
-    print(console, __render((10 % 3)))
+    console.print(__render(total))
+    console.print(__render((10 % 3)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["15", "1"]);
     }
@@ -1823,9 +1823,9 @@ fn is_zero(n: Int) -> Bool:
 
 fn main(console: Console):
     if (!is_zero(5)):
-        print(console, "nonzero")
+        console.print("nonzero")
     else:
-        print(console, "zero")
+        console.print("zero")
 "#;
         assert_eq!(run(src).unwrap(), vec!["nonzero"]);
     }
@@ -1835,8 +1835,8 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     let xs = [10, 20, 30]
-    print(console, __render(list.length(xs)))
-    print(console, __render(list.at(xs, 1)))
+    console.print(__render(list.length(xs)))
+    console.print(__render(list.at(xs, 1)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["3", "20"]);
     }
@@ -1858,7 +1858,7 @@ fn main(console: Console):
 fn main(console: Console):
     var x = 1
     x = (x + 41)
-    print(console, __render(x))
+    console.print(__render(x))
 "#;
         assert_eq!(run(src).unwrap(), vec!["42"]);
     }
@@ -1874,7 +1874,7 @@ fn bump(var n: Int):
 fn main(console: Console):
     var x = 41
     bump(x)
-    print(console, __render(x))
+    console.print(__render(x))
 "#;
         assert_eq!(run(src).unwrap(), vec!["42"]);
     }

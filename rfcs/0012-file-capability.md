@@ -11,8 +11,8 @@ tracking:
 
 > **Status: implemented** (2026-06-25), with one part **rejected**. Shipped on BOTH
 > backends: `File`/`File[Read]`/`File[Write]` as a host capability (right-typed like
-> `Dir`, footprint-visible, `as` facets + implicit narrowing); `read(f) -> String` /
-> `write(f, data)` leaf ops; `Dir` navigation `dir.read_file(rel) -> File[Read]` /
+> `Dir`, footprint-visible, `as` facets + implicit narrowing); `f.read() -> String` /
+> `f.write(data)` leaf ops; `Dir` navigation `dir.read_file(rel) -> File[Read]` /
 > `dir.write_file(rel) -> File[Write]`, with the same `..`/absolute/symlink confinement
 > as `read`; AND **`main` receiving a `File` directly** — `--file <path>` grants fill
 > `main`'s `File` parameters positionally (the i-th `File` param ← the i-th `--file`),

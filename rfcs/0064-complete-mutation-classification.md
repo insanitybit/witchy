@@ -63,7 +63,7 @@ fn bump(var xs: List(Int), by: Int):      # natural spelling
 fn main(console: Console):
     var xs: List(Int) = []
     bump(xs, 5)                           # checks clean, prints [] — silent no-op
-    print(console, "${xs}")
+    console.print("${xs}")
 ```
 
 - The natural spelling is a silent no-op (gap 2: inferred mutator; gap 3: no

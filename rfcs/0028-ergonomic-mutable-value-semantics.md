@@ -147,7 +147,7 @@ fn sum3(nums: let List(Int)) -> Int:
     best
 
 fn main(console: Console):
-    print(console, "${sum3([1, 2, 3, 4, 5])}")
+    console.print("${sum3([1, 2, 3, 4, 5])}")
 ```
 
 **Soundness — two invariants, both discharged by the [RFC-0024](0024-unified-facts-lattice.md) escape lattice:**

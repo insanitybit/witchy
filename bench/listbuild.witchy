@@ -1,12 +1,12 @@
 // Allocation-bound: build a 300k-element list, then fold it.
 fn main(console: Console, clock: Clock):
-    let bench_t0 = now_monotonic(clock)
+    let bench_t0 = clock.now_monotonic()
     var xs = []
     for i in 0..300000:
         xs = list.push(xs, i * 3)
     var total = 0
     for x in xs:
         total = total + x % 7
-    let bench_t1 = now_monotonic(clock)
-    print(console, "${total}")
-    print(console, "bench_ns=${bench_t1 - bench_t0}")
+    let bench_t1 = clock.now_monotonic()
+    console.print("${total}")
+    console.print("bench_ns=${bench_t1 - bench_t0}")

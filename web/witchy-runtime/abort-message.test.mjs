@@ -27,15 +27,15 @@ const CASES = [
     "runtime error: the reason",
   ],
   [
-    'import list\nfn main(console: Console):\n    let xs = [1, 2]\n    print(console, __render(list.at(xs, 5)))\n',
+    'import list\nfn main(console: Console):\n    let xs = [1, 2]\n    console.print(__render(list.at(xs, 5)))\n',
     "runtime error: list index 5 out of bounds (length 2)",
   ],
   [
-    'import string\nfn main(console: Console):\n    print(console, __render(string.to_int("junk")))\n',
+    'import string\nfn main(console: Console):\n    console.print(__render(string.to_int("junk")))\n',
     "runtime error: cannot parse `junk` as an Int",
   ],
   [
-    'fn main(console: Console):\n    let nan = 0.0 / 0.0\n    print(console, __render(nan < 1.0))\n',
+    'fn main(console: Console):\n    let nan = 0.0 / 0.0\n    console.print(__render(nan < 1.0))\n',
     "runtime error: cannot compare NaN",
   ],
 ];

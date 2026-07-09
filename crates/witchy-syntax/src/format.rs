@@ -2197,7 +2197,7 @@ pub fn reformat(src: &str) -> Option<String> {
 }
 
 /// One-time RFC-0076 migration helper: reformat source and rewrite legacy bare
-/// capability ops (`print(console, x)`) to method form (`console.print(x)`).
+/// capability ops (`console.print(x)`) to method form (`console.print(x)`).
 /// A module-local function/method/trait method with the same name suppresses the
 /// rewrite, so ordinary user functions can reclaim names like `read`.
 pub fn reformat_cap_methods(src: &str) -> Option<String> {

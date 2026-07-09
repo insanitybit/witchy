@@ -1922,7 +1922,7 @@
 
     #[test]
     fn string_print_roundtrips() {
-        // print(console, "hi"): data [2,0,0,0,'h','i'] at offset 8.
+        // console.print("hi"): data [2,0,0,0,'h','i'] at offset 8.
         let mut bytes = (2u32).to_le_bytes().to_vec();
         bytes.extend_from_slice(b"hi");
         let print_call = WirExpr::CallHost {

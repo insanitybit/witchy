@@ -914,7 +914,7 @@ mod grantable_footprint_tests {
         // (RFC-0038) a grantable cap at `main` shows on the `user_caps` axis, and
         // carries no host authority (absent from `total`).
         let with = parse_module(
-            "grantable capability UiRoot:\n    policy: String\n\nfn main(console: Console, ui: UiRoot):\n    print(console, \"ok\")\n",
+            "grantable capability UiRoot:\n    policy: String\n\nfn main(console: Console, ui: UiRoot):\n    console.print(\"ok\")\n",
         )
         .unwrap();
         let fp_with = analyze(&with);
@@ -923,7 +923,7 @@ mod grantable_footprint_tests {
 
         // Requiring a grantable cap a prior version did not is a widening; dropping
         // it is a safe narrowing.
-        let without = parse_module("fn main(console: Console):\n    print(console, \"ok\")\n").unwrap();
+        let without = parse_module("fn main(console: Console):\n    console.print(\"ok\")\n").unwrap();
         let fp_without = analyze(&without);
         let widened = diff(&fp_without, &fp_with);
         assert!(widened.user_caps_added.contains("UiRoot"));

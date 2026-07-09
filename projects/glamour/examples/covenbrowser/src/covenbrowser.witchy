@@ -502,4 +502,4 @@ pub fn export_step(input: String) -> String:
 // A `main` so the rune also runs as a CLI program (and the compiled module gets a
 // `run` export): render the initial model (the index) and print the wire JSON.
 fn main(console: Console):
-    print(console, export_step("{\"model\": -1}") + "\n")
+    console.print(export_step("{\"model\": -1}") + "\n")
