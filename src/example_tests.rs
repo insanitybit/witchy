@@ -2454,6 +2454,85 @@ fn main(console: Console):
         );
     }
 
+    /// JWT/OIDC registered claims are trust-boundary inputs. Missing or
+    /// wrong-shaped claims must fail as malformed payloads after the RS256
+    /// signature verifies, not default into ordinary expiry/mismatch outcomes.
+    #[test]
+    fn jwt_registered_claims_reject_malformed_values_on_both_backends() {
+        use crate::idp::RegistryKey;
+
+        fn b64url(bytes: &[u8]) -> String {
+            const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+            let mut out = String::new();
+            for c in bytes.chunks(3) {
+                let n = ((c[0] as u32) << 16)
+                    | ((*c.get(1).unwrap_or(&0) as u32) << 8)
+                    | (*c.get(2).unwrap_or(&0) as u32);
+                out.push(ALPHABET[(n >> 18 & 63) as usize] as char);
+                out.push(ALPHABET[(n >> 12 & 63) as usize] as char);
+                if c.len() > 1 {
+                    out.push(ALPHABET[(n >> 6 & 63) as usize] as char);
+                }
+                if c.len() > 2 {
+                    out.push(ALPHABET[(n & 63) as usize] as char);
+                }
+            }
+            out
+        }
+
+        fn signed_jwt(key: &RegistryKey, payload_json: &str) -> String {
+            let header = b64url(br#"{"alg":"RS256","typ":"JWT"}"#);
+            let payload = b64url(payload_json.as_bytes());
+            let signing_input = format!("{header}.{payload}");
+            let sig = key.sign(signing_input.as_bytes()).expect("sign JWT");
+            format!("{signing_input}.{}", b64url(&sig))
+        }
+
+        let dir = std::env::temp_dir().join(format!("witchy_jwt_claims_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let key = RegistryKey::load_or_create(&dir).expect("issuer key");
+        let pubkey = key.public_hex();
+        let missing_exp = signed_jwt(
+            &key,
+            r#"{"iss":"https://issuer","sub":"s","aud":"aud","iat":1}"#,
+        );
+        let wrong_aud = signed_jwt(
+            &key,
+            r#"{"iss":"https://issuer","sub":"s","aud":123,"exp":2000000000,"iat":1}"#,
+        );
+        let wrong_iss = signed_jwt(
+            &key,
+            r#"{"iss":123,"sub":"s","aud":"aud","exp":2000000000,"iat":1}"#,
+        );
+
+        let src = format!(
+            r#"import jwt
+
+fn report(console: Console, token: String):
+    match jwt.verify_oidc(token, "{pubkey}", "https://issuer", "aud", 1000):
+        Ok(_) -> print(console, "ok")
+        Err(e) -> print(console, e)
+
+fn main(console: Console):
+    report(console, "{missing_exp}")
+    report(console, "{wrong_aud}")
+    report(console, "{wrong_iss}")
+"#
+        );
+        let want = [
+            "JWT payload is missing `exp`",
+            "JWT payload `aud` must be a string or array of strings",
+            "JWT payload `iss` must be a string",
+        ];
+        assert_eq!(link_run(&src), want, "interpreter must reject malformed registered claims");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", &src)], "main"),
+            want,
+            "WASM must reject malformed registered claims"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// (BUG-456) Encoding's canonical binary path is `Bytes`, not lossy `String`
     /// plumbing or hex detours. The payload includes `0xff`, so any accidental
     /// UTF-8 normalization changes the rendered byte list.
@@ -13302,7 +13381,9 @@ fn main(console: Console):
     /// `azp` must be present and must be THIS client. A single-audience token needs
     /// no `azp`; a multi-audience token is admitted only when `azp` == our client id,
     /// and rejected when `azp` is absent or names a co-audience — so a token minted
-    /// for several parties cannot be replayed at ours. Real RS256, both backends.
+    /// for several parties cannot be replayed at ours. A wrong `azp` is an
+    /// authorization mismatch; a missing `azp` is a malformed registered claim.
+    /// Real RS256, both backends.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn jwt_verify_oidc_enforces_azp_for_multi_audience_backends_agree() {
@@ -13361,8 +13442,12 @@ fn main(console: Console):
         assert_eq!(run(&single), vec!["u1".to_string()], "single-audience token needs no azp");
         assert_eq!(run(&multi_ok), vec!["u2".to_string()], "multi-audience with matching azp is admitted");
         let azp_err = "JWT `azp` mismatch: a multi-audience OIDC token must name this client as the authorized party".to_string();
-        assert_eq!(run(&multi_wrong), vec![azp_err.clone()], "azp naming a co-audience is rejected");
-        assert_eq!(run(&multi_missing), vec![azp_err], "multi-audience with no azp is rejected");
+        assert_eq!(run(&multi_wrong), vec![azp_err], "azp naming a co-audience is rejected");
+        assert_eq!(
+            run(&multi_missing),
+            vec!["JWT payload is missing `azp`".to_string()],
+            "multi-audience with no azp is rejected as malformed"
+        );
     }
 
     /// The full OIDC-via-JWKS verification (how "Log in with Google" / GitHub-Actions

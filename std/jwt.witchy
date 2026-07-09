@@ -62,24 +62,40 @@ fn check_claims(payload_b64: String, audience: String, now: Int) -> Result(Json,
     match json.decode(payload_json):
         Err(e) -> Err("JWT payload is not JSON: " + json.decode_error_message(e))
         Ok(claims) ->
-            if json.get_int(claims, "exp").unwrap_or(0) <= now:
+            let exp = require_int_claim(claims, "exp")?
+            if exp <= now:
                 Err("JWT has expired")
-            else if !aud_matches(claims, audience):
-                Err("JWT audience mismatch (wrong relying party / replay)")
             else:
-                Ok(claims)
+                let aud_ok = aud_matches(claims, audience)?
+                if !aud_ok:
+                    Err("JWT audience mismatch (wrong relying party / replay)")
+                else:
+                    Ok(claims)
 
 // The `aud` claim may be a single string OR an array of strings (RFC 7519 §4.1.3):
-// the token is accepted when `audience` is that string, or is a member of that
-// array. A missing `aud`, or an `audience` absent from the array, is a mismatch
-// (BUG-270).
-fn aud_matches(claims: Json, audience: String) -> Bool:
+// the token is accepted when `audience` is that string, or is a member of that array.
+// A missing or wrong-shaped `aud` is malformed input; a well-shaped claim that lacks
+// this relying party is an audience mismatch (BUG-270).
+fn aud_matches(claims: Json, audience: String) -> Result(Bool, String):
     match json.get(claims, "aud"):
-        None -> false
+        None -> Err("JWT payload is missing `aud`")
         Some(aud) ->
             match json.as_string(aud):
-                Some(single) -> single == audience
-                None -> list.contains(json.strings(aud), audience)
+                Some(single) -> Ok(single == audience)
+                None ->
+                    match json.as_array(aud):
+                        None -> Err("JWT payload `aud` must be a string or array of strings")
+                        Some(items) -> aud_array_matches(items, audience)
+
+fn aud_array_matches(items: List(Json), audience: String) -> Result(Bool, String):
+    var found = false
+    for item in items:
+        match json.as_string(item):
+            None -> return Err("JWT payload `aud` array must contain only strings")
+            Some(aud) ->
+                if aud == audience:
+                    found = true
+    Ok(found)
 
 // The full OIDC relying-party check: verify the RS256 signature AND that the token was
 // minted by the expected `issuer` for the expected `audience`, and is valid now
@@ -92,14 +108,19 @@ pub fn verify_oidc(token: String, rsa_pubkey_der_hex: String, issuer: String, au
     match verify_rs256(token, rsa_pubkey_der_hex, audience, now):
         Err(e) -> Err(e)
         Ok(claims) ->
-            if json.get_string(claims, "iss").unwrap_or("") != issuer:
+            let iss = require_string_claim(claims, "iss")?
+            if iss != issuer:
                 Err("JWT issuer mismatch (untrusted identity provider)")
-            else if not_yet_valid(claims, now):
-                Err("JWT is not yet valid (nbf is in the future)")
-            else if !azp_ok(claims, audience):
-                Err("JWT `azp` mismatch: a multi-audience OIDC token must name this client as the authorized party")
             else:
-                Ok(claims)
+                let early = not_yet_valid(claims, now)?
+                if early:
+                    Err("JWT is not yet valid (nbf is in the future)")
+                else:
+                    let azp = azp_ok(claims, audience)?
+                    if !azp:
+                        Err("JWT `azp` mismatch: a multi-audience OIDC token must name this client as the authorized party")
+                    else:
+                        Ok(claims)
 
 // OpenID Connect Core §3.1.3.7: when an ID Token carries MORE THAN ONE audience,
 // the `azp` (authorized party) claim MUST be present and MUST be this relying
@@ -107,13 +128,12 @@ pub fn verify_oidc(token: String, rsa_pubkey_der_hex: String, issuer: String, au
 // this additionally binds the AUTHORIZED party, so a token minted for several
 // clients cannot be replayed at ours by a co-audience. A single-audience token
 // (the common case) needs no `azp`, so it always passes.
-fn azp_ok(claims: Json, audience: String) -> Bool:
+fn azp_ok(claims: Json, audience: String) -> Result(Bool, String):
     if aud_count(claims) <= 1:
-        true
+        Ok(true)
     else:
-        match json.get_string(claims, "azp"):
-            Some(azp) -> azp == audience
-            None -> false
+        let azp = require_string_claim(claims, "azp")?
+        Ok(azp == audience)
 
 // The number of audiences in the `aud` claim: 1 for a bare string, the array
 // length for an array (RFC 7519 §4.1.3), 0 when absent or wrong-typed.
@@ -130,10 +150,29 @@ fn aud_count(claims: Json) -> Int:
 
 // The optional `nbf` (not-before) claim: a token is rejected until its activation time.
 // Absent `nbf` means always-active (only `exp` bounds it).
-fn not_yet_valid(claims: Json, now: Int) -> Bool:
-    match json.get_int(claims, "nbf"):
-        None -> false
-        Some(nbf) -> nbf > now
+fn not_yet_valid(claims: Json, now: Int) -> Result(Bool, String):
+    match json.get(claims, "nbf"):
+        None -> Ok(false)
+        Some(nbf) ->
+            match json.as_int(nbf):
+                None -> Err("JWT payload `nbf` must be an integer")
+                Some(n) -> Ok(n > now)
+
+fn require_int_claim(claims: Json, name: String) -> Result(Int, String):
+    match json.get(claims, name):
+        None -> Err("JWT payload is missing `" + name + "`")
+        Some(value) ->
+            match json.as_int(value):
+                Some(n) -> Ok(n)
+                None -> Err("JWT payload `" + name + "` must be an integer")
+
+fn require_string_claim(claims: Json, name: String) -> Result(String, String):
+    match json.get(claims, name):
+        None -> Err("JWT payload is missing `" + name + "`")
+        Some(value) ->
+            match json.as_string(value):
+                Some(s) -> Ok(s)
+                None -> Err("JWT payload `" + name + "` must be a string")
 
 // The decoded JOSE header of a compact JWT (its first segment), or an error — so a
 // verifier can read `alg`/`kid` to select the JWKS key before checking the signature.
