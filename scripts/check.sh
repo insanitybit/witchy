@@ -98,13 +98,18 @@ fi
 
 # The witchy formatter over the stdlib and examples (NOT rustfmt over the Rust —
 # that's hand-formatted and out of scope). Uses the binary built in step 1.
+# ONE invocation over every file, not one process per file: `witchy fmt --check`
+# already processes all path args, names each unformatted file on stderr, and
+# exits 1 iff any fails — so the per-file loop only paid ~200 extra process
+# spawns (1.5s vs 0.13s over the 205 files) for identical diagnostics.
 witchy_fmt_check() {
-    local fail=0
+    local files=()
+    local f
     for f in std/*.witchy examples/*/src/*.witchy; do
-        [ -f "$f" ] || continue
-        "$target_dir/debug/witchy" fmt --check "$f" >/dev/null 2>&1 || { echo "needs formatting: $f"; fail=1; }
+        [ -f "$f" ] && files+=("$f")
     done
-    return "$fail"
+    [ "${#files[@]}" -eq 0 ] && return 0
+    "$target_dir/debug/witchy" fmt --check "${files[@]}"
 }
 
 # Each stage marker carries its offset from gate start (`==> [2] clippy (t+41s)`),
