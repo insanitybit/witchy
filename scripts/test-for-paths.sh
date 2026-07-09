@@ -61,7 +61,7 @@ for p in "${paths[@]}"; do
             add "for f in std/*.witchy; do ./target/debug/witchy fmt --check \$f; done" ;;
         examples/* | book/*)
             add "cargo nextest run -E 'test(/^example_tests::/)'" ;;
-        projects/pm/* | projects/coven/* | projects/coven-web/* | projects/glamour/*)
+        projects/pm/* | projects/coven/* | projects/coven-web/* | projects/glamour/* | projects/docs/*)
             add "./scripts/check.sh --e2e" ;;
         tests/e2e.rs)
             add "./scripts/check.sh --e2e" ;;

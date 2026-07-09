@@ -171,8 +171,14 @@ The `projects/coven-web` slice is also implemented:
   percent-encoded before forwarding, with an e2e that captures and checks the
   exact upstream request line.
 
-The RFC remains accepted, not implemented, until glamour and docs receive the
-same pass and `projects/**/src/*.witchy` joins the format gate.
+The `projects/docs` app slice is also implemented: navigation construction uses
+statement mutators and tuple binders, presentation paths/classes use
+interpolation, and simple collection scans use `map`/`any`/`fold`. The sweep
+also exposed and fixed BUG-566, which had omitted `projects/docs/*` from the
+focused e2e path map and mislabeled Witchy behavior changes as prose-only.
+
+The RFC remains accepted, not implemented, until glamour receives the same pass
+and `projects/**/src/*.witchy` joins the format gate.
 
 ### Verification
 

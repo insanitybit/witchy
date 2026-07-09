@@ -43,12 +43,12 @@ fn parse_nav(summary: String) -> List(Nav):
     var out = []
     for line in string.lines(summary):
         if string.trim(line) == "---":
-            out = list.push(out, Divider)
+            out.push(Divider)
         else if string.contains(line, "](") && string.contains(line, ".md)"):
             let (_pre, after_lb) = string.split_once(line, "[")
             let (title, after_bracket) = string.split_once(after_lb, "](")
             let (slug, _rest) = string.split_once(after_bracket, ".md)")
-            out = list.push(out, Item(nav_depth(line), title, slug))
+            out.push(Item(nav_depth(line), title, slug))
     out
 
 // A nav line's indentation depth: bulleted sub-pages nest by a 2-space indent (`  - `); a
@@ -61,9 +61,8 @@ fn nav_depth(line: String) -> Int:
 fn nav_pages(nav: List(Nav)) -> List((String, String)):
     var out = []
     for entry in nav:
-        out = match entry:
-            Item(_depth, title, slug) -> list.push(out, (title, slug))
-            Divider -> out
+        if let Item(_depth, title, slug) = entry:
+            out.push((title, slug))
 
     out
 
@@ -78,7 +77,7 @@ fn update(m: Model, msg: Msg, fetch: UiFetch, route_cap: UiRoute) -> (Model, Cmd
                 Visit(path) -> (m, glamour.navigate(route_cap, path))
                 Route(path) ->
                     let slug = slug_of(path)
-                    let page = glamour.http_get(fetch, "/content/" + slug + ".md", "GotPage")
+                    let page = glamour.http_get(fetch, "/content/${slug}.md", "GotPage")
                     let cmd = if string.is_empty(summary): Batch([glamour.http_get(fetch, "/content/SUMMARY.md", "GotNav"), page]) else: page
                     (Model(path, summary, content), cmd)
                 GotNav(_status, body) -> (Model(route, body, content), NoCmd)
@@ -104,9 +103,8 @@ fn nav_chapters(route: String, summary: String) -> VNode(Msg):
 fn index_of_route(entries: List((String, String)), route: String) -> Int:
     var idx = 0 - 1
     var i = 0
-    for entry in entries:
-        let (_title, slug) = entry
-        if "/p/" + slug == route:
+    for _title, slug in entries:
+        if "/p/${slug}" == route:
             idx = i
         i = i + 1
     idx
@@ -114,7 +112,7 @@ fn index_of_route(entries: List((String, String)), route: String) -> Int:
 fn edge_link(entries: List((String, String)), i: Int, cls: String, label: String) -> VNode(Msg):
     if i >= 0 && i < list.length(entries):
         let (title, slug) = list.at(entries, i)
-        glamour.element("button", [glamour.prop("class", "nav-chapter " + cls), glamour.on("click", Visit("/p/" + slug))], [glamour.element("span", [glamour.prop("class", "dir")], [glamour.text(label)]), glamour.element("span", [glamour.prop("class", "title")], [glamour.text(title)])])
+        glamour.element("button", [glamour.prop("class", "nav-chapter ${cls}"), glamour.on("click", Visit("/p/${slug}"))], [glamour.element("span", [glamour.prop("class", "dir")], [glamour.text(label)]), glamour.element("span", [glamour.prop("class", "title")], [glamour.text(title)])])
     else:
         glamour.element("span", [glamour.prop("class", "nav-spacer")], [])
 
@@ -122,19 +120,14 @@ fn sidebar(route: String, summary: String) -> VNode(Msg):
     let nav = parse_nav(summary)
     // The first entry is the book's cover (the un-bulleted title link); the sidebar header IS
     // its link, so it isn't repeated in the list below.
-    var items = []
-    var idx = 0
-    for entry in nav:
-        if idx > 0:
-            items = list.push(items, nav_node(entry, route))
-        idx = idx + 1
+    let items = list.drop(nav, 1).map(fn(entry: Nav): nav_node(entry, route))
     glamour.element("nav", [glamour.prop("class", "sidebar")], [glamour.element("button", [glamour.prop("class", "sidebar-brand"), glamour.on("click", Visit(cover_path(nav)))], [glamour.text("The witchy Book")]), glamour.element("ul", [], items)])
 
 // The route of the cover page (the first nav entry), so the sidebar header links to it.
 fn cover_path(nav: List(Nav)) -> String:
     if list.length(nav) >= 1:
         match list.at(nav, 0):
-            Item(_d, _t, slug) -> "/p/" + slug
+            Item(_d, _t, slug) -> "/p/${slug}"
             Divider -> "/p/introduction"
     else:
         "/p/introduction"
@@ -145,9 +138,9 @@ fn nav_node(entry: Nav, route: String) -> VNode(Msg):
     match entry:
         Divider -> glamour.element("li", [glamour.prop("class", "nav-divider")], [])
         Item(depth, title, slug) ->
-            let path = "/p/" + slug
+            let path = "/p/${slug}"
             let active = if path == route: " active" else: ""
-            let cls = "nav-item nav-depth-${depth}" + active
+            let cls = "nav-item nav-depth-${depth}${active}"
             glamour.element("li", [], [glamour.element("button", [glamour.prop("class", cls), glamour.on("click", Visit(path))], [glamour.text(title)])])
 
 // (RFC-0041 P2) Render the page's Markdown, then replace each `witchy` code block with a host
@@ -206,11 +199,8 @@ fn runs_in_browser(code: String) -> Bool:
     string.contains(code, "fn main(") && !names_denied_capability(code)
 
 fn names_denied_capability(code: String) -> Bool:
-    var found = false
-    for cap in ["Dir", "Net", "File", "Secret", "SecretStore", "Clock", "Rand", "Env", "Exec", "UiRoot", "UiFetch", "UiRoute", "UiTimer", "CredentialPort", "SecretInput", "SecretRef"]:
-        if string.contains(code, cap):
-            found = true
-    found
+    let denied = ["Dir", "Net", "File", "Secret", "SecretStore", "Clock", "Rand", "Env", "Exec", "UiRoot", "UiFetch", "UiRoute", "UiTimer", "CredentialPort", "SecretInput", "SecretRef"]
+    denied.any(fn(cap: String): string.contains(code, cap))
 
 // The fence language from a `<code>`'s `language-<lang>` class (markdown preserves the fence's
 // info string there), or "" if none — so the app can slot each fence to the right highlighter.
@@ -225,12 +215,13 @@ fn attr_language(a: Attr(Msg)) -> String:
         OnInput(_e, _t) -> ""
 
 fn code_language(attrs: List(Attr(Msg))) -> String:
-    var lang = ""
-    for a in attrs:
+    attrs.fold("", fn(language: String, a: Attr(Msg)):
         let l = attr_language(a)
-        if !string.is_empty(l):
-            lang = l
-    lang
+        if string.is_empty(l):
+            language
+        else:
+            l
+    )
 
 // The source text inside a `<code>` (its single child text node).
 fn code_text(kids: List(VNode(Msg))) -> String:
@@ -295,4 +286,5 @@ pub fn export_step(ui: UiRoot, input: String) -> String:
     glamour.step_with(input, view, upd, parse_model, parse_msg, model_to_json, msg_to_json)
 
 fn main(console: Console, ui: UiRoot):
+    // idiom-exempt: the trailing newline frames the exported JSON for the host.
     console.print(export_step(ui, "{\"model\": {\"route\": \"/\", \"summary\": \"\", \"content\": \"# The witchy Book\\n\\nWelcome.\"}}") + "\n")
