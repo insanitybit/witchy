@@ -1766,6 +1766,10 @@ fn pattern(p: &Pattern) -> String {
     }
 }
 
+pub fn expr_str(e: &Expr) -> String {
+    expr(e)
+}
+
 pub fn type_str(t: &Type) -> String {
     match t {
         Type::Qualified(q, inner) => format!("{} {}", q.as_str(), type_str(inner)),
