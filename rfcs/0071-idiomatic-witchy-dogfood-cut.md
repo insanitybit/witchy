@@ -159,8 +159,20 @@ type after binding it through `Result(List(String), E)?`. The two affected Coven
 authorization checks use a documented `list.contains` exemption until the
 RFC-0046 residual is fixed.
 
-The RFC remains accepted, not implemented, until coven-web, glamour, and docs
-receive the same pass and `projects/**/src/*.witchy` joins the format gate.
+The `projects/coven-web` slice is also implemented:
+
+- tuple-valued loops destructure in the binder and presentation, URL, path, and
+  identity strings use interpolation;
+- signed session/OAuth payloads, cookie bytes, and query serialization remain
+  explicit joins with named `idiom-exempt` comments;
+- JSON defaulting helpers now name their fail-closed credential-state policy
+  instead of looking like generic parse recovery; and
+- the sweep found and fixed BUG-565: decoded proxy query values are now
+  percent-encoded before forwarding, with an e2e that captures and checks the
+  exact upstream request line.
+
+The RFC remains accepted, not implemented, until glamour and docs receive the
+same pass and `projects/**/src/*.witchy` joins the format gate.
 
 ### Verification
 

@@ -34,14 +34,14 @@ fn main(console: Console, net: Net, assets: Dir, secrets: SecretStore, clock: Cl
     let listen_addr = if list.length(args) > 0: list.at(args, 0) else: "127.0.0.1:8080"
     let upstream = if list.length(args) > 1: list.at(args, 1) else: "127.0.0.1:8787"
     // The WebAuthn relying-party origin + id the server checks every assertion against.
-    let origin = if list.length(args) > 2: list.at(args, 2) else: "http://" + listen_addr
+    let origin = if list.length(args) > 2: list.at(args, 2) else: "http://${listen_addr}"
     let rp_id = if list.length(args) > 3: list.at(args, 3) else: "localhost"
     // "Log in with GitHub" config. `gh_client_id` empty => login disabled. The base URLs
     // are overridable (GitHub Enterprise, or a test's mock) and default to github.com.
     let gh_client_id = if list.length(args) > 4: list.at(args, 4) else: ""
     let gh_base = if list.length(args) > 5: list.at(args, 5) else: "https://github.com"
     let gh_api = if list.length(args) > 6: list.at(args, 6) else: "https://api.github.com"
-    let gh_redirect = origin + "/auth/github/callback"
+    let gh_redirect = "${origin}/auth/github/callback"
     // "Log in with Google" (OIDC) config. `google_client_id` empty => disabled. Google's
     // authorize/token/JWKS live on three different hosts, so each is its own (overridable
     // for a test mock) URL; the issuer is the fixed well-known `accounts.google.com`.
@@ -49,7 +49,7 @@ fn main(console: Console, net: Net, assets: Dir, secrets: SecretStore, clock: Cl
     let google_authorize = if list.length(args) > 8: list.at(args, 8) else: "https://accounts.google.com/o/oauth2/v2/auth"
     let google_token = if list.length(args) > 9: list.at(args, 9) else: "https://oauth2.googleapis.com/token"
     let google_jwks = if list.length(args) > 10: list.at(args, 10) else: "https://www.googleapis.com/oauth2/v3/certs"
-    let google_redirect = origin + "/auth/google/callback"
+    let google_redirect = "${origin}/auth/google/callback"
 
     var app = server.router()
     app = app.get("/", h_index_html(assets))
@@ -71,7 +71,7 @@ fn main(console: Console, net: Net, assets: Dir, secrets: SecretStore, clock: Cl
     // modules — the same reason source-sandbox inlines. Even compromised it is contained.
     app = app.get("/compartments/d3-runes-chart/", h_asset(assets, "compartments/d3-runes-chart/index.html", "text/html; charset=utf-8"))
     // Read API reverse-proxy — one explicit route per allowlisted coven endpoint
-    // (the route table IS the SSRF allowlist; query strings are forwarded verbatim).
+    // (the route table IS the SSRF allowlist; decoded query values are re-encoded).
     app = app.get("/api/coven/index", h_proxy(net, upstream, "/coven/index"))
     app = app.get("/api/coven/catalog", h_proxy(net, upstream, "/coven/catalog"))
     app = app.get("/api/coven/versions", h_proxy(net, upstream, "/coven/versions"))
@@ -121,7 +121,7 @@ fn main(console: Console, net: Net, assets: Dir, secrets: SecretStore, clock: Cl
     app = app.layer(sec_fetch_csrf())
     app = app.layer(security_headers())
 
-    console.print("coven-web serving http://" + listen_addr + "  -> coven " + upstream)
+    console.print("coven-web serving http://${listen_addr}  -> coven ${upstream}")
     server.serve(net, listen_addr, app)
 
 // ---- Static assets ----------------------------------------------------------
@@ -155,7 +155,7 @@ fn h_proxy(net: Net, upstream: String, base: String) -> fn(Request) -> Response:
                     server.bad_request("{\"error\":\"invalid query\"}")
                 else:
                     let qs = encode_query(q)
-                    let path = if qs == "": base else: base + "?" + qs
+                    let path = if qs == "": base else: "${base}?${qs}"
                     let (host, port) = split_host_port(upstream)
                     match http.try_get(net, host, port, path):
                         Ok(resp) -> server.json(http.status(resp), http.body(resp))
@@ -165,8 +165,7 @@ fn h_proxy(net: Net, upstream: String, base: String) -> fn(Request) -> Response:
 // break out of the forwarded request line into header/request smuggling upstream.
 fn query_has_control(pairs: List((String, String))) -> Bool:
     var bad = false
-    for pair in pairs:
-        let (k, v) = pair
+    for k, v in pairs:
         if string.contains(k, "\n") || string.contains(k, "\r") || string.contains(v, "\n") || string.contains(v, "\r"):
             bad = true
     bad
@@ -177,12 +176,16 @@ fn query_has_control(pairs: List((String, String))) -> Bool:
 // is unforgeable without it) over a Clock reading, and is single-use. The browser
 // hex-encodes the assertion's ArrayBuffers; the server re-derives and verifies
 // everything via `webauthn.verify_assertion` — trusting nothing from the client.
-fn wa_field(doc: Json, name: String) -> String:
+// Untrusted browser/provider JSON uses absence as a failed credential claim. Keep
+// that fail-closed policy named once instead of repeating defaulting at every check.
+fn string_field_or_empty(doc: Json, name: String) -> String:
     match json.get_string(doc, name):
         Some(s) -> s
         None -> ""
 
-fn decode_or_empty(s: String) -> Json:
+// Malformed credential/challenge state has no usable fields and therefore cannot
+// authorize an operation. This default is fail-closed, not a parse recovery path.
+fn decode_state_or_empty(s: String) -> Json:
     match json.decode(s):
         Ok(doc) -> doc
         Err(_e) -> JsonObject([])
@@ -199,8 +202,8 @@ fn h_wa_register(store: Dir) -> fn(Request) -> Response:
             match server.json_body(req):
                 Err(_e) -> server.bad_request("{\"error\":\"bad body\"}")
                 Ok(doc) ->
-                    let cred = wa_field(doc, "credentialId")
-                    let pk = wa_field(doc, "publicKey")
+                    let cred = string_field_or_empty(doc, "credentialId")
+                    let pk = string_field_or_empty(doc, "publicKey")
                     if cred == "" || pk == "":
                         server.bad_request("{\"error\":\"missing credentialId or publicKey\"}")
                     else:
@@ -217,9 +220,9 @@ fn h_wa_challenge(store: Dir, rand: Rand) -> fn(Request) -> Response:
         // over this challenge, so re-checking the stored op+params in the promote/yank handler
         // means an assertion minted for one operation can never be redirected to another.
         let doc = challenge_request(req)
-        let op = wa_field(doc, "op")
-        let name = wa_field(doc, "name")
-        let version = wa_field(doc, "version")
+        let op = string_field_or_empty(doc, "op")
+        let name = string_field_or_empty(doc, "name")
+        let version = string_field_or_empty(doc, "version")
         let ch_hex = rand.hex(32)
         let ch_b64 = result.unwrap_or(encoding.hex_to_base64url(ch_hex), "")
         store.write("_wa_challenge.json", json.encode(JsonObject([("b64", JsonString(ch_b64)), ("op", JsonString(op)), ("name", JsonString(name)), ("version", JsonString(version))])))
@@ -237,8 +240,8 @@ fn h_wa_promote(store: Dir, net: Net, key: Secret, clock: Clock, upstream: Strin
             Ok(doc) -> wa_do_promote(store, net, upstream, origin, rp_id, doc, session_subject(key, clock, req))
 
 fn wa_do_promote(store: Dir, net: Net, upstream: String, origin: String, rp_id: String, doc: Json, promoter: String) -> Response:
-    let name = wa_field(doc, "name")
-    let version = wa_field(doc, "version")
+    let name = string_field_or_empty(doc, "name")
+    let version = string_field_or_empty(doc, "version")
     if !store.exists("_wa_cred.json") || !store.exists("_wa_challenge.json"):
         server.json(403, "{\"error\":\"no registered credential or outstanding challenge\"}")
     else if promoter == "":
@@ -248,21 +251,21 @@ fn wa_do_promote(store: Dir, net: Net, upstream: String, origin: String, rp_id: 
         // duties on this identity, so it must not be attacker-chosen.
         server.json(403, "{\"error\":\"promote requires a signed-in session\"}")
     else:
-        let ch = decode_or_empty(store.read("_wa_challenge.json"))
-        let pk = wa_field(decode_or_empty(store.read("_wa_cred.json")), "publicKey")
-        let ch_b64 = wa_field(ch, "b64")
+        let ch = decode_state_or_empty(store.read("_wa_challenge.json"))
+        let pk = string_field_or_empty(decode_state_or_empty(store.read("_wa_cred.json")), "publicKey")
+        let ch_b64 = string_field_or_empty(ch, "b64")
         if ch_b64 == "":
             // BUG-421: a consumed challenge is cleared to `{}` (no `b64`); the previous code only
             // checked file existence, so a cleared challenge was still accepted. Treat a missing
             // `b64` as no outstanding challenge (single-use enforced by content, not existence).
             server.json(403, "{\"error\":\"no outstanding challenge\"}")
-        else if wa_field(ch, "op") != "promote" || wa_field(ch, "name") != name || wa_field(ch, "version") != version:
+        else if string_field_or_empty(ch, "op") != "promote" || string_field_or_empty(ch, "name") != name || string_field_or_empty(ch, "version") != version:
             // BUG-365: the assertion is only valid for the operation + name@version the challenge
             // was minted for; refuse one bound to anything else.
             server.json(403, "{\"error\":\"challenge is not bound to this promote\"}")
         else:
-            match webauthn.verify_assertion(pk, wa_field(doc, "authData"), wa_field(doc, "clientData"), wa_field(doc, "signature"), ch_b64, origin, rp_id, true):
-                Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("2FA failed: " + webauthn.assertion_error_message(reason)))])))
+            match webauthn.verify_assertion(pk, string_field_or_empty(doc, "authData"), string_field_or_empty(doc, "clientData"), string_field_or_empty(doc, "signature"), ch_b64, origin, rp_id, true):
+                Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("2FA failed: ${webauthn.assertion_error_message(reason)}"))])))
                 Ok(_) ->
                     store.write("_wa_challenge.json", "{}")
                     let body = json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version)), ("second_factor", JsonString("webauthn")), ("promoted_by", JsonString(promoter))]))
@@ -283,23 +286,23 @@ fn h_wa_yank(store: Dir, net: Net, upstream: String, origin: String, rp_id: Stri
             Ok(doc) -> wa_do_yank(store, net, upstream, origin, rp_id, doc)
 
 fn wa_do_yank(store: Dir, net: Net, upstream: String, origin: String, rp_id: String, doc: Json) -> Response:
-    let name = wa_field(doc, "name")
-    let version = wa_field(doc, "version")
+    let name = string_field_or_empty(doc, "name")
+    let version = string_field_or_empty(doc, "version")
     if !store.exists("_wa_cred.json") || !store.exists("_wa_challenge.json"):
         server.json(403, "{\"error\":\"no registered credential or outstanding challenge\"}")
     else:
-        let ch = decode_or_empty(store.read("_wa_challenge.json"))
-        let pk = wa_field(decode_or_empty(store.read("_wa_cred.json")), "publicKey")
-        let ch_b64 = wa_field(ch, "b64")
+        let ch = decode_state_or_empty(store.read("_wa_challenge.json"))
+        let pk = string_field_or_empty(decode_state_or_empty(store.read("_wa_cred.json")), "publicKey")
+        let ch_b64 = string_field_or_empty(ch, "b64")
         if ch_b64 == "":
             // BUG-421: a consumed/cleared challenge (`{}`) has no `b64`; reject by content.
             server.json(403, "{\"error\":\"no outstanding challenge\"}")
-        else if wa_field(ch, "op") != "yank" || wa_field(ch, "name") != name || wa_field(ch, "version") != version:
+        else if string_field_or_empty(ch, "op") != "yank" || string_field_or_empty(ch, "name") != name || string_field_or_empty(ch, "version") != version:
             // BUG-365: bind the assertion to this specific yank.
             server.json(403, "{\"error\":\"challenge is not bound to this yank\"}")
         else:
-            match webauthn.verify_assertion(pk, wa_field(doc, "authData"), wa_field(doc, "clientData"), wa_field(doc, "signature"), ch_b64, origin, rp_id, true):
-                Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("2FA failed: " + webauthn.assertion_error_message(reason)))])))
+            match webauthn.verify_assertion(pk, string_field_or_empty(doc, "authData"), string_field_or_empty(doc, "clientData"), string_field_or_empty(doc, "signature"), ch_b64, origin, rp_id, true):
+                Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("2FA failed: ${webauthn.assertion_error_message(reason)}"))])))
                 Ok(_) ->
                     store.write("_wa_challenge.json", "{}")
                     let body = json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version))]))
@@ -323,6 +326,7 @@ fn session_ttl_ms() -> Int:
 // SEC-019: the session bearer is bound to the authenticated subject. The MAC covers
 // `exp:sub`, and `sub` (hex-encoded so it carries no `.` delimiter) travels in the token,
 // so a token minted for one identity cannot be presented as another.
+// idiom-exempt: concatenation defines the signed session-token byte format.
 fn issue_session(key: Secret, clock: Clock, sub: String) -> (String, Int):
     let exp = clock.now() + session_ttl_ms()
     let sub_hex = encoding.hex_encode(sub)
@@ -366,6 +370,7 @@ fn verify_bearer(key: Secret, clock: Clock, header: String) -> String:
         let sub_hex = list.at(parts, 1)
         let sig = list.at(parts, 2)
         match encoding.hex_decode(sub_hex):
+            // idiom-exempt: this reconstructs the signed session bytes above.
             Err(_e) -> ""
             Ok(sub) ->
                 if ascii.all_digits(exp_s) && ct_eq(sig, crypto.sign(key, "session:" + exp_s + ":" + sub)) && string.to_int(exp_s) > clock.now():
@@ -383,18 +388,18 @@ fn wa_do_login(store: Dir, key: Secret, clock: Clock, origin: String, rp_id: Str
     if !store.exists("_wa_cred.json") || !store.exists("_wa_challenge.json"):
         server.json(403, "{\"error\":\"no registered passkey or outstanding challenge\"}")
     else:
-        let ch = decode_or_empty(store.read("_wa_challenge.json"))
-        let pk = wa_field(decode_or_empty(store.read("_wa_cred.json")), "publicKey")
-        let ch_b64 = wa_field(ch, "b64")
+        let ch = decode_state_or_empty(store.read("_wa_challenge.json"))
+        let pk = string_field_or_empty(decode_state_or_empty(store.read("_wa_cred.json")), "publicKey")
+        let ch_b64 = string_field_or_empty(ch, "b64")
         if ch_b64 == "":
             // BUG-421: reject a consumed/cleared challenge by content, not existence.
             server.json(403, "{\"error\":\"no outstanding challenge\"}")
-        else if wa_field(ch, "op") != "login":
+        else if string_field_or_empty(ch, "op") != "login":
             // BUG-365: a challenge minted for a promote/yank cannot be spent to mint a session.
             server.json(403, "{\"error\":\"challenge is not bound to sign-in\"}")
         else:
-            match webauthn.verify_assertion(pk, wa_field(doc, "authData"), wa_field(doc, "clientData"), wa_field(doc, "signature"), ch_b64, origin, rp_id, true):
-                Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("sign-in failed: " + webauthn.assertion_error_message(reason)))])))
+            match webauthn.verify_assertion(pk, string_field_or_empty(doc, "authData"), string_field_or_empty(doc, "clientData"), string_field_or_empty(doc, "signature"), ch_b64, origin, rp_id, true):
+                Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("sign-in failed: ${webauthn.assertion_error_message(reason)}"))])))
                 Ok(_) ->
                     store.write("_wa_challenge.json", "{}")
                     let (tok, exp) = issue_session(key, clock, "passkey")
@@ -417,6 +422,7 @@ fn state_ttl_ms() -> Int:
 fn login_nonce(rand: Rand) -> String:
     rand.hex(16)
 
+// idiom-exempt: cookie serialization is a byte-level wire format.
 fn nonce_cookie(nonce: String) -> String:
     "oauth_nonce=" + nonce + "; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=600"
 
@@ -425,7 +431,7 @@ fn cookie_value(cookies: String, name: String) -> String:
     var out = ""
     for part in string.split(cookies, ";"):
         let kv = string.trim(part)
-        if string.starts_with(kv, name + "="):
+        if string.starts_with(kv, "${name}="):
             out = string.drop(kv, string.char_count(name) + 1)
     out
 
@@ -436,6 +442,7 @@ fn cookie_nonce(req: Request) -> String:
 
 // A signed, expiring OAuth `state` carrying the per-login nonce. The signature proves we
 // issued it; the nonce binds it to the issuing session's cookie.
+// idiom-exempt: concatenation defines the signed OAuth-state byte format.
 fn sign_state(key: Secret, clock: Clock, nonce: String) -> String:
     let exp = clock.now() + state_ttl_ms()
     "${exp}" + "." + nonce + "." + crypto.sign(key, "oauth-state:" + "${exp}" + ":" + nonce)
@@ -451,6 +458,7 @@ fn valid_state(key: Secret, clock: Clock, state: String, expected_nonce: String)
         // SEC-024: guard `to_int` (it traps on non-numeric input) against the attacker-supplied
         // expiry half — `&&` short-circuits, so a malformed state is just invalid, never a VM abort.
         // SEC-007: the nonce must be non-empty AND equal the issuing session's cookie.
+        // idiom-exempt: this reconstructs the signed OAuth-state bytes above.
         ascii.all_digits(exp_s) && ct_eq(sig, crypto.sign(key, "oauth-state:" + exp_s + ":" + nonce)) && string.to_int(exp_s) > clock.now() && nonce != "" && ct_eq(nonce, expected_nonce)
 
 // BUG-424: server-side single-use of a login nonce. `valid_state` has already proven the nonce
@@ -459,7 +467,7 @@ fn valid_state(key: Secret, clock: Clock, state: String, expected_nonce: String)
 // it writes the marker and returns true; any replay finds the marker and returns false. An empty
 // nonce fails closed.
 fn consume_nonce(store: Dir, nonce: String) -> Bool:
-    let marker = "_oauth_used_" + nonce + ".json"
+    let marker = "_oauth_used_${nonce}.json"
     if nonce == "" || store.exists(marker):
         false
     else:
@@ -470,7 +478,7 @@ fn h_github_login(key: Secret, clock: Clock, rand: Rand, gh_base: String, client
     fn(req: Request):
         let nonce = login_nonce(rand)
         let state = sign_state(key, clock, nonce)
-        let url = oauth.authorize_url(gh_base + "/login/oauth/authorize", client_id, redirect_uri, "read:user", state)
+        let url = oauth.authorize_url("${gh_base}/login/oauth/authorize", client_id, redirect_uri, "read:user", state)
         server.with_header(server.redirect(url), "set-cookie", nonce_cookie(nonce))
 
 fn h_github_callback(store: Dir, net: Net, key: Secret, clock: Clock, secrets: SecretStore, gh_base: String, gh_api: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
@@ -488,18 +496,18 @@ fn github_callback(store: Dir, net: Net, key: Secret, clock: Clock, secrets: Sec
         match secretstore.get(secrets, "github_client_secret"):
             None -> server.json(500, "{\"error\":\"github login is misconfigured (no client secret)\"}")
             Some(sec) ->
-                match oauth.exchange_code(net, gh_base + "/login/oauth/access_token", client_id, crypto.reveal(sec), code, redirect_uri):
+                match oauth.exchange_code(net, "${gh_base}/login/oauth/access_token", client_id, crypto.reveal(sec), code, redirect_uri):
                     Err(_) -> server.json(502, json.encode(JsonObject([("error", JsonString("token exchange failed"))])))
                     Ok(token) -> github_finish(net, key, clock, gh_api, token)
 
 fn github_finish(net: Net, key: Secret, clock: Clock, gh_api: String, token: String) -> Response:
-    match oauth.bearer_get_json(net, gh_api + "/user", token):
+    match oauth.bearer_get_json(net, "${gh_api}/user", token):
         // BUG-410: require a non-empty verified provider identity before minting a session.
         // An empty `login` (a malformed/mock `/user` response) must NOT become a signed-in
         // session with an empty subject — fail closed.
         Err(_) -> server.json(502, json.encode(JsonObject([("error", JsonString("user fetch failed"))])))
         Ok(user) ->
-            let login = wa_field(user, "login")
+            let login = string_field_or_empty(user, "login")
             if login == "":
                 server.json(403, json.encode(JsonObject([("error", JsonString("GitHub identity missing"))])))
             else:
@@ -515,7 +523,7 @@ fn h_google_login(key: Secret, clock: Clock, rand: Rand, authorize_url: String, 
         let state = sign_state(key, clock, nonce)
         // SEC-008: also send the nonce as the OIDC `nonce` request param; Google echoes it
         // into the id_token's `nonce` claim, which we verify (anti-replay).
-        let url = oauth.authorize_url(authorize_url, client_id, redirect_uri, "openid email", state) + "&nonce=" + nonce
+        let url = "${oauth.authorize_url(authorize_url, client_id, redirect_uri, "openid email", state)}&nonce=${nonce}"
         server.with_header(server.redirect(url), "set-cookie", nonce_cookie(nonce))
 
 fn h_google_callback(store: Dir, net: Net, key: Secret, clock: Clock, secrets: SecretStore, token_url: String, jwks_url: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
@@ -548,7 +556,7 @@ fn google_verify(net: Net, key: Secret, clock: Clock, jwks_url: String, client_i
 fn email_is_verified(claims: Json) -> Bool:
     match json.get_bool(claims, "email_verified"):
         Some(b) -> b
-        None -> wa_field(claims, "email_verified") == "true"
+        None -> string_field_or_empty(claims, "email_verified") == "true"
 
 fn google_finish(key: Secret, clock: Clock, jwks: Json, client_id: String, id_token: String, expected_nonce: String) -> Response:
     match select_and_verify(clock, jwks, client_id, id_token):
@@ -558,8 +566,8 @@ fn google_finish(key: Secret, clock: Clock, jwks: Json, client_id: String, id_to
         // an unverified email equal to a maintainer's can't be let in as that maintainer.
         Err(_) -> server.json(403, json.encode(JsonObject([("error", JsonString("id_token rejected"))])))
         Ok(claims) ->
-            let email = wa_field(claims, "email")
-            if expected_nonce == "" || !ct_eq(wa_field(claims, "nonce"), expected_nonce):
+            let email = string_field_or_empty(claims, "email")
+            if expected_nonce == "" || !ct_eq(string_field_or_empty(claims, "nonce"), expected_nonce):
                 server.json(403, json.encode(JsonObject([("error", JsonString("id_token nonce mismatch"))])))
             else if email != "" && email_is_verified(claims):
                 session_redirect(key, clock, email)
@@ -579,7 +587,7 @@ fn select_and_verify(clock: Clock, jwks: Json, client_id: String, id_token: Stri
 // logs/Referer) — the shared tail of every social-login callback.
 fn session_redirect(key: Secret, clock: Clock, who: String) -> Response:
     let (sess, _exp) = issue_session(key, clock, who)
-    server.redirect("/#token=" + url.encode(sess) + "&login=" + url.encode(who))
+    server.redirect("/#token=${url.encode(sess)}&login=${url.encode(who)}")
 
 fn split_host_port(hp: String) -> (String, Int):
     // BUG-226: `string.to_int` traps on non-numeric input. A malformed upstream
@@ -591,11 +599,13 @@ fn split_host_port(hp: String) -> (String, Int):
     (h, port)
 
 fn encode_query(pairs: List((String, String))) -> String:
+    // idiom-exempt: this serializes the canonical upstream query wire format.
     var s = ""
     var first = true
-    for pair in pairs:
-        let (k, v) = pair
-        let seg = k + "=" + v
+    for k, v in pairs:
+        // The server parser has already percent-decoded each pair. Re-encode both
+        // sides so data containing `&` or `=` cannot become upstream structure.
+        let seg = url.encode(k) + "=" + url.encode(v)
         if first:
             s = seg
             first = false
@@ -652,8 +662,7 @@ fn is_state_changing(method: String) -> Bool:
 
 fn with_headers(resp: Response, hs: List((String, String))) -> Response:
     var r = resp
-    for h in hs:
-        let (k, v) = h
+    for k, v in hs:
         r = server.with_header(r, k, v)
     r
 

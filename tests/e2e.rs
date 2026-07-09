@@ -2597,6 +2597,87 @@ fn query_param(url: &str, key: &str) -> Option<String> {
     None
 }
 
+/// Query pairs reach a handler decoded. The coven-web proxy must encode them again
+/// before making the upstream request, or escaped separators become new parameters.
+#[test]
+fn coven_web_proxy_reencodes_decoded_query_values() {
+    use std::io::{Read, Write};
+
+    let upstream_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let upstream_addr = upstream_listener.local_addr().unwrap().to_string();
+    let (request_tx, request_rx) = std::sync::mpsc::channel();
+    let upstream = std::thread::spawn(move || {
+        let (mut stream, _) = upstream_listener.accept().unwrap();
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(8))).unwrap();
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while stream.read_exact(&mut byte).is_ok() {
+            head.push(byte[0]);
+            if head.ends_with(b"\r\n\r\n") {
+                break;
+            }
+        }
+        let request = String::from_utf8_lossy(&head);
+        request_tx.send(request.lines().next().unwrap_or("").to_string()).unwrap();
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+            .unwrap();
+    });
+
+    let seed_root = unique("cw-proxy-seed");
+    let seed = seed_root.join("root.seed");
+    std::fs::write(&seed, "0000000000000000000000000000000000000000000000000000000000000001").unwrap();
+    let web_port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let web_addr = format!("127.0.0.1:{web_port}");
+    let assets = unique("cw-proxy-assets");
+    let cw_src = format!("{}/projects/coven-web/src/coven_web.witchy", env!("CARGO_MANIFEST_DIR"));
+    let mut child = Command::new(BIN)
+        .args([
+            "--net",
+            &web_addr,
+            "--net",
+            &upstream_addr,
+            "--signing-key",
+            seed.to_str().unwrap(),
+            &cw_src,
+            &web_addr,
+            &upstream_addr,
+            &format!("http://{web_addr}"),
+            "localhost",
+        ])
+        .current_dir(&assets)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn coven-web");
+
+    let mut up = false;
+    for _ in 0..SERVER_START_ATTEMPTS {
+        if std::net::TcpStream::connect(&web_addr).is_ok() {
+            up = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(SERVER_START_POLL_MS));
+    }
+    assert!(up, "coven-web never started on {web_addr}");
+
+    let (status, body) = http_get(&web_addr, "/api/coven/versions?name=acme%26state%3Dyanked");
+    let request_line = request_rx.recv_timeout(std::time::Duration::from_secs(8)).unwrap();
+
+    let _ = child.kill();
+    let _ = child.wait();
+    upstream.join().unwrap();
+    let _ = std::fs::remove_dir_all(&seed_root);
+    let _ = std::fs::remove_dir_all(&assets);
+
+    assert_eq!(status, 200, "proxy response: {body}");
+    assert_eq!(
+        request_line,
+        "GET /coven/versions?name=acme%26state%3Dyanked HTTP/1.1",
+        "encoded query separators must remain value data"
+    );
+}
+
 /// "Log in with GitHub" end to end through the REAL coven-web server: a mock GitHub (a
 /// local rustls server) returns a token then a user; coven-web's OAuth `/callback`
 /// verifies the signed state, exchanges the code, reads the user, and mints a bearer
