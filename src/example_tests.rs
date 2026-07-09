@@ -1382,6 +1382,21 @@ fn main(console: Console):
         );
     }
 
+    /// Dict and Set carry the same mutator-method rule as List: module
+    /// functions remain the function-value surface, while statement-form methods
+    /// on `var self` write back to the receiver.
+    #[test]
+    fn dict_and_set_mutator_methods_write_back_on_both_backends() {
+        let src = "import dict\nimport set\n\nfn main(console: Console):\n    var d: Dict(String, Int) = dict.new()\n    d.insert(\"a\", 1)\n    d.insert(\"b\", 2)\n    d.update(\"b\", 0, fn(n: Int): n + 5)\n    d.remove(\"a\")\n    print(console, \"${dict.get_or(d, \"a\", 0)}\")\n    print(console, \"${dict.get_or(d, \"b\", 0)}\")\n    print(console, \"${dict.length(d)}\")\n\n    var s: Set(Int) = set.new()\n    s.insert(1)\n    s.insert(2)\n    s.insert(2)\n    s.remove(1)\n    print(console, \"${set.contains(s, 1)}\")\n    print(console, \"${set.contains(s, 2)}\")\n    print(console, \"${set.length(s)}\")\n";
+        let expected = ["0", "7", "1", "false", "true", "1"];
+        assert_eq!(link_run(src), expected, "interp: dict/set mutator methods");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: dict/set mutator methods",
+        );
+    }
+
     /// (BUG-535) Lists are ordinary comparison-protocol values: if their elements
     /// satisfy `PartialEq`/`Eq`, the list itself satisfies the same bound instead
     /// of relying on one-off direct-operator magic.
