@@ -148,8 +148,9 @@ ambiguous literals, checked documentation, and catching a wrong assumption
 where it is made.
 
 Top-level `let` declares a module constant (inlined at compile time).
-Assigning to a `let`, or to a variable captured by a closure, is a check-time
-error (closures capture **by value**; return the new value or use `var`).
+Assigning to a `let` is a check-time error. A closure also cannot assign to a
+variable it captured: closures capture **by value**, so return the new value or
+use a `var` parameter when a closure-like helper should write through.
 `let _ = expr` evaluates and discards — the same meaning as the bare
 expression statement, which is the form `fmt` prints.
 
