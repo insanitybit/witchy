@@ -1,9 +1,14 @@
 ---
 rfc: 0073
 title: "One home per compiler fact: shared layout constants, deduped type parsing, and the new-semantic checklist"
-status: planned
+status: implemented
 created: 2026-07-07
-tracking: quality audit 2026-07-07 (scratch/audit-2026-07-07-quality/REPORT.md, F6/F7/F12)
+tracking: quality audit 2026-07-07 (scratch/audit-2026-07-07-quality/REPORT.md, F6/F7/F12);
+  shipped 2026-07-09 — typeck `named_builtin` single table + rights-parser dedup
+  and analysis.rs shape-matcher tests (dd104f16); shared `witchy_wir::layout`
+  owning HEAP_REDZONE/RC_SIZE_MASK/type_tag_of with vectors, runtime+lower
+  importing it (af04a6d0); spec/value-model.md + CONTRIBUTING adding-a-semantic
+  checklist (85ce4b13 + the spec-polish merge).
 related:
   - "0018 (workspace split — created the crate boundaries these facts now straddle)"
   - "0037 (type-confusion sanitizer — type_tag_of, currently codegen-only)"

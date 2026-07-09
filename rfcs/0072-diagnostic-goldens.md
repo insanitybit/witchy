@@ -1,10 +1,14 @@
 ---
 rfc: 0072
 title: "Diagnostic goldens: lock the error surface, then polish it"
-status: planned
+status: implemented
 created: 2026-07-07
 tracking: quality audit 2026-07-07 (scratch/audit-2026-07-07-quality/REPORT.md, F3/F4/F9);
-  Phase 1 harness landed on master ea9c/ef9c99a1 (2026-07-08); polish pass remains
+  Phase 1 harness ef9c99a1 (2026-07-08); phase 2 shipped 2026-07-09 —
+  file context on type errors (8da0cf79), backtrace-switch trailer on traps,
+  arity errors show parameter types (7d3465f4), jargon-class messages guided
+  (d7a37976) + goldens (cbb840fd). The known-bad line-zero position (BUG-162)
+  is the documented residual, tracked separately.
 related:
   - "0045 (compiled trap diagnostics — the runtime-error format this locks)"
   - "0050 (method-call generalization — Part 2 error contract, BUG-303, lands under this harness)"
