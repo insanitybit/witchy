@@ -1,16 +1,17 @@
 ---
 rfc: 0077
 title: "Test doubles in witchy — tests are permissive; the VM sandbox is the only boundary"
-status: planned
+status: deferred
 created: 2026-07-08
-# Accepted 2026-07-08 after verifying the safety claim against the shipped
-# runtime rather than RFC-0005's future state: host functions are linked
-# per-grant (runtime.rs:657-687, "only granted host functions are defined"),
-# so under plain `witchy test` (zero real grants beyond print/clock/env) a
-# forged or mock capability is inert TODAY, independent of the i32→externref
-# migration — deny-by-omission linking, not handle unforgeability, is what
-# holds the plain-test tier. Two riders recorded below (§Riders).
-tracking: design conversation 2026-07-08 (witchy test ergonomics + capability model); no prior test-double RFC
+# Deferred 2026-07-09 after checking the actual `witchy test` execution path.
+# The runner uses broad dev grants, including cwd Dir read/write, while Dir is
+# still an i32 table index. The original zero-grant safety premise was false.
+tracking: >
+  Deferred beyond 0.1. Trait-injected doubles already work and may be
+  documented independently. Sealed-construction relaxation and mock
+  capability runtimes require a strict test grant model plus a representation
+  that cannot collide with real host handles; integration grants remain gated
+  on RFC-0005.
 related:
   - "0002 (user-definable capabilities — sealing is a correctness contract, not the security boundary)"
   - "0005 (unforgeable capabilities — production invariant; the VM, not the seal, is the perimeter)"
@@ -21,6 +22,11 @@ related:
 ---
 
 # RFC-0077: Test doubles in witchy
+
+> **Deferred (2026-07-09):** the safety argument below describes the intended
+> destination, not the shipped test runner. `witchy test` currently executes
+> through the broad development grant path, so permitting capability forgery
+> would expose real host authority. See the deferral note after the riders.
 
 ## Summary
 
@@ -230,6 +236,48 @@ without opening production.
    evaluation, and `pm`-driven builds each get a golden proving `testing.*`
    and sealed-construction-outside-home are rejected there. The gate is a
    linker attribute; the goldens are what keep it from silently widening.
+
+## Deferral note (2026-07-09)
+
+The first rider's premise was checked against names in the runtime but not
+against the test runner's actual call path. It is false today:
+
+- `run_tests_in_module` synthesizes a nullary `main`, compiles the entire linked
+  module, and executes it through `run_wasm_bytes`.
+- `run_wasm_bytes` is the development/differential path. Its `Capabilities`
+  grant output, Clock, Rand, Env, cwd `Dir` read/write, and both Net verbs.
+- The runtime's `Dir` value is still a guest `i32` indexing a host table whose
+  entry zero is the granted root. Grant-conditioned import linking does not
+  protect this path because the development grant deliberately links those
+  imports.
+
+Therefore a test-only relaxation that permits constructing sealed capability
+values could construct `Dir(0)` and invoke real operations on the repository
+working directory. The same collision class remains for other unmigrated
+integer-handle capabilities. The current seal is preventing that source-level
+forgery; removing it before the runtime boundary is ready would create the
+authority breach RFC-0005 exists to eliminate.
+
+Resume the runtime portions only after all of these are true:
+
+1. Plain tests instantiate under a genuinely authority-free capability set.
+   Because codegen currently emits imports for the whole linked module, this
+   also needs per-test reachability/dead-code elimination (or an equivalent
+   import projection) so unused effectful production functions do not prevent
+   a pure test module from instantiating.
+2. Mock capabilities have a representation that is mechanically disjoint from
+   real host handles. Completing RFC-0005 is the preferred model; a temporary
+   tagged mock representation would need its own security proof on both
+   backends.
+3. Integration tests remain gated on RFC-0005 for every granted capability,
+   not merely File, and dependency tests cannot receive those grants.
+4. Negative end-to-end tests prove that a plain test cannot read cwd, inspect
+   ambient environment, use randomness/time, or reach the network, and that
+   the test-only linker privilege is absent from every production/build path.
+
+The trait-injection guidance in section 1 is unaffected: it uses ordinary
+values and today's dispatch model, so it can ship as documentation without
+claiming this RFC's unsafe runtime pieces are implemented.
 
 ## Prior art
 
