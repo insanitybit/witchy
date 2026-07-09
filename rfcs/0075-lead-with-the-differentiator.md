@@ -1,16 +1,14 @@
 ---
 rfc: 0075
 title: "Lead with the differentiator: the first-contact arc for README, book, and spec"
-status: planned
+status: implemented
 created: 2026-07-07
-# Accepted 2026-07-08. Collision check performed: the concurrent docs wave
-# (dbebffbc et al.) is truth-row/accuracy work on individual claims; this
-# RFC's targets (README opening, SUMMARY/getting-started bridge, spec TOC,
-# sealed-types section, terminology sweep) are untouched by it — orthogonal
-# surfaces, no coordination blocker. Verified still missing on master
-# 2026-07-08: spec/language.md has no sealed-types section (`sealed brand`
-# appears only inside §capabilities) and no TOC.
-tracking: quality audit 2026-07-07 (scratch/audit-2026-07-07-quality/REPORT.md, F8/F11)
+# Implemented across the docs truth/positioning wave:
+# - 7fc65dab: spec/language.md quick index, sealed-types section, capability/right/verb vocabulary
+# - a09192f3: Getting Started bridge that leads with capabilities
+# - README.md now opens with the language/capability thesis before the package-security application
+# - CONTRIBUTING.md records the capability/right/verb terminology rule for future docs/diagnostics
+tracking: implemented on master (7fc65dab, a09192f3, README/CONTRIBUTING positioning and terminology)
 related:
   - "0019 (interactive docs — superseded lineage; this is prose-arc, not tooling)"
   - "0063 §docs (release truth pass — owns claim accuracy; this owns *ordering*)"
