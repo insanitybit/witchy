@@ -22455,3 +22455,15 @@ pub fn serve(console: Console, net: Net) -> Int:
         assert_eq!(link_run(src), expected, "interp");
         assert_eq!(wasm_run(src), expected, "wasm");
     }
+
+    /// (BUG-447) `std/toml` shares ONE quote-aware key grammar across decode/get/
+    /// table: a quoted literal-dot table key `["a.b"]` is one key (not nested
+    /// a->b), a quoted key holding `=` (`"k=v" = 7`) isn't mis-split, and quoted
+    /// dependency names round-trip. Runs on BOTH backends.
+    #[test]
+    fn toml_quoted_keys_share_one_grammar() {
+        let src = "import toml\n\nfn main(console: Console):\n    let doc = \"[\\\"a.b\\\"]\\nx = 1\\n\\n[plain]\\ny = 2\\n\"\n    console.print(toml.get(doc, \"\\\"a.b\\\".x\") ?? \"MISS\")\n    console.print(toml.get(doc, \"plain.y\") ?? \"MISS\")\n    let doc2 = \"[t]\\n\\\"k=v\\\" = 7\\n\"\n    console.print(toml.get(doc2, \"t.\\\"k=v\\\"\") ?? \"MISS\")\n    let doc3 = \"[dependencies]\\n\\\"acme/money\\\" = \\\"1.0\\\"\\n\"\n    console.print(\"${list.length(toml.table(doc3, \"dependencies\"))}\")\n";
+        let expected: Vec<String> = ["1", "2", "7", "1"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(wasm_run(src), expected, "wasm");
+    }

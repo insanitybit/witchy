@@ -136,8 +136,11 @@ fn update_last(arr: List(Toml), kv_key: String, value: Toml) -> List(Toml):
 
 // "a.b.c" -> ["a", "b", "c"]; "" -> [].
 fn header_path(name: String) -> List(String):
+    // (BUG-447) Split dotted table paths on `.` OUTSIDE quotes, so a quoted
+    // literal-dot key `["a.b"]` stays one segment `a.b` rather than nesting into
+    // `a` -> `b`. Shares the one quote-aware grammar with values/arrays.
     var out = []
-    for seg in string.split(name, "."):
+    for seg in split_outside_quotes(name, "."):
         let s = string.trim(seg)
         if !string.is_empty(s):
             out = list.push(out, unquote_key(s))
@@ -325,13 +328,38 @@ fn split_outside_quotes(s: String, sep: String) -> List(String):
             current = current + ch
     list.push(parts, current)
 
+// (BUG-447) Split `s` at the FIRST `sep` that falls OUTSIDE double quotes,
+// returning `(before, after)` or `None` when no unquoted `sep` exists. Lets a
+// quoted key hold the separator literally — `"a=b" = 1` splits at the second
+// `=`, not the one inside the key. One grammar with `split_outside_quotes`.
+fn split_once_outside_quotes(s: String, sep: String) -> Option((String, String)):
+    var before = ""
+    var in_quotes = false
+    var found = false
+    var rest = ""
+    for ch in string.chars(s):
+        if found:
+            rest = rest + ch
+        else if ch == "\"":
+            in_quotes = !in_quotes
+            before = before + ch
+        else if ch == sep && !in_quotes:
+            found = true
+        else:
+            before = before + ch
+    if found:
+        Some((before, rest))
+    else:
+        None
+
 // If `line` is `key = value` (and not a comment), return (unquoted key, raw value).
 fn key_value(line: String) -> Option((String, String)):
-    if string.starts_with(line, "#") || !string.contains(line, "="):
+    if string.starts_with(line, "#"):
         None
     else:
-        let (k, v) = string.split_once(line, "=")
-        Some((unquote_key(string.trim(k)), string.trim(v)))
+        match split_once_outside_quotes(line, "="):
+            Some((k, v)) -> Some((unquote_key(string.trim(k)), string.trim(v)))
+            None -> None
 
 // A bare key is itself; a quoted key has its surrounding quotes stripped (so a
 // scoped name like `"acme/money"` reads back as `acme/money`).
@@ -356,11 +384,17 @@ fn lookup(text: String, path: String) -> Option(String):
     result
 
 // "rune.name" -> ("rune", "name"); a bare "name" -> ("", "name").
+// (BUG-447) Split on the last `.` OUTSIDE quotes, so a quoted literal-dot key
+// (`get(text, "\"a.b\"")`) stays one key with an empty section, and a section
+// that itself contains a quoted dot is preserved — one grammar with header_path.
 fn split_path(path: String) -> (String, String):
-    if string.contains(path, "."):
-        string.rsplit_once(path, ".")
-    else:
+    let segs = split_outside_quotes(path, ".")
+    if list.length(segs) <= 1:
         ("", path)
+    else:
+        let key = list.at(segs, list.length(segs) - 1)
+        let section = string.join(list.take(segs, list.length(segs) - 1), ".")
+        (section, key)
 
 fn is_header(line: String) -> Bool:
     string.starts_with(line, "[") && string.ends_with(header_no_comment(line), "]")
@@ -392,15 +426,17 @@ fn header_no_comment(line: String) -> String:
             None -> line
 
 // If `line` is `key = value`, return the trimmed raw value (still quoted).
+// (BUG-447) Split on the first `=` OUTSIDE quotes and compare keys by their
+// UNQUOTED canonical form, so a query for `a.b` matches a line `"a.b" = v` and a
+// key holding `=` isn't mis-split — the same grammar `key_value`/`split_path` use.
 fn match_key(line: String, key: String) -> Option(String):
-    if string.contains(line, "="):
-        let (k, v) = string.split_once(line, "=")
-        if string.trim(k) == key:
-            Some(string.trim(v))
-        else:
-            None
-    else:
-        None
+    match split_once_outside_quotes(line, "="):
+        Some((k, v)) ->
+            if unquote_key(string.trim(k)) == unquote_key(key):
+                Some(string.trim(v))
+            else:
+                None
+        None -> None
 
 // The value of `s`, with surrounding double quotes removed and any trailing
 // `# comment` dropped. For a quoted value we take the text up to the closing
