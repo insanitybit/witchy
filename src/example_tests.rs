@@ -1562,6 +1562,64 @@ fn main(console: Console):
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: Json debug object shape");
     }
 
+    /// (BUG-262) JSON decode rejects duplicate object names, and the public
+    /// helper/encoding boundaries must not let hand-built duplicate objects become
+    /// signed or emitted wire JSON silently.
+    #[test]
+    fn json_duplicate_object_keys_fail_at_encoding_boundaries_on_both_backends() {
+        let compile = |src: &str| -> (ast::Module, Vec<u8>) {
+            let linked = resolve_std_src(src);
+            typeck::check(&linked).expect("typecheck");
+            let bytes = codegen::compile_module_binary(&linked)
+                .expect("compile")
+                .expect("the binary path lowers this program");
+            (linked, bytes)
+        };
+        let cases = [
+            (
+                "encode",
+                "import json\n\nfn main(console: Console):\n    let j = json.JsonObject([(\"aud\", json.JsonString(\"good\")), (\"aud\", json.JsonString(\"evil\"))])\n    print(console, json.encode(j))\n",
+                "json.encode: duplicate object key `aud`",
+            ),
+            (
+                "pretty",
+                "import json\n\nfn main(console: Console):\n    let j = json.JsonObject([(\"aud\", json.JsonString(\"good\")), (\"aud\", json.JsonString(\"evil\"))])\n    print(console, json.encode_pretty(j))\n",
+                "json.encode_pretty: duplicate object key `aud`",
+            ),
+            (
+                "object_sorted",
+                "import json\n\nfn main(console: Console):\n    let j = json.object_sorted([(\"kid\", json.JsonString(\"a\")), (\"kid\", json.JsonString(\"b\"))])\n    print(console, json.encode(j))\n",
+                "json.object_sorted: duplicate object key `kid`",
+            ),
+            (
+                "merge left",
+                "import json\n\nfn main(console: Console):\n    let left = json.JsonObject([(\"a\", json.JsonInt(1)), (\"a\", json.JsonInt(2))])\n    let right = json.JsonObject([(\"b\", json.JsonInt(3))])\n    print(console, json.encode(json.merge(left, right)))\n",
+                "json.merge: duplicate object key `a`",
+            ),
+            (
+                "merge right",
+                "import json\n\nfn main(console: Console):\n    let left = json.JsonObject([(\"a\", json.JsonInt(1))])\n    let right = json.JsonObject([(\"b\", json.JsonInt(2)), (\"b\", json.JsonInt(3))])\n    print(console, json.encode(json.merge(left, right)))\n",
+                "json.merge: duplicate object key `b`",
+            ),
+        ];
+        for (label, src, expected_msg) in cases {
+            let (linked, wasm) = compile(src);
+            let interp_err = interpreter::run_module(linked, ".", Vec::new())
+                .expect_err("interpreter must abort on duplicate JSON object keys")
+                .to_string();
+            assert!(interp_err.contains(expected_msg), "{label}: {interp_err}");
+            let wasm_err = crate::run_wasm_bytes(&wasm)
+                .expect_err("WASM must abort on duplicate JSON object keys")
+                .to_string();
+            assert!(wasm_err.contains(expected_msg), "{label}: {wasm_err}");
+        }
+
+        let ok = "import json\n\nfn main(console: Console):\n    let left = json.JsonObject([(\"a\", json.JsonInt(1)), (\"b\", json.JsonInt(2))])\n    let right = json.JsonObject([(\"b\", json.JsonInt(3)), (\"c\", json.JsonInt(4))])\n    print(console, json.encode(json.merge(left, right)))\n";
+        let expected = ["{\"a\":1,\"b\":3,\"c\":4}"];
+        assert_eq!(link_run(ok), expected, "interp: unique JSON merge still works");
+        assert_eq!(run_linked_on_wasm(&[("main", ok)], "main"), expected, "compiled: unique JSON merge still works");
+    }
+
     /// (BUG-374) JSON has no NaN/Infinity tokens, and `null` already means an
     /// intentional JSON null / `Option.None`. Strict JSON boundaries must fail
     /// loudly instead of silently erasing non-finite Float values to null.

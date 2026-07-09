@@ -89,6 +89,7 @@ fn pretty_array(items: List(Json), depth: Int) -> String:
         out + "\n" + indent(depth) + "]"
 
 fn pretty_object(pairs: List((String, Json)), depth: Int) -> String:
+    assert_unique_object_keys(pairs, "json.encode_pretty")
     if list.length(pairs) == 0:
         "{}"
     else:
@@ -124,6 +125,7 @@ fn encode_array(items: List(Json)) -> String:
     out + "]"
 
 fn encode_object(pairs: List((String, Json))) -> String:
+    assert_unique_object_keys(pairs, "json.encode")
     var out = "{"
     var first = true
     for p in pairs:
@@ -134,6 +136,14 @@ fn encode_object(pairs: List((String, Json))) -> String:
             out = out + ","
         out = out + encode_string(k) + ":" + encode(v)
     out + "}"
+
+fn assert_unique_object_keys(pairs: List((String, Json)), context: String):
+    var seen: List(String) = []
+    for p in pairs:
+        let (k, _v) = p
+        if list.contains(seen, k):
+            fail(context + ": duplicate object key `" + k + "`")
+        seen = list.push(seen, k)
 
 // Render a Float as a JSON number. `inf`/`-inf`/`NaN` are not JSON tokens; a
 // core JSON encoder must fail loudly rather than erase the numeric value as
@@ -593,7 +603,10 @@ pub fn merge(a: Json, b: Json) -> Json:
     match a:
         JsonObject(pa) ->
             match b:
-                JsonObject(pb) -> JsonObject(merge_pairs(pa, pb))
+                JsonObject(pb) ->
+                    assert_unique_object_keys(pa, "json.merge")
+                    assert_unique_object_keys(pb, "json.merge")
+                    JsonObject(merge_pairs(pa, pb))
                 _ -> b
         _ -> b
 
@@ -701,6 +714,7 @@ pub fn optional(o: Option(Json), each: fn(Json) -> Result(a, String)) -> Result(
 // be deterministic for signing; reflectively-encoded records keep their declared
 // field order instead.
 pub fn object_sorted(pairs: List((String, Json))) -> Json:
+    assert_unique_object_keys(pairs, "json.object_sorted")
     var sorted: List((String, Json)) = []
     for p in pairs:
         sorted = insert_by_key(sorted, p)
