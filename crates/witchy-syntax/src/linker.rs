@@ -400,11 +400,28 @@ pub type ComptimeExpander = fn(&str, &mut Module, &[(String, Module)]) -> Result
 /// `entry` the module holding `main`. `expand` runs each module's compile-time
 /// passes (see [`ComptimeExpander`]).
 pub fn link(
-    mut modules: Vec<(String, Module)>,
+    modules: Vec<(String, Module)>,
     entry: &str,
     expand: ComptimeExpander,
 ) -> Result<Module, LinkError> {
+    link_with_user_modules(modules, entry, expand, &std::collections::HashSet::new())
+}
+
+/// Like [`link`], but with the subset of module names that came from user
+/// source files rather than the bundled std fallback. This lets diagnostics
+/// explain true local-std shadowing without mislabeling ordinary std imports.
+pub fn link_with_user_modules(
+    mut modules: Vec<(String, Module)>,
+    entry: &str,
+    expand: ComptimeExpander,
+    user_modules: &std::collections::HashSet<String>,
+) -> Result<Module, LinkError> {
     check_reserved_source_names(&modules)?;
+    let user_std_shadows: HashSet<String> = user_modules
+        .iter()
+        .filter(|name| STD_MODULES.contains(&name.as_str()))
+        .cloned()
+        .collect();
 
     // Lower `gen fn`/`yield` to ordinary functions over `std/iter` first — this
     // adds `import iter`/`import option` to any generator module, so the std
@@ -668,6 +685,7 @@ pub fn link(
                         bare_fn_imports.get(mname),
                         &fns,
                         &bound,
+                        &user_std_shadows,
                     )?;
                     items.push(Item::Function(f2));
                 }
@@ -695,6 +713,7 @@ pub fn link(
                                 bare_fn_imports.get(mname),
                                 &fns,
                                 &bound,
+                                &user_std_shadows,
                             )?;
                         }
                     }
@@ -715,6 +734,7 @@ pub fn link(
                             bare_fn_imports.get(mname),
                             &fns,
                             &bound,
+                            &user_std_shadows,
                         )?;
                     }
                     items.push(Item::Impl(im2));
@@ -1160,14 +1180,15 @@ fn rewrite_block(
     bare_imports: Option<&HashMap<String, String>>,
     fns: &FnTable,
     bound: &HashSet<String>,
+    user_std_shadows: &HashSet<String>,
 ) -> Result<(), LinkError> {
     for stmt in &mut b.stmts {
         match stmt {
             Stmt::Let { value, .. }
             | Stmt::Assign { value, .. }
-            | Stmt::LetPattern { value, .. } => rewrite_expr(value, m, imps, bare_imports, fns, bound)?,
+            | Stmt::LetPattern { value, .. } => rewrite_expr(value, m, imps, bare_imports, fns, bound, user_std_shadows)?,
             Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => {
-                rewrite_expr(e, m, imps, bare_imports, fns, bound)?
+                rewrite_expr(e, m, imps, bare_imports, fns, bound, user_std_shadows)?
             }
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
@@ -1182,6 +1203,7 @@ fn rewrite_expr(
     bare_imports: Option<&HashMap<String, String>>,
     fns: &FnTable,
     bound: &HashSet<String>,
+    user_std_shadows: &HashSet<String>,
 ) -> Result<(), LinkError> {
     match e {
         Expr::Call { name, args } => {
@@ -1199,24 +1221,24 @@ fn rewrite_expr(
                     let mut call_args = Vec::new();
                     std::mem::swap(args, &mut call_args);
                     for a in &mut call_args {
-                        rewrite_expr(a, m, imps, bare_imports, fns, bound)?;
+                        rewrite_expr(a, m, imps, bare_imports, fns, bound, user_std_shadows)?;
                     }
                     *e = Expr::MethodCall { receiver, method, args: call_args };
                     return Ok(());
                 }
             }
-            *name = resolve_call(name, m, imps, bare_imports, fns, bound)?;
+            *name = resolve_call(name, m, imps, bare_imports, fns, bound, user_std_shadows)?;
             for a in args {
-                rewrite_expr(a, m, imps, bare_imports, fns, bound)?;
+                rewrite_expr(a, m, imps, bare_imports, fns, bound, user_std_shadows)?;
             }
         }
         // (RFC-0056) A labeled direct call: qualify the callee exactly like a plain
         // call so `keyword_args::resolve` can look up its declaration, and rewrite
         // the argument values. The labels ride along untouched until then.
         Expr::LabeledCall { name, args } => {
-            *name = resolve_call(name, m, imps, bare_imports, fns, bound)?;
+            *name = resolve_call(name, m, imps, bare_imports, fns, bound, user_std_shadows)?;
             for (_, a) in args {
-                rewrite_expr(a, m, imps, bare_imports, fns, bound)?;
+                rewrite_expr(a, m, imps, bare_imports, fns, bound, user_std_shadows)?;
             }
         }
         // A bare name matching a same-module function is a first-class reference
@@ -1230,18 +1252,18 @@ fn rewrite_expr(
             }
         }
         Expr::Apply { func, args } => {
-            rewrite_expr(func, m, imps, bare_imports, fns, bound)?;
+            rewrite_expr(func, m, imps, bare_imports, fns, bound, user_std_shadows)?;
             for a in args {
-                rewrite_expr(a, m, imps, bare_imports, fns, bound)?;
+                rewrite_expr(a, m, imps, bare_imports, fns, bound, user_std_shadows)?;
             }
         }
         Expr::Ctor { args, .. } | Expr::List(args) | Expr::Tuple(args) => {
             for a in args {
-                rewrite_expr(a, m, imps, bare_imports, fns, bound)?;
+                rewrite_expr(a, m, imps, bare_imports, fns, bound, user_std_shadows)?;
             }
         }
         Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } => {
-            rewrite_expr(expr, m, imps, bare_imports, fns, bound)?
+            rewrite_expr(expr, m, imps, bare_imports, fns, bound, user_std_shadows)?
         }
         // (RFC-0050 Part 2) A bare `module.fn` in value (non-call) position is a
         // first-class function value, produced by eta-expansion: `list.length`
@@ -1271,7 +1293,7 @@ fn rewrite_expr(
                 // precise "module `X` has no function `Y`" error — "unbound
                 // variable" never names a module again.
                 let qualified =
-                    resolve_call(&format!("{modname}.{field}"), m, imps, bare_imports, fns, bound)?;
+                    resolve_call(&format!("{modname}.{field}"), m, imps, bare_imports, fns, bound, user_std_shadows)?;
                 let sig = fns
                     .get(&modname)
                     .and_then(|s| s.get(&field))
@@ -1306,73 +1328,73 @@ fn rewrite_expr(
                     ));
                 }
             }
-            rewrite_expr(base, m, imps, bare_imports, fns, bound)?;
+            rewrite_expr(base, m, imps, bare_imports, fns, bound, user_std_shadows)?;
         }
         Expr::RecordUpdate { name: _, base, fields } => {
-            rewrite_expr(base, m, imps, bare_imports, fns, bound)?;
+            rewrite_expr(base, m, imps, bare_imports, fns, bound, user_std_shadows)?;
             for (_, value) in fields {
-                rewrite_expr(value, m, imps, bare_imports, fns, bound)?;
+                rewrite_expr(value, m, imps, bare_imports, fns, bound, user_std_shadows)?;
             }
         }
         Expr::Record { fields, spread, .. } => {
             for (_, value) in fields {
-                rewrite_expr(value, m, imps, bare_imports, fns, bound)?;
+                rewrite_expr(value, m, imps, bare_imports, fns, bound, user_std_shadows)?;
             }
             if let Some(s) = spread {
-                rewrite_expr(s, m, imps, bare_imports, fns, bound)?;
+                rewrite_expr(s, m, imps, bare_imports, fns, bound, user_std_shadows)?;
             }
         }
         Expr::Binary { lhs, rhs, .. } => {
-            rewrite_expr(lhs, m, imps, bare_imports, fns, bound)?;
-            rewrite_expr(rhs, m, imps, bare_imports, fns, bound)?;
+            rewrite_expr(lhs, m, imps, bare_imports, fns, bound, user_std_shadows)?;
+            rewrite_expr(rhs, m, imps, bare_imports, fns, bound, user_std_shadows)?;
         }
         Expr::Range { lo, hi, .. } => {
-            rewrite_expr(lo, m, imps, bare_imports, fns, bound)?;
-            rewrite_expr(hi, m, imps, bare_imports, fns, bound)?;
+            rewrite_expr(lo, m, imps, bare_imports, fns, bound, user_std_shadows)?;
+            rewrite_expr(hi, m, imps, bare_imports, fns, bound, user_std_shadows)?;
         }
         Expr::Index { base, index } => {
-            rewrite_expr(base, m, imps, bare_imports, fns, bound)?;
-            rewrite_expr(index, m, imps, bare_imports, fns, bound)?;
+            rewrite_expr(base, m, imps, bare_imports, fns, bound, user_std_shadows)?;
+            rewrite_expr(index, m, imps, bare_imports, fns, bound, user_std_shadows)?;
         }
         // Lowered to a plain `Call` before this runs; recurse for safety.
         Expr::MethodCall { receiver, args, .. } => {
-            rewrite_expr(receiver, m, imps, bare_imports, fns, bound)?;
+            rewrite_expr(receiver, m, imps, bare_imports, fns, bound, user_std_shadows)?;
             for a in args {
-                rewrite_expr(a, m, imps, bare_imports, fns, bound)?;
+                rewrite_expr(a, m, imps, bare_imports, fns, bound, user_std_shadows)?;
             }
         }
         Expr::WhileLet { scrutinee, body, .. } => {
-            rewrite_expr(scrutinee, m, imps, bare_imports, fns, bound)?;
-            rewrite_block(body, m, imps, bare_imports, fns, bound)?;
+            rewrite_expr(scrutinee, m, imps, bare_imports, fns, bound, user_std_shadows)?;
+            rewrite_block(body, m, imps, bare_imports, fns, bound, user_std_shadows)?;
         }
         Expr::If {
             cond,
             then_block,
             else_block,
         } => {
-            rewrite_expr(cond, m, imps, bare_imports, fns, bound)?;
-            rewrite_block(then_block, m, imps, bare_imports, fns, bound)?;
+            rewrite_expr(cond, m, imps, bare_imports, fns, bound, user_std_shadows)?;
+            rewrite_block(then_block, m, imps, bare_imports, fns, bound, user_std_shadows)?;
             if let Some(b) = else_block {
-                rewrite_block(b, m, imps, bare_imports, fns, bound)?;
+                rewrite_block(b, m, imps, bare_imports, fns, bound, user_std_shadows)?;
             }
         }
-        Expr::Lambda { body, .. } => rewrite_block(body, m, imps, bare_imports, fns, bound)?,
-        Expr::Block(b) => rewrite_block(b, m, imps, bare_imports, fns, bound)?,
+        Expr::Lambda { body, .. } => rewrite_block(body, m, imps, bare_imports, fns, bound, user_std_shadows)?,
+        Expr::Block(b) => rewrite_block(b, m, imps, bare_imports, fns, bound, user_std_shadows)?,
         Expr::While { cond, body } => {
-            rewrite_expr(cond, m, imps, bare_imports, fns, bound)?;
-            rewrite_block(body, m, imps, bare_imports, fns, bound)?;
+            rewrite_expr(cond, m, imps, bare_imports, fns, bound, user_std_shadows)?;
+            rewrite_block(body, m, imps, bare_imports, fns, bound, user_std_shadows)?;
         }
         Expr::For { iter, body, .. } => {
-            rewrite_expr(iter, m, imps, bare_imports, fns, bound)?;
-            rewrite_block(body, m, imps, bare_imports, fns, bound)?;
+            rewrite_expr(iter, m, imps, bare_imports, fns, bound, user_std_shadows)?;
+            rewrite_block(body, m, imps, bare_imports, fns, bound, user_std_shadows)?;
         }
         Expr::Match { scrutinee, arms } => {
-            rewrite_expr(scrutinee, m, imps, bare_imports, fns, bound)?;
+            rewrite_expr(scrutinee, m, imps, bare_imports, fns, bound, user_std_shadows)?;
             for arm in arms {
                 if let Some(g) = &mut arm.guard {
-                    rewrite_expr(g, m, imps, bare_imports, fns, bound)?;
+                    rewrite_expr(g, m, imps, bare_imports, fns, bound, user_std_shadows)?;
                 }
-                rewrite_expr(&mut arm.body, m, imps, bare_imports, fns, bound)?;
+                rewrite_expr(&mut arm.body, m, imps, bare_imports, fns, bound, user_std_shadows)?;
             }
         }
         Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::TaggedLit { .. } => {}
@@ -1648,6 +1670,7 @@ fn resolve_call(
     bare_imports: Option<&HashMap<String, String>>,
     fns: &FnTable,
     bound: &HashSet<String>,
+    user_std_shadows: &HashSet<String>,
 ) -> Result<String, LinkError> {
     check_private_intrinsic_call(name, m)?;
     if let Some((modname, fname)) = name.split_once('.') {
@@ -1663,7 +1686,7 @@ fn resolve_call(
             Some(_) if modname == m => Ok(name.to_string()),
             Some(sig) if sig.public => Ok(name.to_string()),
             Some(_) => lerr(format!("function `{modname}.{fname}` is private to module `{modname}`")),
-            None => lerr(format!("module `{modname}` has no function `{fname}`")),
+            None => lerr(missing_module_function_message(modname, fname, user_std_shadows)),
         };
     }
     // A function defined in THIS module wins over a builtin of the same name, so
@@ -1694,6 +1717,21 @@ fn resolve_call(
     // Not a function here and not a builtin: a local binding being applied (e.g.
     // a lambda parameter). Leave it unqualified; the type checker decides.
     Ok(name.to_string())
+}
+
+fn missing_module_function_message(
+    modname: &str,
+    fname: &str,
+    user_std_shadows: &HashSet<String>,
+) -> String {
+    if user_std_shadows.contains(modname) {
+        format!(
+            "module `{modname}` is provided by this program and shadows the bundled \
+             standard-library module `{modname}`; it has no function `{fname}`"
+        )
+    } else {
+        format!("module `{modname}` has no function `{fname}`")
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2137,6 +2175,31 @@ mod tests {
         link(vec![("main".to_string(), module)], "main", noop_expand)
             .map(|_| ())
             .map_err(|e| e.message)
+    }
+
+    #[test]
+    fn std_shadowing_module_missing_function_names_shadow() {
+        let bytes = crate::parser::parse_module("pub fn unrelated() -> Int:\n    1\n")
+            .expect("local bytes parses");
+        let main = crate::parser::parse_module(
+            "import bytes\n\nfn main(console: Console):\n    let b = bytes.from_string(\"hi\")\n    print(console, \"${bytes.length(b)}\")\n",
+        )
+        .expect("main parses");
+        let user_modules = std::collections::HashSet::from(["bytes".to_string(), "main".to_string()]);
+        let err = link_with_user_modules(
+            vec![("bytes".to_string(), bytes), ("main".to_string(), main)],
+            "main",
+            noop_expand,
+            &user_modules,
+        )
+        .expect_err("local bytes should not be mistaken for std/bytes")
+        .message;
+        assert!(
+            err.contains("module `bytes` is provided by this program")
+                && err.contains("shadows the bundled standard-library module `bytes`")
+                && err.contains("has no function `from_string`"),
+            "{err}"
+        );
     }
 
     #[test]

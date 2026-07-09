@@ -1300,6 +1300,7 @@ fn link_file_with_deps(
 
     let mut modules: Vec<(String, ast::Module)> = Vec::new();
     let mut loaded: HashSet<String> = HashSet::new();
+    let mut user_modules: HashSet<String> = HashSet::new();
     let mut queue: VecDeque<(String, PathBuf)> = VecDeque::new();
     queue.push_back((entry_stem.clone(), entry_path.to_path_buf()));
 
@@ -1310,7 +1311,10 @@ fn link_file_with_deps(
         // A local `<name>.witchy` wins; otherwise fall back to a bundled
         // standard-library module (e.g. `import list`).
         let src = match std::fs::read_to_string(&p) {
-            Ok(s) => s,
+            Ok(s) => {
+                user_modules.insert(name.clone());
+                s
+            }
             Err(e) => match bundled_module(&name) {
                 Some(s) => s.to_string(),
                 None => {
@@ -1339,7 +1343,8 @@ fn link_file_with_deps(
         modules.push((name, module));
     }
 
-    let linked = pipeline::link(modules, &entry_stem).map_err(|e| e.to_string())?;
+    let linked = pipeline::link_with_user_modules(modules, &entry_stem, &user_modules)
+        .map_err(|e| e.to_string())?;
     Ok((linked, entry_stem))
 }
 
