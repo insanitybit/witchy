@@ -2641,35 +2641,70 @@ fn verdict_vendor(console: Console, total: Int, failed: Int) -> Int:
         2
 
 fn report_rune_verify(console: Console, root: Dir, dir: String, rootpub: String, record: String) -> Int:
-    if !record_signature_valid(rootpub, record):
-        console.print("BLOCK: " + dir + "/coven.json is not validly signed by that root key — refusing")
-        2
-    else if rune_hash(root, dir) != recorded_hash(record):
+    match verify_record_signature(rootpub, record):
+        Err(_e) ->
+            console.print("BLOCK: " + dir + "/coven.json is not validly signed by that root key — refusing")
+            2
+        Ok(doc) -> report_rune_hash_verify(console, root, dir, doc)
+
+fn report_rune_hash_verify(console: Console, root: Dir, dir: String, doc: Json) -> Int:
+    if rune_hash(root, dir) != jget(doc, "hash"):
         console.print("BLOCK: " + dir + " source no longer matches its signed hash (tampered)")
         2
     else:
-        match json.decode(record):
-            Ok(doc) -> console.print("OK: " + jget(doc, "name") + "@" + jget(doc, "version") + " verified (signature + content), no network")
-            Err(e) -> console.print("OK: verified")
-
+        console.print("OK: " + jget(doc, "name") + "@" + jget(doc, "version") + " verified (signature + content), no network")
         0
+
+// Matchable errors for offline signed-record verification. The CLI still renders
+// the stable BLOCK line, but the trust boundary no longer collapses malformed
+// JSON, malformed payload shape, malformed verifier input, and bad signatures
+// into an uninspectable Bool.
+type RecordVerifyError:
+    RecordVerifyInvalidJson(String)
+    RecordVerifyPayloadInjectedNewline
+    RecordVerifyPayloadMalformed
+    RecordVerifySignatureInput(String)
+    RecordVerifyBadSignature
+
+fn record_verify_error_message(e: RecordVerifyError) -> String:
+    match e:
+        RecordVerifyInvalidJson(reason) -> "coven.json is not valid JSON: " + reason
+        RecordVerifyPayloadInjectedNewline -> "coven.json signed payload contains an embedded newline"
+        RecordVerifyPayloadMalformed -> "coven.json cannot be projected into its signed payload"
+        RecordVerifySignatureInput(reason) -> "record signature input is malformed: " + reason
+        RecordVerifyBadSignature -> "record signature is invalid"
+
+impl Show for RecordVerifyError:
+    fn show(self) -> String:
+        record_verify_error_message(self)
+
+impl Error for RecordVerifyError
+
+impl From(RecordVerifyError) for String:
+    fn from(value: RecordVerifyError) -> Self:
+        record_verify_error_message(value)
 
 // Verify a registry record is signed by the root key over coven's canonical
 // payload. A malformed `runtime_footprint` cannot be projected into a payload.
-fn record_signature_valid(rootpub: String, text: String) -> Bool:
+fn verify_record_signature(rootpub: String, text: String) -> Result(Json, RecordVerifyError):
     match json.decode(text):
+        Err(e) -> Err(RecordVerifyInvalidJson(json.decode_error_message(e)))
         Ok(doc) ->
             if record_field_has_newline(doc):
-                false
+                Err(RecordVerifyPayloadInjectedNewline)
             else:
                 match record_payload(doc):
-                    None -> false
+                    None -> Err(RecordVerifyPayloadMalformed)
                     Some(payload) ->
                         match crypto.ed25519_verify(rootpub, payload, jget(doc, "sig")):
-                            Ok(true) -> true
-                            Ok(false) -> false
-                            Err(_e) -> false
-        Err(e) -> false
+                            Err(e) -> Err(RecordVerifySignatureInput(crypto.verify_error_message(e)))
+                            Ok(false) -> Err(RecordVerifyBadSignature)
+                            Ok(true) -> Ok(doc)
+
+fn record_signature_valid(rootpub: String, text: String) -> Bool:
+    match verify_record_signature(rootpub, text):
+        Ok(_doc) -> true
+        Err(_e) -> false
 
 // SEC-013: refuse a record whose free-form fields embed the payload line separator
 // (`\n`) — a crafted value could inject a sibling `key=` line, making the canonical

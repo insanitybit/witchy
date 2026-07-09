@@ -1461,6 +1461,23 @@ fn signature_detects_registry_metadata_tampering() {
     assert!(stdout(&out).contains("BLOCK"), "verify-rune: {}", stdout(&out));
 }
 
+#[test]
+fn verify_rune_rejects_malformed_coven_json() {
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "badrecord");
+    let app = fe.new_app();
+    fe.published_lib("acme/broken", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
+    let out = fe.pm(&app, &["add", "acme/broken"], None);
+    assert!(out.status.success(), "add failed: {}", stderr(&out));
+
+    let meta = app.join("vendor/broken/coven.json");
+    std::fs::write(&meta, "{").unwrap();
+
+    let out = fe.pm(&app, &["verify-rune", "vendor/broken", &server.rootpub()], None);
+    assert!(!out.status.success(), "malformed coven.json must fail verify");
+    assert!(stdout(&out).contains("not validly signed"), "verify-rune: {}", stdout(&out));
+}
+
 /// BUG-363: capability strings can contain commas (`Net[Connect, Tcp]`). The
 /// signed record payload must therefore bind the JSON array shape, not only the
 /// comma-joined projection of its elements.

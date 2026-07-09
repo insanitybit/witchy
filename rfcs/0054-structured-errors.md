@@ -257,7 +257,11 @@ returns a local `LockPinError` for non-integer or negative pins before `pm verif
 renders the existing `BLOCK:` diagnostic. The PM registry version resolver now
 returns a local `VersionResolveError`, keeping registry fetch failure, malformed
 requirements, cooldown blocks, and no-match outcomes matchable until the CLI
-renders the existing user-facing message. Stored Coven records parse through
+renders the existing user-facing message. The PM offline vendored-record
+verification path now returns a local `RecordVerifyError`, keeping malformed
+`coven.json`, malformed signed payload shape, malformed verifier input, and bad
+signatures distinct until `verify-rune` / `verify-vendor` render their existing
+BLOCK diagnostics. Stored Coven records parse through
 `coven_record.RecordParseError`, keeping malformed JSON distinct from a
 well-formed JSON value with the wrong record shape before the registry maps it
 to a corrupt-record response. Coven source-footprint recomputation returns
