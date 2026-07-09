@@ -203,6 +203,11 @@ impl Parser {
         if self.at(k) {
             self.advance();
             Ok(())
+        } else if matches!(k, Tok::LBrace) {
+            Err(self.error(format!(
+                "expected an indented block; add `:` after the header (found `{}`)",
+                self.kind()
+            )))
         } else {
             Err(self.error(format!("expected `{k}`, found `{}`", self.kind())))
         }
