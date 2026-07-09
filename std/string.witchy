@@ -87,6 +87,45 @@ pub fn to_lower(var s: String) -> String:
 pub fn trim(var s: String) -> String:
     string.trim(s)
 
+// Real methods mirror the primary string value-mutator surface while the module
+// functions remain as stable, first-class values.
+impl String:
+    pub fn replace(var self, from: String, to: String) -> String:
+        string.replace(self, from, to)
+
+    pub fn to_upper(var self) -> String:
+        string.to_upper(self)
+
+    pub fn to_lower(var self) -> String:
+        string.to_lower(self)
+
+    pub fn trim(var self) -> String:
+        string.trim(self)
+
+    pub fn pad_left(var self, width: Int, fill: String) -> String:
+        string.pad_left(self, width, fill)
+
+    pub fn pad_right(var self, width: Int, fill: String) -> String:
+        string.pad_right(self, width, fill)
+
+    pub fn center(var self, width: Int, fill: String) -> String:
+        string.center(self, width, fill)
+
+    pub fn strip_prefix(var self, prefix: String) -> String:
+        string.strip_prefix(self, prefix)
+
+    pub fn strip_suffix(var self, suffix: String) -> String:
+        string.strip_suffix(self, suffix)
+
+    pub fn replace_first(var self, from: String, to: String) -> String:
+        string.replace_first(self, from, to)
+
+    pub fn trim_start(var self) -> String:
+        string.trim_start(self)
+
+    pub fn trim_end(var self) -> String:
+        string.trim_end(self)
+
 // Parse a decimal integer; junk, overflow, or an empty string ABORTS the
 // program (a runtime error, not an `Err`) on every backend. For the total
 // version that returns `Option(Int)`, see `parse_int`.

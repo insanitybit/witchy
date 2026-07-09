@@ -40,7 +40,7 @@ pub fn render_module(module_name: &str, source: &str, module: &Module) -> Result
         any = true;
         let (head, marker) = type_decl(t);
         let _ = writeln!(out, "#### `{head}`\n");
-        let doc = doc_above(&lines, &marker);
+        let doc = doc_above_top_level(&lines, &marker);
         if !doc.is_empty() {
             let _ = writeln!(out, "{doc}\n");
         }
@@ -102,7 +102,7 @@ pub fn render_module(module_name: &str, source: &str, module: &Module) -> Result
         // The source line carries the same `async`/`gen` qualifier before `fn`,
         // so the doc-comment marker must reconstruct it to find the block.
         let marker = format!("pub {}fn {}(", fn_qualifier(f.is_async, f.is_gen), f.name);
-        let doc = doc_above(&lines, &marker);
+        let doc = doc_above_top_level(&lines, &marker);
         if !doc.is_empty() {
             let _ = writeln!(out, "{doc}\n");
         }
@@ -131,7 +131,14 @@ pub fn render_module(module_name: &str, source: &str, module: &Module) -> Result
             any = true;
             let _ = writeln!(out, "#### `{sig}`\n");
             let marker = format!("pub {}fn {}(", fn_qualifier(m.is_async, m.is_gen), m.name);
-            let doc = doc_above(&lines, &marker);
+            let doc = {
+                let method_doc = doc_above_indented(&lines, &marker);
+                if method_doc.is_empty() {
+                    doc_above_top_level(&lines, &marker)
+                } else {
+                    method_doc
+                }
+            };
             if !doc.is_empty() {
                 let _ = writeln!(out, "{doc}\n");
             }
@@ -379,6 +386,36 @@ fn doc_above(lines: &[&str], marker: &str) -> String {
     join_comment(lines[start..i].iter())
 }
 
+/// Like [`doc_above`], but only matches a declaration that starts at column 0.
+/// Top-level functions and inherent methods can share the same surface name; a
+/// method must not steal the module function's doc-comment.
+fn doc_above_top_level(lines: &[&str], marker: &str) -> String {
+    let Some(i) = lines.iter().position(|l| l.starts_with(marker)) else {
+        return String::new();
+    };
+    let mut start = i;
+    while start > 0 && lines[start - 1].trim_start().starts_with("//") {
+        start -= 1;
+    }
+    join_comment(lines[start..i].iter())
+}
+
+/// Like [`doc_above`], but only matches an indented declaration. Used for
+/// inherent methods, whose source line is nested under `impl`.
+fn doc_above_indented(lines: &[&str], marker: &str) -> String {
+    let Some(i) = lines
+        .iter()
+        .position(|l| !l.starts_with(marker) && l.trim_start().starts_with(marker))
+    else {
+        return String::new();
+    };
+    let mut start = i;
+    while start > 0 && lines[start - 1].trim_start().starts_with("//") {
+        start -= 1;
+    }
+    join_comment(lines[start..i].iter())
+}
+
 /// Strip `//` markers and join a comment block into flowing prose, treating a
 /// bare `//` line as a paragraph break.
 fn join_comment<'a>(it: impl Iterator<Item = &'a &'a str>) -> String {
@@ -427,6 +464,15 @@ mod tests {
         assert!(md.contains("#### `fn hello(name: String) -> String`"), "signature: {md}");
         assert!(md.contains("Say hello to `name`."), "fn doc: {md}");
         assert!(!md.contains("private_helper"), "private fn must be omitted: {md}");
+    }
+
+    #[test]
+    fn duplicate_method_name_does_not_erase_function_doc() {
+        let src = "import option\n\n// Trim whitespace.\npub fn trim(var s: String) -> String:\n    s\n\nimpl String:\n    pub fn trim(var self) -> String:\n        trim(self)\n";
+        let md = render("string", src).unwrap();
+        assert!(md.contains("#### `fn trim(var s: String) -> String`"), "free fn: {md}");
+        assert!(md.contains("#### `String.trim() -> String`"), "method: {md}");
+        assert_eq!(md.matches("Trim whitespace.").count(), 2, "shared docs: {md}");
     }
 
     // BUG-073: public traits (name, type params, supertraits, methods) render.

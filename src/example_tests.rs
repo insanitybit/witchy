@@ -1479,6 +1479,34 @@ fn main(console: Console):
         );
     }
 
+    /// (RFC-0050) String's value-mutator surface is a real inherent-method API
+    /// like List/Dict/Set. Module functions remain callable for function-value
+    /// and explicit-module use.
+    #[test]
+    fn string_mutator_methods_write_back_on_both_backends() {
+        let src = "import string\n\nfn main(console: Console):\n    var s = \"  hello  \"\n    s.trim()\n    console.print(s)\n    s.to_upper()\n    console.print(s)\n    s.replace(\"HELLO\", \"hi\")\n    console.print(s)\n    s.pad_left(5, \"0\")\n    console.print(s)\n    s.pad_right(7, \"!\")\n    console.print(s)\n    s.center(9, \".\")\n    console.print(s)\n    s.strip_prefix(\".\")\n    s.strip_suffix(\".\")\n    console.print(s)\n    s.replace_first(\"hi\", \"bye\")\n    console.print(s)\n    var t = \"  edge  \"\n    t.trim_start()\n    console.print(t)\n    t.trim_end()\n    console.print(t)\n    console.print(string.trim(\"  module  \"))\n    console.print(string.replace_first(\"alpha alpha\", \"alpha\", \"beta\"))\n";
+        let expected = [
+            "hello",
+            "HELLO",
+            "hi",
+            "000hi",
+            "000hi!!",
+            ".000hi!!.",
+            "000hi!!",
+            "000bye!!",
+            "edge  ",
+            "edge",
+            "module",
+            "beta alpha",
+        ];
+        assert_eq!(link_run(src), expected, "interp: string mutator methods");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: string mutator methods",
+        );
+    }
+
     /// (BUG-535) Lists are ordinary comparison-protocol values: if their elements
     /// satisfy `PartialEq`/`Eq`, the list itself satisfies the same bound instead
     /// of relying on one-off direct-operator magic.

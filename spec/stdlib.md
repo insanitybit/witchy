@@ -1416,15 +1416,23 @@ Insert `sep` between adjacent elements: [a, b, c] -> [a, sep, b, sep, c].
 
 #### `fn reverse(var xs: List(a)) -> List(a)`
 
+The list, reversed.
+
 #### `fn sort_by(var xs: List(a), less: fn(a, a) -> Bool) -> List(a)`
 
+Sort using a caller-supplied "is-less-than" comparator — a stable merge sort (O(n log n)), so equal elements keep their original order. Generic over the element type.
+
 #### `fn sort(var xs: List(a)) -> List(a) where a: Ord`
+
+Sort any list whose elements are `Ord` ascending — a stable merge sort (O(n log n)) that dispatches through the element type's total order, so `xs.sort()` works for `Int`, `String`, `Duration`, or your own derived-`Ord` records, content-correct on both backends (RFC-0046). A merely-partial type like `Float` (not `Ord`) is rejected at the bound; sort those with `sort_by`.
 
 #### `fn contains(xs: List(a), target: a) -> Bool where a: Eq`
 
 Whether `target` appears in the list, by the element type's `Eq` impl. The `where a: Eq` bound monomorphizes the equality per element type, so the comparison is content-correct on both backends — including user record element types, which the compiled backend cannot compare through an unbounded generic `==` (RFC-0046).
 
 #### `fn remove(var xs: List(a), target: a) -> List(a) where a: Eq`
+
+A new list with the first occurrence of `target` removed; unchanged when absent. To remove every occurrence, use `filter(xs, fn(y): y != target)`.
 
 #### `fn count(xs: List(a), target: a) -> Int where a: Eq`
 
@@ -1476,7 +1484,11 @@ The elements in the half-open index range [start, end), clamped to bounds. `slic
 
 #### `fn set_at(var xs: List(a), index: Int, value: a) -> List(a)`
 
+A copy of `xs` with the element at `index` replaced by `value`. An out-of-range (or negative) index is a runtime error on both backends, exactly like `list.at` and `xs[i]` read — a write that would silently vanish is a contract violation (RFC-0044 rule 3), so it aborts rather than discarding the value. (Lists are immutable, so this returns a new list rather than mutating in place.)
+
 #### `fn update_at(var xs: List(a), index: Int, f: fn(a) -> a) -> List(a)`
+
+A copy of `xs` with the function `f` applied to the element at `index`. An out-of-range (or negative) index is a runtime error on both backends, exactly like `list.at` — a silently discarded update is a contract violation (RFC-0044 rule 3), so it aborts rather than leaving the list unchanged.
 
 #### `fn windows(xs: List(a), n: Int) -> List(List(a))`
 
@@ -1504,15 +1516,27 @@ A new list that is `xs` followed by `ys`.
 
 #### `List.reverse() -> List(a)`
 
+The list, reversed.
+
 #### `List.sort_by(less: fn(a, a) -> Bool) -> List(a)`
+
+Sort using a caller-supplied "is-less-than" comparator — a stable merge sort (O(n log n)), so equal elements keep their original order. Generic over the element type.
 
 #### `List.set_at(index: Int, value: a) -> List(a)`
 
+A copy of `xs` with the element at `index` replaced by `value`. An out-of-range (or negative) index is a runtime error on both backends, exactly like `list.at` and `xs[i]` read — a write that would silently vanish is a contract violation (RFC-0044 rule 3), so it aborts rather than discarding the value. (Lists are immutable, so this returns a new list rather than mutating in place.)
+
 #### `List.update_at(index: Int, f: fn(a) -> a) -> List(a)`
+
+A copy of `xs` with the function `f` applied to the element at `index`. An out-of-range (or negative) index is a runtime error on both backends, exactly like `list.at` — a silently discarded update is a contract violation (RFC-0044 rule 3), so it aborts rather than leaving the list unchanged.
 
 #### `List.remove(target: a) -> List(a)`
 
+A new list with the first occurrence of `target` removed; unchanged when absent. To remove every occurrence, use `filter(xs, fn(y): y != target)`.
+
 #### `List.sort() -> List(a)`
+
+Sort any list whose elements are `Ord` ascending — a stable merge sort (O(n log n)) that dispatches through the element type's total order, so `xs.sort()` works for `Int`, `String`, `Duration`, or your own derived-`Ord` records, content-correct on both backends (RFC-0046). A merely-partial type like `Float` (not `Ord`) is rejected at the bound; sort those with `sort_by`.
 
 ## `math`
 
@@ -2558,6 +2582,52 @@ Split text into its newline-separated lines.
 Remove leading whitespace.
 
 #### `fn trim_end(var s: String) -> String`
+
+Remove trailing whitespace.
+
+#### `String.replace(from: String, to: String) -> String`
+
+Replace every occurrence of `from` with `to`.
+
+#### `String.to_upper() -> String`
+
+ASCII case mapping (the portable set both backends share).
+
+#### `String.to_lower() -> String`
+
+#### `String.trim() -> String`
+
+Strip leading and trailing ASCII whitespace.
+
+#### `String.pad_left(width: Int, fill: String) -> String`
+
+Left-pad `s` with copies of `fill` until it is `width` characters wide. The padding is trimmed to fit exactly, so any non-empty fill yields a result of exactly `width` chars; `s` is returned unchanged when already that long. An empty `fill` can never reach the promised width, so when padding is needed it fails loudly (RFC-0044 rule 3) instead of returning a short string.
+
+#### `String.pad_right(width: Int, fill: String) -> String`
+
+Right-pad `s` with copies of `fill` until it is `width` characters wide; an empty `fill` fails loudly when padding is needed (see `pad_left`).
+
+#### `String.center(width: Int, fill: String) -> String`
+
+Center `s` in a field `width` characters wide, padding both sides with `fill`; an odd remainder goes on the right. `s` is returned unchanged when already at least that wide; an empty `fill` fails loudly when padding is needed (see `pad_left`).
+
+#### `String.strip_prefix(prefix: String) -> String`
+
+Remove `prefix` from the front of `s` when present; otherwise return `s` unchanged. The complement of the `starts_with` builtin.
+
+#### `String.strip_suffix(suffix: String) -> String`
+
+Remove `suffix` from the end of `s` when present; otherwise return `s` unchanged. The complement of the `ends_with` builtin.
+
+#### `String.replace_first(from: String, to: String) -> String`
+
+Replace only the first occurrence of `from` with `to`; return `s` unchanged when `from` is absent. An empty `from` matches nothing (the module-wide empty-pattern rule: `count`/`index_of`/`last_index_of` treat it as absent). (The `replace` builtin replaces every occurrence.)
+
+#### `String.trim_start() -> String`
+
+Remove leading whitespace.
+
+#### `String.trim_end() -> String`
 
 Remove trailing whitespace.
 
