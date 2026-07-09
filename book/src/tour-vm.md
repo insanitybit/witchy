@@ -61,9 +61,9 @@ fn main(console: Console):
     print(console, "${bytes.at(b, 0)}")
 ```
 
-A general record can't cross a VM boundary directly (its fields are pointers), but a
-`packed` record can (it's flat), and anything else serializes to `Bytes` first — the
-explicit boundary you'd want for a wire format anyway.
+Structured values cross a VM or wire boundary by choosing an explicit encoding into
+`Bytes`. A `packed` record is a local layout/performance contract today, not a
+worker-VM wire format; once a value leaves its VM, `Bytes` is the dependable boundary.
 
 ## `vm.with_dir`: a worker with exactly the authority you pass
 
