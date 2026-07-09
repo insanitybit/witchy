@@ -16176,29 +16176,52 @@ fn main(console: Console):
 import list
 from json import Json
 
-fn strict_footprint(record: String) -> Result(List(String), String):
+type FootprintError:
+    NotJson
+    MissingField
+    NotArray
+    NonStringElement
+
+fn footprint_error_message(e: FootprintError) -> String:
+    match e:
+        NotJson -> "not valid JSON"
+        MissingField -> "no field"
+        NotArray -> "not an array"
+        NonStringElement -> "non-string element"
+
+fn strict_footprint(record: String) -> Result(List(String), FootprintError):
     match json.decode(record):
-        Err(_e) -> Err("not valid JSON")
+        Err(_e) -> Err(NotJson)
         Ok(doc) ->
             match json.get(doc, "runtime_footprint"):
-                None -> Err("no field")
+                None -> Err(MissingField)
                 Some(field) ->
                     match json.as_array(field):
-                        None -> Err("not an array")
+                        None -> Err(NotArray)
                         Some(items) -> strict_strings(items)
 
-fn strict_strings(items: List(Json)) -> Result(List(String), String):
+fn strict_strings(items: List(Json)) -> Result(List(String), FootprintError):
     var out = []
     for it in items:
         match json.as_string(it):
-            None -> return Err("non-string element")
+            None -> return Err(NonStringElement)
             Some(s) -> out = list.push(out, s)
     Ok(out)
 
-fn show(r: Result(List(String), String)) -> String:
+fn show(r: Result(List(String), FootprintError)) -> String:
     match r:
         Ok(xs) -> "ok:[" + list.join(xs, ",") + "]"
-        Err(e) -> "err:" + e
+        Err(e) -> "err:" + footprint_error_message(e)
+
+fn tag(record: String) -> String:
+    match strict_footprint(record):
+        Ok(_xs) -> "ok"
+        Err(e) ->
+            match e:
+                NotJson -> "typed:not-json"
+                MissingField -> "typed:missing"
+                NotArray -> "typed:not-array"
+                NonStringElement -> "typed:non-string"
 
 fn main(console: Console):
     console.print(show(strict_footprint("{\"runtime_footprint\":[\"Net[Connect]\",\"Dir[Read]\"]}")))
@@ -16207,6 +16230,7 @@ fn main(console: Console):
     console.print(show(strict_footprint("{\"runtime_footprint\":\"Net\"}")))
     console.print(show(strict_footprint("{\"runtime_footprint\":[\"Net\",5]}")))
     console.print(show(strict_footprint("{\"runtime_footprint\":[]}")))
+    console.print(tag("{\"runtime_footprint\":[\"Net\",5]}"))
 "#;
         let want = vec![
             "ok:[Net[Connect],Dir[Read]]",
@@ -16215,6 +16239,7 @@ fn main(console: Console):
             "err:not an array",
             "err:non-string element",
             "ok:[]",
+            "typed:non-string",
         ];
         assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "compiled WASM must agree");

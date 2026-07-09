@@ -1858,8 +1858,8 @@ fn gated_refetch(console: Console, net: Net, root: Dir, host: String, port: Int,
     // source. Verify the signed record against the pinned root key and bind its
     // coordinate before trusting its footprint; a verification failure blocks.
     match verified_incoming_footprint(net, root, host, port, fullname, latest):
-        Err(msg) ->
-            console.print("BLOCK: cannot verify the registry record for " + fullname + "@" + latest + " — " + msg)
+        Err(e) ->
+            console.print("BLOCK: cannot verify the registry record for " + fullname + "@" + latest + " — " + record_footprint_error_message(e))
             (0, true, false)
         Ok(incoming) ->
             let widened = rights.uncovered(baseline, incoming)
@@ -1875,43 +1875,77 @@ fn gated_refetch(console: Console, net: Net, root: Dir, host: String, port: Int,
 // (bound to any key pinned in the lock) and its identity is bound to the requested
 // coordinate (BUG-232/266). `Err` on any failure so the gate blocks rather than
 // trusting an unverified/under-declared footprint.
-fn verified_incoming_footprint(net: Net, root: Dir, host: String, port: Int, name: String, version: String) -> Result(List(String), String):
+fn verified_incoming_footprint(net: Net, root: Dir, host: String, port: Int, name: String, version: String) -> Result(List(String), RecordFootprintError):
     let rootpub = http.body(http.get(net, host, port, "/coven/rootpub"))
     let pinned_pub = if root.exists("witchy.lock"): pinned_rootpub(root.read("witchy.lock")) else: ""
     if pinned_pub != "" && pinned_pub != rootpub:
-        Err("registry root key does not match the key pinned in witchy.lock (possible MITM / hostile mirror)")
+        Err(RecordRootKeyMismatch)
     else:
         let resp = http.get(net, host, port, "/coven/record?name=" + wire(name) + "&version=" + version)
         if http.status(resp) != 200:
-            Err("registry has no record")
+            Err(RecordMissing)
         else if !record_signature_valid(rootpub, http.body(resp)):
-            Err("the record is not validly signed by the registry root key")
+            Err(RecordBadSignature)
         else if !record_matches_coordinate(http.body(resp), name, version):
-            Err("the record identity does not match the requested coordinate")
+            Err(RecordCoordinateMismatch)
         else:
             strict_footprint(http.body(resp))
+
+// Matchable errors for the verified registry-record footprint boundary. The
+// widening gate trusts this result, so every verification and decode failure is
+// typed before the CLI renders it into the existing BLOCK diagnostic.
+type RecordFootprintError:
+    RecordRootKeyMismatch
+    RecordMissing
+    RecordBadSignature
+    RecordCoordinateMismatch
+    RecordInvalidJson
+    RecordMissingRuntimeFootprint
+    RecordRuntimeFootprintNotArray
+    RecordRuntimeFootprintNonString
+
+fn record_footprint_error_message(e: RecordFootprintError) -> String:
+    match e:
+        RecordRootKeyMismatch -> "registry root key does not match the key pinned in witchy.lock (possible MITM / hostile mirror)"
+        RecordMissing -> "registry has no record"
+        RecordBadSignature -> "the record is not validly signed by the registry root key"
+        RecordCoordinateMismatch -> "the record identity does not match the requested coordinate"
+        RecordInvalidJson -> "the signed record is not valid JSON"
+        RecordMissingRuntimeFootprint -> "the signed record has no `runtime_footprint` field"
+        RecordRuntimeFootprintNotArray -> "the record's `runtime_footprint` is not an array"
+        RecordRuntimeFootprintNonString -> "the record's `runtime_footprint` has a non-string element"
+
+impl Show for RecordFootprintError:
+    fn show(self) -> String:
+        record_footprint_error_message(self)
+
+impl Error for RecordFootprintError
+
+impl From(RecordFootprintError) for String:
+    fn from(value: RecordFootprintError) -> Self:
+        record_footprint_error_message(value)
 
 // The `runtime_footprint` array of a VERIFIED signed record, decoded strictly: a
 // malformed record, a missing/non-array `runtime_footprint`, or a non-string
 // element is an `Err`, never a silent empty list (BUG-499). This is the footprint
 // the widening gate trusts, so an under-decoded field must block the upgrade
 // rather than read as "demands no authority" and slip past the gate.
-fn strict_footprint(record: String) -> Result(List(String), String):
+fn strict_footprint(record: String) -> Result(List(String), RecordFootprintError):
     match json.decode(record):
-        Err(_e) -> Err("the signed record is not valid JSON")
+        Err(_e) -> Err(RecordInvalidJson)
         Ok(doc) ->
             match json.get(doc, "runtime_footprint"):
-                None -> Err("the signed record has no `runtime_footprint` field")
+                None -> Err(RecordMissingRuntimeFootprint)
                 Some(field) ->
                     match json.as_array(field):
-                        None -> Err("the record's `runtime_footprint` is not an array")
+                        None -> Err(RecordRuntimeFootprintNotArray)
                         Some(items) -> strict_strings(items)
 
-fn strict_strings(items: List(Json)) -> Result(List(String), String):
+fn strict_strings(items: List(Json)) -> Result(List(String), RecordFootprintError):
     var out = []
     for it in items:
         match json.as_string(it):
-            None -> return Err("the record's `runtime_footprint` has a non-string element")
+            None -> return Err(RecordRuntimeFootprintNonString)
             Some(s) -> out = list.push(out, s)
     Ok(out)
 
@@ -2024,8 +2058,8 @@ fn add_pkg_gated(console: Console, net: Net, root: Dir, host: String, port: Int,
         Ok(chosen) ->
             let baseline = union_all(project_baseline(root), allowed)
             match verified_incoming_footprint(net, root, host, port, name, chosen):
-                Err(msg) ->
-                    console.print("BLOCK: cannot verify the registry record for " + name + "@" + chosen + " — " + msg)
+                Err(e) ->
+                    console.print("BLOCK: cannot verify the registry record for " + name + "@" + chosen + " — " + record_footprint_error_message(e))
                     2
                 Ok(incoming) ->
                     add_pkg_gate_widen(console, net, root, host, port, name, req, cooldown, baseline, rights.uncovered(baseline, incoming))

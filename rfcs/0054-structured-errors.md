@@ -8,10 +8,11 @@ tracking: >
   Error, and ? accepts/lowers Result(_, Ein) -> Result(_, Eout) through an
   ordinary From(Ein) for Eout impl. std/json and std/toml now expose typed
   decode-error values; std/crypto, std/webauthn, and std/jwt expose typed
-  trust-boundary verification errors; the package manager's TUF pinning gate
-  uses typed errors internally. All convert to String through From at existing
-  application boundaries. Remaining 0.1 work: finish or explicitly defer typed
-  errors for grant/package-manager record-decode trust boundaries.
+  trust-boundary verification errors; the package manager's TUF pinning and
+  verified registry-record footprint gates use typed errors internally. All
+  convert to String through From at existing application boundaries. Remaining
+  0.1 work: finish or explicitly defer typed errors for grant/other
+  package-manager trust boundaries.
 ---
 
 # RFC-0054: Structured errors (design-first)
@@ -242,9 +243,13 @@ The package manager's TUF pinning boundary is also typed internally:
 checking the registry root key, timestamp/snapshot signatures, role schemas,
 snapshot hash binding, and version agreement. CLI-facing code still renders
 the existing messages before refusing to write unverified trust metadata.
+The PM widening gate's verified registry-record footprint boundary now also
+uses a local `RecordFootprintError` covering root-key mismatch, missing record,
+bad signature, coordinate mismatch, malformed JSON, missing/non-array
+`runtime_footprint`, and non-string footprint elements.
 
 This does not complete the RFC. The remaining release-blocking work is the std
-and core-library migration: grant/package-manager record-decode trust
-boundaries still need typed decoder errors or an explicit 0.1 deferral, and
-broader convenience parsers/codecs (`encoding`, `url`, `semver`, `time`,
-`http`) remain string-error APIs until demand justifies their own typed cuts.
+and core-library migration: grant/other package-manager trust boundaries still
+need typed decoder errors or an explicit 0.1 deferral, and broader convenience
+parsers/codecs (`encoding`, `url`, `semver`, `time`, `http`) remain
+string-error APIs until demand justifies their own typed cuts.
