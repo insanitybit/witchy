@@ -1961,6 +1961,23 @@ fn main(console: Console):
     }
 
     #[test]
+    fn rfc0054_crypto_verify_uses_typed_error_and_converts_to_string() {
+        let src = "import crypto\nimport show\n\nfn via_string() -> Result(Bool, String):\n    let ok = crypto.ed25519_verify(\"not-hex\", \"msg\", \"00\")?\n    Ok(ok)\n\nfn main(console: Console):\n    match crypto.ed25519_verify(\"not-hex\", \"msg\", \"00\"):\n        Ok(_) -> console.print(\"bad\")\n        Err(e) ->\n            match e:\n                crypto.MalformedPublicKey(name) -> console.print(\"key:\" + name)\n                crypto.MalformedMessage(name) -> console.print(\"msg:\" + name)\n                crypto.MalformedSignature(name) -> console.print(\"sig:\" + name)\n                crypto.VerifierUnavailable(name) -> console.print(\"down:\" + name)\n            console.print(crypto.verify_error_message(e))\n            console.print(show.render(e))\n    match via_string():\n        Ok(_) -> console.print(\"bad\")\n        Err(e) -> console.print(e)\n";
+        let expected = [
+            "key:Ed25519",
+            "Ed25519 public key is malformed",
+            "Ed25519 public key is malformed",
+            "Ed25519 public key is malformed",
+        ];
+        assert_eq!(link_run(src), expected, "interp: typed crypto.VerifyError");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: typed crypto.VerifyError",
+        );
+    }
+
+    #[test]
     fn coven_maintainer_policy_string_array_is_strict() {
         let src = "import coven_trust\nimport list\n\nfn report(text: String) -> String:\n    match coven_trust.string_array(text):\n        Ok(xs) -> \"ok:\" + list.join(xs, \",\")\n        Err(e) -> \"err:\" + e\n\nfn main(console: Console):\n    console.print(report(\"[\\\"gha|alice\\\",\\\"gha|bob\\\"]\"))\n    console.print(report(\"{\\\"maintainers\\\":[]}\"))\n    console.print(report(\"[\\\"gha|alice\\\",7]\"))\n    console.print(report(\"[\"))\n";
         let sources = [

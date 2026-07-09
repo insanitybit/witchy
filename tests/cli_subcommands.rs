@@ -39,7 +39,7 @@ fn crypto_verify_malformed_inputs_are_result_errors() {
         &dir,
         "crypto_result.witchy",
         &format!(
-            "import crypto\nfn main(console: Console):\n    match crypto.ed25519_verify(\"not-hex\", \"msg\", \"00\"):\n        Err(e) -> console.print(e)\n        Ok(_v) -> console.print(\"unexpected ed25519\")\n    match crypto.ecdsa_p256_verify_hex(\"{p256_basepoint}\", \"zz\", \"00\"):\n        Err(e) -> console.print(e)\n        Ok(_v) -> console.print(\"unexpected ecdsa\")\n"
+            "import crypto\nfn main(console: Console):\n    match crypto.ed25519_verify(\"not-hex\", \"msg\", \"00\"):\n        Err(e) -> console.print(crypto.verify_error_message(e))\n        Ok(_v) -> console.print(\"unexpected ed25519\")\n    match crypto.ecdsa_p256_verify_hex(\"{p256_basepoint}\", \"zz\", \"00\"):\n        Err(e) -> console.print(crypto.verify_error_message(e))\n        Ok(_v) -> console.print(\"unexpected ecdsa\")\n"
         ),
     );
     let out = run(&[&src]);

@@ -39,7 +39,7 @@ pub fn verify_rs256(token: String, rsa_pubkey_der_hex: String, audience: String,
             // invalid". Rejecting on the decode error is the safe direction.
             let sig_hex = encoding.base64url_to_hex(list.at(parts, 2)).map_err(fn(e: String): "JWT signature segment is malformed: " + e)?
             match crypto.rsa_pkcs1_sha256_verify(rsa_pubkey_der_hex, signed, sig_hex):
-                Err(e) -> Err("JWT signature input is malformed: " + e)
+                Err(e) -> Err("JWT signature input is malformed: " + crypto.verify_error_message(e))
                 Ok(false) -> Err("JWT signature is invalid (untrusted or forged)")
                 Ok(true) -> check_claims(list.at(parts, 1), audience, now)
 

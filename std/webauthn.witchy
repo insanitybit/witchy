@@ -64,6 +64,6 @@ fn check_auth_bytes(stored_pubkey_hex: String, auth_data: Bytes, client_data_jso
             // The signed message is authenticatorData || SHA256(clientDataJSON).
             let msg_hex = encoding.hex_encode_bytes(auth_data) + crypto.sha256(client_data_json)
             match crypto.ecdsa_p256_verify_hex(stored_pubkey_hex, msg_hex, signature_hex):
-                Err(e) -> Err("signature input malformed: " + e)
+                Err(e) -> Err("signature input malformed: " + crypto.verify_error_message(e))
                 Ok(true) -> Ok(true)
                 Ok(false) -> Err("signature invalid")
