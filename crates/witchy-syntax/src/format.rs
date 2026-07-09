@@ -10,7 +10,7 @@
 
 use crate::ast::*;
 // foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
-use foldhash::{HashSet, HashSetExt as _};
+use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 
 const IND: &str = "    ";
 
@@ -19,6 +19,7 @@ const IND: &str = "    ";
 struct Comments<'a> {
     list: &'a [(u32, u32, String)],
     cursor: usize,
+    trailing: HashMap<u32, Vec<String>>,
 }
 
 impl Comments<'_> {
@@ -65,6 +66,24 @@ impl Comments<'_> {
 
     fn remaining(&self) -> bool {
         self.cursor < self.list.len()
+    }
+
+    fn trailing_remaining(&self) -> bool {
+        !self.trailing.is_empty()
+    }
+
+    fn append_trailing(&mut self, s: &mut String, line: u32) {
+        let Some(comments) = self.trailing.remove(&line) else {
+            return;
+        };
+        if s.ends_with('\n') {
+            s.pop();
+        }
+        for comment in comments {
+            s.push(' ');
+            s.push_str(&comment);
+        }
+        s.push('\n');
     }
 
     /// How many own-line comments fall strictly between source lines `lo` and
@@ -134,14 +153,38 @@ fn block_max_line(b: &Block, default: u32) -> u32 {
 }
 
 pub fn module(m: &Module, comments: &[(u32, u32, String)]) -> String {
+    render_module(m, comments, &[]).0
+}
+
+fn module_with_trailing(
+    m: &Module,
+    comments: &[(u32, u32, String)],
+    trailing_comments: &[(u32, u32, String)],
+) -> Option<String> {
+    let (out, dropped_trailing) = render_module(m, comments, trailing_comments);
+    (!dropped_trailing).then_some(out)
+}
+
+fn render_module(
+    m: &Module,
+    comments: &[(u32, u32, String)],
+    trailing_comments: &[(u32, u32, String)],
+) -> (String, bool) {
     let mut s = String::new();
     // Comment placement needs source lines parallel to imports and items; without
     // them (e.g. a linked module) fall back to emitting no comments.
     let have_lines =
         m.import_lines.len() == m.imports.len() && m.item_lines.len() == m.items.len();
+    let mut trailing = HashMap::new();
+    if have_lines {
+        for (line, _, text) in trailing_comments {
+            trailing.entry(*line).or_insert_with(Vec::new).push(text.clone());
+        }
+    }
     let mut c = Comments {
         list: if have_lines { comments } else { &[] },
         cursor: 0,
+        trailing,
     };
 
     // The performance mode `mode opt` leads the file.
@@ -210,7 +253,8 @@ pub fn module(m: &Module, comments: &[(u32, u32, String)]) -> String {
         s.push('\n');
     }
     c.before(&mut s, 0, u32::MAX);
-    s
+    let dropped_trailing = c.trailing_remaining();
+    (s, dropped_trailing)
 }
 
 fn pad(s: &mut String, depth: usize) {
@@ -572,6 +616,9 @@ fn block_stmts(s: &mut String, b: &Block, depth: usize, c: &mut Comments, upper:
         // block's `upper` for the last one.
         let st_upper = b.lines.get(i + 1).copied().unwrap_or(upper);
         stmt(s, st, depth, c, st_upper);
+        if let Some(line) = b.lines.get(i) {
+            c.append_trailing(s, *line);
+        }
     }
 }
 
@@ -1931,9 +1978,6 @@ fn canon_expr(e: &mut Expr) {
 /// (idempotence). That guard makes the printer safe to apply in bulk: anything
 /// it cannot yet render faithfully is simply left untouched.
 pub fn reformat(src: &str) -> Option<String> {
-    if has_unpreservable_comments(src) {
-        return None;
-    }
     let original = crate::parser::parse_module(src).ok()?;
     LOCAL_FNS.with(|s| {
         let mut s = s.borrow_mut();
@@ -1957,7 +2001,11 @@ pub fn reformat(src: &str) -> Option<String> {
             }
         }
     });
-    let out = module(&original, &crate::lexer::own_line_comments(src));
+    let out = module_with_trailing(
+        &original,
+        &crate::lexer::own_line_comments(src),
+        &crate::lexer::trailing_comments(src),
+    )?;
     // Two guards, both required:
     //  1. SEMANTICS — the output must parse back to the same program as the
     //     input (modulo the canonicalization `canon_module` applies to both
@@ -1974,93 +2022,16 @@ pub fn reformat(src: &str) -> Option<String> {
     if want != got {
         return None;
     }
-    let again = module(&reparsed, &crate::lexer::own_line_comments(&out));
+    let again = module_with_trailing(
+        &reparsed,
+        &crate::lexer::own_line_comments(&out),
+        &crate::lexer::trailing_comments(&out),
+    )?;
     if out == again {
         Some(out)
     } else {
         None
     }
-}
-
-fn has_unpreservable_comments(src: &str) -> bool {
-    let chars: Vec<char> = src.chars().collect();
-    let mut i = 0;
-    let mut line_has_code = false;
-
-    while i < chars.len() {
-        match chars[i] {
-            '"' => {
-                line_has_code = true;
-                i += 1;
-                while i < chars.len() {
-                    match chars[i] {
-                        '\\' => i += 2,
-                        '"' => {
-                            i += 1;
-                            break;
-                        }
-                        '\n' => {
-                            line_has_code = false;
-                            i += 1;
-                        }
-                        _ => i += 1,
-                    }
-                }
-            }
-            '/' if chars.get(i + 1) == Some(&'/') => {
-                if line_has_code {
-                    return true;
-                }
-                i += 2;
-                while i < chars.len() && chars[i] != '\n' {
-                    i += 1;
-                }
-            }
-            '/' if chars.get(i + 1) == Some(&'*') => {
-                let starts_after_code = line_has_code;
-                i += 2;
-                let mut depth = 1usize;
-                while i < chars.len() && depth > 0 {
-                    match chars[i] {
-                        '/' if chars.get(i + 1) == Some(&'*') => {
-                            depth += 1;
-                            i += 2;
-                        }
-                        '*' if chars.get(i + 1) == Some(&'/') => {
-                            depth -= 1;
-                            i += 2;
-                        }
-                        '\n' => {
-                            line_has_code = false;
-                            i += 1;
-                        }
-                        _ => i += 1,
-                    }
-                }
-                if starts_after_code {
-                    return true;
-                }
-                let mut j = i;
-                while j < chars.len() && chars[j] != '\n' {
-                    if !chars[j].is_whitespace() {
-                        return true;
-                    }
-                    j += 1;
-                }
-            }
-            '\n' => {
-                line_has_code = false;
-                i += 1;
-            }
-            c if c.is_whitespace() => i += 1,
-            _ => {
-                line_has_code = true;
-                i += 1;
-            }
-        }
-    }
-
-    false
 }
 
 

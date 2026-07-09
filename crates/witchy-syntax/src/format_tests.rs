@@ -212,15 +212,16 @@
     }
 
     #[test]
-    fn refuses_to_drop_comments_it_cannot_place() {
+    fn preserves_trailing_and_inline_comments() {
         // BUG-331: trailing line comments and inline block comments used to be
         // silently deleted because the formatter only re-emits own-line comments.
-        // Until it can preserve their exact placement, it must refuse to format.
         let trailing = "fn main(console: Console):\n    let x = 1 // keep me\n    print(console, __render(x))\n";
-        assert!(reformat(trailing).is_none(), "trailing comment must not be dropped");
+        let out = reformat(trailing).expect("trailing comments round-trip");
+        assert!(out.contains("let x = 1 // keep me"), "{out}");
 
         let inline = "fn main(console: Console):\n    let x = 1 /* keep me */ + 2\n    print(console, __render(x))\n";
-        assert!(reformat(inline).is_none(), "inline block comment must not be dropped");
+        let out = reformat(inline).expect("inline block comments round-trip");
+        assert!(out.contains("let x = 1 + 2 /* keep me */"), "{out}");
 
         let own_line = "fn main(console: Console):\n    let x = 1\n    /* keep me */\n    print(console, __render(x))\n";
         let out = reformat(own_line).expect("own-line block comments still round-trip");

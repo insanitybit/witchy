@@ -264,8 +264,11 @@ struct Lexer {
     /// Own-line comments (only whitespace precedes them on their line), captured
     /// as `(line, col, text)` so the formatter can reproduce them and tell a
     /// body comment (indented) from a next-item doc comment (at the item's own
-    /// column). Trailing comments on a code line are not captured.
+    /// column).
     comments: Vec<(u32, u32, String)>,
+    /// Comments that share a line with code. They are not tokens, but `witchy fmt`
+    /// needs to preserve them on the statement line they came from.
+    trailing_comments: Vec<(u32, u32, String)>,
 }
 
 impl Lexer {
@@ -276,6 +279,7 @@ impl Lexer {
             line: 1,
             col: 1,
             comments: Vec::new(), // (line, col, text)
+            trailing_comments: Vec::new(),
         }
     }
 
@@ -398,9 +402,12 @@ impl Lexer {
 
     /// Record an own-line comment spanning `start..self.pos` at `line`, `col`.
     fn record_comment(&mut self, own_line: bool, line: u32, col: u32, start: usize) {
+        let text: String = self.chars[start..self.pos].iter().collect();
+        let text = text.trim_end().to_string();
         if own_line {
-            let text: String = self.chars[start..self.pos].iter().collect();
-            self.comments.push((line, col, text.trim_end().to_string()));
+            self.comments.push((line, col, text));
+        } else {
+            self.trailing_comments.push((line, col, text));
         }
     }
 
@@ -1027,13 +1034,21 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, LexError> {
 
 /// The own-line comments in `src`, as `(line, col, text)` in source order — used
 /// by the formatter to reproduce comments and to tell a body comment (indented)
-/// from a next-item comment (at the item's column). Trailing comments (sharing a
-/// line with code) are not captured. Returns what was lexed even if a later error
-/// occurs.
+/// from a next-item comment (at the item's column). Returns what was lexed even
+/// if a later error occurs.
 pub fn own_line_comments(src: &str) -> Vec<(u32, u32, String)> {
     let mut lexer = Lexer::new(src);
     let _ = lexer.tokenize();
     lexer.comments
+}
+
+/// Comments that share a source line with code, as `(line, col, text)`. These are
+/// attached by the formatter to the statement that owns `line`; unsupported
+/// anchors make `reformat` refuse rather than drop the comment.
+pub fn trailing_comments(src: &str) -> Vec<(u32, u32, String)> {
+    let mut lexer = Lexer::new(src);
+    let _ = lexer.tokenize();
+    lexer.trailing_comments
 }
 
 fn vtok(kind: Tok, near: &Token) -> Token {
