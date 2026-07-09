@@ -417,6 +417,39 @@
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
+    /// (BUG-366) Lazy iterator adapters must not recurse once per skipped
+    /// element inside a single pull. Long rejected prefixes should behave like
+    /// ordinary loop work on both backends.
+    #[test]
+    fn iterator_skip_adapters_handle_long_prefixes_on_both_backends() {
+        let cases = [
+            (
+                "filter",
+                "import iter\n\nfn even_after(n: Int) -> Bool:\n    n >= 1000 && n % 2 == 0\n\nfn main(console: Console):\n    match iter.split_first(iter.filter(iter.range(0, 1002), even_after)):\n        Some(pair) ->\n            let (x, _rest) = pair\n            print(console, __render(x))\n        None -> print(console, \"missing\")\n",
+                ["1000"],
+            ),
+            (
+                "filter_map",
+                "import iter\nimport option\n\nfn only_after(n: Int) -> Option(Int):\n    if n >= 1000:\n        Some(n + 1)\n    else:\n        None\n\nfn main(console: Console):\n    match iter.split_first(iter.filter_map(iter.range(0, 1001), only_after)):\n        Some(pair) ->\n            let (x, _rest) = pair\n            print(console, __render(x))\n        None -> print(console, \"missing\")\n",
+                ["1001"],
+            ),
+            (
+                "drop_while",
+                "import iter\n\nfn main(console: Console):\n    match iter.split_first(iter.drop_while(iter.range(0, 1002), fn(n: Int): n < 1000)):\n        Some(pair) ->\n            let (x, _rest) = pair\n            print(console, __render(x))\n        None -> print(console, \"missing\")\n",
+                ["1000"],
+            ),
+            (
+                "flat_map",
+                "import iter\n\nfn empty_until_last(n: Int) -> Iter(Int):\n    if n < 1000:\n        iter.empty()\n    else:\n        iter.once(n)\n\nfn main(console: Console):\n    match iter.split_first(iter.flat_map(iter.range(0, 1001), empty_until_last)):\n        Some(pair) ->\n            let (x, _rest) = pair\n            print(console, __render(x))\n        None -> print(console, \"missing\")\n",
+                ["1000"],
+            ),
+        ];
+        for (label, src, expected) in cases {
+            assert_eq!(link_run(src), expected, "interp: {label}");
+            assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: {label}");
+        }
+    }
+
     /// (BUG-007) An `async fn` declared as a METHOD of an inherent `impl` lowers in
     /// place, staying a method that returns a `Task` — so `d.scaled(5).await` drives
     /// it through the executor. Here the method itself `await`s a top-level async fn,

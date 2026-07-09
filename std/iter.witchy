@@ -96,13 +96,19 @@ pub fn filter(it: Iter(a), keep: fn(a) -> Bool) -> Iter(a):
     Iter(fn(): filter_step(next(it), keep))
 
 fn filter_step(s: Step(a), keep: fn(a) -> Bool) -> Step(a):
-    match s:
-        Empty -> Empty
-        Item(x, rest) ->
-            if keep(x):
-                Item(x, filter(rest, keep))
-            else:
-                filter_step(next(rest), keep)
+    var cur = s
+    var out = Empty
+    var scanning = true
+    while scanning:
+        match cur:
+            Empty -> scanning = false
+            Item(x, rest) ->
+                if keep(x):
+                    out = Item(x, filter(rest, keep))
+                    scanning = false
+                else:
+                    cur = next(rest)
+    out
 
 // Apply `f` to each element, keeping every `Some(y)` and dropping every `None` —
 // a `map` and `filter` fused into one pass (Rust's `Iterator::filter_map`).
@@ -110,12 +116,19 @@ pub fn filter_map(it: Iter(a), f: fn(a) -> Option(b)) -> Iter(b):
     Iter(fn(): filter_map_step(next(it), f))
 
 fn filter_map_step(s: Step(a), f: fn(a) -> Option(b)) -> Step(b):
-    match s:
-        Empty -> Empty
-        Item(x, rest) ->
-            match f(x):
-                Some(y) -> Item(y, filter_map(rest, f))
-                None -> filter_map_step(next(rest), f)
+    var cur = s
+    var out = Empty
+    var scanning = true
+    while scanning:
+        match cur:
+            Empty -> scanning = false
+            Item(x, rest) ->
+                match f(x):
+                    Some(y) ->
+                        out = Item(y, filter_map(rest, f))
+                        scanning = false
+                    None -> cur = next(rest)
+    out
 
 // The first `k` elements (fewer if the iterator is shorter).
 pub fn take(it: Iter(a), k: Int) -> Iter(a):
@@ -147,13 +160,19 @@ pub fn drop_while(it: Iter(a), pred: fn(a) -> Bool) -> Iter(a):
     Iter(fn(): drop_while_step(it, pred))
 
 fn drop_while_step(it: Iter(a), pred: fn(a) -> Bool) -> Step(a):
-    match next(it):
-        Empty -> Empty
-        Item(x, rest) ->
-            if pred(x):
-                drop_while_step(rest, pred)
-            else:
-                Item(x, rest)
+    var cur = it
+    var out = Empty
+    var scanning = true
+    while scanning:
+        match next(cur):
+            Empty -> scanning = false
+            Item(x, rest) ->
+                if pred(x):
+                    cur = rest
+                else:
+                    out = Item(x, rest)
+                    scanning = false
+    out
 
 // Skip the first `k` elements. Lazy like every adapter: nothing is pulled from
 // the source at construction — the skip runs inside the returned iterator's
@@ -219,9 +238,19 @@ pub fn flat_map(it: Iter(a), f: fn(a) -> Iter(b)) -> Iter(b):
     Iter(fn(): flat_map_step(next(it), f))
 
 fn flat_map_step(s: Step(a), f: fn(a) -> Iter(b)) -> Step(b):
-    match s:
-        Empty -> Empty
-        Item(x, rest) -> next(chain(f(x), flat_map(rest, f)))
+    var cur = s
+    var out = Empty
+    var scanning = true
+    while scanning:
+        match cur:
+            Empty -> scanning = false
+            Item(x, rest) ->
+                match next(f(x)):
+                    Empty -> cur = next(rest)
+                    Item(y, inner_rest) ->
+                        out = Item(y, chain(inner_rest, flat_map(rest, f)))
+                        scanning = false
+    out
 
 // Call `f` on every element for its effect (drives to exhaustion). The right
 // consumer for a generator when you don't need to early-exit — no list is built.
