@@ -1562,6 +1562,16 @@ fn main(console: Console):
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: Json debug object shape");
     }
 
+    /// (BUG-483) JSON keys are arbitrary strings, so nested lookup needs an exact
+    /// segment API in addition to the dotted-string convenience helper.
+    #[test]
+    fn json_get_in_reaches_literal_dot_keys_on_both_backends() {
+        let src = "import json\n\nfn show(console: Console, v: Option(json.Json)):\n    match v:\n        Some(j) -> print(console, json.encode(j))\n        None -> print(console, \"missing\")\n\nfn main(console: Console):\n    let obj = json.JsonObject([(\"a.b\", json.JsonInt(1)), (\"a\", json.JsonObject([(\"b\", json.JsonInt(2))])), (\"\", json.JsonObject([(\"x.y\", json.JsonInt(3))]))])\n    show(console, json.get_in(obj, [\"a.b\"]))\n    show(console, json.get_path(obj, \"a.b\"))\n    show(console, json.get_in(obj, [\"\", \"x.y\"]))\n    show(console, json.get_in(obj, [\"missing.dot\"]))\n";
+        let expected = ["1", "2", "3", "missing"];
+        assert_eq!(link_run(src), expected, "interp: Json exact path segments");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: Json exact path segments");
+    }
+
     /// (BUG-262) JSON decode rejects duplicate object names, and the public
     /// helper/encoding boundaries must not let hand-built duplicate objects become
     /// signed or emitted wire JSON silently.

@@ -1200,9 +1200,13 @@ A JSON array value as a `List(String)`, dropping any non-string element. Lenient
 
 The string at index `i` of a JSON array, when it is a string.
 
+#### `fn get_in(j: Json, segments: List(String)) -> Option(Json)`
+
+Follow exact object-key segments. Unlike `get_path`, segment strings are not parsed, so dots and empty strings are literal key names. Any missing key (or a non-object along the way) yields `None`.
+
 #### `fn get_path(j: Json, path: String) -> Option(Json)`
 
-Follow a dotted path of object keys, e.g. `get_path(resp, "user.name")`. Any missing key (or a non-object along the way) yields `None`.
+Follow a dotted path of object keys, e.g. `get_path(resp, "user.name")`. This splits on every `.`, so use `get_in` when a key itself may contain a dot. Any missing key (or a non-object along the way) yields `None`.
 
 #### `fn from_option(o: Option(a), each: fn(a) -> Json) -> Json`
 

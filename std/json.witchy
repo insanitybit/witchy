@@ -784,13 +784,20 @@ pub fn index_string(j: Json, i: Int) -> Option(String):
         Some(v) -> as_string(v)
         None -> None
 
-// Follow a dotted path of object keys, e.g. `get_path(resp, "user.name")`. Any
-// missing key (or a non-object along the way) yields `None`.
-pub fn get_path(j: Json, path: String) -> Option(Json):
+// Follow exact object-key segments. Unlike `get_path`, segment strings are not
+// parsed, so dots and empty strings are literal key names. Any missing key (or a
+// non-object along the way) yields `None`.
+pub fn get_in(j: Json, segments: List(String)) -> Option(Json):
     var cur = Some(j)
-    for seg in string.split(path, "."):
+    for seg in segments:
         cur = step(cur, seg)
     cur
+
+// Follow a dotted path of object keys, e.g. `get_path(resp, "user.name")`. This
+// splits on every `.`, so use `get_in` when a key itself may contain a dot. Any
+// missing key (or a non-object along the way) yields `None`.
+pub fn get_path(j: Json, path: String) -> Option(Json):
+    get_in(j, string.split(path, "."))
 
 fn step(cur: Option(Json), seg: String) -> Option(Json):
     match cur:
