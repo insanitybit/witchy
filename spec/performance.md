@@ -19,7 +19,7 @@ are not "WASM is slow"; they are specific and addressable:
 | Startup / cold runs | Cranelift cache exists | **Yes, decisively** — AOT-serialized modules instantiate in microseconds; Go/C# pay process + runtime init |
 | Allocation-heavy (lists, strings) | **traps OOM** (copy-per-push under a bump arena, O(n²) bytes) | **Yes** — capacity-growth + ownership-driven in-place mutation beats GC throughput; this is Phase 1 |
 | Long-running request loops | arena grows until the cap | **Yes** — arena reset points are *faster* than any GC (free bulk reclaim, no pauses) |
-| Long-lived, evicting/mutating heaps (caches, indexes, long-lived owned state) | arena alone never reclaims | **In scope via RC** — reference counting ([RFC-0016](../rfcs/0016-reference-counted-memory.md), planned) is the tier-0 reclamation floor that frees escaping/evicted values; witchy has no shared-mutable pointer graphs to chase, so there is no pointer-cycle tail to concede. See [RFC-0029](../rfcs/0029-performance-tier-contract.md) |
+| Long-lived, evicting/mutating heaps (caches, indexes, long-lived owned state) | arena alone never reclaims | **In scope via RC** — reference counting ([RFC-0016](../rfcs/0016-reference-counted-memory.md), implemented) is the tier-0 reclamation floor that frees escaping/evicted values; witchy has no shared-mutable pointer graphs to chase, so there is no pointer-cycle tail to concede. See [RFC-0029](../rfcs/0029-performance-tier-contract.md) |
 
 The honest summary: witchy should not chase Go by building a *tracing GC*. Its
 value semantics + ownership conventions + region-scoped arenas, with reference
@@ -99,15 +99,22 @@ and activate when a dotnet toolchain is present.
 
 ## Phase 2 — Codegen quality
 
-1. **Binaryen post-pass** — landed as an opt-in (`WITCHY_OPT=wasm-opt`,
-   shell-out, degrades to a no-op without the binary) and then MEASURED:
+1. **Binaryen post-pass** — shipped default-on (`WITCHY_OPT=wasm-opt`,
+   shell-out during cold compilation, cached with the artifact, and a graceful
+   no-op without the binary) and then MEASURED:
    at 64M ops the optimized module is no faster (Cranelift Speed already
    emits ~0.6 ns/op for our loop shapes) and the ~50 ms invocation cost
    dominates every benchmark. Verdict: keep the hook for future
    inline-heavy code, but it is NOT a current lever — which also validates
    deferring the wasmer-LLVM engine.
-2. **Direct calls over `call_indirect`** when the closure target is statically
-   known (the common `list.map(xs, fn(x): …)` shape).
+2. **Direct calls over `call_indirect`** — SHIPPED when a closure target is
+   statically known (`WITCHY_OPT=direct-call`).
+2b. **Non-escaping closure environments** — SHIPPED (RFC-0062). A closure
+   bound once and used only as a direct callee has its captures threaded into a
+   lifted function, so no environment is allocated. The default-deny escape
+   analysis keeps every uncertain or escaping closure boxed. The pass is
+   default-on (`WITCHY_OPT=closure-elide`); `-closure-elide` retains the boxed
+   reference path for differential testing.
 3. **Flatten non-escaping tuples/records into locals** — SHIPPED as escape-driven
    SROA (RFC-0027): a frame-confined record/tuple (used only via field/index
    access, per the `escape` analysis) is scalar-replaced — each field lives in an

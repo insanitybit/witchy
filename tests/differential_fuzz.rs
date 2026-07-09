@@ -482,13 +482,20 @@ fn gen_program(seed: u64, statements: usize) -> (String, u64) {
 }
 
 /// The cross-lever config set (RFC-0037 §2). Every program is run under each: the baseline
-/// (`none`, all opts off), the production default (``), each opt-in lever ALONE (`rc-floor`,
-/// `unbox`, `closure-elide` — the class that hid the UAF is exercised in isolation, not just
-/// masked inside the union), and the union (`all,-wasm-opt`; `-wasm-opt` omits the external
-/// Binaryen post-pass). `closure-elide` (RFC-0062) elides a non-escaping closure's heap
+/// (`none`, all opts off), the production default (``), each high-risk pass ALONE from a
+/// `none` base (`rc-floor`, `unbox`, `closure-elide` — the class that hid the UAF is exercised
+/// in isolation, not just masked inside the union), and the union (`all,-wasm-opt`, which omits
+/// the external Binaryen post-pass). `closure-elide` (RFC-0062) elides a non-escaping closure's heap
 /// environment: a wrong non-escape classification would drop an env a call still reads, so it
 /// is swept both alone and in the union.
-const CONFIGS: &[&str] = &["none", "", "rc-floor", "unbox", "closure-elide", "all,-wasm-opt"];
+const CONFIGS: &[&str] = &[
+    "none",
+    "",
+    "none,rc-floor",
+    "none,unbox",
+    "none,closure-elide",
+    "all,-wasm-opt",
+];
 
 fn env_usize(key: &str, default: usize) -> usize {
     std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)

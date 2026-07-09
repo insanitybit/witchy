@@ -13,11 +13,10 @@
 //!
 //! - **`release`** — the optimized shipping config, and the DEFAULT when
 //!   `WITCHY_OPT` is unset. It is now **`release == all`**: every optimization is
-//!   promoted and ships on by default (both former opt-in levers, `unbox` and
-//!   `rc-floor`, cleared their hardening bars — the type-tag sanitizer for `unbox`,
-//!   the SEC-037 `$rc_dup` object-base guard for `rc-floor`, each with the whole
-//!   `check.sh --fast` gate green under the lever on). A future not-yet-hardened
-//!   lever would be gated back into opt-in via [`Opt::default_on`].
+//!   promoted and ships on by default. High-risk passes cleared their hardening
+//!   bars before promotion: type-tag sanitization for `unbox`, the SEC-037
+//!   `$rc_dup` object-base guard for `rc-floor`, and shape/parity/heap sweeps for
+//!   `closure-elide`.
 //! - **`debug`** — maximally debuggable / fastest-compile = no optimizations. It is
 //!   exactly [`OptSet::none`], which is also the differential reference oracle, so
 //!   it is the best-tested config we have.
@@ -32,9 +31,9 @@
 //! WITCHY_OPT=release        # the shipping config (same as unset)
 //! WITCHY_OPT=debug          # no optimizations (== none); maximal debuggability
 //! WITCHY_OPT=none           # the canonical de-opt reference oracle
-//! WITCHY_OPT=all            # everything, including still-opt-in passes
+//! WITCHY_OPT=all            # everything (identical to release)
 //! WITCHY_OPT=-inplace       # release minus in-place mutation
-//! WITCHY_OPT=release,rc-floor# release plus one hardening candidate (dev/differential)
+//! WITCHY_OPT=release,-closure-elide # release minus one pass for bisection
 //! WITCHY_OPT=none,inplace   # ONLY in-place (allowlist from nothing)
 //! ```
 //!
@@ -68,14 +67,16 @@ pub enum Opt {
     Fold,
     /// Packed / unboxed layouts: a confined `List` of fixed-scalar records stored
     /// as one flat inline buffer instead of an array of pointers to boxed records
-    /// (off ⇒ the uniform boxed layout). Opt-in (the opt-mode asymptotic lever).
-    /// RFC-0027.
+    /// (off ⇒ the uniform boxed layout). Default-on after its type-tag sanitizer
+    /// and cross-lever sweeps cleared the layout hardening bar. RFC-0027.
     Unbox,
     /// RC-floor reclamation: free a confined, never-aliased heap `var`'s old buffer
     /// when it is overwritten by a fresh one (`x = f(x)` for ANY `f`), reusing it via
     /// a size-classed free-list — so generally-escaping / cache-eviction garbage is
     /// reclaimed, not leaked (off ⇒ leak it). Convention/escape-oracle-driven, general
-    /// over all operations (no per-method code). Opt-in until complete. RFC-0016.
+    /// over all operations (no per-method code). Default-on after the SEC-037
+    /// object-base guard and heap sweeps cleared the reclamation hardening bar.
+    /// RFC-0016.
     RcFloor,
     /// Binaryen `wasm-opt -O2` over the emitted wasm before Cranelift compiles it —
     /// the real wasm optimizer (GVN, inlining, DCE, local CSE) our naive emitter
@@ -102,9 +103,8 @@ pub enum Opt {
     /// boxed into a heap env and reloaded per call (off ⇒ the env is heap-allocated and
     /// the call recovers captures through it, i.e. the tier-3 boxed closure). Keyed on the
     /// escape/uniqueness oracle (no blessed-function list, no per-method code); default-
-    /// deny — anything the analysis cannot prove non-escaping stays boxed. Opt-in until it
-    /// clears its hardening bar (a wrong classification would be a use-after-free surface,
-    /// like `rc-floor`/`unbox` before promotion).
+    /// deny — anything the analysis cannot prove non-escaping stays boxed. Default-on
+    /// after its shape, differential, and heap-check sweeps cleared the hardening bar.
     ClosureElide,
     // NOTE: the registry holds ONLY optimizations the compiler actually performs —
     // every entry must pass the differential de-opt sweep AND prove it fired
@@ -157,28 +157,6 @@ impl Opt {
         Opt::ALL.into_iter().find(|o| o.name() == s)
     }
 
-    /// In the `release` (production default) set? This is the single promotion
-    /// point: an optimization joins `release` — and thus the default users get —
-    /// by being removed from this opt-in list once it has cleared its hardening
-    /// bar. `unbox` (layout reinterpretation → type-confusion surface) cleared its
-    /// bar via the `WITCHY_TYPE_CHECK` sanitizer (teeth-tested + false-positive-free
-    /// over the fuzzer and examples, with the cross-lever and heap-checked example
-    /// sweeps clean); `rc-floor` (reclamation → use-after-free surface, cf. SEC-036)
-    /// cleared its bar via the SEC-037 `$rc_dup` object-base guard and was promoted
-    /// in 974ccee. `closure-elide` (RFC-0062) is the current OPT-IN lever: a wrong
-    /// non-escape classification would drop an env a call still reads — a use-after-
-    /// free surface — so it ships off until the differential sweep + heap-check fuzz
-    /// have hardened it, exactly as the two above did before promotion.
-    fn default_on(self) -> bool {
-        match self {
-            // Opt-in until hardened: excluded from `release` (the production default),
-            // so `release == all MINUS closure-elide`.
-            Opt::ClosureElide => false,
-            // Every other lever has cleared its bar and ships default-on.
-            _ => true,
-        }
-    }
-
     fn bit(self) -> u32 {
         1 << (self as u32)
     }
@@ -194,22 +172,16 @@ impl OptSet {
         OptSet(0)
     }
 
-    /// Everything enabled, including the opt-in passes.
+    /// Everything enabled. Identical to the production `release` set.
     pub fn all() -> OptSet {
         OptSet(Opt::ALL.iter().fold(0, |m, o| m | o.bit()))
     }
 
-    /// The **`release`** mode: the optimized shipping config = every `default_on`
-    /// optimization. This is what an unset `WITCHY_OPT` resolves to. Its end-state
-    /// is [`OptSet::all`] — promoting a lever (via [`Opt::default_on`]) grows this
-    /// set until the two coincide.
+    /// The **`release`** mode: every hardened optimization. This is what an unset
+    /// `WITCHY_OPT` resolves to; every registered pass has cleared its hardening
+    /// bar, so the production set is exactly [`OptSet::all`].
     pub fn release() -> OptSet {
-        OptSet(
-            Opt::ALL
-                .iter()
-                .filter(|o| o.default_on())
-                .fold(0, |m, o| m | o.bit()),
-        )
+        OptSet::all()
     }
 
     /// The **`debug`** mode: no optimizations — maximal debuggability and fastest
@@ -310,16 +282,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_is_production_set_with_optin_off() {
+    fn default_is_every_hardened_optimization() {
         let d = OptSet::default_set();
         assert!(d.contains(Opt::InPlace));
         assert!(d.contains(Opt::Region));
-        assert!(d.contains(Opt::WasmOpt), "wasm-opt (AOT-cached Binaryen) is default-on");
-        assert!(d.contains(Opt::Unbox) && d.contains(Opt::RcFloor), "both promoted");
-        assert!(d.contains(Opt::Views) && d.contains(Opt::Sroa), "default includes shipped opts");
-        // release == all MINUS the current opt-in lever (closure-elide, RFC-0062).
-        assert!(!d.contains(Opt::ClosureElide), "closure-elide is opt-in (off in release)");
-        assert_eq!(d, OptSet::all().without(Opt::ClosureElide), "release == all minus closure-elide");
+        assert!(
+            d.contains(Opt::WasmOpt),
+            "wasm-opt (AOT-cached Binaryen) is default-on"
+        );
+        assert!(
+            d.contains(Opt::Unbox) && d.contains(Opt::RcFloor),
+            "both promoted"
+        );
+        assert!(
+            d.contains(Opt::Views) && d.contains(Opt::Sroa),
+            "default includes shipped opts"
+        );
+        assert!(d.contains(Opt::ClosureElide), "closure-elide is promoted");
+        assert_eq!(d, OptSet::all(), "release == all");
     }
 
     #[test]
@@ -335,14 +315,27 @@ mod tests {
         // `release` == the production default; `debug` == none.
         assert_eq!(parse("release").unwrap(), OptSet::default_set());
         assert_eq!(parse("debug").unwrap(), OptSet::none());
-        // release holds back only closure-elide (RFC-0062, opt-in); everything else promoted.
         let rel = OptSet::release();
-        assert_eq!(rel, OptSet::all().without(Opt::ClosureElide), "release == all minus closure-elide");
-        assert!(rel.contains(Opt::Unbox) && rel.contains(Opt::RcFloor), "both promoted");
-        assert!(rel.contains(Opt::Region) && rel.contains(Opt::WasmOpt), "shipped opts are in release");
-        assert!(!rel.contains(Opt::ClosureElide), "closure-elide opt-in");
-        // ...and release is the base for the dev grammar (release + a candidate).
-        assert!(parse("release,closure-elide").unwrap().contains(Opt::ClosureElide));
+        assert_eq!(
+            rel,
+            OptSet::all(),
+            "every registered optimization is promoted"
+        );
+        assert!(
+            rel.contains(Opt::Unbox) && rel.contains(Opt::RcFloor),
+            "both promoted"
+        );
+        assert!(
+            rel.contains(Opt::Region) && rel.contains(Opt::WasmOpt),
+            "shipped opts are in release"
+        );
+        assert!(rel.contains(Opt::ClosureElide), "closure-elide promoted");
+        // Release remains the base for per-pass bisection.
+        assert!(
+            !parse("release,-closure-elide")
+                .unwrap()
+                .contains(Opt::ClosureElide)
+        );
         // A mode keyword must be the first token.
         assert!(parse("region,release").is_err());
         assert!(parse("inplace,debug").is_err());
@@ -353,7 +346,10 @@ mod tests {
         let s = parse("-inplace").unwrap();
         assert!(!s.contains(Opt::InPlace));
         assert!(s.contains(Opt::Region), "only inplace removed");
-        assert!(s.contains(Opt::WasmOpt), "wasm-opt stays on; only inplace removed");
+        assert!(
+            s.contains(Opt::WasmOpt),
+            "wasm-opt stays on; only inplace removed"
+        );
     }
 
     #[test]

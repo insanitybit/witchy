@@ -1,9 +1,9 @@
 ---
 rfc: 0062
 title: Closure escape elision — closures that don't escape don't allocate
-status: planned
+status: implemented
 created: 2026-07-04
-tracking: tier-1 implemented (WITCHY_OPT=closure-elide, opt-in); tiers 2/3 unchanged
+tracking: tier-1 implemented and promoted into the default release set; conservative escaping closures remain boxed
 ---
 
 # RFC-0062: Closure escape elision — closures that don't escape don't allocate
@@ -131,12 +131,26 @@ Constraints and properties:
 - RFC-0059 (removes the executor's manufactured escaping closures; the
   complement of this RFC), RFC-0050 Part 2 (eta-expansion, tier-1 consumer).
 
-## Implementation status (tier 1 shipped)
+## Implementation status (tier 1 shipped and promoted)
 
-Tier 1 is implemented behind `WITCHY_OPT=closure-elide` (opt-in, `release ==
-all` minus this lever, mirroring how `rc-floor`/`unbox` began before their
-hardening bars). Tiers 2 (escaping-but-unique reuse) and 3 (escaping shared)
-are today's behavior, unchanged.
+Tier 1 is implemented behind the addressable `WITCHY_OPT=closure-elide` pass
+and is included in the default production set (`release == all`). It was
+promoted after the firing/non-firing shape proofs, differential configuration,
+heap-check fuzz arm, and repeated workspace gates had exercised the pass both
+alone and in the optimization union. `WITCHY_OPT=-closure-elide` retains the
+boxed reference path for differential testing and bisection.
+
+The promotion audit also corrected the high-risk differential configurations
+to start from `none` (`none,closure-elide`, and likewise for `rc-floor` and
+`unbox`). A bare pass token is additive to `release`; once every pass is
+promoted, the former bare-token rows would only duplicate the default instead
+of proving each risky pass in isolation.
+
+The 0.1 scope is tier 1: proven non-escaping closures avoid the environment
+allocation. Escaping-but-unique closures use the existing RC-floor behavior,
+and escaping/shared closures remain boxed. More aggressive closure
+specialization or in-place environment reuse is future optimization work, not
+an incomplete semantic requirement of this RFC.
 
 **Classification (general, default-deny).** Two facts, both keyed on the
 escape/uniqueness oracle — no blessed-function list, no per-method code:

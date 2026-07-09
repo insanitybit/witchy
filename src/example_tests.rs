@@ -3647,8 +3647,10 @@ fn main(console: Console):
 
     /// (RFC-0034 L3) Closure devirtualization fires and is gated. A single-bound,
     /// never-reassigned closure local `f` is called with a direct `call $__lamw{i}`
-    /// under the default (`direct-call` on) and falls back to `call_indirect` under
-    /// `-direct-call`. This is the call-SHAPE proof the lever fired — devirt moves no
+    /// with `direct-call` on and falls back to `call_indirect` under `-direct-call`.
+    /// The test disables closure elision so the newer threaded `__lamt` path does
+    /// not subsume the boxed-closure optimization being tested here. This is the
+    /// call-SHAPE proof the lever fired — devirt moves no
     /// heap, so there is no `witchy stats` counter; OUTPUT invariance (and the
     /// captures-through-a-direct-call case) is the differential sweep's job.
     #[test]
@@ -3662,9 +3664,10 @@ fn main(console: Console):
         )
         .expect("write temp source");
 
-        opt::set_for_tests(Some(OptSet::default_set()));
+        let direct_base = OptSet::default_set().without(Opt::ClosureElide);
+        opt::set_for_tests(Some(direct_base));
         let on = crate::emit_wat_file(path.to_str().unwrap()).expect("emit-wat on");
-        opt::set_for_tests(Some(OptSet::default_set().without(Opt::DirectCall)));
+        opt::set_for_tests(Some(direct_base.without(Opt::DirectCall)));
         let off = crate::emit_wat_file(path.to_str().unwrap()).expect("emit-wat off");
         opt::set_for_tests(None);
         let _ = std::fs::remove_file(&path);

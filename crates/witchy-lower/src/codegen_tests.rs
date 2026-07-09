@@ -702,8 +702,10 @@ fn main(console: Console):
         // `direct-call` lever lowers `g(x)` to a DIRECT `call $__lamw{i}` (recovering
         // the lifted body's index at compile time) instead of a `call_indirect` through
         // the closure record's runtime code-index word. `g` captures `k`, so the env
-        // still flows — the devirt is sound for capturing closures too. Asserting on the
-        // emitted call SHAPE is the firing proof: a call-shape lever moves no heap, so
+        // still flows — the devirt is sound for capturing closures too. This proof
+        // explicitly disables `closure-elide`, which otherwise subsumes the site with
+        // a threaded `__lamt` call. Asserting on the emitted call SHAPE is the firing
+        // proof: a call-shape lever moves no heap, so
         // there is no `witchy stats` counter to check (opt.rs registry note).
         let src = r#"
 fn main() -> Int:
@@ -711,8 +713,9 @@ fn main() -> Int:
     let g = fn(x: Int): (x + k)
     (g(5) + g(7))
 "#;
-        let default = witchy_syntax::opt::OptSet::default_set();
-        let (on, on_indirect) = call_shape(src, default);
+        let direct_base = witchy_syntax::opt::OptSet::default_set()
+            .without(witchy_syntax::opt::Opt::ClosureElide);
+        let (on, on_indirect) = call_shape(src, direct_base);
         assert!(
             on.iter().any(|n| n.starts_with("__lamw")),
             "direct-call ON: the single-bound closure call devirtualizes to `call $__lamw` (got {on:?})",
@@ -725,7 +728,7 @@ fn main() -> Int:
         // Inverse guard: remove ONLY `direct-call` and the SAME program must revert to
         // an indirect call — proving the shape is this lever's doing, not incidental
         // codegen (an always-`__lamw` emitter would pass the ON case and lie here).
-        let off_set = default.without(witchy_syntax::opt::Opt::DirectCall);
+        let off_set = direct_base.without(witchy_syntax::opt::Opt::DirectCall);
         let (off, off_indirect) = call_shape(src, off_set);
         assert!(
             !off.iter().any(|n| n.starts_with("__lamw")),
@@ -803,8 +806,7 @@ fn main() -> Int:
     let g = fn(x: Int): (x + k)
     (g(5) + g(7))
 "#;
-        let base = witchy_syntax::opt::OptSet::default_set();
-        let on = base.with(witchy_syntax::opt::Opt::ClosureElide);
+        let on = witchy_syntax::opt::OptSet::default_set();
         let (on_calls, on_indirect) = call_shape(src, on);
         assert!(
             !on_calls.iter().any(|n| n.starts_with("mk")),
@@ -823,7 +825,8 @@ fn main() -> Int:
         // Inverse guard: remove ONLY `closure-elide` and the SAME program reverts to the
         // boxed closure — a `mk1` env allocation and a devirtualized `call $__lamw` — proving
         // the elision is this lever's doing (a phantom emitter would pass the ON case and lie).
-        let (off_calls, _) = call_shape(src, base);
+        let off = on.without(witchy_syntax::opt::Opt::ClosureElide);
+        let (off_calls, _) = call_shape(src, off);
         assert!(
             off_calls.iter().any(|n| n.starts_with("mk")),
             "-closure-elide: the closure env is heap-allocated (`mk1`) (got {off_calls:?})",
@@ -850,7 +853,7 @@ fn main() -> Int:
     let g = fn(x: Int): (x + k)
     apply_it(g, 5)
 "#;
-        let on = witchy_syntax::opt::OptSet::default_set().with(witchy_syntax::opt::Opt::ClosureElide);
+        let on = witchy_syntax::opt::OptSet::default_set();
         let (calls, _) = call_shape(src, on);
         assert!(
             calls.iter().any(|n| n.starts_with("mk")),
@@ -878,9 +881,10 @@ fn main(console: Console):
         i = (i + 1)
     console.print("${total}")
 "#;
-        let base = witchy_syntax::opt::OptSet::default_set();
-        let on = run_str_opt(src, base.with(witchy_syntax::opt::Opt::ClosureElide));
-        let off = run_str_opt(src, base);
+        let on_set = witchy_syntax::opt::OptSet::default_set();
+        let off_set = on_set.without(witchy_syntax::opt::Opt::ClosureElide);
+        let on = run_str_opt(src, on_set);
+        let off = run_str_opt(src, off_set);
         // 100+0 + 101+... => (100*5) + (0+1+2+3+4) = 500 + 10 = 510.
         assert_eq!(on, vec!["510".to_string()], "elided closure computes the right value");
         assert_eq!(on, off, "elided and boxed closures produce identical output (parity)");
