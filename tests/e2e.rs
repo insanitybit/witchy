@@ -1478,6 +1478,76 @@ fn verify_rune_rejects_malformed_coven_json() {
     assert!(stdout(&out).contains("not validly signed"), "verify-rune: {}", stdout(&out));
 }
 
+#[test]
+fn pm_add_rejects_malformed_source_response_before_hashing() {
+    use std::io::{Read, Write};
+
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "badsource");
+    let app = fe.new_app();
+    fe.published_lib("acme/srcbad", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
+
+    let rootpub = server.rootpub();
+    let (status, versions) = http_get(&format!("127.0.0.1:{}", server.port), "/coven/versions?name=acme/srcbad");
+    assert_eq!(status, 200, "versions fetch failed");
+    let record = std::fs::read_to_string(server.regroot.join("registry/acme/srcbad/1.0.0/coven.json")).unwrap();
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mirror_addr = listener.local_addr().unwrap().to_string();
+    let mirror = std::thread::spawn(move || {
+        for _ in 0..8 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut buf = [0u8; 2048];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let path = req.split_whitespace().nth(1).unwrap_or("/");
+            let mut done = false;
+            let body = if path.starts_with("/coven/rootpub") {
+                rootpub.clone()
+            } else if path.starts_with("/coven/versions") {
+                versions.clone()
+            } else if path.starts_with("/coven/record") {
+                record.clone()
+            } else if path.starts_with("/coven/source") {
+                done = true;
+                "{\"files\":42}".to_string()
+            } else {
+                "not found".to_string()
+            };
+            let status = if body == "not found" { "404 Not Found" } else { "200 OK" };
+            let resp = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            if done {
+                return;
+            }
+        }
+    });
+
+    let out = Command::new(BIN)
+        .current_dir(&app)
+        .env("COVEN_URL", format!("http://{mirror_addr}"))
+        .env("WITCHY_COOLDOWN_SECS", "0")
+        .args(["pm", "add", "acme/srcbad@1.0.0"])
+        .output()
+        .expect("spawn witchy pm add");
+    assert!(!out.status.success(), "malformed source response must fail add");
+    assert!(
+        stdout(&out).contains("malformed source response"),
+        "add output: status {:?}\nstdout: {}\nstderr: {}",
+        out.status.code(),
+        stdout(&out),
+        stderr(&out)
+    );
+    assert!(!app.join("vendor/srcbad").exists(), "malformed source must not be vendored");
+    let _ = mirror.join();
+}
+
 /// BUG-363: capability strings can contain commas (`Net[Connect, Tcp]`). The
 /// signed record payload must therefore bind the JSON array shape, not only the
 /// comma-joined projection of its elements.

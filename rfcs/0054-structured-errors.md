@@ -261,7 +261,10 @@ renders the existing user-facing message. The PM offline vendored-record
 verification path now returns a local `RecordVerifyError`, keeping malformed
 `coven.json`, malformed signed payload shape, malformed verifier input, and bad
 signatures distinct until `verify-rune` / `verify-vendor` render their existing
-BLOCK diagnostics. Stored Coven records parse through
+BLOCK diagnostics. PM source fetches now decode the `/coven/source` response
+through a local `SourceResponseError`, so malformed JSON, missing/wrong-shaped
+`files`, and malformed file entries fail before source hashing or vendoring.
+Stored Coven records parse through
 `coven_record.RecordParseError`, keeping malformed JSON distinct from a
 well-formed JSON value with the wrong record shape before the registry maps it
 to a corrupt-record response. Coven source-footprint recomputation returns

@@ -2506,19 +2506,19 @@ fn fetch_verified(console: Console, net: Net, root: Dir, host: String, port: Int
         console.print("registry has no source for " + name + "@" + version)
         1
     else:
-        let files = source_files(http.body(resp))
-        if content_hash(files) != recorded_hash(record):
-            console.print("BLOCK: integrity failure — fetched source for " + name + "@" + version + " does not match the signed hash (tampered mirror?)")
-            1
-        else if recorded_field(record, "state") != "released":
-            // BUG-277: the SIGNED record's lifecycle state — not the unsigned
-            // /versions index — is the release authority. A validly signed but
-            // staged/yanked record must not be vendored, even when name, version,
-            // signature, and source hash all match the requested coordinate.
-            console.print("BLOCK: registry record for " + name + "@" + version + " is `" + recorded_field(record, "state") + "`, not `released` — refusing to vendor an unreleased version")
-            1
-        else:
-            write_vendored_source(console, root, dest, name, version, files, record)
+        match source_files(http.body(resp)):
+            Err(e) ->
+                console.print("BLOCK: malformed source response for " + name + "@" + version + " — " + source_response_error_message(e))
+                1
+            Ok(files) ->
+                if content_hash(files) != recorded_hash(record):
+                    console.print("BLOCK: integrity failure — fetched source for " + name + "@" + version + " does not match the signed hash (tampered mirror?)")
+                    1
+                else if recorded_field(record, "state") != "released":
+                    console.print("BLOCK: registry record for " + name + "@" + version + " is `" + recorded_field(record, "state") + "`, not `released` — refusing to vendor an unreleased version")
+                    1
+                else:
+                    write_vendored_source(console, root, dest, name, version, files, record)
 
 // Validate the fetched file set, then materialize it beside its signed record.
 // BUG-089: a registry/mirror response is untrusted structure. Even though the set
@@ -2569,14 +2569,62 @@ fn path_shape_ok(path: String) -> Bool:
     else:
         path == "witchy.toml" || string.starts_with(path, "src/") && string.ends_with(path, ".witchy")
 
-fn source_files(body: String) -> List((String, String)):
+// Matchable failures from the `/coven/source` response boundary. This response is
+// untrusted registry/mirror structure; malformed JSON or a wrong-shaped `files`
+// field must fail closed before hashing or writing, not become an empty file set.
+type SourceResponseError:
+    SourceInvalidJson(String)
+    SourceMissingFiles
+    SourceFilesNotArray
+    SourceFileEntryMalformed
+
+fn source_response_error_message(e: SourceResponseError) -> String:
+    match e:
+        SourceInvalidJson(reason) -> "response is not valid JSON: " + reason
+        SourceMissingFiles -> "response has no `files` field"
+        SourceFilesNotArray -> "`files` is not an array"
+        SourceFileEntryMalformed -> "`files` contains an entry that is not `[path, text]` strings"
+
+impl Show for SourceResponseError:
+    fn show(self) -> String:
+        source_response_error_message(self)
+
+impl Error for SourceResponseError
+
+impl From(SourceResponseError) for String:
+    fn from(value: SourceResponseError) -> Self:
+        source_response_error_message(value)
+
+fn source_files(body: String) -> Result(List((String, String)), SourceResponseError):
     var out = []
-    if let Ok(doc) = json.decode(body):
-        if let Some(files) = json.get(doc, "files"):
-            if let Some(items) = json.as_array(files):
-                for entry in items:
-                    out = list.push(out, (json_index_str(entry, 0), json_index_str(entry, 1)))
-    out
+    match json.decode(body):
+        Err(e) -> Err(SourceInvalidJson(json.decode_error_message(e)))
+        Ok(doc) ->
+            match json.get(doc, "files"):
+                None -> Err(SourceMissingFiles)
+                Some(files) ->
+                    match json.as_array(files):
+                        None -> Err(SourceFilesNotArray)
+                        Some(items) ->
+                            for entry in items:
+                                match source_file_entry(entry):
+                                    Err(e) -> return Err(e)
+                                    Ok(pair) -> out = list.push(out, pair)
+                            Ok(out)
+
+fn source_file_entry(entry: Json) -> Result((String, String), SourceResponseError):
+    match json.as_array(entry):
+        None -> Err(SourceFileEntryMalformed)
+        Some(parts) ->
+            if list.length(parts) != 2:
+                Err(SourceFileEntryMalformed)
+            else:
+                match json.as_string(list.at(parts, 0)):
+                    None -> Err(SourceFileEntryMalformed)
+                    Some(path) ->
+                        match json.as_string(list.at(parts, 1)):
+                            None -> Err(SourceFileEntryMalformed)
+                            Some(text) -> Ok((path, text))
 
 // The content address of an in-memory rune source (matches coven / crypto.rune_hash).
 fn content_hash(files: List((String, String))) -> String:
