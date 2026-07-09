@@ -11,6 +11,9 @@ import crypto
 import string
 import result
 import option
+import show
+import error
+import convert
 from json import Json
 
 type Record derive(Reflect, Deserialize):
@@ -81,16 +84,42 @@ pub fn sign_record(key: Secret, name: String, version: String, state: State, has
     let rec = Record(name, version, sw, hash, rt, [], "guaranteed", uploaded_by, opt_str(promoted_by), opt_str(factor), opt_str(provenance), released_at, sig)
     json.encode(json.from_value(rec))
 
-// Decode a stored coven.json into a typed `Record` (or a parse-error message).
-pub fn parse(text: String) -> Result(Record, String):
-    Record.from_json(json.decode(text)?)
+// Decode a stored coven.json into a typed `Record` (or a matchable parse error).
+pub fn parse(text: String) -> Result(Record, RecordParseError):
+    match json.decode(text):
+        Err(e) -> Err(RecordJson(json.decode_error_message(e)))
+        Ok(doc) ->
+            match Record.from_json(doc):
+                Ok(r) -> Ok(r)
+                Err(e) -> Err(RecordShape(e))
+
+// Stored signed records are registry trust state. Keep malformed JSON distinct
+// from a well-formed JSON value with the wrong record shape.
+type RecordParseError:
+    RecordJson(String)
+    RecordShape(String)
+
+pub fn record_parse_error_message(e: RecordParseError) -> String:
+    match e:
+        RecordJson(reason) -> reason
+        RecordShape(reason) -> reason
+
+impl Show for RecordParseError:
+    fn show(self) -> String:
+        record_parse_error_message(self)
+
+impl Error for RecordParseError
+
+impl From(RecordParseError) for String:
+    fn from(value: RecordParseError) -> Self:
+        record_parse_error_message(value)
 
 // Reconstruct a record's canonical signing payload from its stored JSON — the digest
 // the snapshot pins, so a record swapped to an older state stops matching.
 pub fn record_signing_payload(text: String) -> String:
     match parse(text):
         Ok(r) -> signing_payload(r.name, r.version, r.state, r.hash, r.runtime_footprint, r.uploaded_by, str_or_empty(r.promoted_by), str_or_empty(r.second_factor), str_or_empty(r.provenance), r.released_at)
-        Err(e) -> corrupt_record(e)
+        Err(e) -> corrupt_record(record_parse_error_message(e))
 
 // A stored record that no longer parses is corruption/tampering, not an empty payload:
 // hashing sha256("") would give every corrupt record the same snapshot digest and hide

@@ -77,6 +77,21 @@ fn test_runtime_footprint_payload_is_injective():
     testing.assert(one != split, "different footprint list shapes must produce different signed payloads")
     testing.assert(string.contains(one, "rt=[\"Net[Connect, Tcp]\"]"), "the runtime footprint is encoded as a JSON array")
 
+fn test_record_parse_errors_are_typed():
+    match coven_record.parse("{"):
+        Ok(_r) -> testing.assert(false, "malformed record JSON must fail")
+        Err(e) ->
+            match e:
+                coven_record.RecordJson(_reason) -> testing.assert(true, "malformed JSON is typed")
+                _ -> testing.assert(false, "malformed JSON should be RecordJson")
+
+    match coven_record.parse("{\"name\":\"acme/x\"}"):
+        Ok(_r) -> testing.assert(false, "wrong-shaped record JSON must fail")
+        Err(e) ->
+            match e:
+                coven_record.RecordShape(_reason) -> testing.assert(true, "wrong shape is typed")
+                _ -> testing.assert(false, "wrong shape should be RecordShape")
+
 // --- proto builders carry the identity token (BUG-225) -----------------------
 // The client builders must emit `id_token` when a trusted-publishing token is present
 // (the parsers already read it), and omit it for an anonymous registry.

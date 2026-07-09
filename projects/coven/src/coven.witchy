@@ -526,7 +526,7 @@ impl Coven:
             Some(text) ->
                 match coven_record.parse(text):
                     Ok(r) -> Ok(r)
-                    Err(e) -> Err(CovenError(500, "corrupt record `" + name + "@" + version + "`: " + e))
+                    Err(e) -> Err(CovenError(500, "corrupt record `" + name + "@" + version + "`: " + coven_record.record_parse_error_message(e)))
 
     fn source_response(self, name: String, version: String) -> Result(Response, CovenError):
         let files = coven_store.read_source(self.store, name, version)
