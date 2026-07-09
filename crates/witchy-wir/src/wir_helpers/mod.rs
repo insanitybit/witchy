@@ -146,14 +146,7 @@ pub fn heap_reclaim_helper() -> WirFunc {
     }
 }
 
-/// The `$mk{n}` allocator for an `n`-field record/tuple/list: bump-allocate
-/// `4 + 8n` bytes, store the i32 tag/length header then each i64 field slot,
-/// advance `$heap`, return the pointer. Mirrors `wir_prelude::mk_helper` /
-/// `codegen::mk_helper`. Calls `$ensure`; uses the `$heap` global.
-/// (RFC-0023) Trailing redzone size, in bytes, reserved after each checked
-/// allocation. MUST equal `witchy_runtime`'s `HEAP_REDZONE` — the host poisons and
-/// sweeps exactly this many bytes at `[end, end+HEAP_REDZONE)`.
-pub const HEAP_REDZONE: usize = 8;
+pub use crate::layout::{HEAP_REDZONE, RC_SIZE_MASK};
 
 /// (RFC-0023) Whether the opt-in checked heap is selected for this compile. Read from
 /// the environment like the other codegen toggles (`WITCHY_OPT`, `WIRDIAG`), so a
@@ -204,11 +197,10 @@ pub fn rc_assert_enabled() -> bool {
     std::env::var_os("WITCHY_RC_ASSERT").is_some_and(|v| v == "1")
 }
 
-/// The alloc-size header word (`ptr-4`, written by `$rc_alloc`) holds the allocated size in its
-/// low 24 bits; the high 8 bits are reserved for the [`type_check_enabled`] debug type tag.
-/// Every reader of the size masks with this so the tag is invisible to size arithmetic.
-pub const RC_SIZE_MASK: i32 = 0x00FF_FFFF;
-
+/// The `$mk{n}` allocator for an `n`-field record/tuple/list: bump-allocate
+/// `4 + 8n` bytes, store the i32 tag/length header then each i64 field slot,
+/// advance `$heap`, return the pointer. Mirrors `wir_prelude::mk_helper` /
+/// `codegen::mk_helper`. Calls `$ensure`; uses the `$heap` global.
 pub fn mk_helper(n: usize, checked: bool) -> WirFunc {
     let size = 4 + 8 * n;
     // (RFC-0023) When checked, reserve a trailing redzone the host poisons via

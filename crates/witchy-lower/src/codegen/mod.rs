@@ -41,6 +41,7 @@ use passes::{alpha_rename_module, flip_string_add_module, rewrite_try_ctx_module
 
 use crate::analysis::{self};
 use witchy_syntax::lambda_scan::{collect_pattern_vars, scan_lambda};
+use witchy_wir::layout::type_tag_of;
 // foldhash (not SipHash): all keys are compiler-internal names/ids, never
 // attacker-chosen collections — see the note in witchy-types/src/typeck.rs.
 use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
@@ -124,19 +125,6 @@ const SECRET_NAME_TMP: &str = "__witchy_secret_name_tmp";
 /// (RFC-0037 §3) Scratch i32 local holding a record pointer under `WITCHY_TYPE_CHECK`, so the
 /// type-tag check and the field load share one evaluation of the base.
 const TYPECHECK_TMP: &str = "__witchy_typecheck_tmp";
-
-/// (RFC-0037 §3) A stable, stateless 8-bit type id for the type-confusion sanitizer: the same
-/// type name always maps to the same NON-ZERO tag (0 means "untagged"), so the WRITE side (a
-/// record ctor) and the CHECK side (a `.field` read) agree without threading a registry. FNV-1a
-/// hash → 1..=255; a collision (~1/255 per type pair) only misses a confusion, never false-traps.
-fn type_tag_of(name: &str) -> u8 {
-    let mut h: u32 = 2166136261;
-    for byte in name.bytes() {
-        h ^= byte as u32;
-        h = h.wrapping_mul(16777619);
-    }
-    (h % 255) as u8 + 1
-}
 
 /// One scratch local per nesting level of expression application (`f(x)(y)`),
 /// holding the callee pointer while its arguments are evaluated. A nested

@@ -14,6 +14,7 @@ use wasmtime::{
     bail, Cache, CacheConfig, Caller, Config, Engine, Error, Extern, ExternRef, Instance, Linker,
     Memory, Module, Result, Rooted, Store, StoreLimits, StoreLimitsBuilder,
 };
+use witchy_wir::layout::HEAP_REDZONE;
 
 /// An on-disk Cranelift compilation cache so re-running the same program skips
 /// recompiling its WAT (the ~3 ms compile cost). Keyed by wasm content +
@@ -298,12 +299,6 @@ struct FileHandle {
 /// Host-side state owned by a spawned VM's `Store`: its capability grant, output
 /// buffer, and the host-side `Dir`/`Net`/build handle tables. One state type
 /// means one set of capability host functions.
-/// (RFC-0023, opt-in checked heap) Bytes of poisoned redzone the host writes
-/// immediately after every *checked* allocation. A write that runs past an object's
-/// end lands in this zone; the post-run sweep then proves it was never touched. Such
-/// an overrun is in-bounds for the linear memory, so wasmtime cannot see it — this is
-/// the missing intra-heap check.
-pub(crate) const HEAP_REDZONE: usize = 8;
 const HEAP_POISON: u8 = 0xDB;
 
 pub struct VmState {

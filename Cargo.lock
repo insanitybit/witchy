@@ -2683,6 +2683,7 @@ dependencies = [
  "witchy-caps",
  "witchy-syntax",
  "witchy-types",
+ "witchy-wir",
 ]
 
 [[package]]
