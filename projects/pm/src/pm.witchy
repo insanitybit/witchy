@@ -941,7 +941,9 @@ fn latest_label(body: String, status: Int) -> String:
     if status != 200:
         "registry error"
     else:
-        latest_label_of(latest_version(released_versions(body)))
+        match released_version_records(body):
+            Err(e) -> version_resolve_error_message(e)
+            Ok(records) -> latest_label_of(latest_version(list.map(records, fn(record: (Version, Int)): record.0)))
 
 fn latest_label_of(v: Option(Version)) -> String:
     match v:
@@ -1015,7 +1017,9 @@ fn print_versions(console: Console, name: String, body: String) -> Int:
         console.print("${name}: no versions")
     0
 
-// The `records` array of a /coven/versions response, as raw Json values.
+// Presentation-only projection for `pm list`: an unavailable or malformed
+// response renders as no rows. Install/update decisions use the strict typed
+// `released_version_records` boundary below.
 fn version_records(body: String) -> List(Json):
     var out = []
     if let Ok(doc) = json.decode(body):
@@ -2293,10 +2297,11 @@ fn resolve_version(net: Net, host: String, port: Int, name: String, req: String,
         Err(VersionRegistryFetchFailed(http.status(resp)))
     else:
         let body = http.body(resp)
-        match pick_version_cooled(body, req, cooldown):
+        let records = released_version_records(body)?
+        match pick_version_cooled(records, req, cooldown):
             Ok(v) -> Ok(v)
             Err(e) ->
-                if has_cooling_match(body, req, cooldown):
+                if has_cooling_match(records, req, cooldown):
                     Err(VersionCooling(req))
                 else:
                     Err(e)
@@ -2306,6 +2311,7 @@ fn resolve_version(net: Net, host: String, port: Int, name: String, req: String,
 // staging-cooldown policy are combined; keep it typed until the CLI renders it.
 type VersionResolveError:
     VersionRegistryFetchFailed(Int)
+    VersionMalformedResponse(String)
     VersionBadRequirement(String, String)
     VersionCooling(String)
     VersionNoMatch(String)
@@ -2313,6 +2319,7 @@ type VersionResolveError:
 fn version_resolve_error_message(e: VersionResolveError) -> String:
     match e:
         VersionRegistryFetchFailed(_status) -> "registry error fetching versions"
+        VersionMalformedResponse(reason) -> "registry returned a malformed versions response: ${reason}"
         VersionBadRequirement(req, cause) -> "bad requirement `${req}`: ${cause}"
         VersionCooling(req) -> "a release satisfying `${req}` is inside its staging cooldown and not resolvable yet (compromised-release protection) — re-run with --allow-fresh to accept it now"
         VersionNoMatch(req) -> "no released version satisfies `${req}`"
@@ -2350,9 +2357,9 @@ fn add_deps(console: Console, net: Net, root: Dir, host: String, port: Int, name
 // error. A release still inside its staging cooldown is excluded (unless
 // `--allow-fresh`) — `resolve_version` distinguishes "none satisfy" from "the
 // only match is cooling" for a clearer message.
-fn pick_version_cooled(body: String, req: String, cooldown: (Int, Int, Bool)) -> Result(String, VersionResolveError):
+fn pick_version_cooled(records: List((Version, Int)), req: String, cooldown: (Int, Int, Bool)) -> Result(String, VersionResolveError):
     match semver.parse_req(req):
-        Ok(r) -> choose(eligible_versions(body, cooldown), r, req)
+        Ok(r) -> choose(eligible_versions(records, cooldown), r, req)
         Err(e) -> Err(VersionBadRequirement(req, e))
 
 fn choose(versions: List(Version), r: Req, req: String) -> Result(String, VersionResolveError):
@@ -2360,20 +2367,14 @@ fn choose(versions: List(Version), r: Req, req: String) -> Result(String, Versio
         Some(v) -> Ok(semver.format(v))
         None -> Err(VersionNoMatch(req))
 
-// The released versions in a /coven/versions response, parsed (cooldown-agnostic;
-// used by `outdated`/`update` which report the latest, not resolve-for-install).
-fn released_versions(body: String) -> List(Version):
-    eligible_versions(body, (0, 0, true))
-
 // Released versions that are resolvable now: state `released` AND past the staging
 // cooldown window (or `--allow-fresh`). A record's `released_at` (unix seconds, in
 // the signed payload so it can't be tampered away) plus the window must be ≤ now.
-fn eligible_versions(body: String, cooldown: (Int, Int, Bool)) -> List(Version):
+fn eligible_versions(records: List((Version, Int)), cooldown: (Int, Int, Bool)) -> List(Version):
     var out = []
-    for rec in released_records(body):
-        if !cooling(rec, cooldown):
-            if let Some(v) = canonical_version(jget(rec, "version")):
-                out.push(v)
+    for version, released_at in records:
+        if !cooling(released_at, cooldown):
+            out.push(version)
     out
 
 // Parse a registry version string, but ONLY if it is already the canonical SemVer
@@ -2381,7 +2382,7 @@ fn eligible_versions(body: String, cooldown: (Int, Int, Bool)) -> List(Version):
 // whitespace away, so the resolver would otherwise select one released record
 // and then fetch a DIFFERENT `&version=` coordinate. Requiring
 // `format(parse(raw)) == raw` keeps the resolved coordinate byte-identical to the
-// record it came from; noncanonical strings are simply not resolvable.
+// record it came from; the boundary reports noncanonical strings as corruption.
 fn canonical_version(raw: String) -> Option(Version):
     match semver.parse(raw):
         Ok(v) -> if semver.format(v) == raw: Some(v) else: None
@@ -2389,36 +2390,65 @@ fn canonical_version(raw: String) -> Option(Version):
 
 // Whether any released version satisfying `req` exists but is still cooling — so
 // the caller can say "blocked by cooldown" instead of "no version".
-fn has_cooling_match(body: String, req: String, cooldown: (Int, Int, Bool)) -> Bool:
+fn has_cooling_match(records: List((Version, Int)), req: String, cooldown: (Int, Int, Bool)) -> Bool:
     match semver.parse_req(req):
         Err(_e) -> false
         Ok(r) ->
             var found = false
-            for rec in released_records(body):
-                if cooling(rec, cooldown):
-                    if let Some(v) = canonical_version(jget(rec, "version")):
-                        if semver.matches(r, v):
-                            found = true
+            for version, released_at in records:
+                if cooling(released_at, cooldown) && semver.matches(r, version):
+                    found = true
             found
 
-// The `released`-state records of a /coven/versions response, as raw Json.
-fn released_records(body: String) -> List(Json):
+// Parse the registry response once into the only fields version decisions use.
+// Malformed JSON, response shape, states, coordinates, or release timestamps are
+// a typed boundary error — never an empty registry or an ordinary no-match.
+fn released_version_records(body: String) -> Result(List((Version, Int)), VersionResolveError):
+    match json.decode(body):
+        Err(e) -> Err(VersionMalformedResponse(json.decode_error_message(e)))
+        Ok(doc) ->
+            match json.get(doc, "records"):
+                None -> Err(VersionMalformedResponse("missing `records` array"))
+                Some(field) ->
+                    match json.as_array(field):
+                        None -> Err(VersionMalformedResponse("`records` is not an array"))
+                        Some(items) -> parse_version_records(items)
+
+fn parse_version_records(items: List(Json)) -> Result(List((Version, Int)), VersionResolveError):
     var out = []
-    if let Ok(doc) = json.decode(body):
-        if let Some(records) = json.get(doc, "records"):
-            if let Some(items) = json.as_array(records):
-                for rec in items:
-                    if jget(rec, "state") == "released":
-                        out.push(rec)
-    out
+    var index = 0
+    for rec in items:
+        let state = match json.get_string(rec, "state"):
+            None -> return Err(VersionMalformedResponse("record ${index} has no string `state`"))
+            Some(s) -> s
+
+        if state != "staged" && state != "released" && state != "yanked":
+            return Err(VersionMalformedResponse("record ${index} has unknown state `${state}`"))
+        let raw = match json.get_string(rec, "version"):
+            None -> return Err(VersionMalformedResponse("record ${index} has no string `version`"))
+            Some(s) -> s
+
+        let version = match canonical_version(raw):
+            None -> return Err(VersionMalformedResponse("record ${index} has noncanonical version `${raw}`"))
+            Some(v) -> v
+
+        if state == "released":
+            let released_at = match json.get_int(rec, "released_at"):
+                None -> return Err(VersionMalformedResponse("released record ${index} has no integer `released_at`"))
+                Some(n) -> n
+
+            if released_at < 0:
+                return Err(VersionMalformedResponse("released record ${index} has negative `released_at`"))
+            out.push((version, released_at))
+        index = index + 1
+    Ok(out)
 
 // Whether a released record is still inside its staging cooldown window. A
 // `released_at` of 0 (legacy/unstamped) is treated as past any window; with
 // `--allow-fresh` nothing cools. `cooldown` is (now_unix_secs, window_secs,
 // allow_fresh).
-fn cooling(rec: Json, cooldown: (Int, Int, Bool)) -> Bool:
+fn cooling(released_at: Int, cooldown: (Int, Int, Bool)) -> Bool:
     let (now_secs, window, allow_fresh) = cooldown
-    let released_at = jget_int(rec, "released_at")
     if allow_fresh || released_at == 0:
         false
     else:

@@ -1049,8 +1049,70 @@ fn resolver_rejects_whitespace_padded_registry_versions() {
     let out = fe.pm(&app, &["add", "acme/coord"], None);
     assert!(!out.status.success(), "noncanonical registry coordinate must not resolve");
     let msg = format!("{}{}", stdout(&out), stderr(&out));
-    assert!(msg.contains("no released version"), "expected resolver rejection, got: {msg}");
+    assert!(
+        msg.contains("malformed versions response"),
+        "expected corrupt registry record rejection, got: {msg}"
+    );
     assert!(!app.join("vendor/coord").exists(), "nothing should be vendored on a failed add");
+}
+
+/// BUG-567: malformed registry data is not an empty registry. Version
+/// resolution must preserve that distinction through its typed boundary and
+/// stop before any record or source request.
+#[test]
+fn pm_add_rejects_malformed_versions_response() {
+    use std::io::{ErrorKind, Read, Write};
+
+    let app = unique("badversions-app");
+    std::fs::create_dir_all(app.join("src")).unwrap();
+    std::fs::write(app.join("witchy.toml"), "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n").unwrap();
+    std::fs::write(app.join("src/app.witchy"), "fn main(console: Console):\n    console.print(\"app\")\n").unwrap();
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let mirror_addr = listener.local_addr().unwrap().to_string();
+    let mirror = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let (mut stream, _) = loop {
+            match listener.accept() {
+                Ok(connection) => break connection,
+                Err(e) if e.kind() == ErrorKind::WouldBlock && std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(e) => panic!("versions mirror did not receive a request: {e}"),
+            }
+        };
+        let mut buf = [0u8; 2048];
+        let n = stream.read(&mut buf).unwrap_or(0);
+        let req = String::from_utf8_lossy(&buf[..n]);
+        let path = req.split_whitespace().nth(1).unwrap_or("/");
+        assert!(path.starts_with("/coven/versions"), "unexpected first registry request: {path}");
+
+        let body = "{\"records\":42}";
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(resp.as_bytes()).unwrap();
+    });
+
+    let out = Command::new(BIN)
+        .current_dir(&app)
+        .env("COVEN_URL", format!("http://{mirror_addr}"))
+        .env("WITCHY_COOLDOWN_SECS", "0")
+        .args(["pm", "add", "acme/bad@1.0.0"])
+        .output()
+        .expect("spawn witchy pm add");
+    assert!(!out.status.success(), "malformed versions response must fail add");
+    let msg = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        msg.contains("malformed versions response") && msg.contains("`records` is not an array"),
+        "expected typed versions-response error, got: {msg}"
+    );
+    assert!(!app.join("vendor/bad").exists(), "malformed versions response must not be vendored");
+    mirror.join().unwrap();
+    std::fs::remove_dir_all(app).unwrap();
 }
 
 /// Promotion enforces separation of duties: the promoter must be a DISTINCT human
