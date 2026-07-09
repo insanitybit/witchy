@@ -518,7 +518,7 @@ impl Coven:
             Ok(coven_json.str(claims, "sub"))
 
     fn maintainer_ids(self, ns: String, path: String) -> Result(List(String), CovenError):
-        coven_trust.string_array(self.store.read(path)).map_err(fn(e: String): CovenError(500, "corrupt maintainer policy for namespace `" + ns + "` (" + e + "); it must be repaired or rebound out of band"))
+        coven_trust.string_array(self.store.read(path)).map_err(fn(e: coven_trust.TrustPolicyError): CovenError(500, "corrupt maintainer policy for namespace `" + ns + "` (" + coven_trust.trust_policy_error_message(e) + "); it must be repaired or rebound out of band"))
 
     fn load_record(self, name: String, version: String) -> Result(Record, CovenError):
         match coven_store.read_record(self.store, name, version):

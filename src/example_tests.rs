@@ -1979,7 +1979,7 @@ fn main(console: Console):
 
     #[test]
     fn coven_maintainer_policy_string_array_is_strict() {
-        let src = "import coven_trust\nimport list\n\nfn report(text: String) -> String:\n    match coven_trust.string_array(text):\n        Ok(xs) -> \"ok:\" + list.join(xs, \",\")\n        Err(e) -> \"err:\" + e\n\nfn main(console: Console):\n    console.print(report(\"[\\\"gha|alice\\\",\\\"gha|bob\\\"]\"))\n    console.print(report(\"{\\\"maintainers\\\":[]}\"))\n    console.print(report(\"[\\\"gha|alice\\\",7]\"))\n    console.print(report(\"[\"))\n";
+        let src = "import coven_trust\nimport list\n\nfn report(text: String) -> String:\n    match coven_trust.string_array(text):\n        Ok(xs) -> \"ok:\" + list.join(xs, \",\")\n        Err(e) -> \"err:\" + coven_trust.trust_policy_error_message(e)\n\nfn tag(text: String) -> String:\n    match coven_trust.string_array(text):\n        Ok(_xs) -> \"typed:ok\"\n        Err(e) ->\n            match e:\n                coven_trust.PolicyInvalidJson(_) -> \"typed:json\"\n                coven_trust.PolicyNotStringArray -> \"typed:shape\"\n                coven_trust.PolicyNonString(i) -> \"typed:item:\" + \"${i}\"\n\nfn main(console: Console):\n    console.print(report(\"[\\\"gha|alice\\\",\\\"gha|bob\\\"]\"))\n    console.print(report(\"{\\\"maintainers\\\":[]}\"))\n    console.print(report(\"[\\\"gha|alice\\\",7]\"))\n    console.print(report(\"[\"))\n    console.print(tag(\"[\\\"gha|alice\\\",7]\"))\n";
         let sources = [
             ("coven_json", include_str!("../projects/coven/src/coven_json.witchy")),
             ("coven_trust", include_str!("../projects/coven/src/coven_trust.witchy")),
@@ -2001,6 +2001,7 @@ fn main(console: Console):
                 "err:expected a JSON array of strings",
                 "err:expected a string at index 1",
                 "err:unexpected end of input",
+                "typed:item:1",
             ],
         );
     }

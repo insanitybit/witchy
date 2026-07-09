@@ -8,6 +8,9 @@
 import jwt
 import string
 import coven_json
+import show
+import error
+import convert
 from json import Json
 
 // A trusted issuer: a provider id (the token's `iss`) plus the key(s) that sign its
@@ -44,24 +47,48 @@ pub fn attestation(claims: Json, digest: String, now: Int) -> String:
 // A durable trust-policy JSON string array (e.g. a namespace's maintainers.json).
 // Unlike coven's request-body helpers, malformed or wrong-shaped policy state is
 // corruption, not an empty policy.
-pub fn string_array(text: String) -> Result(List(String), String):
+pub fn string_array(text: String) -> Result(List(String), TrustPolicyError):
     match json.decode(text):
-        Err(e) -> Err(json.decode_error_message(e))
+        Err(e) -> Err(PolicyInvalidJson(json.decode_error_message(e)))
         Ok(doc) -> strict_string_array(doc)
 
-fn strict_string_array(doc: Json) -> Result(List(String), String):
+// Matchable errors for durable trust-policy state. This is authority-bearing
+// registry state, so malformed JSON and wrong shapes are corruption, not a
+// silent empty policy.
+type TrustPolicyError:
+    PolicyInvalidJson(String)
+    PolicyNotStringArray
+    PolicyNonString(Int)
+
+pub fn trust_policy_error_message(e: TrustPolicyError) -> String:
+    match e:
+        PolicyInvalidJson(reason) -> reason
+        PolicyNotStringArray -> "expected a JSON array of strings"
+        PolicyNonString(index) -> "expected a string at index ${index}"
+
+impl Show for TrustPolicyError:
+    fn show(self) -> String:
+        trust_policy_error_message(self)
+
+impl Error for TrustPolicyError
+
+impl From(TrustPolicyError) for String:
+    fn from(value: TrustPolicyError) -> Self:
+        trust_policy_error_message(value)
+
+fn strict_string_array(doc: Json) -> Result(List(String), TrustPolicyError):
     match doc:
         JsonArray(items) -> strict_strings(items)
-        _ -> Err("expected a JSON array of strings")
+        _ -> Err(PolicyNotStringArray)
 
-fn strict_strings(items: List(Json)) -> Result(List(String), String):
+fn strict_strings(items: List(Json)) -> Result(List(String), TrustPolicyError):
     var out: List(String) = []
     var index = 0
     for item in items:
         if let JsonString(s) = item:
             out = list.push(out, s)
         else:
-            return Err("expected a string at index ${index}")
+            return Err(PolicyNonString(index))
         index = index + 1
     Ok(out)
 
