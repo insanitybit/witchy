@@ -488,6 +488,37 @@ mod capability {
             "fn main(dir: Dir[Read]):\n    dir.write(\"x\", \"y\")\n"
         ));
     }
+
+    #[test]
+    fn rfc0076_bare_print_is_still_accepted_known_bad() {
+        // KNOWN-BAD (RFC-0076): bare cap ops are still accepted today. The
+        // method-only cut should update this snapshot to the new fix-it
+        // diagnostic, making the user-facing message reviewable.
+        insta::assert_snapshot!(type_diag(
+            "fn main(console: Console):\n    print(console, \"hi\")\n"
+        ));
+    }
+
+    #[test]
+    fn console_print_requires_string() {
+        insta::assert_snapshot!(type_diag(
+            "fn main(console: Console):\n    console.print(42)\n"
+        ));
+    }
+
+    #[test]
+    fn file_read_capability_cannot_write() {
+        insta::assert_snapshot!(type_diag(
+            "fn main(file: File[Read]):\n    file.write(\"x\")\n"
+        ));
+    }
+
+    #[test]
+    fn net_connect_capability_cannot_listen() {
+        insta::assert_snapshot!(type_diag(
+            "fn main(net: Net[Connect]):\n    net.listen(\"127.0.0.1:0\")\n"
+        ));
+    }
 }
 
 // ===========================================================================
