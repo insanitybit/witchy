@@ -245,8 +245,15 @@ async fn main(console: Console):
 One restriction: an `async fn` may not be a *trait* method (neither declared in a
 `trait` nor implementing one in an `impl Trait for T`) — the compiler rejects it
 at parse time. A trait that wants an asynchronous operation declares a plain
-`fn … -> Task(m, a)`; the implementing method leaves its own return type to
+`fn … -> Task(a)`; the implementing method leaves its own return type to
 inference and delegates to an inherent async method.
+
+```witchy
+from task import Task
+
+trait Fetcher:
+    fn fetch(self, url: String) -> Task(String)
+```
 
 ## Why this stays deterministic
 
