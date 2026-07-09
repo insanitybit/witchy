@@ -522,10 +522,12 @@ aliasing. Concretely:
 - A **closure** captures by value and so cannot assign to a captured variable
   (check-time error); produce the new value and return it, or take a `var`
   parameter.
-- **`await`** lowers the rest of the function after the seam into a continuation
-  closure (§14), so a `var` declared before an `await` cannot be mutated after it
-  — carrying mutable state across an `await` hits the same closure rule. Recurse
-  with an `async fn`, or thread the state through a channel (`chan.serve`), instead.
+- **`await`** lowers an `async fn` into state-machine segments (§14). Live locals
+  are threaded through segment parameters, so a `var` declared before an
+  `await` may be mutated after it when the await appears in a supported
+  position. `await` is supported in loop bodies, including `while` bodies and
+  `for await` folds; it remains unsupported in branch conditions, loop
+  conditions, and match scrutinees.
 - A **`gen fn`** is the exception: a `var` *may* be freely mutated across a
   `yield` (§11), because a generator re-runs its body to the next yield rather
   than capturing a continuation.

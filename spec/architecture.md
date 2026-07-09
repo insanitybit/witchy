@@ -171,8 +171,10 @@ Tracked honestly rather than hidden:
   channel buffers are typed `List(m)`: heterogeneous channels would need type
   erasure, so union several shapes into a sum type. Spawned tasks return `Nil`
   and report results over channels (the Go model); a typed `JoinHandle(T)`
-  would likewise need erasure. `await` is not yet supported inside a `while`
-  loop or a condition/scrutinee. See [concurrency-design.md](../rfcs/concurrency-design.md).
+  would likewise need erasure. `await` is supported in loop bodies, including
+  `while` bodies that carry mutable locals across the await; it is still not
+  supported in loop/branch conditions or match scrutinees. See
+  [concurrency-design.md](../rfcs/concurrency-design.md).
 - The LSP has diagnostics, completion, and hover — no go-to-definition or
   rename yet.
 - No tracing GC: reclamation is structural (see the memory model above). A

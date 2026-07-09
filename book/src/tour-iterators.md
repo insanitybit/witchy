@@ -10,7 +10,8 @@ advance how many you need. witchy gives you two cooperating tools for that: the
 
 `import iter` brings in `Iter(a)`, a lazy stream. Its combinators — `map`,
 `filter`, `take`, `range`, and friends — build a *description* of a computation;
-nothing runs until you `collect` it into a list (or fold, count, or loop over it).
+nothing runs until a consumer pulls it: `collect`, `fold`, `count`, `find`, or
+`iter.for_each`.
 
 ```witchy
 import iter
@@ -156,11 +157,11 @@ interpreter and the compiled backend — laziness is a library and a lowering, n
 a special runtime.
 
 Note that a `gen fn` mutates `var` freely across a `yield` — `a`, `b`, and `n`
-above all carry forward — even though an `async fn` *cannot* carry a `var` across
-an `await` ([Concurrency](tour-async.md)). The difference is the lowering: a
-generator re-runs its body to the next yield, while an `await` captures the rest
-of the function as a by-value continuation, which can't write back to an outer
-`var`.
+above all carry forward. An `async fn` can also carry a `var` across an `await`
+in supported positions ([Concurrency](tour-async.md)); the current async
+lowering threads live locals through state-machine segments. The remaining
+restriction is placement: `await` works in loop bodies, but not in branch
+conditions or match scrutinees.
 
 A generator with no capability parameters is also, by construction, **pure**: a
 `gen fn` that takes no `Console`/`Dir`/`Net` provably cannot do I/O — it can only
