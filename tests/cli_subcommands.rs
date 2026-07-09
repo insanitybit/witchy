@@ -132,6 +132,41 @@ fn secretstore_main_runs_without_a_secret() {
     }
 }
 
+#[test]
+fn named_secret_does_not_satisfy_a_bare_secret() {
+    // BUG-116: a bare `Secret` main parameter is the ROOT signing-key handle
+    // (handle 0). A `--secret name=value` populates a SecretStore; if it also
+    // satisfied the bare Secret, the named value would land at handle 0 and
+    // `crypto.reveal(key)` would leak it as the root key. Only `--signing-key`
+    // mints a bare Secret.
+    let dir = workdir("bare-secret");
+    let src = write(
+        &dir,
+        "s.witchy",
+        "import crypto\n\nfn main(console: Console, key: Secret):\n    print(console, crypto.reveal(key))\n",
+    );
+    for pre in [vec![], vec!["sandbox", "--dir", dir.to_str().unwrap()]] {
+        let mut args = pre.clone();
+        args.push("--secret");
+        args.push("token=abc123");
+        args.push(src.as_str());
+        let out = run(&args);
+        assert!(
+            !out.status.success(),
+            "{args:?}: a named secret must NOT satisfy a bare Secret"
+        );
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            !combined.contains("abc123"),
+            "{args:?}: the named secret must never be revealed as the root key: {combined}"
+        );
+    }
+}
+
 // ---- BUG-119 / BUG-163 / BUG-177: mode-opt enforced consistently ----
 
 #[test]

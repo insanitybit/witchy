@@ -2194,9 +2194,17 @@ fn run_linked_compiled(
     // `capabilities::unmintable_main_cap`), so binding one must NOT force a
     // `--secret`. This keeps `run`/`sandbox` aligned with `parity` and both backends,
     // which run a `main(…, SecretStore)` fine with an empty store (BUG-112).
-    if grant.contains_key("Secret") && signing_key.is_none() && named_secrets.is_empty() {
+    //
+    // (BUG-116) A bare `Secret` is the ROOT signing-key handle (handle 0); only
+    // `--signing-key` mints it. A `--secret name=value` populates the
+    // `SecretStore`, and named secrets follow the signing key in the handle
+    // table — so if we accepted a named secret here, the first one would land at
+    // handle 0 and `crypto.reveal(key)` on the bare `Secret` would read an
+    // arbitrary named value as the root key. A bare `Secret` therefore requires
+    // `--signing-key` specifically, independent of any named secrets.
+    if grant.contains_key("Secret") && signing_key.is_none() {
         return Err(
-            "this program needs a Secret, but the host granted none (provide `--signing-key <seed-file>`, `--secret name=value`, or `--secret-file name=path`)".to_string(),
+            "this program needs a root `Secret` (the signing key), but none was granted — provide `--signing-key <seed-file>` (a named `--secret`/`--secret-file` populates a `SecretStore`, not the bare `Secret`)".to_string(),
         );
     }
     // Quiet: the captured lines are printed once by the caller (and an
@@ -2561,9 +2569,13 @@ fn run_file_sandboxed(
     // whole-program union, so a verify-only program that imports `crypto` is not
     // forced to be handed a `Secret` it never binds.
     let grant = capabilities::run_grant(&linked);
-    if grant.contains_key("Secret") && signing_key.is_none() && named_secrets.is_empty() {
+    // (BUG-116) A bare `Secret` is the root signing-key handle; a named
+    // `--secret` populates a `SecretStore`, not the bare `Secret`. Requiring
+    // `--signing-key` specifically stops a named value from landing at handle 0
+    // and being revealed as the root key.
+    if grant.contains_key("Secret") && signing_key.is_none() {
         return Err(format!(
-            "`{path}` needs a Secret, but the host granted none (provide `--signing-key <seed-file>`, `--secret name=value`, or `--secret-file name=path`)"
+            "`{path}` needs a root `Secret` (the signing key), but none was granted — provide `--signing-key <seed-file>` (a named `--secret`/`--secret-file` populates a `SecretStore`, not the bare `Secret`)"
         ));
     }
     eprintln!(
