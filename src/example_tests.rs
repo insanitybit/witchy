@@ -1721,6 +1721,31 @@ fn main(console: Console):
                 "import json\n\nfn main(console: Console):\n    let left = json.JsonObject([(\"a\", json.JsonInt(1))])\n    let right = json.JsonObject([(\"b\", json.JsonInt(2)), (\"b\", json.JsonInt(3))])\n    console.print(json.encode(json.merge(left, right)))\n",
                 "json.merge: duplicate object key `b`",
             ),
+            (
+                "get",
+                "import json\n\nfn main(console: Console):\n    let j = json.JsonObject([(\"aud\", json.JsonString(\"good\")), (\"aud\", json.JsonString(\"evil\"))])\n    let _ = json.get(j, \"aud\")\n    console.print(\"bad\")\n",
+                "json.get: duplicate object key `aud`",
+            ),
+            (
+                "typed accessor",
+                "import json\n\nfn main(console: Console):\n    let j = json.JsonObject([(\"aud\", json.JsonString(\"good\")), (\"aud\", json.JsonString(\"evil\"))])\n    let _ = json.get_string(j, \"aud\")\n    console.print(\"bad\")\n",
+                "json.get: duplicate object key `aud`",
+            ),
+            (
+                "contains_key",
+                "import json\n\nfn main(console: Console):\n    let j = json.JsonObject([(\"kid\", json.JsonString(\"a\")), (\"kid\", json.JsonString(\"b\"))])\n    console.print(\"${json.contains_key(j, \"kid\")}\")\n",
+                "json.contains_key: duplicate object key `kid`",
+            ),
+            (
+                "as_object",
+                "import json\n\nfn main(console: Console):\n    let j = json.JsonObject([(\"kid\", json.JsonString(\"a\")), (\"kid\", json.JsonString(\"b\"))])\n    let _ = json.as_object(j)\n    console.print(\"bad\")\n",
+                "json.as_object: duplicate object key `kid`",
+            ),
+            (
+                "reflect",
+                "import json\nimport reflect\n\nfn main(console: Console):\n    let j = json.JsonObject([(\"kid\", json.JsonString(\"a\")), (\"kid\", json.JsonString(\"b\"))])\n    console.print(reflect.debug(j))\n",
+                "json.reflect: duplicate object key `kid`",
+            ),
         ];
         for (label, src, expected_msg) in cases {
             let (linked, wasm) = compile(src);

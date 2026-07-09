@@ -567,12 +567,16 @@ fn parse_object(cs: List(String), i: Int, depth: Int) -> Result((Json, Int), Dec
 // --- Accessors -----------------------------------------------------------
 //
 // Read data out of a decoded value. Each returns an Option, so a wrong shape is
-// `None` rather than a trap.
+// `None` rather than a trap. A JsonObject with duplicate names is not a valid
+// std JSON object; accessors fail loudly instead of choosing first- or
+// last-wins semantics.
 
 // Look up a key in a JSON object.
 pub fn get(j: Json, key: String) -> Option(Json):
     match j:
-        JsonObject(pairs) -> find_key(pairs, key)
+        JsonObject(pairs) ->
+            assert_unique_object_keys(pairs, "json.get")
+            find_key(pairs, key)
         _ -> None
 
 fn find_key(pairs: List((String, Json)), key: String) -> Option(Json):
@@ -585,7 +589,9 @@ fn find_key(pairs: List((String, Json)), key: String) -> Option(Json):
 // Whether a JSON object has `key` (false for non-objects).
 pub fn contains_key(j: Json, key: String) -> Bool:
     match j:
-        JsonObject(pairs) -> pairs_contains_key(pairs, key)
+        JsonObject(pairs) ->
+            assert_unique_object_keys(pairs, "json.contains_key")
+            pairs_contains_key(pairs, key)
         _ -> false
 
 fn pairs_contains_key(pairs: List((String, Json)), key: String) -> Bool:
@@ -654,7 +660,9 @@ pub fn as_array(j: Json) -> Option(List(Json)):
 // whose keys aren't known ahead of time.
 pub fn as_object(j: Json) -> Option(List((String, Json))):
     match j:
-        JsonObject(pairs) -> Some(pairs)
+        JsonObject(pairs) ->
+            assert_unique_object_keys(pairs, "json.as_object")
+            Some(pairs)
         _ -> None
 
 // Reconstruct a value from a `Json`. Reflection can read a value's structure but not
@@ -834,7 +842,9 @@ impl Reflect for Json:
             JsonFloat(f) -> MFloat(f)
             JsonString(s) -> MString(s)
             JsonArray(xs) -> MList(reflect_json_each(xs))
-            JsonObject(fields) -> MRecord("", reflect_json_fields(fields))
+            JsonObject(fields) ->
+                assert_unique_object_keys(fields, "json.reflect")
+                MRecord("", reflect_json_fields(fields))
 
 fn reflect_json_each(xs: List(Json)) -> List(Mirror):
     var out = []

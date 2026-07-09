@@ -1,29 +1,28 @@
 # BUG-262: JSON duplicate object names can still be constructed and re-encoded
 
 Severity: MED
-Status: PARTIAL
-Verified: 2026-07-08 PARTIAL fix on branch fix/json-unique-object-boundaries
+Status: FIXED
+Verified: 2026-07-09 SOURCE+TEST on branch fix/bug262-json-accessor-duplicates
 Area: `std/json`, JWT/OIDC claim handling, Coven request parsing, package record verification
 
 ## Current status
 
-Current `json.decode` now rejects duplicate object names while parsing, so the
-old default-decoder ambiguity for incoming wire JSON is fixed in the core parser.
-The release-facing emission/canonicalization gap is also fixed:
-`json.encode`, `json.encode_pretty`, `json.object_sorted`, and `json.merge`
-now fail loudly when handed duplicate object names. That means a hand-built
-ambiguous `JsonObject` can no longer be silently serialized, signed, or emitted
-through the stdlib JSON encoder.
+Current `json.decode` rejects duplicate object names while parsing, so the old
+default-decoder ambiguity for incoming wire JSON is fixed in the core parser.
+The release-facing emission/canonicalization boundaries also fail loudly when
+handed duplicate object names: `json.encode`, `json.encode_pretty`,
+`json.object_sorted`, and `json.merge`.
 
-The remaining model gap is the public object representation:
-`JsonObject(List((String, Json)))` is still directly constructible with repeated
-names, and direct accessors such as `json.get` still read the first matching
-pair from such a manually constructed value. Fully closing that requires either
-hiding constructors/sealing `Json`, or introducing an explicit checked object
-constructor and documenting `JsonObject` as low-level/internal once the language
-can enforce that boundary.
+The remaining first-wins read path is now fixed too: `json.get`, typed accessors
+that compose through it (`get_string`, `get_int`, etc.), `json.contains_key`,
+and `json.as_object` reject duplicate object names before exposing pairs. A
+hand-built ambiguous `JsonObject` can still exist as a raw ADT value, but no
+stdlib JSON accessor, encoder, merge, sorted-object builder, reflection path, or
+default decoder silently chooses an interpretation for it. Sealing or hiding
+the raw constructors would be a larger API design change, not the remaining
+BUG-262 runtime ambiguity.
 
-Regression for the fixed emission boundaries:
+Regression for the fixed boundaries:
 
 ```sh
 CARGO_TARGET_DIR=target-codex-json cargo test json_duplicate_object_keys_fail_at_encoding_boundaries_on_both_backends -- --nocapture
@@ -56,14 +55,16 @@ consumer sees a different one.
   deterministic `object_sorted`, and shallow object merge boundaries.
 - `std/json.witchy:514-516` now rejects duplicate keys during `json.decode`,
   using `pairs_contains_key` before pushing each parsed member.
-- `std/json.witchy:535-545` implements `json.get` by returning the first
-  matching pair.
+- `std/json.witchy` rejects duplicate keys in `json.get`,
+  `json.contains_key`, and `json.as_object`, so typed accessors and callers
+  such as JWT/Coven/PM fail closed instead of reading first-wins from a
+  hand-built duplicate object.
 - `std/json.witchy` says `merge(a, b)` gives `b` override semantics; duplicate
   names inside either input now fail instead of surviving into the merged object.
 - `std/json.witchy` documents `object_sorted` as deterministic for signing;
   duplicate names now fail before a supposedly canonical object is built.
-- `std/json.witchy:770-790` reflects a `JsonObject` back to fields by preserving
-  every pair.
+- `std/json.witchy` reflects a `JsonObject` back to fields by preserving every
+  pair only after the same uniqueness check.
 - `std/jwt.witchy:39-49`, `std/jwt.witchy:58-67`, and
   `std/jwt.witchy:146-160` validate `exp`, `aud`, `iss`, `nbf`, and JWK fields
   through the first-wins JSON accessors.
