@@ -4159,6 +4159,19 @@ impl Checker {
                     return Ok(t.clone());
                 }
                 let Ty::Named(tyname, args) = &resolved else {
+                    // (RFC-0072 phase 2) `?` is the renderer's spelling of "not
+                    // yet known" — for a user that almost always means an
+                    // unbounded generic parameter, so say that instead of
+                    // leaking the placeholder alone.
+                    if matches!(resolved, Ty::Var(_)) {
+                        return terr(format!(
+                            "field access `.{field}` requires a record, but this \
+                             value's type is not known here — if it is a generic \
+                             parameter, witchy has no field constraints on generics: \
+                             take the concrete record type (or pass the field's \
+                             value) instead"
+                        ));
+                    }
                     return terr(format!(
                         "field access `.{field}` requires a record, found `{resolved}`"
                     ));
@@ -5331,8 +5344,14 @@ impl Checker {
             for (pname, v) in typarams {
                 let resolved = self.resolve(&Ty::Var(v));
                 if !matches!(resolved, Ty::Var(_)) {
+                    // (RFC-0072 phase 2) Say what to DO, not just what's wrong:
+                    // the two real fixes are "you meant the concrete type" or
+                    // "the body over-constrained the parameter".
                     return terr(format!(
-                        "function `{}`: type parameter `{pname}` is used as `{resolved}`, so it isn't generic",
+                        "function `{}`: type parameter `{pname}` is used as `{resolved}`, \
+                         so it isn't generic — write `{resolved}` in the signature if that \
+                         is what you meant, or remove the body expression that pins \
+                         `{pname}` to `{resolved}`",
                         func.name
                     ));
                 }
