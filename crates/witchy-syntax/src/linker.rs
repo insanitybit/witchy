@@ -1712,6 +1712,10 @@ fn is_user_spellable_lowered_method_name(name: &str) -> bool {
     name.contains("__")
 }
 
+fn is_reserved_user_identifier(name: &str) -> bool {
+    is_compiler_private_name(name) || is_user_spellable_lowered_method_name(name)
+}
+
 fn is_generated_anon_type(name: &str, line: Option<u32>) -> bool {
     line == Some(u32::MAX)
         && name
@@ -1753,37 +1757,38 @@ fn check_reserved_source_names(modules: &[(String, Module)]) -> Result<(), LinkE
 fn check_reserved_item(module_name: &str, item: &Item, line: Option<u32>) -> Result<(), LinkError> {
     match item {
         Item::Function(f) => {
-            if is_compiler_private_name(&f.name) || is_user_spellable_lowered_method_name(&f.name) {
+            if is_reserved_user_identifier(&f.name) {
                 return reserved_name_error(module_name, "function", &f.name);
             }
             check_reserved_function(module_name, f)
         }
         Item::Type(t) => {
             let generated_anon = is_generated_anon_type(&t.name, line);
-            if is_compiler_private_name(&t.name) && !generated_anon {
+            if is_reserved_user_identifier(&t.name) && !generated_anon {
                 return reserved_name_error(module_name, "type", &t.name);
             }
             for param in &t.params {
                 check_reserved_binding(module_name, "type parameter", param)?;
             }
             for variant in &t.variants {
-                if is_compiler_private_name(&variant.name) && !generated_anon {
+                if is_reserved_user_identifier(&variant.name) && !generated_anon {
                     return reserved_name_error(module_name, "constructor", &variant.name);
+                }
+                for field_name in &variant.field_names {
+                    check_reserved_binding(module_name, "field", field_name)?;
                 }
             }
             Ok(())
         }
         Item::Trait(t) => {
-            if is_compiler_private_name(&t.name) {
+            if is_reserved_user_identifier(&t.name) {
                 return reserved_name_error(module_name, "trait", &t.name);
             }
             for param in &t.typarams {
                 check_reserved_binding(module_name, "type parameter", param)?;
             }
             for method in &t.methods {
-                if is_compiler_private_name(&method.name)
-                    || is_user_spellable_lowered_method_name(&method.name)
-                {
+                if is_reserved_user_identifier(&method.name) {
                     return reserved_name_error(module_name, "trait method", &method.name);
                 }
                 for p in &method.params {
@@ -1800,17 +1805,15 @@ fn check_reserved_item(module_name: &str, item: &Item, line: Option<u32>) -> Res
         }
         Item::Impl(im) => {
             if let Some(trait_name) = &im.trait_name {
-                if is_compiler_private_name(trait_name) {
+                if is_reserved_user_identifier(trait_name) {
                     return reserved_name_error(module_name, "trait", trait_name);
                 }
             }
-            if is_compiler_private_name(&im.type_name) {
+            if is_reserved_user_identifier(&im.type_name) {
                 return reserved_name_error(module_name, "type", &im.type_name);
             }
             for method in &im.methods {
-                if is_compiler_private_name(&method.name)
-                    || is_user_spellable_lowered_method_name(&method.name)
-                {
+                if is_reserved_user_identifier(&method.name) {
                     return reserved_name_error(module_name, "method", &method.name);
                 }
                 check_reserved_function(module_name, method)?;
@@ -1848,7 +1851,7 @@ fn check_reserved_param(module_name: &str, p: &Param) -> Result<(), LinkError> {
 }
 
 fn check_reserved_binding(module_name: &str, kind: &str, name: &str) -> Result<(), LinkError> {
-    if is_compiler_private_name(name) && !is_generated_local_name(name) {
+    if is_reserved_user_identifier(name) && !is_generated_local_name(name) {
         return reserved_name_error(module_name, kind, name);
     }
     Ok(())
@@ -1856,15 +1859,15 @@ fn check_reserved_binding(module_name: &str, kind: &str, name: &str) -> Result<(
 
 fn reserved_name_error(module_name: &str, kind: &str, name: &str) -> Result<(), LinkError> {
     lerr(format!(
-        "module `{module_name}` declares {kind} `{name}`, but identifiers beginning with `__` \
-         and lowered-method names containing `__` are reserved for the compiler"
+        "module `{module_name}` declares {kind} `{name}`, but identifiers containing `__` are \
+         reserved for the compiler"
     ))
 }
 
 fn check_reserved_type(module_name: &str, ty: &Type) -> Result<(), LinkError> {
     match ty {
         Type::Named(name, args) => {
-            if is_compiler_private_name(name) {
+            if is_reserved_user_identifier(name) {
                 return reserved_name_error(module_name, "type", name);
             }
             for arg in args {
@@ -1958,12 +1961,14 @@ fn check_reserved_expr(module_name: &str, expr: &Expr) -> Result<(), LinkError> 
         }
         Expr::RecordUpdate { name: _, base, fields } => {
             check_reserved_expr(module_name, base)?;
-            for (_, value) in fields {
+            for (field, value) in fields {
+                check_reserved_binding(module_name, "field", field)?;
                 check_reserved_expr(module_name, value)?;
             }
         }
         Expr::Record { fields, spread, .. } => {
-            for (_, value) in fields {
+            for (field, value) in fields {
+                check_reserved_binding(module_name, "field", field)?;
                 check_reserved_expr(module_name, value)?;
             }
             if let Some(spread) = spread {
@@ -2139,6 +2144,18 @@ mod tests {
         let err = link_main("type __Hidden:\n    Hidden(Int)\n").unwrap_err();
         assert!(err.contains("type `__Hidden`") && err.contains("reserved for the compiler"), "{err}");
 
+        let err = link_main("type Foo__Int:\n    Foo__Int(Int)\n").unwrap_err();
+        assert!(err.contains("type `Foo__Int`") && err.contains("reserved for the compiler"), "{err}");
+
+        let err = link_main("type Box(value__type):\n    Box(value__type)\n").unwrap_err();
+        assert!(
+            err.contains("type parameter `value__type`") && err.contains("reserved for the compiler"),
+            "{err}"
+        );
+
+        let err = link_main("type Record:\n    field__name: Int\n").unwrap_err();
+        assert!(err.contains("field `field__name`") && err.contains("reserved for the compiler"), "{err}");
+
         let err = link_main("fn Point__show(x: Int) -> String:\n    \"x\"\n").unwrap_err();
         assert!(
             err.contains("function `Point__show`") && err.contains("reserved for the compiler"),
@@ -2150,6 +2167,12 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("binding `__target`"), "{err}");
+
+        let err = link_main(
+            "fn main(console: Console):\n    let user__target = 1\n    print(console, __render(user__target))\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("binding `user__target`"), "{err}");
     }
 
     #[test]
