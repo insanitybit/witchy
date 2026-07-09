@@ -524,6 +524,30 @@
     }
 
     #[test]
+    fn method_receiver_type_survives_result_propagation() {
+        let src = r#"
+impl List(a):
+    fn contains(self, target: a) -> Bool:
+        true
+
+fn ids() -> Result(List(String), String):
+    Ok(["a"])
+
+fn has_id() -> Result(Bool, String):
+    let ids = ids()?
+    Ok(ids.contains("a"))
+
+fn optional_ids() -> Option(List(String)):
+    Some(["a"])
+
+fn has_optional_id() -> Option(Bool):
+    let ids = optional_ids()?
+    Some(ids.contains("a"))
+"#;
+        check_str(src).expect("the `?` payload keeps its concrete receiver type for method lookup");
+    }
+
+    #[test]
     fn duplicate_parameter_names_are_rejected() {
         let top = check_str("fn pick(x: Int, x: Int) -> Int:\n    x\n")
             .expect_err("duplicate function parameters must be rejected");

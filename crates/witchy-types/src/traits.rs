@@ -2570,8 +2570,9 @@ fn build_mutation_tables(
 /// declared return is answered directly, with its FULL encoding — where the
 /// head-only `fn_rets` loses the arguments (`string.split`'s `List(String)`
 /// became bare `"List"`). Also types `xs[i]` as the element of the base's list
-/// type (the subscript desugars to `list.at` only inside the checker, so this
-/// pass sees the `Index` node). A failed or partial unification yields `None` —
+/// type and `e?` as the payload of a declared Option/Result (those desugars are
+/// only understood inside the checker, while this pass must bootstrap method
+/// resolution before annotate). A failed or partial judgment yields `None` —
 /// absence only ever produces a loud type error downstream, never wrong code.
 fn declared_call_result(
     e: &Expr,
@@ -2581,6 +2582,18 @@ fn declared_call_result(
     match e {
         Expr::Index { base, .. } => match decode_scope_type(&type_of(base)?) {
             Type::Named(n, args) if n == "List" && args.len() == 1 => {
+                type_to_scope_name(&args[0])
+            }
+            _ => None,
+        },
+        // The empty-table quiet pass runs before annotate, so a `let x = e?`
+        // binding must recover the payload from the operand's declared type.
+        // This is the same structural judgment as the checker: `?` unwraps the
+        // first argument of Option/Result, and any mismatch still fails later.
+        Expr::Try(inner) => match decode_scope_type(&type_of(inner)?) {
+            Type::Named(n, args)
+                if matches!(n.as_str(), "Option" | "Result") && !args.is_empty() =>
+            {
                 type_to_scope_name(&args[0])
             }
             _ => None,

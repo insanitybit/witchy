@@ -1,6 +1,6 @@
 # BUG-564: method dispatch loses a list type after `Result` propagation
 
-- Status: OPEN
+- Status: FIXED
 - Severity: MEDIUM
 - Area: type checker / RFC-0046 trait and method dispatch
 - Found: 2026-07-09 during the RFC-0071 Coven modernization
@@ -55,3 +55,14 @@ RFC-0046 generic-chain class, not a missing `List.contains` implementation.
 - Method lookup uses the checker-owned type of a value bound from `e?`.
 - Coven's BUG-564 module-form exemptions return to method form.
 - A regression test covers a generic std method after `Result` propagation.
+
+## Resolution
+
+The empty-table quiet pass now derives the payload type of `Expr::Try` from the
+operand's declared `Option` or `Result` type. This seeds a `let x = e?` binding
+with the same concrete receiver type the checker later verifies, allowing the
+normal owner-method lookup to resolve without a per-method special case.
+
+Crate regressions cover both `Result(List(String), E)?` and
+`Option(List(String))?`, and Coven's maintainer checks use canonical
+`maintainers.contains(id)` spelling again.

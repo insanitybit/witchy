@@ -490,9 +490,7 @@ impl Coven:
             Ok(coven_json.str(claims, "sub"))
         else:
             let maintainers = self.maintainer_ids(ns, mfile)?
-            // idiom-exempt (BUG-564): method dispatch loses the List(String)
-            // type produced through `?`; the same std function works directly.
-            if list.contains(maintainers, id):
+            if maintainers.contains(id):
                 Ok(coven_json.str(claims, "sub"))
             else:
                 Err(CovenError(403, "`${coven_json.str(claims, "sub")}` is not a maintainer of namespace `${ns}`"))
@@ -517,7 +515,7 @@ impl Coven:
             require(self.store.exists(mfile), 403, "namespace `${ns}` has no registered maintainers; nothing may be yanked")?
             let id = "${coven_json.str(claims, "iss")}|${coven_json.str(claims, "sub")}"
             let maintainers = self.maintainer_ids(ns, mfile)?
-            require(list.contains(maintainers, id), 403, "`${coven_json.str(claims, "sub")}` is not a maintainer of namespace `${ns}`")?
+            require(maintainers.contains(id), 403, "`${coven_json.str(claims, "sub")}` is not a maintainer of namespace `${ns}`")?
             Ok(coven_json.str(claims, "sub"))
 
     fn maintainer_ids(self, ns: String, path: String) -> Result(List(String), CovenError):
