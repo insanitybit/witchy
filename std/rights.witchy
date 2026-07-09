@@ -18,6 +18,8 @@ pub fn covers(declared: String, demanded: String) -> Bool:
         true
     else if is_full(demanded):
         false
+    else if base_name(declared) == "Net":
+        net_covers(rights_of(declared), rights_of(demanded))
     else:
         subset(rights_of(demanded), rights_of(declared))
 
@@ -67,6 +69,48 @@ fn subset(xs: List(String), ys: List(String)) -> Bool:
         if !member(ys, x):
             all_in = false
     all_in
+
+fn net_covers(declared: List(String), demanded: List(String)) -> Bool:
+    // BUG-154 tracks rejecting unknown markers. Until that lands, keep unknown
+    // Net markers on the old flat path so axis expansion does not make them
+    // accidentally broad.
+    if list.length(net_unknowns(declared)) > 0 || list.length(net_unknowns(demanded)) > 0:
+        subset(demanded, declared)
+    else:
+        subset(net_verbs(demanded), net_verbs(declared)) && subset(net_transports(demanded), net_transports(declared))
+
+fn net_verbs(markers: List(String)) -> List(String):
+    var out = []
+    for marker in markers:
+        if is_net_verb(marker):
+            out = list.push(out, marker)
+    if list.length(out) == 0:
+        ["Connect", "Listen"]
+    else:
+        out
+
+fn net_transports(markers: List(String)) -> List(String):
+    var out = []
+    for marker in markers:
+        if is_net_transport(marker):
+            out = list.push(out, marker)
+    if list.length(out) == 0:
+        ["Tcp", "Udp", "Uds"]
+    else:
+        out
+
+fn net_unknowns(markers: List(String)) -> List(String):
+    var out = []
+    for marker in markers:
+        if !is_net_verb(marker) && !is_net_transport(marker):
+            out = list.push(out, marker)
+    out
+
+fn is_net_verb(marker: String) -> Bool:
+    marker == "Connect" || marker == "Listen"
+
+fn is_net_transport(marker: String) -> Bool:
+    marker == "Tcp" || marker == "Udp" || marker == "Uds"
 
 fn member(ys: List(String), x: String) -> Bool:
     var found = false

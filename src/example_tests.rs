@@ -2348,6 +2348,36 @@ fn main(console: Console):
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
+    /// BUG-381: `std/rights` must model `Net` as two independent axes:
+    /// verbs (`Connect`/`Listen`) and transports (`Tcp`/`Udp`/`Uds`). Omitting
+    /// an axis means "all values on that axis", matching the compiler's
+    /// capability analyzer and the package/Coven authority gates.
+    #[test]
+    fn rights_net_axis_coverage_agrees_on_both_backends() {
+        let src = r#"import rights
+
+fn mark(v: Bool) -> String:
+    if v:
+        "T"
+    else:
+        "F"
+
+fn main(console: Console):
+    console.print(mark(rights.covers("Net[Connect]", "Net[Connect, Tcp]")))
+    console.print(mark(rights.covers("Net[Tcp]", "Net[Connect, Tcp]")))
+    console.print(mark(rights.covers("Net[Connect, Tcp]", "Net[Connect]")))
+    console.print(mark(rights.covers("Net[Connect]", "Net[Listen]")))
+    console.print(mark(rights.covers("Net[Tcp]", "Net[Udp]")))
+    console.print(mark(rights.covers("Net", "Net[Connect]")))
+    console.print(mark(rights.covers("Net[Connect]", "Net")))
+    console.print(mark(rights.covers("Dir[Read]", "Dir[Read, Write]")))
+    console.print(mark(rights.covers("Dir[Read, Write]", "Dir[Read]")))
+"#;
+        let expected = ["T", "T", "F", "F", "F", "T", "F", "F", "T"];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+    }
+
     /// `Rand` follows the same receiver-method shape as other capabilities:
     /// `rand.hex(n)` lowers to `rand.hex(rand, n)`, without needing the ambiguous
     /// double-receiver spelling `rand.hex(rand, n)`.
@@ -9000,7 +9030,10 @@ fn yes(b: Bool) -> String:
 "#;
         assert_eq!(
             link_run(src),
-            vec!["y", "n", "y", "n", "y", "Net|Console"]
+            // `Net[Connect, Tcp]` does not cover `Net[Connect]`: the demanded
+            // type admits every Connect transport, while the declared type is
+            // Tcp-only.
+            vec!["y", "n", "n", "n", "y", "Net|Console"]
         );
     }
 

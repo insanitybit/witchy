@@ -3135,6 +3135,40 @@ fn witchy_pm_add_resolves_transitive_dependencies() {
     );
 }
 
+/// BUG-381: `std/rights` must interpret Net's verb and transport axes the same
+/// way the compiler renders footprints. A manifest that declares all Connect
+/// transports (`Net[Connect]`) covers source whose concrete footprint is the TCP
+/// subset (`Net[Connect, Tcp]`).
+#[test]
+fn witchy_pm_check_accepts_net_axis_omission() {
+    let work = unique("witchy-pm-rights-net");
+    std::fs::create_dir_all(work.join("src")).unwrap();
+    std::fs::write(
+        work.join("witchy.toml"),
+        "[rune]\nname = \"acme/net-axis\"\nversion = \"1.0.0\"\n\n[capabilities]\nruntime = [\"Net[Connect]\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        work.join("src/net_axis.witchy"),
+        "pub fn fetch(net: Net[Connect, Tcp]) -> Int:\n    1\n",
+    )
+    .unwrap();
+
+    let out = Command::new(BIN)
+        .args(["pm", "check", "."])
+        .current_dir(&work)
+        .output()
+        .expect("run pm check");
+    let _ = std::fs::remove_dir_all(&work);
+
+    assert!(
+        out.status.success() && stdout(&out).contains("OK: declared footprint admits the code"),
+        "pm check should accept Net[Connect] covering Net[Connect, Tcp]: out={} err={}",
+        stdout(&out),
+        stderr(&out)
+    );
+}
+
 /// The witchy pm's LOCAL lifecycle, end to end and offline: scaffold two runes
 /// (`new`), wire a path dependency, pin it (`lock`), confirm the pin (`verify`)
 /// and the authority baseline (`gate`) — then tamper with the dependency so it
