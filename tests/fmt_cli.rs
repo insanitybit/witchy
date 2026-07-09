@@ -61,3 +61,31 @@ fn fmt_formats_every_file_argument() {
         String::from_utf8_lossy(&check.stderr)
     );
 }
+
+#[test]
+fn fmt_refuses_to_delete_trailing_comments() {
+    let work = std::env::temp_dir().join(format!("witchy-fmt-comments-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+
+    let file = work.join("comments.witchy");
+    let src = "fn main(console: Console):\n    let x = 1 // keep me\n    print(console, __render(x))\n";
+    std::fs::write(&file, src).unwrap();
+
+    let out = Command::new(BIN)
+        .args(["fmt", file.to_str().unwrap()])
+        .output()
+        .expect("spawn witchy fmt");
+    assert!(
+        !out.status.success(),
+        "witchy fmt must refuse unsupported comments instead of deleting them"
+    );
+    let got = std::fs::read_to_string(&file).unwrap();
+    let _ = std::fs::remove_dir_all(&work);
+    assert_eq!(got, src, "failed fmt must leave the source untouched");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("cannot format"),
+        "stderr should explain refusal: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

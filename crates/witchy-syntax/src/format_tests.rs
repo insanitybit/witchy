@@ -162,6 +162,22 @@
     }
 
     #[test]
+    fn refuses_to_drop_comments_it_cannot_place() {
+        // BUG-331: trailing line comments and inline block comments used to be
+        // silently deleted because the formatter only re-emits own-line comments.
+        // Until it can preserve their exact placement, it must refuse to format.
+        let trailing = "fn main(console: Console):\n    let x = 1 // keep me\n    print(console, __render(x))\n";
+        assert!(reformat(trailing).is_none(), "trailing comment must not be dropped");
+
+        let inline = "fn main(console: Console):\n    let x = 1 /* keep me */ + 2\n    print(console, __render(x))\n";
+        assert!(reformat(inline).is_none(), "inline block comment must not be dropped");
+
+        let own_line = "fn main(console: Console):\n    let x = 1\n    /* keep me */\n    print(console, __render(x))\n";
+        let out = reformat(own_line).expect("own-line block comments still round-trip");
+        assert!(out.contains("/* keep me */"), "{out}");
+    }
+
+    #[test]
     fn preserves_blank_lines_between_statements() {
         // A single author blank line between statements survives (it used to be
         // stripped); multiple blanks collapse to one.

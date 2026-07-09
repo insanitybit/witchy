@@ -1929,6 +1929,9 @@ fn canon_expr(e: &mut Expr) {
 /// (idempotence). That guard makes the printer safe to apply in bulk: anything
 /// it cannot yet render faithfully is simply left untouched.
 pub fn reformat(src: &str) -> Option<String> {
+    if has_unpreservable_comments(src) {
+        return None;
+    }
     let original = crate::parser::parse_module(src).ok()?;
     LOCAL_FNS.with(|s| {
         let mut s = s.borrow_mut();
@@ -1975,6 +1978,87 @@ pub fn reformat(src: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn has_unpreservable_comments(src: &str) -> bool {
+    let chars: Vec<char> = src.chars().collect();
+    let mut i = 0;
+    let mut line_has_code = false;
+
+    while i < chars.len() {
+        match chars[i] {
+            '"' => {
+                line_has_code = true;
+                i += 1;
+                while i < chars.len() {
+                    match chars[i] {
+                        '\\' => i += 2,
+                        '"' => {
+                            i += 1;
+                            break;
+                        }
+                        '\n' => {
+                            line_has_code = false;
+                            i += 1;
+                        }
+                        _ => i += 1,
+                    }
+                }
+            }
+            '/' if chars.get(i + 1) == Some(&'/') => {
+                if line_has_code {
+                    return true;
+                }
+                i += 2;
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+            }
+            '/' if chars.get(i + 1) == Some(&'*') => {
+                let starts_after_code = line_has_code;
+                i += 2;
+                let mut depth = 1usize;
+                while i < chars.len() && depth > 0 {
+                    match chars[i] {
+                        '/' if chars.get(i + 1) == Some(&'*') => {
+                            depth += 1;
+                            i += 2;
+                        }
+                        '*' if chars.get(i + 1) == Some(&'/') => {
+                            depth -= 1;
+                            i += 2;
+                        }
+                        '\n' => {
+                            line_has_code = false;
+                            i += 1;
+                        }
+                        _ => i += 1,
+                    }
+                }
+                if starts_after_code {
+                    return true;
+                }
+                let mut j = i;
+                while j < chars.len() && chars[j] != '\n' {
+                    if !chars[j].is_whitespace() {
+                        return true;
+                    }
+                    j += 1;
+                }
+            }
+            '\n' => {
+                line_has_code = false;
+                i += 1;
+            }
+            c if c.is_whitespace() => i += 1,
+            _ => {
+                line_has_code = true;
+                i += 1;
+            }
+        }
+    }
+
+    false
 }
 
 
