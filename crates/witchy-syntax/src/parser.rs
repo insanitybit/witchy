@@ -1,6 +1,4 @@
 //! Recursive-descent parser with a Pratt expression core.
-//!
-//! Pipelines are desugared at parse time: `x |> f(a)` becomes `f(x, a)`.
 
 use std::fmt;
 // foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
@@ -1286,10 +1284,7 @@ impl Parser {
                 break;
             }
             let op_tok = self.advance();
-            if op_tok == Tok::Pipe {
-                let rhs = self.prefix()?;
-                lhs = desugar_pipe(lhs, rhs, self)?;
-            } else if op_tok == Tok::DotDot || op_tok == Tok::DotDotEq {
+            if op_tok == Tok::DotDot || op_tok == Tok::DotDotEq {
                 let rhs = self.expr(r_bp)?;
                 lhs = Expr::Range {
                     lo: Box::new(lhs),
@@ -2295,9 +2290,8 @@ impl Parser {
 fn infix_bp(t: &Tok) -> Option<(u8, u8)> {
     use Tok::*;
     Some(match t {
-        Pipe => (1, 2),
-        // `a..b` (half-open) and `a..=b` (inclusive) ranges bind loosest after
-        // pipe, so `1..n+1` is `1..(n+1)` and arbitrary Int expressions work.
+        // `a..b` (half-open) and `a..=b` (inclusive) ranges bind loosest, so
+        // `1..n+1` is `1..(n+1)` and arbitrary Int expressions work.
         DotDot | DotDotEq => (2, 3),
         // `??` (RFC-0048) is the loosest binary operator before ranges, and
         // RIGHT-associative (r_bp < l_bp): `a ?? b ?? c` is `a ?? (b ?? c)`,
@@ -2817,24 +2811,6 @@ fn lower_sugar_expr(e: &mut Expr) {
     }
 }
 
-/// `lhs |> rhs` threads `lhs` in as the first argument of `rhs`.
-fn desugar_pipe(lhs: Expr, rhs: Expr, p: &Parser) -> Result<Expr, ParseError> {
-    match rhs {
-        Expr::Call { name, mut args } => {
-            args.insert(0, lhs);
-            Ok(Expr::Call { name, args })
-        }
-        Expr::Var(name) => Ok(Expr::Call {
-            name,
-            args: vec![lhs],
-        }),
-        Expr::Ctor { name, mut args } => {
-            args.insert(0, lhs);
-            Ok(Expr::Ctor { name, args })
-        }
-        _ => Err(p.error("right-hand side of `|>` must be a function or constructor")),
-    }
-}
 
 #[cfg(test)]
 #[path = "parser_tests.rs"]

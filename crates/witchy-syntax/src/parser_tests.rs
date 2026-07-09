@@ -379,12 +379,11 @@ fn f():
     }
 
     #[test]
-    fn desugars_pipeline_into_first_argument() {
+    fn parses_nested_calls_as_arguments() {
         let stmts = fn_body(r#"
 fn f(x: Int):
     add(double(x), 1)
 "#);
-        // x |> double() |> add(1)  ==  add(double(x), 1)
         assert_eq!(
             stmts,
             vec![Stmt::Expr(Expr::Call {
