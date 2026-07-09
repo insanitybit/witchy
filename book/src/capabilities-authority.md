@@ -29,8 +29,8 @@ the ones the host mints and hands to `main`:
 ```witchy
 fn main(console: Console, clock: Clock):
     // Milliseconds since the unix epoch; needs the Clock.
-    let t = now(clock)
-    print(console, if t > 0: "the clock is ticking" else: "epoch")
+    let t = clock.now()
+    console.print(if t > 0: "the clock is ticking" else: "epoch")
 ```
 
 ```text
@@ -54,7 +54,7 @@ fn compute(x: Int) -> Int:
     x * x + 1
 
 fn log(console: Console, label: String, value: Int):
-    print(console, label + ": " + "${value}")
+    console.print(label + ": " + "${value}")
 
 fn main(console: Console):
     let result = compute(6)

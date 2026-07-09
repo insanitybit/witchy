@@ -1556,6 +1556,56 @@ fn main(console: Console, f: File[Read]):
     }
 
     #[test]
+    fn capability_methods_resolve_on_narrowed_handles() {
+        let narrowed_dir = r#"
+fn main(console: Console, dir: Dir):
+    let ro = dir as Dir[Read]
+    console.print(ro.read("config.txt"))
+"#;
+        check_str(narrowed_dir).expect("Dir[Read] method resolves after explicit narrowing");
+
+        let file_leaf = r#"
+fn main(console: Console, dir: Dir):
+    let ro = dir as Dir[Read]
+    let cfg = ro.read_file("config.txt")
+    console.print(cfg.read())
+"#;
+        check_str(file_leaf).expect("File[Read] method resolves after navigation");
+
+        let narrowed_param = r#"
+fn load(dir: Dir[Read], name: String) -> String:
+    dir.read(name)
+
+fn main(console: Console, dir: Dir):
+    console.print(load(dir, "notes.txt"))
+"#;
+        check_str(narrowed_param).expect("capability methods resolve on narrowed params");
+
+        let branded_capability = r#"
+capability ConfigDir from Dir[Read]
+
+fn load(c: ConfigDir, name: String) -> String:
+    match c:
+        ConfigDir(dir) -> dir.read(name)
+"#;
+        check_str(branded_capability).expect("capability methods resolve on branded payloads");
+
+        let option_capability = r#"
+type Option(a):
+    Some(a)
+    None
+
+fn record(out: Option(Dir[Write]), name: String, line: String) -> Bool:
+    match out:
+        Some(d) ->
+            d.append(name, line)
+            true
+        None -> false
+"#;
+        check_str(option_capability).expect("capability methods resolve on generic pattern payloads");
+    }
+
+    #[test]
     fn capability_methods_prefer_host_ops_over_std_owner_modules() {
         use witchy_syntax::ast::{Expr, Item, Stmt};
 

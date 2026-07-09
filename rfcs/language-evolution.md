@@ -159,7 +159,7 @@ type Point derive(Show, Eq, Ord):
     y: Int
 
 fn main(console: Console):
-    print(console, "${Point(1, 2)}")
+    console.print("${Point(1, 2)}")
 ```
 
 expands (deterministically, in the compiler, no user code execution) to the

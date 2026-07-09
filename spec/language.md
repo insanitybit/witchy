@@ -46,9 +46,9 @@ fn classify(n: Int) -> String:
         _ -> if n > 0: "positive" else: "negative"
 
 fn main(console: Console):
-    print(console, classify(0))
-    print(console, classify(7))
-    print(console, classify(-3))
+    console.print(classify(0))
+    console.print(classify(7))
+    console.print(classify(-3))
 ```
 
 **Comments.** `//` to end of line; `/* ... */` blocks. `witchy fmt` preserves
@@ -75,11 +75,11 @@ types and constructors. A lowercase, argument-less name in type position
 fn main(console: Console):
     let a = 6
     let b = 7
-    print(console, "sum: ${a + b}")          // string interpolation
-    print(console, "${1500ms < 2s}")         // durations are a distinct type
-    let pair = (1, "a")                       // a tuple
+    console.print("sum: ${a + b}") // string interpolation
+    console.print("${1500ms < 2s}") // durations are a distinct type
+    let pair = (1, "a") // a tuple
     let (n, s) = pair
-    print(console, "${n}${s}")
+    console.print("${n}${s}")
 ```
 
 **Rendering values to strings.** Reach for interpolation first: `"${x}"` renders
@@ -94,7 +94,7 @@ produce `1m30s`. Tuple `Show`/`Reflect` protocol impls are provided through
 arity 8; larger tuples still exist as structural values, but should be modeled as
 records or lists when they need protocol-backed display or reflection. You rarely
 need to call a conversion by hand. To print one value, use
-`print(console, "${x}")`, or `show.say(console, x)` for any `Show` value (the
+`console.print("${x}")`, or `show.say(console, x)` for any `Show` value (the
 built-in scalars and your own types). The **`Show` trait**
 (`fn show(self) -> String`) is the trait-method route: implement it to give a
 type a custom rendering.
@@ -125,13 +125,13 @@ type Account:
     balance: Int
 
 fn main(console: Console):
-    print(console, "${Red == Red}")
+    console.print("${Red == Red}")
     let acc = Account("ada", 100)
     let named = Account(name: "bob", balance: 5)
-    print(console, acc.name)
+    console.print(acc.name)
     let richer = Account(balance: acc.balance + 1, ..acc)
-    print(console, "${richer.balance}")
-    print(console, "${named.balance}")
+    console.print("${richer.balance}")
+    console.print("${named.balance}")
 ```
 
 Records construct positionally (`Account("ada", 100)`) or by name; field access
@@ -163,11 +163,16 @@ sealed type Percent:
 // The one choke point: every Percent in the program came through here,
 // so `0 <= value <= 100` holds everywhere without re-checking.
 pub fn percent(n: Int) -> Percent:
-    if n < 0: Percent(0) else if n > 100: Percent(100) else: Percent(n)
+    if n < 0:
+        Percent(0)
+    else if n > 100:
+        Percent(100)
+    else:
+        Percent(n)
 
 fn main(console: Console):
     let p = percent(140)
-    print(console, "${p.value}")
+    console.print("${p.value}")
 ```
 
 This is the same mechanism that makes capabilities unforgeable (only the host
@@ -188,8 +193,8 @@ fn main(console: Console):
     var count = 0
     count = count + 1
     let (lo, hi) = bounds([3, 5, 9])
-    print(console, "${x + count}")
-    print(console, "${lo}..${hi}")
+    console.print("${x + count}")
+    console.print("${lo}..${hi}")
 ```
 
 `let x: Type = e` ascribes the binding: the annotation is a unification
@@ -223,9 +228,9 @@ fn main(console: Console):
     xs[0] = 9
     xs[1] += 5
     var acct = Account("ada", 100)
-    acct.balance = acct.balance + 50
-    print(console, "${xs}")
-    print(console, "${acct.balance}")
+    acct.balance += 50
+    console.print("${xs}")
+    console.print("${acct.balance}")
 ```
 
 A **method call used as a statement** on a `var` place belongs to the same
@@ -248,8 +253,8 @@ fn main(console: Console):
     var xs = []
     xs.push(1)
     xs.push(2)
-    let _ = xs.length()                  // explicit discard — `length` is not a mutator
-    print(console, "${xs}")              // [1, 2]
+    let _ = xs.length() // explicit discard — `length` is not a mutator
+    console.print("${xs}") // [1, 2]
 ```
 
 ## 4. Expressions and operators
@@ -279,13 +284,13 @@ fn double(n: Int) -> Int:
     n * 2
 
 fn main(console: Console):
-    print(console, "${7 % 3}")
-    print(console, "a" + "b")
-    print(console, "${[1, 2] == [1, 2]}")
-    print(console, "${2.5 < 3.0}")
+    console.print("${7 % 3}")
+    console.print("a" + "b")
+    console.print("${[1, 2] == [1, 2]}")
+    console.print("${2.5 < 3.0}")
     let xs = [10, 20, 30]
-    print(console, "${xs[1]}")
-    print(console, "${list.head(xs) ?? 0}")
+    console.print("${xs[1]}")
+    console.print("${list.head(xs) ?? 0}")
 ```
 
 Float notes: `0.0 / 0.0` is NaN; `1.0 / 0.0` is infinity; NaN `==` anything is
@@ -299,11 +304,11 @@ junk or overflow — `string.parse_int` is the `Option`-returning version), `mat
 fn main(console: Console):
     let n = 5
     if n > 10:
-        print(console, "big")
+        console.print("big")
     else if n > 3:
-        print(console, "medium")
+        console.print("medium")
     else:
-        print(console, "small")
+        console.print("small")
 
     var total = 0
     for x in [1, 2, 3, 4]:
@@ -312,12 +317,12 @@ fn main(console: Console):
         if x > 3:
             break
         total = total + x
-    print(console, "${total}")
+    console.print("${total}")
 
     var i = 0
     while i < 3:
         i = i + 1
-    print(console, "${i}")
+    console.print("${i}")
 ```
 
 `for var x in xs:` binds each element of a list variable **mutably** and writes it
@@ -333,7 +338,7 @@ fn main(console: Console):
     var xs = [1, 2, 3, 4]
     for var x in xs:
         x = x * 10
-    print(console, "${xs}")              // [10, 20, 30, 40]
+    console.print("${xs}") // [10, 20, 30, 40]
 ```
 
 `if let PAT = e:` binds and runs only on a match (with an optional `else`);
@@ -369,9 +374,9 @@ fn first_even(xs: List(Int)) -> Option(Int):
 
 fn main(console: Console):
     if let Some(v) = first_even([1, 3, 4, 5]):
-        print(console, "first even: ${v}")
+        console.print("first even: ${v}")
     else:
-        print(console, "none")
+        console.print("none")
 ```
 
 ## 6. Pattern matching
@@ -445,15 +450,15 @@ fn head(xs: List(Int)) -> String:
         [first, ..rest] -> "first " + "${first}" + ", " + "${list.length(rest)}" + " more"
 
 fn main(console: Console):
-    print(console, describe(Circle(2)))
-    print(console, size(5))
-    print(console, size(50))
-    print(console, head([10, 20, 30]))
+    console.print(describe(Circle(2)))
+    console.print(size(5))
+    console.print(size(50))
+    console.print(head([10, 20, 30]))
     // Irrefutable destructuring shares the same grammar:
     let ((a, b), c) = ((1, 2), 3)
-    print(console, "${a} ${b} ${c}")
-    for (k, v) in [(1, 2), (3, 4)]:
-        print(console, "${k}=${v}")
+    console.print("${a} ${b} ${c}")
+    for k, v in [(1, 2), (3, 4)]:
+        console.print("${k}=${v}")
 ```
 
 ## 7. Functions
@@ -469,8 +474,8 @@ pub fn area(s: Shape) -> Int:
         Square(w) -> w * w
 
 fn main(console: Console):
-    print(console, "${area(Circle(2))}")
-    print(console, "${area(Square(3))}")
+    console.print("${area(Circle(2))}")
+    console.print("${area(Square(3))}")
 ```
 
 Parameter annotations are required; the return type may be inferred for
@@ -494,7 +499,7 @@ fn bump(var n: Int):
 fn main(console: Console):
     var counter = 41
     bump(counter)
-    print(console, "${counter}")
+    console.print("${counter}")
 ```
 
 `bump` above is a **procedure channel**: a `var` parameter and a `Nil` return, so
@@ -536,7 +541,7 @@ fn adder(by: Int) -> fn(Int) -> Int:
 
 fn main(console: Console):
     let add10 = adder(10)
-    print(console, "${apply(add10, 5)}")
+    console.print("${apply(add10, 5)}")
 ```
 
 **Keyword arguments and default parameters.** A direct call to a free or
@@ -559,9 +564,9 @@ fn connect(host: String, port: Int = 443, tls: Bool = true) -> String:
     "${scheme}://${host}:${port}"
 
 fn main(console: Console):
-    print(console, connect(port: 8080, host: "localhost", tls: false))
-    print(console, connect("example.com"))
-    print(console, connect("db.internal", port: 5432))
+    console.print(connect(port: 8080, host: "localhost", tls: false))
+    console.print(connect("example.com"))
+    console.print(connect("db.internal", port: 5432))
 ```
 
 **Where a mutation reaches.** A `var` is a *local* mutable binding, nothing more.
@@ -630,8 +635,8 @@ fn largest(xs: List(a)) -> a where a: Ord:
     best
 
 fn main(console: Console):
-    print(console, "${largest([3, 9, 2, 7])}")
-    print(console, largest(["apple", "pear", "fig"]))
+    console.print("${largest([3, 9, 2, 7])}")
+    console.print(largest(["apple", "pear", "fig"]))
 ```
 
 Generic functions are checked once and monomorphized per concrete use for the
@@ -655,7 +660,7 @@ impl Greet for Dog:
         "woof"
 
 fn main(console: Console):
-    print(console, Dog.greet())
+    console.print(Dog.greet())
 ```
 
 The std comparison hierarchy `PartialEq` → `Eq` → `PartialOrd` → `Ord` (in
@@ -679,7 +684,7 @@ impl Loud for Dog:
         "WOOF"
 
 fn announce(console: Console, x: impl Loud):    // == `x: a` ... `where a: Loud`
-    print(console, shout(x))
+    console.print(shout(x))
 
 fn main(console: Console):
     announce(console, Dog)
@@ -719,7 +724,7 @@ type Point derive(Show, PartialEq, Eq, PartialOrd, Ord):
 
 fn main(console: Console):
     show.say(console, Point(1, 2))
-    print(console, "${Point(1, 2) < Point(1, 3)}")
+    console.print("${Point(1, 2) < Point(1, 3)}")
 ```
 
 `Show` renders a value structurally (the same form `${...}` uses); `PartialEq`/`Eq`
@@ -742,10 +747,11 @@ a type or constructing `Json` by hand:
 
 ```witchy
 import json
+import reflect
 
 fn main(console: Console):
     let files = [("a.txt", "hi")]
-    print(console, json.stringify(.{files: files}))
+    console.print(json.stringify(.{files: files}))
 ```
 
 ### Conversion: `From` and `Into`
@@ -764,8 +770,8 @@ impl From(Int) for Celsius:
         Celsius(value)
 
 fn main(console: Console):
-    let c: Celsius = (5).into()
-    print(console, "${c.deg}")
+    let c: Celsius = 5.into()
+    console.print("${c.deg}")
 ```
 
 A single blanket impl, `impl Into(b) for a where b: From(a)`, supplies the `into` for
@@ -795,7 +801,7 @@ comptime:
         i = i + 1
 
 fn main(console: Console):
-    print(console, "${lucky_0()} ${lucky_1()} ${lucky_2()}")
+    console.print("${lucky_0()} ${lucky_1()} ${lucky_2()}")
 ```
 
 ### Tagged literals — compile-time `tag"…"`
@@ -838,7 +844,7 @@ fn greet(parts: List(String), holes: List(String)) -> String:
 
 fn main(console: Console):
     let name = "witch"
-    print(console, greet"hi ${name}")
+    console.print(greet"hi ${name}")
 ```
 
 ## 9. Errors, `Option`/`Result`, and failure
@@ -864,8 +870,8 @@ fn show(r: Result(Int, String)) -> String:
         Err(e) -> "err: " + e
 
 fn main(console: Console):
-    print(console, show(ratio(100, 5, 2)))
-    print(console, show(ratio(100, 0, 2)))
+    console.print(show(ratio(100, 5, 2)))
+    console.print(show(ratio(100, 0, 2)))
 ```
 
 Bare `e?` propagates `Option(T)` or `Result(T, e)` unchanged. The contextual
@@ -886,13 +892,13 @@ fn checked_div(a: Int, b: Int) -> Result(Int, String):
         Ok(a / b)
 
 fn ratio(a: Int, b: Int) -> Result(Int, String):
-    let q = checked_div(a, b)? "computing ${a}/${b}"
+    let q = checked_div(a, b) ? "computing ${a}/${b}"
     Ok(q + 1)
 
 fn main(console: Console):
     match ratio(10, 0):
-        Ok(v) -> print(console, "${v}")
-        Err(e) -> print(console, e)
+        Ok(v) -> console.print("${v}")
+        Err(e) -> console.print(e)
 ```
 
 Unexpected failure is **loud on every backend**: out-of-bounds indexing,
@@ -910,8 +916,8 @@ lookups (`dict.get`, `list.head`, …).
 ```witchy
 fn main(console: Console):
     let ages = dict.new().insert("ada", 36)
-    print(console, "${dict.get(ages, "ada") ?? 0}")
-    print(console, "${dict.get(ages, "bob") ?? 0}")
+    console.print("${dict.get(ages, "ada") ?? 0}")
+    console.print("${dict.get(ages, "bob") ?? 0}")
 ```
 
 ## 10. Comprehensions
@@ -927,9 +933,9 @@ fn show(xs: List(Int)) -> String:
 
 fn main(console: Console):
     let squares = [n * n for n in 1..6]
-    print(console, show(squares))
+    console.print(show(squares))
     let evens = [n for n in 1..11 if n % 2 == 0]
-    print(console, show(evens))
+    console.print(show(evens))
 ```
 
 ## 11. Generators
@@ -954,7 +960,7 @@ gen fn fibs() -> Iter(Int):
 
 fn main(console: Console):
     let first8 = iter.collect(iter.take(fibs(), 8))
-    print(console, list.join(list.map(first8, fn(n: Int): "${n}"), " "))
+    console.print(list.join(list.map(first8, fn(n: Int): "${n}"), " "))
 
 // 0 1 1 2 3 5 8 13
 ```
@@ -967,7 +973,7 @@ import string
 
 fn main(console: Console):
     let shouted = ["a", "b", "c"].map(fn(s: String): s.to_upper())
-    print(console, shouted.join("-"))   // A-B-C
+    console.print(shouted.join("-")) // A-B-C
 ```
 
 The core data modules — `list`, `string`, `dict`, `math`, `option`,
@@ -1002,7 +1008,7 @@ and may return `Nil` or `Int` (the process exit code):
 
 ```witchy
 fn main(console: Console, dir: Dir[Read], args: List(String)) -> Int:
-    print(console, "running with ${args.length()} arg(s)")
+    console.print("running with ${args.length()} arg(s)")
     0
 ```
 
@@ -1118,7 +1124,7 @@ backends, the address analog of `dir.subtree` for `Dir`.
 fn main(console: Console, net: Net):
     let db = net.only(Net.tcp("10.0.0.5", 6379))
     let safe = net.deny(Net.cidr_any("10.0.0.0/8")).only(Net.tcp("192.168.1.1", 80))
-    print(console, "net confined")
+    console.print("net confined")
 ```
 
 The policy constructors are `Net.tcp(host, port)`, `Net.any_port(host)`,
@@ -1128,7 +1134,7 @@ metadata IP, CGNAT) for the one-line SSRF/rebinding guard
 `net.deny(Net.private())`. A CIDR/IP policy is
 checked against the *resolved* IP, so it is rebinding-safe. TLS is not a right or a
 policy scheme but a connect-time `tls:` prefix on the address you dial
-(`connect(net, "tls:host:443")`); see
+(`net.connect("tls:host:443")`); see
 [0003-network-address-scoping.md](../rfcs/0003-network-address-scoping.md) and
 [0009-https-tls-client.md](../rfcs/0009-https-tls-client.md).
 
@@ -1149,7 +1155,6 @@ memory, so there are no locks or data races, and the round-robin schedule is
 deterministic — identical output on the interpreter and the compiled WebAssembly.
 
 ```witchy
-import chan
 from chan import Sender
 
 async fn producer(tx: Sender(Int)) -> Nil:
@@ -1159,7 +1164,7 @@ async fn producer(tx: Sender(Int)) -> Nil:
 async fn main(console: Console):
     let (tx, rx) = chan.channel(4).await
     chan.spawn(producer(tx)).await
-    chan.consume(rx, fn(n): chan.done(print(console, "got ${n}"))).await
+    chan.consume(rx, fn(n): chan.done(console.print("got ${n}"))).await
 ```
 
 `chan.channel(cap)` is a bounded channel — the sender blocks when it is full

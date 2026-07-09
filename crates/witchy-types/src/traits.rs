@@ -1898,7 +1898,12 @@ impl Ctx<'_> {
             Expr::WhileLet { pattern, scrutinee, body } => {
                 self.rewrite_expr(scrutinee, scope);
                 let mut s = scope.clone();
-                bind_ctor_pattern(pattern, self.ctor_fields, &HashMap::new(), &mut s);
+                let subst = pattern_subst_from_scrutinee(
+                    pattern,
+                    self.ctor_infos,
+                    self.type_name(scrutinee, scope).as_deref(),
+                );
+                bind_ctor_pattern(pattern, self.ctor_fields, &subst, &mut s);
                 // A loop evaluates to Nil, so its body's tail value is discarded.
                 self.rewrite_block(body, &mut s, false);
             }
@@ -1941,9 +1946,15 @@ impl Ctx<'_> {
             }
             Expr::Match { scrutinee, arms } => {
                 self.rewrite_expr(scrutinee, scope);
+                let scrutinee_ty = self.type_name(scrutinee, scope);
                 for arm in arms.iter_mut() {
                     let mut s = scope.clone();
-                    bind_ctor_pattern(&arm.pattern, self.ctor_fields, &HashMap::new(), &mut s);
+                    let subst = pattern_subst_from_scrutinee(
+                        &arm.pattern,
+                        self.ctor_infos,
+                        scrutinee_ty.as_deref(),
+                    );
+                    bind_ctor_pattern(&arm.pattern, self.ctor_fields, &subst, &mut s);
                     if let Some(g) = &mut arm.guard {
                         self.rewrite_expr(g, &mut s);
                     }
@@ -2008,6 +2019,10 @@ fn head_type_name(
         ),
         Expr::Call { name, .. } => fn_rets.get(name).cloned(),
         Expr::RecordUpdate { base, .. } => head_type_name(base, scope, ctor_results, ctor_infos, fn_rets, record_fields),
+        // An explicit ascription is the user's type claim and the checker will
+        // verify it later. The pre-check method rewriter needs it for capability
+        // methods on narrowed handles (`let ro = dir as Dir[Read]; ro.read(...)`).
+        Expr::As { ty, .. } => type_to_scope_name(ty),
         // `!` yields Bool; `-`/`~` preserve the operand's type (so `-5` is Int).
         Expr::Unary { op, expr } => match op {
             UnOp::Not => Some("Bool".into()),
@@ -2646,20 +2661,25 @@ fn build_ctor_fields(items: &[Item]) -> HashMap<String, Vec<Type>> {
 
 /// The scope name for a field type that is a *concrete* (non-type-variable)
 /// type. Witchy spells type variables in lowercase and concrete types
-/// capitalized, so a capitalized, argument-free head name is concrete (`Int`,
-/// `Coord`). Generic fields (a lowercase var like `a`, or a parameterized type
-/// whose arguments we don't track here) return `None`, so their bound variable
-/// stays untyped rather than risk a wrong dispatch.
+/// capitalized, so a capitalized head name is concrete (`Int`, `Coord`,
+/// `Dir[Read]`) when all of its arguments are concrete too. Generic fields
+/// (a lowercase var like `a`, or a parameterized type carrying one) return
+/// `None`, so their bound variable stays untyped rather than risk a wrong dispatch.
 fn concrete_scope_name(t: &Type) -> Option<String> {
     match t {
         // A concrete nominal type: an uppercase head (`Coord`), or a module-
         // qualified name (`geometry.Coord`) whose lowercase first segment is the
         // module, not a type variable (RFC-0042).
         Type::Named(n, args)
-            if args.is_empty()
-                && (n.chars().next().is_some_and(|c| c.is_uppercase()) || n.contains('.')) =>
+            if n.chars().next().is_some_and(|c| c.is_uppercase()) || n.contains('.') =>
         {
-            Some(n.clone())
+            args.iter().map(concrete_scope_name).collect::<Option<Vec<_>>>()?;
+            type_to_scope_name(t)
+        }
+        Type::Qualified(_, inner) => concrete_scope_name(inner),
+        Type::Tuple(items) => {
+            items.iter().map(concrete_scope_name).collect::<Option<Vec<_>>>()?;
+            type_to_scope_name(t)
         }
         _ => None,
     }
@@ -2692,6 +2712,33 @@ fn bind_ctor_pattern(
             }
         }
     }
+}
+
+fn pattern_subst_from_scrutinee(
+    pat: &Pattern,
+    ctor_infos: &HashMap<String, CtorInfo>,
+    scrutinee_scope: Option<&str>,
+) -> HashMap<String, String> {
+    let mut subst = HashMap::new();
+    let (Pattern::Ctor { name, .. }, Some(scrutinee_scope)) = (pat, scrutinee_scope) else {
+        return subst;
+    };
+    let Some(info) = ctor_infos.get(name) else {
+        return subst;
+    };
+    if info.params.is_empty() {
+        return subst;
+    }
+    let pattern = Type::Named(
+        info.owner.clone(),
+        info.params
+            .iter()
+            .map(|p| Type::Named(p.clone(), Vec::new()))
+            .collect(),
+    );
+    let concrete = decode_scope_type(scrutinee_scope);
+    let _ = bind_type_vars(&pattern, &concrete, &mut subst);
+    subst
 }
 
 fn pattern_field_scope_name(fty: &Type, subst: &HashMap<String, String>) -> Option<String> {
@@ -4293,7 +4340,13 @@ impl Mono<'_> {
             Expr::WhileLet { pattern, scrutinee, body } => {
                 self.walk_expr(scrutinee, scope);
                 let mut s = scope.clone();
-                bind_ctor_pattern(pattern, self.ctor_fields, &self.cur_subst, &mut s);
+                let mut subst = self.cur_subst.clone();
+                subst.extend(pattern_subst_from_scrutinee(
+                    pattern,
+                    self.ctor_infos,
+                    self.type_name_subst(scrutinee, scope).as_deref(),
+                ));
+                bind_ctor_pattern(pattern, self.ctor_fields, &subst, &mut s);
                 self.walk_block(body, &mut s);
             }
             Expr::If {
@@ -4319,9 +4372,16 @@ impl Mono<'_> {
             }
             Expr::Match { scrutinee, arms } => {
                 self.walk_expr(scrutinee, scope);
+                let scrutinee_ty = self.type_name_subst(scrutinee, scope);
                 for arm in arms.iter_mut() {
                     let mut s = scope.clone();
-                    bind_ctor_pattern(&arm.pattern, self.ctor_fields, &self.cur_subst, &mut s);
+                    let mut subst = self.cur_subst.clone();
+                    subst.extend(pattern_subst_from_scrutinee(
+                        &arm.pattern,
+                        self.ctor_infos,
+                        scrutinee_ty.as_deref(),
+                    ));
+                    bind_ctor_pattern(&arm.pattern, self.ctor_fields, &subst, &mut s);
                     if let Some(g) = &mut arm.guard {
                         self.walk_expr(g, &mut s);
                     }

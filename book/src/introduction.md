@@ -14,11 +14,11 @@ When writing or executing a witchy program you are always able to reason about w
 // This function can read a file. You can see that. It cannot write, connect to
 // the network, or read the clock — there is no parameter that would let it.
 fn first_line(dir: Dir[Read], name: String) -> String:
-    let contents = read(dir, name)
+    let contents = dir.read(name)
     string.split_once(contents, "\n").0
 
 fn main(console: Console, dir: Dir[Read]):
-    print(console, first_line(dir, "notes.txt"))
+    console.print(first_line(dir, "notes.txt"))
 ```
 
 This program can write to the console and read whatever directory was provided to it.
@@ -53,25 +53,27 @@ request/reply shape you'd normally reach for a socket, here in pure, determinist
 witchy that needs nothing but `Console`.
 
 ```witchy
-import chan
-from chan import Sender, Receiver
 import json
-
 // This program's channels all carry one message type; a program may also use
 // channels of several different types.
+
+// A tiny stateful server: it folds incoming readings into a running
+// (count, total) and answers a Report by sending the totals back.
+import reflect
+from chan import Sender, Receiver
+
 type Msg:
     Reading(Int)
     Report(Sender(Msg))
     Summary(Int, Int)
 
-// A tiny stateful server: it folds incoming readings into a running
-// (count, total) and answers a Report by sending the totals back.
 async fn server(inbox: Receiver(Msg)) -> Nil:
     chan.serve(inbox, (0, 0), fn(state: (Int, Int), m):
         match m:
             Reading(v) -> chan.done((state.0 + 1, state.1 + v))
             Report(reply) -> chan.and_then(chan.send(reply, Summary(state.0, state.1)), fn(_u): chan.done(state))
-            Summary(_c, _t) -> chan.done(state)).await
+            Summary(_c, _t) -> chan.done(state)
+    ).await
 
 async fn main(console: Console):
     let (tx, rx) = chan.channel(8).await
@@ -82,8 +84,9 @@ async fn main(console: Console):
     chan.send(tx, Report(reply_tx)).await
     let r = chan.recv(reply_rx).await
     match r:
-        Some(Summary(count, total)) -> print(console, json.stringify(.{count: count, total: total}))
-        _ -> print(console, "no reply")
+        Some(Summary(count, total)) -> console.print(json.stringify(.{count: count, total: total}))
+        _ -> console.print("no reply")
+
     chan.join(srv).await
 ```
 
@@ -105,8 +108,9 @@ an infinite generator is fine when something bounds it:
 ```witchy
 import iter
 import json
-
 // A generator yields a lazy, possibly-infinite sequence; the caller bounds it.
+import reflect
+
 gen fn squares() -> Iter(Int):
     var n = 1
     while true:
@@ -115,7 +119,7 @@ gen fn squares() -> Iter(Int):
 
 fn main(console: Console):
     let first5: List(Int) = iter.collect(iter.take(squares(), 5))
-    print(console, json.stringify(.{squares: first5}))
+    console.print(json.stringify(.{squares: first5}))
 ```
 
 ```text

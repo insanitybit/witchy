@@ -14,7 +14,7 @@ comptime:
         i = i + 1
 
 fn main(console: Console):
-    print(console, "${lucky_0()} ${lucky_1()} ${lucky_2()}")
+    console.print("${lucky_0()} ${lucky_1()} ${lucky_2()}")
 ```
 
 ```text
@@ -82,7 +82,7 @@ fn greet(parts: List(String), holes: List(String)) -> String:
 
 fn main(console: Console):
     let name = "witch"
-    print(console, greet"hi ${name}")
+    console.print(greet"hi ${name}")
 ```
 
 ```text

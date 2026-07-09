@@ -180,7 +180,7 @@ pub fn render(x: impl Show) -> String:
 
 // Print any `Show` value without converting it by hand — `show.say(console, 42)`,
 // `show.say(console, point)`, `show.say(console, [1, 2, 3])`. The Show-accepting `print`
-// you reach for instead of `print(console, "${n}")`. (A thin wrapper kept out of
+// you reach for instead of `console.print("${n}")`. (A thin wrapper kept out of
 // the `print` builtin so a builtin never depends on a std trait.)
 pub fn say(console: Console, x: impl Show):
     console.print(show(x))

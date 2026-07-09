@@ -21,7 +21,7 @@ async fn double(n: Int) -> Int:
 
 async fn main(console: Console):
     let a = double(21).await
-    print(console, "doubled: " + "${a}")
+    console.print("doubled: " + "${a}")
 ```
 
 ## Spawning tasks
@@ -39,9 +39,9 @@ import chan
 
 async fn ticker(console: Console, name: String, n: Int) -> Nil:
     if n <= 0:
-        print(console, name + " done")
+        console.print(name + " done")
     else:
-        print(console, "${name} ${n}")
+        console.print("${name} ${n}")
         chan.yield_now().await
         ticker(console, name, n - 1).await
 
@@ -65,7 +65,6 @@ witchy does not refcount sender values, so "closed" does not mean no `Sender`
 value can ever be used again.
 
 ```witchy
-import chan
 from chan import Sender, Receiver
 
 async fn source(tx: Sender(String)) -> Nil:
@@ -75,7 +74,7 @@ async fn source(tx: Sender(String)) -> Nil:
 async fn main(console: Console):
     let (tx, rx) = chan.channel(4).await
     chan.spawn(source(tx)).await
-    chan.consume(rx, fn(msg): chan.done(print(console, "got: " + msg))).await
+    chan.consume(rx, fn(msg): chan.done(console.print("got: " + msg))).await
 ```
 
 ## Request, reply, and stateful servers
@@ -86,7 +85,6 @@ answer carries a reply `Sender` the client made — the reply comes back on a ch
 the caller chose, with no shared addresses.
 
 ```witchy
-import chan
 from chan import Sender, Receiver
 
 type Msg:
@@ -109,10 +107,10 @@ async fn client(console: Console, srv: Sender(Msg)) -> Nil:
     chan.send(srv, Get(reply_tx)).await
     let r = chan.recv(reply_rx).await
     match r:
-        Some(Total(t)) -> print(console, "total is " + "${t}")
-        Some(Add(_n)) -> print(console, "(unreachable)")
-        Some(Get(_s)) -> print(console, "(unreachable)")
-        None -> print(console, "(no reply)")
+        Some(Total(t)) -> console.print("total is " + "${t}")
+        Some(Add(_n)) -> console.print("(unreachable)")
+        Some(Get(_s)) -> console.print("(unreachable)")
+        None -> console.print("(no reply)")
 
 async fn main(console: Console):
     let (srv_tx, srv_rx) = chan.channel(8).await
@@ -133,7 +131,6 @@ worker pool (many receivers on one channel) — something a per-task mailbox can
 express. Results flow back on a second channel.
 
 ```witchy
-import chan
 from chan import Sender, Receiver
 
 async fn worker(jobs: Receiver(Int), out: Sender(Int)) -> Nil:
@@ -146,7 +143,7 @@ async fn main(console: Console):
     chan.spawn(worker(jobs_rx, out_tx)).await
     for n in [3, 4, 5]:
         chan.send(jobs_tx, n).await
-    chan.consume(out_rx, fn(r): chan.done(print(console, "sq ${r}"))).await
+    chan.consume(out_rx, fn(r): chan.done(console.print("sq ${r}"))).await
 ```
 
 ## Iterating with `await`
@@ -160,7 +157,6 @@ message in turn and stopping when the channel closes — and its body may `await
 too, so a stage can receive, transform, and forward in a few plain lines:
 
 ```witchy
-import chan
 from chan import Sender, Receiver
 
 async fn producer(tx: Sender(Int)) -> Nil:
@@ -176,7 +172,7 @@ async fn main(console: Console):
     let (out_tx, out_rx) = chan.channel(4).await
     chan.spawn(producer(tx)).await
     chan.spawn(squares(rx, out_tx)).await
-    chan.consume(out_rx, fn(v): chan.done(print(console, "got ${v}"))).await
+    chan.consume(out_rx, fn(v): chan.done(console.print("got ${v}"))).await
 ```
 
 A `while` loop may `await` in its body too, and a `var` local may cross an
@@ -186,7 +182,6 @@ also lets a `for await` loop **fold**: mutate an accumulator each message and re
 the total once the channel closes.
 
 ```witchy
-import chan
 from chan import Sender, Receiver
 
 async fn counter(tx: Sender(Int), n: Int) -> Nil:
@@ -199,7 +194,7 @@ async fn total(console: Console, rx: Receiver(Int)) -> Nil:
     var sum = 0
     for await v in rx:
         sum = sum + v
-    print(console, "sum is ${sum}")
+    console.print("sum is ${sum}")
 
 async fn main(console: Console):
     let (tx, rx) = chan.channel(4).await
@@ -235,7 +230,7 @@ impl Doubler:
 async fn main(console: Console):
     let d = Doubler(100)
     let r = d.scaled(5).await
-    print(console, "${r}")
+    console.print("${r}")
 ```
 
 ```text

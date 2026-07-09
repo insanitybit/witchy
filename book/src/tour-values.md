@@ -13,11 +13,11 @@ fn main(console: Console):
     let ok = true
     let name = "witchy"
     let timeout = 30s
-    print(console, "${answer}")
-    print(console, "${half}")
-    print(console, "${ok}")
-    print(console, name)
-    print(console, "${timeout < 1m}")
+    console.print("${answer}")
+    console.print("${half}")
+    console.print("${ok}")
+    console.print(name)
+    console.print("${timeout < 1m}")
 ```
 
 ```text
@@ -49,8 +49,8 @@ Strings concatenate with `+` and interpolate with `${...}`:
 fn main(console: Console):
     let who = "world"
     let n = 3
-    print(console, "hello, " + who)
-    print(console, "n is ${n}, doubled ${n * 2}")
+    console.print("hello, " + who)
+    console.print("n is ${n}, doubled ${n * 2}")
 ```
 
 ```text
@@ -73,10 +73,10 @@ Crossing between types is always explicit — there's no silent coercion:
 
 ```witchy
 fn main(console: Console):
-    print(console, "${7}")
-    print(console, "${math.to_float(7)}")
-    print(console, "${math.to_int(7.9)}")
-    print(console, "${string.to_int("123")}")
+    console.print("${7}")
+    console.print("${math.to_float(7)}")
+    console.print("${math.to_int(7.9)}")
+    console.print("${string.to_int("123")}")
 ```
 
 ```text
@@ -102,18 +102,18 @@ fn show(xs: List(Int)) -> String:
 
 fn main(console: Console):
     let xs = [1, 2, 3]
-    print(console, show(xs))
-    print(console, "${xs.length()}")
-    print(console, "${xs[0]}")
+    console.print(show(xs))
+    console.print("${xs.length()}")
+    console.print("${xs[0]}")
 
     let pair = (1, "one")
     let (n, word) = pair
-    print(console, "${n} = ${word}")
-    print(console, "${pair.0} = ${pair.1}")
+    console.print("${n} = ${word}")
+    console.print("${pair.0} = ${pair.1}")
 
     let ages = dict.new().insert("ada", 36).insert("bob", 41)
-    print(console, "${ages.get_or("ada", 0)}")
-    print(console, "${ages.get_or("nobody", 0)}")
+    console.print("${ages.get_or("ada", 0)}")
+    console.print("${ages.get_or("nobody", 0)}")
 ```
 
 ```text
@@ -155,9 +155,9 @@ builds a new list from an old one, and an `if` clause filters as it goes:
 ```witchy
 fn main(console: Console):
     let xs = [1, 2, 3, 4, 5]
-    print(console, "${[n * n for n in xs]}")
-    print(console, "${[n for n in xs if n % 2 == 1]}")
-    print(console, "${["${n}" for n in xs if n > 3]}")
+    console.print("${[n * n for n in xs]}")
+    console.print("${[n for n in xs if n % 2 == 1]}")
+    console.print("${["${n}" for n in xs if n > 3]}")
 ```
 
 ```text
@@ -178,10 +178,10 @@ lists, tuples, records, enums, `Option`, dicts — not identity:
 
 ```witchy
 fn main(console: Console):
-    print(console, "${[1, 2, 3] == [1, 2, 3]}")
-    print(console, "${(1, "a") == (1, "a")}")
-    print(console, "${Some(5) == Some(5)}")
-    print(console, "${Some(5) == None}")
+    console.print("${[1, 2, 3] == [1, 2, 3]}")
+    console.print("${(1, "a") == (1, "a")}")
+    console.print("${Some(5) == Some(5)}")
+    console.print("${Some(5) == None}")
 ```
 
 ```text

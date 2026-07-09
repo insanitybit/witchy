@@ -15,15 +15,15 @@ fn main(console: Console):
     for var x in xs:
         x = x * 10
     // [10, 20, 30, 40]
-    print(console, "${xs}")
+    console.print("${xs}")
 
     var accounts = [Account("ada", 100), Account("bob", 50)]
     for var a in accounts:
-        a.balance = a.balance + 25
+        a.balance += 25
     // 125
-    print(console, "${accounts.at(0).balance}")
+    console.print("${accounts.at(0).balance}")
     // 75
-    print(console, "${accounts.at(1).balance}")
+    console.print("${accounts.at(1).balance}")
 ```
 
 A plain `for x in xs:` binds each element read-only — assigning to `x` there is a

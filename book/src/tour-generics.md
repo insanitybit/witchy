@@ -14,8 +14,8 @@ fn first(xs: List(a)) -> a:
 
 fn main(console: Console):
     let (lo, hi) = pair_up(1, 2)
-    print(console, "${lo}, ${hi}")
-    print(console, first(["alpha", "beta"]))
+    console.print("${lo}, ${hi}")
+    console.print(first(["alpha", "beta"]))
 ```
 
 ```text
@@ -51,8 +51,8 @@ impl Greet for Robot:
         "beep boop"
 
 fn main(console: Console):
-    print(console, Dog.greet())
-    print(console, Robot.greet())
+    console.print(Dog.greet())
+    console.print(Robot.greet())
 ```
 
 ```text
@@ -80,8 +80,8 @@ fn largest(xs: List(a)) -> a where a: Ord:
     best
 
 fn main(console: Console):
-    print(console, "${largest([3, 9, 2, 7])}")
-    print(console, largest(["apple", "pear", "fig"]))
+    console.print("${largest([3, 9, 2, 7])}")
+    console.print(largest(["apple", "pear", "fig"]))
 ```
 
 ```text
@@ -117,7 +117,7 @@ impl Show for Temp:
         "${self.celsius} deg C"
 
 fn announce(console: Console, label: String, x: impl Show):
-    print(console, "${label}: ${show(x)}")
+    console.print("${label}: ${show(x)}")
 
 fn main(console: Console):
     // Uses Temp's Show.
@@ -135,7 +135,7 @@ count: 42
 ```
 
 `show.say(console, x)` is the `Show`-accepting `print` — reach for it instead of
-`print(console, "${x}")`. Note the division of labor: interpolation and the
+`console.print("${x}")`. Note the division of labor: interpolation and the
 built-in rendering already covers *every* value structurally (including bare
 lists, tuples, and dicts, which can't carry a `Show` impl); `Show` is for giving
 *your own* types a rendering you choose.
@@ -157,9 +157,9 @@ fn main(console: Console):
     let a = Score(10, "alpha")
     let b = Score(12, "beta")
     // Derived PartialEq.
-    print(console, "${a == Score(10, "alpha")}")
+    console.print("${a == Score(10, "alpha")}")
     // Derived Ord, using field order.
-    print(console, "${cmp.max_of(a, b)}")
+    console.print("${cmp.max_of(a, b)}")
 ```
 
 ```text
@@ -212,8 +212,8 @@ fn parse(s: String) -> Option(Version):
 fn main(console: Console):
     if let Some(v) = parse("1.4"):
         // `v` is bound by `if let`.
-        print(console, "${v == Version(1, 4)}")
-        print(console, "${v < Version(2, 0)}")
+        console.print("${v == Version(1, 4)}")
+        console.print("${v < Version(2, 0)}")
 ```
 
 ```text

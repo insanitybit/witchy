@@ -17,12 +17,12 @@ fn first_even(xs: List(Int)) -> Option(Int):
 
 fn main(console: Console):
     match first_even([1, 3, 4, 7]):
-        Some(n) -> print(console, "found " + "${n}")
-        None -> print(console, "none")
+        Some(n) -> console.print("found " + "${n}")
+        None -> console.print("none")
 
     match first_even([1, 3, 5]):
-        Some(n) -> print(console, "found " + "${n}")
-        None -> print(console, "none")
+        Some(n) -> console.print("found " + "${n}")
+        None -> console.print("none")
 ```
 
 ```text
@@ -41,9 +41,9 @@ fn lookup(xs: List(Int), i: Int) -> Option(Int):
 
 fn main(console: Console):
     if let Some(v) = lookup([10, 20, 30], 1):
-        print(console, "got " + "${v}")
+        console.print("got " + "${v}")
     else:
-        print(console, "out of range")
+        console.print("out of range")
 ```
 
 ```text
@@ -62,8 +62,8 @@ fn lookup(xs: List(Int), i: Int) -> Option(Int):
         None
 
 fn main(console: Console):
-    print(console, "${lookup([10, 20, 30], 1) ?? 0}")
-    print(console, "${lookup([10, 20, 30], 9) ?? 0}")
+    console.print("${lookup([10, 20, 30], 1) ?? 0}")
+    console.print("${lookup([10, 20, 30], 9) ?? 0}")
 ```
 
 ```text
@@ -95,8 +95,8 @@ fn show(r: Result(Int, String)) -> String:
         Err(e) -> "error: " + e
 
 fn main(console: Console):
-    print(console, show(checked_div(10, 2)))
-    print(console, show(checked_div(10, 0)))
+    console.print(show(checked_div(10, 2)))
+    console.print(show(checked_div(10, 0)))
 ```
 
 ```text
@@ -129,9 +129,9 @@ fn show(r: Result(Int, String)) -> String:
         Err(e) -> "error: " + e
 
 fn main(console: Console):
-    print(console, show(average_of_ratios(100, 5, 2)))
-    print(console, show(average_of_ratios(100, 0, 2)))
-    print(console, show(average_of_ratios(100, 5, 0)))
+    console.print(show(average_of_ratios(100, 5, 2)))
+    console.print(show(average_of_ratios(100, 0, 2)))
+    console.print(show(average_of_ratios(100, 5, 0)))
 ```
 
 ```text
@@ -161,7 +161,7 @@ fn safe_sqrt_input(n: Int) -> Int:
     n
 
 fn main(console: Console):
-    print(console, "${safe_sqrt_input(9)}")
+    console.print("${safe_sqrt_input(9)}")
 
 // safe_sqrt_input(0 - 1) would abort the program here.
 ```
@@ -194,8 +194,8 @@ fn parse_release(date: String, ver: String) -> Result(String, String):
 
 fn main(console: Console):
     match parse_release("2026-06-12T00:00:00Z", "1.4.0"):
-        Ok(s) -> print(console, s)
-        Err(e) -> print(console, "error: " + e)
+        Ok(s) -> console.print(s)
+        Err(e) -> console.print("error: " + e)
 ```
 
 ```text

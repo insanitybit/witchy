@@ -27,7 +27,7 @@ fn main(console: Console):
     let evens = iter.filter(iter.range(1, 20), fn(n: Int): n % 2 == 0)
     let doubled = iter.map(evens, fn(n: Int): n * 2)
     let firsts: List(Int) = iter.collect(iter.take(doubled, 5))
-    print(console, show(firsts))
+    console.print(show(firsts))
 ```
 
 ```text
@@ -66,7 +66,7 @@ fn show(xs: List(Int)) -> String:
 
 fn main(console: Console):
     let first10: List(Int) = iter.collect(iter.take(fibs(), 10))
-    print(console, show(first10))
+    console.print(show(first10))
 ```
 
 ```text
@@ -98,8 +98,8 @@ fn show(xs: List(Int)) -> String:
     parts.join(", ")
 
 fn main(console: Console):
-    print(console, "collatz(6): " + show(iter.collect(collatz(6))))
-    print(console, "collatz(27) steps: " + "${iter.count(collatz(27))}")
+    console.print("collatz(6): " + show(iter.collect(collatz(6))))
+    console.print("collatz(27) steps: " + "${iter.count(collatz(27))}")
 ```
 
 ```text
@@ -129,7 +129,7 @@ impl Counter:
 fn main(console: Console):
     let c = Counter(4)
     let xs: List(Int) = iter.collect(c.upto())
-    print(console, "${xs}")
+    console.print("${xs}")
 ```
 
 ```text

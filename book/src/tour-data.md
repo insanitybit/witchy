@@ -16,8 +16,8 @@ type Account:
 fn main(console: Console):
     let a = Account("ada", 100)
     let b = Account(name: "bob", balance: 5)
-    print(console, a.name)
-    print(console, "${b.balance}")
+    console.print(a.name)
+    console.print("${b.balance}")
 ```
 
 ```text
@@ -42,8 +42,8 @@ fn deposit(a: Account, amount: Int) -> Account:
 fn main(console: Console):
     let a = Account("ada", 100)
     let richer = deposit(a, 50)
-    print(console, "${richer.balance}")
-    print(console, "${a.balance}")
+    console.print("${richer.balance}")
+    console.print("${a.balance}")
 ```
 
 ```text
@@ -59,11 +59,12 @@ type:
 
 ```witchy
 import json
+import reflect
 
 fn main(console: Console):
     let point = .{x: 1, y: 2}
-    print(console, "${point.x}, ${point.y}")
-    print(console, json.stringify(.{name: "ada", scores: [10, 20]}))
+    console.print("${point.x}, ${point.y}")
+    console.print(json.stringify(.{name: "ada", scores: [10, 20]}))
 ```
 
 ```text
@@ -102,9 +103,9 @@ fn area(s: Shape) -> Int:
         Rectangle(w, h) -> w * h
 
 fn main(console: Console):
-    print(console, "${North == North}")
-    print(console, "${area(Circle(2))}")
-    print(console, "${area(Rectangle(3, 4))}")
+    console.print("${North == North}")
+    console.print("${area(Circle(2))}")
+    console.print("${area(Rectangle(3, 4))}")
 ```
 
 ```text
@@ -132,9 +133,9 @@ fn describe(e: Event) -> String:
         Close -> "close"
 
 fn main(console: Console):
-    print(console, describe(Click(3, 9)))
-    print(console, describe(Key("Enter")))
-    print(console, describe(Close))
+    console.print(describe(Click(3, 9)))
+    console.print(describe(Key("Enter")))
+    console.print(describe(Close))
 ```
 
 ```text
@@ -160,12 +161,12 @@ fn sign(n: Int) -> String:
         _ -> "negative"
 
 fn main(console: Console):
-    print(console, head([]))
-    print(console, head([7]))
-    print(console, head([1, 2, 3]))
-    print(console, sign(0))
-    print(console, sign(4))
-    print(console, sign(0 - 1))
+    console.print(head([]))
+    console.print(head([7]))
+    console.print(head([1, 2, 3]))
+    console.print(sign(0))
+    console.print(sign(4))
+    console.print(sign(0 - 1))
 ```
 
 ```text
@@ -213,7 +214,7 @@ pub fn percent(n: Int) -> Percent:
 
 fn main(console: Console):
     let p = percent(140)
-    print(console, "clamped to ${p.value}")
+    console.print("clamped to ${p.value}")
 ```
 
 ```text

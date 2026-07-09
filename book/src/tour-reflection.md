@@ -22,8 +22,8 @@ type Point derive(Reflect):
     y: Int
 
 fn main(console: Console):
-    print(console, json.stringify(Point(1, 2)))
-    print(console, reflect.debug(Point(1, 2)))
+    console.print(json.stringify(Point(1, 2)))
+    console.print(reflect.debug(Point(1, 2)))
 ```
 
 ```text
@@ -48,8 +48,8 @@ type Shape derive(Reflect):
     Square(Int, Int)
 
 fn main(console: Console):
-    print(console, reflect.debug(Square(3, 4)))
-    print(console, json.stringify(Circle(5)))
+    console.print(reflect.debug(Square(3, 4)))
+    console.print(json.stringify(Circle(5)))
 ```
 
 ```text
@@ -96,10 +96,10 @@ fn kind(value: impl Reflect) -> String:
         _ -> "other"
 
 fn main(console: Console):
-    print(console, kind(42))
-    print(console, kind(Point(1, 2)))
-    print(console, kind(Circle(5)))
-    print(console, kind([1, 2, 3]))
+    console.print(kind(42))
+    console.print(kind(Point(1, 2)))
+    console.print(kind(Circle(5)))
+    console.print(kind([1, 2, 3]))
 ```
 
 ```text

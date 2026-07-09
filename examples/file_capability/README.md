@@ -10,8 +10,8 @@ A `Dir` navigates down to a single file, and the leaf is read/written directly
 ```witchy
 let config = dir.read_file("config.txt")     // File[Read]  (must exist)
 let log    = dir.write_file("run.log")      // File[Write] (need not exist)
-print(console, read(config))
-write(log, "started")
+console.print(config.read())
+log.write("started")
 ```
 
 `load_config` here takes `File[Read]`, the least authority that reads one file —

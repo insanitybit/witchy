@@ -32,9 +32,9 @@ fn matches_ci(query: String, contents: String) -> List(String):
 fn main(console: Console):
     let log = "INFO started\nWARN disk low\ninfo retry\nERROR boom"
     for line in matches("INFO", log):
-        print(console, "exact:  " + line)
+        console.print("exact:  " + line)
     for line in matches_ci("info", log):
-        print(console, "ci:     " + line)
+        console.print("ci:     " + line)
 ```
 
 ```text
@@ -74,13 +74,14 @@ fn matches_ci(query: String, contents: String) -> List(String):
 fn main(console: Console, dir: Dir[Read], env: Env, args: List(String)) -> Int:
     let query = list.at(args, 0)
     let path = list.at(args, 1)
-    let contents = read(dir, path)
-    let insensitive = match get_env(env, "SCAN_IGNORE_CASE"):
+    let contents = dir.read(path)
+    let insensitive = match env.get_env("SCAN_IGNORE_CASE"):
         Some(_) -> true
         None -> false
+
     let hits = if insensitive: matches_ci(query, contents) else: matches(query, contents)
     for line in hits:
-        print(console, line)
+        console.print(line)
     0
 ```
 

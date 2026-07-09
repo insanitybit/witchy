@@ -6,11 +6,11 @@ diffable, enforceable artifact**.
 ```witchy
 // Provably cannot write.
 fn load(dir: Dir[Read], name: String) -> String:
-    read(dir, name)
+    dir.read(name)
 
 fn main(console: Console, dir: Dir):
     // Full Dir narrows to Dir[Read].
-    print(console, load(dir, "notes.txt"))
+    console.print(load(dir, "notes.txt"))
 ```
 
 
@@ -40,7 +40,7 @@ import markdown    // third-party rune; vetted as pure (footprint: [])
 
 fn main(console: Console, net: Net, dir: Dir):
     // You genuinely hold both caps and use them legitimately.
-    let template = read(dir, "report.tmpl")
+    let template = dir.read("report.tmpl")
     let notes    = http.body(http.get(net, "notes.internal", 443, "/today"))
 
     // Hand the untrusted rune the *data*, never the *authority*. `markdown.render`
@@ -48,7 +48,7 @@ fn main(console: Console, net: Net, dir: Dir):
     // it does (or anything it calls) can reach them. Only the String crosses back.
     let html = markdown.render(template, notes)
 
-    print(console, html)
+    console.print(html)
 ```
 
 This is extremely hard to mess up. `markdown.render` never receives the capabilities — they
@@ -163,7 +163,7 @@ fn main(console: Console):
     let shapes = [Circle(2), Square(3)]
     for s in shapes:
         // String interpolation.
-        print(console, "area: ${area(s)}")
+        console.print("area: ${area(s)}")
 ```
 
 - `Int` (64-bit), `Float`, `Bool`, `String`, `Duration` (native literals: `30s`,

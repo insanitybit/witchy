@@ -117,7 +117,7 @@ fn main(console: Console):
     while i < list.length(ps):
         total = total + list.at(ps, i).x + list.at(ps, i).y
         i = i + 1
-    print(console, "${total}")
+    console.print("${total}")
 ```
 
 `packed` is a layout *contract*. Its fields must be fixed-size scalars

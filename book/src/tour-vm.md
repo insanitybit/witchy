@@ -24,7 +24,7 @@ fn square(n: Int) -> Int:
 
 fn main(console: Console):
     let squares = vm.par_map([1, 2, 3, 4], square)
-    print(console, "${list.sum(squares)}")
+    console.print("${list.sum(squares)}")
 ```
 
 Why is this safe to run in parallel when so much of witchy's speed comes from "one
@@ -57,8 +57,8 @@ import bytes
 
 fn main(console: Console):
     let b = bytes.from_string("hi")
-    print(console, "${bytes.length(b)}")
-    print(console, "${bytes.at(b, 0)}")
+    console.print("${bytes.length(b)}")
+    console.print("${bytes.at(b, 0)}")
 ```
 
 Structured values cross a VM or wire boundary by choosing an explicit encoding into
@@ -106,7 +106,7 @@ fn main(console: Console):
     let reqs = [bytes.from_string("a"), bytes.from_string("b")]
     let outs = vm.serve(bytes.from_string(""), reqs, step)
     for o in outs:
-        print(console, bytes.to_string(o))
+        console.print(bytes.to_string(o))
 ```
 
 This prints `a` then `ab`: the state accumulates across the stream.

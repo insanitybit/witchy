@@ -13,10 +13,10 @@ A read-only `Dir` is a confined view of one directory subtree. `read` and
 
 ```witchy
 fn main(console: Console, root: Dir[Read]):
-    if exists(root, "notes.txt"):
-        print(console, read(root, "notes.txt"))
+    if root.exists("notes.txt"):
+        console.print(root.read("notes.txt"))
     else:
-        print(console, "no notes yet")
+        console.print("no notes yet")
 ```
 
 Where does `root` point? A plain `witchy program.witchy` run roots every `Dir`
@@ -37,10 +37,10 @@ the least authority that does the job. A `Dir` navigates down to a single file w
 // `load` provably touches one file — `witchy caps` reports it as `File[Read]`,
 // never `Dir`, so it cannot see anything else in the tree.
 fn load(cfg: File[Read]) -> String:
-    read(cfg)
+    cfg.read()
 
 fn main(console: Console, root: Dir[Read]):
-    print(console, load(root.read_file("config.toml")))
+    console.print(load(root.read_file("config.toml")))
 ```
 
 `root.read_file(...)` needs `Dir[Read]` and yields `File[Read]`; the write
@@ -56,8 +56,8 @@ program writes but never reads.
 
 ```witchy
 fn main(console: Console, root: Dir[Write]):
-    write(root, "out.txt", "hello from witchy\n")
-    print(console, "wrote out.txt")
+    root.write("out.txt", "hello from witchy\n")
+    console.print("wrote out.txt")
 ```
 
 ## List a directory
@@ -67,8 +67,8 @@ capability confined to a child folder if you want to descend.
 
 ```witchy
 fn main(console: Console, root: Dir[Read]):
-    for name in list(root):
-        print(console, name)
+    for name in root.list():
+        console.print(name)
 ```
 
 ## Read an environment variable
@@ -79,9 +79,9 @@ case explicitly.
 
 ```witchy
 fn main(console: Console, env: Env):
-    match get_env(env, "HOME"):
-        Some(h) -> print(console, "HOME is " + h)
-        None -> print(console, "HOME is unset")
+    match env.get_env("HOME"):
+        Some(h) -> console.print("HOME is " + h)
+        None -> console.print("HOME is unset")
 ```
 
 ## Command-line arguments
@@ -92,10 +92,10 @@ sets the process exit code (`0` is success).
 ```witchy
 fn main(console: Console, args: List(String)) -> Int:
     if args.length() == 0:
-        print(console, "usage: prog <name>")
+        console.print("usage: prog <name>")
         1
     else:
-        print(console, "hello, " + args.at(0))
+        console.print("hello, " + args.at(0))
         0
 ```
 
@@ -109,9 +109,9 @@ import http
 
 fn main(console: Console, net: Net):
     let resp = http.get(net, "localhost", 80, "/")
-    print(console, "status " + "${http.status(resp)}")
+    console.print("status " + "${http.status(resp)}")
     if http.is_success(resp):
-        print(console, http.body(resp))
+        console.print(http.body(resp))
 ```
 
 To narrow the network capability itself — a client that can dial out but never
@@ -139,11 +139,11 @@ import http
 fn main(console: Console, net: Net[Connect, Tcp]):
     let safe = net.deny(Net.private())
     match http.pin(safe, "http://example.com/status", public_ok):
-        Err(e) -> print(console, "blocked: " + e)
+        Err(e) -> console.print("blocked: " + e)
         Ok(target) ->
             match http.get_pinned(safe, target):
-                Ok(resp) -> print(console, "status " + "${http.status(resp)}")
-                Err(e) -> print(console, "fetch failed: " + e)
+                Ok(resp) -> console.print("status " + "${http.status(resp)}")
+                Err(e) -> console.print("fetch failed: " + e)
 
 // Your policy: inspect a resolved IP literal and approve or reject it. Returning
 // `false` for every candidate makes `pin` fail closed.
@@ -184,13 +184,13 @@ fn main(console: Console, secrets: SecretStore):
     // enter the program — the host signs on its behalf and returns the signature.
     let signing = secrets.require("signing")
     let sig = crypto.sign(signing, "release v1.2.3")
-    print(console, "signature length ${string.length(sig)}")
+    console.print("signature length ${string.length(sig)}")
 
     // An optional, revealable value secret. `reveal` works here because this is
     // an ordinary named secret — it would error on the signing key above.
     match secrets.get("api-token"):
-        Some(tok) -> print(console, "token: ${crypto.reveal(tok)}")
-        None -> print(console, "no api-token granted")
+        Some(tok) -> console.print("token: ${crypto.reveal(tok)}")
+        None -> console.print("no api-token granted")
 ```
 
 Run it with `witchy run sign.witchy --signing-key key.seed --secret
@@ -212,11 +212,9 @@ here in the page:
 import glamour
 
 fn main(console: Console):
-    let view = glamour.element("article", [glamour.prop("class", "post")], [
-        glamour.element("h1", [], [glamour.text("Hello from a rune")]),
-        glamour.element("p", [], [glamour.text("Glamour renders <script> as text.")]),
-    ])
-    print(console, glamour.to_html(view))
+    let view = glamour.element("article", [glamour.prop("class", "post")], [glamour.element("h1", [], [glamour.text("Hello from a rune")]), glamour.element("p", [], [glamour.text("Glamour renders <script> as text.")])])
+
+    console.print(glamour.to_html(view))
 ```
 
 Beyond rendering, a full Glamour app adds an MVU loop (`view`/`update`/`step_with`) and

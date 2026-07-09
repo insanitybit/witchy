@@ -2405,7 +2405,7 @@ Render one `Show` value to a `String` — `render(point)`, `render(90000ms)`, `r
 
 #### `fn say(console: Console, x: impl Show)`
 
-Print any `Show` value without converting it by hand — `show.say(console, 42)`, `show.say(console, point)`, `show.say(console, [1, 2, 3])`. The Show-accepting `print` you reach for instead of `print(console, "${n}")`. (A thin wrapper kept out of the `print` builtin so a builtin never depends on a std trait.)
+Print any `Show` value without converting it by hand — `show.say(console, 42)`, `show.say(console, point)`, `show.say(console, [1, 2, 3])`. The Show-accepting `print` you reach for instead of `console.print("${n}")`. (A thin wrapper kept out of the `print` builtin so a builtin never depends on a std trait.)
 
 ## `string`
 
@@ -2714,11 +2714,11 @@ time — civil (UTC) date/time from a unix timestamp.
 
 #### `fn from_millis(ms: Int) -> DateTime`
 
-The civil UTC date/time at `ms` MILLISECONDS since the unix epoch — what `now(clock)` returns, so `time.from_millis(now(clock))` is the idiom for "the current date/time".
+The civil UTC date/time at `ms` MILLISECONDS since the unix epoch — what `clock.now()` returns, so `time.from_millis(clock.now())` is the idiom for "the current date/time".
 
 #### `fn from_unix(secs: Int) -> DateTime`
 
-The civil UTC date/time at `secs` SECONDS since the unix epoch (a classic unix timestamp). `now(clock)` returns milliseconds — use `from_millis` for it, or this becomes the year 58000. The formatted/parsing contract is a fixed four-digit CE year, so timestamps outside 0001..9999 are out of domain.
+The civil UTC date/time at `secs` SECONDS since the unix epoch (a classic unix timestamp). `clock.now()` returns milliseconds — use `from_millis` for it, or this becomes the year 58000. The formatted/parsing contract is a fixed four-digit CE year, so timestamps outside 0001..9999 are out of domain.
 
 #### `fn to_unix(d: DateTime) -> Int`
 

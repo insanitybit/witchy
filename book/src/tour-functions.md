@@ -9,7 +9,7 @@ fn add(a: Int, b: Int) -> Int:
     a + b
 
 fn main(console: Console):
-    print(console, "${add(2, 3)}")
+    console.print("${add(2, 3)}")
 ```
 
 ```text
@@ -38,12 +38,13 @@ type Score:
 impl Score:
     fn doubled(self) -> Score:
         Score(self.points * 2)
+
     fn bumped(self) -> Score:
         Score(self.points + 1)
 
 fn main(console: Console):
     let s = Score(3).doubled().bumped().doubled()
-    print(console, "${s.points}")
+    console.print("${s.points}")
 ```
 
 ```text
@@ -65,9 +66,9 @@ fn classify(n: Int) -> String:
         "negative"
 
 fn main(console: Console):
-    print(console, classify(5))
-    print(console, classify(0))
-    print(console, classify(0 - 2))
+    console.print(classify(5))
+    console.print(classify(0))
+    console.print(classify(0 - 2))
 ```
 
 ```text
@@ -91,7 +92,7 @@ fn main(console: Console):
     var total = 0
     for n in 1..5:
         total = total + n
-    print(console, "${total}")
+    console.print("${total}")
 
     var count = 0
     for x in [10, 20, 30, 40]:
@@ -100,7 +101,7 @@ fn main(console: Console):
         if x > 30:
             break
         count = count + 1
-    print(console, "${count}")
+    console.print("${count}")
 ```
 
 ```text
@@ -122,7 +123,7 @@ fn main(console: Console):
     var xs = [1, 2, 3]
     xs[0] = 9
     xs[2] += 5
-    print(console, "${xs}")
+    console.print("${xs}")
 ```
 
 ```text
@@ -143,8 +144,8 @@ fn adder(by: Int) -> fn(Int) -> Int:
 
 fn main(console: Console):
     let add10 = adder(10)
-    print(console, "${apply(add10, 5)}")
-    print(console, "${apply(fn(n: Int): n * n, 6)}")
+    console.print("${apply(add10, 5)}")
+    console.print("${apply(fn(n: Int): n * n, 6)}")
 ```
 
 ```text
@@ -170,7 +171,7 @@ fn bump(var n: Int):
 fn main(console: Console):
     var counter = 41
     bump(counter)
-    print(console, "${counter}")
+    console.print("${counter}")
 ```
 
 ```text
@@ -200,8 +201,8 @@ fn sum(let xs: List(Int), i: Int) -> Int:
 
 fn main(console: Console):
     let xs = [1, 2, 3, 4]
-    print(console, "${sum(xs, 0)}")
-    print(console, "${xs.length()}")
+    console.print("${sum(xs, 0)}")
+    console.print("${xs.length()}")
 ```
 
 ```text
@@ -219,9 +220,9 @@ fn into_label(own name: String) -> String:
 
 fn main(console: Console):
     let name = "witchy"
-    print(console, into_label(move name))
+    console.print(into_label(move name))
 
-// print(console, name)   // <- compile error: `name` was moved
+// console.print(name)   // <- compile error: `name` was moved
 ```
 
 ```text

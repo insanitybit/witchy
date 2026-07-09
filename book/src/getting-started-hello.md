@@ -4,7 +4,7 @@ Create a file `hello.witchy`:
 
 ```witchy
 fn main(console: Console):
-    print(console, "hello, witchy")
+    console.print("hello, witchy")
 ```
 
 Run it:
@@ -34,11 +34,11 @@ one your code cannot forge. There is no way to conjure one — you can't write
 The only `Console` in the whole program is the one the *host* hands to `main`
 when the program starts.
 
-## `print(console, "...")`
+## `console.print("...")`
 
-Because printing needs a `Console`, `print` takes one as its first argument.
+Because printing needs a `Console`, `print` is a method on one.
 This is the pattern you'll see everywhere: an operation that touches the world
-takes the capability that authorizes it. A function that never receives a
+is reached through the capability that authorizes it. A function that never receives a
 `Console` can never print — and you can verify that just by reading its
 signature.
 
@@ -62,8 +62,8 @@ fn classify(n: Int) -> String:
         _ -> if n > 0: "positive" else: "negative"
 
 fn main(console: Console):
-    print(console, classify(double(0)))
-    print(console, "${double(21)}")
+    console.print(classify(double(0)))
+    console.print("${double(21)}")
 ```
 
 ```text

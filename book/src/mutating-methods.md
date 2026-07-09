@@ -11,13 +11,13 @@ fn main(console: Console):
     xs.push(2)
     xs.push(3)
     // [1, 2, 3]
-    print(console, "${xs}")
+    console.print("${xs}")
 
     var tally = dict.new()
     tally.insert("a", 1)
     tally.insert("b", 2)
     // 1
-    print(console, "${tally.get_or("a", 0)}")
+    console.print("${tally.get_or("a", 0)}")
 ```
 
 `xs.push(1)` as a statement is exactly `xs = list.push(xs, 1)` — the completion of
@@ -38,12 +38,12 @@ fn main(console: Console):
     // Explicit discard: `length` is not a mutator.
     let _ = xs.length()
     // [1, 2, 3], unchanged
-    print(console, "${xs}")
+    console.print("${xs}")
 
     let frozen = [9, 9]
     // frozen.push(1) would be a compile error — `frozen` is a `let`
     // [9, 9]
-    print(console, "${frozen}")
+    console.print("${frozen}")
 ```
 
 Writing `xs.length()` as a bare statement is now that error (`result of

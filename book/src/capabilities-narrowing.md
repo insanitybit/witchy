@@ -14,10 +14,10 @@ writing. The right is part of the type, so it's checked:
 ```witchy
 // This loader provably cannot write. The `Dir[Read]` it receives has no `write`.
 fn load(dir: Dir[Read], name: String) -> String:
-    read(dir, name)
+    dir.read(name)
 
 fn main(console: Console, dir: Dir):
-    print(console, load(dir, "config.txt"))
+    console.print(load(dir, "config.txt"))
 ```
 
 `load` takes `Dir[Read]`, but `main` holds a full `Dir`. Passing the full `Dir`
@@ -47,14 +47,14 @@ Note `write` *overwrites* — for a log you keep adding to, use `append`.
 ```witchy
 // A fetcher that can dial out over TCP but cannot open a listening socket.
 fn fetch(net: Net[Connect, Tcp], addr: String) -> String:
-    let sock = connect(net, addr)
-    recv_all(sock)
+    let sock = net.connect(addr)
+    sock.recv_all()
 
 fn main(console: Console, net: Net[Connect, Tcp]):
-    print(console, fetch(net, "example.test:80"))
+    console.print(fetch(net, "example.test:80"))
 ```
 
-If `fetch` tried to call `listen(net, ...)`, it wouldn't compile — `Net[Connect]`
+If `fetch` tried to call `net.listen(...)`, it wouldn't compile — `Net[Connect]`
 has no `listen`.
 
 ## Naming a narrowed handle: `as`
@@ -67,8 +67,9 @@ to keep using it locally, or to make the attenuation obvious — ascribe it with
 fn main(console: Console, dir: Dir):
     // A read-only view of the same subtree.
     let ro = dir as Dir[Read]
-    print(console, read(ro, "log.txt"))
-    // `ro` cannot write; `write(ro, ...)` would be a compile error.
+    console.print(ro.read("log.txt"))
+
+    // `ro` cannot write; `ro.write(...)` would be a compile error.
 ```
 
 You can only ever drop rights with `as`, never add them. Authority can't be
@@ -85,12 +86,12 @@ form, the filesystem counterpart of `net.only(...)`:
 // `handle_upload` gets ONLY the uploads/ folder. It cannot see the rest of the
 // program's directory, even though its caller can.
 fn handle_upload(uploads: Dir, name: String, body: String):
-    write(uploads, name, body)
+    uploads.write(name, body)
 
 fn main(console: Console, dir: Dir):
     let uploads = dir.subtree("uploads")
     handle_upload(uploads, "avatar.png", "...")
-    print(console, "stored")
+    console.print("stored")
 ```
 
 Combine the two — `dir.subtree("uploads") as Dir[Write]` — and you've handed a
@@ -109,12 +110,12 @@ subtree inherits the policy. It is the `Dir` analog of `net.only` below:
 // `read_logs` is handed a Dir that can only touch `.log` files — even though its
 // caller holds the whole directory, it cannot read a `.key` or a `.env`.
 fn read_logs(logs: Dir[Read], name: String) -> String:
-    read(logs, name)
+    logs.read(name)
 
 fn main(console: Console, dir: Dir):
     // Entry policy: only `.log` files.
     let logs = dir.only(Dir.ext(".log"))
-    print(console, read_logs(logs, "app.log"))
+    console.print(read_logs(logs, "app.log"))
 ```
 
 ## Files: the leaf
@@ -127,17 +128,17 @@ handed a whole directory, so a `Dir` navigates down to a single file:
 // `read_config` provably touches one file — `witchy caps` reports it as
 // `File[Read]`, never `Dir`. It cannot see any other file in the tree.
 fn read_config(f: File[Read]) -> String:
-    read(f)
+    f.read()
 
 fn main(console: Console, dir: Dir):
     // File[Read]: needs Dir[Read], must exist.
     let cfg = dir.read_file("config.toml")
-    print(console, read_config(cfg))
+    console.print(read_config(cfg))
 
     // File[Write]: needs Dir[Write].
     let log = dir.write_file("run.log")
     // A File op takes no path; it IS the file.
-    write(log, "started")
+    log.write("started")
 ```
 
 The **name states the conferred right**, and it's all checked statically:
@@ -162,14 +163,14 @@ the capability itself (`Net.tcp(…)`) rather than ad-hoc strings:
 // `talk_to_db` is handed a Net that can reach exactly one server. Even though
 // `main` holds the whole network, the dependency cannot dial anywhere else.
 fn talk_to_db(db: Net[Connect, Tcp]):
-    let sock = connect(db, "10.0.0.5:6379")
-    send_line(sock, "PING")
+    let sock = db.connect("10.0.0.5:6379")
+    sock.send_line("PING")
 
 fn main(console: Console, net: Net):
     // Intersect down to one endpoint.
     let db = net.only(Net.tcp("10.0.0.5", 6379))
     talk_to_db(db)
-    print(console, "done")
+    console.print("done")
 ```
 
 `net.only(policy)` *intersects* the carried address-set with `policy`; an endpoint
@@ -181,7 +182,7 @@ removes a private block, then keeps a single host. The policy constructors are
 `Net.cidr_any(block)`, and `Net.union(a, b)` for a multi-endpoint set. The host enforces the set **at the
 syscall** on both backends, so a narrowed `Net` structurally cannot reach
 elsewhere. (HTTPS isn't a separate right: ask for TLS at connect time with a
-`tls:` prefix on the address you dial — `connect(net, "tls:example.com:443")`.)
+`tls:` prefix on the address you dial — `net.connect("tls:example.com:443")`.)
 
 For the common SSRF / DNS-rebinding guard, `net.deny(Net.private())` excludes
 the internal ranges in one line — loopback, RFC-1918, link-local (including the
@@ -227,7 +228,7 @@ capability ConfigDir from Dir[Read]
 // The ONLY way to get a `ConfigDir` — a checked smart constructor, in the same
 // module. Outside this module nobody can write `ConfigDir(...)`.
 pub fn config_dir(root: Dir[Read]) -> Option(ConfigDir):
-    if exists(root, "config.toml"):
+    if root.exists("config.toml"):
         Some(ConfigDir(root))
     else:
         None
@@ -236,7 +237,7 @@ pub fn config_dir(root: Dir[Read]) -> Option(ConfigDir):
 // `Dir` — and can never reach the raw `Dir` back out.
 fn load(c: ConfigDir, name: String) -> String:
     match c:
-        ConfigDir(dir) -> read(dir, name)
+        ConfigDir(dir) -> dir.read(name)
 ```
 
 `witchy caps` still reports `load` as `Dir[Read] (refined: ConfigDir)`. The brand
@@ -272,15 +273,17 @@ pub fn open_table(net: Net[Connect, Tcp], name: String) -> Table:
 pub fn count(t: Table, requested: String) -> String:
     match t:
         Table(_, name) ->
-            if requested == name: "ok: " + requested
-            else: "denied: " + requested
+            if requested == name:
+                "ok: " + requested
+            else:
+                "denied: " + requested
 
 fn main(console: Console, net: Net):
     let users = open_table(net, "users")
     // ok: users
-    print(console, count(users, "users"))
+    console.print(count(users, "users"))
     // denied: secrets
-    print(console, count(users, "secrets"))
+    console.print(count(users, "secrets"))
 ```
 
 `witchy caps` sees straight through the record: `Table` audits as exactly `Net`,
@@ -310,7 +313,7 @@ a grant document — the same reviewed launch as `[dirs]`/`[files]`:
 
 ```
 fn main(console: Console, ui: UiRoot):
-    print(console, policy_of(ui))
+    console.print(policy_of(ui))
 ```
 
 ```
@@ -347,12 +350,12 @@ lift it into a function that simply isn't given that capability:
 ```witchy
 fn audit_log(console: Console, body: String):
     // Never receives `clock`, so it structurally cannot read the wall clock.
-    print(console, "audit: ${body}")
+    console.print("audit: ${body}")
 
 fn main(console: Console, clock: Clock):
     let body = "request handled"
     audit_log(console, body)
-    print(console, "logged at ${now(clock)}")
+    console.print("logged at ${clock.now()}")
 ```
 
 `audit_log` cannot read the clock in *any* execution, under *any* later refactor:

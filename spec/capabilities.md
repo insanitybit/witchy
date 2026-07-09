@@ -37,28 +37,27 @@ audit witchy code by reading signatures, not by tracing call graphs.
 **right** is a permission parameter *within* one (`Dir[Read]` grants the
 `Read` right); a **verb** is an operation checked against rights (`read`,
 `write`, `connect`). So `Dir[Read]` is a capability carrying one right, and
-`read(dir, path)` is a verb that requires it.
+`dir.read(path)` is a verb call that requires it.
 
 ## The capability types
 
 | Type | Grants | Operations |
 |---|---|---|
-| `Console` | write to stdout | `print(console, s)` |
-| `Clock` | read the wall clock | `now(clock) -> Int` (epoch ms) |
+| `Console` | write to stdout | `console.print(s)` |
+| `Clock` | read the wall clock | `clock.now() -> Int` (epoch ms) |
 | `Env` | read environment variables | `get_env(env, name) -> Option(String)` |
 | `Dir`, `Dir[Read]`, `Dir[Write]` | a directory **subtree** | `read`, `write`, `append`, `exists`, `is_dir`, `list`, `make_dir`, `subtree`, `read_file`/`write_file` (→ `File`) |
-| `File`, `File[Read]`, `File[Write]` | authority to **one file** (the leaf) | `read(f) -> String`, `write(f, data)` (a `Dir` mints one with `read_file`/`write_file`) |
+| `File`, `File[Read]`, `File[Write]` | authority to **one file** (the leaf) | `f.read() -> String`, `f.write(data)` (a `Dir` mints one with `read_file`/`write_file`) |
 | `Exec` | spawn a confined native subprocess | `exec.run(e, dir, path, args, stdin) -> (Int, String)` (std `exec`) |
 | `Net`, `Net[Connect]`, `Net[Listen]` (+ `Tcp`/`Udp`/`Uds` transport markers) | the network | `connect`, `listen`, `accept`, `send_line`, `recv_line`, `recv_all`, `only`, `deny`, … |
 | `SecretStore` | named secrets provisioned by the host (`--secret`/`--secret-file`/`--signing-key`) | `require(store, name) -> Secret`, `get(store, name) -> Option(Secret)` |
 | `Secret` | opaque host-held secret material obtained from a `SecretStore` | `crypto.sign`, `crypto.public_key` (Ed25519 signing keys); `server.serve_tls`/`serve_tls_n` consume a TLS private key by handle; `crypto.reveal` (revealable value secrets only — signing keys and use-only secrets are not revealable) |
 
-A `Dir` is not "the filesystem" — it is one subtree. `read(dir, path)` resolves
+A `Dir` is not "the filesystem" — it is one subtree. `dir.read(path)` resolves
 `path` relative to the capability and rejects `..`, absolute paths, and
 symlinks that point outside the subtree. `dir.subtree("sub")` mints a new,
 smaller capability — handing a callee `dir.subtree("uploads")` gives it that
-folder and nothing else. (`subtree(dir, "sub")` is the equivalent free-function
-form.) A `Dir` also carries an **entry policy** (RFC-0011) in two dimensions:
+folder and nothing else. A `Dir` also carries an **entry policy** (RFC-0011) in two dimensions:
 name-suffix (`dir.only(Dir.ext(".txt"))` — only `.txt` entries) and entry-kind
 (`dir.only(Dir.files())` — only file access, no sub-directory open/create;
 `Dir.dirs()` — the mirror). They AND-compose: `dir.only(Dir.files()).only(Dir.ext(".txt"))`
@@ -73,7 +72,7 @@ A **`File`** is the *leaf* of the same hierarchy (RFC-0012): authority to one
 file, right-typed like `Dir` (`File[Read]`/`File[Write]`). A `Dir` navigates to
 one with `dir.read_file("x.txt") -> File[Read]` (must exist) or `dir.write_file("x.txt")
 -> File[Write]` (need not), both rejecting `..`/absolute escape exactly as `read`
-does; then `read(f) -> String` / `write(f, data)` operate on the leaf with no path
+does; then `f.read() -> String` / `f.write(data)` operate on the leaf with no path
 argument. `File[Read]` expresses "this one file, read-only" — the least-authority
 form for a single-file need, instead of handing over a whole `Dir`. `main` can
 also receive a `File` **directly**: each `--file <path>` grant fills `main`'s
@@ -89,7 +88,7 @@ already be admitted); `net.deny(policy)` subtracts one (set difference). Both ar
 syscall by the runtime** on both backends, so a narrowed `Net` cannot dial
 elsewhere. Policy patterns are **scheme-agnostic `host:port`**: HTTPS is not a
 right and not an allowlist scheme but a *connect-time* `tls:` choice on the
-address you dial (`connect(net, "tls:github.com:443")`), terminated on the host —
+address you dial (`net.connect("tls:github.com:443")`), terminated on the host —
 see `rfcs/0009-https-tls-client.md`.
 
 **Resolve-once-and-pin.** `connect` resolves a hostname a *single* time: the IP set
@@ -145,18 +144,18 @@ confined subprocess; see `rfcs/0004-self-hosted-cli.md`.
 ```witchy
 // Implicit narrowing at a call: more authority stands in for less.
 fn load(dir: Dir[Read], name: String) -> String:
-    read(dir, name)
+    dir.read(name)
 
 fn main(console: Console, dir: Dir):
-    print(console, load(dir, "notes.txt"))   // full Dir -> Dir[Read] parameter
+    console.print(load(dir, "notes.txt")) // full Dir -> Dir[Read] parameter
 
     // Explicit narrowing when you want to NAME the smaller handle:
     let ro = dir as Dir[Read]
-    print(console, read(ro, "config.txt"))
+    console.print(ro.read("config.txt"))
 
     // Subtree attenuation: a smaller world, not just fewer verbs.
     let uploads = dir.subtree("uploads")
-    print(console, read(uploads, "latest.bin"))
+    console.print(uploads.read("latest.bin"))
 ```
 
 `Net` narrows the same way, with typed policy values on the `Net` type itself instead of strings:
@@ -169,7 +168,7 @@ fn main(console: Console, net: Net):
     // `deny` subtracts a block; refinement only ever shrinks. Chains, too.
     let safe = net.deny(Net.cidr_any("10.0.0.0/8")).only(Net.tcp("192.168.1.1", 80))
 
-    print(console, "net confined")
+    console.print("net confined")
 ```
 
 Brands go further: wrap a capability in your own type to encode *policy*
@@ -216,7 +215,7 @@ mechanism as `[dirs]`/`[files]`:
 
 ```
 fn main(console: Console, ui: UiRoot):
-    print(console, policy_of(ui))
+    console.print(policy_of(ui))
 ```
 
 ```
@@ -321,11 +320,11 @@ has, because there is no name to reach and no value to smuggle.
 ```witchy
 fn audit_log(console: Console, body: String):
     // No `clock` parameter — structurally cannot read the wall clock.
-    print(console, "audit: ${body}")
+    console.print("audit: ${body}")
 
 fn main(console: Console, clock: Clock):
     audit_log(console, "request handled")
-    print(console, "at ${now(clock)}")
+    console.print("at ${clock.now()}")
 ```
 
 `audit_log`'s authority is fixed by its signature, not by what its callers hold:

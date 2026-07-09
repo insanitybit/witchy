@@ -16,15 +16,15 @@ matches on it and uses the capability only in the `Some` branch:
 fn record(out: Option(Dir[Write]), name: String, line: String) -> Bool:
     match out:
         Some(d) ->
-            append(d, name, line)
+            d.append(name, line)
             true
         None -> false
 
 fn main(console: Console, dir: Dir[Write]):
     let wrote = record(Some(dir), "log.txt", "started")
-    print(console, "${wrote}")
+    console.print("${wrote}")
     let skipped = record(None, "log.txt", "goes nowhere")
-    print(console, "${skipped}")
+    console.print("${skipped}")
 ```
 
 You construct the values with `Some(dir)` and `None` like any other option — a
@@ -55,14 +55,14 @@ type Access:
 
 fn handle(a: Access, name: String) -> String:
     match a:
-        ReadOnly(d) -> read(d, name)
+        ReadOnly(d) -> d.read(name)
         Writable(d) ->
-            write(d, name, "touched")
+            d.write(name, "touched")
             "wrote " + name
 
 fn main(console: Console, dir: Dir):
-    print(console, handle(ReadOnly(dir as Dir[Read]), "notes.txt"))
-    print(console, handle(Writable(dir as Dir[Write]), "out.txt"))
+    console.print(handle(ReadOnly(dir as Dir[Read]), "notes.txt"))
+    console.print(handle(Writable(dir as Dir[Write]), "out.txt"))
 ```
 
 `handle` accepts either variant and does the right thing for each. And again the
@@ -85,14 +85,15 @@ grant it to `main` and decide there whether to pass it onward:
 fn run(console: Console, out: Option(Dir[Write])):
     match out:
         Some(d) ->
-            write(d, "out.txt", "result")
-            print(console, "wrote out.txt")
-        None -> print(console, "dry run; nothing written")
+            d.write("out.txt", "result")
+            console.print("wrote out.txt")
+        None -> console.print("dry run; nothing written")
 
 fn main(console: Console, dir: Dir[Write], env: Env):
-    let enabled = match get_env(env, "WRITE"):
+    let enabled = match env.get_env("WRITE"):
         Some(_) -> Some(dir)
         None -> None
+
     run(console, enabled)
 ```
 

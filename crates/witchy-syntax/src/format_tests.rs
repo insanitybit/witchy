@@ -63,6 +63,16 @@
     }
 
     #[test]
+    fn capability_rights_use_brackets_when_formatting() {
+        let src = "fn main(console: Console, dir: Dir[Read], file: File[Read], net: Net[Connect]):\n    print(console, read(file))\n";
+        let out = reformat(src).expect("capability rights round-trip");
+        assert!(out.contains("dir: Dir[Read]"), "{out}");
+        assert!(out.contains("file: File[Read]"), "{out}");
+        assert!(out.contains("net: Net[Connect]"), "{out}");
+        assert!(!out.contains("File(Read)"), "{out}");
+    }
+
+    #[test]
     fn comprehensions_survive_formatting_everywhere() {
         // Learner round-3 BLOCKER: `let ys = [n * n for n in xs]` used to print
         // as `let ys = 0` (the inline renderer's placeholder leaked), and the

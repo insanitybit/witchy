@@ -1776,7 +1776,7 @@ pub fn type_str(t: &Type) -> String {
         Type::Named(n, args) if args.is_empty() => n.clone(),
         // Capability rights use bracket syntax (`Dir[Read]`, `Net[Connect]`);
         // ordinary generic types use parens (`List(Int)`, `Option(T)`).
-        Type::Named(n, args) if n == "Dir" || n == "Net" => {
+        Type::Named(n, args) if n == "Dir" || n == "File" || n == "Net" => {
             format!("{n}[{}]", args.iter().map(type_str).collect::<Vec<_>>().join(", "))
         }
         Type::Named(n, args) => {
