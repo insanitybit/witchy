@@ -14,22 +14,9 @@
 // A forged or replayed assertion fails one of these and is rejected here.
 
 import crypto
-import string
+import bytes
+import encoding
 from json import Json
-
-// One lowercase hex digit -> 0..15, or -1. (Inputs are lowercase hex: that is what
-// `crypto.sha256` emits and what standard encoders/`toString(16)` produce.)
-fn nibble(c: String) -> Int:
-    string.index_of("0123456789abcdef", c) ?? -1
-
-// The unsigned byte at byte-offset `i` of a hex string (2 chars per byte), or -1.
-fn hex_byte_at(hexs: String, i: Int) -> Int:
-    let hi = nibble(string.substring(hexs, i * 2, i * 2 + 1))
-    let lo = nibble(string.substring(hexs, i * 2 + 1, i * 2 + 2))
-    if hi < 0 || lo < 0:
-        -1
-    else:
-        hi * 16 + lo
 
 fn json_str(doc: Json, key: String) -> String:
     match json.get_string(doc, key):
@@ -55,13 +42,18 @@ pub fn verify_assertion(stored_pubkey_hex: String, auth_data_hex: String, client
                 check_auth_and_sig(stored_pubkey_hex, auth_data_hex, client_data_json, signature_hex, expected_rp_id, require_uv)
 
 fn check_auth_and_sig(stored_pubkey_hex: String, auth_data_hex: String, client_data_json: String, signature_hex: String, expected_rp_id: String, require_uv: Bool) -> Result(Bool, String):
+    match encoding.hex_decode_bytes(auth_data_hex):
+        Err(e) -> Err("authenticatorData is not valid hex: " + e)
+        Ok(auth_data) -> check_auth_bytes(stored_pubkey_hex, auth_data, client_data_json, signature_hex, expected_rp_id, require_uv)
+
+fn check_auth_bytes(stored_pubkey_hex: String, auth_data: Bytes, client_data_json: String, signature_hex: String, expected_rp_id: String, require_uv: Bool) -> Result(Bool, String):
     // authenticatorData = rpIdHash[32] || flags[1] || signCount[4] || ... (>= 37 bytes).
-    if string.char_count(auth_data_hex) < 74:
+    if bytes.length(auth_data) < 37:
         Err("authenticatorData too short")
-    else if string.substring(auth_data_hex, 0, 64) != crypto.sha256(expected_rp_id):
+    else if encoding.hex_encode_bytes(bytes.slice(auth_data, 0, 32)) != crypto.sha256(expected_rp_id):
         Err("rpIdHash mismatch (wrong relying party)")
     else:
-        let flags = hex_byte_at(auth_data_hex, 32)
+        let flags = bytes.at(auth_data, 32)
         let up = flags - flags / 2 * 2
         let uv = flags / 4 - flags / 8 * 2
         if up != 1:
@@ -70,7 +62,7 @@ fn check_auth_and_sig(stored_pubkey_hex: String, auth_data_hex: String, client_d
             Err("user-verification required but flag not set")
         else:
             // The signed message is authenticatorData || SHA256(clientDataJSON).
-            let msg_hex = auth_data_hex + crypto.sha256(client_data_json)
+            let msg_hex = encoding.hex_encode_bytes(auth_data) + crypto.sha256(client_data_json)
             match crypto.ecdsa_p256_verify_hex(stored_pubkey_hex, msg_hex, signature_hex):
                 Err(e) -> Err("signature input malformed: " + e)
                 Ok(true) -> Ok(true)

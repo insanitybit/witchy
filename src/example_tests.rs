@@ -2414,6 +2414,46 @@ fn main(console: Console):
         assert_eq!(run_linked_on_wasm(&[("main", &ok)], "main"), ["hi"], "wasm decodes valid hex");
     }
 
+    /// WebAuthn treats authenticatorData as a trust-boundary decoder input. A
+    /// malformed hex flag byte must fail as malformed input before semantic flag
+    /// checks can turn it into a misleading user-presence error.
+    #[test]
+    fn webauthn_authenticator_data_rejects_malformed_hex_before_flags_on_both_backends() {
+        let src = r#"import crypto
+import webauthn
+
+fn main(console: Console):
+    let rp = "example.com"
+    let client = "{\"type\":\"webauthn.get\",\"challenge\":\"c\",\"origin\":\"https://example.com\"}"
+    let malformed = crypto.sha256(rp) + "zz00000000"
+    match webauthn.verify_assertion("00", malformed, client, "00", "c", "https://example.com", rp, true):
+        Ok(v) -> print(console, "ok ${v}")
+        Err(e) -> print(console, e)
+"#;
+
+        let interp = link_run(src);
+        assert_eq!(interp.len(), 1, "interpreter produced unexpected output: {interp:?}");
+        assert!(
+            interp[0].starts_with("authenticatorData is not valid hex:"),
+            "interpreter must reject malformed authenticatorData as malformed hex: {interp:?}"
+        );
+        assert!(
+            !interp[0].contains("user-presence flag not set"),
+            "interpreter must not report a semantic flag error for malformed hex: {interp:?}"
+        );
+
+        let wasm = run_linked_on_wasm(&[("main", src)], "main");
+        assert_eq!(wasm.len(), 1, "WASM produced unexpected output: {wasm:?}");
+        assert!(
+            wasm[0].starts_with("authenticatorData is not valid hex:"),
+            "WASM must reject malformed authenticatorData as malformed hex: {wasm:?}"
+        );
+        assert!(
+            !wasm[0].contains("user-presence flag not set"),
+            "WASM must not report a semantic flag error for malformed hex: {wasm:?}"
+        );
+    }
+
     /// (BUG-456) Encoding's canonical binary path is `Bytes`, not lossy `String`
     /// plumbing or hex detours. The payload includes `0xff`, so any accidental
     /// UTF-8 normalization changes the rendered byte list.
