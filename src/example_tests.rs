@@ -5785,18 +5785,26 @@ fn yn(b: Bool) -> String:
         assert_eq!(wasm_run(src), want, "compiled WASM must agree");
     }
 
-    /// An invalid regex pattern must NOT trap the VM: `matches`/`find`/`find_all`/`split`
-    /// return Bool/Option/List (a total contract), so a bad pattern yields the empty result,
-    /// identically on both backends. Previously the compiled backend trapped while the
-    /// interpreter raised a RuntimeError — a parity gap and a latent DoS if a pattern were
-    /// ever attacker-supplied.
+    /// (BUG-186/RFC-0044) An invalid regex pattern is a loud error, not the same
+    /// result as a valid regex with no matches. That keeps the module docs, native
+    /// helper, and compiled host import on one contract.
     #[test]
-    fn regex_invalid_pattern_is_total_on_both_backends() {
-        let src = "import regex\nimport string\n\nfn main(console: Console):\n    print(console, __render(regex.matches(\"[\", \"x\")))\n    print(console, __render(regex.find(\"(unclosed\", \"x\")))\n    print(console, __render(regex.find_all(\"*\", \"x\")))\n    print(console, __render(regex.split(\"((((\", \"a,b\")))\n";
-        let want: Vec<String> =
-            ["false", "None", "[]", "[a,b]"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(link_run(src), want.clone(), "interpreter");
-        assert_eq!(wasm_run(src), want, "compiled WASM must agree");
+    fn regex_invalid_pattern_is_loud_on_both_backends() {
+        let src = "import regex\n\nfn main(console: Console):\n    print(console, __render(regex.matches(\"[\", \"x\")))\n";
+        let linked = resolve_std_src(src);
+        typeck::check(&linked).expect("typecheck");
+        let interp_err = interpreter::run_module(linked.clone(), ".", Vec::new())
+            .expect_err("interpreter must reject invalid regex syntax")
+            .to_string();
+        assert!(interp_err.contains("invalid regex pattern `[`"), "{interp_err}");
+
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers regex");
+        let wasm_err = crate::run_wasm_bytes(&bytes)
+            .expect_err("WASM must reject invalid regex syntax")
+            .to_string();
+        assert!(wasm_err.contains("invalid regex pattern `[`"), "{wasm_err}");
     }
 
     /// Alternation `a|b` and grouping `(...)` — which the old hand-rolled engine

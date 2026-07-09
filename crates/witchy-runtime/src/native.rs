@@ -916,15 +916,9 @@ mod regexp {
         let [Value::Str(pattern), Value::Str(text)] = args else {
             return Err(type_error("regex.match_spans expects (pattern, text) strings"));
         };
-        // An invalid pattern yields no matches rather than aborting the VM. std/regex's
-        // `matches`/`find`/`find_all`/`split` return Bool/Option/List — a TOTAL contract —
-        // so a bad pattern must not trap (on the compiled backend a returned error becomes a
-        // wasm trap; the interpreter raised a RuntimeError — a latent parity gap too). An
-        // empty result is already the "no match" encoding. Also removes a latent DoS were a
-        // pattern ever attacker-supplied.
-        let Ok(re) = regex::Regex::new(pattern) else {
-            return Ok(Value::Str(String::new()));
-        };
+        let re = regex::Regex::new(pattern).map_err(|e| RuntimeError {
+            message: format!("invalid regex pattern `{pattern}`: {e}"),
+        })?;
         let mut out = String::new();
         for m in re.find_iter(text) {
             use std::fmt::Write;

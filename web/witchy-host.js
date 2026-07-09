@@ -141,6 +141,9 @@ export async function runWitchy(wasm, source) {
       wasm.witchy_free(pp, p.length || 1);
       wasm.witchy_free(tp, t.length || 1);
       pending = takeLibBytes(res);
+      if (pending[0] === 0x1f) {
+        throw new Error(dec.decode(pending.slice(1)));
+      }
       return pending.length;
     },
     fill_pending(outPtr) {
