@@ -5,6 +5,11 @@
 
 use super::*;
 
+fn is_generated_anon_name(name: &str) -> bool {
+    name.strip_prefix("__anon")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
 impl Codegen {
     /// WIR twin of [`slot_cmp`] for SCALAR slots only: the comparison of two
     /// 8-byte slots at addresses `aa`/`bb`. `None` for Str/compound shapes (whose
@@ -766,17 +771,26 @@ impl Codegen {
             // name as the opening token (matching the single ctor it lowers to).
             EqShape::Record(tyname) => {
                 let fields = self.record_field_types.get(tyname).cloned()?;
+                let names = self.record_fields.get(tyname).cloned()?;
+                let anonymous = is_generated_anon_name(tyname);
                 // (RFC-0042) Render the unqualified type name (`P`), not the
                 // canonical `main.P` — matching the interpreter's Display.
                 let shown = tyname.rsplit_once('.').map_or(tyname.as_str(), |(_, c)| c);
-                let header = self.intern(&format!("{shown}("));
-                let (close, comma) = (self.intern(")"), self.intern(", "));
+                let header_text = if anonymous { ".{".to_string() } else { format!("{shown}(") };
+                let header = self.intern(&header_text);
+                let close = self.intern(if anonymous { "}" } else { ")" });
+                let (comma, colon) = (self.intern(", "), self.intern(": "));
                 let mut body: witchy_wir::wir::WirSeq = vec![setl("acc", W::StrPtr(header))];
                 for (i, fty) in fields.iter().enumerate() {
                     let fshape = self.eq_shape_of_type(fty)?;
                     let render = self.slot_render_wir(&fshape, add(getl("p"), i32c((4 + 8 * i) as i32)))?;
                     if i > 0 {
                         body.push(setl("acc", concat(getl("acc"), W::StrPtr(comma))));
+                    }
+                    if anonymous {
+                        let label = self.intern(&names.get(i)?.0);
+                        body.push(setl("acc", concat(getl("acc"), W::StrPtr(label))));
+                        body.push(setl("acc", concat(getl("acc"), W::StrPtr(colon))));
                     }
                     body.push(setl("acc", concat(getl("acc"), render)));
                 }
@@ -789,16 +803,25 @@ impl Codegen {
             // `RecInst` arm and the render `AdtRec` arm.
             EqShape::RecInst(tyname, args) => {
                 let fields = self.record_field_types.get(tyname).cloned()?;
+                let names = self.record_fields.get(tyname).cloned()?;
                 let subst = self.record_field_subst(tyname, args);
+                let anonymous = is_generated_anon_name(tyname);
                 let shown = tyname.rsplit_once('.').map_or(tyname.as_str(), |(_, c)| c);
-                let header = self.intern(&format!("{shown}("));
-                let (close, comma) = (self.intern(")"), self.intern(", "));
+                let header_text = if anonymous { ".{".to_string() } else { format!("{shown}(") };
+                let header = self.intern(&header_text);
+                let close = self.intern(if anonymous { "}" } else { ")" });
+                let (comma, colon) = (self.intern(", "), self.intern(": "));
                 let mut body: witchy_wir::wir::WirSeq = vec![setl("acc", W::StrPtr(header))];
                 for (i, fty) in fields.iter().enumerate() {
                     let fshape = self.eq_shape_of_type_with(fty, &subst)?;
                     let render = self.slot_render_wir(&fshape, add(getl("p"), i32c((4 + 8 * i) as i32)))?;
                     if i > 0 {
                         body.push(setl("acc", concat(getl("acc"), W::StrPtr(comma))));
+                    }
+                    if anonymous {
+                        let label = self.intern(&names.get(i)?.0);
+                        body.push(setl("acc", concat(getl("acc"), W::StrPtr(label))));
+                        body.push(setl("acc", concat(getl("acc"), W::StrPtr(colon))));
                     }
                     body.push(setl("acc", concat(getl("acc"), render)));
                 }

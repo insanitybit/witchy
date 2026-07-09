@@ -1131,6 +1131,25 @@ fn main(console: Console):
         );
     }
 
+    /// (BUG-562) Anonymous-record synthetic type names are keyed by field shape,
+    /// not by each module's local first-seen ordinal. Different shapes from
+    /// different modules must not collapse into the same bare compiler-private
+    /// type after linking, while equal shapes may still share one definition.
+    #[test]
+    fn anonymous_record_shapes_do_not_collide_across_modules() {
+        let left = "pub fn make():\n    .{a: 1}\n";
+        let right = "pub fn make():\n    .{a: 3}\n";
+        let main = "import left\nimport right\n\nfn main(console: Console):\n    let local = .{b: 2}\n    let l = left.make()\n    let r = right.make()\n    print(console, \"${l.a}\")\n    print(console, \"${r.a}\")\n    print(console, \"${local.b}\")\n";
+        let sources = [("left", left), ("right", right), ("main", main)];
+        let expected = ["1", "3", "2"];
+        assert_eq!(interpreter::run_program(&sources, "main").expect("interp"), expected);
+        assert_eq!(
+            run_linked_on_wasm(&sources, "main"),
+            expected,
+            "compiled anonymous-record shape names must agree",
+        );
+    }
+
     /// (RFC-0065, parity) Set/DateTime/Rng/Url are `sealed type`s: external code must
     /// build them through the module's smart constructors (dedup / validated /
     /// parsed), but may still READ and MATCH them. The public API + inspection run
@@ -5829,7 +5848,7 @@ fn yn(b: Bool) -> String:
     #[test]
     fn anonymous_record_eq_and_show_backends_agree() {
         let src = "fn main(console: Console):\n    let a = .{x: 1, y: \"hi\"}\n    let b = .{x: 1, y: \"hi\"}\n    let c = .{x: 2, y: \"hi\"}\n    print(console, \"${a == b}\")\n    print(console, \"${a == c}\")\n    print(console, \"${a}\")\n";
-        let want = ["true", "false", "__anon0(1, hi)"];
+        let want = ["true", "false", ".{x: 1, y: hi}"];
         assert_eq!(link_run(src), want, "interp");
         assert_eq!(wasm_run(src), want, "wasm");
     }

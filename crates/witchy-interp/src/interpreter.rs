@@ -196,6 +196,11 @@ impl fmt::Display for Value {
     }
 }
 
+fn is_generated_anon_name(name: &str) -> bool {
+    name.strip_prefix("__anon")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeError {
     pub message: String,
@@ -641,6 +646,54 @@ const DEFAULT_STEP_LIMIT: u64 = u64::MAX;
 pub const COMPTIME_STEP_LIMIT: u64 = 500_000_000;
 
 impl Interpreter {
+    fn render_value(&self, value: &Value) -> String {
+        match value {
+            Value::List(items) => format!(
+                "[{}]",
+                items.iter().map(|v| self.render_value(v)).collect::<Vec<_>>().join(", ")
+            ),
+            Value::Tuple(items) => format!(
+                "({})",
+                items.iter().map(|v| self.render_value(v)).collect::<Vec<_>>().join(", ")
+            ),
+            Value::Ctor { name, fields } if is_generated_anon_name(name) => {
+                let Some(names) = self.record_fields.get(name) else {
+                    return value.to_string();
+                };
+                if names.len() != fields.len() {
+                    return value.to_string();
+                }
+                let parts = names
+                    .iter()
+                    .zip(fields)
+                    .map(|(name, field)| format!("{name}: {}", self.render_value(field)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(".{{{parts}}}")
+            }
+            Value::Ctor { name, fields } => {
+                let shown = name.rsplit_once('.').map_or(name.as_str(), |(_, c)| c);
+                if fields.is_empty() {
+                    shown.to_string()
+                } else {
+                    format!(
+                        "{shown}({})",
+                        fields.iter().map(|v| self.render_value(v)).collect::<Vec<_>>().join(", ")
+                    )
+                }
+            }
+            Value::Dict(entries) => format!(
+                "{{{}}}",
+                entries
+                    .iter()
+                    .map(|(k, v)| format!("{}: {}", self.render_value(k), self.render_value(v)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            _ => value.to_string(),
+        }
+    }
+
     pub fn new(module: Module) -> Self {
         let mut functions = HashMap::new();
         let mut record_fields = HashMap::new();
@@ -1219,7 +1272,7 @@ impl Interpreter {
                 _ => err("print expects a Console capability and a message: print(console, msg)"),
             },
             // Pure builtins need no capability.
-            "__render" => Ok(Some(Value::Str(one(args)?.to_string()))),
+            "__render" => Ok(Some(Value::Str(self.render_value(&one(args)?)))),
             // (RFC-0055) Channel message erasure. `Value` is uniform, so erasing a
             // typed message to the executor's opaque `__Msg` and recovering the
             // endpoint's type are both the identity — the value passes through

@@ -663,6 +663,8 @@ pub fn link_with_user_modules(
     }
 
     let mut items = Vec::new();
+    let mut seen_anon_types: HashMap<String, TypeDef> = HashMap::new();
+    let mut seen_anon_trait_impls: HashSet<(String, Vec<String>, String, Vec<String>)> = HashSet::new();
     for (mname, m) in &modules {
         for item in &m.items {
             match item {
@@ -689,7 +691,18 @@ pub fn link_with_user_modules(
                     )?;
                     items.push(Item::Function(f2));
                 }
-                Item::Type(t) => items.push(Item::Type(t.clone())),
+                Item::Type(t) => {
+                    if is_generated_anon_name(&t.name) {
+                        if let Some(prev) = seen_anon_types.get(&t.name) {
+                            if prev == t {
+                                continue;
+                            }
+                        } else {
+                            seen_anon_types.insert(t.name.clone(), t.clone());
+                        }
+                    }
+                    items.push(Item::Type(t.clone()));
+                }
                 // Constants and aliases were resolved per-module above, so none
                 // remain here.
                 Item::Const { .. } | Item::TypeAlias { .. } | Item::Comptime(_) => {}
@@ -720,6 +733,11 @@ pub fn link_with_user_modules(
                     items.push(Item::Trait(t2));
                 }
                 Item::Impl(im) => {
+                    if let Some(key) = generated_anon_trait_impl_key(im) {
+                        if !seen_anon_trait_impls.insert(key) {
+                            continue;
+                        }
+                    }
                     let mut im2 = im.clone();
                     for method in &mut im2.methods {
                         let mut bound = HashSet::new();
@@ -1754,11 +1772,26 @@ fn is_reserved_user_identifier(name: &str) -> bool {
     is_compiler_private_name(name) || is_user_spellable_lowered_method_name(name)
 }
 
+fn is_generated_anon_name(name: &str) -> bool {
+    name.strip_prefix("__anon")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
 fn is_generated_anon_type(name: &str, line: Option<u32>) -> bool {
-    line == Some(u32::MAX)
-        && name
-            .strip_prefix("__anon")
-            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    line == Some(u32::MAX) && is_generated_anon_name(name)
+}
+
+fn generated_anon_trait_impl_key(im: &ImplDef) -> Option<(String, Vec<String>, String, Vec<String>)> {
+    let trait_name = im.trait_name.as_ref()?;
+    if !is_generated_anon_name(&im.type_name) {
+        return None;
+    }
+    Some((
+        trait_name.clone(),
+        im.trait_args.iter().map(crate::format::type_str).collect(),
+        im.type_name.clone(),
+        im.target_args.iter().map(crate::format::type_str).collect(),
+    ))
 }
 
 fn is_generated_local_name(name: &str) -> bool {

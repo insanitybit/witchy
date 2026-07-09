@@ -75,8 +75,8 @@ fn is_ambient_ctor(name: &str) -> bool {
 }
 
 /// Compiler-synthesized type heads that name no module and stay bare: the
-/// `TupleN` head a tuple `impl` dispatches under, and the `__anonN` record a
-/// `.{…}` literal desugars to.
+/// `TupleN` head a tuple `impl` dispatches under, and the shape-keyed `__anon…`
+/// record a `.{…}` literal desugars to.
 fn is_synthetic_type(name: &str) -> bool {
     is_anon_type(name)
         || (name.strip_prefix("Tuple").is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())))
@@ -353,7 +353,7 @@ impl<'a> Scope<'a> {
         if is_ambient_type(name) || name == "Self" || is_synthetic_type(name) {
             // `Self` is the impl/trait's own type, substituted during trait
             // lowering; `TupleN` is the synthetic head a tuple impl dispatches
-            // under; `__anonN` is a `.{…}` record — all name no module, stay bare.
+            // under; `__anon…` is a `.{…}` record — all name no module, stay bare.
             return Ok(name.to_string());
         }
         if name.chars().next().is_some_and(|c| c.is_lowercase()) {
@@ -593,8 +593,9 @@ impl<'a> Scope<'a> {
                         ));
                     }
                     // Canonicalize the declaration itself (unless ambient or a
-                    // compiler synthetic like `__anonN`, whose constructions stay
-                    // bare — canonicalizing the def would strand them).
+                    // compiler synthetic like an anonymous-record `__anon…`, whose
+                    // constructions stay bare — canonicalizing the def would strand
+                    // them).
                     if !is_ambient_type(&t.name) && !is_synthetic_type(&t.name) {
                         let qual = format!("{}.{}", self.home, t.name);
                         for v in &mut t.variants {

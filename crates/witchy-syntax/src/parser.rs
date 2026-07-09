@@ -24,6 +24,17 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+fn anon_record_type_name(fields: &[String]) -> String {
+    let mut suffix = format!("{:010}", fields.len());
+    for field in fields {
+        suffix.push_str(&format!("{:010}", field.len()));
+        for byte in field.as_bytes() {
+            suffix.push_str(&format!("{byte:03}"));
+        }
+    }
+    format!("__anon{suffix}")
+}
+
 pub fn parse_module(src: &str) -> Result<Module, ParseError> {
     let tokens = tokenize(src).map_err(|e| ParseError {
         message: e.message,
@@ -36,14 +47,16 @@ pub fn parse_module(src: &str) -> Result<Module, ParseError> {
     let mut parser = Parser::new(tokens);
     let mut module = parser.module()?;
     // Each anonymous struct `.{…}` becomes a generic synthetic record carrying
-    // `derive(Reflect)`, prepended to the module: `__anonN(t0, …)` with one type
-    // parameter per field. Generic-record derive makes `.{…}` ordinary reflectable
-    // data with no special builtin.
+    // `derive(Reflect)`, prepended to the module. The synthetic type name is
+    // keyed by the sorted field-name set, so distinct shapes from different
+    // modules cannot collide after linking. Generic-record derive makes `.{…}`
+    // ordinary reflectable data with no special builtin.
     if !parser.anon_records.is_empty() {
         let mut defs = String::new();
-        for (idx, fields) in parser.anon_records.iter().enumerate() {
+        for fields in &parser.anon_records {
+            let name = anon_record_type_name(fields);
             let params: Vec<String> = (0..fields.len()).map(|i| format!("t{i}")).collect();
-            defs.push_str(&format!("type __anon{idx}({}) derive(Reflect):\n", params.join(", ")));
+            defs.push_str(&format!("type {name}({}) derive(Reflect):\n", params.join(", ")));
             for (i, f) in fields.iter().enumerate() {
                 defs.push_str(&format!("    {f}: t{i}\n"));
             }
@@ -89,8 +102,8 @@ struct Parser {
     in_async: bool,
     in_gen: bool,
     /// Distinct field-name sets (sorted) of the anonymous structs `.{…}` seen, in
-    /// first-seen order. Each becomes a generic synthetic record `__anonN(t0, …)
-    /// derive(Reflect)` prepended to the module, so `.{a: x}` is ordinary
+    /// first-seen order. Each becomes an exactly shape-keyed generic synthetic
+    /// record `__anon...` prepended to the module, so `.{a: x}` is ordinary
     /// reflectable data — `json.stringify(.{…})`, `debug(.{…})` — with no builtins.
     anon_records: Vec<Vec<String>>,
     /// Current recursion depth of the mutually-recursive descent (expressions,
@@ -1692,10 +1705,10 @@ impl Parser {
     }
 
     /// `.{ field: expr, … }` — an anonymous struct (the `.` is already consumed).
-    /// It desugars to a value of a generic synthetic record `__anonN`, registered so
-    /// `module()` emits its `derive(Reflect)` definition. The record is constructed
-    /// by named field, so its field order is irrelevant; the synthetic type dedups by
-    /// the sorted field-name set.
+    /// It desugars to a value of a shape-keyed generic synthetic record, registered
+    /// so `module()` emits its `derive(Reflect)` definition. The record is
+    /// constructed by named field, so its field order is irrelevant; the synthetic
+    /// type dedups by the sorted field-name set.
     fn anon_record(&mut self) -> Result<Expr, ParseError> {
         let mut fields = Vec::new();
         while !self.at(&Tok::RBrace) {
@@ -1709,15 +1722,10 @@ impl Parser {
         self.expect(&Tok::RBrace)?;
         let mut names: Vec<String> = fields.iter().map(|(n, _)| n.clone()).collect();
         names.sort();
-        let idx = self
-            .anon_records
-            .iter()
-            .position(|s| *s == names)
-            .unwrap_or_else(|| {
-                self.anon_records.push(names);
-                self.anon_records.len() - 1
-            });
-        Ok(Expr::Record { name: format!("__anon{idx}"), fields, spread: None })
+        if !self.anon_records.contains(&names) {
+            self.anon_records.push(names.clone());
+        }
+        Ok(Expr::Record { name: anon_record_type_name(&names), fields, spread: None })
     }
 
     /// `Name(field: value, ..., ..base?)` — named-field construction, optionally
