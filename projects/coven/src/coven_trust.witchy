@@ -72,13 +72,13 @@ fn strict_strings(items: List(Json)) -> Result(List(String), String):
 // signed by the issuer it names (and trusted here) passes. Returns the verified claims, or
 // a reason the server renders as 401.
 pub fn verify_token(issuers: List(Issuer), token: String, now: Int) -> Result(Json, String):
-    let unverified = jwt.claims_unverified(token).map_err(fn(e: String): "malformed identity token: " + e)?
+    let unverified = jwt.claims_unverified(token).map_err(fn(e: jwt.JwtError): "malformed identity token: " + jwt.jwt_error_message(e))?
     let iss = coven_json.str(unverified, "iss")
     match find_issuer(issuers, iss):
         None -> Err("issuer `" + iss + "` is not trusted by this registry")
         Some(entry) ->
             let pubkey = signing_key(entry, token)?
-            jwt.verify_oidc(token, pubkey, iss, "coven-registry", now)
+            jwt.verify_oidc(token, pubkey, iss, "coven-registry", now).map_err(fn(e: jwt.JwtError): jwt.jwt_error_message(e))
 
 fn find_issuer(issuers: List(Issuer), iss: String) -> Option(Issuer):
     list.find_map(issuers, fn(entry: Issuer): if entry.id == iss: Some(entry) else: None)
@@ -89,6 +89,6 @@ fn signing_key(entry: Issuer, token: String) -> Result(String, String):
     match entry.jwks:
         Some(jwks) ->
             match jwt.kid(token):
-                Some(k) -> jwt.rsa_key_for_kid(jwks, k)
+                Some(k) -> jwt.rsa_key_for_kid(jwks, k).map_err(fn(e: jwt.JwtError): jwt.jwt_error_message(e))
                 None -> Err("issuer `" + entry.id + "` publishes a JWKS but the token has no `kid` header")
         None -> Ok(entry.pubkey)

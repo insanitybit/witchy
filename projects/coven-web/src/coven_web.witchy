@@ -572,7 +572,8 @@ fn select_and_verify(clock: Clock, jwks: Json, client_id: String, id_token: Stri
     let key_id = jwt.kid(id_token).ok_or("id_token header has no `kid`")?
     let der = jwt.rsa_key_for_kid(jwks, key_id)?
     // JWT `exp`/`nbf` are unix SECONDS; `clock.now()` is milliseconds.
-    jwt.verify_oidc(id_token, der, "https://accounts.google.com", client_id, clock.now() / 1000)
+    let claims = jwt.verify_oidc(id_token, der, "https://accounts.google.com", client_id, clock.now() / 1000)?
+    Ok(claims)
 
 // Mint a bearer session for `who` and hand it to the SPA in the URL fragment (kept out of
 // logs/Referer) — the shared tail of every social-login callback.

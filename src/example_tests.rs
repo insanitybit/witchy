@@ -2802,7 +2802,13 @@ fn main(console: Console):
 fn report(console: Console, token: String):
     match jwt.verify_oidc(token, "{pubkey}", "https://issuer", "aud", 1000):
         Ok(_) -> console.print("ok")
-        Err(e) -> console.print(e)
+        Err(e) ->
+            match e:
+                jwt.MissingClaim(name) -> console.print("missing:" + name)
+                jwt.AudienceClaimExpected -> console.print("aud-shape")
+                jwt.StringClaimExpected(name) -> console.print("string:" + name)
+                _ -> console.print("other")
+            console.print(jwt.jwt_error_message(e))
 
 fn main(console: Console):
     report(console, "{missing_exp}")
@@ -2811,8 +2817,11 @@ fn main(console: Console):
 "#
         );
         let want = [
+            "missing:exp",
             "JWT payload is missing `exp`",
+            "aud-shape",
             "JWT payload `aud` must be a string or array of strings",
+            "string:iss",
             "JWT payload `iss` must be a string",
         ];
         assert_eq!(link_run(&src), want, "interpreter must reject malformed registered claims");
@@ -13508,7 +13517,7 @@ fn main(console: Console):
         // `now` = 1000, audience "coven". Print `sub` on success, else the error.
         let run = |token: &str| -> Vec<String> {
             let src = format!(
-                "import jwt\nimport json\nfn main(console: Console):\n    match jwt.verify_rs256(\"{token}\", \"{pk_hex}\", \"coven\", 1000):\n        Ok(claims) -> console.print(json.get_string(claims, \"sub\").unwrap_or(\"?\"))\n        Err(e) -> console.print(e)\n"
+                "import jwt\nimport json\nfn main(console: Console):\n    match jwt.verify_rs256(\"{token}\", \"{pk_hex}\", \"coven\", 1000):\n        Ok(claims) -> console.print(json.get_string(claims, \"sub\").unwrap_or(\"?\"))\n        Err(e) -> console.print(jwt.jwt_error_message(e))\n"
             );
             let interp = link_run(&src);
             let wasm = run_linked_on_wasm(&[("main", src.as_str())], "main");
@@ -13650,7 +13659,7 @@ fn main(console: Console):
         // (token, issuer-to-trust) -> printed line. now = 1000, audience "coven".
         let run = |tok: &str, issuer: &str| -> Vec<String> {
             let src = format!(
-                "import jwt\nimport json\nfn main(console: Console):\n    match jwt.verify_oidc(\"{tok}\", \"{pk_hex}\", \"{issuer}\", \"coven\", 1000):\n        Ok(claims) -> console.print(json.get_string(claims, \"repository\").unwrap_or(\"?\"))\n        Err(e) -> console.print(e)\n"
+                "import jwt\nimport json\nfn main(console: Console):\n    match jwt.verify_oidc(\"{tok}\", \"{pk_hex}\", \"{issuer}\", \"coven\", 1000):\n        Ok(claims) -> console.print(json.get_string(claims, \"repository\").unwrap_or(\"?\"))\n        Err(e) -> console.print(jwt.jwt_error_message(e))\n"
             );
             let interp = link_run(&src);
             assert_eq!(interp, run_linked_on_wasm(&[("main", src.as_str())], "main"), "backends agree");
@@ -13724,7 +13733,7 @@ fn main(console: Console):
         // audience = "myclient", now = 1000.
         let run = |tok: &str| -> Vec<String> {
             let src = format!(
-                "import jwt\nimport json\nfn main(console: Console):\n    match jwt.verify_oidc(\"{tok}\", \"{pk_hex}\", \"{iss}\", \"myclient\", 1000):\n        Ok(claims) -> console.print(json.get_string(claims, \"sub\").unwrap_or(\"?\"))\n        Err(e) -> console.print(e)\n"
+                "import jwt\nimport json\nfn main(console: Console):\n    match jwt.verify_oidc(\"{tok}\", \"{pk_hex}\", \"{iss}\", \"myclient\", 1000):\n        Ok(claims) -> console.print(json.get_string(claims, \"sub\").unwrap_or(\"?\"))\n        Err(e) -> console.print(jwt.jwt_error_message(e))\n"
             );
             let interp = link_run(&src);
             assert_eq!(interp, run_linked_on_wasm(&[("main", src.as_str())], "main"), "backends agree");
@@ -13817,7 +13826,7 @@ fn main(console: Console):
         let token = format!("{signed}.{}", b64url(&sig));
         let jwks_lit = jwks.replace('"', "\\\"");
         let src = format!(
-            "import jwt\nimport json\nfn main(console: Console):\n    match json.decode(\"{jwks_lit}\"):\n        Err(e) -> console.print(\"bad jwks\")\n        Ok(doc) ->\n            match jwt.kid(\"{token}\"):\n                None -> console.print(\"no kid\")\n                Some(k) ->\n                    match jwt.rsa_key_for_kid(doc, k):\n                        Err(e) -> console.print(\"key: \" + e)\n                        Ok(der) ->\n                            match jwt.verify_oidc(\"{token}\", der, \"https://accounts.google.com\", \"myclient\", 1000):\n                                Ok(claims) -> console.print(json.get_string(claims, \"email\").unwrap_or(\"?\"))\n                                Err(e) -> console.print(e)\n"
+            "import jwt\nimport json\nfn main(console: Console):\n    match json.decode(\"{jwks_lit}\"):\n        Err(e) -> console.print(\"bad jwks\")\n        Ok(doc) ->\n            match jwt.kid(\"{token}\"):\n                None -> console.print(\"no kid\")\n                Some(k) ->\n                    match jwt.rsa_key_for_kid(doc, k):\n                        Err(e) -> console.print(\"key: \" + jwt.jwt_error_message(e))\n                        Ok(der) ->\n                            match jwt.verify_oidc(\"{token}\", der, \"https://accounts.google.com\", \"myclient\", 1000):\n                                Ok(claims) -> console.print(json.get_string(claims, \"email\").unwrap_or(\"?\"))\n                                Err(e) -> console.print(jwt.jwt_error_message(e))\n"
         );
         let expected = vec!["a@b.com".to_string()];
         assert_eq!(link_run(&src), expected, "interp OIDC-via-JWKS");
@@ -13834,7 +13843,7 @@ fn main(console: Console):
         let run = |jwks_json: &str| -> Vec<String> {
             let lit = jwks_json.replace('"', "\\\"");
             let src = format!(
-                "import jwt\nimport json\nfn main(console: Console):\n    match json.decode(\"{lit}\"):\n        Err(_e) -> console.print(\"bad json\")\n        Ok(doc) -> match jwt.rsa_key_for_kid(doc, \"k1\"):\n            Ok(_der) -> console.print(\"ok\")\n            Err(e) -> console.print(e)\n"
+                "import jwt\nimport json\nfn main(console: Console):\n    match json.decode(\"{lit}\"):\n        Err(_e) -> console.print(\"bad json\")\n        Ok(doc) -> match jwt.rsa_key_for_kid(doc, \"k1\"):\n            Ok(_der) -> console.print(\"ok\")\n            Err(e) -> console.print(jwt.jwt_error_message(e))\n"
             );
             let interp = link_run(&src);
             assert_eq!(interp, run_linked_on_wasm(&[("main", src.as_str())], "main"), "backends agree");
@@ -13866,7 +13875,7 @@ fn main(console: Console):
     /// for reading `iss` to select the verification key before `verify_oidc`. Both backends.
     #[test]
     fn jwt_claims_unverified_reads_routing_fields() {
-        let src = "import jwt\nimport json\nimport encoding\nfn main(console: Console):\n    let payload = encoding.hex_to_base64url(encoding.hex_encode(\"{\\\"iss\\\":\\\"acme\\\",\\\"sub\\\":\\\"x\\\"}\")).unwrap_or(\"?\")\n    match jwt.claims_unverified(\"aaa.\" + payload + \".bbb\"):\n        Err(e) -> console.print(e)\n        Ok(claims) -> console.print(json.get_string(claims, \"iss\").unwrap_or(\"?\"))\n";
+        let src = "import jwt\nimport json\nimport encoding\nfn main(console: Console):\n    let payload = encoding.hex_to_base64url(encoding.hex_encode(\"{\\\"iss\\\":\\\"acme\\\",\\\"sub\\\":\\\"x\\\"}\")).unwrap_or(\"?\")\n    match jwt.claims_unverified(\"aaa.\" + payload + \".bbb\"):\n        Err(e) -> console.print(jwt.jwt_error_message(e))\n        Ok(claims) -> console.print(json.get_string(claims, \"iss\").unwrap_or(\"?\"))\n";
         let expected = vec!["acme".to_string()];
         assert_eq!(link_run(src), expected, "interp");
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
@@ -22304,7 +22313,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     /// (algorithm-confusion defense, fail closed). Identical on both backends.
     #[test]
     fn jwt_rejects_empty_jwk_and_non_rs256_alg_backends_agree() {
-        let src = "import jwt\nfn tag(r: Result(String, String)) -> String:\n    match r:\n        Ok(_k) -> \"ok\"\n        Err(_e) -> \"err\"\nfn main(console: Console):\n    console.print(tag(jwt.rsa_key_from_jwk(\"\", \"\")))\n    let token = \"eyJhbGciOiJub25lIn0.eyJpc3MiOiJpIiwiYXVkIjoiYSIsImV4cCI6OTk5OTk5OTk5OX0.AAAA\"\n    match jwt.verify_oidc(token, \"00\", \"i\", \"a\", 0):\n        Ok(_c) -> console.print(\"accepted\")\n        Err(e) -> console.print(e)\n";
+        let src = "import jwt\nfn tag(r: Result(String, jwt.JwtError)) -> String:\n    match r:\n        Ok(_k) -> \"ok\"\n        Err(_e) -> \"err\"\nfn main(console: Console):\n    console.print(tag(jwt.rsa_key_from_jwk(\"\", \"\")))\n    let token = \"eyJhbGciOiJub25lIn0.eyJpc3MiOiJpIiwiYXVkIjoiYSIsImV4cCI6OTk5OTk5OTk5OX0.AAAA\"\n    match jwt.verify_oidc(token, \"00\", \"i\", \"a\", 0):\n        Ok(_c) -> console.print(\"accepted\")\n        Err(e) -> console.print(jwt.jwt_error_message(e))\n";
         let expected = ["err", "JWT `alg` is `none`, not the required `RS256`"];
         let linked = resolve_std_src(src);
         assert_eq!(

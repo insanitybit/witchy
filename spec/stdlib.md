@@ -1235,23 +1235,61 @@ jwt — verify a compact JWS / JWT (the OIDC identity-token shape), in PURE witc
 
 A compact JWT is `header.payload.signature`, each base64url. The signature covers the ASCII bytes of `header.payload`; for RS256 it is verified against the issuer's RSA public key (DER PKCS#1, hex). On success the decoded payload `claims` are returned for the caller to inspect (`sub`, `iss`, provider-specific owner fields).
 
-#### `fn verify_rs256(token: String, rsa_pubkey_der_hex: String, audience: String, now: Int) -> Result(Json, String)`
+#### `type JwtError`
 
-Verify an RS256 (RSASSA-PKCS1-v1_5 / SHA-256) compact JWT against a DER PKCS#1 RSA public key (hex), checking the signature, `exp > now` (unix seconds), and `aud == audience`. Returns the decoded claims, or a reason string.
+Matchable compact-JWT/OIDC verification failures. These distinguish malformed wire segments, malformed JSON/JWKS metadata, invalid signatures, and semantic claim rejection without forcing callers to parse display strings.
 
-#### `fn verify_oidc(token: String, rsa_pubkey_der_hex: String, issuer: String, audience: String, now: Int) -> Result(Json, String)`
+- `MalformedCompact`
+- `NoHeaderSegment`
+- `NoPayloadSegment`
+- `HeaderBase64(String)`
+- `HeaderJson(String)`
+- `HeaderMissingAlg`
+- `UnsupportedAlg(String)`
+- `SignatureSegmentBase64(String)`
+- `SignatureInputMalformed(String)`
+- `SignatureInvalid`
+- `PayloadBase64(String)`
+- `PayloadJson(String)`
+- `MissingClaim(String)`
+- `IntClaimExpected(String)`
+- `StringClaimExpected(String)`
+- `AudienceClaimExpected`
+- `AudienceArrayStringExpected`
+- `TokenExpired`
+- `AudienceMismatch`
+- `IssuerMismatch`
+- `NotYetValid`
+- `AuthorizedPartyMismatch`
+- `JwkModulusBase64(String)`
+- `JwkExponentBase64(String)`
+- `JwkModulusEmpty`
+- `JwkExponentEmpty`
+- `JwksMissingKeys`
+- `JwksKeysNotArray`
+- `JwksNoMatchingRsaKey(String)`
+
+#### `fn jwt_error_message(e: JwtError) -> String`
+
+Human-readable JWT/OIDC failure text for logs, CLI output, and HTTP responses.
+
+#### `fn verify_rs256(token: String, rsa_pubkey_der_hex: String, audience: String, now: Int) -> Result(Json, JwtError)`
+
+Verify an RS256 (RSASSA-PKCS1-v1_5 / SHA-256) compact JWT against a DER PKCS#1 RSA public key (hex), checking the signature, `exp > now` (unix seconds), and `aud == audience`. Returns the decoded claims, or a typed error.
+
+#### `fn verify_oidc(token: String, rsa_pubkey_der_hex: String, issuer: String, audience: String, now: Int) -> Result(Json, JwtError)`
 
 The full OIDC relying-party check: verify the RS256 signature AND that the token was minted by the expected `issuer` for the expected `audience`, and is valid now (`exp`/`nbf`). Returns the identity claims — `sub` plus provider-specific fields like GitHub's `repository` or Google's `email` — for the caller to authorize. This is the call a login or trusted-publishing flow makes once it holds the issuer's JWKS key (`rsa_key_from_jwk`). The issuer check is what binds a token to a TRUSTED provider: without it, anyone who can mint a JWT for the right audience would be admitted.
 
-#### `fn header(token: String) -> Result(Json, String)`
+#### `fn header(token: String) -> Result(Json, JwtError)`
 
 The decoded JOSE header of a compact JWT (its first segment), or an error — so a verifier can read `alg`/`kid` to select the JWKS key before checking the signature.
 
-#### `fn claims_unverified(token: String) -> Result(Json, String)`
+#### `fn claims_unverified(token: String) -> Result(Json, JwtError)`
 
 The payload claims of a compact JWT WITHOUT verifying its signature — for reading the routing fields (`iss`, and `kid` via `header`) needed to SELECT the verification key before `verify_oidc`. DANGER: never authorize on these claims; verify the signature first and read the claims `verify_oidc` returns.
 
-#### `fn rsa_key_from_jwk(n: String, e: String) -> Result(String, String)`
+#### `fn rsa_key_from_jwk(n: String, e: String) -> Result(String, JwtError)`
 
 Build the DER PKCS#1 `RSAPublicKey` (as hex — the shape `verify_rs256` wants) from a JWK's base64url modulus `n` and exponent `e`, so an OIDC verifier can turn a JWKS entry (`{"kty":"RSA","n":…,"e":…}`) into a key. The result is the ASN.1 DER `SEQUENCE { INTEGER n, INTEGER e }`; an INTEGER gains a leading `00` when its top bit is set (DER integers are signed two's-complement, RSA values are unsigned magnitudes).
 
@@ -1259,7 +1297,7 @@ Build the DER PKCS#1 `RSAPublicKey` (as hex — the shape `verify_rs256` wants) 
 
 The `kid` (key id) from a compact JWT's header — used to pick the right JWKS key when a provider publishes several (key rotation). `None` if the token or header is malformed.
 
-#### `fn rsa_key_for_kid(jwks: Json, key_id: String) -> Result(String, String)`
+#### `fn rsa_key_for_kid(jwks: Json, key_id: String) -> Result(String, JwtError)`
 
 Select the RSA public key for `kid` from a JWKS document (`{"keys":[{"kty":"RSA","kid": …,"n":…,"e":…}, …]}`) and return it as the DER PKCS#1 hex `verify_rs256`/`verify_oidc` want. This is how an OIDC verifier consumes a provider's published keys (Google, GitHub Actions): fetch the JWKS, read the token's `kid` (`jwt.kid`), then pick the key.
 

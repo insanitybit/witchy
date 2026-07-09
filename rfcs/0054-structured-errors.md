@@ -7,9 +7,10 @@ tracking: >
   Core language slice shipped: std/error defines Error: Show, String implements
   Error, and ? accepts/lowers Result(_, Ein) -> Result(_, Eout) through an
   ordinary From(Ein) for Eout impl. std/json and std/toml now expose typed
-  decode-error values and convert them to String through From at existing
-  application boundaries. Remaining 0.1 work: decide whether any other
-  trust-boundary decoders need typed errors before the release.
+  decode-error values; std/crypto, std/webauthn, and std/jwt expose typed
+  trust-boundary verification errors. All convert to String through From at
+  existing application boundaries. Remaining 0.1 work: finish or explicitly
+  defer typed errors for grant/TUF/package-manager trust boundaries.
 ---
 
 # RFC-0054: Structured errors (design-first)
@@ -224,12 +225,19 @@ typed-error bridge: it turns `None` into `Err(String)`, and the same
 library author explicitly provides that conversion.
 
 `std/json.decode` now returns `Result(Json, json.DecodeError)`, and
-`std/toml.decode` now returns `Result(Toml, toml.TomlDecodeError)`. Both typed
-decode errors implement `Show`, `Error`, and conversion to `String`, so
-libraries can match typed errors while existing stringly application boundaries
-can keep using `?` or render the message explicitly with
-`json.decode_error_message` / `toml.decode_error_message`.
+`std/toml.decode` now returns `Result(Toml, toml.TomlDecodeError)`. The
+authentication/verification trust boundary has also moved: `std/crypto`
+verifiers return `crypto.VerifyError`, `std/webauthn.verify_assertion` returns
+`webauthn.AssertionError`, and `std/jwt` verification/JWKS helpers return
+`jwt.JwtError`. These typed errors implement `Show`, `Error`, and conversion to
+`String`, so libraries can match typed errors while existing stringly
+application boundaries can keep using `?` or render the message explicitly with
+the module helper (`json.decode_error_message`, `toml.decode_error_message`,
+`crypto.verify_error_message`, `webauthn.assertion_error_message`, or
+`jwt.jwt_error_message`).
 
 This does not complete the RFC. The remaining release-blocking work is the std
-and core-library migration: json/toml/grant/TUF/webauthn/package-manager trust
-boundaries need typed decoder errors and fail-closed callers.
+and core-library migration: grant/TUF/package-manager trust boundaries still
+need typed decoder errors or an explicit 0.1 deferral, and broader convenience
+parsers/codecs (`encoding`, `url`, `semver`, `time`, `http`) remain
+string-error APIs until demand justifies their own typed cuts.
