@@ -143,7 +143,7 @@ fn named_secret_does_not_satisfy_a_bare_secret() {
     let src = write(
         &dir,
         "s.witchy",
-        "import crypto\n\nfn main(console: Console, key: Secret):\n    print(console, crypto.reveal(key))\n",
+        "import crypto\n\nfn main(console: Console, key: Secret):\n    console.print(crypto.reveal(key))\n",
     );
     for pre in [vec![], vec!["sandbox", "--dir", dir.to_str().unwrap()]] {
         let mut args = pre.clone();
