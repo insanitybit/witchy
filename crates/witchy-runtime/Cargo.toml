@@ -9,6 +9,7 @@ description = "witchy compiler — runtime values, the capability host registry,
 [dependencies]
 witchy-caps = { path = "../witchy-caps" }
 witchy-syntax = { path = "../witchy-syntax" }
+witchy-types = { path = "../witchy-types" }
 # Pure-Rust crypto for the wasm-safe path (the playground never runs
 # security-critical crypto); the native path below uses aws-lc-rs instead.
 sha2 = "0.11.0"

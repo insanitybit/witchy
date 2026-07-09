@@ -1892,8 +1892,15 @@ fn main(console: Console):
     fn native_compiler_intrinsics_reject_comptime_source_strings() {
         use crate::value::NativeValue;
 
-        let src = "comptime:\n    emit(\"pub fn generated(net: Net) -> Int:\")\n    emit(\"    7\")\n";
+        let invalid = "fn main(console: Console):\n    missing(console)\n";
         let footprint = crate::native::lookup("compiler.footprint").expect("compiler.footprint native");
+        let NativeValue::Str(json) = footprint(&[NativeValue::Str(invalid.into())]).expect("native call") else {
+            panic!("compiler.footprint must return a JSON string");
+        };
+        assert!(json.contains("\"error\""), "type-invalid source must fail closed: {json}");
+        assert!(json.contains("unknown function `missing`"), "error must include the type error: {json}");
+
+        let src = "comptime:\n    emit(\"pub fn generated(net: Net) -> Int:\")\n    emit(\"    7\")\n";
         let NativeValue::Str(json) = footprint(&[NativeValue::Str(src.into())]).expect("native call") else {
             panic!("compiler.footprint must return a JSON string");
         };
@@ -1901,6 +1908,17 @@ fn main(console: Console):
         assert!(json.contains("does not support comptime"), "error must name the boundary: {json}");
 
         let diff = crate::native::lookup("compiler.diff").expect("compiler.diff native");
+        let NativeValue::Str(json) = diff(&[
+            NativeValue::Str("pub fn direct() -> Int:\n    0\n".into()),
+            NativeValue::Str(invalid.into()),
+        ])
+        .expect("native diff")
+        else {
+            panic!("compiler.diff must return a JSON string");
+        };
+        assert!(json.contains("\"error\""), "type-invalid diff must fail closed: {json}");
+        assert!(json.contains("unknown function `missing`"), "diff error must include the type error: {json}");
+
         let NativeValue::Str(json) =
             diff(&[NativeValue::Str("pub fn direct() -> Int:\n    0\n".into()), NativeValue::Str(src.into())])
                 .expect("native diff")
@@ -1918,6 +1936,18 @@ fn main(console: Console):
         };
         assert!(md.contains("doc error:"), "comptime doc must return an error comment: {md}");
         assert!(md.contains("does not support comptime"), "doc error must name the boundary: {md}");
+    }
+
+    #[test]
+    fn compiler_footprint_rejects_type_invalid_sources_on_both_backends() {
+        let src = "import compiler\nimport string\n\nfn main(console: Console):\n    let bad = \"fn main(console: Console):\\n    missing(console)\\n\"\n    let fp = compiler.footprint(bad)\n    print(console, \"${string.contains(fp, \"error\")}\")\n    print(console, \"${string.contains(fp, \"missing\")}\")\n    let diff = compiler.diff(\"pub fn direct() -> Int:\\n    0\\n\", bad)\n    print(console, \"${string.contains(diff, \"error\")}\")\n    print(console, \"${string.contains(diff, \"missing\")}\")\n";
+        let expected = ["true", "true", "true", "true"];
+        assert_eq!(link_run(src), expected, "interp: compiler.footprint type gate");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: compiler.footprint type gate",
+        );
     }
 
     #[test]

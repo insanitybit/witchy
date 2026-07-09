@@ -539,7 +539,7 @@ mod compiler {
         let [Value::Str(src)] = args else {
             return Err(type_error("compiler.footprint expects a String"));
         };
-        let json = match parse_source_only_module(src, "compiler.footprint") {
+        let json = match checked_source_only_module(src, "compiler.footprint") {
             Ok(module) => {
                 let fp = witchy_caps::capabilities::analyze(&module);
                 let total = arr(fp.total.iter().map(|(n, r)| witchy_caps::capabilities::show_cap(n, r)));
@@ -613,8 +613,8 @@ mod compiler {
             return Err(type_error("compiler.diff expects (old_source, new_source) strings"));
         };
         let json = match (
-            parse_source_only_module(old_src, "compiler.diff"),
-            parse_source_only_module(new_src, "compiler.diff"),
+            checked_source_only_module(old_src, "compiler.diff"),
+            checked_source_only_module(new_src, "compiler.diff"),
         ) {
             (Ok(old), Ok(new)) => {
                 let old_fp = witchy_caps::capabilities::analyze(&old);
@@ -642,6 +642,65 @@ mod compiler {
             ));
         }
         Ok(module)
+    }
+
+    fn checked_source_only_module(src: &str, op: &str) -> Result<Module, String> {
+        use std::collections::{HashSet, VecDeque};
+
+        fn reject_comptime(module: &Module, op: &str) -> Result<(), String> {
+            if module.items.iter().any(|item| matches!(item, Item::Comptime(_))) {
+                Err(format!(
+                    "{op} does not support comptime source strings; use the source-file CLI path for expanded introspection"
+                ))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn no_comptime_expand(
+            _name: &str,
+            module: &mut Module,
+            _siblings: &[(String, Module)],
+        ) -> Result<(), String> {
+            reject_comptime(module, "compiler source-string introspection")
+        }
+
+        let entry = parse_source_only_module(src, op)?;
+        let mut modules: Vec<(String, Module)> = vec![("main".to_string(), entry.clone())];
+        let mut loaded: HashSet<String> = HashSet::from(["main".to_string()]);
+        let mut queue: VecDeque<Module> = VecDeque::from([entry.clone()]);
+        while let Some(module) = queue.pop_front() {
+            for name in module.imports.clone() {
+                if !loaded.insert(name.clone()) {
+                    continue;
+                }
+                let Some(source) = witchy_syntax::linker::std_source(&name) else {
+                    if let Some(suggestion) = witchy_syntax::linker::closest_std_module(&name) {
+                        return Err(format!(
+                            "unknown module `{name}` — did you mean `import {suggestion}`?"
+                        ));
+                    }
+                    // Source-string introspection has no caller-provided module map.
+                    // Project tools such as pm feed it one file at a time, so a
+                    // non-std import is treated as a project-local module and keeps
+                    // the historical source-only footprint shape. Source-file CLI
+                    // gates own strict multi-module validation.
+                    return Ok(entry);
+                };
+                let parsed = parse_source_only_module(source, op)?;
+                queue.push_back(parsed.clone());
+                modules.push((name, parsed));
+            }
+        }
+
+        let linked = witchy_syntax::linker::link(modules, "main", no_comptime_expand)
+            .map_err(|e| e.to_string())?;
+        witchy_types::typeck::check(&linked).map_err(|e| e.to_string())?;
+        // The public source-string footprint is the submitted module's footprint,
+        // not the linked program's transitive std footprint. Linking/type-checking
+        // above is the validity gate; analyzing `entry` preserves the established
+        // JSON shape and unqualified entry names (`load`, not `main.load`).
+        Ok(entry)
     }
 
     fn render_doc_result(name: &str, src: &str, op: &str) -> Result<String, String> {

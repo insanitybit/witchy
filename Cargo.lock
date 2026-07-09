@@ -2682,6 +2682,7 @@ dependencies = [
  "webpki-roots 0.26.11",
  "witchy-caps",
  "witchy-syntax",
+ "witchy-types",
 ]
 
 [[package]]
