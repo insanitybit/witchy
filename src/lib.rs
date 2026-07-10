@@ -28,6 +28,7 @@ pub use witchy_syntax::{
 pub mod stats;
 // RFC-0018: footprint analysis + grant docs live in the `witchy-caps` crate.
 pub use witchy_caps::capabilities;
+pub mod artifact;
 #[cfg(test)]
 mod capabilities_tests;
 // RFC-0018: runtime values + the capability host live in `witchy-runtime`
@@ -91,13 +92,14 @@ pub fn compile_source(src: &str) -> Result<Vec<u8>, String> {
     // pure Rust, so this runs on EVERY target including the browser playground).
     // A program that doesn't fully lower returns `Ok(None)` → the hard "cannot
     // compile" error below; there is no WAT fallback.
-    codegen::compile_module_binary(&linked)
+    let bytes = codegen::compile_module_binary(&linked)
         .map_err(|e| format!("cannot compile to WASM: {e}"))?
         .ok_or_else(|| {
             "cannot compile to WASM: the program reached a construct the compiled backend \
              does not support (an interpreter-only feature?)"
                 .to_string()
-        })
+        })?;
+    Ok(artifact::embed_launch_contract(bytes, &linked))
 }
 
 /// The exact float formatting both backends share. The playground's host shim

@@ -133,6 +133,32 @@ fn secretstore_main_runs_without_a_secret() {
 }
 
 #[test]
+fn wasm_preserves_an_unused_root_secret_contract() {
+    // BUG-113: imports alone cannot reveal an unused capability parameter. The
+    // artifact's launch metadata must preserve the source-level `Secret` request.
+    let dir = workdir("wasm-unused-secret");
+    let src = write(
+        &dir,
+        "unused_secret.witchy",
+        "fn main(console: Console, key: Secret):\n    console.print(\"must not run\")\n",
+    );
+    let wasm = dir.join("unused_secret.wasm");
+    let emit = run(&["emit-wasm", &src, "-o", wasm.to_str().unwrap()]);
+    assert!(emit.status.success(), "emit-wasm failed: {}", String::from_utf8_lossy(&emit.stderr));
+
+    for program in [src.as_str(), wasm.to_str().unwrap()] {
+        let denied = run(&[program]);
+        let error = String::from_utf8_lossy(&denied.stderr);
+        assert!(!denied.status.success(), "{program} must require its declared root Secret");
+        assert!(
+            error.contains("Secret") && error.contains("--signing-key"),
+            "source and artifact should expose the same launch requirement: {error}",
+        );
+        assert!(String::from_utf8_lossy(&denied.stdout).is_empty());
+    }
+}
+
+#[test]
 fn named_secret_does_not_satisfy_a_bare_secret() {
     // BUG-116: a bare `Secret` main parameter is the ROOT signing-key handle
     // (handle 0). A `--secret name=value` populates a SecretStore; if it also

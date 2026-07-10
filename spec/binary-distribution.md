@@ -25,9 +25,11 @@ wasm library and dropped by `wasm-opt`, but the core evaluator stays linked.
 ## Distribution: one artifact, two hosts
 
 The compile artifact is **`app.wasm`**: the program module, importing the
-`"witchy"` capability host. A module's authority is exactly its **imports** — it
-cannot call a host op it does not import — the distribution counterpart of
-`capabilities::analyze` over source (`witchy_imports` in `src/main.rs`).
+`"witchy"` capability host and carrying a versioned `witchy.launch` custom
+section with `main`'s source-derived host-capability contract. Imports are the
+executable authority floor — a module cannot call a host op it does not import —
+while the launch section preserves declared capability parameters even when
+lowering eliminates every use.
 
 ```
 codegen:  checked AST → WirModule → wasm binary        (no WAT anywhere)
@@ -45,16 +47,14 @@ browser:  app.wasm + web/witchy-host.js (loader)       host = JS (deny-by-omissi
 - **Portable module.** `witchy emit-wasm app.witchy [-o app.wasm]` produces the
   binary; `witchy app.wasm` (or `witchy sandbox [--dir <root>] [--net
   <host:port>]... app.wasm`) runs it. The installed `witchy` binary is the host:
-  it reads the module's `witchy.*` imports, links exactly those families (Dir/Net
-  at the `--dir`/`--net` roots, default cwd; secrets from `--secret`/
+  it reads the module's `witchy.launch` contract and `witchy.*` imports, unions
+  their requirements, and links those families (Dir/Net at the `--dir`/`--net`
+  roots, default cwd; secrets from `--secret`/
   `--secret-file`/`--signing-key`), and a module importing an ungranted op fails
   to instantiate. `precompiled_wasm_runs_like_the_source` checks that a
-  precompiled module runs like its source. Authority is derived from the imports;
-  witchy does **not** embed the source-derived footprint as a custom section, so
-  `witchy caps app.wasm` re-derives it from the import set rather than reading it
-  back. The import-to-capability classification for a precompiled module is the
-  boundary that must track the runtime gate, so it is only as precise as the
-  import families the host recognizes.
+  precompiled module runs like its source. Legacy and external wasm modules with
+  no launch section retain import-derived classification; malformed or unknown
+  Witchy launch metadata is rejected instead of silently ignored.
 - **Browser host.** Ship `app.wasm` + `web/witchy-host.js` as the loader. The
   pure-compute JS host provides only infrastructure imports and omits every
   capability import, so a capability-using module fails to instantiate
@@ -102,8 +102,6 @@ confinement go through the same `runtime.rs`/`confine.rs` as `witchy sandbox`. A
   runtimes (wasmtime CLI, jco, wasmCloud) with no witchy host. Witchy's
   `Dir`/`Net` grants map onto WASI's own capability model. Buys ecosystem
   portability; the distribution story above needs none of it.
-- **Embedded footprint section.** Embedding the source-derived footprint as a
-  custom section (so `witchy caps app.wasm` reads it directly instead of
-  re-deriving from imports) and shipping a per-target `cwasm` plus a slim
-  runtime-only launcher are additive future work, not part of the current artifact
-  contract.
+- **Runtime-only launcher.** Shipping a per-target `cwasm` plus a slim launcher is
+  additive future work; the portable artifact remains `app.wasm` plus the
+  consumer's trusted Witchy host.

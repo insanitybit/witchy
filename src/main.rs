@@ -13,6 +13,7 @@
 
 pub use witchy::analysis;
 pub use witchy::aliases;
+pub use witchy::artifact;
 pub use witchy::ast;
 pub use witchy::capabilities;
 pub use witchy::codegen;
@@ -891,8 +892,8 @@ fn main() -> wasmtime::Result<()> {
             eprintln!("usage: witchy sandbox [--grants <doc.toml> [--accept-grants] | [--dir <root>] [--file <path>]... [--net <host:port>]... [--signing-key <seed-file>] [--secret name=value] [--secret-file name=path]] <file.witchy> [args...]");
             std::process::exit(1);
         };
-        // A precompiled `.wasm` runs directly (authority from its imports); a
-        // `.witchy` source is compiled then run, granted its computed footprint.
+        // A precompiled `.wasm` runs directly (authority from its launch metadata
+        // plus imports); a source is compiled then run with its computed grant.
         // With `--grants`, the whole grant comes from the document (cross-checked).
         let result = if let Some(doc) = grants_doc {
             if path.ends_with(".wasm") {
@@ -943,7 +944,7 @@ fn main() -> wasmtime::Result<()> {
     }
     // `witchy emit-wasm <file.witchy> [-o out.wasm]` compiles a program to a wasm
     // BINARY — the Tier-1 distribution artifact. Run it with `witchy <out.wasm>`,
-    // which grants exactly the authority the module's imports declare.
+    // which grants its source-derived launch contract plus imported host families.
     if std::env::args().nth(1).as_deref() == Some("emit-wasm") {
         let mut argv = std::env::args().skip(2);
         let mut path: Option<String> = None;
@@ -2324,13 +2325,14 @@ fn run_linked_compiled(
 /// pipeline (`compile_module_binary`). A program that doesn't fully lower
 /// surfaces as a hard "cannot compile" error — there is no WAT fallback.
 fn compile_linked_to_wasm(linked: &ast::Module) -> Result<Vec<u8>, String> {
-    codegen::compile_module_binary(linked)
+    let bytes = codegen::compile_module_binary(linked)
         .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?
         .ok_or_else(|| {
             "cannot compile to WASM: the program reached a construct the compiled backend \
              does not support (an interpreter-only feature?)"
                 .to_string()
-        })
+        })?;
+    Ok(artifact::embed_launch_contract(bytes, linked))
 }
 
 /// A cheap fingerprint of the compiler build: the `witchy` binary's size + mtime.
@@ -2753,11 +2755,10 @@ fn run_file_grants(
     run_linked_compiled(&linked, dir_roots, file_grants, net_allow, args, None, named_secrets, user_cap_fields, true)
 }
 
-/// The `witchy.*` host functions a compiled module imports — its authority
-/// surface. For a *precompiled* program (`app.wasm`) the imports ARE the
-/// footprint: there is no source to analyze, but a module physically cannot call
-/// a host op it does not import, so granting exactly the imported families is the
-/// distribution counterpart of `capabilities::analyze`.
+/// The `witchy.*` host functions a compiled module imports — its executable
+/// authority floor. A Witchy-produced artifact also carries its source-derived
+/// root contract in `witchy.launch`; imports remain the fallback for legacy and
+/// external wasm and are always unioned with that metadata.
 ///
 /// Reads the import section with `wasmparser` — a streaming parse of one
 /// section, not a compile. (This used to call `wasmtime::Module::new` on a
@@ -2890,7 +2891,12 @@ fn run_wasm_module(
 ) -> Result<(Vec<String>, Option<i32>), String> {
     use crate::runtime::{Capabilities, Runtime};
     let needs = witchy_imports(bytes)?;
+    let declared = artifact::launch_contract(bytes)?.unwrap_or_default();
     let has = |n: &str| needs.iter().any(|i| i == n);
+    let declares = |name: &str| declared.contains_key(name);
+    let declares_right = |name: &str, right: &str| {
+        declared.get(name).is_some_and(|rights| rights.contains(right))
+    };
     let dir_read = [
         "dir_subdir", "dir_read_len", "dir_exists", "dir_is_dir", "dir_list_size",
         // BUG-013: the runtime links these too — omitting them left a precompiled `.wasm`
@@ -2898,8 +2904,10 @@ fn run_wasm_module(
         "dir_only", "dir_open",
     ]
     .iter()
-    .any(|n| has(n));
-    let dir_write = ["dir_write", "dir_append", "dir_make_dir", "dir_create"].iter().any(|n| has(n));
+    .any(|n| has(n))
+        || declares_right("Dir", "Read");
+    let dir_write = ["dir_write", "dir_append", "dir_make_dir", "dir_create"].iter().any(|n| has(n))
+        || declares_right("Dir", "Write");
     let net_connect = [
         "net_connect", "net_try_connect", "net_restrict", "net_send_line", "net_send_bytes",
         "net_recv_line_len", "net_recv_all_len", "net_recv_bytes_len", "net_close",
@@ -2907,11 +2915,20 @@ fn run_wasm_module(
         "net_deny", "net_resolve_size", "net_connect_pinned", "net_try_connect_pinned",
     ]
     .iter()
-    .any(|n| has(n));
-    let net_listen = ["net_listen", "net_accept", "serve_pool"].iter().any(|n| has(n));
-    let needs_secret =
+    .any(|n| has(n))
+        || declares_right("Net", "Connect");
+    let net_listen = ["net_listen", "net_accept", "serve_pool"].iter().any(|n| has(n))
+        || declares_right("Net", "Listen");
+    let uses_secret_host =
         has("crypto.sign") || has("crypto.public_key") || has("crypto.reveal") || has("secretstore_lookup");
-    if needs_secret && signing_key.is_none() && named_secrets.is_empty() {
+    if declares("Secret") && signing_key.is_none() {
+        return Err(
+            "this program's `main` requires a root `Secret` (the signing key), but none was \
+             granted (use `--signing-key <seed-file>`)"
+                .to_string(),
+        );
+    }
+    if uses_secret_host && signing_key.is_none() && named_secrets.is_empty() {
         return Err(
             "this module imports the Secret host, but none was granted (use `--signing-key <seed-file>`, `--secret name=value`, or `--secret-file name=path`)".to_string(),
         );
@@ -2923,19 +2940,19 @@ fn run_wasm_module(
         args,
         ..Default::default()
     };
-    if has("now") {
+    if has("now") || declares("Clock") {
         caps.clock = true;
     }
-    if has("rand_u64") {
+    if has("rand_u64") || declares("Rand") {
         caps.rand = true;
     }
-    if has("env_len") || has("env_fill") {
+    if has("env_len") || has("env_fill") || declares("Env") {
         caps.env = true;
     }
-    if has("exec_run") {
+    if has("exec_run") || declares("Exec") {
         caps.exec = true;
     }
-    if dir_read || dir_write {
+    if dir_read || dir_write || declares("Dir") {
         let mut roots = dir_roots;
         if roots.is_empty() {
             // Deny by omission (BUG-106): a strict/announced launch (`witchy sandbox
@@ -2959,18 +2976,18 @@ fn run_wasm_module(
     // as an `externref` via the `mint_file` host import, so a module importing
     // `mint_file` needs at least one `--file` grant, exactly as a `Dir` importer
     // needs `--dir`.
-    if has("mint_file") && file_grants.is_empty() {
+    if (has("mint_file") || declares("File")) && file_grants.is_empty() {
         return Err(
             "this program's `main` requires a `File`, but none was granted (use `--file <path>`)".to_string(),
         );
     }
     caps.file_grants = file_grants;
-    if net_connect || net_listen {
+    if net_connect || net_listen || declares("Net") {
         caps.net_allow = Some(net_allow);
         caps.net_connect = net_connect;
         caps.net_listen = net_listen;
     }
-    if needs_secret {
+    if uses_secret_host || declares("Secret") || declares("SecretStore") {
         caps.signing_key = signing_key;
         if let Some(seed) = signing_key {
             caps.secrets.push(runtime::SecretGrant::new("signing", seed.to_vec()));
@@ -2997,8 +3014,8 @@ fn run_wasm_module(
 }
 
 /// Compile a `.witchy` program to a wasm binary and write it to `out`. The
-/// produced module is the Tier-1 distribution artifact: run it with
-/// `witchy <out>` (authority granted from its imports).
+/// produced module is the Tier-1 distribution artifact: run it with `witchy
+/// <out>` under its source-derived launch contract and imported host families.
 fn emit_wasm_file(path: &str, out: &str) -> Result<(), String> {
     let (linked, _stem) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
