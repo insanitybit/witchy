@@ -38,9 +38,9 @@ pub fn render_module(module_name: &str, source: &str, module: &Module) -> Result
     for item in &module.items {
         let Item::Type(t) = item else { continue };
         any = true;
-        let (head, marker) = type_decl(t);
+        let head = type_decl(t);
         let _ = writeln!(out, "#### `{head}`\n");
-        let doc = doc_above_top_level(&lines, &marker);
+        let doc = doc_above_type(&lines, t);
         if !doc.is_empty() {
             let _ = writeln!(out, "{doc}\n");
         }
@@ -150,12 +150,8 @@ pub fn render_module(module_name: &str, source: &str, module: &Module) -> Result
     Ok(out)
 }
 
-/// The declaration head to display for a type, and the source-line marker used to
-/// find its leading doc comment. A `capability` (RFC-0002/0038) and a `sealed type`
-/// (RFC-0065) render with their own keyword rather than as an ordinary `type`
-/// (BUG-138) — mirroring how `witchy fmt` distinguishes them. `is_capability`
-/// implies the type is sealed, so it is the one flag that decides the keyword.
-fn type_decl(t: &TypeDef) -> (String, String) {
+/// A type's source-faithful declaration head, without the trailing colon.
+fn type_decl(t: &TypeDef) -> String {
     if t.is_capability {
         let kw = if t.grantable { "grantable capability" } else { "capability" };
         let v = &t.variants[0];
@@ -168,15 +164,27 @@ fn type_decl(t: &TypeDef) -> (String, String) {
             } else {
                 format!("({})", v.fields.iter().map(type_str).collect::<Vec<_>>().join(", "))
             };
-            return (format!("{kw} {} from {from}", t.name), format!("{kw} {} from", t.name));
+            return format!("{kw} {} from {from}", t.name);
         }
         // `capability X:` — a record capability carrying named state.
-        return (format!("{kw} {}", t.name), format!("{kw} {}:", t.name));
+        return format!("{kw} {}", t.name);
     }
-    if t.sealed {
-        return (format!("sealed type {}", t.name), format!("sealed type {}:", t.name));
+
+    let mut head = if t.sealed {
+        format!("sealed type {}", t.name)
+    } else {
+        format!("type {}", t.name)
+    };
+    if !t.params.is_empty() {
+        head.push_str(&format!("({})", t.params.join(", ")));
     }
-    (format!("type {}", t.name), format!("type {}:", t.name))
+    if t.packed {
+        head.push_str(" packed");
+    }
+    if !t.derives.is_empty() {
+        head.push_str(&format!(" derive({})", t.derives.join(", ")));
+    }
+    head
 }
 
 fn variant_str(v: &Variant) -> String {
@@ -379,11 +387,7 @@ fn doc_above(lines: &[&str], marker: &str) -> String {
     else {
         return String::new();
     };
-    let mut start = i;
-    while start > 0 && lines[start - 1].trim_start().starts_with("//") {
-        start -= 1;
-    }
-    join_comment(lines[start..i].iter())
+    comment_before(lines, i)
 }
 
 /// Like [`doc_above`], but only matches a declaration that starts at column 0.
@@ -393,11 +397,30 @@ fn doc_above_top_level(lines: &[&str], marker: &str) -> String {
     let Some(i) = lines.iter().position(|l| l.starts_with(marker)) else {
         return String::new();
     };
-    let mut start = i;
-    while start > 0 && lines[start - 1].trim_start().starts_with("//") {
-        start -= 1;
-    }
-    join_comment(lines[start..i].iter())
+    comment_before(lines, i)
+}
+
+/// Find a type declaration by keyword + exact name boundary. The suffix varies
+/// across `type T:`, `type T(a):`, `type T packed:`, and `type T derive(...):`.
+fn doc_above_type(lines: &[&str], t: &TypeDef) -> String {
+    let keyword = if t.is_capability {
+        if t.grantable { "grantable capability" } else { "capability" }
+    } else if t.sealed {
+        "sealed type"
+    } else {
+        "type"
+    };
+    let prefix = format!("{keyword} {}", t.name);
+    let Some(i) = lines.iter().position(|line| {
+        line.strip_prefix(&prefix).is_some_and(|rest| {
+            rest.as_bytes()
+                .first()
+                .is_some_and(|byte| matches!(*byte, b':' | b'(') || byte.is_ascii_whitespace())
+        })
+    }) else {
+        return String::new();
+    };
+    comment_before(lines, i)
 }
 
 /// Like [`doc_above`], but only matches an indented declaration. Used for
@@ -409,6 +432,10 @@ fn doc_above_indented(lines: &[&str], marker: &str) -> String {
     else {
         return String::new();
     };
+    comment_before(lines, i)
+}
+
+fn comment_before(lines: &[&str], i: usize) -> String {
     let mut start = i;
     while start > 0 && lines[start - 1].trim_start().starts_with("//") {
         start -= 1;
@@ -501,6 +528,25 @@ mod tests {
         assert!(md.contains("#### `type UserId = Int`"), "alias: {md}");
         assert!(md.contains("A user identifier."), "alias doc: {md}");
         assert!(!md.contains("_No public API._"), "alias is public API: {md}");
+    }
+
+    #[test]
+    fn renders_generic_packed_and_derived_type_declarations() {
+        let src = "// A generic box.\ntype Box(a):\n    value: a\n\n// A derived version.\ntype Version derive(PartialEq, Eq):\n    major: Int\n\n// A packed generic pair.\ntype Pair(a, b) packed derive(Reflect, Show):\n    left: a\n    right: b\n";
+        let md = render("models", src).unwrap();
+
+        assert!(md.contains("#### `type Box(a)`"), "generic type: {md}");
+        assert!(md.contains("A generic box."), "generic doc: {md}");
+        assert!(
+            md.contains("#### `type Version derive(PartialEq, Eq)`"),
+            "derived type: {md}",
+        );
+        assert!(md.contains("A derived version."), "derived doc: {md}");
+        assert!(
+            md.contains("#### `type Pair(a, b) packed derive(Reflect, Show)`"),
+            "generic packed derived type: {md}",
+        );
+        assert!(md.contains("A packed generic pair."), "generic derived doc: {md}");
     }
 
     // BUG-207: RFC-0056 default values appear in the rendered signature.

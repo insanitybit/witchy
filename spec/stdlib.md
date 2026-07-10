@@ -102,15 +102,21 @@ Messages: channels are per-type generic (RFC-0055). A `Sender(m)`/`Receiver(m)` 
 
 The `async`/`await` CPS transform lowers onto the `std/task` executor (task.lazy/and_then/done/run); channel ops (`await chan.recv(rx)` / `await chan.send(tx, x)`) run on the same protocol.
 
-#### `sealed type Sender`
+#### `sealed type Sender(m)`
+
+The typed sending endpoint of a channel carrying `m` messages.
 
 - `Sender(Int)`
 
-#### `sealed type Receiver`
+#### `sealed type Receiver(m)`
+
+The typed receiving endpoint of a channel carrying `m` messages.
 
 - `Receiver(Int)`
 
-#### `type Selected`
+#### `type Selected(m)`
+
+The outcome of a `select`: a message from the first or the second receiver, or `Closed` once neither can deliver.
 
 - `First(m)`
 - `Second(m)`
@@ -2182,7 +2188,9 @@ semver — semantic versions and constraints, for dependency resolution.
 
 Intentionally minimal (matching the package manager's needs): `major.minor.patch` versions and the `^`, `~`, exact, `>=`, and `*` constraints — enough for deterministic resolution without a full SemVer grammar. A missing component parses as 0 (`1.2` is `1.2.0`); a non-numeric component is an error.
 
-#### `sealed type Version`
+#### `sealed type Version derive(PartialEq, Eq, PartialOrd, Ord)`
+
+A version orders by major, then minor, then patch — exactly the lexicographic order `derive(Ord)` gives the fields in declaration order, so `<`, `>`, and `==` compare versions directly. `Version` is sealed (RFC-0065): external code cannot forge one with the raw data constructor, so a `Version` can only be built through this module — `parse`, which rejects negative components, or `version`. This closes the arbitrary-raw-construction vector of BUG-191 (`semver.Version(-1, 2, 3)` from another module is now a compile error).
 
 - `Version { major: Int, minor: Int, patch: Int }`
 
@@ -2404,7 +2412,7 @@ Serve exactly `n` HTTPS requests then return — `serve_tls`'s one-shot/test twi
 
 Set(a) — an unordered collection of distinct values. Members are compared by value equality (a `where a: Eq` bound on every operation that compares), so sets of Ints, Strings, tuples, or your own `Eq` types all work. Build one with `set.new()` / `set.from_list(xs)`, test membership with `set.contains`, and reach for `union`/`intersection`/`difference` for the algebra. A `Set` whose members are `Show` renders as `{a, b, c}` through `show`/`say` (import `show`); `set.to_list(s)` returns the members in insertion order.
 
-#### `sealed type Set`
+#### `sealed type Set(a)`
 
 - `Set { items: List(a) }`
 
@@ -2700,7 +2708,9 @@ Messages: the executor is ERASED (RFC-0055). Its buffers, `Step`, and `Slot` car
 
 The `async`/`await` CPS transform lowers onto this substrate (`task.lazy`/ `and_then`/`done`/`run`), so `chan.recv(rx).await` / `chan.send(tx, x).await` work in async fns.
 
-#### `type Step`
+#### `type Step(a)`
+
+What a task yields to the executor when stepped. `a` is the task's own result. The channel effects (`Open`/`Push`/`Pull`/`PullAny`) are produced by `std/chan`; the executor below interprets every variant. Messages are the erased `__Msg` (RFC-0055) — the typed endpoints (un)wrap at the boundary.
 
 - `Done(a)`
 - `Yield(Task(a))`
@@ -2712,7 +2722,9 @@ The `async`/`await` CPS transform lowers onto this substrate (`task.lazy`/ `and_
 - `Wait(Int, fn(Nil) -> Task(a))`
 - `Cancel(Int, fn(Nil) -> Task(a))`
 
-#### `type Task`
+#### `type Task(a)`
+
+A task communicating via channels, producing an `a`.
 
 - `Task(fn() -> Step(a))`
 

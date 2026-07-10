@@ -84,9 +84,12 @@ pub fn for_each(xs: List(a), f: fn(a) -> Task(Nil)) -> Task(Nil):
     task.for_each(xs, f)
 
 // ---- spawn + channels (the surface) ----
+
+// The typed sending endpoint of a channel carrying `m` messages.
 sealed type Sender(m):
     Sender(Int)
 
+// The typed receiving endpoint of a channel carrying `m` messages.
 sealed type Receiver(m):
     Receiver(Int)
 
