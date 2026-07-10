@@ -32,15 +32,16 @@ fn checked_port(port: Int) -> String:
         fail("policy: net port must be in 0..65535")
     __render(port)
 
-// A typed `Net` address policy — one allowlist pattern (`host:port`, with `:*` / CIDR forms).
-type NetPolicy:
+// A sealed `Net` address policy. Only the checked `Net.*` builders below can mint
+// one; the newline-delimited host grammar is not a user-facing string escape hatch.
+sealed type NetPolicy:
     pattern: String
 
-// A typed `Dir` ENTRY policy (RFC-0011): which entries the Dir may read/write/open.
-// `dir.only(Dir.ext(".txt"))` confines a `Dir` so it can only touch `.txt` files
-// (enforced at read/write/open on both backends, the filesystem analog of
-// `net.only`). Refinement only ever shrinks the set.
-type DirPolicy:
+// A sealed `Dir` ENTRY policy (RFC-0011): which entries the Dir may
+// read/write/open. Only `Dir.ext`/`files`/`dirs` can mint one, so malformed raw
+// grammar cannot turn a requested refinement into a silent no-op. Refinement
+// only ever shrinks the set.
+sealed type DirPolicy:
     pattern: String
 
 impl Net:
