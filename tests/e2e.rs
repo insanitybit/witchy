@@ -2782,7 +2782,9 @@ fn http_get(addr: &str, path: &str) -> (u16, String) {
 fn rand_capability_seeds_deterministically_and_agrees_across_backends() {
     let dir = unique("witchy-rand");
     std::fs::create_dir_all(&dir).unwrap();
-    let src = dir.join("rand.witchy");
+    // Bundled std module names have one canonical owner; this test exercises the
+    // Rand capability, so its entry module must not also claim the `rand` name.
+    let src = dir.join("main.witchy");
     std::fs::write(
         &src,
         "fn main(console: Console, rand: Rand):\n    console.print(__render(rand.rand_u64()))\n    console.print(__render(rand.rand_u64()))\n",

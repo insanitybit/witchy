@@ -85,15 +85,15 @@ impl Show for List(a) where a: Show:
 impl Show for Option(a) where a: Show:
     fn show(self) -> String:
         match self:
-            Some(value) -> "Some(" + show(value) + ")"
+            Some(value) -> "Some(${show(value)})"
             None -> "None"
 
 // A result renders as `Ok(x)` / `Err(e)`, each payload through its `Show`.
 impl Show for Result(a, e) where a: Show, e: Show:
     fn show(self) -> String:
         match self:
-            Ok(value) -> "Ok(" + show(value) + ")"
-            Err(error) -> "Err(" + show(error) + ")"
+            Ok(value) -> "Ok(${show(value)})"
+            Err(error) -> "Err(${show(error)})"
 
 // A dict renders as `{k1: v1, k2: v2}` (insertion order), keys and values each
 // through their `Show`.

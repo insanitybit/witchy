@@ -53,9 +53,12 @@ predecessors:
 > constructor/pattern shadow tables, and head-only return map are deleted.
 > `traits.rs` shrank by 832 net lines in the completion cut. Canonical rendered
 > keys remain only at impl-table, memo, and mangle boundaries and are never
-> parsed back into a type; receiver head/module/generic decisions read `Type`
-> directly. The fast gate is green at 1603/1603 with warning-denied Clippy plus
-> focused interpreter/WASM generic-dispatch regressions. RFC-0046 is implemented.
+> parsed back into a type; their iterative renderer is total over the finite
+> `Type` tree, never truncates distinct deep types to one key, and uses
+> injective byte escaping when keys become private function symbols. Receiver
+> head/module/generic decisions read `Type` directly. The fast gate is green at
+> 1603/1603 with warning-denied Clippy plus focused interpreter/WASM
+> generic-dispatch regressions. RFC-0046 is implemented.
 
 # RFC-0046: Typed trait dispatch — retire the string shadow type system
 

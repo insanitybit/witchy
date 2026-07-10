@@ -39,12 +39,6 @@ struct ImplTraitMethod {
 
 type TraitImplTable = HashMap<(String, String, String), Vec<ImplTraitMethod>>;
 
-fn mangle_segment(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
-        .collect()
-}
-
 /// Mangled name for an impl method: `Trait__Type__method`, or
 /// `Trait__Arg__Type__method` for parameterized trait impls such as `From(Arg)`.
 fn mangle(trait_name: Option<&str>, trait_args: &[Type], type_name: &str, method: &str) -> String {
@@ -53,7 +47,7 @@ fn mangle(trait_name: Option<&str>, trait_args: &[Type], type_name: &str, method
         Some(t) => {
             let args = trait_args
                 .iter()
-                .map(|a| mangle_segment(&witchy_syntax::format::type_str(a)))
+                .map(|arg| mangle_type_key(&type_key(arg.unqualified())))
                 .collect::<Vec<_>>()
                 .join("__");
             format!("{t}__{args}__{type_name}__{method}")
@@ -1504,7 +1498,7 @@ impl Ctx<'_> {
         let table_key = |ty: String| (owner.to_string(), method.to_string(), ty);
         let exact = type_key(ty.unqualified());
         let head = type_head_key(ty);
-        for candidate_key in exact.into_iter().chain(head).map(table_key) {
+        for candidate_key in std::iter::once(exact).chain(head).map(table_key) {
             if let Some(candidates) = self.trait_impl_table.get(&candidate_key) {
                 return candidates.iter().map(|c| c.mangled.clone()).collect();
             }
@@ -1529,8 +1523,7 @@ impl Ctx<'_> {
     fn lookup_inherent_impl(&self, method: &str, ty: &Type) -> Option<String> {
         let exact = type_key(ty.unqualified());
         let head = type_head_key(ty);
-        exact
-            .into_iter()
+        std::iter::once(exact)
             .chain(head)
             .find_map(|key| self.inherent_impl_table.get(&(method.to_string(), key)))
             .cloned()
@@ -1844,8 +1837,7 @@ impl Ctx<'_> {
                 if self.is_dispatch_method(name) && !scope.is_local(name) {
                     if let Some(recv) = args.first() {
                         if let Some(recv_ty) = self.type_ast(recv, scope) {
-                            let tn = type_key(recv_ty.unqualified())
-                                .unwrap_or_else(|| display_type(&recv_ty));
+                            let tn = type_key(recv_ty.unqualified());
                             match self.lookup_impl(name, &recv_ty) {
                                 Some(MethodResolution::Found(mangled)) => *name = mangled,
                                 Some(MethodResolution::Ambiguous(owners)) => self
@@ -2021,7 +2013,7 @@ impl Ctx<'_> {
                 }
                 let receiver_ty = self.type_ast(receiver, scope);
                 if let Some(ty) = &receiver_ty {
-                    let tn = type_key(ty.unqualified()).unwrap_or_else(|| display_type(ty));
+                    let tn = type_key(ty.unqualified());
                     // Host-capability intrinsics are authority-bearing methods,
                     // even when the capability type also has a std owner module
                     // (`Rand` -> `rand`). Try this before owner-module UFCS so
@@ -2145,7 +2137,7 @@ impl Ctx<'_> {
                         "no method `{method}` on `{}` — methods come from `impl` blocks; \
                          a plain function is called as `{method}(value, …)` (or module-qualified, \
                          e.g. `list.{method}(value, …)`)",
-                        type_key(ty.unqualified()).unwrap_or_else(|| display_type(&ty)),
+                        type_key(ty.unqualified()),
                     )),
                     // `json.stringify(x)` with no `import json` parses as a method
                     // call on the bare name `json`; if that name is actually a std
@@ -2409,55 +2401,75 @@ fn expr_needs_lowering(e: &Expr) -> bool {
 /// Canonical terminal key for impl lookup, memoization, and mangling. The key is
 /// never parsed back into a type; all structural reasoning happens before this
 /// boundary on [`Type`].
-fn type_key(t: &Type) -> Option<String> {
-    type_key_d(t, 0)
-}
+fn type_key(t: &Type) -> String {
+    enum Part<'a> {
+        Ty(&'a Type),
+        Char(char),
+        Text(&'static str),
+    }
 
-/// A legitimate type is shallow (its depth is the program's nesting); a self-
-/// referential type's NOMINAL form is finite (`Json`, not its expansion). Past this
-/// depth the input is a degenerate/cyclic type the encoding can't represent, so bail
-/// to the head rather than recurse without bound — the compiler must never overflow.
-const TYPE_KEY_MAX_DEPTH: usize = 32;
-
-fn type_key_d(t: &Type, depth: usize) -> Option<String> {
-    match t {
-        Type::Qualified(_, inner) => type_key_d(inner, depth),
-        // Generic arguments make specialization keys distinct. Structural
-        // recovery has already happened on `Type`; this rendering is output-only.
-        Type::Named(n, args) if !args.is_empty() => {
-            if depth >= TYPE_KEY_MAX_DEPTH {
-                return Some(n.clone());
+    fn push_items<'a>(stack: &mut Vec<Part<'a>>, items: &'a [Type]) {
+        for (index, item) in items.iter().enumerate().rev() {
+            stack.push(Part::Ty(item));
+            if index > 0 {
+                stack.push(Part::Char(','));
             }
-            Some(match args.iter().map(|a| type_key_d(a, depth + 1)).collect::<Option<Vec<_>>>() {
-                Some(es) => format!("{n}<{}>", es.join(",")),
-                None => n.clone(),
-            })
-        }
-        Type::Named(n, _) => Some(n.clone()),
-        // A tuple's head is its arity (`Tuple2`, `Tuple3`) — the head `impl Trait for
-        // (a, b)` registers under and a value dispatches to — and it encodes its
-        // slot types (`Tuple2<Int,String>`) so specializations stay distinct.
-        Type::Tuple(ts) => {
-            if depth >= TYPE_KEY_MAX_DEPTH {
-                return Some(format!("Tuple{}", ts.len()));
-            }
-            Some(
-                match ts.iter().map(|a| type_key_d(a, depth + 1)).collect::<Option<Vec<_>>>() {
-                    Some(es) => format!("Tuple{}<{}>", ts.len(), es.join(",")),
-                    None => format!("Tuple{}", ts.len()),
-                },
-            )
-        }
-        Type::Fn(params, ret) => {
-            if depth >= TYPE_KEY_MAX_DEPTH {
-                return None;
-            }
-            let ps: Option<Vec<String>> =
-                params.iter().map(|p| type_key_d(p, depth + 1)).collect();
-            let r = type_key_d(ret, depth + 1)?;
-            Some(format!("fn({})->{r}", ps?.join(",")))
         }
     }
+
+    // `Type` is a finite owned tree: recursive declarations stay nominal rather
+    // than embedding themselves. Walk it iteratively so arbitrary source nesting
+    // cannot overflow this renderer, and never truncate a key in a way that makes
+    // two distinct types select the same specialization.
+    let mut key = String::new();
+    let mut stack = vec![Part::Ty(t)];
+    while let Some(part) = stack.pop() {
+        match part {
+            Part::Ty(Type::Qualified(_, inner)) => stack.push(Part::Ty(inner)),
+            Part::Ty(Type::Named(name, args)) => {
+                key.push_str(name);
+                if !args.is_empty() {
+                    key.push('<');
+                    stack.push(Part::Char('>'));
+                    push_items(&mut stack, args);
+                }
+            }
+            Part::Ty(Type::Tuple(items)) => {
+                key.push_str(&format!("Tuple{}<", items.len()));
+                stack.push(Part::Char('>'));
+                push_items(&mut stack, items);
+            }
+            Part::Ty(Type::Fn(params, ret)) => {
+                key.push_str("fn(");
+                stack.push(Part::Ty(ret));
+                stack.push(Part::Text(")->"));
+                push_items(&mut stack, params);
+            }
+            Part::Char(ch) => key.push(ch),
+            Part::Text(text) => key.push_str(text),
+        }
+    }
+    key
+}
+
+/// Encode a canonical type key into one compiler-private symbol segment without
+/// losing identity. Escaping every non-ASCII-alphanumeric byte (including `_`)
+/// keeps punctuation, module qualification, Unicode, and literal underscores
+/// distinct; the old replace-with-underscore scheme could emit one function name
+/// for both `pkg.T` and `pkg_T`.
+fn mangle_type_key(key: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut mangled = String::with_capacity(key.len());
+    for byte in key.bytes() {
+        if byte.is_ascii_alphanumeric() {
+            mangled.push(char::from(byte));
+        } else {
+            mangled.push('_');
+            mangled.push(char::from(HEX[usize::from(byte >> 4)]));
+            mangled.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+    }
+    mangled
 }
 
 /// (RFC-0043) Whether a receiver place's base variable is a known mutable
@@ -3049,10 +3061,9 @@ fn pick_rename<'a>(
     recv: Option<&Type>,
 ) -> Option<&'a String> {
     if let Some(recv) = recv {
-        if let Some(key) = type_key(recv.unqualified()) {
-            if let Some(t) = renames.get(&(key, method.to_string())) {
-                return Some(t);
-            }
+        let key = type_key(recv.unqualified());
+        if let Some(t) = renames.get(&(key, method.to_string())) {
+            return Some(t);
         }
         if let Some(head) = type_head_key(recv) {
             if let Some(t) = renames.get(&(head, method.to_string())) {
@@ -3639,7 +3650,7 @@ impl Mono<'_> {
                 if !unresolved.is_empty() {
                     return None;
                 }
-                let key = type_key(ty.unqualified())?;
+                let key = type_key(ty.unqualified());
                 if !bounded
                     && !table_confirmed.contains(&var)
                     && !is_specializable_type_arg(&key)
@@ -3655,8 +3666,7 @@ impl Mono<'_> {
         let type_keys = type_args
             .iter()
             .map(|ty| type_key(ty.unqualified()))
-            .collect::<Option<Vec<_>>>()
-            .expect("monomorphization only specializes representable concrete types");
+            .collect::<Vec<_>>();
         let key = (name.to_string(), type_keys.clone());
         if let Some(m) = self.memo.get(&key) {
             return m.clone();
@@ -3665,11 +3675,7 @@ impl Mono<'_> {
         // is never parsed back into a type.
         let safe: Vec<String> = type_keys
             .iter()
-            .map(|t| {
-                t.chars()
-                    .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
-                    .collect()
-            })
+            .map(|key| mangle_type_key(key))
             .collect();
         let mangled = format!("{name}__{}", safe.join("__"));
         self.memo.insert(key, mangled.clone());
@@ -4201,5 +4207,47 @@ mod structured_dispatch_tests {
             &mut bindings,
         ));
         assert_eq!(bindings.get("a"), Some(&named_type("Float")));
+    }
+
+    #[test]
+    fn terminal_type_keys_never_collapse_deep_distinct_types() {
+        fn nested_list(mut inner: Type) -> Type {
+            for _ in 0..64 {
+                inner = nominal("List", vec![inner]);
+            }
+            inner
+        }
+
+        let ints = type_key(&nested_list(named_type("Int")));
+        let strings = type_key(&nested_list(named_type("String")));
+
+        assert_ne!(ints, strings);
+        assert_eq!(ints.matches("List<").count(), 64);
+        assert!(ints.ends_with(&format!("Int{}", ">".repeat(64))));
+    }
+
+    #[test]
+    fn terminal_type_key_mangling_is_injective_for_old_collisions() {
+        for (left, right) in [
+            ("pkg.T", "pkg_T"),
+            ("List<Int>", "List_Int_"),
+            ("Tuple2<Int,String>", "Tuple2_Int_String_"),
+        ] {
+            assert_ne!(mangle_type_key(left), mangle_type_key(right));
+        }
+
+        let qualified = mangle(
+            Some("From"),
+            &[named_type("pkg.T")],
+            "Target",
+            "from",
+        );
+        let underscored = mangle(
+            Some("From"),
+            &[named_type("pkg_T")],
+            "Target",
+            "from",
+        );
+        assert_ne!(qualified, underscored);
     }
 }
