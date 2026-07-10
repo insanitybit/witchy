@@ -234,10 +234,27 @@
 
     #[test]
     fn bar_distinct_from_oror() {
-        // `|` (or-patterns) vs `||` (logical or). There is no `|>` pipe operator
-        // (removed, BUG-564): `|>` lexes as `Bar` then `Gt`, so it parses as an
-        // unexpected `>` rather than sugar.
-        assert_eq!(kinds("a | b"), vec![Tok::Ident("a".into()), Tok::Bar, Tok::Ident("b".into()), Tok::Eof]);
-        assert_eq!(kinds("a || b"), vec![Tok::Ident("a".into()), Tok::OrOr, Tok::Ident("b".into()), Tok::Eof]);
-        assert_eq!(kinds("a |> b"), vec![Tok::Ident("a".into()), Tok::Bar, Tok::Gt, Tok::Ident("b".into()), Tok::Eof]);
+        // `|` (or-patterns) vs `||` (logical or). There is no `|>` pipe operator;
+        // recognize that retired spelling only to give a source-facing replacement.
+        assert_eq!(
+            kinds("a | b"),
+            vec![
+                Tok::Ident("a".into()),
+                Tok::Bar,
+                Tok::Ident("b".into()),
+                Tok::Eof,
+            ]
+        );
+        assert_eq!(
+            kinds("a || b"),
+            vec![
+                Tok::Ident("a".into()),
+                Tok::OrOr,
+                Tok::Ident("b".into()),
+                Tok::Eof,
+            ]
+        );
+        let error = tokenize("a |> b").expect_err("the retired pipe spelling must fail");
+        assert!(error.message.contains("not a witchy operator"));
+        assert!(error.message.contains("value.f(...)"));
     }

@@ -959,6 +959,11 @@ impl Lexer {
                 self.bump();
                 Tok::PercentEq
             }
+            ('|', Some('>')) => {
+                return Err(self.err(
+                    "`|>` is not a witchy operator — write `f(value, ...)` or `value.f(...)`",
+                ));
+            }
             ('&', Some('&')) => {
                 self.bump();
                 Tok::AndAnd

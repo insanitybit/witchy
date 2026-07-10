@@ -2811,7 +2811,6 @@ fn lower_sugar_expr(e: &mut Expr) {
     }
 }
 
-
 #[cfg(test)]
 #[path = "parser_tests.rs"]
 mod tests;

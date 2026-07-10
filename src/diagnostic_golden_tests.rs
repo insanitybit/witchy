@@ -179,6 +179,13 @@ mod parse {
     }
 
     #[test]
+    fn retired_pipe_operator() {
+        insta::assert_snapshot!(parse_diag(
+            "fn main(console: Console):\n    console.print(\"hi\" |> string.to_upper())\n"
+        ));
+    }
+
+    #[test]
     fn braces_are_not_syntax() {
         insta::assert_snapshot!(parse_diag(
             "fn main(console: Console) {\n    console.print(\"hi\")\n}\n"
