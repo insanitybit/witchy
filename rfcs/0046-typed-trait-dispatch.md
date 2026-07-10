@@ -1,9 +1,9 @@
 ---
 rfc: 0046
 title: "Typed trait dispatch: retire the string shadow type system"
-status: in-progress
+status: implemented
 created: 2026-07-03
-tracking: "dispatch scopes and quiet-pass judgments use structured Type; Mono/specialization still carry the encoded-name residual"
+tracking: "completed 2026-07-10: dispatch and Mono use structured Type; rendered keys are output-only"
 predecessors:
   - "language-evolution.md Phase 0 (typed lowering — the TypeTable this completes)"
   - "0042 (module namespaces — the other half of 'facts live in declarations')"
@@ -38,12 +38,24 @@ predecessors:
 > capability-return and pattern-payload adapters were deleted. The fast gate is
 > green at 1603/1603 with focused representation-boundary tests.
 >
-> The RFC remains **in progress**, not implemented: `Mono` and its
-> specialization call-renaming pass still use `Scope<String>`, `head_type_name`,
-> and the scope-name parser family for generated bodies that have no TypeTable
-> entries yet. That is the remaining architectural cut; this status cannot return
-> to `implemented` until those consumers migrate or the RFC is explicitly
-> narrowed by a replacement decision.
+> At that checkpoint the RFC remained **in progress**: `Mono` and specialization
+> call renaming still used `Scope<String>`. The completion note below supersedes
+> that temporary boundary.
+>
+> 2026-07-10 completion: `Mono`, generated-body walking, specialization call
+> renaming, generic argument resolution, body-annotation substitution, and all
+> lexical scopes now carry structured `Type`. One structural unifier handles
+> named, tuple, function, nested-container, argument-position, and expected-
+> result bindings; unresolved actual variables are explicitly non-evidence, so
+> later concrete arguments refine them instead of producing order-dependent
+> failures. The old `Scope<String>` path, `head_type_name`, encoder/decoder,
+> list/generic/tuple parsers, per-shape generic resolver, string substitution,
+> constructor/pattern shadow tables, and head-only return map are deleted.
+> `traits.rs` shrank by 832 net lines in the completion cut. Canonical rendered
+> keys remain only at impl-table, memo, and mangle boundaries and are never
+> parsed back into a type; receiver head/module/generic decisions read `Type`
+> directly. The fast gate is green at 1603/1603 with warning-denied Clippy plus
+> focused interpreter/WASM generic-dispatch regressions. RFC-0046 is implemented.
 
 # RFC-0046: Typed trait dispatch — retire the string shadow type system
 

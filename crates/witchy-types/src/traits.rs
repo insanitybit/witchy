@@ -321,7 +321,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                     // inherent methods must be reachable as receiver methods,
                     // but must not resurrect retired global builtins such as
                     // bare `push([1], 2)`.
-                    if !is_ambient_std_owned_type(&im.type_name) {
+                    if !is_ambient_std_owned_name(&im.type_name) {
                         inherent_methods.insert(method.name.clone());
                     }
                     inherent_impl_table
@@ -408,7 +408,8 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     items.extend(generated.into_iter().map(Item::Function));
 
     // Phase 0 (typed lowering): annotate this exact items instance so
-    // monomorphization can resolve type arguments the head-name scope cannot
+    // monomorphization can resolve type arguments the declaration-only local
+    // judgment cannot
     // (e.g. `dict.get(d, k)` needs `v` from `d: Dict(String, String)`).
     // Node pointers stay valid through the moves below (statements live in
     // each function's own heap allocations).
@@ -427,7 +428,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     // pass; the same message need only appear once).
     let discard_errors = std::cell::RefCell::new(Vec::new());
     {
-        let (_, _, fn_sigs) = build_tables(&items);
+        let fn_sigs = build_fn_sigs(&items);
         let ctor_infos = build_ctor_infos(&items);
         let record_fields = build_record_fields(&items);
         let free_fns: HashSet<String> = items
@@ -581,9 +582,8 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         // of the derive-heavy comptime path (RFC-0046 regression, BUG-013).
         let mut any_generated = false;
         for round in 0..MONO_ROUNDS {
-            let (ctor_results, fn_rets, fn_sigs) = build_tables(&items);
+            let fn_sigs = build_fn_sigs(&items);
             let ctor_infos = build_ctor_infos(&items);
-            let ctor_fields = build_ctor_fields(&items);
             let record_fields = build_record_fields(&items);
             let known_fns: HashSet<String> = items
                 .iter()
@@ -599,16 +599,11 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                 supertraits: &trait_supertraits,
                 trait_impl_table: &trait_impl_table,
                 diagnostics: Vec::new(),
-                ctor_results: &ctor_results,
                 ctor_infos: &ctor_infos,
-                ctor_fields: &ctor_fields,
                 record_fields: &record_fields,
-                fn_rets,
                 fn_sigs,
                 memo: std::mem::take(&mut memo),
                 generated: Vec::new(),
-                generated_subst: Vec::new(),
-                cur_subst: HashMap::new(),
                 table: &table,
                 skip_walk: &no_fallback,
                 show_types: &show_types,
@@ -692,7 +687,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     }
 
     // Tables used to determine a receiver's type at a trait-method call site.
-    let (_, _, fn_sigs) = build_tables(&items);
+    let fn_sigs = build_fn_sigs(&items);
     let ctor_infos = build_ctor_infos(&items);
     let record_fields = build_record_fields(&items);
     let free_fns: HashSet<String> = items
@@ -981,7 +976,7 @@ fn transitive_supertraits(direct: &HashMap<String, Vec<String>>) -> HashMap<Stri
 /// parameter) is invoked as the first-class function it is, never rewritten to a
 /// trait dispatch.
 #[derive(Clone)]
-struct Scope<T = String> {
+struct Scope<T> {
     types: HashMap<String, T>,
     locals: HashSet<String>,
     /// (RFC-0043) Names bound to a *mutable* place — a `var` parameter or `var`
@@ -1049,12 +1044,6 @@ impl<T> Scope<T> {
         self.mutables.contains(name)
     }
 
-    /// Drop any type binding for `name` (monomorphization's scope, which does
-    /// not consult the local set — it only recovers concrete types).
-    fn remove(&mut self, name: &str) {
-        self.types.remove(name);
-    }
-
     /// Whether `name` is bound as a local in this scope (so a call on it is a
     /// first-class function invocation, not a trait-method dispatch).
     fn is_local(&self, name: &str) -> bool {
@@ -1062,27 +1051,22 @@ impl<T> Scope<T> {
     }
 }
 
-fn merge_refined_outer_types(parent: &mut Scope<String>, child: &Scope<String>) {
+fn merge_refined_outer_ast_types(parent: &mut Scope<Type>, child: &Scope<Type>) {
     for (name, refined) in &child.types {
         let Some(existing) = parent.types.get(name) else { continue };
-        if existing != refined && head_of(existing) == head_of(refined) && refined.contains('<') {
+        let same_head = match (existing.unqualified(), refined.unqualified()) {
+            (Type::Named(left, _), Type::Named(right, _)) => left == right,
+            (Type::Tuple(left), Type::Tuple(right)) => left.len() == right.len(),
+            (Type::Fn(left, _), Type::Fn(right, _)) => left.len() == right.len(),
+            _ => false,
+        };
+        let carries_arguments = match refined.unqualified() {
+            Type::Named(_, args) => !args.is_empty(),
+            Type::Tuple(_) | Type::Fn(_, _) => true,
+            Type::Qualified(_, _) => unreachable!("unqualified strips qualifiers"),
+        };
+        if existing != refined && same_head && carries_arguments {
             parent.types.insert(name.clone(), refined.clone());
-        }
-    }
-}
-
-fn seed_params(params: &[Param], scope: &mut Scope<String>) {
-    for p in params {
-        // Every parameter is a bound local — even a function-typed one, whose
-        // type has no scope-name — so a call on it never dispatches as a trait
-        // method that shares its name. (RFC-0043) A `var` parameter is a mutable
-        // place, so a statement-position mutator call on it can write back.
-        let mutable = p.convention == Convention::Var;
-        match p.ty.as_ref().and_then(type_to_scope_name) {
-            Some(name) if mutable => scope.insert_mut(p.name.clone(), name),
-            Some(name) => scope.insert(p.name.clone(), name),
-            None if mutable => scope.bind_local_mut(&p.name),
-            None => scope.bind_local(&p.name),
         }
     }
 }
@@ -1096,16 +1080,6 @@ fn seed_typed_params(params: &[Param], scope: &mut Scope<Type>) {
             (None, true) => scope.bind_local_mut(&param.name),
             (None, false) => scope.bind_local(&param.name),
         }
-    }
-}
-
-/// Bind a `for`-loop variable to the element type of the iterable, when the
-/// iterable's type is a known `List<...>`. The variable is recorded as a bound
-/// local either way, so a call on it is never a trait dispatch.
-fn bind_loop_var(var: &str, iter_type: Option<String>, scope: &mut Scope<String>) {
-    match iter_type.as_deref().and_then(list_elem) {
-        Some(elem) => scope.insert(var.to_string(), elem.to_string()),
-        None => scope.bind_local(var),
     }
 }
 
@@ -1275,19 +1249,6 @@ struct Ctx<'a> {
     bound_traits: std::cell::RefCell<HashMap<String, Vec<String>>>,
 }
 
-/// The scope-name of an expression as typeck's `annotate` resolved it (RFC-0046):
-/// the real inference judgment, keyed by expression identity. `None` when the
-/// checker left the type with free variables (generic-body expressions) or the
-/// table is empty (the quiet pre-mono pass) — the caller then falls back to the
-/// local string machinery. This is the PRIMARY dispatch source: the table is not
-/// a guess, so it can never resolve a receiver to the wrong concrete type.
-fn table_scope_name(table: &crate::typeck::TypeTable, e: &Expr) -> Option<String> {
-    table
-        .type_of(e)
-        .and_then(crate::typeck::ty_to_ast)
-        .and_then(|t| type_to_scope_name(&t))
-}
-
 fn table_ast_type(table: &crate::typeck::TypeTable, e: &Expr) -> Option<Type> {
     table.type_of(e).and_then(crate::typeck::ty_to_ast)
 }
@@ -1384,7 +1345,13 @@ fn local_expr_type(
         Expr::Duration(_) => Some(named_type("Duration")),
         Expr::Str(_) => Some(named_type("String")),
         Expr::Bool(_) => Some(named_type("Bool")),
-        Expr::Var(name) => scope.get(name).cloned(),
+        Expr::Var(name) => scope.get(name).cloned().or_else(|| {
+            let (params, ret) = fn_sigs.get(name)?;
+            Some(Type::Fn(
+                params.iter().cloned().collect::<Option<Vec<_>>>()?,
+                Box::new(ret.clone()),
+            ))
+        }),
         Expr::Field { base, field } => {
             let base_ty = type_of(base)?;
             let Type::Named(owner, args) = base_ty.unqualified() else {
@@ -1457,10 +1424,18 @@ fn local_expr_type(
             None => Some(named_type(&format!("Tuple{}", items.len()))),
         },
         Expr::Range { .. } => Some(Type::Named("List".to_string(), vec![named_type("Int")])),
-        Expr::Lambda { params, ret: Some(ret), .. } => Some(Type::Fn(
-            params.iter().map(|param| param.ty.clone()).collect::<Option<Vec<_>>>()?,
-            Box::new(ret.clone()),
-        )),
+        Expr::Lambda { params, body, ret } => {
+            let params = params
+                .iter()
+                .map(|param| param.ty.clone())
+                .collect::<Option<Vec<_>>>()?;
+            let ret = ret.clone().or_else(|| match body.stmts.last() {
+                Some(Stmt::Expr(expr) | Stmt::Return(Some(expr))) => type_of(expr),
+                Some(Stmt::Return(None)) => Some(named_type("Nil")),
+                _ => None,
+            })?;
+            Some(Type::Fn(params, Box::new(ret)))
+        }
         Expr::LabeledCall { .. }
         | Expr::MethodCall { .. }
         | Expr::If { .. }
@@ -1469,7 +1444,6 @@ fn local_expr_type(
         | Expr::While { .. }
         | Expr::For { .. }
         | Expr::WhileLet { .. }
-        | Expr::Lambda { ret: None, .. }
         | Expr::TaggedLit { .. } => None,
     }
 }
@@ -1517,11 +1491,6 @@ impl Ctx<'_> {
             .or_else(|| cap_op_result_type(e))
     }
 
-    fn type_name(&self, e: &Expr, scope: &Scope<Type>) -> Option<String> {
-        self.type_ast(e, scope)
-            .and_then(|ty| type_to_scope_name(ty.unqualified()))
-    }
-
     /// Resolve an owner-specific trait method to its mangled impl for a receiver
     /// type. A concrete generic type falls back to its head, where generic impls
     /// are registered:
@@ -1531,9 +1500,11 @@ impl Ctx<'_> {
     /// — `impl Into(b) for a where b: From(a)` — is registered under a type-variable
     /// head (lowercase); it applies to any receiver, with its `where` bound
     /// discharged at monomorphization.
-    fn lookup_trait_impls(&self, owner: &str, method: &str, tn: &str) -> Vec<String> {
-        let key = |ty: &str| (owner.to_string(), method.to_string(), ty.to_string());
-        for candidate_key in [key(tn), key(head_of(tn))] {
+    fn lookup_trait_impls(&self, owner: &str, method: &str, ty: &Type) -> Vec<String> {
+        let table_key = |ty: String| (owner.to_string(), method.to_string(), ty);
+        let exact = type_key(ty.unqualified());
+        let head = type_head_key(ty);
+        for candidate_key in exact.into_iter().chain(head).map(table_key) {
             if let Some(candidates) = self.trait_impl_table.get(&candidate_key) {
                 return candidates.iter().map(|c| c.mangled.clone()).collect();
             }
@@ -1555,18 +1526,21 @@ impl Ctx<'_> {
             .collect()
     }
 
-    fn lookup_inherent_impl(&self, method: &str, tn: &str) -> Option<String> {
-        self.inherent_impl_table
-            .get(&(method.to_string(), tn.to_string()))
-            .or_else(|| self.inherent_impl_table.get(&(method.to_string(), head_of(tn).to_string())))
+    fn lookup_inherent_impl(&self, method: &str, ty: &Type) -> Option<String> {
+        let exact = type_key(ty.unqualified());
+        let head = type_head_key(ty);
+        exact
+            .into_iter()
+            .chain(head)
+            .find_map(|key| self.inherent_impl_table.get(&(method.to_string(), key)))
             .cloned()
     }
 
     /// Resolve a concrete receiver method. Inherent methods take precedence; if
     /// multiple trait impls with the same method apply to the same receiver, the
     /// source needs a bound to provide trait identity and the call is ambiguous.
-    fn lookup_impl(&self, method: &str, tn: &str) -> Option<MethodResolution> {
-        if let Some(mangled) = self.lookup_inherent_impl(method, tn) {
+    fn lookup_impl(&self, method: &str, ty: &Type) -> Option<MethodResolution> {
+        if let Some(mangled) = self.lookup_inherent_impl(method, ty) {
             return Some(MethodResolution::Found(mangled));
         }
         let mut matches = Vec::new();
@@ -1575,7 +1549,7 @@ impl Ctx<'_> {
                 if info.is_static {
                     continue;
                 }
-                for mangled in self.lookup_trait_impls(&info.owner, method, tn) {
+                for mangled in self.lookup_trait_impls(&info.owner, method, ty) {
                     matches.push((info.owner.clone(), mangled));
                 }
             }
@@ -1589,13 +1563,15 @@ impl Ctx<'_> {
         }
     }
 
-    fn trait_method_infos_for_receiver(&self, method: &str, receiver_ty: Option<&str>) -> Vec<TraitMethodInfo> {
+    fn trait_method_infos_for_receiver(
+        &self,
+        method: &str,
+        receiver_ty: Option<&Type>,
+    ) -> Vec<TraitMethodInfo> {
         let Some(infos) = self.trait_methods.get(method) else {
             return Vec::new();
         };
-        let Some(var) =
-            receiver_ty.filter(|n| n.chars().next().is_some_and(char::is_lowercase) && !n.contains('.'))
-        else {
+        let Some(var) = receiver_ty.and_then(type_variable_name) else {
             return infos.clone();
         };
         let bounds = self.bound_traits.borrow();
@@ -1623,11 +1599,11 @@ impl Ctx<'_> {
         self.trait_methods.contains_key(method) || self.inherent_methods.contains(method)
     }
 
-    fn std_owner_method_alias(&self, method: &str, tn: &str) -> Option<String> {
-        if !is_ambient_std_owned_type(tn) || self.lookup_inherent_impl(method, tn).is_none() {
+    fn std_owner_method_alias(&self, method: &str, ty: &Type) -> Option<String> {
+        if !is_ambient_std_owned_ast_type(ty) || self.lookup_inherent_impl(method, ty).is_none() {
             return None;
         }
-        let module = type_owner_module(tn)?;
+        let module = type_owner_module_ast(ty)?;
         let func = format!("{module}.{method}");
         self.free_fns.contains(&func).then_some(func)
     }
@@ -1662,23 +1638,26 @@ impl Ctx<'_> {
     /// concrete non-primitive always dispatches and a type variable dispatches
     /// when bound by `PartialOrd`/`Ord` (an unbounded one is left for the type
     /// checker to reject with its clear "ordering requires Int/…" message).
-    fn operator_dispatches(&self, op: BinOp, head: Option<&str>) -> bool {
-        let Some(head) = head else { return false };
-        if is_specializable_type_arg(head) {
+    fn operator_dispatches(&self, op: BinOp, ty: Option<&Type>) -> bool {
+        let Some(ty) = ty else { return false };
+        let Some(head) = type_head_key(ty) else { return false };
+        if is_specializable_type_arg(&head) {
             return false;
         }
-        let is_type_var = head.chars().next().is_some_and(char::is_lowercase) && !head.contains('.');
+        let type_var = type_variable_name(ty);
         if matches!(op, BinOp::Eq | BinOp::NotEq) {
-            if head.starts_with("Tuple") || head == "List" || head.starts_with("List<") {
+            if matches!(ty.unqualified(), Type::Tuple(_))
+                || matches!(ty.unqualified(), Type::Named(name, _) if name == "List")
+            {
                 return false;
             }
-            if is_type_var {
-                return self.var_bounded_by(head, &["PartialEq", "Eq", "PartialOrd", "Ord"]);
+            if let Some(var) = type_var {
+                return self.var_bounded_by(var, &["PartialEq", "Eq", "PartialOrd", "Ord"]);
             }
             let method = if op == BinOp::Eq { "eq" } else { "ne" };
-            self.lookup_impl(method, head).is_some()
-        } else if is_type_var {
-            self.var_bounded_by(head, &["PartialOrd", "Ord"])
+            self.lookup_impl(method, ty).is_some()
+        } else if let Some(var) = type_var {
+            self.var_bounded_by(var, &["PartialOrd", "Ord"])
         } else {
             true
         }
@@ -1864,8 +1843,10 @@ impl Ctx<'_> {
                 // function.
                 if self.is_dispatch_method(name) && !scope.is_local(name) {
                     if let Some(recv) = args.first() {
-                        if let Some(tn) = self.type_name(recv, scope) {
-                            match self.lookup_impl(name, &tn) {
+                        if let Some(recv_ty) = self.type_ast(recv, scope) {
+                            let tn = type_key(recv_ty.unqualified())
+                                .unwrap_or_else(|| display_type(&recv_ty));
+                            match self.lookup_impl(name, &recv_ty) {
                                 Some(MethodResolution::Found(mangled)) => *name = mangled,
                                 Some(MethodResolution::Ambiguous(owners)) => self
                                     .missing_impls
@@ -1879,7 +1860,7 @@ impl Ctx<'_> {
                                 // a bounded generic: dispatch resolves after
                                 // monomorphization, never an error here.
                                 None if !self.free_fns.contains(name.as_str())
-                                    && (!tn.chars().next().is_some_and(|c| c.is_lowercase()) || tn.contains('.')) => {
+                                    && type_variable_name(&recv_ty).is_none() => {
                                     if let Some(infos) = self.trait_methods.get(name.as_str()) {
                                         // Render the unqualified type name a reader wrote
                                         // (`Blob`, not the canonical `main.Blob`) (RFC-0042).
@@ -1958,16 +1939,10 @@ impl Ctx<'_> {
                     // operand (`Ok(p2) -> p2 == p`) whose type the scope/table can't
                     // surface but the right operand can. A wrong guess only ever
                     // yields a type error (never wrong code), so trying both is safe.
-                    let head_of = |operand: &Expr| -> Option<String> {
-                        self.type_name(operand, scope).or_else(|| {
-                            self.table
-                                .type_of(operand)
-                                .and_then(crate::typeck::ty_to_ast)
-                                .and_then(|t| type_to_scope_name(&t))
-                        })
-                    };
-                    let head = head_of(lhs).or_else(|| head_of(rhs));
-                    if self.operator_dispatches(*op, head.as_deref()) {
+                    let operand_ty = self
+                        .type_ast(lhs, scope)
+                        .or_else(|| self.type_ast(rhs, scope));
+                    if self.operator_dispatches(*op, operand_ty.as_ref()) {
                         let l = std::mem::replace(lhs.as_mut(), Expr::Bool(false));
                         let r = std::mem::replace(rhs.as_mut(), Expr::Bool(false));
                         // Mangle to the concrete impl directly from the recovered
@@ -1976,10 +1951,10 @@ impl Ctx<'_> {
                         // operand (`Ok(p2) -> p2 == p`); since both operands share
                         // `head`, use it. A type-variable head (lowercase) stays a
                         // generic trait call for monomorphization to specialize.
-                        let resolved = head
-                            .as_deref()
-                            .filter(|h| !h.chars().next().is_some_and(char::is_lowercase) || h.contains('.'))
-                            .and_then(|h| match self.lookup_impl(method, h) {
+                        let resolved = operand_ty
+                            .as_ref()
+                            .filter(|ty| type_variable_name(ty).is_none())
+                            .and_then(|ty| match self.lookup_impl(method, ty) {
                                 Some(MethodResolution::Found(mangled)) => Some(mangled),
                                 _ => None,
                             });
@@ -2001,13 +1976,8 @@ impl Ctx<'_> {
             Expr::Index { base, index } => {
                 self.rewrite_expr(base, scope);
                 self.rewrite_expr(index, scope);
-                let receiver_ty = self.type_name(base, scope).or_else(|| {
-                    self.table
-                        .type_of(base)
-                        .and_then(crate::typeck::ty_to_ast)
-                        .and_then(|t| type_to_scope_name(&t))
-                });
-                if receiver_ty.as_deref().and_then(type_owner_module) == Some("dict") {
+                let receiver_ty = self.type_ast(base, scope);
+                if receiver_ty.as_ref().and_then(type_owner_module_ast) == Some("dict") {
                     let base = std::mem::replace(base.as_mut(), Expr::Bool(false));
                     let index = std::mem::replace(index.as_mut(), Expr::Bool(false));
                     *e = Expr::Call { name: "dict.at".to_string(), args: vec![base, index] };
@@ -2039,7 +2009,7 @@ impl Ctx<'_> {
                             .ctor_infos
                             .get(tyname.as_str())
                             .is_some_and(|info| info.fields.is_empty());
-                        if self.lookup_impl(method, tyname).is_some() && !is_value
+                        if self.lookup_impl(method, &named_type(tyname)).is_some() && !is_value
                         {
                             self.missing_impls.borrow_mut().push(format!(
                                 "`{tyname}.{method}` is an INSTANCE method (it takes `self`) — \
@@ -2049,21 +2019,15 @@ impl Ctx<'_> {
                         }
                     }
                 }
-                let tn = self
-                    .type_name(receiver, scope)
-                    .or_else(|| {
-                        self.table
-                            .type_of(receiver)
-                            .and_then(crate::typeck::ty_to_ast)
-                            .and_then(|t| type_to_scope_name(&t))
-                    });
-                if let Some(tn) = &tn {
+                let receiver_ty = self.type_ast(receiver, scope);
+                if let Some(ty) = &receiver_ty {
+                    let tn = type_key(ty.unqualified()).unwrap_or_else(|| display_type(ty));
                     // Host-capability intrinsics are authority-bearing methods,
                     // even when the capability type also has a std owner module
                     // (`Rand` -> `rand`). Try this before owner-module UFCS so
                     // `rand.rand_u64()` lowers to the host op, while ordinary
                     // std helpers like `rand.hex(n)` still resolve below.
-                    if is_host_capability(tn) && cap_ops::is_op_name(method) {
+                    if is_host_capability_ast(ty) && cap_ops::is_op_name(method) {
                         let mut call_args = vec![std::mem::replace(
                             receiver.as_mut(),
                             Expr::Bool(false),
@@ -2072,7 +2036,7 @@ impl Ctx<'_> {
                         *e = Expr::Call { name: cap_ops::call_name(method), args: call_args };
                         return;
                     }
-                    if let Some(func) = self.std_owner_method_alias(method, tn) {
+                    if let Some(func) = self.std_owner_method_alias(method, ty) {
                         let mut call_args = vec![std::mem::replace(
                             receiver.as_mut(),
                             Expr::Bool(false),
@@ -2081,7 +2045,7 @@ impl Ctx<'_> {
                         *e = Expr::Call { name: func, args: call_args };
                         return;
                     }
-                    match self.lookup_impl(method, tn) {
+                    match self.lookup_impl(method, ty) {
                         Some(MethodResolution::Found(mangled)) => {
                             let mut call_args = vec![std::mem::replace(
                                 receiver.as_mut(),
@@ -2094,7 +2058,7 @@ impl Ctx<'_> {
                         Some(MethodResolution::Ambiguous(owners)) => {
                             self.missing_impls
                                 .borrow_mut()
-                                .push(Self::ambiguous_method_msg(method, tn, &owners));
+                                .push(Self::ambiguous_method_msg(method, &tn, &owners));
                             return;
                         }
                         None => {}
@@ -2105,10 +2069,11 @@ impl Ctx<'_> {
                 // method (`b.from(x)`, no `self`) takes no receiver — the receiver is
                 // the type itself, resolved through the bound at mono — so only the
                 // explicit arguments are passed; an instance method prepends `self`.
-                let receiver_is_generic =
-                    tn.as_deref().is_none_or(|n| n.chars().next().is_some_and(char::is_lowercase) && !n.contains('.'));
+                let receiver_is_generic = receiver_ty
+                    .as_ref()
+                    .is_none_or(|ty| type_variable_name(ty).is_some());
                 let active_trait_methods =
-                    self.trait_method_infos_for_receiver(method, tn.as_deref());
+                    self.trait_method_infos_for_receiver(method, receiver_ty.as_ref());
                 if !active_trait_methods.is_empty() && receiver_is_generic {
                     if active_trait_methods.len() > 1 {
                         self.missing_impls.borrow_mut().push(format!(
@@ -2144,7 +2109,7 @@ impl Ctx<'_> {
                 // names, so the owner is derived from the type itself. Ambient
                 // builtin types still use a small declaration table until they
                 // acquire ordinary source declarations.
-                if let Some(module) = tn.as_deref().and_then(type_owner_module) {
+                if let Some(module) = receiver_ty.as_ref().and_then(type_owner_module_ast) {
                     let mut call_args =
                         vec![std::mem::replace(receiver.as_mut(), Expr::Bool(false))];
                     call_args.append(args);
@@ -2157,7 +2122,7 @@ impl Ctx<'_> {
                     } else {
                         format!("{module}.{method}")
                     };
-                    if is_ambient_owned_type(tn.as_deref().unwrap_or_default())
+                    if receiver_ty.as_ref().is_some_and(is_ambient_owned_ast_type)
                         || self.owner_methods.contains(&func)
                     {
                         *e = Expr::Call { name: func, args: call_args };
@@ -2168,18 +2133,19 @@ impl Ctx<'_> {
                 // the lowered call so the compiler still knows the user wrote
                 // method syntax (`dir.read("x")`) rather than the legacy bare
                 // intrinsic form (`dir.read("x")`).
-                if tn.as_deref().is_some_and(is_host_capability) {
+                if receiver_ty.as_ref().is_some_and(is_host_capability_ast) {
                     let mut call_args =
                         vec![std::mem::replace(receiver.as_mut(), Expr::Bool(false))];
                     call_args.append(args);
                     *e = Expr::Call { name: cap_ops::call_name(method), args: call_args };
                     return;
                 }
-                match tn {
-                    Some(tn) => self.missing_impls.borrow_mut().push(format!(
-                        "no method `{method}` on `{tn}` — methods come from `impl` blocks; \
+                match receiver_ty {
+                    Some(ty) => self.missing_impls.borrow_mut().push(format!(
+                        "no method `{method}` on `{}` — methods come from `impl` blocks; \
                          a plain function is called as `{method}(value, …)` (or module-qualified, \
-                         e.g. `list.{method}(value, …)`)"
+                         e.g. `list.{method}(value, …)`)",
+                        type_key(ty.unqualified()).unwrap_or_else(|| display_type(&ty)),
                     )),
                     // `json.stringify(x)` with no `import json` parses as a method
                     // call on the bare name `json`; if that name is actually a std
@@ -2283,176 +2249,26 @@ impl Ctx<'_> {
     }
 }
 
-// (RFC-0046 step 4) `builtin_ret` — the four hardcoded intrinsic return types
-// (`int_to_string`/`__render` -> String, `string_length`/`char_count` -> Int) —
-// is DELETED. The checker's `call_sig` already types every intrinsic, so the
-// table-first path resolves them; only the empty-table quiet pass could ever have
-// reached it, and no method call takes one of these as a receiver.
-
-/// Best-effort head type name of an expression, or `None` if undeterminable
-/// without full inference. Shared by trait-call resolution and monomorphization.
-fn head_type_name(
-    e: &Expr,
-    scope: &Scope,
-    ctor_results: &HashMap<String, String>,
-    ctor_infos: &HashMap<String, CtorInfo>,
-    fn_rets: &HashMap<String, String>,
-    record_fields: &HashMap<String, Vec<(String, Type)>>,
-) -> Option<String> {
-    match e {
-        Expr::Int(_) => Some("Int".into()),
-        Expr::Float(_) => Some("Float".into()),
-        Expr::Str(_) => Some("String".into()),
-        Expr::Bool(_) => Some("Bool".into()),
-        Expr::Duration(_) => Some("Duration".into()),
-        Expr::Var(n) => scope.get(n).cloned(),
-        // `self.home` — a record field of a known record type, when the field
-        // type is concrete (so generated method bodies dispatch on fields).
-        Expr::Field { base, field } => {
-            let base_ty = head_type_name(base, scope, ctor_results, ctor_infos, fn_rets, record_fields)?;
-            // The base may be an encoded generic (`Box<Int>`, `Set<String>`); record
-            // fields are keyed by the bare head. The field's declared type stays
-            // generic (`a`) and the caller's substitution makes it concrete.
-            let fields = record_fields.get(head_of(&base_ty))?;
-            let (_, ft) = fields.iter().find(|(n, _)| n == field)?;
-            type_to_scope_name(ft)
-        }
-        Expr::Ctor { name, args } => constructor_type_name(
-            name,
-            args,
-            scope,
-            ctor_results,
-            ctor_infos,
-            fn_rets,
-            record_fields,
-        ),
-        Expr::Record { name, fields, spread: _ } => record_literal_type_name(
-            name,
-            fields,
-            scope,
-            ctor_results,
-            ctor_infos,
-            fn_rets,
-            record_fields,
-        ),
-        Expr::Call { name, .. } => fn_rets.get(name).cloned(),
-        Expr::RecordUpdate { base, .. } => head_type_name(base, scope, ctor_results, ctor_infos, fn_rets, record_fields),
-        // An explicit ascription is the user's type claim and the checker will
-        // verify it later. The pre-check method rewriter needs it for capability
-        // methods on narrowed handles (`let ro = dir as Dir[Read]; ro.read(...)`).
-        Expr::As { ty, .. } => type_to_scope_name(ty),
-        // `!` yields Bool; `-`/`~` preserve the operand's type (so `-5` is Int).
-        Expr::Unary { op, expr } => match op {
-            UnOp::Not => Some("Bool".into()),
-            UnOp::Neg | UnOp::BitNot | UnOp::Move | UnOp::Await => head_type_name(expr, scope, ctor_results, ctor_infos, fn_rets, record_fields),
-        },
-        // Comparisons/logic yield Bool; `<>` yields String; arithmetic and
-        // bitwise ops have the type of their (left) operand.
-        Expr::Binary { op, lhs, rhs } => match op {
-            BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq
-            | BinOp::And | BinOp::Or => Some("Bool".into()),
-            BinOp::Concat => Some("String".into()),
-            // `a ?? b` (RFC-0048) unwraps: its type is the fallback's (the
-            // Option/Result payload — the two agree by the typing rule, and the
-            // rhs is the side whose head is recoverable here).
-            BinOp::Coalesce => head_type_name(rhs, scope, ctor_results, ctor_infos, fn_rets, record_fields),
-            _ => head_type_name(lhs, scope, ctor_results, ctor_infos, fn_rets, record_fields),
-        },
-        // A list literal's type encodes its element type when determinable from
-        // the first element, e.g. `List<Int>`, so a `for` loop over it can type
-        // the loop variable. `list_elem` reads the element back out.
-        Expr::List(items) => Some(
-            match items
-                .first()
-                .and_then(|e| head_type_name(e, scope, ctor_results, ctor_infos, fn_rets, record_fields))
-            {
-                Some(elem) => format!("List<{elem}>"),
-                None => "List".to_string(),
-            },
-        ),
-        // A tuple literal encodes its slot types (`Tuple2<Int,String>`), mirroring a
-        // list literal, so a tuple value dispatches + monomorphizes per slot.
-        Expr::Tuple(items) => Some(
-            match items
-                .iter()
-                .map(|e| head_type_name(e, scope, ctor_results, ctor_infos, fn_rets, record_fields))
-                .collect::<Option<Vec<_>>>()
-            {
-                Some(es) => format!("Tuple{}<{}>", items.len(), es.join(",")),
-                None => format!("Tuple{}", items.len()),
-            },
-        ),
-        _ => None,
+fn nominal_type_name(ty: &Type) -> Option<&str> {
+    match ty.unqualified() {
+        Type::Named(name, _) => Some(name),
+        Type::Tuple(_) | Type::Fn(_, _) => None,
+        Type::Qualified(_, _) => unreachable!("unqualified strips qualifiers"),
     }
 }
 
-/// The element type encoded in a `List<...>` scope name, if any.
-/// Rewrite type-variable tokens in a scope-name string to their concrete types,
-/// e.g. `apply_subst("List<a>", {a: "Int"})` is `"List<Int>"`. Whole identifier
-/// tokens are matched, so only an exact type-variable name is replaced.
-fn apply_subst(name: &str, subst: &HashMap<String, String>) -> String {
-    if subst.is_empty() {
-        return name.to_string();
-    }
-    let mut out = String::with_capacity(name.len());
-    let mut tok = String::new();
-    let flush = |tok: &mut String, out: &mut String| {
-        if !tok.is_empty() {
-            out.push_str(subst.get(tok.as_str()).map_or(tok.as_str(), |s| s.as_str()));
-            tok.clear();
-        }
-    };
-    for c in name.chars() {
-        if c.is_alphanumeric() || c == '_' {
-            tok.push(c);
-        } else {
-            flush(&mut tok, &mut out);
-            out.push(c);
-        }
-    }
-    flush(&mut tok, &mut out);
-    out
+fn type_variable_name(ty: &Type) -> Option<&str> {
+    let Type::Named(name, args) = ty.unqualified() else { return None };
+    (args.is_empty()
+        && name.chars().next().is_some_and(char::is_lowercase)
+        && !name.contains('.'))
+    .then_some(name)
 }
 
-fn list_elem(type_name: &str) -> Option<&str> {
-    type_name.strip_prefix("List<")?.strip_suffix('>')
-}
-
-/// The argument of a single-arg generic scope name — `List<Int>`/`Option<Int>` ->
-/// `Int`, `List<List<Int>>` -> `List<Int>`. Lets monomorphization recover the
-/// element of any one-parameter generic (List, Option, a user `Box(a)`) uniformly.
-fn generic_arg(type_name: &str) -> Option<&str> {
-    let start = type_name.find('<')? + 1;
-    let end = type_name.rfind('>')?;
-    (start <= end).then(|| &type_name[start..end])
-}
-
-/// The top-level slot scope names of a tuple scope name — `Tuple2<Int,String>` ->
-/// `["Int", "String"]`, respecting nesting (`Tuple2<List<Int>,String>`). Lets
-/// monomorphization recover each slot type of a tuple impl's `self`.
-fn tuple_args(type_name: &str) -> Option<Vec<&str>> {
-    let inner = generic_arg(type_name)?;
-    let mut out = Vec::new();
-    let mut depth = 0i32;
-    let mut start = 0;
-    for (i, c) in inner.char_indices() {
-        match c {
-            '<' | '(' => depth += 1,
-            '>' | ')' => depth -= 1,
-            ',' if depth == 0 => {
-                out.push(inner[start..i].trim());
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-    out.push(inner[start..].trim());
-    Some(out)
-}
-
-fn is_host_capability(tn: &str) -> bool {
+fn is_host_capability_ast(ty: &Type) -> bool {
+    let Some(name) = nominal_type_name(ty) else { return false };
     matches!(
-        tn.split(['[', '<']).next().unwrap_or(tn).trim(),
+        name,
         "Net"
             | "Dir"
             | "File"
@@ -2471,14 +2287,13 @@ fn is_host_capability(tn: &str) -> bool {
     )
 }
 
-fn type_owner_module(tn: &str) -> Option<&str> {
-    let head = tn.split('<').next().unwrap_or(tn).trim();
-    if let Some((module, ty)) = head.rsplit_once('.') {
+fn type_owner_module_name(name: &str) -> Option<&str> {
+    if let Some((module, ty)) = name.rsplit_once('.') {
         if !module.is_empty() && !ty.is_empty() {
             return Some(module);
         }
     }
-    match head {
+    match name {
         "Bytes" => Some("bytes"),
         "Duration" => Some("duration"),
         "List" => Some("list"),
@@ -2497,12 +2312,20 @@ fn type_owner_module(tn: &str) -> Option<&str> {
     }
 }
 
-fn is_ambient_owned_type(tn: &str) -> bool {
-    !tn.split('<').next().unwrap_or(tn).contains('.')
+fn type_owner_module_ast(ty: &Type) -> Option<&str> {
+    type_owner_module_name(nominal_type_name(ty)?)
 }
 
-fn is_ambient_std_owned_type(tn: &str) -> bool {
-    is_ambient_owned_type(tn) && type_owner_module(tn).is_some()
+fn is_ambient_owned_ast_type(ty: &Type) -> bool {
+    nominal_type_name(ty).is_some_and(|name| !name.contains('.'))
+}
+
+fn is_ambient_std_owned_ast_type(ty: &Type) -> bool {
+    is_ambient_owned_ast_type(ty) && type_owner_module_ast(ty).is_some()
+}
+
+fn is_ambient_std_owned_name(name: &str) -> bool {
+    !name.contains('.') && type_owner_module_name(name).is_some()
 }
 
 // A `MethodCall` anywhere means the lowering pass must run (to resolve it via
@@ -2583,27 +2406,29 @@ fn expr_needs_lowering(e: &Expr) -> bool {
     }
 }
 
-fn type_to_scope_name(t: &Type) -> Option<String> {
-    type_to_scope_name_d(t, 0)
+/// Canonical terminal key for impl lookup, memoization, and mangling. The key is
+/// never parsed back into a type; all structural reasoning happens before this
+/// boundary on [`Type`].
+fn type_key(t: &Type) -> Option<String> {
+    type_key_d(t, 0)
 }
 
 /// A legitimate type is shallow (its depth is the program's nesting); a self-
 /// referential type's NOMINAL form is finite (`Json`, not its expansion). Past this
 /// depth the input is a degenerate/cyclic type the encoding can't represent, so bail
 /// to the head rather than recurse without bound — the compiler must never overflow.
-const SCOPE_NAME_MAX_DEPTH: usize = 32;
+const TYPE_KEY_MAX_DEPTH: usize = 32;
 
-fn type_to_scope_name_d(t: &Type, depth: usize) -> Option<String> {
+fn type_key_d(t: &Type, depth: usize) -> Option<String> {
     match t {
-        Type::Qualified(_, inner) => type_to_scope_name_d(inner, depth),
-        // A generic encodes its arguments (`List<Int>`, `Box<Int>`,
-        // `Dict<String,Int>`) so monomorphization can recover each from a receiver's
-        // scope name; the dispatch lookup strips them back to the head.
+        Type::Qualified(_, inner) => type_key_d(inner, depth),
+        // Generic arguments make specialization keys distinct. Structural
+        // recovery has already happened on `Type`; this rendering is output-only.
         Type::Named(n, args) if !args.is_empty() => {
-            if depth >= SCOPE_NAME_MAX_DEPTH {
+            if depth >= TYPE_KEY_MAX_DEPTH {
                 return Some(n.clone());
             }
-            Some(match args.iter().map(|a| type_to_scope_name_d(a, depth + 1)).collect::<Option<Vec<_>>>() {
+            Some(match args.iter().map(|a| type_key_d(a, depth + 1)).collect::<Option<Vec<_>>>() {
                 Some(es) => format!("{n}<{}>", es.join(",")),
                 None => n.clone(),
             })
@@ -2611,35 +2436,28 @@ fn type_to_scope_name_d(t: &Type, depth: usize) -> Option<String> {
         Type::Named(n, _) => Some(n.clone()),
         // A tuple's head is its arity (`Tuple2`, `Tuple3`) — the head `impl Trait for
         // (a, b)` registers under and a value dispatches to — and it encodes its
-        // slot types (`Tuple2<Int,String>`) so monomorphization recovers each.
+        // slot types (`Tuple2<Int,String>`) so specializations stay distinct.
         Type::Tuple(ts) => {
-            if depth >= SCOPE_NAME_MAX_DEPTH {
+            if depth >= TYPE_KEY_MAX_DEPTH {
                 return Some(format!("Tuple{}", ts.len()));
             }
             Some(
-                match ts.iter().map(|a| type_to_scope_name_d(a, depth + 1)).collect::<Option<Vec<_>>>() {
+                match ts.iter().map(|a| type_key_d(a, depth + 1)).collect::<Option<Vec<_>>>() {
                     Some(es) => format!("Tuple{}<{}>", ts.len(), es.join(",")),
                     None => format!("Tuple{}", ts.len()),
                 },
             )
         }
         Type::Fn(params, ret) => {
-            if depth >= SCOPE_NAME_MAX_DEPTH {
+            if depth >= TYPE_KEY_MAX_DEPTH {
                 return None;
             }
             let ps: Option<Vec<String>> =
-                params.iter().map(|p| type_to_scope_name_d(p, depth + 1)).collect();
-            let r = type_to_scope_name_d(ret, depth + 1)?;
+                params.iter().map(|p| type_key_d(p, depth + 1)).collect();
+            let r = type_key_d(ret, depth + 1)?;
             Some(format!("fn({})->{r}", ps?.join(",")))
         }
     }
-}
-
-/// The head of a scope type name — `List<Int>` -> `List`, `Point` -> `Point`,
-/// `Tuple2` -> `Tuple2`. Generic impls register by head, so a concrete receiver
-/// type falls back to it during dispatch.
-fn head_of(tn: &str) -> &str {
-    tn.split('<').next().unwrap_or(tn)
 }
 
 /// (RFC-0043) Whether a receiver place's base variable is a known mutable
@@ -2687,42 +2505,17 @@ struct CtorInfo {
     fields: Vec<Type>,
 }
 
-/// Constructor -> its type name, function -> its scope-encoded return type, and
-/// function -> its full signature (params + return) for generic-return recovery.
-fn build_tables(
-    items: &[Item],
-) -> (HashMap<String, String>, HashMap<String, String>, HashMap<String, FnSig>) {
-    let mut ctor_results = HashMap::new();
-    let mut fn_rets = HashMap::new();
+fn build_fn_sigs(items: &[Item]) -> HashMap<String, FnSig> {
     let mut fn_sigs = HashMap::new();
     for item in items {
-        match item {
-            Item::Type(t) => {
-                for v in &t.variants {
-                    ctor_results.insert(v.name.clone(), t.name.clone());
-                }
+        if let Item::Function(f) = item {
+            if let Some(ret) = &f.ret {
+                let ptys = f.params.iter().map(|p| p.ty.clone()).collect();
+                fn_sigs.insert(f.name.clone(), (ptys, ret.clone()));
             }
-            Item::Function(f) => {
-                if let Some(ret) = &f.ret {
-                    let mut vars = Vec::new();
-                    collect_type_vars(ret, &mut vars);
-                    if vars.is_empty() {
-                        if let Some(scope_name) = type_to_scope_name(ret) {
-                            fn_rets.insert(f.name.clone(), scope_name);
-                        }
-                    } else if let Type::Named(n, _) = ret {
-                        fn_rets.insert(f.name.clone(), n.clone());
-                    }
-                }
-                if let Some(ret) = &f.ret {
-                    let ptys = f.params.iter().map(|p| p.ty.clone()).collect();
-                    fn_sigs.insert(f.name.clone(), (ptys, ret.clone()));
-                }
-            }
-            _ => {}
         }
     }
-    (ctor_results, fn_rets, fn_sigs)
+    fn_sigs
 }
 
 fn build_ctor_infos(items: &[Item]) -> HashMap<String, CtorInfo> {
@@ -2769,10 +2562,7 @@ fn build_owner_methods(items: &[Item]) -> HashSet<String> {
         let Some(first_ty) = f.params.first().and_then(|p| p.ty.as_ref()) else {
             continue;
         };
-        let Some(first_scope) = type_to_scope_name(first_ty) else {
-            continue;
-        };
-        if type_owner_module(&first_scope) == Some(module) {
+        if type_owner_module_ast(first_ty) == Some(module) {
             methods.insert(f.name.clone());
         }
     }
@@ -2810,178 +2600,6 @@ fn build_mutation_tables(
     (mutators, returns_nil)
 }
 
-// (RFC-0046 step 4) `recover_generic_call` + `bind_type_var` — the per-shape
-// string guessers (`list.at` special-cased BY NAME; exactly three bindable
-// parameter shapes) — are DELETED, replaced by `declared_call_result` below:
-// ONE general structural unification of the callee's declared signature against
-// the arguments' known types. The loud pass and mono read the checker's table
-// first; this judgment is what the EMPTY-TABLE quiet pass (and un-annotated mono
-// clones) use, and it derives everything from the declaration — no name matches,
-// no shape table.
-
-/// The result type of a call, judged from the callee's DECLARED signature — the
-/// typed declaration, not a shape table (RFC-0046 step 1: general structural
-/// binding). Each declared parameter type is unified against its argument's
-/// known type (both as structured `Type`s), binding the signature's type
-/// variables; the bindings substitute into the declared return. A concrete
-/// declared return is answered directly, with its FULL encoding — where the
-/// head-only `fn_rets` loses the arguments (`string.split`'s `List(String)`
-/// became bare `"List"`). Also types `xs[i]` as the element of the base's list
-/// type and `e?` as the payload of a declared Option/Result (those desugars are
-/// only understood inside the checker, while this pass must bootstrap method
-/// resolution before annotate). A failed or partial judgment yields `None` —
-/// absence only ever produces a loud type error downstream, never wrong code.
-fn declared_call_result(
-    e: &Expr,
-    fn_sigs: &HashMap<String, FnSig>,
-    type_of: &dyn Fn(&Expr) -> Option<String>,
-) -> Option<String> {
-    match e {
-        Expr::Index { base, .. } => match decode_scope_type(&type_of(base)?) {
-            Type::Named(n, args) if n == "List" && args.len() == 1 => {
-                type_to_scope_name(&args[0])
-            }
-            _ => None,
-        },
-        // The empty-table quiet pass runs before annotate, so a `let x = e?`
-        // binding must recover the payload from the operand's declared type.
-        // This is the same structural judgment as the checker: `?` unwraps the
-        // first argument of Option/Result, and any mismatch still fails later.
-        Expr::Try(inner) => match decode_scope_type(&type_of(inner)?) {
-            Type::Named(n, args)
-                if matches!(n.as_str(), "Option" | "Result") && !args.is_empty() =>
-            {
-                type_to_scope_name(&args[0])
-            }
-            _ => None,
-        },
-        Expr::Call { name, args } => {
-            let (params, ret) = fn_sigs.get(name)?;
-            let mut ret_vars = Vec::new();
-            collect_type_vars(ret, &mut ret_vars);
-            if ret_vars.is_empty() {
-                // Concrete declared return: the signature IS the answer.
-                return type_to_scope_name(ret);
-            }
-            let mut binds: HashMap<String, String> = HashMap::new();
-            for (p, arg) in params.iter().zip(args) {
-                let (Some(pty), Some(at)) = (p, type_of(arg)) else { continue };
-                // Structural match; a shape disagreement simply binds nothing.
-                let _ = bind_type_vars(pty, &decode_scope_type(&at), &mut binds);
-            }
-            // Sound only if EVERY return-position variable bound (a variable
-            // that appears in no argument — `collect`'s `c` — stays unresolved
-            // here; the table/fixpoint handles it).
-            if !ret_vars.iter().all(|v| binds.contains_key(v)) {
-                return None;
-            }
-            let subst: HashMap<&str, String> =
-                binds.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
-            type_to_scope_name(&subst_vars(ret, &subst))
-        }
-        _ => None,
-    }
-}
-
-fn constructor_type_name(
-    name: &str,
-    args: &[Expr],
-    scope: &Scope,
-    ctor_results: &HashMap<String, String>,
-    ctor_infos: &HashMap<String, CtorInfo>,
-    fn_rets: &HashMap<String, String>,
-    record_fields: &HashMap<String, Vec<(String, Type)>>,
-) -> Option<String> {
-    let info = ctor_infos.get(name)?;
-    if info.params.is_empty() {
-        return Some(info.owner.clone());
-    }
-    let mut binds: HashMap<String, String> = HashMap::new();
-    for (field, arg) in info.fields.iter().zip(args) {
-        let Some(arg_type) =
-            head_type_name(arg, scope, ctor_results, ctor_infos, fn_rets, record_fields)
-        else {
-            continue;
-        };
-        let _ = bind_type_vars(field, &decode_scope_type(&arg_type), &mut binds);
-    }
-    if info.params.iter().all(|param| binds.contains_key(param)) {
-        Some(format!(
-            "{}<{}>",
-            info.owner,
-            info.params
-                .iter()
-                .map(|param| binds.get(param).cloned())
-                .collect::<Option<Vec<_>>>()?
-                .join(",")
-        ))
-    } else {
-        ctor_results.get(name).cloned()
-    }
-}
-
-fn record_literal_type_name(
-    name: &str,
-    fields: &[(String, Expr)],
-    scope: &Scope,
-    ctor_results: &HashMap<String, String>,
-    ctor_infos: &HashMap<String, CtorInfo>,
-    fn_rets: &HashMap<String, String>,
-    record_fields: &HashMap<String, Vec<(String, Type)>>,
-) -> Option<String> {
-    let info = ctor_infos.get(name)?;
-    if info.params.is_empty() {
-        return Some(info.owner.clone());
-    }
-    let declared = record_fields.get(&info.owner)?;
-    let mut binds: HashMap<String, String> = HashMap::new();
-    for (field_name, arg) in fields {
-        let Some((_, field_ty)) = declared.iter().find(|(n, _)| n == field_name) else {
-            continue;
-        };
-        let Some(arg_type) =
-            head_type_name(arg, scope, ctor_results, ctor_infos, fn_rets, record_fields)
-        else {
-            continue;
-        };
-        let _ = bind_type_vars(field_ty, &decode_scope_type(&arg_type), &mut binds);
-    }
-    if info.params.iter().all(|param| binds.contains_key(param)) {
-        Some(format!(
-            "{}<{}>",
-            info.owner,
-            info.params
-                .iter()
-                .map(|param| binds.get(param).cloned())
-                .collect::<Option<Vec<_>>>()?
-                .join(",")
-        ))
-    } else {
-        ctor_results.get(name).cloned()
-    }
-}
-
-fn split_scope_args(inner: &str) -> Vec<&str> {
-    let mut args = Vec::new();
-    let mut depth = 0usize;
-    let mut start = 0usize;
-    for (i, c) in inner.char_indices() {
-        match c {
-            '<' | '(' => depth += 1,
-            '>' | ')' => depth = depth.saturating_sub(1),
-            ',' if depth == 0 => {
-                args.push(inner[start..i].trim());
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-    if start < inner.len() {
-        args.push(inner[start..].trim());
-    }
-    args
-}
-
 /// Record type name -> its named field types, for typing `x.field` receivers.
 fn build_record_fields(items: &[Item]) -> HashMap<String, Vec<(String, Type)>> {
     let mut map = HashMap::new();
@@ -3000,166 +2618,8 @@ fn build_record_fields(items: &[Item]) -> HashMap<String, Vec<(String, Type)>> {
     map
 }
 
-/// Constructor name -> the types of its fields, for typing the variables bound
-/// by a constructor pattern in a `match` arm.
-fn build_ctor_fields(items: &[Item]) -> HashMap<String, Vec<Type>> {
-    let mut map = HashMap::new();
-    for item in items {
-        if let Item::Type(t) = item {
-            for v in &t.variants {
-                map.insert(v.name.clone(), v.fields.clone());
-            }
-        }
-    }
-    map
-}
-
-/// The scope name for a field type that is a *concrete* (non-type-variable)
-/// type. Witchy spells type variables in lowercase and concrete types
-/// capitalized, so a capitalized head name is concrete (`Int`, `Coord`,
-/// `Dir[Read]`) when all of its arguments are concrete too. Generic fields
-/// (a lowercase var like `a`, or a parameterized type carrying one) return
-/// `None`, so their bound variable stays untyped rather than risk a wrong dispatch.
-fn concrete_scope_name(t: &Type) -> Option<String> {
-    match t {
-        // A concrete nominal type: an uppercase head (`Coord`), or a module-
-        // qualified name (`geometry.Coord`) whose lowercase first segment is the
-        // module, not a type variable (RFC-0042).
-        Type::Named(n, args)
-            if n.chars().next().is_some_and(|c| c.is_uppercase()) || n.contains('.') =>
-        {
-            args.iter().map(concrete_scope_name).collect::<Option<Vec<_>>>()?;
-            type_to_scope_name(t)
-        }
-        Type::Qualified(_, inner) => concrete_scope_name(inner),
-        Type::Tuple(items) => {
-            items.iter().map(concrete_scope_name).collect::<Option<Vec<_>>>()?;
-            type_to_scope_name(t)
-        }
-        _ => None,
-    }
-}
-
-/// Bind the variables of a constructor pattern to their concrete field types, so
-/// a trait-method call on one (e.g. a recursive `show(x)` inside a `Show` impl)
-/// resolves. Recurses into nested constructor patterns. Conservative: only
-/// concrete fields are bound (see `concrete_scope_name`); a wrong guess would in
-/// any case be caught by the type checker, never miscompiled.
-fn bind_ctor_pattern(
-    pat: &Pattern,
-    ctor_fields: &HashMap<String, Vec<Type>>,
-    subst: &HashMap<String, String>,
-    scope: &mut Scope,
-) {
-    if let Pattern::Ctor { name, args } = pat {
-        if let Some(fields) = ctor_fields.get(name) {
-            for (arg, fty) in args.iter().zip(fields) {
-                match arg {
-                    Pattern::Var(v) => match pattern_field_scope_name(fty, subst) {
-                        Some(sn) => scope.insert(v.clone(), sn),
-                        // A generic-typed binder is still a bound local, so a
-                        // call on it is a first-class invocation, not a dispatch.
-                        None => scope.bind_local(v),
-                    },
-                    Pattern::Ctor { .. } => bind_ctor_pattern(arg, ctor_fields, subst, scope),
-                    _ => {}
-                }
-            }
-        }
-    }
-}
-
-fn pattern_subst_from_scrutinee(
-    pat: &Pattern,
-    ctor_infos: &HashMap<String, CtorInfo>,
-    scrutinee_scope: Option<&str>,
-) -> HashMap<String, String> {
-    let mut subst = HashMap::new();
-    let (Pattern::Ctor { name, .. }, Some(scrutinee_scope)) = (pat, scrutinee_scope) else {
-        return subst;
-    };
-    let Some(info) = ctor_infos.get(name) else {
-        return subst;
-    };
-    if info.params.is_empty() {
-        return subst;
-    }
-    let pattern = Type::Named(
-        info.owner.clone(),
-        info.params
-            .iter()
-            .map(|p| Type::Named(p.clone(), Vec::new()))
-            .collect(),
-    );
-    let concrete = decode_scope_type(scrutinee_scope);
-    let _ = bind_type_vars(&pattern, &concrete, &mut subst);
-    subst
-}
-
-fn pattern_field_scope_name(fty: &Type, subst: &HashMap<String, String>) -> Option<String> {
-    if subst.is_empty() {
-        concrete_scope_name(fty)
-    } else {
-        type_to_scope_name(fty).map(|name| apply_subst(&name, subst))
-    }
-}
-
-/// Encode a CONCRETE `Type` as the scope naming (`List<Int>`,
-/// `Tuple2<String,Int>`). None when a type variable or unencodable form remains.
-fn encode_scope_type(t: &Type) -> Option<String> {
-    match t {
-        Type::Named(n, args) if args.is_empty() => {
-            if n.chars().next().is_some_and(char::is_lowercase) && !n.contains('.') {
-                None // a type variable, not a concrete type
-            } else {
-                Some(n.clone())
-            }
-        }
-        Type::Named(n, args) => {
-            let inner: Option<Vec<String>> = args.iter().map(encode_scope_type).collect();
-            Some(format!("{n}<{}>", inner?.join(",")))
-        }
-        Type::Tuple(ts) => {
-            let inner: Option<Vec<String>> = ts.iter().map(encode_scope_type).collect();
-            Some(format!("Tuple{}<{}>", ts.len(), inner?.join(",")))
-        }
-        _ => None,
-    }
-}
-
-/// Match a type PATTERN (an impl's trait argument, possibly containing type
-/// variables) against a concrete type, collecting variable bindings as scope
-/// encodings. False when the shapes disagree or a leaf can't encode.
-fn bind_type_vars(pattern: &Type, concrete: &Type, out: &mut HashMap<String, String>) -> bool {
-    match (pattern, concrete) {
-        (Type::Named(v, a), c) if a.is_empty() && v.chars().next().is_some_and(char::is_lowercase) && !v.contains('.') => {
-            match encode_scope_type(c) {
-                Some(enc) => match out.get(v) {
-                    Some(prev) => prev == &enc,
-                    None => {
-                        out.insert(v.clone(), enc);
-                        true
-                    }
-                },
-                None => false,
-            }
-        }
-        (Type::Named(pn, pa), Type::Named(cn, ca)) => {
-            pn == cn
-                && pa.len() == ca.len()
-                && pa.iter().zip(ca).all(|(p, c)| bind_type_vars(p, c, out))
-        }
-        (Type::Tuple(ps), Type::Tuple(cs)) => {
-            ps.len() == cs.len() && ps.iter().zip(cs).all(|(p, c)| bind_type_vars(p, c, out))
-        }
-        _ => pattern == concrete,
-    }
-}
-
-/// Structured counterpart to [`bind_type_vars`]. This is the representation
-/// used by the dispatch pass; the string binder remains only at the
-/// monomorphization boundary. Failed matches are transactional so a partial
-/// shape disagreement cannot leak bindings into a later argument judgment.
+/// Match a declared type pattern against a concrete type transactionally.
+/// Failed shape matches cannot leak partial bindings into later judgments.
 fn bind_ast_type_vars(
     pattern: &Type,
     concrete: &Type,
@@ -3187,6 +2647,17 @@ fn bind_ast_type_vars_inner(
                 && var.chars().next().is_some_and(char::is_lowercase)
                 && !var.contains('.') =>
         {
+            // An unresolved actual variable is absence of evidence, not a
+            // concrete binding. `set.new()` yields `Set(a)`; a later
+            // `set.insert(s, 1.5)` must refine that `a` from the Float argument
+            // instead of conflicting with a meaningless `a -> a` binding.
+            if matches!(concrete, Type::Named(name, args)
+                if args.is_empty()
+                    && name.chars().next().is_some_and(char::is_lowercase)
+                    && !name.contains('.'))
+            {
+                return true;
+            }
             match out.get(var) {
                 Some(previous) => previous.unqualified() == concrete,
                 None => {
@@ -3228,74 +2699,14 @@ fn bind_ast_type_vars_inner(
     }
 }
 
-/// Decode a scope-encoded type name ("List<Int>", "Dict<String, Int>",
-/// "Int") back into a structured `Type` — the inverse of `simple_ty_name`.
-fn decode_scope_type(name: &str) -> Type {
-    if let Some(rest) = name.strip_prefix("fn(") {
-        if let Some((params_src, ret_src)) = rest.split_once(")->") {
-            let params = if params_src.trim().is_empty() {
-                Vec::new()
-            } else {
-                split_scope_args(params_src)
-                    .into_iter()
-                    .map(decode_scope_type)
-                    .collect()
-            };
-            return Type::Fn(params, Box::new(decode_scope_type(ret_src.trim())));
-        }
-        if let Some((params_src, ret_src)) = rest.split_once(") -> ") {
-            let params = if params_src.trim().is_empty() {
-                Vec::new()
-            } else {
-                split_scope_args(params_src)
-                    .into_iter()
-                    .map(decode_scope_type)
-                    .collect()
-            };
-            return Type::Fn(params, Box::new(decode_scope_type(ret_src.trim())));
-        }
-    }
-    // A tuple encoding: "(String, Int)".
-    if let Some(inner) = name.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
-        let args: Vec<Type> = split_scope_args(inner)
-            .into_iter()
-            .map(decode_scope_type)
-            .collect();
-        return Type::Tuple(args);
-    }
-    match name.split_once('<') {
-        Some((head, rest)) if rest.ends_with('>') => {
-            let inner = &rest[..rest.len() - 1];
-            // Split on top-level commas only (nested encodings nest brackets).
-            let args: Vec<Type> = split_scope_args(inner)
-                .into_iter()
-                .map(decode_scope_type)
-                .collect();
-            if head == "List" && args.len() == 1 {
-                Type::Named("List".into(), args)
-            } else if head
-                .strip_prefix("Tuple")
-                .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
-            {
-                // `Tuple2<String,Int>` decodes to the tuple type `(String, Int)`, so
-                // its slot types survive the round-trip and each one monomorphizes.
-                Type::Tuple(args)
-            } else {
-                Type::Named(head.to_string(), args)
-            }
-        }
-        _ => Type::Named(name.to_string(), vec![]),
-    }
-}
-
 /// Substitute type variables in a block's type ANNOTATIONS (`let x: T`, `e as T`)
 /// — the part `specialize` doesn't reach by rewriting only the signature.
-fn subst_block_types(b: &mut Block, subst: &HashMap<&str, String>) {
+fn subst_block_types(b: &mut Block, subst: &HashMap<String, Type>) {
     for stmt in &mut b.stmts {
         match stmt {
             Stmt::Let { ty, value, .. } => {
                 if let Some(t) = ty {
-                    *t = subst_vars(t, subst);
+                    *t = subst_trait_params(t, subst);
                 }
                 subst_expr_types(value, subst);
             }
@@ -3309,19 +2720,19 @@ fn subst_block_types(b: &mut Block, subst: &HashMap<&str, String>) {
     }
 }
 
-fn subst_expr_types(e: &mut Expr, subst: &HashMap<&str, String>) {
+fn subst_expr_types(e: &mut Expr, subst: &HashMap<String, Type>) {
     match e {
         Expr::Lambda { params, body, .. } => {
             for p in params.iter_mut() {
                 if let Some(t) = &p.ty {
-                    p.ty = Some(subst_vars(t, subst));
+                    p.ty = Some(subst_trait_params(t, subst));
                 }
             }
             subst_block_types(body, subst);
         }
         Expr::Block(b) => subst_block_types(b, subst),
         Expr::As { expr, ty } => {
-            *ty = subst_vars(ty, subst);
+            *ty = subst_trait_params(ty, subst);
             subst_expr_types(expr, subst);
         }
         Expr::If { cond, then_block, else_block } => {
@@ -3413,87 +2824,12 @@ fn subst_expr_types(e: &mut Expr, subst: &HashMap<&str, String>) {
     }
 }
 
-fn subst_vars(t: &Type, subst: &HashMap<&str, String>) -> Type {
-    match t {
-        Type::Qualified(q, inner) => Type::Qualified(*q, Box::new(subst_vars(inner, subst))),
-        Type::Named(n, args) if args.is_empty() && subst.contains_key(n.as_str()) => {
-            decode_scope_type(&subst[n.as_str()])
-        }
-        Type::Named(n, args) => {
-            Type::Named(n.clone(), args.iter().map(|a| subst_vars(a, subst)).collect())
-        }
-        Type::Tuple(ts) => Type::Tuple(ts.iter().map(|a| subst_vars(a, subst)).collect()),
-        Type::Fn(ps, r) => Type::Fn(
-            ps.iter().map(|a| subst_vars(a, subst)).collect(),
-            Box::new(subst_vars(r, subst)),
-        ),
-    }
-}
-
 /// A type argument we will specialize an *unbounded* generic on. Restricted to
 /// the primitive types: these are exactly the ones the generic i32 ABI gets
 /// wrong — `String` (pointer-compared instead of content-compared by `==`) and
 /// `Int` (truncated to 32 bits). For records/enums/parameterized types the head
 /// name alone wouldn't capture the type, and codegen treats them as pointers
 /// either way, so those calls keep using the generic version.
-/// Unify a declared parameter type against a typeck-resolved type, binding
-/// `var` if it appears. Only SIMPLE named bindings (no type arguments) are
-/// returned — monomorphization's name-keyed substitution can't represent a
-/// composite type argument.
-fn bind_var_simple(param: &Type, concrete: &crate::typeck::Ty, var: &str) -> Option<String> {
-    use crate::typeck::Ty;
-    match (param, concrete) {
-        (Type::Named(n, args), _) if n == var && args.is_empty() => simple_ty_name(concrete),
-        (Type::Named(n, pargs), Ty::Named(cn, cargs))
-            if n == cn && pargs.len() == cargs.len() =>
-        {
-            pargs.iter().zip(cargs).find_map(|(p, c)| bind_var_simple(p, c, var))
-        }
-        (Type::Named(n, pargs), Ty::List(e)) if n == "List" && pargs.len() == 1 => {
-            bind_var_simple(&pargs[0], e, var)
-        }
-        (Type::Tuple(ps), Ty::Tuple(cs)) if ps.len() == cs.len() => {
-            ps.iter().zip(cs).find_map(|(p, c)| bind_var_simple(p, c, var))
-        }
-        (Type::Fn(ps, pr), Ty::Fn(cs, cr)) if ps.len() == cs.len() => ps
-            .iter()
-            .zip(cs)
-            .find_map(|(p, c)| bind_var_simple(p, c, var))
-            .or_else(|| bind_var_simple(pr, cr, var)),
-        _ => None,
-    }
-}
-
-/// The plain name of a resolved type, when it has one (no type arguments).
-fn simple_ty_name(t: &crate::typeck::Ty) -> Option<String> {
-    use crate::typeck::Ty;
-    match t {
-        Ty::Int => Some("Int".into()),
-        Ty::Float => Some("Float".into()),
-        Ty::Bool => Some("Bool".into()),
-        Ty::String => Some("String".into()),
-        Ty::Duration => Some("Duration".into()),
-        Ty::Named(n, args) if args.is_empty() => Some(n.clone()),
-        // Compound types use the same scope encoding `head_type_name`
-        // produces (`List<Int>`, `Tuple2<Int,String>`), so monomorphization
-        // can feed them back into dispatch and receiver specialization.
-        Ty::List(e) => Some(format!("List<{}>", simple_ty_name(e)?)),
-        Ty::Tuple(ts) => {
-            let inner: Option<Vec<String>> = ts.iter().map(simple_ty_name).collect();
-            Some(format!("Tuple{}<{}>", ts.len(), inner?.join(",")))
-        }
-        Ty::Named(n, args) => {
-            let inner: Option<Vec<String>> = args.iter().map(simple_ty_name).collect();
-            Some(format!("{n}<{}>", inner?.join(",")))
-        }
-        Ty::Fn(params, ret) => {
-            let ps: Option<Vec<String>> = params.iter().map(simple_ty_name).collect();
-            Some(format!("fn({})->{}", ps?.join(","), simple_ty_name(ret)?))
-        }
-        _ => None,
-    }
-}
-
 fn is_specializable_type_arg(n: &str) -> bool {
     matches!(n, "Int" | "Bool" | "Float" | "String" | "Duration")
 }
@@ -3691,21 +3027,35 @@ fn no_fallback_template_names(items: &[Item]) -> HashSet<String> {
 /// comparator `less`, `eq`, …) would be silently rewritten to the trait impl,
 /// discarding the passed function and computing the wrong answer (BUG-001).
 type Renames = HashMap<(String, String), String>;
-type ReceiverResolver<'a> = dyn Fn(&Expr, &Scope) -> Option<String> + 'a;
+type ReceiverResolver<'a> = dyn Fn(&Expr, &Scope<Type>) -> Option<Type> + 'a;
+
+fn type_head_key(ty: &Type) -> Option<String> {
+    match ty.unqualified() {
+        Type::Named(name, _) => Some(name.clone()),
+        Type::Tuple(items) => Some(format!("Tuple{}", items.len())),
+        Type::Fn(_, _) => None,
+        Type::Qualified(_, _) => unreachable!("unqualified strips qualifiers"),
+    }
+}
 
 /// Resolve `method` to its specialized impl for a call whose first argument (the
 /// receiver, for the UFCS-lowered instance methods that get renamed) has head
 /// type `recv`. When the receiver type is known, key on it exactly; otherwise
 /// fall back to the method's unique target if there is only one across all bound
 /// types (the single-bound case). Ambiguous with an unknown receiver → leave it.
-fn pick_rename<'a>(renames: &'a Renames, method: &str, recv: Option<&str>) -> Option<&'a String> {
-    if let Some(h) = recv {
-        if let Some(t) = renames.get(&(h.to_string(), method.to_string())) {
-            return Some(t);
+fn pick_rename<'a>(
+    renames: &'a Renames,
+    method: &str,
+    recv: Option<&Type>,
+) -> Option<&'a String> {
+    if let Some(recv) = recv {
+        if let Some(key) = type_key(recv.unqualified()) {
+            if let Some(t) = renames.get(&(key, method.to_string())) {
+                return Some(t);
+            }
         }
-        let head = head_of(h);
-        if head != h {
-            if let Some(t) = renames.get(&(head.to_string(), method.to_string())) {
+        if let Some(head) = type_head_key(recv) {
+            if let Some(t) = renames.get(&(head, method.to_string())) {
                 return Some(t);
             }
         }
@@ -3718,26 +3068,15 @@ fn pick_rename<'a>(renames: &'a Renames, method: &str, recv: Option<&str>) -> Op
 struct RenameCallContext<'a> {
     renames: &'a Renames,
     resolve: &'a ReceiverResolver<'a>,
-    ctor_fields: &'a HashMap<String, Vec<Type>>,
-    subst: &'a HashMap<String, String>,
+    ctor_infos: &'a HashMap<String, CtorInfo>,
 }
 
-fn rename_calls_block(b: &mut Block, scope: &mut Scope, ctx: &RenameCallContext<'_>) {
-    fn bind_pattern(pat: &Pattern, scope: &mut Scope, ctx: &RenameCallContext<'_>) {
-        // Keep the constructor field's substituted type when known. This lets a
-        // specialization distinguish two same-trait bounds inside match arms and
-        // specialize a nested generic impl instead of naming its no-fallback
-        // template after that template is removed.
-        bind_ctor_pattern(pat, ctx.ctor_fields, ctx.subst, scope);
-        let mut names = Vec::new();
-        witchy_syntax::ast::pattern_binds(pat, &mut names);
-        for n in &names {
-            if !scope.is_local(n) {
-                scope.bind_local(n);
-            }
-        }
-    }
-    fn walk_expr(e: &mut Expr, scope: &mut Scope, ctx: &RenameCallContext<'_>) {
+fn rename_calls_block(
+    b: &mut Block,
+    scope: &mut Scope<Type>,
+    ctx: &RenameCallContext<'_>,
+) {
+    fn walk_expr(e: &mut Expr, scope: &mut Scope<Type>, ctx: &RenameCallContext<'_>) {
         match e {
             Expr::Call { name, args } => {
                 // A call on a bound LOCAL (a `fn`-typed parameter or `let` named
@@ -3747,7 +3086,7 @@ fn rename_calls_block(b: &mut Block, scope: &mut Scope, ctx: &RenameCallContext<
                 // concrete type so each same-trait bound picks its own impl.
                 if !scope.is_local(name) {
                     let recv = args.first().and_then(|a| (ctx.resolve)(a, scope));
-                    if let Some(to) = pick_rename(ctx.renames, name, recv.as_deref()) {
+                    if let Some(to) = pick_rename(ctx.renames, name, recv.as_ref()) {
                         *name = to.clone();
                     }
                 }
@@ -3758,7 +3097,7 @@ fn rename_calls_block(b: &mut Block, scope: &mut Scope, ctx: &RenameCallContext<
             Expr::LabeledCall { name, args } => {
                 if !scope.is_local(name) {
                     let recv = args.first().and_then(|(_, a)| (ctx.resolve)(a, scope));
-                    if let Some(to) = pick_rename(ctx.renames, name, recv.as_deref()) {
+                    if let Some(to) = pick_rename(ctx.renames, name, recv.as_ref()) {
                         *name = to.clone();
                     }
                 }
@@ -3820,9 +3159,15 @@ fn rename_calls_block(b: &mut Block, scope: &mut Scope, ctx: &RenameCallContext<
             }
             Expr::Match { scrutinee, arms } => {
                 walk_expr(scrutinee, scope, ctx);
+                let scrutinee_ty = (ctx.resolve)(scrutinee, scope);
                 for a in arms {
                     let mut s = scope.clone();
-                    bind_pattern(&a.pattern, &mut s, ctx);
+                    bind_typed_pattern(
+                        &a.pattern,
+                        ctx.ctor_infos,
+                        scrutinee_ty.as_ref(),
+                        &mut s,
+                    );
                     if let Some(g) = &mut a.guard {
                         walk_expr(g, &mut s, ctx);
                     }
@@ -3836,18 +3181,22 @@ fn rename_calls_block(b: &mut Block, scope: &mut Scope, ctx: &RenameCallContext<
             Expr::WhileLet { pattern, scrutinee, body } => {
                 walk_expr(scrutinee, scope, ctx);
                 let mut s = scope.clone();
-                bind_pattern(pattern, &mut s, ctx);
+                let scrutinee_ty = (ctx.resolve)(scrutinee, scope);
+                bind_typed_pattern(pattern, ctx.ctor_infos, scrutinee_ty.as_ref(), &mut s);
                 rename_calls_block(body, &mut s, ctx);
             }
             Expr::For { var, iter, body } => {
                 walk_expr(iter, scope, ctx);
                 let mut s = scope.clone();
-                s.bind_local(var);
+                match (ctx.resolve)(iter, scope).as_ref().and_then(iterable_item_type) {
+                    Some(item_ty) => s.insert(var.clone(), item_ty),
+                    None => s.bind_local(var),
+                }
                 rename_calls_block(body, &mut s, ctx);
             }
             Expr::Lambda { params, body, .. } => {
                 let mut s = scope.clone();
-                seed_params(params, &mut s);
+                seed_typed_params(params, &mut s);
                 rename_calls_block(body, &mut s, ctx);
             }
             Expr::Block(body) => rename_calls_block(body, &mut scope.clone(), ctx),
@@ -3857,18 +3206,30 @@ fn rename_calls_block(b: &mut Block, scope: &mut Scope, ctx: &RenameCallContext<
     }
     for st in &mut b.stmts {
         match st {
-            Stmt::Let { name, value, .. } => {
+            Stmt::Let { name, ty, value, mutable } => {
                 walk_expr(value, scope, ctx);
                 // A `let less = …` shadows a same-named trait method for the rest
                 // of the block, so a later `less(…)` is its value, not a rename.
-                scope.bind_local(name);
+                let resolved = ty.clone().or_else(|| (ctx.resolve)(value, scope));
+                match (resolved, *mutable) {
+                    (Some(ty), true) => scope.insert_mut(name.clone(), ty),
+                    (Some(ty), false) => scope.insert(name.clone(), ty),
+                    (None, true) => scope.bind_local_mut(name),
+                    (None, false) => scope.bind_local(name),
+                }
             }
             Stmt::LetPattern { pattern, value } => {
                 walk_expr(value, scope, ctx);
-                bind_pattern(pattern, scope, ctx);
+                let value_ty = (ctx.resolve)(value, scope);
+                bind_typed_pattern(pattern, ctx.ctor_infos, value_ty.as_ref(), scope);
             }
-            Stmt::Assign { value, .. }
-            | Stmt::Return(Some(value))
+            Stmt::Assign { name, value } => {
+                walk_expr(value, scope, ctx);
+                if let Some(ty) = (ctx.resolve)(value, scope) {
+                    scope.insert(name.clone(), ty);
+                }
+            }
+            Stmt::Return(Some(value))
             | Stmt::Expr(value)
             | Stmt::Yield(value) => walk_expr(value, scope, ctx),
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
@@ -3893,14 +3254,16 @@ fn type_var_list(f: &Function) -> Vec<String> {
     }
 }
 
-fn type_args_from_receiver(template: &Function, concrete_receiver: &str) -> Option<Vec<String>> {
+fn type_args_from_receiver(template: &Function, concrete_receiver: &Type) -> Option<Vec<Type>> {
     let recv = template.params.first()?.ty.as_ref()?;
-    let concrete = decode_scope_type(concrete_receiver);
     let mut bindings = HashMap::new();
-    if !bind_type_vars(recv, &concrete, &mut bindings) {
+    if !bind_ast_type_vars(recv, concrete_receiver, &mut bindings) {
         return None;
     }
-    type_var_list(template).into_iter().map(|var| bindings.get(&var).cloned()).collect()
+    type_var_list(template)
+        .into_iter()
+        .map(|var| bindings.get(&var).cloned())
+        .collect()
 }
 
 /// (RFC-0053) Whether a concrete type should render through `Show` instead of
@@ -4157,27 +3520,17 @@ struct Mono<'a> {
     trait_impl_table: &'a TraitImplTable,
     /// Loud failures (an uninferrable bounded call) surfaced as check errors.
     diagnostics: Vec<String>,
-    ctor_results: &'a HashMap<String, String>,
     ctor_infos: &'a HashMap<String, CtorInfo>,
-    ctor_fields: &'a HashMap<String, Vec<Type>>,
     record_fields: &'a HashMap<String, Vec<(String, Type)>>,
-    fn_rets: HashMap<String, String>,
     /// Function -> (param types, return type): the declared signatures behind
-    /// `declared_call_result` for expressions the table has no entry for
+    /// `declared_expr_type` for expressions the table has no entry for
     /// (freshly-generated specialization bodies within a round).
     fn_sigs: HashMap<String, FnSig>,
     memo: HashMap<(String, Vec<String>), String>,
     generated: Vec<Function>,
-    /// Per-generated-instance type-variable substitution (var -> concrete scope
-    /// name), parallel to `generated`. Lets the walk of an instance resolve a
-    /// field-access type the head-name scope leaves generic (`s.items` on a
-    /// `Set(Int)` is `List(Int)`, not `List(a)`).
-    generated_subst: Vec<HashMap<String, String>>,
-    /// The substitution of the instance currently being walked — empty when
-    /// walking an original (non-specialized) function.
-    cur_subst: HashMap<String, String>,
-    /// typeck's resolved types for this module instance: the fallback when
-    /// the head-name scope can't resolve a type argument.
+    /// typeck's resolved types for this module instance. Generated bodies have
+    /// no entries until the next fixpoint round, so declarations and typed local
+    /// scopes provide their structured fallback.
     table: &'a crate::typeck::TypeTable,
     /// Names of the template functions that are kept in `items` ONLY so the
     /// fixpoint re-annotate can see their signatures (bounded templates + the
@@ -4203,7 +3556,7 @@ impl Mono<'_> {
                     continue;
                 }
                 let mut s = Scope::new();
-                seed_params(&f.params, &mut s);
+                seed_typed_params(&f.params, &mut s);
                 self.walk_block(&mut f.body, &mut s);
             }
         }
@@ -4217,267 +3570,100 @@ impl Mono<'_> {
                 Block { stmts: Vec::new(), lines: Vec::new(), region: None },
             );
             let mut s = Scope::new();
-            seed_params(&params, &mut s);
-            // This instance's type-variable substitution, so the body walk can
-            // make a generic field-access type concrete.
-            self.cur_subst = self.generated_subst[i].clone();
+            seed_typed_params(&params, &mut s);
             self.walk_block(&mut body, &mut s);
-            self.cur_subst = HashMap::new();
             self.generated[i].body = body;
             i += 1;
         }
     }
 
-    fn type_name(&self, e: &Expr, scope: &Scope) -> Option<String> {
-        // RFC-0046: typeck's resolved type is the primary source (it is the
-        // checker's answer, not a guess). It only carries fully-concrete types,
-        // so a generic-body expression falls through to the declaration-driven
-        // judgment (freshly-generated clones have no table entries mid-round).
-        table_scope_name(self.table, e)
-            .or_else(|| declared_call_result(e, &self.fn_sigs, &|a| self.type_name(a, scope)))
-            .or_else(|| head_type_name(e, scope, self.ctor_results, self.ctor_infos, &self.fn_rets, self.record_fields))
-    }
-
-    /// Like `type_name`, but rewrites the current instantiation's type variables
-    /// to their concrete types — so a field access whose declared type is generic
-    /// (`s.items: List(a)`) resolves concretely (`List(Int)`) inside `foo__Int`.
-    fn type_name_subst(&self, e: &Expr, scope: &Scope) -> Option<String> {
-        self.type_name(e, scope).map(|t| apply_subst(&t, &self.cur_subst))
-    }
-
-    /// Seed the mono scope with the names an irrefutable `let`/`for` pattern
-    /// binds, typing each from the value's type where the structure lets us
-    /// recover it (a tuple pattern recurses per slot). Names we can't type are
-    /// cleared, so no stale outer binding leaks into this specialization.
-    fn seed_pattern_subst(&self, pat: &Pattern, ty: Option<&str>, scope: &mut Scope) {
-        match pat {
-            Pattern::Var(n) if n != "_" => match ty {
-                Some(t) => scope.insert(n.clone(), t.to_string()),
-                None => scope.remove(n.as_str()),
-            },
-            Pattern::Tuple(ps) => {
-                let slots = ty.and_then(tuple_args);
-                for (i, sub) in ps.iter().enumerate() {
-                    let sub_ty = slots.as_ref().and_then(|s| s.get(i)).copied();
-                    self.seed_pattern_subst(sub, sub_ty, scope);
-                }
-            }
-            _ => {
-                let mut names = Vec::new();
-                witchy_syntax::ast::pattern_binds(pat, &mut names);
-                for n in &names {
-                    scope.remove(n.as_str());
-                }
-            }
-        }
-    }
-
-    /// The concrete type of field `pos` of the element TUPLE of a list argument,
-    /// where the argument is a list literal of tuples (e.g. `unzip([(big, 1)])`).
-    fn list_elem_tuple_field_type(&self, arg: &Expr, pos: usize, scope: &Scope) -> Option<String> {
-        if let Expr::List(items) = arg {
-            if let Some(Expr::Tuple(fields)) = items.first() {
-                if let Some(e) = fields.get(pos) {
-                    return self.type_name(e, scope);
-                }
-            }
-        }
-        None
-    }
-
-    fn list_push_assignment_type(&self, assigned: &str, value: &Expr, scope: &Scope) -> Option<String> {
-        let Expr::Call { name, args } = value else { return None };
-        if name != "list.push" || args.len() != 2 {
-            return None;
-        }
-        if !matches!(&args[0], Expr::Var(n) if n == assigned) {
-            return None;
-        }
-        self.type_name_subst(&args[1], scope)
-            .map(|elem| format!("List<{elem}>"))
-    }
-
-    /// The return type name of a function-valued argument: a lambda's body type
-    /// (its parameters seeded into scope) or a named function's return type.
-    /// Resolves a `fn(...) -> b` parameter's `b` for monomorphization.
-    fn closure_ret_type(&self, arg: &Expr, scope: &Scope) -> Option<String> {
-        match arg {
-            Expr::Lambda { params, body, .. } => {
-                let mut s = scope.clone();
-                seed_params(params, &mut s);
-                match body.stmts.last() {
-                    Some(Stmt::Expr(e)) | Some(Stmt::Return(Some(e))) => {
-                        head_type_name(e, &s, self.ctor_results, self.ctor_infos, &self.fn_rets, self.record_fields)
-                    }
-                    _ => None,
-                }
-            }
-            Expr::Var(f) => self.fn_rets.get(f).cloned(),
-            _ => None,
-        }
+    fn type_ast(&self, e: &Expr, scope: &Scope<Type>) -> Option<Type> {
+        table_ast_type(self.table, e)
+            .or_else(|| declared_expr_type(e, &self.fn_sigs, &|arg| self.type_ast(arg, scope)))
+            .or_else(|| {
+                local_expr_type(
+                    e,
+                    scope,
+                    self.ctor_infos,
+                    &self.fn_sigs,
+                    self.record_fields,
+                    &|arg| self.type_ast(arg, scope),
+                )
+            })
+            .or_else(|| cap_op_result_type(e))
     }
 
     fn resolve_type_args(
         &self,
         template: &Function,
         args: &[Expr],
-        scope: &Scope,
-        result_ty: Option<&crate::typeck::Ty>,
-    ) -> Option<Vec<String>> {
-        let mut result = Vec::new();
+        scope: &Scope<Type>,
+        result_ty: Option<&Type>,
+    ) -> Option<Vec<Type>> {
         let bounded = !template.bounds.is_empty();
-        for var in type_var_list(template) {
-            // The variable must appear in a parameter's type, either directly
-            // (`x: a`) or as a list element (`xs: List(a)`); take the concrete
-            // type from the matching argument.
-            let mut found = None;
-            for (i, p) in template.params.iter().enumerate() {
-                let Some(arg) = args.get(i) else { continue };
-                match &p.ty {
-                    Some(Type::Named(n, a)) if *n == var && a.is_empty() => {
-                        if let Some(tn) = self.type_name_subst(arg, scope) {
-                            found = Some(tn);
-                            break;
-                        }
-                    }
-                    // `xs: List(a)` / `b: Box(a, c)` / any generic `G(…var…)`: take
-                    // `var` from its position among the argument's encoded scope
-                    // arguments `G<arg0,arg1,…>`.
-                    Some(Type::Named(_, slots))
-                        if slots.iter().any(
-                            |t| matches!(t, Type::Named(vn, va) if *vn == var && va.is_empty()),
-                        ) =>
-                    {
-                        let pos = slots
-                            .iter()
-                            .position(|t| matches!(t, Type::Named(vn, va) if *vn == var && va.is_empty()))
-                            .unwrap();
-                        if let Some(elem) = self
-                            .type_name_subst(arg, scope)
-                            .as_deref()
-                            .and_then(tuple_args)
-                            .and_then(|a| a.get(pos).map(|s| s.to_string()))
-                        {
-                            found = Some(elem);
-                            break;
-                        }
-                    }
-                    // `xs: List((.., var, ..))` (e.g. `unzip`): resolve `var` from
-                    // the argument list's element tuple at `var`'s position.
-                    Some(Type::Named(n, a)) if n == "List" => {
-                        if let Some(Type::Tuple(slots)) = a.first() {
-                            if let Some(pos) = slots.iter().position(
-                                |t| matches!(t, Type::Named(vn, va) if *vn == var && va.is_empty()),
-                            ) {
-                                if let Some(tn) = self.list_elem_tuple_field_type(arg, pos, scope) {
-                                    found = Some(tn);
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    // `f: fn(...) -> var` (e.g. `map`'s mapper, whose result is the
-                    // element type of the returned list): take `var` from the
-                    // closure argument's return type.
-                    Some(Type::Fn(_, ret))
-                        if matches!(ret.as_ref(), Type::Named(vn, va) if *vn == var && va.is_empty()) =>
-                    {
-                        if let Some(tn) = self.closure_ret_type(arg, scope) {
-                            found = Some(tn);
-                            break;
-                        }
-                    }
-                    // `self: (a, b, ...)` — a tuple impl's receiver: recover `var`
-                    // from its slot in the argument tuple's encoded scope name.
-                    Some(Type::Tuple(slots)) => {
-                        if let Some(pos) = slots.iter().position(
-                            |t| matches!(t, Type::Named(vn, va) if *vn == var && va.is_empty()),
-                        ) {
-                            if let Some(elem) = self
-                                .type_name_subst(arg, scope)
-                                .as_deref()
-                                .and_then(tuple_args)
-                                .and_then(|a| a.get(pos).map(|s| s.to_string()))
-                            {
-                                found = Some(elem);
-                                break;
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            // The typed-lowering resolution: unify each parameter's declared
-            // type against the argument's typeck-resolved type. Table
-            // bindings are exact, so any simple named type is trusted — this
-            // is what lets `dict.get(d, key)` specialize its VALUE type, and
-            // generic helpers specialize on user record types (content
-            // equality). It both fills in what the head-name scope missed
-            // and CONFIRMS a non-primitive name the scope guessed.
-            let mut table_name = None;
-            for (i, p) in template.params.iter().enumerate() {
-                let (Some(pty), Some(arg)) = (&p.ty, args.get(i)) else { continue };
-                if let Some(ty) = self.table.type_of(arg) {
-                    if let Some(tn) = bind_var_simple(pty, ty, &var) {
-                        table_name = Some(tn);
-                        break;
-                    }
-                }
-            }
-            let mut from_table = match (&found, &table_name) {
-                (None, Some(tn)) => {
-                    found = Some(tn.clone());
-                    true
-                }
-                (Some(f), Some(tn)) if f == tn => true,
-                // The head-name scope saw only the bare head (`Box`, from a
-                // constructor) while the table carries the full encoded type
-                // (`Box<Int>`); the table is more specific, so trust it — this is
-                // what recovers a generic constructor's element without a per-
-                // constructor head-name special case.
-                (Some(f), Some(tn)) if head_of(tn) == f => {
-                    found = Some(tn.clone());
-                    true
-                }
-                (Some(_), Some(_)) => false,
-                _ => false,
-            };
-            // A RETURN-POSITION variable (`fn collect(...) -> c`): no argument
-            // mentions it, so it binds from the call site's EXPECTED type —
-            // typeck's table, fed by unification (an ascribed binding, a typed
-            // parameter the result is passed to). This is what makes
-            // annotation-driven instantiation work.
-            if found.is_none() {
-                if let (Some(ret), Some(ty)) = (&template.ret, result_ty) {
-                    if let Some(tn) = bind_var_simple(ret, ty, &var) {
-                        found = Some(tn);
-                        from_table = true;
-                    }
-                }
-            }
-            // A `where`-bounded generic resolves to whatever concrete type the
-            // trait dispatch picked (any named type). An *unbounded* generic is
-            // only specialized on a primitive type argument — the cases the i32
-            // generic ABI miscompiles — unless the TABLE confirmed the type
-            // exactly; anything else falls back to the generic version rather
-            // than producing an unsound specialization.
-            let tn = found?;
-            if !bounded && !from_table && !is_specializable_type_arg(&tn) {
+        let mut bindings = HashMap::new();
+        let mut table_confirmed = HashSet::new();
+
+        for (param, arg) in template.params.iter().zip(args) {
+            let Some(pattern) = &param.ty else { continue };
+            let from_table = table_ast_type(self.table, arg);
+            let actual = from_table.clone().or_else(|| self.type_ast(arg, scope));
+            let Some(actual) = actual else { continue };
+            if !bind_ast_type_vars(pattern, &actual, &mut bindings) {
                 return None;
             }
-            result.push(tn);
+            if let Some(table_ty) = from_table {
+                let mut confirmed = HashMap::new();
+                if bind_ast_type_vars(pattern, &table_ty, &mut confirmed) {
+                    table_confirmed.extend(confirmed.into_keys());
+                }
+            }
         }
-        Some(result)
+
+        if let (Some(ret), Some(actual)) = (&template.ret, result_ty) {
+            if !bind_ast_type_vars(ret, actual, &mut bindings) {
+                return None;
+            }
+            let mut confirmed = HashMap::new();
+            if bind_ast_type_vars(ret, actual, &mut confirmed) {
+                table_confirmed.extend(confirmed.into_keys());
+            }
+        }
+
+        type_var_list(template)
+            .into_iter()
+            .map(|var| {
+                let ty = bindings.get(&var)?.clone();
+                let mut unresolved = Vec::new();
+                collect_type_vars(&ty, &mut unresolved);
+                if !unresolved.is_empty() {
+                    return None;
+                }
+                let key = type_key(ty.unqualified())?;
+                if !bounded
+                    && !table_confirmed.contains(&var)
+                    && !is_specializable_type_arg(&key)
+                {
+                    return None;
+                }
+                Some(ty)
+            })
+            .collect()
     }
 
-    fn specialize(&mut self, name: &str, type_args: Vec<String>) -> String {
-        let key = (name.to_string(), type_args.clone());
+    fn specialize(&mut self, name: &str, type_args: Vec<Type>) -> String {
+        let type_keys = type_args
+            .iter()
+            .map(|ty| type_key(ty.unqualified()))
+            .collect::<Option<Vec<_>>>()
+            .expect("monomorphization only specializes representable concrete types");
+        let key = (name.to_string(), type_keys.clone());
         if let Some(m) = self.memo.get(&key) {
             return m.clone();
         }
-        // Type arguments may carry scope encodings ("List<Int>"); mangle
-        // segments stay identifier-safe.
-        let safe: Vec<String> = type_args
+        // The canonical type rendering is emitted only as an identifier key; it
+        // is never parsed back into a type.
+        let safe: Vec<String> = type_keys
             .iter()
             .map(|t| {
                 t.chars()
@@ -4493,29 +3679,16 @@ impl Mono<'_> {
         // Substitute over the same variable list `resolve_type_args` resolved:
         // the `where`-bound variables for a bounded generic, otherwise the free
         // type variables of the signature.
-        let vars = type_var_list(&f);
-        let subst: HashMap<&str, String> =
-            vars.iter().map(|v| v.as_str()).zip(type_args).collect();
-        // Owned copy stored parallel to the generated function, so its body walk
-        // can resolve field-access types this instantiation makes concrete.
-        let owned_subst: HashMap<String, String> =
-            subst.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+        let subst: HashMap<String, Type> = type_var_list(&f).into_iter().zip(type_args).collect();
         for p in &mut f.params {
             if let Some(t) = &p.ty {
-                p.ty = Some(subst_vars(t, &subst));
+                p.ty = Some(subst_trait_params(t, &subst));
             }
         }
-        f.ret = f.ret.as_ref().map(|t| subst_vars(t, &subst));
+        f.ret = f.ret.as_ref().map(|t| subst_trait_params(t, &subst));
         if let Some(ret) = &f.ret {
-            let mut vars = Vec::new();
-            collect_type_vars(ret, &mut vars);
-            if vars.is_empty() {
-                if let Some(scope_name) = type_to_scope_name(ret) {
-                    self.fn_rets.insert(mangled.clone(), scope_name);
-                }
-            } else if let Type::Named(n, _) = ret {
-                self.fn_rets.insert(mangled.clone(), n.clone());
-            }
+            let params = f.params.iter().map(|param| param.ty.clone()).collect();
+            self.fn_sigs.insert(mangled.clone(), (params, ret.clone()));
         }
         // Substitute the body's type ANNOTATIONS too (`var items: List(a) = []`,
         // `x as T`), so a specialization's body type-checks at the concrete type.
@@ -4538,7 +3711,7 @@ impl Mono<'_> {
         let mut renames: HashMap<(String, String), String> = HashMap::new();
         for (bvar, btrait, btargs) in &bounds_snapshot {
             let Some(concrete) = subst.get(bvar.as_str()) else { continue };
-            let head = concrete.split('<').next().unwrap_or(concrete).to_string();
+            let Some(head) = type_head_key(concrete) else { continue };
             for (method, owner) in &trait_method_pairs {
                 // The bound discharges its own trait's methods AND those of every
                 // supertrait (a `where a: Ord` bound also supplies `eq`/`less`).
@@ -4576,12 +3749,12 @@ impl Mono<'_> {
                     // matching: each impl trait-argument pattern against the
                     // bound's (substituted) concrete argument. Anything that
                     // doesn't bind falls back to the generic impl function.
-                    let mut bound_map: HashMap<String, String> = HashMap::new();
+                    let mut bound_map: HashMap<String, Type> = HashMap::new();
                     let mut ok = candidate.trait_args.len() == btargs.len();
                     if ok {
                         for (pat, targ) in candidate.trait_args.iter().zip(btargs) {
-                            let concrete = subst_vars(targ, &subst);
-                            if !bind_type_vars(pat, &concrete, &mut bound_map) {
+                            let concrete_arg = subst_trait_params(targ, &subst);
+                            if !bind_ast_type_vars(pat, &concrete_arg, &mut bound_map) {
                                 ok = false;
                                 break;
                             }
@@ -4600,7 +3773,7 @@ impl Mono<'_> {
                         continue;
                     };
                     if ok {
-                        let mut targs_out: Vec<String> = Vec::new();
+                        let mut targs_out: Vec<Type> = Vec::new();
                         for v in type_var_list(&tmpl) {
                             match bound_map.get(&v) {
                                 Some(c) => targs_out.push(c.clone()),
@@ -4635,27 +3808,21 @@ impl Mono<'_> {
             // `fn`-typed parameter named like a trait method (a comparator) is
             // invoked as the passed function, not rewritten to the impl (BUG-001).
             let mut rename_scope = Scope::new();
-            seed_params(&f.params, &mut rename_scope);
+            seed_typed_params(&f.params, &mut rename_scope);
             // Resolve a call's receiver type through the checker's tables and make
             // the (possibly generic) result concrete with THIS specialization's
             // substitution — so a field-access receiver (`self.fst`) resolves to
             // its instantiated type and each same-trait bound dispatches to its
             // own impl (BUG-298).
             let this = &*self;
-            let osub = &owned_subst;
-            let resolve = move |e: &Expr, sc: &Scope| -> Option<String> {
-                this.type_name(e, sc)
-                    .map(|t| apply_subst(&t, osub))
-            };
+            let resolve = move |e: &Expr, sc: &Scope<Type>| this.type_ast(e, sc);
             let rename_ctx = RenameCallContext {
                 renames: &renames,
                 resolve: &resolve,
-                ctor_fields: self.ctor_fields,
-                subst: &owned_subst,
+                ctor_infos: self.ctor_infos,
             };
             rename_calls_block(&mut f.body, &mut rename_scope, &rename_ctx);
         }
-        drop(subst);
         // Monomorphization discharges the `where` bounds: every bound type
         // variable is now a concrete type, and the trait obligation is satisfied
         // by the impl whose method this specialization's body resolves to.
@@ -4663,39 +3830,28 @@ impl Mono<'_> {
         // compiled backend, which has no notion of an unsatisfied generic bound.
         f.bounds = Vec::new();
         self.generated.push(f);
-        self.generated_subst.push(owned_subst);
         mangled
     }
 
-    fn walk_block(&mut self, b: &mut Block, scope: &mut Scope) {
+    fn walk_block(&mut self, b: &mut Block, scope: &mut Scope<Type>) {
         for stmt in &mut b.stmts {
             match stmt {
-                Stmt::Let { name, ty, value, .. } => {
+                Stmt::Let { name, ty, value, mutable } => {
                     self.walk_expr(value, scope);
                     // Prefer the type ascription (`var items: List(a) = []`): it
                     // carries the element type an empty/ambiguous value loses. The
                     // value's inferred type is the fallback.
-                    let resolved = ty
-                        .as_ref()
-                        .and_then(type_to_scope_name)
-                        .or_else(|| self.type_name(value, scope));
-                    match resolved {
-                        Some(t) => {
-                            scope.insert(name.clone(), t);
-                        }
-                        None => {
-                            scope.remove(name.as_str());
-                        }
+                    let resolved = ty.clone().or_else(|| self.type_ast(value, scope));
+                    match (resolved, *mutable) {
+                        (Some(t), true) => scope.insert_mut(name.clone(), t),
+                        (Some(t), false) => scope.insert(name.clone(), t),
+                        (None, true) => scope.bind_local_mut(name),
+                        (None, false) => scope.bind_local(name),
                     }
                 }
                 Stmt::Assign { name, value } => {
                     self.walk_expr(value, scope);
-                    let inferred = self.type_name_subst(value, scope);
-                    let refined = match inferred.as_deref() {
-                        None | Some("List") => self.list_push_assignment_type(name, value, scope),
-                        _ => None,
-                    };
-                    if let Some(t) = refined.or(inferred) {
+                    if let Some(t) = self.type_ast(value, scope) {
                         scope.insert(name.clone(), t);
                     }
                 }
@@ -4706,8 +3862,8 @@ impl Mono<'_> {
                 // doesn't leak in.
                 Stmt::LetPattern { pattern, value } => {
                     self.walk_expr(value, scope);
-                    let ty = self.type_name_subst(value, scope);
-                    self.seed_pattern_subst(pattern, ty.as_deref(), scope);
+                    let ty = self.type_ast(value, scope);
+                    bind_typed_pattern(pattern, self.ctor_infos, ty.as_ref(), scope);
                 }
                 Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => self.walk_expr(e, scope),
                 Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
@@ -4715,8 +3871,8 @@ impl Mono<'_> {
         }
     }
 
-    fn walk_expr(&mut self, e: &mut Expr, scope: &mut Scope) {
-        let result_ty = self.table.type_of(e).cloned();
+    fn walk_expr(&mut self, e: &mut Expr, scope: &mut Scope<Type>) {
+        let result_ty = table_ast_type(self.table, e);
         match e {
             Expr::Call { name, args } => {
                 for a in args.iter_mut() {
@@ -4817,13 +3973,13 @@ impl Mono<'_> {
             Expr::WhileLet { pattern, scrutinee, body } => {
                 self.walk_expr(scrutinee, scope);
                 let mut s = scope.clone();
-                let mut subst = self.cur_subst.clone();
-                subst.extend(pattern_subst_from_scrutinee(
+                let scrutinee_ty = self.type_ast(scrutinee, scope);
+                bind_typed_pattern(
                     pattern,
                     self.ctor_infos,
-                    self.type_name_subst(scrutinee, scope).as_deref(),
-                ));
-                bind_ctor_pattern(pattern, self.ctor_fields, &subst, &mut s);
+                    scrutinee_ty.as_ref(),
+                    &mut s,
+                );
                 self.walk_block(body, &mut s);
             }
             Expr::If {
@@ -4834,11 +3990,11 @@ impl Mono<'_> {
                 self.walk_expr(cond, scope);
                 let mut then_scope = scope.clone();
                 self.walk_block(then_block, &mut then_scope);
-                merge_refined_outer_types(scope, &then_scope);
+                merge_refined_outer_ast_types(scope, &then_scope);
                 if let Some(b) = else_block {
                     let mut else_scope = scope.clone();
                     self.walk_block(b, &mut else_scope);
-                    merge_refined_outer_types(scope, &else_scope);
+                    merge_refined_outer_ast_types(scope, &else_scope);
                 }
             }
             Expr::While { cond, body } => {
@@ -4848,38 +4004,40 @@ impl Mono<'_> {
             Expr::For { var, iter, body } => {
                 self.walk_expr(iter, scope);
                 let mut s = scope.clone();
-                bind_loop_var(var, self.type_name_subst(iter, scope), &mut s);
+                match self.type_ast(iter, scope).as_ref().and_then(iterable_item_type) {
+                    Some(item_ty) => s.insert(var.clone(), item_ty),
+                    None => s.bind_local(var),
+                }
                 self.walk_block(body, &mut s);
-                merge_refined_outer_types(scope, &s);
+                merge_refined_outer_ast_types(scope, &s);
             }
             Expr::Match { scrutinee, arms } => {
                 self.walk_expr(scrutinee, scope);
-                let scrutinee_ty = self.type_name_subst(scrutinee, scope);
+                let scrutinee_ty = self.type_ast(scrutinee, scope);
                 for arm in arms.iter_mut() {
                     let mut s = scope.clone();
-                    let mut subst = self.cur_subst.clone();
-                    subst.extend(pattern_subst_from_scrutinee(
+                    bind_typed_pattern(
                         &arm.pattern,
                         self.ctor_infos,
-                        scrutinee_ty.as_deref(),
-                    ));
-                    bind_ctor_pattern(&arm.pattern, self.ctor_fields, &subst, &mut s);
+                        scrutinee_ty.as_ref(),
+                        &mut s,
+                    );
                     if let Some(g) = &mut arm.guard {
                         self.walk_expr(g, &mut s);
                     }
                     self.walk_expr(&mut arm.body, &mut s);
-                    merge_refined_outer_types(scope, &s);
+                    merge_refined_outer_ast_types(scope, &s);
                 }
             }
             Expr::Lambda { params, body, .. } => {
                 let mut s = scope.clone();
-                seed_params(params, &mut s);
+                seed_typed_params(params, &mut s);
                 self.walk_block(body, &mut s);
             }
             Expr::Block(b) => {
                 let mut block_scope = scope.clone();
                 self.walk_block(b, &mut block_scope);
-                merge_refined_outer_types(scope, &block_scope);
+                merge_refined_outer_ast_types(scope, &block_scope);
             }
             Expr::Var(_) | Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::TaggedLit { .. } => {}
         }
@@ -5033,5 +4191,15 @@ mod structured_dispatch_tests {
 
         assert!(!bind_ast_type_vars(&pattern, &concrete, &mut bindings));
         assert!(bindings.is_empty());
+
+        let pattern = nominal("Set", vec![named_type("a")]);
+        assert!(bind_ast_type_vars(&pattern, &pattern, &mut bindings));
+        assert!(bindings.is_empty(), "an unresolved actual is not evidence");
+        assert!(bind_ast_type_vars(
+            &pattern,
+            &nominal("Set", vec![named_type("Float")]),
+            &mut bindings,
+        ));
+        assert_eq!(bindings.get("a"), Some(&named_type("Float")));
     }
 }
