@@ -39,6 +39,19 @@ sandbox, arrived at by omission rather than by a runtime check — see
 [the WASM ABI](https://github.com/insanitybit/witchy/blob/master/spec/wasm-abi.md)
 and [Capabilities](capabilities.md) for the full model.
 
+This is also why, in the runnable version of this book, a `Console`-only example
+has a **Run** button but one reaching for another authority currently does not:
+the browser host links those imports as trapping stubs, so the module can't run.
+The planned fix (see
+[RFC-0079](https://github.com/insanitybit/witchy/blob/master/rfcs/0079-browser-virtual-capabilities.md))
+is to back each stub with *what the browser actually has* — the real clock for
+`Clock`, the browser's own `fetch` (within its CORS rules) for `Net`, a
+default-empty (but page-overridable) environment for `Env` — and an in-memory
+scratch tree for `Dir`, the one capability that genuinely needs a backing. Those examples then run in the page (with
+ordinary, non-deterministic output, which is fine for a demo), while `Exec` (a
+native subprocess) and host secrets have no browser analogue and stay un-runnable
+by design.
+
 ## UI authority is a capability, too
 
 Some UI effects are sensitive — fetching a URL, navigating, invoking a login or
@@ -62,6 +75,35 @@ before performing it. This is the capability model of
 [Capabilities](capabilities.md) applied to UI effects — the same footprint that
 [coven](appendix-ecosystem.md) gates on. The full token vocabulary is in the
 [capability spec](https://github.com/insanitybit/witchy/blob/master/spec/capabilities.md#framework-effect-authority-capability-safe-ui-glamour).
+
+## Running foreign code safely: compartments and the `Js` capability
+
+Sometimes you need a JavaScript library a witchy app can't replace — a charting
+engine, a syntax highlighter. Glamour lets you embed one **without giving up the
+security model**, through a *compartment*: an isolated foreign-code bundle the
+host mounts in a locked-down, opaque-origin `sandbox="allow-scripts"` iframe with
+`connect-src 'none'`, reachable only over a narrow message channel. The foreign
+code runs, but it cannot touch the network, the parent origin, or the DOM outside
+its frame.
+
+Spawning foreign code is a real authority — the **`Js`** capability, the browser
+sibling of `Exec` (RFC-0015). As with every other effect, the app only emits a
+*description*; the host shell, which alone holds `Js`, performs the spawn, and
+emitting a compartment is what puts `Js` in the app's footprint (so `witchy caps`
+surfaces "this rune runs third-party JS"). A component builds the node with
+`glamour.compartment`:
+
+```
+// `renderer` is a sealed bundle id the host serves under the locked-down origin;
+// `grant` is the JSON payload that crosses in (the ONLY thing that does);
+// `on_event` names the Reflect variant the compartment's channel may dispatch back.
+glamour.compartment("d3-runes-chart", json.stringify(chart_data), "ChartClicked")
+```
+
+The shipped example is `projects/glamour/examples/package_page`, whose package
+page renders its download chart with an isolated `d3` bundle — d3 runs sandboxed,
+and even a compromised d3 is confined to its frame. Coven Web ships that bundle
+under `web/dist/compartments/d3-runes-chart/`.
 
 ## Where it runs: Coven Web and the docs app
 
