@@ -232,8 +232,8 @@ impl Codegen {
 
     /// Ensure the WIR rcopy helper for `shape` exists, returning its name. `Str` uses
     /// the registered `$rcopy_str`; scalars never get one. Compound shapes generate a
-    /// `WirFunc` into `rcopy_wir_helpers`. A recursive type mid-build (cycle) returns
-    /// `None` → the region arm falls back to a plain block (correct value, no reclaim).
+    /// `WirFunc` into `rcopy_wir_helpers`. The name is reserved before building,
+    /// so a recursive field becomes a call back to the helper being defined.
     pub(crate) fn ensure_rcopy_wir_helper(&mut self, shape: &EqShape) -> Option<String> {
         if matches!(shape, EqShape::Str) {
             return Some("rcopy_str".to_string());
@@ -245,9 +245,25 @@ impl Codegen {
         if !self.rcopy_building.insert(name.clone()) {
             return None;
         }
+        self.rcopy_wir_helpers.insert(name.clone(), witchy_wir::wir::WirFunc {
+            name: name.clone(),
+            params: vec![witchy_wir::wir::WirLocal {
+                name: "p".into(),
+                ty: witchy_wir::wir::WirTy::Str,
+            }],
+            ret: vec![witchy_wir::wir::WirTy::Bool],
+            locals: vec![],
+            body: vec![witchy_wir::wir::WirNode::Push(
+                witchy_wir::wir::WirExpr::GetLocal("p".into()),
+            )],
+            raw_body: None,
+        });
         let built = self.build_rcopy_wir_body(shape);
         self.rcopy_building.remove(&name);
-        let (body, locals) = built?;
+        let Some((body, locals)) = built else {
+            self.rcopy_wir_helpers.remove(&name);
+            return None;
+        };
         let func = witchy_wir::wir::WirFunc {
             name: name.clone(),
             params: vec![witchy_wir::wir::WirLocal { name: "p".into(), ty: witchy_wir::wir::WirTy::Str }],
@@ -260,10 +276,45 @@ impl Codegen {
         Some(name)
     }
 
-    /// Build a per-shape rcopy `WirFunc` body (List/Tuple so far; other compound
-    /// shapes return `None` → plain-block fallback). Each: parent short-circuit, then
+    /// Allocate one region-copy payload through the RC allocator and account for
+    /// the copied bytes. Every compound shape uses this exact header/counter path.
+    fn rcopy_alloc_wir(size: witchy_wir::wir::WirExpr) -> witchy_wir::wir::WirSeq {
+        use witchy_wir::wir::{BinOp, Kind, WirExpr as W, WirNode as N};
+        let getl = |name: &str| W::GetLocal(name.into());
+        let getg = |name: &str| W::GetGlobal(name.into());
+        vec![
+            N::SetLocal {
+                local: "size".into(),
+                value: size,
+            },
+            // `$rc_alloc` preserves the `[rc][size]` header required by reuse and
+            // returns the object base expected by the slide-down bias.
+            N::SetLocal {
+                local: "n".into(),
+                value: W::Call {
+                    func: "rc_alloc".into(),
+                    args: vec![getl("size")],
+                },
+            },
+            N::SetGlobal {
+                global: "__region_copy_bytes".into(),
+                value: W::Binary {
+                    op: BinOp::Add,
+                    kind: Kind::I64,
+                    lhs: Box::new(getg("__region_copy_bytes")),
+                    rhs: Box::new(W::Convert {
+                        from: Kind::I32,
+                        to: Kind::I64,
+                        arg: Box::new(getl("size")),
+                    }),
+                },
+            },
+        ]
+    }
+
+    /// Build a per-shape rcopy `WirFunc` body. Each: parent short-circuit, then
     /// allocate above the live data, fill (recursing per slot), and return the ptr
-    /// pre-biased by `$rcopy_delta`. Mirrors `ensure_rcopy_helper`'s WAT emission.
+    /// pre-biased by `$rcopy_delta`.
     pub(crate) fn build_rcopy_wir_body(
         &mut self,
         shape: &EqShape,
@@ -282,34 +333,13 @@ impl Codegen {
             els: vec![],
             result: None,
         };
-        // Allocate `$size` bytes above the live data; record `$n` and count the bytes.
-        let alloc = |size_expr: W| -> Vec<N> {
-            vec![
-                N::SetLocal { local: "size".into(), value: size_expr },
-                // (SEC-037) Allocate the copy through `$rc_alloc` so it carries the `[rc][size]`
-                // header. A header-less copy reclaimed by rc-floor's free-at-overwrite makes
-                // `$rc_alloc`'s reuse scan read a garbage size → wrong-block reuse → OOB (the
-                // minigrep/pm crash). rc_alloc ensures + reserves the header and returns the same
-                // object base the bump path did, so readers and the `- rcopy_delta` bias are unchanged.
-                N::SetLocal { local: "n".into(), value: W::Call { func: "rc_alloc".into(), args: vec![getl("size")] } },
-                N::SetGlobal {
-                    global: "__region_copy_bytes".into(),
-                    value: W::Binary {
-                        op: BinOp::Add,
-                        kind: WK::I64,
-                        lhs: Box::new(getg("__region_copy_bytes")),
-                        rhs: Box::new(W::Convert { from: WK::I32, to: WK::I64, arg: Box::new(getl("size")) }),
-                    },
-                },
-            ]
-        };
         let ret_biased = N::Push(bin(BinOp::Sub, getl("n"), getg("rcopy_delta")));
         match shape {
             EqShape::List(elem) => {
                 // size = 4 + 8*len; len = list length header.
                 let size = bin(BinOp::Add, i32c(4), bin(BinOp::Mul, load_i32(getl("p")), i32c(8)));
                 let mut body = vec![prologue, N::SetLocal { local: "len".into(), value: load_i32(getl("p")) }];
-                body.extend(alloc(size));
+                body.extend(Self::rcopy_alloc_wir(size));
                 if matches!(**elem, EqShape::Int | EqShape::Bool | EqShape::Float) {
                     // Scalar payload: one straight copy of `[len][payload]`.
                     body.push(N::MemoryCopy { dest: getl("n"), src: getl("p"), len: getl("size") });
@@ -356,7 +386,7 @@ impl Codegen {
             EqShape::Tuple(shapes) => {
                 let nslots = shapes.len();
                 let mut body = vec![prologue];
-                body.extend(alloc(i32c((4 + 8 * nslots) as i32)));
+                body.extend(Self::rcopy_alloc_wir(i32c((4 + 8 * nslots) as i32)));
                 // Copy the tag word (slot 0), then rcopy each field slot.
                 body.push(N::Store { ptr: getl("n"), value: load_i32(getl("p")), kind: WK::I32, offset: 0 });
                 for (i, fs) in shapes.iter().enumerate() {
@@ -376,9 +406,8 @@ impl Codegen {
             // (BUG-407) A record has the same flat `[tag i32][slot i64]…` layout as a
             // tuple, so its copy-out is the tuple body over its RESOLVED field shapes —
             // deep-copying each slot through `slot_rcopy_wir`. This closes the shape
-            // dependence for the common `region -> SomeRecord:` result (a self-
-            // referential field bails via the `ensure_rcopy_wir_helper` cycle guard,
-            // as the recursive-List case already does).
+            // dependence for the common `region -> SomeRecord:` result; recursive
+            // fields call the helper name reserved by `ensure_rcopy_wir_helper`.
             EqShape::Record(tyname) => {
                 let field_tys = self.record_field_types.get(tyname).cloned()?;
                 let mut shapes = Vec::new();
@@ -399,8 +428,235 @@ impl Codegen {
                 }
                 self.build_rcopy_wir_body(&EqShape::Tuple(shapes))
             }
-            _ => None,
+            EqShape::Adt(tyname) => {
+                let variants = self.adt_variants.get(tyname).cloned()?;
+                let mut all = Vec::new();
+                for fields in &variants {
+                    let mut shapes = Vec::new();
+                    for field in fields {
+                        shapes.push(self.eq_shape_of_type(field)?);
+                    }
+                    all.push(shapes);
+                }
+                self.build_variant_rcopy_wir(&all)
+            }
+            EqShape::AdtInst(_, variants) => self.build_variant_rcopy_wir(variants),
+            EqShape::AdtRec(tyname, args) => {
+                let variants = self.adt_variants.get(tyname).cloned()?;
+                let mut params = Vec::new();
+                for fields in &variants {
+                    for field in fields {
+                        collect_type_vars(field, &mut params);
+                    }
+                }
+                let subst: HashMap<String, EqShape> =
+                    params.iter().cloned().zip(args.iter().cloned()).collect();
+                let mut all = Vec::new();
+                for fields in &variants {
+                    let mut shapes = Vec::new();
+                    for field in fields {
+                        shapes.push(self.eq_shape_of_type_with(field, &subst)?);
+                    }
+                    all.push(shapes);
+                }
+                self.build_variant_rcopy_wir(&all)
+            }
+            EqShape::Dict(key, value) => {
+                let mut body = vec![
+                    prologue,
+                    N::SetLocal {
+                        local: "len".into(),
+                        value: load_i32(getl("p")),
+                    },
+                ];
+                let size = bin(
+                    BinOp::Add,
+                    i32c(8),
+                    bin(BinOp::Mul, getl("len"), i32c(16)),
+                );
+                body.extend(Self::rcopy_alloc_wir(size));
+                body.push(N::Store {
+                    ptr: getl("n"),
+                    value: i32c(0),
+                    kind: WK::I32,
+                    offset: 0,
+                });
+                body.push(N::Store {
+                    ptr: getl("n"),
+                    value: getl("len"),
+                    kind: WK::I32,
+                    offset: 4,
+                });
+                body.push(N::SetLocal {
+                    local: "i".into(),
+                    value: i32c(0),
+                });
+                let entry_off = bin(BinOp::Mul, getl("i"), i32c(16));
+                let key_value = self.slot_rcopy_wir(
+                    key,
+                    bin(
+                        BinOp::Add,
+                        bin(BinOp::Add, getl("p"), i32c(4)),
+                        entry_off.clone(),
+                    ),
+                )?;
+                let value_value = self.slot_rcopy_wir(
+                    value,
+                    bin(
+                        BinOp::Add,
+                        bin(BinOp::Add, getl("p"), i32c(12)),
+                        entry_off.clone(),
+                    ),
+                )?;
+                let dest = bin(BinOp::Add, getl("n"), entry_off);
+                body.push(N::Block {
+                    label: "done".into(),
+                    result: None,
+                    body: vec![N::Loop {
+                        label: "l".into(),
+                        body: vec![
+                            N::Br {
+                                target: "done".into(),
+                                cond: Some(bin(BinOp::Ge, getl("i"), getl("len"))),
+                            },
+                            N::Store {
+                                ptr: dest.clone(),
+                                value: key_value,
+                                kind: WK::I64,
+                                offset: 8,
+                            },
+                            N::Store {
+                                ptr: dest,
+                                value: value_value,
+                                kind: WK::I64,
+                                offset: 16,
+                            },
+                            N::SetLocal {
+                                local: "i".into(),
+                                value: bin(BinOp::Add, getl("i"), i32c(1)),
+                            },
+                            N::Br {
+                                target: "l".into(),
+                                cond: None,
+                            },
+                        ],
+                    }],
+                });
+                body.push(N::Push(bin(
+                    BinOp::Sub,
+                    bin(BinOp::Add, getl("n"), i32c(4)),
+                    getg("rcopy_delta"),
+                )));
+                Some((
+                    body,
+                    vec![
+                        WirLocal {
+                            name: "n".into(),
+                            ty: i32l(),
+                        },
+                        WirLocal {
+                            name: "size".into(),
+                            ty: i32l(),
+                        },
+                        WirLocal {
+                            name: "i".into(),
+                            ty: i32l(),
+                        },
+                        WirLocal {
+                            name: "len".into(),
+                            ty: i32l(),
+                        },
+                    ],
+                ))
+            }
+            EqShape::Int | EqShape::Bool | EqShape::Float | EqShape::Str => None,
         }
+    }
+
+    /// Build a tag-dispatched region copy-out for an ADT. Each variant allocates
+    /// exactly its active payload size, copies the tag, and recursively copies its
+    /// fields. Recursive fields call the placeholder reserved by
+    /// `ensure_rcopy_wir_helper`.
+    pub(crate) fn build_variant_rcopy_wir(
+        &mut self,
+        variants: &[Vec<EqShape>],
+    ) -> Option<(witchy_wir::wir::WirSeq, Vec<witchy_wir::wir::WirLocal>)> {
+        use witchy_wir::wir::{BinOp, Kind as WK, WirExpr as W, WirLocal, WirNode as N, WirTy};
+        let getl = |name: &str| W::GetLocal(name.into());
+        let getg = |name: &str| W::GetGlobal(name.into());
+        let i32c = W::ConstI32;
+        let bin = |op: BinOp, lhs: W, rhs: W| W::Binary {
+            op,
+            kind: WK::I32,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        };
+        let mut body = vec![N::If {
+            cond: bin(BinOp::LtU, getl("p"), getg("rcopy_wm")),
+            then_: vec![N::Return(Some(getl("p")))],
+            els: vec![],
+            result: None,
+        }];
+        body.push(N::SetLocal {
+            local: "tag".into(),
+            value: W::Load {
+                ptr: Box::new(getl("p")),
+                kind: WK::I32,
+                offset: 0,
+            },
+        });
+        for (tag, fields) in variants.iter().enumerate() {
+            let size = (4 + 8 * fields.len()) as i32;
+            let mut copy = Self::rcopy_alloc_wir(i32c(size));
+            copy.push(N::Store {
+                ptr: getl("n"),
+                value: getl("tag"),
+                kind: WK::I32,
+                offset: 0,
+            });
+            for (index, field) in fields.iter().enumerate() {
+                let offset = (4 + 8 * index) as i32;
+                let value = self.slot_rcopy_wir(
+                    field,
+                    bin(BinOp::Add, getl("p"), i32c(offset)),
+                )?;
+                copy.push(N::Store {
+                    ptr: getl("n"),
+                    value,
+                    kind: WK::I64,
+                    offset: offset as u32,
+                });
+            }
+            copy.push(N::Return(Some(bin(
+                BinOp::Sub,
+                getl("n"),
+                getg("rcopy_delta"),
+            ))));
+            body.push(N::If {
+                cond: bin(BinOp::Eq, getl("tag"), i32c(tag as i32)),
+                then_: copy,
+                els: vec![],
+                result: None,
+            });
+        }
+        body.push(N::Unreachable);
+        Some((
+            body,
+            vec![
+                WirLocal {
+                    name: "n".into(),
+                    ty: WirTy::Bool,
+                },
+                WirLocal {
+                    name: "size".into(),
+                    ty: WirTy::Bool,
+                },
+                WirLocal {
+                    name: "tag".into(),
+                    ty: WirTy::Bool,
+                },
+            ],
+        ))
     }
 
     /// Build the `(body, locals)` of a structural-eq helper for `shape`. `None`
