@@ -547,8 +547,9 @@ fn main() -> wasmtime::Result<()> {
             std::process::exit(1);
         };
         let result = (|| -> Result<(), String> {
-            let (linked, _stem) = link_file_with_deps(&entry, &deps)?;
+            let (linked, stem) = link_file_with_deps(&entry, &deps)?;
             typeck::check(&linked).map_err(|e| e.to_string())?;
+            enforce_performance_modes(&linked, &stem)?;
             let bytes = compile_linked_to_wasm(&linked)?;
             if let Some(f) = &out {
                 std::fs::write(f, &bytes).map_err(|e| format!("cannot write `{f}`: {e}"))?;
@@ -2614,8 +2615,9 @@ fn run_file_grants(
     args: Vec<String>,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     use std::io::IsTerminal;
-    let (linked, _stem) = link_file(path)?;
+    let (linked, stem) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
+    enforce_performance_modes(&linked, &stem)?;
     let doc_src = std::fs::read_to_string(grants_path)
         .map_err(|e| format!("cannot read `{grants_path}`: {e}"))?;
     let doc = grants::GrantDoc::parse(&doc_src)?;

@@ -351,10 +351,21 @@ fn named_secret_does_not_satisfy_a_bare_secret() {
 fn mode_opt_enforced_across_subcommands() {
     let dir = workdir("mode-opt");
     let bad = write(&dir, "bad.witchy", BAD_OPT);
+    let compiled = dir.join("bad.wasm");
+    let grants = write(&dir, "empty.grants.toml", "");
     // `check` is the reference: it rejects.
     assert!(!run(&["check", &bad]).status.success(), "check must reject the mode-opt violation");
-    // BUG-163 emit-wat, BUG-119 parity, BUG-177 stats + test must all reject too.
+    // BUG-163 artifact paths, BUG-119 parity, BUG-177 stats + test must all reject too.
+    assert!(
+        !run(&["compile", &bad, "--out", compiled.to_str().unwrap()]).status.success(),
+        "BUG-163: compile must enforce mode opt",
+    );
+    assert!(!compiled.exists(), "BUG-163: a rejected compile must not write an artifact");
     assert!(!run(&["emit-wat", &bad]).status.success(), "BUG-163: emit-wat must enforce mode opt");
+    assert!(
+        !run(&["sandbox", "--grants", &grants, "--accept-grants", &bad]).status.success(),
+        "BUG-163: grant-document sandbox must enforce mode opt",
+    );
     assert!(!run(&["parity", &bad]).status.success(), "BUG-119: parity must enforce mode opt");
     assert!(!run(&["stats", &bad]).status.success(), "BUG-177: stats must enforce mode opt");
     assert!(!run(&["test", &bad]).status.success(), "BUG-177: test must enforce mode opt");
