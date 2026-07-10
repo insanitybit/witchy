@@ -124,7 +124,7 @@ cannot instantiate.
 
 ## The imports
 
-ABI version 1 declares **77 imports** (`IMPORT_COUNT` in
+ABI version 1 declares **83 imports** (`IMPORT_COUNT` in
 `crates/witchy-wir/src/wir_prelude.rs`),
 classified below. **Infrastructure** imports carry no authority and the
 pure-compute host provides them. **Capability** imports are authority (or host
@@ -160,6 +160,31 @@ representative rather than enumerate each half of a pair.
 | `field_str_len` | `(i32 h) -> i32` | reflection field length (host cell; returns 0 for ordinary programs) |
 | `field_intlist_len` | `(i32 h) -> i32` | reflection field length |
 | `field_strlist_size` | `(i32 h) -> i32` | reflection field length |
+
+`encoding` is a byte-oriented sub-ABI: `in_ptr` addresses a `[i32 len][bytes]`
+buffer, the host writes result bytes at `out_ptr`, and the return value is their
+length. String results are UTF-8; `Bytes` results are raw. Its op ids are part of
+ABI version 1:
+
+| op | operation | input -> output |
+| ---: | --- | --- |
+| 0 | `hex_encode` | String -> String |
+| 1 | `hex_decode_lossy` | String -> String |
+| 2 | `base64_encode` | String -> String |
+| 3 | `base64_decode_lossy` | String -> String |
+| 4 | `hex_to_base64url_lossy` | String -> String |
+| 5 | `base64url_decode_lossy` | String -> String |
+| 6 | `base64url_to_hex_lossy` | String -> String |
+| 7 | `utf8_lossy` | Bytes -> String |
+| 8 | `hex_encode_bytes` | Bytes -> String |
+| 9 | `base64_encode_bytes` | Bytes -> String |
+| 10 | `base64url_encode_bytes` | Bytes -> String |
+| 11 | `hex_decode_bytes_raw` | String -> Bytes |
+| 12 | `base64_decode_bytes_raw` | String -> Bytes |
+| 13 | `base64url_decode_bytes_raw` | String -> Bytes |
+
+Public decoders validate their alphabet and shape before calling a raw decode
+op. Hosts still reject an unknown op or malformed direct hex decode loudly.
 
 The crypto digests, encoding transforms, float formatting, and code-point
 encoding are pure functions; the pure-compute host mirrors

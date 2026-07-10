@@ -238,12 +238,50 @@ export function hexToBytes(s) {
   return out;
 }
 
-// encoding(op, input) -> string. op: 0 hex_encode, 1 hex_decode, 2 base64_encode,
-// 3 base64_decode, 4 hex_to_base64url. Mirrors src/native.rs::encoding exactly.
-function encodingOp(op, input /* Uint8Array */) {
+function base64String(input, alphabet, padding) {
+  let out = "";
+  for (let i = 0; i < input.length; i += 3) {
+    const b0 = input[i], b1 = input[i + 1] || 0, b2 = input[i + 2] || 0;
+    const len = input.length - i;
+    const n = (b0 << 16) | (b1 << 8) | b2;
+    out += alphabet[(n >> 18) & 63] + alphabet[(n >> 12) & 63];
+    if (len > 1) out += alphabet[(n >> 6) & 63];
+    else if (padding) out += "=";
+    if (len > 2) out += alphabet[n & 63];
+    else if (padding) out += "=";
+  }
+  return out;
+}
+
+const isAsciiWhitespace = (b) => b === 0x20 || (b >= 0x09 && b <= 0x0d);
+
+// Match native `base64_bytes`: padding and ASCII whitespace are ignored, and
+// the first non-alphabet byte ends the raw decode. Public witchy wrappers reject
+// malformed input before reaching these primitives.
+function base64Bytes(input, alphabet) {
+  let acc = 0, nbits = 0;
+  const bytes = [];
+  for (const b of input) {
+    if (b === 0x3d || isAsciiWhitespace(b)) continue;
+    const v = alphabet.indexOf(String.fromCharCode(b));
+    if (v < 0) break;
+    acc = ((acc << 6) | v) >>> 0;
+    nbits += 6;
+    if (nbits >= 8) {
+      nbits -= 8;
+      bytes.push((acc >>> nbits) & 0xff);
+    }
+  }
+  return new Uint8Array(bytes);
+}
+
+// `encoding(op, input) -> bytes`, mirroring the native host's complete op
+// table. Text results are returned as UTF-8 bytes; byte decoders stay raw.
+export function encodingOp(op, input /* Uint8Array */) {
   switch (op) {
-    case 0: { // hex_encode of the UTF-8 bytes
-      return toHex(input);
+    case 0: // hex_encode of a String's UTF-8 bytes
+    case 8: { // hex_encode_bytes
+      return utf8.encode(toHex(input));
     }
     case 1: { // hex_decode: lossy UTF-8 of the DECODED bytes. The hex alphabet is
       // decoded STRICTLY — a non-hex char or odd length is a hard error, matching
@@ -251,57 +289,45 @@ function encodingOp(op, input /* Uint8Array */) {
       // skip / odd-tail drop.
       const bytes = hexToBytes(decodeLossy(input));
       if (bytes === null) throw new Error("encoding.hex_decode: input is not valid hex");
-      return decodeLossy(bytes);
+      return utf8.encode(decodeLossy(bytes));
     }
-    case 2: { // standard base64 (=-padded) of the UTF-8 bytes
-      let out = "";
-      for (let i = 0; i < input.length; i += 3) {
-        const b0 = input[i], b1 = input[i + 1] || 0, b2 = input[i + 2] || 0;
-        const len = input.length - i;
-        const n = (b0 << 16) | (b1 << 8) | b2;
-        out += B64[(n >> 18) & 63] + B64[(n >> 12) & 63];
-        out += len > 1 ? B64[(n >> 6) & 63] : "=";
-        out += len > 2 ? B64[n & 63] : "=";
-      }
-      return out;
+    case 2: // base64_encode of a String's UTF-8 bytes
+    case 9: { // base64_encode_bytes
+      return utf8.encode(base64String(input, B64, true));
     }
     case 3: { // base64_decode (lossy UTF-8); padding/whitespace tolerated
-      const text = decodeLossy(input);
-      let acc = 0, nbits = 0;
-      const bytes = [];
-      for (const ch of text) {
-        const c = ch;
-        if (c === "=" || /\s/.test(c)) continue;
-        const v = B64.indexOf(c);
-        if (v < 0) break;
-        acc = (acc << 6) | v;
-        nbits += 6;
-        if (nbits >= 8) {
-          nbits -= 8;
-          bytes.push((acc >> nbits) & 0xff);
-        }
-      }
-      return decodeLossy(new Uint8Array(bytes));
+      return utf8.encode(decodeLossy(base64Bytes(input, B64)));
     }
     case 4: { // base64url (no padding) of the bytes given as a HEX string; the hex
       // is decoded STRICTLY, matching native `encoding::hex_to_base64url` (BUG-276).
       const bytes = hexToBytes(decodeLossy(input));
       if (bytes === null) throw new Error("encoding.hex_to_base64url: input is not valid hex");
-      let out = "";
-      for (let i = 0; i < bytes.length; i += 3) {
-        const b0 = bytes[i], b1 = bytes[i + 1] || 0, b2 = bytes[i + 2] || 0;
-        const len = bytes.length - i;
-        const n = (b0 << 16) | (b1 << 8) | b2;
-        out += B64URL[(n >> 18) & 63] + B64URL[(n >> 12) & 63];
-        if (len > 1) out += B64URL[(n >> 6) & 63];
-        if (len > 2) out += B64URL[n & 63];
-      }
-      return out;
+      return utf8.encode(base64String(bytes, B64URL, false));
+    }
+    case 5: { // base64url_decode_lossy
+      return utf8.encode(decodeLossy(base64Bytes(input, B64URL)));
+    }
+    case 6: { // base64url_to_hex_lossy
+      return utf8.encode(toHex(base64Bytes(input, B64URL)));
     }
     case 7: { // utf8_lossy (bytes.to_string): lossy UTF-8 decode, invalid -> U+FFFD.
       // `input` was read raw (readWstr); decode it lossily here so the JS host
       // matches the interpreter's `String::from_utf8_lossy` byte-for-byte.
-      return decodeLossy(input);
+      return utf8.encode(decodeLossy(input));
+    }
+    case 10: { // base64url_encode_bytes
+      return utf8.encode(base64String(input, B64URL, false));
+    }
+    case 11: { // hex_decode_bytes_raw
+      const bytes = hexToBytes(decodeLossy(input));
+      if (bytes === null) throw new Error("encoding.hex_decode_bytes: input is not valid hex");
+      return bytes;
+    }
+    case 12: { // base64_decode_bytes_raw
+      return base64Bytes(input, B64);
+    }
+    case 13: { // base64url_decode_bytes_raw
+      return base64Bytes(input, B64URL);
     }
     default:
       throw new Error(`witchy-runtime: unknown encoding op ${op}`);
@@ -533,7 +559,7 @@ export async function instantiate(wasmBytes, opts = {}) {
       return writeAt(stringFromCode(cp), outPtr);
     },
     encoding(op, inPtr, outPtr) {
-      return writeAt(utf8.encode(encodingOp(op, readWstr(inPtr))), outPtr);
+      return writeAt(encodingOp(op, readWstr(inPtr)), outPtr);
     },
     regex_match_spans_len(patPtr, textPtr) {
       const spans = matchSpans(readWstrText(patPtr), readWstrText(textPtr));

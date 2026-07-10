@@ -316,8 +316,10 @@ mod wasm_abi {
         pack(super::string_from_code(cp).as_bytes())
     }
 
-    /// `encoding(op, input[..in_len])` → `[u32 len][utf-8]` (a decode error folds
-    /// to the empty string, matching how the program would observe a failed op).
+    /// `encoding(op, input[..in_len])` → `[u32 len][bytes]`. Text results use
+    /// UTF-8; byte decoders preserve their raw output. Public witchy decoders
+    /// validate before calling a raw op, so the pointer-only bridge has no error
+    /// variant; an impossible host-table error becomes an empty result.
     #[unsafe(no_mangle)]
     pub extern "C" fn witchy_encoding(op: i32, in_ptr: *const u8, in_len: usize) -> *mut u8 {
         let input = unsafe { std::slice::from_raw_parts(in_ptr, in_len) };
