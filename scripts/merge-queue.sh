@@ -197,10 +197,23 @@ run_gate() { # run_gate <log>
         # compiling/testing; only silence WITH no CPU is a genuine stall. A real
         # hang (deadlock/blocked syscall) consumes no CPU, so it still trips.
         if [ "$age" -gt "$stall_timeout" ]; then
-            if group_is_busy "$gpid"; then
+            # A busy group that has been silent for a NORMAL compile-window length
+            # is fine (this is the false-positive fix). But a group that is busy
+            # AND silent for far longer than any compile+enumeration takes is a
+            # CPU-burning runaway (e.g. a busy-spin infinite loop in a test) — kill
+            # it well before the 45-min whole-gate ceiling so it doesn't block the
+            # serialized queue that long. `busy_silence_max` = 6× the stall window
+            # (default 1800s), comfortably above a cold test-profile compile even
+            # under contention, far below GATE_TIMEOUT.
+            local busy_silence_max="${MERGE_QUEUE_BUSY_SILENCE_MAX:-$((stall_timeout * 6))}"
+            if group_is_busy "$gpid" && [ "$age" -le "$busy_silence_max" ]; then
                 continue
             fi
-            why="no log output for ${age}s and process group idle (MERGE_QUEUE_STALL_TIMEOUT=${stall_timeout})"
+            if group_is_busy "$gpid"; then
+                why="no log output for ${age}s despite a busy process group — runaway (MERGE_QUEUE_BUSY_SILENCE_MAX=${busy_silence_max})"
+            else
+                why="no log output for ${age}s and process group idle (MERGE_QUEUE_STALL_TIMEOUT=${stall_timeout})"
+            fi
             break
         fi
     done

@@ -113,7 +113,10 @@ Environment knobs: `MERGE_QUEUE_GATE_CMD` (default `./scripts/check.sh`),
 `MERGE_QUEUE_GATE_TIMEOUT` (2700s), `MERGE_QUEUE_STALL_TIMEOUT` (300s of no log
 output **while the gate's process group is idle** — a group still burning CPU is
 compiling/testing, not hung, so silence alone never kills it; see the stall
-note below), `MERGE_QUEUE_BATCH_MAX` (5), `MERGE_QUEUE_STATE_DIR` +
+note below), `MERGE_QUEUE_BUSY_SILENCE_MAX` (6× stall = 1800s: the ceiling on
+silence even for a *busy* group, so a CPU-burning runaway is reclaimed here
+rather than at GATE_TIMEOUT), `MERGE_QUEUE_BATCH_MAX` (5),
+`MERGE_QUEUE_STATE_DIR` +
 `MERGE_QUEUE_GATE_WT` (isolated state for TESTING the coordinator itself),
 `MERGE_QUEUE_ALLOW_MERGE=1` (test mode still merges — see Testing below).
 
@@ -216,9 +219,12 @@ note below), `MERGE_QUEUE_BATCH_MAX` (5), `MERGE_QUEUE_STATE_DIR` +
   gate's wall-clock and forcing a resubmit. Fix: the monitor now consults
   `group_is_busy` (sum of `ps -g <pgid> -o %cpu`) and only kills on silence WITH
   an idle group. A real hang (deadlock/blocked syscall) consumes no CPU so it
-  still trips; a runaway that spins forever is caught by the whole-gate
-  `GATE_TIMEOUT` backstop. Raising `STALL_TIMEOUT` would only move the cliff;
-  the compile is genuinely long, so liveness is the right signal.
+  still trips; a CPU-burning runaway (busy-spin) that stays silent past
+  `BUSY_SILENCE_MAX` (6× stall = 1800s, well above any compile+enumeration, well
+  below `GATE_TIMEOUT`) is reclaimed there rather than blocking the serialized
+  queue for the full 45-min whole-gate ceiling. Raising `STALL_TIMEOUT` would
+  only move the cliff; the compile is genuinely long, so liveness is the right
+  signal.
 - **`blocked` almost always means the main worktree is dirty** with an
   untracked file the merge would overwrite, or master is checked out
   somewhere unexpected. The gate result stays valid; only the ff needs help.
