@@ -145,6 +145,20 @@ ensure_gate_worktree() {
     git -C "$gate_wt" rebase --abort >/dev/null 2>&1 || true
 }
 
+# Is the gate's process group actively using CPU? `set -m` puts the gate in its
+# own group whose pgid == the launched pid, so `ps -g <pgid>` lists the whole
+# cargo/rustc/nextest tree. Sum their %cpu (a float across cores); "busy" means
+# the gate is compiling or running tests, not hung — used to distinguish a silent
+# WORKING gate from a silent WEDGED one. Fails safe: if ps yields nothing (group
+# already gone, or an unexpected ps), returns false so the stall path proceeds.
+group_is_busy() { # group_is_busy <pgid>
+    local total
+    total="$(ps -g "$1" -o %cpu= 2>/dev/null | awk '{s+=$1} END {print s+0}')"
+    # Threshold well above idle jitter but far below one busy core (100%); a live
+    # compile/test tree sits at hundreds of %.
+    awk -v c="$total" 'BEGIN { exit !(c > 20) }'
+}
+
 # Run the gate in its own process group with a stall/overall-timeout monitor.
 # Sets gate_result to "green", "red", or "timeout: <why>". Never returns nonzero.
 gate_result=""
@@ -172,8 +186,21 @@ run_gate() { # run_gate <log>
             why="gate exceeded ${gate_timeout}s (MERGE_QUEUE_GATE_TIMEOUT)"
             break
         fi
+        # Log silence alone is NOT a hang. The gate legitimately goes quiet for
+        # minutes: nextest recompiles the `test` profile (separate artifacts from
+        # the `dev`-profile build/clippy stages) and then enumerates+starts tests,
+        # all before the first streamed `PASS` line — and under CPU contention that
+        # silent window blew the 300s stall clock, killing HEALTHY gates (every
+        # observed "no log output" timeout was this false positive, never a real
+        # hang; the whole-gate limit above already backstops a true wedge). So
+        # gate liveness on CPU, not log writes: a process group burning CPU is
+        # compiling/testing; only silence WITH no CPU is a genuine stall. A real
+        # hang (deadlock/blocked syscall) consumes no CPU, so it still trips.
         if [ "$age" -gt "$stall_timeout" ]; then
-            why="no log output for ${age}s (MERGE_QUEUE_STALL_TIMEOUT=${stall_timeout})"
+            if group_is_busy "$gpid"; then
+                continue
+            fi
+            why="no log output for ${age}s and process group idle (MERGE_QUEUE_STALL_TIMEOUT=${stall_timeout})"
             break
         fi
     done

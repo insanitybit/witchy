@@ -110,8 +110,10 @@ merge-queue.sh sweep                             remove worktrees whose branch t
 ```
 
 Environment knobs: `MERGE_QUEUE_GATE_CMD` (default `./scripts/check.sh`),
-`MERGE_QUEUE_GATE_TIMEOUT` (2700s), `MERGE_QUEUE_STALL_TIMEOUT` (300s of no
-log output), `MERGE_QUEUE_BATCH_MAX` (5), `MERGE_QUEUE_STATE_DIR` +
+`MERGE_QUEUE_GATE_TIMEOUT` (2700s), `MERGE_QUEUE_STALL_TIMEOUT` (300s of no log
+output **while the gate's process group is idle** — a group still burning CPU is
+compiling/testing, not hung, so silence alone never kills it; see the stall
+note below), `MERGE_QUEUE_BATCH_MAX` (5), `MERGE_QUEUE_STATE_DIR` +
 `MERGE_QUEUE_GATE_WT` (isolated state for TESTING the coordinator itself),
 `MERGE_QUEUE_ALLOW_MERGE=1` (test mode still merges — see Testing below).
 
@@ -129,8 +131,10 @@ log output), `MERGE_QUEUE_BATCH_MAX` (5), `MERGE_QUEUE_STATE_DIR` +
    rebase excludes. Members carrying a `.nobatch` marker (from a previous
    red batch) are skipped, and a head with `.nobatch` gates strictly alone.
 5. Run the gate: own process group (`set -m`), stdout to the log,
-   `NEXTEST_STATUS_LEVEL=pass` for streaming. A monitor loop kills the group
-   on overall timeout or log-stall and journals `timeout`.
+   `NEXTEST_STATUS_LEVEL=pass` for streaming. A monitor loop kills the group on
+   overall timeout, or on log-stall **only when the group is also idle** (CPU
+   near zero) — a silent-but-CPU-busy gate is compiling/enumerating, not hung —
+   and journals `timeout`.
 6. Outcomes:
    - **green, solo:** if master still == base → `git merge --ff-only <sha>`,
      journal `merged`, sweep. If master moved → journal `requeued`, keep the
@@ -200,6 +204,21 @@ log output), `MERGE_QUEUE_BATCH_MAX` (5), `MERGE_QUEUE_STATE_DIR` +
   (kill pid → `daemon`). Editing in place risks bash reading a half-new file.
 - **Lock is stealable only on dead pid.** A live-but-stuck holder needs a
   human `kill`; `doctor` shows holder pid + what + elapsed + log age.
+- **Stall detection is CPU-gated, not log-only (2026-07-10).** The stall monitor
+  once killed on 300s of no log output alone. But the gate legitimately goes
+  silent for minutes: stage 4 (`nextest run`) recompiles the `test` profile —
+  separate artifacts from the `dev`-profile `cargo build`/`clippy` of stages
+  1-3, so it is a full second compile — then spawns `--list` across ~17 test
+  binaries and runs the warm-caches setup script, all before the first streamed
+  `PASS`. Under CPU contention (concurrent agent builds) that silent window blew
+  the 300s clock and killed HEALTHY gates: over a single day, 56 of 56
+  `timeout`s were this false positive, never a real hang, each burning a full
+  gate's wall-clock and forcing a resubmit. Fix: the monitor now consults
+  `group_is_busy` (sum of `ps -g <pgid> -o %cpu`) and only kills on silence WITH
+  an idle group. A real hang (deadlock/blocked syscall) consumes no CPU so it
+  still trips; a runaway that spins forever is caught by the whole-gate
+  `GATE_TIMEOUT` backstop. Raising `STALL_TIMEOUT` would only move the cliff;
+  the compile is genuinely long, so liveness is the right signal.
 - **`blocked` almost always means the main worktree is dirty** with an
   untracked file the merge would overwrite, or master is checked out
   somewhere unexpected. The gate result stays valid; only the ff needs help.
@@ -245,7 +264,7 @@ you didn't drop a real commit that landed meanwhile.
 |---|---|
 | doctor: coordinator NOT RUNNING | `./scripts/merge-queue.sh daemon` — state is on disk; nothing is lost between coordinators |
 | lock held, holder pid dead | next acquirer steals it automatically; or `rm -rf scratch/merge-queue/gate.lock` if nothing will acquire soon |
-| lock held, holder alive but gate silent | doctor shows log age; the stall monitor kills at 300s of silence — wait, or `kill <holder>` |
+| lock held, holder alive but gate silent | expected during the `test`-profile compile / test enumeration; the monitor now kills only after 300s of silence WITH an idle process group (a busy group is compiling, not hung). If it is genuinely wedged AND idle it self-kills; a spinning runaway is caught by `GATE_TIMEOUT`. Only `kill <holder>` by hand if both clocks are somehow not progressing. |
 | journal says `blocked` | gate was GREEN: `git merge --ff-only <sha from journal>` in the main worktree, then `merge-queue.sh resolve <branch>` |
 | branch red repeatedly, uniform ~32s e2e failures | environmental (server readiness under load), not the branch: check what else is hammering the machine, resubmit |
 | need to reorder the queue | rename files in `queue/` (sort order = order) or use `submit --front` |
