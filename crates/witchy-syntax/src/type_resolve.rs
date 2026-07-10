@@ -27,7 +27,10 @@ use crate::ast::*;
 use crate::linker::LinkError;
 
 fn lerr<T>(message: impl Into<String>) -> Result<T, LinkError> {
-    Err(LinkError { message: message.into() })
+    Err(LinkError {
+        message: message.into(),
+        location: None,
+    })
 }
 
 /// Type names known without a module qualifier: primitives, host capabilities,

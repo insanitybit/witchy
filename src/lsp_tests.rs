@@ -400,14 +400,69 @@ fn main(console: Console):
     #[test]
     fn link_error_maps_to_real_location() {
         // BUG-162: a link error carrying `line N` underlines that line; one that
-        // blames an imported module underlines its import; otherwise line 0.
-        let text = "import helper\nimport other\nfn main(console: Console):\n    console.print(\"x\")\n";
-        assert_eq!(link_error_line("boom at line 3: bad thing", text), 2);
+        // carries a structured source line underlines it; an imported module
+        // falls back to its import; otherwise line 0.
+        let text = "import helper\nimport other\nfn main(console: Console):\n    console.print(\"x\")\n    console.print(helper.not_real())\n";
+        let error = |message: &str, location: Option<(&str, u32)>| crate::linker::LinkError {
+            message: message.to_string(),
+            location: location.map(|(module, line)| crate::linker::LinkLocation {
+                module: module.to_string(),
+                line,
+            }),
+        };
         assert_eq!(
-            link_error_line("module `main` imports unknown module `other`", text),
+            link_error_line(&error("boom at line 3: bad thing", None), text, "main"),
+            2
+        );
+        assert_eq!(
+            link_error_line(
+                &error(
+                    "module `helper` has no function `not_real`",
+                    Some(("main", 5)),
+                ),
+                text,
+                "main",
+            ),
+            4
+        );
+        assert_eq!(
+            link_error_line(
+                &error("module `main` imports unknown module `other`", None),
+                text,
+                "main",
+            ),
             1
         );
-        assert_eq!(link_error_line("something went wrong", text), 0);
+        assert_eq!(
+            link_error_line(
+                &error("module `helper` has no function `not_real`", Some(("helper", 8))),
+                text,
+                "main",
+            ),
+            0
+        );
+        assert_eq!(
+            link_error_line(&error("something went wrong", None), text, "main"),
+            0
+        );
+    }
+
+    #[test]
+    fn missing_module_function_underlines_qualified_call() {
+        let uri = "file:///tmp/witchy-lsp-162-main.witchy";
+        let src = "import string\n\nfn main(console: Console):\n    console.print(\"before\")\n    console.print(string.not_real(\"x\"))\n";
+        let mut docs = HashMap::new();
+        docs.insert(uri.to_string(), src.to_string());
+
+        let diagnostics = compute_diagnostics(uri, src, &docs);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert!(
+            diagnostics[0]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("module `string` has no function `not_real`")),
+            "{diagnostics:?}",
+        );
+        assert_eq!(diagnostics[0]["range"]["start"]["line"], json!(4));
     }
 
     #[test]

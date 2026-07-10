@@ -471,7 +471,7 @@ fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) ->
             // BUG-162: map the link error onto the line it names (or the import it
             // blames) instead of always pinning it to line 0.
             let msg = e.to_string();
-            return vec![line_diag(link_error_line(&msg, text), text, &msg)];
+            return vec![line_diag(link_error_line(&e, text, &entry), text, &msg)];
         }
     };
     match typeck::check(&linked) {
@@ -615,15 +615,23 @@ fn import_line_of(text: &str, name: &str) -> Option<u32> {
 }
 
 /// The line a link error should underline: the `line N` it carries, else the
-/// import line of the first module it names in backticks, else the top of file.
-/// Link errors otherwise all pinned to line 0 (BUG-162).
-fn link_error_line(message: &str, text: &str) -> u32 {
-    if let Some(n) = extract_line(message) {
+/// relevant import, else the top of file. Link errors otherwise all pinned to
+/// line 0 (BUG-162).
+fn link_error_line(error: &crate::linker::LinkError, text: &str, entry: &str) -> u32 {
+    if let Some(location) = &error.location {
+        if location.module == entry {
+            return location.line.saturating_sub(1);
+        }
+        if let Some(line0) = import_line_of(text, &location.module) {
+            return line0;
+        }
+    }
+    if let Some(n) = extract_line(&error.message) {
         return n.saturating_sub(1);
     }
     // The message may name several things in backticks (e.g. the importing module
     // AND the unknown one); use the first that this file actually imports.
-    for name in backtick_tokens(message) {
+    for name in backtick_tokens(&error.message) {
         if let Some(line0) = import_line_of(text, &name) {
             return line0;
         }

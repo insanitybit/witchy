@@ -21,6 +21,16 @@ use crate::lambda_scan::collect_pattern_vars;
 #[derive(Debug, Clone, PartialEq)]
 pub struct LinkError {
     pub message: String,
+    /// Parsed source location when the linker can identify the failing statement.
+    /// `None` is reserved for module-wide or generated-source errors.
+    pub location: Option<LinkLocation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkLocation {
+    pub module: String,
+    /// One-based source line within `module`.
+    pub line: u32,
 }
 
 impl fmt::Display for LinkError {
@@ -34,6 +44,14 @@ impl std::error::Error for LinkError {}
 fn lerr<T>(message: impl Into<String>) -> Result<T, LinkError> {
     Err(LinkError {
         message: message.into(),
+        location: None,
+    })
+}
+
+fn lerr_at<T>(message: impl Into<String>, module: &str, line: Option<u32>) -> Result<T, LinkError> {
+    Err(LinkError {
+        message: message.into(),
+        location: line.map(|line| LinkLocation { module: module.to_string(), line }),
     })
 }
 
@@ -451,9 +469,11 @@ pub fn link_with_mode(
         }
         let source = std_source(name).ok_or_else(|| LinkError {
             message: format!("reserved standard-library module `{name}` has no bundled source"),
+            location: None,
         })?;
         let canonical = crate::parser::parse_module(source).map_err(|e| LinkError {
             message: format!("bundled std module `{name}` failed to parse: {e}"),
+            location: None,
         })?;
         if module != &canonical {
             user_modules.insert(name.clone());
@@ -492,6 +512,14 @@ pub fn link_with_user_modules_with_mode(
              bundled std modules have one canonical owner"
         ));
     }
+    // User modules that shadow std module names (always empty after the check
+    // above rejects them, but the rewrite context still carries the set for
+    // diagnostic precision in `missing_module_function_message`).
+    let user_std_shadows: HashSet<String> = user_modules
+        .iter()
+        .filter(|name| STD_MODULES.contains(&name.as_str()))
+        .cloned()
+        .collect();
 
     // Lower `gen fn`/`yield` to ordinary functions over `std/iter` first — this
     // adds `import iter`/`import option` to any generator module, so the std
@@ -500,7 +528,7 @@ pub fn link_with_user_modules_with_mode(
         .into_iter()
         .map(|(n, m)| crate::generators::lower(m).map(|m| (n, m)))
         .collect::<Result<_, _>>()
-        .map_err(|message| LinkError { message })?;
+        .map_err(|message| LinkError { message, location: None })?;
 
     // Lower `async fn`/`await` to ordinary functions over `std/task` (CPS over
     // closures), also before typeck — adds `import task`/`import chan` to any
@@ -509,7 +537,7 @@ pub fn link_with_user_modules_with_mode(
         .into_iter()
         .map(|(n, m)| crate::async_lower::lower(m).map(|m| (n, m)))
         .collect::<Result<_, _>>()
-        .map_err(|message| LinkError { message })?;
+        .map_err(|message| LinkError { message, location: None })?;
 
     // Lower named-field record construction (`Point(x: 1, ..p)`) to positional
     // constructors / record updates, so later stages never see `Expr::Record`.
@@ -517,7 +545,7 @@ pub fn link_with_user_modules_with_mode(
         .into_iter()
         .map(|(n, m)| crate::records::lower_lenient(m).map(|m| (n, m)))
         .collect::<Result<_, _>>()
-        .map_err(|message| LinkError { message })?;
+        .map_err(|message| LinkError { message, location: None })?;
 
     // Compile-time expansion happens here, per module, BEFORE name resolution
     // and type checking see it. `expand` runs `comptime:` blocks (zero
@@ -539,7 +567,7 @@ pub fn link_with_user_modules_with_mode(
                 .filter(|(j, _)| *j != i)
                 .map(|(_, m)| m.clone())
                 .collect();
-            expand(name, &mut modules[i].1, &siblings).map_err(|message| LinkError { message })?;
+            expand(name, &mut modules[i].1, &siblings).map_err(|message| LinkError { message, location: None })?;
         }
     }
 
@@ -560,9 +588,11 @@ pub fn link_with_user_modules_with_mode(
         if !modules.iter().any(|(n, _)| n == prelude) {
             let src = std_source(prelude).ok_or_else(|| LinkError {
                 message: format!("prelude module `{prelude}` has no bundled source"),
+                location: None,
             })?;
             let m = crate::parser::parse_module(src).map_err(|e| LinkError {
                 message: format!("prelude module `{prelude}` failed to parse: {e}"),
+                location: None,
             })?;
             modules.push((prelude.to_string(), m));
         }
@@ -581,6 +611,7 @@ pub fn link_with_user_modules_with_mode(
                 if let Some(src) = std_source(&imp) {
                     let m = crate::parser::parse_module(src).map_err(|e| LinkError {
                         message: format!("std module `{imp}`: {e}"),
+                        location: None,
                     })?;
                     modules.push((imp.clone(), m));
                 }
@@ -600,7 +631,7 @@ pub fn link_with_user_modules_with_mode(
     // restrict to `pulled_std_start..` to avoid re-running comptime expansion
     // (which, unlike derive desugaring, is not idempotent).
     for (_, m) in modules[pulled_std_start..].iter_mut() {
-        *m = crate::records::lower_lenient(m.clone()).map_err(|message| LinkError { message })?;
+        *m = crate::records::lower_lenient(m.clone()).map_err(|message| LinkError { message, location: None })?;
     }
     for k in pulled_std_start..modules.len() {
         let name = modules[k].0.clone();
@@ -610,7 +641,7 @@ pub fn link_with_user_modules_with_mode(
             .filter(|(j, _)| *j != k)
             .map(|(_, m)| m.clone())
             .collect();
-        expand(&name, &mut modules[k].1, &siblings).map_err(|message| LinkError { message })?;
+        expand(&name, &mut modules[k].1, &siblings).map_err(|message| LinkError { message, location: None })?;
     }
 
     // MethodCall nodes survive linking: `x.f(a)` resolves to a REAL method
@@ -758,7 +789,6 @@ pub fn link_with_user_modules_with_mode(
     let mut items = Vec::new();
     let mut seen_anon_types: HashMap<String, TypeDef> = HashMap::new();
     let mut seen_anon_trait_impls: HashSet<(String, Vec<String>, String, Vec<String>)> = HashSet::new();
-    let access = LinkAccess { mode, entry };
     for (mname, m) in &modules {
         for item in &m.items {
             match item {
@@ -781,7 +811,9 @@ pub fn link_with_user_modules_with_mode(
                         bare_fn_imports.get(mname),
                         &fns,
                         &bound,
-                        access,
+                        &user_std_shadows,
+                        mode,
+                        entry,
                     )?;
                     items.push(Item::Function(f2));
                 }
@@ -820,7 +852,9 @@ pub fn link_with_user_modules_with_mode(
                                 bare_fn_imports.get(mname),
                                 &fns,
                                 &bound,
-                                access,
+                                &user_std_shadows,
+                        mode,
+                        entry,
                             )?;
                         }
                     }
@@ -846,7 +880,9 @@ pub fn link_with_user_modules_with_mode(
                             bare_fn_imports.get(mname),
                             &fns,
                             &bound,
-                            access,
+                            &user_std_shadows,
+                        mode,
+                        entry,
                         )?;
                     }
                     items.push(Item::Impl(im2));
@@ -880,7 +916,7 @@ pub fn link_with_user_modules_with_mode(
     // AFTER method resolution (so every direct callee is statically known) and
     // BEFORE folding/typeck, which only ever see the positional calls it emits —
     // labels and defaults never reach either backend (parity by construction).
-    crate::keyword_args::resolve(&mut module).map_err(|message| LinkError { message })?;
+    crate::keyword_args::resolve(&mut module).map_err(|message| LinkError { message, location: None })?;
     // Semantics-preserving constant folding over the single linked module both
     // backends consume (parity-free by construction). See src/optimize.rs. Gated
     // on the `fold` lever (RFC-0030) so the differential de-opt sweep covers it:
@@ -903,7 +939,7 @@ pub fn link_with_user_modules_with_mode(
     // (`Bogus(x: 9, ..p)` → "not a record type") — so the merge is the single
     // point where an unknown record type is caught, whether or not a later stage
     // (typeck/backend) re-runs the idempotent lowering.
-    let module = crate::records::lower(module).map_err(|message| LinkError { message })?;
+    let module = crate::records::lower(module).map_err(|message| LinkError { message, location: None })?;
     Ok(module)
 }
 
@@ -1288,7 +1324,13 @@ fn collect_bound_expr(e: &Expr, out: &mut HashSet<String>) {
 }
 
 #[derive(Clone, Copy)]
-struct LinkAccess<'a> {
+struct RewriteContext<'a> {
+    module: &'a str,
+    imports: &'a [String],
+    bare_imports: Option<&'a HashMap<String, String>>,
+    fns: &'a FnTable,
+    bound: &'a HashSet<String>,
+    user_std_shadows: &'a HashSet<String>,
     mode: LinkMode,
     entry: &'a str,
 }
@@ -1300,15 +1342,26 @@ fn rewrite_block(
     bare_imports: Option<&HashMap<String, String>>,
     fns: &FnTable,
     bound: &HashSet<String>,
-    access: LinkAccess<'_>,
+    user_std_shadows: &HashSet<String>,
+    mode: LinkMode,
+    entry: &str,
 ) -> Result<(), LinkError> {
-    for stmt in &mut b.stmts {
+    let context = RewriteContext {
+        module: m, imports: imps, bare_imports, fns, bound,
+        user_std_shadows, mode, entry,
+    };
+    rewrite_block_with_context(b, &context)
+}
+
+fn rewrite_block_with_context(b: &mut Block, context: &RewriteContext<'_>) -> Result<(), LinkError> {
+    for (index, stmt) in b.stmts.iter_mut().enumerate() {
+        let line = b.lines.get(index).copied().filter(|line| *line > 0);
         match stmt {
             Stmt::Let { value, .. }
             | Stmt::Assign { value, .. }
-            | Stmt::LetPattern { value, .. } => rewrite_expr(value, m, imps, bare_imports, fns, bound, access)?,
+            | Stmt::LetPattern { value, .. } => rewrite_expr(value, context, line)?,
             Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => {
-                rewrite_expr(e, m, imps, bare_imports, fns, bound, access)?
+                rewrite_expr(e, context, line)?
             }
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
@@ -1318,13 +1371,16 @@ fn rewrite_block(
 
 fn rewrite_expr(
     e: &mut Expr,
-    m: &str,
-    imps: &[String],
-    bare_imports: Option<&HashMap<String, String>>,
-    fns: &FnTable,
-    bound: &HashSet<String>,
-    access: LinkAccess<'_>,
+    context: &RewriteContext<'_>,
+    line: Option<u32>,
 ) -> Result<(), LinkError> {
+    let RewriteContext {
+        module: m,
+        imports: imps,
+        fns,
+        bound,
+        ..
+    } = *context;
     match e {
         Expr::Call { name, args } => {
             // `local.method(args)` where `local` is a bound variable is a METHOD
@@ -1341,42 +1397,46 @@ fn rewrite_expr(
                     let mut call_args = Vec::new();
                     std::mem::swap(args, &mut call_args);
                     for a in &mut call_args {
-                        rewrite_expr(a, m, imps, bare_imports, fns, bound, access)?;
+                        rewrite_expr(a, context, line)?;
                     }
                     *e = Expr::MethodCall { receiver, method, args: call_args };
                     return Ok(());
                 }
             }
-            let resolved = resolve_call(name, m, imps, bare_imports, fns, bound, access)?;
+            let resolved = resolve_call(name, context, line)?;
             if let Some(sig) = fn_sig(fns, &resolved).filter(|sig| sig.method_alias) {
                 *name = sig
                     .alias_target
                     .expect("method aliases carry the generated implementation name");
                 for a in args {
-                    rewrite_expr(a, m, imps, bare_imports, fns, bound, access)?;
+                    rewrite_expr(a, context, line)?;
                 }
                 return Ok(());
             }
             *name = resolved;
             for a in args {
-                rewrite_expr(a, m, imps, bare_imports, fns, bound, access)?;
+                rewrite_expr(a, context, line)?;
             }
         }
         // (RFC-0056) A labeled direct call: qualify the callee exactly like a plain
         // call so `keyword_args::resolve` can look up its declaration, and rewrite
         // the argument values. The labels ride along untouched until then.
         Expr::LabeledCall { name, args } => {
-            let resolved = resolve_call(name, m, imps, bare_imports, fns, bound, access)?;
+            let resolved = resolve_call(name, context, line)?;
             if fn_sig(fns, &resolved).is_some_and(|sig| sig.method_alias) {
-                return lerr(format!(
-                    "`{resolved}` is a method alias; call it as `receiver.{}(...)` \
-                     or use the positional module form",
-                    resolved.rsplit_once('.').map_or(resolved.as_str(), |(_, name)| name)
-                ));
+                return lerr_at(
+                    format!(
+                        "`{resolved}` is a method alias; call it as `receiver.{}(...)` \
+                         or use the positional module form",
+                        resolved.rsplit_once('.').map_or(resolved.as_str(), |(_, name)| name)
+                    ),
+                    m,
+                    line,
+                );
             }
             *name = resolved;
             for (_, a) in args {
-                rewrite_expr(a, m, imps, bare_imports, fns, bound, access)?;
+                rewrite_expr(a, context, line)?;
             }
         }
         // A bare name matching a same-module function is a first-class reference
@@ -1390,19 +1450,19 @@ fn rewrite_expr(
             }
         }
         Expr::Apply { func, args } => {
-            rewrite_expr(func, m, imps, bare_imports, fns, bound, access)?;
+            rewrite_expr(func, context, line)?;
             for a in args {
-                rewrite_expr(a, m, imps, bare_imports, fns, bound, access)?;
+                rewrite_expr(a, context, line)?;
             }
         }
         Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. }
         | Expr::List(args) | Expr::Tuple(args) => {
             for a in args {
-                rewrite_expr(a, m, imps, bare_imports, fns, bound, access)?;
+                rewrite_expr(a, context, line)?;
             }
         }
         Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } => {
-            rewrite_expr(expr, m, imps, bare_imports, fns, bound, access)?
+            rewrite_expr(expr, context, line)?
         }
         // (RFC-0050 Part 2) A bare `module.fn` in value (non-call) position is a
         // first-class function value, produced by eta-expansion: `list.length`
@@ -1431,8 +1491,7 @@ fn rewrite_expr(
                 // checked, so `resolve_call` returns the qualified callee or the
                 // precise "module `X` has no function `Y`" error — "unbound
                 // variable" never names a module again.
-                let qualified =
-                    resolve_call(&format!("{modname}.{field}"), m, imps, bare_imports, fns, bound, access)?;
+                let qualified = resolve_call(&format!("{modname}.{field}"), context, line)?;
                 let sig = fns
                     .get(&modname)
                     .and_then(|s| s.get(&field))
@@ -1448,79 +1507,83 @@ fn rewrite_expr(
             // so "unbound variable" never names a module.
             if let Expr::Var(modname) = base.as_ref() {
                 if !bound.contains(modname.as_str()) && STD_MODULES.contains(&modname.as_str()) {
-                    return lerr(format!(
-                        "`{modname}.{field}` looks like a module-qualified reference, but \
-                         `{modname}` is not imported — add `import {modname}`"
-                    ));
+                    return lerr_at(
+                        format!(
+                            "`{modname}.{field}` looks like a module-qualified reference, but \
+                             `{modname}` is not imported — add `import {modname}`"
+                        ),
+                        m,
+                        line,
+                    );
                 }
             }
-            rewrite_expr(base, m, imps, bare_imports, fns, bound, access)?;
+            rewrite_expr(base, context, line)?;
         }
         Expr::RecordUpdate { name: _, base, fields } => {
-            rewrite_expr(base, m, imps, bare_imports, fns, bound, access)?;
+            rewrite_expr(base, context, line)?;
             for (_, value) in fields {
-                rewrite_expr(value, m, imps, bare_imports, fns, bound, access)?;
+                rewrite_expr(value, context, line)?;
             }
         }
         Expr::Record { fields, spread, .. } => {
             for (_, value) in fields {
-                rewrite_expr(value, m, imps, bare_imports, fns, bound, access)?;
+                rewrite_expr(value, context, line)?;
             }
             if let Some(s) = spread {
-                rewrite_expr(s, m, imps, bare_imports, fns, bound, access)?;
+                rewrite_expr(s, context, line)?;
             }
         }
         Expr::Binary { lhs, rhs, .. } => {
-            rewrite_expr(lhs, m, imps, bare_imports, fns, bound, access)?;
-            rewrite_expr(rhs, m, imps, bare_imports, fns, bound, access)?;
+            rewrite_expr(lhs, context, line)?;
+            rewrite_expr(rhs, context, line)?;
         }
         Expr::Range { lo, hi, .. } => {
-            rewrite_expr(lo, m, imps, bare_imports, fns, bound, access)?;
-            rewrite_expr(hi, m, imps, bare_imports, fns, bound, access)?;
+            rewrite_expr(lo, context, line)?;
+            rewrite_expr(hi, context, line)?;
         }
         Expr::Index { base, index } => {
-            rewrite_expr(base, m, imps, bare_imports, fns, bound, access)?;
-            rewrite_expr(index, m, imps, bare_imports, fns, bound, access)?;
+            rewrite_expr(base, context, line)?;
+            rewrite_expr(index, context, line)?;
         }
         // Lowered to a plain `Call` before this runs; recurse for safety.
         Expr::MethodCall { receiver, args, .. } => {
-            rewrite_expr(receiver, m, imps, bare_imports, fns, bound, access)?;
+            rewrite_expr(receiver, context, line)?;
             for a in args {
-                rewrite_expr(a, m, imps, bare_imports, fns, bound, access)?;
+                rewrite_expr(a, context, line)?;
             }
         }
         Expr::WhileLet { scrutinee, body, .. } => {
-            rewrite_expr(scrutinee, m, imps, bare_imports, fns, bound, access)?;
-            rewrite_block(body, m, imps, bare_imports, fns, bound, access)?;
+            rewrite_expr(scrutinee, context, line)?;
+            rewrite_block_with_context(body, context)?;
         }
         Expr::If {
             cond,
             then_block,
             else_block,
         } => {
-            rewrite_expr(cond, m, imps, bare_imports, fns, bound, access)?;
-            rewrite_block(then_block, m, imps, bare_imports, fns, bound, access)?;
+            rewrite_expr(cond, context, line)?;
+            rewrite_block_with_context(then_block, context)?;
             if let Some(b) = else_block {
-                rewrite_block(b, m, imps, bare_imports, fns, bound, access)?;
+                rewrite_block_with_context(b, context)?;
             }
         }
-        Expr::Lambda { body, .. } => rewrite_block(body, m, imps, bare_imports, fns, bound, access)?,
-        Expr::Block(b) => rewrite_block(b, m, imps, bare_imports, fns, bound, access)?,
+        Expr::Lambda { body, .. } => rewrite_block_with_context(body, context)?,
+        Expr::Block(b) => rewrite_block_with_context(b, context)?,
         Expr::While { cond, body } => {
-            rewrite_expr(cond, m, imps, bare_imports, fns, bound, access)?;
-            rewrite_block(body, m, imps, bare_imports, fns, bound, access)?;
+            rewrite_expr(cond, context, line)?;
+            rewrite_block_with_context(body, context)?;
         }
         Expr::For { iter, body, .. } => {
-            rewrite_expr(iter, m, imps, bare_imports, fns, bound, access)?;
-            rewrite_block(body, m, imps, bare_imports, fns, bound, access)?;
+            rewrite_expr(iter, context, line)?;
+            rewrite_block_with_context(body, context)?;
         }
         Expr::Match { scrutinee, arms } => {
-            rewrite_expr(scrutinee, m, imps, bare_imports, fns, bound, access)?;
+            rewrite_expr(scrutinee, context, line)?;
             for arm in arms {
                 if let Some(g) = &mut arm.guard {
-                    rewrite_expr(g, m, imps, bare_imports, fns, bound, access)?;
+                    rewrite_expr(g, context, line)?;
                 }
-                rewrite_expr(&mut arm.body, m, imps, bare_imports, fns, bound, access)?;
+                rewrite_expr(&mut arm.body, context, line)?;
             }
         }
         Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::TaggedLit { .. } => {}
@@ -1848,26 +1911,34 @@ fn seal_expr(
 
 fn resolve_call(
     name: &str,
-    m: &str,
-    imps: &[String],
-    bare_imports: Option<&HashMap<String, String>>,
-    fns: &FnTable,
-    bound: &HashSet<String>,
-    access: LinkAccess<'_>,
+    context: &RewriteContext<'_>,
+    line: Option<u32>,
 ) -> Result<String, LinkError> {
+    let RewriteContext {
+        module: m,
+        imports: imps,
+        bare_imports,
+        fns,
+        bound,
+        user_std_shadows,
+        mode,
+        entry,
+    } = *context;
     let accept = |resolved: String| -> Result<String, LinkError> {
-        check_test_only_call(&resolved, m, access)?;
+        check_test_only_call(&resolved, m, mode, entry, line)?;
         Ok(resolved)
     };
-    check_private_intrinsic_call(name, m)?;
+    check_private_intrinsic_call(name, m, line)?;
     if let Some((modname, fname)) = name.split_once('.') {
         // The prelude modules are importable-by-default everywhere (the link
         // set always carries them), including from inside one another.
         let prelude = is_prelude_module(modname);
         if !prelude && !imps.iter().any(|i| i == modname) {
-            return lerr(format!(
-                "module `{m}` calls `{modname}.{fname}` but does not `import {modname}`"
-            ));
+            return lerr_at(
+                format!("module `{m}` calls `{modname}.{fname}` but does not `import {modname}`"),
+                m,
+                line,
+            );
         }
         return match fns.get(modname).and_then(|s| s.get(fname)) {
             Some(_) if modname == m => accept(name.to_string()),
@@ -1875,8 +1946,16 @@ fn resolve_call(
                 accept(name.to_string())
             }
             Some(sig) if sig.public => accept(name.to_string()),
-            Some(_) => lerr(format!("function `{modname}.{fname}` is private to module `{modname}`")),
-            None => lerr(format!("module `{modname}` has no function `{fname}`")),
+            Some(_) => lerr_at(
+                format!("function `{modname}.{fname}` is private to module `{modname}`"),
+                m,
+                line,
+            ),
+            None => lerr_at(
+                missing_module_function_message(modname, fname, user_std_shadows),
+                m,
+                line,
+            ),
         };
     }
     // A function defined in THIS module wins over a builtin of the same name, so
@@ -1897,11 +1976,15 @@ fn resolve_call(
             .iter()
             .find(|imp| fns.get(*imp).and_then(|s| s.get(name)).is_some_and(|sig| sig.public))
         {
-            return lerr(format!(
-                "`{name}(...)` is not in scope as a bare function. `import {srcmod}` keeps \
-                 functions qualified; write `{srcmod}.{name}(...)` or add \
-                 `from {srcmod} import {name}`"
-            ));
+            return lerr_at(
+                format!(
+                    "`{name}(...)` is not in scope as a bare function. `import {srcmod}` keeps \
+                     functions qualified; write `{srcmod}.{name}(...)` or add \
+                     `from {srcmod} import {name}`"
+                ),
+                m,
+                line,
+            );
         }
     }
     // Not a function here and not a builtin: a local binding being applied (e.g.
@@ -1912,18 +1995,22 @@ fn resolve_call(
 fn check_test_only_call(
     resolved: &str,
     module_name: &str,
-    access: LinkAccess<'_>,
+    mode: LinkMode,
+    entry: &str,
+    line: Option<u32>,
 ) -> Result<(), LinkError> {
     if resolved != "testing.mock_dir" {
         return Ok(());
     }
-    if access.mode == LinkMode::Test && module_name == access.entry {
+    if mode == LinkMode::Test && module_name == entry {
         return Ok(());
     }
-    lerr(
+    lerr_at(
         "`testing.mock_dir` is available only inside the entry module run by \
          `witchy test`; production code and dependency test modules cannot mint \
          mock capabilities",
+        module_name,
+        line,
     )
 }
 
@@ -2382,12 +2469,14 @@ fn check_reserved_pattern(
     }
 }
 
-fn check_private_intrinsic_call(name: &str, module_name: &str) -> Result<(), LinkError> {
+fn check_private_intrinsic_call(name: &str, module_name: &str, line: Option<u32>) -> Result<(), LinkError> {
     let intrinsic = name.rsplit_once('.').map_or(name, |(_, bare)| bare);
     if intrinsic == crate::intrinsics::RETIRED_SOURCE_RENDER {
-        return lerr(
+        return lerr_at(
             "`__render` is compiler-private; use string interpolation (`\"${value}\"`) \
              or `show.render(value)` instead",
+            module_name,
+            line,
         );
     }
     let Some(owners) = crate::intrinsics::private_intrinsic_callers(intrinsic) else {
@@ -2396,10 +2485,29 @@ fn check_private_intrinsic_call(name: &str, module_name: &str) -> Result<(), Lin
     if owners.contains(&module_name) {
         return Ok(());
     }
-    lerr(format!(
-        "`{intrinsic}` is a compiler-private intrinsic for std/{}`; use the public stdlib surface instead",
-        owners.join(" or std/")
-    ))
+    lerr_at(
+        format!(
+            "`{intrinsic}` is a compiler-private intrinsic for std/{}`; use the public stdlib surface instead",
+            owners.join(" or std/")
+        ),
+        module_name,
+        line,
+    )
+}
+
+fn missing_module_function_message(
+    modname: &str,
+    fname: &str,
+    user_std_shadows: &HashSet<String>,
+) -> String {
+    if user_std_shadows.contains(modname) {
+        format!(
+            "module `{modname}` is provided by this program and shadows the bundled \
+             standard-library module `{modname}`; it has no function `{fname}`"
+        )
+    } else {
+        format!("module `{modname}` has no function `{fname}`")
+    }
 }
 
 fn private_intrinsic_friend_call(provider: &str, name: &str, caller: &str) -> bool {
@@ -2502,6 +2610,21 @@ mod tests {
             err.contains("module `bytes` uses a reserved standard-library name")
                 && err.contains("one canonical owner"),
             "{err}"
+        );
+    }
+
+    #[test]
+    fn missing_module_function_keeps_statement_location() {
+        let module = crate::parser::parse_module(
+            "import string\n\nfn main(console: Console):\n    console.print(\"before\")\n    console.print(string.not_real(\"x\"))\n",
+        )
+        .expect("main parses");
+        let err = link(vec![("main".to_string(), module)], "main", noop_expand)
+            .expect_err("missing std function must fail during linking");
+
+        assert_eq!(
+            err.location,
+            Some(LinkLocation { module: "main".to_string(), line: 5 })
         );
     }
 
