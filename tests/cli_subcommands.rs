@@ -7,6 +7,11 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use wasm_encoder::{
+    CodeSection, EntityType, ExportKind, ExportSection, Function, FunctionSection,
+    ImportSection, Instruction, MemorySection, MemoryType, Module, TypeSection, ValType,
+};
+
 const BIN: &str = env!("CARGO_BIN_EXE_witchy");
 
 /// A fresh, unique temp directory for one test.
@@ -25,6 +30,62 @@ fn write(dir: &std::path::Path, name: &str, body: &str) -> String {
     let p = dir.join(name);
     std::fs::write(&p, body).unwrap();
     p.to_str().unwrap().to_string()
+}
+
+/// A legacy/external wasm module with no `witchy.launch` metadata. `call_args`
+/// optionally makes `run` call the import with i32 constants; omitting it tests
+/// whether an import family is linked without needing valid operation inputs.
+fn legacy_import_module(
+    name: &str,
+    params: &[ValType],
+    results: &[ValType],
+    call_args: Option<&[i32]>,
+) -> Vec<u8> {
+    let mut types = TypeSection::new();
+    types.ty().function(params.iter().copied(), results.iter().copied());
+    types.ty().function([], []);
+
+    let mut imports = ImportSection::new();
+    imports.import("witchy", name, EntityType::Function(0));
+
+    let mut functions = FunctionSection::new();
+    functions.function(1);
+
+    let mut memories = MemorySection::new();
+    memories.memory(MemoryType {
+        minimum: 1,
+        maximum: None,
+        memory64: false,
+        shared: false,
+        page_size_log2: None,
+    });
+
+    let mut exports = ExportSection::new();
+    exports.export("memory", ExportKind::Memory, 0);
+    exports.export("run", ExportKind::Func, 1);
+
+    let mut run = Function::new([]);
+    if let Some(args) = call_args {
+        for arg in args {
+            run.instruction(&Instruction::I32Const(*arg));
+        }
+        run.instruction(&Instruction::Call(0));
+        for _ in results {
+            run.instruction(&Instruction::Drop);
+        }
+    }
+    run.instruction(&Instruction::End);
+    let mut code = CodeSection::new();
+    code.function(&run);
+
+    let mut module = Module::new();
+    module.section(&types);
+    module.section(&imports);
+    module.section(&functions);
+    module.section(&memories);
+    module.section(&exports);
+    module.section(&code);
+    module.finish()
 }
 
 fn run(args: &[&str]) -> std::process::Output {
@@ -156,6 +217,97 @@ fn wasm_preserves_an_unused_root_secret_contract() {
         );
         assert!(String::from_utf8_lossy(&denied.stdout).is_empty());
     }
+}
+
+#[test]
+fn legacy_reveal_import_receives_the_signing_key_grant() {
+    // BUG-427: the ABI import is `crypto_reveal_len`, not the source spelling
+    // `crypto.reveal`. Classification must install the granted key before the
+    // reveal host applies the sign-only policy.
+    let dir = workdir("wasm-reveal-import");
+    let wasm = dir.join("legacy_reveal.wasm");
+    std::fs::write(
+        &wasm,
+        legacy_import_module(
+            "crypto_reveal_len",
+            &[ValType::I32],
+            &[ValType::I32],
+            Some(&[0]),
+        ),
+    )
+    .unwrap();
+    let seed = dir.join("seed.hex");
+    std::fs::write(&seed, "41".repeat(32)).unwrap();
+
+    let out = run(&[
+        "sandbox",
+        "--signing-key",
+        seed.to_str().unwrap(),
+        wasm.to_str().unwrap(),
+    ]);
+    let error = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(!out.status.success(), "the signing key must remain non-revealable");
+    assert!(error.contains("not revealable"), "expected the reveal policy guard: {error}");
+    assert!(!error.contains("no secret at handle"), "the granted key was not installed: {error}");
+}
+
+#[test]
+fn legacy_clock_and_tls_import_variants_are_classified() {
+    let dir = workdir("wasm-import-variants");
+
+    let clock = dir.join("clock.wasm");
+    std::fs::write(
+        &clock,
+        legacy_import_module("now_monotonic", &[], &[ValType::I64], Some(&[])),
+    )
+    .unwrap();
+    let clock_run = run(&[clock.to_str().unwrap()]);
+    assert!(
+        clock_run.status.success(),
+        "now_monotonic must receive the Clock family: {}",
+        String::from_utf8_lossy(&clock_run.stderr),
+    );
+
+    let tls = dir.join("tls.wasm");
+    std::fs::write(
+        &tls,
+        legacy_import_module(
+            "net_listen_tls",
+            &[ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+            &[ValType::I32],
+            None,
+        ),
+    )
+    .unwrap();
+    let seed = dir.join("tls-seed.hex");
+    std::fs::write(&seed, "42".repeat(32)).unwrap();
+
+    let no_key = run(&[
+        "sandbox",
+        "--net",
+        "127.0.0.1:0",
+        tls.to_str().unwrap(),
+    ]);
+    assert!(!no_key.status.success());
+    assert!(String::from_utf8_lossy(&no_key.stderr).contains("Secret"));
+
+    let granted = run(&[
+        "sandbox",
+        "--net",
+        "127.0.0.1:0",
+        "--signing-key",
+        seed.to_str().unwrap(),
+        tls.to_str().unwrap(),
+    ]);
+    assert!(
+        granted.status.success(),
+        "net_listen_tls must receive Net Listen and Secret families: {}",
+        String::from_utf8_lossy(&granted.stderr),
+    );
 }
 
 #[test]

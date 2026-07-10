@@ -2917,10 +2917,17 @@ fn run_wasm_module(
     .iter()
     .any(|n| has(n))
         || declares_right("Net", "Connect");
-    let net_listen = ["net_listen", "net_accept", "serve_pool"].iter().any(|n| has(n))
+    let net_listen = ["net_listen", "net_listen_tls", "net_accept", "serve_pool"].iter().any(|n| has(n))
         || declares_right("Net", "Listen");
-    let uses_secret_host =
-        has("crypto.sign") || has("crypto.public_key") || has("crypto.reveal") || has("secretstore_lookup");
+    let uses_secret_host = [
+        "crypto.sign",
+        "crypto.public_key",
+        "crypto_reveal_len",
+        "secretstore_lookup",
+        "net_listen_tls",
+    ]
+    .iter()
+    .any(|name| has(name));
     if declares("Secret") && signing_key.is_none() {
         return Err(
             "this program's `main` requires a root `Secret` (the signing key), but none was \
@@ -2940,7 +2947,7 @@ fn run_wasm_module(
         args,
         ..Default::default()
     };
-    if has("now") || declares("Clock") {
+    if has("now") || has("now_monotonic") || declares("Clock") {
         caps.clock = true;
     }
     if has("rand_u64") || declares("Rand") {
