@@ -2410,7 +2410,7 @@ Serve exactly `n` HTTPS requests then return — `serve_tls`'s one-shot/test twi
 
 ## `set`
 
-Set(a) — an unordered collection of distinct values. Members are compared by value equality (a `where a: Eq` bound on every operation that compares), so sets of Ints, Strings, tuples, or your own `Eq` types all work. Build one with `set.new()` / `set.from_list(xs)`, test membership with `set.contains`, and reach for `union`/`intersection`/`difference` for the algebra. A `Set` whose members are `Show` renders as `{a, b, c}` through `show`/`say` (import `show`); `set.to_list(s)` returns the members in insertion order.
+Set(a) — an unordered collection of distinct values. Members are compared by value equality (a `where a: Eq` bound on every operation that compares), so sets of Ints, Strings, tuples, or your own `Eq` types all work. Build one with `set.new()` / `set.from_list(xs)`, test membership with `set.contains`, and reach for `union`/`intersection`/`difference` for the algebra. A `Set` whose members are `Show` renders as `{a, b, c}` through interpolation or `show.say`; `set.to_list(s)` returns the members in insertion order.
 
 #### `sealed type Set(a)`
 
@@ -2482,7 +2482,7 @@ Whether the two sets share no members.
 
 ## `show`
 
-The witchy standard `Show` trait: render a value as a `String`. Built-in impls cover the scalars — `Int`, `Float`, `Bool`, `String`, `Bytes`, `Duration` (which shows in its human form, `1m30s`, not raw milliseconds) — and the built-in comparison result `Ordering`. A `List`, `Dict`, `Set`, `Option`, `Result`, or tuple through arity 8 whose elements are themselves `Show` renders structurally through each element's `Show` (`[a, b]`, `{k: v}`, `Some(x)`), so `show.say(console, [1, 2, 3])` and `show.say(console, someSet)` just work — and a custom element `Show` is honored (`[P<1,2>, P<3,4>]`). Implement `Show` for your own types to give them a custom readable form. Interpolation (`"${x}"`) uses `Show` when `render` is linked, and otherwise keeps the structural fallback for values whose module never imports `show`. Pure except `say`, which takes the `Console` it prints to.
+The witchy standard `Show` trait: render a value as a `String`. Built-in impls cover the scalars — `Int`, `Float`, `Bool`, `String`, `Bytes`, `Duration` (which shows in its human form, `1m30s`, not raw milliseconds) — and the built-in comparison result `Ordering`. A `List`, `Dict`, `Set`, `Option`, `Result`, or tuple through arity 8 whose elements are themselves `Show` renders structurally through each element's `Show` (`[a, b]`, `{k: v}`, `Some(x)`), so `show.say(console, [1, 2, 3])` and `show.say(console, someSet)` just work — and a custom element `Show` is honored (`[P<1,2>, P<3,4>]`). Implement `Show` for your own types to give them a custom readable form. `Show` is preluded: interpolation (`"${x}"`) always honors a relevant impl, while values without one keep the structural default. Pure except `say`, which takes the `Console` it prints to.
 
 #### `trait Show`
 
@@ -2490,7 +2490,7 @@ The witchy standard `Show` trait: render a value as a `String`. Built-in impls c
 
 #### `fn render(x: impl Show) -> String`
 
-Render one `Show` value to a `String` — `render(point)`, `render(90000ms)`, `render([1, 2, 3])`. This is the one public renderer (RFC-0053): string interpolation `"${x}"` lowers to `render(x)` for any `x` whose concrete type has a relevant `Show` impl, so interpolation and `show.say` agree. A type without a linked `Show` path keeps interpolation's byte-identical structural fallback.
+Render one `Show` value to a `String` — `render(point)`, `render(90000ms)`, `render([1, 2, 3])`. This is the one public renderer (RFC-0053): string interpolation `"${x}"` lowers to `render(x)` for any `x` whose concrete type has a relevant `Show` impl, so interpolation and `show.say` agree. A type without a `Show` path keeps interpolation's byte-identical structural default.
 
 #### `fn say(console: Console, x: impl Show)`
 

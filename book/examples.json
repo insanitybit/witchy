@@ -587,9 +587,7 @@
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
-    "footprint": [
-      "Console"
-    ],
+    "footprint": [],
     "output": [],
     "runnable": false
   },
@@ -717,7 +715,6 @@
     "file": "book/src/appendix-recipes.md",
     "footprint": [
       "Console",
-      "Secret",
       "SecretStore"
     ],
     "output": [],
@@ -847,13 +844,10 @@
   },
   {
     "block": 8,
-    "console_only": false,
+    "console_only": true,
     "expect_error": false,
     "file": "book/src/capabilities-narrowing.md",
-    "footprint": [
-      "Dir[Read]",
-      "Exec"
-    ],
+    "footprint": [],
     "output": [],
     "runnable": false
   },
@@ -1167,9 +1161,7 @@
     "console_only": true,
     "expect_error": false,
     "file": "book/src/testing.md",
-    "footprint": [
-      "Console"
-    ],
+    "footprint": [],
     "output": [],
     "runnable": false
   },
@@ -1955,15 +1947,16 @@
   },
   {
     "block": 1,
-    "console_only": false,
+    "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-vm.md",
     "footprint": [
-      "Console",
-      "Dir[Read,Write]"
+      "Console"
     ],
-    "output": [],
-    "runnable": false
+    "output": [
+      "30"
+    ],
+    "runnable": true
   },
   {
     "block": 2,
@@ -1981,14 +1974,16 @@
   },
   {
     "block": 3,
-    "console_only": false,
+    "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-vm.md",
     "footprint": [
-      "Console",
-      "Dir[Read,Write]"
+      "Console"
     ],
-    "output": [],
-    "runnable": false
+    "output": [
+      "a",
+      "ab"
+    ],
+    "runnable": true
   }
 ]

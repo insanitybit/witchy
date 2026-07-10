@@ -75,8 +75,8 @@
         crate::pipeline::link(vec![("t".into(), module)], "t").expect("link")
     }
 
-    /// Every shipped example's entry module: `examples/<name>/src/<name>.witchy`
-    /// (the file whose stem matches its rune directory — the one bearing `main`).
+    /// Every shipped example's entry module: the source file named by its
+    /// `[rune].name` manifest field (the one bearing `main`).
     /// Skips `examples/projects/` (multi-rune workspaces, covered by the pm tests)
     /// and each rune's `*_test.witchy` modules and helper modules.
     fn example_entries() -> Vec<std::path::PathBuf> {
@@ -86,14 +86,30 @@
             if !dir.is_dir() {
                 continue;
             }
-            let Some(name) = dir.file_name().and_then(|s| s.to_str()) else {
+            let Some(dir_name) = dir.file_name().and_then(|s| s.to_str()) else {
                 continue;
             };
-            if name == "projects" {
+            if dir_name == "projects" {
                 continue;
             }
-            let entry_file = dir.join("src").join(format!("{name}.witchy"));
-            if entry_file.exists() {
+            let manifest_path = dir.join("witchy.toml");
+            let module_name = if manifest_path.exists() {
+                let source = std::fs::read_to_string(&manifest_path).expect("read example manifest");
+                let manifest: toml::Value = toml::from_str(&source).expect("parse example manifest");
+                manifest
+                    .get("rune")
+                    .and_then(|rune| rune.get("name"))
+                    .and_then(toml::Value::as_str)
+                    .expect("example manifest has [rune].name")
+                    .to_string()
+            } else {
+                dir_name.to_string()
+            };
+            let entry_file = dir.join("src").join(format!("{module_name}.witchy"));
+            if manifest_path.exists() {
+                assert!(entry_file.exists(), "example manifest entry missing: {}", entry_file.display());
+                out.push(entry_file);
+            } else if entry_file.exists() {
                 out.push(entry_file);
             }
         }
@@ -1287,19 +1303,18 @@ fn main(console: Console):
         );
     }
 
-    /// RFC-0053's interpolation flip is deliberately `show`-gated. Without
-    /// `show`, a Duration keeps the structural millisecond render; once `show`
-    /// is linked, interpolation, `show.render`, and `show.say` agree on the
-    /// human form.
+    /// RFC-0053's interpolation flip is import-independent. `show` is preluded,
+    /// so interpolation, `show.render`, and `show.say` agree on Duration's human
+    /// form with or without a redundant explicit import.
     #[test]
-    fn rfc0053_duration_interpolation_is_show_gated_on_both_backends() {
-        let structural = "fn main(console: Console):\n    console.print(\"${90000ms}\")\n";
-        let structural_expected = ["90000"];
-        assert_eq!(link_run(structural), structural_expected, "interp: bare Duration interpolation");
+    fn rfc0053_duration_interpolation_is_import_independent_on_both_backends() {
+        let without_import = "fn main(console: Console):\n    console.print(\"${90000ms}\")\n";
+        let expected = ["1m30s"];
+        assert_eq!(link_run(without_import), expected, "interp: prelude Duration interpolation");
         assert_eq!(
-            run_linked_on_wasm(&[("main", structural)], "main"),
-            structural_expected,
-            "compiled: bare Duration interpolation",
+            run_linked_on_wasm(&[("main", without_import)], "main"),
+            expected,
+            "compiled: prelude Duration interpolation",
         );
 
         let with_show = "import show\nimport duration\n\nfn main(console: Console):\n    console.print(\"${90000ms}\")\n    console.print(show.render(90000ms))\n    show.say(console, 90000ms)\n";
@@ -1335,7 +1350,7 @@ fn main(console: Console):
     /// (RFC-0053, coherence) Generic container `Show` impls are part of the same
     /// rendering model as concrete custom impls. In particular, `Set(Int)` has a
     /// structural fallback (`Set([1, 2])`) but a public display form (`{1, 2}`), so
-    /// interpolation, `show.render`, and `show.say` must agree once `show` is linked.
+    /// interpolation, `show.render`, and `show.say` must always agree.
     #[test]
     fn rfc0053_interpolation_matches_show_for_generic_containers_on_both_backends() {
         let with_show = "import set\nimport show\n\ntype P:\n    P(Int)\n\nimpl Show for P:\n    fn show(self) -> String:\n        match self:\n            P(n) -> \"P<${n}>\"\n\nfn main(console: Console):\n    let s = set.from_list([1, 1, 2, 3])\n    console.print(\"${s}\")\n    console.print(show.render(s))\n    show.say(console, s)\n    console.print(\"${[s]}\")\n    let ps = [P(1), P(2)]\n    console.print(\"${ps}\")\n    console.print(show.render(ps))\n";
@@ -1354,13 +1369,13 @@ fn main(console: Console):
             "compiled: interpolation matches show.render/say",
         );
 
-        let no_show = "import set\n\nfn main(console: Console):\n    let s = set.from_list([1, 1, 2, 3])\n    console.print(\"${s}\")\n";
-        let structural = ["Set([1, 2, 3])"];
-        assert_eq!(link_run(no_show), structural, "interp: no linked show keeps structural fallback");
+        let no_import = "import set\n\nfn main(console: Console):\n    let s = set.from_list([1, 1, 2, 3])\n    console.print(\"${s}\")\n";
+        let public_display = ["{1, 2, 3}"];
+        assert_eq!(link_run(no_import), public_display, "interp: prelude Show renders Set");
         assert_eq!(
-            run_linked_on_wasm(&[("main", no_show)], "main"),
-            structural,
-            "compiled: no linked show keeps structural fallback",
+            run_linked_on_wasm(&[("main", no_import)], "main"),
+            public_display,
+            "compiled: prelude Show renders Set",
         );
     }
 
@@ -2360,9 +2375,9 @@ fn main(console: Console):
                 "type `Int` is not a value",
             ),
             (
-                "ambient std type",
-                "fn main(console: Console):\n    Set([])\n    console.print(\"bad\")\n",
-                "type `Set` is not a value",
+                "prelude type",
+                "fn main(console: Console):\n    Result\n    console.print(\"bad\")\n",
+                "type `Result` is not a value",
             ),
             (
                 "synthetic tuple type",
@@ -5868,14 +5883,14 @@ fn yn(b: Bool) -> String:
         );
     }
 
-    /// `examples/regex/src/regex.witchy` — a tiny K&P-style regex matcher (literals, `.`,
+    /// `examples/regex/src/regex_demo.witchy` — a tiny K&P-style regex matcher (literals, `.`,
     /// `*`, `^`, `$`) — matches a battery of pattern/text pairs. Every step is a
     /// two-`list.at(..)` character comparison, so it stresses content comparison on
     /// both backends.
     #[test]
     fn regex_example_matches_literals_dot_star_anchors() {
         assert_eq!(
-            crate::execute_file("examples/regex/src/regex.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/regex/src/regex_demo.witchy", Vec::new()).unwrap(),
             vec![
                 "/abc/     \"abc\"           match",
                 "/a.c/     \"axc\"           match",
@@ -7059,6 +7074,9 @@ fn yn(b: Bool) -> String:
                 let context = format!("{}: ```witchy block #{}", file.display(), idx + 1);
                 let module = parser::parse_module(&snippet)
                     .unwrap_or_else(|e| panic!("{context} fails to parse: {e:?}"));
+                let mut footprint_module = module.clone();
+                crate::comptime::expand("main", &mut footprint_module)
+                    .unwrap_or_else(|e| panic!("{context} fails compile-time expansion: {e}"));
                 let linked = crate::pipeline::link(vec![("main".into(), module)], "main")
                     .unwrap_or_else(|e| panic!("{context} fails to link: {e}"));
                 typeck::check(&linked).unwrap_or_else(|e| panic!("{context} fails to type-check: {e}"));
@@ -7074,7 +7092,11 @@ fn yn(b: Bool) -> String:
                                 && matches!(args.first(),
                                     Some(ast::Type::Named(s, _)) if s == "String"))))
                 });
-                let fp = crate::capabilities::analyze(&linked);
+                // Footprint the source module, not the flattened link: imported
+                // modules' public APIs are not entry points of this snippet. This
+                // matches `witchy caps` and `compiler.footprint`, while retaining
+                // capabilities introduced by compile-time generated source.
+                let fp = crate::capabilities::analyze(&footprint_module);
                 let console_only = fp.total.keys().all(|k| *k == "Console");
                 let runnable = has_main && console_only && !reads_argv;
                 // Right-precise footprint: `Console`, `Dir[Read]`, `Net[Connect,Tcp]`, ….
@@ -8906,7 +8928,7 @@ fn main(console: Console, root: Dir):
     /// results) at i64. (Regression for the big-Int-through-Option/Result gap.)
     #[test]
     fn wasm_big_int_through_result_payload_and_try() {
-        let src = "type Result:\n    Ok(a)\n    Err(e)\n\nfn fetch() -> Result(Int, String):\n    Ok(5000000000)\n\nfn chain() -> Result(Int, String):\n    let x = (fetch())?\n    Ok((x + 1))\n\nfn main(console: Console):\n    match chain():\n        Ok(v) -> console.print(__render(v))\n        Err(e) -> console.print(e)\n";
+        let src = "fn fetch() -> Result(Int, String):\n    Ok(5000000000)\n\nfn chain() -> Result(Int, String):\n    let x = (fetch())?\n    Ok((x + 1))\n\nfn main(console: Console):\n    match chain():\n        Ok(v) -> console.print(__render(v))\n        Err(e) -> console.print(e)\n";
         let want = vec!["5000000001".to_string()];
         assert_eq!(interp(src), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
@@ -15569,10 +15591,6 @@ fn main() -> Int:
         // `?` compiles: success unwraps, error early-returns. compute(3,4)=Ok(7),
         // compute(0,9)=Err(99); 7*100 + 99 = 799.
         let src = r#"
-type Result:
-    Ok(a)
-    Err(e)
-
 fn checked(n: Int) -> Result(Int, Int):
     match n:
         0 -> Err(99)
@@ -19340,25 +19358,25 @@ fn main(console: Console):
     #[test]
     fn traits_concrete_dispatch_backends_agree() {
         let src = r#"
-trait Show:
-    fn show(self) -> String
+trait Describe:
+    fn describe(self) -> String
 
-impl Show for Int:
-    fn show(self) -> String:
+impl Describe for Int:
+    fn describe(self) -> String:
         __render(self)
 
-impl Show for Bool:
-    fn show(self) -> String:
+impl Describe for Bool:
+    fn describe(self) -> String:
         if self:
             "yes"
         else:
             "no"
 
 fn main(console: Console):
-    console.print(show(42))
-    console.print(show(true))
+    console.print(describe(42))
+    console.print(describe(true))
     let n = 7
-    console.print(show(n))
+    console.print(describe(n))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "trait dispatch diverged");
         assert_eq!(run_on_wasm(src), vec!["42", "yes", "7"]);
@@ -20228,15 +20246,15 @@ fn main(console: Console):
     #[test]
     fn traits_cross_module_backends_agree() {
         let show_mod = r#"
-trait Show:
-    fn show(self) -> String
+trait Describe:
+    fn describe(self) -> String
 
-impl Show for Int:
-    fn show(self) -> String:
+impl Describe for Int:
+    fn describe(self) -> String:
         __render(self)
 
-impl Show for Bool:
-    fn show(self) -> String:
+impl Describe for Bool:
+    fn describe(self) -> String:
         if self:
             "Y"
         else:
@@ -20246,8 +20264,8 @@ impl Show for Bool:
 import show_mod
 
 fn main(console: Console):
-    console.print(show(42))
-    console.print(show(false))
+    console.print(describe(42))
+    console.print(describe(false))
 "#;
         let sources = [("show_mod", show_mod), ("app", app)];
         let interpreted = interpreter::run_program(&sources, "app").expect("interp");
@@ -20569,23 +20587,23 @@ fn main(console: Console):
     #[test]
     fn indentation_traits_backends_agree() {
         let src = r#"
-trait Show:
-    fn show(self) -> String
+trait Describe:
+    fn describe(self) -> String
 
-impl Show for Int:
-    fn show(self) -> String:
+impl Describe for Int:
+    fn describe(self) -> String:
         __render(self)
 
-impl Show for Bool:
-    fn show(self) -> String:
+impl Describe for Bool:
+    fn describe(self) -> String:
         if self:
             "yes"
         else:
             "no"
 
 fn main(console: Console):
-    console.print(show(42))
-    console.print(show(true))
+    console.print(describe(42))
+    console.print(describe(true))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "indentation traits diverged");
         assert_eq!(run_on_wasm(src), vec!["42", "yes"]);
@@ -21246,7 +21264,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     #[test]
     fn result_example() {
         assert_eq!(
-            interp(include_str!("../examples/result/src/result.witchy")),
+            interp(include_str!("../examples/result/src/result_demo.witchy")),
             vec!["ok 5", "err divide by zero"]
         );
     }

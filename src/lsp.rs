@@ -74,36 +74,18 @@ const BUILTINS: &[&str] = &[
     "recv_all", "recv_bytes", "close", "send", "fail",
 ];
 
-/// The modules the linker always bundles (importable without an `import` line):
-/// their functions are offered and hover-resolvable everywhere, and a bare
-/// method call resolves against them (`xs.push` → `list.push`).
-const PRELUDE_MODULES: &[&str] =
-    &["list", "string", "dict", "math", "option", "result", "policy"];
-
-/// The prelude's module-qualified core operations, completed without an
-/// import line (the linker always bundles these modules).
-const PRELUDE_FNS: &[&str] = &[
-    "list.push", "list.at", "list.length", "list.concat", "list.map", "list.filter",
-    "list.fold", "list.sort_by", "list.contains", "list.remove", "list.index_of",
-    "string.split", "string.trim", "string.length", "string.char_count", "string.chars",
-    "string.contains", "string.starts_with", "string.ends_with", "string.replace",
-    "string.substring", "string.index_of", "string.to_upper", "string.to_lower",
-    "string.to_int", "string.parse_int", "list.join",
-    "dict.new", "dict.insert", "dict.get_or", "dict.get", "dict.contains_key", "dict.remove",
-    "dict.update", "dict.keys", "dict.values", "dict.pairs", "dict.length",
-    "math.to_float", "math.to_int", "math.sqrt", "math.min", "math.max", "math.abs",
-];
-
 /// Completion items: keywords, builtins, this document's functions, and the
-/// `pub fn`s of every imported module (offered as `module.name`).
+/// `pub fn`s of every prelude/imported module (offered as `module.name`).
 fn completion_response(docs: &HashMap<String, String>, params: &Value) -> Value {
     let uri = params["textDocument"]["uri"].as_str();
     let Some(text) = uri.and_then(|u| docs.get(u)) else {
         return json!([]);
     };
     let mut items: Vec<Value> = Vec::new();
-    for f in PRELUDE_FNS {
-        items.push(json!({ "label": f, "kind": 3 }));
+    for module in crate::linker::PRELUDE_MODULES {
+        // Prelude completion comes from the canonical source registry, so it
+        // cannot drift from the linker or be replaced by a sibling file.
+        push_module_completions(&mut items, module, None, docs);
     }
     for k in KEYWORDS {
         items.push(json!({ "label": k, "kind": 14 })); // Keyword
@@ -335,7 +317,7 @@ fn visible_module_sources(
             names.push(module);
         }
     }
-    names.extend(PRELUDE_MODULES.iter().map(|s| s.to_string()));
+    names.extend(crate::linker::PRELUDE_MODULES.iter().map(|s| s.to_string()));
     let mut seen: HashSet<String> = HashSet::new();
     let mut out = Vec::new();
     for name in names {

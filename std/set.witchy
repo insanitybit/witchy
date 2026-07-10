@@ -3,7 +3,7 @@
 // sets of Ints, Strings, tuples, or your own `Eq` types all work. Build one with
 // `set.new()` / `set.from_list(xs)`, test membership with `set.contains`, and
 // reach for `union`/`intersection`/`difference` for the algebra. A `Set` whose
-// members are `Show` renders as `{a, b, c}` through `show`/`say` (import `show`);
+// members are `Show` renders as `{a, b, c}` through interpolation or `show.say`;
 // `set.to_list(s)` returns the members in insertion order.
 
 import cmp

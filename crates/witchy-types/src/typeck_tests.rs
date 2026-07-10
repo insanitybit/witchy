@@ -2065,6 +2065,8 @@ fn main():
         // once" error the function namespace already gives.
         let ty = check_str("type T:\n    A\ntype T:\n    B\n").unwrap_err();
         assert!(ty.contains("type `T` is defined more than once"), "{ty}");
+        let identical = check_str("type T:\n    A\ntype T:\n    A\n").unwrap_err();
+        assert!(identical.contains("type `T` is defined more than once"), "{identical}");
         let type_param = check_str("type Pair(a, a):\n    Pair(a, a)\n").unwrap_err();
         assert!(
             type_param.contains("type parameter `a` is declared more than once in type `Pair`"),

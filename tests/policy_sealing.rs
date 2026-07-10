@@ -45,10 +45,11 @@ fn local_policy_module_cannot_impersonate_bundled_policy_owner() {
         "main",
         &user_modules,
     )
-    .expect_err("a local std-name shadow is not the ambient type's canonical owner")
+    .expect_err("a local module cannot own a reserved std name")
     .message;
     assert!(
-        error.contains("type `NetPolicy` shadows the ambient built-in name"),
+        error.contains("module `policy` uses a reserved standard-library name")
+            && error.contains("one canonical owner"),
         "{error}",
     );
 }

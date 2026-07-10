@@ -73,8 +73,7 @@ fn is_ambient_ctor(name: &str) -> bool {
     AMBIENT_CTORS.contains(&name)
 }
 
-/// Whether an ambient declaration is the one canonical std owner, or an exact
-/// local restatement of the language-preluded `Option`/`Result` shape.
+/// Whether an ambient declaration comes from its one canonical std owner.
 fn ambient_declaration_allowed(home: &str, user_module: bool, t: &TypeDef) -> bool {
     let canonical_owner = match t.name.as_str() {
         "Option" => "option",
@@ -85,19 +84,7 @@ fn ambient_declaration_allowed(home: &str, user_module: bool, t: &TypeDef) -> bo
         "NetPolicy" | "DirPolicy" => "policy",
         _ => return false,
     };
-    if home == canonical_owner && !user_module {
-        return true;
-    }
-
-    let expected: &[(&str, usize)] = match t.name.as_str() {
-        "Option" => &[("Some", 1), ("None", 0)],
-        "Result" => &[("Ok", 1), ("Err", 1)],
-        _ => return false,
-    };
-    t.variants.len() == expected.len()
-        && expected.iter().all(|(name, arity)| {
-            t.variants.iter().any(|variant| variant.name == *name && variant.fields.len() == *arity)
-        })
+    home == canonical_owner && !user_module
 }
 
 /// Compiler-synthesized type heads that name no module and stay bare: the
@@ -369,7 +356,7 @@ impl<'a> Scope<'a> {
     /// Whether `module` is referenceable here (imported, or a prelude module).
     fn in_scope(&self, module: &str) -> bool {
         self.imports.iter().any(|i| i == module)
-            || matches!(module, "list" | "string" | "dict" | "math" | "option" | "result")
+            || crate::linker::PRELUDE_MODULES.contains(&module)
     }
 
     // ---- type references -------------------------------------------------
@@ -618,10 +605,8 @@ impl<'a> Scope<'a> {
                     // strand its constructors: an ambient-named type is kept out of
                     // the module type map, so a NON-ambient constructor it declares
                     // (`type Secret: Hidden(String)`, `type Set: ...`) is
-                    // unreachable by any spelling (BUG-289). Only `Result` and
-                    // `Option` may be restated with their exact language-ambient
-                    // constructor shape. Each other ambient library type may be
-                    // declared only by its canonical std owner.
+                    // unreachable by any spelling (BUG-289). Every ambient
+                    // library type may be declared only by its canonical std owner.
                     if is_ambient_type(&t.name)
                         && !is_synthetic_type(&t.name)
                         && !ambient_declaration_allowed(self.home, self.user_module, t)
@@ -1122,7 +1107,9 @@ mod tests {
         // BUG-289: a user module declaring `type Secret`/`type Set`/… is a loud
         // error (its constructors would be unreachable), while the canonical std
         // declarer (`cmp`) may still declare `type Ordering`.
-        for ambient in ["Secret", "Set", "Iter", "Ordering", "NetPolicy", "DirPolicy"] {
+        for ambient in [
+            "Secret", "Set", "Iter", "Ordering", "NetPolicy", "DirPolicy", "Option", "Result",
+        ] {
             let src = format!("type {ambient}:\n    Wrapped(Int)\n");
             let err = resolve_src(&[("main", &src)]).unwrap_err();
             assert!(
@@ -1133,24 +1120,6 @@ mod tests {
         }
         // A std module keeps declaring its own ambient type.
         resolve_src(&[("cmp", CMP_STUB)]).expect("cmp may declare Ordering");
-        // A program may restate a prelude type whose constructors are all ambient
-        // (`Ok`/`Err`, `Some`/`None`) — those resolve, so nothing is stranded.
-        resolve_src(&[("main", "type Result:\n    Ok(a)\n    Err(e)\n")])
-            .expect("type Result with ambient ctors is legal");
-        resolve_src(&[("main", "type Option:\n    Some(a)\n    None\n")])
-            .expect("type Option with ambient ctors is legal");
-        for malformed in [
-            "type Result:\n    Ok(a)\n",
-            "type Result:\n    Ok(a)\n    Err(e)\n    Extra\n",
-            "type Option:\n    Some(a, b)\n    None\n",
-        ] {
-            let err = resolve_src(&[("main", malformed)]).unwrap_err();
-            assert!(
-                err.message.contains("shadows the ambient built-in name"),
-                "{}",
-                err.message
-            );
-        }
         // Being some other std module does not grant ownership of every ambient
         // declaration. Only the canonical owner above is exempt.
         let err = resolve_src(&[("json", "type Secret:\n    Secret(Int)\n")]).unwrap_err();

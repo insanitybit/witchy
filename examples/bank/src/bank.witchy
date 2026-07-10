@@ -1,13 +1,9 @@
 // Records + lists + for-in + Result/`?` together. `total` folds balances over a
-// list; `debit` returns a Result, and `?` in `pay_both` short-circuits the whole
-// computation on the first overdraft.
+// list; `debit` returns the prelude Result, and `?` in `pay_both` short-circuits
+// the whole computation on the first overdraft.
 type Account:
     name: String
     balance: Int
-
-type Result:
-    Ok(a)
-    Err(e)
 
 fn total(accounts: List(Account)) -> Int:
     var sum = 0

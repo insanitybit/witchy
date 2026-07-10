@@ -15,7 +15,7 @@ across modules, and in-rune `test_*` functions.
 
 ```sh
 witchy run                                # from this directory
-witchy examples/regex/src/regex.witchy    # or by file, from the repo root
+witchy examples/regex/src/regex_demo.witchy # or by file, from the repo root
 ```
 
 ## Test

@@ -146,12 +146,12 @@ impl Parser {
             // `task`/`chan` are seeded too: the `async`/`await` lowering implies
             // and auto-imports them, so `task.spawn(...)` / `chan.send(...)` parse
             // as qualified calls in async code without an explicit import line.
-            imports: [
-                "list", "string", "dict", "math", "option", "result", "task", "chan",
-            ]
-            .into_iter()
-            .map(String::from)
-            .collect(),
+            imports: crate::linker::PRELUDE_MODULES
+                .iter()
+                .copied()
+                .chain(["task", "chan"])
+                .map(String::from)
+                .collect(),
             pending_impl_bounds: Vec::new(),
             in_async: false,
             in_gen: false,

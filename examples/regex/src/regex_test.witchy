@@ -2,24 +2,24 @@
 // by returning, and fails by aborting (the `testing` assertions do that with a
 // message). Run them with `witchy test examples/regex`.
 
-import regex
+import regex_demo
 import testing
 
 fn test_literals_and_dot():
-    testing.assert(regex.matches("abc", "abc"), "literal match")
-    testing.assert(regex.matches("a.c", "axc"), ". matches any one char")
-    testing.assert(!regex.matches("a.c", "ac"), ". requires a character")
+    testing.assert(regex_demo.matches("abc", "abc"), "literal match")
+    testing.assert(regex_demo.matches("a.c", "axc"), ". matches any one char")
+    testing.assert(!regex_demo.matches("a.c", "ac"), ". requires a character")
 
 fn test_star():
-    testing.assert(regex.matches("a*b", "aaab"), "* matches zero or more")
-    testing.assert(regex.matches("a*b", "b"), "* allows zero reps")
+    testing.assert(regex_demo.matches("a*b", "aaab"), "* matches zero or more")
+    testing.assert(regex_demo.matches("a*b", "b"), "* allows zero reps")
 
 fn test_anchors():
-    testing.assert(regex.matches("^hello", "hello world"), "^ anchors at start")
-    testing.assert(regex.matches("world\$", "hello world"), "\$ anchors at end")
-    testing.assert(regex.matches("^a.*z\$", "abcz"), "^...\$ spans the whole text")
-    testing.assert(!regex.matches("^a.*z\$", "abc"), "\$ requires the final char")
+    testing.assert(regex_demo.matches("^hello", "hello world"), "^ anchors at start")
+    testing.assert(regex_demo.matches("world\$", "hello world"), "\$ anchors at end")
+    testing.assert(regex_demo.matches("^a.*z\$", "abcz"), "^...\$ spans the whole text")
+    testing.assert(!regex_demo.matches("^a.*z\$", "abc"), "\$ requires the final char")
 
 fn test_unanchored():
-    testing.assert(regex.matches("bc", "abcd"), "unanchored match in the middle")
-    testing.assert(!regex.matches("xyz", "abcd"), "no match anywhere")
+    testing.assert(regex_demo.matches("bc", "abcd"), "unanchored match in the middle")
+    testing.assert(!regex_demo.matches("xyz", "abcd"), "no match anywhere")

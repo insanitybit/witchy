@@ -2,11 +2,11 @@
 
 The `?` operator propagates errors: `e?` unwraps an `Ok`/`Some` to its value, or
 short-circuits — returning the `Err`/`None` straight out of the enclosing
-function, whose return type must match. `Result` is an ordinary generic type
-defined in the program here, not a built-in. The logic is pure (`pub`, no
-capabilities); only `main` touches the `Console`.
+function, whose return type must match. `Result` and `Option` are standard
+prelude ADTs. The logic is pure (`pub`, no capabilities); only `main` touches
+the `Console`.
 
-**Shows:** the `?` operator, a user-defined generic `Result` type, `match`, and
+**Shows:** the `?` operator, standard generic `Result`, `match`, and
 in-rune `test_*` functions.
 
 ## Run

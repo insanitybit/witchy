@@ -1,5 +1,5 @@
 [rune]
-name = "regex"
+name = "regex_demo"
 version = "0.1.0"
 
 [dependencies]

@@ -520,15 +520,7 @@ fn check_unique_declarations(module: &Module) -> Result<(), TypeError> {
                         bare(&t.name)
                     ));
                 }
-                if let Some(prev) = types.insert(t.name.clone(), t) {
-                    // A structurally-IDENTICAL re-declaration is a harmless shadow — a user
-                    // module may redefine a prelude-injected type (`Result`/`Option`) with
-                    // the same shape (examples/try teaches exactly this). Only a CONFLICTING
-                    // redefinition (a different shape under the same name) is an error; the
-                    // identical one is skipped so its constructors aren't double-counted.
-                    if prev.params == t.params && prev.variants == t.variants {
-                        continue;
-                    }
+                if types.insert(t.name.clone(), t).is_some() {
                     return terr(format!(
                         "type `{}` is defined more than once; top-level type names must be unique",
                         bare(&t.name)

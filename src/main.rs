@@ -1280,15 +1280,14 @@ fn main() -> Int:
 }
 
 /// Source for a bundled standard-library module, shipped with the compiler so
-/// `import list` works without a local file. A local file of the same name
-/// takes precedence (see `execute_file`).
+/// `import list` works without a local file. Bundled module names are reserved.
 fn bundled_module(name: &str) -> Option<&'static str> {
     crate::linker::std_source(name)
 }
 
-/// Parse and link a source file, resolving each `import` from a sibling
-/// `<name>.witchy` (preferred) or the bundled std. Returns the linked module and
-/// the entry module's stem. Shared by `execute_file` and `check_file`.
+/// Parse and link a source file. Non-std imports resolve from sibling
+/// `<name>.witchy` files; reserved std names resolve from the bundled source.
+/// Returns the linked module and entry stem.
 fn link_file(path: &str) -> Result<(ast::Module, String), String> {
     link_file_with_deps(path, &std::collections::HashMap::new())
 }
@@ -1326,8 +1325,8 @@ fn link_file_with_deps(
         if !loaded.insert(name.clone()) {
             continue; // already loaded (cycle-safe)
         }
-        // A local `<name>.witchy` wins; otherwise fall back to a bundled
-        // standard-library module (e.g. `import list`).
+        // Read a local source when present; the linker rejects it if its module
+        // name is reserved by a non-identical bundled std module.
         let src = match std::fs::read_to_string(&p) {
             Ok(s) => {
                 // Repository checks read canonical std sources from disk. Source

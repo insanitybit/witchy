@@ -1,16 +1,16 @@
 # Appendix: The Standard Library
 
-witchy ships ~40 standard-library modules. Bring one in with `import name` and
+witchy ships a broad bundled standard library. Bring a non-prelude module in with `import name` and
 call its functions module-qualified (`list.map`, `list.join`). A module's
 *types and their constructors* are module-scoped the same way — after
 `import json` you write `json.JsonInt(1)`. Name a type explicitly with
 `from json import Json` to use it and its variant constructors unqualified
 (`JsonInt(1)`).
 
-Six modules form **the prelude** and never need an import line: `list`,
-`string`, `dict`, `math`, `option`, and `result`. Every program can write
-`list.push(...)` or `dict.new()` directly; `import list` is not wrong, just
-redundant. This appendix is a map; the full,
+Eight modules form **the prelude** and never need an import line: `list`,
+`string`, `dict`, `math`, `option`, `result`, `policy`, and `show`. Every
+program can write `list.push(...)`, `dict.new()`, or `show.render(...)` directly;
+an explicit prelude import is accepted but redundant. This appendix is a map; the full,
 function-by-function reference — generated from the library sources, so it's
 always current — is
 [spec/stdlib.md](https://github.com/insanitybit/witchy/blob/master/spec/stdlib.md).
@@ -54,7 +54,7 @@ to_ms` finds `duration.to_milliseconds`.
 | `rand` | cryptographically-secure randomness — needs the `Rand` capability |
 | `time` / `duration` | civil UTC date-times: `parse_iso8601`, `iso8601`, strftime-style `format`, validated `civil(...)`; `Duration` helpers |
 | `semver` | version parsing and comparison |
-| `cmp` / `show` | the comparison hierarchy (`PartialEq`/`Eq`/`PartialOrd`/`Ord`, backing `== != < > <= >=`) and display trait, plus generic algorithms (`list.sort`, `cmp.max_of`, …) |
+| `cmp` / `show` *(show is prelude)* | the comparison hierarchy (`PartialEq`/`Eq`/`PartialOrd`/`Ord`, backing `== != < > <= >=`) and display trait, plus generic algorithms (`list.sort`, `cmp.max_of`, …) |
 | `ascii` | ASCII classification |
 
 ## Concurrency

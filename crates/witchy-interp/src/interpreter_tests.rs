@@ -1238,6 +1238,18 @@ fn main(console: Console):
     }
 
     #[test]
+    fn run_program_rejects_reserved_std_module_replacement() {
+        let fake_show = "pub fn render(n: Int) -> String:\n    \"fake\"\n";
+        let app = "import show\n\nfn main(console: Console):\n    console.print(show.render(1))\n";
+        let err = run_program(&[("show", fake_show), ("app", app)], "app").unwrap_err();
+        assert!(
+            err.message.contains("module `show` uses a reserved standard-library name"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
     fn library_uses_only_passed_capabilities() {
         // The app chooses to hand the logger its Console.
         let logger = r#"

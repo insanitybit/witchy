@@ -368,8 +368,8 @@ impl Codegen {
                     self.reject_reason.get_or_insert_with(|| CodegenError {
                         message: "cannot render this value with `\"${…}\"` on the \
                                   compiled backend — the structural renderer can't \
-                                  build this shape. Import `show` and render through \
-                                  the public `Show` protocol instead, e.g. \
+                                  build this shape. Render through the public \
+                                  `Show` protocol instead, e.g. \
                                   `show.render(x)` or `show.say(console, x)`"
                             .into(),
                     });

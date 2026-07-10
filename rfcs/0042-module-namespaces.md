@@ -171,9 +171,11 @@ needless grammar).
 `Option`/`Some`/`None`/`Result`/`Ok`/`Err` — and the primitive type names —
 remain globally bare, no import required. They are load-bearing language
 surface (`?`, `e? "msg"`, main-signature checking), not ordinary library types.
-The prelude *modules* (`list`, `string`, `dict`, `math`, `option`, `result` —
-linker.rs, the prelude pull-in) contribute exactly these type names ambiently
-and nothing else. `cmp.Ordering` is deliberately **not** ambient: derive- and
+The prelude modules come from one shared registry: `list`, `string`, `dict`,
+`math`, `option`, `result`, `policy`, and `show`. Their public
+module-qualified functions are available without an import; explicit imports
+are accepted but redundant. Only the designated prelude type/constructor names
+are ambient. `cmp.Ordering` is deliberately **not** ambient: derive- and
 comptime-generated code references it qualified, and a bare `Less` in your
 match still resolves via the scrutinee rule (§4).
 

@@ -267,7 +267,7 @@ with the language reference's examples preloaded.
   or read the chapters as Markdown under `book/src/`). Start here if you're new.
 - **[Language reference](spec/language.md)** — the full syntax and semantics.
 - **[Capabilities guide](spec/capabilities.md)** — the security model, for users.
-- **[Standard library](spec/stdlib.md)** — 36 modules, function-by-function.
+- **[Standard library](spec/stdlib.md)** — the bundled modules, function-by-function.
 - **[Examples](examples/)** — 100+ programs from `hello` to a self-hosted
   package registry; see the [index](examples/README.md).
 - **[Capability rights design](rfcs/capability-rights.md)** and

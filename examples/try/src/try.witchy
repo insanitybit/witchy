@@ -1,12 +1,7 @@
 // The `?` operator propagates errors. `e?` unwraps an `Ok`/`Some` to its value,
 // or short-circuits — returning the `Err`/`None` straight out of the enclosing
 // function. The function must itself return a matching Result/Option, so the
-// error type is checked end to end. Result is an ordinary generic type here,
-// not a built-in.
-type Result:
-    Ok(a)
-    Err(e)
-
+// error type is checked end to end. Both ADTs are part of the prelude.
 pub fn checked_div(a: Int, b: Int) -> Result(Int, String):
     match b:
         0 -> Err("divide by zero")

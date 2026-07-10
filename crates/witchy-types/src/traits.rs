@@ -550,8 +550,9 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     // (RFC-0053) The interpolation flip's inputs. `show_types` is the bare name
     // of every type carrying a `Show` impl (`trait_impl_table`'s `Show.show` keys). A value
     // whose concrete type is here, or whose container transitively contains one,
-    // can render through `show.render`. The rewrite is gated on that helper being
-    // linked, so modules that never import `show` keep structural `__render`.
+    // can render through `show.render`. The linker preludes that helper, so imports
+    // never select semantics; the availability guard only protects direct users of
+    // this stage API that bypass linking.
     let show_types: HashSet<String> = trait_impl_table
         .keys()
         .filter(|(owner, method, _)| owner == "Show" && method == "show")
@@ -3893,8 +3894,8 @@ struct Mono<'a> {
     /// rewrite uses this to route values with a meaningful display protocol
     /// through `show.render`.
     show_types: &'a HashSet<String>,
-    /// Whether `show.render` is linked as a monomorphizable template. Without it,
-    /// interpolation keeps the structural fallback and never emits a dangling call.
+    /// Whether `show.render` is linked as a monomorphizable template. Production
+    /// linking guarantees it; direct stage callers still avoid a dangling call.
     render_available: bool,
 }
 
@@ -4423,7 +4424,7 @@ impl Mono<'_> {
                 // fallback. At this point monomorphization has concrete type
                 // evidence for `x`, so values whose public display model is `Show`
                 // route through `show.render` and then specialize like any other
-                // bounded generic. If `show` was never linked, no rewrite happens.
+                // bounded generic. Production linking always supplies `show`.
                 if name == "__render" && args.len() == 1 {
                     if self.render_available {
                         if let Some(ty) = self.table.type_of(&args[0]) {

@@ -135,11 +135,10 @@ count: 42
 ```
 
 `show.say(console, x)` is the `Show`-accepting print helper. Interpolation is the
-usual inline rendering form, and once `show` is imported it uses the same `Show`
-path for values with a relevant impl: `console.print("${Temp(5)}")`,
+usual inline rendering form and always uses the same prelude `Show` path for a
+value with a relevant impl: `console.print("${Temp(5)}")`,
 `show.render(Temp(5))`, and `show.say(console, Temp(5))` all print `5 deg C`.
-Without `show` linked, interpolation keeps the structural fallback, so modules
-that do not need custom display pay no protocol cost.
+Imports expose names; they do not change rendering behavior.
 
 ## Deriving the common traits
 

@@ -22,6 +22,8 @@
         assert!(labels.contains(&"match".to_string()), "keywords offered");
         assert!(labels.contains(&"print".to_string()), "builtins offered");
         assert!(labels.contains(&"helper".to_string()), "document fns offered");
+        assert!(labels.contains(&"show.render".to_string()), "prelude Show renderer offered");
+        assert!(labels.contains(&"show.say".to_string()), "prelude Show printer offered");
         assert!(
             labels.iter().any(|l| l.starts_with("string.")),
             "imported module fns offered: {labels:?}"
@@ -279,6 +281,27 @@ fn main(console: Console):
         // bundled-module fallback. A clean program must stay diagnostic-free.
         let src = "import string\nfn main(console: Console):\n    console.print(string.repeat(\"ab\", 2))\n";
         assert_eq!(diags(src), Vec::<Value>::new());
+    }
+
+    #[test]
+    fn sibling_cannot_replace_reserved_std_module() {
+        let dir = std::env::temp_dir().join(format!("witchy-lsp-std-owner-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("show.witchy"), "pub fn fake() -> Int:\n    1\n").unwrap();
+        let main = dir.join("main.witchy");
+        let src = "import show\n\nfn main(console: Console):\n    console.print(\"${90000ms}\")\n";
+        let uri = format!("file://{}", main.to_str().unwrap());
+        let mut docs = HashMap::new();
+        docs.insert(uri.clone(), src.to_string());
+
+        let d = compute_diagnostics(&uri, src, &docs);
+        assert_eq!(d.len(), 1, "{d:?}");
+        let msg = d[0]["message"].as_str().unwrap();
+        assert!(
+            msg.contains("module `show` uses a reserved standard-library name"),
+            "{msg}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

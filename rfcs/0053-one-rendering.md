@@ -9,26 +9,23 @@ predecessors:
   - "scratch/consistency-analysis-2026-07-03.md §4 (two rendering systems with disjoint domains)"
 tracking: "IMPLEMENTED — blanket-Show + typed interpolation flip both shipped"
 implementation-notes: |
-  AS BUILT (2026-07-06, RFC-0067 reconciliation):
+  AS BUILT (2026-07-10, coherence reconciliation):
   - Interpolation still desugars at lex time to `__render(x)`, the structural
     fallback. The lexer remains type-free.
   - The semantic flip lives in `crates/witchy-types/src/traits.rs`, inside
     `Mono::walk_expr`, after RFC-0046's TypeTable can report the concrete type of
     `x`. That is the only place `__render(x)` is rewritten.
   - `std/show.witchy` exposes `pub fn render(x: impl Show) -> String: show(x)`.
-    When `show.render` is linked and the concrete type has a relevant `Show` path,
+    `show` is a prelude module. When the concrete type has a relevant `Show` path,
     monomorphization rewrites `__render(x)` to `show.render(x)`. That then
     specializes through the same bounded-generic machinery as any other `Show`
     call, so interpreter and compiled backend parity follows from one AST rewrite.
-  - Modules that never import/link `show` keep structural `__render`. This preserves
-    the current no-ambient-`show` policy: `"${90000ms}"` remains raw milliseconds
-    unless `show` is linked, while `import show` makes interpolation agree with
-    `show.render`/`show.say`. BUG-559 is therefore not a backend defect under the
-    shipped contract; the release invariant is that both modes are explicit and
-    parity-tested.
+  - Imports never select rendering semantics. `show` is linked for every program;
+    `import show` is accepted but redundant. `"${90000ms}"`, `show.render(90000ms)`,
+    and `show.say(console, 90000ms)` all use the human Duration form.
   - The rewrite predicate keeps primitives structural, flips `Duration`, flips any
     named type carrying a `Show` impl, recurses through `List`, `Option`, `Result`,
-    `Dict`, and tuples, and always flips `Set` once `show.render` is available
+    `Dict`, and tuples, and always flips `Set`
     because `Set([1, 2])` structurally and `{1, 2}` through `Show` are different
     public renderings.
   - The previous early `custom_show`/`Ctx::render_flip` approach was removed: it
@@ -41,14 +38,14 @@ implementation-notes: |
 
 ## Summary
 
-"How does my type print?" has two answers today: `"${x}"` is always structural
-and ignores a user's `Show` impl, while `say(console, x)` honors it — probed:
-the same `Point` with a custom `Show` prints `Point(1, 2)` via interpolation
-and `P<1,2>` via `say`; a `Duration` prints `90000` via interpolation and
-`1m30s` via `say`. Meanwhile each system has holes the other doesn't:
-interpolation of a `Set`, closure, capability, `Bytes`, or `Nil` **passes
-`witchy check` and then fails at codegen**, and `say` rejects lists, tuples,
-dicts, and Options (no blanket `impl Show for List(a) where a: Show`). This
+Before this RFC, "How does my type print?" had two answers: `"${x}"` was always
+structural and ignored a user's `Show` impl, while `say(console, x)` honored it.
+The same `Point` with a custom `Show` printed `Point(1, 2)` via interpolation
+and `P<1,2>` via `say`; a `Duration` printed `90000` via interpolation and
+`1m30s` via `say`. Each system also had holes the other did not:
+interpolation of a `Set`, closure, capability, `Bytes`, or `Nil` **passed
+`witchy check` and then failed at codegen**, and `say` rejected lists, tuples,
+dicts, and Options (there was no blanket `impl Show for List(a) where a: Show`). This
 RFC makes rendering one path: the structural renderer becomes the *derived
 default `Show`*, interpolation consults a user `Show` impl when one exists,
 blanket impls close `say`'s container holes, and the check-passes-codegen-
@@ -57,7 +54,7 @@ fails class is eliminated by giving every first-class value a stable rendering
 
 ## Motivation
 
-All probed at HEAD against the PATH binary:
+Baseline probes recorded before implementation:
 
 - **Two answers to one question.** `spec/language.md:67-76` teaches "reach for
   interpolation first: `"${x}"` renders *any* value" and positions `Show` as
@@ -83,22 +80,21 @@ All probed at HEAD against the PATH binary:
 
 ## Design
 
-### One path when `Show` is linked: `show.render(x)`
+### One path: `show.render(x)`
 
-The shipped 0.1 contract is intentionally import-gated:
+`show` is a prelude module, so imports cannot change rendering behavior:
 
-1. If `show.render` is linked and `x`'s concrete type has a relevant `Show`
-   path, interpolation rewrites to `show.render(x)`.
-2. Otherwise interpolation keeps `__render(x)`, the structural fallback.
+1. If `x`'s concrete type has a relevant `Show` path, interpolation rewrites
+   to `show.render(x)`.
+2. Otherwise interpolation keeps `__render(x)`, the structural default.
 
-`show.say(console, x)` and `show.render(x)` always mean the `Show` protocol.
-Interpolation joins that protocol once `show` is linked; modules that never
-import `show` keep the existing structural behavior. Consequences:
+`show.say(console, x)`, `show.render(x)`, and interpolation share the same
+protocol. Consequences:
 
-- For types without a linked `Show` path, output is byte-identical to today.
-- For types with a linked `Show` path, `"${x}"`, `show.render(x)`, and
+- For types without a `Show` path, structural output remains byte-identical.
+- For types with a `Show` path, `"${x}"`, `show.render(x)`, and
   `show.say(console, x)` agree.
-- `Set(a)` flips whenever `show.render` is available because its structural
+- `Set(a)` uses `Show` because its structural
   fallback (`Set([1, 2])`) and public display form (`{1, 2}`) differ even when
   `a` is primitive.
 
@@ -123,25 +119,23 @@ impl Show for (a, b) where a: Show, b: Show     # per tuple arity, as derives do
 
 Each is the structural container form over the elements' `Show` rendering — so
 a `List(Point)` under a custom `Point` Show prints `[P<1,2>, P<3,4>]`
-everywhere once `show` is linked. `show.show_list` and `set.show` are retired
-workaround names; callers use interpolation with `import show`, `show.render`,
-or `show.say`.
+everywhere. `show.show_list` and `set.show` are retired workaround names;
+callers use interpolation, `show.render`, or `show.say`.
 
-### Duration renders humanely when `show` is linked
+### Duration renders humanely
 
-`Show for Duration` is already `duration.human` (`std/show.witchy`). Under the
-import-gated path, `import show` makes interpolation follow: `"${90000ms}"` →
-`1m30s`. Without `show`, interpolation keeps the raw structural milliseconds.
+`Show for Duration` is `duration.human` (`std/show.witchy`), so
+`"${90000ms}"` always renders as `1m30s`.
 
 ### Unsupported structural rendering is explicit
 
 The current compiler does not promise total opaque rendering for every value.
 Function interpolation is rejected at check time, and shapes the compiled
 structural renderer cannot build now get a diagnostic pointing users at
-`import show` plus `show.render`/`show.say` when the value has a `Show` path.
+`show.render`/`show.say` when the value has a `Show` path.
 
 The invariant for 0.1 is narrower but enforceable: interpolation either follows
-the linked `Show` protocol, uses a structural form both backends support, or
+the `Show` protocol, uses a structural form both backends support, or
 fails loudly before runtime with a diagnostic that names the public rendering
 protocol. Silent `check`-passes/codegen-surprise paths are bugs.
 
@@ -154,12 +148,12 @@ protocol. Silent `check`-passes/codegen-surprise paths are bugs.
 | `Bool` | `true` / `false` | unchanged |
 | `String` | the string, bare | unchanged; **stays unquoted inside containers** (see Alternatives) |
 | `Nil` | `Nil` | interpreter already does this; compiled: new |
-| `Duration` | human form `1m30s` when `show` is linked; raw ms structurally | import-gated |
+| `Duration` | human form `1m30s` | through `Show` |
 | `List(a)` | `[e1, e2]`, elements via `render` | element custom Shows now honored |
 | tuple | `(e1, e2)` | " |
 | record / ADT | custom `Show` if impl'd, else `Name(f1, f2)` | **changed** when an impl exists |
 | `Dict(k, v)` | `{k1: v1, k2: v2}` | insertion order, as today |
-| `Set(a)` | `{e1, e2}` when `show` is linked; `Set([...])` structurally | generic-container follow-up shipped in `Mono::walk_expr` |
+| `Set(a)` | `{e1, e2}` | generic-container follow-up shipped in `Mono::walk_expr` |
 | `Bytes` | structural/backend-supported form | total opaque rendering deferred |
 | range | `[0, 1, 2]` | already works both backends; unchanged |
 | closure / fn value | rejected for interpolation | check-time error |
@@ -194,9 +188,15 @@ specified and tested.
 
 - **Observable change for every type with a custom `Show`**: all their
   interpolations switch to the custom form at once. In-tree fallout is found
-  by the suite/fences; out-of-tree programs change silently (output, not
-  behavior — but golden-output tests will fail). Must headline the release
-  notes with the Duration row, the likeliest to bite.
+  by the suite/fences; out-of-tree rendered output changes silently (program
+  control flow does not, but golden-output tests will fail). Must headline the
+  release notes with the Duration row, the likeliest to bite.
+- **Standard-library module names are now reserved.** A local `result.witchy`,
+  `regex.witchy`, or any other file whose stem matches a bundled module is a
+  compile-time error; allowing it to replace `show` or one of `show`'s
+  dependencies would make rendering semantics depend on filesystem layout.
+  Rename the module and its manifest/import references (the in-tree examples
+  became `result_demo` and `regex_demo`).
 - **Hard dependency on RFC-0046.** The impl-consulting step and the blanket
   impls are both blocked on TypeTable-backed dispatch; shipping this first
   would mean interpolation consults impls only where the shadow dispatch can

@@ -67,7 +67,7 @@ types and constructors. A lowercase, argument-less name in type position
 | `true` / `false` | `Bool` | |
 | `"hi\n"` | `String` | UTF-8; escapes `\n \t \r \0 \\ \" \$` |
 | `"sum: ${a + b}"` | `String` | interpolation — `${expr}` renders data values (see below); inner strings may be bare (`"${f("x")}"`) or escaped (`"${f(\"x\")}"`) |
-| `30s`, `250ms`, `5m`, `2h`/`2hr`, `1d`, `1w` | `Duration` | a distinct type carried as milliseconds; not mixable with bare `Int`; structural interpolation prints raw milliseconds, while `import show` makes `${d}` use `Duration`'s `Show` impl (`duration.human`) |
+| `30s`, `250ms`, `5m`, `2h`/`2hr`, `1d`, `1w` | `Duration` | a distinct type carried as milliseconds; not mixable with bare `Int`; interpolation uses the prelude `Show` impl (`duration.human`) |
 | `[1, 2, 3]` | `List(Int)` | immutable |
 | `(1, "a")` | tuple | fixed arity, mixed types; elements read by position (`pair.0`, `grid.0.1`) or destructured (`let (n, s) = pair`) |
 
@@ -85,10 +85,9 @@ fn main(console: Console):
 **Rendering values to strings.** Reach for interpolation first: `"${x}"` renders
 ordinary data values — scalars, record fields, lists, tuples, records, sum types,
 dicts, and their supported nesting — identically on both backends. Function
-values are not data rendering targets and are rejected before runtime. Without
-`show` linked, interpolation uses the structural renderer; for example, a
-`Duration` renders as its raw millisecond count. With `import show`,
-interpolation for values with a relevant `Show` path routes through `Show`, so
+values are not data rendering targets and are rejected before runtime. `Show`
+is preluded, so interpolation always honors a relevant implementation; imports
+never select rendering semantics. Thus
 `"${90000ms}"`, `show.render(90000ms)`, and `show.say(console, 90000ms)` all
 produce `1m30s`. Tuple `Show`/`Reflect` protocol impls are provided through
 arity 8; larger tuples still exist as structural values, but should be modeled as
@@ -666,7 +665,7 @@ fn main(console: Console):
 The std comparison hierarchy `PartialEq` → `Eq` → `PartialOrd` → `Ord` (in
 `import cmp`, mirroring Rust's `std::cmp`) backs the `== != < > <= >=` operators
 and provides bounded generic algorithms (`list.contains`, `list.sort`, `cmp.max_of`,
-...); `Show` (`import show`) renders.
+...); the prelude `Show` protocol renders.
 
 **`impl Trait` arguments.** When a parameter is generic only so it can carry a
 trait bound, `impl Trait` says so directly — `x: impl Loud` is sugar for a fresh
@@ -693,9 +692,9 @@ fn main(console: Console):
 Each `impl Trait` parameter introduces its own type variable, so two of them are
 two independent types. It is argument-position only (not a return type), and it
 composes with an explicit `where` clause. The std library uses it for
-`show.say(console, x: impl Show)` — a `Show`-accepting `print`, so you write
-`show.say(console, value)` after `import show`, or `from show import say` when
-you want a bare `say(...)` call.
+`show.say(console, x: impl Show)` — a `Show`-accepting `print`. The `show`
+module is preluded; `from show import say` is needed only when you want the bare
+`say(...)` spelling.
 
 ### Deriving the standard traits
 
@@ -978,8 +977,8 @@ fn main(console: Console):
     console.print(shouted.join("-")) // A-B-C
 ```
 
-The core data modules — `list`, `string`, `dict`, `math`, `option`,
-`result` — are **the prelude**: always available, no import line needed
+The core data modules — `list`, `string`, `dict`, `math`, `option`, `result`,
+`policy`, and `show` — are **the prelude**: always available, no import line needed
 (`list.push(xs, 1)` works anywhere). Pure data operations live ONLY in
 modules; the global namespace is capability operations (`print`, `read`,
 `send`, `now`, …) and `fail` — authority is loud and unprefixed, everything
@@ -996,9 +995,10 @@ type brings its variant constructors into scope bare, so `JsonInt(1)` and
 `JsonObject([...])` then work directly. (In a `match` whose scrutinee type is
 known, bare variant names always resolve against that type, so match arms need
 no qualifier either.) Two unqualified bindings of the same name collide at the
-import line, not at first use. Resolution order: a
-sibling `name.witchy` file, then the bundled standard library (30+ modules — see
-[stdlib.md](stdlib.md)). `pub` items are importable; everything else is
+import line, not at first use. Bundled standard-library module names are
+reserved and always resolve to their canonical compiler-shipped source; a local
+module must use another name. Other imports resolve a sibling `name.witchy`
+file or a package dependency. `pub` items are importable; everything else is
 module-private. Package dependencies ("runes")
 come from the manifest — see [package-manager.md](../rfcs/package-manager.md).
 

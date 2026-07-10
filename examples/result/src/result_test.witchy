@@ -2,12 +2,12 @@
 // by returning, and fails by aborting (the `testing` assertions do that with a
 // message). Run them with `witchy test examples/result`.
 
-import result
+import result_demo
 import testing
 
 fn test_ok():
-    testing.assert_eq(result.show(result.safe_div(10, 2)), "ok 5")
-    testing.assert_eq(result.show(result.safe_div(9, 3)), "ok 3")
+    testing.assert_eq(result_demo.show(result_demo.safe_div(10, 2)), "ok 5")
+    testing.assert_eq(result_demo.show(result_demo.safe_div(9, 3)), "ok 3")
 
 fn test_err():
-    testing.assert_eq(result.show(result.safe_div(10, 0)), "err divide by zero")
+    testing.assert_eq(result_demo.show(result_demo.safe_div(10, 0)), "err divide by zero")

@@ -1,10 +1,10 @@
-// regex — a tiny regular-expression matcher in the style of Kernighan & Pike.
+// regex_demo — a tiny regular-expression matcher in the style of Kernighan & Pike.
 // It supports literal characters, `.` (any one character), `*` (zero or more of
 // the preceding character), and the `^` / `$` anchors. The match is recursive:
 // `match_here` consumes the pattern and text together; `match_star` handles the
 // zero-or-more repetition. Every comparison is between two `list.at(..)` characters,
 // so it's a thorough both-backends exercise of content comparison. Pure (Console
-// only); identical interpreted and compiled. Run:  witchy examples/regex.witchy
+// only); identical interpreted and compiled. Run: witchy examples/regex/src/regex_demo.witchy
 
 import string
 

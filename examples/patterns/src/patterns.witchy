@@ -2,9 +2,9 @@
 // over a handful of patterns. It supports `. * + ? ^ $` and literal characters.
 // Pure (only `main` touches the Console), so it runs identically interpreted,
 // compiled, and inside the capability sandbox:
-//   witchy examples/regex.witchy
-//   witchy parity examples/regex.witchy
-//   witchy sandbox examples/regex.witchy
+//   witchy examples/patterns/src/patterns.witchy
+//   witchy parity examples/patterns/src/patterns.witchy
+//   witchy sandbox examples/patterns/src/patterns.witchy
 
 import regex
 import string
