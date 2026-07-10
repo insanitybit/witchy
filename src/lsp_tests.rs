@@ -31,6 +31,86 @@
     }
 
     #[test]
+    fn async_and_generator_hover_preserve_function_kind() {
+        let mut docs = HashMap::new();
+        let generators = include_str!("../examples/generators/src/generators.witchy");
+        let generator_uri = "file:///generators.witchy";
+        docs.insert(generator_uri.to_string(), generators.to_string());
+
+        let generator_items = completion_response(
+            &docs,
+            &json!({ "textDocument": { "uri": generator_uri } }),
+        );
+        let generator_labels: Vec<&str> = generator_items
+            .as_array()
+            .expect("generator completions")
+            .iter()
+            .filter_map(|item| item["label"].as_str())
+            .collect();
+        assert!(generator_labels.contains(&"fibs"), "{generator_labels:?}");
+        assert!(generator_labels.contains(&"collatz"), "{generator_labels:?}");
+
+        let (fibs_line, fibs_source) = generators
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("iter.take(fibs"))
+            .expect("fibs call");
+        let fibs_col = fibs_source.find("fibs").unwrap() as u64;
+        let fibs = hover_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": generator_uri },
+                "position": { "line": fibs_line, "character": fibs_col },
+            }),
+        );
+        let fibs_contents = fibs["contents"]["value"].as_str().expect("fibs hover");
+        assert!(
+            fibs_contents.contains("gen fn fibs() -> Iter(Int)"),
+            "{fibs_contents}"
+        );
+        assert!(fibs_contents.contains("Fibonacci"), "{fibs_contents}");
+
+        let async_tasks = include_str!("../examples/async_tasks/src/async_tasks.witchy");
+        let async_uri = "file:///async_tasks.witchy";
+        docs.insert(async_uri.to_string(), async_tasks.to_string());
+        let async_items = completion_response(
+            &docs,
+            &json!({ "textDocument": { "uri": async_uri } }),
+        );
+        let async_labels: Vec<&str> = async_items
+            .as_array()
+            .expect("async completions")
+            .iter()
+            .filter_map(|item| item["label"].as_str())
+            .collect();
+        assert!(async_labels.contains(&"ticker"), "{async_labels:?}");
+        assert!(async_labels.contains(&"main"), "{async_labels:?}");
+
+        let (ticker_line, ticker_source) = async_tasks
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("ticker(console, name, n - 1)"))
+            .expect("ticker call");
+        let ticker_col = ticker_source.find("ticker").unwrap() as u64;
+        let ticker = hover_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": async_uri },
+                "position": { "line": ticker_line, "character": ticker_col },
+            }),
+        );
+        let ticker_contents = ticker["contents"]["value"].as_str().expect("ticker hover");
+        assert!(
+            ticker_contents
+                .contains("async fn ticker(console: Console, name: String, n: Int) -> Nil"),
+            "{ticker_contents}"
+        );
+
+        assert_eq!(fn_decl_line(generators, "fibs"), Some(13));
+        assert_eq!(fn_decl_line(async_tasks, "ticker"), Some(14));
+    }
+
+    #[test]
     fn hover_shows_signature_and_doc() {
         let mut docs = HashMap::new();
         let src = "// Doubles a number.\n// Twice the input.\nfn double(n: Int) -> Int:\n    n * 2\n\nfn main(console: Console):\n    console.print(\"${double(3)}\")\n";
@@ -86,6 +166,14 @@
         assert_eq!(
             qualify_signature("fn tcp(host: String, port: Int) -> NetPolicy", "Net."),
             "fn Net.tcp(host: String, port: Int) -> NetPolicy"
+        );
+        assert_eq!(
+            qualify_signature("pub async fn ticker(clock: Clock)", "jobs."),
+            "pub async fn jobs.ticker(clock: Clock)"
+        );
+        assert_eq!(
+            qualify_signature("pub gen fn fibs() -> Int", "sequence."),
+            "pub gen fn sequence.fibs() -> Int"
         );
         // A bare (document-local) signature is left untouched.
         assert_eq!(

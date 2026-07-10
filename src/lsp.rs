@@ -74,6 +74,40 @@ const BUILTINS: &[&str] = &[
     "recv_all", "recv_bytes", "close", "send", "fail",
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FunctionDeclaration<'a> {
+    signature: &'a str,
+    name: &'a str,
+    name_start: usize,
+    public: bool,
+}
+
+/// Parse one source declaration header. Keeping this small indexer shared makes
+/// completion, hover, qualification, and diagnostic lookup agree on every
+/// function kind even when the rest of the buffer is temporarily invalid.
+fn function_declaration(line: &str) -> Option<FunctionDeclaration<'_>> {
+    let signature = line.trim_start().trim_end();
+    let signature = signature.strip_suffix(':').unwrap_or(signature).trim_end();
+    let (public, rest) = signature
+        .strip_prefix("pub ")
+        .map_or((false, signature), |rest| (true, rest));
+    let rest = rest
+        .strip_prefix("async fn ")
+        .or_else(|| rest.strip_prefix("gen fn "))
+        .or_else(|| rest.strip_prefix("fn "))?;
+    let name_rest = rest.trim_start();
+    let name = name_rest.split_once('(')?.0.trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some(FunctionDeclaration {
+        signature,
+        name,
+        name_start: signature.len() - name_rest.len(),
+        public,
+    })
+}
+
 /// Completion items: keywords, builtins, this document's functions, and the
 /// `pub fn`s of every prelude/imported module (offered as `module.name`).
 fn completion_response(docs: &HashMap<String, String>, params: &Value) -> Value {
@@ -95,10 +129,8 @@ fn completion_response(docs: &HashMap<String, String>, params: &Value) -> Value 
     }
     for line in text.lines() {
         let t = line.trim_start();
-        if let Some(rest) = t.strip_prefix("pub fn ").or_else(|| t.strip_prefix("fn ")) {
-            if let Some(name) = rest.split('(').next() {
-                items.push(json!({ "label": name.trim(), "kind": 3 }));
-            }
+        if let Some(declaration) = function_declaration(t) {
+            items.push(json!({ "label": declaration.name, "kind": 3 }));
         }
         if let Some(module) = t.strip_prefix("import ") {
             push_module_completions(&mut items, module.trim(), uri, docs);
@@ -127,13 +159,13 @@ fn push_module_completions(
     items.push(json!({ "label": module, "kind": 9 })); // Module
     if let Some(src) = module_source(module, uri, docs) {
         for ml in src.lines() {
-            if let Some(rest) = ml.trim_start().strip_prefix("pub fn ") {
-                if let Some(name) = rest.split('(').next() {
-                    items.push(json!({
-                        "label": format!("{module}.{}", name.trim()),
-                        "kind": 3,
-                    }));
-                }
+            if let Some(declaration) =
+                function_declaration(ml).filter(|declaration| declaration.public)
+            {
+                items.push(json!({
+                    "label": format!("{module}.{}", declaration.name),
+                    "kind": 3,
+                }));
             }
         }
     }
@@ -231,15 +263,18 @@ fn hover_response(docs: &HashMap<String, String>, params: &Value) -> Value {
 /// Render a signature line qualified by `prefix` (e.g. `string.`). The qualifier
 /// belongs before the FUNCTION NAME, not in front of the whole line: prepending
 /// it produced the malformed `string.pub fn repeat(...)` (and `Net.pub fn tcp`).
-/// Inserting it after the `fn`/`pub fn` keyword yields `pub fn string.repeat(...)`.
+/// Inserting it at the parsed name offset preserves ordinary/async/gen modifiers.
 fn qualify_signature(sig: &str, prefix: &str) -> String {
     if prefix.is_empty() {
         return sig.to_string();
     }
-    for kw in ["pub fn ", "fn "] {
-        if let Some(rest) = sig.strip_prefix(kw) {
-            return format!("{kw}{prefix}{rest}");
-        }
+    if let Some(declaration) = function_declaration(sig) {
+        return format!(
+            "{}{}{}",
+            &declaration.signature[..declaration.name_start],
+            prefix,
+            &declaration.signature[declaration.name_start..]
+        );
     }
     format!("{prefix}{sig}")
 }
@@ -268,16 +303,14 @@ fn word_at(text: &str, line: usize, character: usize) -> Option<String> {
     Some(word.trim_matches('.').to_string())
 }
 
-/// Find `fn <name>(` in `src` and return (signature line, preceding `//` block).
+/// Find a function declaration in `src` and return its signature plus preceding
+/// contiguous `//` doc block.
 fn signature_doc(src: &str, name: &str) -> Option<(String, String)> {
     let lines: Vec<&str> = src.lines().collect();
     for (i, l) in lines.iter().enumerate() {
-        let t = l.trim_start();
-        let sig = t
-            .strip_prefix("pub fn ")
-            .or_else(|| t.strip_prefix("fn "))
-            .filter(|rest| rest.split('(').next().map(str::trim) == Some(name));
-        if sig.is_some() {
+        if let Some(declaration) =
+            function_declaration(l).filter(|declaration| declaration.name == name)
+        {
             let mut doc_lines: Vec<&str> = Vec::new();
             for j in (0..i).rev() {
                 let dt = lines[j].trim_start();
@@ -288,7 +321,7 @@ fn signature_doc(src: &str, name: &str) -> Option<(String, String)> {
                 }
             }
             doc_lines.reverse();
-            return Some((t.trim_end_matches(':').to_string(), doc_lines.join("\n")));
+            return Some((declaration.signature.to_string(), doc_lines.join("\n")));
         }
     }
     None
@@ -578,15 +611,15 @@ fn diag(start_line: u32, start_char: u32, end_line: u32, end_char: u32, message:
     })
 }
 
-/// The 0-based line of `text` declaring function `bare` (`fn bare(` / `pub fn bare(`),
-/// so a mode-opt signature-contract error can point at the offending function even
-/// though the AST carries no span for it.
+/// The 0-based line of `text` declaring function `bare`, so a mode-opt
+/// signature-contract error can point at ordinary/async/gen functions even
+/// though the AST carries no span for declarations.
 fn fn_decl_line(text: &str, bare: &str) -> Option<u32> {
-    let needle = format!("fn {bare}(");
-    text.lines().position(|l| {
-        let t = l.trim_start();
-        t.strip_prefix("pub ").unwrap_or(t).starts_with(&needle)
-    }).map(|i| i as u32)
+    text.lines()
+        .position(|line| {
+            function_declaration(line).is_some_and(|declaration| declaration.name == bare)
+        })
+        .map(|i| i as u32)
 }
 
 fn line_len(text: &str, line0: u32) -> u32 {
