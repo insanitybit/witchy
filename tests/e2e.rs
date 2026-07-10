@@ -1092,6 +1092,73 @@ fn versions_mirror_once(body: &'static str) -> (String, std::thread::JoinHandle<
     (addr, server)
 }
 
+/// Mirror valid version/TUF metadata but fail either the snapshot request or
+/// the second root-key request (the one used to serialize the lock after TUF
+/// verification). The first root-key response stays valid so the latter case
+/// isolates `rootpub_pin` rather than signature verification.
+fn trust_pin_failure_mirror(
+    versions: String,
+    snapshot: String,
+    timestamp: String,
+    rootpub: String,
+    fail_snapshot: bool,
+) -> (String, std::thread::JoinHandle<()>) {
+    use std::io::{ErrorKind, Read, Write};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let server = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut root_requests = 0;
+        loop {
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(connection) => break connection,
+                    Err(e) if e.kind() == ErrorKind::WouldBlock && std::time::Instant::now() < deadline => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(e) => panic!("trust metadata mirror did not receive an expected request: {e}"),
+                }
+            };
+            let mut buf = [0u8; 2048];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let path = req.split_whitespace().nth(1).unwrap_or("/");
+            let (status, body, done) = if path.starts_with("/coven/versions") {
+                ("200 OK", versions.clone(), false)
+            } else if path.starts_with("/coven/snapshot") {
+                if fail_snapshot {
+                    ("503 Service Unavailable", "snapshot unavailable".to_string(), true)
+                } else {
+                    ("200 OK", snapshot.clone(), false)
+                }
+            } else if path.starts_with("/coven/timestamp") {
+                ("200 OK", timestamp.clone(), false)
+            } else if path.starts_with("/coven/rootpub") {
+                root_requests += 1;
+                if !fail_snapshot && root_requests == 2 {
+                    ("503 Service Unavailable", "root key unavailable".to_string(), true)
+                } else {
+                    ("200 OK", rootpub.clone(), false)
+                }
+            } else {
+                panic!("unexpected trust metadata request: {path}");
+            };
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            if done {
+                return;
+            }
+        }
+    });
+    (addr, server)
+}
+
 /// BUG-567: malformed registry data is not an empty registry. Version
 /// resolution must preserve that distinction through its typed boundary and
 /// stop before any record or source request.
@@ -1162,6 +1229,61 @@ fn pm_update_preserves_malformed_versions_error() {
     );
     mirror.join().unwrap();
     std::fs::remove_dir_all(app).unwrap();
+}
+
+/// BUG-571: transient metadata failures during lock regeneration must preserve
+/// both trust pins. A missing snapshot is not "no TUF", and a failed root-key
+/// refetch is not an instruction to write a lock without its TOFU anchor.
+#[test]
+fn pm_update_preserves_lock_when_trust_pin_fetches_fail() {
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "pin-fetch");
+    let app = fe.new_app();
+    fe.published_lib("acme/pinned", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
+    let add = fe.pm(&app, &["add", "acme/pinned"], None);
+    assert!(add.status.success(), "initial add failed: {}\n{}", stdout(&add), stderr(&add));
+
+    let original_lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
+    assert!(
+        original_lock.contains("registry_snapshot_version") && original_lock.contains("registry_rootpub"),
+        "initial lock must carry both trust pins: {original_lock}"
+    );
+
+    let registry = format!("127.0.0.1:{}", server.port);
+    let (status, versions) = http_get(&registry, "/coven/versions?name=acme/pinned");
+    assert_eq!(status, 200);
+    let (status, snapshot) = http_get(&registry, "/coven/snapshot");
+    assert_eq!(status, 200);
+    let (status, timestamp) = http_get(&registry, "/coven/timestamp");
+    assert_eq!(status, 200);
+    let rootpub = server.rootpub();
+
+    for fail_snapshot in [true, false] {
+        let (mirror_addr, mirror) = trust_pin_failure_mirror(
+            versions.clone(),
+            snapshot.clone(),
+            timestamp.clone(),
+            rootpub.clone(),
+            fail_snapshot,
+        );
+        let out = Command::new(BIN)
+            .current_dir(&app)
+            .env("COVEN_URL", format!("http://{mirror_addr}"))
+            .env("WITCHY_COOLDOWN_SECS", "0")
+            .args(["pm", "update"])
+            .output()
+            .expect("spawn witchy pm update");
+        assert!(!out.status.success(), "missing trust metadata must fail update");
+        let output = format!("{}{}", stdout(&out), stderr(&out));
+        let expected = if fail_snapshot { "snapshot is unavailable" } else { "root key is unavailable" };
+        assert!(output.contains(expected), "expected `{expected}` diagnostic, got: {output}");
+        assert_eq!(
+            std::fs::read_to_string(app.join("witchy.lock")).unwrap(),
+            original_lock,
+            "failed trust-pin fetch must preserve the existing lock"
+        );
+        mirror.join().unwrap();
+    }
 }
 
 /// Promotion enforces separation of duties: the promoter must be a DISTINCT human

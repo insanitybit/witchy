@@ -8,7 +8,7 @@ tracking: >
   Error, and ? accepts/lowers Result(_, Ein) -> Result(_, Eout) through an
   ordinary From(Ein) for Eout impl. std/json and std/toml now expose typed
   decode-error values; std/crypto, std/webauthn, and std/jwt expose typed
-  trust-boundary verification errors; the package manager's TUF pinning,
+  trust-boundary verification errors; the package manager's TUF/TOFU pinning,
   verified registry-record footprint, strict vendored-record lock projection,
   lock snapshot-pin, registry version-response/resolution/update-consumption,
   and compiler-footprint consumption gates use typed errors internally, and
@@ -248,6 +248,9 @@ The package manager's TUF pinning boundary is also typed internally:
 checking the registry root key, timestamp/snapshot signatures, role schemas,
 snapshot hash binding, and version agreement. CLI-facing code still renders
 the existing messages before refusing to write unverified trust metadata.
+Snapshot and root-key fetch failures are typed too: lock regeneration obtains
+both trust lines as one `lock_trust_pins` result, so a transient failure cannot
+rewrite the lock with its rollback floor or TOFU anchor omitted.
 The PM widening gate's verified registry-record footprint boundary now also
 uses a local `RecordFootprintError` covering root-key mismatch, missing record,
 bad signature, coordinate mismatch, malformed JSON, missing/non-array

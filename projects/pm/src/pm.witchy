@@ -1856,12 +1856,12 @@ fn update_vendored(console: Console, net: Net, root: Dir, host: String, port: In
         console.print("BLOCK: an update failed to resolve, fetch, or verify — leaving witchy.lock and the pinned registry key untouched")
         1
     else:
-        match snapshot_pin(net, root, host, port):
+        match lock_trust_pins(net, root, host, port):
             Err(e) ->
                 console.print("BLOCK: cannot pin registry metadata — ${tuf_error_message(e)}")
                 2
-            Ok(snapline) ->
-                match vendor_lock(root, snapline + rootpub_pin(net, host, port)):
+            Ok(pins) ->
+                match vendor_lock(root, pins):
                     Err(e) ->
                         console.print("BLOCK: cannot regenerate witchy.lock — ${vendored_record_error_message(e)}")
                         2
@@ -2183,12 +2183,12 @@ fn split_spec(spec: String) -> (String, String):
 // source and `verify`/`gate` can re-check it. Idempotently rewrites the lock from
 // every currently-vendored rune so repeated `add`s accumulate, not clobber.
 fn pin_lock(console: Console, net: Net, root: Dir, host: String, port: Int, name: String) -> Int:
-    match snapshot_pin(net, root, host, port):
+    match lock_trust_pins(net, root, host, port):
         Err(e) ->
             console.print("BLOCK: cannot pin registry metadata for ${basename(name)} — ${tuf_error_message(e)}")
             2
-        Ok(snapline) ->
-            match vendor_lock(root, snapline + rootpub_pin(net, host, port)):
+        Ok(pins) ->
+            match vendor_lock(root, pins):
                 Err(e) ->
                     console.print("BLOCK: cannot regenerate witchy.lock — ${vendored_record_error_message(e)}")
                     2
@@ -2202,6 +2202,8 @@ fn pin_lock(console: Console, net: Net, root: Dir, host: String, port: Int, name
 // schemas, content hash binding, and role version agreement.
 type TufError:
     RootKeyMismatch
+    RootKeyUnavailable(Int)
+    SnapshotUnavailable(Int)
     SnapshotWithoutTimestamp
     TimestampBadSignature
     SnapshotBadSignature
@@ -2213,6 +2215,8 @@ type TufError:
 fn tuf_error_message(e: TufError) -> String:
     match e:
         RootKeyMismatch -> "registry root key does not match the key pinned in witchy.lock (possible MITM / hostile mirror)"
+        RootKeyUnavailable(status) -> "registry root key is unavailable (HTTP ${status})"
+        SnapshotUnavailable(status) -> "registry snapshot is unavailable (HTTP ${status})"
         SnapshotWithoutTimestamp -> "registry served a snapshot but no timestamp role — cannot verify the TUF chain"
         TimestampBadSignature -> "the timestamp role is not validly signed by the registry root key"
         SnapshotBadSignature -> "the snapshot role is not validly signed by the registry root key"
@@ -2231,20 +2235,27 @@ impl From(TufError) for String:
     fn from(value: TufError) -> Self:
         tuf_error_message(value)
 
+// Fetch and verify every trust line before lock serialization. A partial metadata
+// fetch must never rewrite the lock with an existing trust anchor omitted (BUG-571).
+fn lock_trust_pins(net: Net, root: Dir, host: String, port: Int) -> Result(String, TufError):
+    let snapshot = snapshot_pin(net, root, host, port)?
+    let rootpub = rootpub_pin(net, host, port)?
+    Ok(snapshot + rootpub)
+
 // The `registry_snapshot_version = N` top-level line pinning the registry's current
 // TUF snapshot version into the lock — the rollback baseline `verify` enforces.
 // BUG-233: the version is pinned ONLY from a VERIFIED snapshot role — the snapshot
 // and timestamp must be validly signed by the registry root key (bound to any key
 // already pinned in the lock), structurally well-formed, hash-bound, and in version
 // agreement — so a malformed/unsigned/split response cannot under- or over-pin the
-// rollback floor. `Ok("")` when the registry serves no snapshot (nothing to pin);
-// `Err` aborts the add/update rather than writing an unverified pin.
+// rollback floor. An unavailable snapshot is an error: treating it as "nothing to
+// pin" would erase an existing rollback floor during lock regeneration.
 fn snapshot_pin(net: Net, root: Dir, host: String, port: Int) -> Result(String, TufError):
     let snap_resp = http.get(net, host, port, "/coven/snapshot")
     if http.status(snap_resp) != 200:
-        Ok("")
+        Err(SnapshotUnavailable(http.status(snap_resp)))
     else:
-        let rootpub = http.body(http.get(net, host, port, "/coven/rootpub"))
+        let rootpub = fetch_registry_rootpub(net, host, port)?
         let pinned_pub = if root.exists("witchy.lock"): pinned_rootpub(root.read("witchy.lock")) else: ""
         if pinned_pub != "" && pinned_pub != rootpub:
             Err(RootKeyMismatch)
@@ -2277,15 +2288,20 @@ fn verified_snapshot_line(rootpub: String, snap_env: String, ts_env: String) -> 
 
 // The `registry_rootpub = "<hex>"` line pinning the registry's Ed25519 root public key
 // into the lock (trust-on-first-use). `verify` re-fetches the key and refuses a chain
-// rooted in a different one, so a hostile mirror / MITM cannot swap the root key. Empty
-// when the registry serves no key. (SEC-002)
+// rooted in a different one, so a hostile mirror / MITM cannot swap the root key.
+// A missing key is an error: returning an empty line would silently remove an
+// existing TOFU trust anchor from a regenerated lock. (SEC-002 / BUG-571)
 // idiom-exempt: this produces an exact TOML line for the lockfile serializer.
-fn rootpub_pin(net: Net, host: String, port: Int) -> String:
+fn rootpub_pin(net: Net, host: String, port: Int) -> Result(String, TufError):
+    let rootpub = fetch_registry_rootpub(net, host, port)?
+    Ok("registry_rootpub = \"" + rootpub + "\"\n")
+
+fn fetch_registry_rootpub(net: Net, host: String, port: Int) -> Result(String, TufError):
     let resp = http.get(net, host, port, "/coven/rootpub")
     if http.status(resp) != 200:
-        ""
+        Err(RootKeyUnavailable(http.status(resp)))
     else:
-        "registry_rootpub = \"" + http.body(resp) + "\"\n"
+        Ok(http.body(resp))
 
 // The lockfile text generated from the vendored tree: one `[[rune]]` block per
 // vendored rune (those carrying a coven.json), pinning name/version/hash from the
