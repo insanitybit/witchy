@@ -9,9 +9,10 @@ tracking: >
   ordinary From(Ein) for Eout impl. std/json and std/toml now expose typed
   decode-error values; std/crypto, std/webauthn, and std/jwt expose typed
   trust-boundary verification errors; the package manager's TUF pinning,
-  verified registry-record footprint, lock snapshot-pin, strict registry
-  version-response/resolution/update-consumption, and compiler-footprint
-  consumption gates use typed errors internally, and Coven maintainer-policy
+  verified registry-record footprint, strict vendored-record lock projection,
+  lock snapshot-pin, registry version-response/resolution/update-consumption,
+  and compiler-footprint consumption gates use typed errors internally, and
+  Coven maintainer-policy
   state, stored-record parsing, source-footprint recomputation, and
   trusted-publishing token verification have typed corruption/authentication
   errors. All convert to String through From at existing application
@@ -268,7 +269,11 @@ presentation projection. The PM offline vendored-record
 verification path now returns a local `RecordVerifyError`, keeping malformed
 `coven.json`, malformed signed payload shape, malformed verifier input, and bad
 signatures distinct until `verify-rune` / `verify-vendor` render their existing
-BLOCK diagnostics. PM source fetches now decode the `/coven/source` response
+BLOCK diagnostics. Update, existing-rune deduplication, and lock regeneration
+also consume local `coven.json` through `VendoredRecordError`: required identity,
+state, hash, version, and footprint fields cannot default to empty values, and
+the existing lock is preserved unless every vendored record parses. PM source
+fetches now decode the `/coven/source` response
 through a local `SourceResponseError`, so malformed JSON, missing/wrong-shaped
 `files`, and malformed file entries fail before source hashing or vendoring.
 PM consumption of `compiler.footprint` / `compiler.diff` now uses a local

@@ -1134,7 +1134,7 @@ fn pm_update_preserves_malformed_versions_error() {
     std::fs::write(app.join("src/app.witchy"), "fn main(console: Console):\n    console.print(\"app\")\n").unwrap();
     std::fs::write(
         app.join("vendor/bad/coven.json"),
-        r#"{"name":"acme/bad","version":"1.0.0","runtime_footprint":[]}"#,
+        r#"{"name":"acme/bad","version":"1.0.0","state":"released","hash":"sha256:test","runtime_footprint":[]}"#,
     )
     .unwrap();
     let original_lock = "registry_snapshot_version = 7\nrootpub = \"pinned\"\n";
@@ -1573,13 +1573,14 @@ fn signature_detects_registry_metadata_tampering() {
 }
 
 #[test]
-fn verify_rune_rejects_malformed_coven_json() {
+fn malformed_vendored_record_blocks_verify_update_and_lock_regeneration() {
     let server = RegistryServer::start();
     let fe = FrontEnd::new(&server, "badrecord");
     let app = fe.new_app();
     fe.published_lib("acme/broken", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
     let out = fe.pm(&app, &["add", "acme/broken"], None);
     assert!(out.status.success(), "add failed: {}", stderr(&out));
+    let original_lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
 
     let meta = app.join("vendor/broken/coven.json");
     std::fs::write(&meta, "{").unwrap();
@@ -1587,6 +1588,34 @@ fn verify_rune_rejects_malformed_coven_json() {
     let out = fe.pm(&app, &["verify-rune", "vendor/broken", &server.rootpub()], None);
     assert!(!out.status.success(), "malformed coven.json must fail verify");
     assert!(stdout(&out).contains("not validly signed"), "verify-rune: {}", stdout(&out));
+
+    let out = fe.pm(&app, &["update"], None);
+    assert!(!out.status.success(), "malformed coven.json must fail update");
+    assert!(
+        stdout(&out).contains("vendored coven.json is not valid JSON"),
+        "update must preserve the vendored-record parse error: {}",
+        stdout(&out)
+    );
+    assert_eq!(
+        std::fs::read_to_string(app.join("witchy.lock")).unwrap(),
+        original_lock,
+        "failed update must preserve the existing lock"
+    );
+
+    fe.published_lib("acme/fresh", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
+    let out = fe.pm(&app, &["add", "acme/fresh"], None);
+    assert!(!out.status.success(), "a corrupt existing record must block lock regeneration");
+    assert!(
+        stdout(&out).contains("cannot regenerate witchy.lock")
+            && stdout(&out).contains("vendored coven.json is not valid JSON"),
+        "add must report the exact corrupt lock input: {}",
+        stdout(&out)
+    );
+    assert_eq!(
+        std::fs::read_to_string(app.join("witchy.lock")).unwrap(),
+        original_lock,
+        "failed lock regeneration must preserve the existing lock"
+    );
 }
 
 #[test]

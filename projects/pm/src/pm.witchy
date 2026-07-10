@@ -1861,9 +1861,14 @@ fn update_vendored(console: Console, net: Net, root: Dir, host: String, port: In
                 console.print("BLOCK: cannot pin registry metadata — ${tuf_error_message(e)}")
                 2
             Ok(snapline) ->
-                root.write("witchy.lock", vendor_lock(root, snapline + rootpub_pin(net, host, port)))
-                console.print("updated ${changed} dependencies -> witchy.lock")
-                0
+                match vendor_lock(root, snapline + rootpub_pin(net, host, port)):
+                    Err(e) ->
+                        console.print("BLOCK: cannot regenerate witchy.lock — ${vendored_record_error_message(e)}")
+                        2
+                    Ok(lock) ->
+                        root.write("witchy.lock", lock)
+                        console.print("updated ${changed} dependencies -> witchy.lock")
+                        0
 
 // Re-fetch one vendored rune if the registry has a newer eligible version than the
 // one currently vendored. Returns (changed, blocked, failed): `changed` is 1 if it
@@ -1876,9 +1881,13 @@ fn update_one(console: Console, net: Net, root: Dir, host: String, port: Int, en
     if !root.exists(join_path(rune_dir, "coven.json")):
         (0, false, false)
     else:
-        let record = root.read(join_path(rune_dir, "coven.json"))
-        let fullname = recorded_field(record, "name")
-        let current = recorded_field(record, "version")
+        let vendored = match parse_vendored_record(root.read(join_path(rune_dir, "coven.json"))):
+            Err(e) ->
+                console.print("BLOCK: cannot update `${entry}` — ${vendored_record_error_message(e)}")
+                return (0, false, true)
+            Ok(record) -> record
+        let fullname = vendored.name
+        let current = vendored.version
         let req = dep_req(manifest, fullname, entry)
         match resolve_version(net, host, port, fullname, req, cooldown):
             // Cooling and no-match mean there is no eligible update today. Every
@@ -1893,7 +1902,7 @@ fn update_one(console: Console, net: Net, root: Dir, host: String, port: Int, en
                 if string.is_empty(latest) || latest == current:
                     (0, false, false)
                 else:
-                    gated_refetch(console, net, root, host, port, fullname, current, latest, record, allowed, cooldown)
+                    gated_refetch(console, net, root, host, port, fullname, current, latest, vendored.runtime_footprint, allowed, cooldown)
 
 // The version requirement the consumer's manifest declares for a vendored dep,
 // matched by full registry identity or basename alias; `*` (latest) when the
@@ -1911,8 +1920,8 @@ fn dep_req(manifest: String, fullname: String, alias: String) -> String:
 // signed registry record) against the vendored baseline ∪ the consented caps. Any
 // capability the baseline doesn't already admit is a widening of authority — BLOCK.
 // Only on a clean (non-widening) upgrade do we re-fetch.
-fn gated_refetch(console: Console, net: Net, root: Dir, host: String, port: Int, fullname: String, current: String, latest: String, baseline_record: String, allowed: List(String), cooldown: (Int, Int, Bool)) -> (Int, Bool, Bool):
-    let baseline = union_all(recorded_footprint(baseline_record), allowed)
+fn gated_refetch(console: Console, net: Net, root: Dir, host: String, port: Int, fullname: String, current: String, latest: String, baseline_footprint: List(String), allowed: List(String), cooldown: (Int, Int, Bool)) -> (Int, Bool, Bool):
+    let baseline = union_all(baseline_footprint, allowed)
     // BUG-232: the widening gate must diff against a VERIFIED footprint, not a raw
     // `/coven/record` body. A hostile mirror could otherwise serve an under-declared
     // (or wrong-coordinate) record to sneak the gate, then serve matching malicious
@@ -2010,16 +2019,6 @@ fn strict_strings(items: List(Json)) -> Result(List(String), RecordFootprintErro
             Some(s) ->
                 out.push(s)
     Ok(out)
-
-// The `runtime_footprint` array of a signed coven record (JSON), as capability
-// strings; `[]` for a malformed/absent field. Used only where an empty result is
-// FAIL-SAFE — the widening baseline (a smaller baseline blocks more) and lockfile
-// re-serialization of an already-vendored record. The verified widening input uses
-// `strict_footprint` instead (BUG-499).
-fn recorded_footprint(record: String) -> List(String):
-    match json.decode(record):
-        Ok(doc) -> json.get_strings(doc, "runtime_footprint")
-        Err(_e) -> []
 
 // Returns (changed, blocked, failed). BUG-091: after a clean re-fetch, recurse into
 // the new version's OWN dependency closure (`add_deps`), so a release that GAINED a
@@ -2189,9 +2188,14 @@ fn pin_lock(console: Console, net: Net, root: Dir, host: String, port: Int, name
             console.print("BLOCK: cannot pin registry metadata for ${basename(name)} — ${tuf_error_message(e)}")
             2
         Ok(snapline) ->
-            root.write("witchy.lock", vendor_lock(root, snapline + rootpub_pin(net, host, port)))
-            console.print("locked ${basename(name)} -> witchy.lock")
-            0
+            match vendor_lock(root, snapline + rootpub_pin(net, host, port)):
+                Err(e) ->
+                    console.print("BLOCK: cannot regenerate witchy.lock — ${vendored_record_error_message(e)}")
+                    2
+                Ok(lock) ->
+                    root.write("witchy.lock", lock)
+                    console.print("locked ${basename(name)} -> witchy.lock")
+                    0
 
 // Matchable failures from the TUF pinning gate. `add`/`update` only write a
 // registry_snapshot_version lock pin after this boundary verifies signatures,
@@ -2288,27 +2292,113 @@ fn rootpub_pin(net: Net, host: String, port: Int) -> String:
 // signed record kept beside the source. `snapshot_line` is the TUF snapshot pin
 // (a top-level key, emitted BEFORE any `[[rune]]` array-table per TOML rules).
 // idiom-exempt: concatenation in this section is canonical lockfile serialization.
-fn vendor_lock(root: Dir, snapshot_line: String) -> String:
+fn vendor_lock(root: Dir, snapshot_line: String) -> Result(String, VendoredRecordError):
     var out = "# witchy.lock — generated by `pm add`. Pins every vendored dependency\n# by content hash. Regenerate with `pm add`. Do not edit by hand.\n" + snapshot_line
     if root.exists("vendor"):
         for entry in root.subtree("vendor").list():
             let rune_dir = join_path("vendor", entry)
             if root.exists(join_path(rune_dir, "coven.json")):
-                out = out + vendor_lock_entry(root, entry, rune_dir)
-    out
+                match vendor_lock_entry(root, entry, rune_dir):
+                    Err(e) -> return Err(e)
+                    Ok(lock_entry) -> out = out + lock_entry
+    Ok(out)
 
 // `name` is the vendor directory basename (the local import alias); the signed
 // record carries the FULL registry package identity (e.g. `acme/http`). BUG-099:
 // the lock `name` is the registry identity from the signed record, and `alias`
 // records the basename import key separately — the two are no longer collapsed.
-fn vendor_lock_entry(root: Dir, name: String, rune_dir: String) -> String:
-    let record = root.read(join_path(rune_dir, "coven.json"))
-    let full = recorded_field(record, "name")
-    let ident = if string.is_empty(full): name else: full
-    let version = recorded_field(record, "version")
-    let hash = recorded_field(record, "hash")
-    let fp = footprint_toml(recorded_footprint(record))
-    "\n[[rune]]\nname = \"" + ident + "\"\nalias = \"" + name + "\"\nversion = \"" + version + "\"\nsource = \"coven\"\nhash = \"" + hash + "\"\nruntime_footprint = [" + fp + "]\n"
+fn vendor_lock_entry(root: Dir, alias: String, rune_dir: String) -> Result(String, VendoredRecordError):
+    let record = parse_vendored_record(root.read(join_path(rune_dir, "coven.json")))?
+    let fp = footprint_toml(record.runtime_footprint)
+    Ok("\n[[rune]]\nname = \"" + record.name + "\"\nalias = \"" + alias + "\"\nversion = \"" + record.version + "\"\nsource = \"coven\"\nhash = \"" + record.hash + "\"\nruntime_footprint = [" + fp + "]\n")
+
+// The strict subset of a signed coven record needed by update and lock
+// regeneration. Local vendor metadata is trust state: malformed fields are an
+// error, never empty identity/hash/authority defaults (BUG-570).
+type VendoredRecord:
+    name: String
+    version: String
+    state: String
+    hash: String
+    runtime_footprint: List(String)
+
+type VendoredRecordError:
+    VendoredRecordInvalidJson(String)
+    VendoredRecordMissingString(String)
+    VendoredRecordEmptyString(String)
+    VendoredRecordInvalidVersion(String)
+    VendoredRecordInvalidState(String)
+    VendoredRecordInvalidHash(String)
+    VendoredRecordMissingFootprint
+    VendoredRecordFootprintNotArray
+    VendoredRecordFootprintNonString
+
+fn vendored_record_error_message(e: VendoredRecordError) -> String:
+    match e:
+        VendoredRecordInvalidJson(reason) -> "vendored coven.json is not valid JSON: ${reason}"
+        VendoredRecordMissingString(field) -> "vendored coven.json has no string `${field}` field"
+        VendoredRecordEmptyString(field) -> "vendored coven.json has an empty `${field}` field"
+        VendoredRecordInvalidVersion(version) -> "vendored coven.json has noncanonical version `${version}`"
+        VendoredRecordInvalidState(state) -> "vendored coven.json has non-released state `${state}`"
+        VendoredRecordInvalidHash(hash) -> "vendored coven.json has malformed content hash `${hash}`"
+        VendoredRecordMissingFootprint -> "vendored coven.json has no `runtime_footprint` field"
+        VendoredRecordFootprintNotArray -> "vendored coven.json `runtime_footprint` is not an array"
+        VendoredRecordFootprintNonString -> "vendored coven.json `runtime_footprint` contains a non-string value"
+
+impl Show for VendoredRecordError:
+    fn show(self) -> String:
+        vendored_record_error_message(self)
+
+impl Error for VendoredRecordError
+
+impl From(VendoredRecordError) for String:
+    fn from(value: VendoredRecordError) -> Self:
+        vendored_record_error_message(value)
+
+fn parse_vendored_record(text: String) -> Result(VendoredRecord, VendoredRecordError):
+    match json.decode(text):
+        Err(e) -> Err(VendoredRecordInvalidJson(json.decode_error_message(e)))
+        Ok(doc) ->
+            let name = required_vendored_string(doc, "name")?
+            let version = required_vendored_string(doc, "version")?
+            let state = required_vendored_string(doc, "state")?
+            let hash = required_vendored_string(doc, "hash")?
+            let runtime_footprint = required_vendored_footprint(doc)?
+            match canonical_version(version):
+                None -> Err(VendoredRecordInvalidVersion(version))
+                Some(_parsed) ->
+                    if state != "released":
+                        Err(VendoredRecordInvalidState(state))
+                    else if !string.starts_with(hash, "sha256:"):
+                        Err(VendoredRecordInvalidHash(hash))
+                    else:
+                        Ok(VendoredRecord(name, version, state, hash, runtime_footprint))
+
+fn required_vendored_string(doc: Json, field: String) -> Result(String, VendoredRecordError):
+    match json.get_string(doc, field):
+        None -> Err(VendoredRecordMissingString(field))
+        Some(value) ->
+            if string.is_empty(value):
+                Err(VendoredRecordEmptyString(field))
+            else:
+                Ok(value)
+
+fn required_vendored_footprint(doc: Json) -> Result(List(String), VendoredRecordError):
+    match json.get(doc, "runtime_footprint"):
+        None -> Err(VendoredRecordMissingFootprint)
+        Some(field) ->
+            match json.as_array(field):
+                None -> Err(VendoredRecordFootprintNotArray)
+                Some(items) -> vendored_footprint_strings(items)
+
+fn vendored_footprint_strings(items: List(Json)) -> Result(List(String), VendoredRecordError):
+    var out = []
+    for item in items:
+        let value = match json.as_string(item):
+            None -> return Err(VendoredRecordFootprintNonString)
+            Some(value) -> value
+        out.push(value)
+    Ok(out)
 
 fn recorded_field(record: String, key: String) -> String:
     match json.decode(record):
@@ -2323,12 +2413,16 @@ fn recorded_field(record: String, key: String) -> String:
 fn add_rune(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, req: String, dest: String, cooldown: (Int, Int, Bool), allowed: List(String)) -> Int:
     let vendored = join_path(dest, basename(name))
     if root.exists(join_path(vendored, "coven.json")):
-        let existing = recorded_field(root.read(join_path(vendored, "coven.json")), "name")
-        if !string.is_empty(existing) && existing != name:
-            console.print("BLOCK: module name collision — `${name}` and `${existing}` both vendor to `${vendored}` (same basename `${basename(name)}`)")
-            2
-        else:
-            0
+        match parse_vendored_record(root.read(join_path(vendored, "coven.json"))):
+            Err(e) ->
+                console.print("BLOCK: cannot reuse `${vendored}` — ${vendored_record_error_message(e)}")
+                2
+            Ok(existing) ->
+                if existing.name != name:
+                    console.print("BLOCK: module name collision — `${name}` and `${existing.name}` both vendor to `${vendored}` (same basename `${basename(name)}`)")
+                    2
+                else:
+                    0
     else:
         match resolve_version(net, host, port, name, req, cooldown):
             Ok(chosen) -> fetch_then_deps(console, net, root, host, port, name, chosen, dest, cooldown, allowed)
