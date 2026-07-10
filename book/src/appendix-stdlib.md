@@ -24,7 +24,9 @@ always current — is
 | `set` | the `Set(a)` type — distinct values, `union`/`intersection`/`difference`, `for x in set` iteration, and `let s: Set(Int) = iter.collect(it)` (its `FromIterator` is a conditional impl `where a: Eq`). Render a set with `"${s}"` interpolation or `show.say(console, s)` — both work identically on both backends and honor the elements' `Show`. |
 | `string` *(prelude)* | `split`, `lines`, `join`, `trim`, case, search, … |
 | `path` | path-*string* manipulation (join, normalize, base/dir/ext) — pure; the `Dir`-using half lives in `fs` |
+| `bytes` | the `Bytes` type — `from_string`/`to_string_lossy`, `from_list`, `length`, slicing; the binary counterpart to `String` |
 | `iter` | lazy iterator combinators (`take`, `collect`, …) |
+| `func` | function combinators — `identity`, `compose`, `flip`, `constant`, `on_key`, `first`/`second` |
 | `option` / `result` *(prelude)* | helpers for `Option` / `Result` |
 
 Ordering-aware functions (`list.sort_by`, `list.min_by`, …) take a *less-than
@@ -55,6 +57,8 @@ to_ms` finds `duration.to_milliseconds`.
 | `time` / `duration` | civil UTC date-times: `parse_iso8601`, `iso8601`, strftime-style `format`, validated `civil(...)`; `Duration` helpers |
 | `semver` | version parsing and comparison |
 | `cmp` / `show` *(show is prelude)* | the comparison hierarchy (`PartialEq`/`Eq`/`PartialOrd`/`Ord`, backing `== != < > <= >=`) and display trait; scalar comparison helpers live in `cmp`, collection algorithms live in `list` |
+| `convert` / `error` | the `From`/`Into` conversion traits (`(5).into()`, `T.from(x)`) and the `Error` trait bound |
+| `reflect` / `meta` | runtime reflection (`reflect(x)` → the `Mirror` tree, `derive(Reflect)`) and compile-time type introspection — see the [Reflection](tour-reflection.md) and [comptime](tour-comptime.md) chapters |
 | `ascii` | ASCII classification |
 
 ## Concurrency
@@ -65,7 +69,9 @@ to_ms` finds `duration.to_milliseconds`.
 | `task` | the core task combinators `chan` builds on — `spawn`, `join`, `cancel` — over a pure-witchy deterministic executor |
 | `future` | `Future(a)` and the `await` surface |
 
-`vm` (multi-core) is capability-gated — see below.
+`vm` runs capture-free work across isolated worker cores (`vm.par_map`); its
+`with_dir` / `serve` entry points thread a `Dir` / `Net` through to the workers.
+See the [Multi-Core](tour-vm.md) chapter.
 
 ## Capability-gated modules
 
@@ -75,8 +81,28 @@ These do real I/O, so their functions take capabilities:
 |---|---|
 | `fs` | `Dir` |
 | `http` / `server` | `Net` |
+| `exec` | `Exec` — spawn a native subprocess (`exec.run`); the sharpest authority |
 | `crypto` | hashing, verification; signing needs a `Secret` |
+| `secretstore` | `SecretStore` — fetch a named host secret (`get`/`require`); reveal with `crypto` |
 | `show` | the `Show` trait (with blanket impls for the built-in containers) is pure; `say` (the Show-accepting `print`) takes a `Console`. `"${x}"` interpolation renders through `Show` too |
+
+## Authentication and web identity
+
+Pure-witchy implementations of the standard web-auth protocols, built over
+`crypto` / `http` / `json` — the machinery behind the coven registry's trusted
+publishing and social login.
+
+| Module | What it gives you |
+|---|---|
+| `jwt` | verify a compact JWS / JWT (the OIDC identity-token shape), RS256 over `crypto` |
+| `oauth` | the OAuth 2.0 Authorization Code flow — "Log in with GitHub / Google" |
+| `webauthn` | server-side verification of a WebAuthn assertion (passkey login) |
+
+## Testing
+
+| Module | What it gives you |
+|---|---|
+| `testing` | the assertions behind `witchy test` (`assert`, `assert_eq`, `assert_value_eq`, …) — see the [Testing](testing.md) chapter |
 
 ## Build-time intrinsics
 

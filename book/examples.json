@@ -1469,6 +1469,22 @@
       "Console"
     ],
     "output": [
+      "a few",
+      "several",
+      "many",
+      "lots"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 8,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-data.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
       "clamped to 100"
     ],
     "runnable": true
@@ -1668,6 +1684,21 @@
   },
   {
     "block": 7,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-functions.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "3",
+      "2",
+      "1"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 8,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-functions.md",

@@ -175,6 +175,24 @@ fn main(console: Console):
 one is a compile error. Ranges are never materialized into a list — `for n in
 0..1000000` allocates nothing.
 
+`while let PATTERN = expr:` loops as long as the value keeps matching, binding
+the pattern each turn and stopping the first time it doesn't — the loop form of
+`if let`. It's the natural way to drain something that hands back an `Option`:
+
+```witchy
+fn main(console: Console):
+    var stack = [1, 2, 3]
+    while let Some(x) = list.last(stack):
+        console.print("${x}")
+        stack = list.drop_last(stack)
+```
+
+```text
+3
+2
+1
+```
+
 A `var` collection updates in place by subscript or field — `xs[i] = v`,
 `d[k] = v`, `acct.balance = b` (and compound forms like `xs[i] += v` / `d[k] += v`). It's shorthand for
 the value update (`xs.set_at(i, v)`), so witchy's value semantics hold while

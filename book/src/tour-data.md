@@ -221,6 +221,37 @@ knows the guard might not hold, so it still expects the cases below it. Aim a
 `match` at a value with an unhandled variant and witchy won't compile it; that's
 the feature, not an annoyance.
 
+An arm can match **several values at once** with an or-pattern (`a | b | c`), or
+a **range** with `lo..hi` (half-open) or `lo..=hi` (inclusive):
+
+```witchy
+fn size(n: Int) -> String:
+    match n:
+        0 -> "none"
+        1 | 2 | 3 -> "a few"
+        4..10 -> "several"
+        10..=100 -> "many"
+        _ -> "lots"
+
+fn main(console: Console):
+    console.print(size(2))
+    console.print(size(7))
+    console.print(size(50))
+    console.print(size(1000))
+```
+
+```text
+a few
+several
+many
+lots
+```
+
+Or-patterns nest anywhere a pattern is allowed (`Some(1 | 2)`), and every
+alternative must bind the same names with the same types. Range and or-patterns
+are refutable — they can fail to match — so a `match` over them still needs a
+final `_` (or exhaustive coverage) to compile.
+
 An arm's body is usually an expression, but a single statement works inline
 too — `0 -> return Err("zero")` to bail out of the enclosing function, or
 `Some(v) -> total = total + v` to update a `var`. For more than one statement,
