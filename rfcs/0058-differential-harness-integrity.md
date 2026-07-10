@@ -65,9 +65,12 @@ hard failure if > X% of a run traps before its first observable effect.
 unexpected-error. The sweep and the fuzzer branch on the code, never on a substring; any
 `unexpected-error` fails the gate. `|| true` is banned in gate scripts.
 
-### 3. Value comparison across traps
-A both-error outcome compares the **pre-trap output prefix and the failure point**, not just
-"both errored." Two backends that print different lines and *then* both trap is a DIVERGE.
+### 3. Exact failure comparison
+A both-error outcome compares the **complete failure diagnostic byte-for-byte**, not just
+"both errored." A different abort class, dynamic value, lexical function, source line, bare
+Wasm trap, or backend-specific host refusal is a DIVERGE. The current run APIs do not retain
+pre-trap output after returning `Err`; exposing that prefix is a separate harness extension,
+not a reason to accept unequal failures now.
 
 ### 4. Vacuity guards + positive controls
 Every sweep asserts a **minimum compared count** (files discovered, programs run, lines
@@ -115,9 +118,10 @@ ci.yml; BUG-003's fuzzer counting both-trap as Agree (the guard is satisfiable b
 a corpus of 100%-trapping programs); per-config outcome invisibility (:565-575);
 identity-satisfiable sort laws. Two overstatements: partial vacuity guards DO
 exist (NLAWS, the grammar-coverage bitmask); and §3 half-exists for routed aborts
-via RFC-0045 abort-core matching — the genuinely missing piece (the pre-trap
-output prefix) requires API changes to both run harnesses (`Err(String)` carries
-no partial lines).
+via RFC-0045's then-current core-only matching. The pre-trap output prefix still requires API
+changes to both run harnesses (`Err(String)` carries no partial lines); the
+2026-07-10 RFC-0045 strict completion instead makes the complete error string,
+including source location, exact for every both-error result.
 
 **Required revisions before implementing.** (a) Specify the positive-control
 mechanism — a genuinely-divergent fixture can't live in-repo; it needs an

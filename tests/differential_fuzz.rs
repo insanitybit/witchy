@@ -7,8 +7,9 @@
 //! across the i64 range to push allocations toward page boundaries.
 //!
 //! `witchy parity <file>` is the oracle: it runs both backends and prints `DIVERGE` on a real
-//! mismatch (incl. interp-ok / compiled-trap), `agree (both error)` when both reject (so we
-//! need not avoid runtime traps), and a plain exit-1 for a compile error. A compile miss is
+//! mismatch (incl. interp-ok / compiled-trap), `agree (both error)` when both
+//! reject with the same diagnostic (so we need not avoid runtime traps), and an
+//! `unexpected-error` exit for a compile error. A compile miss is
 //! tolerated only when `witchy check` rejects the same generated source; if `check` accepts it,
 //! every optimizer config must reach both backends. A crash (terminated by signal) means the
 //! host itself died — also a bug.

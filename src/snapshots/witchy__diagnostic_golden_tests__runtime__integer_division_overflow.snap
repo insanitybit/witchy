@@ -1,0 +1,6 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "trap_pair(\"fn main(console: Console):\\n    let min = (0 - 9223372036854775807) - 1\\n    console.print(__render(min / (0 - 1)))\\n\")"
+---
+interp: runtime error: `main`, line 3: integer overflow in `/`
+wasm:   runtime error: `main`, line 3: integer overflow in `/`

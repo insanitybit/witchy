@@ -305,32 +305,35 @@ capability rune is refused with a `LinkError`.
 ## Runtime aborts (RFC-0045)
 
 Every runtime abort on the compiled backend — an out-of-bounds `list`/`bytes`
-index, `string.to_int` on junk or overflow, ordering a `NaN`, or a user
-`fail(msg)` — carries the interpreter's exact message out before it traps, so the
-two backends agree on the abort *text*, not merely on the fact of erroring.
+index, `string.to_int` on junk or overflow, integer division/modulo failure,
+ordering a `NaN`, or a user `fail(msg)` — carries the interpreter's complete
+diagnostic out before it traps. The two backends agree on function, line, and
+message, not merely on the fact of erroring.
 
 - **`__witchy_abort(template, a, b, str_ptr)` is always linked** and grants no
-  authority: it reads only the witchy string at `str_ptr`, returns nothing to the
-  guest, and its only effect is to terminate execution with a diagnostic label —
-  an ability the guest already has via `unreachable`. Like the checked-heap
+  authority: it reads only guest-memory strings named by `str_ptr` and the
+  packed site, returns nothing to the guest, and its only effect is to terminate
+  execution with a diagnostic label — an ability the guest already has via
+  `unreachable`. Like the checked-heap
   imports (`heap_register`, RFC-0023), it is therefore defined unconditionally on
   every host (the pure-compute shim included) and is **excluded from the
   capability footprint** (`witchy caps` and the coven widening gate never see it).
-- **The message text is single-sourced** in `crates/witchy-syntax/src/diag.rs`
+- **Rust message text has one owner** in `crates/witchy-syntax/src/diag.rs`
   (`DiagTemplate`). `template` is the stable `DiagTemplate::id()` (part of the
-  compiled ABI — do not renumber); `a`/`b` are the integer holes (index, length),
-  `str_ptr` the string hole (the junk input or `fail` message, or `0` when the
-  template has none). The interpreter constructs its errors through the same
-  `render`, so divergence is a code change, not a silent drift. Both hosts render
-  the template and surface `runtime error: <message>`.
-- **Message parity is enforced** by the differential harness (`witchy verify`):
-  when the interpreter aborts, the compiled backend must abort with the same
-  message *core* (`src/main.rs::abort_core`), so a compiled trap at the wrong site
-  or for the wrong reason diverges loudly.
-- **Location prefix (deferred).** The interpreter prefixes its message with
-  `` `func`, line N: ``; the compiled backend does not yet reproduce it (the
-  RFC-0045 (c) `witchy.sites` table + `$witchy_site` global are future work), so
-  the compiled core carries no source location and the harness compares cores.
+  compiled ABI — do not renumber); `a`/`b` are integer holes and `str_ptr` is a
+  witchy-string pointer (or `0`). The interpreter and native host use the same
+  renderer. The dependency-free browser host mirrors the small table, pinned by
+  a compiled test matrix covering every pure template.
+- **`__witchy_abort_site` carries source location.** Modules with routed aborts
+  export one mutable `i64`: high 32 bits are a static witchy-string pointer to
+  the lexical function name, low 32 bits are the source line. Lowered calls pass
+  that packed site as a final argument to abort-capable WIR helpers; a helper
+  writes the global only on its actual host-abort edge. Successful nested calls
+  and async interleavings therefore cannot stale an outer operation's location.
+  Zero means unavailable.
+- **Exact error parity is enforced** by `witchy parity`: every both-error outcome
+  must have byte-for-byte identical complete diagnostics. A bare Wasm trap,
+  missing location, or backend-specific host error is a divergence.
 - **`WITCHY_WASM_BACKTRACE`** — set this environment variable to also dump the
   full named-frame wasm backtrace beneath the message (the emitted name section
   makes frames readable). It is a debugging add-on for *frames*; the message

@@ -1,12 +1,12 @@
 //! Shared runtime-abort message templates (RFC-0045).
 //!
 //! The interpreter (the reference) and the compiled backend must produce
-//! *byte-for-byte identical* abort messages. That is only guaranteed if the
-//! message text lives in exactly one place. This module is that place: a
+//! *byte-for-byte identical* abort messages. Rust wording lives here: a
 //! [`DiagTemplate`] per abort class, one [`DiagTemplate::render`] that turns a
 //! template plus its arguments into the interpreter's exact wording, and one
 //! [`runtime_error`] that adds the `` `func`, line N: `` location prefix the
-//! interpreter's `Display` + `rt_at_line` produce.
+//! interpreter's `Display` + `rt_at_line` produce. The browser host mirrors the
+//! small rendering table and its compiled-abort matrix pins every pure template.
 //!
 //! - The **interpreter** constructs these errors through `render`, so its
 //!   messages are these strings by construction.
@@ -16,8 +16,9 @@
 //!   with the `runtime_error`-prefixed string.
 //!
 //! The template ids are part of the compiled ABI: codegen bakes them into the
-//! `__witchy_abort` call arguments, and both hosts (the wasmtime runtime and the
-//! browser shim) decode them here. Do not renumber an existing id.
+//! `__witchy_abort` call arguments. The wasmtime host decodes them here; the
+//! browser host mirrors the rendering table and its compiled-abort matrix pins
+//! the same output. Do not renumber an existing id.
 
 /// One runtime-abort class. Each maps to exactly one interpreter message that,
 /// on the compiled backend, was previously a bare `unreachable` trap.
@@ -41,6 +42,12 @@ pub enum DiagTemplate {
     /// name the host did not grant. Matches the interpreter's eager error so the
     /// compiled backend fails at the require site, not lazily (BUG-394).
     SecretRequired,
+    /// `division by zero` — integer `/` with a zero divisor.
+    DivisionByZero,
+    /// `integer overflow in `/`` — `Int::MIN / -1`.
+    DivisionOverflow,
+    /// `modulo by zero` — integer `%` with a zero divisor.
+    ModuloByZero,
 }
 
 impl DiagTemplate {
@@ -56,6 +63,9 @@ impl DiagTemplate {
             DiagTemplate::SecretRequired => 6,
             DiagTemplate::NanToInt => 7,
             DiagTemplate::DictMissing => 8,
+            DiagTemplate::DivisionByZero => 9,
+            DiagTemplate::DivisionOverflow => 10,
+            DiagTemplate::ModuloByZero => 11,
         }
     }
 
@@ -72,6 +82,9 @@ impl DiagTemplate {
             6 => Some(DiagTemplate::SecretRequired),
             7 => Some(DiagTemplate::NanToInt),
             8 => Some(DiagTemplate::DictMissing),
+            9 => Some(DiagTemplate::DivisionByZero),
+            10 => Some(DiagTemplate::DivisionOverflow),
+            11 => Some(DiagTemplate::ModuloByZero),
             _ => None,
         }
     }
@@ -92,15 +105,32 @@ impl DiagTemplate {
             DiagTemplate::DictMissing => "dict.at: missing key".to_string(),
             DiagTemplate::Fail => s.to_string(),
             DiagTemplate::SecretRequired => format!("required secret `{s}` was not granted"),
+            DiagTemplate::DivisionByZero => "division by zero".to_string(),
+            DiagTemplate::DivisionOverflow => "integer overflow in `/`".to_string(),
+            DiagTemplate::ModuloByZero => "modulo by zero".to_string(),
         }
     }
+}
+
+/// Pack a static Witchy-string pointer and source line into the single mutable
+/// site global exported by an abort-capable module. This is compiled ABI: the
+/// function pointer occupies the high 32 bits and the line the low 32 bits.
+pub const fn pack_site(func_ptr: u32, line: u32) -> i64 {
+    (((func_ptr as u64) << 32) | line as u64) as i64
+}
+
+/// Decode the packed abort-site ABI into `(function_string_pointer, line)`.
+pub const fn unpack_site(site: i64) -> (u32, u32) {
+    let bits = site as u64;
+    ((bits >> 32) as u32, bits as u32)
 }
 
 /// Build the full runtime-error string a *routed* abort surfaces, reproducing
 /// the interpreter's `RuntimeError` `Display` (`runtime error: …`) composed with
 /// `rt_at_line` (the `` `func`, line N: `` location prefix). `line == 0` means
 /// "no line available" (the prefix is omitted); an empty `func` omits the name
-/// but keeps the line. Both backends call this so the surfaced text matches.
+/// but keeps the line. The interpreter and native host call this; the browser
+/// host's compiled-abort matrix pins the same formatting.
 pub fn runtime_error(func: &str, line: u32, core: &str) -> String {
     if line == 0 {
         format!("runtime error: {core}")
@@ -126,6 +156,9 @@ mod tests {
             DiagTemplate::DictMissing,
             DiagTemplate::Fail,
             DiagTemplate::SecretRequired,
+            DiagTemplate::DivisionByZero,
+            DiagTemplate::DivisionOverflow,
+            DiagTemplate::ModuloByZero,
         ] {
             assert_eq!(DiagTemplate::from_id(t.id()), Some(t));
         }
@@ -157,6 +190,12 @@ mod tests {
             DiagTemplate::SecretRequired.render(0, 0, "signing"),
             "required secret `signing` was not granted"
         );
+        assert_eq!(DiagTemplate::DivisionByZero.render(0, 0, ""), "division by zero");
+        assert_eq!(
+            DiagTemplate::DivisionOverflow.render(0, 0, ""),
+            "integer overflow in `/`"
+        );
+        assert_eq!(DiagTemplate::ModuloByZero.render(0, 0, ""), "modulo by zero");
     }
 
     #[test]
@@ -167,5 +206,11 @@ mod tests {
         );
         assert_eq!(runtime_error("", 4, "boom"), "runtime error: line 4: boom");
         assert_eq!(runtime_error("f", 0, "boom"), "runtime error: boom");
+    }
+
+    #[test]
+    fn packed_site_round_trips_both_u32_halves() {
+        let site = pack_site(0xfedc_ba98, 0x7654_3210);
+        assert_eq!(unpack_site(site), (0xfedc_ba98, 0x7654_3210));
     }
 }

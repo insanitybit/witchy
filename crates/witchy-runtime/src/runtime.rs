@@ -896,9 +896,11 @@ pub(crate) fn link_capability_imports(
 /// authority-free abort channel. Renders the shared [`DiagTemplate`] (the SAME
 /// wording the interpreter constructs) from the integer holes `a`/`b` and, when
 /// the template has a string hole, the witchy string at `str_ptr`, then traps
-/// with the interpreter's `runtime error: <core>` text so the compiled backend's
-/// surfaced message matches byte-for-byte. It never returns (codegen still emits
-/// `unreachable` after the call). `str_ptr == 0` means "no string hole".
+/// with the interpreter's full location-prefixed `runtime error` text so the
+/// compiled backend's surfaced message matches byte-for-byte. The compiler-owned
+/// packed site global identifies the innermost aborting source statement. This
+/// import never returns (codegen still emits `unreachable` after the call).
+/// `str_ptr == 0` means "no string hole".
 fn host_witchy_abort(
     mut caller: Caller<'_, VmState>,
     template: i32,
@@ -913,18 +915,27 @@ fn host_witchy_abort(
     // Read the string hole only for a template that carries one, and only for a
     // non-null pointer (a defensive read: a crafted module could pass junk, but
     // `read_wstr` fails closed on an out-of-bounds slice).
-    let s = if str_ptr != 0 {
+    let site = guest_i64_global(&mut caller, "__witchy_abort_site").unwrap_or(0);
+    let (func_ptr, line) = witchy_syntax::diag::unpack_site(site);
+    let (s, func) = if str_ptr != 0 || func_ptr != 0 {
         let mem = memory_of(&mut caller)?;
-        read_wstr(mem.data(&caller), str_ptr).unwrap_or_default()
+        let data = mem.data(&caller);
+        (
+            if str_ptr == 0 { String::new() } else { read_wstr(data, str_ptr).unwrap_or_default() },
+            if func_ptr == 0 { String::new() } else { read_wstr(data, func_ptr as i32).unwrap_or_default() },
+        )
     } else {
-        String::new()
+        (String::new(), String::new())
     };
     let core = tmpl.render(a, b, &s);
-    // The compiled backend has no per-abort source line/function yet (the site
-    // table is a deferred RFC-0045 (c) channel), so surface the bare core message
-    // — the differential gate compares the message *core*, which is what
-    // distinguishes an abort class and carries its dynamic data.
-    bail!("{}", runtime_error("", 0, &core));
+    bail!("{}", runtime_error(&func, line, &core));
+}
+
+fn guest_i64_global(caller: &mut Caller<'_, VmState>, name: &str) -> Option<i64> {
+    let Some(Extern::Global(global)) = caller.get_export(name) else {
+        return None;
+    };
+    global.get(&mut *caller).i64()
 }
 
 fn host_print(mut caller: Caller<'_, VmState>, ptr: i32, len: i32) -> Result<()> {

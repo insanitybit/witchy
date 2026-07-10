@@ -464,6 +464,7 @@ export async function instantiate(wasmBytes, opts = {}) {
   // Bound late: instance memory is set after instantiation, but the import
   // closures capture `mem` by reference through this object.
   let memory = null;
+  let instance = null;
   const u8 = () => new Uint8Array(memory.buffer);
   const dv = () => new DataView(memory.buffer);
 
@@ -504,11 +505,10 @@ export async function instantiate(wasmBytes, opts = {}) {
   // so a module importing one cannot instantiate here.
   // (RFC-0045) Render a runtime-abort message from a `DiagTemplate` id + its
   // holes — a byte-for-byte mirror of `DiagTemplate::render` in
-  // crates/witchy-syntax/src/diag.rs (the single source of truth). The template
-  // ids are the compiled ABI (`DiagTemplate::id`); do not renumber. `a`/`b` are
-  // i64 holes (BigInt), `s` the string hole. (When the compiler emits the deferred
-  // `witchy.templates` custom section, this table becomes a decode of that section
-  // instead of a hand-mirror — see RFC-0045 (e).)
+  // crates/witchy-syntax/src/diag.rs. The compiled-abort matrix pins every pure
+  // template against complete expected messages. The template ids are the
+  // compiled ABI (`DiagTemplate::id`); do not renumber. `a`/`b` are i64 holes
+  // (BigInt), `s` the string hole.
   const renderDiag = (template, a, b, s) => {
     switch (template) {
       case 1: return `list index ${a} out of bounds (length ${b})`;
@@ -516,6 +516,12 @@ export async function instantiate(wasmBytes, opts = {}) {
       case 3: return `cannot parse \`${s}\` as an Int`;
       case 4: return "cannot compare NaN";
       case 5: return s;
+      case 6: return `required secret \`${s}\` was not granted`;
+      case 7: return "math.to_int: NaN cannot be converted to Int";
+      case 8: return "dict.at: missing key";
+      case 9: return "division by zero";
+      case 10: return "integer overflow in `/`";
+      case 11: return "modulo by zero";
       default: return `abort with unknown diagnostic template id ${template}`;
     }
   };
@@ -537,9 +543,9 @@ export async function instantiate(wasmBytes, opts = {}) {
 
     // --- (RFC-0045) the always-present, authority-free abort channel ---
     // `__witchy_abort(template, a, b, str_ptr)`: render the shared DiagTemplate
-    // and throw a JS Error whose `.message` is the same `runtime error: <core>`
-    // string the wasmtime host produces (host_witchy_abort in src/runtime.rs), so
-    // an abort surfaces identically here. It grants NO authority (it reads only the
+    // and throw a JS Error whose `.message` is the same location-prefixed
+    // `runtime error` string the native host produces, so an abort surfaces
+    // identically here. It grants NO authority (it reads only the
     // string it is handed, returns nothing, and only terminates execution — an
     // ability the guest already has via `unreachable`), so, like `print`, the
     // pure/deny-by-omission host may provide it; it MUST be present or every
@@ -547,7 +553,12 @@ export async function instantiate(wasmBytes, opts = {}) {
     __witchy_abort(template, a, b, strPtr) {
       const s = strPtr !== 0 ? readWstrText(strPtr) : "";
       const core = renderDiag(Number(template), a, b, s);
-      throw new Error(`runtime error: ${core}`);
+      const site = BigInt(instance?.exports.__witchy_abort_site?.value || 0n);
+      const funcPtr = Number((site >> 32n) & 0xffffffffn);
+      const line = Number(site & 0xffffffffn);
+      const func = funcPtr !== 0 ? readWstrText(funcPtr) : "";
+      const location = line > 0 ? (func ? `\`${func}\`, line ${line}: ` : `line ${line}: `) : "";
+      throw new Error(`runtime error: ${location}${core}`);
     },
 
     // --- the pending-buffer string-bridge (pure mechanics, no authority) ---
@@ -656,7 +667,7 @@ export async function instantiate(wasmBytes, opts = {}) {
     );
   }
 
-  const { instance } = await WebAssembly.instantiate(wasmBytes, { witchy });
+  ({ instance } = await WebAssembly.instantiate(wasmBytes, { witchy }));
   memory = instance.exports.memory;
 
   const run = () => {

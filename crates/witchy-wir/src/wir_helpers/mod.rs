@@ -1358,6 +1358,107 @@ pub fn float_cmp_helper(name: &str, op: BinOp) -> WirFunc {
     }
 }
 
+/// Guarded Witchy integer division. WebAssembly traps directly on zero and on
+/// `Int::MIN / -1`; route both through the shared language diagnostics first.
+pub fn int_div_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let eq = |lhs: E, rhs: E| E::Binary {
+        op: BinOp::Eq,
+        kind: Kind::I64,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+    };
+    WirFunc {
+        name: "int_div".into(),
+        params: vec![
+            WirLocal { name: "a".into(), ty: WirTy::Int },
+            WirLocal { name: "b".into(), ty: WirTy::Int },
+        ],
+        ret: vec![WirTy::Int],
+        locals: vec![],
+        body: vec![
+            N::If {
+                cond: eq(getl("b"), E::ConstI64(0)),
+                then_: abort_nodes(
+                    DiagTemplate::DivisionByZero,
+                    E::ConstI64(0),
+                    E::ConstI64(0),
+                    E::ConstI32(0),
+                ),
+                els: vec![],
+                result: None,
+            },
+            N::If {
+                cond: E::Binary {
+                    op: BinOp::And,
+                    kind: Kind::I32,
+                    lhs: Box::new(eq(getl("a"), E::ConstI64(i64::MIN))),
+                    rhs: Box::new(eq(getl("b"), E::ConstI64(-1))),
+                },
+                then_: abort_nodes(
+                    DiagTemplate::DivisionOverflow,
+                    E::ConstI64(0),
+                    E::ConstI64(0),
+                    E::ConstI32(0),
+                ),
+                els: vec![],
+                result: None,
+            },
+            N::Push(E::Binary {
+                op: BinOp::Div,
+                kind: Kind::I64,
+                lhs: Box::new(getl("a")),
+                rhs: Box::new(getl("b")),
+            }),
+        ],
+        raw_body: None,
+    }
+}
+
+/// Guarded Witchy integer remainder. `Int::MIN % -1` is defined as zero on
+/// both backends; only a zero divisor aborts.
+pub fn int_rem_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    WirFunc {
+        name: "int_rem".into(),
+        params: vec![
+            WirLocal { name: "a".into(), ty: WirTy::Int },
+            WirLocal { name: "b".into(), ty: WirTy::Int },
+        ],
+        ret: vec![WirTy::Int],
+        locals: vec![],
+        body: vec![
+            N::If {
+                cond: E::Binary {
+                    op: BinOp::Eq,
+                    kind: Kind::I64,
+                    lhs: Box::new(getl("b")),
+                    rhs: Box::new(E::ConstI64(0)),
+                },
+                then_: abort_nodes(
+                    DiagTemplate::ModuloByZero,
+                    E::ConstI64(0),
+                    E::ConstI64(0),
+                    E::ConstI32(0),
+                ),
+                els: vec![],
+                result: None,
+            },
+            N::Push(E::Binary {
+                op: BinOp::Rem,
+                kind: Kind::I64,
+                lhs: Box::new(getl("a")),
+                rhs: Box::new(getl("b")),
+            }),
+        ],
+        raw_body: None,
+    }
+}
+
 /// `$float_to_int(x: f64) -> i64` — `math.to_int`. Finite values and infinities
 /// keep the WebAssembly saturating conversion policy, but NaN is a Witchy
 /// runtime error instead of silently becoming 0.
@@ -5225,6 +5326,20 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "float_to_int" => Some(WirHelperSpec {
             func: float_to_int_helper(),
+            helper_deps: &[],
+            import_deps: &["__witchy_abort"],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "int_div" => Some(WirHelperSpec {
+            func: int_div_helper(),
+            helper_deps: &[],
+            import_deps: &["__witchy_abort"],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "int_rem" => Some(WirHelperSpec {
+            func: int_rem_helper(),
             helper_deps: &[],
             import_deps: &["__witchy_abort"],
             uses_heap: false,

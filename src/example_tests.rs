@@ -11808,12 +11808,10 @@ fn main(console: Console):
         );
     }
 
-    /// (RFC-0045) `witchy verify` on an ABORTING program passes: both backends
-    /// abort AND their message cores match (the interpreter's `` `main`, line N:
-    /// list index … `` core equals the compiled `runtime error: list index …`).
-    /// This exercises the differential harness's message-parity arm end to end.
+    /// (RFC-0045) `witchy parity` on an aborting program passes only when both
+    /// backends produce the same complete location-prefixed diagnostic.
     #[test]
-    fn verify_file_agrees_on_matching_aborts() {
+    fn parity_file_agrees_on_matching_aborts() {
         let path = std::env::temp_dir().join("witchy_verify_abort.witchy");
         std::fs::write(
             &path,
@@ -11823,39 +11821,10 @@ fn main(console: Console):
         let outcome = crate::parity_check(path.to_str().unwrap());
         assert!(
             matches!(outcome, crate::ParityOutcome::BothErrorAgree { .. }),
-            "both backends must abort with the same message core: {}",
+            "both backends must abort with the same complete diagnostic: {}",
             outcome.message()
         );
         let _ = std::fs::remove_file(&path);
-    }
-
-    /// (RFC-0045) `abort_core` strips the interpreter's exact `rt_at_line` location
-    /// prefix (both the `` `func`, line N: `` and the func-less `line N: ` shapes)
-    /// while leaving the compiled `runtime error:` core untouched, and returns
-    /// `None` for non-routed messages — so the parity gate compares like with like.
-    #[test]
-    fn abort_core_strips_location_prefix() {
-        assert_eq!(
-            crate::abort_core("runtime error: `p20.test_fail`, line 4: the reason").as_deref(),
-            Some("the reason")
-        );
-        assert_eq!(
-            crate::abort_core("runtime error: line 4: boom").as_deref(),
-            Some("boom")
-        );
-        // Compiled side (no location prefix): the core is the whole body.
-        assert_eq!(
-            crate::abort_core("runtime error: list index 5 out of bounds (length 2)").as_deref(),
-            Some("list index 5 out of bounds (length 2)")
-        );
-        // A `fail` message containing backticks and `: ` must NOT be mis-stripped.
-        assert_eq!(
-            crate::abort_core("runtime error: `weird`: value").as_deref(),
-            Some("`weird`: value")
-        );
-        // Non-routed errors (bare trap, capability refusal) are not compared.
-        assert_eq!(crate::abort_core("wasm trap: unreachable"), None);
-        assert_eq!(crate::abort_core("`..` escapes the Dir capability"), None);
     }
 
     #[test]

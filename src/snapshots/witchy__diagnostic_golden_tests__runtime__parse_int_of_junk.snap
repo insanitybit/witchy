@@ -1,6 +1,6 @@
 ---
 source: src/diagnostic_golden_tests.rs
-expression: "trap_pair(\"import string\\n\\nfn main(console: Console):\\n    print(console, __render(string.to_int(\\\"notanumber\\\")))\\n\")"
+expression: "trap_pair(\"import string\\n\\nfn main(console: Console):\\n    console.print(__render(string.to_int(\\\"notanumber\\\")))\\n\")"
 ---
 interp: runtime error: `main`, line 4: cannot parse `notanumber` as an Int
-wasm:   runtime error: cannot parse `notanumber` as an Int
+wasm:   runtime error: `main`, line 4: cannot parse `notanumber` as an Int

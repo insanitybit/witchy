@@ -690,6 +690,12 @@ pub fn assemble_wir_module(
             eprintln!("WIRBAIL prune-fail: no_direct_host={no_direct_host} all_registered={all_registered} user_host={user_host_imports:?} hosts={hosts:?}");
         }
         if no_direct_host && all_registered {
+            // Abort-capable helpers receive the caller's packed source site as a
+            // final i64 argument. They publish it only immediately before the
+            // host abort, so successful nested calls cannot stale the location.
+            for (name, spec) in &mut resolved {
+                prepare_abort_helper(name, &mut spec.func);
+            }
             let mut import_names: std::collections::BTreeSet<&str> =
                 std::collections::BTreeSet::new();
             let mut uses_heap = false;
@@ -967,6 +973,15 @@ pub fn assemble_wir_module(
             } else {
                 Vec::new()
             };
+            if cg.uses_abort_sites {
+                pruned_globals.push(WirGlobal {
+                    name: "__witchy_abort_site".into(),
+                    kind: WK::I64,
+                    mutable: true,
+                    init: GlobalInit::I64(0),
+                    export: Some("__witchy_abort_site".into()),
+                });
+            }
             // Region copy-out scratch globals: the watermark / temp base / slide delta
             // the `$rcopy_*` helpers read, and the exported `$__region_copy_bytes`
             // counter. Declared only when a pointer `region:` reclaim is reached.
@@ -1079,7 +1094,7 @@ pub fn assemble_wir_module(
 /// Collect every function name a `WirSeq` calls directly (`Call{func}`),
 /// recursively. Used by `assemble_wir_module` to find which prelude helpers a
 /// program reaches.
-fn collect_called_funcs(seq: &witchy_wir::wir::WirSeq, out: &mut HashSet<String>) {
+fn collect_called_funcs(seq: &[witchy_wir::wir::WirNode], out: &mut HashSet<String>) {
     use witchy_wir::wir::{WirExpr as E, WirNode as N};
     fn expr(e: &E, out: &mut HashSet<String>) {
         match e {
@@ -1171,7 +1186,7 @@ fn collect_called_funcs(seq: &witchy_wir::wir::WirSeq, out: &mut HashSet<String>
 /// calls in USER code (e.g. `dir.subdir`, `now`, `recv_*`) — which the pruned
 /// path can't account for, so such programs return `Ok(None)`. (Helper
 /// host calls are accounted for via the registry's `import_deps` instead.)
-fn collect_called_host_imports(seq: &witchy_wir::wir::WirSeq, out: &mut HashSet<String>) {
+fn collect_called_host_imports(seq: &[witchy_wir::wir::WirNode], out: &mut HashSet<String>) {
     use witchy_wir::wir::{WirExpr as E, WirNode as N};
     fn expr(e: &E, out: &mut HashSet<String>) {
         match e {
@@ -1254,6 +1269,269 @@ fn collect_called_host_imports(seq: &witchy_wir::wir::WirSeq, out: &mut HashSet<
     }
     for n in seq {
         node(n, out);
+    }
+}
+
+/// Whether this lowered source statement can reach the routed abort import.
+/// Direct calls cover `fail`; helper calls follow the WIR registry's declared
+/// dependency graph, which is also what module assembly uses to link imports.
+pub(super) fn wir_seq_calls_abort(seq: &[witchy_wir::wir::WirNode]) -> bool {
+    let mut imports = HashSet::new();
+    collect_called_host_imports(seq, &mut imports);
+    if imports.contains("__witchy_abort") {
+        return true;
+    }
+
+    let mut calls = HashSet::new();
+    collect_called_funcs(seq, &mut calls);
+    let mut seen = HashSet::new();
+    calls.iter().any(|name| helper_calls_abort(name, &mut seen))
+}
+
+const ABORT_SITE_PARAM: &str = "__witchy_abort_site_arg";
+
+fn helper_calls_abort(name: &str, seen: &mut HashSet<String>) -> bool {
+    if !seen.insert(name.to_string()) {
+        return false;
+    }
+    let Some(spec) = witchy_wir::wir_helpers::wir_helper(name) else {
+        return false;
+    };
+    spec.import_deps.contains(&"__witchy_abort")
+        || spec.helper_deps.iter().any(|dep| helper_calls_abort(dep, seen))
+}
+
+fn registered_helper_calls_abort(name: &str) -> bool {
+    helper_calls_abort(name, &mut HashSet::new())
+}
+
+fn append_helper_abort_site(
+    func: &str,
+    args: &mut Vec<witchy_wir::wir::WirExpr>,
+    site: &witchy_wir::wir::WirExpr,
+) -> bool {
+    if !registered_helper_calls_abort(func) {
+        return false;
+    }
+    let original_arity = witchy_wir::wir_helpers::wir_helper(func)
+        .map(|spec| spec.func.params.len())
+        .expect("a registered abort helper must resolve");
+    match args.len() {
+        n if n == original_arity => args.push(site.clone()),
+        n if n == original_arity + 1 => {}
+        n => panic!("abort helper `{func}` has {n} arguments; expected {original_arity}"),
+    }
+    true
+}
+
+/// Thread one packed source site into every abort-capable helper call and write
+/// it to the exported global only on the actual host-abort edge. Passing the site
+/// as a normal argument is compositional: nested calls evaluate first and cannot
+/// leave stale location state for an outer abort.
+pub(super) fn attach_abort_sites(seq: &mut witchy_wir::wir::WirSeq, site: i64) -> bool {
+    attach_abort_site_expr(seq, &witchy_wir::wir::WirExpr::ConstI64(site))
+}
+
+fn attach_abort_site_expr(
+    seq: &mut witchy_wir::wir::WirSeq,
+    site: &witchy_wir::wir::WirExpr,
+) -> bool {
+    use witchy_wir::wir::{WirExpr as E, WirNode as N};
+
+    fn expr(e: &mut E, site: &E) -> bool {
+        let mut reaches_abort = false;
+        match e {
+            E::Call { func, args } => {
+                for arg in args.iter_mut() {
+                    reaches_abort |= expr(arg, site);
+                }
+                reaches_abort |= append_helper_abort_site(func, args, site);
+            }
+            E::CallHost { import, args } => {
+                for arg in args {
+                    reaches_abort |= expr(arg, site);
+                }
+                reaches_abort |= import == "__witchy_abort";
+            }
+            E::CallIndirect { args, index, .. } => {
+                for arg in args {
+                    reaches_abort |= expr(arg, site);
+                }
+                reaches_abort |= expr(index, site);
+            }
+            E::ToSlot(inner, _)
+            | E::FromSlot(inner, _)
+            | E::Unary { arg: inner, .. }
+            | E::Convert { arg: inner, .. }
+            | E::Load { ptr: inner, .. }
+            | E::Load8U { ptr: inner, .. }
+            | E::MemoryGrow(inner) => reaches_abort |= expr(inner, site),
+            E::Binary { lhs, rhs, .. } => {
+                reaches_abort |= expr(lhs, site);
+                reaches_abort |= expr(rhs, site);
+            }
+            E::Control(node) => reaches_abort |= node_expr(node, site),
+            E::Seq(inner) => reaches_abort |= attach_abort_site_expr(inner, site),
+            E::StructNew { args, .. } => {
+                for arg in args {
+                    reaches_abort |= expr(arg, site);
+                }
+            }
+            E::StructGet { base, .. } => reaches_abort |= expr(base, site),
+            E::ConstI64(_)
+            | E::ConstF64(_)
+            | E::ConstI32(_)
+            | E::StrPtr(_)
+            | E::GetLocal(_)
+            | E::GetGlobal(_)
+            | E::MemorySize
+            | E::RefNull(_) => {}
+        }
+        reaches_abort
+    }
+
+    fn node_expr(node: &mut N, site: &E) -> bool {
+        let mut reaches_abort = false;
+        match node {
+            N::SetLocal { value, .. } | N::SetGlobal { value, .. } => {
+                reaches_abort |= expr(value, site);
+            }
+            N::Store { ptr, value, .. } | N::Store8 { ptr, value, .. } => {
+                reaches_abort |= expr(ptr, site);
+                reaches_abort |= expr(value, site);
+            }
+            N::CallStoreMulti { func, args, .. } => {
+                for arg in args.iter_mut() {
+                    reaches_abort |= expr(arg, site);
+                }
+                reaches_abort |= append_helper_abort_site(func, args, site);
+            }
+            N::MemoryCopy { dest, src, len } => {
+                reaches_abort |= expr(dest, site);
+                reaches_abort |= expr(src, site);
+                reaches_abort |= expr(len, site);
+            }
+            N::MemoryFill { dest, value, len } => {
+                reaches_abort |= expr(dest, site);
+                reaches_abort |= expr(value, site);
+                reaches_abort |= expr(len, site);
+            }
+            N::If { cond, then_, els, .. } => {
+                reaches_abort |= expr(cond, site);
+                reaches_abort |= attach_abort_site_expr(then_, site);
+                reaches_abort |= attach_abort_site_expr(els, site);
+            }
+            N::Block { body, .. } | N::Loop { body, .. } => {
+                reaches_abort |= attach_abort_site_expr(body, site);
+            }
+            N::Br { cond: Some(cond), .. } => reaches_abort |= expr(cond, site),
+            N::Drop(value) | N::Do(value) | N::Push(value) | N::Return(Some(value)) => {
+                reaches_abort |= expr(value, site);
+            }
+            N::StructSet { base, value, .. } => {
+                reaches_abort |= expr(base, site);
+                reaches_abort |= expr(value, site);
+            }
+            N::Br { cond: None, .. } | N::Return(None) | N::Unreachable => {}
+        }
+        reaches_abort
+    }
+
+    let mut out = Vec::with_capacity(seq.len());
+    let mut reaches_abort = false;
+    for mut node in std::mem::take(seq) {
+        let is_abort_edge = matches!(
+            &node,
+            N::Do(E::CallHost { import, .. }) if import == "__witchy_abort"
+        );
+        reaches_abort |= node_expr(&mut node, site);
+        if is_abort_edge {
+            out.push(N::SetGlobal {
+                global: "__witchy_abort_site".into(),
+                value: site.clone(),
+            });
+        }
+        out.push(node);
+    }
+    *seq = out;
+    reaches_abort
+}
+
+fn prepare_abort_helper(name: &str, func: &mut witchy_wir::wir::WirFunc) {
+    use witchy_wir::wir::{WirExpr as E, WirLocal, WirTy};
+    if !registered_helper_calls_abort(name) {
+        return;
+    }
+    if !func.params.iter().any(|param| param.name == ABORT_SITE_PARAM) {
+        func.params.push(WirLocal { name: ABORT_SITE_PARAM.into(), ty: WirTy::Int });
+    }
+    let reached = attach_abort_site_expr(&mut func.body, &E::GetLocal(ABORT_SITE_PARAM.into()));
+    debug_assert!(reached, "abort-capable helper `{name}` has no routed abort edge");
+}
+
+#[cfg(test)]
+mod abort_site_tests {
+    use super::{attach_abort_sites, prepare_abort_helper, wir_seq_calls_abort, ABORT_SITE_PARAM};
+    use witchy_wir::wir::{WirExpr as E, WirNode as N};
+
+    #[test]
+    fn source_sites_follow_wir_abort_dependencies() {
+        let direct = [N::Do(E::CallHost {
+            import: "__witchy_abort".into(),
+            args: vec![],
+        })];
+        let helper = [N::Push(E::Call {
+            func: "list_at".into(),
+            args: vec![],
+        })];
+        let ordinary = [N::Push(E::Call {
+            func: "concat".into(),
+            args: vec![],
+        })];
+
+        assert!(wir_seq_calls_abort(&direct));
+        assert!(wir_seq_calls_abort(&helper));
+        assert!(!wir_seq_calls_abort(&ordinary));
+    }
+
+    #[test]
+    fn source_sites_are_arguments_and_globals_change_only_on_abort_edges() {
+        let site = 0x1234_i64;
+        let mut seq = vec![N::Push(E::Call {
+            func: "list_at".into(),
+            args: vec![E::ConstI32(8), E::ConstI64(1)],
+        })];
+        assert!(attach_abort_sites(&mut seq, site));
+        let N::Push(E::Call { args, .. }) = &seq[0] else { panic!("list_at call") };
+        assert!(matches!(args.last(), Some(E::ConstI64(v)) if *v == site));
+        assert!(!seq.iter().any(|node| matches!(node, N::SetGlobal { .. })));
+
+        let mut helper = witchy_wir::wir_helpers::wir_helper("list_at").unwrap().func;
+        prepare_abort_helper("list_at", &mut helper);
+        assert_eq!(helper.params.last().unwrap().name, ABORT_SITE_PARAM);
+        let N::If { then_, .. } = &helper.body[0] else { panic!("list_at guard") };
+        assert!(matches!(
+            &then_[0],
+            N::SetGlobal { global, value: E::GetLocal(local) }
+                if global == "__witchy_abort_site" && local == ABORT_SITE_PARAM
+        ));
+
+        let mut direct = vec![
+            N::SetLocal { local: "msg".into(), value: E::ConstI32(12) },
+            N::Do(E::CallHost {
+                import: "__witchy_abort".into(),
+                args: vec![
+                    E::ConstI32(5),
+                    E::ConstI64(0),
+                    E::ConstI64(0),
+                    E::GetLocal("msg".into()),
+                ],
+            }),
+        ];
+        assert!(attach_abort_sites(&mut direct, site));
+        assert!(matches!(&direct[0], N::SetLocal { local, .. } if local == "msg"));
+        assert!(matches!(&direct[1], N::SetGlobal { .. }));
+        assert!(matches!(&direct[2], N::Do(E::CallHost { .. })));
     }
 }
 

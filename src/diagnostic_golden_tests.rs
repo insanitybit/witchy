@@ -15,10 +15,9 @@
 //!
 //! Parity note: every runtime-trap golden captures BOTH the interpreter and the
 //! compiled-WASM output in one snapshot, so a diverging pair is a parity failure
-//! caught at the message level. Today the compiled backend omits the trap's
-//! source position (BUG-107 / RFC-0045 residual) and surfaces integer
-//! divide-by-zero as a raw wasm trap; those accepted differences are recorded
-//! here so any *further* drift is loud.
+//! caught at the message level. Routed runtime traps must carry the same source
+//! position and message on both backends (RFC-0045 strict); a bare Wasm trap is
+//! a regression.
 
 use crate::{codegen, interpreter, parser, pipeline, typeck};
 
@@ -151,11 +150,12 @@ fn wasm_trap(src: &str) -> String {
 
 /// Snapshot the interpreter+compiled trap PAIR for one program (RFC-0072's
 /// parity rule): both backends' trap text in one golden, so a divergence is a
-/// message-level parity failure. `interp:`/`wasm:` prefixes make an accepted
-/// difference (e.g. the compiled backend's missing source position, BUG-107)
-/// legible in the snapshot.
+/// message-level parity failure.
 fn trap_pair(src: &str) -> String {
-    format!("interp: {}\nwasm:   {}", interp_trap(src), wasm_trap(src))
+    let interp = interp_trap(src);
+    let wasm = wasm_trap(src);
+    assert_eq!(wasm, interp, "runtime diagnostic parity");
+    format!("interp: {interp}\nwasm:   {wasm}")
 }
 
 // ===========================================================================
@@ -599,10 +599,6 @@ mod runtime {
     use super::*;
 
     #[test]
-    // KNOWN-BAD (BUG-107): the compiled backend omits the trap's source position
-    // (`main`, line N) that the interpreter carries — RFC-0045's lenient slice.
-    // The golden records the accepted interp/wasm difference so further drift is
-    // loud and BUG-107's eventual fix is a deliberate golden update.
     fn list_index_out_of_bounds() {
         insta::assert_snapshot!(trap_pair(
             "import list\n\nfn main(console: Console):\n    let xs = [1, 2]\n    console.print(__render(list.at(xs, 9)))\n"
@@ -610,7 +606,6 @@ mod runtime {
     }
 
     #[test]
-    // KNOWN-BAD (BUG-107): compiled backend omits the source position (see above).
     fn index_operator_out_of_bounds() {
         insta::assert_snapshot!(trap_pair(
             "fn main(console: Console):\n    let xs = [1, 2]\n    console.print(__render(xs[9]))\n"
@@ -618,7 +613,6 @@ mod runtime {
     }
 
     #[test]
-    // KNOWN-BAD (BUG-107): compiled backend omits the source position (see above).
     fn parse_int_of_junk() {
         insta::assert_snapshot!(trap_pair(
             "import string\n\nfn main(console: Console):\n    console.print(__render(string.to_int(\"notanumber\")))\n"
@@ -626,7 +620,6 @@ mod runtime {
     }
 
     #[test]
-    // KNOWN-BAD (BUG-107): compiled backend omits the source position (see above).
     fn user_fail() {
         insta::assert_snapshot!(trap_pair(
             "fn main(console: Console):\n    fail(\"something broke\")\n"
@@ -634,12 +627,6 @@ mod runtime {
     }
 
     #[test]
-    // KNOWN-BAD (BUG-107): the interp/wasm messages DIVERGE here, not just in
-    // position: the interpreter reports `runtime error: ... division by zero`
-    // while the compiled backend surfaces the raw `wasm trap: integer divide by
-    // zero`. This integer trap is not routed through RFC-0045's `__witchy_abort`
-    // template set, so the pair is not message-parity. The golden locks the
-    // current divergence; closing BUG-107 should make both read identically.
     fn integer_division_by_zero() {
         insta::assert_snapshot!(trap_pair(
             "fn main(console: Console):\n    let z = 0\n    console.print(__render(10 / z))\n"
@@ -647,7 +634,48 @@ mod runtime {
     }
 
     #[test]
-    // KNOWN-BAD (BUG-107): compiled backend omits the source position (see above).
+    fn nested_function_uses_innermost_source_site() {
+        insta::assert_snapshot!(trap_pair(
+            "fn explode() -> Int:\n    let z = 0\n    10 / z\n\nfn main(console: Console):\n    console.print(__render(explode()))\n"
+        ));
+    }
+
+    #[test]
+    fn successful_nested_call_restores_caller_source_site() {
+        insta::assert_snapshot!(trap_pair(
+            "import list\n\nfn probe() -> Int:\n    let inner = [7]\n    let _ = list.at(inner, 0)\n    9\n\nfn main(console: Console):\n    let outer = [1]\n    console.print(__render(list.at(outer, probe())))\n"
+        ));
+    }
+
+    #[test]
+    fn escaping_lambda_uses_lexical_source_owner() {
+        insta::assert_snapshot!(trap_pair(
+            "fn make() -> fn() -> Int:\n    fn(): 10 / 0\n\nfn main(console: Console):\n    let explode = make()\n    console.print(__render(explode()))\n"
+        ));
+    }
+
+    #[test]
+    fn successful_closure_call_restores_caller_source_site() {
+        insta::assert_snapshot!(trap_pair(
+            "import list\n\nfn make_probe() -> fn() -> Int:\n    fn(): list.at([7], 0)\n\nfn main(console: Console):\n    let outer = [1]\n    let probe = make_probe()\n    console.print(__render(list.at(outer, probe())))\n"
+        ));
+    }
+
+    #[test]
+    fn integer_division_overflow() {
+        insta::assert_snapshot!(trap_pair(
+            "fn main(console: Console):\n    let min = (0 - 9223372036854775807) - 1\n    console.print(__render(min / (0 - 1)))\n"
+        ));
+    }
+
+    #[test]
+    fn integer_modulo_by_zero() {
+        insta::assert_snapshot!(trap_pair(
+            "fn main(console: Console):\n    let z = 0\n    console.print(__render(10 % z))\n"
+        ));
+    }
+
+    #[test]
     fn nan_to_int() {
         insta::assert_snapshot!(trap_pair(
             "import math\n\nfn main(console: Console):\n    console.print(__render(math.to_int(0.0 / 0.0)))\n"
@@ -655,7 +683,6 @@ mod runtime {
     }
 
     #[test]
-    // KNOWN-BAD (BUG-107): compiled backend omits the source position (see above).
     fn nan_comparison_order() {
         insta::assert_snapshot!(trap_pair(
             "fn main(console: Console):\n    let a = 0.0 / 0.0\n    let b = 1.0\n    if a < b: console.print(\"lt\") else: console.print(\"ge\")\n"

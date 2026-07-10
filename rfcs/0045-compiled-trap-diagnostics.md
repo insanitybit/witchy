@@ -10,29 +10,30 @@ predecessors:
 tracking:
 ---
 
-> **Implementation status (2026-07-04, branch `impl/rfc-0045c`).** The core is
-> shipped: the always-linked authority-free `__witchy_abort(template, a, b,
-> str_ptr)` import (§a) carries the interpreter's exact message out before the
-> trap; the message text is single-sourced in `witchy-syntax/src/diag.rs`
-> (`DiagTemplate`), rendered host-side by the wasmtime host and the browser shim
-> (§b, §e); every static abort class (list/bytes index OOB, view OOB, parse-int
-> junk/overflow, NaN ordering) and `fail(msg)` is routed (§b); the differential
-> harness compares the abort message **core** (§d, lenient notch); and
-> `WITCHY_WASM_BACKTRACE` is documented in `spec/wasm-abi.md` + `CONTRIBUTING.md`
-> (§f). The gate's first catch was a real latent bug: `list.at` truncated its
-> index to i32, so a huge index wrapped instead of aborting with its true value —
-> now checked in i64.
+> **Implementation update (2026-07-10, branch
+> `fix/bug107-strict-abort-diagnostics`).** The original message channel is
+> extended to complete diagnostic parity. A single exported mutable `i64`
+> (`__witchy_abort_site`) carries an interned lexical-function pointer in its
+> high 32 bits and the source line in its low 32 bits (§c). Codegen threads the
+> site through helpers from the lowered WIR's actual abort dependencies, not from
+> a second hand-maintained operation list; the global changes only on an abort
+> edge. Integer division/modulo traps are routed through
+> shared templates, closures retain their lexical diagnostic owner on both
+> backends, and the differential harness requires byte-for-byte equality for
+> every both-error result (§d). The browser's compiled-abort matrix pins every
+> pure template and the packed-site ABI (§e).
 >
-> **Deferred:** the source-**location** channel of §c (the `witchy.sites` custom
-> section + the hot-path `$witchy_site` global that reproduce the interpreter's
-> `` `func`, line N: `` prefix). The compiled core carries no location yet, so
-> the harness compares cores rather than the full prefixed string, and no
-> hot-path global is added (so the §"Binary-size cost" benchmark gate did not
-> need to run). The **strict** notch of §d (a bare `unreachable` reaching the
-> host is itself a failure) is likewise future work — the lenient notch is live.
-> The template-format `witchy.templates` custom section of §e is deferred with
-> it; the JS shim mirrors `DiagTemplate::render` by hand in the interim (a small,
-> comment-flagged duplication).
+> This implementation deliberately does **not** emit `witchy.sites` or
+> `witchy.templates` custom sections. The packed global avoids a site table; Rust
+> hosts share `DiagTemplate` directly, while the dependency-free JavaScript host
+> keeps a small mirrored renderer whose complete matrix is the drift detector.
+> This is a representation amendment, not a behavioral deferral. The browser
+> compiler/runtime matrix is green. A 20M-call dynamic `list.at` kernel measured
+> +0.35% against the existing release compiler; after preserving raw Wasm for
+> provably nontrapping literal divisors, `list.at(xs, i % 4)` measured a 0.987
+> median ratio over 25 alternating Node/V8 samples. Native runtime snapshots and
+> the 14-case browser-host matrix are green; the development host still needs
+> its documented dyld launch workaround until the toolchain repair lands.
 
 # RFC-0045: Aborts carry their message on the compiled backend
 
@@ -46,9 +47,9 @@ actually run says nothing. `fail(msg)` literally **evaluates and drops its
 message** (`crates/witchy-lower/src/codegen/builtins.rs:358-368`, comment:
 "evaluate (and drop) the message, then `unreachable`"). This RFC adds one
 always-linked, authority-free host import, `__witchy_abort`, called before the
-trap; routes every abort through it with the interpreter's exact message; and
-promotes **message parity** from "both error" to "same error text" in the
-differential harness.
+trap; routes every abort through it with the interpreter's exact diagnostic; and
+promotes error parity from "both error" to byte-for-byte diagnostic equality in
+the differential harness.
 
 ## Motivation
 
@@ -84,7 +85,7 @@ compiled path must match it — currently exempts the entire diagnostic surface.
 One new host import in the `"witchy"` module:
 
 ```
-__witchy_abort(site: i32, template: i32, a: i64, b: i64, str_ptr: i32, str_len: i32)
+__witchy_abort(template: i32, a: i64, b: i64, str_ptr: i32)
 ```
 
 The host formats the message (below) and returns a trap (`bail!`), so the
@@ -95,20 +96,21 @@ function stays stack-typed even if a host ignored the contract.
 precedent is explicit in `crates/witchy-runtime/src/runtime.rs:562-568`: the
 RFC-0023 checked-heap imports "are not capabilities — they grant no authority
 … so they are always defined." `__witchy_abort` grants strictly less than
-those: it cannot read or write guest memory beyond the `(str_ptr, str_len)`
-the guest hands it, it cannot return data to the guest (it never returns),
-and its only effect is to *terminate execution with a label* — an ability the
-guest already has via `unreachable`. It is a diagnostic channel to the host's
-own stderr, not an authority. Correspondingly it is excluded from the
+those: it cannot read or write outside guest memory; `str_ptr` names an ordinary
+witchy string whose length is read from its in-memory header. It cannot return
+data to the guest (it never returns), and its only effect is to *terminate
+execution with a label* — an ability the guest already has via `unreachable`.
+It is a diagnostic channel to the host's own stderr, not an authority.
+Correspondingly it is excluded from the
 capability footprint exactly as `heap_register` is: `witchy caps` and the
 coven widening gate never see it.
 
-### (b) Message templates — one source of truth, shared with the interpreter
+### (b) Message templates — shared in Rust, executable mirror in JavaScript
 
-The message *text* must match the interpreter's byte-for-byte, so it must not
-be written twice. Add `witchy-syntax/src/diag.rs` (every crate already
-depends on witchy-syntax): a `DiagTemplate` enum with one variant per abort
-class and one `render(&self, a, b, s) -> String` — e.g.
+The message *text* must match the interpreter's byte-for-byte. The Rust
+implementation has one owner: `witchy-syntax/src/diag.rs` (every core crate
+already depends on witchy-syntax), with a `DiagTemplate` enum per abort class
+and one `render(&self, a, b, s) -> String` — e.g.
 
 - `ListIndexOob` → `list index {a} out of bounds (length {b})`
 - `BytesIndexOob`, `StringIndexOob`, `DictMissing` … (one per interpreter
@@ -124,69 +126,63 @@ becomes a type error, not a test failure. The **wasmtime host** renders the
 template on `__witchy_abort`. The template ids are part of the compiled
 ABI (appended to the existing prelude index contract in `wir_prelude`).
 
-### (c) Site information — function from frames, line from a site table
+### (c) Site information — one packed global, derived from lowered WIR
 
 The interpreter prefixes ``runtime error: `module.func`, line N: …``
-(`rt_at_line`, `crates/witchy-interp/src/interpreter.rs:245-258`). Two
-channels recover the same on the compiled side:
+(`rt_at_line`, `crates/witchy-interp/src/interpreter.rs`). Compiled modules that
+can route an abort export one mutable `i64` global named
+`__witchy_abort_site`. Its high 32 bits are a pointer to an interned static
+witchy string containing the lexical function name; its low 32 bits are the
+source line. Zero means unavailable. The abort host reads the packed value and
+the named string before applying the shared `runtime_error` formatter. The
+four-argument host-import signature therefore stays unchanged.
 
-- **Function name — free, from the existing name section.** The
-  `__witchy_abort` host handler captures the wasm backtrace (the same frames
-  `WITCHY_WASM_BACKTRACE` prints) and takes the innermost frame that is not a
-  runtime helper (helpers are enumerable: the `wir_helpers` name list). The
-  name section already survives to the binary and wasmtime already resolves
-  frames through it — that machinery is proven; note honestly that it proves
-  *names* survive, not lines, which is why lines need their own channel.
-- **Line — a site table.** Codegen already has per-statement lines
-  (`Block.lines`, `crates/witchy-syntax/src/ast.rs:260-261`). Emit a custom
-  section `witchy.sites`: `site_id → (func_name, line)`. At each abort the
-  guest passes `site`:
-  - **Inline abort sites** (the ~5 in `codegen/mod.rs` + `fail` in
-    `builtins.rs`) know their statement: codegen assigns a fresh site id and
-    passes it as a constant.
-  - **Shared-helper sites** (the ~8 `Unreachable`s inside `wir_helpers` —
-    `list_at`'s bounds check etc. — which cannot know their caller) read a
-    mutable global `$witchy_site` that codegen sets to the call site's id
-    immediately before invoking any may-trap helper. `site = 0` means
-    "unknown" and the prefix degrades to the frame-derived function name only.
+Codegen already has a line for each source statement. After lowering one
+statement, it asks the WIR artifact whether that statement directly calls
+`__witchy_abort` or reaches it through the helper registry's transitive
+`import_deps`. If so, every abort-capable helper call receives the packed site as
+a final `i64` argument. Module assembly applies the same registry-derived rule
+to helper-to-helper calls and adds the site parameter to those helpers. A helper
+writes the exported global only immediately before its host-abort edge.
 
-Both hosts parse `witchy.sites` like the name section: pure metadata, ignored
-for execution, parity-safe.
+This placement is compositional. Nested arguments finish before the outer
+helper receives its site; a successful nested call and an async interleave do
+not mutate diagnostic state. The WIR helper registry remains the single owner
+of abort reachability, with no parallel source-operation list or custom section.
+
+Failing callees publish their more precise innermost statement; successful
+functions and closures restore the caller's complete diagnostic context in the
+interpreter. Lifted lambdas use their lexical owner, and that owner participates
+in both closure cache keys; the interpreter stores it in closure values.
+Escaping closures therefore report the function that contains their source,
+not whichever function happened to invoke them.
 
 ### (d) Message parity becomes a testable property
 
-`verify_file`'s `(Err(i), Err(c))` arm changes from unconditional agreement to
-**string equality**: when the interpreter returns `Err(msg)`, the compiled run
-must abort with the *same* `runtime error: …` text (the host's `bail!` message
-is already what `run_wasm_bytes` surfaces via `root_cause()`,
-`src/main.rs:1806-1817`). Rollout in two notches to keep the gate green while
-sites are converted:
-
-1. **Lenient**: compare only when the compiled message is non-empty (a bare
-   `unreachable` still passes) — new sites become load-bearing the moment
-   they land.
-2. **Strict** (the DoD): a bare `unreachable` reaching the host **is itself a
-   failure** in the differential suite. Every abort must be routed. The
-   capability-refusal precedent shows this end state is achievable: `` `..`
-   escapes the Dir capability`` already prints identically on both backends
-   because the message is produced host-side once.
+`parity_check`'s `(Err(i), Err(c))` arm uses exact string equality. The complete
+diagnostic must match, including `runtime error:`, lexical function, source line,
+message class, and dynamic values. This strict rule applies to every both-error
+pair, not only routed runtime aborts: a bare Wasm trap, missing source location,
+or backend-specific rejection is a divergence. The host's `bail!` root cause is
+the string `run_wasm_bytes` exposes, without wasmtime's wrapper.
 
 This closes the occurrence-vs-semantics gap: a compiled backend that traps at
 the wrong site or for the wrong reason now diverges loudly.
 
 ### (e) The browser shim
 
-The pure-compute shim (`web/witchy-runtime/witchy-runtime.mjs`) adds
-`__witchy_abort` to its non-capability import set (it sits beside `print` in
-the "pure modules" tier — same authority argument as (a), and it must be
-present or every footprint-empty module that can abort fails to instantiate).
-The handler renders the template and throws a JS `Error` whose `.message` is
-the same `runtime error: …` string; the existing shim tests gain an abort
-case asserting the text matches a committed oracle. Templates are **not**
-hand-mirrored in JS: the compiler emits the rendered template *format strings*
-into a `witchy.templates` custom section, and both hosts (Rust and JS)
-substitute `{a}`/`{b}`/`{s}` from that section — the compiler stays the single
-source of truth.
+The pure-compute shim (`web/witchy-runtime/witchy-runtime.mjs`) provides
+`__witchy_abort` in its non-capability import set (it sits beside `print` in the
+pure tier, under the same authority argument as (a)). The handler reads the
+packed exported site, renders the template, and throws a JS `Error` whose
+`.message` is the complete `runtime error: …` diagnostic.
+
+JavaScript deliberately mirrors the small `DiagTemplate::render` switch rather
+than shipping a custom format-string section and parser in every module. A
+compiled browser test exercises every pure template, dynamic hole, nested named
+function, and escaping lambda against committed complete-message oracles. The
+capability-only `SecretRequired` template is pinned on the native path; the pure
+browser cannot instantiate the capability program that reaches it.
 
 ### (f) `WITCHY_WASM_BACKTRACE` stays, and gets documented
 
@@ -197,18 +193,17 @@ documented nowhere user-facing).
 
 ### Binary-size cost
 
-Message bodies are host-side templates: **zero guest bytes** per message. The
-guest cost is the site table (~8 bytes/site plus shared name references) and
-one `i32.const; global.set` before each may-trap helper call. Abort sites at
-HEAD: 13 static emission sites (1 in `codegen/builtins.rs`, 4 in
-`codegen/mod.rs`, 8 in `wir_helpers`) plus one site per user `fail`/`match`
-lowering — order tens to low hundreds of table entries for a large program,
-i.e. well under a kilobyte against multi-hundred-KB binaries. `fail`'s dynamic
-strings are already interned in the data segment today (they are evaluated,
-just dropped); no new data. The `global.set` on hot paths (`list.at`) is the
-one measurable risk — gate the merge on the benchmark suite's kernel-clock
-numbers staying within noise; if it doesn't, fall back to site-id-as-argument
-threading for the two hottest helpers only.
+Message bodies remain host-side templates: **zero guest bytes** per static
+message. There is no site table. A module that can route an abort gains one
+exported mutable `i64`, interned lexical-owner strings, and one trailing `i64`
+site argument at each abort-capable helper call. The global write executes only
+inside the failing branch, immediately before the host abort. Bounds-elided
+operations have no abort dependency and pay neither cost. `fail`'s dynamic
+strings were already in the data segment. The extra constant argument on hot
+calls such as `list.at` is the measurable risk; benchmark results must stay
+within noise before merge. Static nonzero remainder divisors, and division
+divisors other than `0`/`-1`, retain raw Wasm operations because the compiler can
+prove those cases cannot reach a diagnostic edge.
 
 ## Alternatives
 
@@ -224,10 +219,12 @@ threading for the two hottest helpers only.
   (Clock/Rand), and silently reports the *wrong* message whenever the two
   backends disagree — which is precisely the case the harness exists to catch.
 - **Full message strings in guest data segments** (no host templates). Works,
-  but duplicates every message body per binary, forfeits the shared-template
-  parity-by-construction with the interpreter, and makes the JS shim a third
-  copy. The template-table-index scheme *is* the adopted design; this is the
-  heavier variant it replaces.
+  but duplicates every message body per binary and forfeits the shared Rust
+  renderer. Stable template ids with host rendering are smaller.
+- **`witchy.sites` / `witchy.templates` custom sections.** They avoid the small
+  JavaScript mirror, but require two metadata formats and parsers in every host
+  while still needing mutable call-site state for shared helpers. The packed
+  global plus an executable browser matrix is the smaller 0.1 contract.
 - **DWARF/source-map debug info.** Gives lines "for free" in devtools-class
   hosts, but is large, unsupported in the pure shim, and still carries no
   dynamic message. Complementary at best; not this.
@@ -237,17 +234,20 @@ threading for the two hottest helpers only.
 
 ## Drawbacks
 
-- **A new ABI surface.** `__witchy_abort` + two custom sections + the
-  `$witchy_site` global become part of the compiled contract; the prelude
-  index seam (already flagged as fragile in the 0037-era notes) gains
-  template-id constants. Mitigated by the differential gate: any skew between
-  compiler and host is an immediate strict-mode failure.
+- **A new ABI surface.** `__witchy_abort`, stable template ids, and the packed
+  `__witchy_abort_site` global are part of the compiled contract. Mitigated by
+  the exact differential gate and browser matrix: compiler/host skew fails
+  immediately.
 - **Every host must implement it.** wasmtime runtime, browser shim, and any
   future embedder. The always-linked choice means an embedder that forgets it
   fails at instantiation (loud), not at first abort (silent) — that is the
   right failure mode, but it is still a checklist item.
-- **Hot-path cost of the site global** — small but nonzero; bounded by the
-  benchmark gate above, with a named fallback.
+- **Hot-path cost of site propagation** — one extra `i64` constant argument on
+  an abort-capable helper call; the global write is failure-only. The argument
+  cost is small but nonzero and benchmark-gated.
+- **A small host mirror remains in JavaScript.** Native code and the interpreter
+  share the Rust renderer; the dependency-free browser host duplicates the
+  template switch. Its compiled-abort matrix is therefore part of the ABI gate.
 - **The interpreter refactor is wide**: every abort-class `format!` site moves
   to templates. Mechanical, but it touches the most-trusted artifact in the
   repo; the message-pinned tests (79 of them) are the net.
@@ -261,9 +261,9 @@ threading for the two hottest helpers only.
   `unreachable` without a handler) and the same solution shape — an imported
   hook (`panic_hook` / `console_error_panic_hook`) that carries the message
   out before the trap.
-- **wasmtime's trap backtraces + the name section** — the frames half of this
-  design, already shipped here for `WITCHY_WASM_BACKTRACE` (see the coven
-  publish OOB debugging record).
+- **wasmtime's trap backtraces + the name section** — retained as the optional
+  full-frame debugging layer under `WITCHY_WASM_BACKTRACE`; source identity for
+  the primary diagnostic uses the packed site instead.
 - **RFC-0023's checked-heap imports** — the in-repo precedent that a
   no-authority diagnostic import may be always-linked without violating
   deny-by-omission.

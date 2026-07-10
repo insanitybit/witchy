@@ -182,6 +182,32 @@ fn main() -> Float:
     }
 
     #[test]
+    fn integer_min_remainder_negative_one_is_zero() {
+        assert_eq!(
+            run_int(
+                "fn main() -> Int:\n    let min = (0 - 9223372036854775807) - 1\n    min % (0 - 1)\n"
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn literal_nontrapping_integer_divisors_stay_raw() {
+        let module = parse_module(
+            "fn main() -> Int:\n    let quotient = 9 / 3\n    quotient + (7 % 4)\n",
+        )
+        .expect("parse");
+        let wir = assemble_wir_module(&module)
+            .expect("assemble")
+            .expect("the binary path lowers this program");
+        let wat = witchy_wir::wir::to_wat(&wir);
+        assert!(wat.contains("i64.div_s"));
+        assert!(wat.contains("i64.rem_s"));
+        assert!(!wat.contains("(func $int_div"));
+        assert!(!wat.contains("(func $int_rem"));
+    }
+
+    #[test]
     fn float_record_field_compiles() {
         // 8-byte heap slots hold an f64 field; float_to_int reads it back.
         let src = r#"
@@ -250,6 +276,20 @@ fn main() -> Int:
     apply(fn(n: Int): (dbl(n) + 1), 4)
 "#;
         assert_eq!(run_int(src), 9); // dbl(4) + 1
+    }
+
+    #[test]
+    fn lambda_diagnostic_identity_includes_its_source_owner() {
+        let module = parse_module("fn main():\n    let f = fn(n: Int): n + 1\n    f(1)\n").unwrap();
+        let Item::Function(main) = &module.items[0] else { panic!("function") };
+        let Stmt::Let { value: Expr::Lambda { params, body, .. }, .. } = &main.body.stmts[0] else {
+            panic!("lambda binding")
+        };
+
+        assert_ne!(
+            Codegen::lambda_content_key("left.make", params, body),
+            Codegen::lambda_content_key("right.make", params, body)
+        );
     }
 
     #[test]

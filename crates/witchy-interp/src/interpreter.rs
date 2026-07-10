@@ -75,9 +75,11 @@ pub enum Value {
     /// A listening server socket — a handle into the interpreter's listener
     /// table. Obtained from `net.listen(addr)`; `accept` blocks for a `Socket`.
     Listener(usize),
-    /// A first-class function (closure): its parameters, body, and the
-    /// environment captured where it was defined.
+    /// A first-class function (closure): its source owner, parameters, body,
+    /// and the environment captured where it was defined. `owner` keeps a
+    /// runtime error's function name paired with the body line that produced it.
     Closure {
+        owner: String,
         params: Vec<Param>,
         body: Block,
         env: Box<Env>,
@@ -957,7 +959,8 @@ impl Interpreter {
                 param.convention.binds_mutable(),
             );
         }
-        let prev = std::mem::replace(&mut self.cur_fn, name.to_string());
+        let prev_fn = std::mem::replace(&mut self.cur_fn, name.to_string());
+        let prev_line = self.cur_line;
         self.depth += 1;
         if self.depth > self.depth_limit {
             self.depth -= 1;
@@ -965,10 +968,13 @@ impl Interpreter {
         }
         let result = finish(self.eval_block(&func.body, &mut env));
         self.depth -= 1;
-        // On success, restore the caller's name; on error, keep this one so the
-        // innermost failing function is reported.
+        // On success, restore the caller's complete source context. On error,
+        // keep this function and its last line so the innermost failure is
+        // reported. Restoring only the name paired caller names with callee lines
+        // after a successful nested call.
         if result.is_ok() {
-            self.cur_fn = prev;
+            self.cur_fn = prev_fn;
+            self.cur_line = prev_line;
         }
         result
     }
@@ -987,7 +993,7 @@ impl Interpreter {
     /// captured environment (plus a fresh scope for the parameters), and its body
     /// is a function boundary, so a `?` inside it returns from the closure.
     fn apply_closure(&mut self, clo: Value, argvals: Vec<Value>) -> Result<Value, Flow> {
-        let Value::Closure { params, body, env } = clo else {
+        let Value::Closure { owner, params, body, env } = clo else {
             return err("attempted to call a non-function value");
         };
         if params.len() != argvals.len() {
@@ -1007,8 +1013,14 @@ impl Interpreter {
             self.depth -= 1;
             return err("call stack too deep (possible infinite recursion)");
         }
+        let prev_fn = std::mem::replace(&mut self.cur_fn, owner);
+        let prev_line = self.cur_line;
         let result = self.eval_block(&body, &mut cenv);
         self.depth -= 1;
+        if matches!(&result, Ok(_) | Err(Flow::Return(_))) {
+            self.cur_fn = prev_fn;
+            self.cur_line = prev_line;
+        }
         match result {
             Ok(v) | Err(Flow::Return(v)) => Ok(v),
             Err(e @ Flow::Err(_)) => Err(e),
@@ -1113,7 +1125,8 @@ impl Interpreter {
         }
         // The callee's own `?` early-return stops here; it becomes the call's
         // value rather than propagating into the caller.
-        let prev = std::mem::replace(&mut self.cur_fn, name.to_string());
+        let prev_fn = std::mem::replace(&mut self.cur_fn, name.to_string());
+        let prev_line = self.cur_line;
         self.depth += 1;
         if self.depth > self.depth_limit {
             self.depth -= 1;
@@ -1130,6 +1143,8 @@ impl Interpreter {
                 return err("`break`/`continue` outside a loop")
             }
         };
+        self.cur_fn = prev_fn;
+        self.cur_line = prev_line;
         for (caller, param_name) in writebacks {
             let final_v = fenv.get(&param_name).cloned().unwrap();
             match env.assign(&caller, final_v) {
@@ -1144,7 +1159,6 @@ impl Interpreter {
                 }
             }
         }
-        self.cur_fn = prev;
         Ok(result)
     }
 
@@ -1316,7 +1330,7 @@ impl Interpreter {
                 Value::Bytes(b) => Ok(Some(Value::Int(b.len() as i64))),
                 other => err(format!("bytes.length expects Bytes, got `{other}`")),
             },
-            "__bytes_at" => match args {
+            "__bytes_at" | "bytes.at" => match args {
                 [Value::Bytes(b), Value::Int(i)] => match b.get(*i as usize) {
                     Some(byte) => Ok(Some(Value::Int(*byte as i64))),
                     None => err(DiagTemplate::BytesIndexOob.render(*i, b.len() as i64, "")),
@@ -2596,6 +2610,7 @@ impl Interpreter {
                     // (top-level functions are closed; nested calls resolve
                     // through the global function table at apply time).
                     Some(func) => Ok(Value::Closure {
+                        owner: name.clone(),
                         params: func.params.clone(),
                         body: func.body.clone(),
                         env: Box::new(Env::new()),
@@ -2652,6 +2667,7 @@ impl Interpreter {
                     }
                 });
                 Ok(Value::Closure {
+                    owner: self.cur_fn.clone(),
                     params: params.clone(),
                     body: body.clone(),
                     env: Box::new(env.capture(&mentioned)),
@@ -2929,13 +2945,6 @@ fn match_pattern(pat: &Pattern, value: &Value, env: &mut Env) -> bool {
     }
 }
 
-/// Build an "integer overflow" error producer for the given operator.
-fn over(op: &str) -> impl FnOnce() -> RuntimeError + '_ {
-    move || RuntimeError {
-        message: format!("integer overflow in `{op}`"),
-    }
-}
-
 fn eval_binary(op: BinOp, l: Value, r: Value) -> Result<Value, RuntimeError> {
     use BinOp::*;
     use Value::{Float, Int, Str};
@@ -2951,8 +2960,10 @@ fn eval_binary(op: BinOp, l: Value, r: Value) -> Result<Value, RuntimeError> {
             (Add, Int(a), Int(b)) => Ok(Int(a.wrapping_add(b))),
             (Sub, Int(a), Int(b)) => Ok(Int(a.wrapping_sub(b))),
             (Mul, Int(a), Int(b)) => Ok(Int(a.wrapping_mul(b))),
-            (Div, Int(_), Int(0)) => err("division by zero"),
-            (Div, Int(a), Int(b)) => a.checked_div(b).map(Int).ok_or_else(over("/")),
+            (Div, Int(_), Int(0)) => err(DiagTemplate::DivisionByZero.render(0, 0, "")),
+            (Div, Int(a), Int(b)) => a.checked_div(b).map(Int).ok_or_else(|| RuntimeError {
+                message: DiagTemplate::DivisionOverflow.render(0, 0, ""),
+            }),
             (Add, Float(a), Float(b)) => Ok(Float(a + b)),
             (Sub, Float(a), Float(b)) => Ok(Float(a - b)),
             (Mul, Float(a), Float(b)) => Ok(Float(a * b)),
@@ -2960,7 +2971,7 @@ fn eval_binary(op: BinOp, l: Value, r: Value) -> Result<Value, RuntimeError> {
             (_, a, b) => err(format!("cannot apply arithmetic to `{a}` and `{b}`")),
         },
         Mod => match (l, r) {
-            (Int(_), Int(0)) => err("modulo by zero"),
+            (Int(_), Int(0)) => err(DiagTemplate::ModuloByZero.render(0, 0, "")),
             (Int(a), Int(b)) => Ok(Int(a.wrapping_rem(b))),
             (a, b) => err(format!("`%` expects two Ints, got `{a}` and `{b}`")),
         },

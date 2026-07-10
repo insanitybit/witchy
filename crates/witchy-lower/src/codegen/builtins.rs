@@ -442,17 +442,19 @@ impl Codegen {
             // `fail(msg)`: a deliberate, loud abort. (RFC-0045) The message is no
             // longer dropped — it is handed to the always-linked, authority-free
             // `__witchy_abort` host import (the `Fail` template passes the string
-            // through verbatim), which renders `runtime error: <msg>` and traps.
-            // The `unreachable` after keeps the Seq stack-typed (the call never
-            // returns); the trailing `i32.const 0` is dead code satisfying the type.
+            // through verbatim), which renders the full runtime diagnostic and
+            // traps. Evaluate the message into a scratch first; site propagation
+            // inserts the packed global write immediately before the host abort,
+            // after any nested calls in the message have returned.
             ("fail", 1) => {
                 let msg = self.lower_expr(&args[0])?;
-                let mut nodes = witchy_wir::wir_helpers::abort_nodes(
+                let mut nodes = vec![N::SetLocal { local: ABORT_STR_TMP.into(), value: msg }];
+                nodes.extend(witchy_wir::wir_helpers::abort_nodes(
                     witchy_syntax::diag::DiagTemplate::Fail,
                     W::ConstI64(0),
                     W::ConstI64(0),
-                    msg,
-                );
+                    W::GetLocal(ABORT_STR_TMP.into()),
+                ));
                 nodes.push(witchy_wir::wir::WirNode::Push(W::ConstI32(0)));
                 W::Seq(nodes)
             }
@@ -867,7 +869,7 @@ impl Codegen {
                     Kind::I64,
                 )
             }
-            ("__bytes_at", 2) => {
+            ("__bytes_at", 2) | ("bytes.at", 2) => {
                 // Bounds-checked byte read via the `$bytes_at` helper: trap on
                 // `i < 0 || i >= len`, matching the interpreter's "bytes index out
                 // of bounds" error. (An unchecked `load8_u` here used to silently

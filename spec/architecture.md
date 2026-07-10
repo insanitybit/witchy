@@ -58,8 +58,9 @@ The interpreter defines the semantics; the compiled backend must agree —
 **zero silent divergence**, including error paths. This is the project's core
 engineering invariant, enforced by:
 
-- `witchy parity <file>`: runs both backends and compares; both-error counts
-  as agreement, an error/value split is a reported divergence.
+- `witchy parity <file>`: runs both backends and compares values and complete
+  error diagnostics byte-for-byte. An error/value split, different errors, or a
+  missing compiled source location is a reported divergence.
 - Hundreds of differential unit tests plus property-based tests (proptest).
 - A CI sweep running `parity` over every example.
 

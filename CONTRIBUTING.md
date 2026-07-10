@@ -48,13 +48,15 @@ a differential test (`assert_eq!(interp(src), ...); assert_eq!(run_on_wasm(src),
 in `src/example_tests.rs`). If a backend genuinely can't support it
 yet, make it a **loud error** there — never a silently different answer.
 Behavior that errors should error on *both* backends (the parity tool checks
-error paths too) — and with the **same message** (RFC-0045): a runtime abort
-(out-of-bounds index, `string.to_int` junk, `NaN` ordering, `fail(msg)`) carries
-the interpreter's exact text on the compiled backend via the always-linked,
-authority-free `__witchy_abort` import, and the harness compares the message core.
-Improving an abort's wording is therefore a two-backend change through the shared
-templates in `crates/witchy-syntax/src/diag.rs` (`DiagTemplate`) — never edit one
-backend's `format!` alone. When debugging a compiled trap, set
+error paths too) — and with the **same complete diagnostic** (RFC-0045): a
+runtime abort (out-of-bounds index, integer division/modulo failure,
+`string.to_int` junk, `NaN` ordering, `fail(msg)`) carries the interpreter's
+exact text on the compiled backend via the always-linked, authority-free
+`__witchy_abort` import. The harness compares that diagnostic byte-for-byte,
+including lexical function and source line. Improving an abort's wording is
+therefore a shared-template change in
+`crates/witchy-syntax/src/diag.rs` (`DiagTemplate`) plus the pinned browser mirror
+— never edit one backend's formatter alone. When debugging a compiled trap, set
 `WITCHY_WASM_BACKTRACE=1` to dump the full named-frame wasm backtrace beneath the
 message (the message itself always prints).
 

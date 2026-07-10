@@ -123,6 +123,11 @@ const SECRET_TMP: &str = "__witchy_secret_tmp";
 /// eager not-granted abort message (BUG-394).
 const SECRET_NAME_TMP: &str = "__witchy_secret_name_tmp";
 
+/// Scratch i32 slot holding `fail`'s evaluated string pointer. The source site
+/// is published only after the message expression returns, so a nested call in
+/// that expression cannot overwrite the outer abort's location.
+const ABORT_STR_TMP: &str = "__witchy_abort_str_tmp";
+
 /// (RFC-0037 §3) Scratch i32 local holding a record pointer under `WITCHY_TYPE_CHECK`, so the
 /// type-tag check and the field load share one evaluation of the base.
 const TYPECHECK_TMP: &str = "__witchy_typecheck_tmp";
@@ -604,6 +609,9 @@ struct Codegen {
     cur_fn_has_type_vars: bool,
     /// The function being compiled, for error context.
     cur_fn_name: String,
+    /// Whether any lowered statement propagates a source site to a routed abort.
+    /// The module assembler uses this to declare the failure-only exported global.
+    uses_abort_sites: bool,
     /// Phase 0 (rfcs/language-evolution.md): typeck's resolved types for the
     /// EXACT module instance being compiled — the authoritative fallback
     /// wherever the local tracking maps come up empty.
@@ -905,13 +913,15 @@ struct Codegen {
     /// twin of `lambdas`. Each is a `WirFunc $__lamw{i}`; the closure object
     /// stores `i` as its code index and `CallIndirect` uses it as the table slot.
     lambda_wir_funcs: Vec<witchy_wir::wir::WirFunc>,
-    /// Maps a lambda's content hash to its index in `lambda_wir_funcs`, so the
-    /// many lowering passes register each lambda exactly once (idempotent).
+    /// Maps a lambda's source-owner/content hash to its index in
+    /// `lambda_wir_funcs`, so the many lowering passes register each lambda
+    /// exactly once (idempotent).
     lambda_wir_index: HashMap<u64, usize>,
-    /// (RFC-0062) Maps an ELIDED closure lambda's content hash to its THREADED lifted
-    /// body index (a `$__lamt{i}` in `lambda_wir_funcs`), so an identical tier-1 lambda
-    /// registers one threaded body across the many lowering passes. A global registry
-    /// like `lambda_wir_index` (NOT scope-saved).
+    /// (RFC-0062) Maps an ELIDED closure lambda's owner/content hash to its
+    /// THREADED lifted body index (a `$__lamt{i}` in `lambda_wir_funcs`), so an
+    /// identical tier-1 lambda registers one threaded body across the many
+    /// lowering passes. A global registry like `lambda_wir_index` (NOT
+    /// scope-saved).
     lambda_threaded_index: HashMap<u64, usize>,
     /// Generated per-shape `to_string` renderers, keyed by `EqShape::id` (a
     /// `ts_` prefix on the function name). Parallels `eq_helpers`: each compound
@@ -1018,6 +1028,7 @@ impl Codegen {
             cur_fn_own_param: None,
             cur_fn_has_type_vars: false,
             cur_fn_name: String::new(),
+            uses_abort_sites: false,
             type_table: witchy_types::typeck::TypeTable::default(),
             uses_list_push_cap: false,
             field_caps: HashSet::new(),
@@ -2035,6 +2046,7 @@ impl Codegen {
         }
         locals.push(WirLocal { name: SECRET_TMP.into(), ty: i32t() });
         locals.push(WirLocal { name: SECRET_NAME_TMP.into(), ty: i32t() });
+        locals.push(WirLocal { name: ABORT_STR_TMP.into(), ty: i32t() });
         // Scratch slots for the inlined in-place `set_at` fast path (index i32,
         // value i64): the common in-bounds + owned case stores directly without a
         // `$list_set_cap` call; the helper is only invoked for OOB / re-own.
@@ -2340,6 +2352,7 @@ impl Codegen {
         let mut seq: witchy_wir::wir::WirSeq = Vec::with_capacity(block.stmts.len() + 1);
         let mut tail_is_value = false;
         for (i, stmt) in block.stmts.iter().enumerate() {
+            let stmt_start = seq.len();
             match stmt {
                 Stmt::Let { name, value, .. } => {
                     // (RFC-0035 step 3) If this binds a dup-eligible container read
@@ -2490,7 +2503,7 @@ impl Codegen {
                         // `call` instead of `call_indirect` (see the closure-call arms).
                         if self.collect_wir && self.devirt_ok.contains(name) {
                             if let Expr::Lambda { params, body, .. } = value {
-                                let key = Self::lambda_content_key(params, body);
+                                let key = Self::lambda_content_key(&self.cur_fn_name, params, body);
                                 if let Some(&idx) = self.lambda_wir_index.get(&key) {
                                     self.devirt_index.insert(name.clone(), idx);
                                 }
@@ -3327,6 +3340,22 @@ impl Codegen {
                 }
                 // Yield → legacy (rewritten away before codegen anyway).
                 _ => return None,
+            }
+            // Derive source-site propagation from the lowered artifact, not from
+            // a second list of language operations. Abort-capable helpers receive
+            // the packed site as a final argument and publish it only on their
+            // actual abort edge; successful nested calls therefore cannot stale
+            // an outer operation's location.
+            if assembly::wir_seq_calls_abort(&seq[stmt_start..]) {
+                let func = self.cur_fn_name.clone();
+                let func_ptr = self.intern(&func);
+                let line = block.lines.get(i).copied().filter(|line| *line != u32::MAX).unwrap_or(0);
+                let site = witchy_syntax::diag::pack_site(func_ptr, line);
+                let mut stmt_seq = seq.split_off(stmt_start);
+                let attached = assembly::attach_abort_sites(&mut stmt_seq, site);
+                debug_assert!(attached, "detected abort path must accept a source site");
+                seq.extend(stmt_seq);
+                self.uses_abort_sites = true;
             }
             // Reset the cap of any inplace_push var killed AFTER this statement
             // (binary path), positioned here in the seq. Read-only — the kills
@@ -4915,6 +4944,25 @@ impl Codegen {
                 } else {
                     Kind::I32
                 };
+                // A literal divisor proves the Wasm op cannot trap in the common
+                // cases: remainder needs only nonzero; signed division also has
+                // the `Int::MIN / -1` overflow edge. Keep those proven-safe ops
+                // raw so tight arithmetic/index loops do not pay a helper call.
+                let rhs_proves_nontrapping = match (*op, rhs.as_ref()) {
+                    (BinOp::Mod, Expr::Int(n)) => *n != 0,
+                    (BinOp::Div, Expr::Int(n)) => *n != 0 && *n != -1,
+                    _ => false,
+                };
+                if self.collect_wir
+                    && ck == Kind::I64
+                    && matches!(op, BinOp::Div | BinOp::Mod)
+                    && !rhs_proves_nontrapping
+                {
+                    let func = if *op == BinOp::Div { "int_div" } else { "int_rem" };
+                    let lhs_w = Self::wir_convert(self.lower_expr(lhs)?, lk, ck);
+                    let rhs_w = Self::wir_convert(self.lower_expr(rhs)?, rk, ck);
+                    return Some(W::Call { func: func.into(), args: vec![lhs_w, rhs_w] });
+                }
                 // The plain numeric path only. Every special case returns `None` so
                 // the legacy arm keeps its exact emission.
                 let wop = match op {
@@ -5313,15 +5361,18 @@ impl Codegen {
 
     /// Lower a lambda to its closure-object creation expression (the `$mk{c}` call
     /// producing `[code_index][caps..]`), registering the lifted body `WirFunc` in
-    /// `lambda_wir_funcs` once (idempotent by content hash). `None` (the program is
-    /// then rejected as unsupported) when the lambda assigns a captured var or its
-    /// body doesn't fully lower.
-    /// The content hash keying a lambda's idempotent registration (and the
-    /// `lambda_wir_index` lookup the devirt binding-recorder reuses to recover the
-    /// `$__lamw{i}` index a `let f = <lambda>` was assigned).
-    fn lambda_content_key(params: &[Param], body: &Block) -> u64 {
+    /// `lambda_wir_funcs` once (idempotent by owner/content hash). `None` (the
+    /// program is then rejected as unsupported) when the lambda assigns a
+    /// captured var or its body doesn't fully lower.
+    /// The source-owner/content hash keying a lambda's idempotent registration
+    /// (and the `lambda_wir_index` lookup the devirt binding-recorder reuses to recover the
+    /// `$__lamw{i}` index a `let f = <lambda>` was assigned). The owner is
+    /// diagnostic identity: identical bodies in two functions carry different
+    /// source function names and therefore cannot share one lifted body.
+    fn lambda_content_key(owner: &str, params: &[Param], body: &Block) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
+        owner.hash(&mut h);
         format!("{params:?}{body:?}").hash(&mut h);
         h.finish()
     }
@@ -5373,9 +5424,9 @@ impl Codegen {
             .collect();
         let ncaps = cap_info.len();
 
-        // Idempotent registration: the same lambda (by content) gets one lifted
-        // body + one stable table index across the many lowering passes.
-        let key = Self::lambda_content_key(params, body);
+        // Idempotent registration: the same lambda (by source owner and content)
+        // gets one lifted body + one stable table index across lowering passes.
+        let key = Self::lambda_content_key(&self.cur_fn_name, params, body);
         let index = if let Some(&i) = self.lambda_wir_index.get(&key) {
             i
         } else {
@@ -5439,8 +5490,9 @@ impl Codegen {
                 kind,
             ));
         }
-        // Idempotent registration: an identical elided lambda shares one `$__lamt{i}`.
-        let key = Self::lambda_content_key(params, body);
+        // Idempotent registration: an identical, same-owner elided lambda shares
+        // one `$__lamt{i}`.
+        let key = Self::lambda_content_key(&self.cur_fn_name, params, body);
         let index = if let Some(&i) = self.lambda_threaded_index.get(&key) {
             i
         } else {
@@ -5602,6 +5654,7 @@ impl Codegen {
                 }
                 locals.push(WirLocal { name: SECRET_TMP.into(), ty: i32t() });
                 locals.push(WirLocal { name: SECRET_NAME_TMP.into(), ty: i32t() });
+                locals.push(WirLocal { name: ABORT_STR_TMP.into(), ty: i32t() });
                 // Scratch slots for the inlined in-place set_at/push fast path (a
                 // self-assign accumulator can live inside a lifted lambda body too).
                 locals.push(WirLocal { name: "__witchy_set_idx".into(), ty: i32t() });

@@ -1769,9 +1769,9 @@ fn run_tests_in_module(
         // that actually runs in production. A `test_*` is nullary (no capability
         // params), so the synthesized `main` needs no grants. A `testing.assert` /
         // `fail_with` lowers to `__witchy_abort`, which `run_wasm_bytes` surfaces as
-        // the same `runtime error: <core>` the interpreter produced (RFC-0045 message
-        // parity), so a failure reads identically. A module that does not lower is
-        // itself a failure: the test cannot run where it ships.
+        // the same location-prefixed `runtime error` the interpreter produced
+        // (RFC-0045 message parity), so a failure reads identically. A module
+        // that does not lower is itself a failure: the test cannot run where it ships.
         let outcome = match codegen::compile_module_binary(&m) {
             Ok(Some(bytes)) => run_wasm_bytes(&bytes).map(|_| ()),
             Ok(None) => Err("does not lower to the compiled backend (WASM)".to_string()),
@@ -1874,53 +1874,11 @@ fn run_tests(path: &str) -> Result<bool, String> {
     Ok(total_fail == 0)
 }
 
-/// (RFC-0045) Extract the *core* of a routed runtime-abort message for message
-/// parity: the text after the `runtime error: ` marker, with the interpreter's
-/// `` `func`, line N: `` location prefix (which the compiled backend does not yet
-/// reproduce — the site table is a deferred channel) stripped. Returns `None` for
-/// a message that is not a `runtime error: …` (a bare wasm trap, a capability
-/// refusal, a parse/type error), so only genuinely routed aborts are compared.
-fn abort_core(msg: &str) -> Option<String> {
-    let rest = msg.strip_prefix("runtime error: ")?;
-    Some(strip_location_prefix(rest).to_string())
-}
-
-/// Strip the interpreter's EXACT `rt_at_line` location prefix — `` `<func>`, line
-/// <N>: `` (func nonempty) or `line <N>: ` (func empty) — from the front of a
-/// runtime-error body, leaving the message core. The match is precise (a
-/// backtick-delimited name, the literal `, line `, one-or-more digits, then `: `)
-/// so a `fail` message that itself contains backticks or `": "` is never
-/// mis-stripped. Returns the input unchanged when no such prefix is present (the
-/// compiled backend does not yet emit one — the site table is deferred).
-fn strip_location_prefix(rest: &str) -> &str {
-    // `` `<func>`, line <N>: ``
-    if let Some(after_tick) = rest.strip_prefix('`') {
-        if let Some((_func, tail)) = after_tick.split_once('`') {
-            if let Some(after_line) = tail.strip_prefix(", line ") {
-                if let Some(core) = split_after_line_number(after_line) {
-                    return core;
-                }
-            }
-        }
-    }
-    // `line <N>: `
-    if let Some(after_line) = rest.strip_prefix("line ") {
-        if let Some(core) = split_after_line_number(after_line) {
-            return core;
-        }
-    }
-    rest
-}
-
-/// Given the text right after `line ` (i.e. starting with the line number),
-/// consume the digits and a following `: `, returning the remaining core. `None`
-/// if the shape doesn't match (no digit, or no `: ` after the number).
-fn split_after_line_number(s: &str) -> Option<&str> {
-    let ndigits = s.bytes().take_while(u8::is_ascii_digit).count();
-    if ndigits == 0 {
-        return None;
-    }
-    s[ndigits..].strip_prefix(": ")
+/// Failure diagnostics are observable backend behavior, so "both errored" is
+/// agreement only when the complete messages agree. This rejects bare Wasm
+/// traps, missing source locations, and backend-specific host failures alike.
+fn backend_errors_agree(interp: &str, compiled: &str) -> bool {
+    interp == compiled
 }
 
 /// Exit codes for `witchy parity` — distinct so gate scripts branch on the code,
@@ -1951,7 +1909,7 @@ fn seeded_divergence_armed() -> bool {
 enum ParityOutcome {
     /// Both backends produced equal output. Carries the compared line count.
     Agree { compared: usize, message: String },
-    /// Both backends errored and agree (same routed abort core, or unrouted).
+    /// Both backends errored with byte-for-byte identical diagnostics.
     BothErrorAgree { message: String },
     /// The backends diverge. `compared` is the matched-prefix line count.
     Diverge { compared: usize, message: String },
@@ -2002,7 +1960,7 @@ impl ParityOutcome {
 /// Run `path` on both backends and classify the result into one of the four
 /// `ParityOutcome`s. The compiled and interpreter runs happen regardless of either
 /// failing (a trap on one side and a value on the other is itself a divergence), and
-/// the abort-core comparison closes the routed-message gap (RFC-0045). This is the
+/// exact error comparison closes the routed-diagnostic gap (RFC-0045). This is the
 /// oracle the differential fuzzer and the example sweep drive as `witchy parity`.
 fn parity_check(path: &str) -> ParityOutcome {
     use std::path::Path;
@@ -2061,7 +2019,7 @@ fn parity_check(path: &str) -> ParityOutcome {
     });
     let interp = interpreter::run_module(linked, Path::new("."), Vec::new()).map_err(|e| e.to_string());
     let compiled = match &unmintable {
-        Some(msg) => Err(msg.clone()),
+        Some(msg) => Err(witchy_syntax::diag::runtime_error("", 0, msg)),
         None => run_wasm_bytes(&bytes).map(|mut lines| {
             if main_returns_int {
                 lines.pop();
@@ -2102,25 +2060,18 @@ fn parity_check(path: &str) -> ParityOutcome {
                 ),
             }
         }
-        // Both fail: they agree on rejecting this input. (RFC-0045, message parity
-        // — lenient notch) When the compiled backend surfaced a ROUTED abort
-        // (`runtime error: <core>` via `__witchy_abort`), its message core must
-        // MATCH the interpreter's core (same abort class, same dynamic data) — a
-        // compiled trap at the wrong site or for the wrong reason now diverges
-        // loudly, closing the occurrence-vs-semantics gap. An unrouted site (a bare
-        // wasm `unreachable` trap, or a non-`runtime error:` message) still passes,
-        // so sites become load-bearing as they are routed.
+        // Both fail: exact diagnostic parity is mandatory. A bare Wasm trap,
+        // missing source location, or different host refusal is a divergence,
+        // not "both error" agreement (RFC-0045 strict).
         (Err(i), Err(c)) => {
-            if let (Some(ic), Some(cc)) = (abort_core(&i), abort_core(&c)) {
-                if ic != cc {
-                    return ParityOutcome::Diverge {
-                        compared: 0,
-                        message: format!(
-                            "\u{2717} {path}: the two backends DIVERGE on the abort message\n  \
-                             interpreter core: {ic:?}\n  compiled core:    {cc:?}"
-                        ),
-                    };
-                }
+            if !backend_errors_agree(&i, &c) {
+                return ParityOutcome::Diverge {
+                    compared: 0,
+                    message: format!(
+                        "\u{2717} {path}: the two backends DIVERGE on the error diagnostic\n  \
+                         interpreter: {i:?}\n  compiled:    {c:?}"
+                    ),
+                };
             }
             ParityOutcome::BothErrorAgree {
                 message: format!("\u{2713} {path}: interpreter and compiled WASM agree (both error)"),
@@ -2138,6 +2089,21 @@ fn parity_check(path: &str) -> ParityOutcome {
                 "\u{2717} {path}: the two backends DIVERGE\n  interpreter: Err({i})\n  compiled:    Ok({c:?})"
             ),
         },
+    }
+}
+
+#[cfg(test)]
+mod runtime_parity_tests {
+    use super::backend_errors_agree;
+
+    #[test]
+    fn backend_errors_require_full_diagnostic_parity() {
+        let full = "runtime error: `main`, line 3: division by zero";
+        assert!(backend_errors_agree(full, full));
+        assert!(!backend_errors_agree(full, "runtime error: division by zero"));
+        assert!(!backend_errors_agree(full, "wasm trap: integer divide by zero"));
+        assert!(backend_errors_agree("host refusal", "host refusal"));
+        assert!(!backend_errors_agree("host refusal", "different refusal"));
     }
 }
 
@@ -3165,8 +3131,8 @@ fn run_wasm_bytes(bytes: &[u8]) -> Result<Vec<String>, String> {
         .map_err(|e| e.to_string())?;
     // (RFC-0045) Surface the ROOT CAUSE, not wasmtime's outer "error while
     // executing at wasm backtrace…" wrapper — so a routed `__witchy_abort` reads
-    // as the clean `runtime error: <core>` the interpreter produces, which the
-    // differential harness (`parity_check`) compares for message parity.
+    // as the clean, location-prefixed `runtime error` the interpreter produces,
+    // which the differential harness (`parity_check`) compares byte-for-byte.
     vm.run().map_err(|e| e.root_cause().to_string())?;
     Ok(vm.output())
 }
