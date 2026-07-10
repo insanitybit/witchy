@@ -158,6 +158,41 @@
     }
 
     #[test]
+    fn associated_std_function_hover_uses_type_owner() {
+        let mut docs = HashMap::new();
+        let src = "import string\n\nfn main(console: Console):\n    let net_policy = Net.tcp(\"127.0.0.1\", 8080)\n    let dir_policy = Dir.ext(\".log\")\n    console.print(string.repeat(\"x\", 2))\n";
+        let uri = "file:///policy-hover.witchy";
+        docs.insert(uri.to_string(), src.to_string());
+
+        let hover = |line: usize, name: &str| {
+            let col = src.lines().nth(line).unwrap().find(name).unwrap() as u64;
+            hover_response(
+                &docs,
+                &json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": col },
+                }),
+            )
+        };
+
+        let net = hover(3, "tcp");
+        let net_contents = net["contents"]["value"].as_str().expect("Net.tcp hover");
+        assert!(
+            net_contents.contains("Net.tcp(host: String, port: Int) -> NetPolicy"),
+            "{net_contents}"
+        );
+        assert!(!net_contents.contains("policy.tcp"), "{net_contents}");
+
+        let dir = hover(4, "ext");
+        let dir_contents = dir["contents"]["value"].as_str().expect("Dir.ext hover");
+        assert!(
+            dir_contents.contains("Dir.ext(suffix: String) -> DirPolicy"),
+            "{dir_contents}"
+        );
+        assert!(!dir_contents.contains("policy.ext"), "{dir_contents}");
+    }
+
+    #[test]
     fn qualify_signature_inserts_module_before_name() {
         assert_eq!(
             qualify_signature("pub fn repeat(s: String, n: Int) -> String", "string."),

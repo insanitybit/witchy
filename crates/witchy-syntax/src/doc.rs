@@ -8,15 +8,59 @@
 use std::fmt::Write;
 
 use crate::ast::{
-    Expr, ImplDef, Item, MethodSig, Module, Param, TraitDef, Type, TypeDef, UnOp, Variant,
+    Expr, Function, ImplDef, Item, MethodSig, Module, Param, TraitDef, Type, TypeDef, UnOp, Variant,
 };
 use crate::format::type_str;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssociatedFunctionDoc {
+    /// Callable source spelling, for example `Net.tcp(host: String, port: Int) -> NetPolicy`.
+    pub signature: String,
+    pub docs: String,
+}
 
 /// Render Markdown documentation for one module (named `module_name`) from its
 /// source. Errors only if the source does not parse.
 pub fn render(module_name: &str, source: &str) -> Result<String, String> {
     let module = crate::parser::parse_module(source).map_err(|e| e.to_string())?;
     render_module(module_name, source, &module)
+}
+
+/// Find a public self-less inherent function by its owning type and source name.
+/// This is the structured API-discovery path shared with editor hover; callers
+/// never need to infer ownership from indentation or function-name collisions.
+pub fn associated_function(
+    source: &str,
+    owner: &str,
+    name: &str,
+) -> Result<Option<AssociatedFunctionDoc>, String> {
+    let module = crate::parser::parse_module(source).map_err(|e| e.to_string())?;
+    let lines: Vec<&str> = source.lines().collect();
+    for item in &module.items {
+        let Item::Impl(im) = item else { continue };
+        if im.trait_name.is_some() || im.type_name != owner {
+            continue;
+        }
+        for method in &im.methods {
+            if !method.public || method.name != name {
+                continue;
+            }
+            let (signature, is_static) = inherent_signature(&im.type_name, method);
+            if !is_static {
+                continue;
+            }
+            let marker = format!(
+                "pub {}fn {}(",
+                fn_qualifier(method.is_async, method.is_gen),
+                method.name
+            );
+            return Ok(Some(AssociatedFunctionDoc {
+                signature,
+                docs: doc_above_indented(&lines, &marker),
+            }));
+        }
+    }
+    Ok(None)
 }
 
 /// Render Markdown documentation for one module from an already-parsed AST.
@@ -122,15 +166,7 @@ pub fn render_module(module_name: &str, source: &str, module: &Module) -> Result
             if !m.public {
                 continue;
             }
-            // A `self`-less method is a static (`Type.name(…)`); an instance
-            // method drops `self` and reads as `value.name(…)`.
-            let is_static = m.params.first().is_none_or(|p| p.name != "self");
-            let params: &[Param] = if is_static { &m.params } else { &m.params[1..] };
-            let sig = signature(&m.name, params, &m.ret, &m.bounds);
-            let sig = sig
-                .strip_prefix("fn ")
-                .map(|s| format!("{}{}.{s}", fn_qualifier(m.is_async, m.is_gen), im.type_name))
-                .unwrap_or(sig);
+            let (sig, _) = inherent_signature(&im.type_name, m);
             any = true;
             let _ = writeln!(out, "#### `{sig}`\n");
             let marker = format!("pub {}fn {}(", fn_qualifier(m.is_async, m.is_gen), m.name);
@@ -258,6 +294,26 @@ fn signature(name: &str, params: &[Param], ret: &Option<Type>, bounds: &[(String
         format!(" where {}", bs.join(", "))
     };
     format!("fn {name}({}){r}{w}", ps.join(", "))
+}
+
+/// Render one public inherent method as its callable surface spelling. A
+/// self-less method is static (`Type.name(...)`); an instance method drops
+/// `self` and reads as `Type.name(...)` in generated API documentation.
+fn inherent_signature(owner: &str, method: &Function) -> (String, bool) {
+    let is_static = method.params.first().is_none_or(|param| param.name != "self");
+    let params: &[Param] = if is_static { &method.params } else { &method.params[1..] };
+    let signature = signature(&method.name, params, &method.ret, &method.bounds);
+    let signature = signature
+        .strip_prefix("fn ")
+        .map(|rest| {
+            format!(
+                "{}{}.{rest}",
+                fn_qualifier(method.is_async, method.is_gen),
+                owner
+            )
+        })
+        .unwrap_or(signature);
+    (signature, is_static)
 }
 
 
@@ -577,7 +633,25 @@ fn join_comment<'a>(it: impl Iterator<Item = &'a &'a str>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::render;
+    use super::{associated_function, render};
+
+    #[test]
+    fn associated_function_uses_type_owned_callable_spelling() {
+        let src = "impl Net:\n    // A plaintext endpoint.\n    pub fn tcp(host: String, port: Int) -> NetPolicy:\n        fail(\"stub\")\n\nimpl String:\n    pub fn trim(self) -> String:\n        self\n";
+        let tcp = associated_function(src, "Net", "tcp")
+            .expect("source parses")
+            .expect("static function found");
+        assert_eq!(
+            tcp.signature,
+            "Net.tcp(host: String, port: Int) -> NetPolicy"
+        );
+        assert_eq!(tcp.docs, "A plaintext endpoint.");
+        assert_eq!(
+            associated_function(src, "String", "trim").expect("source parses"),
+            None,
+            "instance methods are not associated constructors"
+        );
+    }
 
     #[test]
     fn renders_signature_and_doc() {

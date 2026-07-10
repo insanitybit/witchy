@@ -231,6 +231,7 @@ fn hover_response(docs: &HashMap<String, String>, params: &Value) -> Value {
     // (`xs.push`) or a bare name looks in this document and every module the
     // document can see (prelude + imports).
     let mut sources: Vec<(String, String)> = Vec::new();
+    let mut associated_owner: Option<String> = None;
     let bare = match word.split_once('.') {
         Some((head, tail)) => {
             // `head.tail`: `head` is a module (`string.repeat`) or a receiver
@@ -241,6 +242,14 @@ fn hover_response(docs: &HashMap<String, String>, params: &Value) -> Value {
             if let Some(src) = module_source(head, uri, docs) {
                 sources.push((src, format!("{head}.")));
             } else {
+                // An uppercase head is a type-owned associated function, not a
+                // receiver value. Search the current module and visible modules
+                // by AST ownership; never relabel an incidental free function
+                // such as policy.tcp as Net.tcp (BUG-161).
+                if head.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                    associated_owner = Some(head.to_string());
+                    sources.push((text.to_string(), String::new()));
+                }
                 sources.extend(visible_module_sources(text, uri, docs));
             }
             name
@@ -252,6 +261,16 @@ fn hover_response(docs: &HashMap<String, String>, params: &Value) -> Value {
         }
     };
     for (src, prefix) in sources {
+        if let Some(owner) = &associated_owner {
+            if let Ok(Some(symbol)) = crate::doc::associated_function(&src, owner, &bare) {
+                let contents = format!(
+                    "```witchy\n{}\n```\n{}",
+                    symbol.signature, symbol.docs
+                );
+                return json!({ "contents": { "kind": "markdown", "value": contents } });
+            }
+            continue;
+        }
         if let Some((sig, doc)) = signature_doc(&src, &bare) {
             let contents = format!("```witchy\n{}\n```\n{}", qualify_signature(&sig, &prefix), doc);
             return json!({ "contents": { "kind": "markdown", "value": contents } });
