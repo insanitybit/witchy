@@ -9,34 +9,35 @@
 // distinct from `std/reflect`'s runtime `Mirror` (a value's structure at runtime).
 
 // A declared type expression, exposed as data so generators do not have to parse
-// source-looking type strings. The string fields below remain for compatibility
-// with existing user derives, but built-in derives use this shape.
+// source-looking type strings.
 type TypeExpr:
     TNamed(String, List(TypeExpr))
     TTuple(List(TypeExpr))
     TFn(List(TypeExpr), TypeExpr)
     TQualified(String, TypeExpr)
 
-// One field of a record: its name, its declared type rendered as a compatibility
-// string (e.g. "Int", "List(String)", "Option(Point)"), and its structured type.
+// The declaration shape. `TypeUninhabited` is intentionally not called "unit":
+// a fieldless declaration has no constructor and therefore no values.
+type TypeKind:
+    TypeRecord
+    TypeSum
+    TypeUninhabited
+
+// One field of a record: its name and declared type.
 type FieldInfo:
     name: String
-    type_name: String
     type_expr: TypeExpr
 
-// One constructor of a sum type: its name and its positional payload types,
-// exposed both as compatibility strings and as structured types.
+// One constructor of a sum type: its name and positional payload types.
 type VariantInfo:
     name: String
-    field_types: List(String)
     field_type_exprs: List(TypeExpr)
 
-// A type's structure. `kind` is "record" (one constructor with named fields),
-// "sum" (one or more positional constructors), or "unit" (a fieldless type with
-// no constructors). `fields` is populated for records, `variants` for sums.
+// A type's structure. `fields` is populated for records and `variants` for sums;
+// both are empty for an uninhabited fieldless declaration.
 type TypeInfo:
     name: String
-    kind: String
+    kind: TypeKind
     params: List(String)
     fields: List(FieldInfo)
     variants: List(VariantInfo)
@@ -94,13 +95,13 @@ pub fn type_source(ty: TypeExpr) -> String:
 // backends.
 pub fn derive_show(t: TypeInfo) -> String:
     let head = "impl Show for " + target_with_params(t) + where_each(t.params, "Show") + ":\n    fn show(self) -> String:\n"
-    if t.kind == "record":
-        head + "        " + record_show_body(t.name, t.fields) + "\n"
-    else:
-        var arms = []
-        for v in t.variants:
-            arms = list.push(arms, variant_show_arm(v))
-        head + "        match self:\n" + list.join(arms, "\n") + "\n"
+    match t.kind:
+        TypeRecord -> head + "        " + record_show_body(t.name, t.fields) + "\n"
+        _ ->
+            var arms = []
+            for v in t.variants:
+                arms = list.push(arms, variant_show_arm(v))
+            head + "        match self:\n" + list.join(arms, "\n") + "\n"
 
 // The rendered body of a record's `show`: `"Name"` for a defensive empty-field
 // record input, else `"Name(" + show(self.f1) + ", " + show(self.f2) + ")"`.
@@ -119,7 +120,7 @@ fn variant_show_arm(v: VariantInfo) -> String:
     var pats = []
     var parts = []
     var i = 0
-    for ft in v.field_types:
+    for _ft in v.field_type_exprs:
         pats = list.push(pats, "p${i}")
         parts = list.push(parts, "show(p${i})")
         i = i + 1
@@ -140,13 +141,13 @@ pub fn derive_eq(t: TypeInfo) -> String:
 // field with `==`; a sum type matches the variant and compares payloads.
 pub fn derive_partial_eq(t: TypeInfo) -> String:
     let head = "impl PartialEq for " + target_with_params(t) + where_each(t.params, "PartialEq") + ":\n    fn eq(self, other: " + target_with_params(t) + ") -> Bool:\n"
-    if t.kind == "record":
-        head + "        " + record_eq_body(t.fields) + "\n"
-    else:
-        var arms = []
-        for v in t.variants:
-            arms = list.push(arms, variant_eq_arm(v))
-        head + "        match self:\n" + list.join(arms, "\n") + "\n"
+    match t.kind:
+        TypeRecord -> head + "        " + record_eq_body(t.fields) + "\n"
+        _ ->
+            var arms = []
+            for v in t.variants:
+                arms = list.push(arms, variant_eq_arm(v))
+            head + "        match self:\n" + list.join(arms, "\n") + "\n"
 
 // The `&&`-chained field comparison of a record's `eq`, or `true` for a
 // defensive empty-field record input.
@@ -166,7 +167,7 @@ fn variant_eq_arm(v: VariantInfo) -> String:
     var opats = []
     var terms = []
     var i = 0
-    for ft in v.field_types:
+    for _ft in v.field_type_exprs:
         pats = list.push(pats, "p${i}")
         opats = list.push(opats, "o${i}")
         terms = list.push(terms, "p${i} == o${i}")
@@ -199,7 +200,7 @@ fn reflect_call(ty: TypeExpr, value: String) -> String:
 // over variants to `MVariant`. (The module must `import reflect`; caller checks.)
 pub fn derive_reflect(t: TypeInfo) -> String:
     let head = "import reflect\n\nimpl Reflect for " + target_with_params(t) + where_each(t.params, "Reflect") + ":\n    fn reflect(self) -> reflect.Mirror:\n"
-    if t.kind == "record":
+    if let TypeRecord = t.kind:
         var pairs = []
         for f in t.fields:
             pairs = list.push(pairs, "(\"" + f.name + "\", " + reflect_call(f.type_expr, "self." + f.name) + ")")

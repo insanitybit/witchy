@@ -1697,30 +1697,38 @@ This is COMPILE-TIME structure (field names + declared type expressions), distin
 
 #### `type TypeExpr`
 
-A declared type expression, exposed as data so generators do not have to parse source-looking type strings. The string fields below remain for compatibility with existing user derives, but built-in derives use this shape.
+A declared type expression, exposed as data so generators do not have to parse source-looking type strings.
 
 - `TNamed(String, List(TypeExpr))`
 - `TTuple(List(TypeExpr))`
 - `TFn(List(TypeExpr), TypeExpr)`
 - `TQualified(String, TypeExpr)`
 
+#### `type TypeKind`
+
+The declaration shape. `TypeUninhabited` is intentionally not called "unit": a fieldless declaration has no constructor and therefore no values.
+
+- `TypeRecord`
+- `TypeSum`
+- `TypeUninhabited`
+
 #### `type FieldInfo`
 
-One field of a record: its name, its declared type rendered as a compatibility string (e.g. "Int", "List(String)", "Option(Point)"), and its structured type.
+One field of a record: its name and declared type.
 
-- `FieldInfo { name: String, type_name: String, type_expr: TypeExpr }`
+- `FieldInfo { name: String, type_expr: TypeExpr }`
 
 #### `type VariantInfo`
 
-One constructor of a sum type: its name and its positional payload types, exposed both as compatibility strings and as structured types.
+One constructor of a sum type: its name and positional payload types.
 
-- `VariantInfo { name: String, field_types: List(String), field_type_exprs: List(TypeExpr) }`
+- `VariantInfo { name: String, field_type_exprs: List(TypeExpr) }`
 
 #### `type TypeInfo`
 
-A type's structure. `kind` is "record" (one constructor with named fields), "sum" (one or more positional constructors), or "unit" (a fieldless type with no constructors). `fields` is populated for records, `variants` for sums.
+A type's structure. `fields` is populated for records and `variants` for sums; both are empty for an uninhabited fieldless declaration.
 
-- `TypeInfo { name: String, kind: String, params: List(String), fields: List(FieldInfo), variants: List(VariantInfo) }`
+- `TypeInfo { name: String, kind: TypeKind, params: List(String), fields: List(FieldInfo), variants: List(VariantInfo) }`
 
 #### `fn type_source(ty: TypeExpr) -> String`
 

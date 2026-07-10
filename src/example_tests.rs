@@ -939,13 +939,46 @@
         );
     }
 
-    /// (RFC-0067) `module_types` exposes structured `meta.TypeExpr` facts, not only
-    /// rendered type-name strings. A generator may still render a type at the source
-    /// boundary, but it can read the structured field directly.
+    /// (RFC-0069) `module_types` exposes both declaration kind and field types as
+    /// structured facts. Rendering occurs only at the generated-source boundary.
     #[test]
     fn comptime_typeinfo_exposes_structured_type_expr_on_both_backends() {
-        let src = "import list\nimport meta\n\ntype Config:\n    values: List(Option(Int))\n\ncomptime:\n    for t in module_types:\n        if t.name == \"Config\":\n            let f = list.at(t.fields, 0)\n            emit(\"fn generated_type_shape() -> String:\")\n            emit(\"    \\\"\" + meta.type_source(f.type_expr) + \"\\\"\")\n\nfn main(console: Console):\n    console.print(generated_type_shape())\n";
-        let expected = ["List(Option(Int))"];
+        let src = r#"import list
+import meta
+
+type Config:
+    values: List(Option(Int))
+
+type Choice:
+    First(Int)
+    Second
+
+type Never:
+
+comptime:
+    for t in module_types:
+        if t.name == "Config":
+            match t.kind:
+                meta.TypeRecord ->
+                    let f = list.at(t.fields, 0)
+                    emit("fn generated_type_shape() -> String:")
+                    emit("    \"record:" + meta.type_source(f.type_expr) + "\"")
+                _ -> Nil
+        if t.name == "Choice":
+            match t.kind:
+                meta.TypeSum -> emit("fn generated_sum_kind() -> String:\n    \"sum\"")
+                _ -> Nil
+        if t.name == "Never":
+            match t.kind:
+                meta.TypeUninhabited -> emit("fn generated_empty_kind() -> String:\n    \"uninhabited\"")
+                _ -> Nil
+
+fn main(console: Console):
+    console.print(generated_type_shape())
+    console.print(generated_sum_kind())
+    console.print(generated_empty_kind())
+"#;
+        let expected = ["record:List(Option(Int))", "sum", "uninhabited"];
         assert_eq!(link_run(src), expected, "interp reads structured TypeExpr in comptime");
         assert_eq!(
             run_linked_on_wasm(&[("main", src)], "main"),
@@ -4734,7 +4767,42 @@ fn main(console: Console):
     /// backends (comptime runs at link time, so the generated code is identical).
     #[test]
     fn comptime_typeinfo_generates_specialized_to_json() {
-        let src = "import meta\nimport json\nimport string\nfrom json import Json\n\ntype Point:\n    x: Int\n    y: Int\n\ntype User:\n    name: String\n    age: Int\n    active: Bool\n\ncomptime:\n    let ctor = fn(ty: String) -> String:\n        if ty == \"Int\": \"JsonInt\"\n        else if ty == \"String\": \"JsonString\"\n        else if ty == \"Bool\": \"JsonBool\"\n        else: \"JsonNull\"\n    for t in module_types:\n        if t.kind == \"record\":\n            emit(\"fn to_json_${t.name}(v: ${t.name}) -> Json:\")\n            var pairs = []\n            for f in t.fields:\n                pairs = list.push(pairs, \"(\\\"\" + f.name + \"\\\", \" + ctor(f.type_name) + \"(v.\" + f.name + \"))\")\n            emit(\"    JsonObject([\" + list.join(pairs, \", \") + \"])\")\n            emit(\"\")\n\nfn main(console: Console):\n    console.print(json.encode(to_json_Point(Point(1, 2))))\n    console.print(json.encode(to_json_User(User(\"ann\", 30, true))))";
+        let src = r#"import meta
+import json
+from json import Json
+
+type Point:
+    x: Int
+    y: Int
+
+type User:
+    name: String
+    age: Int
+    active: Bool
+
+comptime:
+    let ctor = fn(ty: meta.TypeExpr) -> String:
+        match ty:
+            meta.TNamed(name, _args) ->
+                if name == "Int": "JsonInt"
+                else if name == "String": "JsonString"
+                else if name == "Bool": "JsonBool"
+                else: "JsonNull"
+            _ -> "JsonNull"
+    for t in module_types:
+        match t.kind:
+            meta.TypeRecord ->
+                emit("fn to_json_${t.name}(v: ${t.name}) -> Json:")
+                var pairs = []
+                for f in t.fields:
+                    pairs = list.push(pairs, "(\"" + f.name + "\", " + ctor(f.type_expr) + "(v." + f.name + "))")
+                emit("    JsonObject([" + list.join(pairs, ", ") + "])")
+                emit("")
+            _ -> Nil
+
+fn main(console: Console):
+    console.print(json.encode(to_json_Point(Point(1, 2))))
+    console.print(json.encode(to_json_User(User("ann", 30, true))))"#;
         let want: Vec<String> = [
             "{\"x\":1,\"y\":2}",
             "{\"name\":\"ann\",\"age\":30,\"active\":true}",

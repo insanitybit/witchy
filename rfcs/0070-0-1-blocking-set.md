@@ -191,10 +191,9 @@ RFC-0067 model 3, made checkable: every first-class std value
 `Show` / `Reflect` / `PartialEq` behavior **or a documented reason it does
 not** (BUG-530–545 cluster). Container equality routes through `PartialEq`
 so generic bounds hold (BUG-478's derive-marks-custom-eq-structural is fixed
-here). The *full* structured-`TypeInfo` metaprogramming model is explicitly
-deferred post-0.1 as a documented limitation; only the minimal slice D9 and
-D3 need ships now. A matrix test enumerates type × protocol and fails on
-silent holes.
+here). RFC-0069 closes the stringly `TypeInfo` representation before 0.1;
+higher-order metadata beyond declaration kind and type expressions remains
+future work. A matrix test enumerates type × protocol and fails on silent holes.
 
 ## Out — the deferral ledger (0067's "accepted residual" bucket)
 
@@ -205,7 +204,6 @@ silent holes.
 | RFC-0059 Increment-2 Step 2 | deferred beyond 0.1; ceiling documented | book concurrency chapter |
 | RFC-0031 SIMD | deferred with explicit revival conditions | RFC tracking note |
 | RFC-0062 closure elision | **implemented**; default-on after one full-matrix soak | RFC status flip |
-| Structured TypeInfo (full model) | deferred; string-parsing named a known limitation | spec metaprogramming note |
 | LSP depth (reuse the `check` pipeline) | deferred; only mode-opt enforcement holes fixed | bugs stay open below LOW gate |
 | coven-namespaces / execution-plan / implementation-roadmap staleness | truth pass: reconcile the 0011 contradiction, close or refresh all three | part of the 0061 RFC-drain |
 
@@ -238,5 +236,5 @@ difference between draining 273 bugs and fixing seven diseases.
 - No new features. Every decision here deletes, unifies, or enforces.
 - This does not reopen decided designs (Go/CSP, break-don't-deprecate,
   RFC-0051's retained in-place family). It applies them.
-- Post-0.1 direction (full TypeInfo, LSP-on-check, stage-4 GC, SIMD
+- Post-0.1 direction (higher-order TypeInfo metadata, LSP-on-check, stage-4 GC, SIMD
   revival conditions) is named but not designed here.

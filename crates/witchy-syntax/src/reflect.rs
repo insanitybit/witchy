@@ -58,11 +58,11 @@ pub fn type_info_expr(t: &TypeDef) -> Expr {
     let str_list = |xs: &[String]| Expr::List(xs.iter().map(|x| Expr::Str(x.clone())).collect());
     let is_record = t.variants.len() == 1 && !t.variants[0].field_names.is_empty();
     let kind = if is_record {
-        "record"
+        "meta.TypeRecord"
     } else if t.variants.is_empty() {
-        "unit"
+        "meta.TypeUninhabited"
     } else {
-        "sum"
+        "meta.TypeSum"
     };
     let fields = if is_record {
         let v = &t.variants[0];
@@ -71,7 +71,7 @@ pub fn type_info_expr(t: &TypeDef) -> Expr {
             .zip(&v.fields)
             .map(|(name, ty)| Expr::Ctor {
                 name: "meta.FieldInfo".into(),
-                args: vec![s(name), s(&type_to_string(ty)), type_expr(ty)],
+                args: vec![s(name), type_expr(ty)],
             })
             .collect()
     } else {
@@ -86,7 +86,6 @@ pub fn type_info_expr(t: &TypeDef) -> Expr {
                 name: "meta.VariantInfo".into(),
                 args: vec![
                     s(&v.name),
-                    Expr::List(v.fields.iter().map(|ty| s(&type_to_string(ty))).collect()),
                     Expr::List(v.fields.iter().map(type_expr).collect()),
                 ],
             })
@@ -96,7 +95,7 @@ pub fn type_info_expr(t: &TypeDef) -> Expr {
         name: "meta.TypeInfo".into(),
         args: vec![
             s(&t.name),
-            s(kind),
+            Expr::Ctor { name: kind.into(), args: Vec::new() },
             str_list(&t.params),
             Expr::List(fields),
             Expr::List(variants),
@@ -104,10 +103,8 @@ pub fn type_info_expr(t: &TypeDef) -> Expr {
     }
 }
 
-/// Build the structured `meta.TypeExpr` for a declared type. `meta.TypeInfo`
-/// still carries the legacy rendered strings for compatibility, but built-in
-/// derives consume this structured shape so they do not parse source-looking
-/// type names.
+/// Build the structured `meta.TypeExpr` for a declared type. Rendering is kept
+/// at the explicit generated-source boundary in `meta.type_source`.
 fn type_expr(t: &Type) -> Expr {
     let s = |v: &str| Expr::Str(v.to_string());
     match t {
@@ -130,26 +127,5 @@ fn type_expr(t: &Type) -> Expr {
                 type_expr(r),
             ],
         },
-    }
-}
-
-/// Render a declared type to the legacy string form `meta.TypeInfo` exposes —
-/// `Int`, `List(String)`, `Option(Point)`, `(Int, String)`, `fn(Int) -> Bool`.
-fn type_to_string(t: &Type) -> String {
-    match t {
-        Type::Qualified(q, inner) => format!("{} {}", q.as_str(), type_to_string(inner)),
-        Type::Named(n, args) if args.is_empty() => n.clone(),
-        Type::Named(n, args) => {
-            let inner: Vec<String> = args.iter().map(type_to_string).collect();
-            format!("{n}({})", inner.join(", "))
-        }
-        Type::Tuple(ts) => {
-            let inner: Vec<String> = ts.iter().map(type_to_string).collect();
-            format!("({})", inner.join(", "))
-        }
-        Type::Fn(ps, r) => {
-            let inner: Vec<String> = ps.iter().map(type_to_string).collect();
-            format!("fn({}) -> {}", inner.join(", "), type_to_string(r))
-        }
     }
 }
