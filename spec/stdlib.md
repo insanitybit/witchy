@@ -1901,15 +1901,15 @@ policy — typed capability refinement policies (RFC-0011, RFC-0057). A policy i
 
 These are pure value builders (empty capability footprint). A `NetPolicy` wraps the same `host:port` allowlist pattern the host enforces (RFC-0003); the `tls:` HTTPS scheme is a connect-time choice on the address, not a property of the policy (RFC-0009). The module is preluded, so `Net.tcp(…)` / `Dir.ext(…)` resolve without an import.
 
-#### `type NetPolicy`
+#### `sealed type NetPolicy`
 
-A typed `Net` address policy — one allowlist pattern (`host:port`, with `:*` / CIDR forms).
+A sealed `Net` address policy. Only the checked `Net.*` builders below can mint one; the newline-delimited host grammar is not a user-facing string escape hatch.
 
 - `NetPolicy { pattern: String }`
 
-#### `type DirPolicy`
+#### `sealed type DirPolicy`
 
-A typed `Dir` ENTRY policy (RFC-0011): which entries the Dir may read/write/open. `dir.only(Dir.ext(".txt"))` confines a `Dir` so it can only touch `.txt` files (enforced at read/write/open on both backends, the filesystem analog of `net.only`). Refinement only ever shrinks the set.
+A sealed `Dir` ENTRY policy (RFC-0011): which entries the Dir may read/write/open. Only `Dir.ext`/`files`/`dirs` can mint one, so malformed raw grammar cannot turn a requested refinement into a silent no-op. Refinement only ever shrinks the set.
 
 - `DirPolicy { pattern: String }`
 

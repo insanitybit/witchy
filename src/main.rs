@@ -1330,7 +1330,13 @@ fn link_file_with_deps(
         // standard-library module (e.g. `import list`).
         let src = match std::fs::read_to_string(&p) {
             Ok(s) => {
-                user_modules.insert(name.clone());
+                // Repository checks read canonical std sources from disk. Source
+                // identity, not the filesystem path, determines provenance: an
+                // exact embedded module keeps std ownership, while any local
+                // modification remains user code even under a std filename.
+                if bundled_module(&name) != Some(s.as_str()) {
+                    user_modules.insert(name.clone());
+                }
                 s
             }
             Err(e) => match bundled_module(&name) {

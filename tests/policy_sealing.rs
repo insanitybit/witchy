@@ -8,7 +8,7 @@ fn raw_policy_values_cannot_be_forged_outside_std_policy() {
     for (name, raw) in [("NetPolicy", "example.com:443"), ("DirPolicy", "")]
     {
         let source = format!(
-            "import policy\nfn main(console: Console):\n    let _policy = policy.{name}(\"{raw}\")\n    console.print(\"forged\")\n"
+            "fn main(console: Console):\n    let _policy = {name}(\"{raw}\")\n    console.print(\"forged\")\n"
         );
         let error = check(&source).expect_err("policy representations must be sealed");
         assert!(
@@ -16,6 +16,41 @@ fn raw_policy_values_cannot_be_forged_outside_std_policy() {
             "raw {name} should fail at the constructor boundary: {error}",
         );
     }
+
+    for name in ["NetPolicy", "DirPolicy"] {
+        let source = format!(
+            "type {name}:\n    {name}(String)\n\nfn main(console: Console):\n    console.print(\"shadowed\")\n"
+        );
+        let error = check(&source).expect_err("an ambient policy lookalike must not shadow std");
+        assert!(
+            error.contains("shadows the ambient built-in name") && error.contains(name),
+            "local {name} lookalike should be rejected: {error}",
+        );
+    }
+}
+
+#[test]
+fn local_policy_module_cannot_impersonate_bundled_policy_owner() {
+    let policy = witchy::parser::parse_module(
+        "sealed type NetPolicy:\n    pattern: String\n\npub fn raw(value: String) -> NetPolicy:\n    NetPolicy(value)\n",
+    )
+    .expect("local policy parses");
+    let main = witchy::parser::parse_module(
+        "import policy\n\nfn main(console: Console):\n    let _ = policy.raw(\"*:*\")\n    console.print(\"forged\")\n",
+    )
+    .expect("main parses");
+    let user_modules = std::collections::HashSet::from(["policy".to_string(), "main".to_string()]);
+    let error = witchy::pipeline::link_with_user_modules(
+        vec![("policy".to_string(), policy), ("main".to_string(), main)],
+        "main",
+        &user_modules,
+    )
+    .expect_err("a local std-name shadow is not the ambient type's canonical owner")
+    .message;
+    assert!(
+        error.contains("type `NetPolicy` shadows the ambient built-in name"),
+        "{error}",
+    );
 }
 
 #[test]

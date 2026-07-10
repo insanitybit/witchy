@@ -47,9 +47,8 @@ const AMBIENT_TYPES: &[&str] = &[
     // keeps working bare — no forced `import cmp`.
     "Ordering",
     // `policy.NetPolicy`/`policy.DirPolicy` (RFC-0011): the cap-refinement verbs
-    // `only`/`deny` are BUILT-IN and type their policy argument by the bare name
-    // `NetPolicy`/`DirPolicy` (typeck.rs), and a program may declare its own
-    // policy record for them — so these names, like `Ordering`, stay ambient.
+    // `only`/`deny` are built-in and type their policy argument by these bare
+    // names. `policy` is their sole declarer; user lookalikes are rejected below.
     "NetPolicy", "DirPolicy",
     // `set.Set` / `iter.Iter`: the method-dispatch and for-loop machinery still
     // treats these as ambient owner types (`type_owner_module`, the `for x in set`
@@ -72,6 +71,33 @@ fn is_ambient_type(name: &str) -> bool {
 
 fn is_ambient_ctor(name: &str) -> bool {
     AMBIENT_CTORS.contains(&name)
+}
+
+/// Whether an ambient declaration is the one canonical std owner, or an exact
+/// local restatement of the language-preluded `Option`/`Result` shape.
+fn ambient_declaration_allowed(home: &str, user_module: bool, t: &TypeDef) -> bool {
+    let canonical_owner = match t.name.as_str() {
+        "Option" => "option",
+        "Result" => "result",
+        "Ordering" => "cmp",
+        "Set" => "set",
+        "Iter" => "iter",
+        "NetPolicy" | "DirPolicy" => "policy",
+        _ => return false,
+    };
+    if home == canonical_owner && !user_module {
+        return true;
+    }
+
+    let expected: &[(&str, usize)] = match t.name.as_str() {
+        "Option" => &[("Some", 1), ("None", 0)],
+        "Result" => &[("Ok", 1), ("Err", 1)],
+        _ => return false,
+    };
+    t.variants.len() == expected.len()
+        && expected.iter().all(|(name, arity)| {
+            t.variants.iter().any(|variant| variant.name == *name && variant.fields.len() == *arity)
+        })
 }
 
 /// Compiler-synthesized type heads that name no module and stay bare: the
@@ -213,6 +239,7 @@ impl World {
 /// The per-module resolution maps: what each bare name canonicalizes to.
 struct Scope<'a> {
     home: &'a str,
+    user_module: bool,
     imports: &'a [String],
     world: &'a World,
     /// bare type name -> canonical (`home.T` or `srcmod.T`).
@@ -223,6 +250,16 @@ struct Scope<'a> {
 
 /// Canonicalize every type and constructor reference in `modules`, in place.
 pub fn resolve(modules: &mut [(String, Module)]) -> Result<(), LinkError> {
+    resolve_with_user_modules(modules, &std::collections::HashSet::new())
+}
+
+/// Canonicalize types while preserving which module names came from user
+/// files. A local module named `policy`, for example, is not the canonical std
+/// owner of the ambient policy types merely because its filename matches.
+pub fn resolve_with_user_modules(
+    modules: &mut [(String, Module)],
+    user_modules: &std::collections::HashSet<String>,
+) -> Result<(), LinkError> {
     let world = World::build(modules);
     // Split the borrow: build each scope from `world`, then rewrite that module.
     #[allow(clippy::needless_range_loop)] // index needed: read modules[idx] then mutate modules[idx].1
@@ -231,7 +268,13 @@ pub fn resolve(modules: &mut [(String, Module)]) -> Result<(), LinkError> {
             let (n, m) = &modules[idx];
             (n.clone(), m.imports.clone(), m.from_imports.clone())
         };
-        let scope = Scope::build(&home, &imports, &from_imports, &world)?;
+        let scope = Scope::build(
+            &home,
+            user_modules.contains(&home),
+            &imports,
+            &from_imports,
+            &world,
+        )?;
         scope.rewrite_module(&mut modules[idx].1)?;
     }
     Ok(())
@@ -240,6 +283,7 @@ pub fn resolve(modules: &mut [(String, Module)]) -> Result<(), LinkError> {
 impl<'a> Scope<'a> {
     fn build(
         home: &'a str,
+        user_module: bool,
         imports: &'a [String],
         from_imports: &'a [(String, Vec<String>)],
         world: &'a World,
@@ -319,7 +363,7 @@ impl<'a> Scope<'a> {
                 // bindings.
             }
         }
-        Ok(Scope { home, imports, world, type_map, ctor_map })
+        Ok(Scope { home, user_module, imports, world, type_map, ctor_map })
     }
 
     /// Whether `module` is referenceable here (imported, or a prelude module).
@@ -574,16 +618,13 @@ impl<'a> Scope<'a> {
                     // strand its constructors: an ambient-named type is kept out of
                     // the module type map, so a NON-ambient constructor it declares
                     // (`type Secret: Hidden(String)`, `type Set: ...`) is
-                    // unreachable by any spelling (BUG-289). A declaration whose
-                    // constructors are ALL ambient (`type Result: Ok(a) Err(e)`,
-                    // `type Option: Some(a) None`) resolves fine and stays legal —
-                    // a program may restate the prelude type. The canonical std
-                    // declarers (`cmp`/`set`/`iter`/`option`/`result`/`policy`) are
-                    // exempt outright.
+                    // unreachable by any spelling (BUG-289). Only `Result` and
+                    // `Option` may be restated with their exact language-ambient
+                    // constructor shape. Each other ambient library type may be
+                    // declared only by its canonical std owner.
                     if is_ambient_type(&t.name)
                         && !is_synthetic_type(&t.name)
-                        && !crate::linker::STD_MODULES.contains(&self.home)
-                        && t.variants.iter().any(|v| !is_ambient_ctor(&v.name))
+                        && !ambient_declaration_allowed(self.home, self.user_module, t)
                     {
                         return lerr(format!(
                             "type `{name}` shadows the ambient built-in name `{name}` — rename it \
@@ -1081,7 +1122,7 @@ mod tests {
         // BUG-289: a user module declaring `type Secret`/`type Set`/… is a loud
         // error (its constructors would be unreachable), while the canonical std
         // declarer (`cmp`) may still declare `type Ordering`.
-        for ambient in ["Secret", "Set", "Iter", "Ordering"] {
+        for ambient in ["Secret", "Set", "Iter", "Ordering", "NetPolicy", "DirPolicy"] {
             let src = format!("type {ambient}:\n    Wrapped(Int)\n");
             let err = resolve_src(&[("main", &src)]).unwrap_err();
             assert!(
@@ -1098,6 +1139,32 @@ mod tests {
             .expect("type Result with ambient ctors is legal");
         resolve_src(&[("main", "type Option:\n    Some(a)\n    None\n")])
             .expect("type Option with ambient ctors is legal");
+        for malformed in [
+            "type Result:\n    Ok(a)\n",
+            "type Result:\n    Ok(a)\n    Err(e)\n    Extra\n",
+            "type Option:\n    Some(a, b)\n    None\n",
+        ] {
+            let err = resolve_src(&[("main", malformed)]).unwrap_err();
+            assert!(
+                err.message.contains("shadows the ambient built-in name"),
+                "{}",
+                err.message
+            );
+        }
+        // Being some other std module does not grant ownership of every ambient
+        // declaration. Only the canonical owner above is exempt.
+        let err = resolve_src(&[("json", "type Secret:\n    Secret(Int)\n")]).unwrap_err();
+        assert!(err.message.contains("type `Secret` shadows the ambient built-in name"));
+
+        // Provenance, not the filename alone, identifies a canonical std owner.
+        // A local `policy.witchy` must not gain authority to mint policy values.
+        let mut local_policy = vec![(
+            "policy".to_string(),
+            parse_module("type NetPolicy:\n    pattern: String\n").expect("parse"),
+        )];
+        let user_modules = std::collections::HashSet::from(["policy".to_string()]);
+        let err = resolve_with_user_modules(&mut local_policy, &user_modules).unwrap_err();
+        assert!(err.message.contains("type `NetPolicy` shadows the ambient built-in name"));
     }
 
     #[test]

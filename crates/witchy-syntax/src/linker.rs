@@ -578,7 +578,7 @@ pub fn link_with_user_modules(
     // is already a concrete reference) and before the merge, while each item
     // still knows its home module and imports. Dissolves the flat-type-namespace
     // collisions (iter+chan's `Step`, task+future's `Step`/`Task`).
-    crate::type_resolve::resolve(&mut modules)?;
+    crate::type_resolve::resolve_with_user_modules(&mut modules, user_modules)?;
 
     // RFC-0002 sealing: a `capability` (a sealed type) may be CONSTRUCTED or
     // DESTRUCTURED only inside the module that declares it. Run AFTER
