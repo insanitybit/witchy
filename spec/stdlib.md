@@ -106,13 +106,13 @@ The `async`/`await` CPS transform lowers onto the `std/task` executor (task.lazy
 
 The typed sending endpoint of a channel carrying `m` messages.
 
-- `Sender(Int)`
+- `Sender(ChannelId)`
 
 #### `sealed type Receiver(m)`
 
 The typed receiving endpoint of a channel carrying `m` messages.
 
-- `Receiver(Int)`
+- `Receiver(ChannelId)`
 
 #### `type Selected(m)`
 
@@ -2708,9 +2708,9 @@ Messages: the executor is ERASED (RFC-0055). Its buffers, `Step`, and `Slot` car
 
 The `async`/`await` CPS transform lowers onto this substrate (`task.lazy`/ `and_then`/`done`/`run`), so `chan.recv(rx).await` / `chan.send(tx, x).await` work in async fns.
 
-#### `type Step(a)`
+#### `sealed type Step(a)`
 
-What a task yields to the executor when stepped. `a` is the task's own result. The channel effects (`Open`/`Push`/`Pull`/`PullAny`) are produced by `std/chan`; the executor below interprets every variant. Messages are the erased `__Msg` (RFC-0055) — the typed endpoints (un)wrap at the boundary.
+What a task yields to the executor when stepped. `a` is the task's own result. The channel effects (`Open`/`Push`/`Pull`/`PullAny`) are produced by the private bridge below; the executor interprets every variant. Messages are the erased `__Msg` (RFC-0055) — std/chan's typed endpoints (un)wrap at the boundary.
 
 - `Done(a)`
 - `Yield(Task(a))`
@@ -2722,19 +2722,25 @@ What a task yields to the executor when stepped. `a` is the task's own result. T
 - `Wait(Int, fn(Nil) -> Task(a))`
 - `Cancel(Int, fn(Nil) -> Task(a))`
 
-#### `type Task(a)`
+#### `sealed type Task(a)`
 
 A task communicating via channels, producing an `a`.
 
 - `Task(fn() -> Step(a))`
 
-#### `type Handle`
+#### `sealed type Handle`
 
 ---- spawn + join ----
 
 - `Handle(Int)`
 
-#### `type Slot`
+#### `sealed type ChannelId`
+
+Channel identity shared with std/chan. User source cannot mint one; the compiler-private bridge functions below are callable only from std/task and std/chan.
+
+- `ChannelId(Int)`
+
+#### `sealed type Slot`
 
 A scheduling slot: running, parked on a channel recv/send or on a join, or done. Parked messages are the erased `__Msg` (RFC-0055).
 
@@ -2744,8 +2750,6 @@ A scheduling slot: running, parked on a channel recv/send or on a join, or done.
 - `WaitAny(List(Int), fn(Option((Int, __Msg))) -> Task(Nil))`
 - `WaitJoin(Int, fn(Nil) -> Task(Nil))`
 - `Ended`
-
-#### `fn poll(t: Task(a)) -> Step(a)`
 
 #### `fn done(x: a) -> Task(a)`
 

@@ -31,10 +31,10 @@
 import option
 
 // What a task yields to the executor when stepped. `a` is the task's own result.
-// The channel effects (`Open`/`Push`/`Pull`/`PullAny`) are produced by `std/chan`;
-// the executor below interprets every variant. Messages are the erased `__Msg`
-// (RFC-0055) — the typed endpoints (un)wrap at the boundary.
-type Step(a):
+// The channel effects (`Open`/`Push`/`Pull`/`PullAny`) are produced by the private
+// bridge below; the executor interprets every variant. Messages are the erased
+// `__Msg` (RFC-0055) — std/chan's typed endpoints (un)wrap at the boundary.
+sealed type Step(a):
     Done(a)
     Yield(Task(a))
     Fork(Task(Nil), fn(Int) -> Task(a))
@@ -46,10 +46,10 @@ type Step(a):
     Cancel(Int, fn(Nil) -> Task(a))
 
 // A task communicating via channels, producing an `a`.
-type Task(a):
+sealed type Task(a):
     Task(fn() -> Step(a))
 
-pub fn poll(t: Task(a)) -> Step(a):
+fn poll(t: Task(a)) -> Step(a):
     match t:
         Task(th) -> th()
 
@@ -108,8 +108,34 @@ pub fn for_each(xs: List(a), f: fn(a) -> Task(Nil)) -> Task(Nil):
         and_then(f(list.at(xs, 0)), fn(_done): for_each(list.tail(xs), f))
 
 // ---- spawn + join ----
-type Handle:
+sealed type Handle:
     Handle(Int)
+
+// Channel identity shared with std/chan. User source cannot mint one; the
+// compiler-private bridge functions below are callable only from std/task and
+// std/chan.
+sealed type ChannelId:
+    ChannelId(Int)
+
+fn __channel_open(capacity: Int) -> Task(ChannelId):
+    Task(fn(): Open(capacity, fn(id): Task(fn(): Done(ChannelId(id)))))
+
+fn __channel_send(channel: ChannelId, msg: __Msg) -> Task(Nil):
+    match channel:
+        ChannelId(id) -> Task(fn(): Push(id, msg, fn(_done): ready_unit()))
+
+fn __channel_recv(channel: ChannelId, decode: fn(Option(__Msg)) -> a) -> Task(a):
+    match channel:
+        ChannelId(id) -> Task(fn(): Pull(id, fn(msg): done(decode(msg))))
+
+fn __channel_select(channels: List(ChannelId), k: fn(Option((Int, __Msg))) -> Task(a)) -> Task(a):
+    Task(fn(): PullAny(channel_ids(channels), k))
+
+fn channel_ids(channels: List(ChannelId)) -> List(Int):
+    list.map(channels, fn(channel):
+        match channel:
+            ChannelId(id) -> id
+    )
 
 // Start `child` as a concurrent task; the returned handle completes when it does.
 pub fn spawn(child: Task(Nil)) -> Task(Handle):
@@ -134,7 +160,7 @@ pub fn cancel(h: Handle) -> Task(Nil):
 
 // A scheduling slot: running, parked on a channel recv/send or on a join, or done.
 // Parked messages are the erased `__Msg` (RFC-0055).
-type Slot:
+sealed type Slot:
     Active(Task(Nil))
     WaitRecv(Int, fn(Option(__Msg)) -> Task(Nil))
     WaitSend(Int, __Msg, fn(Nil) -> Task(Nil))

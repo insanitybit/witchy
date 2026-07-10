@@ -1721,6 +1721,9 @@ fn resolve_call(
         }
         return match fns.get(modname).and_then(|s| s.get(fname)) {
             Some(_) if modname == m => Ok(name.to_string()),
+            Some(_) if private_intrinsic_friend_call(modname, fname, m) => {
+                Ok(name.to_string())
+            }
             Some(sig) if sig.public => Ok(name.to_string()),
             Some(_) => lerr(format!("function `{modname}.{fname}` is private to module `{modname}`")),
             None => lerr(format!("module `{modname}` has no function `{fname}`")),
@@ -2156,9 +2159,12 @@ fn check_reserved_pattern(
     }
 }
 
-fn private_intrinsic_owner(name: &str) -> Option<&'static [&'static str]> {
+fn private_intrinsic_callers(name: &str) -> Option<&'static [&'static str]> {
     match name {
         "__erase" | "__unerase" => Some(&["chan", "task"]),
+        "__channel_open" | "__channel_send" | "__channel_recv" | "__channel_select" => {
+            Some(&["chan", "task"])
+        }
         "__bytes_from_string"
         | "__bytes_to_string"
         | "__bytes_length"
@@ -2170,16 +2176,26 @@ fn private_intrinsic_owner(name: &str) -> Option<&'static [&'static str]> {
 }
 
 fn check_private_intrinsic_call(name: &str, module_name: &str) -> Result<(), LinkError> {
-    let Some(owners) = private_intrinsic_owner(name) else {
+    let intrinsic = name.rsplit_once('.').map_or(name, |(_, bare)| bare);
+    let Some(owners) = private_intrinsic_callers(intrinsic) else {
         return Ok(());
     };
     if owners.contains(&module_name) {
         return Ok(());
     }
     lerr(format!(
-        "`{name}` is a compiler-private intrinsic for std/{}`; use the public stdlib surface instead",
+        "`{intrinsic}` is a compiler-private intrinsic for std/{}`; use the public stdlib surface instead",
         owners.join(" or std/")
     ))
+}
+
+fn private_intrinsic_friend_call(provider: &str, name: &str, caller: &str) -> bool {
+    provider == "task"
+        && matches!(
+            name,
+            "__channel_open" | "__channel_send" | "__channel_recv" | "__channel_select"
+        )
+        && private_intrinsic_callers(name).is_some_and(|callers| callers.contains(&caller))
 }
 
 #[cfg(test)]
@@ -2361,9 +2377,24 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("`__bytes_from_string` is a compiler-private intrinsic"), "{err}");
 
+        let err = link_main(
+            "import task\n\nfn main(console: Console):\n    let _raw = task.__channel_open(0)\n    console.print(\"x\")\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("`__channel_open` is a compiler-private intrinsic"), "{err}");
+
         let bytes = crate::parser::parse_module(std_source("bytes").expect("std bytes")).expect("bytes parses");
         link(vec![("bytes".to_string(), bytes)], "bytes", noop_expand)
             .expect("std/bytes may use the private bytes bridge");
+
+        let task = crate::parser::parse_module(std_source("task").expect("std task")).expect("task parses");
+        let chan = crate::parser::parse_module(std_source("chan").expect("std chan")).expect("chan parses");
+        link(
+            vec![("task".to_string(), task), ("chan".to_string(), chan)],
+            "chan",
+            noop_expand,
+        )
+        .expect("std/chan may use task's private channel bridge");
     }
 
     #[test]

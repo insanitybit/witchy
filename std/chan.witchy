@@ -29,14 +29,12 @@
 // `await chan.send(tx, x)`) run on the same protocol.
 
 import option
-from task import Task, Step, Handle
+from task import Task, Handle, ChannelId
 
-// (RFC-0042) The async effect (`Step`), the `Task` monad, and the executor's
-// `Handle` are ONE type each, owned by `std/task` (the executor lives there).
-// `chan` produces the channel effects (`Open`/`Push`/`Pull`) as values of task's
-// `Step`, so a channel `Task` and an `async fn`'s `Task` are the SAME type and
-// interoperate. The task combinator functions below are facade wrappers over
-// `std/task`, so the implementation body lives in one module.
+// (RFC-0042) `Task` and `Handle` are owned by std/task. The raw scheduler
+// protocol is sealed; chan reaches channel effects through task's compiler-private
+// bridge, carrying a non-mintable `ChannelId`. Channel tasks and async-fn tasks
+// remain the same type without exposing construction of the erased protocol.
 // ---- erasure boundary (RFC-0055) ----
 
 // Recover a received `Option(__Msg)` at the endpoint's message type. `__unerase`
@@ -87,11 +85,11 @@ pub fn for_each(xs: List(a), f: fn(a) -> Task(Nil)) -> Task(Nil):
 
 // The typed sending endpoint of a channel carrying `m` messages.
 sealed type Sender(m):
-    Sender(Int)
+    Sender(ChannelId)
 
 // The typed receiving endpoint of a channel carrying `m` messages.
 sealed type Receiver(m):
-    Receiver(Int)
+    Receiver(ChannelId)
 
 // `Handle` is task's (from-imported above) — a spawned child's join handle.
 
@@ -101,14 +99,11 @@ sealed type Receiver(m):
 // non-positive bound means "no bound".
 pub fn channel(capacity: Int) -> Task((Sender(m), Receiver(m))):
     let cap = if capacity < 0: 0 else: capacity
-    and_then(open_raw(cap), fn(id): done((Sender(id), Receiver(id))))
+    and_then(task.__channel_open(cap), fn(id): done((Sender(id), Receiver(id))))
 
 // An unbounded channel — `send` never blocks (the buffer grows without limit).
 pub fn unbounded() -> Task((Sender(m), Receiver(m))):
     channel(0)
-
-fn open_raw(capacity: Int) -> Task(Int):
-    Task(fn(): Open(capacity, fn(c): Task(fn(): Done(c))))
 
 // Send `msg`; on a bounded channel this blocks until there is room while some
 // task can make progress. If the whole executor reaches quiescence with this
@@ -117,7 +112,7 @@ fn open_raw(capacity: Int) -> Task(Int):
 // erased to the executor's opaque slot at this boundary.
 pub fn send(tx: Sender(m), msg: m) -> Task(Nil):
     match tx:
-        Sender(id) -> Task(fn(): Push(id, __erase(msg), fn(u): Task(fn(): Done(u))))
+        Sender(id) -> task.__channel_send(id, __erase(msg))
 
 // Receive the next message, or `None` when the executor reaches quiescence with
 // this receive parked. `for await x in rx:` loops until this `None`. Because
@@ -126,7 +121,7 @@ pub fn send(tx: Sender(m), msg: m) -> Task(Nil):
 // at this boundary.
 pub fn recv(rx: Receiver(m)) -> Task(Option(m)):
     match rx:
-        Receiver(id) -> Task(fn(): Pull(id, fn(o): Task(fn(): Done(unerase_option(o)))))
+        Receiver(id) -> task.__channel_recv(id, fn(o): unerase_option(o))
 
 // Start `child` as a concurrent task; the returned handle completes when it does.
 pub fn spawn(child: Task(Nil)) -> Task(Handle):
@@ -333,17 +328,17 @@ pub fn select(a: Receiver(m), b: Receiver(m)) -> Task(Selected(m)):
     match a:
         Receiver(ia) ->
             match b:
-                Receiver(ib) -> Task(fn(): PullAny([ia, ib], fn(o): select_result(o)))
+                Receiver(ib) -> task.__channel_select([ia, ib], fn(o): select_result(o))
 
 fn select_result(o: Option((Int, __Msg))) -> Task(Selected(m)):
     match o:
         Some(hit) ->
             let (i, msg) = hit
             if i == 0:
-                Task(fn(): Done(First(__unerase(msg))))
+                done(First(__unerase(msg)))
             else:
-                Task(fn(): Done(Second(__unerase(msg))))
-        None -> Task(fn(): Done(Closed))
+                done(Second(__unerase(msg)))
+        None -> done(Closed)
 
 // Receive from `rx`, run `f` on each message, until the channel closes. The
 // stateless server loop; `for await x in rx:` lowers to this.
