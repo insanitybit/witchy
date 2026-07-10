@@ -1280,6 +1280,32 @@ fn main(console: Console):
         );
     }
 
+    /// RFC-0046 residual cleanup: constructor-pattern bindings retain their
+    /// substituted generic field types. A bounded trait call may dispatch directly
+    /// on `Some(value)`, `Ok(value)`, or `Err(error)` without routing the binding
+    /// through a parameter/loop-shaped helper to recover its type.
+    #[test]
+    fn generic_match_bindings_dispatch_bounded_traits_on_both_backends() {
+        let src = "import reflect\nimport show\nfrom reflect import Mirror\n\ntype P derive(Reflect):\n    value: Int\n\nimpl Show for P:\n    fn show(self) -> String:\n        \"<${self.value}>\"\n\nfn show_option(value: Option(a)) -> String where a: Show:\n    match value:\n        Some(inner) -> show(inner)\n        None -> \"none\"\n\nfn show_result(value: Result(a, e)) -> String where a: Show, e: Show:\n    match value:\n        Ok(inner) -> show(inner)\n        Err(error) -> show(error)\n\nfn reflect_option(value: Option(a)) -> Mirror where a: Reflect:\n    match value:\n        Some(inner) -> MVariant(\"Option\", \"Some\", [reflect(inner)])\n        None -> MVariant(\"Option\", \"None\", [])\n\nfn reflect_result(value: Result(a, e)) -> Mirror where a: Reflect, e: Reflect:\n    match value:\n        Ok(inner) -> MVariant(\"Result\", \"Ok\", [reflect(inner)])\n        Err(error) -> MVariant(\"Result\", \"Err\", [reflect(error)])\n\nfn describe(value: Mirror) -> String:\n    match value:\n        MVariant(owner, variant, payload) -> \"${owner}.${variant}:${list.length(payload)}\"\n        _ -> \"other\"\n\nfn main(console: Console):\n    let ok: Result(P, P) = Ok(P(2))\n    let err: Result(P, P) = Err(P(3))\n    let nested_ok: Result(List(P), List(P)) = Ok([P(5)])\n    let nested_err: Result(List(P), List(P)) = Err([P(7)])\n    console.print(show_option(Some(P(1))))\n    console.print(show_result(ok))\n    console.print(show_result(err))\n    console.print(show_option(Some([P(4)])))\n    console.print(show_result(nested_ok))\n    console.print(describe(reflect_option(Some(P(4)))))\n    console.print(describe(reflect_result(err)))\n    console.print(describe(reflect_option(Some([P(6)]))))\n    console.print(describe(reflect_result(nested_err)))\n";
+        let expected = [
+            "<1>",
+            "<2>",
+            "<3>",
+            "[<4>]",
+            "[<5>]",
+            "Option.Some:1",
+            "Result.Err:1",
+            "Option.Some:1",
+            "Result.Err:1",
+        ];
+        assert_eq!(link_run(src), expected, "interp: bounded dispatch on generic match bindings");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: bounded dispatch on generic match bindings",
+        );
+    }
+
     /// (RFC-0053, D5) f-strings are not a second rendering mechanism. They lower
     /// to the same interpolation path, so they honor `Show` for custom values,
     /// containers, and std domain/scalar display.

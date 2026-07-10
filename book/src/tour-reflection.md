@@ -116,8 +116,9 @@ qualified (`reflect.MInt`, `reflect.MRecord`, …), or bind the type once with
 `value` is taken as
 `impl Reflect` — sugar for a generic parameter with a `Reflect` bound — because
 `reflect(...)` dispatches on any expression whose type the checker knows (a
-parameter, a loop variable, or a call result), which is exactly what a trait
-method needs to resolve (see [Generics and Traits](tour-generics.md)).
+parameter, loop variable, constructor-pattern binding, destructured tuple slot,
+or call result), which is exactly what a trait method needs to resolve (see
+[Generics and Traits](tour-generics.md)).
 
 A `MRecord` carries its fields *in declared order* and a `MVariant` names both the
 type and the variant, so a single recursive walk over `Mirror` is enough to

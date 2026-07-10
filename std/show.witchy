@@ -73,13 +73,6 @@ fn show_each(xs: List(a)) -> List(String) where a: Show:
         parts = list.push(parts, show(x))
     parts
 
-// An `Option`'s payload as a 0-or-1-element list, so the container impls can
-// render it with `show_each` (the same trick `reflect.witchy` uses).
-fn opt_elems(o: Option(a)) -> List(a):
-    match o:
-        Some(v) -> [v]
-        None -> []
-
 // A list renders as `[a, b, c]`, each element through its own `Show` — the same
 // structural form `"${xs}"` produces, but honoring a custom element `Show`.
 impl Show for List(a) where a: Show:
@@ -87,29 +80,20 @@ impl Show for List(a) where a: Show:
         "[" + list.join(show_each(self), ", ") + "]"
 
 // An option renders as `Some(x)` / `None`, the payload through its `Show`.
-// The `List(a)` ascriptions below (here and in the other container impls) are
-// load-bearing: monomorphization substitutes body type annotations, so the
-// ascribed binding carries the concrete element type this instantiation uses,
-// which is what lets `show_each` specialize on a call result.
+// Match bindings retain the constructor field's generic type, so dispatch is
+// direct: no temporary 0-or-1 list is needed to recover `a`.
 impl Show for Option(a) where a: Show:
     fn show(self) -> String:
-        let elems: List(a) = opt_elems(self)
-        let parts = show_each(elems)
-        if list.is_empty(parts):
-            "None"
-        else:
-            "Some(" + list.join(parts, "") + ")"
+        match self:
+            Some(value) -> "Some(" + show(value) + ")"
+            None -> "None"
 
 // A result renders as `Ok(x)` / `Err(e)`, each payload through its `Show`.
 impl Show for Result(a, e) where a: Show, e: Show:
     fn show(self) -> String:
         match self:
-            Ok(v) ->
-                let elems: List(a) = [v]
-                "Ok(" + list.join(show_each(elems), "") + ")"
-            Err(e) ->
-                let elems: List(e) = [e]
-                "Err(" + list.join(show_each(elems), "") + ")"
+            Ok(value) -> "Ok(" + show(value) + ")"
+            Err(error) -> "Err(" + show(error) + ")"
 
 // A dict renders as `{k1: v1, k2: v2}` (insertion order), keys and values each
 // through their `Show`.

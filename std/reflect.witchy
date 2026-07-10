@@ -92,32 +92,17 @@ impl Reflect for Ordering:
             Equal -> MVariant("Ordering", "Equal", [])
             Greater -> MVariant("Ordering", "Greater", [])
 
-// Reflect a single value through a free function. The generated `reflect` calls this
-// rather than the trait method directly, because trait dispatch resolves on params
-// and loop vars but not on `match` bindings (so an Option field's `Some(x)` arm could
-// not call `reflect(x)`). Here `x` is a parameter, which always resolves.
+// Reflect a single value through a generic helper. Generated record/tuple impls use
+// this at heterogeneous field sites so each call specializes independently.
 pub fn reflect_one(x: a) -> Mirror where a: Reflect:
     reflect(x)
 
-// Reflect an `Option` to a `Some`/`None` `MVariant`. The payload reflects through a
-// loop over `opt_list` (0 or 1 element), so it calls the trait method `reflect(x)` on
-// a loop var, which resolves under the generic `a` bound where a generic free
-// function or a match binding would not. An empty payload gives None.
+// Reflect an `Option` to a `Some`/`None` `MVariant`. Match bindings retain the
+// constructor field's generic type, so the payload dispatches directly.
 pub fn reflect_option(o: Option(a)) -> Mirror where a: Reflect:
-    var payloads = []
-    for x in opt_list(o):
-        payloads = list.push(payloads, reflect(x))
-    if list.is_empty(payloads):
-        MVariant("Option", "None", [])
-    else:
-        MVariant("Option", "Some", payloads)
-
-// An Option as a 0-or-1-element list. The value is only moved into a list literal,
-// never used in a trait call on the binding, so it stays resolvable.
-fn opt_list(o: Option(a)) -> List(a):
     match o:
-        Some(v) -> [v]
-        None -> []
+        Some(value) -> MVariant("Option", "Some", [reflect(value)])
+        None -> MVariant("Option", "None", [])
 
 // Reflect a list of `Reflect` elements. This is a free function rather than an
 // `impl Reflect for List(a)` because method dispatch on a `List` receiver binds to
@@ -141,30 +126,12 @@ impl Reflect for Option(a) where a: Reflect:
     fn reflect(self) -> Mirror:
         reflect_option(self)
 
-// Reflect a `Result` to an `Ok`/`Err` `MVariant`. Like `Option`, payloads flow
-// through 0-or-1-element lists so trait dispatch happens on loop variables under
-// the relevant `where` bound instead of on a match binding.
+// Reflect a `Result` to an `Ok`/`Err` `MVariant`, dispatching directly on the
+// typed constructor binding.
 pub fn reflect_result(r: Result(a, e)) -> Mirror where a: Reflect, e: Reflect:
-    var ok_payloads = []
-    for x in result_ok_list(r):
-        ok_payloads = list.push(ok_payloads, reflect(x))
-    if !list.is_empty(ok_payloads):
-        MVariant("Result", "Ok", ok_payloads)
-    else:
-        var err_payloads = []
-        for err in result_err_list(r):
-            err_payloads = list.push(err_payloads, reflect(err))
-        MVariant("Result", "Err", err_payloads)
-
-fn result_ok_list(r: Result(a, e)) -> List(a):
     match r:
-        Ok(v) -> [v]
-        Err(_e) -> []
-
-fn result_err_list(r: Result(a, e)) -> List(e):
-    match r:
-        Ok(_v) -> []
-        Err(e) -> [e]
+        Ok(value) -> MVariant("Result", "Ok", [reflect(value)])
+        Err(error) -> MVariant("Result", "Err", [reflect(error)])
 
 impl Reflect for Result(a, e) where a: Reflect, e: Reflect:
     fn reflect(self) -> Mirror:

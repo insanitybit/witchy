@@ -2011,11 +2011,11 @@ Bytes are binary data, not text. Reflection exposes their raw byte values as a l
 
 #### `fn reflect_one(x: a) -> Mirror where a: Reflect`
 
-Reflect a single value through a free function. The generated `reflect` calls this rather than the trait method directly, because trait dispatch resolves on params and loop vars but not on `match` bindings (so an Option field's `Some(x)` arm could not call `reflect(x)`). Here `x` is a parameter, which always resolves.
+Reflect a single value through a generic helper. Generated record/tuple impls use this at heterogeneous field sites so each call specializes independently.
 
 #### `fn reflect_option(o: Option(a)) -> Mirror where a: Reflect`
 
-Reflect an `Option` to a `Some`/`None` `MVariant`. The payload reflects through a loop over `opt_list` (0 or 1 element), so it calls the trait method `reflect(x)` on a loop var, which resolves under the generic `a` bound where a generic free function or a match binding would not. An empty payload gives None.
+Reflect an `Option` to a `Some`/`None` `MVariant`. Match bindings retain the constructor field's generic type, so the payload dispatches directly.
 
 #### `fn reflect_list(xs: List(a)) -> Mirror where a: Reflect`
 
@@ -2023,7 +2023,7 @@ Reflect a list of `Reflect` elements. This is a free function rather than an `im
 
 #### `fn reflect_result(r: Result(a, e)) -> Mirror where a: Reflect, e: Reflect`
 
-Reflect a `Result` to an `Ok`/`Err` `MVariant`. Like `Option`, payloads flow through 0-or-1-element lists so trait dispatch happens on loop variables under the relevant `where` bound instead of on a match binding.
+Reflect a `Result` to an `Ok`/`Err` `MVariant`, dispatching directly on the typed constructor binding.
 
 #### `fn reflect_set(s: Set(a)) -> Mirror where a: Reflect`
 

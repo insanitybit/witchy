@@ -3433,15 +3433,29 @@ fn pick_rename<'a>(renames: &'a Renames, method: &str, recv: Option<&str>) -> Op
     matches.next().is_none().then_some(first.1)
 }
 
-fn rename_calls_block(b: &mut Block, renames: &Renames, scope: &mut Scope, resolve: &ReceiverResolver) {
-    fn bind_pattern(pat: &Pattern, scope: &mut Scope) {
+struct RenameCallContext<'a> {
+    renames: &'a Renames,
+    resolve: &'a ReceiverResolver<'a>,
+    ctor_fields: &'a HashMap<String, Vec<Type>>,
+    subst: &'a HashMap<String, String>,
+}
+
+fn rename_calls_block(b: &mut Block, scope: &mut Scope, ctx: &RenameCallContext<'_>) {
+    fn bind_pattern(pat: &Pattern, scope: &mut Scope, ctx: &RenameCallContext<'_>) {
+        // Keep the constructor field's substituted type when known. This lets a
+        // specialization distinguish two same-trait bounds inside match arms and
+        // specialize a nested generic impl instead of naming its no-fallback
+        // template after that template is removed.
+        bind_ctor_pattern(pat, ctx.ctor_fields, ctx.subst, scope);
         let mut names = Vec::new();
         witchy_syntax::ast::pattern_binds(pat, &mut names);
         for n in &names {
-            scope.bind_local(n);
+            if !scope.is_local(n) {
+                scope.bind_local(n);
+            }
         }
     }
-    fn walk_expr(e: &mut Expr, renames: &Renames, scope: &mut Scope, resolve: &ReceiverResolver) {
+    fn walk_expr(e: &mut Expr, scope: &mut Scope, ctx: &RenameCallContext<'_>) {
         match e {
             Expr::Call { name, args } => {
                 // A call on a bound LOCAL (a `fn`-typed parameter or `let` named
@@ -3450,111 +3464,111 @@ fn rename_calls_block(b: &mut Block, renames: &Renames, scope: &mut Scope, resol
                 // argument (UFCS-lowered `x.tag()` -> `tag(x)`); dispatch on its
                 // concrete type so each same-trait bound picks its own impl.
                 if !scope.is_local(name) {
-                    let recv = args.first().and_then(|a| resolve(a, scope));
-                    if let Some(to) = pick_rename(renames, name, recv.as_deref()) {
+                    let recv = args.first().and_then(|a| (ctx.resolve)(a, scope));
+                    if let Some(to) = pick_rename(ctx.renames, name, recv.as_deref()) {
                         *name = to.clone();
                     }
                 }
                 for a in args {
-                    walk_expr(a, renames, scope, resolve);
+                    walk_expr(a, scope, ctx);
                 }
             }
             Expr::LabeledCall { name, args } => {
                 if !scope.is_local(name) {
-                    let recv = args.first().and_then(|(_, a)| resolve(a, scope));
-                    if let Some(to) = pick_rename(renames, name, recv.as_deref()) {
+                    let recv = args.first().and_then(|(_, a)| (ctx.resolve)(a, scope));
+                    if let Some(to) = pick_rename(ctx.renames, name, recv.as_deref()) {
                         *name = to.clone();
                     }
                 }
                 for (_, a) in args {
-                    walk_expr(a, renames, scope, resolve);
+                    walk_expr(a, scope, ctx);
                 }
             }
             Expr::Apply { func, args } => {
-                walk_expr(func, renames, scope, resolve);
+                walk_expr(func, scope, ctx);
                 for a in args {
-                    walk_expr(a, renames, scope, resolve);
+                    walk_expr(a, scope, ctx);
                 }
             }
             Expr::MethodCall { receiver, args, .. } => {
-                walk_expr(receiver, renames, scope, resolve);
+                walk_expr(receiver, scope, ctx);
                 for a in args {
-                    walk_expr(a, renames, scope, resolve);
+                    walk_expr(a, scope, ctx);
                 }
             }
             Expr::Ctor { args, .. } | Expr::List(args) | Expr::Tuple(args) => {
                 for a in args {
-                    walk_expr(a, renames, scope, resolve);
+                    walk_expr(a, scope, ctx);
                 }
             }
             Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. }
-            | Expr::Field { base: expr, .. } => walk_expr(expr, renames, scope, resolve),
+            | Expr::Field { base: expr, .. } => walk_expr(expr, scope, ctx),
             Expr::Binary { lhs, rhs, .. } => {
-                walk_expr(lhs, renames, scope, resolve);
-                walk_expr(rhs, renames, scope, resolve);
+                walk_expr(lhs, scope, ctx);
+                walk_expr(rhs, scope, ctx);
             }
             Expr::Range { lo, hi, .. } => {
-                walk_expr(lo, renames, scope, resolve);
-                walk_expr(hi, renames, scope, resolve);
+                walk_expr(lo, scope, ctx);
+                walk_expr(hi, scope, ctx);
             }
             Expr::Index { base, index } => {
-                walk_expr(base, renames, scope, resolve);
-                walk_expr(index, renames, scope, resolve);
+                walk_expr(base, scope, ctx);
+                walk_expr(index, scope, ctx);
             }
             Expr::Record { fields, spread, .. } => {
                 for (_, v) in fields {
-                    walk_expr(v, renames, scope, resolve);
+                    walk_expr(v, scope, ctx);
                 }
                 if let Some(sp) = spread {
-                    walk_expr(sp, renames, scope, resolve);
+                    walk_expr(sp, scope, ctx);
                 }
             }
             Expr::RecordUpdate { name: _, base, fields } => {
-                walk_expr(base, renames, scope, resolve);
+                walk_expr(base, scope, ctx);
                 for (_, v) in fields {
-                    walk_expr(v, renames, scope, resolve);
+                    walk_expr(v, scope, ctx);
                 }
             }
             Expr::If { cond, then_block, else_block } => {
-                walk_expr(cond, renames, scope, resolve);
-                rename_calls_block(then_block, renames, &mut scope.clone(), resolve);
+                walk_expr(cond, scope, ctx);
+                rename_calls_block(then_block, &mut scope.clone(), ctx);
                 if let Some(b) = else_block {
-                    rename_calls_block(b, renames, &mut scope.clone(), resolve);
+                    rename_calls_block(b, &mut scope.clone(), ctx);
                 }
             }
             Expr::Match { scrutinee, arms } => {
-                walk_expr(scrutinee, renames, scope, resolve);
+                walk_expr(scrutinee, scope, ctx);
                 for a in arms {
                     let mut s = scope.clone();
-                    bind_pattern(&a.pattern, &mut s);
+                    bind_pattern(&a.pattern, &mut s, ctx);
                     if let Some(g) = &mut a.guard {
-                        walk_expr(g, renames, &mut s, resolve);
+                        walk_expr(g, &mut s, ctx);
                     }
-                    walk_expr(&mut a.body, renames, &mut s, resolve);
+                    walk_expr(&mut a.body, &mut s, ctx);
                 }
             }
             Expr::While { cond, body } => {
-                walk_expr(cond, renames, scope, resolve);
-                rename_calls_block(body, renames, &mut scope.clone(), resolve);
+                walk_expr(cond, scope, ctx);
+                rename_calls_block(body, &mut scope.clone(), ctx);
             }
             Expr::WhileLet { pattern, scrutinee, body } => {
-                walk_expr(scrutinee, renames, scope, resolve);
+                walk_expr(scrutinee, scope, ctx);
                 let mut s = scope.clone();
-                bind_pattern(pattern, &mut s);
-                rename_calls_block(body, renames, &mut s, resolve);
+                bind_pattern(pattern, &mut s, ctx);
+                rename_calls_block(body, &mut s, ctx);
             }
             Expr::For { var, iter, body } => {
-                walk_expr(iter, renames, scope, resolve);
+                walk_expr(iter, scope, ctx);
                 let mut s = scope.clone();
                 s.bind_local(var);
-                rename_calls_block(body, renames, &mut s, resolve);
+                rename_calls_block(body, &mut s, ctx);
             }
             Expr::Lambda { params, body, .. } => {
                 let mut s = scope.clone();
                 seed_params(params, &mut s);
-                rename_calls_block(body, renames, &mut s, resolve);
+                rename_calls_block(body, &mut s, ctx);
             }
-            Expr::Block(body) => rename_calls_block(body, renames, &mut scope.clone(), resolve),
+            Expr::Block(body) => rename_calls_block(body, &mut scope.clone(), ctx),
             Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_)
             | Expr::Bool(_) | Expr::Var(_) | Expr::TaggedLit { .. } => {}
         }
@@ -3562,19 +3576,19 @@ fn rename_calls_block(b: &mut Block, renames: &Renames, scope: &mut Scope, resol
     for st in &mut b.stmts {
         match st {
             Stmt::Let { name, value, .. } => {
-                walk_expr(value, renames, scope, resolve);
+                walk_expr(value, scope, ctx);
                 // A `let less = …` shadows a same-named trait method for the rest
                 // of the block, so a later `less(…)` is its value, not a rename.
                 scope.bind_local(name);
             }
             Stmt::LetPattern { pattern, value } => {
-                walk_expr(value, renames, scope, resolve);
-                bind_pattern(pattern, scope);
+                walk_expr(value, scope, ctx);
+                bind_pattern(pattern, scope, ctx);
             }
             Stmt::Assign { value, .. }
             | Stmt::Return(Some(value))
             | Stmt::Expr(value)
-            | Stmt::Yield(value) => walk_expr(value, renames, scope, resolve),
+            | Stmt::Yield(value) => walk_expr(value, scope, ctx),
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
     }
@@ -4351,7 +4365,13 @@ impl Mono<'_> {
                 this.type_name(e, sc)
                     .map(|t| apply_subst(&t, osub))
             };
-            rename_calls_block(&mut f.body, &renames, &mut rename_scope, &resolve);
+            let rename_ctx = RenameCallContext {
+                renames: &renames,
+                resolve: &resolve,
+                ctor_fields: self.ctor_fields,
+                subst: &owned_subst,
+            };
+            rename_calls_block(&mut f.body, &mut rename_scope, &rename_ctx);
         }
         drop(subst);
         // Monomorphization discharges the `where` bounds: every bound type
