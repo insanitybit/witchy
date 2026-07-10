@@ -25,30 +25,36 @@ The current ABI version is **1**. The JavaScript host pins it as
 version covers: the import module name `"witchy"`, the set of import names and
 their `(params) -> results` signatures, the value/memory representation, and the
 pending-buffer protocol. Bump it in lockstep with any change to those.
+Version 1 is the baseline frozen for the first 0.1 release; earlier pre-release
+import counts were not separately published ABI versions.
 
 ## Import inclusion is tree-shaken
 
 A compiled module declares **only the imports it actually reaches**, not the full
 set. The codegen path (`assemble_wir_module` in
 `crates/witchy-lower/src/codegen/assembly.rs`) prunes the import list to the host
-functions the reachable code calls. A footprint-empty
-("pure") rune therefore imports only the non-capability functions it uses; a rune
-that touches the filesystem/network/clock additionally imports the corresponding
-capability function.
+functions the reachable code calls. A footprint-empty rune therefore imports no
+capability-authority function; a rune that touches the
+filesystem/network/clock additionally imports the corresponding capability
+function. Authority-free modules can still require a native-only launch or
+toolchain service such as `args_size` or `compiler_footprint_len`.
 
 This is what makes the browser target's containment **structural**. The browser
-host (`web/witchy-runtime/`) provides only the non-capability imports below. Per
-the WebAssembly spec, a module that imports a function the host does not supply
+host (`web/witchy-runtime/`) provides only entries marked `browser: provided`
+below. Per the WebAssembly spec, a module that imports a function the host does not supply
 **fails to instantiate** with a `LinkError`. So:
 
-- a pure rune imports only functions the host provides → it instantiates and runs;
+- an authority-free rune using only browser-provided services instantiates and
+  runs;
 - an impure rune imports a capability function the host does **not** provide →
   `WebAssembly.instantiate` throws, and the module never runs.
 
-The host is a sieve that admits exactly the footprint-empty modules. This is
-**deny-by-omission**: capabilities are denied by simply not being on offer, the
-strongest "structurally incapable of I/O" guarantee. No trap stubs are needed (or
-installed) for capability imports — their *absence* is the guarantee.
+The host is a sieve that admits no authority-bearing module. It is deliberately
+stricter than "all footprint-empty modules": native-only launch and toolchain
+services are omitted too. This is **deny-by-omission**: capabilities are denied
+by simply not being on offer, the strongest "structurally incapable of I/O"
+guarantee. No trap stubs are needed (or installed) for capability imports —
+their *absence* is the guarantee.
 
 ## Module exports
 
@@ -125,41 +131,111 @@ cannot instantiate.
 ## The imports
 
 ABI version 1 declares **83 imports** (`IMPORT_COUNT` in
-`crates/witchy-wir/src/wir_prelude.rs`),
-classified below. **Infrastructure** imports carry no authority and the
-pure-compute host provides them. **Capability** imports are authority (or host
-services the pure-compute target does not provide) and the pure-compute host
-**omits** them. The
-tables group imports by family and, for a *staged* result, list the representative
-`…_len`/`…_size` import (its paired drain — `dir_read`, `dir_list`,
-`net_recv_*`, `file_read`, … — is implied), so the rows classify each family's
-representative rather than enumerate each half of a pair.
+`crates/witchy-wir/src/wir_prelude.rs`). That file owns the ordered signatures
+and the explicit metadata rendered below. The classes are:
 
-### Infrastructure — provided by the pure-compute host
+- **pure infrastructure**: deterministic computation or marshaling, no authority;
+- **capability authority**: only linked when the corresponding grant is present;
+- **launch input**: data selected by the host at launch, not ambient authority;
+- **internal/toolchain service**: compiler, reflection, or worker-runtime plumbing;
+- **runtime diagnostic**: checked-heap or abort reporting, no application authority.
 
-| import | signature | purpose |
-| --- | --- | --- |
-| `print` | `(i32 ptr, i32 len)` | write a UTF-8 buffer to output (capturable; output is not authority) |
-| `print_int` | `(i64)` | write an integer result |
-| `print_float` | `(f64)` | write a float result (canonical `render_float` form) |
-| `__witchy_abort` | `(i32 template, i64 a, i64 b, i32 str_ptr)` | render a runtime-abort message and trap (RFC-0045; see *Runtime aborts* below) |
-| `fill_pending` | `(i32 out_ptr)` | drain the staged String into guest memory |
-| `write_pending_list` | `(i32 base_ptr)` | lay a staged List(String) into guest memory |
-| `float_to_str` | `(f64, i32 out_ptr) -> i32` | format a float; write bytes, return length |
-| `string_from_code` | `(i64 cp, i32 out_ptr) -> i32` | UTF-8-encode a code point (U+FFFD on out-of-range) |
-| `encoding` | `(i32 op, i32 in_ptr, i32 out_ptr) -> i32` | hex / base64 / base64url transforms |
-| `regex_match_spans_len` | `(i32 pat_ptr, i32 text_ptr) -> i32` | regex spans; stages result, returns length |
-| `crypto.sha256` | `(i32 in_ptr, i32 out_ptr)` | SHA-256, 64 hex bytes |
-| `crypto.sha512` | `(i32 in_ptr, i32 out_ptr)` | SHA-512, 128 hex bytes |
-| `crypto.sha3_256` | `(i32 in_ptr, i32 out_ptr)` | SHA3-256, 64 hex bytes |
-| `crypto.hmac_sha256` | `(i32 key_ptr, i32 msg_ptr, i32 out_ptr)` | HMAC-SHA256 (key is hex), 64 hex bytes |
-| `crypto.rune_hash` | `(i32 paths_ptr, i32 contents_ptr, i32 out_ptr)` | content hash `sha256:<hex>` (71 bytes) |
-| `crypto.ed25519_verify` | `(i32 pk, i32 msg, i32 sig) -> i32` | verify (pk/sig hex); pure compute |
-| `crypto.ecdsa_p256_verify` | `(i32 pk, i32 msg, i32 sig) -> i32` | verify; pure compute |
-| `crypto.ecdsa_p256_verify_hex` | `(i32 pk, i32 msg, i32 sig) -> i32` | verify; pure compute |
-| `field_str_len` | `(i32 h) -> i32` | reflection field length (host cell; returns 0 for ordinary programs) |
-| `field_intlist_len` | `(i32 h) -> i32` | reflection field length |
-| `field_strlist_size` | `(i32 h) -> i32` | reflection field length |
+`browser: provided` is the exact deny-by-omission surface implemented by the
+JavaScript host. `omitted` means a browser module importing that function cannot
+instantiate. Regenerate the table with
+`cargo run -p witchy-wir --example abi_catalog`; the test suite compares the
+committed block with the compiler catalog byte-for-byte and instantiates an
+all-import probe against the native host.
+
+<!-- BEGIN GENERATED WASM ABI IMPORTS -->
+| import | signature | class | browser |
+| --- | --- | --- | --- |
+| `print` | `(i32, i32)` | pure infrastructure | provided |
+| `crypto.sha256` | `(i32, i32)` | pure infrastructure | provided |
+| `crypto.rune_hash` | `(i32, i32, i32)` | pure infrastructure | provided |
+| `compiler_footprint_len` | `(i32) -> i32` | internal/toolchain service | omitted |
+| `compiler_diff_len` | `(i32, i32) -> i32` | internal/toolchain service | omitted |
+| `compiler_doc_len` | `(i32, i32) -> i32` | internal/toolchain service | omitted |
+| `compiler_doc_result_json_len` | `(i32, i32) -> i32` | internal/toolchain service | omitted |
+| `user_cap_field_len` | `(i32, i32) -> i32` | launch input | provided |
+| `field_str_len` | `(i32) -> i32` | internal/toolchain service | provided |
+| `field_intlist_len` | `(i32) -> i32` | internal/toolchain service | provided |
+| `field_strlist_size` | `(i32) -> i32` | internal/toolchain service | provided |
+| `float_to_str` | `(f64, i32) -> i32` | pure infrastructure | provided |
+| `encoding` | `(i32, i32, i32) -> i32` | pure infrastructure | provided |
+| `crypto.sign` | `(i32, i32, i32)` | capability authority | omitted |
+| `crypto.public_key` | `(i32, i32)` | capability authority | omitted |
+| `secretstore_lookup` | `(i32) -> i32` | capability authority | omitted |
+| `crypto_reveal_len` | `(i32) -> i32` | capability authority | omitted |
+| `env_len` | `(i32) -> i32` | capability authority | omitted |
+| `env_fill` | `(i32, i32)` | capability authority | omitted |
+| `dir_read_len` | `(i32, i32) -> i32` | capability authority | omitted |
+| `dir_list_size` | `(i32) -> i32` | capability authority | omitted |
+| `args_size` | `() -> i32` | launch input | omitted |
+| `write_pending_list` | `(i32)` | pure infrastructure | provided |
+| `vm_par_map_run` | `(i32, i32) -> i32` | internal/toolchain service | omitted |
+| `vm_par_map_write` | `(i32)` | internal/toolchain service | omitted |
+| `vm_par_map_bytes_run` | `(i32, i32) -> i32` | internal/toolchain service | omitted |
+| `vm_par_map_bytes_write` | `(i32)` | internal/toolchain service | omitted |
+| `vm_with_dir_run` | `(i32, i32, i32) -> i32` | internal/toolchain service | omitted |
+| `vm_serve_run` | `(i32, i32, i32) -> i32` | internal/toolchain service | omitted |
+| `build_read_len` | `(i32, i32) -> i32` | capability authority | omitted |
+| `build_out_write` | `(i32, i32, i32)` | capability authority | omitted |
+| `build_env_len` | `(i32, i32) -> i32` | capability authority | omitted |
+| `build_env_fill` | `(i32, i32, i32)` | capability authority | omitted |
+| `build_fetch_len` | `(i32, i32, i32) -> i32` | capability authority | omitted |
+| `build_exec_run` | `(i32, i32, i32) -> i32` | capability authority | omitted |
+| `net_recv_line_len` | `(i32) -> i32` | capability authority | omitted |
+| `net_recv_all_len` | `(i32) -> i32` | capability authority | omitted |
+| `net_recv_bytes_len` | `(i32, i64) -> i32` | capability authority | omitted |
+| `fill_pending` | `(i32)` | pure infrastructure | provided |
+| `crypto.sha512` | `(i32, i32)` | pure infrastructure | provided |
+| `crypto.sha3_256` | `(i32, i32)` | pure infrastructure | provided |
+| `crypto.hmac_sha256` | `(i32, i32, i32)` | pure infrastructure | provided |
+| `print_int` | `(i64)` | pure infrastructure | provided |
+| `print_float` | `(f64)` | pure infrastructure | provided |
+| `string_from_code` | `(i64, i32) -> i32` | pure infrastructure | provided |
+| `dir_subdir` | `(i32, i32) -> i32` | capability authority | omitted |
+| `dir_only` | `(i32, i32) -> i32` | capability authority | omitted |
+| `dir_exists` | `(i32, i32) -> i32` | capability authority | omitted |
+| `dir_is_dir` | `(i32, i32) -> i32` | capability authority | omitted |
+| `dir_write` | `(i32, i32, i32)` | capability authority | omitted |
+| `dir_append` | `(i32, i32, i32)` | capability authority | omitted |
+| `dir_make_dir` | `(i32, i32)` | capability authority | omitted |
+| `dir_open` | `(i32, i32) -> externref` | capability authority | omitted |
+| `dir_create` | `(i32, i32) -> externref` | capability authority | omitted |
+| `mint_file` | `(i32) -> externref` | capability authority | omitted |
+| `file_read_len` | `(externref) -> i32` | capability authority | omitted |
+| `file_write` | `(externref, i32)` | capability authority | omitted |
+| `net_connect` | `(i32, i32) -> i32` | capability authority | omitted |
+| `net_try_connect` | `(i32, i32) -> i32` | capability authority | omitted |
+| `net_resolve_size` | `(i32, i32) -> i32` | capability authority | omitted |
+| `net_connect_pinned` | `(i32, i32, i32, i64, i32) -> i32` | capability authority | omitted |
+| `net_try_connect_pinned` | `(i32, i32, i32, i64, i32) -> i32` | capability authority | omitted |
+| `net_listen` | `(i32, i32) -> i32` | capability authority | omitted |
+| `net_listen_tls` | `(i32, i32, i32, i32) -> i32` | capability authority | omitted |
+| `net_accept` | `(i32) -> i32` | capability authority | omitted |
+| `serve_pool` | `(i32)` | internal/toolchain service | omitted |
+| `net_restrict` | `(i32, i32) -> i32` | capability authority | omitted |
+| `net_deny` | `(i32, i32) -> i32` | capability authority | omitted |
+| `net_send_line` | `(i32, i32)` | capability authority | omitted |
+| `net_send_bytes` | `(i32, i32)` | capability authority | omitted |
+| `net_close` | `(i32)` | capability authority | omitted |
+| `now` | `() -> i64` | capability authority | omitted |
+| `now_monotonic` | `() -> i64` | capability authority | omitted |
+| `rand_u64` | `() -> i64` | capability authority | omitted |
+| `regex_match_spans_len` | `(i32, i32) -> i32` | pure infrastructure | provided |
+| `crypto.__ecdsa_p256_verify_status` | `(i32, i32, i32) -> i64` | pure infrastructure | provided |
+| `crypto.__ecdsa_p256_verify_hex_status` | `(i32, i32, i32) -> i64` | pure infrastructure | provided |
+| `crypto.__rsa_pkcs1_sha256_verify_status` | `(i32, i32, i32) -> i64` | pure infrastructure | provided |
+| `crypto.__ed25519_verify_status` | `(i32, i32, i32) -> i64` | pure infrastructure | provided |
+| `exec_run` | `(i32, i32, i32, i32) -> i32` | capability authority | omitted |
+| `heap_register` | `(i32, i32)` | runtime diagnostic | omitted |
+| `heap_frontier` | `(i32)` | runtime diagnostic | omitted |
+| `__witchy_abort` | `(i32, i64, i64, i32)` | runtime diagnostic | provided |
+<!-- END GENERATED WASM ABI IMPORTS -->
+
+### Encoding sub-ABI
 
 `encoding` is a byte-oriented sub-ABI: `in_ptr` addresses a `[i32 len][bytes]`
 buffer, the host writes result bytes at `out_ptr`, and the return value is their
@@ -194,25 +270,7 @@ every observable byte (the parity rule). The ed25519/p256 verifies need a platfo
 crypto backend; the SHA-256 core (and HMAC and `rune_hash`, which build on it) is
 a self-contained synchronous implementation needing none.
 
-### Capability — omitted by the pure-compute host
-
-Providing any of these would grant authority (or is a host service the
-pure-compute target does not provide). The pure-compute host omits them all; a
-module that imports one cannot instantiate.
-
-| family | imports | authority |
-| --- | --- | --- |
-| Dir | `dir_read_len`, `dir_list_size`, `dir_subdir` (mints a child `Dir` — user op `subtree`), `dir_exists`, `dir_is_dir`, `dir_write`, `dir_append`, `dir_make_dir`, `dir_open`/`dir_create` (mint a `File[Read]`/`File[Write]` — user ops `read_file`/`write_file`) | filesystem |
-| File | `file_read_len`, `file_write` | one file — the leaf of `Dir` (RFC-0012) |
-| Net | `net_connect`, `net_try_connect`, `net_listen`, `net_accept`, `net_restrict`/`net_deny` (intersect/subtract the address-set — user ops `net.only`/`net.deny`), `net_send_line`, `net_send_bytes`, `net_recv_line_len`, `net_recv_all_len`, `net_recv_bytes_len`, `net_close` | network |
-| Exec | `exec_run` | subprocess |
-| Clock | `now` | wall clock |
-| Env | `env_len`, `env_fill` | process environment |
-| Secret | `crypto.sign`, `crypto.public_key` | host-held key material |
-| SecretStore | `secretstore_lookup`, `crypto_reveal_len` | named secrets |
-| Args | `args_size` | host-chosen argv (pure input, but a host service) |
-| Build | `build_read_len`, `build_out_write` | build-time confined I/O |
-| Compiler | `compiler_footprint_len`, `compiler_diff_len`, `compiler_doc_len` | toolchain services — pure, grant no authority; see note |
+### Host policy notes
 
 > `args_size` is host-chosen *input* rather than authority, but it is a host
 > service the pure-compute target does not offer, so it is omitted; a browser
@@ -229,13 +287,15 @@ module that imports one cannot instantiate.
 
 ## Hosts
 
-- **`crates/witchy-runtime/src/runtime.rs`** — the wasmtime host. Links only the granted capability
-  imports plus the pure infrastructure; the reference implementation of every
+- **`crates/witchy-runtime/src/runtime.rs`** — the wasmtime host. Defines every
+  non-authority import and defines capability-authority imports only when the
+  corresponding grant is present; it is the reference implementation of every
   signature and the pending-buffer protocol above.
 - **`web/witchy-runtime/witchy-runtime.mjs`** — the JavaScript pure-compute host
-  (RFC-0007). Provides the infrastructure imports only; omits every capability
-  import. Its `instantiate(wasmBytes, { onPrint })` returns `{ instance, output,
-  run }`. See `web/witchy-runtime/README.md`.
+  (RFC-0007). Provides exactly the imports marked `browser: provided` above and
+  omits every capability-authority import. Its
+  `instantiate(wasmBytes, { onPrint })` returns `{ instance, output, run }`.
+  See `web/witchy-runtime/README.md`.
 
 The spike `web/witchy-runtime/spike.mjs` (driven by the Rust test
 `tests/browser_shim.rs`) compiles a pure rune, runs it under the JS host, asserts

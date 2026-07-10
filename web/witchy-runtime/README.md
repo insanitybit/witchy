@@ -2,9 +2,10 @@
 
 `witchy-runtime.mjs` runs witchyc-compiled WASM in JavaScript (browser or Node)
 with **every capability denied**. It is the browser analog of the wasmtime host
-in `src/runtime.rs`, with the capability set fixed to empty — the implementation
-of [RFC-0007](../../rfcs/0007-witchy-wasm-browser-target.md). The ABI it targets
-is the public contract in [`spec/wasm-abi.md`](../../spec/wasm-abi.md).
+in `crates/witchy-runtime/src/runtime.rs`, with the capability set fixed to
+empty — the implementation of
+[RFC-0007](../../rfcs/0007-witchy-wasm-browser-target.md). The ABI it targets is
+the public contract in [`spec/wasm-abi.md`](../../spec/wasm-abi.md).
 
 This is a *general* witchy-WASM browser runtime, not specific to any one app. It
 is distinct from the `web/witchy-host.js` playground shim, which compiles
@@ -14,13 +15,13 @@ to that lib; this runtime is standalone and implements the pure helpers in JS.
 ## The guarantee: deny-by-omission
 
 witchyc tree-shakes imports — a module declares only the host functions it
-reaches. A footprint-empty rune imports only the non-capability ("pure-compute")
-functions this runtime provides. A rune that touches the filesystem, network,
-clock, etc. additionally imports a capability function this runtime **does not
-provide**, so `WebAssembly.instantiate` throws a `LinkError` and the module never
-runs. The host is a sieve that admits exactly the pure modules; nothing impure
-can instantiate. No trap stubs are involved — the capability imports are simply
-absent.
+reaches. A rune that touches the filesystem, network, clock, etc. imports a
+capability function this runtime **does not provide**, so
+`WebAssembly.instantiate` throws a `LinkError` and the module never runs. The
+host therefore admits no authority-bearing module. It is deliberately stricter
+than "all footprint-empty modules": native-only launch and toolchain services
+such as argv and `std/compiler` are absent too. No trap stubs are involved —
+the imports are simply absent.
 
 ## API
 
@@ -42,7 +43,8 @@ run();          // calls the module's exported `run`; returns the output array
 - `opts.nodeCrypto` / `opts.cryptoBackend` — override the crypto backend (Node's
   `node:crypto` is auto-detected; SHA-256/HMAC/`rune_hash` work with no backend).
 
-The exported `WITCHY_ABI_VERSION` is the ABI version this runtime implements.
+The exported `WITCHY_ABI_VERSION` is the ABI version this runtime implements;
+the Rust catalog test compares it with the compiler-owned version.
 
 ### `callString` — the `String -> String` export ABI (RFC-0008)
 
@@ -84,16 +86,18 @@ a fake, controllable clock.
 
 ## What it provides — and refuses
 
-**Provides (pure, no authority):** `print` / `print_int` / `print_float`
-(output), `fill_pending` / `write_pending_list` (the string-bridge), `float_to_str`,
-`string_from_code`, `encoding` (hex/base64/base64url), `regex_match_spans_len`,
-the `crypto.*` digests/verifies, and the reflection field-length stubs. These
-mirror `src/runtime.rs` / `src/native.rs` byte-for-byte.
+**Provides (no authority):** `print` / `print_int` / `print_float` (capturable
+output), `fill_pending` / `write_pending_list` (the string bridge),
+`float_to_str`, `string_from_code`, `encoding` (hex/base64/base64url),
+`regex_match_spans_len`, the `crypto.*` digests/verifies, launch-provided
+`user_cap_field_len`, the reflection field-length stubs, and runtime abort
+diagnostics. The exported `WITCHY_BROWSER_IMPORTS` list is checked against both
+the compiler catalog and the actual JavaScript import object.
 
-**Refuses (capability — absent):** `dir_*`, `net_*`, `exec_run`, `now`, `env_*`,
-`secretstore_lookup` / `crypto_reveal_len`, `args_size`, `build_*`, `crypto.sign`
-/ `crypto.public_key`, `compiler_*`. A module importing any of these cannot
-instantiate.
+**Refuses (absent):** all capability-authority imports (`dir_*`, `net_*`,
+`exec_run`, `now`, `env_*`, secrets, build authority, signing) plus unsupported
+native launch/toolchain services such as `args_size` and `compiler_*`. A module
+importing any of these cannot instantiate.
 
 See [`spec/wasm-abi.md`](../../spec/wasm-abi.md) for the full import table and the
 pending-buffer protocol.

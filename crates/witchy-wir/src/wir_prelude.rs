@@ -300,6 +300,209 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
 pub const IMPORT_COUNT: usize = 83;
 
+/// Version of the public `"witchy"` host-import contract.
+pub const WITCHY_ABI_VERSION: u32 = 1;
+
+/// The role an import plays at the host boundary. This classification is part
+/// of the public Wasm ABI: it tells embedders which imports grant authority,
+/// which are pure mechanics, and which are runtime/toolchain plumbing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbiImportClass {
+    PureInfrastructure,
+    CapabilityAuthority,
+    LaunchInput,
+    InternalService,
+    RuntimeDiagnostic,
+}
+
+impl AbiImportClass {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::PureInfrastructure => "pure infrastructure",
+            Self::CapabilityAuthority => "capability authority",
+            Self::LaunchInput => "launch input",
+            Self::InternalService => "internal/toolchain service",
+            Self::RuntimeDiagnostic => "runtime diagnostic",
+        }
+    }
+}
+
+/// Public ABI metadata layered over the canonical prelude signature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AbiImportInfo {
+    pub class: AbiImportClass,
+    /// Whether the deny-by-omission browser host implements this import.
+    pub browser: bool,
+}
+
+/// Classify one canonical host import. Every name is explicit so adding an
+/// import cannot silently inherit authority or browser availability.
+pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
+    use AbiImportClass as C;
+
+    let class = match name {
+        "print"
+        | "crypto.sha256"
+        | "crypto.rune_hash"
+        | "float_to_str"
+        | "encoding"
+        | "write_pending_list"
+        | "fill_pending"
+        | "crypto.sha512"
+        | "crypto.sha3_256"
+        | "crypto.hmac_sha256"
+        | "print_int"
+        | "print_float"
+        | "string_from_code"
+        | "regex_match_spans_len"
+        | "crypto.__ecdsa_p256_verify_status"
+        | "crypto.__ecdsa_p256_verify_hex_status"
+        | "crypto.__rsa_pkcs1_sha256_verify_status"
+        | "crypto.__ed25519_verify_status" => C::PureInfrastructure,
+
+        "crypto.sign"
+        | "crypto.public_key"
+        | "secretstore_lookup"
+        | "crypto_reveal_len"
+        | "env_len"
+        | "env_fill"
+        | "dir_read_len"
+        | "dir_list_size"
+        | "build_read_len"
+        | "build_out_write"
+        | "build_env_len"
+        | "build_env_fill"
+        | "build_fetch_len"
+        | "build_exec_run"
+        | "net_recv_line_len"
+        | "net_recv_all_len"
+        | "net_recv_bytes_len"
+        | "dir_subdir"
+        | "dir_only"
+        | "dir_exists"
+        | "dir_is_dir"
+        | "dir_write"
+        | "dir_append"
+        | "dir_make_dir"
+        | "dir_open"
+        | "dir_create"
+        | "mint_file"
+        | "file_read_len"
+        | "file_write"
+        | "net_connect"
+        | "net_try_connect"
+        | "net_resolve_size"
+        | "net_connect_pinned"
+        | "net_try_connect_pinned"
+        | "net_listen"
+        | "net_listen_tls"
+        | "net_accept"
+        | "net_restrict"
+        | "net_deny"
+        | "net_send_line"
+        | "net_send_bytes"
+        | "net_close"
+        | "now"
+        | "now_monotonic"
+        | "rand_u64"
+        | "exec_run" => C::CapabilityAuthority,
+
+        "args_size" | "user_cap_field_len" => C::LaunchInput,
+
+        "compiler_footprint_len"
+        | "compiler_diff_len"
+        | "compiler_doc_len"
+        | "compiler_doc_result_json_len"
+        | "field_str_len"
+        | "field_intlist_len"
+        | "field_strlist_size"
+        | "vm_par_map_run"
+        | "vm_par_map_write"
+        | "vm_par_map_bytes_run"
+        | "vm_par_map_bytes_write"
+        | "vm_with_dir_run"
+        | "vm_serve_run"
+        | "serve_pool" => C::InternalService,
+
+        "heap_register" | "heap_frontier" | "__witchy_abort" => C::RuntimeDiagnostic,
+        _ => return None,
+    };
+
+    let browser = matches!(
+        name,
+        "print"
+            | "crypto.sha256"
+            | "crypto.rune_hash"
+            | "user_cap_field_len"
+            | "field_str_len"
+            | "field_intlist_len"
+            | "field_strlist_size"
+            | "float_to_str"
+            | "encoding"
+            | "write_pending_list"
+            | "fill_pending"
+            | "crypto.sha512"
+            | "crypto.sha3_256"
+            | "crypto.hmac_sha256"
+            | "print_int"
+            | "print_float"
+            | "string_from_code"
+            | "regex_match_spans_len"
+            | "crypto.__ecdsa_p256_verify_status"
+            | "crypto.__ecdsa_p256_verify_hex_status"
+            | "crypto.__rsa_pkcs1_sha256_verify_status"
+            | "crypto.__ed25519_verify_status"
+            | "__witchy_abort"
+    );
+    Some(AbiImportInfo { class, browser })
+}
+
+fn wasm_ty_name(ty: WasmTy) -> &'static str {
+    match ty {
+        WasmTy::I32 => "i32",
+        WasmTy::I64 => "i64",
+        WasmTy::F32 => "f32",
+        WasmTy::F64 => "f64",
+        WasmTy::ExternRef => "externref",
+    }
+}
+
+fn abi_signature(import: &PreludeImport) -> String {
+    let params = import.params.iter().copied().map(wasm_ty_name).collect::<Vec<_>>().join(", ");
+    if import.results.is_empty() {
+        format!("({params})")
+    } else {
+        let results = import.results.iter().copied().map(wasm_ty_name).collect::<Vec<_>>().join(", ");
+        format!("({params}) -> {results}")
+    }
+}
+
+/// Render the complete generated import table committed in `spec/wasm-abi.md`.
+/// The spec test compares this output byte-for-byte, so names, signatures,
+/// classifications, browser support, and the declared count cannot drift.
+pub fn render_abi_import_catalog() -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::from(
+        "| import | signature | class | browser |\n\
+         | --- | --- | --- | --- |\n",
+    );
+    for import in &prelude().imports {
+        let info = abi_import_info(&import.name)
+            .unwrap_or_else(|| panic!("ABI import `{}` has no classification", import.name));
+        writeln!(
+            out,
+            "| `{}` | `{}` | {} | {} |",
+            import.name,
+            abi_signature(import),
+            info.class.label(),
+            if info.browser { "provided" } else { "omitted" },
+        )
+        .expect("writing to a String cannot fail");
+    }
+    out
+}
+
 /// The full ordered name list for the funcs section: `$mk0..$mk{MAX_MK}` then
 /// the static helper names. Matches the order the prelude emits bodies, so
 /// the i-th code-section entry is `func_names()[i]`.
@@ -392,7 +595,6 @@ pub fn prelude() -> &'static Prelude {
 }
 
 #[cfg(test)]
-#[cfg(feature = "native")]
 mod tests {
     use super::*;
 
@@ -413,6 +615,21 @@ mod tests {
         let now = imports.iter().find(|i| i.name == "now").expect("the `now` import is present");
         assert!(now.params.is_empty());
         assert_eq!(now.results, vec![WasmTy::I64]);
+    }
+
+    #[test]
+    fn every_prelude_import_has_abi_metadata() {
+        let imports = &prelude().imports;
+        let names = imports.iter().map(|i| i.name.as_str()).collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(names.len(), imports.len(), "ABI import names must be unique");
+        for import in imports {
+            assert!(
+                abi_import_info(&import.name).is_some(),
+                "ABI import `{}` needs an explicit class and browser decision",
+                import.name
+            );
+        }
+        assert_eq!(render_abi_import_catalog().lines().count(), IMPORT_COUNT + 2);
     }
 
     /// The prelude exposes the helper NAMES the binary path's resolution filter

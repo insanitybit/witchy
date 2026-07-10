@@ -1,27 +1,59 @@
 // witchy-runtime — a JavaScript host for witchyc-compiled WASM that implements
-// only the NON-capability ("pure-compute") half of the `"witchy"` import ABI and
-// DENIES every capability import. It is the browser/Node analog of the wasmtime
-// host in `src/runtime.rs`, with the capability set fixed to empty.
+// only the browser-supported non-authority subset of the `"witchy"` import ABI
+// and DENIES every capability import. It is the browser/Node analog of the
+// wasmtime host in `crates/witchy-runtime/src/runtime.rs`, with the capability
+// set fixed to empty.
 //
 // This is RFC-0007 ("witchy-WASM in the browser: a pure-compute target"). The
 // containment guarantee is structural: witchyc TREE-SHAKES imports (a module
 // declares only the host functions it actually reaches — see spec/wasm-abi.md),
-// so a footprint-empty rune imports only the pure functions this shim provides,
-// while a rune that touches Net/Dir/Clock/etc. imports a capability host function
+// so a rune that touches Net/Dir/Clock/etc. imports a capability host function
 // this shim does NOT provide — and `WebAssembly.instantiate` then throws a
-// `LinkError` for the missing import. Deny-by-omission: the host is a sieve that
-// admits exactly the pure modules. No trap stubs are needed for the guarantee
-// (none are installed); a capability-using module simply cannot instantiate.
+// `LinkError` for the missing import. Deny-by-omission: the host admits no
+// authority-bearing module, while also omitting native-only non-authority
+// services such as argv and compiler introspection. No trap stubs are needed
+// for the guarantee (none are installed).
 //
-// The ABI this targets is declared in `src/wir_prelude.rs` (PRELUDE_IMPORTS_WAT)
-// and the wasmtime implementations live in `src/runtime.rs`. The pure functions
-// below mirror those byte-for-byte, so a browser run and a native run agree on
-// every observable byte (the parity rule of CLAUDE.md). See spec/wasm-abi.md.
+// The ABI this targets is declared in `crates/witchy-wir/src/wir_prelude.rs`
+// and the wasmtime implementations live in
+// `crates/witchy-runtime/src/runtime.rs`. The shared functions below mirror
+// those byte-for-byte, so a browser run and a native run agree on every
+// observable byte (the parity rule of CLAUDE.md). See spec/wasm-abi.md.
 
 // The ABI version this shim implements. Bump in lockstep with a breaking change
 // to the `"witchy"` import surface (a renamed/re-signatured pure import, or a
 // change to the pending-buffer protocol). RFC-0007 §"ABI stabilization".
 export const WITCHY_ABI_VERSION = 1;
+
+// Exact deny-by-omission surface implemented below. The Rust ABI catalog test
+// compares this list with `wir_prelude` and `instantiate` compares it with the
+// actual import object, so adding a host function requires one explicit ABI
+// classification instead of silently widening the browser host.
+export const WITCHY_BROWSER_IMPORTS = Object.freeze([
+  "__witchy_abort",
+  "crypto.__ecdsa_p256_verify_hex_status",
+  "crypto.__ecdsa_p256_verify_status",
+  "crypto.__ed25519_verify_status",
+  "crypto.__rsa_pkcs1_sha256_verify_status",
+  "crypto.hmac_sha256",
+  "crypto.rune_hash",
+  "crypto.sha256",
+  "crypto.sha3_256",
+  "crypto.sha512",
+  "encoding",
+  "field_intlist_len",
+  "field_str_len",
+  "field_strlist_size",
+  "fill_pending",
+  "float_to_str",
+  "print",
+  "print_float",
+  "print_int",
+  "regex_match_spans_len",
+  "string_from_code",
+  "user_cap_field_len",
+  "write_pending_list",
+]);
 
 // ---------------------------------------------------------------------------
 // Pure crypto backend. The witchy host functions are SYNCHRONOUS — the guest
@@ -614,6 +646,15 @@ export async function instantiate(wasmBytes, opts = {}) {
     field_intlist_len(_h) { return 0; },
     field_strlist_size(_h) { return 0; },
   };
+
+  const actualHostImports = Object.keys(witchy).sort();
+  if (actualHostImports.join("\0") !== WITCHY_BROWSER_IMPORTS.join("\0")) {
+    throw new Error(
+      `witchy-runtime: implemented imports drifted from WITCHY_BROWSER_IMPORTS\n` +
+      `  declared: ${WITCHY_BROWSER_IMPORTS.join(", ")}\n` +
+      `  actual:   ${actualHostImports.join(", ")}`
+    );
+  }
 
   const { instance } = await WebAssembly.instantiate(wasmBytes, { witchy });
   memory = instance.exports.memory;

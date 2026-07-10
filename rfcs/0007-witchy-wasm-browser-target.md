@@ -8,10 +8,13 @@ tracking: |
   Shipped 2026-06-22 (commit bfc7655). The JS host-import shim
   (web/witchy-runtime/witchy-runtime.mjs) runs witchyc-compiled WASM with the
   "witchy" ABI: it provides the pure-compute imports and DENIES capabilities by
-  OMISSION — imports are tree-shaken, so a footprint-empty rune instantiates and a
-  capability-using rune fails with a LinkError (proven by spike.mjs in node;
-  tests/browser_shim.rs). The ABI is a stabilized contract in spec/wasm-abi.md
-  (version 1). A String->String export ABI (__galloc + __export_<name>, codegen)
+  OMISSION — imports are tree-shaken, so a capability-using rune fails with a
+  LinkError; an authority-free rune instantiates when all of its non-authority
+  services are in the browser catalog (proven by spike.mjs in node;
+  tests/browser_shim.rs). Native-only launch/toolchain services remain omitted.
+  The ABI is a stabilized contract in spec/wasm-abi.md (version 1), generated
+  and checked from crates/witchy-wir/src/wir_prelude.rs. A String->String export
+  ABI (__galloc + __export_<name>, codegen)
   was added under RFC-0008 (commit de0c68e) for the framework loop. DEFERRED +
   flagged (this RFC's Future work): a browser DOM/host capability — not needed
   while WASM stays pure-compute and the JS shell drives the DOM.
@@ -23,12 +26,14 @@ tracking: |
 
 Run witchyc-compiled WASM in the browser by writing a small JavaScript shim that
 implements witchy's `"witchy"` host-import ABI with **every capability import
-denied**. The result is a module that is *structurally* incapable of I/O: it can
-compute over inputs and return outputs, and nothing else. The browser is not a
-new backend — it is the **existing compiled backend** (the same WASM
-`src/codegen.rs`/`src/wir*.rs` already emit) plus the **empty capability set**
-plus a **JavaScript host** standing in for the wasmtime host functions in
-`src/runtime.rs`. To make this a stable surface rather than an internal
+denied**. The result is a module structurally incapable of acquiring ambient
+authority: it can compute over host-provided inputs and emit captured outputs,
+but it cannot reach the network, filesystem, clock, process environment, or
+secrets. The browser is not a new backend — it is the **existing compiled backend** (the same WASM
+`crates/witchy-lower/src/codegen/` and `crates/witchy-wir/` already emit) plus
+the **empty capability set** plus a **JavaScript host** standing in for the
+wasmtime host functions in `crates/witchy-runtime/src/runtime.rs`. To make this
+a stable surface rather than an internal
 codegen↔runtime detail, this RFC also stabilizes and documents the `"witchy"`
 import ABI as a versioned public contract.
 
@@ -70,14 +75,16 @@ unreachable. This RFC is WS-I prerequisite **B5**.
 The browser execution path is, deliberately, *not* a third backend:
 
 - **The artifact** is the same WASM witchyc emits today — the output of
-  `lower_* → assemble_wir_module → wir_encode` (`src/codegen.rs`, `src/wir*.rs`).
+  `lower_* → assemble_wir_module → wir_encode`
+  (`crates/witchy-lower/src/codegen/`, `crates/witchy-wir/`).
   No new compiler mode, no new lowering, no `--target=browser`.
 - **The capability set is empty.** The launch grant that a CLI run gets from
   `--net`/`--dir`/etc. is, in the browser, simply nothing.
-- **The host is JavaScript.** The wasmtime host functions in `src/runtime.rs` —
+- **The host is JavaScript.** The wasmtime host functions in
+  `crates/witchy-runtime/src/runtime.rs` —
   the functions that satisfy the module's imports — are replaced by a small JS
-  shim that implements only the *non-capability* imports and provides *none* of
-  the capability imports.
+  shim that implements the browser-supported non-authority imports and provides
+  *none* of the capability imports.
 
 So a "browser run" is "the compiled backend, with the capability set fixed to
 empty, hosted by JS instead of wasmtime." A confined variant of one backend, not
@@ -85,50 +92,39 @@ a new one (see *Parity*).
 
 ### What the shim implements — and what it refuses
 
-witchy's compiled modules import from a single module named `"witchy"`. Those
-imports fall into two classes:
-
-```text
-"witchy" imports
-├── non-capability (ambient mechanics — the shim PROVIDES these)
-│     ├── string-bridge      : the pending-buffer fill protocol
-│     ├── encoding           : hex / base64url / utf-8 helpers
-│     └── memory management   : alloc/realloc/grow plumbing
-└── capability (authority — the shim DENIES these, i.e. does not provide them)
-      └── Net, Dir, Clock, Console, Exec, Secret, …
-```
-
-The shim implements the first class only:
-
-- **The string-bridge** — witchy passes strings across the WASM boundary by a
-  pending-buffer fill protocol (the guest asks the host to materialize a value
-  into guest memory; see *Data marshaling*). This is pure mechanics, no
-  authority, so the shim implements it.
-- **`encoding`** — hex/base64url/utf-8 conversions are pure functions; the shim
-  provides them (or the guest carries them, but the existing host import is
-  cheaper to mirror).
-- **Memory management** — alloc/grow plumbing the runtime already brokers.
+witchy's compiled modules import from a single module named `"witchy"`. The
+canonical catalog in `spec/wasm-abi.md` classifies every import as pure
+infrastructure, capability authority, launch input, internal/toolchain service,
+or runtime diagnostic, and independently marks the exact browser subset. The
+shim provides no authority. Its supported subset spans deterministic
+computation and marshaling, capturable output, declared user-capability policy
+input, harmless reflection stubs, and abort diagnostics. Native-only argv,
+compiler services, checked-heap instrumentation, and every authority-bearing
+operation are omitted.
 
 The shim **provides no capability import whatsoever**. The mechanism that makes
 this a hard guarantee is WebAssembly instantiation itself: if a module imports a
 function the host does not supply, **instantiation throws** with a missing-import
 error. So a module whose footprint is non-empty — one that imports `Net.connect`
-or `Console.print` — *cannot be instantiated by this host at all*. Only a
-footprint-empty (pure) rune loads. That failure is the feature: the host is a
-sieve that admits exactly the pure modules.
+or `Clock.now` — *cannot be instantiated by this host at all*. The host also
+omits native-only non-authority services such as argv and compiler
+introspection, so its accepted surface is a deliberate subset of
+footprint-empty programs. That failure is the feature: the host is a sieve that
+admits no authority-bearing module.
 
 ### ABI stabilization
 
-Today the `"witchy"` import surface is an internal handshake between
-`src/codegen.rs` (which emits the imports) and `src/runtime.rs` (which satisfies
-them); it can change freely because both ends move together in one repo. Once a
+Today the `"witchy"` import surface is a handshake between
+`crates/witchy-wir/src/wir_prelude.rs` (which declares the imports),
+`crates/witchy-lower/src/codegen/` (which selects them), and
+`crates/witchy-runtime/src/runtime.rs` (which satisfies them). Once a
 *browser* host depends on it — and especially once third-party tooling or a
 shipped framework rune does — it becomes a **public contract**. This RFC
 enumerates what is frozen and versioned:
 
 - **The import module name** `"witchy"`.
 - **The host function signatures** — the name, parameter, and result shape of
-  every non-capability import the shim must implement.
+  every import, plus the exact subset the browser shim implements.
 - **The string-bridge protocol** — the exact pending-buffer fill sequence
   (request length, host writes bytes, guest reads), byte order, and encoding.
 - **The memory/value model** — how guest pointers/lengths denote values, the
@@ -329,7 +325,8 @@ itself; it is out of scope for this one and is not designed here.
 
 ## Prior art
 
-- **wasmtime host functions (`src/runtime.rs`)** — the server-side analog: the
+- **wasmtime host functions (`crates/witchy-runtime/src/runtime.rs`)** — the
+  server-side analog: the
   functions that satisfy a compiled module's `"witchy"` imports. The browser shim
   is the same role re-implemented in JS with the capability set fixed to empty.
 - **The browser WebAssembly/JS import ABI** — `WebAssembly.instantiate` with an
