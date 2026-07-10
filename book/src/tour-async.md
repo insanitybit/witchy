@@ -21,7 +21,7 @@ async fn double(n: Int) -> Int:
 
 async fn main(console: Console):
     let a = double(21).await
-    console.print("doubled: " + "${a}")
+    console.print("doubled: ${a}")
 ```
 
 ## Spawning tasks

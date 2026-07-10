@@ -55,7 +55,7 @@ fn compute(x: Int) -> Int:
     x * x + 1
 
 fn log(console: Console, label: String, value: Int):
-    console.print(label + ": " + "${value}")
+    console.print("${label}: ${value}")
 
 fn main(console: Console):
     let result = compute(6)

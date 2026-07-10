@@ -98,8 +98,8 @@ fn show(xs: List(Int)) -> String:
     parts.join(", ")
 
 fn main(console: Console):
-    console.print("collatz(6): " + show(iter.collect(collatz(6))))
-    console.print("collatz(27) steps: " + "${iter.count(collatz(27))}")
+    console.print("collatz(6): ${show(iter.collect(collatz(6)))}")
+    console.print("collatz(27) steps: ${iter.count(collatz(27))}")
 ```
 
 ```text
