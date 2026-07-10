@@ -823,6 +823,21 @@ fn lower_async_fn_with(
     counter: &mut usize,
     self_ty: Option<Type>,
 ) -> Result<(Function, Vec<Function>), String> {
+    let declared_ret = f.ret.clone();
+    if is_entry
+        && declared_ret
+            .as_ref()
+            .is_some_and(|ret| {
+                !matches!(ret.unqualified(), Type::Named(name, args) if name == "Nil" && args.is_empty())
+            })
+    {
+        let ret = crate::format::type_str(declared_ret.as_ref().unwrap());
+        return Err(format!(
+            "async fn `main` returns `{ret}`, but the async executor drives `Task(Nil)` and \
+             cannot surface a completed value; handle the value inside `main` and return `Nil`"
+        ));
+    }
+
     let mut ctx = Ctx { fname: f.name.clone(), counter, segments: Vec::new() };
     let scope: Vec<Local> = f
         .params
@@ -860,7 +875,14 @@ fn lower_async_fn_with(
         public: f.public,
         name: f.name,
         params: f.params,
-        ret: None,
+        // Source `async fn f() -> T` describes the completed value, so callers
+        // receive `Task(T)`. `main` is different: its wrapper drives `Task(Nil)`
+        // and returns `Nil` directly. An omitted annotation remains inferred.
+        ret: if is_entry {
+            declared_ret
+        } else {
+            declared_ret.map(|ret| Type::Named("task.Task".to_string(), vec![ret]))
+        },
         body: tail_block_at(entry_body, body_line),
         bounds: f.bounds,
         is_gen: false,
@@ -1303,4 +1325,76 @@ fn remaining_lines(lines: &[u32]) -> &[u32] {
 
 fn next_line(lines: &[u32], fallback: u32) -> u32 {
     first_line(lines).max(fallback)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn int_type() -> Type {
+        Type::Named("Int".to_string(), Vec::new())
+    }
+
+    #[test]
+    fn lowering_preserves_explicit_async_return_contracts() {
+        let source = "async fn value() -> Int:\n    1\n\nasync fn main(console: Console) -> Nil:\n    return\n";
+        let module = crate::parser::parse_module(source).expect("parse async declarations");
+        let lowered = lower(module).expect("lower async declarations");
+
+        let value = lowered
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "value" => Some(function),
+                _ => None,
+            })
+            .expect("lowered value function");
+        assert_eq!(
+            value.ret,
+            Some(Type::Named("task.Task".to_string(), vec![int_type()])),
+        );
+
+        let main = lowered
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("lowered main function");
+        assert_eq!(main.ret, Some(Type::Named("Nil".to_string(), Vec::new())));
+    }
+
+    #[test]
+    fn lowering_rejects_value_returning_async_main() {
+        let source = "async fn main(console: Console) -> Int:\n    1\n";
+        let module = crate::parser::parse_module(source).expect("parse async main");
+        let error = lower(module).expect_err("the executor cannot surface an async root value");
+
+        assert!(error.contains("async fn `main` returns `Int`"), "{error}");
+        assert!(error.contains("Task(Nil)"), "{error}");
+    }
+
+    #[test]
+    fn lowering_preserves_explicit_async_method_return_contract() {
+        let source = "type Counter:\n    value: Int\n\nimpl Counter:\n    async fn value(self) -> Int:\n        self.value\n";
+        let module = crate::parser::parse_module(source).expect("parse async method");
+        let lowered = lower(module).expect("lower async method");
+        let method = lowered
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Impl(definition) => definition
+                    .methods
+                    .iter()
+                    .find(|method| method.name == "value"),
+                _ => None,
+            })
+            .expect("lowered async method");
+
+        assert_eq!(
+            method.ret,
+            Some(Type::Named("task.Task".to_string(), vec![int_type()])),
+        );
+    }
 }
