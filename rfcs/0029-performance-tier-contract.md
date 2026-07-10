@@ -91,8 +91,8 @@ mechanism.
 - **RC floor ([0016])** for reclamation. *This is a correctness feature, not a
   speed knob* — see the normal-mode carve-out. It is invisible (no syntax) and
   must be present for the normal-mode contract to hold.
-- AST const-folding/propagation; AOT module serialization (microsecond cold
-  start).
+- AST const-folding/propagation; validated optimized-wasm and Wasmtime
+  compilation caches.
 
 ### Tier 1 — normal mode (ergonomics first; a speed gap is acceptable)
 
@@ -154,7 +154,7 @@ decisively in opt mode — and beats Go on safety and ergonomics regardless.
 
 | Axis | Normal mode | Opt mode | Evidence |
 |---|---|---|---|
-| Cold start | beats Go | beats Go | AOT serialize (measured: microsecond-class) |
+| Cold start | beats Go | beats Go | validated optimized-wasm + Wasmtime compilation caches |
 | Strings | **~4–5.7× Go** | ≥ that | measured, `bench/BASELINE.md` (single workload) |
 | Lists / dicts / compute | parity with Go | ≥ parity | measured, `bench/BASELINE.md` |
 | Concurrency throughput | beats GC | beats GC | design (no pauses, bulk free, `frozen`); to be benched |

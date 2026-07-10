@@ -19,7 +19,7 @@ uniqueness-driven in-place + arena reclaim beat the GC languages on
 allocation-heavy throughput (the string builder is ~3.9× faster than Go; the
 record-graph `expr_eval` benchmark is 0.54×, i.e. witchy is ~2× *faster*). The
 *compute* half is not. Current standing vs Go on `benchmarks/` + `bench/`
-(Apple Silicon, release, AOT cache warm), **with process startup stripped out**:
+(Apple Silicon, release, validated caches warm), **with process startup stripped out**:
 
 | workload | vs Go (startup-stripped) | the gap is |
 |---|---|---|
@@ -28,7 +28,7 @@ record-graph `expr_eval` benchmark is 0.54×, i.e. witchy is ~2× *faster*). The
 | numeric kernels (`mandelbrot`, `fannkuch`, `nsieve`) | ~1.8–2.6× | **codegen** |
 | closures / indirect calls (`closure_calls`) | ~3.1× | **closure ABI** |
 | parallel CPU map (`parmap`) | ~1.4× | per-call VM spin-up + per-thread codegen |
-| cold start (`hello`) | ~15 ms vs ~4 ms | process + instantiate (AOT already done) |
+| cold start (`hello`) | ~15 ms vs ~4 ms | process + instantiate (module caches already warm) |
 
 Two facts shape what is and isn't worth doing:
 
@@ -58,20 +58,19 @@ The compute gap has an *avoidable* part (codegen, checks, ABI — this RFC) and 
 
 ## Levers (priority order)
 
-### L1 — Integrate Binaryen `wasm-opt` as an AOT-cached compile pass — ✅ SHIPPED
+### L1 — Integrate Binaryen `wasm-opt` as a cached compile pass — ✅ SHIPPED
 Done (`runtime.rs` `binaryen_optimize`, run in `build_module`'s cold path only, so
-warm runs deserialize the optimized native via the AOT cache and pay nothing; the
-cache key includes the Binaryen flag; optional + graceful if `wasm-opt` is absent).
+warm runs load content-bound optimized wasm through safe `Module::new`, then hit
+Wasmtime's compilation cache; optional + graceful if `wasm-opt` is absent).
 **Measured win (release, warm):** mandelbrot 95.9 → 53.4 ms (~1.8×, now Go parity),
 record_build 40.8 → 29.5 ms (~1.4×), nsieve 39.3 → 33.1 ms (~1.2×). Sound: 104
 examples + 15 benchmarks byte-identical with Binaryen on vs off.
 
 The single biggest codegen win Cranelift cannot give. Run real `wasm-opt -O2/-O3`
 (GVN, aggressive inlining, DCE, local CSE, local/memory coalescing) on the wasm
-witchy emits, *before* Cranelift compiles it. It is slow — but it runs **once at
-compile time and the result is AOT-serialized into the existing module cache**, so
-runtime pays nothing (this is exactly the `Module::deserialize` path in
-`crates/witchy-runtime/src/runtime.rs`).
+witchy emits, *before* Cranelift compiles it. It is slow — but successful output is
+cached as ordinary wasm in a corruption-detecting envelope. Every hit is validated
+through `Module::new`; Wasmtime's own cache safely reuses the compiled native code.
 - **Targets:** the numeric ~1.8–2.6× and, partly, closures.
 - **Shape:** `binaryen-rs` crate (in-process, no external binary) or shell out to a
   vendored, hash-pinned `wasm-opt`. Gate behind the existing `WasmOpt` lever
@@ -194,7 +193,7 @@ against the recorded baseline and fails loudly on regressions):
    `chan_throughput` benches added; `list_index` added with L2).
 2. **L4 + L5 + L3** — L4 ✅ measured (pooling not-beneficial-yet, opt-in); L3(a)
    ✅ shipped (closure devirt); L5 not done (lowest value — `parmap` already ~1.4×).
-3. **L1 (Binaryen)** — ✅ shipped (the big codegen lever; AOT-cached).
+3. **L1 (Binaryen)** — ✅ shipped (the big codegen lever; safely cached).
 4. **L2 (bounds-check elision)** — ✅ shipped (conservative `0..list.length(xs)`
    slice; gated on the differential oracle).
 5. **L6** — not done; representation/SIMD/proposals as the target and need mature.
@@ -265,7 +264,7 @@ RFC's two proving workloads.
 From the full open-RFC review (scratch/rfc-review-2026-07-04.md, verified against
 HEAD 789f2e9).
 
-**Status-accuracy corrections.** L1 (Binaryen AOT via PATH shell-out — note the
+**Status-accuracy corrections.** L1 (cached Binaryen via PATH shell-out — note the
 cache key omits the wasm-opt version), L2 (BoundsElide), L3a (DirectCall), and
 L4 (pooling, opt-in) all verified shipped. L5 (par_map worker pool) is NOT —
 still a fresh VM per chunk (runtime.rs:1494). L6 is contradicted by the shipped

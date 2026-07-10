@@ -104,9 +104,9 @@ at implementation with the flag's current grammar).
 - e2e on **both backends**: `serve_tls` with a self-signed fixture, exercised
   by the RFC-0009 HTTPS client; wrong-key-for-cert fails loudly at startup;
   a plaintext request to the TLS port is dropped and the server keeps serving.
-- The client must trust the test CA: a test-only extra-roots hook
-  (`WITCHY_TLS_TEST_ROOTS`, consumed only when set, documented as test-only).
-  Production trust remains the platform store.
+- The client must trust the test CA through the scoped, feature-gated test-root
+  registry. Production builds do not expose that registry; their trust remains
+  the Mozilla root set plus explicitly configured `WITCHY_TLS_EXTRA_ROOTS`.
 - A use-only test: `crypto.reveal` on a use-only secret errors identically on
   both backends.
 

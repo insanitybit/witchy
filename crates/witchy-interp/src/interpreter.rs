@@ -20,7 +20,7 @@
 // `return`/`?` in the oracle's hot path; the larger Result is the right trade.
 #![allow(clippy::result_large_err)]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::io::{BufReader, Read, Write};
 use std::net::TcpListener;
@@ -101,8 +101,9 @@ pub enum BuildCap {
     /// Read project files confined to one of these directory subtrees. A relative
     /// path resolves against the first granted root that contains it.
     Read(Vec<PathBuf>),
-    /// Read environment variables, restricted to this allow-list of names.
-    Env(Vec<String>),
+    /// Immutable host snapshot of the granted environment names and values.
+    /// A missing map entry is ungranted; `None` is granted but unset.
+    Env(BTreeMap<String, Option<String>>),
     /// Fetch from this allow-list of hosts.
     Net(Vec<String>),
     /// Invoke external tools, restricted to this allow-list.
@@ -831,7 +832,7 @@ impl Interpreter {
                 Ok(Value::Build(BuildCap::Read(grants.read_roots.clone())))
             }
             Some(Type::Named(n, _)) if n == "BuildEnv" => {
-                Ok(Value::Build(BuildCap::Env(grants.env_keys.clone())))
+                Ok(Value::Build(BuildCap::Env(grants.env.clone())))
             }
             Some(Type::Named(n, _)) if n == "BuildNet" => {
                 Ok(Value::Build(BuildCap::Net(grants.net_hosts.clone())))
@@ -1883,15 +1884,15 @@ impl Interpreter {
             },
             // Read a named env var, but only one on the BuildEnv allow-list.
             "get_build_env" => match args {
-                [Value::Build(BuildCap::Env(allow)), Value::Str(name)] => {
-                    if !allow.iter().any(|k| k == name) {
-                        return err(format!(
+                [Value::Build(BuildCap::Env(env)), Value::Str(name)] => {
+                    let value = env.get(name).ok_or_else(|| RuntimeError {
+                        message: format!(
                             "get_build_env: `{name}` is not in this BuildEnv grant's allow-list"
-                        ));
-                    }
-                    Ok(Some(match std::env::var(name) {
-                        Ok(v) => Value::Ctor { name: "Some".into(), fields: vec![Value::Str(v)] },
-                        Err(_) => Value::Ctor { name: "None".into(), fields: Vec::new() },
+                        ),
+                    })?;
+                    Ok(Some(match value {
+                        Some(v) => Value::Ctor { name: "Some".into(), fields: vec![Value::Str(v.clone())] },
+                        None => Value::Ctor { name: "None".into(), fields: Vec::new() },
                     }))
                 }
                 _ => err("get_build_env expects a BuildEnv and a variable name"),
@@ -3412,13 +3413,17 @@ fn run_module_inner_limited(
 
 /// The attenuated grants a build step runs under: a confined output directory
 /// (always present — it is `BuildOut`), an optional confined read root, and
-/// allow-lists for the env/net/exec caps. Safe by default — anything not granted
-/// here cannot be minted, so a build step demanding it fails before running.
+/// an immutable env snapshot, and allow-lists for the net/exec caps. Safe by
+/// default — anything not granted here cannot be minted, so a build step
+/// demanding it fails before running.
 #[derive(Debug, Clone, Default)]
 pub struct BuildGrants {
     pub out_dir: PathBuf,
     pub read_roots: Vec<PathBuf>,
-    pub env_keys: Vec<String>,
+    /// Granted environment values captured by the host before the build starts.
+    /// Map membership is the allow-list; `None` represents an allowed but unset
+    /// variable. The interpreter never consults mutable process-global env state.
+    pub env: BTreeMap<String, Option<String>>,
     pub net_hosts: Vec<String>,
     pub exec_tools: Vec<String>,
 }

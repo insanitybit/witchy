@@ -12,6 +12,7 @@
 // Match the project-wide lint policy (root `src/lib.rs`): collapsed-style `if`
 // chains are intentional in the WIR builders.
 #![allow(clippy::collapsible_if, clippy::collapsible_match, clippy::items_after_test_module)]
+#![deny(unsafe_code)]
 
 pub mod wir;
 pub mod wir_encode;

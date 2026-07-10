@@ -23,7 +23,7 @@ metamorphic check):
 
 - **Phase 0–1 — DONE.** `witchy run` (`execute_file_exit`) executes on the
   compiled backend via the shared `run_linked_compiled` helper (footprint-derived
-  grants, `Dir` rooted at cwd), with the AOT cache making re-runs instant
+  grants, `Dir` rooted at cwd), with the validated module caches making re-runs fast
   (cold/warm ≈ 19 ms). On the run path the compiled backend is used
   unconditionally — there is no interpreter fallback. A `Secret` is
   required only when `main` actually binds one (matching the interpreter), not
@@ -146,9 +146,10 @@ until the very end, so every reroute is validated against the oracle as it lands
 
 - Benchmark cold-start of the compiled path for a trivial program: front-end
   (parse/link/typeck/footprint) + `Engine::new` + `spawn`. Establish the dev-run
-  latency floor with the AOT cache warm and cold (`build_module` / `Module::{serialize,deserialize}`).
+  latency floor with the optimized-wasm and Wasmtime compilation caches warm
+  and cold (`build_module` / `Module::new`).
 - Decide the acceptable dev-run latency budget. If the warm-cache number is
-  within budget, Phase 1 is unblocked; if not, AOT/Engine-reuse work comes first.
+  within budget, Phase 1 is unblocked; if not, cache/Engine-reuse work comes first.
 - Inventory current parity coverage so we know what the oracle actually guards
   before we lean on it harder.
 
@@ -160,7 +161,8 @@ until the very end, so every reroute is validated against the oracle as it lands
 - Reroute `execute_file_exit` (main.rs:1085) from `interpreter::run_module_exit`
   to `codegen::compile_module` → `runtime::spawn` with that grant set, returning
   the same `(Vec<String>, exit_code)`.
-- Wire the AOT cache so re-running an unchanged file skips recompilation.
+- Wire the validated module caches so re-running an unchanged file skips
+  Binaryen and native recompilation.
 - Keep an **undocumented** `WITCHY_INTERP=1` escape hatch that forces the
   interpreter path — for bisecting backend disagreements during development
   only, not a user feature.
@@ -310,8 +312,8 @@ migration's goal (the interpreter is already not user-facing for execution).
     (the browser path) runs identically to the WAT text, corpus-wide.
   - Already present: the `WITCHY_NO_INPLACE` forced-copy differential and `fmt`
     round-trip / reformat-idempotence.
-  - Same family, easy follow-ups: opt-level agreement and AOT-deserialized vs
-    freshly-compiled agreement (toggle the optimizer / AOT cache and diff output).
+  - Same family, easy follow-ups: opt-level agreement and optimized-wasm cache
+    hit vs freshly-optimized agreement (toggle the optimizer/cache and diff output).
 - Acceptance: ✅ CI runs `parity` over every example plus the metamorphic checks
   above; a codegen regression is caught by at least one without needing a
   reference implementation.
@@ -322,7 +324,7 @@ migration's goal (the interpreter is already not user-facing for execution).
   with "run the same WASM on a second engine" — that catches engine bugs, not
   *our* codegen bugs (both would run codegen's output). The reference evaluator
   earns its keep precisely by not sharing the codegen path.
-- **Cold-start is the main risk** to `witchy run` ergonomics. If the warm-AOT
+- **Cold-start is the main risk** to `witchy run` ergonomics. If the warm-cache
   number misses budget, fix it in Phase 0 before rerouting; do not ship a slow
   dev loop.
 - **Footprint must remain source-derived.** The security model recomputes the
@@ -366,7 +368,7 @@ crate. This refactor makes codegen emit a wasm **binary** directly via
 - *Drop the WAT step* — the browser's `wat` assembly and wasmtime's WAT parse both
   work fine; removing them is tidiness, not a fix.
 - *Speed* — WAT parsing is a fraction of the ~16 ms cold-start floor and is
-  AOT-cached after the first run.
+  cached as validated optimized wasm after the first run.
 The real drivers would be **new needs**: source maps / DWARF, wasm GC or other
 post-MVP features, or a measured compile-speed bottleneck.
 

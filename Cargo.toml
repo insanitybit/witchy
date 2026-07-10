@@ -85,6 +85,9 @@ rustls-pemfile = "2"
 
 [dev-dependencies]
 proptest = "1.11.0"
+# Enables only the concurrency-safe TLS fixture hook for root-package tests.
+# The ordinary runtime dependency does not expose it in production builds.
+witchy-runtime = { path = "crates/witchy-runtime", features = ["test-support"] }
 # Snapshot harness for the diagnostic goldens (RFC-0072): every user-facing
 # error string is captured verbatim in src/snapshots/ and reviewed as a diff.
 insta = "1.48.0"

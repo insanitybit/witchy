@@ -30,23 +30,19 @@ fn compilation_cache() -> Option<Cache> {
     Cache::new(cfg).ok()
 }
 
-/// Directory for AOT-serialized compiled modules, keyed by a content hash of the
-/// wasm. Distinct from the Cranelift compile cache above: `Module::deserialize`
-/// loads an already-compiled artifact directly, skipping wasm parse/validate AND
-/// the cache lookup — the cold-start lever from spec/performance.md Phase 3.
-fn aot_cache_dir() -> Option<std::path::PathBuf> {
-    // Trusted, owner-private base ONLY. `build_module` loads artifacts from here via
-    // `unsafe Module::deserialize` (native code), so a directory another local user can
-    // write is a native-code-execution vector OUTSIDE the wasm sandbox. Never fall back
-    // to a world-writable temp dir: with no trusted base, return `None` and the caller
-    // just compiles fresh (it already treats `None` as "no AOT fast-path").
+/// Directory for validated Binaryen output. This cache stores ordinary wasm,
+/// never serialized native code: every hit still enters Wasmtime through the
+/// safe `Module::new` validation path and then benefits from Wasmtime's own
+/// compilation cache configured below.
+fn optimized_wasm_cache_dir() -> Option<std::path::PathBuf> {
     let base = std::env::var_os("XDG_CACHE_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))?;
-    let dir = base.join("witchy").join("aot");
+    let dir = base.join("witchy").join("optimized-wasm");
     std::fs::create_dir_all(&dir).ok()?;
-    // Owner-only (0700): even under a trusted HOME, deny group/other write so a
-    // shared-account co-tenant cannot plant a `.cwasm` for `deserialize` to trust.
+    // The cache is not a security boundary (`Module::new` validates every hit),
+    // but owner-only permissions also prevent another local user from replacing
+    // a valid optimized module with different, still-valid wasm.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -55,10 +51,61 @@ fn aot_cache_dir() -> Option<std::path::PathBuf> {
     Some(dir)
 }
 
+const OPT_CACHE_MAGIC: &[u8; 8] = b"WYOPT001";
+const OPT_CACHE_HEADER_LEN: usize = OPT_CACHE_MAGIC.len() + 32 + 32 + 8;
+
+fn sha256(bytes: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes).into()
+}
+
+/// Bind cached optimized wasm to both its original input and its own contents.
+/// The envelope detects truncation, corruption, and accidental cache-file swaps
+/// before Wasmtime sees the payload. `Module::new` remains the authoritative
+/// validator and the memory-safety boundary.
+fn encode_optimized_wasm(input_hash: [u8; 32], payload: &[u8]) -> Vec<u8> {
+    let payload_len = u64::try_from(payload.len()).expect("a wasm buffer length fits in u64");
+    let mut out = Vec::with_capacity(OPT_CACHE_HEADER_LEN + payload.len());
+    out.extend_from_slice(OPT_CACHE_MAGIC);
+    out.extend_from_slice(&input_hash);
+    out.extend_from_slice(&sha256(payload));
+    out.extend_from_slice(&payload_len.to_le_bytes());
+    out.extend_from_slice(payload);
+    debug_assert_eq!(out.len(), OPT_CACHE_HEADER_LEN + payload.len());
+    out
+}
+
+fn decode_optimized_wasm<'a>(expected_input_hash: &[u8; 32], bytes: &'a [u8]) -> Option<&'a [u8]> {
+    let header = bytes.get(..OPT_CACHE_HEADER_LEN)?;
+    if header.get(..OPT_CACHE_MAGIC.len())? != OPT_CACHE_MAGIC {
+        return None;
+    }
+    let input_start = OPT_CACHE_MAGIC.len();
+    let payload_hash_start = input_start + 32;
+    let len_start = payload_hash_start + 32;
+    if header.get(input_start..payload_hash_start)? != expected_input_hash {
+        return None;
+    }
+    let expected_payload_hash: [u8; 32] = header.get(payload_hash_start..len_start)?.try_into().ok()?;
+    let payload_len = u64::from_le_bytes(header.get(len_start..OPT_CACHE_HEADER_LEN)?.try_into().ok()?);
+    let payload_len = usize::try_from(payload_len).ok()?;
+    let end = OPT_CACHE_HEADER_LEN.checked_add(payload_len)?;
+    if end != bytes.len() {
+        return None;
+    }
+    let payload = bytes.get(OPT_CACHE_HEADER_LEN..end)?;
+    (sha256(payload) == expected_payload_hash).then_some(payload)
+}
+
+fn optimized_wasm_cache_path(input_hash: &[u8; 32]) -> Option<std::path::PathBuf> {
+    let hex: String = input_hash.iter().map(|b| format!("{b:02x}")).collect();
+    optimized_wasm_cache_dir().map(|dir| dir.join(format!("{hex}.wasm-cache")))
+}
+
 /// (RFC-0034 L1) Run Binaryen `wasm-opt -O2` on the module — a heavier optimizer
 /// than Cranelift's Speed tier (GVN, inlining, DCE, local CSE). It runs ONLY on
-/// the cold compile path below (the result is AOT-cached), so warm runs pay
-/// nothing. Optional + graceful: returns the input unchanged if `wasm-opt` isn't
+/// the cold compile path below (successful output is cached as validated wasm),
+/// so warm runs skip Binaryen. Optional + graceful: returns the input unchanged if `wasm-opt` isn't
 /// on PATH or fails, or if the `wasm-opt` lever is off (`WITCHY_OPT=-wasm-opt`).
 /// `--all-features` so it accepts witchy's bulk-memory (`memory.copy`); -O2 never
 /// introduces new features, so the output runs under the same wasmtime config.
@@ -97,48 +144,42 @@ fn binaryen_optimize(wasm: &[u8]) -> std::borrow::Cow<'_, [u8]> {
     }
 }
 
-/// Build a `Module`. On the cacheable (non-preempt) engine, a warm AOT artifact
-/// is loaded via `Module::deserialize` (skips wasm parse/validate/compile); a
-/// cold compile is persisted for next time. `cacheable` is false on the preempt
-/// engine, whose differing config must not share artifacts.
+/// Build a `Module`. On the cacheable (non-preempt) engine, successful Binaryen
+/// output is cached as validated wasm; every cold and warm path enters Wasmtime
+/// through safe `Module::new`. Wasmtime's configured compilation cache handles
+/// native-code reuse internally. `cacheable` is false on the preempt engine,
+/// whose differing config must not share artifacts.
 fn build_module(engine: &Engine, opt_wasm: &[u8], cacheable: bool) -> Result<Module> {
     if !cacheable {
         return Module::new(engine, opt_wasm);
     }
-    let path = aot_cache_dir().map(|dir| {
-        use sha2::{Digest, Sha256};
-        let mut h = Sha256::new();
-        h.update(opt_wasm);
-        // The artifact differs by whether Binaryen ran, so the cache key must too —
-        // otherwise toggling it returns a stale (un)optimized module under the same key.
-        h.update(if binaryen_enabled() { b"+wopt".as_slice() } else { b"-wopt".as_slice() });
-        let hex: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
-        dir.join(format!("{hex}.cwasm"))
-    });
-    if let Some(p) = &path {
-        if let Ok(bytes) = std::fs::read(p) {
-            // SAFETY: the artifact was produced by this binary's own
-            // `Module::serialize` into a content-hash-named file under our cache
-            // dir; `deserialize` additionally rejects version/config mismatches
-            // (a wasmtime upgrade), in which case we fall through and recompile.
-            if let Ok(m) = unsafe { Module::deserialize(engine, &bytes) } {
-                return Ok(m);
+    let input_hash = sha256(opt_wasm);
+    let path = binaryen_enabled()
+        .then(|| optimized_wasm_cache_path(&input_hash))
+        .flatten();
+    if let Some(path) = &path {
+        if let Ok(envelope) = std::fs::read(path) {
+            if let Some(cached_wasm) = decode_optimized_wasm(&input_hash, &envelope) {
+                if let Ok(module) = Module::new(engine, cached_wasm) {
+                    return Ok(module);
+                }
             }
         }
     }
     let optimized = binaryen_optimize(opt_wasm);
     let module = Module::new(engine, &optimized)?;
-    if let Some(p) = &path {
-        if let Ok(bytes) = module.serialize() {
-            // Write-then-rename so a reader never sees a partial file. The temp
-            // name carries a random suffix so two threads/processes compiling the
-            // same program don't race on one path (atomic rename publishes it).
+    if let (Some(path), std::borrow::Cow::Owned(optimized_wasm)) = (&path, optimized) {
+        let envelope = encode_optimized_wasm(input_hash, &optimized_wasm);
+        // Write-then-rename so a reader never sees a partial envelope. The temp
+        // name carries a random suffix so concurrent compilers do not share a
+        // temporary path; atomic rename publishes the complete validated wasm.
+        {
             let mut rnd = [0u8; 8];
             getrandom::fill(&mut rnd).ok();
             let suffix: String = rnd.iter().map(|b| format!("{b:02x}")).collect();
-            let tmp = p.with_extension(format!("{suffix}.tmp"));
-            if std::fs::write(&tmp, &bytes).is_ok() {
-                let _ = std::fs::rename(&tmp, p);
+            let tmp = path.with_extension(format!("{suffix}.tmp"));
+            if std::fs::write(&tmp, envelope).is_ok() {
+                let _ = std::fs::rename(&tmp, path);
             }
         }
     }
@@ -186,9 +227,8 @@ pub struct Capabilities {
     /// May read process environment variables via `witchy.env_*` (an `Env`
     /// capability).
     pub env: bool,
-    /// Optional per-key restriction for `Env` host reads. `None` preserves the
-    /// ordinary coarse `Env` grant; `Some(keys)` links the same host operation but
-    /// refuses every key not named here. BuildEnv uses this path.
+    /// Optional per-key restriction for ordinary `Env` host reads. `None`
+    /// preserves the coarse grant; `Some(keys)` refuses every unnamed key.
     pub env_allow: Option<Vec<String>>,
     /// The directory subtree backing the root `Dir` capability (handle 0).
     /// `None` denies the filesystem entirely; the `dir_read`/`dir_write` flags
@@ -258,6 +298,11 @@ pub struct Capabilities {
     /// `read_build` resolves a path against the first root that holds it. Empty
     /// denies build-time reads.
     pub build_read_roots: Vec<std::path::PathBuf>,
+    /// Immutable snapshot backing `BuildEnv`. Map membership is the allow-list;
+    /// `None` means the named variable was allowed but unset. Keeping the values
+    /// in the grant makes the size/fill protocol deterministic and avoids mutable
+    /// process-global environment access while a VM is running.
+    pub build_env: Option<std::collections::BTreeMap<String, Option<String>>>,
 }
 
 impl Capabilities {
@@ -577,8 +622,8 @@ impl Runtime {
         memory_pages_max: usize,
     ) -> Result<Vm> {
         let id = self.next_id;
-        // `wasm-opt` runs inside `build_module` (ahead of time, on the cold compile
-        // only, then AOT-cached) — never here on the hot per-spawn path.
+        // `wasm-opt` runs inside `build_module` only on an optimized-wasm cache miss;
+        // every hit and miss still enters Wasmtime through safe `Module::new`.
         let module = build_module(&self.engine, wasm.as_ref(), !self.preempt)?;
 
         let limits = StoreLimitsBuilder::new()
@@ -776,7 +821,7 @@ pub(crate) fn link_capability_imports(
         // unconditionally below) does the transfer.
         linker.func_wrap("witchy", "build_read_len", host_build_read_len)?;
     }
-    if caps.env_allow.is_some() {
+    if caps.build_env.is_some() {
         linker.func_wrap("witchy", "build_env_len", host_build_env_len)?;
         linker.func_wrap("witchy", "build_env_fill", host_build_env_fill)?;
     }
@@ -2295,21 +2340,28 @@ fn host_build_read_len(mut caller: Caller<'_, VmState>, _h: i32, rel_ptr: i32) -
 fn host_build_env_len(mut caller: Caller<'_, VmState>, _h: i32, name_ptr: i32) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let name = read_wstr(mem.data(&caller), name_ptr)?;
-    let allow = caller
+    let env = caller
         .data()
         .caps
-        .env_allow
+        .build_env
         .as_ref()
         .ok_or_else(|| Error::msg("get_build_env: no BuildEnv grant"))?;
-    if !allow.iter().any(|k| k == &name) {
-        return Err(Error::msg(format!(
+    let value = env.get(&name).ok_or_else(|| {
+        Error::msg(format!(
             "get_build_env: `{name}` is not in this BuildEnv grant's allow-list"
-        )));
+        ))
+    })?;
+    match value {
+        Some(value) => checked_build_env_len(&name, value.len()),
+        None => Ok(-1),
     }
-    match std::env::var(&name) {
-        Ok(v) => Ok(v.len() as i32),
-        Err(_) => Ok(-1),
-    }
+}
+
+fn checked_build_env_len(name: &str, len: usize) -> Result<i32> {
+    let len = i32::try_from(len)
+        .map_err(|_| Error::msg(format!("get_build_env: `{name}` exceeds the guest ABI size limit")))?;
+    debug_assert!(len >= 0, "a checked byte length must not collide with the unset sentinel");
+    Ok(len)
 }
 
 fn host_build_env_fill(
@@ -2320,19 +2372,19 @@ fn host_build_env_fill(
 ) -> Result<()> {
     let mem = memory_of(&mut caller)?;
     let name = read_wstr(mem.data(&caller), name_ptr)?;
-    let allow = caller
+    let env = caller
         .data()
         .caps
-        .env_allow
+        .build_env
         .as_ref()
         .ok_or_else(|| Error::msg("get_build_env: no BuildEnv grant"))?;
-    if !allow.iter().any(|k| k == &name) {
-        return Err(Error::msg(format!(
+    let value = env.get(&name).ok_or_else(|| {
+        Error::msg(format!(
             "get_build_env: `{name}` is not in this BuildEnv grant's allow-list"
-        )));
-    }
-    let value = std::env::var(&name).unwrap_or_default();
-    mem.write(&mut caller, out_ptr as usize, value.as_bytes())
+        ))
+    })?;
+    let bytes = value.as_deref().unwrap_or_default().as_bytes().to_vec();
+    mem.write(&mut caller, out_ptr as usize, &bytes)
         .map_err(|e| Error::msg(format!("writing build env value into guest memory: {e}")))
 }
 

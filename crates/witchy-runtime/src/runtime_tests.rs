@@ -23,6 +23,35 @@
         (module (memory (export "memory") 4) (func (export "run")))
     "#;
 
+    #[test]
+    fn optimized_wasm_cache_envelope_rejects_corruption_and_swaps() {
+        let input_hash = sha256(b"original input wasm");
+        let payload = b"optimized wasm payload";
+        let envelope = encode_optimized_wasm(input_hash, payload);
+        assert_eq!(decode_optimized_wasm(&input_hash, &envelope), Some(payload.as_slice()));
+
+        let other_input = sha256(b"different input wasm");
+        assert!(decode_optimized_wasm(&other_input, &envelope).is_none(), "a cache file cannot move between input keys");
+
+        let mut corrupt = envelope.clone();
+        *corrupt.last_mut().unwrap() ^= 0x80;
+        assert!(decode_optimized_wasm(&input_hash, &corrupt).is_none(), "payload corruption must fail before validation");
+        assert!(decode_optimized_wasm(&input_hash, &envelope[..envelope.len() - 1]).is_none(), "truncation must be rejected");
+
+        let mut bad_magic = envelope;
+        bad_magic[0] ^= 0xff;
+        assert!(decode_optimized_wasm(&input_hash, &bad_magic).is_none(), "unknown cache formats must be ignored");
+    }
+
+    #[test]
+    fn build_env_length_rejects_values_outside_the_guest_abi() {
+        assert_eq!(checked_build_env_len("SMALL", 42).unwrap(), 42);
+        let err = checked_build_env_len("HUGE", usize::MAX)
+            .expect_err("a host length must not truncate into the guest ABI");
+        assert!(err.to_string().contains("HUGE"), "{err}");
+        assert!(err.to_string().contains("ABI size limit"), "{err}");
+    }
+
     const NULL_FILE_READ: &str = r#"
         (module
           (import "witchy" "file_read_len" (func $file_read_len (param externref) (result i32)))

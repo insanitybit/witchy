@@ -16,7 +16,7 @@ are not "WASM is slow"; they are specific and addressable:
 | Workload | Today | Winnable vs Go/C#? |
 |---|---|---|
 | Compute-bound loops | already native-class | **Yes** — Cranelift + a Binaryen post-pass closes most of the LLVM gap; SIMD where it applies |
-| Startup / cold runs | Cranelift cache exists | **Yes, decisively** — AOT-serialized modules instantiate in microseconds; Go/C# pay process + runtime init |
+| Startup / cold runs | validated optimized-WASM + Cranelift caches exist | **Yes** — warm runs skip Binaryen and native recompilation while still validating cached wasm through Wasmtime's safe API; Go/C# pay process + runtime init |
 | Allocation-heavy (lists, strings) | **traps OOM** (copy-per-push under a bump arena, O(n²) bytes) | **Yes** — capacity-growth + ownership-driven in-place mutation beats GC throughput; this is Phase 1 |
 | Long-running request loops | arena grows until the cap | **Yes** — arena reset points are *faster* than any GC (free bulk reclaim, no pauses) |
 | Long-lived, evicting/mutating heaps (caches, indexes, long-lived owned state) | arena alone never reclaims | **In scope via RC** — reference counting ([RFC-0016](../rfcs/0016-reference-counted-memory.md), implemented) is the tier-0 reclamation floor that frees escaping/evicted values; witchy has no shared-mutable pointer graphs to chase, so there is no pointer-cycle tail to concede. See [RFC-0029](../rfcs/0029-performance-tier-contract.md) |
@@ -43,7 +43,7 @@ tracked in CI as numbers, not vibes:
 - string building/scanning
 - channel ping-pong and fan-out throughput
 - HTTP server requests/second (`std/server` vs `net/http` vs ASP.NET minimal)
-- cold-start latency (`witchy sandbox` AOT vs `go run`/compiled binary vs `dotnet run`)
+- cold-start latency (`witchy sandbox` cached vs `go run`/compiled binary vs `dotnet run`)
 
 `bench/run.sh` runs the paired programs via `hyperfine` and diffs against the
 recorded `bench/BASELINE.md`, so regressions fail loudly.
@@ -195,9 +195,9 @@ and activate when a dotnet toolchain is present.
 All wasmtime-45 features we already ship but don't fully use:
 
 1. `Config::cranelift_opt_level(OptLevel::Speed)` for non-preempt engines.
-2. **AOT artifact cache**: `Module::serialize`/`deserialize` keyed by program
-   hash (the Cranelift cache exists; serialize skips even the cache lookup
-   work and makes `witchy sandbox` cold-start microsecond-class).
+2. **Safe two-level cache**: content-bound optimized wasm keyed by program
+   hash, loaded only through `Module::new`, plus Wasmtime's validated Cranelift
+   compilation cache. No application-owned native artifact deserialization.
 3. **Pooling instance allocator** — deferred until profiling shows spawn
    pressure (the measure-first rule; on-demand allocation hasn't appeared in
    any profile yet).
@@ -214,15 +214,15 @@ All wasmtime-45 features we already ship but don't fully use:
   codegen over the same module. Deferred until Phase 2 numbers exist —
   Binaryen likely closes most of the gap without linking LLVM or maintaining
   a second runtime integration.
-- **wizer** (pre-initialized snapshots): superseded by our own start-function
-  + AOT serialize combination.
+- **wizer** (pre-initialized snapshots): deferred; the start-function plus
+  validated optimized-WASM/Cranelift caches cover the measured startup need.
 
 ## Crates
 
 | Crate | Use | Phase |
 |---|---|---|
 | `wasm-opt` (Binaryen bindings) | post-pass optimizer over emitted modules | 2 |
-| `wasmtime` 45 (already in) | opt-level, serialize/deserialize AOT, pooling allocator, relaxed-SIMD | 3 |
+| `wasmtime` 45 (already in) | opt-level, safe compilation cache, pooling allocator, relaxed-SIMD | 3 |
 | `hyperfine` (dev-dependency / CI tool) | benchmark harness vs Go/C# | 0 |
 | `wasmer` + `wasmer-compiler-llvm` | optional LLVM engine — only if Binaryen numbers disappoint | 4 |
 

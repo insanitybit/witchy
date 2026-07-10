@@ -11,6 +11,7 @@
 // Mirror the binary crate's lint posture (these collapse-suggestions hurt the
 // readability of the nested capability/pattern checks).
 #![allow(clippy::collapsible_if, clippy::collapsible_match, clippy::items_after_test_module)]
+#![deny(unsafe_code)]
 
 // RFC-0018: AST→WIR lowering (codegen) + its uniqueness analysis live in the
 // `witchy-lower` crate.
@@ -246,28 +247,157 @@ pub fn crypto_verify(op: i32, pk: &str, msg: &str, sig: &str) -> bool {
 // `[u32 len][payload]` (always succeed; bad input already folds to a sentinel).
 // The caller frees each block (`8 + len` or `4 + len`) with `witchy_free`.
 
+/// Owned browser-ABI buffers. JavaScript sees only the address of each boxed
+/// slice; Rust retains ownership and validates the exact base/length before a
+/// read or free. That turns the foreign pointer contract into safe, testable
+/// map lookups instead of relying on `from_raw_parts`/manual deallocation.
+#[cfg(any(target_arch = "wasm32", test))]
+mod abi_buffers {
+    use std::collections::BTreeMap;
+    #[cfg(target_arch = "wasm32")]
+    use std::cell::RefCell;
+
+    #[derive(Default)]
+    struct BufferStore {
+        live: BTreeMap<usize, Box<[u8]>>,
+    }
+
+    impl BufferStore {
+        fn store(&mut self, bytes: Vec<u8>) -> *mut u8 {
+            if bytes.is_empty() {
+                return std::ptr::null_mut();
+            }
+            let mut bytes = bytes.into_boxed_slice();
+            let ptr = bytes.as_mut_ptr();
+            let old = self.live.insert(ptr as usize, bytes);
+            debug_assert!(old.is_none(), "two live boxes cannot have the same base address");
+            ptr
+        }
+
+        fn allocate(&mut self, len: usize) -> *mut u8 {
+            if len == 0 {
+                std::ptr::null_mut()
+            } else {
+                self.store(vec![0; len])
+            }
+        }
+
+        fn read(&self, ptr: *const u8, len: usize) -> Option<Vec<u8>> {
+            if ptr.is_null() {
+                return (len == 0).then(Vec::new);
+            }
+            self.live
+                .get(&(ptr as usize))
+                .and_then(|bytes| bytes.get(..len))
+                .map(<[u8]>::to_vec)
+        }
+
+        fn free(&mut self, ptr: *mut u8, len: usize) -> bool {
+            if ptr.is_null() {
+                return len == 0;
+            }
+            let key = ptr as usize;
+            if !matches!(self.live.get(&key), Some(bytes) if bytes.len() == len) {
+                return false;
+            }
+            let removed = self.live.remove(&key);
+            debug_assert_eq!(removed.as_deref().map(<[u8]>::len), Some(len));
+            true
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    thread_local! {
+        static BUFFERS: RefCell<BufferStore> = RefCell::new(BufferStore::default());
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn allocate(len: usize) -> *mut u8 {
+        BUFFERS.with(|buffers| buffers.borrow_mut().allocate(len))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn store(bytes: Vec<u8>) -> *mut u8 {
+        BUFFERS.with(|buffers| buffers.borrow_mut().store(bytes))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn read(ptr: *const u8, len: usize) -> Option<Vec<u8>> {
+        BUFFERS.with(|buffers| buffers.borrow().read(ptr, len))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn free(ptr: *mut u8, len: usize) -> bool {
+        BUFFERS.with(|buffers| buffers.borrow_mut().free(ptr, len))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::BufferStore;
+
+        #[test]
+        fn wasm_export_lint_exception_contains_no_unsafe_operations() {
+            // `wasm_abi` must allow Rust 2024's `#[unsafe(no_mangle)]`
+            // attributes, so guard that narrow lint exception against growing
+            // actual unsafe functions, impls, extern blocks, or operations.
+            let unsafe_operation =
+                regex::Regex::new(r"\bunsafe\s*(?:\{|fn\b|impl\b|extern\b|trait\b)").unwrap();
+            assert!(
+                !unsafe_operation.is_match(include_str!("lib.rs")),
+                "the browser ABI must use safe Rust despite its export-attribute lint exception"
+            );
+        }
+
+        #[test]
+        fn reads_only_live_base_bounded_ranges() {
+            let mut buffers = BufferStore::default();
+            let ptr = buffers.store(b"witchy".to_vec());
+            assert_eq!(buffers.read(ptr, 6).as_deref(), Some(b"witchy".as_slice()));
+            assert_eq!(buffers.read(ptr, 3).as_deref(), Some(b"wit".as_slice()));
+            assert!(buffers.read(ptr, 7).is_none(), "an oversized range must be rejected");
+            assert!(
+                buffers.read(std::ptr::dangling(), 1).is_none(),
+                "a forged base must be rejected"
+            );
+            assert_eq!(buffers.read(std::ptr::null(), 0), Some(Vec::new()));
+            assert!(buffers.read(std::ptr::null(), 1).is_none());
+        }
+
+        #[test]
+        fn free_requires_exact_live_allocation() {
+            let mut buffers = BufferStore::default();
+            let ptr = buffers.allocate(8);
+            assert!(!buffers.free(ptr, 7), "a mismatched layout must not free the box");
+            assert!(buffers.read(ptr, 8).is_some(), "a rejected free must leave the allocation live");
+            assert!(buffers.free(ptr, 8));
+            assert!(!buffers.free(ptr, 8), "a double free must be rejected");
+            assert!(buffers.free(std::ptr::null_mut(), 0));
+            assert!(!buffers.free(std::ptr::null_mut(), 1));
+        }
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
+#[allow(
+    unsafe_code,
+    reason = "Rust 2024 classifies exported no_mangle symbols as unsafe attributes; a source-level test forbids unsafe operations in this module"
+)]
 mod wasm_abi {
-    use std::alloc::{alloc, dealloc, Layout};
+    use super::abi_buffers;
 
     /// Allocate `len` bytes of guest memory for JS to write into.
     #[unsafe(no_mangle)]
     pub extern "C" fn witchy_alloc(len: usize) -> *mut u8 {
-        if len == 0 {
-            return std::ptr::null_mut();
-        }
-        // SAFETY: non-zero len; the matching free is `witchy_free`.
-        unsafe { alloc(Layout::from_size_align(len, 1).unwrap()) }
+        abi_buffers::allocate(len)
     }
 
     /// Free a buffer previously returned by `witchy_alloc` / `witchy_compile` /
     /// the helper exports.
     #[unsafe(no_mangle)]
     pub extern "C" fn witchy_free(ptr: *mut u8, len: usize) {
-        if !ptr.is_null() && len != 0 {
-            // SAFETY: ptr/len pair came from one of our allocations.
-            unsafe { dealloc(ptr, Layout::from_size_align(len, 1).unwrap()) }
-        }
+        // Invalid, mismatched, forged, and already-freed pairs fail closed. The
+        // host has no authority to make Rust deallocate an unowned address.
+        let _ = abi_buffers::free(ptr, len);
     }
 
     /// `[u32 status][u32 len][payload]` in a fresh buffer handed to JS.
@@ -276,9 +406,7 @@ mod wasm_abi {
         out.extend_from_slice(&status.to_le_bytes());
         out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
         out.extend_from_slice(payload);
-        let ptr = out.as_mut_ptr();
-        std::mem::forget(out); // handed to JS; freed via witchy_free
-        ptr
+        abi_buffers::store(out)
     }
 
     /// `[u32 len][payload]` in a fresh buffer handed to JS.
@@ -286,18 +414,17 @@ mod wasm_abi {
         let mut out = Vec::with_capacity(4 + payload.len());
         out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
         out.extend_from_slice(payload);
-        let ptr = out.as_mut_ptr();
-        std::mem::forget(out);
-        ptr
+        abi_buffers::store(out)
     }
 
     /// Compile the source at `ptr[..len]` to a wasm binary; status 0 → bytes,
     /// 1 → error message. Free with `witchy_free(p, 8 + len)`.
     #[unsafe(no_mangle)]
     pub extern "C" fn witchy_compile(ptr: *const u8, len: usize) -> *mut u8 {
-        // SAFETY: JS hands back the exact ptr/len it wrote via witchy_alloc.
-        let src = unsafe { std::slice::from_raw_parts(ptr, len) };
-        let src = String::from_utf8_lossy(src).into_owned();
+        let Some(src) = abi_buffers::read(ptr, len) else {
+            return pack_tagged(1, b"browser ABI rejected an invalid source buffer");
+        };
+        let src = String::from_utf8_lossy(&src).into_owned();
         match super::compile_source(&src) {
             Ok(binary) => pack_tagged(0, &binary),
             Err(message) => pack_tagged(1, message.as_bytes()),
@@ -322,21 +449,22 @@ mod wasm_abi {
     /// variant; an impossible host-table error becomes an empty result.
     #[unsafe(no_mangle)]
     pub extern "C" fn witchy_encoding(op: i32, in_ptr: *const u8, in_len: usize) -> *mut u8 {
-        let input = unsafe { std::slice::from_raw_parts(in_ptr, in_len) };
-        let out = super::encoding(op, input).unwrap_or_default();
+        let Some(input) = abi_buffers::read(in_ptr, in_len) else {
+            return pack(&[]);
+        };
+        let out = super::encoding(op, &input).unwrap_or_default();
         pack(&out)
     }
 
-    // SAFETY for the next four: each `*_ptr`/`*_len` pair is a slice JS wrote into
-    // a `witchy_alloc` buffer just before the call.
-    fn raw<'a>(ptr: *const u8, len: usize) -> std::borrow::Cow<'a, str> {
-        String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(ptr, len) })
+    fn text(ptr: *const u8, len: usize) -> Option<String> {
+        abi_buffers::read(ptr, len).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
     }
 
     /// `crypto.sha256/sha512/sha3_256(op, input)` → `[u32 len][hex]`.
     #[unsafe(no_mangle)]
     pub extern "C" fn witchy_crypto_hash(op: i32, in_ptr: *const u8, in_len: usize) -> *mut u8 {
-        pack(super::crypto_hash(op, &raw(in_ptr, in_len)).as_bytes())
+        let Some(input) = text(in_ptr, in_len) else { return pack(&[]) };
+        pack(super::crypto_hash(op, &input).as_bytes())
     }
 
     /// `crypto.hmac_sha256(key, msg)` → `[u32 len][hex]`.
@@ -347,7 +475,10 @@ mod wasm_abi {
         m_ptr: *const u8,
         m_len: usize,
     ) -> *mut u8 {
-        pack(super::hmac_sha256(&raw(k_ptr, k_len), &raw(m_ptr, m_len)).as_bytes())
+        let (Some(key), Some(message)) = (text(k_ptr, k_len), text(m_ptr, m_len)) else {
+            return pack(&[]);
+        };
+        pack(super::hmac_sha256(&key, &message).as_bytes())
     }
 
     /// `regex.match_spans(pattern, text)` → `[u32 len][packed spans]`.
@@ -358,7 +489,10 @@ mod wasm_abi {
         t_ptr: *const u8,
         t_len: usize,
     ) -> *mut u8 {
-        pack(super::regex_spans(&raw(p_ptr, p_len), &raw(t_ptr, t_len)).as_bytes())
+        let (Some(pattern), Some(text)) = (text(p_ptr, p_len), text(t_ptr, t_len)) else {
+            return pack(&[]);
+        };
+        pack(super::regex_spans(&pattern, &text).as_bytes())
     }
 
     /// Signature verify status (op 0 ed25519, 1/2 ecdsa): 1 valid, 0 invalid
@@ -373,7 +507,14 @@ mod wasm_abi {
         s_ptr: *const u8,
         s_len: usize,
     ) -> i64 {
-        super::crypto_verify_status(op, &raw(pk_ptr, pk_len), &raw(m_ptr, m_len), &raw(s_ptr, s_len))
+        let (Some(pk), Some(message), Some(signature)) = (
+            text(pk_ptr, pk_len),
+            text(m_ptr, m_len),
+            text(s_ptr, s_len),
+        ) else {
+            return -4;
+        };
+        super::crypto_verify_status(op, &pk, &message, &signature)
     }
 
     /// Signature verify (op 0 ed25519, 1/2 ecdsa) → 1 if valid, else 0.
@@ -387,6 +528,13 @@ mod wasm_abi {
         s_ptr: *const u8,
         s_len: usize,
     ) -> i32 {
-        (super::crypto_verify_status(op, &raw(pk_ptr, pk_len), &raw(m_ptr, m_len), &raw(s_ptr, s_len)) == 1) as i32
+        let (Some(pk), Some(message), Some(signature)) = (
+            text(pk_ptr, pk_len),
+            text(m_ptr, m_len),
+            text(s_ptr, s_len),
+        ) else {
+            return 0;
+        };
+        (super::crypto_verify_status(op, &pk, &message, &signature) == 1) as i32
     }
 }

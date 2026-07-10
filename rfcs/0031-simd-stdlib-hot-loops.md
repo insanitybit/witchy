@@ -26,7 +26,7 @@ cores) and the determinism-preserving alternative to true multi-core execution
 A survey of where parallelism could help witchy found:
 
 - **Backend compilation is already parallel** — wasmtime/cranelift compiles a
-  module's functions across cores by default, and the result is AOT-cached, so
+  module's functions across cores by default, and the optimized wasm is safely cached, so
   there is nothing to win there.
 - **Program execution is single-threaded by design** — `spawn`/channels are a
   cooperative executor inside one wasm instance, so a CPU-bound program uses one

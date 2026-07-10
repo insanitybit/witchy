@@ -36,3 +36,6 @@ getrandom = { version = "0.2", features = ["js"] }
 
 [features]
 native = ["dep:wasmtime", "dep:getrandom"]
+# Exposes the scoped TLS-root registry used by the root package's hermetic
+# integration tests. Normal builds cannot add trust anchors through this API.
+test-support = []

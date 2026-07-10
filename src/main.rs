@@ -10,6 +10,7 @@
 // `let`-chains without re-indenting, hurting readability; the nested form is an
 // intentional style choice here.
 #![allow(clippy::collapsible_if, clippy::collapsible_match, clippy::items_after_test_module)]
+#![deny(unsafe_code)]
 
 pub use witchy::analysis;
 pub use witchy::aliases;
@@ -237,10 +238,11 @@ fn main() -> wasmtime::Result<()> {
     // aren't mistaken for the program file.
     {
         let a: Vec<String> = std::env::args().skip(1).collect();
-        // SAFETY: this runs at the very top of `main`, before any thread is spawned, so there is
-        // no concurrent env access to race with (the requirement `set_var` is unsafe for).
         if let Some(m) = leading_opt_mode(&a) {
-            unsafe { std::env::set_var("WITCHY_OPT", m) };
+            opt::configure(m).unwrap_or_else(|e| {
+                eprintln!("cannot select `{m}` optimization mode: {e}");
+                std::process::exit(2);
+            });
         }
     }
     // `witchy doc <file>...` prints Markdown API docs (one section per file) to
@@ -2433,8 +2435,9 @@ fn embedded_wasm_cached(
 /// opt set — every input that determines the emitted wasm — so it is sound by
 /// construction: a key that fails to reflect some input simply MISSES and recompiles,
 /// it can never serve wrong code. Distinct from the runtime's post-Cranelift module
-/// cache (`~/.cache/witchy/aot`); this one (`~/.cache/witchy/src`) caches the wasm
-/// bytes so the front-end's codegen is skipped, not just the native compile. The
+/// caches (`~/.cache/witchy/{optimized-wasm,wasm}`); this one
+/// (`~/.cache/witchy/src`) caches the wasm bytes so the front-end's codegen is
+/// skipped, not just the native compile. The
 /// capability grant and every security check still run from `linked` on every run —
 /// only the wasm is cached.
 fn compile_linked_to_wasm_cached(linked: &ast::Module) -> Result<Vec<u8>, String> {
@@ -3060,13 +3063,39 @@ pub fn run_build_step_compiled(
     exec_tools: Vec<String>,
     net_hosts: Vec<String>,
 ) -> Result<Vec<String>, String> {
+    let env = capture_build_env(&env_keys);
+    run_build_step_compiled_with_env(module, out_dir, read_roots, env, exec_tools, net_hosts)
+}
+
+fn capture_build_env(
+    keys: &[String],
+) -> std::collections::BTreeMap<String, Option<String>> {
+    let env: std::collections::BTreeMap<_, _> = keys
+        .iter()
+        .map(|key| (key.clone(), std::env::var(key).ok()))
+        .collect();
+    debug_assert!(
+        keys.iter().all(|key| env.contains_key(key)),
+        "every granted env name must be represented in the snapshot"
+    );
+    env
+}
+
+fn run_build_step_compiled_with_env(
+    module: ast::Module,
+    out_dir: std::path::PathBuf,
+    read_roots: Vec<std::path::PathBuf>,
+    env: std::collections::BTreeMap<String, Option<String>>,
+    exec_tools: Vec<String>,
+    net_hosts: Vec<String>,
+) -> Result<Vec<String>, String> {
     use runtime::{Capabilities, Runtime};
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("build: output dir: {e}"))?;
     let wasm = codegen::compile_build_module(&module).map_err(|e| e.message)?;
     let caps = Capabilities {
         build_out: Some(out_dir.clone()),
         build_read_roots: read_roots,
-        env_allow: Some(env_keys),
+        build_env: Some(env),
         exec_allow: Some(exec_tools),
         build_net_allow: Some(net_hosts),
         ..Default::default()
@@ -3170,15 +3199,27 @@ fn run_build_step_file(
     exec_tools: Vec<String>,
     net_hosts: Vec<String>,
 ) -> Result<Vec<String>, String> {
+    let env = capture_build_env(&env_keys);
+    run_build_step_file_with_env(path, out_dir, read_roots, env, exec_tools, net_hosts)
+}
+
+fn run_build_step_file_with_env(
+    path: &str,
+    out_dir: Option<std::path::PathBuf>,
+    read_roots: Vec<std::path::PathBuf>,
+    env: std::collections::BTreeMap<String, Option<String>>,
+    exec_tools: Vec<String>,
+    net_hosts: Vec<String>,
+) -> Result<Vec<String>, String> {
     let (linked, _) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
     let out = out_dir.unwrap_or_else(|| std::path::PathBuf::from("build-out"));
-    run_build_step_compiled(linked, out, read_roots, env_keys, exec_tools, net_hosts)
+    run_build_step_compiled_with_env(linked, out, read_roots, env, exec_tools, net_hosts)
 }
 
 #[cfg(test)]
 mod compiled_build_step_tests {
-    use super::run_build_step_file;
+    use super::{run_build_step_file, run_build_step_file_with_env};
 
     fn unique(name: &str) -> std::path::PathBuf {
         let nanos = std::time::SystemTime::now()
@@ -3199,18 +3240,18 @@ mod compiled_build_step_tests {
     fn compiled_build_env_reads_only_allow_listed_keys() {
         let dir = unique("compiled_build_env");
         let _ = std::fs::remove_dir_all(&dir);
-        unsafe { std::env::set_var("WITCHY_BUILD_ALLOWED", "yes") };
-        unsafe { std::env::set_var("WITCHY_BUILD_SECRET", "leak") };
+        let env: std::collections::BTreeMap<String, Option<String>> =
+            [("WITCHY_BUILD_ALLOWED".to_string(), Some("yes".to_string()))].into();
 
         let allowed = write_source(
             &dir,
             "import option\nfn build(out: BuildOut, env: BuildEnv):\n    let v = match env.get_build_env(\"WITCHY_BUILD_ALLOWED\"):\n        Some(x) -> x\n        None -> \"unset\"\n    out.write_out(\"g.txt\", v)\n",
         );
-        run_build_step_file(
+        run_build_step_file_with_env(
             allowed.to_str().unwrap(),
             Some(dir.join("out")),
             vec![],
-            vec!["WITCHY_BUILD_ALLOWED".to_string()],
+            env.clone(),
             vec![],
             vec![],
         )
@@ -3221,11 +3262,11 @@ mod compiled_build_step_tests {
             &dir,
             "import option\nfn build(out: BuildOut, env: BuildEnv):\n    let v = match env.get_build_env(\"WITCHY_BUILD_SECRET\"):\n        Some(x) -> x\n        None -> \"unset\"\n    out.write_out(\"g.txt\", v)\n",
         );
-        let err = run_build_step_file(
+        let err = run_build_step_file_with_env(
             denied.to_str().unwrap(),
             Some(dir.join("out2")),
             vec![],
-            vec!["WITCHY_BUILD_ALLOWED".to_string()],
+            env,
             vec![],
             vec![],
         )

@@ -80,8 +80,8 @@ pub enum Opt {
     RcFloor,
     /// Binaryen `wasm-opt -O2` over the emitted wasm before Cranelift compiles it —
     /// the real wasm optimizer (GVN, inlining, DCE, local CSE) our naive emitter
-    /// leaves on the table. Run AHEAD OF TIME on the cold compile only and
-    /// AOT-serialized into the module cache, so warm runs pay nothing; default-on,
+    /// leaves on the table. Run AHEAD OF TIME on the cold compile only and cache
+    /// the validated optimized wasm, so warm runs skip Binaryen; default-on,
     /// a graceful no-op if `wasm-opt` isn't on PATH (RFC-0034 L1).
     WasmOpt,
     /// (RFC-0034 L3) Closure devirtualization: a closure local provably bound to one
@@ -248,9 +248,33 @@ pub fn parse(spec: &str) -> Result<OptSet, String> {
     Ok(set)
 }
 
+static PROCESS_CONFIG: OnceLock<OptSet> = OnceLock::new();
+
+fn configure_cell(cell: &OnceLock<OptSet>, set: OptSet) -> Result<(), String> {
+    match cell.set(set) {
+        Ok(()) => {
+            debug_assert_eq!(cell.get(), Some(&set), "a successful optimization configuration must be observable");
+            Ok(())
+        }
+        Err(_) if cell.get() == Some(&set) => Ok(()),
+        Err(_) => Err(format!(
+            "optimization mode was already initialized as {:?}, cannot change it to {set:?}",
+            cell.get().expect("OnceLock::set failed only when initialized")
+        )),
+    }
+}
+
+/// Select the process-wide optimization mode without mutating the process
+/// environment. This is single-assignment: configuring the same set twice is
+/// harmless, while an attempted mid-process mode change fails loudly. Callers
+/// that need several configurations in one process use [`set_for_tests`], whose
+/// override is deliberately thread-local.
+pub fn configure(spec: &str) -> Result<(), String> {
+    configure_cell(&PROCESS_CONFIG, parse(spec)?)
+}
+
 fn env_default() -> OptSet {
-    static CACHE: OnceLock<OptSet> = OnceLock::new();
-    *CACHE.get_or_init(|| match std::env::var("WITCHY_OPT") {
+    *PROCESS_CONFIG.get_or_init(|| match std::env::var("WITCHY_OPT") {
         Ok(spec) => parse(&spec).unwrap_or_else(|e| panic!("WITCHY_OPT: {e}")),
         Err(_) => OptSet::default_set(),
     })
@@ -288,7 +312,7 @@ mod tests {
         assert!(d.contains(Opt::Region));
         assert!(
             d.contains(Opt::WasmOpt),
-            "wasm-opt (AOT-cached Binaryen) is default-on"
+            "wasm-opt (safely cached Binaryen) is default-on"
         );
         assert!(
             d.contains(Opt::Unbox) && d.contains(Opt::RcFloor),
@@ -374,6 +398,18 @@ mod tests {
         set_for_tests(Some(OptSet::default_set()));
         assert!(enabled(Opt::InPlace));
         set_for_tests(None);
+    }
+
+    #[test]
+    fn process_configuration_is_single_assignment() {
+        let cell = OnceLock::new();
+        let debug = OptSet::debug();
+        let release = OptSet::release();
+        configure_cell(&cell, debug).unwrap();
+        configure_cell(&cell, debug).expect("repeating the same configuration is idempotent");
+        let err = configure_cell(&cell, release).expect_err("a process mode cannot change after initialization");
+        assert!(err.contains("already initialized"), "{err}");
+        assert_eq!(cell.get(), Some(&debug), "a rejected reconfiguration must not change the active set");
     }
 
     #[test]

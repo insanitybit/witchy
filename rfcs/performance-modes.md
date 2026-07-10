@@ -243,9 +243,10 @@ scope as the lifetime bound.
   later uses, feeding the folder), run on the single linked module both backends
   consume. String-concat folding through `let` bindings eliminates real runtime
   allocations the WASM backend's Cranelift mid-end cannot see.
-- **SHIPPED** — AOT module serialization (`src/runtime.rs`): a warm `witchy
-  sandbox` loads a precompiled wasmtime artifact instead of recompiling (Phase 3
-  of [performance.md](performance.md)).
+- **SHIPPED** — safe two-level module caching (`runtime.rs`): a warm `witchy
+  sandbox` validates content-bound optimized wasm through `Module::new`, while
+  Wasmtime's compilation cache avoids native recompilation (Phase 3 of
+  [performance.md](../spec/performance.md)).
 - **NEXT** — consolidate the six escape computations into one escape/region
   lattice + `Facts` query API (the lowest-risk, code-deleting first step).
 - **THEN** — escape + uniqueness on a shared CFG/SSA (this is where the

@@ -147,15 +147,13 @@ fn main(console: Console):
         // even a variable that exists in the process env.
         let dir = std::env::temp_dir().join(format!("witchy_build_env_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        unsafe { std::env::set_var("WITCHY_BUILD_ALLOWED", "yes") };
-        unsafe { std::env::set_var("WITCHY_BUILD_SECRET", "leak?") };
         let granted = witchy_syntax::parser::parse_module(
             "import option\nfn build(out: BuildOut, env: BuildEnv):\n    let v = match env.get_build_env(\"WITCHY_BUILD_ALLOWED\"):\n        Some(x) -> x\n        None -> \"unset\"\n    out.write_out(\"g.txt\", v)\n",
         )
         .unwrap();
         let g = BuildGrants {
             out_dir: dir.join("out"),
-            env_keys: vec!["WITCHY_BUILD_ALLOWED".to_string()],
+            env: [("WITCHY_BUILD_ALLOWED".to_string(), Some("yes".to_string()))].into(),
             ..Default::default()
         };
         run_build_step(granted, g).expect("a named key reads fine");
@@ -168,7 +166,7 @@ fn main(console: Console):
         .unwrap();
         let g2 = BuildGrants {
             out_dir: dir.join("out2"),
-            env_keys: vec!["WITCHY_BUILD_ALLOWED".to_string()],
+            env: [("WITCHY_BUILD_ALLOWED".to_string(), Some("yes".to_string()))].into(),
             ..Default::default()
         };
         let err = run_build_step(denied, g2).expect_err("an unlisted key must be refused");

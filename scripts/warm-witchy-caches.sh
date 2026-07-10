@@ -5,12 +5,12 @@
 #
 # Why: the e2e suite spawns `witchy pm ...` / `witchy coven-serve` subprocesses
 # dozens of times. Each spawn compiles projects/pm / projects/coven to wasm
-# unless the on-disk caches (~/.cache/witchy/{src,aot,wasm}) are warm — and
+# unless the on-disk caches (~/.cache/witchy/{src,optimized-wasm,wasm}) are warm — and
 # those caches are keyed on the binary's mtime+size, so EVERY rebuild (i.e.
 # every merge) invalidates them. Until this script existed, the first gate
 # after a rebuild paid the same embedded-program compile in every spawned
 # subprocess. Warming once up front turns all of those into cache hits
-# (Module::deserialize — microseconds).
+# (safe Module::new validation followed by a Wasmtime compilation-cache hit).
 #
 # Best-effort by design: this script ALWAYS exits 0. If the binary is missing
 # or broken, the tests themselves will say so with a real error; a warm

@@ -8,6 +8,7 @@
 
 // Match the project-wide lint policy (root `src/lib.rs`).
 #![allow(clippy::collapsible_if, clippy::collapsible_match, clippy::items_after_test_module)]
+#![deny(unsafe_code)]
 
 pub mod analysis;
 pub mod codegen;

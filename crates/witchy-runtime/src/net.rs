@@ -11,6 +11,8 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
+use std::sync::{LazyLock, Mutex};
 
 /// A connected byte stream behind a socket handle. Plain `TcpStream` and TLS
 /// `rustls::StreamOwned` both satisfy it, so both backends keep plain and `tls:`
@@ -217,22 +219,72 @@ pub fn dial(
     }
 }
 
-/// A client config trusting the Mozilla CA roots plus any extra PEM roots named by
-/// `WITCHY_TLS_EXTRA_ROOTS` (a custom/corporate CA) or `WITCHY_TLS_TEST_ROOTS`
-/// (RFC-0060: the TEST-ONLY hook the `serve_tls` differential/e2e suites use to
-/// trust their self-signed fixture; consumed only when set, never for production
-/// trust). Built per dial — correctness over the micro-cost; the handshake dominates.
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
+static TEST_TLS_ROOTS: LazyLock<Mutex<std::collections::BTreeMap<u64, std::path::PathBuf>>> =
+    LazyLock::new(|| Mutex::new(std::collections::BTreeMap::new()));
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
+static NEXT_TEST_TLS_ROOT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// RAII registration for a hermetic test CA. Unlike mutating
+/// `WITCHY_TLS_EXTRA_ROOTS`, this is safe under parallel test execution: every
+/// live fixture contributes its own root, and dropping the guard removes only
+/// that registration.
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
+#[doc(hidden)]
+pub struct TestTlsRootGuard(u64);
+
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
+#[doc(hidden)]
+pub fn register_test_tls_root(path: impl Into<std::path::PathBuf>) -> TestTlsRootGuard {
+    use std::sync::atomic::Ordering;
+    let id = NEXT_TEST_TLS_ROOT.fetch_add(1, Ordering::Relaxed);
+    assert_ne!(id, 0, "test TLS root registration id overflowed");
+    let mut roots = TEST_TLS_ROOTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let old = roots.insert(id, path.into());
+    debug_assert!(old.is_none(), "a fresh test TLS root id must be unique");
+    TestTlsRootGuard(id)
+}
+
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
+impl Drop for TestTlsRootGuard {
+    fn drop(&mut self) {
+        let removed = TEST_TLS_ROOTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.0);
+        debug_assert!(removed.is_some(), "a live test TLS root guard must own one registration");
+    }
+}
+
+/// A client config trusting the Mozilla CA roots plus any extra PEM root named
+/// by `WITCHY_TLS_EXTRA_ROOTS` (a custom/corporate CA). Tests can also register
+/// scoped roots when the non-default `test-support` feature is enabled. Built
+/// per dial — correctness over the micro-cost; the handshake dominates.
 #[cfg(not(target_arch = "wasm32"))]
 fn client_config() -> Arc<rustls::ClientConfig> {
     let mut roots = rustls::RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    for var in ["WITCHY_TLS_EXTRA_ROOTS", "WITCHY_TLS_TEST_ROOTS"] {
-        if let Some(path) = std::env::var_os(var) {
-            if let Ok(pem) = std::fs::read(&path) {
-                let mut reader = &pem[..];
-                for cert in rustls_pemfile::certs(&mut reader).flatten() {
-                    let _ = roots.add(cert);
-                }
+    let extra_paths: Vec<std::path::PathBuf> = std::env::var_os("WITCHY_TLS_EXTRA_ROOTS")
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .collect();
+    #[cfg(any(test, feature = "test-support"))]
+    let extra_paths = {
+        let mut with_test_roots = extra_paths;
+        with_test_roots.extend(
+            TEST_TLS_ROOTS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .values()
+                .cloned(),
+        );
+        with_test_roots
+    };
+    for path in extra_paths {
+        if let Ok(pem) = std::fs::read(&path) {
+            let mut reader = &pem[..];
+            for cert in rustls_pemfile::certs(&mut reader).flatten() {
+                let _ = roots.add(cert);
             }
         }
     }
@@ -244,6 +296,21 @@ fn client_config() -> Arc<rustls::ClientConfig> {
     .with_root_certificates(roots)
     .with_no_client_auth();
     Arc::new(config)
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tls_root_guard_registers_and_removes_exactly_one_root() {
+        let before = TEST_TLS_ROOTS.lock().unwrap().len();
+        {
+            let _guard = register_test_tls_root("fixture.pem");
+            assert_eq!(TEST_TLS_ROOTS.lock().unwrap().len(), before + 1);
+        }
+        assert_eq!(TEST_TLS_ROOTS.lock().unwrap().len(), before);
+    }
 }
 
 /// (SEC-035) A capability-secure server must not let a peer OOM the host by streaming

@@ -7512,11 +7512,9 @@ fn main(console: Console, root: Dir):
     /// `main` (Console + Env / Console + Clock), which codegen now accepts.
     #[test]
     fn clock_and_env_compile_to_wasm_and_agree() {
-        // SAFETY-free env set: std::env::set_var is fine in a single-threaded
-        // test context; the var is namespaced to this test.
-        unsafe { std::env::set_var("WITCHY_E2E_ENV_VAR", "from the host") };
-        let env_src = "import option\n\nfn main(console: Console, env: Env):\n    match env.get_env(\"WITCHY_E2E_ENV_VAR\"):\n        Some(v) -> console.print(\"got: \" + v)\n        None -> console.print(\"unset\")\n    match env.get_env(\"WITCHY_E2E_DEFINITELY_UNSET\"):\n        Some(v) -> console.print(\"got: \" + v)\n        None -> console.print(\"unset\")\n";
-        let want = vec!["got: from the host".to_string(), "unset".to_string()];
+        let host_path = std::env::var("PATH").expect("the test process has PATH");
+        let env_src = "import option\n\nfn main(console: Console, env: Env):\n    match env.get_env(\"PATH\"):\n        Some(v) -> console.print(\"got: \" + v)\n        None -> console.print(\"unset\")\n    match env.get_env(\"WITCHY_E2E_DEFINITELY_UNSET\"):\n        Some(v) -> console.print(\"got: \" + v)\n        None -> console.print(\"unset\")\n";
+        let want = vec![format!("got: {host_path}"), "unset".to_string()];
         let module = parser::parse_module(env_src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
@@ -11588,10 +11586,10 @@ fn main(console: Console):
         let src_path = root.join("prog.witchy");
         std::fs::write(
             &src_path,
-            "import option\nimport string\n\nfn main(console: Console, env: Env, dir: Dir[Read], args: List(String)) -> Int:\n    let path = list.at(args, 0)\n    let label = match env.get_env(\"WITCHY_SANDBOX_LABEL\"):\n        Some(v) -> v\n        None -> \"unlabeled\"\n    for line in string.lines(dir.read(path)):\n        if string.contains(line, \"needle\"):\n            console.print(label + \": \" + line)\n    0\n",
+            "import option\nimport string\n\nfn main(console: Console, env: Env, dir: Dir[Read], args: List(String)) -> Int:\n    let path = list.at(args, 0)\n    let label = match env.get_env(\"PATH\"):\n        Some(v) -> v\n        None -> \"unlabeled\"\n    for line in string.lines(dir.read(path)):\n        if string.contains(line, \"needle\"):\n            console.print(label + \": \" + line)\n    0\n",
         )
         .unwrap();
-        unsafe { std::env::set_var("WITCHY_SANDBOX_LABEL", "found") };
+        let host_path = std::env::var("PATH").expect("the test process has PATH");
         let (out, exit) = crate::run_file_sandboxed(
             src_path.to_str().unwrap(),
             vec![root.clone()],
@@ -11602,7 +11600,7 @@ fn main(console: Console):
             Vec::new(),
         )
         .expect("sandbox run");
-        assert_eq!(out, vec!["found: needle in here"]);
+        assert_eq!(out, vec![format!("{host_path}: needle in here")]);
         assert_eq!(exit, Some(0), "Int-returning main becomes the exit code");
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -13989,7 +13987,7 @@ fn main(console: Console):
 
     /// TLS works end to end through the `tls:` address scheme (RFC-0009), HERMETICALLY:
     /// a local rustls server with a self-signed `localhost` cert (trusted via the
-    /// `WITCHY_TLS_EXTRA_ROOTS` hook), and a witchy program that `connect`s to
+    /// concurrency-safe test-root registry), and a witchy program that `connect`s to
     /// `tls:localhost:PORT`, sends a line, and reads the echo — identical on BOTH
     /// backends. Proves rustls+aws-lc terminates TLS host-side (the guest sees
     /// plaintext) with real certificate validation, no network access.
@@ -14015,9 +14013,7 @@ fn main(console: Console):
         let port = listener.local_addr().unwrap().port();
         let cert_path = std::env::temp_dir().join(format!("witchy-tls-test-{port}.pem"));
         std::fs::write(&cert_path, ck.cert.pem()).unwrap();
-        // SAFETY: nextest runs each test in its own process, so this env var is not
-        // observed by another thread/test racing the set.
-        unsafe { std::env::set_var("WITCHY_TLS_EXTRA_ROOTS", &cert_path) };
+        let _tls_root = crate::net::register_test_tls_root(cert_path.clone());
 
         // Echo server: two connections (one per backend run), each echoing one line.
         let sc = server_config.clone();
@@ -14223,8 +14219,7 @@ fn main(console: Console):
         let port = listener.local_addr().unwrap().port();
         let cert_path = std::env::temp_dir().join(format!("witchy-https-test-{port}.pem"));
         std::fs::write(&cert_path, ck.cert.pem()).unwrap();
-        // SAFETY: nextest runs each test in its own process — no other thread races this.
-        unsafe { std::env::set_var("WITCHY_TLS_EXTRA_ROOTS", &cert_path) };
+        let _tls_root = crate::net::register_test_tls_root(cert_path.clone());
 
         let sc = server_config.clone();
         let server = std::thread::spawn(move || {
@@ -14307,8 +14302,7 @@ fn main(console: Console):
         let port = listener.local_addr().unwrap().port();
         let cert_path = std::env::temp_dir().join(format!("witchy-oauth-test-{port}.pem"));
         std::fs::write(&cert_path, ck.cert.pem()).unwrap();
-        // SAFETY: nextest runs each test in its own process — no other thread races this.
-        unsafe { std::env::set_var("WITCHY_TLS_EXTRA_ROOTS", &cert_path) };
+        let _tls_root = crate::net::register_test_tls_root(cert_path.clone());
 
         let sc = server_config.clone();
         let server = std::thread::spawn(move || {
@@ -14377,8 +14371,7 @@ fn main(console: Console):
         let port = listener.local_addr().unwrap().port();
         let cert_path = std::env::temp_dir().join(format!("witchy-bearer-test-{port}.pem"));
         std::fs::write(&cert_path, ck.cert.pem()).unwrap();
-        // SAFETY: nextest runs each test in its own process — no other thread races this.
-        unsafe { std::env::set_var("WITCHY_TLS_EXTRA_ROOTS", &cert_path) };
+        let _tls_root = crate::net::register_test_tls_root(cert_path.clone());
 
         let sc = server_config.clone();
         let server = std::thread::spawn(move || {
