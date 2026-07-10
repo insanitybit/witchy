@@ -1,9 +1,9 @@
 ---
 rfc: 0046
 title: "Typed trait dispatch: retire the string shadow type system"
-status: implemented
+status: in-progress
 created: 2026-07-03
-tracking: "typed-path core; head_type_name residual tracked in the step-4 note; merged to master a842068 (dispatch reads the TypeTable); string shadow system NOT yet deleted"
+tracking: "dispatch scopes and quiet-pass judgments use structured Type; Mono/specialization still carry the encoded-name residual"
 predecessors:
   - "language-evolution.md Phase 0 (typed lowering — the TypeTable this completes)"
   - "0042 (module namespaces — the other half of 'facts live in declarations')"
@@ -26,6 +26,24 @@ predecessors:
 > (`show.render(Box(3))`/`json.stringify(Box(3))` see `Box<Int>`), but it is
 > still a bridge inside the string-scope fallback. The RFC's final target remains
 > deleting the fallback and reading structured checker types directly.
+>
+> 2026-07-10 structured-dispatch cut: the lexical dispatch pass no longer has a
+> string shadow type system. `Ctx` scopes carry `Type`; declaration-driven call
+> results, literals, constructors, generic record fields, loop elements, and
+> nested constructor/Option/Result/list patterns are judged and substituted as
+> structured types. Partially inferred declarations preserve their nominal
+> shape (`dict.new() -> Dict(k, v)`) so owner-method resolution does not depend
+> on concrete generic arguments. Encoding now occurs only at the terminal
+> impl/method-table key and is never parsed by `Ctx`. The redundant string
+> capability-return and pattern-payload adapters were deleted. The fast gate is
+> green at 1603/1603 with focused representation-boundary tests.
+>
+> The RFC remains **in progress**, not implemented: `Mono` and its
+> specialization call-renaming pass still use `Scope<String>`, `head_type_name`,
+> and the scope-name parser family for generated bodies that have no TypeTable
+> entries yet. That is the remaining architectural cut; this status cannot return
+> to `implemented` until those consumers migrate or the RFC is explicitly
+> narrowed by a replacement decision.
 
 # RFC-0046: Typed trait dispatch — retire the string shadow type system
 

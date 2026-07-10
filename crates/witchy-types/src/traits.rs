@@ -427,9 +427,8 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     // pass; the same message need only appear once).
     let discard_errors = std::cell::RefCell::new(Vec::new());
     {
-        let (ctor_results, fn_rets, fn_sigs) = build_tables(&items);
+        let (_, _, fn_sigs) = build_tables(&items);
         let ctor_infos = build_ctor_infos(&items);
-        let ctor_fields = build_ctor_fields(&items);
         let record_fields = build_record_fields(&items);
         let free_fns: HashSet<String> = items
             .iter()
@@ -448,11 +447,8 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             supertraits: &trait_supertraits,
             trait_impl_table: &trait_impl_table,
             inherent_impl_table: &inherent_impl_table,
-            ctor_results: &ctor_results,
             ctor_infos: &ctor_infos,
-            fn_rets: &fn_rets,
             fn_sigs: &fn_sigs,
-            ctor_fields: &ctor_fields,
             record_fields: &record_fields,
             free_fns: &free_fns,
             owner_methods: &owner_methods,
@@ -468,7 +464,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             if let Item::Function(f) = item {
                 ctx.set_bounds(&f.bounds);
                 let mut scope = Scope::new();
-                seed_params(&f.params, &mut scope);
+                seed_typed_params(&f.params, &mut scope);
                 // (RFC-0043) A function body's tail statement is its return
                 // value (value position); write-back skips it.
                 ctx.rewrite_block(&mut f.body, &mut scope, true);
@@ -696,9 +692,8 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     }
 
     // Tables used to determine a receiver's type at a trait-method call site.
-    let (ctor_results, fn_rets, fn_sigs) = build_tables(&items);
+    let (_, _, fn_sigs) = build_tables(&items);
     let ctor_infos = build_ctor_infos(&items);
-    let ctor_fields = build_ctor_fields(&items);
     let record_fields = build_record_fields(&items);
     let free_fns: HashSet<String> = items
         .iter()
@@ -716,11 +711,8 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         supertraits: &trait_supertraits,
         trait_impl_table: &trait_impl_table,
         inherent_impl_table: &inherent_impl_table,
-        ctor_results: &ctor_results,
         ctor_infos: &ctor_infos,
-        fn_rets: &fn_rets,
         fn_sigs: &fn_sigs,
-        ctor_fields: &ctor_fields,
         record_fields: &record_fields,
         free_fns: &free_fns,
         owner_methods: &owner_methods,
@@ -737,7 +729,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         if let Item::Function(f) = item {
             ctx.set_bounds(&f.bounds);
             let mut scope = Scope::new();
-            seed_params(&f.params, &mut scope);
+            seed_typed_params(&f.params, &mut scope);
             // (RFC-0043) The body's tail statement is the return value.
             ctx.rewrite_block(&mut f.body, &mut scope, true);
         }
@@ -988,9 +980,9 @@ fn transitive_supertraits(direct: &HashMap<String, Vec<String>>) -> HashMap<Stri
 /// share a trait method's name (`less`/`greater`/`show`, e.g. a comparator
 /// parameter) is invoked as the first-class function it is, never rewritten to a
 /// trait dispatch.
-#[derive(Clone, Default)]
-struct Scope {
-    types: HashMap<String, String>,
+#[derive(Clone)]
+struct Scope<T = String> {
+    types: HashMap<String, T>,
     locals: HashSet<String>,
     /// (RFC-0043) Names bound to a *mutable* place — a `var` parameter or `var`
     /// let. A statement-position mutator method call (`xs.push(1)`) writes back
@@ -999,27 +991,37 @@ struct Scope {
     mutables: HashSet<String>,
 }
 
-impl Scope {
+impl<T> Default for Scope<T> {
+    fn default() -> Self {
+        Self {
+            types: HashMap::new(),
+            locals: HashSet::new(),
+            mutables: HashSet::new(),
+        }
+    }
+}
+
+impl<T> Scope<T> {
     fn new() -> Self {
         Scope::default()
     }
 
-    /// The head type name bound for `name`, if known.
-    fn get(&self, name: &str) -> Option<&String> {
+    /// The type evidence bound for `name`, if known.
+    fn get(&self, name: &str) -> Option<&T> {
         self.types.get(name)
     }
 
-    /// Bind `name` to head type `ty` — and record it as a local. Immutable by
+    /// Bind `name` to type evidence `ty` — and record it as a local. Immutable by
     /// default (a `let`); use [`Scope::insert_mut`] for a `var`.
-    fn insert(&mut self, name: String, ty: String) {
+    fn insert(&mut self, name: String, ty: T) {
         self.locals.insert(name.clone());
         self.mutables.remove(&name);
         self.types.insert(name, ty);
     }
 
-    /// Bind `name` to head type `ty` as a MUTABLE place (a `var`) — a write-back
+    /// Bind `name` to type evidence `ty` as a MUTABLE place (a `var`) — a write-back
     /// target for a statement-position mutator method call.
-    fn insert_mut(&mut self, name: String, ty: String) {
+    fn insert_mut(&mut self, name: String, ty: T) {
         self.locals.insert(name.clone());
         self.mutables.insert(name.clone());
         self.types.insert(name, ty);
@@ -1060,7 +1062,7 @@ impl Scope {
     }
 }
 
-fn merge_refined_outer_types(parent: &mut Scope, child: &Scope) {
+fn merge_refined_outer_types(parent: &mut Scope<String>, child: &Scope<String>) {
     for (name, refined) in &child.types {
         let Some(existing) = parent.types.get(name) else { continue };
         if existing != refined && head_of(existing) == head_of(refined) && refined.contains('<') {
@@ -1069,7 +1071,7 @@ fn merge_refined_outer_types(parent: &mut Scope, child: &Scope) {
     }
 }
 
-fn seed_params(params: &[Param], scope: &mut Scope) {
+fn seed_params(params: &[Param], scope: &mut Scope<String>) {
     for p in params {
         // Every parameter is a bound local — even a function-typed one, whose
         // type has no scope-name — so a call on it never dispatches as a trait
@@ -1085,13 +1087,138 @@ fn seed_params(params: &[Param], scope: &mut Scope) {
     }
 }
 
+fn seed_typed_params(params: &[Param], scope: &mut Scope<Type>) {
+    for param in params {
+        let mutable = param.convention == Convention::Var;
+        match (&param.ty, mutable) {
+            (Some(ty), true) => scope.insert_mut(param.name.clone(), ty.clone()),
+            (Some(ty), false) => scope.insert(param.name.clone(), ty.clone()),
+            (None, true) => scope.bind_local_mut(&param.name),
+            (None, false) => scope.bind_local(&param.name),
+        }
+    }
+}
+
 /// Bind a `for`-loop variable to the element type of the iterable, when the
 /// iterable's type is a known `List<...>`. The variable is recorded as a bound
 /// local either way, so a call on it is never a trait dispatch.
-fn bind_loop_var(var: &str, iter_type: Option<String>, scope: &mut Scope) {
+fn bind_loop_var(var: &str, iter_type: Option<String>, scope: &mut Scope<String>) {
     match iter_type.as_deref().and_then(list_elem) {
         Some(elem) => scope.insert(var.to_string(), elem.to_string()),
         None => scope.bind_local(var),
+    }
+}
+
+fn iterable_item_type(iter_type: &Type) -> Option<Type> {
+    match iter_type.unqualified() {
+        Type::Named(name, args) if matches!(name.as_str(), "List" | "Set") => {
+            args.first().cloned()
+        }
+        Type::Named(name, args) if name == "Dict" && args.len() == 2 => {
+            Some(Type::Tuple(args.clone()))
+        }
+        _ => None,
+    }
+}
+
+/// Bind every variable in a refutable pattern from its structured scrutinee
+/// type. Constructor generics are substituted once and then propagated through
+/// nested patterns; builtin Option/Result payloads follow the same path. An
+/// unknown type still records names as locals, preventing accidental dispatch
+/// through a same-named free function.
+fn bind_typed_pattern(
+    pat: &Pattern,
+    ctor_infos: &HashMap<String, CtorInfo>,
+    expected: Option<&Type>,
+    scope: &mut Scope<Type>,
+) {
+    match pat {
+        Pattern::Var(name) if name != "_" => match expected {
+            Some(ty) => scope.insert(name.clone(), ty.clone()),
+            None => scope.bind_local(name),
+        },
+        Pattern::Tuple(parts) => {
+            let slots = match expected.map(Type::unqualified) {
+                Some(Type::Tuple(slots)) => Some(slots.as_slice()),
+                Some(Type::Named(name, slots)) if name.starts_with("Tuple") => {
+                    Some(slots.as_slice())
+                }
+                _ => None,
+            };
+            for (index, part) in parts.iter().enumerate() {
+                bind_typed_pattern(
+                    part,
+                    ctor_infos,
+                    slots.and_then(|items| items.get(index)),
+                    scope,
+                );
+            }
+        }
+        Pattern::Ctor { name, args } => {
+            if let Some(info) = ctor_infos.get(name) {
+                let mut subst = HashMap::new();
+                if let Some(actual) = expected {
+                    let nominal = Type::Named(
+                        info.owner.clone(),
+                        info.params
+                            .iter()
+                            .map(|param| named_type(param))
+                            .collect(),
+                    );
+                    let _ = bind_ast_type_vars(&nominal, actual, &mut subst);
+                }
+                for (index, arg) in args.iter().enumerate() {
+                    let field_ty = info
+                        .fields
+                        .get(index)
+                        .map(|field| subst_trait_params(field, &subst));
+                    bind_typed_pattern(arg, ctor_infos, field_ty.as_ref(), scope);
+                }
+                return;
+            }
+
+            let payload = match (name.as_str(), expected.map(Type::unqualified)) {
+                ("Some", Some(Type::Named(owner, types))) if owner == "Option" => types.first(),
+                ("Ok", Some(Type::Named(owner, types))) if owner == "Result" => types.first(),
+                ("Err", Some(Type::Named(owner, types))) if owner == "Result" => types.get(1),
+                _ => None,
+            };
+            for (index, arg) in args.iter().enumerate() {
+                bind_typed_pattern(
+                    arg,
+                    ctor_infos,
+                    (index == 0).then_some(payload).flatten(),
+                    scope,
+                );
+            }
+        }
+        Pattern::List { elems, rest } => {
+            let elem_ty = match expected.map(Type::unqualified) {
+                Some(Type::Named(name, args)) if name == "List" => args.first(),
+                _ => None,
+            };
+            for elem in elems {
+                bind_typed_pattern(elem, ctor_infos, elem_ty, scope);
+            }
+            if let Some(Some(name)) = rest {
+                match expected {
+                    Some(ty) => scope.insert(name.clone(), ty.clone()),
+                    None => scope.bind_local(name),
+                }
+            }
+        }
+        Pattern::Or(alternatives) => {
+            if let Some(first) = alternatives.first() {
+                bind_typed_pattern(first, ctor_infos, expected, scope);
+            }
+        }
+        Pattern::Wildcard
+        | Pattern::Var(_)
+        | Pattern::Int(_)
+        | Pattern::Str(_)
+        | Pattern::Bool(_)
+        | Pattern::Duration(_)
+        | Pattern::IntRange { .. } => {}
     }
 }
 
@@ -1103,13 +1230,10 @@ struct Ctx<'a> {
     supertraits: &'a HashMap<String, Vec<String>>,
     trait_impl_table: &'a TraitImplTable,
     inherent_impl_table: &'a HashMap<(String, String), String>,
-    ctor_results: &'a HashMap<String, String>,
     ctor_infos: &'a HashMap<String, CtorInfo>,
-    fn_rets: &'a HashMap<String, String>,
     /// Function -> (param types, return type), for recovering a generic call's
     /// concrete result type (e.g. the element of `list.at(xs, i)`).
     fn_sigs: &'a HashMap<String, FnSig>,
-    ctor_fields: &'a HashMap<String, Vec<Type>>,
     /// Record type name -> its named field types (for typing `x.field`).
     record_fields: &'a HashMap<String, Vec<(String, Type)>>,
     /// Plain (non-method) function names: a trait-method call that ALSO names
@@ -1164,22 +1288,238 @@ fn table_scope_name(table: &crate::typeck::TypeTable, e: &Expr) -> Option<String
         .and_then(|t| type_to_scope_name(&t))
 }
 
+fn table_ast_type(table: &crate::typeck::TypeTable, e: &Expr) -> Option<Type> {
+    table.type_of(e).and_then(crate::typeck::ty_to_ast)
+}
+
+fn named_type(name: &str) -> Type {
+    Type::Named(name.to_string(), Vec::new())
+}
+
+/// Recover an expression type from language declarations and local syntax.
+/// This is the empty-table half of dispatch: the loud pass normally reads
+/// typeck's table, while the quiet pre-pass must bootstrap enough information
+/// to make the module checkable. Types stay structured throughout; only the
+/// final impl-table lookup encodes a name.
+fn declared_expr_type(
+    e: &Expr,
+    fn_sigs: &HashMap<String, FnSig>,
+    type_of: &dyn Fn(&Expr) -> Option<Type>,
+) -> Option<Type> {
+    match e {
+        Expr::Index { base, .. } => match type_of(base)?.unqualified() {
+            Type::Named(name, args) if name == "List" && args.len() == 1 => {
+                Some(args[0].clone())
+            }
+            _ => None,
+        },
+        Expr::Try(inner) => match type_of(inner)?.unqualified() {
+            Type::Named(name, args)
+                if matches!(name.as_str(), "Option" | "Result") && !args.is_empty() =>
+            {
+                Some(args[0].clone())
+            }
+            _ => None,
+        },
+        Expr::Call { name, args } => {
+            let (params, ret) = fn_sigs.get(name)?;
+            let mut binds = HashMap::new();
+            for (param, arg) in params.iter().zip(args) {
+                let (Some(param), Some(arg_ty)) = (param, type_of(arg)) else {
+                    continue;
+                };
+                let _ = bind_ast_type_vars(param, &arg_ty, &mut binds);
+            }
+            // Keep unresolved variables in place. The nominal declaration is
+            // still authoritative enough to resolve owner methods (`dict.new()`
+            // is `Dict(k, v)` before its insert arguments constrain k/v), while
+            // typeck remains responsible for proving those variables concrete.
+            Some(subst_trait_params(ret, &binds))
+        }
+        _ => None,
+    }
+}
+
+fn ctor_info_for_owner<'a>(
+    infos: &'a HashMap<String, CtorInfo>,
+    owner: &str,
+) -> Option<&'a CtorInfo> {
+    infos
+        .get(owner)
+        .filter(|info| info.owner == owner)
+        .or_else(|| infos.values().find(|info| info.owner == owner))
+}
+
+fn inferred_nominal_type(
+    info: &CtorInfo,
+    fields: impl Iterator<Item = (Type, Type)>,
+) -> Type {
+    if info.params.is_empty() {
+        return named_type(&info.owner);
+    }
+    let mut binds = HashMap::new();
+    for (declared, actual) in fields {
+        let _ = bind_ast_type_vars(&declared, &actual, &mut binds);
+    }
+    let args = info
+        .params
+        .iter()
+        .map(|param| binds.get(param).cloned())
+        .collect::<Option<Vec<_>>>()
+        .unwrap_or_default();
+    Type::Named(info.owner.clone(), args)
+}
+
+fn local_expr_type(
+    e: &Expr,
+    scope: &Scope<Type>,
+    ctor_infos: &HashMap<String, CtorInfo>,
+    fn_sigs: &HashMap<String, FnSig>,
+    record_fields: &HashMap<String, Vec<(String, Type)>>,
+    type_of: &dyn Fn(&Expr) -> Option<Type>,
+) -> Option<Type> {
+    match e {
+        Expr::Int(_) => Some(named_type("Int")),
+        Expr::Float(_) => Some(named_type("Float")),
+        Expr::Duration(_) => Some(named_type("Duration")),
+        Expr::Str(_) => Some(named_type("String")),
+        Expr::Bool(_) => Some(named_type("Bool")),
+        Expr::Var(name) => scope.get(name).cloned(),
+        Expr::Field { base, field } => {
+            let base_ty = type_of(base)?;
+            let Type::Named(owner, args) = base_ty.unqualified() else {
+                return None;
+            };
+            let (_, field_ty) = record_fields.get(owner)?.iter().find(|(name, _)| name == field)?;
+            let Some(info) = ctor_info_for_owner(ctor_infos, owner) else {
+                return Some(field_ty.clone());
+            };
+            let subst = info
+                .params
+                .iter()
+                .cloned()
+                .zip(args.iter().cloned())
+                .collect();
+            Some(subst_trait_params(field_ty, &subst))
+        }
+        Expr::Ctor { name, args } => {
+            let info = ctor_infos.get(name)?;
+            let inferred = info
+                .fields
+                .iter()
+                .zip(args)
+                .filter_map(|(declared, arg)| Some((declared.clone(), type_of(arg)?)));
+            Some(inferred_nominal_type(info, inferred))
+        }
+        Expr::Record { name, fields, .. } => {
+            let info = ctor_infos
+                .get(name)
+                .or_else(|| ctor_info_for_owner(ctor_infos, name))?;
+            let declared = record_fields.get(&info.owner)?;
+            let inferred = fields.iter().filter_map(|(field, value)| {
+                let (_, declared_ty) = declared.iter().find(|(name, _)| name == field)?;
+                Some((declared_ty.clone(), type_of(value)?))
+            });
+            Some(inferred_nominal_type(info, inferred))
+        }
+        Expr::Call { .. } | Expr::Index { .. } | Expr::Try(_) => {
+            declared_expr_type(e, fn_sigs, type_of)
+        }
+        Expr::Apply { func, .. } => match type_of(func)?.unqualified() {
+            Type::Fn(_, ret) => Some((**ret).clone()),
+            _ => None,
+        },
+        Expr::RecordUpdate { base, .. } => type_of(base),
+        Expr::As { ty, .. } => Some(ty.clone()),
+        Expr::Unary { op, expr } => match op {
+            UnOp::Not => Some(named_type("Bool")),
+            UnOp::Neg | UnOp::BitNot | UnOp::Move | UnOp::Await => type_of(expr),
+        },
+        Expr::Binary { op, lhs, rhs } => match op {
+            BinOp::Eq
+            | BinOp::NotEq
+            | BinOp::Lt
+            | BinOp::LtEq
+            | BinOp::Gt
+            | BinOp::GtEq
+            | BinOp::And
+            | BinOp::Or => Some(named_type("Bool")),
+            BinOp::Concat => Some(named_type("String")),
+            BinOp::Coalesce => type_of(rhs),
+            _ => type_of(lhs),
+        },
+        Expr::List(items) => Some(Type::Named(
+            "List".to_string(),
+            items.first().and_then(type_of).into_iter().collect(),
+        )),
+        Expr::Tuple(items) => match items.iter().map(type_of).collect::<Option<Vec<_>>>() {
+            Some(types) => Some(Type::Tuple(types)),
+            None => Some(named_type(&format!("Tuple{}", items.len()))),
+        },
+        Expr::Range { .. } => Some(Type::Named("List".to_string(), vec![named_type("Int")])),
+        Expr::Lambda { params, ret: Some(ret), .. } => Some(Type::Fn(
+            params.iter().map(|param| param.ty.clone()).collect::<Option<Vec<_>>>()?,
+            Box::new(ret.clone()),
+        )),
+        Expr::LabeledCall { .. }
+        | Expr::MethodCall { .. }
+        | Expr::If { .. }
+        | Expr::Match { .. }
+        | Expr::Block(_)
+        | Expr::While { .. }
+        | Expr::For { .. }
+        | Expr::WhileLet { .. }
+        | Expr::Lambda { ret: None, .. }
+        | Expr::TaggedLit { .. } => None,
+    }
+}
+
+fn cap_op_result_type(e: &Expr) -> Option<Type> {
+    let Expr::Call { name, .. } = e else { return None };
+    match cap_ops::surface_name(name) {
+        "only" | "deny" => Some(named_type("Net")),
+        "subtree" | "make_dir" => Some(named_type("Dir")),
+        "read_file" | "write_file" => Some(named_type("File")),
+        "connect" | "connect_pinned" | "accept" => Some(named_type("Socket")),
+        "try_connect" | "try_connect_pinned" => Some(Type::Named(
+            "Option".to_string(),
+            vec![named_type("Socket")],
+        )),
+        "listen" | "listen_tls" => Some(named_type("Listener")),
+        _ => None,
+    }
+}
+
 impl Ctx<'_> {
-    fn type_name(&self, e: &Expr, scope: &Scope) -> Option<String> {
-        table_scope_name(self.table, e)
+    fn type_ast(&self, e: &Expr, scope: &Scope<Type>) -> Option<Type> {
+        table_ast_type(self.table, e)
             // Declaration-driven judgment for call results — what the QUIET pass
             // (empty table) relies on to type a let bound to a generic call
             // (`let above = table.at(i - 1)`), so a method call on it resolves
             // BEFORE annotate needs a fully-resolved module.
-            .or_else(|| declared_call_result(e, self.fn_sigs, &|a| self.type_name(a, scope)))
-            .or_else(|| head_type_name(e, scope, self.ctor_results, self.ctor_infos, self.fn_rets, self.record_fields))
+            .or_else(|| declared_expr_type(e, self.fn_sigs, &|a| self.type_ast(a, scope)))
+            .or_else(|| {
+                local_expr_type(
+                    e,
+                    scope,
+                    self.ctor_infos,
+                    self.fn_sigs,
+                    self.record_fields,
+                    &|a| self.type_ast(a, scope),
+                )
+            })
             // A host capability OP is a BARE intrinsic (`net.deny`, `dir.subtree`),
             // so the QUIET pre-mono pass (which runs with an empty table) cannot
             // type its result from the table — it needs this to resolve a chained
             // method call on a cap-op result (`net.deny(...).only(...)`). The loud
             // pass gets the same fact from the checker's table; this is the empty-
             // table residual. See RFC-0046 step-4 note.
-            .or_else(|| cap_op_return_type(e))
+            .or_else(|| cap_op_result_type(e))
+    }
+
+    fn type_name(&self, e: &Expr, scope: &Scope<Type>) -> Option<String> {
+        self.type_ast(e, scope)
+            .and_then(|ty| type_to_scope_name(ty.unqualified()))
     }
 
     /// Resolve an owner-specific trait method to its mangled impl for a receiver
@@ -1348,7 +1688,7 @@ impl Ctx<'_> {
     /// position — a function/closure body, or an `if`/`match` arm used as an
     /// expression — so its result is consumed and must NOT be turned into a
     /// write-back or flagged as a discard. (RFC-0043)
-    fn rewrite_block(&self, b: &mut Block, scope: &mut Scope, tail_is_value: bool) {
+    fn rewrite_block(&self, b: &mut Block, scope: &mut Scope<Type>, tail_is_value: bool) {
         let last = b.stmts.len().wrapping_sub(1);
         for (i, stmt) in b.stmts.iter_mut().enumerate() {
             // The final statement of a value-position block IS the block's value;
@@ -1373,10 +1713,7 @@ impl Ctx<'_> {
                     // position variable is unrecoverable before annotate), so a
                     // bare trait call on `cs` (`show(cs)`) stayed unresolved and
                     // made annotate fail — emptying the table for everyone.
-                    let resolved = ty
-                        .as_ref()
-                        .and_then(type_to_scope_name)
-                        .or_else(|| self.type_name(value, scope));
+                    let resolved = ty.as_ref().cloned().or_else(|| self.type_ast(value, scope));
                     match resolved {
                         // A `var` let is a mutable place — a write-back target.
                         Some(t) if *mutable => scope.insert_mut(name.clone(), t),
@@ -1400,21 +1737,8 @@ impl Ctx<'_> {
                     // can't type is bound untyped (`bind_local`); this is a
                     // best-effort dispatch aid, so an untyped fallback is always
                     // sound (the checker re-verifies).
-                    let tup = self
-                        .type_name(value, scope)
-                        .or_else(|| {
-                            self.table
-                                .type_of(value)
-                                .and_then(crate::typeck::ty_to_ast)
-                                .and_then(|t| type_to_scope_name(&t))
-                        })
-                        .or_else(|| match value {
-                            Expr::Call { name, .. } => {
-                                self.fn_sigs.get(name).and_then(|(_, ret)| type_to_scope_name(ret))
-                            }
-                            _ => None,
-                        });
-                    self.seed_pattern(pattern, tup.as_deref(), scope);
+                    let value_ty = self.type_ast(value, scope);
+                    bind_typed_pattern(pattern, self.ctor_infos, value_ty.as_ref(), scope);
                 }
                 // A `return`/`yield` value is always consumed. A bare expression
                 // statement is consumed only when it is this block's value tail
@@ -1468,7 +1792,7 @@ impl Ctx<'_> {
     /// A call this pass can't resolve to a `Call` (its receiver type isn't known
     /// yet) is left untouched — a later pass (per specialization) resolves and
     /// decides it, or the checker reports the unresolved method.
-    fn rewrite_expr_stmt_method(&self, stmt: &mut Stmt, place: Expr, scope: &mut Scope) {
+    fn rewrite_expr_stmt_method(&self, stmt: &mut Stmt, place: Expr, scope: &mut Scope<Type>) {
         // Read the method name before resolution consumes the node (for the
         // discard/immutable-place diagnostics).
         let method = match stmt {
@@ -1514,48 +1838,17 @@ impl Ctx<'_> {
         }
     }
 
-    /// Seed the trait-dispatch scope with the names an irrefutable `let`/`for`
-    /// pattern binds, typing each from the value's (best-effort) type name where
-    /// the structure lets us recover it. A tuple pattern against a `Tuple<...>`
-    /// type recurses per slot; anything else binds its names untyped (sound — the
-    /// checker re-verifies, this only helps method dispatch resolve eagerly).
-    fn seed_pattern(&self, pat: &Pattern, ty: Option<&str>, scope: &mut Scope) {
-        match pat {
-            Pattern::Var(n) if n != "_" => match ty {
-                Some(t) => scope.insert(n.clone(), t.to_string()),
-                None => scope.bind_local(n),
-            },
-            Pattern::Tuple(ps) => {
-                let slots = ty.and_then(tuple_args);
-                for (i, sub) in ps.iter().enumerate() {
-                    let sub_ty = slots.as_ref().and_then(|s| s.get(i)).copied();
-                    self.seed_pattern(sub, sub_ty, scope);
-                }
-            }
-            // For ctor/record/list/or sub-patterns we don't recover the per-field
-            // types here (the checker does the real work); bind every name untyped
-            // so it at least resolves as a local.
-            _ => {
-                let mut names = Vec::new();
-                witchy_syntax::ast::pattern_binds(pat, &mut names);
-                for n in &names {
-                    scope.bind_local(n);
-                }
-            }
-        }
-    }
-
     /// Resolve method syntax / trait calls within an expression. (RFC-0043)
     /// `value_position` flows to nested blocks so each knows whether its tail
     /// statement is consumed as a value: an `if`/`match` arm inherits the
     /// surrounding position (a tail `if` in a function body is a return value),
     /// while a loop body's tail is always discarded. Sub-expression operands are
     /// always in value position — the thin `rewrite_expr` wrapper passes `true`.
-    fn rewrite_expr(&self, e: &mut Expr, scope: &mut Scope) {
+    fn rewrite_expr(&self, e: &mut Expr, scope: &mut Scope<Type>) {
         self.rewrite_expr_vp(e, scope, true);
     }
 
-    fn rewrite_expr_vp(&self, e: &mut Expr, scope: &mut Scope, value_position: bool) {
+    fn rewrite_expr_vp(&self, e: &mut Expr, scope: &mut Scope<Type>, value_position: bool) {
         match e {
             Expr::Call { name, args } => {
                 for a in args.iter_mut() {
@@ -1743,9 +2036,9 @@ impl Ctx<'_> {
                         // is a method call on that value, not a static access:
                         // fall through to instance dispatch.
                         let is_value = self
-                            .ctor_fields
+                            .ctor_infos
                             .get(tyname.as_str())
-                            .is_some_and(|fs| fs.is_empty());
+                            .is_some_and(|info| info.fields.is_empty());
                         if self.lookup_impl(method, tyname).is_some() && !is_value
                         {
                             self.missing_impls.borrow_mut().push(format!(
@@ -1911,21 +2204,13 @@ impl Ctx<'_> {
             Expr::WhileLet { pattern, scrutinee, body } => {
                 self.rewrite_expr(scrutinee, scope);
                 let mut s = scope.clone();
-                let subst = pattern_subst_from_scrutinee(
+                let scrutinee_ty = self.type_ast(scrutinee, scope);
+                bind_typed_pattern(
                     pattern,
                     self.ctor_infos,
-                    self.type_name(scrutinee, scope).as_deref(),
+                    scrutinee_ty.as_ref(),
+                    &mut s,
                 );
-                bind_ctor_pattern(pattern, self.ctor_fields, &subst, &mut s);
-                if !pattern_ctor_name(pattern)
-                    .is_some_and(|name| self.ctor_infos.contains_key(name))
-                {
-                    bind_builtin_payload_pattern(
-                        pattern,
-                        self.type_name(scrutinee, scope).as_deref(),
-                        &mut s,
-                    );
-                }
                 // A loop evaluates to Nil, so its body's tail value is discarded.
                 self.rewrite_block(body, &mut s, false);
             }
@@ -1948,14 +2233,13 @@ impl Ctx<'_> {
             }
             Expr::For { var, iter, body } => {
                 self.rewrite_expr(iter, scope);
+                let iter_ty = self.type_ast(iter, scope);
                 // `for ... in <dict>` iterates the dict's (key, value) pairs;
                 // `for x in <set>` iterates the set's members — rewrite the
                 // iterand to `dict.pairs(...)` / `set.to_list(...)` respectively.
-                let iter_head = self.type_name(iter, scope);
-                let head = iter_head.as_deref().and_then(|t| t.split('<').next());
-                let view = match head {
-                    Some("Dict") => Some("dict.pairs"),
-                    Some("Set") => Some("set.to_list"),
+                let view = match iter_ty.as_ref().map(Type::unqualified) {
+                    Some(Type::Named(name, _)) if name == "Dict" => Some("dict.pairs"),
+                    Some(Type::Named(name, _)) if name == "Set" => Some("set.to_list"),
                     _ => None,
                 };
                 if let Some(view_fn) = view {
@@ -1963,25 +2247,23 @@ impl Ctx<'_> {
                     **iter = Expr::Call { name: view_fn.to_string(), args: vec![inner] };
                 }
                 let mut s = scope.clone();
-                bind_loop_var(var, self.type_name(iter, scope), &mut s);
+                match iter_ty.as_ref().and_then(iterable_item_type) {
+                    Some(item_ty) => s.insert(var.clone(), item_ty),
+                    None => s.bind_local(var),
+                }
                 self.rewrite_block(body, &mut s, false);
             }
             Expr::Match { scrutinee, arms } => {
                 self.rewrite_expr(scrutinee, scope);
-                let scrutinee_ty = self.type_name(scrutinee, scope);
+                let scrutinee_ty = self.type_ast(scrutinee, scope);
                 for arm in arms.iter_mut() {
                     let mut s = scope.clone();
-                    let subst = pattern_subst_from_scrutinee(
+                    bind_typed_pattern(
                         &arm.pattern,
                         self.ctor_infos,
-                        scrutinee_ty.as_deref(),
+                        scrutinee_ty.as_ref(),
+                        &mut s,
                     );
-                    bind_ctor_pattern(&arm.pattern, self.ctor_fields, &subst, &mut s);
-                    if !pattern_ctor_name(&arm.pattern)
-                        .is_some_and(|name| self.ctor_infos.contains_key(name))
-                    {
-                        bind_builtin_payload_pattern(&arm.pattern, scrutinee_ty.as_deref(), &mut s);
-                    }
                     if let Some(g) = &mut arm.guard {
                         self.rewrite_expr(g, &mut s);
                     }
@@ -1991,7 +2273,7 @@ impl Ctx<'_> {
             }
             Expr::Lambda { params, body, .. } => {
                 let mut s = scope.clone();
-                seed_params(params, &mut s);
+                seed_typed_params(params, &mut s);
                 // A closure body's tail IS its return value.
                 self.rewrite_block(body, &mut s, true);
             }
@@ -2168,32 +2450,6 @@ fn tuple_args(type_name: &str) -> Option<Vec<&str>> {
     Some(out)
 }
 
-/// The scope name for a declared parameter type, encoding a list's element type
-/// (`List<Int>`) so loop-variable typing works on annotated list parameters.
-/// Host capabilities whose operations are BARE intrinsics (`restrict`, `connect`,
-/// `subdir`, `read`, `write`, …) rather than module functions — so `cap.op(args)`
-/// UFCS-lowers to the bare call `op(cap, args)`. (`Secret`/`SecretStore` map to the
-/// `crypto`/`secretstore` modules via `type_owner_module` and are handled first.)
-/// The capability/handle type a host-capability operation *intrinsic* returns, so a
-/// let-bound result (`let d = net.deny(...)`) is typed and a chained method call on it
-/// resolves (`d.only(...)`). These are bare intrinsics — not user functions — so they
-/// are absent from `fn_sigs`/`fn_rets`. Checked LAST (after the user-function recovery),
-/// so a user function of the same name still wins.
-fn cap_op_return_type(e: &Expr) -> Option<String> {
-    match e {
-        Expr::Call { name, .. } => match cap_ops::surface_name(name) {
-            "only" | "deny" => Some("Net".to_string()),
-            "subtree" | "make_dir" => Some("Dir".to_string()),
-            "read_file" | "write_file" => Some("File".to_string()),
-            "connect" | "connect_pinned" | "accept" => Some("Socket".to_string()),
-            "try_connect" | "try_connect_pinned" => Some("Option<Socket>".to_string()),
-            "listen" | "listen_tls" => Some("Listener".to_string()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 fn is_host_capability(tn: &str) -> bool {
     matches!(
         tn.split(['[', '<']).next().unwrap_or(tn).trim(),
@@ -2339,6 +2595,7 @@ const SCOPE_NAME_MAX_DEPTH: usize = 32;
 
 fn type_to_scope_name_d(t: &Type, depth: usize) -> Option<String> {
     match t {
+        Type::Qualified(_, inner) => type_to_scope_name_d(inner, depth),
         // A generic encodes its arguments (`List<Int>`, `Box<Int>`,
         // `Dict<String,Int>`) so monomorphization can recover each from a receiver's
         // scope name; the dispatch lookup strips them back to the head.
@@ -2375,7 +2632,6 @@ fn type_to_scope_name_d(t: &Type, depth: usize) -> Option<String> {
             let r = type_to_scope_name_d(ret, depth + 1)?;
             Some(format!("fn({})->{r}", ps?.join(",")))
         }
-        _ => None,
     }
 }
 
@@ -2391,7 +2647,7 @@ fn head_of(tn: &str) -> &str {
 /// target. `let`/borrow bases, loop variables, pattern bindings, and lambda
 /// parameters are immutable (absent from `scope.mutables`), and a non-place
 /// receiver (a call result, a literal) has no base variable at all.
-fn place_base_is_mutable(e: &Expr, scope: &Scope) -> bool {
+fn place_base_is_mutable<T>(e: &Expr, scope: &Scope<T>) -> bool {
     match e {
         Expr::Var(x) => scope.is_mutable(x),
         Expr::Index { base, .. } | Expr::Field { base, .. } => place_base_is_mutable(base, scope),
@@ -2840,52 +3096,6 @@ fn pattern_subst_from_scrutinee(
     subst
 }
 
-fn bind_builtin_payload_pattern(pat: &Pattern, scrutinee_scope: Option<&str>, scope: &mut Scope) {
-    let Some(scrutinee_scope) = scrutinee_scope else {
-        return;
-    };
-    let Pattern::Ctor { name, args } = pat else {
-        return;
-    };
-    let payload = match name.as_str() {
-        "Some" => generic_arg(scrutinee_scope),
-        "Ok" => tuple_args(scrutinee_scope).and_then(|args| args.first().copied()),
-        "Err" => tuple_args(scrutinee_scope).and_then(|args| args.get(1).copied()),
-        _ => None,
-    };
-    let (Some(payload), Some(arg)) = (payload, args.first()) else {
-        return;
-    };
-    bind_pattern_scope(arg, payload, scope);
-}
-
-fn pattern_ctor_name(pat: &Pattern) -> Option<&str> {
-    match pat {
-        Pattern::Ctor { name, .. } => Some(name.as_str()),
-        _ => None,
-    }
-}
-
-fn bind_pattern_scope(pat: &Pattern, scope_name: &str, scope: &mut Scope) {
-    match pat {
-        Pattern::Var(n) if n != "_" => {
-            if scope.get(n).is_none() {
-                scope.insert(n.clone(), scope_name.to_string());
-            }
-        }
-        Pattern::Tuple(ps) => {
-            let slots = tuple_args(scope_name);
-            for (i, sub) in ps.iter().enumerate() {
-                if let Some(slot) = slots.as_ref().and_then(|s| s.get(i)).copied() {
-                    bind_pattern_scope(sub, slot, scope);
-                }
-            }
-        }
-        Pattern::Ctor { .. } => {}
-        _ => {}
-    }
-}
-
 fn pattern_field_scope_name(fty: &Type, subst: &HashMap<String, String>) -> Option<String> {
     if subst.is_empty() {
         concrete_scope_name(fty)
@@ -2941,6 +3151,78 @@ fn bind_type_vars(pattern: &Type, concrete: &Type, out: &mut HashMap<String, Str
         }
         (Type::Tuple(ps), Type::Tuple(cs)) => {
             ps.len() == cs.len() && ps.iter().zip(cs).all(|(p, c)| bind_type_vars(p, c, out))
+        }
+        _ => pattern == concrete,
+    }
+}
+
+/// Structured counterpart to [`bind_type_vars`]. This is the representation
+/// used by the dispatch pass; the string binder remains only at the
+/// monomorphization boundary. Failed matches are transactional so a partial
+/// shape disagreement cannot leak bindings into a later argument judgment.
+fn bind_ast_type_vars(
+    pattern: &Type,
+    concrete: &Type,
+    out: &mut HashMap<String, Type>,
+) -> bool {
+    let mut trial = out.clone();
+    if bind_ast_type_vars_inner(pattern, concrete, &mut trial) {
+        *out = trial;
+        true
+    } else {
+        false
+    }
+}
+
+fn bind_ast_type_vars_inner(
+    pattern: &Type,
+    concrete: &Type,
+    out: &mut HashMap<String, Type>,
+) -> bool {
+    let pattern = pattern.unqualified();
+    let concrete = concrete.unqualified();
+    match (pattern, concrete) {
+        (Type::Named(var, args), concrete)
+            if args.is_empty()
+                && var.chars().next().is_some_and(char::is_lowercase)
+                && !var.contains('.') =>
+        {
+            match out.get(var) {
+                Some(previous) => previous.unqualified() == concrete,
+                None => {
+                    out.insert(var.clone(), concrete.clone());
+                    true
+                }
+            }
+        }
+        (Type::Named(pattern_name, pattern_args), Type::Named(name, args)) => {
+            pattern_name == name
+                && pattern_args.len() == args.len()
+                && pattern_args
+                    .iter()
+                    .zip(args)
+                    .all(|(pattern, concrete)| {
+                        bind_ast_type_vars_inner(pattern, concrete, out)
+                    })
+        }
+        (Type::Tuple(pattern_items), Type::Tuple(items)) => {
+            pattern_items.len() == items.len()
+                && pattern_items
+                    .iter()
+                    .zip(items)
+                    .all(|(pattern, concrete)| {
+                        bind_ast_type_vars_inner(pattern, concrete, out)
+                    })
+        }
+        (Type::Fn(pattern_params, pattern_ret), Type::Fn(params, ret)) => {
+            pattern_params.len() == params.len()
+                && pattern_params
+                    .iter()
+                    .zip(params)
+                    .all(|(pattern, concrete)| {
+                        bind_ast_type_vars_inner(pattern, concrete, out)
+                    })
+                && bind_ast_type_vars_inner(pattern_ret, ret, out)
         }
         _ => pattern == concrete,
     }
@@ -4601,5 +4883,155 @@ impl Mono<'_> {
             }
             Expr::Var(_) | Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::TaggedLit { .. } => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod structured_dispatch_tests {
+    use super::*;
+
+    fn nominal(name: &str, args: Vec<Type>) -> Type {
+        Type::Named(name.to_string(), args)
+    }
+
+    #[test]
+    fn declared_result_substitutes_nested_types_without_scope_strings() {
+        let a = named_type("a");
+        let mut signatures = HashMap::new();
+        signatures.insert(
+            "head".to_string(),
+            (
+                vec![Some(nominal("List", vec![a.clone()]))],
+                nominal("Option", vec![nominal("List", vec![a])]),
+            ),
+        );
+        let expression = Expr::Call {
+            name: "head".to_string(),
+            args: vec![Expr::Var("values".to_string())],
+        };
+        let actual = declared_expr_type(&expression, &signatures, &|expr| match expr {
+            Expr::Var(name) if name == "values" => {
+                Some(nominal("List", vec![named_type("String")]))
+            }
+            _ => None,
+        });
+
+        assert_eq!(
+            actual,
+            Some(nominal(
+                "Option",
+                vec![nominal("List", vec![named_type("String")])],
+            ))
+        );
+
+        signatures.insert(
+            "empty_dict".to_string(),
+            (
+                Vec::new(),
+                nominal("Dict", vec![named_type("k"), named_type("v")]),
+            ),
+        );
+        let unbound = declared_expr_type(
+            &Expr::Call { name: "empty_dict".to_string(), args: Vec::new() },
+            &signatures,
+            &|_| None,
+        );
+        assert_eq!(
+            unbound,
+            Some(nominal("Dict", vec![named_type("k"), named_type("v")]))
+        );
+    }
+
+    #[test]
+    fn local_record_and_constructor_types_keep_generic_arguments() {
+        let mut infos = HashMap::new();
+        infos.insert(
+            "Box".to_string(),
+            CtorInfo {
+                owner: "Box".to_string(),
+                params: vec!["a".to_string()],
+                fields: vec![named_type("a")],
+            },
+        );
+        let mut fields = HashMap::new();
+        fields.insert(
+            "Box".to_string(),
+            vec![("value".to_string(), named_type("a"))],
+        );
+        let mut scope = Scope::new();
+        scope.insert(
+            "box".to_string(),
+            nominal("Box", vec![nominal("List", vec![named_type("Int")])]),
+        );
+        let no_signatures = HashMap::new();
+        let field = Expr::Field {
+            base: Box::new(Expr::Var("box".to_string())),
+            field: "value".to_string(),
+        };
+        let field_ty = local_expr_type(
+            &field,
+            &scope,
+            &infos,
+            &no_signatures,
+            &fields,
+            &|expr| match expr {
+                Expr::Var(name) => scope.get(name).cloned(),
+                _ => None,
+            },
+        );
+        assert_eq!(field_ty, Some(nominal("List", vec![named_type("Int")])));
+
+        let ctor = Expr::Ctor {
+            name: "Box".to_string(),
+            args: vec![Expr::Str("value".to_string())],
+        };
+        let ctor_ty = local_expr_type(
+            &ctor,
+            &scope,
+            &infos,
+            &no_signatures,
+            &fields,
+            &|expr| matches!(expr, Expr::Str(_)).then(|| named_type("String")),
+        );
+        assert_eq!(ctor_ty, Some(nominal("Box", vec![named_type("String")])));
+    }
+
+    #[test]
+    fn constructor_pattern_propagates_nested_payload_types() {
+        let mut infos = HashMap::new();
+        infos.insert(
+            "Wrapped".to_string(),
+            CtorInfo {
+                owner: "Envelope".to_string(),
+                params: vec!["a".to_string()],
+                fields: vec![nominal("List", vec![named_type("a")])],
+            },
+        );
+        let pattern = Pattern::Ctor {
+            name: "Wrapped".to_string(),
+            args: vec![Pattern::List {
+                elems: vec![Pattern::Var("first".to_string())],
+                rest: Some(Some("rest".to_string())),
+            }],
+        };
+        let expected = nominal("Envelope", vec![named_type("String")]);
+        let mut scope = Scope::new();
+        bind_typed_pattern(&pattern, &infos, Some(&expected), &mut scope);
+
+        assert_eq!(scope.get("first"), Some(&named_type("String")));
+        assert_eq!(
+            scope.get("rest"),
+            Some(&nominal("List", vec![named_type("String")]))
+        );
+    }
+
+    #[test]
+    fn structured_unification_discards_partial_failed_bindings() {
+        let pattern = Type::Tuple(vec![named_type("a"), named_type("String")]);
+        let concrete = Type::Tuple(vec![named_type("Int"), named_type("Bool")]);
+        let mut bindings = HashMap::new();
+
+        assert!(!bind_ast_type_vars(&pattern, &concrete, &mut bindings));
+        assert!(bindings.is_empty());
     }
 }
