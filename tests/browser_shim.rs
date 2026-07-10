@@ -57,6 +57,39 @@ fn browser_shim_runs_pure_rune_and_denies_capabilities() {
     assert!(stdout.contains("SPIKE OK"), "spike did not report success:\n{stdout}");
 }
 
+/// RFC-0045: browser execution carries Witchy's structured abort message through
+/// the JS host instead of exposing a generic WebAssembly trap. The committed
+/// driver compiles and runs four distinct abort classes and compares each thrown
+/// JS `Error.message` with the interpreter/wasmtime diagnostic oracle.
+#[test]
+fn browser_abort_messages_match_runtime_oracles() {
+    if !node_available() {
+        eprintln!("skipping: `node` is not available on PATH");
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let driver = manifest.join("web/witchy-runtime/abort-message.test.mjs");
+    assert!(driver.exists(), "the committed abort-message driver must exist at {}", driver.display());
+
+    let out = Command::new("node")
+        .arg(&driver)
+        .arg(BIN)
+        .current_dir(manifest)
+        .output()
+        .expect("spawn node abort-message driver");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the browser abort-message test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(
+        stdout.contains("ABORT-MESSAGE OK"),
+        "abort-message driver did not report success:\n{stdout}"
+    );
+}
+
 /// RFC-0041 Phase 0: the shared witchy syntax highlighter (`web/witchy-highlight.js`) is a
 /// PURE `source -> HTML` function, so the committed Node test
 /// (`web/witchy-runtime/witchy-highlight.test.mjs`) exercises it with no DOM: keywords
