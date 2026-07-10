@@ -33,15 +33,16 @@ is a pure function: the parallel answer is *identical* to the sequential one. So
 interpreter runs it sequentially, the compiled backend runs it across cores, and they
 agree. Parallelism changes how *fast* the map runs, not *what* it returns.
 
-Two rules keep it sound, both checked at compile time (anything else runs the ordinary
-sequential body):
+Two rules select the parallel fast path. Anything else runs the ordinary sequential
+body with the same ordered-map semantics:
 
 - The element type must be **flat** — a scalar (`Int`/`Bool`/`Float`), a `String`, or
   `Bytes`. A flat value (`[length][bytes…]`, no internal pointers) copies to a worker
   by a plain byte copy. A pointer-bearing value like `List(String)` would carry
   addresses meaningless in another VM's memory, so it stays sequential.
-- `f` must be a **top-level function** (capture-free): a worker has its own memory, so
-  a captured parent-heap value would not be reachable there.
+- `f` must be named directly as a **top-level function** (capture-free): a worker has
+  its own memory, so a captured parent-heap value would not be reachable there. A
+  local function value or lambda remains valid, but runs sequentially.
 
 On CPU-bound work this scales close to linearly with core count; the residual
 overhead is the per-call cost of spinning up worker instances, so it pays off
@@ -88,6 +89,10 @@ Because the output is a deterministic function of the directory's contents and t
 input, the isolation is a security property invisible to the *result* — so the two
 backends still agree.
 
+The callback must be a bare top-level function name. A closure or local function
+alias is rejected at compile time: `vm.with_dir` never silently substitutes a direct
+parent-VM call for its promised isolation boundary.
+
 ## `vm.serve`: a cross-VM channel as a stateful service
 
 The last shape is a worker that stays alive and processes a *stream* of messages while
@@ -111,6 +116,10 @@ fn main(console: Console):
 ```
 
 This prints `a` then `ab`: the state accumulates across the stream.
+
+As with `vm.with_dir`, the handler must be a bare top-level function name. Closures
+and local aliases are rejected, so this API always means an isolated worker on the
+compiled backend rather than a shape-dependent parent-VM fallback.
 
 It is deliberately **lock-step** — the worker processes one request at a time, in
 order, rather than racing the caller. That is the interesting part: a *freely-racing*

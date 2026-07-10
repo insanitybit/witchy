@@ -8,11 +8,11 @@
 // this module's own reference body) computes it sequentially and the two backends
 // agree. Parallelism changes how fast the map runs, not what it returns.
 //
-// The mapped function must be CAPTURE-FREE (a top-level function, or a closure that
-// captures nothing): a worker VM has its own linear memory, so a captured parent-heap
-// value would not be reachable. The compiled backend only takes the parallel path for
-// a capture-free function over scalar elements; everything else runs the sequential
-// reference body below, with identical results.
+// The compiled backend takes the parallel path only when `f` is a BARE TOP-LEVEL
+// function and the element representation can cross the worker boundary. A local
+// function value, lambda, or pointer-bearing element type instead runs this module's
+// sequential reference body, with identical results. That fallback changes only
+// performance: `par_map` promises an ordered map, not isolation.
 
 import list
 
@@ -26,9 +26,11 @@ pub fn par_map(xs: List(a), f: fn(a) -> b) -> List(b):
 // within `dir` (with `dir`'s own rights) and reach NO other host resource: it is its own
 // WebAssembly instance with its own memory, and every ungranted capability traps. This is
 // the capability-passing sandbox — run untrusted/partially-trusted code with precisely
-// scoped authority. `f` must be a top-level (capture-free) function. Because the result is
-// a deterministic function of `dir`'s contents and `input`, the isolation is invisible to
-// the output, so the interpreter (which runs `f` directly) and the compiled backend agree.
+// scoped authority. `f` must be named directly as a bare top-level function; closures and
+// local function values are rejected rather than silently running in the parent VM.
+// Because the result is a deterministic function of `dir`'s contents and `input`, the
+// isolation is invisible to the output, so the interpreter (which runs `f` directly) and
+// the compiled backend agree.
 pub fn with_dir(dir: Dir, f: fn(Dir, Bytes) -> Bytes, input: Bytes) -> Bytes:
     f(dir, input)
 
@@ -39,7 +41,9 @@ pub fn with_dir(dir: Dir, f: fn(Dir, Bytes) -> Bytes, input: Bytes) -> Bytes:
 // message stream with persistent state. It is deliberately LOCK-STEP (ordered, not
 // racing) — that determinism is what lets the interpreter (a sequential scan) and the
 // compiled backend (a persistent worker VM) agree, which a truly-racing channel could
-// not. `handler` must be a top-level (capture-free) function.
+// not. `handler` must be named directly as a bare top-level function; closures and local
+// function values are rejected rather than silently replacing isolation with a parent-VM
+// loop.
 pub fn serve(init: Bytes, requests: List(Bytes), handler: fn(Bytes, Bytes) -> Bytes) -> List(Bytes):
     var state = init
     var out = []

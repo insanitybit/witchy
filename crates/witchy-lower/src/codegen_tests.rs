@@ -325,6 +325,65 @@ fn main() -> Int:
     }
 
     #[test]
+    fn isolated_vm_calls_reject_indirect_callbacks_without_typecheck() {
+        fn no_comptime(
+            _name: &str,
+            _module: &mut witchy_syntax::ast::Module,
+            _siblings: &[(String, witchy_syntax::ast::Module)],
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        let cases = [
+            (
+                "vm.with_dir",
+                r#"
+import vm
+
+fn worker(dir: Dir, input: Bytes) -> Bytes:
+    input
+
+fn main(dir: Dir, input: Bytes) -> Bytes:
+    let callback = worker
+    vm.with_dir(dir, callback, input)
+"#,
+            ),
+            (
+                "vm.serve",
+                r#"
+import vm
+
+fn worker(state: Bytes, request: Bytes) -> Bytes:
+    state
+
+fn main(init: Bytes, requests: List(Bytes)) -> List(Bytes):
+    let callback = worker
+    vm.serve(init, requests, callback)
+"#,
+            ),
+        ];
+
+        for (api, source) in cases {
+            let entry = parse_module(source).expect("parse");
+            let module = witchy_syntax::linker::link(
+                vec![("main".to_string(), entry)],
+                "main",
+                no_comptime,
+            )
+            .expect("link bundled std without checking types");
+            let error = compile_module_binary(&module)
+                .expect_err("unchecked codegen must preserve the isolation contract");
+            let diagnostic = error.to_string();
+            assert!(
+                diagnostic.contains(api)
+                    && diagnostic.contains("bare top-level function")
+                    && diagnostic.contains("isolated worker-VM boundary"),
+                "unexpected diagnostic for {api}: {diagnostic}"
+            );
+        }
+    }
+
+    #[test]
     fn record_dict_keys_without_eq_are_rejected() {
         let src = r#"
 type Key:

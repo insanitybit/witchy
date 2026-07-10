@@ -492,7 +492,10 @@ half-built:
    through the passed `Dir` and the interpreter (runs `f` directly) and compiled backend
    (isolated worker) agree, since the isolation is invisible to the result. The same
    pattern (read the parent grant → build the worker `VmState` + link only those caps)
-   generalizes to `Net`/`File`. Test: `vm_with_dir_capability_passing_agrees`.
+   generalizes to `Net`/`File`. The checker requires `f` to be a bare top-level
+   function, and codegen repeats that check as a backstop: an alias or closure is an
+   error, never a silent parent-VM fallback. Tests: `vm_with_dir_capability_passing_agrees`
+   and `isolated_worker_apis_reject_indirect_callbacks`.
 2. **Cross-VM channels (the last remaining piece)** — the parent and child have separate linear memories, so a
    channel between them cannot be the current in-VM pure-witchy data structure.
    **SHIPPED (2026-06-29) as `vm.serve`** — and the parity invariant *forced the right
@@ -507,7 +510,9 @@ half-built:
    produce identical responses. So lock-step serving is not a compromise — it is the
    correct cross-VM-channel shape for a parity-preserving language. (A free-racing
    `vm.spawn` is therefore a deliberate NON-goal, not unfinished work.) Test:
-   `vm_serve_stateful_service_agrees`.
+   `vm_serve_stateful_service_agrees`. As with `with_dir`, `handler` must be a bare
+   top-level function; the shared checker/codegen contract rejects closures and local
+   aliases rather than weakening isolation.
 2. **True multi-core — SHIPPED** as the `vm.par_map` backend (OS-thread child VMs;
    instances are `Send`). Parity-neutral, because results are collected by input index:
    a pure function over a list gives the same answer sequentially or in parallel, so the

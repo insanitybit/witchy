@@ -10,6 +10,15 @@ impl Codegen {
         use witchy_wir::wir::WirExpr as W;
         use witchy_wir::wir::WirNode as N;
         let name = witchy_syntax::cap_ops::surface_name(name);
+        if let Some((callback_index, diagnostic)) =
+            witchy_types::typeck::isolated_vm_callback_contract(name, args.len())
+            && !self.is_top_level_fn_ref(&args[callback_index])
+        {
+            self.reject_reason.get_or_insert_with(|| CodegenError {
+                message: diagnostic.to_string(),
+            });
+            return None;
+        }
         let call = |func: &str, a: Vec<W>| W::Call { func: func.to_string(), args: a };
         // A direct host-import call (a `_host` import is the authority surface).
         let host = |import: &str, a: Vec<W>| W::CallHost { import: import.to_string(), args: a };
@@ -575,13 +584,13 @@ impl Codegen {
             // (RFC-0032) Capability-passing: run a top-level `f(Dir, Bytes) -> Bytes` in an
             // isolated worker VM granted exactly `dir`. `f` must be a top-level (capture-free)
             // function, like the par_map variants.
-            ("vm.with_dir", 3) if self.is_top_level_fn_ref(&args[1]) => {
+            ("vm.with_dir", 3) => {
                 call("vm_with_dir", self.lower_args(&[&args[0], &args[1], &args[2]])?)
             }
             // (RFC-0032) `vm.serve(init, requests, handler)` — a stateful service on a
             // long-lived isolated worker VM (the parity-safe cross-VM channel). `handler`
             // must be a top-level (capture-free) function.
-            ("vm.serve", 3) if self.is_top_level_fn_ref(&args[2]) => {
+            ("vm.serve", 3) => {
                 call("vm_serve", self.lower_args(&[&args[0], &args[1], &args[2]])?)
             }
             ("read_build", 2) => {

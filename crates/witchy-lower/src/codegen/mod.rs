@@ -4026,8 +4026,8 @@ impl Codegen {
     /// a top-level ref only when it is an actually-emitted function (`emitted_funcs`
     /// — it therefore has a table entry) AND is not shadowed by a local holding a
     /// function value. Any other argument (a local/param, a lambda, a call result, a
-    /// non-function name) falls back to the sequential `std/vm` reference body, which
-    /// calls the value directly and is always correct — robust to any arg expression.
+    /// non-function name) falls back to the sequential `vm.par_map` reference body;
+    /// `vm.with_dir` and `vm.serve` reject it through the shared isolation contract.
     fn is_top_level_fn_ref(&self, e: &Expr) -> bool {
         matches!(e, Expr::Var(f) if self.emitted_funcs.contains(f) && !self.locals.contains_key(f))
     }

@@ -2270,6 +2270,26 @@ fn diagnostic_callable_name(name: &str) -> String {
     }
 }
 
+/// Return the callback position and diagnostic for an API whose semantics require
+/// execution in an isolated worker VM. Both type checking and codegen consume this
+/// contract so a new worker API cannot silently acquire a parent-VM fallback.
+pub fn isolated_vm_callback_contract(
+    name: &str,
+    arity: usize,
+) -> Option<(usize, &'static str)> {
+    match (cap_ops::surface_name(name), arity) {
+        ("vm.with_dir", 3) => Some((
+            1,
+            "`vm.with_dir` requires a bare top-level function callback; closures and local function values cannot cross the isolated worker-VM boundary",
+        )),
+        ("vm.serve", 3) => Some((
+            2,
+            "`vm.serve` requires a bare top-level function callback; closures and local function values cannot cross the isolated worker-VM boundary",
+        )),
+        _ => None,
+    }
+}
+
 fn bare_cap_op_error(name: &str, arity: usize) -> Option<String> {
     if !cap_ops::is_op_name(name) {
         return None;
@@ -3920,6 +3940,16 @@ impl Checker {
             Expr::Call { name, args } => {
                 let is_cap_op = cap_ops::is_marked(name);
                 let call_name = cap_ops::surface_name(name);
+                if let Some((callback_index, diagnostic)) =
+                    isolated_vm_callback_contract(call_name, args.len())
+                {
+                    let callback = &args[callback_index];
+                    let is_bare_top_level = matches!(callback, Expr::Var(function)
+                        if self.lookup(function).is_none() && self.fn_sigs.contains_key(function));
+                    if !is_bare_top_level {
+                        return terr(diagnostic);
+                    }
+                }
                 // A local binding (parameter or `let`) holding a function value:
                 // apply it. Handles both an explicit `fn(..)->..` type and an as
                 // yet unconstrained variable (which we pin to a function type).

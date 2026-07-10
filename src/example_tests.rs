@@ -626,25 +626,17 @@
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
-    /// (BUG-414) The `vm.*` worker-VM intercepts fire only for a bare TOP-LEVEL
-    /// function (invoked by table index with a null environment). Passing the
-    /// function INDIRECTLY — via a local, or a lambda — must fall back to the
-    /// sequential `std/vm` body, which is byte-identical on both backends. The
-    /// intercept now requires a proven emitted top-level function, so it is robust to
-    /// any argument expression rather than mis-firing on a non-emitted name.
+    /// (BUG-414) `vm.par_map` takes its worker-VM fast path only for a bare
+    /// top-level function. A local function value or lambda deliberately uses the
+    /// byte-identical sequential body; unlike the isolation APIs, that changes
+    /// performance rather than semantics or authority.
     #[test]
-    fn vm_builtins_robust_to_indirect_function() {
+    fn vm_par_map_indirect_callbacks_fall_back() {
         // par_map with the function in a LOCAL and as an inline LAMBDA -> fallback.
         let par = "import vm\n\nfn dbl(n: Int) -> Int:\n    n * 2\n\nfn main(console: Console):\n    let f = dbl\n    console.print(__render(vm.par_map([1, 2, 3], f)))\n    console.print(__render(vm.par_map([4, 5], fn(n: Int): n + 1)))\n";
         let par_expected = ["[2, 4, 6]", "[5, 6]"];
         assert_eq!(interpreter::run(par).expect("interp"), par_expected, "interp par_map indirect");
         assert_eq!(run_linked_on_wasm(&[("main", par)], "main"), par_expected, "wasm par_map indirect");
-
-        // serve with the handler in a LOCAL -> fallback (sequential fold).
-        let serve = "import vm\nimport bytes\n\nfn step(state: Bytes, req: Bytes) -> Bytes:\n    bytes.concat(state, req)\n\nfn main(console: Console):\n    let h = step\n    let outs = vm.serve(bytes.from_string(\"\"), [bytes.from_string(\"a\"), bytes.from_string(\"b\")], h)\n    for o in outs:\n        console.print(bytes.to_string(o))\n";
-        let serve_expected = ["a", "ab"];
-        assert_eq!(link_run(serve), serve_expected, "interp serve indirect");
-        assert_eq!(run_linked_on_wasm(&[("main", serve)], "main"), serve_expected, "wasm serve indirect");
 
         // A bare TOP-LEVEL function still takes the fast path and agrees.
         let direct = "import vm\n\nfn dbl(n: Int) -> Int:\n    n * 2\n\nfn main(console: Console):\n    console.print(__render(vm.par_map([1, 2, 3], dbl)))\n";
