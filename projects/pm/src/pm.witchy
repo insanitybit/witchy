@@ -16,9 +16,11 @@
 //   new   <name>         scaffold a new rune (manifest + src stub)
 //   help                 show this message
 
+import bytes
 import compiler
 import coven_proto
 import crypto
+import encoding
 import exec
 import fs
 import http
@@ -250,7 +252,11 @@ fn verify_lock_integrity(root: Dir, dir: String) -> Result(Nil, LockIntegrityErr
             verify_registry_lock_entries(root, dir, lock)
 
 fn verify_registry_lock_entries(root: Dir, dir: String, lock: String) -> Result(Nil, LockIntegrityError):
-    let rootpub = pinned_rootpub(lock)
+    let rootpub = match pinned_registry_trust(lock):
+        Err(e) -> return Err(LockEntryMalformed(lock_pin_error_message(e)))
+        Ok(None) -> ""
+        Ok(Some(trust)) -> trust.1
+
     var aliases = []
     for block in toml.array_tables(lock, "rune"):
         match toml.get(block, "source"):
@@ -1411,43 +1417,44 @@ fn cmd_verify(console: Console, net: Net, root: Dir, env: Env, clock: Clock, arg
 //   5. snapshot.version >= the version pinned in witchy.lock    (no rollback)
 //   6. each vendored registry dep's record digest is the snapshot's target digest
 fn verify_tuf(console: Console, net: Net, root: Dir, env: Env, clock: Clock, dir: String, lock: String) -> Int:
-    match pinned_snapshot_version(lock):
-        // BUG-204: a malformed/hand-edited pin is a lockfile diagnostic, not an
-        // internal `string.to_int` runtime abort.
-
-        // No registry deps were added (no pinned snapshot) — nothing to verify.
+    match pinned_registry_trust(lock):
+        // BUG-204/572: malformed or incomplete trust state is a lockfile
+        // diagnostic, never an internal trap or a downgrade to unpinned trust.
         Err(e) ->
             console.print("BLOCK: ${lock_pin_error_message(e)}")
             2
-        Ok(pinned) ->
-            if pinned < 0:
-                0
-            else:
-                match parse_hostport(coven_addr(env, "")):
-                    Err(m) ->
-                        console.print("invalid registry address: ${m}")
-                        2
-                    Ok(hp) ->
-                        let (host, port) = hp
-                        verify_chain(console, net, root, dir, host, port, pinned, pinned_rootpub(lock), clock)
+        // No registry deps were added, so there is no registry trust state to verify.
+        Ok(None) -> 0
+        Ok(Some(trust)) ->
+            let pinned = trust.0
+            let pinned_pub = trust.1
+            match parse_hostport(coven_addr(env, "")):
+                Err(m) ->
+                    console.print("invalid registry address: ${m}")
+                    2
+                Ok(hp) ->
+                    let (host, port) = hp
+                    verify_chain(console, net, root, dir, host, port, pinned, pinned_pub, clock)
 
 fn verify_chain(console: Console, net: Net, root: Dir, dir: String, host: String, port: Int, pinned: Int, pinned_pub: String, clock: Clock) -> Int:
-    let rootpub = http.body(http.get(net, host, port, "/coven/rootpub"))
-    // SEC-002: the root key is the trust anchor for the whole chain — every record and
-    // TUF role is verified against it. If the lock pinned one at `add` (trust-on-first-use),
-    // refuse a chain rooted in a DIFFERENT key, so a hostile mirror or on-path attacker
-    // cannot swap the plaintext-fetched root key and re-sign everything to match.
-    if pinned_pub != "" && pinned_pub != rootpub:
-        console.print("FAIL: TUF chain — registry root key does not match the key pinned in witchy.lock (possible MITM / hostile mirror)")
-        2
-    else:
-        let snap_resp = http.get(net, host, port, "/coven/snapshot")
-        let ts_resp = http.get(net, host, port, "/coven/timestamp")
-        if http.status(snap_resp) != 200 || http.status(ts_resp) != 200:
-            console.print("FAIL: TUF chain — registry served no snapshot/timestamp role")
+    match fetch_registry_rootpub(net, host, port):
+        Err(e) ->
+            console.print("FAIL: TUF chain — ${registry_root_key_error_message(e)}")
             2
-        else:
-            check_chain(console, root, dir, rootpub, http.body(snap_resp), http.body(ts_resp), pinned, clock)
+        Ok(rootpub) ->
+            // SEC-002: the root key is the trust anchor for the whole chain. Refuse
+            // one different from the complete trust record in witchy.lock.
+            if pinned_pub != rootpub:
+                console.print("FAIL: TUF chain — registry root key does not match the key pinned in witchy.lock (possible MITM / hostile mirror)")
+                2
+            else:
+                let snap_resp = http.get(net, host, port, "/coven/snapshot")
+                let ts_resp = http.get(net, host, port, "/coven/timestamp")
+                if http.status(snap_resp) != 200 || http.status(ts_resp) != 200:
+                    console.print("FAIL: TUF chain — registry served no snapshot/timestamp role")
+                    2
+                else:
+                    check_chain(console, root, dir, rootpub, http.body(snap_resp), http.body(ts_resp), pinned, clock)
 
 fn check_chain(console: Console, root: Dir, dir: String, rootpub: String, snap_env: String, ts_env: String, pinned: Int, clock: Clock) -> Int:
     let snap_signed = signed_canonical(snap_env)
@@ -1630,29 +1637,65 @@ fn snapshot_schema_ok(envelope: String) -> Bool:
 fn timestamp_schema_ok(envelope: String) -> Bool:
     signed_has_int(envelope, "snapshot_version") && signed_has_str(envelope, "snapshot_hash") && signed_has_int(envelope, "expires")
 
-// The `registry_snapshot_version` pinned in the lock: `Ok(-1)` when absent (no
-// registry deps), `Ok(n)` for a valid non-negative pin, or `Err` for a malformed
-// pin. Parsed through the total `string.parse_int` so a corrupt or hand-edited
-// lockfile yields a diagnostic rather than a `string.to_int` trap (BUG-204).
-fn pinned_snapshot_version(lock: String) -> Result(Int, LockPinError):
-    match toml.get(lock, "registry_snapshot_version"):
-        None -> Ok(-1)
-        Some(v) -> match string.parse_int(v):
-            Some(n) ->
-                if n < 0:
-                    Err(LockPinNegative(v))
+// Registry trust is one atomic lock invariant: either neither pin exists (a
+// path-only project), or a non-negative snapshot version and a 32-byte Ed25519
+// root key exist together. Treating either half as optional silently degrades an
+// existing registry lock back to trust-on-first-use (BUG-572).
+fn pinned_registry_trust(lock: String) -> Result(Option((Int, String)), LockPinError):
+    let snapshot = toml.get(lock, "registry_snapshot_version")
+    let rootpub = toml.get(lock, "registry_rootpub")
+    match snapshot:
+        None -> match rootpub:
+            None -> Ok(None)
+            Some(_key) -> Err(LockPinRootWithoutSnapshot)
+        Some(raw_version) -> match rootpub:
+            None -> Err(LockPinSnapshotWithoutRoot)
+            Some(key) ->
+                let version = parse_snapshot_pin(raw_version)?
+                if valid_registry_rootpub(key):
+                    Ok(Some((version, key)))
                 else:
-                    Ok(n)
-            None -> Err(LockPinNotInteger(v))
+                    Err(LockPinRootMalformed)
+
+fn parse_snapshot_pin(value: String) -> Result(Int, LockPinError):
+    match string.parse_int(value):
+        Some(n) ->
+            if n < 0:
+                Err(LockPinNegative(value))
+            else:
+                Ok(n)
+        None -> Err(LockPinNotInteger(value))
+
+fn valid_registry_rootpub(value: String) -> Bool:
+    match encoding.hex_decode_bytes(value):
+        Ok(decoded) -> bytes.length(decoded) == 32
+        Err(_e) -> false
+
+// The pinned registry root for network trust checks. A project with no lock or a
+// path-only lock is unpinned; any partial/malformed registry trust record is Err.
+fn pinned_registry_rootpub(root: Dir) -> Result(String, LockPinError):
+    if !root.exists("witchy.lock"):
+        Ok("")
+    else:
+        match pinned_registry_trust(root.read("witchy.lock")):
+            Err(e) -> Err(e)
+            Ok(None) -> Ok("")
+            Ok(Some(trust)) -> Ok(trust.1)
 
 type LockPinError:
     LockPinNegative(String)
     LockPinNotInteger(String)
+    LockPinSnapshotWithoutRoot
+    LockPinRootWithoutSnapshot
+    LockPinRootMalformed
 
 fn lock_pin_error_message(e: LockPinError) -> String:
     match e:
         LockPinNegative(v) -> "invalid witchy.lock registry_snapshot_version `${v}` (must not be negative)"
         LockPinNotInteger(v) -> "invalid witchy.lock registry_snapshot_version `${v}` (not an integer)"
+        LockPinSnapshotWithoutRoot -> "invalid witchy.lock registry trust: registry_snapshot_version is present but registry_rootpub is missing"
+        LockPinRootWithoutSnapshot -> "invalid witchy.lock registry trust: registry_rootpub is present but registry_snapshot_version is missing"
+        LockPinRootMalformed -> "invalid witchy.lock registry_rootpub (expected a 32-byte Ed25519 public key encoded as hex)"
 
 impl Show for LockPinError:
     fn show(self) -> String:
@@ -1664,12 +1707,24 @@ impl From(LockPinError) for String:
     fn from(value: LockPinError) -> Self:
         lock_pin_error_message(value)
 
-// The `registry_rootpub` (Ed25519 root public key hex) pinned in the lock, or "" if
-// none — older locks predate the pin and fall back to trust-on-first-use. (SEC-002)
-fn pinned_rootpub(lock: String) -> String:
-    match toml.get(lock, "registry_rootpub"):
-        Some(v) -> v
-        None -> ""
+type RegistryRootKeyError:
+    RegistryRootKeyUnavailable(Int)
+    RegistryRootKeyMalformed
+
+fn registry_root_key_error_message(e: RegistryRootKeyError) -> String:
+    match e:
+        RegistryRootKeyUnavailable(status) -> "registry root key is unavailable (HTTP ${status})"
+        RegistryRootKeyMalformed -> "registry root key is malformed (expected a 32-byte Ed25519 public key encoded as hex)"
+
+impl Show for RegistryRootKeyError:
+    fn show(self) -> String:
+        registry_root_key_error_message(self)
+
+impl Error for RegistryRootKeyError
+
+impl From(RegistryRootKeyError) for String:
+    fn from(value: RegistryRootKeyError) -> Self:
+        registry_root_key_error_message(value)
 
 // The path-dependency names whose recomputed hash differs from the lockfile's.
 // BUG-047/135: walks the full transitive path-dep closure, not just the direct
@@ -2073,8 +2128,8 @@ fn gated_refetch(console: Console, net: Net, root: Dir, host: String, port: Int,
 // coordinate (BUG-232/266). `Err` on any failure so the gate blocks rather than
 // trusting an unverified/under-declared footprint.
 fn verified_incoming_footprint(net: Net, root: Dir, host: String, port: Int, name: String, version: String) -> Result(List(String), RecordFootprintError):
-    let rootpub = http.body(http.get(net, host, port, "/coven/rootpub"))
-    let pinned_pub = if root.exists("witchy.lock"): pinned_rootpub(root.read("witchy.lock")) else: ""
+    let rootpub = fetch_registry_rootpub(net, host, port)?
+    let pinned_pub = pinned_registry_rootpub(root)?
     if pinned_pub != "" && pinned_pub != rootpub:
         Err(RecordRootKeyMismatch)
     else:
@@ -2092,6 +2147,8 @@ fn verified_incoming_footprint(net: Net, root: Dir, host: String, port: Int, nam
 // widening gate trusts this result, so every verification and decode failure is
 // typed before the CLI renders it into the existing BLOCK diagnostic.
 type RecordFootprintError:
+    RecordLockPin(LockPinError)
+    RecordRootKeyFetch(RegistryRootKeyError)
     RecordRootKeyMismatch
     RecordMissing
     RecordBadSignature
@@ -2103,6 +2160,8 @@ type RecordFootprintError:
 
 fn record_footprint_error_message(e: RecordFootprintError) -> String:
     match e:
+        RecordLockPin(error) -> lock_pin_error_message(error)
+        RecordRootKeyFetch(error) -> registry_root_key_error_message(error)
         RecordRootKeyMismatch -> "registry root key does not match the key pinned in witchy.lock (possible MITM / hostile mirror)"
         RecordMissing -> "registry has no record"
         RecordBadSignature -> "the record is not validly signed by the registry root key"
@@ -2121,6 +2180,14 @@ impl Error for RecordFootprintError
 impl From(RecordFootprintError) for String:
     fn from(value: RecordFootprintError) -> Self:
         record_footprint_error_message(value)
+
+impl From(LockPinError) for RecordFootprintError:
+    fn from(value: LockPinError) -> Self:
+        RecordLockPin(value)
+
+impl From(RegistryRootKeyError) for RecordFootprintError:
+    fn from(value: RegistryRootKeyError) -> Self:
+        RecordRootKeyFetch(value)
 
 // The `runtime_footprint` array of a VERIFIED signed record, decoded strictly: a
 // malformed record, a missing/non-array `runtime_footprint`, or a non-string
@@ -2328,8 +2395,9 @@ fn pin_lock(console: Console, net: Net, root: Dir, host: String, port: Int, name
 // registry_snapshot_version lock pin after this boundary verifies signatures,
 // schemas, content hash binding, and role version agreement.
 type TufError:
+    TufLockPin(LockPinError)
+    TufRootKeyFetch(RegistryRootKeyError)
     RootKeyMismatch
-    RootKeyUnavailable(Int)
     SnapshotUnavailable(Int)
     SnapshotWithoutTimestamp
     TimestampBadSignature
@@ -2341,8 +2409,9 @@ type TufError:
 
 fn tuf_error_message(e: TufError) -> String:
     match e:
+        TufLockPin(error) -> lock_pin_error_message(error)
+        TufRootKeyFetch(error) -> registry_root_key_error_message(error)
         RootKeyMismatch -> "registry root key does not match the key pinned in witchy.lock (possible MITM / hostile mirror)"
-        RootKeyUnavailable(status) -> "registry root key is unavailable (HTTP ${status})"
         SnapshotUnavailable(status) -> "registry snapshot is unavailable (HTTP ${status})"
         SnapshotWithoutTimestamp -> "registry served a snapshot but no timestamp role — cannot verify the TUF chain"
         TimestampBadSignature -> "the timestamp role is not validly signed by the registry root key"
@@ -2362,12 +2431,20 @@ impl From(TufError) for String:
     fn from(value: TufError) -> Self:
         tuf_error_message(value)
 
-// Fetch and verify every trust line before lock serialization. A partial metadata
-// fetch must never rewrite the lock with an existing trust anchor omitted (BUG-571).
+impl From(LockPinError) for TufError:
+    fn from(value: LockPinError) -> Self:
+        TufLockPin(value)
+
+impl From(RegistryRootKeyError) for TufError:
+    fn from(value: RegistryRootKeyError) -> Self:
+        TufRootKeyFetch(value)
+
+// Fetch and verify the snapshot plus its signing key as one operation before lock
+// serialization. The exact root key that verifies the snapshot is the one emitted;
+// there is no second fetch that can race and pin a different key (BUG-571/572).
 fn lock_trust_pins(net: Net, root: Dir, host: String, port: Int) -> Result(String, TufError):
-    let snapshot = snapshot_pin(net, root, host, port)?
-    let rootpub = rootpub_pin(net, host, port)?
-    Ok(snapshot + rootpub)
+    let pins = snapshot_pin(net, root, host, port)?
+    Ok(pins.0 + "registry_rootpub = \"" + pins.1 + "\"\n")
 
 // The `registry_snapshot_version = N` top-level line pinning the registry's current
 // TUF snapshot version into the lock — the rollback baseline `verify` enforces.
@@ -2377,13 +2454,13 @@ fn lock_trust_pins(net: Net, root: Dir, host: String, port: Int) -> Result(Strin
 // agreement — so a malformed/unsigned/split response cannot under- or over-pin the
 // rollback floor. An unavailable snapshot is an error: treating it as "nothing to
 // pin" would erase an existing rollback floor during lock regeneration.
-fn snapshot_pin(net: Net, root: Dir, host: String, port: Int) -> Result(String, TufError):
+fn snapshot_pin(net: Net, root: Dir, host: String, port: Int) -> Result((String, String), TufError):
     let snap_resp = http.get(net, host, port, "/coven/snapshot")
     if http.status(snap_resp) != 200:
         Err(SnapshotUnavailable(http.status(snap_resp)))
     else:
         let rootpub = fetch_registry_rootpub(net, host, port)?
-        let pinned_pub = if root.exists("witchy.lock"): pinned_rootpub(root.read("witchy.lock")) else: ""
+        let pinned_pub = pinned_registry_rootpub(root)?
         if pinned_pub != "" && pinned_pub != rootpub:
             Err(RootKeyMismatch)
         else:
@@ -2391,7 +2468,8 @@ fn snapshot_pin(net: Net, root: Dir, host: String, port: Int) -> Result(String, 
             if http.status(ts_resp) != 200:
                 Err(SnapshotWithoutTimestamp)
             else:
-                verified_snapshot_line(rootpub, http.body(snap_resp), http.body(ts_resp))
+                let snapshot = verified_snapshot_line(rootpub, http.body(snap_resp), http.body(ts_resp))?
+                Ok((snapshot, rootpub))
 
 // Run the signature + schema + hash-binding + version-agreement checks over a
 // snapshot/timestamp pair (the same gate `verify`/`check_chain` applies) and, only
@@ -2413,20 +2491,12 @@ fn verified_snapshot_line(rootpub: String, snap_env: String, ts_env: String) -> 
     else:
         Ok("registry_snapshot_version = ${signed_field_int(snap_env, "version")}\n")
 
-// The `registry_rootpub = "<hex>"` line pinning the registry's Ed25519 root public key
-// into the lock (trust-on-first-use). `verify` re-fetches the key and refuses a chain
-// rooted in a different one, so a hostile mirror / MITM cannot swap the root key.
-// A missing key is an error: returning an empty line would silently remove an
-// existing TOFU trust anchor from a regenerated lock. (SEC-002 / BUG-571)
-// idiom-exempt: this produces an exact TOML line for the lockfile serializer.
-fn rootpub_pin(net: Net, host: String, port: Int) -> Result(String, TufError):
-    let rootpub = fetch_registry_rootpub(net, host, port)?
-    Ok("registry_rootpub = \"" + rootpub + "\"\n")
-
-fn fetch_registry_rootpub(net: Net, host: String, port: Int) -> Result(String, TufError):
+fn fetch_registry_rootpub(net: Net, host: String, port: Int) -> Result(String, RegistryRootKeyError):
     let resp = http.get(net, host, port, "/coven/rootpub")
     if http.status(resp) != 200:
-        Err(RootKeyUnavailable(http.status(resp)))
+        Err(RegistryRootKeyUnavailable(http.status(resp)))
+    else if !valid_registry_rootpub(http.body(resp)):
+        Err(RegistryRootKeyMalformed)
     else:
         Ok(http.body(resp))
 
@@ -2779,13 +2849,19 @@ fn positionals(args: List(String)) -> List(String):
 // source must hash to that signed hash. An untrusted mirror cannot swap the
 // bytes — content addressing + the signature, not the transport, are trusted.
 fn fetch_source(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, version: String, dest: String) -> Int:
-    let rootpub = http.body(http.get(net, host, port, "/coven/rootpub"))
-    // SEC-002: enforce the lock's pinned root key on the fetch/add path too (not only in
-    // `verify`), so a MITM cannot swap the root key and self-sign a record on an upgrade.
-    // Also closes SEC-005's exploit: a record that fooled the unverified widening gate is
-    // rejected HERE — before any source is vendored — because the gate trusts an unverified
-    // footprint field but this verifies the record against the pinned trust anchor.
-    let pinned_pub = if root.exists("witchy.lock"): pinned_rootpub(root.read("witchy.lock")) else: ""
+    match pinned_registry_rootpub(root):
+        Err(e) ->
+            console.print("BLOCK: ${lock_pin_error_message(e)}")
+            1
+        Ok(pinned_pub) -> match fetch_registry_rootpub(net, host, port):
+            Err(e) ->
+                console.print("BLOCK: cannot fetch registry root key for ${name}@${version} — ${registry_root_key_error_message(e)}")
+                1
+            Ok(rootpub) -> fetch_source_with_root(console, net, root, host, port, name, version, dest, rootpub, pinned_pub)
+
+fn fetch_source_with_root(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, version: String, dest: String, rootpub: String, pinned_pub: String) -> Int:
+    // SEC-002: enforce the complete lock trust record on fetch/add too, before
+    // source is vendored or a signed record's footprint is trusted.
     if pinned_pub != "" && pinned_pub != rootpub:
         console.print("BLOCK: registry root key for ${name}@${version} does not match the key pinned in witchy.lock (possible MITM / hostile mirror)")
         1

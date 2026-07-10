@@ -24,5 +24,5 @@ the lock is written. There is no empty-pin representation.
 
 End-to-end coverage starts from a real signed registry and pinned lock, then
 proxies valid version/TUF metadata while failing first the snapshot fetch and
-then the final root-key fetch. Both updates fail with the precise typed
+then the root-key fetch. Both updates fail with the precise typed
 diagnostic and leave the original lockfile byte-identical.

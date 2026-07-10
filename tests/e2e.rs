@@ -772,10 +772,11 @@ fn tuf_chain_verified_and_snapshot_tamper_rejected() {
     assert!(stdout(&out).contains("FAIL"), "verify out: {}", stdout(&out));
 }
 
-/// A hand-edited lockfile snapshot pin is a package-manager diagnostic, not a
-/// trap or a value that flows into TUF rollback comparison.
+/// A registry lock's snapshot version and root key are one trust record. A
+/// malformed value or either missing half is a diagnostic, never an unpinned
+/// fallback that reaches the network.
 #[test]
-fn witchy_pm_verify_rejects_malformed_registry_snapshot_pin() {
+fn witchy_pm_verify_rejects_malformed_registry_trust_pins() {
     let server = RegistryServer::start();
     let fe = FrontEnd::new(&server, "badpin");
     let app = fe.new_app();
@@ -784,26 +785,55 @@ fn witchy_pm_verify_rejects_malformed_registry_snapshot_pin() {
     assert!(out.status.success(), "add failed: {}\n{}", stderr(&out), stdout(&out));
 
     let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
-    let corrupted = lock
-        .lines()
-        .map(|l| {
-            if l.trim_start().starts_with("registry_snapshot_version") {
-                "registry_snapshot_version = nope".to_string()
-            } else {
-                l.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    std::fs::write(app.join("witchy.lock"), corrupted).unwrap();
+    let cases = [
+        (
+            lock.lines()
+                .map(|line| {
+                    if line.trim_start().starts_with("registry_snapshot_version") {
+                        "registry_snapshot_version = nope".to_string()
+                    } else {
+                        line.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            "registry_snapshot_version `nope` (not an integer)",
+        ),
+        (
+            lock.lines()
+                .filter(|line| !line.trim_start().starts_with("registry_rootpub"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            "registry_snapshot_version is present but registry_rootpub is missing",
+        ),
+        (
+            lock.lines()
+                .filter(|line| !line.trim_start().starts_with("registry_snapshot_version"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            "registry_rootpub is present but registry_snapshot_version is missing",
+        ),
+        (
+            lock.lines()
+                .map(|line| {
+                    if line.trim_start().starts_with("registry_rootpub") {
+                        "registry_rootpub = \"not-hex\"".to_string()
+                    } else {
+                        line.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            "invalid witchy.lock registry_rootpub",
+        ),
+    ];
 
-    let out = fe.pm(&app, &["verify", ".", "--online"], None);
-    assert!(!out.status.success(), "malformed pin must fail verify");
-    assert!(
-        stdout(&out).contains("BLOCK: invalid witchy.lock registry_snapshot_version `nope` (not an integer)"),
-        "out: {}",
-        stdout(&out)
-    );
+    for (corrupted, expected) in cases {
+        std::fs::write(app.join("witchy.lock"), corrupted).unwrap();
+        let out = fe.pm(&app, &["verify", ".", "--online"], None);
+        assert!(!out.status.success(), "malformed trust record must fail verify");
+        assert!(stdout(&out).contains(expected), "expected `{expected}`, got: {}", stdout(&out));
+    }
 }
 
 /// BUG-386: a TUF role can be validly signed yet structurally incomplete. The
@@ -1119,15 +1149,11 @@ fn versions_mirror_once(body: &'static str) -> (String, std::thread::JoinHandle<
     (addr, server)
 }
 
-/// Mirror valid version/TUF metadata but fail either the snapshot request or
-/// the second root-key request (the one used to serialize the lock after TUF
-/// verification). The first root-key response stays valid so the latter case
-/// isolates `rootpub_pin` rather than signature verification.
+/// Mirror valid version/snapshot metadata but fail either the snapshot request
+/// or the one root-key request used to verify and serialize the trust record.
 fn trust_pin_failure_mirror(
     versions: String,
     snapshot: String,
-    timestamp: String,
-    rootpub: String,
     fail_snapshot: bool,
 ) -> (String, std::thread::JoinHandle<()>) {
     use std::io::{ErrorKind, Read, Write};
@@ -1137,7 +1163,6 @@ fn trust_pin_failure_mirror(
     let addr = listener.local_addr().unwrap().to_string();
     let server = std::thread::spawn(move || {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let mut root_requests = 0;
         loop {
             let (mut stream, _) = loop {
                 match listener.accept() {
@@ -1165,15 +1190,8 @@ fn trust_pin_failure_mirror(
                 } else {
                     ("200 OK", snapshot.clone(), false)
                 }
-            } else if path.starts_with("/coven/timestamp") {
-                ("200 OK", timestamp.clone(), false)
             } else if path.starts_with("/coven/rootpub") {
-                root_requests += 1;
-                if !fail_snapshot && root_requests == 2 {
-                    ("503 Service Unavailable", "root key unavailable".to_string(), true)
-                } else {
-                    ("200 OK", rootpub.clone(), false)
-                }
+                ("503 Service Unavailable", "root key unavailable".to_string(), true)
             } else {
                 panic!("unexpected trust metadata request: {path}");
             };
@@ -1286,16 +1304,10 @@ fn pm_update_preserves_lock_when_trust_pin_fetches_fail() {
     assert_eq!(status, 200);
     let (status, snapshot) = http_get(&registry, "/coven/snapshot");
     assert_eq!(status, 200);
-    let (status, timestamp) = http_get(&registry, "/coven/timestamp");
-    assert_eq!(status, 200);
-    let rootpub = server.rootpub();
-
     for fail_snapshot in [true, false] {
         let (mirror_addr, mirror) = trust_pin_failure_mirror(
             versions.clone(),
             snapshot.clone(),
-            timestamp.clone(),
-            rootpub.clone(),
             fail_snapshot,
         );
         let out = Command::new(BIN)
