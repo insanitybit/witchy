@@ -369,6 +369,15 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             }
         }
     }
+    // `?` conversion is a semantic use of a resolved `From.from` trait impl,
+    // not a property of whatever compiler-generated spelling its function
+    // happens to receive. Keep that identity explicit through annotation and
+    // rewriting below.
+    let from_conversion_fns = trait_impl_table
+        .iter()
+        .filter(|((trait_name, method, _), _)| trait_name == "From" && method == "from")
+        .flat_map(|(_, methods)| methods.iter().map(|method| method.mangled.clone()))
+        .collect::<HashSet<_>>();
 
     // Supertrait obligations: `impl Ord for T` requires `impl Eq for T`,
     // `impl PartialOrd for T`, etc. (the transitive closure). Surfaced through the
@@ -468,14 +477,17 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     }
 
     let __t = mono_timing_start();
-    let mut typed = crate::typeck::annotate(Module {
-        modes: Vec::new(),
-        imports: imports.clone(),
-        from_imports: Vec::new(),
-        items,
-        import_lines: Vec::new(),
-        item_lines: Vec::new(),
-    });
+    let mut typed = crate::typeck::annotate_with_from_conversions(
+        Module {
+            modes: Vec::new(),
+            imports: imports.clone(),
+            from_imports: Vec::new(),
+            items,
+            import_lines: Vec::new(),
+            item_lines: Vec::new(),
+        },
+        &from_conversion_fns,
+    );
     if let Some(__t) = __t {
         eprintln!(
             "annotate first_table: items={} took={:?}",
@@ -501,17 +513,19 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             import_lines: Vec::new(),
             item_lines: Vec::new(),
         };
-        crate::typeck::check_selected_lowered(&probe, &no_fallback).err().and_then(|e| {
-            // Some bounded trait calls are intentionally unresolved until a
-            // concrete specialization exists (`compare` for `where a: Ord`,
-            // etc.). Keep those lazy, but surface ordinary template-body type
-            // errors now so an uncalled generic cannot make `check` lie.
-            let lazy_template_placeholder = e.message.contains("call to unknown function")
-                || e.message.contains("cannot infer the result type")
-                || e.message.contains("could not resolve the `")
-                || e.message.contains("requires `Ord`");
-            (!lazy_template_placeholder).then_some(e.message)
-        })
+        crate::typeck::check_selected_lowered(&probe, &no_fallback, &from_conversion_fns)
+            .err()
+            .and_then(|e| {
+                // Some bounded trait calls are intentionally unresolved until a
+                // concrete specialization exists (`compare` for `where a: Ord`,
+                // etc.). Keep those lazy, but surface ordinary template-body type
+                // errors now so an uncalled generic cannot make `check` lie.
+                let lazy_template_placeholder = e.message.contains("call to unknown function")
+                    || e.message.contains("cannot infer the result type")
+                    || e.message.contains("could not resolve the `")
+                    || e.message.contains("requires `Ord`");
+                (!lazy_template_placeholder).then_some(e.message)
+            })
     };
     let mut templates: HashMap<String, Function> = HashMap::new();
     for it in &typed.module().items {
@@ -617,7 +631,8 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             let mut module = typed.into_module();
             module.items.extend(generated.into_iter().map(Item::Function));
             let __t = mono_timing_start();
-            typed = crate::typeck::annotate(module);
+            typed =
+                crate::typeck::annotate_with_from_conversions(module, &from_conversion_fns);
             if let Some(__t) = __t {
                 eprintln!(
                     "annotate round {round}: items={} took={:?}",
@@ -682,7 +697,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         // This replacement changes expression structure. It is deliberately the
         // final table-dependent operation in the closure; the table is consumed
         // together with the typed owner immediately afterwards.
-        rewrite_try_from_conversions(&mut module.items, type_table);
+        rewrite_try_from_conversions(&mut module.items, type_table, &from_conversion_fns);
     });
     lowered
         .items
@@ -3269,15 +3284,14 @@ struct FromConversion {
     func: String,
 }
 
-fn build_from_conversions(items: &[Item]) -> Vec<FromConversion> {
+fn build_from_conversions(
+    items: &[Item],
+    from_conversion_fns: &HashSet<String>,
+) -> Vec<FromConversion> {
     items
         .iter()
         .filter_map(|it| match it {
-            Item::Function(f)
-                if f.name.starts_with("From__")
-                    && f.name.ends_with("__from")
-                    && f.params.len() == 1 =>
-            {
+            Item::Function(f) if from_conversion_fns.contains(&f.name) && f.params.len() == 1 => {
                 Some(FromConversion {
                     src: f.params[0].ty.clone()?,
                     dst: f.ret.clone()?,
@@ -3303,8 +3317,12 @@ fn result_error_from_ty(ty: &crate::typeck::Ty) -> Option<Type> {
     }
 }
 
-fn rewrite_try_from_conversions(items: &mut [Item], table: &crate::typeck::TypeTable) {
-    let conversions = build_from_conversions(items);
+fn rewrite_try_from_conversions(
+    items: &mut [Item],
+    table: &crate::typeck::TypeTable,
+    from_conversion_fns: &HashSet<String>,
+) {
+    let conversions = build_from_conversions(items, from_conversion_fns);
     if conversions.is_empty() {
         return;
     }

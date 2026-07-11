@@ -369,6 +369,28 @@
     }
 
     #[test]
+    fn generated_name_shape_does_not_impersonate_a_from_impl() {
+        let src = r#"
+type LeafError:
+    Leaf
+
+type AppError:
+    App
+
+fn From__spoof__from(value: LeafError) -> AppError:
+    App
+
+fn leaf() -> Result(Int, LeafError):
+    Err(Leaf)
+
+fn wrapper() -> Result(Int, AppError):
+    leaf()?
+"#;
+        let error = check_str(src).expect_err("a generated-looking name is not a From impl");
+        assert!(error.contains("no `From("), "{error}");
+    }
+
+    #[test]
     fn trait_impls_must_match_trait_methods() {
         let misspelled = check_str(
             "type R:\n    R(Int)\ntrait PartialLike:\n    fn partial_compare(self, other: Self) -> Option(Int)\nimpl PartialLike for R:\n    fn partial_cmp(self, other: R) -> Option(Int):\n        Some(1)\nfn main(console: Console):\n    console.print(\"ok\")\n",

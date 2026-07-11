@@ -2107,6 +2107,9 @@ struct Checker {
     /// finalized against the ending substitution. Key = `&Expr as *const _`.
     type_record: Option<HashMap<usize, Ty>>,
     fn_sigs: HashMap<String, (Vec<Ty>, Ty)>,
+    /// Functions selected by trait lowering as actual `From.from` impls.
+    /// Generated function names are an ABI detail, not semantic evidence.
+    from_conversion_fns: HashSet<String>,
     ctor_sigs: HashMap<String, (Vec<Ty>, Ty)>,
     /// Type-parameter var ids per constructor, so a generic ADT's constructors
     /// are instantiated fresh at each use (e.g. `Some(1)` vs `Some("x")`).
@@ -2551,12 +2554,12 @@ impl Checker {
     }
 
     fn has_from_conversion(&self, dst: &Ty, src: &Ty) -> bool {
-        self.fn_sigs.iter().any(|(name, (params, ret))| {
-            name.starts_with("From__")
-                && name.ends_with("__from")
-                && params.len() == 1
-                && self.same_resolved_type(ret, dst)
-                && self.same_resolved_type(&params[0], src)
+        self.from_conversion_fns.iter().any(|name| {
+            self.fn_sigs.get(name).is_some_and(|(params, ret)| {
+                params.len() == 1
+                    && self.same_resolved_type(ret, dst)
+                    && self.same_resolved_type(&params[0], src)
+            })
         })
     }
 
@@ -5642,7 +5645,14 @@ fn ty_has_var(t: &Ty) -> bool {
 /// already passed `check`, so any error here yields an empty table and the
 /// consumer's own fallbacks apply.
 pub fn annotate(module: Module) -> TypedModule {
-    let table = match run_check(&module, true) {
+    annotate_with_conversion_fns(module, None)
+}
+
+fn annotate_with_conversion_fns(
+    module: Module,
+    from_conversion_fns: Option<&HashSet<String>>,
+) -> TypedModule {
+    let table = match run_check_selected(&module, true, None, None, from_conversion_fns) {
         Ok(Some(table)) => table,
         Err(e) => {
             if std::env::var_os("WITCHY_DEBUG_ANNOTATE").is_some() {
@@ -5653,6 +5663,16 @@ pub fn annotate(module: Module) -> TypedModule {
         _ => TypeTable::default(),
     };
     TypedModule { module, table }
+}
+
+/// Annotate a trait-lowering intermediate while preserving the semantic
+/// identity of resolved `From.from` implementations. The ordinary public
+/// annotation path sees an already-lowered module and needs no such context.
+pub(crate) fn annotate_with_from_conversions(
+    module: Module,
+    from_conversion_fns: &HashSet<String>,
+) -> TypedModule {
+    annotate_with_conversion_fns(module, Some(from_conversion_fns))
 }
 
 /// The entry module — the home of the unqualified `main` — for home-module
@@ -5680,12 +5700,10 @@ fn detect_entry_module(module: &Module) -> String {
 pub(crate) fn check_selected_lowered(
     module: &Module,
     names: &HashSet<String>,
+    from_conversion_fns: &HashSet<String>,
 ) -> Result<(), TypeError> {
-    run_check_selected(module, false, Some(names), None).map(|_| ())
-}
-
-fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeError> {
-    run_check_selected(module, record, None, None)
+    run_check_selected(module, false, Some(names), None, Some(from_conversion_fns))
+        .map(|_| ())
 }
 
 fn run_check_with_trait_methods(
@@ -5693,7 +5711,7 @@ fn run_check_with_trait_methods(
     record: bool,
     trait_method_names: &HashSet<String>,
 ) -> Result<Option<TypeTable>, TypeError> {
-    run_check_selected(module, record, None, Some(trait_method_names))
+    run_check_selected(module, record, None, Some(trait_method_names), None)
 }
 
 fn run_check_selected(
@@ -5701,11 +5719,13 @@ fn run_check_selected(
     record: bool,
     selected_functions: Option<&HashSet<String>>,
     trait_method_names: Option<&HashSet<String>>,
+    from_conversion_fns: Option<&HashSet<String>>,
 ) -> Result<Option<TypeTable>, TypeError> {
     let module = &module;
     let mut c = Checker {
         type_record: if record { Some(HashMap::new()) } else { None },
         fn_sigs: HashMap::new(),
+        from_conversion_fns: from_conversion_fns.cloned().unwrap_or_default(),
         fn_conventions: HashMap::new(),
         fn_mutators: HashSet::new(),
         ctor_sigs: HashMap::new(),
