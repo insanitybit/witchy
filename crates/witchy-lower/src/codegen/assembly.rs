@@ -896,6 +896,19 @@ pub fn assemble_wir_module(
                     });
                 }
             }
+            // Static host-backed helpers already carry a source-site parameter,
+            // and source/lambda bodies were instrumented statement by statement.
+            // The remaining functions are compiler-synthesized after those
+            // passes: run/export wrappers and per-shape render/equality helpers.
+            // They have no lexical statement of their own, but must still satisfy
+            // the augmented helper signatures. Thread the explicit "unknown"
+            // site (0) through any host-backed path they contain. Existing precise
+            // sites are idempotently preserved.
+            for func in &mut pruned_funcs {
+                if prepare_synthetic_diagnostic_sites(func) {
+                    cg.uses_diagnostic_sites = true;
+                }
+            }
             let mut pruned_globals = if uses_heap {
                 vec![
                     WirGlobal {
@@ -1479,10 +1492,18 @@ fn prepare_diagnostic_helper(name: &str, func: &mut witchy_wir::wir::WirFunc) {
     debug_assert!(reached, "host-backed helper `{name}` has no diagnostic edge");
 }
 
+fn prepare_synthetic_diagnostic_sites(func: &mut witchy_wir::wir::WirFunc) -> bool {
+    if func.params.iter().any(|param| param.name == DIAGNOSTIC_SITE_PARAM) {
+        return false;
+    }
+    attach_diagnostic_sites(&mut func.body, 0)
+}
+
 #[cfg(test)]
 mod diagnostic_site_tests {
     use super::{
         attach_diagnostic_sites, prepare_diagnostic_helper,
+        prepare_synthetic_diagnostic_sites,
         wir_seq_needs_diagnostic_site, DIAGNOSTIC_SITE_PARAM,
     };
     use witchy_wir::wir::{WirExpr as E, WirNode as N};
@@ -1571,6 +1592,24 @@ mod diagnostic_site_tests {
         assert!(matches!(
             &direct[1],
             N::SetGlobal { value: E::ConstI64(v), .. } if *v == site
+        ));
+    }
+
+    #[test]
+    fn synthesized_callers_supply_an_unknown_site_to_host_backed_helpers() {
+        let mut wrapper = witchy_wir::wir::WirFunc {
+            name: "run".into(),
+            params: Vec::new(),
+            ret: Vec::new(),
+            locals: Vec::new(),
+            body: vec![N::Push(E::Call { func: "build_args".into(), args: Vec::new() })],
+            raw_body: None,
+        };
+        assert!(prepare_synthetic_diagnostic_sites(&mut wrapper));
+        assert!(matches!(
+            &wrapper.body[..],
+            [N::Push(E::Call { func, args })]
+                if func == "build_args" && matches!(&args[..], [E::ConstI64(0)])
         ));
     }
 }
