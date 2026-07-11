@@ -83,7 +83,6 @@ fn maximal_capabilities() -> Capabilities {
         clock: true,
         rand: true,
         env: true,
-        // BuildEnv shares this allow-list path in the native linker.
         env_allow: Some(Vec::new()),
         dir_root: Some(root.clone()),
         file_grants: vec![root.join("witchy-abi-catalog-file")],
@@ -99,6 +98,7 @@ fn maximal_capabilities() -> Capabilities {
         secrets: vec![SecretGrant::new("abi", vec![1, 2, 3])],
         build_out: Some(root.clone()),
         build_read_roots: vec![root],
+        build_env: Some(Default::default()),
         ..Default::default()
     }
 }
