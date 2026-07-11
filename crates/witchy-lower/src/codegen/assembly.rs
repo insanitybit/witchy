@@ -404,20 +404,20 @@ pub fn assemble_wir_module(
     let mut lowered = witchy_types::traits::lower_for_wasm(recs);
     witchy_syntax::parser::lower_sugar_module(&mut lowered);
     alpha_rename_module(&mut lowered);
-    let mut cg = Codegen::new();
-    cg.collect_wir = true;
-    cg.type_table = witchy_types::typeck::annotate(&lowered);
+    let mut typed = witchy_types::typeck::annotate(lowered);
     // `e ? "msg"` desugar (`__try_ctx`) is type-directed: an `Option` operand lowers
     // via `option.ok_or`, a `Result` via `result.map_err`. Rewrite it here — after
     // annotation (so the operand's type is known) and before the string-`+` flip +
     // lowering (so the synthesized `map_err` lambda's `+` flips to `Concat` and its
     // nodes get typed). Re-annotate so the freshly minted calls/lambda are in the
     // type table.
-    if rewrite_try_ctx_module(&mut lowered, &cg.type_table) {
-        cg.type_table = witchy_types::typeck::annotate(&lowered);
-    }
-    flip_string_add_module(&mut lowered, &cg.type_table);
-    let module = &lowered;
+    typed = typed.rewrite_and_reannotate_if(|table, module| {
+        rewrite_try_ctx_module(module, table)
+    });
+    typed.rewrite_preserving_nodes(|table, module| flip_string_add_module(module, table));
+    let module = typed.module();
+    let mut cg = Codegen::new(typed.table());
+    cg.collect_wir = true;
     register_module_items(&mut cg, module);
     cg.eq_types = eq_types;
     cg.summaries = analysis::Summaries::of_module(module);

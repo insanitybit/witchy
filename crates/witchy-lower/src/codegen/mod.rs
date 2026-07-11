@@ -441,7 +441,7 @@ struct SavedScope {
     elide_index_list: Vec<(String, String)>,
 }
 
-struct Codegen {
+struct Codegen<'types> {
     strings: Vec<(String, u32)>,
     next_offset: u32,
     uses_int_to_string: bool,
@@ -615,7 +615,7 @@ struct Codegen {
     /// Phase 0 (rfcs/language-evolution.md): typeck's resolved types for the
     /// EXACT module instance being compiled — the authoritative fallback
     /// wherever the local tracking maps come up empty.
-    type_table: witchy_types::typeck::TypeTable,
+    type_table: &'types witchy_types::typeck::TypeTable,
     /// Whether the `$list_push_cap` helper is needed.
     uses_list_push_cap: bool,
     /// (RFC-0033 R2) The `${var}${field}__cap` field-buffer capacity tokens emitted
@@ -941,8 +941,8 @@ struct Codegen {
     loop_labels: Vec<(String, String)>,
 }
 
-impl Codegen {
-    fn new() -> Self {
+impl<'types> Codegen<'types> {
+    fn new(type_table: &'types witchy_types::typeck::TypeTable) -> Self {
         Self {
             strings: Vec::new(),
             next_offset: DATA_BASE,
@@ -1029,7 +1029,7 @@ impl Codegen {
             cur_fn_has_type_vars: false,
             cur_fn_name: String::new(),
             uses_diagnostic_sites: false,
-            type_table: witchy_types::typeck::TypeTable::default(),
+            type_table,
             uses_list_push_cap: false,
             field_caps: HashSet::new(),
             field_push_safe: HashSet::new(),

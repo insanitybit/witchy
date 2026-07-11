@@ -10,7 +10,7 @@ fn is_generated_anon_name(name: &str) -> bool {
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
-impl Codegen {
+impl Codegen<'_> {
     /// WIR twin of [`slot_cmp`] for SCALAR slots only: the comparison of two
     /// 8-byte slots at addresses `aa`/`bb`. `None` for Str/compound shapes (whose
     /// compare would need `$str_eq` or a nested eq call) so the caller bails.

@@ -5507,10 +5507,14 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
     }
 }
 
-/// The resolved-type side table produced by `annotate`: expression identity
+/// The resolved-type side table owned by [`TypedModule`]: expression identity
 /// (`&Expr as *const _`) -> the concrete `Ty` the checker inferred, finalized
 /// against the ending substitution. Entries exist only where the type is
 /// fully concrete (no free variables) — consumers fall back where it is not.
+///
+/// This table is deliberately not produced independently of its AST. Raw node
+/// addresses are valid identities only while that exact module allocation is
+/// alive, so [`annotate`] returns both values in one ownership unit.
 #[derive(Default)]
 pub struct TypeTable {
     types: HashMap<usize, Ty>,
@@ -5519,6 +5523,65 @@ pub struct TypeTable {
 impl TypeTable {
     pub fn type_of(&self, e: &Expr) -> Option<&Ty> {
         self.types.get(&(e as *const Expr as usize))
+    }
+}
+
+/// An AST and the type facts keyed to that exact AST instance.
+///
+/// Keeping the table under the same owner as the module prevents callers from
+/// moving the table away, dropping the annotated nodes, and accidentally
+/// consulting it for freshly allocated nodes that reuse an old address.
+pub struct TypedModule {
+    module: Module,
+    table: TypeTable,
+}
+
+impl TypedModule {
+    pub fn module(&self) -> &Module {
+        &self.module
+    }
+
+    pub fn table(&self) -> &TypeTable {
+        &self.table
+    }
+
+    pub fn into_module(self) -> Module {
+        self.module
+    }
+
+    /// Mutate fields that preserve every expression allocation (for example a
+    /// resolved call name or binary-op tag) while consulting the existing facts.
+    /// Structural rewrites must instead consume the typed module and re-annotate.
+    pub fn rewrite_preserving_nodes<R>(
+        &mut self,
+        rewrite: impl FnOnce(&TypeTable, &mut Module) -> R,
+    ) -> R {
+        rewrite(&self.table, &mut self.module)
+    }
+
+    /// Apply a rewrite that reports whether it replaced or inserted nodes. A
+    /// structural change immediately invalidates and rebuilds the side table;
+    /// a no-op keeps the existing facts without paying for another check.
+    pub fn rewrite_and_reannotate_if(
+        mut self,
+        rewrite: impl FnOnce(&TypeTable, &mut Module) -> bool,
+    ) -> Self {
+        if rewrite(&self.table, &mut self.module) {
+            annotate(self.module)
+        } else {
+            self
+        }
+    }
+
+    /// Perform a final, potentially structural rewrite while the old facts are
+    /// available. The table is consumed with this wrapper and cannot be observed
+    /// after nodes have been replaced or removed.
+    pub(crate) fn rewrite_into_module<R>(
+        mut self,
+        rewrite: impl FnOnce(&TypeTable, &mut Module) -> R,
+    ) -> (Module, R) {
+        let result = rewrite(&self.table, &mut self.module);
+        (self.module, result)
     }
 }
 
@@ -5578,8 +5641,8 @@ fn ty_has_var(t: &Ty) -> bool {
 /// Phase 0). Best-effort by contract — consumers only annotate modules that
 /// already passed `check`, so any error here yields an empty table and the
 /// consumer's own fallbacks apply.
-pub fn annotate(module: &Module) -> TypeTable {
-    match run_check(module, true) {
+pub fn annotate(module: Module) -> TypedModule {
+    let table = match run_check(&module, true) {
         Ok(Some(table)) => table,
         Err(e) => {
             if std::env::var_os("WITCHY_DEBUG_ANNOTATE").is_some() {
@@ -5588,7 +5651,8 @@ pub fn annotate(module: &Module) -> TypeTable {
             TypeTable::default()
         }
         _ => TypeTable::default(),
-    }
+    };
+    TypedModule { module, table }
 }
 
 /// The entry module — the home of the unqualified `main` — for home-module

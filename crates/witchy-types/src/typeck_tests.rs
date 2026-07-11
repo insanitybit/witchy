@@ -1,6 +1,41 @@
     use super::*;
 
     #[test]
+    fn typed_module_rebuilds_address_keyed_facts_after_structural_rewrite() {
+        use witchy_syntax::ast::{Expr, Item, Stmt};
+
+        fn tail(module: &witchy_syntax::ast::Module) -> &Expr {
+            let Item::Function(main) = &module.items[0] else {
+                panic!("expected main function")
+            };
+            let Some(Stmt::Expr(expr)) = main.body.stmts.last() else {
+                panic!("expected tail expression")
+            };
+            expr
+        }
+
+        let module = witchy_syntax::parser::parse_module("fn value() -> Int:\n    1\n")
+            .expect("parse");
+        let typed = annotate(module);
+        assert_eq!(typed.table().type_of(tail(typed.module())), Some(&Ty::Int));
+
+        let typed = typed.rewrite_and_reannotate_if(|_, module| {
+            let Item::Function(main) = &mut module.items[0] else {
+                panic!("expected main function")
+            };
+            *main.body.stmts.last_mut().expect("tail statement") =
+                Stmt::Expr(Expr::Str("now a string".into()));
+            main.ret = Some(witchy_syntax::ast::Type::Named("String".into(), Vec::new()));
+            true
+        });
+
+        assert_eq!(
+            typed.table().type_of(tail(typed.module())),
+            Some(&Ty::String)
+        );
+    }
+
+    #[test]
     fn packed_type_requires_packable_fields() {
         // (RFC-0027) scalars (and nested packed types) are packable.
         assert!(check_str(

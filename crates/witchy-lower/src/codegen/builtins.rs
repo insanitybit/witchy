@@ -5,7 +5,7 @@
 
 use super::*;
 
-impl Codegen {
+impl Codegen<'_> {
     pub(crate) fn lower_call(&mut self, name: &str, args: &[Expr]) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::WirExpr as W;
         use witchy_wir::wir::WirNode as N;

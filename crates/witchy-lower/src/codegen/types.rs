@@ -11,7 +11,7 @@ use super::{Codegen, Kind, ValType};
 use witchy_syntax::ast::{BinOp, Block, Expr, Pattern, Stmt, Type, UnOp};
 use witchy_syntax::cap_ops;
 
-impl Codegen {
+impl Codegen<'_> {
     /// The WASM kind a compiled expression evaluates to.
     pub(crate) fn kind_of(&self, e: &Expr) -> Kind {
         match e {

@@ -467,30 +467,29 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         }
     }
 
-    let (items_back, first_table) = {
-        let probe = Module {
-            modes: Vec::new(),
-            imports: imports.clone(),
-            from_imports: Vec::new(),
-            items,
-            import_lines: Vec::new(),
-            item_lines: Vec::new(),
-        };
-        let __t = mono_timing_start();
-        let t = crate::typeck::annotate(&probe);
-        if let Some(__t) = __t {
-            eprintln!("annotate first_table: items={} took={:?}", probe.items.len(), __t.elapsed());
-        }
-        (probe.items, t)
-    };
-    let mut items = items_back;
+    let __t = mono_timing_start();
+    let mut typed = crate::typeck::annotate(Module {
+        modes: Vec::new(),
+        imports: imports.clone(),
+        from_imports: Vec::new(),
+        items,
+        import_lines: Vec::new(),
+        item_lines: Vec::new(),
+    });
+    if let Some(__t) = __t {
+        eprintln!(
+            "annotate first_table: items={} took={:?}",
+            typed.module().items.len(),
+            __t.elapsed()
+        );
+    }
 
     // The no-fallback template set: bounded generics PLUS the generic helpers that
     // transitively call them (RFC-0046 §2). Both are kept in `items` through the
     // fixpoint so each re-annotate sees their signatures, then removed afterwards —
     // they have no runnable generic form (their bounded call can't resolve while
     // generic). Their concrete specializations are what gets emitted.
-    let no_fallback = no_fallback_template_names(&items);
+    let no_fallback = no_fallback_template_names(&typed.module().items);
     let template_body_diag = if no_fallback.is_empty() {
         None
     } else {
@@ -498,7 +497,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             modes: Vec::new(),
             imports: imports.clone(),
             from_imports: Vec::new(),
-            items: items.clone(),
+            items: typed.module().items.clone(),
             import_lines: Vec::new(),
             item_lines: Vec::new(),
         };
@@ -515,7 +514,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         })
     };
     let mut templates: HashMap<String, Function> = HashMap::new();
-    for it in &items {
+    for it in &typed.module().items {
         if let Item::Function(f) = it {
             if no_fallback.contains(&f.name) {
                 templates.insert(f.name.clone(), f.clone());
@@ -527,7 +526,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     // specialization (so `==` is content-correct and `Int` stays 64-bit), while a
     // call that can't be resolved keeps calling the generic version unchanged.
     if mono_unbounded {
-        for it in &items {
+        for it in &typed.module().items {
             if let Item::Function(f) = it {
                 if f.bounds.is_empty()
                     && !signature_type_vars(f).is_empty()
@@ -551,7 +550,6 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         .collect();
     let render_available = templates.contains_key("show.render");
     let mut mono_diags: Vec<String> = Vec::new();
-    let type_table;
     if !templates.is_empty() {
         // Annotate + monomorphize to a FIXPOINT (RFC-0046 §2): each round types the
         // concrete specializations the previous round generated, unlocking the
@@ -563,175 +561,133 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         // deterministic pass, so both backends reach the same fixpoint. The memo
         // persists across rounds so a specialization is never generated twice.
         const MONO_ROUNDS: usize = 4;
-        let mut table = first_table;
         let mut memo: HashMap<(String, Vec<String>), String> = HashMap::new();
-        // Did any round actually monomorphize something? The ONLY mutation
-        // `Mono::walk_*` performs is a call-name rewrite to a specialization, and
-        // every such rewrite pushes to `generated` — so `generated` empty across
-        // ALL rounds means the module is byte-for-byte the one `first_table` was
-        // computed over. In that (very common) case — every derive/comptime block,
-        // and any module whose generics are never instantiated concretely — the
-        // separate FINAL re-annotate below is pure redundant work: `first_table`
-        // is already the exact final table. Skipping it halves the annotate cost
-        // of the derive-heavy comptime path (RFC-0046 regression, BUG-013).
-        let mut any_generated = false;
         for round in 0..MONO_ROUNDS {
-            let fn_sigs = build_fn_sigs(&items);
-            let ctor_infos = build_ctor_infos(&items);
-            let record_fields = build_record_fields(&items);
-            let known_fns: HashSet<String> = items
+            let fn_sigs = build_fn_sigs(&typed.module().items);
+            let ctor_infos = build_ctor_infos(&typed.module().items);
+            let record_fields = build_record_fields(&typed.module().items);
+            let known_fns: HashSet<String> = typed
+                .module()
+                .items
                 .iter()
                 .filter_map(|it| match it {
                     Item::Function(f) => Some(f.name.clone()),
                     _ => None,
                 })
                 .collect();
-            let mut mono = Mono {
-                templates: &templates,
-                known_fns: &known_fns,
-                trait_methods: &trait_methods,
-                supertraits: &trait_supertraits,
-                trait_impl_table: &trait_impl_table,
-                diagnostics: Vec::new(),
-                ctor_infos: &ctor_infos,
-                record_fields: &record_fields,
-                fn_sigs,
-                memo: std::mem::take(&mut memo),
-                generated: Vec::new(),
-                table: &table,
-                skip_walk: &no_fallback,
-                show_types: &show_types,
-                render_available,
-            };
             let __t_mono = mono_timing_start();
-            mono.run(&mut items);
-            memo = std::mem::take(&mut mono.memo);
-            mono_diags = std::mem::take(&mut mono.diagnostics);
-            let generated = std::mem::take(&mut mono.generated);
-            drop(mono);
+            let (next_memo, next_diags, generated) = typed.rewrite_preserving_nodes(
+                |table, module| {
+                    let mut mono = Mono {
+                        templates: &templates,
+                        known_fns: &known_fns,
+                        trait_methods: &trait_methods,
+                        supertraits: &trait_supertraits,
+                        trait_impl_table: &trait_impl_table,
+                        diagnostics: Vec::new(),
+                        ctor_infos: &ctor_infos,
+                        record_fields: &record_fields,
+                        fn_sigs,
+                        memo: std::mem::take(&mut memo),
+                        generated: Vec::new(),
+                        table,
+                        skip_walk: &no_fallback,
+                        show_types: &show_types,
+                        render_available,
+                    };
+                    mono.run(&mut module.items);
+                    (mono.memo, mono.diagnostics, mono.generated)
+                },
+            );
+            memo = next_memo;
+            mono_diags = next_diags;
             let progressed = !generated.is_empty();
-            any_generated |= progressed;
             if let Some(__t_mono) = __t_mono {
                 eprintln!(
                     "mono round {round}: items={} generated={} mono_walk={:?}",
-                    items.len(), generated.len(), __t_mono.elapsed()
+                    typed.module().items.len(), generated.len(), __t_mono.elapsed()
                 );
             }
-            items.extend(generated.into_iter().map(Item::Function));
-            if !progressed || round + 1 == MONO_ROUNDS {
+            if !progressed {
                 break;
             }
-            // Re-annotate the module — now carrying the concrete specializations
-            // this round generated — so their bodies' bounded calls resolve next
-            // round. Moving `items` through the probe keeps node addresses stable,
-            // so the table keys still match the items the next round walks.
-            let probe = Module {
-                modes: Vec::new(),
-                imports: imports.clone(),
-                from_imports: Vec::new(),
-                items,
-                import_lines: Vec::new(),
-                item_lines: Vec::new(),
-            };
+            // Generated nodes have no facts in the current table. Consume the
+            // typed owner before extending the AST, then annotate the new exact
+            // module before either the next round or the final dispatch pass.
+            let mut module = typed.into_module();
+            module.items.extend(generated.into_iter().map(Item::Function));
             let __t = mono_timing_start();
-            table = crate::typeck::annotate(&probe);
+            typed = crate::typeck::annotate(module);
             if let Some(__t) = __t {
-                eprintln!("annotate round {round}: items={} took={:?}", probe.items.len(), __t.elapsed());
+                eprintln!(
+                    "annotate round {round}: items={} took={:?}",
+                    typed.module().items.len(),
+                    __t.elapsed()
+                );
             }
-            items = probe.items;
+            if round + 1 == MONO_ROUNDS {
+                break;
+            }
         }
-        // The no-fallback generic originals were kept only for the re-annotate;
-        // drop them now that their concrete specializations exist. (An unresolved
-        // call to one is a genuine error the loud pass reports.)
-        items.retain(|it| !matches!(it, Item::Function(f) if no_fallback.contains(&f.name)));
-        if any_generated {
-            // A fresh table over the FINAL module for the loud dispatch pass: node
-            // addresses now match after the retain, and every specialization is typed.
-            let probe = Module {
-                modes: Vec::new(),
-                imports: imports.clone(),
-                from_imports: Vec::new(),
-                items,
-                import_lines: Vec::new(),
-                item_lines: Vec::new(),
-            };
-            let __t = mono_timing_start();
-            type_table = crate::typeck::annotate(&probe);
-            if let Some(__t) = __t {
-                eprintln!("annotate final: items={} took={:?}", probe.items.len(), __t.elapsed());
-            }
-            items = probe.items;
-        } else {
-            // Nothing was monomorphized: `items` is exactly what `first_table`
-            // (moved into `table` and never reassigned — the loop broke at round 0)
-            // was computed over. The only difference is the `retain` above, which
-            // dropped bounded/no-fallback templates; those are skipped by pass 2 of
-            // the checker, so `first_table` never held entries for their bodies —
-            // and any stale key it does hold is for a node no longer in `items`, so
-            // the loud pass (which only looks up live nodes) never reads it. Reuse
-            // it and skip the redundant whole-module re-annotate.
-            if std::env::var_os("WITCHY_DEBUG_MONO_TIMING").is_some() {
-                eprintln!("annotate final: SKIPPED (no monomorphization; reusing first_table)");
-            }
-            type_table = table;
-        }
-    } else {
-        // No generics to specialize: the first table already matches `items`.
-        type_table = first_table;
     }
 
     // Tables used to determine a receiver's type at a trait-method call site.
-    let fn_sigs = build_fn_sigs(&items);
-    let ctor_infos = build_ctor_infos(&items);
-    let record_fields = build_record_fields(&items);
-    let free_fns: HashSet<String> = items
+    let fn_sigs = build_fn_sigs(&typed.module().items);
+    let ctor_infos = build_ctor_infos(&typed.module().items);
+    let record_fields = build_record_fields(&typed.module().items);
+    let free_fns: HashSet<String> = typed
+        .module()
+        .items
         .iter()
         .filter_map(|it| match it {
             Item::Function(f) => Some(f.name.clone()),
             _ => None,
         })
         .collect();
-    let owner_methods = build_owner_methods(&items);
+    let owner_methods = build_owner_methods(&typed.module().items);
     let missing_impls = std::cell::RefCell::new(Vec::new());
-    let (mutators, returns_nil) = build_mutation_tables(&items);
-    let ctx = Ctx {
-        trait_methods: &trait_methods,
-        inherent_methods: &inherent_methods,
-        supertraits: &trait_supertraits,
-        trait_impl_table: &trait_impl_table,
-        inherent_impl_table: &inherent_impl_table,
-        ctor_infos: &ctor_infos,
-        fn_sigs: &fn_sigs,
-        record_fields: &record_fields,
-        free_fns: &free_fns,
-        owner_methods: &owner_methods,
-        missing_impls: &missing_impls,
-        statics: &statics,
-        mutators: &mutators,
-        returns_nil: &returns_nil,
-        discard_errors: &discard_errors,
-        table: &type_table,
-        bound_traits: std::cell::RefCell::new(HashMap::new()),
-    };
-    rewrite_try_from_conversions(&mut items, &type_table);
-    for item in &mut items {
-        if let Item::Function(f) = item {
-            ctx.set_bounds(&f.bounds);
-            let mut scope = Scope::new();
-            seed_typed_params(&f.params, &mut scope);
-            // (RFC-0043) The body's tail statement is the return value.
-            ctx.rewrite_block(&mut f.body, &mut scope, true);
+    let (mutators, returns_nil) = build_mutation_tables(&typed.module().items);
+    let (mut lowered, ()) = typed.rewrite_into_module(|type_table, module| {
+        let ctx = Ctx {
+            trait_methods: &trait_methods,
+            inherent_methods: &inherent_methods,
+            supertraits: &trait_supertraits,
+            trait_impl_table: &trait_impl_table,
+            inherent_impl_table: &inherent_impl_table,
+            ctor_infos: &ctor_infos,
+            fn_sigs: &fn_sigs,
+            record_fields: &record_fields,
+            free_fns: &free_fns,
+            owner_methods: &owner_methods,
+            missing_impls: &missing_impls,
+            statics: &statics,
+            mutators: &mutators,
+            returns_nil: &returns_nil,
+            discard_errors: &discard_errors,
+            table: type_table,
+            bound_traits: std::cell::RefCell::new(HashMap::new()),
+        };
+        for item in &mut module.items {
+            if let Item::Function(f) = item {
+                if no_fallback.contains(&f.name) {
+                    continue;
+                }
+                ctx.set_bounds(&f.bounds);
+                let mut scope = Scope::new();
+                seed_typed_params(&f.params, &mut scope);
+                // (RFC-0043) The body's tail statement is the return value.
+                ctx.rewrite_block(&mut f.body, &mut scope, true);
+            }
         }
-    }
-
-    let mut lowered = Module {
-        modes: Vec::new(),
-        imports,
-        from_imports: Vec::new(),
-        items,
-        import_lines: Vec::new(),
-        item_lines: Vec::new(),
-    };
+        // This replacement changes expression structure. It is deliberately the
+        // final table-dependent operation in the closure; the table is consumed
+        // together with the typed owner immediately afterwards.
+        rewrite_try_from_conversions(&mut module.items, type_table);
+    });
+    lowered
+        .items
+        .retain(|it| !matches!(it, Item::Function(f) if no_fallback.contains(&f.name)));
+    lowered.imports = imports;
     // (RFC-0056; BUG-210) A defaulted parameter on an `impl`/`trait` method
     // (`p.scaled()` where `fn scaled(self, k: Int = 2)`) is unreachable through the
     // linker's keyword-argument pass, which ran BEFORE method calls were resolved.
@@ -1935,6 +1891,12 @@ impl Ctx<'_> {
                         .type_ast(lhs, scope)
                         .or_else(|| self.type_ast(rhs, scope));
                     if self.operator_dispatches(*op, operand_ty.as_ref()) {
+                        // Rewrite children while they still occupy the addresses
+                        // recorded by the typed owner. Once moved into the new
+                        // Call's Vec their addresses change, so the replacement
+                        // must not be revisited with the old table.
+                        self.rewrite_expr(lhs, scope);
+                        self.rewrite_expr(rhs, scope);
                         let l = std::mem::replace(lhs.as_mut(), Expr::Bool(false));
                         let r = std::mem::replace(rhs.as_mut(), Expr::Bool(false));
                         // Mangle to the concrete impl directly from the recovered
@@ -1954,7 +1916,6 @@ impl Ctx<'_> {
                             name: resolved.unwrap_or_else(|| method.to_string()),
                             args: vec![l, r],
                         };
-                        self.rewrite_expr(e, scope);
                         return;
                     }
                 }
