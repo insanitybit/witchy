@@ -45,13 +45,13 @@ fn raw_scheduler_protocol_is_not_user_constructible() {
         &dir,
         "raw-cancel",
         "import task\nfrom task import Task, Cancel\n\nfn main(console: Console):\n    task.run(Task(fn(): Cancel(0, fn(_done): task.ready_unit())))\n",
-        &["sealed type", "construct"],
+        &["Cancel", "exports no type or function"],
     );
     assert_rejected(
         &dir,
         "raw-step",
         "import task\nfrom task import Cancel\n\nfn main(console: Console):\n    let _step = Cancel(0, fn(_done): task.ready_unit())\n    console.print(\"bad\")\n",
-        &["sealed type", "construct"],
+        &["Cancel", "exports no type or function"],
     );
     assert_rejected(
         &dir,
