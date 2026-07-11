@@ -113,13 +113,13 @@ impl DiagTemplate {
 }
 
 /// Pack a static Witchy-string pointer and source line into the single mutable
-/// site global exported by an abort-capable module. This is compiled ABI: the
+/// site global exported by a diagnostic-capable module. This is compiled ABI: the
 /// function pointer occupies the high 32 bits and the line the low 32 bits.
 pub const fn pack_site(func_ptr: u32, line: u32) -> i64 {
     (((func_ptr as u64) << 32) | line as u64) as i64
 }
 
-/// Decode the packed abort-site ABI into `(function_string_pointer, line)`.
+/// Decode the packed diagnostic-site ABI into `(function_string_pointer, line)`.
 pub const fn unpack_site(site: i64) -> (u32, u32) {
     let bits = site as u64;
     ((bits >> 32) as u32, bits as u32)

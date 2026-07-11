@@ -7264,8 +7264,8 @@ fn yn(b: Bool) -> String:
             let bytes = codegen::compile_module_binary(&linked).expect("compile").expect("binary");
             let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort on the huge index");
             assert_eq!(
-                cerr.strip_prefix("runtime error: "),
-                Some("list index 4294967297 out of bounds (length 2)"),
+                cerr,
+                format!("runtime error: {}", ierr.message),
                 "compiled must report the TRUE index, not a wrapped one"
             );
         }
@@ -7285,10 +7285,11 @@ fn yn(b: Bool) -> String:
                 .expect("compile")
                 .expect("the binary path lowers this program");
             let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort");
-            let ccore = cerr
-                .strip_prefix("runtime error: ")
-                .unwrap_or_else(|| panic!("compiled abort not routed: `{cerr}`"));
-            assert_eq!(ccore, *want_core, "compiled abort core mismatch for src:\n{src}");
+            assert_eq!(
+                cerr,
+                format!("runtime error: {}", ierr.message),
+                "compiled abort mismatch for src:\n{src}"
+            );
         }
     }
 
@@ -7371,10 +7372,11 @@ fn yn(b: Bool) -> String:
                 .expect("compile")
                 .expect("the binary path lowers this program");
             let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort");
-            let ccore = cerr
-                .strip_prefix("runtime error: ")
-                .unwrap_or_else(|| panic!("compiled abort not routed: `{cerr}`"));
-            assert_eq!(ccore, *want_core, "compiled abort core mismatch for src:\n{src}");
+            assert_eq!(
+                cerr,
+                format!("runtime error: {}", ierr.message),
+                "compiled abort mismatch for src:\n{src}"
+            );
         }
         // The valid-boundary values still work (no over-eager abort): factorial(0),
         // pow(x, 0), isqrt(0), days_in_month for every month 1..12, to_base at both
@@ -7607,10 +7609,7 @@ fn main(console: Console, root: Dir):
             .expect("compile")
             .expect("the binary path lowers this program");
         let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort");
-        let ccore = cerr
-            .strip_prefix("runtime error: ")
-            .unwrap_or_else(|| panic!("compiled abort not routed: `{cerr}`"));
-        assert_eq!(ccore, want_core, "compiled abort core mismatch");
+        assert_eq!(cerr, format!("runtime error: {}", ierr.message), "compiled abort mismatch");
 
         // A valid bound still draws a value in range on both backends.
         let ok = "import rand\nfn main(console: Console, r: Rand):\n    let n = rand.below(r, 10)\n    console.print(__render(n >= 0 && n < 10))\n";

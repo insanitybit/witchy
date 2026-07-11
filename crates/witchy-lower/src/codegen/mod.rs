@@ -609,9 +609,9 @@ struct Codegen {
     cur_fn_has_type_vars: bool,
     /// The function being compiled, for error context.
     cur_fn_name: String,
-    /// Whether any lowered statement propagates a source site to a routed abort.
-    /// The module assembler uses this to declare the failure-only exported global.
-    uses_abort_sites: bool,
+    /// Whether any lowered statement propagates a source site to a host-backed
+    /// operation. The assembler uses this to declare the failure-only global.
+    uses_diagnostic_sites: bool,
     /// Phase 0 (rfcs/language-evolution.md): typeck's resolved types for the
     /// EXACT module instance being compiled — the authoritative fallback
     /// wherever the local tracking maps come up empty.
@@ -1028,7 +1028,7 @@ impl Codegen {
             cur_fn_own_param: None,
             cur_fn_has_type_vars: false,
             cur_fn_name: String::new(),
-            uses_abort_sites: false,
+            uses_diagnostic_sites: false,
             type_table: witchy_types::typeck::TypeTable::default(),
             uses_list_push_cap: false,
             field_caps: HashSet::new(),
@@ -3342,20 +3342,20 @@ impl Codegen {
                 _ => return None,
             }
             // Derive source-site propagation from the lowered artifact, not from
-            // a second list of language operations. Abort-capable helpers receive
-            // the packed site as a final argument and publish it only on their
-            // actual abort edge; successful nested calls therefore cannot stale
-            // an outer operation's location.
-            if assembly::wir_seq_calls_abort(&seq[stmt_start..]) {
+            // a second list of language operations. Host-backed helpers receive
+            // the packed site as a final argument and publish it only at their
+            // host edge; successful nested calls therefore cannot stale an outer
+            // operation's location.
+            if assembly::wir_seq_needs_diagnostic_site(&seq[stmt_start..]) {
                 let func = self.cur_fn_name.clone();
                 let func_ptr = self.intern(&func);
                 let line = block.lines.get(i).copied().filter(|line| *line != u32::MAX).unwrap_or(0);
                 let site = witchy_syntax::diag::pack_site(func_ptr, line);
                 let mut stmt_seq = seq.split_off(stmt_start);
-                let attached = assembly::attach_abort_sites(&mut stmt_seq, site);
-                debug_assert!(attached, "detected abort path must accept a source site");
+                let attached = assembly::attach_diagnostic_sites(&mut stmt_seq, site);
+                debug_assert!(attached, "detected host path must accept a source site");
                 seq.extend(stmt_seq);
-                self.uses_abort_sites = true;
+                self.uses_diagnostic_sites = true;
             }
             // Reset the cap of any inplace_push var killed AFTER this statement
             // (binary path), positioned here in the seq. Read-only — the kills

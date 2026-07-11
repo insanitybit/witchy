@@ -324,11 +324,11 @@ message, not merely on the fact of erroring.
   witchy-string pointer (or `0`). The interpreter and native host use the same
   renderer. The dependency-free browser host mirrors the small table, pinned by
   a compiled test matrix covering every pure template.
-- **`__witchy_abort_site` carries source location.** Modules with routed aborts
+- **`__witchy_diagnostic_site` carries source location.** Modules with routed failures
   export one mutable `i64`: high 32 bits are a static witchy-string pointer to
   the lexical function name, low 32 bits are the source line. Lowered calls pass
-  that packed site as a final argument to abort-capable WIR helpers; a helper
-  writes the global only on its actual host-abort edge. Successful nested calls
+  that packed site as a final argument to host-backed WIR helpers; a helper
+  writes the global only on its actual host edge. Successful nested calls
   and async interleavings therefore cannot stale an outer operation's location.
   Zero means unavailable.
 - **Exact error parity is enforced** by `witchy parity`: every both-error outcome

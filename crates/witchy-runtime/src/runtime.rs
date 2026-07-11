@@ -429,7 +429,9 @@ impl Vm {
         let run = self
             .instance
             .get_typed_func::<(), ()>(&mut self.store, "run")?;
-        run.call(&mut self.store, ())?;
+        if let Err(error) = run.call(&mut self.store, ()) {
+            return Err(self.contextualize_run_error(error));
+        }
         self.heap_sweep()?;
         if std::env::var_os("WITCHY_REGION_STATS").is_some_and(|v| v == "1") {
             if let Some(bytes) = self.region_copy_bytes() {
@@ -437,6 +439,34 @@ impl Vm {
             }
         }
         Ok(())
+    }
+
+    /// Attach the source site published immediately before a host-backed
+    /// operation. Guest-routed aborts already carry their complete diagnostic;
+    /// capability host failures arrive as a bare core and are completed here.
+    fn contextualize_run_error(&mut self, error: Error) -> Error {
+        let core = error.root_cause().to_string();
+        if core.starts_with("runtime error: ") {
+            return error;
+        }
+        let site = self
+            .instance
+            .get_global(&mut self.store, "__witchy_diagnostic_site")
+            .and_then(|global| global.get(&mut self.store).i64())
+            .unwrap_or(0);
+        if site == 0 {
+            return error;
+        }
+        let (func_ptr, line) = witchy_syntax::diag::unpack_site(site);
+        let func = if func_ptr == 0 {
+            String::new()
+        } else {
+            self.instance
+                .get_memory(&mut self.store, "memory")
+                .and_then(|memory| read_wstr(memory.data(&self.store), func_ptr as i32).ok())
+                .unwrap_or_default()
+        };
+        Error::msg(witchy_syntax::diag::runtime_error(&func, line, &core))
     }
 
     /// (RFC-0023) After the run, prove every checked allocation's trailing redzone is
@@ -915,7 +945,7 @@ fn host_witchy_abort(
     // Read the string hole only for a template that carries one, and only for a
     // non-null pointer (a defensive read: a crafted module could pass junk, but
     // `read_wstr` fails closed on an out-of-bounds slice).
-    let site = guest_i64_global(&mut caller, "__witchy_abort_site").unwrap_or(0);
+    let site = guest_i64_global(&mut caller, "__witchy_diagnostic_site").unwrap_or(0);
     let (func_ptr, line) = witchy_syntax::diag::unpack_site(site);
     let (s, func) = if str_ptr != 0 || func_ptr != 0 {
         let mem = memory_of(&mut caller)?;

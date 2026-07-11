@@ -13,7 +13,7 @@ tracking:
 > **Implementation update (2026-07-10, branch
 > `fix/bug107-strict-abort-diagnostics`).** The original message channel is
 > extended to complete diagnostic parity. A single exported mutable `i64`
-> (`__witchy_abort_site`) carries an interned lexical-function pointer in its
+> (`__witchy_diagnostic_site`) carries an interned lexical-function pointer in its
 > high 32 bits and the source line in its low 32 bits (§c). Codegen threads the
 > site through helpers from the lowered WIR's actual abort dependencies, not from
 > a second hand-maintained operation list; the global changes only on an abort
@@ -130,25 +130,25 @@ ABI (appended to the existing prelude index contract in `wir_prelude`).
 
 The interpreter prefixes ``runtime error: `module.func`, line N: …``
 (`rt_at_line`, `crates/witchy-interp/src/interpreter.rs`). Compiled modules that
-can route an abort export one mutable `i64` global named
-`__witchy_abort_site`. Its high 32 bits are a pointer to an interned static
+can reach a host-backed failure export one mutable `i64` global named
+`__witchy_diagnostic_site`. Its high 32 bits are a pointer to an interned static
 witchy string containing the lexical function name; its low 32 bits are the
-source line. Zero means unavailable. The abort host reads the packed value and
-the named string before applying the shared `runtime_error` formatter. The
-four-argument host-import signature therefore stays unchanged.
+source line. Zero means unavailable. Routed aborts read the packed value in the
+host import; other host errors are contextualized when `Vm::run` surfaces them.
+The four-argument abort-import signature therefore stays unchanged.
 
 Codegen already has a line for each source statement. After lowering one
-statement, it asks the WIR artifact whether that statement directly calls
-`__witchy_abort` or reaches it through the helper registry's transitive
-`import_deps`. If so, every abort-capable helper call receives the packed site as
+statement, it asks the WIR artifact whether that statement directly reaches a
+host import or does so through the helper registry's transitive `import_deps`.
+If so, every host-backed helper call receives the packed site as
 a final `i64` argument. Module assembly applies the same registry-derived rule
 to helper-to-helper calls and adds the site parameter to those helpers. A helper
-writes the exported global only immediately before its host-abort edge.
+writes the exported global only immediately before its actual host edge.
 
 This placement is compositional. Nested arguments finish before the outer
 helper receives its site; a successful nested call and an async interleave do
 not mutate diagnostic state. The WIR helper registry remains the single owner
-of abort reachability, with no parallel source-operation list or custom section.
+of host reachability, with no parallel source-operation list or custom section.
 
 Failing callees publish their more precise innermost statement; successful
 functions and closures restore the caller's complete diagnostic context in the
@@ -194,11 +194,11 @@ documented nowhere user-facing).
 ### Binary-size cost
 
 Message bodies remain host-side templates: **zero guest bytes** per static
-message. There is no site table. A module that can route an abort gains one
+message. There is no site table. A module that can reach a host failure gains one
 exported mutable `i64`, interned lexical-owner strings, and one trailing `i64`
-site argument at each abort-capable helper call. The global write executes only
-inside the failing branch, immediately before the host abort. Bounds-elided
-operations have no abort dependency and pay neither cost. `fail`'s dynamic
+site argument at each host-backed helper call. The global write executes only
+immediately before the host edge. Bounds-elided operations have no host dependency
+and pay neither cost. `fail`'s dynamic
 strings were already in the data segment. The extra constant argument on hot
 calls such as `list.at` is the measurable risk; benchmark results must stay
 within noise before merge. Static nonzero remainder divisors, and division
@@ -235,7 +235,7 @@ prove those cases cannot reach a diagnostic edge.
 ## Drawbacks
 
 - **A new ABI surface.** `__witchy_abort`, stable template ids, and the packed
-  `__witchy_abort_site` global are part of the compiled contract. Mitigated by
+  `__witchy_diagnostic_site` global are part of the compiled contract. Mitigated by
   the exact differential gate and browser matrix: compiler/host skew fails
   immediately.
 - **Every host must implement it.** wasmtime runtime, browser shim, and any
@@ -243,7 +243,7 @@ prove those cases cannot reach a diagnostic edge.
   fails at instantiation (loud), not at first abort (silent) — that is the
   right failure mode, but it is still a checklist item.
 - **Hot-path cost of site propagation** — one extra `i64` constant argument on
-  an abort-capable helper call; the global write is failure-only. The argument
+  a host-backed helper call; the global write occurs only at the host edge. The argument
   cost is small but nonzero and benchmark-gated.
 - **A small host mirror remains in JavaScript.** Native code and the interpreter
   share the Rust renderer; the dependency-free browser host duplicates the

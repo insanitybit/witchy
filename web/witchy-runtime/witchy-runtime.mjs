@@ -553,7 +553,7 @@ export async function instantiate(wasmBytes, opts = {}) {
     __witchy_abort(template, a, b, strPtr) {
       const s = strPtr !== 0 ? readWstrText(strPtr) : "";
       const core = renderDiag(Number(template), a, b, s);
-      const site = BigInt(instance?.exports.__witchy_abort_site?.value || 0n);
+      const site = BigInt(instance?.exports.__witchy_diagnostic_site?.value || 0n);
       const funcPtr = Number((site >> 32n) & 0xffffffffn);
       const line = Number(site & 0xffffffffn);
       const func = funcPtr !== 0 ? readWstrText(funcPtr) : "";
