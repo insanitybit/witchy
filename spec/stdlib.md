@@ -2100,10 +2100,6 @@ Transform the Err value, leaving an Ok untouched.
 
 The Err value, or `default` if it's Ok. This is the error-side counterpart of `unwrap_or`: it is a defaulting helper, not a strict assertion that `r` is Err.
 
-#### `fn unwrap_err(r: Result(a, e), default: e) -> e`
-
-Compatibility alias for `unwrap_err_or`. Prefer `unwrap_err_or` in new code so the defaulting behavior is visible at the call site.
-
 #### `fn unwrap_or_else(r: Result(a, e), f: fn() -> a) -> a`
 
 The Ok value, or the result of calling `f` (a lazily-computed default).

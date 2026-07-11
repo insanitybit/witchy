@@ -2,7 +2,7 @@
 
 Severity: LOW
 Status: FIXED
-Verified: 2026-07-07 CODE on branch worktree-wt-bug-519-result-helper
+Verified: 2026-07-11 CODE on branch cleanup/result-unwrap-err-alias
 Component: `std/result`, stdlib naming consistency, RFC-0044 error-shape cleanup
 
 ## Problem
@@ -29,16 +29,15 @@ result is an `Err`.
 result.unwrap_err_or(r, default)
 ```
 
-`unwrap_err` remains as a compatibility alias that delegates to
-`unwrap_err_or`, but its docs now explicitly say to prefer `unwrap_err_or` in
-new code so the defaulting contract is visible at the call site.
+The misleading `unwrap_err` spelling is deleted. This is a pre-0.1 clean break:
+keeping a zero-call-site compatibility alias would contradict RFC-0044's
+explicit delete-not-deprecate rule and leave two names for one operation.
 
 ## Acceptance
 
-- The public stdlib docs no longer teach `unwrap_err` as the primary defaulting
-  operation under a strict-looking name.
-- Existing callers of `unwrap_err(r, default)` keep working.
+- The public stdlib exposes no strict-looking `unwrap_err` defaulting helper.
 - The clearer `unwrap_err_or(r, default)` helper is documented.
+- There were no Witchy call sites to migrate.
 
 ## Verification
 
