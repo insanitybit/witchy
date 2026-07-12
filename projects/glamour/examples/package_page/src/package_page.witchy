@@ -51,7 +51,7 @@ fn footprint_chips(caps: List(String)) -> VNode(Msg):
     else:
         var cs = []
         for c in caps:
-            cs = list.push(cs, chip(c))
+            cs.push(chip(c))
         glamour.element("div", [glamour.prop("class", "chips")], cs)
 
 fn tab_button(label: String, msg: Msg, active: Bool) -> VNode(Msg):
@@ -66,9 +66,9 @@ fn view(tab: Int) -> VNode(Msg):
             glamour.element("section", [glamour.prop("class", "readme")], [markdown.to_vnode(pkg_readme())])
     glamour.element("article", [glamour.prop("class", "package")], [
         glamour.element("h1", [glamour.prop("class", "package-name")], [glamour.text(pkg_name())]),
-        glamour.element("div", [glamour.prop("class", "package-version")], [glamour.text("v" + pkg_version())]),
+        glamour.element("div", [glamour.prop("class", "package-version")], [glamour.text("v${pkg_version()}")]),
         footprint_chips(pkg_caps()),
-        glamour.element("pre", [glamour.prop("class", "install")], [glamour.text("witchy add " + pkg_name())]),
+        glamour.element("pre", [glamour.prop("class", "install")], [glamour.text("witchy add ${pkg_name()}")]),
         glamour.element("nav", [glamour.prop("class", "tabs")], [
             tab_button("README", ShowReadme, tab == 0),
             tab_button("API docs", ShowDocs, tab == 1),
@@ -106,4 +106,5 @@ pub fn export_step(input: String) -> String:
     glamour.step_with(input, view, update, parse_model, parse_msg, model_to_json, msg_to_json)
 
 fn main(console: Console):
-    console.print(export_step("{\"model\": 0}") + "\n")
+    let output = export_step("{\"model\": 0}")
+    console.print("${output}\n")

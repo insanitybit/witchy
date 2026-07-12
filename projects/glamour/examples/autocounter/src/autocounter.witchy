@@ -93,4 +93,5 @@ pub fn export_step(ui: UiRoot, input: String) -> String:
 // initial render carries no msg, so its command is `{"cmd":"none"}`; click/Tick
 // steps carry `{"cmd":"after","ms":1000,"msg":{...Tick...}}`.
 fn main(console: Console, ui: UiRoot):
-    console.print(export_step(ui, "{\"model\": 0}") + "\n")
+    let output = export_step(ui, "{\"model\": 0}")
+    console.print("${output}\n")

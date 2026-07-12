@@ -152,7 +152,7 @@ fn index_view(runes: List(Rune)) -> VNode(Msg):
     var cards: List(VNode(Msg)) = []
     var i = 0
     for r in runes:
-        cards = list.push(cards, index_card(r, i))
+        cards.push(index_card(r, i))
         i = i + 1
     let heading = glamour.element(
         "h2",
@@ -232,12 +232,12 @@ fn trust_panel(verified: Bool, freshness: String, provenance: String) -> VNode(M
     let tuf_line = glamour.element(
         "div",
         [glamour.prop("class", "trust-tuf")],
-        [glamour.text("TUF: " + freshness)],
+        [glamour.text("TUF: ${freshness}")],
     )
     let prov_line = glamour.element(
         "div",
         [glamour.prop("class", "trust-prov")],
-        [glamour.text("provenance: " + provenance)],
+        [glamour.text("provenance: ${provenance}")],
     )
     glamour.element(
         "div",
@@ -259,7 +259,7 @@ fn card_body(name: String, version: String, caps: List(String), label: String) -
     let ver = glamour.element(
         "div",
         [glamour.prop("class", "rune-version")],
-        [glamour.text("v" + version)],
+        [glamour.text("v${version}")],
     )
     let caps_row = cap_row(caps)
     let prov = glamour.element(
@@ -283,7 +283,7 @@ fn cap_row(caps: List(String)) -> VNode(Msg):
     else:
         var badges: List(VNode(Msg)) = []
         for c in caps:
-            badges = list.push(badges, cap_badge(c))
+            badges.push(cap_badge(c))
         glamour.element("div", [glamour.prop("class", "cap-row")], badges)
 
 // One capability badge — `<span class="cap-badge">Net</span>`. The capability name
@@ -321,27 +321,27 @@ fn tokenize(src: String) -> List(Token):
         let c = list.at(cs, i)
         if is_slash_slash(cs, i, n):
             let (text, j) = read_line_comment(cs, i, n)
-            toks = list.push(toks, Tok("com", text))
+            toks.push(Tok("com", text))
             i = j
         else:
             if c == "\"":
                 let (text, j) = read_string(cs, i, n)
-                toks = list.push(toks, Tok("str", text))
+                toks.push(Tok("str", text))
                 i = j
             else:
                 if is_digit(c):
                     let (text, j) = read_number(cs, i, n)
-                    toks = list.push(toks, Tok("num", text))
+                    toks.push(Tok("num", text))
                     i = j
                 else:
                     if is_ident_start(c):
                         let (word, j) = read_ident(cs, i, n)
                         let kind = if is_keyword(word): "kw" else: ""
-                        toks = list.push(toks, Tok(kind, word))
+                        toks.push(Tok(kind, word))
                         i = j
                     else:
                         let (text, j) = read_plain(cs, i, n)
-                        toks = list.push(toks, Tok("", text))
+                        toks.push(Tok("", text))
                         i = j
     toks
 
@@ -424,7 +424,7 @@ fn highlight(src: String) -> VNode(Msg):
     let toks = tokenize(src)
     var spans: List(VNode(Msg)) = []
     for t in toks:
-        spans = list.push(spans, render_token(t))
+        spans.push(render_token(t))
     let code = glamour.element("code", [], spans)
     glamour.element("pre", [glamour.prop("class", "coven-source")], [code])
 
@@ -502,4 +502,5 @@ pub fn export_step(input: String) -> String:
 // A `main` so the rune also runs as a CLI program (and the compiled module gets a
 // `run` export): render the initial model (the index) and print the wire JSON.
 fn main(console: Console):
-    console.print(export_step("{\"model\": -1}") + "\n")
+    let output = export_step("{\"model\": -1}")
+    console.print("${output}\n")

@@ -63,7 +63,7 @@ fn msg_to_json(m: Msg) -> Json:
 // ---------------------------------------------------------------------------
 fn card(name: String, version: String, caps: List(String), provenance: String) -> VNode(Msg):
     let heading = glamour.element("h3", [glamour.prop("class", "rune-name")], [glamour.text(name)])
-    let ver = glamour.element("div", [glamour.prop("class", "rune-version")], [glamour.text("v" + version)])
+    let ver = glamour.element("div", [glamour.prop("class", "rune-version")], [glamour.text("v${version}")])
 
     let caps_row = cap_row(caps)
     let prov = glamour.element("div", [glamour.prop("class", "rune-provenance")], [glamour.text(provenance)])
@@ -82,7 +82,7 @@ fn cap_row(caps: List(String)) -> VNode(Msg):
     else:
         var badges: List(VNode(Msg)) = []
         for c in caps:
-            badges = list.push(badges, cap_badge(c))
+            badges.push(cap_badge(c))
         glamour.element("div", [glamour.prop("class", "cap-row")], badges)
 
 // One capability badge — `<span class="cap-badge">Net</span>`. The capability name
@@ -118,4 +118,5 @@ fn field_or(doc: Json, key: String, fallback: String) -> String:
 // `run` export): render a tiny sample card and print the wire JSON.
 fn main(console: Console):
     let sample = "{\"name\": \"acme/widget\", \"version\": \"1.2.0\", \"caps\": [\"Net\", \"Dir\"], \"provenance\": \"trusted-publisher | issuer=ci@acme\"}"
-    console.print(export_render(sample) + "\n")
+    let output = export_render(sample)
+    console.print("${output}\n")

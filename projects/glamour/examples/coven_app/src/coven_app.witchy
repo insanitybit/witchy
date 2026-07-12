@@ -29,10 +29,10 @@ fn update(m: Model, msg: Msg, fetch: UiFetch, route_cap: UiRoute) -> (Model, Cmd
                 Route(path) ->
                     if string.starts_with(path, "/p/"):
                         let name = string.drop(path, 3)
-                        (Model(path, cat, pkg), glamour.http_get(fetch, "/api/coven/doc?name=" + name, "GotPackage"))
+                        (Model(path, cat, pkg), glamour.http_get(fetch, "/api/coven/doc?name=${name}", "GotPackage"))
                     else:
                         (Model("/", cat, pkg), glamour.http_get(fetch, "/api/coven/catalog", "GotCatalog"))
-                Goto(name) -> (Model(route, cat, pkg), glamour.navigate(route_cap, "/p/" + name))
+                Goto(name) -> (Model(route, cat, pkg), glamour.navigate(route_cap, "/p/${name}"))
                 GotCatalog(_status, body) -> (Model(route, body, pkg), NoCmd)
                 GotPackage(_status, body) -> (Model(route, cat, body), NoCmd)
 
@@ -44,7 +44,7 @@ fn catalog_names(body: String) -> List(String):
                 Some(runesj) ->
                     var names = []
                     for r in json.as_array(runesj).unwrap_or([]):
-                        names = list.push(names, json.get_string(r, "name").unwrap_or("?"))
+                        names.push(json.get_string(r, "name").unwrap_or("?"))
                     names
                 None -> []
         Err(_e) -> []
@@ -53,7 +53,7 @@ fn catalog_view(body: String) -> VNode(Msg):
     var items = []
     for name in catalog_names(body):
         let btn = glamour.element("button", [glamour.prop("class", "rune-name"), glamour.on("click", Goto(name))], [glamour.text(name)])
-        items = list.push(items, glamour.keyed(name, glamour.element("li", [glamour.prop("class", "rune-row")], [btn])))
+        items.push(glamour.keyed(name, glamour.element("li", [glamour.prop("class", "rune-row")], [btn])))
     glamour.element("section", [glamour.prop("class", "catalog")], [glamour.element("h1", [], [glamour.text("Runes")]), glamour.element("ul", [glamour.prop("class", "rune-list")], items)])
 
 fn doc_markdown(body: String) -> String:
@@ -127,4 +127,5 @@ pub fn export_step(ui: UiRoot, input: String) -> String:
     glamour.step_with(input, view, upd, parse_model, parse_msg, model_to_json, msg_to_json)
 
 fn main(console: Console, ui: UiRoot):
-    console.print(export_step(ui, "{\"model\": {\"route\": \"/\", \"catalog\": \"\", \"package\": \"\"}}") + "\n")
+    let output = export_step(ui, "{\"model\": {\"route\": \"/\", \"catalog\": \"\", \"package\": \"\"}}")
+    console.print("${output}\n")

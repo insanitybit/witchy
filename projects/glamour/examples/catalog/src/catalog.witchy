@@ -47,22 +47,21 @@ fn caps_row(caps: List(String)) -> VNode(Msg):
     else:
         var cs = []
         for c in caps:
-            cs = list.push(cs, chip(c))
+            cs.push(chip(c))
         glamour.element("span", [glamour.prop("class", "chips")], cs)
 
 fn card(name: String, ver: String, caps: List(String)) -> VNode(Msg):
     glamour.element("li", [glamour.prop("class", "rune-row")], [
         glamour.element("button", [glamour.prop("class", "rune-name"), glamour.on("click", Goto(name))], [glamour.text(name)]),
-        glamour.element("span", [glamour.prop("class", "rune-version")], [glamour.text("v" + ver)]),
+        glamour.element("span", [glamour.prop("class", "rune-version")], [glamour.text("v${ver}")]),
         caps_row(caps),
     ])
 
 fn view(query: String) -> VNode(Msg):
     var items = []
-    for r in catalog():
-        let (name, ver, caps) = r
+    for name, ver, caps in catalog():
         if matches(name, caps, query):
-            items = list.push(items, glamour.keyed(name, card(name, ver, caps)))
+            items.push(glamour.keyed(name, card(name, ver, caps)))
     glamour.element("section", [glamour.prop("class", "catalog")], [
         glamour.element("h1", [], [glamour.text("Runes")]),
         glamour.element("input", [
@@ -77,7 +76,7 @@ fn view(query: String) -> VNode(Msg):
 fn update(query: String, msg: Msg, route: UiRoute) -> (String, Cmd(Msg)):
     match msg:
         Search(q) -> (q, NoCmd)
-        Goto(name) -> (query, glamour.navigate(route, "/p/" + name))
+        Goto(name) -> (query, glamour.navigate(route, "/p/${name}"))
 
 // --- MVU glue ----------------------------------------------------------------
 fn parse_model(j: Json) -> String:
@@ -114,4 +113,5 @@ pub fn export_step(ui: UiRoot, input: String) -> String:
     glamour.step_with(input, view, upd, parse_model, parse_msg, model_to_json, msg_to_json)
 
 fn main(console: Console, ui: UiRoot):
-    console.print(export_step(ui, "{\"model\": \"\"}") + "\n")
+    let output = export_step(ui, "{\"model\": \"\"}")
+    console.print("${output}\n")

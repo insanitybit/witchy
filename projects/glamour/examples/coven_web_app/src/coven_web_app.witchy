@@ -47,13 +47,13 @@ fn fetch_for(fetch: UiFetch, path: String) -> Cmd(Msg):
         glamour.http_get(fetch, "/api/coven/rootpub", "GotData")
     else if string.starts_with(path, "/d/"):
         let (name, ver) = name_ver(path)
-        glamour.http_get(fetch, "/api/coven/doc?name=" + name + "&version=" + ver, "GotData")
+        glamour.http_get(fetch, "/api/coven/doc?name=${name}&version=${ver}", "GotData")
     else if string.starts_with(path, "/s/"):
         let (name, ver) = name_ver(path)
-        glamour.http_get(fetch, "/api/coven/source?name=" + name + "&version=" + ver, "GotData")
+        glamour.http_get(fetch, "/api/coven/source?name=${name}&version=${ver}", "GotData")
     else if string.starts_with(path, "/v/"):
         let (name, ver) = name_ver(path)
-        glamour.http_get(fetch, "/api/coven/record?name=" + name + "&version=" + ver, "GotData")
+        glamour.http_get(fetch, "/api/coven/record?name=${name}&version=${ver}", "GotData")
     else:
         glamour.http_get(fetch, "/api/coven/catalog", "GotData")
 
@@ -83,7 +83,7 @@ fn view(m: Model) -> VNode(Msg):
             glamour.element("div", [glamour.prop("class", "app")], [header(sess, notice), body(route, data, sess, query)])
 
 fn header(sess: String, notice: String) -> VNode(Msg):
-    let auth = if string.is_empty(sess): glamour.element("span", [glamour.prop("class", "nav-auth")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Login)], [glamour.text("sign in with passkey")]), glamour.element("button", [glamour.prop("class", "button link ghost"), glamour.on("click", Register)], [glamour.text("register")])]) else: glamour.element("span", [glamour.prop("class", "nav-auth")], [glamour.element("span", [glamour.prop("class", "session-id")], [glamour.text("● signed in as " + sess)])])
+    let auth = if string.is_empty(sess): glamour.element("span", [glamour.prop("class", "nav-auth")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Login)], [glamour.text("sign in with passkey")]), glamour.element("button", [glamour.prop("class", "button link ghost"), glamour.on("click", Register)], [glamour.text("register")])]) else: glamour.element("span", [glamour.prop("class", "nav-auth")], [glamour.element("span", [glamour.prop("class", "session-id")], [glamour.text("● signed in as ${sess}")])])
 
     glamour.element("nav", [glamour.prop("class", "topnav")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/"))], [glamour.text("Runes")]), glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/trust"))], [glamour.text("Trust")]), auth, glamour.element("span", [glamour.prop("class", "muted notice")], [glamour.text(notice)])])
 
@@ -115,7 +115,7 @@ fn catalog_view(data: String, query: String) -> VNode(Msg):
         let author = json.get_string(r, "uploaded_by").unwrap_or("unknown")
         let st = json.get_string(r, "state").unwrap_or("staged")
         if string.is_empty(q) || rune_matches(name, caps, author, q):
-            items = list.push(items, glamour.keyed(name, rune_card(name, ver, caps, author, st, gi(r, "released_at"))))
+            items.push(glamour.keyed(name, rune_card(name, ver, caps, author, st, gi(r, "released_at"))))
     let shown = list.length(items)
     let total = list.length(all)
     let label = if string.is_empty(query): "${total} runes" else: "${shown} of ${total} runes"
@@ -124,8 +124,8 @@ fn catalog_view(data: String, query: String) -> VNode(Msg):
 // One catalog row (crates.io card): name + version is the link; the right rail carries the
 // lifecycle badge, the author byline, and the release date; the footprint is a quiet "needs" line.
 fn rune_card(name: String, ver: String, caps: List(String), author: String, st: String, released: Int) -> VNode(Msg):
-    let date_node = if released > 0: glamour.element("span", [glamour.prop("class", "meta-date")], [glamour.text("published " + fmt_date(released))]) else: glamour.element("span", [glamour.prop("class", "meta-date dim")], [glamour.text("not yet released")])
-    glamour.element("li", [glamour.prop("class", "rune-row")], [glamour.element("div", [glamour.prop("class", "rune-main")], [glamour.element("button", [glamour.prop("class", "rune-name"), glamour.on("click", Visit("/v/" + wire(name) + "/" + ver))], [glamour.text(name), glamour.element("span", [glamour.prop("class", "ver")], [glamour.text("v" + ver)])]), needs(caps)]), glamour.element("div", [glamour.prop("class", "rune-meta")], [state_badge(st), glamour.element("span", [glamour.prop("class", "meta-by")], [glamour.text("by " + author)]), date_node])])
+    let date_node = if released > 0: glamour.element("span", [glamour.prop("class", "meta-date")], [glamour.text("published ${fmt_date(released)}")]) else: glamour.element("span", [glamour.prop("class", "meta-date dim")], [glamour.text("not yet released")])
+    glamour.element("li", [glamour.prop("class", "rune-row")], [glamour.element("div", [glamour.prop("class", "rune-main")], [glamour.element("button", [glamour.prop("class", "rune-name"), glamour.on("click", Visit("/v/${wire(name)}/${ver}"))], [glamour.text(name), glamour.element("span", [glamour.prop("class", "ver")], [glamour.text("v${ver}")])]), needs(caps)]), glamour.element("div", [glamour.prop("class", "rune-meta")], [state_badge(st), glamour.element("span", [glamour.prop("class", "meta-by")], [glamour.text("by ${author}")]), date_node])])
 
 // the quiet, secondary footprint line: small chips, still color-coded by danger but low-key.
 fn needs(caps: List(String)) -> VNode(Msg):
@@ -134,11 +134,11 @@ fn needs(caps: List(String)) -> VNode(Msg):
     else:
         var cs = []
         for c in caps:
-            cs = list.push(cs, glamour.element("span", [glamour.prop("class", "chip-sm cap-" + cap_kind(c))], [glamour.text(c)]))
+            cs.push(glamour.element("span", [glamour.prop("class", "chip-sm cap-${cap_kind(c)}")], [glamour.text(c)]))
         glamour.element("span", [glamour.prop("class", "needs")], cs)
 
 fn state_badge(st: String) -> VNode(Msg):
-    glamour.element("span", [glamour.prop("class", "badge state-" + st)], [glamour.text(st)])
+    glamour.element("span", [glamour.prop("class", "badge state-${st}")], [glamour.text(st)])
 
 fn gi(j: Json, k: String) -> Int:
     match json.get(j, k):
@@ -171,7 +171,7 @@ fn version_view(route: String, data: String, sess: String) -> VNode(Msg):
     let rows = record_rows(data)
     let controls = if string.is_empty(sess): glamour.element("p", [glamour.prop("class", "muted")], [glamour.text("sign in to promote or yank")]) else: glamour.element("div", [glamour.prop("class", "promote")], [glamour.element("button", [glamour.prop("class", "button"), glamour.on("click", Promote)], [glamour.text("promote")]), glamour.element("button", [glamour.prop("class", "button"), glamour.on("click", Yank)], [glamour.text("yank")])])
 
-    glamour.element("article", [glamour.prop("class", "version")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/"))], [glamour.text("← all runes")]), glamour.element("h1", [], [glamour.text(unwire(name)), glamour.element("span", [glamour.prop("class", "ver")], [glamour.text("v" + ver)])]), record_subhead(data), glamour.element("dl", [glamour.prop("class", "record")], rows), controls, glamour.element("div", [glamour.prop("class", "viewlinks")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/d/" + name + "/" + ver))], [glamour.text("API documentation →")]), glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/s/" + name + "/" + ver))], [glamour.text("source →")])])])
+    glamour.element("article", [glamour.prop("class", "version")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/"))], [glamour.text("← all runes")]), glamour.element("h1", [], [glamour.text(unwire(name)), glamour.element("span", [glamour.prop("class", "ver")], [glamour.text("v${ver}")])]), record_subhead(data), glamour.element("dl", [glamour.prop("class", "record")], rows), controls, glamour.element("div", [glamour.prop("class", "viewlinks")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/d/${name}/${ver}"))], [glamour.text("API documentation →")]), glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/s/${name}/${ver}"))], [glamour.text("source →")])])])
 
 // source: every file of the package, rendered inline as <pre><code> via glamour.text. Untrusted
 // stranger-uploaded source is DATA, and glamour cannot produce an HTML sink, so it is XSS-immune
@@ -184,12 +184,12 @@ fn source_view(route: String, data: String) -> VNode(Msg):
         Err(_e) -> []
 
     var blocks = []
-    blocks = list.push(blocks, glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/v/" + name + "/" + ver))], [glamour.text("← " + unwire(name) + " @ " + ver)]))
-    blocks = list.push(blocks, glamour.element("h1", [], [glamour.text("source")]))
+    blocks.push(glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/v/${name}/${ver}"))], [glamour.text("← ${unwire(name)} @ ${ver}")]))
+    blocks.push(glamour.element("h1", [], [glamour.text("source")]))
     for f in files:
         let path = json.as_string(json.index(f, 0).unwrap_or(JsonNull)).unwrap_or("?")
         let contents = json.as_string(json.index(f, 1).unwrap_or(JsonNull)).unwrap_or("")
-        blocks = list.push(blocks, glamour.keyed(path, glamour.element("div", [glamour.prop("class", "srcfile")], [glamour.element("div", [glamour.prop("class", "srcpath")], [glamour.text(path)]), glamour.element("pre", [glamour.prop("class", "src")], [glamour.element("code", [], [glamour.text(contents)])])])))
+        blocks.push(glamour.keyed(path, glamour.element("div", [glamour.prop("class", "srcfile")], [glamour.element("div", [glamour.prop("class", "srcpath")], [glamour.text(path)]), glamour.element("pre", [glamour.prop("class", "src")], [glamour.element("code", [], [glamour.text(contents)])])])))
 
     glamour.element("article", [glamour.prop("class", "source")], blocks)
 
@@ -201,8 +201,8 @@ fn record_subhead(data: String) -> VNode(Msg):
             let st = json.get_string(doc, "state").unwrap_or("staged")
             let author = json.get_string(doc, "uploaded_by").unwrap_or("unknown")
             let released = gi(doc, "released_at")
-            let date_txt = if released > 0: "published " + fmt_date(released) else: "not yet released"
-            glamour.element("div", [glamour.prop("class", "version-meta")], [state_badge(st), glamour.element("span", [glamour.prop("class", "meta-by")], [glamour.text("by " + author)]), glamour.element("span", [glamour.prop("class", "meta-date")], [glamour.text(date_txt)])])
+            let date_txt = if released > 0: "published ${fmt_date(released)}" else: "not yet released"
+            glamour.element("div", [glamour.prop("class", "version-meta")], [state_badge(st), glamour.element("span", [glamour.prop("class", "meta-by")], [glamour.text("by ${author}")]), glamour.element("span", [glamour.prop("class", "meta-date")], [glamour.text(date_txt)])])
         Err(_e) -> glamour.text("")
 
 fn record_rows(data: String) -> List(VNode(Msg)):
@@ -240,7 +240,7 @@ fn chips(caps: List(String)) -> VNode(Msg):
     else:
         var cs = []
         for c in caps:
-            cs = list.push(cs, glamour.element("span", [glamour.prop("class", "chip cap cap-" + cap_kind(c))], [glamour.text(c)]))
+            cs.push(glamour.element("span", [glamour.prop("class", "chip cap cap-${cap_kind(c)}")], [glamour.text(c)]))
         glamour.element("span", [glamour.prop("class", "chips")], cs)
 
 // Classify a footprint capability so the UI can color-code authority: the dangerous ones
@@ -338,4 +338,5 @@ pub fn export_step(ui: UiRoot, input: String) -> String:
     glamour.step_with(input, view, upd, parse_model, parse_msg, model_to_json, msg_to_json)
 
 fn main(console: Console, ui: UiRoot):
-    console.print(export_step(ui, "{\"model\": {\"route\": \"/\", \"session\": \"\", \"data\": \"\", \"notice\": \"\"}}") + "\n")
+    let output = export_step(ui, "{\"model\": {\"route\": \"/\", \"session\": \"\", \"data\": \"\", \"notice\": \"\"}}")
+    console.print("${output}\n")

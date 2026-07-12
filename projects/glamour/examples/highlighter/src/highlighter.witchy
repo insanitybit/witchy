@@ -76,28 +76,28 @@ fn tokenize(src: String) -> List(Token):
         if is_slash_slash(cs, i, n):
             // `//` line comment to end of line (the newline is left for plain text).
             let (text, j) = read_line_comment(cs, i, n)
-            toks = list.push(toks, Tok("com", text))
+            toks.push(Tok("com", text))
             i = j
         else if c == "\"":
             // A string literal, quotes included; `\"` does not close it.
             let (text, j) = read_string(cs, i, n)
-            toks = list.push(toks, Tok("str", text))
+            toks.push(Tok("str", text))
             i = j
         else if is_digit(c):
             let (text, j) = read_number(cs, i, n)
-            toks = list.push(toks, Tok("num", text))
+            toks.push(Tok("num", text))
             i = j
         else if is_ident_start(c):
             let (word, j) = read_ident(cs, i, n)
             let kind = if is_keyword(word): "kw" else: if is_capability(word): "cap" else: ""
-            toks = list.push(toks, Tok(kind, word))
+            toks.push(Tok(kind, word))
             i = j
         else:
             // Plain run: anything that is not the start of a
             // classed token (whitespace, punctuation, operators),
             // coalesced so the tree stays small.
             let (text, j) = read_plain(cs, i, n)
-            toks = list.push(toks, Tok("", text))
+            toks.push(Tok("", text))
             i = j
     toks
 
@@ -192,7 +192,7 @@ fn highlight(src: String) -> VNode(Msg):
     let toks = tokenize(src)
     var spans: List(VNode(Msg)) = []
     for t in toks:
-        spans = list.push(spans, render_token(t))
+        spans.push(render_token(t))
     // <pre><code> … </code></pre> — the conventional code-block structure.
     let code = glamour.element("code", [], spans)
     glamour.element("pre", [], [code])
@@ -227,4 +227,5 @@ pub fn export_render(input: String) -> String:
 // A `main` so the rune also runs as a CLI program (and the compiled module gets a
 // `run` export): highlight a tiny sample and print the wire JSON.
 fn main(console: Console):
-    console.print(export_render("{\"src\": \"fn main():\\n    // hi\\n    print(\\\"x\\\")\"}") + "\n")
+    let output = export_render("{\"src\": \"fn main():\\n    // hi\\n    print(\\\"x\\\")\"}")
+    console.print("${output}\n")

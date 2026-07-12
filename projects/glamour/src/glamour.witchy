@@ -296,7 +296,7 @@ pub fn cmd_to_json(cmd: Cmd(msg), msg_to_json: fn(msg) -> Json) -> Json:
             var cjs: List(Json) = []
             for c in cmds:
                 let cj: Json = cmd_to_json(c, msg_to_json)
-                cjs = list.push(cjs, cj)
+                cjs.push(cj)
             JsonObject([("cmd", JsonString("batch")), ("cmds", JsonArray(cjs))])
         Http(fetch, method, url, body, tag) ->
             match fetch:
@@ -393,6 +393,7 @@ pub fn submit_secret(secret: SecretRef, cred: CredentialPort, on_done: String) -
 // characters `&lt;script&gt;`, never executable markup.
 // ---------------------------------------------------------------------------
 pub fn to_html(node: VNode(msg)) -> String:
+    // idiom-exempt: rendering assembles exact HTML bytes after escaping each dynamic field.
     match node:
         // (BUG-272) The renderer is a REGISTRY KEY, not URL path material. Validate it as
         // an opaque, non-path id; a value carrying `/`, `.`, `%`, `?`, `#` (which URL
@@ -471,6 +472,7 @@ fn name_alpha() -> String:
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 fn valid_tag_name(name: String) -> Bool:
+    // idiom-exempt: these suffixes define the accepted character sets.
     valid_name_with(name, name_alpha() + "0123456789-")
 
 fn valid_attr_name(name: String) -> Bool:
@@ -517,6 +519,7 @@ fn escape_attr(s: String) -> String:
 // namespace (browser URL resolution can normalize `..`/dot-segments out of a path). The JS
 // host re-checks the same grammar at the live iframe sink.
 fn valid_renderer_id(id: String) -> Bool:
+    // idiom-exempt: these literals define the renderer-id character set.
     if string.is_empty(id):
         false
     else:
@@ -538,6 +541,7 @@ fn valid_renderer_id(id: String) -> Bool:
 // separator is unambiguous and the mapping is injective. The JS host mirrors this exact
 // encoding (`secretSlot`), so `secret_ref` and the rendered `SecretField` name the same slot.
 fn slot_encode(form: String, field: String) -> String:
+    // idiom-exempt: this is a collision-resistant encoded key, not presentation text.
     slot_escape(form) + "/" + slot_escape(field)
 
 fn slot_escape(s: String) -> String:
@@ -549,6 +553,7 @@ fn slot_escape(s: String) -> String:
 // `,`/`space`/`|` as separators (e.g. "GET", "GET,POST", "GET POST"); a method is allowed only
 // if it appears as a whole token. Case-normalized to the uppercase HTTP-verb convention.
 fn method_allowed(methods: String, method: String) -> Bool:
+    // idiom-exempt: delimiters make the comma-separated membership check exact.
     let norm = string.replace(string.replace(string.to_upper(methods), " ", ","), "|", ",")
     string.contains("," + norm + ",", "," + string.to_upper(method) + ",")
 
@@ -613,11 +618,11 @@ fn node_json(node: VNode(msg), msg_to_json: fn(msg) -> Json) -> Json:
                         JsonArray([JsonString("on"), JsonString(event), mj])
                     OnInput(event, tag) ->
                         JsonArray([JsonString("oninput"), JsonString(event), JsonString(tag)])
-                ajs = list.push(ajs, aj)
+                ajs.push(aj)
             var kjs: List(Json) = []
             for c in children:
                 let cj: Json = node_json(c, msg_to_json)
-                kjs = list.push(kjs, cj)
+                kjs.push(cj)
             JsonObject([("el", JsonString(tag)), ("attrs", JsonArray(ajs)), ("kids", JsonArray(kjs))])
 
 // ===========================================================================
@@ -743,6 +748,7 @@ fn no_trailing_tokens(toks: List(HtmlTok), from: Int) -> Bool:
 // M1 + … . `parts.len() == holes.len() + 1`, so every gap gets exactly one
 // marker indexed by its position.
 fn weave(parts: List(String)) -> String:
+    // idiom-exempt: this emits the parser's NUL-delimited hole wire format.
     let nul = string.from_code(0)
     var out = ""
     var i = 0
@@ -797,23 +803,23 @@ fn lex_html(s: String) -> List(HtmlTok):
         if c == nul:
             // A hole marker `<NUL>N<NUL>` in TEXT position.
             if string.length(text) > 0:
-                out = list.push(out, TextRun(text))
+                out.push(TextRun(text))
                 text = ""
             let (idx, j) = read_marker(cs, i, nul)
-            out = list.push(out, HoleNode(idx))
+            out.push(HoleNode(idx))
             i = j
         else if c == "<":
             if string.length(text) > 0:
-                out = list.push(out, TextRun(text))
+                out.push(TextRun(text))
                 text = ""
             let (tok, j) = lex_tag(cs, i, nul)
-            out = list.push(out, tok)
+            out.push(tok)
             i = j
         else:
             text = text + c
             i = i + 1
     if string.length(text) > 0:
-        out = list.push(out, TextRun(text))
+        out.push(TextRun(text))
     out
 
 // Read a NUL-delimited marker `<NUL>digits<NUL>` starting at `i` (which is the
@@ -878,7 +884,7 @@ fn lex_attrs(cs: List(String), start: Int, nul: String) -> (List(HAttr), Int, Bo
             return (attrs, i + 2, true)
         else:
             let (attr, j) = lex_one_attr(cs, i, nul)
-            attrs = list.push(attrs, attr)
+            attrs.push(attr)
             i = j
     (attrs, i, false)
 
@@ -892,7 +898,7 @@ fn lex_one_attr(cs: List(String), start: Int, nul: String) -> (HAttr, Int):
         i = i + 1
     // No `=value`: a bare/boolean attribute (unsupported in this subset).
     if i >= n || list.at(cs, i) != "=":
-        (Bad("attribute `" + name + "` has no value — boolean attributes are unsupported"), i)
+        (Bad("attribute `${name}` has no value — boolean attributes are unsupported"), i)
     else:
         i = i + 1
         // Value: a bare `${N}` hole, a `"quoted"` value (static OR a single `"${N}"` hole),
@@ -908,7 +914,7 @@ fn lex_one_attr(cs: List(String), start: Int, nul: String) -> (HAttr, Int):
             let (value, j) = lex_attr_value(cs, i, nul)
             // A static value for an `on:` handler is rejected — events are data.
             if string.starts_with(name, "on:"):
-                (Bad("event `" + name + "` needs a \${msg} hole, not a static value"), j)
+                (Bad("event `${name}` needs a \${msg} hole, not a static value"), j)
             else:
                 (SProp(name, value), j)
 
@@ -928,7 +934,7 @@ fn lex_quoted_attr(cs: List(String), start: Int, nul: String, name: String) -> (
         if after_marker < n && list.at(cs, after_marker) == "\"":
             (hole_attr(name, idx), after_marker + 1)
         else:
-            (Bad("attribute `" + name + "` mixes static text and a \${hole} in a quoted value — unsupported"), scan_to_quote(cs, after_marker))
+            (Bad("attribute `${name}` mixes static text and a \${hole} in a quoted value — unsupported"), scan_to_quote(cs, after_marker))
     else:
         // Static (or mixed) text: read to the closing quote; a marker anywhere inside means
         // the value mixes static text and a hole.
@@ -942,9 +948,9 @@ fn lex_quoted_attr(cs: List(String), start: Int, nul: String, name: String) -> (
             k = k + 1
         let after = k + 1
         if has_hole:
-            (Bad("attribute `" + name + "` mixes static text and a \${hole} in a quoted value — unsupported"), after)
+            (Bad("attribute `${name}` mixes static text and a \${hole} in a quoted value — unsupported"), after)
         else if string.starts_with(name, "on:"):
-            (Bad("event `" + name + "` needs a \${msg} hole, not a static value"), after)
+            (Bad("event `${name}` needs a \${msg} hole, not a static value"), after)
         else:
             (SProp(name, v), after)
 
@@ -998,11 +1004,12 @@ fn parse_node(toks: List(HtmlTok), at: Int, holes: List(String)) -> (String, Int
             TextRun(s) -> (emit_text_literal(s), at + 1)
             HoleNode(idx) -> (emit_text_hole(idx, holes), at + 1)
             Close(name) ->
-                let _bad = fail("glamour html: unexpected closing tag </" + name + ">")
+                let _bad = fail("glamour html: unexpected closing tag </${name}>")
                 ("", at + 1)
             Open(name, attrs, self_close) -> parse_element(toks, at, name, attrs, self_close, holes)
 
 fn parse_element(toks: List(HtmlTok), at: Int, name: String, attrs: List(HAttr), self_close: Bool, holes: List(String)) -> (String, Int):
+    // idiom-exempt: this parser emits Witchy source and must preserve quoting byte-for-byte.
     if string.length(name) == 0:
         let _bad = fail("glamour html: a tag NAME may not be a \${hole} — the element name must be static")
         ("", at + 1)
@@ -1031,18 +1038,20 @@ fn parse_children(toks: List(HtmlTok), at: Int, name: String, holes: List(String
             if close_name == name:
                 closed = true
             else:
-                let _bad = fail("glamour html: expected </" + name + ">, found </" + close_name + ">")
+                let _bad = fail("glamour html: expected </${name}>, found </${close_name}>")
             done = true
             i = i + 1
         else:
             let (src, j) = parse_node(toks, i, holes)
-            kids = list.push(kids, src)
+            kids.push(src)
             i = j
     if !closed:
-        let _bad2 = fail("glamour html: unclosed <" + name + "> — missing its </" + name + ">")
+        let _bad2 = fail("glamour html: unclosed <${name}> — missing its </${name}>")
     (list.join(kids, ", "), i)
 
 // ---- emitters: produce witchy expression SOURCE ----
+
+// idiom-exempt: these emitters assemble Witchy source and preserve quoting byte-for-byte.
 
 // Static text -> `glamour.text("…")` with the literal string-escaped for
 // re-parsing. The qualified name resolves in glamour's module (hygiene).
@@ -1064,7 +1073,7 @@ fn emit_text_hole(idx: Int, holes: List(String)) -> String:
 fn emit_attrs(attrs: List(HAttr), holes: List(String)) -> String:
     var srcs = []
     for a in attrs:
-        srcs = list.push(srcs, emit_attr(a, holes))
+        srcs.push(emit_attr(a, holes))
     list.join(srcs, ", ")
 
 fn emit_attr(a: HAttr, holes: List(String)) -> String:
@@ -1073,7 +1082,7 @@ fn emit_attr(a: HAttr, holes: List(String)) -> String:
         HProp(name, idx) -> "glamour.prop(\"" + escape_src(name) + "\", " + list.at(holes, idx) + ")"
         HOn(event, idx) -> "glamour.on(\"" + escape_src(event) + "\", " + list.at(holes, idx) + ")"
         Bad(msg) ->
-            let _bad = fail("glamour html: " + msg)
+            let _bad = fail("glamour html: ${msg}")
             ""
 
 // Escape a string so it can be re-parsed as a witchy string LITERAL (the emitted
