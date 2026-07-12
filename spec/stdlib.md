@@ -2431,9 +2431,13 @@ A request header, looked up case-insensitively, or None.
 
 #### `fn request_body(req: Request) -> String`
 
-#### `fn json_body(req: Request) -> Result(Json, String)`
+#### `fn json_body(req: Request) -> Result(Json, json.DecodeError)`
 
-Decode the request body as JSON — the role of axum's `Json` extractor. Returns an Err (rather than panicking) on malformed input, so handlers stay total.
+Decode the request body as JSON — the role of axum's `Json` extractor. Returns a typed Err (rather than panicking) on malformed input, so handlers stay total without collapsing trust-boundary failures to display text.
+
+#### `fn json_body_string(req: Request) -> Result(Json, String)`
+
+Compatibility bridge for applications that intentionally want rendered errors.
 
 #### `fn form_body(req: Request) -> List((String, String))`
 

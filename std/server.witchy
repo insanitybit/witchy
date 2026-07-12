@@ -66,10 +66,16 @@ pub fn request_body(req: Request) -> String:
         Request(_m, _p, _pa, _q, _h, b) -> b
 
 // Decode the request body as JSON — the role of axum's `Json` extractor. Returns
-// an Err (rather than panicking) on malformed input, so handlers stay total.
-pub fn json_body(req: Request) -> Result(Json, String):
-    let doc = json.decode(request_body(req))?
-    Ok(doc)
+// a typed Err (rather than panicking) on malformed input, so handlers stay total
+// without collapsing trust-boundary failures to display text.
+pub fn json_body(req: Request) -> Result(Json, json.DecodeError):
+    json.decode(request_body(req))
+
+// Compatibility bridge for applications that intentionally want rendered errors.
+pub fn json_body_string(req: Request) -> Result(Json, String):
+    match json_body(req):
+        Ok(doc) -> Ok(doc)
+        Err(e) -> Err(json.decode_error_message(e))
 
 // Parse an `application/x-www-form-urlencoded` body (`a=1&b=2`) into key/value
 // pairs — for HTML form POSTs.

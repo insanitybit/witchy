@@ -2047,6 +2047,50 @@ fn main(console: Console):
     }
 
     #[test]
+    fn rfc0054_server_json_body_uses_typed_error_and_string_bridge() {
+        let src = r#"import json
+import server
+from http import Request
+from json import Json
+
+fn typed(req: Request) -> Result(Json, json.DecodeError):
+    server.json_body(req)
+
+fn via_string(req: Request) -> Result(Json, String):
+    let doc = server.json_body(req)?
+    Ok(doc)
+
+fn main(console: Console):
+    let good = Request("POST", "/", [], [], [], "{\"ok\":true}")
+    let bad = Request("POST", "/", [], [], [], "1 2")
+    match typed(good):
+        Ok(doc) -> console.print(json.encode(doc))
+        Err(e) -> console.print(json.decode_error_message(e))
+    match typed(bad):
+        Ok(_) -> console.print("bad")
+        Err(e) -> console.print(json.decode_error_message(e))
+    match via_string(bad):
+        Ok(_) -> console.print("bad")
+        Err(e) -> console.print(e)
+    match server.json_body_string(bad):
+        Ok(_) -> console.print("bad")
+        Err(e) -> console.print(e)
+"#;
+        let expected = [
+            "{\"ok\":true}",
+            "unexpected trailing content at 2",
+            "unexpected trailing content at 2",
+            "unexpected trailing content at 2",
+        ];
+        assert_eq!(link_run(src), expected, "interp: server.json_body typed error");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: server.json_body typed error",
+        );
+    }
+
+    #[test]
     fn rfc0054_toml_decode_uses_typed_error_and_converts_to_string() {
         let src = "import json\nimport toml\nfrom toml import Toml\n\nfn via_string() -> Result(Toml, String):\n    let doc = toml.decode(\"not a toml line\")?\n    Ok(doc)\n\nfn main(console: Console):\n    match json.decode(\"1 2\"):\n        Ok(_) -> console.print(\"bad\")\n        Err(e) -> console.print(json.decode_error_message(e))\n    match toml.decode(\"not a toml line\"):\n        Ok(_) -> console.print(\"bad\")\n        Err(e) -> console.print(toml.decode_error_message(e))\n    match via_string():\n        Ok(_) -> console.print(\"bad\")\n        Err(e) -> console.print(e)\n";
         let expected = [
