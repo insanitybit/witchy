@@ -5161,6 +5161,14 @@ fn main(console: Console):
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
+    #[test]
+    fn interpolation_tail_after_guard_returns_string() {
+        let src = "fn checked(n: Int) -> String:\n    if n < 0:\n        fail(\"bad\")\n    \"${n}\"\n\nfn main(console: Console):\n    console.print(checked(7))\n";
+        let want = vec!["7".to_string()];
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
     /// `say` covers every scalar out of the box (Duration in its HUMAN form
     /// — the custom rendering `Show` exists for), and a missing impl is a
     /// clean check-time error naming the trait and type, not a post-lowering

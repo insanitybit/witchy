@@ -144,6 +144,20 @@
     }
 
     #[test]
+    fn interpolation_expression_starts_at_literal_column() {
+        let toks = tokenize("fn f():\n    if bad:\n        fail(\"bad\")\n    \"${value}\"\n")
+            .unwrap();
+        let open = toks
+            .iter()
+            .find(|t| t.kind == Tok::LParen && t.line == 4)
+            .expect("interpolated string emits an expression opener");
+        assert_eq!(
+            open.col, 5,
+            "off-side layout must see the string literal's indentation, not the hole's"
+        );
+    }
+
+    #[test]
     fn underscore_vs_identifier() {
         assert_eq!(kinds("_ _foo"), vec![Tok::Underscore, Tok::Ident("_foo".into()), Tok::Eof]);
     }

@@ -698,7 +698,13 @@ impl Lexer {
                         self.bump();
                         text.push('{');
                     } else {
-                        self.emit_interpolation(&mut out, &mut text, &mut interpolated)?;
+                        self.emit_interpolation(
+                            &mut out,
+                            &mut text,
+                            &mut interpolated,
+                            literal_line,
+                            literal_col,
+                        )?;
                     }
                 }
                 Some('}') if fstring => {
@@ -710,7 +716,13 @@ impl Lexer {
                 // plain string: `${expr}` interpolates.
                 Some('$') if !fstring && self.peek() == Some('{') => {
                     self.bump(); // consume '{'
-                    self.emit_interpolation(&mut out, &mut text, &mut interpolated)?;
+                    self.emit_interpolation(
+                        &mut out,
+                        &mut text,
+                        &mut interpolated,
+                        literal_line,
+                        literal_col,
+                    )?;
                 }
                 Some(c) => text.push(c),
             }
@@ -783,14 +795,28 @@ impl Lexer {
         out: &mut Vec<Token>,
         text: &mut String,
         interpolated: &mut bool,
+        literal_line: u32,
+        literal_col: u32,
     ) -> Result<(), LexError> {
-        if *interpolated {
+        let first_segment = !*interpolated;
+        if !first_segment {
             out.push(Token { kind: Tok::Plus, line: self.line, col: self.col });
         } else {
-            out.push(Token { kind: Tok::LParen, line: self.line, col: self.col });
+            // Layout uses the first token column as the line indent; for
+            // `"${x}"`, that must be the quote column, not the hole column.
+            out.push(Token { kind: Tok::LParen, line: literal_line, col: literal_col });
             *interpolated = true;
         }
-        out.push(Token { kind: Tok::Str(std::mem::take(text)), line: self.line, col: self.col });
+        let (segment_line, segment_col) = if first_segment {
+            (literal_line, literal_col)
+        } else {
+            (self.line, self.col)
+        };
+        out.push(Token {
+            kind: Tok::Str(std::mem::take(text)),
+            line: segment_line,
+            col: segment_col,
+        });
         let span = self.interp_source()?;
         let expr_toks = Lexer::new(&span.src).tokenize().map_err(|err| {
             let (line, col) = rebase_inner_position(
