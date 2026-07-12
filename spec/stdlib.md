@@ -597,6 +597,16 @@ The byte-level codecs need access witchy source cannot express directly, so the 
 
 Encoding is total, so the encoders return a plain `String`. Decoding can fail, so the public `*decode` functions guard the raw codec with a pure-witchy alphabet check and return `Result` (RFC-0044): valid input decodes to `Ok`, and any non-alphabet character or a truncated final group is a reachable `Err` — never a silent truncation (the JWT/WebAuthn segment-decoding hazard BUG-006 named).
 
+#### `type EncodingError`
+
+Matchable decode failures for the text encodings this module supports.
+
+- `InvalidHex(String)`
+- `InvalidBase64(String)`
+- `InvalidBase64Url(String)`
+
+#### `fn encoding_error_message(e: EncodingError) -> String`
+
 #### `fn hex_encode(data: String) -> String`
 
 Lowercase hex of `data`'s UTF-8 bytes.
@@ -605,13 +615,21 @@ Lowercase hex of `data`'s UTF-8 bytes.
 
 Lowercase hex of raw bytes.
 
+#### `fn hex_decode_typed(data: String) -> Result(String, EncodingError)`
+
+Decode a hex string (an even count of `0-9a-fA-F` digits) back to text (lossy UTF-8 for non-text payloads), or a typed `Err` when it is not hex.
+
+#### `fn hex_decode_bytes_typed(data: String) -> Result(Bytes, EncodingError)`
+
+Decode a hex string (an even count of `0-9a-fA-F` digits) to raw bytes, or a typed `Err` when it is not hex.
+
 #### `fn hex_decode(data: String) -> Result(String, String)`
 
-Decode a hex string (an even count of `0-9a-fA-F` digits) back to text (lossy UTF-8 for non-text payloads), or an `Err` naming the input when it is not hex.
+Decode hex with String errors for application-style callers and older code. Libraries that need to classify failure should use `hex_decode_typed`.
 
 #### `fn hex_decode_bytes(data: String) -> Result(Bytes, String)`
 
-Decode a hex string (an even count of `0-9a-fA-F` digits) to raw bytes.
+Decode hex bytes with String errors for application-style callers and older code. Libraries that need to classify failure should use `hex_decode_bytes_typed`.
 
 #### `fn base64_encode(data: String) -> String`
 
@@ -625,29 +643,53 @@ Standard base64 (with `=` padding) of raw bytes.
 
 base64url (no padding; `-`/`_`) of raw bytes.
 
+#### `fn base64_decode_typed(data: String) -> Result(String, EncodingError)`
+
+Decode standard base64 (the `A-Za-z0-9+/` alphabet, `=` padding) back to text (lossy UTF-8), or a typed `Err` when it is not valid base64.
+
+#### `fn base64_decode_bytes_typed(data: String) -> Result(Bytes, EncodingError)`
+
+Decode standard base64 (the `A-Za-z0-9+/` alphabet, `=` padding) to raw bytes, or a typed `Err` when it is not valid base64.
+
 #### `fn base64_decode(data: String) -> Result(String, String)`
 
-Decode standard base64 (the `A-Za-z0-9+/` alphabet, `=` padding) back to text (lossy UTF-8), or an `Err` naming the input when it is not valid base64.
+Decode base64 with String errors for application-style callers and older code. Libraries that need to classify failure should use `base64_decode_typed`.
 
 #### `fn base64_decode_bytes(data: String) -> Result(Bytes, String)`
 
-Decode standard base64 (the `A-Za-z0-9+/` alphabet, `=` padding) to raw bytes.
+Decode base64 bytes with String errors for application-style callers and older code. Libraries that need to classify failure should use `base64_decode_bytes_typed`.
 
-#### `fn hex_to_base64url(hex: String) -> Result(String, String)`
+#### `fn hex_to_base64url_typed(hex: String) -> Result(String, EncodingError)`
 
 base64url (no padding; `-`/`_`) of the bytes given as a HEX string, or an `Err` naming the input when it is not valid hex. The hex indirection lets binary round-trip through UTF-8 strings — e.g. a WebAuthn `clientDataJSON.challenge` is base64url of the raw challenge bytes. Fallible like `hex_decode` (RFC-0044): malformed hex is a reachable `Err`, never the silent drop the raw codec would do.
 
-#### `fn base64url_decode(data: String) -> Result(String, String)`
+#### `fn hex_to_base64url(hex: String) -> Result(String, String)`
+
+Convert hex to base64url with String errors for application-style callers and older code. Libraries that need to classify failure should use `hex_to_base64url_typed`.
+
+#### `fn base64url_decode_typed(data: String) -> Result(String, EncodingError)`
 
 Decode base64url (URL-safe `-`/`_`, no padding) back to text (lossy UTF-8) — the JSON header/payload segments of a JWT/OIDC identity token — or an `Err` naming the input when it is not valid base64url.
 
+#### `fn base64url_decode_bytes_typed(data: String) -> Result(Bytes, EncodingError)`
+
+Decode base64url (URL-safe `-`/`_`, no padding) to raw bytes, or a typed `Err` when it is not valid base64url.
+
+#### `fn base64url_decode(data: String) -> Result(String, String)`
+
+Decode base64url with String errors for application-style callers and older code. Libraries that need to classify failure should use `base64url_decode_typed`.
+
 #### `fn base64url_decode_bytes(data: String) -> Result(Bytes, String)`
 
-Decode base64url (URL-safe `-`/`_`, no padding) to raw bytes.
+Decode base64url bytes with String errors for application-style callers and older code. Libraries that need to classify failure should use `base64url_decode_bytes_typed`.
+
+#### `fn base64url_to_hex_typed(data: String) -> Result(String, EncodingError)`
+
+Decode base64url to a HEX string — for binary that must round-trip through a witchy String, e.g. a JWT's RS256 signature fed to `crypto.rsa_pkcs1_sha256_verify` — or an `Err` naming the input when it is not valid base64url.
 
 #### `fn base64url_to_hex(data: String) -> Result(String, String)`
 
-Decode base64url to a HEX string — for binary that must round-trip through a witchy String, e.g. a JWT's RS256 signature fed to `crypto.rsa_pkcs1_sha256_verify` — or an `Err` naming the input when it is not valid base64url.
+Decode base64url to hex with String errors for application-style callers and older code. Libraries that need to classify failure should use `base64url_to_hex_typed`.
 
 ## `error`
 
