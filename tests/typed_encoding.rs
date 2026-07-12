@@ -1,4 +1,4 @@
-//! Encoding decoders expose typed failures while legacy wrappers keep String errors.
+//! Encoding decoders expose typed failures on the primary decode APIs.
 
 use std::process::{Command, Output};
 
@@ -32,32 +32,32 @@ fn classify(e: encoding.EncodingError) -> String:
         encoding.InvalidBase64Url(raw) -> "base64url:" + raw
 
 fn via_string(raw: String) -> Result(String, String):
-    let text = encoding.base64url_decode_typed(raw)?
+    let text = encoding.base64url_decode(raw)?
     Ok(text)
 
 fn main(console: Console):
-    match encoding.hex_decode_typed("zz"):
+    match encoding.hex_decode("zz"):
         Ok(_) -> console.print("bad")
         Err(e) ->
             console.print(classify(e))
             console.print(encoding.encoding_error_message(e))
             console.print(show.render(e))
-    match encoding.base64_decode_typed("@@@"):
+    match encoding.base64_decode("@@@"):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(classify(e))
-    match encoding.base64url_decode_typed("QQD/Lw=="):
+    match encoding.base64url_decode("QQD/Lw=="):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(classify(e))
-    match encoding.hex_to_base64url_typed("abc"):
+    match encoding.hex_to_base64url("abc"):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(classify(e))
-    match encoding.base64url_to_hex_typed("QQD_Lw"):
+    match encoding.base64url_to_hex("QQD_Lw"):
         Ok(hex) -> console.print(hex)
         Err(_) -> console.print("bad")
     match via_string("QQD/Lw=="):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(e)
-    match encoding.base64_decode("@@@"):
+    match encoding.base64_decode_string("@@@"):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(e)
 "#,

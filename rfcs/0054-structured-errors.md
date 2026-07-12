@@ -22,12 +22,13 @@ tracking: >
   std/duration.parse returns DurationParseError, with parse_string as the
   explicit String-rendering bridge. std/time.civil and parse_iso8601 return
   TimeError, with civil_string and parse_iso8601_string as explicit
-  String-rendering bridges. std/encoding
-  exposes EncodingError through typed hex/base64/base64url decoders, with JWT
-  and WebAuthn consumers bridging those errors explicitly to their existing
-  typed API. std/http exposes HttpError through typed URL, fallible request,
-  DNS-pin, builder-send, and strict-response-parse paths while keeping String
-  wrappers. Coven Web's OIDC key selection preserves JwtError through
+  String-rendering bridges. std/encoding decoders and encoding conversions
+  return EncodingError at their primary names, with *_string functions as
+  explicit String-rendering bridges; JWT and WebAuthn consumers bridge those
+  errors explicitly to their existing typed API. std/http exposes HttpError
+  through typed URL, fallible request, DNS-pin, builder-send, and
+  strict-response-parse paths while keeping String wrappers. Coven Web's OIDC
+  key selection preserves JwtError through
   verification. Coven maintainer-policy
   state, stored-record parsing, source-footprint recomputation, and
   trusted-publishing token verification have typed corruption/authentication
@@ -323,9 +324,10 @@ application-style String bridge.
 shapes, digit failures, fractional-second errors, and UTC-offset errors as
 matchable cases. `time.civil_string` and `parse_iso8601_string` are the
 explicit application-style String bridges.
-`std/encoding` now exposes `encoding.EncodingError` through typed hex,
-base64, and base64url decoders/converters while keeping the legacy String
-wrappers. `std/jwt` and `std/webauthn` call the typed decoders and render with
+`std/encoding` now exposes `encoding.EncodingError` through primary hex,
+base64, and base64url decoders/converters. The explicit `*_string` bridges keep
+String-rendering available for application boundaries. `std/jwt` and
+`std/webauthn` call the typed decoders and render with
 `encoding.encoding_error_message` only when mapping into their existing
 module-specific error variants.
 `std/http` now exposes `http.HttpError` through typed URL fetch, fallible

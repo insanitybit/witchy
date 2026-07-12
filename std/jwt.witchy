@@ -119,7 +119,7 @@ pub fn verify_rs256(token: String, rsa_pubkey_der_hex: String, audience: String,
             // A malformed signature segment is a distinct, reachable error — not a
             // silent truncation to garbage bytes that would later read as "signature
             // invalid". Rejecting on the decode error is the safe direction.
-            let sig_hex = encoding.base64url_to_hex_typed(list.at(parts, 2)).map_err(fn(e: encoding.EncodingError): SignatureSegmentBase64(encoding.encoding_error_message(e)))?
+            let sig_hex = encoding.base64url_to_hex(list.at(parts, 2)).map_err(fn(e: encoding.EncodingError): SignatureSegmentBase64(encoding.encoding_error_message(e)))?
             match crypto.rsa_pkcs1_sha256_verify(rsa_pubkey_der_hex, signed, sig_hex):
                 Err(e) -> Err(SignatureInputMalformed(crypto.verify_error_message(e)))
                 Ok(false) -> Err(SignatureInvalid)
@@ -129,7 +129,7 @@ pub fn verify_rs256(token: String, rsa_pubkey_der_hex: String, audience: String,
 // header is not valid base64url/JSON or carries no `alg`. A missing `alg` is an
 // error (fail closed), not a default.
 fn header_alg(header_b64: String) -> Result(String, JwtError):
-    let header_json = encoding.base64url_decode_typed(header_b64).map_err(fn(e: encoding.EncodingError): HeaderBase64(encoding.encoding_error_message(e)))?
+    let header_json = encoding.base64url_decode(header_b64).map_err(fn(e: encoding.EncodingError): HeaderBase64(encoding.encoding_error_message(e)))?
     match json.decode(header_json):
         Err(e) -> Err(HeaderJson(json.decode_error_message(e)))
         Ok(h) ->
@@ -140,7 +140,7 @@ fn header_alg(header_b64: String) -> Result(String, JwtError):
 // Decode and validate the payload's registered claims: `exp` not in the past, and the
 // audience matches (defends against a token minted for a different relying party).
 fn check_claims(payload_b64: String, audience: String, now: Int) -> Result(Json, JwtError):
-    let payload_json = encoding.base64url_decode_typed(payload_b64).map_err(fn(e: encoding.EncodingError): PayloadBase64(encoding.encoding_error_message(e)))?
+    let payload_json = encoding.base64url_decode(payload_b64).map_err(fn(e: encoding.EncodingError): PayloadBase64(encoding.encoding_error_message(e)))?
     match json.decode(payload_json):
         Err(e) -> Err(PayloadJson(json.decode_error_message(e)))
         Ok(claims) ->
@@ -263,7 +263,7 @@ pub fn header(token: String) -> Result(Json, JwtError):
     if list.length(parts) < 1 || string.is_empty(list.at(parts, 0)):
         Err(NoHeaderSegment)
     else:
-        let header_json = encoding.base64url_decode_typed(list.at(parts, 0)).map_err(fn(e: encoding.EncodingError): HeaderBase64(encoding.encoding_error_message(e)))?
+        let header_json = encoding.base64url_decode(list.at(parts, 0)).map_err(fn(e: encoding.EncodingError): HeaderBase64(encoding.encoding_error_message(e)))?
         match json.decode(header_json):
             Err(e) -> Err(HeaderJson(json.decode_error_message(e)))
             Ok(doc) -> Ok(doc)
@@ -277,7 +277,7 @@ pub fn claims_unverified(token: String) -> Result(Json, JwtError):
     if list.length(parts) < 2 || string.is_empty(list.at(parts, 1)):
         Err(NoPayloadSegment)
     else:
-        let payload_json = encoding.base64url_decode_typed(list.at(parts, 1)).map_err(fn(e: encoding.EncodingError): PayloadBase64(encoding.encoding_error_message(e)))?
+        let payload_json = encoding.base64url_decode(list.at(parts, 1)).map_err(fn(e: encoding.EncodingError): PayloadBase64(encoding.encoding_error_message(e)))?
         match json.decode(payload_json):
             Err(e) -> Err(PayloadJson(json.decode_error_message(e)))
             Ok(doc) -> Ok(doc)
@@ -288,8 +288,8 @@ pub fn claims_unverified(token: String) -> Result(Json, JwtError):
 // `SEQUENCE { INTEGER n, INTEGER e }`; an INTEGER gains a leading `00` when its top bit
 // is set (DER integers are signed two's-complement, RSA values are unsigned magnitudes).
 pub fn rsa_key_from_jwk(n: String, e: String) -> Result(String, JwtError):
-    let n_hex = encoding.base64url_to_hex_typed(n).map_err(fn(err: encoding.EncodingError): JwkModulusBase64(encoding.encoding_error_message(err)))?
-    let e_hex = encoding.base64url_to_hex_typed(e).map_err(fn(err: encoding.EncodingError): JwkExponentBase64(encoding.encoding_error_message(err)))?
+    let n_hex = encoding.base64url_to_hex(n).map_err(fn(err: encoding.EncodingError): JwkModulusBase64(encoding.encoding_error_message(err)))?
+    let e_hex = encoding.base64url_to_hex(e).map_err(fn(err: encoding.EncodingError): JwkExponentBase64(encoding.encoding_error_message(err)))?
     // Reject an empty/missing `n` or `e` (a JWK with no such member decodes to empty
     // hex): building a key from them would yield a structurally-valid but bogus DER
     // key that later "verifies" nothing, so fail closed here (BUG-408).

@@ -7451,7 +7451,7 @@ import encoding
 import oauth
 import option
 
-fn ok_err(r: Result(String, String)) -> String:
+fn ok_err(r: Result(String, encoding.EncodingError)) -> String:
     match r:
         Ok(_) -> "ok"
         Err(_) -> "err"
@@ -14532,10 +14532,10 @@ fn main(console: Console):
     console.print(r(encoding.base64url_decode("QUJDW")))
     console.print(r(encoding.base64url_decode("QUJD")))
 
-fn r(x: Result(String, String)) -> String:
+fn r(x: Result(String, encoding.EncodingError)) -> String:
     match x:
         Ok(s) -> "ok:" + s
-        Err(e) -> "err:" + e
+        Err(e) -> "err:" + encoding.encoding_error_message(e)
 "#;
         let expected = vec![
             "err:`QUJD#WFO` is not valid base64url (expected the URL-safe `A-Za-z0-9-_` alphabet)".to_string(),
@@ -22214,7 +22214,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     #[test]
     fn encoding_rejects_malformed_padding_and_hex_on_both_backends() {
         let src = "import encoding\n\
-                   fn show(label: String, r: Result(String, String), console: Console):\n\
+                   fn show(label: String, r: Result(String, encoding.EncodingError), console: Console):\n\
                    \x20   match r:\n\
                    \x20       Ok(v) -> console.print(label + \": OK\")\n\
                    \x20       Err(e) -> console.print(label + \": ERR\")\n\

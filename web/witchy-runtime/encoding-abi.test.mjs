@@ -45,15 +45,15 @@ const SOURCE = `import bytes
 import encoding
 import show
 
-fn print_text(console: Console, value: Result(String, String)):
+fn print_text(console: Console, value: Result(String, encoding.EncodingError)):
     match value:
         Ok(text) -> console.print(text)
-        Err(error) -> console.print("ERR: \${error}")
+        Err(error) -> console.print("ERR: " + encoding.encoding_error_message(error))
 
-fn print_bytes(console: Console, value: Result(Bytes, String)):
+fn print_bytes(console: Console, value: Result(Bytes, encoding.EncodingError)):
     match value:
         Ok(data) -> console.print(show.render(bytes.to_list(data)))
-        Err(error) -> console.print("ERR: \${error}")
+        Err(error) -> console.print("ERR: " + encoding.encoding_error_message(error))
 
 fn main(console: Console):
     let hi = bytes.from_string("Hi")

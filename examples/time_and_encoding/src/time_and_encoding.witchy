@@ -26,4 +26,4 @@ fn main(console: Console):
     console.print("hex:     " + encoding.hex_encode(payload))
     match encoding.base64_decode(encoding.base64_encode(payload)):
         Ok(decoded) -> console.print("decoded: " + decoded)
-        Err(e) -> console.print("decode failed: " + e)
+        Err(e) -> console.print("decode failed: " + encoding.encoding_error_message(e))

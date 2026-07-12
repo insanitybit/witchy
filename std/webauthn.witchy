@@ -86,7 +86,7 @@ pub fn verify_assertion(stored_pubkey_hex: String, auth_data_hex: String, client
                 check_auth_and_sig(stored_pubkey_hex, auth_data_hex, client_data_json, signature_hex, expected_rp_id, require_uv)
 
 fn check_auth_and_sig(stored_pubkey_hex: String, auth_data_hex: String, client_data_json: String, signature_hex: String, expected_rp_id: String, require_uv: Bool) -> Result(Bool, AssertionError):
-    match encoding.hex_decode_bytes_typed(auth_data_hex):
+    match encoding.hex_decode_bytes(auth_data_hex):
         Err(e) -> Err(AuthenticatorDataHex(encoding.encoding_error_message(e)))
         Ok(auth_data) -> check_auth_bytes(stored_pubkey_hex, auth_data, client_data_json, signature_hex, expected_rp_id, require_uv)
 

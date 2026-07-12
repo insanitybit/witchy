@@ -50,28 +50,26 @@ pub fn hex_encode_bytes(data: Bytes) -> String:
 
 // Decode a hex string (an even count of `0-9a-fA-F` digits) back to text (lossy
 // UTF-8 for non-text payloads), or a typed `Err` when it is not hex.
-pub fn hex_decode_typed(data: String) -> Result(String, EncodingError):
-    result.map_ok(hex_decode_bytes_typed(data), fn(b: Bytes): bytes.to_string_lossy(b))
+pub fn hex_decode(data: String) -> Result(String, EncodingError):
+    result.map_ok(hex_decode_bytes(data), fn(b: Bytes): bytes.to_string_lossy(b))
 
 // Decode a hex string (an even count of `0-9a-fA-F` digits) to raw bytes, or a
 // typed `Err` when it is not hex.
-pub fn hex_decode_bytes_typed(data: String) -> Result(Bytes, EncodingError):
+pub fn hex_decode_bytes(data: String) -> Result(Bytes, EncodingError):
     if hex_valid(data):
         Ok(hex_decode_bytes_raw(data))
     else:
         Err(InvalidHex(data))
 
-// Decode hex with String errors for application-style callers and older code.
-// Libraries that need to classify failure should use `hex_decode_typed`.
-pub fn hex_decode(data: String) -> Result(String, String):
-    match hex_decode_typed(data):
+// Decode hex with String errors for application-style boundaries.
+pub fn hex_decode_string(data: String) -> Result(String, String):
+    match hex_decode(data):
         Ok(text) -> Ok(text)
         Err(e) -> Err(encoding_error_message(e))
 
-// Decode hex bytes with String errors for application-style callers and older
-// code. Libraries that need to classify failure should use `hex_decode_bytes_typed`.
-pub fn hex_decode_bytes(data: String) -> Result(Bytes, String):
-    match hex_decode_bytes_typed(data):
+// Decode hex bytes with String errors for application-style boundaries.
+pub fn hex_decode_bytes_string(data: String) -> Result(Bytes, String):
+    match hex_decode_bytes(data):
         Ok(b) -> Ok(b)
         Err(e) -> Err(encoding_error_message(e))
 
@@ -89,28 +87,26 @@ pub fn base64url_encode_bytes(data: Bytes) -> String:
 
 // Decode standard base64 (the `A-Za-z0-9+/` alphabet, `=` padding) back to text
 // (lossy UTF-8), or a typed `Err` when it is not valid base64.
-pub fn base64_decode_typed(data: String) -> Result(String, EncodingError):
-    result.map_ok(base64_decode_bytes_typed(data), fn(b: Bytes): bytes.to_string_lossy(b))
+pub fn base64_decode(data: String) -> Result(String, EncodingError):
+    result.map_ok(base64_decode_bytes(data), fn(b: Bytes): bytes.to_string_lossy(b))
 
 // Decode standard base64 (the `A-Za-z0-9+/` alphabet, `=` padding) to raw bytes,
 // or a typed `Err` when it is not valid base64.
-pub fn base64_decode_bytes_typed(data: String) -> Result(Bytes, EncodingError):
+pub fn base64_decode_bytes(data: String) -> Result(Bytes, EncodingError):
     if base64_valid(data):
         Ok(base64_decode_bytes_raw(data))
     else:
         Err(InvalidBase64(data))
 
-// Decode base64 with String errors for application-style callers and older code.
-// Libraries that need to classify failure should use `base64_decode_typed`.
-pub fn base64_decode(data: String) -> Result(String, String):
-    match base64_decode_typed(data):
+// Decode base64 with String errors for application-style boundaries.
+pub fn base64_decode_string(data: String) -> Result(String, String):
+    match base64_decode(data):
         Ok(text) -> Ok(text)
         Err(e) -> Err(encoding_error_message(e))
 
-// Decode base64 bytes with String errors for application-style callers and older
-// code. Libraries that need to classify failure should use `base64_decode_bytes_typed`.
-pub fn base64_decode_bytes(data: String) -> Result(Bytes, String):
-    match base64_decode_bytes_typed(data):
+// Decode base64 bytes with String errors for application-style boundaries.
+pub fn base64_decode_bytes_string(data: String) -> Result(Bytes, String):
+    match base64_decode_bytes(data):
         Ok(b) -> Ok(b)
         Err(e) -> Err(encoding_error_message(e))
 
@@ -119,57 +115,50 @@ pub fn base64_decode_bytes(data: String) -> Result(Bytes, String):
 // round-trip through UTF-8 strings — e.g. a WebAuthn `clientDataJSON.challenge`
 // is base64url of the raw challenge bytes. Fallible like `hex_decode` (RFC-0044):
 // malformed hex is a reachable `Err`, never the silent drop the raw codec would do.
-pub fn hex_to_base64url_typed(hex: String) -> Result(String, EncodingError):
-    result.map_ok(hex_decode_bytes_typed(hex), fn(b: Bytes): base64url_encode_bytes(b))
+pub fn hex_to_base64url(hex: String) -> Result(String, EncodingError):
+    result.map_ok(hex_decode_bytes(hex), fn(b: Bytes): base64url_encode_bytes(b))
 
-// Convert hex to base64url with String errors for application-style callers and
-// older code. Libraries that need to classify failure should use
-// `hex_to_base64url_typed`.
-pub fn hex_to_base64url(hex: String) -> Result(String, String):
-    match hex_to_base64url_typed(hex):
+// Convert hex to base64url with String errors for application-style boundaries.
+pub fn hex_to_base64url_string(hex: String) -> Result(String, String):
+    match hex_to_base64url(hex):
         Ok(text) -> Ok(text)
         Err(e) -> Err(encoding_error_message(e))
 
 // Decode base64url (URL-safe `-`/`_`, no padding) back to text (lossy UTF-8) — the
 // JSON header/payload segments of a JWT/OIDC identity token — or an `Err` naming the
 // input when it is not valid base64url.
-pub fn base64url_decode_typed(data: String) -> Result(String, EncodingError):
-    result.map_ok(base64url_decode_bytes_typed(data), fn(b: Bytes): bytes.to_string_lossy(b))
+pub fn base64url_decode(data: String) -> Result(String, EncodingError):
+    result.map_ok(base64url_decode_bytes(data), fn(b: Bytes): bytes.to_string_lossy(b))
 
 // Decode base64url (URL-safe `-`/`_`, no padding) to raw bytes, or a typed
 // `Err` when it is not valid base64url.
-pub fn base64url_decode_bytes_typed(data: String) -> Result(Bytes, EncodingError):
+pub fn base64url_decode_bytes(data: String) -> Result(Bytes, EncodingError):
     if base64url_valid(data):
         Ok(base64url_decode_bytes_raw(data))
     else:
         Err(InvalidBase64Url(data))
 
-// Decode base64url with String errors for application-style callers and older
-// code. Libraries that need to classify failure should use `base64url_decode_typed`.
-pub fn base64url_decode(data: String) -> Result(String, String):
-    match base64url_decode_typed(data):
+// Decode base64url with String errors for application-style boundaries.
+pub fn base64url_decode_string(data: String) -> Result(String, String):
+    match base64url_decode(data):
         Ok(text) -> Ok(text)
         Err(e) -> Err(encoding_error_message(e))
 
-// Decode base64url bytes with String errors for application-style callers and
-// older code. Libraries that need to classify failure should use
-// `base64url_decode_bytes_typed`.
-pub fn base64url_decode_bytes(data: String) -> Result(Bytes, String):
-    match base64url_decode_bytes_typed(data):
+// Decode base64url bytes with String errors for application-style boundaries.
+pub fn base64url_decode_bytes_string(data: String) -> Result(Bytes, String):
+    match base64url_decode_bytes(data):
         Ok(b) -> Ok(b)
         Err(e) -> Err(encoding_error_message(e))
 
 // Decode base64url to a HEX string — for binary that must round-trip through a witchy
 // String, e.g. a JWT's RS256 signature fed to `crypto.rsa_pkcs1_sha256_verify` — or an
 // `Err` naming the input when it is not valid base64url.
-pub fn base64url_to_hex_typed(data: String) -> Result(String, EncodingError):
-    result.map_ok(base64url_decode_bytes_typed(data), fn(b: Bytes): hex_encode_bytes(b))
+pub fn base64url_to_hex(data: String) -> Result(String, EncodingError):
+    result.map_ok(base64url_decode_bytes(data), fn(b: Bytes): hex_encode_bytes(b))
 
-// Decode base64url to hex with String errors for application-style callers and
-// older code. Libraries that need to classify failure should use
-// `base64url_to_hex_typed`.
-pub fn base64url_to_hex(data: String) -> Result(String, String):
-    match base64url_to_hex_typed(data):
+// Decode base64url to hex with String errors for application-style boundaries.
+pub fn base64url_to_hex_string(data: String) -> Result(String, String):
+    match base64url_to_hex(data):
         Ok(text) -> Ok(text)
         Err(e) -> Err(encoding_error_message(e))
 
