@@ -142,97 +142,98 @@ and the explicit metadata rendered below. The classes are:
 
 `browser: provided` is the exact deny-by-omission surface implemented by the
 JavaScript host. `omitted` means a browser module importing that function cannot
-instantiate. Regenerate the table with
-`cargo run -p witchy-wir --example abi_catalog`; the test suite compares the
-committed block with the compiler catalog byte-for-byte and instantiates an
-all-import probe against the native host.
+instantiate. `authority` is the concrete grant family used by launchers for
+precompiled `.wasm` classification; `none` means the import is not a capability
+grant. Regenerate the table with `cargo run -p witchy-wir --example abi_catalog`;
+the test suite compares the committed block with the compiler catalog
+byte-for-byte and instantiates an all-import probe against the native host.
 
 <!-- BEGIN GENERATED WASM ABI IMPORTS -->
-| import | signature | class | browser |
-| --- | --- | --- | --- |
-| `print` | `(i32, i32)` | pure infrastructure | provided |
-| `crypto.sha256` | `(i32, i32)` | pure infrastructure | provided |
-| `crypto.rune_hash` | `(i32, i32, i32)` | pure infrastructure | provided |
-| `compiler_footprint_len` | `(i32) -> i32` | internal/toolchain service | omitted |
-| `compiler_diff_len` | `(i32, i32) -> i32` | internal/toolchain service | omitted |
-| `compiler_doc_len` | `(i32, i32) -> i32` | internal/toolchain service | omitted |
-| `compiler_doc_result_json_len` | `(i32, i32) -> i32` | internal/toolchain service | omitted |
-| `user_cap_field_len` | `(i32, i32) -> i32` | launch input | provided |
-| `field_str_len` | `(i32) -> i32` | internal/toolchain service | provided |
-| `field_intlist_len` | `(i32) -> i32` | internal/toolchain service | provided |
-| `field_strlist_size` | `(i32) -> i32` | internal/toolchain service | provided |
-| `float_to_str` | `(f64, i32) -> i32` | pure infrastructure | provided |
-| `encoding` | `(i32, i32, i32) -> i32` | pure infrastructure | provided |
-| `crypto.sign` | `(i32, i32, i32)` | capability authority | omitted |
-| `crypto.public_key` | `(i32, i32)` | capability authority | omitted |
-| `secretstore_lookup` | `(i32) -> i32` | capability authority | omitted |
-| `crypto_reveal_len` | `(i32) -> i32` | capability authority | omitted |
-| `env_len` | `(i32) -> i32` | capability authority | omitted |
-| `env_fill` | `(i32, i32)` | capability authority | omitted |
-| `dir_read_len` | `(i32, i32) -> i32` | capability authority | omitted |
-| `dir_list_size` | `(i32) -> i32` | capability authority | omitted |
-| `args_size` | `() -> i32` | launch input | omitted |
-| `write_pending_list` | `(i32)` | pure infrastructure | provided |
-| `vm_par_map_run` | `(i32, i32) -> i32` | internal/toolchain service | omitted |
-| `vm_par_map_write` | `(i32)` | internal/toolchain service | omitted |
-| `vm_par_map_bytes_run` | `(i32, i32) -> i32` | internal/toolchain service | omitted |
-| `vm_par_map_bytes_write` | `(i32)` | internal/toolchain service | omitted |
-| `vm_with_dir_run` | `(i32, i32, i32) -> i32` | internal/toolchain service | omitted |
-| `vm_serve_run` | `(i32, i32, i32) -> i32` | internal/toolchain service | omitted |
-| `build_read_len` | `(i32, i32) -> i32` | capability authority | omitted |
-| `build_out_write` | `(i32, i32, i32)` | capability authority | omitted |
-| `build_env_len` | `(i32, i32) -> i32` | capability authority | omitted |
-| `build_env_fill` | `(i32, i32, i32)` | capability authority | omitted |
-| `build_fetch_len` | `(i32, i32, i32) -> i32` | capability authority | omitted |
-| `build_exec_run` | `(i32, i32, i32) -> i32` | capability authority | omitted |
-| `net_recv_line_len` | `(i32) -> i32` | capability authority | omitted |
-| `net_recv_all_len` | `(i32) -> i32` | capability authority | omitted |
-| `net_recv_bytes_len` | `(i32, i64) -> i32` | capability authority | omitted |
-| `fill_pending` | `(i32)` | pure infrastructure | provided |
-| `crypto.sha512` | `(i32, i32)` | pure infrastructure | provided |
-| `crypto.sha3_256` | `(i32, i32)` | pure infrastructure | provided |
-| `crypto.hmac_sha256` | `(i32, i32, i32)` | pure infrastructure | provided |
-| `print_int` | `(i64)` | pure infrastructure | provided |
-| `print_float` | `(f64)` | pure infrastructure | provided |
-| `string_from_code` | `(i64, i32) -> i32` | pure infrastructure | provided |
-| `dir_subdir` | `(i32, i32) -> i32` | capability authority | omitted |
-| `dir_only` | `(i32, i32) -> i32` | capability authority | omitted |
-| `dir_exists` | `(i32, i32) -> i32` | capability authority | omitted |
-| `dir_is_dir` | `(i32, i32) -> i32` | capability authority | omitted |
-| `dir_write` | `(i32, i32, i32)` | capability authority | omitted |
-| `dir_append` | `(i32, i32, i32)` | capability authority | omitted |
-| `dir_make_dir` | `(i32, i32)` | capability authority | omitted |
-| `dir_open` | `(i32, i32) -> externref` | capability authority | omitted |
-| `dir_create` | `(i32, i32) -> externref` | capability authority | omitted |
-| `mint_file` | `(i32) -> externref` | capability authority | omitted |
-| `file_read_len` | `(externref) -> i32` | capability authority | omitted |
-| `file_write` | `(externref, i32)` | capability authority | omitted |
-| `net_connect` | `(i32, i32) -> i32` | capability authority | omitted |
-| `net_try_connect` | `(i32, i32) -> i32` | capability authority | omitted |
-| `net_resolve_size` | `(i32, i32) -> i32` | capability authority | omitted |
-| `net_connect_pinned` | `(i32, i32, i32, i64, i32) -> i32` | capability authority | omitted |
-| `net_try_connect_pinned` | `(i32, i32, i32, i64, i32) -> i32` | capability authority | omitted |
-| `net_listen` | `(i32, i32) -> i32` | capability authority | omitted |
-| `net_listen_tls` | `(i32, i32, i32, i32) -> i32` | capability authority | omitted |
-| `net_accept` | `(i32) -> i32` | capability authority | omitted |
-| `serve_pool` | `(i32)` | internal/toolchain service | omitted |
-| `net_restrict` | `(i32, i32) -> i32` | capability authority | omitted |
-| `net_deny` | `(i32, i32) -> i32` | capability authority | omitted |
-| `net_send_line` | `(i32, i32)` | capability authority | omitted |
-| `net_send_bytes` | `(i32, i32)` | capability authority | omitted |
-| `net_close` | `(i32)` | capability authority | omitted |
-| `now` | `() -> i64` | capability authority | omitted |
-| `now_monotonic` | `() -> i64` | capability authority | omitted |
-| `rand_u64` | `() -> i64` | capability authority | omitted |
-| `regex_match_spans_len` | `(i32, i32) -> i32` | pure infrastructure | provided |
-| `crypto.__ecdsa_p256_verify_status` | `(i32, i32, i32) -> i64` | pure infrastructure | provided |
-| `crypto.__ecdsa_p256_verify_hex_status` | `(i32, i32, i32) -> i64` | pure infrastructure | provided |
-| `crypto.__rsa_pkcs1_sha256_verify_status` | `(i32, i32, i32) -> i64` | pure infrastructure | provided |
-| `crypto.__ed25519_verify_status` | `(i32, i32, i32) -> i64` | pure infrastructure | provided |
-| `exec_run` | `(i32, i32, i32, i32) -> i32` | capability authority | omitted |
-| `heap_register` | `(i32, i32)` | runtime diagnostic | omitted |
-| `heap_frontier` | `(i32)` | runtime diagnostic | omitted |
-| `__witchy_abort` | `(i32, i64, i64, i32)` | runtime diagnostic | provided |
+| import | signature | class | authority | browser |
+| --- | --- | --- | --- | --- |
+| `print` | `(i32, i32)` | pure infrastructure | none | provided |
+| `crypto.sha256` | `(i32, i32)` | pure infrastructure | none | provided |
+| `crypto.rune_hash` | `(i32, i32, i32)` | pure infrastructure | none | provided |
+| `compiler_footprint_len` | `(i32) -> i32` | internal/toolchain service | none | omitted |
+| `compiler_diff_len` | `(i32, i32) -> i32` | internal/toolchain service | none | omitted |
+| `compiler_doc_len` | `(i32, i32) -> i32` | internal/toolchain service | none | omitted |
+| `compiler_doc_result_json_len` | `(i32, i32) -> i32` | internal/toolchain service | none | omitted |
+| `user_cap_field_len` | `(i32, i32) -> i32` | launch input | none | provided |
+| `field_str_len` | `(i32) -> i32` | internal/toolchain service | none | provided |
+| `field_intlist_len` | `(i32) -> i32` | internal/toolchain service | none | provided |
+| `field_strlist_size` | `(i32) -> i32` | internal/toolchain service | none | provided |
+| `float_to_str` | `(f64, i32) -> i32` | pure infrastructure | none | provided |
+| `encoding` | `(i32, i32, i32) -> i32` | pure infrastructure | none | provided |
+| `crypto.sign` | `(i32, i32, i32)` | capability authority | Secret | omitted |
+| `crypto.public_key` | `(i32, i32)` | capability authority | Secret | omitted |
+| `secretstore_lookup` | `(i32) -> i32` | capability authority | Secret | omitted |
+| `crypto_reveal_len` | `(i32) -> i32` | capability authority | Secret | omitted |
+| `env_len` | `(i32) -> i32` | capability authority | Env | omitted |
+| `env_fill` | `(i32, i32)` | capability authority | Env | omitted |
+| `dir_read_len` | `(i32, i32) -> i32` | capability authority | Dir.Read | omitted |
+| `dir_list_size` | `(i32) -> i32` | capability authority | Dir.Read | omitted |
+| `args_size` | `() -> i32` | launch input | none | omitted |
+| `write_pending_list` | `(i32)` | pure infrastructure | none | provided |
+| `vm_par_map_run` | `(i32, i32) -> i32` | internal/toolchain service | none | omitted |
+| `vm_par_map_write` | `(i32)` | internal/toolchain service | none | omitted |
+| `vm_par_map_bytes_run` | `(i32, i32) -> i32` | internal/toolchain service | none | omitted |
+| `vm_par_map_bytes_write` | `(i32)` | internal/toolchain service | none | omitted |
+| `vm_with_dir_run` | `(i32, i32, i32) -> i32` | internal/toolchain service | none | omitted |
+| `vm_serve_run` | `(i32, i32, i32) -> i32` | internal/toolchain service | none | omitted |
+| `build_read_len` | `(i32, i32) -> i32` | capability authority | Build.Read | omitted |
+| `build_out_write` | `(i32, i32, i32)` | capability authority | Build.Out | omitted |
+| `build_env_len` | `(i32, i32) -> i32` | capability authority | Build.Env | omitted |
+| `build_env_fill` | `(i32, i32, i32)` | capability authority | Build.Env | omitted |
+| `build_fetch_len` | `(i32, i32, i32) -> i32` | capability authority | Build.Fetch | omitted |
+| `build_exec_run` | `(i32, i32, i32) -> i32` | capability authority | Build.Exec | omitted |
+| `net_recv_line_len` | `(i32) -> i32` | capability authority | Net.Connect | omitted |
+| `net_recv_all_len` | `(i32) -> i32` | capability authority | Net.Connect | omitted |
+| `net_recv_bytes_len` | `(i32, i64) -> i32` | capability authority | Net.Connect | omitted |
+| `fill_pending` | `(i32)` | pure infrastructure | none | provided |
+| `crypto.sha512` | `(i32, i32)` | pure infrastructure | none | provided |
+| `crypto.sha3_256` | `(i32, i32)` | pure infrastructure | none | provided |
+| `crypto.hmac_sha256` | `(i32, i32, i32)` | pure infrastructure | none | provided |
+| `print_int` | `(i64)` | pure infrastructure | none | provided |
+| `print_float` | `(f64)` | pure infrastructure | none | provided |
+| `string_from_code` | `(i64, i32) -> i32` | pure infrastructure | none | provided |
+| `dir_subdir` | `(i32, i32) -> i32` | capability authority | Dir.Read | omitted |
+| `dir_only` | `(i32, i32) -> i32` | capability authority | Dir.Read | omitted |
+| `dir_exists` | `(i32, i32) -> i32` | capability authority | Dir.Read | omitted |
+| `dir_is_dir` | `(i32, i32) -> i32` | capability authority | Dir.Read | omitted |
+| `dir_write` | `(i32, i32, i32)` | capability authority | Dir.Write | omitted |
+| `dir_append` | `(i32, i32, i32)` | capability authority | Dir.Write | omitted |
+| `dir_make_dir` | `(i32, i32)` | capability authority | Dir.Write | omitted |
+| `dir_open` | `(i32, i32) -> externref` | capability authority | Dir.Read | omitted |
+| `dir_create` | `(i32, i32) -> externref` | capability authority | Dir.Write | omitted |
+| `mint_file` | `(i32) -> externref` | capability authority | File.grant | omitted |
+| `file_read_len` | `(externref) -> i32` | capability authority | File.handle | omitted |
+| `file_write` | `(externref, i32)` | capability authority | File.handle | omitted |
+| `net_connect` | `(i32, i32) -> i32` | capability authority | Net.Connect | omitted |
+| `net_try_connect` | `(i32, i32) -> i32` | capability authority | Net.Connect | omitted |
+| `net_resolve_size` | `(i32, i32) -> i32` | capability authority | Net.Connect | omitted |
+| `net_connect_pinned` | `(i32, i32, i32, i64, i32) -> i32` | capability authority | Net.Connect | omitted |
+| `net_try_connect_pinned` | `(i32, i32, i32, i64, i32) -> i32` | capability authority | Net.Connect | omitted |
+| `net_listen` | `(i32, i32) -> i32` | capability authority | Net.Listen | omitted |
+| `net_listen_tls` | `(i32, i32, i32, i32) -> i32` | capability authority | Net.Listen, Secret | omitted |
+| `net_accept` | `(i32) -> i32` | capability authority | Net.Listen | omitted |
+| `serve_pool` | `(i32)` | capability authority | Net.Listen | omitted |
+| `net_restrict` | `(i32, i32) -> i32` | capability authority | Net.Connect | omitted |
+| `net_deny` | `(i32, i32) -> i32` | capability authority | Net.Connect | omitted |
+| `net_send_line` | `(i32, i32)` | capability authority | Net.Connect | omitted |
+| `net_send_bytes` | `(i32, i32)` | capability authority | Net.Connect | omitted |
+| `net_close` | `(i32)` | capability authority | Net.Connect | omitted |
+| `now` | `() -> i64` | capability authority | Clock | omitted |
+| `now_monotonic` | `() -> i64` | capability authority | Clock | omitted |
+| `rand_u64` | `() -> i64` | capability authority | Rand | omitted |
+| `regex_match_spans_len` | `(i32, i32) -> i32` | pure infrastructure | none | provided |
+| `crypto.__ecdsa_p256_verify_status` | `(i32, i32, i32) -> i64` | pure infrastructure | none | provided |
+| `crypto.__ecdsa_p256_verify_hex_status` | `(i32, i32, i32) -> i64` | pure infrastructure | none | provided |
+| `crypto.__rsa_pkcs1_sha256_verify_status` | `(i32, i32, i32) -> i64` | pure infrastructure | none | provided |
+| `crypto.__ed25519_verify_status` | `(i32, i32, i32) -> i64` | pure infrastructure | none | provided |
+| `exec_run` | `(i32, i32, i32, i32) -> i32` | capability authority | Exec | omitted |
+| `heap_register` | `(i32, i32)` | runtime diagnostic | none | omitted |
+| `heap_frontier` | `(i32)` | runtime diagnostic | none | omitted |
+| `__witchy_abort` | `(i32, i64, i64, i32)` | runtime diagnostic | none | provided |
 <!-- END GENERATED WASM ABI IMPORTS -->
 
 ### Encoding sub-ABI

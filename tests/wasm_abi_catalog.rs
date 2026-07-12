@@ -9,8 +9,8 @@ use wasm_encoder::{
 };
 use witchy_runtime::runtime::{Capabilities, Runtime, SecretGrant};
 use witchy_wir::wir_prelude::{
-    abi_import_info, prelude, render_abi_import_catalog, PreludeImport, WasmTy,
-    WITCHY_ABI_VERSION,
+    abi_import_info, prelude, render_abi_import_catalog, AbiImportAuthority, AbiImportClass,
+    PreludeImport, WasmTy, WITCHY_ABI_VERSION,
 };
 
 const CATALOG_BEGIN: &str = "<!-- BEGIN GENERATED WASM ABI IMPORTS -->";
@@ -128,6 +128,51 @@ fn public_spec_contains_the_generated_complete_catalog() {
         render_abi_import_catalog().trim(),
         "regenerate with `cargo run -p witchy-wir --example abi_catalog`"
     );
+}
+
+fn authorities_for(name: &str) -> Vec<AbiImportAuthority> {
+    abi_import_info(name)
+        .unwrap_or_else(|| panic!("missing ABI metadata for `{name}`"))
+        .authorities
+        .to_vec()
+}
+
+#[test]
+fn capability_imports_name_their_authority_family() {
+    for import in &prelude().imports {
+        let info = abi_import_info(&import.name)
+            .unwrap_or_else(|| panic!("missing ABI metadata for `{}`", import.name));
+        if info.class == AbiImportClass::CapabilityAuthority {
+            assert!(
+                !info.authorities.is_empty(),
+                "capability import `{}` must name its concrete authority family",
+                import.name
+            );
+        } else {
+            assert!(
+                info.authorities.is_empty(),
+                "non-capability import `{}` must not claim authority {:?}",
+                import.name,
+                info.authorities
+            );
+        }
+    }
+}
+
+#[test]
+fn precompiled_runner_authority_rows_are_cataloged() {
+    use AbiImportAuthority as A;
+
+    assert_eq!(authorities_for("dir_open"), vec![A::DirRead]);
+    assert_eq!(authorities_for("dir_create"), vec![A::DirWrite]);
+    assert_eq!(authorities_for("mint_file"), vec![A::FileGrant]);
+    assert_eq!(authorities_for("file_read_len"), vec![A::FileHandle]);
+    assert_eq!(authorities_for("net_connect_pinned"), vec![A::NetConnect]);
+    assert_eq!(authorities_for("net_listen"), vec![A::NetListen]);
+    assert_eq!(authorities_for("serve_pool"), vec![A::NetListen]);
+    assert_eq!(authorities_for("net_listen_tls"), vec![A::NetListen, A::Secret]);
+    assert_eq!(authorities_for("crypto.sign"), vec![A::Secret]);
+    assert_eq!(authorities_for("now_monotonic"), vec![A::Clock]);
 }
 
 fn node_available() -> bool {

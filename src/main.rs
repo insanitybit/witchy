@@ -2865,44 +2865,21 @@ fn run_wasm_module(
     strict_dir: bool,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     use crate::runtime::{Capabilities, Runtime};
+    use witchy_wir::wir_prelude::{abi_import_uses_authority, AbiImportAuthority as Authority};
+
     let needs = witchy_imports(bytes)?;
     let declared = artifact::launch_contract(bytes)?.unwrap_or_default();
-    let has = |n: &str| needs.iter().any(|i| i == n);
     let declares = |name: &str| declared.contains_key(name);
     let declares_right = |name: &str, right: &str| {
         declared.get(name).is_some_and(|rights| rights.contains(right))
     };
-    let dir_read = [
-        "dir_subdir", "dir_read_len", "dir_exists", "dir_is_dir", "dir_list_size",
-        // BUG-013: the runtime links these too — omitting them left a precompiled `.wasm`
-        // failing `unknown import: witchy::dir_*` under `--dir`.
-        "dir_only", "dir_open",
-    ]
-    .iter()
-    .any(|n| has(n))
-        || declares_right("Dir", "Read");
-    let dir_write = ["dir_write", "dir_append", "dir_make_dir", "dir_create"].iter().any(|n| has(n))
-        || declares_right("Dir", "Write");
-    let net_connect = [
-        "net_connect", "net_try_connect", "net_restrict", "net_send_line", "net_send_bytes",
-        "net_recv_line_len", "net_recv_all_len", "net_recv_bytes_len", "net_close",
-        // BUG-013: pinned/resolve/deny variants the runtime links but the classifier missed.
-        "net_deny", "net_resolve_size", "net_connect_pinned", "net_try_connect_pinned",
-    ]
-    .iter()
-    .any(|n| has(n))
-        || declares_right("Net", "Connect");
-    let net_listen = ["net_listen", "net_listen_tls", "net_accept", "serve_pool"].iter().any(|n| has(n))
-        || declares_right("Net", "Listen");
-    let uses_secret_host = [
-        "crypto.sign",
-        "crypto.public_key",
-        "crypto_reveal_len",
-        "secretstore_lookup",
-        "net_listen_tls",
-    ]
-    .iter()
-    .any(|name| has(name));
+    let imports_authority =
+        |authority| needs.iter().any(|name| abi_import_uses_authority(name, authority));
+    let dir_read = imports_authority(Authority::DirRead) || declares_right("Dir", "Read");
+    let dir_write = imports_authority(Authority::DirWrite) || declares_right("Dir", "Write");
+    let net_connect = imports_authority(Authority::NetConnect) || declares_right("Net", "Connect");
+    let net_listen = imports_authority(Authority::NetListen) || declares_right("Net", "Listen");
+    let uses_secret_host = imports_authority(Authority::Secret);
     if declares("Secret") && signing_key.is_none() {
         return Err(
             "this program's `main` requires a root `Secret` (the signing key), but none was \
@@ -2922,16 +2899,16 @@ fn run_wasm_module(
         args,
         ..Default::default()
     };
-    if has("now") || has("now_monotonic") || declares("Clock") {
+    if imports_authority(Authority::Clock) || declares("Clock") {
         caps.clock = true;
     }
-    if has("rand_u64") || declares("Rand") {
+    if imports_authority(Authority::Rand) || declares("Rand") {
         caps.rand = true;
     }
-    if has("env_len") || has("env_fill") || declares("Env") {
+    if imports_authority(Authority::Env) || declares("Env") {
         caps.env = true;
     }
-    if has("exec_run") || declares("Exec") {
+    if imports_authority(Authority::Exec) || declares("Exec") {
         caps.exec = true;
     }
     if dir_read || dir_write || declares("Dir") {
@@ -2958,7 +2935,7 @@ fn run_wasm_module(
     // as an `externref` via the `mint_file` host import, so a module importing
     // `mint_file` needs at least one `--file` grant, exactly as a `Dir` importer
     // needs `--dir`.
-    if (has("mint_file") || declares("File")) && file_grants.is_empty() {
+    if (imports_authority(Authority::FileGrant) || declares("File")) && file_grants.is_empty() {
         return Err(
             "this program's `main` requires a `File`, but none was granted (use `--file <path>`)".to_string(),
         );

@@ -4,7 +4,7 @@ title: Strong-state coherence gate for a proud 0.1 release
 status: accepted
 created: 2026-07-04
 superseded-by:
-tracking: coherence gate accepted as the pre-tag bar; executed alongside RFC-0061; intrinsic name catalog slice in progress
+tracking: coherence gate accepted as the pre-tag bar; executed alongside RFC-0061; intrinsic-name and host-import authority catalog slices landed
 ---
 
 # RFC-0063: Strong-state coherence gate for a proud 0.1 release
@@ -68,6 +68,15 @@ Create one machine-readable catalog for the host import surface. It should defin
 and browser host conformance tests should consume this catalog or be checked against it.
 
 This directly closes drift bugs such as BUG-013 and prevents future import-name skew.
+
+Implementation progress (2026-07-12): the WIR prelude ABI catalog now carries
+the concrete authority family for every capability-bearing `witchy.*` import,
+including multi-authority imports such as `net_listen_tls` (`Net.Listen` +
+`Secret`). The precompiled `.wasm` runner consumes that catalog instead of
+owning local name arrays for `Dir`, `Net`, `Secret`, `Clock`, `Rand`, `Env`,
+`Exec`, and direct `File` grants. The committed `spec/wasm-abi.md` table is
+generated from the same metadata, and catalog tests require every
+capability-authority import to name a concrete authority family.
 
 ### 3. One intrinsic/operation catalog
 

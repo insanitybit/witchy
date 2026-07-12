@@ -327,10 +327,77 @@ impl AbiImportClass {
     }
 }
 
+/// The concrete authority family an import observes or exercises. Classes say
+/// whether an import is authority-bearing at all; this enum says which grant
+/// family owns it, so launchers and hosts do not need local import-name tables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AbiImportAuthority {
+    Secret,
+    Env,
+    DirRead,
+    DirWrite,
+    FileGrant,
+    FileHandle,
+    NetConnect,
+    NetListen,
+    Clock,
+    Rand,
+    Exec,
+    BuildRead,
+    BuildOut,
+    BuildEnv,
+    BuildFetch,
+    BuildExec,
+}
+
+impl AbiImportAuthority {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Secret => "Secret",
+            Self::Env => "Env",
+            Self::DirRead => "Dir.Read",
+            Self::DirWrite => "Dir.Write",
+            Self::FileGrant => "File.grant",
+            Self::FileHandle => "File.handle",
+            Self::NetConnect => "Net.Connect",
+            Self::NetListen => "Net.Listen",
+            Self::Clock => "Clock",
+            Self::Rand => "Rand",
+            Self::Exec => "Exec",
+            Self::BuildRead => "Build.Read",
+            Self::BuildOut => "Build.Out",
+            Self::BuildEnv => "Build.Env",
+            Self::BuildFetch => "Build.Fetch",
+            Self::BuildExec => "Build.Exec",
+        }
+    }
+}
+
+const NO_AUTHORITIES: &[AbiImportAuthority] = &[];
+const AUTH_SECRET: &[AbiImportAuthority] = &[AbiImportAuthority::Secret];
+const AUTH_ENV: &[AbiImportAuthority] = &[AbiImportAuthority::Env];
+const AUTH_DIR_READ: &[AbiImportAuthority] = &[AbiImportAuthority::DirRead];
+const AUTH_DIR_WRITE: &[AbiImportAuthority] = &[AbiImportAuthority::DirWrite];
+const AUTH_FILE_GRANT: &[AbiImportAuthority] = &[AbiImportAuthority::FileGrant];
+const AUTH_FILE_HANDLE: &[AbiImportAuthority] = &[AbiImportAuthority::FileHandle];
+const AUTH_NET_CONNECT: &[AbiImportAuthority] = &[AbiImportAuthority::NetConnect];
+const AUTH_NET_LISTEN: &[AbiImportAuthority] = &[AbiImportAuthority::NetListen];
+const AUTH_NET_LISTEN_SECRET: &[AbiImportAuthority] =
+    &[AbiImportAuthority::NetListen, AbiImportAuthority::Secret];
+const AUTH_CLOCK: &[AbiImportAuthority] = &[AbiImportAuthority::Clock];
+const AUTH_RAND: &[AbiImportAuthority] = &[AbiImportAuthority::Rand];
+const AUTH_EXEC: &[AbiImportAuthority] = &[AbiImportAuthority::Exec];
+const AUTH_BUILD_READ: &[AbiImportAuthority] = &[AbiImportAuthority::BuildRead];
+const AUTH_BUILD_OUT: &[AbiImportAuthority] = &[AbiImportAuthority::BuildOut];
+const AUTH_BUILD_ENV: &[AbiImportAuthority] = &[AbiImportAuthority::BuildEnv];
+const AUTH_BUILD_FETCH: &[AbiImportAuthority] = &[AbiImportAuthority::BuildFetch];
+const AUTH_BUILD_EXEC: &[AbiImportAuthority] = &[AbiImportAuthority::BuildExec];
+
 /// Public ABI metadata layered over the canonical prelude signature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AbiImportInfo {
     pub class: AbiImportClass,
+    pub authorities: &'static [AbiImportAuthority],
     /// Whether the deny-by-omission browser host implements this import.
     pub browser: bool,
 }
@@ -402,6 +469,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "net_send_line"
         | "net_send_bytes"
         | "net_close"
+        | "serve_pool"
         | "now"
         | "now_monotonic"
         | "rand_u64"
@@ -421,11 +489,49 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "vm_par_map_bytes_run"
         | "vm_par_map_bytes_write"
         | "vm_with_dir_run"
-        | "vm_serve_run"
-        | "serve_pool" => C::InternalService,
+        | "vm_serve_run" => C::InternalService,
 
         "heap_register" | "heap_frontier" | "__witchy_abort" => C::RuntimeDiagnostic,
         _ => return None,
+    };
+
+    let authorities = match name {
+        "crypto.sign" | "crypto.public_key" | "secretstore_lookup" | "crypto_reveal_len" => AUTH_SECRET,
+        "env_len" | "env_fill" => AUTH_ENV,
+        "dir_read_len"
+        | "dir_list_size"
+        | "dir_subdir"
+        | "dir_only"
+        | "dir_exists"
+        | "dir_is_dir"
+        | "dir_open" => AUTH_DIR_READ,
+        "dir_write" | "dir_append" | "dir_make_dir" | "dir_create" => AUTH_DIR_WRITE,
+        "mint_file" => AUTH_FILE_GRANT,
+        "file_read_len" | "file_write" => AUTH_FILE_HANDLE,
+        "net_connect"
+        | "net_try_connect"
+        | "net_resolve_size"
+        | "net_connect_pinned"
+        | "net_try_connect_pinned"
+        | "net_restrict"
+        | "net_deny"
+        | "net_send_line"
+        | "net_send_bytes"
+        | "net_close"
+        | "net_recv_line_len"
+        | "net_recv_all_len"
+        | "net_recv_bytes_len" => AUTH_NET_CONNECT,
+        "net_listen" | "net_accept" | "serve_pool" => AUTH_NET_LISTEN,
+        "net_listen_tls" => AUTH_NET_LISTEN_SECRET,
+        "now" | "now_monotonic" => AUTH_CLOCK,
+        "rand_u64" => AUTH_RAND,
+        "exec_run" => AUTH_EXEC,
+        "build_read_len" => AUTH_BUILD_READ,
+        "build_out_write" => AUTH_BUILD_OUT,
+        "build_env_len" | "build_env_fill" => AUTH_BUILD_ENV,
+        "build_fetch_len" => AUTH_BUILD_FETCH,
+        "build_exec_run" => AUTH_BUILD_EXEC,
+        _ => NO_AUTHORITIES,
     };
 
     let browser = matches!(
@@ -454,7 +560,20 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
             | "crypto.__ed25519_verify_status"
             | "__witchy_abort"
     );
-    Some(AbiImportInfo { class, browser })
+    Some(AbiImportInfo { class, authorities, browser })
+}
+
+/// Whether a host import is cataloged as using a specific authority family.
+pub fn abi_import_uses_authority(name: &str, authority: AbiImportAuthority) -> bool {
+    abi_import_info(name).is_some_and(|info| info.authorities.contains(&authority))
+}
+
+fn abi_authority_list(authorities: &[AbiImportAuthority]) -> String {
+    if authorities.is_empty() {
+        "none".to_string()
+    } else {
+        authorities.iter().map(|a| a.label()).collect::<Vec<_>>().join(", ")
+    }
 }
 
 fn wasm_ty_name(ty: WasmTy) -> &'static str {
@@ -484,18 +603,19 @@ pub fn render_abi_import_catalog() -> String {
     use std::fmt::Write as _;
 
     let mut out = String::from(
-        "| import | signature | class | browser |\n\
-         | --- | --- | --- | --- |\n",
+        "| import | signature | class | authority | browser |\n\
+         | --- | --- | --- | --- | --- |\n",
     );
     for import in &prelude().imports {
         let info = abi_import_info(&import.name)
             .unwrap_or_else(|| panic!("ABI import `{}` has no classification", import.name));
         writeln!(
             out,
-            "| `{}` | `{}` | {} | {} |",
+            "| `{}` | `{}` | {} | {} | {} |",
             import.name,
             abi_signature(import),
             info.class.label(),
+            abi_authority_list(info.authorities),
             if info.browser { "provided" } else { "omitted" },
         )
         .expect("writing to a String cannot fail");
