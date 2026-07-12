@@ -31,8 +31,6 @@
 // `{"model": <sel'>, "vnode": <tree>, "cmd": ...}`. The rune holds NO capability —
 // `witchy caps .../covenbrowser.witchy` reports `export_step (none)`.
 
-import glamour
-import json
 import reflect
 import string
 import list
@@ -90,42 +88,19 @@ fn no_selection() -> Int:
 // footprint and one whose source contains a comment + a string + `<script>` (the
 // XSS probe: it must render as inert text, never a real element).
 // ---------------------------------------------------------------------------
-
 fn catalog() -> List(Rune):
-    [
-        // VERIFIED: signature checks out, TUF metadata is fresh, trusted publisher.
-        Rune(
-            "acme/widget",
-            "1.2.0",
-            ["Net", "Dir", "Clock"],
-            "// acme/widget — fetches and renders a remote widget.\nfn main(net: Net):\n    let body = http.get(net, \"https://acme.test/widget\")\n    print(body)",
-            true,
-            "snapshot v42, timestamp fresh",
-            "trusted-publisher | issuer=ci@acme",
-        ),
-        // VERIFIED + the celebrated EMPTY footprint.
-        Rune(
-            "glamour/view",
-            "0.1.0",
-            [],
-            "// glamour/view — a footprint-EMPTY view rune.\nfn view(count: Int) -> VNode(Msg):\n    html\"<span>\${count}</span>\"",
-            true,
-            "snapshot v42, timestamp fresh",
-            "trusted-publisher | issuer=witchy-core",
-        ),
-        // UNVERIFIED: unsigned artifact, stale TUF metadata, and a HOSTILE
-        // provenance string (carries `<script>`) — the XSS probe for the trust
-        // panel. It must render as inert text, never a real element.
-        Rune(
-            "evil/inject",
-            "6.6.6",
-            ["Exec"],
-            "// evil/inject — tries to smuggle markup through the highlighter.\nfn payload() -> String:\n    let s = \"<script>alert(1)</script>\"\n    s",
-            false,
-            "snapshot v17, timestamp STALE",
-            "unverified | <script>alert('provenance')</script>",
-        ),
-    ]
+    // VERIFIED: signature checks out, TUF metadata is fresh, trusted publisher.
+    let widget = Rune("acme/widget", "1.2.0", ["Net", "Dir", "Clock"], "// acme/widget — fetches and renders a remote widget.\nfn main(net: Net):\n    let body = http.get(net, \"https://acme.test/widget\")\n    print(body)", true, "snapshot v42, timestamp fresh", "trusted-publisher | issuer=ci@acme")
+
+    // VERIFIED + the celebrated EMPTY footprint.
+    let glamour_view = Rune("glamour/view", "0.1.0", [], "// glamour/view — a footprint-EMPTY view rune.\nfn view(count: Int) -> VNode(Msg):\n    html\"<span>\${count}</span>\"", true, "snapshot v42, timestamp fresh", "trusted-publisher | issuer=witchy-core")
+
+    // UNVERIFIED: unsigned artifact, stale TUF metadata, and a HOSTILE
+    // provenance string (carries `<script>`) — the XSS probe for the trust
+    // panel. It must render as inert text, never a real element.
+    let hostile = Rune("evil/inject", "6.6.6", ["Exec"], "// evil/inject — tries to smuggle markup through the highlighter.\nfn payload() -> String:\n    let s = \"<script>alert(1)</script>\"\n    s", false, "snapshot v17, timestamp STALE", "unverified | <script>alert('provenance')</script>")
+
+    [widget, glamour_view, hostile]
 
 // The initial model: the catalog, nothing selected (the INDEX view).
 fn init() -> Model:
@@ -136,7 +111,6 @@ fn init() -> Model:
 // rune is. Built entirely with glamour BUILDERS (`element`/`text`/`prop`/`on`) —
 // NOT the `html` tag (its contract is mid-change in a parallel branch).
 // ---------------------------------------------------------------------------
-
 fn view(model: Model) -> VNode(Msg):
     match model:
         Model(runes, selected) ->
@@ -154,27 +128,16 @@ fn index_view(runes: List(Rune)) -> VNode(Msg):
     for r in runes:
         cards.push(index_card(r, i))
         i = i + 1
-    let heading = glamour.element(
-        "h2",
-        [glamour.prop("class", "coven-title")],
-        [glamour.text("coven — browse runes")],
-    )
-    glamour.element(
-        "div",
-        [glamour.prop("class", "coven-index")],
-        [heading, glamour.element("div", [glamour.prop("class", "coven-list")], cards)],
-    )
+    let heading = glamour.element("h2", [glamour.prop("class", "coven-title")], [glamour.text("coven — browse runes")])
+
+    glamour.element("div", [glamour.prop("class", "coven-index")], [heading, glamour.element("div", [glamour.prop("class", "coven-list")], cards)])
 
 // One clickable index card: the runecard card body wrapped so the whole card
 // dispatches `Show(i)` on click. Reuses `card_body` (the shared runecard structure).
 fn index_card(r: Rune, idx: Int) -> VNode(Msg):
     match r:
         Rune(name, version, caps, _src, _verified, _freshness, _provenance) ->
-            glamour.element(
-                "div",
-                [glamour.prop("class", "rune-card"), glamour.on("click", Show(idx))],
-                card_body(name, version, caps, "click to inspect"),
-            )
+            glamour.element("div", [glamour.prop("class", "rune-card"), glamour.on("click", Show(idx))], card_body(name, version, caps, "click to inspect"))
 
 // The DETAIL: a COMPLETE coven page for the selected rune — the back button, the
 // rune card (NOT clickable here), the TRUST PANEL (signature + TUF freshness +
@@ -182,23 +145,13 @@ fn index_card(r: Rune, idx: Int) -> VNode(Msg):
 fn detail_view(r: Rune) -> VNode(Msg):
     match r:
         Rune(name, version, caps, src, verified, freshness, provenance) ->
-            let back = glamour.element(
-                "button",
-                [glamour.prop("class", "coven-back"), glamour.on("click", Back)],
-                [glamour.text("← back")],
-            )
-            let card = glamour.element(
-                "div",
-                [glamour.prop("class", "rune-card")],
-                card_body(name, version, caps, "source"),
-            )
+            let back = glamour.element("button", [glamour.prop("class", "coven-back"), glamour.on("click", Back)], [glamour.text("← back")])
+
+            let card = glamour.element("div", [glamour.prop("class", "rune-card")], card_body(name, version, caps, "source"))
+
             let trust = trust_panel(verified, freshness, provenance)
             let source = highlight(src)
-            glamour.element(
-                "div",
-                [glamour.prop("class", "coven-detail")],
-                [back, card, trust, source],
-            )
+            glamour.element("div", [glamour.prop("class", "coven-detail")], [back, card, trust, source])
 
 // ---------------------------------------------------------------------------
 // The TRUST PANEL — the detail view's security headline (coven-web, PLAN WS-G).
@@ -215,35 +168,14 @@ fn detail_view(r: Rune) -> VNode(Msg):
 //     through `text(...)` rather than an HTML-string sink.
 // ---------------------------------------------------------------------------
 fn trust_panel(verified: Bool, freshness: String, provenance: String) -> VNode(Msg):
-    let badge =
-        if verified:
-            glamour.element(
-                "span",
-                [glamour.prop("class", "trust-ok")],
-                [glamour.text("✓ signature verified")],
-            )
-        else:
-            glamour.element(
-                "span",
-                [glamour.prop("class", "trust-warn")],
-                [glamour.text("⚠ unverified")],
-            )
+    let badge = if verified: glamour.element("span", [glamour.prop("class", "trust-ok")], [glamour.text("✓ signature verified")]) else: glamour.element("span", [glamour.prop("class", "trust-warn")], [glamour.text("⚠ unverified")])
+
     let sig_line = glamour.element("div", [glamour.prop("class", "trust-sig")], [badge])
-    let tuf_line = glamour.element(
-        "div",
-        [glamour.prop("class", "trust-tuf")],
-        [glamour.text("TUF: ${freshness}")],
-    )
-    let prov_line = glamour.element(
-        "div",
-        [glamour.prop("class", "trust-prov")],
-        [glamour.text("provenance: ${provenance}")],
-    )
-    glamour.element(
-        "div",
-        [glamour.prop("class", "trust-panel")],
-        [sig_line, tuf_line, prov_line],
-    )
+    let tuf_line = glamour.element("div", [glamour.prop("class", "trust-tuf")], [glamour.text("TUF: ${freshness}")])
+
+    let prov_line = glamour.element("div", [glamour.prop("class", "trust-prov")], [glamour.text("provenance: ${provenance}")])
+
+    glamour.element("div", [glamour.prop("class", "trust-panel")], [sig_line, tuf_line, prov_line])
 
 // ---------------------------------------------------------------------------
 // The runecard CARD STRUCTURE, reused (mirrors runecard.witchy's `card`/`cap_row`/
@@ -253,20 +185,13 @@ fn trust_panel(verified: Bool, freshness: String, provenance: String) -> VNode(M
 // wrap it in their own outer `<div class="rune-card">` (the index card adds an
 // `on("click", ...)`; the detail card does not).
 // ---------------------------------------------------------------------------
-
 fn card_body(name: String, version: String, caps: List(String), label: String) -> List(VNode(Msg)):
     let heading = glamour.element("h3", [glamour.prop("class", "rune-name")], [glamour.text(name)])
-    let ver = glamour.element(
-        "div",
-        [glamour.prop("class", "rune-version")],
-        [glamour.text("v${version}")],
-    )
+    let ver = glamour.element("div", [glamour.prop("class", "rune-version")], [glamour.text("v${version}")])
+
     let caps_row = cap_row(caps)
-    let prov = glamour.element(
-        "div",
-        [glamour.prop("class", "rune-provenance")],
-        [glamour.text(label)],
-    )
+    let prov = glamour.element("div", [glamour.prop("class", "rune-provenance")], [glamour.text(label)])
+
     [heading, ver, caps_row, prov]
 
 // The capability row. A NON-empty footprint becomes one `<span class="cap-badge">`
@@ -274,11 +199,8 @@ fn card_body(name: String, version: String, caps: List(String), label: String) -
 // `<span class="cap-none">no capabilities</span>` — the state witchy celebrates.
 fn cap_row(caps: List(String)) -> VNode(Msg):
     if list.is_empty(caps):
-        let none_badge = glamour.element(
-            "span",
-            [glamour.prop("class", "cap-none")],
-            [glamour.text("no capabilities")],
-        )
+        let none_badge = glamour.element("span", [glamour.prop("class", "cap-none")], [glamour.text("no capabilities")])
+
         glamour.element("div", [glamour.prop("class", "cap-row")], [none_badge])
     else:
         var badges: List(VNode(Msg)) = []
@@ -298,16 +220,11 @@ fn cap_badge(name: String) -> VNode(Msg):
 // (digit run), `kw` (keyword identifier), or "" (plain text). Each token's text
 // flows through a `text(...)` node, so a `<script>` in the source is inert.
 // ===========================================================================
-
 type Token:
     Tok(String, String)
 
 fn keywords() -> List(String):
-    [
-        "fn", "let", "var", "if", "else", "match", "type", "import", "pub",
-        "for", "while", "return", "in", "where", "derive", "and", "or", "not",
-        "true", "false",
-    ]
+    ["fn", "let", "var", "if", "else", "match", "type", "import", "pub", "for", "while", "return", "in", "where", "derive", "and", "or", "not", "true", "false"]
 
 fn is_keyword(word: String) -> Bool:
     list.contains(keywords(), word)
@@ -323,26 +240,23 @@ fn tokenize(src: String) -> List(Token):
             let (text, j) = read_line_comment(cs, i, n)
             toks.push(Tok("com", text))
             i = j
+        else if c == "\"":
+            let (text, j) = read_string(cs, i, n)
+            toks.push(Tok("str", text))
+            i = j
+        else if is_digit(c):
+            let (text, j) = read_number(cs, i, n)
+            toks.push(Tok("num", text))
+            i = j
+        else if is_ident_start(c):
+            let (word, j) = read_ident(cs, i, n)
+            let kind = if is_keyword(word): "kw" else: ""
+            toks.push(Tok(kind, word))
+            i = j
         else:
-            if c == "\"":
-                let (text, j) = read_string(cs, i, n)
-                toks.push(Tok("str", text))
-                i = j
-            else:
-                if is_digit(c):
-                    let (text, j) = read_number(cs, i, n)
-                    toks.push(Tok("num", text))
-                    i = j
-                else:
-                    if is_ident_start(c):
-                        let (word, j) = read_ident(cs, i, n)
-                        let kind = if is_keyword(word): "kw" else: ""
-                        toks.push(Tok(kind, word))
-                        i = j
-                    else:
-                        let (text, j) = read_plain(cs, i, n)
-                        toks.push(Tok("", text))
-                        i = j
+            let (text, j) = read_plain(cs, i, n)
+            toks.push(Tok("", text))
+            i = j
     toks
 
 fn is_slash_slash(cs: List(String), i: Int, n: Int) -> Bool:
@@ -402,8 +316,7 @@ fn read_plain(cs: List(String), start: Int, n: Int) -> (String, Int):
     (out, i)
 
 fn is_digit(c: String) -> Bool:
-    c == "0" || c == "1" || c == "2" || c == "3" || c == "4"
-        || c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
+    c == "0" || c == "1" || c == "2" || c == "3" || c == "4" || c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
 
 fn is_number_char(c: String) -> Bool:
     is_digit(c) || c == "_" || c == "."
@@ -440,7 +353,6 @@ fn render_token(t: Token) -> VNode(Msg):
 // update — fold a navigation message into the next model. No effects (the rune is
 // capability-denied), so the command is always `NoCmd`.
 // ---------------------------------------------------------------------------
-
 fn update(model: Model, msg: Msg) -> (Model, Cmd(Msg)):
     match model:
         Model(runes, _selected) ->
@@ -457,7 +369,6 @@ fn update(model: Model, msg: Msg) -> (Model, Cmd(Msg)):
 // full `Model` from the constant catalog + the wire index; `model_to_json` projects
 // the model back down to that index. `Msg` round-trips via reflect (like counter).
 // ---------------------------------------------------------------------------
-
 fn parse_model(j: Json) -> Model:
     match json.as_int(j):
         Some(sel) -> Model(catalog(), sel)
@@ -468,10 +379,10 @@ fn model_to_json(model: Model) -> Json:
         Model(_runes, selected) -> json.from_value(selected)
 
 fn parse_msg(j: Json) -> Msg:
-    match json.get_string(j, "$variant"):
+    match json.get_string(j, "\$variant"):
         Some(v) ->
             if v == "Show":
-                match json.get(j, "$values"):
+                match json.get(j, "\$values"):
                     Some(vals) -> Show(first_int(vals))
                     None -> Back
             else:

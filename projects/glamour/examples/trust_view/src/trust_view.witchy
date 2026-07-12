@@ -5,8 +5,6 @@
 // fills them from `/coven/rootpub`, `/coven/snapshot`, `/coven/timestamp` and computes the
 // checks. A pure render (no events); empty footprint.
 
-import glamour
-import json
 import list
 import reflect
 from glamour import VNode, Cmd
@@ -17,10 +15,7 @@ type Msg derive(Reflect):
 
 fn check(label: String, value: String, pass: Bool) -> List(VNode(Msg)):
     let cls = if pass: "chip ok" else: "chip bad"
-    [
-        glamour.element("dt", [], [glamour.text(label)]),
-        glamour.element("dd", [], [glamour.element("span", [glamour.prop("class", cls)], [glamour.text(value)])]),
-    ]
+    [glamour.element("dt", [], [glamour.text(label)]), glamour.element("dd", [], [glamour.element("span", [glamour.prop("class", cls)], [glamour.text(value)])])]
 
 fn view(model: Int) -> VNode(Msg):
     var rows = []
@@ -30,10 +25,7 @@ fn view(model: Int) -> VNode(Msg):
     rows = list.concat(rows, check("snapshot signature", "valid", true))
     rows = list.concat(rows, check("timestamp freshness", "fresh (2m ago)", true))
     rows = list.concat(rows, check("rollback check", "ok", true))
-    glamour.element("article", [glamour.prop("class", "trust")], [
-        glamour.element("h1", [], [glamour.text("Registry trust (TUF)")]),
-        glamour.element("dl", [glamour.prop("class", "record")], rows),
-    ])
+    glamour.element("article", [glamour.prop("class", "trust")], [glamour.element("h1", [], [glamour.text("Registry trust (TUF)")]), glamour.element("dl", [glamour.prop("class", "record")], rows)])
 
 fn update(model: Int, msg: Msg) -> (Int, Cmd(Msg)):
     (model, NoCmd)

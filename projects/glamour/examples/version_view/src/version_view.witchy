@@ -6,8 +6,6 @@
 // in (the shell fills it from `/coven/record`); the promote/yank buttons are shown here
 // but the shell gates them on the signed-in session. Empty footprint.
 
-import glamour
-import json
 import list
 import reflect
 from glamour import VNode, Cmd
@@ -40,16 +38,7 @@ fn view(model: Int) -> VNode(Msg):
     rows = list.concat(rows, row("promoted_by", "alice"))
     rows = list.concat(rows, row("provenance", "trusted-publisher|issuer=token.actions.githubusercontent.com"))
     rows = list.concat(rows, row("released_at", "2026-06-26"))
-    glamour.element("article", [glamour.prop("class", "version")], [
-        glamour.element("h1", [], [glamour.text("acme/charts@1.2.0")]),
-        glamour.element("span", [glamour.prop("class", "chip state-released")], [glamour.text("released")]),
-        footprint_chips(["Net[Connect, Tls]", "Js{d3-runes-chart}"]),
-        glamour.element("dl", [glamour.prop("class", "record")], rows),
-        glamour.element("div", [glamour.prop("class", "promote")], [
-            glamour.element("button", [glamour.prop("class", "button"), glamour.on("click", Promote)], [glamour.text("promote")]),
-            glamour.element("button", [glamour.prop("class", "button"), glamour.on("click", Yank)], [glamour.text("yank")]),
-        ]),
-    ])
+    glamour.element("article", [glamour.prop("class", "version")], [glamour.element("h1", [], [glamour.text("acme/charts@1.2.0")]), glamour.element("span", [glamour.prop("class", "chip state-released")], [glamour.text("released")]), footprint_chips(["Net[Connect, Tls]", "Js{d3-runes-chart}"]), glamour.element("dl", [glamour.prop("class", "record")], rows), glamour.element("div", [glamour.prop("class", "promote")], [glamour.element("button", [glamour.prop("class", "button"), glamour.on("click", Promote)], [glamour.text("promote")]), glamour.element("button", [glamour.prop("class", "button"), glamour.on("click", Yank)], [glamour.text("yank")])])])
 
 fn update(model: Int, msg: Msg) -> (Int, Cmd(Msg)):
     (model, NoCmd)
@@ -60,7 +49,7 @@ fn parse_model(j: Json) -> Int:
         None -> 0
 
 fn parse_msg(j: Json) -> Msg:
-    match json.get_string(j, "$variant"):
+    match json.get_string(j, "\$variant"):
         Some(v) ->
             if v == "Yank":
                 Yank

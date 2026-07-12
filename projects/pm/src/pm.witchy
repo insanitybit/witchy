@@ -277,9 +277,11 @@ fn verify_registry_lock_entries(root: Dir, dir: String, lock: String) -> Result(
                     match verify_record_signature(rootpub, record_text):
                         Err(e) -> return Err(LockRecordInvalid(alias, record_verify_error_message(e)))
                         Ok(_doc) -> Nil
+
                     let record = match parse_vendored_record(record_text):
                         Err(e) -> return Err(LockRecordInvalid(alias, vendored_record_error_message(e)))
                         Ok(record) -> record
+
                     if record.name != name:
                         return Err(LockRecordCoordinateMismatch(alias, "name", name, record.name))
                     else if record.version != version:
@@ -2001,6 +2003,7 @@ fn update_one(console: Console, net: Net, root: Dir, host: String, port: Int, en
                 console.print("BLOCK: cannot update `${entry}` — ${vendored_record_error_message(e)}")
                 return (0, false, true)
             Ok(record) -> record
+
         let fullname = vendored.name
         let current = vendored.version
         let req = dep_req(manifest, fullname, entry)
@@ -2528,6 +2531,7 @@ fn vendored_footprint_strings(items: List(Json)) -> Result(List(String), Vendore
         let value = match json.as_string(item):
             None -> return Err(VendoredRecordFootprintNonString)
             Some(value) -> value
+
         out.push(value)
     Ok(out)
 

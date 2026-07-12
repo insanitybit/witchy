@@ -10,8 +10,6 @@
 // calls it with `{"model": <n>}` to render, and `{"model": <n>, "msg": <m>}`
 // after a click; it returns `{"model": <n'>, "vnode": <tree>}`.
 
-import glamour
-import json
 import reflect
 from glamour import VNode, Cmd
 from json import Json
@@ -19,7 +17,6 @@ from json import Json
 // `Model = Int` (RFC-0008's example model): the count. A bare `Int` reflects to a
 // JSON integer, so it round-trips through the wire with no wrapper shape to keep in
 // sync — `model_to_json(3)` is `3` and `parse_model(3)` is `3`.
-
 type Msg derive(Reflect):
     Inc
     Dec
@@ -57,7 +54,7 @@ fn parse_model(j: Json) -> Int:
 // match over the app's own message shape — this is the deliberate MVU glue (the
 // shell sends back exactly the JSON `to_json` embedded in the `on` handler).
 fn parse_msg(j: Json) -> Msg:
-    match json.get_string(j, "$variant"):
+    match json.get_string(j, "\$variant"):
         Some(v) ->
             if v == "Dec":
                 Dec

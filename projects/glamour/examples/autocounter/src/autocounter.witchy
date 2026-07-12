@@ -13,8 +13,6 @@
 // `main` touches `Console`). The auto-increment authority is the shell's, never
 // the rune's.
 
-import glamour
-import json
 import reflect
 from glamour import VNode, Cmd, UiRoot, UiTimer
 from json import Json
@@ -60,7 +58,7 @@ fn parse_model(j: Json) -> Int:
 // shell sends back exactly the JSON embedded in the `on` handler or in the `After`
 // command, so `Tick` round-trips into `update`.
 fn parse_msg(j: Json) -> Msg:
-    match json.get_string(j, "$variant"):
+    match json.get_string(j, "\$variant"):
         Some(v) ->
             if v == "Tick":
                 Tick

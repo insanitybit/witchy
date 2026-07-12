@@ -13,9 +13,7 @@
 // page renders standalone — this rune is the TEMPLATE the shell's package view is built on.
 // The rune holds NO capability: `witchy caps` reports `export_step (none)`.
 
-import glamour
 import markdown
-import json
 import list
 import reflect
 from glamour import VNode, Cmd
@@ -59,22 +57,8 @@ fn tab_button(label: String, msg: Msg, active: Bool) -> VNode(Msg):
     glamour.element("button", [glamour.prop("class", cls), glamour.on("click", msg)], [glamour.text(label)])
 
 fn view(tab: Int) -> VNode(Msg):
-    let body =
-        if tab == 1:
-            glamour.element("section", [glamour.prop("class", "apidocs")], [markdown.to_vnode(pkg_docs())])
-        else:
-            glamour.element("section", [glamour.prop("class", "readme")], [markdown.to_vnode(pkg_readme())])
-    glamour.element("article", [glamour.prop("class", "package")], [
-        glamour.element("h1", [glamour.prop("class", "package-name")], [glamour.text(pkg_name())]),
-        glamour.element("div", [glamour.prop("class", "package-version")], [glamour.text("v${pkg_version()}")]),
-        footprint_chips(pkg_caps()),
-        glamour.element("pre", [glamour.prop("class", "install")], [glamour.text("witchy add ${pkg_name()}")]),
-        glamour.element("nav", [glamour.prop("class", "tabs")], [
-            tab_button("README", ShowReadme, tab == 0),
-            tab_button("API docs", ShowDocs, tab == 1),
-        ]),
-        body,
-    ])
+    let body = if tab == 1: glamour.element("section", [glamour.prop("class", "apidocs")], [markdown.to_vnode(pkg_docs())]) else: glamour.element("section", [glamour.prop("class", "readme")], [markdown.to_vnode(pkg_readme())])
+    glamour.element("article", [glamour.prop("class", "package")], [glamour.element("h1", [glamour.prop("class", "package-name")], [glamour.text(pkg_name())]), glamour.element("div", [glamour.prop("class", "package-version")], [glamour.text("v${pkg_version()}")]), footprint_chips(pkg_caps()), glamour.element("pre", [glamour.prop("class", "install")], [glamour.text("witchy add ${pkg_name()}")]), glamour.element("nav", [glamour.prop("class", "tabs")], [tab_button("README", ShowReadme, tab == 0), tab_button("API docs", ShowDocs, tab == 1)]), body])
 
 fn update(tab: Int, msg: Msg) -> (Int, Cmd(Msg)):
     match msg:
@@ -88,7 +72,7 @@ fn parse_model(j: Json) -> Int:
         None -> 0
 
 fn parse_msg(j: Json) -> Msg:
-    match json.get_string(j, "$variant"):
+    match json.get_string(j, "\$variant"):
         Some(v) ->
             if v == "ShowDocs":
                 ShowDocs

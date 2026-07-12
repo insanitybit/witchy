@@ -6,8 +6,6 @@
 // package page. The catalog data is baked in (the shell fills it from `/coven/catalog` over
 // the HTTP effect); this is the template the shell's index view is built on. Empty footprint.
 
-import glamour
-import json
 import list
 import reflect
 from glamour import VNode, Cmd, UiRoute, UiRoot
@@ -20,11 +18,7 @@ type Msg derive(Reflect):
 // The baked catalog — (name, version, capability footprint). The shell loads this from the
 // registry; here it is constant so the view renders standalone.
 fn catalog() -> List((String, String, List(String))):
-    [
-        ("acme/charts", "1.2.0", ["Net[Connect, Tls]", "Js{d3-runes-chart}"]),
-        ("acme/log", "0.3.0", []),
-        ("std/json", "1.0.0", []),
-    ]
+    [("acme/charts", "1.2.0", ["Net[Connect, Tls]", "Js{d3-runes-chart}"]), ("acme/log", "0.3.0", []), ("std/json", "1.0.0", [])]
 
 fn matches(name: String, caps: List(String), q: String) -> Bool:
     if string.is_empty(q):
@@ -51,27 +45,14 @@ fn caps_row(caps: List(String)) -> VNode(Msg):
         glamour.element("span", [glamour.prop("class", "chips")], cs)
 
 fn card(name: String, ver: String, caps: List(String)) -> VNode(Msg):
-    glamour.element("li", [glamour.prop("class", "rune-row")], [
-        glamour.element("button", [glamour.prop("class", "rune-name"), glamour.on("click", Goto(name))], [glamour.text(name)]),
-        glamour.element("span", [glamour.prop("class", "rune-version")], [glamour.text("v${ver}")]),
-        caps_row(caps),
-    ])
+    glamour.element("li", [glamour.prop("class", "rune-row")], [glamour.element("button", [glamour.prop("class", "rune-name"), glamour.on("click", Goto(name))], [glamour.text(name)]), glamour.element("span", [glamour.prop("class", "rune-version")], [glamour.text("v${ver}")]), caps_row(caps)])
 
 fn view(query: String) -> VNode(Msg):
     var items = []
     for name, ver, caps in catalog():
         if matches(name, caps, query):
             items.push(glamour.keyed(name, card(name, ver, caps)))
-    glamour.element("section", [glamour.prop("class", "catalog")], [
-        glamour.element("h1", [], [glamour.text("Runes")]),
-        glamour.element("input", [
-            glamour.prop("class", "search"),
-            glamour.prop("type", "search"),
-            glamour.prop("placeholder", "filter by name or capability"),
-            glamour.on_input("input", "Search"),
-        ], []),
-        glamour.element("ul", [glamour.prop("class", "rune-list")], items),
-    ])
+    glamour.element("section", [glamour.prop("class", "catalog")], [glamour.element("h1", [], [glamour.text("Runes")]), glamour.element("input", [glamour.prop("class", "search"), glamour.prop("type", "search"), glamour.prop("placeholder", "filter by name or capability"), glamour.on_input("input", "Search")], []), glamour.element("ul", [glamour.prop("class", "rune-list")], items)])
 
 fn update(query: String, msg: Msg, route: UiRoute) -> (String, Cmd(Msg)):
     match msg:
@@ -83,7 +64,7 @@ fn parse_model(j: Json) -> String:
     json.as_string(j).unwrap_or("")
 
 fn arg_str(j: Json, i: Int) -> String:
-    match json.get(j, "$values"):
+    match json.get(j, "\$values"):
         Some(arr) ->
             match json.index(arr, i):
                 Some(v) -> json.as_string(v).unwrap_or("")
@@ -91,7 +72,7 @@ fn arg_str(j: Json, i: Int) -> String:
         None -> ""
 
 fn parse_msg(j: Json) -> Msg:
-    match json.get_string(j, "$variant"):
+    match json.get_string(j, "\$variant"):
         Some(v) ->
             if v == "Goto":
                 Goto(arg_str(j, 0))
