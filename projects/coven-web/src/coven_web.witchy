@@ -576,8 +576,8 @@ fn google_finish(key: Secret, clock: Clock, jwks: Json, client_id: String, id_to
 
 // Pick the signing key for the token's `kid` from the JWKS and verify it (signature +
 // issuer `accounts.google.com` + audience = our client id + expiry). Returns the claims.
-fn select_and_verify(clock: Clock, jwks: Json, client_id: String, id_token: String) -> Result(Json, String):
-    let key_id = jwt.kid(id_token).ok_or("id_token header has no `kid`")?
+fn select_and_verify(clock: Clock, jwks: Json, client_id: String, id_token: String) -> Result(Json, jwt.JwtError):
+    let key_id = jwt.require_kid(id_token)?
     let der = jwt.rsa_key_for_kid(jwks, key_id)?
     // JWT `exp`/`nbf` are unix SECONDS; `clock.now()` is milliseconds.
     let claims = jwt.verify_oidc(id_token, der, "https://accounts.google.com", client_id, clock.now() / 1000)?

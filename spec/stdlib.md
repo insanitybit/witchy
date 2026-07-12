@@ -1251,6 +1251,7 @@ Matchable compact-JWT/OIDC verification failures. These distinguish malformed wi
 - `HeaderBase64(String)`
 - `HeaderJson(String)`
 - `HeaderMissingAlg`
+- `HeaderMissingKid`
 - `UnsupportedAlg(String)`
 - `SignatureSegmentBase64(String)`
 - `SignatureInputMalformed(String)`
@@ -1299,9 +1300,13 @@ The payload claims of a compact JWT WITHOUT verifying its signature — for read
 
 Build the DER PKCS#1 `RSAPublicKey` (as hex — the shape `verify_rs256` wants) from a JWK's base64url modulus `n` and exponent `e`, so an OIDC verifier can turn a JWKS entry (`{"kty":"RSA","n":…,"e":…}`) into a key. The result is the ASN.1 DER `SEQUENCE { INTEGER n, INTEGER e }`; an INTEGER gains a leading `00` when its top bit is set (DER integers are signed two's-complement, RSA values are unsigned magnitudes).
 
+#### `fn require_kid(token: String) -> Result(String, JwtError)`
+
+Require the `kid` (key id) from a compact JWT header, preserving malformed compact/header input and a missing `kid` as matchable `JwtError` cases.
+
 #### `fn kid(token: String) -> Option(String)`
 
-The `kid` (key id) from a compact JWT's header — used to pick the right JWKS key when a provider publishes several (key rotation). `None` if the token or header is malformed.
+Optional convenience for callers that genuinely treat a malformed/missing key id as absence. Verification boundaries should use `require_kid`.
 
 #### `fn rsa_key_for_kid(jwks: Json, key_id: String) -> Result(String, JwtError)`
 

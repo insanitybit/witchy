@@ -29,6 +29,7 @@ type JwtError:
     HeaderBase64(String)
     HeaderJson(String)
     HeaderMissingAlg
+    HeaderMissingKid
     UnsupportedAlg(String)
     SignatureSegmentBase64(String)
     SignatureInputMalformed(String)
@@ -62,6 +63,7 @@ pub fn jwt_error_message(e: JwtError) -> String:
         HeaderBase64(reason) -> "JWT header is not valid base64url: " + reason
         HeaderJson(reason) -> "JWT header is not JSON: " + reason
         HeaderMissingAlg -> "JWT header is missing `alg`"
+        HeaderMissingKid -> "JWT header is missing `kid`"
         UnsupportedAlg(alg) -> "JWT `alg` is `" + alg + "`, not the required `RS256`"
         SignatureSegmentBase64(reason) -> "JWT signature segment is malformed: " + reason
         SignatureInputMalformed(reason) -> "JWT signature input is malformed: " + reason
@@ -325,12 +327,20 @@ fn byte_hex(b: Int) -> String:
 fn high_bit_set(value_hex: String) -> Bool:
     !string.is_empty(value_hex) && string.contains("89abcdef", string.char_at(value_hex, 0) ?? "")
 
-// The `kid` (key id) from a compact JWT's header — used to pick the right JWKS key when a
-// provider publishes several (key rotation). `None` if the token or header is malformed.
+// Require the `kid` (key id) from a compact JWT header, preserving malformed
+// compact/header input and a missing `kid` as matchable `JwtError` cases.
+pub fn require_kid(token: String) -> Result(String, JwtError):
+    let h = header(token)?
+    match json.get_string(h, "kid"):
+        Some(k) -> Ok(k)
+        None -> Err(HeaderMissingKid)
+
+// Optional convenience for callers that genuinely treat a malformed/missing key
+// id as absence. Verification boundaries should use `require_kid`.
 pub fn kid(token: String) -> Option(String):
-    match header(token):
+    match require_kid(token):
         Err(_) -> None
-        Ok(h) -> json.get_string(h, "kid")
+        Ok(k) -> Some(k)
 
 // Select the RSA public key for `kid` from a JWKS document (`{"keys":[{"kty":"RSA","kid":
 // …,"n":…,"e":…}, …]}`) and return it as the DER PKCS#1 hex `verify_rs256`/`verify_oidc`

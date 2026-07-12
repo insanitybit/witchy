@@ -92,7 +92,8 @@ compromised release to be noticed before anyone consumes it — unless you accep
 it explicitly with `--allow-fresh`. The release timestamp is part of the signed
 record, so the window can't be erased by tampering. Registry metadata is signed (TUF-style) to resist rollback and
 tampering, and lockfiles pin content hashes, the registry's key, and the full
-provenance chain, all re-checkable offline with `witchy verify`.
+provenance chain, all re-checkable offline with `witchy verify`. Add `--online`
+when you also want to re-fetch TUF metadata and check freshness or rollback.
 
 Crucially, **resolving and installing a rune never executes its code** — it is
 read and type-checked, nothing more. There is no `postinstall`, no `build.rs`

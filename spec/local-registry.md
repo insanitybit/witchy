@@ -105,8 +105,9 @@ witchy run
 
 The lockfile pins the content hash, the registry's signing key fingerprint,
 and the full trusted-publishing provenance chain — `witchy verify` re-checks
-all of it offline, and `witchy vendor` materializes the sources if you want
-zero registry dependence at build time.
+all of it offline, while `witchy verify --online` additionally refreshes TUF
+metadata to check freshness and rollback. `witchy vendor` materializes the
+sources if you want zero registry dependence at build time.
 
 ## 5. Watch the gates work
 

@@ -152,11 +152,11 @@ fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, args
     let target = arg(args, 1)
     let dir = if string.is_empty(target): "." else: target
     if root.exists(join_path(dir, "witchy.toml")):
-        match verify_lock_integrity(root, dir):
+        match ensure_lock_integrity(root, dir):
             // BUG-094: refuse to link a vendored dependency whose on-disk source
             // no longer matches its signed record — before any compile.
-            Err(msg) ->
-                console.print(msg)
+            Err(e) ->
+                console.print(lock_integrity_error_message(e))
                 2
             Ok(_) ->
                 match project_entry(root, dir):
@@ -188,11 +188,11 @@ fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, args
 // program's data Dir would default to pm's cwd — too wide when pm runs from a
 // workspace root, and missing the project's data files (e.g. `tasks.md`).
 fn run_project(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, app_args: List(String)) -> Int:
-    match verify_lock_integrity(root, dir):
+    match ensure_lock_integrity(root, dir):
         // BUG-094: verify vendored sources against their signed records before
         // linking + running, so a tampered vendored rune never executes.
-        Err(msg) ->
-            console.print(msg)
+        Err(e) ->
+            console.print(lock_integrity_error_message(e))
             2
         Ok(_) ->
             match project_entry(root, dir):
@@ -206,28 +206,148 @@ fn run_project(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String,
                     else:
                         compile_then_run(console, runner, root, bin, dir, entry, steps.1, app_args)
 
-// BUG-094: the integrity a `build`/`run` enforces before linking — every vendored
-// registry dependency's on-disk source must still hash to its own signed
-// `coven.json`. Path dependencies are the developer's local siblings (edited in
-// place), so they are NOT gated here; `pm verify`/`pm lock` cover those. Failure
-// names the tampered runes; success means the vendored tree is intact or absent.
-fn verify_lock_integrity(root: Dir, dir: String) -> Result(Nil, String):
-    let bad = tampered_vendored(root, dir)
-    if list.length(bad) == 0:
-        Ok(Nil)
+// `build`/`run` use a lock on every project path. A path-only development project
+// gets its first lock automatically, matching the documented "writes/uses the
+// lock" contract. Registry dependencies can only be locked by `add`, because that
+// operation obtains the signed record and trust pins; never synthesize a weaker
+// registry lock during a build.
+fn ensure_lock_integrity(root: Dir, dir: String) -> Result(Nil, LockIntegrityError):
+    let lockpath = join_path(dir, "witchy.lock")
+    if !root.exists(lockpath):
+        let manifest = root.read(join_path(dir, "witchy.toml"))
+        let problems = lock_problems(root, dir, manifest)
+        if list.length(problems) > 0:
+            Err(LockCannotCreate(list.join(problems, "; ")))
+        else:
+            match generate_lock(root, dir):
+                Err(e) -> Err(LockCannotCreate(footprint_error_message(e)))
+                Ok(lock) ->
+                    root.write(lockpath, lock)
+                    verify_lock_integrity(root, dir)
     else:
-        Err("BLOCK: refusing to build — vendored dependency source no longer matches its signed record for: ${list.join(bad, ", ")} (re-run `pm add` or `pm verify ${dir}`)")
+        verify_lock_integrity(root, dir)
 
-fn tampered_vendored(root: Dir, dir: String) -> List(String):
-    var bad = []
-    let vendor = join_path(dir, "vendor")
-    if root.exists(vendor):
-        for entry in root.subtree(vendor).list():
-            let rune_dir = join_path(vendor, entry)
-            if root.exists(join_path(rune_dir, "coven.json")):
-                if rune_hash(root, rune_dir) != recorded_hash(root.read(join_path(rune_dir, "coven.json"))):
-                    bad.push(entry)
-    bad
+// One offline integrity contract shared by `build`, `run`, and `verify`:
+//
+// * every path dependency still matches the hash pinned in the lock;
+// * every registry lock entry has a corresponding vendored rune;
+// * the vendored record verifies under the root key pinned in the lock;
+// * signed name/version/hash agree with the lock entry; and
+// * the current source tree hashes to that same signed and locked hash.
+//
+// No network state participates. Online TUF freshness is the optional second
+// phase of `verify --online`.
+fn verify_lock_integrity(root: Dir, dir: String) -> Result(Nil, LockIntegrityError):
+    let lockpath = join_path(dir, "witchy.lock")
+    if !root.exists(lockpath):
+        Err(LockMissing)
+    else:
+        let lock = root.read(lockpath)
+        let path_bad = hash_mismatches(root, dir, lock)
+        if list.length(path_bad) > 0:
+            Err(LockPathHashMismatch(path_bad))
+        else:
+            verify_registry_lock_entries(root, dir, lock)
+
+fn verify_registry_lock_entries(root: Dir, dir: String, lock: String) -> Result(Nil, LockIntegrityError):
+    let rootpub = pinned_rootpub(lock)
+    var aliases = []
+    for block in toml.array_tables(lock, "rune"):
+        match toml.get(block, "source"):
+            Some(source) ->
+                if source == "coven":
+                    let name = required_lock_field(block, "name")?
+                    let version = required_lock_field(block, "version")?
+                    let hash = required_lock_field(block, "hash")?
+                    let alias = entry_alias(block)
+                    if string.is_empty(alias):
+                        return Err(LockEntryMalformed("registry entry `${name}` has no local alias"))
+                    else if has(aliases, alias):
+                        return Err(LockDuplicateAlias(alias))
+                    aliases.push(alias)
+                    if string.is_empty(rootpub):
+                        return Err(LockRootKeyMissing)
+                    let rune_dir = join_path(join_path(dir, "vendor"), alias)
+                    let record_path = join_path(rune_dir, "coven.json")
+                    if !root.exists(record_path):
+                        return Err(LockVendorMissing(alias))
+                    else if !root.exists(join_path(rune_dir, "witchy.toml")):
+                        return Err(LockVendorManifestMissing(alias))
+                    let record_text = root.read(record_path)
+                    match verify_record_signature(rootpub, record_text):
+                        Err(e) -> return Err(LockRecordInvalid(alias, record_verify_error_message(e)))
+                        Ok(_doc) -> Nil
+                    let record = match parse_vendored_record(record_text):
+                        Err(e) -> return Err(LockRecordInvalid(alias, vendored_record_error_message(e)))
+                        Ok(record) -> record
+                    if record.name != name:
+                        return Err(LockRecordCoordinateMismatch(alias, "name", name, record.name))
+                    else if record.version != version:
+                        return Err(LockRecordCoordinateMismatch(alias, "version", version, record.version))
+                    else if record.hash != hash:
+                        return Err(LockRecordCoordinateMismatch(alias, "hash", hash, record.hash))
+                    else if rune_hash(root, rune_dir) != hash:
+                        return Err(LockSourceHashMismatch(alias))
+                else if string.starts_with(source, "path:"):
+                    let name = required_lock_field(block, "name")?
+                    if !is_locked_path_dependency(root, dir, name):
+                        return Err(LockEntryMalformed("path entry `${name}` is not in the manifest dependency closure"))
+                else:
+                    return Err(LockEntryMalformed("unsupported dependency source `${source}`"))
+            None -> return Err(LockEntryMalformed("a [[rune]] entry has no `source` field"))
+    Ok(Nil)
+
+fn is_locked_path_dependency(root: Dir, dir: String, name: String) -> Bool:
+    for dep_name, _dep_dir in path_closure(root, dir):
+        if dep_name == name:
+            return true
+    false
+
+fn required_lock_field(block: String, field: String) -> Result(String, LockIntegrityError):
+    match toml.get(block, field):
+        None -> Err(LockEntryMalformed("a registry [[rune]] entry has no `${field}` field"))
+        Some(value) ->
+            if string.is_empty(value):
+                Err(LockEntryMalformed("a registry [[rune]] entry has an empty `${field}` field"))
+            else:
+                Ok(value)
+
+type LockIntegrityError:
+    LockMissing
+    LockCannotCreate(String)
+    LockPathHashMismatch(List(String))
+    LockRootKeyMissing
+    LockEntryMalformed(String)
+    LockDuplicateAlias(String)
+    LockVendorMissing(String)
+    LockVendorManifestMissing(String)
+    LockRecordInvalid(String, String)
+    LockRecordCoordinateMismatch(String, String, String, String)
+    LockSourceHashMismatch(String)
+
+fn lock_integrity_error_message(e: LockIntegrityError) -> String:
+    match e:
+        LockMissing -> "BLOCK: no witchy.lock — run `witchy lock` or `witchy add` before verification"
+        LockCannotCreate(reason) -> "BLOCK: cannot create witchy.lock before build: ${reason}"
+        LockPathHashMismatch(names) -> "BLOCK: lock no longer matches source for: ${list.join(names, ", ")}"
+        LockRootKeyMissing -> "BLOCK: witchy.lock has registry dependencies but no pinned registry_rootpub"
+        LockEntryMalformed(reason) -> "BLOCK: malformed witchy.lock — ${reason}"
+        LockDuplicateAlias(alias) -> "BLOCK: witchy.lock maps more than one registry dependency to vendor/${alias}"
+        LockVendorMissing(alias) -> "BLOCK: locked registry dependency vendor/${alias} is missing"
+        LockVendorManifestMissing(alias) -> "BLOCK: locked registry dependency vendor/${alias} has no witchy.toml"
+        LockRecordInvalid(alias, reason) -> "BLOCK: vendor/${alias}/coven.json failed pinned-root verification — ${reason}"
+        LockRecordCoordinateMismatch(alias, field, expected, actual) -> "BLOCK: vendor/${alias}/coven.json `${field}` is `${actual}`, but witchy.lock pins `${expected}`"
+        LockSourceHashMismatch(alias) -> "BLOCK: vendor/${alias} source no longer matches its signed and locked hash"
+
+impl Show for LockIntegrityError:
+    fn show(self) -> String:
+        lock_integrity_error_message(self)
+
+impl Error for LockIntegrityError
+
+impl From(LockIntegrityError) for String:
+    fn from(value: LockIntegrityError) -> Self:
+        lock_integrity_error_message(value)
 
 fn compile_then_run(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, entry: String, build_flags: List(String), app_args: List(String)) -> Int:
     let outdir = join_path(dir, "target")
@@ -322,7 +442,7 @@ fn collect_deps(root: Dir, dir: String, flags: List(String)) -> List(String):
             // registry identity `name` (BUG-099). Old-format locks have no `alias`,
             // so fall back to the basename of `name`.
             let alias = entry_alias(block)
-            if !string.is_empty(alias) && !has_dep(acc, alias):
+            if entry_is_registry(block) && !string.is_empty(alias) && !has_dep(acc, alias):
                 if let Some(src) = vendored_module(root, dir, alias):
                     acc = dep_flag(acc, alias, src)
     acc
@@ -474,18 +594,23 @@ fn dep_dirs(root: Dir, dir: String) -> List((String, String)):
             // run its build step) when it carries provenance (coven.json) AND is
             // pinned in witchy.lock. A stray directory dropped under vendor/, or an
             // unpinned partial add, must not have its build step executed.
-            if root.exists(join_path(rune_dir, "coven.json")) && locked_alias(lock, name):
+            if root.exists(join_path(rune_dir, "coven.json")) && locked_registry_alias(lock, name):
                 out.push((name, rune_dir))
     out
 
 // Whether the lock records a `[[rune]]` whose local import alias is `alias` — the
 // gate for a vendored dependency to count as resolved (BUG-095).
-fn locked_alias(lock: String, alias: String) -> Bool:
+fn locked_registry_alias(lock: String, alias: String) -> Bool:
     var found = false
     for block in toml.array_tables(lock, "rune"):
-        if entry_alias(block) == alias:
+        if entry_is_registry(block) && entry_alias(block) == alias:
             found = true
     found
+
+fn entry_is_registry(block: String) -> Bool:
+    match toml.get(block, "source"):
+        Some(source) -> source == "coven"
+        None -> false
 
 // Whether a dependency ships a `build` step (`src/build.witchy` defining `build`).
 fn has_build_step(root: Dir, depdir: String) -> Bool:
@@ -1240,40 +1365,30 @@ fn check_path_identity(problems: List(String), name: String, rel: String, dep_ma
                 out.push("BLOCK: path dependency key `${name}` does not match its manifest identity `${realname}` (${rel})")
     out
 
-// --- verify: every locked hash must still match its source, AND the registry's
-// TUF chain must verify (no tampered/rolled-back metadata) -------------------
-// Parses the lockfile's `[[rune]]` entries and recomputes each path dependency's
-// content hash, so it validates *any* witchy.lock — including one coven wrote.
-// A mismatch (or a missing entry) means the pinned bytes no longer match disk:
-// tampering or a stale lock. Then, if the lock pins a `registry_snapshot_version`
-// (written by `add`), it re-fetches + re-verifies the registry's signed TUF
-// snapshot + timestamp roles and refuses a tampered chain or a rollback to an
-// older snapshot version than the one the lock pinned. Exits 2 on any discrepancy.
+// --- verify: offline lock/signature/provenance verification ------------------
+// The default command is deliberately network-independent: it applies the same
+// complete lock-integrity gate as build/run. `--online` adds a second TUF
+// freshness/rollback phase against the configured registry; it never substitutes
+// for the offline source + signed-record checks.
 fn cmd_verify(console: Console, net: Net, root: Dir, env: Env, clock: Clock, args: List(String)) -> Int:
-    let target = arg(args, 1)
+    let first = arg(args, 1)
+    let target = if first == "--online": "" else: first
     let dir = if string.is_empty(target): "." else: target
-    if !root.exists(join_path(dir, "witchy.lock")):
-        console.print("no witchy.lock — run `pm lock ${dir}` first")
-        1
-    else:
-        let lock = root.read(join_path(dir, "witchy.lock"))
-        let hash_code = report_verify(console, hash_mismatches(root, dir, lock))
-        let tuf_code = verify_tuf(console, net, root, env, clock, dir, lock)
-        if hash_code != 0:
-            hash_code
-        else:
-            tuf_code
-
-fn report_verify(console: Console, bad: List(String)) -> Int:
-    if list.length(bad) == 0:
-        console.print("OK: every locked hash matches the dependency sources")
-        0
-    else:
-        console.print("BLOCK: lock no longer matches source for: ${list.join(bad, ", ")}")
-        2
+    let online = first == "--online" || arg(args, 2) == "--online"
+    match verify_lock_integrity(root, dir):
+        Err(e) ->
+            console.print(lock_integrity_error_message(e))
+            2
+        Ok(_) ->
+            console.print("OK: every locked hash matches the dependency sources")
+            if online:
+                let lock = root.read(join_path(dir, "witchy.lock"))
+                verify_tuf(console, net, root, env, clock, dir, lock)
+            else:
+                0
 
 // --- TUF chain verification (client side) ------------------------------------
-// `add` pins the registry's TUF snapshot version into the lock; `verify` re-fetches
+// `add` pins the registry's TUF snapshot version into the lock; `verify --online` re-fetches
 // the signed snapshot + timestamp roles and re-checks the whole chain against the
 // registry root key, refusing a tampered role or a rollback. The registry only
 // PRODUCES these roles (coven_meta); the front-end is the verifier. Checks (the
@@ -2715,8 +2830,8 @@ fn write_vendored_source(console: Console, root: Dir, dest: String, name: String
     match validate_source_files(files):
         // Keep the signed record next to the source, so the vendored rune
         // carries its own provenance and can be re-verified offline.
-        Err(msg) ->
-            console.print(msg)
+        Err(e) ->
+            console.print(source_file_set_error_message(e))
             1
         Ok(_) ->
             let base = join_path(dest, basename(name))
@@ -2730,15 +2845,34 @@ fn write_vendored_source(console: Console, root: Dir, dest: String, name: String
 
 // Fail on the first unexpected/traversing or duplicated path. Successful
 // validation proves the whole fetched file set is well-formed and unique.
-fn validate_source_files(files: List((String, String))) -> Result(Nil, String):
+fn validate_source_files(files: List((String, String))) -> Result(Nil, SourceFileSetError):
     var seen = []
     for path, _text in files:
         if !path_shape_ok(path):
-            return Err("BLOCK: fetched source carries an unexpected path `${path}` — a vendored rune may only ship `witchy.toml` and `src/**.witchy` (no absolute or `..` paths)")
+            return Err(SourcePathInvalid(path))
         else if has(seen, path):
-            return Err("BLOCK: fetched source lists `${path}` more than once — refusing an ambiguous/duplicated file set")
+            return Err(SourcePathDuplicated(path))
         seen.push(path)
     Ok(Nil)
+
+type SourceFileSetError:
+    SourcePathInvalid(String)
+    SourcePathDuplicated(String)
+
+fn source_file_set_error_message(e: SourceFileSetError) -> String:
+    match e:
+        SourcePathInvalid(path) -> "BLOCK: fetched source carries an unexpected path `${path}` — a vendored rune may only ship `witchy.toml` and `src/**.witchy` (no absolute or `..` paths)"
+        SourcePathDuplicated(path) -> "BLOCK: fetched source lists `${path}` more than once — refusing an ambiguous/duplicated file set"
+
+impl Show for SourceFileSetError:
+    fn show(self) -> String:
+        source_file_set_error_message(self)
+
+impl Error for SourceFileSetError
+
+impl From(SourceFileSetError) for String:
+    fn from(value: SourceFileSetError) -> Self:
+        source_file_set_error_message(value)
 
 // Whether a fetched source path is confined and conventional: `witchy.toml`, or a
 // `src/...` file ending in `.witchy`, with no absolute prefix or `..` traversal.
@@ -2974,24 +3108,49 @@ fn jget_int(doc: Json, key: String) -> Int:
 // caller-level `Err`, never a `string.to_int` runtime abort. A single trailing `/`
 // (a common `COVEN_URL` spelling like `127.0.0.1:8787/`) is tolerated, matching the
 // Rust launcher's auto-grant normalization.
-fn parse_hostport(addr: String) -> Result((String, Int), String):
+fn parse_hostport(addr: String) -> Result((String, Int), HostPortError):
     let trimmed = string.strip_suffix(string.trim(addr), "/")
     if !string.contains(trimmed, ":"):
-        Err("`${addr}` is not a host:port (missing `:<port>`)")
+        Err(HostPortMissingPort(addr))
     else:
         let (host, portstr) = string.split_once(trimmed, ":")
         if string.is_empty(host):
-            Err("`${addr}` has an empty host")
+            Err(HostPortEmptyHost(addr))
         else if string.contains(portstr, ":"):
-            Err("`${addr}` has more than one `:` (expected host:port)")
+            Err(HostPortMultipleColons(addr))
         else:
             match string.parse_int(portstr):
-                None -> Err("`${addr}` has a non-numeric port `${portstr}`")
+                None -> Err(HostPortNonNumeric(addr, portstr))
                 Some(p) ->
                     if p < 1 || p > 65535:
-                        Err("`${addr}` port ${portstr} is out of range (1-65535)")
+                        Err(HostPortOutOfRange(addr, portstr))
                     else:
                         Ok((host, p))
+
+type HostPortError:
+    HostPortMissingPort(String)
+    HostPortEmptyHost(String)
+    HostPortMultipleColons(String)
+    HostPortNonNumeric(String, String)
+    HostPortOutOfRange(String, String)
+
+fn host_port_error_message(e: HostPortError) -> String:
+    match e:
+        HostPortMissingPort(addr) -> "`${addr}` is not a host:port (missing `:<port>`)"
+        HostPortEmptyHost(addr) -> "`${addr}` has an empty host"
+        HostPortMultipleColons(addr) -> "`${addr}` has more than one `:` (expected host:port)"
+        HostPortNonNumeric(addr, port) -> "`${addr}` has a non-numeric port `${port}`"
+        HostPortOutOfRange(addr, port) -> "`${addr}` port ${port} is out of range (1-65535)"
+
+impl Show for HostPortError:
+    fn show(self) -> String:
+        host_port_error_message(self)
+
+impl Error for HostPortError
+
+impl From(HostPortError) for String:
+    fn from(value: HostPortError) -> Self:
+        host_port_error_message(value)
 
 // Rune names contain `/`; the wire encodes it as `~` for a query value.
 fn wire(name: String) -> String:
@@ -3238,7 +3397,7 @@ fn usage(console: Console):
     console.print("  guard <old> <new>   BLOCK if <new> widens authority")
     console.print("  deps  <dir>         list a rune's dependencies")
     console.print("  lock  <dir>         pin dependencies by content hash -> witchy.lock")
-    console.print("  verify <dir>        witchy.lock must match the dependency sources")
+    console.print("  verify [<dir>] [--online]  verify lock, signatures, and provenance offline; optionally check live TUF freshness")
     console.print("  gate  <dir> [cap..] BLOCK if deps demand authority beyond the lock")
     console.print("  why   <dir> <name>  explain a dependency's presence")
     console.print("  why-cap <dir> <Cap> which deps introduce a capability")

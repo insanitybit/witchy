@@ -585,7 +585,8 @@ witchy tree                  print the resolved dependency tree
 witchy outdated              list deps with newer versions available within constraints
 witchy vendor                materialize the content-addressed store (and vendored
                              generated source) in-repo
-witchy verify                re-verify lock against store + coven signatures
+witchy verify                re-verify lock, source hashes, and pinned-root coven signatures offline
+witchy verify --online       run the offline gate, then check live TUF freshness/rollback
 witchy publish               author flow: hash, recompute footprints, sign, upload
                              -> lands STAGED (not resolvable) (§8.1)
 witchy promote <pkg>@<ver>   out-of-band, second-factor release of a staged version;

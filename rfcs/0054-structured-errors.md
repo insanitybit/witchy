@@ -11,8 +11,10 @@ tracking: >
   trust-boundary verification errors; the package manager's TUF/TOFU pinning,
   verified registry-record footprint, strict vendored-record lock projection,
   lock snapshot-pin, registry version-response/resolution/update-consumption,
-  and compiler-footprint consumption gates use typed errors internally, and
-  Coven maintainer-policy
+  compiler-footprint consumption, and offline build/run/verify lock-integrity
+  gates use typed errors internally; fetched source-path validation and registry
+  host/port parsing are typed too. Coven Web's OIDC key selection preserves
+  JwtError through verification. Coven maintainer-policy
   state, stored-record parsing, source-footprint recomputation, and
   trusted-publishing token verification have typed corruption/authentication
   errors. All convert to String through From at existing application
@@ -279,6 +281,18 @@ the existing lock is preserved unless every vendored record parses. PM source
 fetches now decode the `/coven/source` response
 through a local `SourceResponseError`, so malformed JSON, missing/wrong-shaped
 `files`, and malformed file entries fail before source hashing or vendoring.
+The validated file set then crosses a `SourceFileSetError` boundary, preserving
+invalid/traversing paths versus duplicate paths, and registry address parsing
+uses `HostPortError` instead of collapsing configuration failures into strings.
+`std/jwt.require_kid` preserves malformed headers and missing key IDs as
+`JwtError`, so Coven Web's JWKS selection and OIDC verification no longer erase
+typed JWT failures into `String` before the HTTP boundary.
+Build, run, and verify now share a local `LockIntegrityError` boundary: path
+hash drift, missing locked vendors, absent trust pins, malformed lock entries,
+duplicate aliases, invalid signed records, coordinate mismatches, and source
+hash mismatches remain distinct until the CLI renders a blocking diagnostic.
+The default `verify` is wholly offline; `verify --online` composes the same
+offline gate with live TUF freshness and rollback verification.
 PM consumption of `compiler.footprint` / `compiler.diff` now uses a local
 `FootprintError` across build grants, generated-source audits, source
 checks/diffs, path lock generation, and dependency gates; compiler rejection or

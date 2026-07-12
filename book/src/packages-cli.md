@@ -89,7 +89,8 @@ Commit the lockfile. Same lock ⇒ same bytes, same authority, offline.
 | `witchy audit <file>` | the capability footprint a single source file demands, recomputed from source |
 | `witchy why <dir> <name>` | whether `<name>` is a dependency of the rune at `<dir>`, and where it comes from |
 | `witchy why-cap <dir> <Cap>` | which dependency of the rune at `<dir>` demands a capability (`genlib demands BuildExec`) |
-| `witchy verify` | re-check the lock's hashes/signatures/provenance offline (current project) |
+| `witchy verify [<dir>]` | re-check path and registry source hashes, pinned-root record signatures, coordinates, and provenance offline |
+| `witchy verify [<dir>] --online` | run the same offline checks, then re-fetch TUF metadata to check freshness and rollback |
 | `witchy vendor <dir>` | materialize the resolved tree into the project for offline builds |
 | `witchy publish` / `promote` / `yank` / `list` | registry operations (staged → 2FA-promoted releases) |
 | `witchy coven-serve` | run a registry yourself (it's a witchy program — `projects/coven`) |

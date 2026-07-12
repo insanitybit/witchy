@@ -709,8 +709,8 @@ fn token_required_and_untrusted_issuer_refused() {
 }
 
 /// The front-end verifies the registry's TUF chain on `add` and re-verifies it on
-/// `verify`. `add` pins the registry's signed snapshot version into the lock; a
-/// later `verify` re-fetches the signed snapshot + timestamp roles and checks the
+/// `verify --online`. `add` pins the registry's signed snapshot version into the lock; a
+/// later online verify re-fetches the signed snapshot + timestamp roles and checks the
 /// whole chain against the root key. Tampering a signed field of the server's
 /// snapshot breaks its root-key signature, so a fresh `verify` rejects it — the
 /// signature + content binding, not the transport, are trusted.
@@ -729,7 +729,7 @@ fn tuf_chain_verified_and_snapshot_tamper_rejected() {
     // SEC-002: the lock also pins the registry's Ed25519 root public key (trust-on-first-use),
     // so `verify` refuses a chain rooted in a different (MITM/hostile-mirror) key.
     assert!(lock.contains("registry_rootpub = \""), "lock should pin the root key: {lock}");
-    let out = fe.pm(&app, &["verify"], None);
+    let out = fe.pm(&app, &["verify", ".", "--online"], None);
     assert!(out.status.success(), "verify failed: {}\n{}", stderr(&out), stdout(&out));
     assert!(stdout(&out).contains("TUF chain"), "verify out: {}", stdout(&out));
 
@@ -740,7 +740,7 @@ fn tuf_chain_verified_and_snapshot_tamper_rejected() {
     let body = std::fs::read_to_string(&snap).unwrap().replace("1.0.0", "1.0.1");
     std::fs::write(&snap, body).unwrap();
 
-    let out = fe.pm(&app, &["verify"], None);
+    let out = fe.pm(&app, &["verify", ".", "--online"], None);
     assert!(!out.status.success(), "tampered snapshot must fail verify");
     assert!(stdout(&out).contains("FAIL"), "verify out: {}", stdout(&out));
 }
@@ -770,7 +770,7 @@ fn witchy_pm_verify_rejects_malformed_registry_snapshot_pin() {
         .join("\n");
     std::fs::write(app.join("witchy.lock"), corrupted).unwrap();
 
-    let out = fe.pm(&app, &["verify"], None);
+    let out = fe.pm(&app, &["verify", ".", "--online"], None);
     assert!(!out.status.success(), "malformed pin must fail verify");
     assert!(
         stdout(&out).contains("BLOCK: invalid witchy.lock registry_snapshot_version `nope` (not an integer)"),
@@ -807,7 +807,7 @@ fn tuf_chain_rejects_validly_signed_malformed_roles() {
     std::fs::write(&snap_path, signed_test_root_role(&malformed_snapshot)).unwrap();
     std::fs::write(&ts_path, signed_test_root_role(&malformed_timestamp)).unwrap();
 
-    let out = fe.pm(&app, &["verify"], None);
+    let out = fe.pm(&app, &["verify", ".", "--online"], None);
     assert!(!out.status.success(), "malformed snapshot must fail verify");
     assert!(
         stdout(&out).contains("snapshot role is structurally malformed"),
@@ -822,7 +822,7 @@ fn tuf_chain_rejects_validly_signed_malformed_roles() {
     );
     std::fs::write(&ts_path, signed_test_root_role(&malformed_timestamp)).unwrap();
 
-    let out = fe.pm(&app, &["verify"], None);
+    let out = fe.pm(&app, &["verify", ".", "--online"], None);
     assert!(!out.status.success(), "malformed timestamp must fail verify");
     assert!(
         stdout(&out).contains("timestamp role is structurally malformed"),
@@ -863,7 +863,7 @@ fn tuf_rollback_is_rejected() {
         .join("\n");
     std::fs::write(app.join("witchy.lock"), bumped).unwrap();
 
-    let out = fe.pm(&app, &["verify"], None);
+    let out = fe.pm(&app, &["verify", ".", "--online"], None);
     assert!(!out.status.success(), "rollback must be refused");
     assert!(
         stdout(&out).contains("rolled back") || stdout(&out).contains("rollback"),
@@ -1125,7 +1125,12 @@ fn trust_pin_failure_mirror(
             let n = stream.read(&mut buf).unwrap_or(0);
             let req = String::from_utf8_lossy(&buf[..n]);
             let path = req.split_whitespace().nth(1).unwrap_or("/");
-            let (status, body, done) = if path.starts_with("/coven/versions") {
+            let (status, body, done) = if path == "/" {
+                // The compiled PM launcher probes an explicitly granted registry
+                // address before execution. Readiness is transport setup, not one
+                // of this fixture's scripted trust-metadata requests.
+                ("200 OK", "ready".to_string(), false)
+            } else if path.starts_with("/coven/versions") {
                 ("200 OK", versions.clone(), false)
             } else if path.starts_with("/coven/snapshot") {
                 if fail_snapshot {
@@ -1832,7 +1837,7 @@ fn signature_detects_runtime_footprint_shape_tampering() {
     let out = fe.pm(&app, &["verify-rune", "vendor/netcap", &rootpub], None);
     assert!(out.status.success() && stdout(&out).contains("verified"), "healthy verify: {}", stdout(&out));
     let out = fe.pm(&app, &["verify"], None);
-    assert!(out.status.success(), "healthy TUF verify failed: {}", stdout(&out));
+    assert!(out.status.success(), "healthy offline verify failed: {}", stdout(&out));
 
     let meta = app.join("vendor/netcap/coven.json");
     let json = std::fs::read_to_string(&meta)
@@ -1844,15 +1849,14 @@ fn signature_detects_runtime_footprint_shape_tampering() {
     assert!(!out.status.success(), "shape-tampered footprint must fail verify");
     assert!(stdout(&out).contains("BLOCK"), "verify-rune: {}", stdout(&out));
     let out = fe.pm(&app, &["verify"], None);
-    assert!(!out.status.success(), "shape-tampered footprint must fail TUF verify");
-    assert!(stdout(&out).contains("vendored record digest does not match"), "verify: {}", stdout(&out));
+    assert!(!out.status.success(), "shape-tampered footprint must fail offline verify");
+    assert!(stdout(&out).contains("failed pinned-root verification"), "verify: {}", stdout(&out));
 }
 
-/// A fetched rune carries its signed provenance and re-verifies offline: `pm add`
-/// vendors `coven.json` (the registry-root-signed record) beside the source and
-/// pins the content hash in `witchy.lock`; `pm verify-rune <dir> <rootpub>` then
-/// re-checks the signature + content hash with NO network. The front-end pins
-/// trust in the signed record + content address, not a lockfile key fingerprint.
+/// A fetched rune carries its signed provenance and every consumption path
+/// re-verifies it offline. `verify`, `build`, and the narrow `verify-rune` command
+/// all bind the vendored source to the signed record, lock coordinate, and pinned
+/// registry root key without contacting the registry.
 #[test]
 fn vendored_rune_reverifies_offline_against_the_root_key() {
     let server = RegistryServer::start();
@@ -1871,11 +1875,91 @@ fn vendored_rune_reverifies_offline_against_the_root_key() {
     assert!(out.status.success(), "verify-rune failed: {}\n{}", stderr(&out), stdout(&out));
     assert!(stdout(&out).contains("verified"), "verify-rune: {}", stdout(&out));
 
+    let offline = |args: &[&str]| {
+        let mut full = vec!["pm"];
+        full.extend_from_slice(args);
+        Command::new(BIN)
+            .current_dir(&app)
+            .env("COVEN_URL", "127.0.0.1:1")
+            .args(full)
+            .output()
+            .expect("run offline pm command")
+    };
+    let out = offline(&["verify"]);
+    assert!(out.status.success(), "offline verify failed: {}\n{}", stderr(&out), stdout(&out));
+    assert!(stdout(&out).contains("every locked hash matches"), "verify: {}", stdout(&out));
+    let out = offline(&["build", "."]);
+    assert!(out.status.success(), "offline build failed: {}\n{}", stderr(&out), stdout(&out));
+    let out = offline(&["run", "."]);
+    assert!(out.status.success(), "offline run failed: {}\n{}", stderr(&out), stdout(&out));
+
     // Tampering the vendored source breaks the content check.
-    std::fs::write(app.join("vendor/yankee/src/yankee.witchy"), "pub fn f(s: String) -> String:\n    \"evil\"\n").unwrap();
+    let source_path = app.join("vendor/yankee/src/yankee.witchy");
+    let original_source = std::fs::read_to_string(&source_path).unwrap();
+    std::fs::write(&source_path, "pub fn f(s: String) -> String:\n    \"evil\"\n").unwrap();
     let out = fe.pm(&app, &["verify-rune", "vendor/yankee", &rootpub], None);
     assert!(!out.status.success(), "tampered source must fail re-verification");
     assert!(stdout(&out).contains("BLOCK"), "verify-rune: {}", stdout(&out));
+    let out = offline(&["verify"]);
+    assert!(!out.status.success(), "tampered source must fail offline verify");
+    assert!(stdout(&out).contains("source no longer matches"), "verify: {}", stdout(&out));
+    let out = offline(&["build", "."]);
+    assert!(!out.status.success(), "tampered source must fail before build");
+    assert!(stdout(&out).contains("source no longer matches"), "build: {}", stdout(&out));
+    let out = offline(&["run", "."]);
+    assert!(!out.status.success(), "tampered source must fail before run");
+    assert!(stdout(&out).contains("source no longer matches"), "run: {}", stdout(&out));
+
+    // A source-preserving signature edit must also fail before the compiler runs.
+    std::fs::write(&source_path, original_source).unwrap();
+    let record_path = app.join("vendor/yankee/coven.json");
+    let original_record = std::fs::read_to_string(&record_path).unwrap();
+    let mut record: serde_json::Value = serde_json::from_str(&original_record).unwrap();
+    record["sig"] = serde_json::Value::String("00".repeat(64));
+    std::fs::write(&record_path, serde_json::to_string(&record).unwrap()).unwrap();
+    let out = offline(&["build", "."]);
+    assert!(!out.status.success(), "bad record signature must fail before build");
+    assert!(stdout(&out).contains("failed pinned-root verification"), "build: {}", stdout(&out));
+
+    // The signed coordinate and root key are lock invariants, not advisory
+    // metadata. Neither may be edited while preserving a green verification.
+    std::fs::write(&record_path, original_record.clone()).unwrap();
+    let lock_path = app.join("witchy.lock");
+    std::fs::write(
+        &lock_path,
+        lock.replacen("name = \"acme/yankee\"", "name = \"evil/yankee\"", 1),
+    )
+    .unwrap();
+    let out = offline(&["verify"]);
+    assert!(!out.status.success(), "coordinate-substituted lock must fail verify");
+    assert!(stdout(&out).contains("coven.json `name`"), "verify: {}", stdout(&out));
+
+    std::fs::write(
+        &lock_path,
+        lock.replacen("source = \"coven\"", "source = \"path:vendor/yankee\"", 1),
+    )
+    .unwrap();
+    let out = offline(&["verify"]);
+    assert!(!out.status.success(), "registry entry disguised as a path entry must fail verify");
+    assert!(stdout(&out).contains("not in the manifest dependency closure"), "verify: {}", stdout(&out));
+
+    let without_root = lock
+        .lines()
+        .filter(|line| !line.starts_with("registry_rootpub ="))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&lock_path, without_root).unwrap();
+    let out = offline(&["verify"]);
+    assert!(!out.status.success(), "registry lock without a root pin must fail verify");
+    assert!(stdout(&out).contains("no pinned registry_rootpub"), "verify: {}", stdout(&out));
+
+    // A lock entry without its vendored directory is a hard failure, not a
+    // silently omitted dependency.
+    std::fs::write(&lock_path, lock).unwrap();
+    std::fs::remove_dir_all(app.join("vendor/yankee")).unwrap();
+    let out = offline(&["verify"]);
+    assert!(!out.status.success(), "missing locked vendor must fail verify");
+    assert!(stdout(&out).contains("locked registry dependency vendor/yankee is missing"), "verify: {}", stdout(&out));
 }
 
 /// A dependency whose module shadows the standard library (a rune named
@@ -2061,6 +2145,10 @@ fn path_dependency_builds_and_runs() {
     let out = pm_fe(&work, &["run", "app"]);
     assert!(out.status.success(), "pm run failed: {}", stderr(&out));
     assert!(stdout(&out).contains("hi witchy"), "got: {}", stdout(&out));
+    assert!(
+        app.join("witchy.lock").exists(),
+        "the first path-only run must materialize the lock it verifies"
+    );
 
     // It also builds (links the path dep without running).
     let out = pm_fe(&work, &["build", "app"]);
@@ -2227,6 +2315,11 @@ fn build_steps_auto_run_and_generated_source_is_gated() {
         "fn build(out: BuildOut):\n    let nl = \"\\n\"\n    out.write_out(\"greet.witchy\", \"pub fn evil(n: Net, addr: String) -> Socket:\" + nl + \"    n.connect(addr)\" + nl)\n",
     )
     .unwrap();
+    // This is an intentional path-dependency edit, so refresh its content lock.
+    // The refreshed shipped footprint still contains only BuildOut; the dynamic
+    // generated Net demand is what the post-generation gate must catch.
+    let relock = pm_fe(&work, &["lock", "app"]);
+    assert!(relock.status.success(), "relock malicious build-step fixture: {}", stdout(&relock));
     let out = pm_fe(&work, &["run", "app"]);
     assert!(!out.status.success(), "generated widening must be refused");
     assert!(
@@ -3758,7 +3851,7 @@ fn witchy_pm_local_lifecycle_new_lock_verify_gate() {
     let verify_ok = pm(&["verify", "app"]);
     assert!(
         verify_ok.status.success()
-            && stdout(&verify_ok).contains("OK: every locked hash matches"),
+            && stdout(&verify_ok).contains("every locked hash matches"),
         "pm verify on a fresh lock: {:?}",
         stdout(&verify_ok)
     );
