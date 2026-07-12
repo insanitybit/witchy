@@ -16,9 +16,9 @@ implementation-notes: |
   - The semantic flip lives in `crates/witchy-types/src/traits.rs`, inside
     `Mono::walk_expr`, after RFC-0046's TypeTable can report the concrete type of
     `x`. That is the only place generated render calls are rewritten.
-  - Source-spellable `__render(x)` remains accepted only as a temporary
-    oracle/test spelling during corpus migration; interpolation no longer
-    generates it.
+  - Source-spellable `__render(x)` is rejected as compiler-private; the corpus
+    uses interpolation or `show.render(x)`, and only generated `@render(x)` can
+    reach the rewrite.
   - `std/show.witchy` exposes `pub fn render(x: impl Show) -> String: show(x)`.
     `show` is a prelude module. When the concrete type has a relevant `Show` path,
     monomorphization rewrites generated render calls to `show.render(x)`. That then

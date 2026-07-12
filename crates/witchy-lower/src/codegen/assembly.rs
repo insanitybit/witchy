@@ -548,9 +548,9 @@ pub fn assemble_wir_module(
     // closure types beyond the reserved band. An Int/Float `main` is fine now —
     // the prelude declares `print_int`/`print_float` and the `run` wrapper prints
     // the result.
-    // Structural `==` / `__render` are fine when every legacy eq/ts helper has a
-    // WIR twin; a shape the WIR generator couldn't build leaves its key without a
-    // twin → bail to WAT.
+    // Structural `==` / generated render are fine when every legacy eq/ts helper
+    // has a WIR twin; a shape the WIR generator couldn't build leaves its key
+    // without a twin → bail to WAT.
     let eq_all_wir = cg.eq_helpers.keys().all(|k| cg.eq_wir_helpers.contains_key(k));
     let ts_all_wir = cg.ts_helpers.keys().all(|k| cg.ts_wir_helpers.contains_key(k));
     // Lambdas/closures are fine now: each lifted body is in `lambda_wir_funcs` and
@@ -749,7 +749,7 @@ pub fn assemble_wir_module(
                 pruned_funcs.push(f);
             }
             // The program-specific structural-equality / render helpers reached by
-            // user `==` / `__render`.
+            // user `==` / generated interpolation render.
             for f in cg.eq_wir_helpers.values() {
                 pruned_funcs.push(f.clone());
             }

@@ -89,10 +89,10 @@ pub fn type_source(ty: TypeExpr) -> String:
         TQualified(q, inner) -> q + " " + type_source(inner)
 
 // `derive(Show)` -> constructor-shaped rendering with each field/payload rendered
-// through its own `Show` impl. Primitive fields still match `__render`, while
-// fields with custom `Show` keep their public display form. Generic parameters
-// carry a `: Show` bound, so the same code path compiles coherently on both
-// backends.
+// through its own `Show` impl. Primitive fields still match structural
+// interpolation bytes, while fields with custom `Show` keep their public display
+// form. Generic parameters carry a `: Show` bound, so the same code path compiles
+// coherently on both backends.
 pub fn derive_show(t: TypeInfo) -> String:
     let head = "impl Show for " + target_with_params(t) + where_each(t.params, "Show") + ":\n    fn show(self) -> String:\n"
     match t.kind:

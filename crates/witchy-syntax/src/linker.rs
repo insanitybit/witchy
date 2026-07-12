@@ -42,7 +42,6 @@ const BUILTINS: &[&str] = &[
     "print_int",
     "print_float",
     GENERATED_RENDER_INTRINSIC,
-    LEGACY_RENDER_INTRINSIC,
     "int_to_string",
     "string_length",
     "to_upper",
@@ -2242,6 +2241,12 @@ fn private_intrinsic_callers(name: &str) -> Option<&'static [&'static str]> {
 
 fn check_private_intrinsic_call(name: &str, module_name: &str) -> Result<(), LinkError> {
     let intrinsic = name.rsplit_once('.').map_or(name, |(_, bare)| bare);
+    if intrinsic == "__render" {
+        return lerr(
+            "`__render` is compiler-private; use string interpolation (`\"${value}\"`) \
+             or `show.render(value)` instead",
+        );
+    }
     let Some(owners) = private_intrinsic_callers(intrinsic) else {
         return Ok(());
     };
@@ -2381,25 +2386,25 @@ mod tests {
         );
 
         let err = link_main(
-            "fn main(console: Console):\n    let __target = 1\n    console.print(__render(__target))\n",
+            "fn main(console: Console):\n    let __target = 1\n    console.print(\"${__target}\")\n",
         )
         .unwrap_err();
         assert!(err.contains("binding `__target`"), "{err}");
 
         let err = link_main(
-            "fn main(console: Console):\n    let user__target = 1\n    console.print(__render(user__target))\n",
+            "fn main(console: Console):\n    let user__target = 1\n    console.print(\"${user__target}\")\n",
         )
         .unwrap_err();
         assert!(err.contains("binding `user__target`"), "{err}");
 
         let err = link_main(
-            "fn main(console: Console):\n    let __compr0 = 1\n    console.print(__render(__compr0))\n",
+            "fn main(console: Console):\n    let __compr0 = 1\n    console.print(\"${__compr0}\")\n",
         )
         .unwrap_err();
         assert!(err.contains("binding `__compr0`"), "{err}");
 
         let err = crate::parser::parse_module(
-            "fn main(console: Console):\n    for __fv0 in [1]:\n        console.print(__render(__fv0))\n",
+            "fn main(console: Console):\n    for __fv0 in [1]:\n        console.print(\"${__fv0}\")\n",
         )
         .expect_err("source loop variables cannot use generated compiler names");
         assert!(err.message.contains("identifier `__fv0` is reserved for the compiler"), "{err:?}");
@@ -2411,13 +2416,13 @@ mod tests {
         assert!(err.message.contains("identifier `__fv0` is reserved for the compiler"), "{err:?}");
 
         let err = link_main(
-            "fn main(console: Console):\n    let (__fortuple0, n) = (1, 2)\n    console.print(__render(n))\n",
+            "fn main(console: Console):\n    let (__fortuple0, n) = (1, 2)\n    console.print(\"${n}\")\n",
         )
         .unwrap_err();
         assert!(err.contains("pattern binding `__fortuple0`"), "{err}");
 
         link_main(
-            "fn main(console: Console):\n    let xs = [n * 2 for n in [1, 2, 3]]\n    console.print(__render(xs))\n",
+            "fn main(console: Console):\n    let xs = [n * 2 for n in [1, 2, 3]]\n    console.print(\"${xs}\")\n",
         )
         .expect("parser-generated list-comprehension names stay legal");
 
@@ -2430,7 +2435,7 @@ mod tests {
     #[test]
     fn private_bridge_intrinsics_are_std_only() {
         let err = link_main(
-            "fn main(console: Console):\n    let s = __unerase(__erase(1))\n    console.print(__render(s))\n",
+            "fn main(console: Console):\n    let s = __unerase(__erase(1))\n    console.print(\"${s}\")\n",
         )
         .unwrap_err();
         assert!(
@@ -2466,9 +2471,18 @@ mod tests {
     }
 
     #[test]
-    fn render_intrinsic_remains_available_for_interpolation_oracles() {
-        link_main("fn main(console: Console):\n    console.print(__render(1))\n")
-            .expect("__render is still the interpolation/oracle spelling");
+    fn source_render_intrinsic_is_private() {
+        let err = link_main("fn main(console: Console):\n    console.print(__render(1))\n")
+            .expect_err("source-spellable render intrinsic is compiler-private");
+        assert!(
+            err.contains("`__render` is compiler-private")
+                && err.contains("string interpolation")
+                && err.contains("show.render"),
+            "{err}"
+        );
+
+        link_main("fn main(console: Console):\n    console.print(\"${1}\")\n")
+            .expect("interpolation still emits the generated render intrinsic");
     }
 
     #[test]
@@ -2477,11 +2491,11 @@ mod tests {
                    pub fn shown(n: Int) -> Int:\n    hidden(n)\n";
 
         let ok = "import sealed_lib\n\n\
-                  fn main(console: Console):\n    console.print(__render(sealed_lib.shown(1)))\n";
+                  fn main(console: Console):\n    console.print(\"${sealed_lib.shown(1)}\")\n";
         link_lib_user(lib, ok).expect("public function may call its private helper");
 
         let hidden_call = "import sealed_lib\n\n\
-                           fn main(console: Console):\n    console.print(__render(sealed_lib.hidden(1)))\n";
+                           fn main(console: Console):\n    console.print(\"${sealed_lib.hidden(1)}\")\n";
         let err = link_lib_user(lib, hidden_call).expect_err("private function must not be module-callable");
         assert!(err.contains("function `sealed_lib.hidden` is private"), "{err}");
 
@@ -2498,7 +2512,7 @@ mod tests {
         let lib = "pub fn shown(n: Int) -> Int:\n    n + 1\n";
 
         let plain = "import sealed_lib\n\n\
-                     fn main(console: Console):\n    console.print(__render(shown(1)))\n";
+                     fn main(console: Console):\n    console.print(\"${shown(1)}\")\n";
         let err = link_lib_user(lib, plain).expect_err("plain import must not bind `shown` bare");
         assert!(
             err.contains("`shown(...)` is not in scope as a bare function")
@@ -2508,11 +2522,11 @@ mod tests {
         );
 
         let from_import = "from sealed_lib import shown\n\n\
-                           fn main(console: Console):\n    console.print(__render(shown(1)))\n";
+                           fn main(console: Console):\n    console.print(\"${shown(1)}\")\n";
         link_lib_user(lib, from_import).expect("from-imported public function is callable bare");
 
         let qualified = "import sealed_lib\n\n\
-                         fn main(console: Console):\n    console.print(__render(sealed_lib.shown(1)))\n";
+                         fn main(console: Console):\n    console.print(\"${sealed_lib.shown(1)}\")\n";
         link_lib_user(lib, qualified).expect("plain import keeps qualified calls available");
     }
 
@@ -2638,7 +2652,7 @@ mod tests {
         let src = "type R:\n    x: Int\n\n\
                    impl R:\n    fn get(self, n: Int) -> Int:\n        self.x + n\n\n\
                    fn main(console: Console):\n    \
-                   let list = R(x: 1)\n    console.print(__render(list.get(2)))\n";
+                   let list = R(x: 1)\n    console.print(\"${list.get(2)}\")\n";
         let parsed = crate::parser::parse_module(src).expect("parses");
         let linked = link(vec![("main".to_string(), parsed)], "main", noop_expand)
             .expect("links");

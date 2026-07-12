@@ -2880,7 +2880,7 @@ fn rand_capability_seeds_deterministically_and_agrees_across_backends() {
     let src = dir.join("main.witchy");
     std::fs::write(
         &src,
-        "fn main(console: Console, rand: Rand):\n    console.print(__render(rand.rand_u64()))\n    console.print(__render(rand.rand_u64()))\n",
+        "fn main(console: Console, rand: Rand):\n    console.print(\"${rand.rand_u64()}\")\n    console.print(\"${rand.rand_u64()}\")\n",
     )
     .unwrap();
     let path = src.to_str().unwrap();
@@ -4899,7 +4899,7 @@ fn build_step_generated_deps_link_and_run() {
     .unwrap();
     std::fs::write(
         app.join("src/app.witchy"),
-        "import genmod\nimport genmod2\n\nfn main(console: Console):\n    console.print(__render(genmod.value() + genmod2.value()))\n",
+        "import genmod\nimport genmod2\n\nfn main(console: Console):\n    console.print(\"${genmod.value() + genmod2.value()}\")\n",
     )
     .unwrap();
 

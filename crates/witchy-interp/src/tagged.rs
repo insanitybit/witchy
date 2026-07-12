@@ -830,8 +830,8 @@ mod tests {
             r#"glamour.text("\${price}")"#
         );
         assert_eq!(
-            escape_generated_string_interpolations(r#""${a}" + __render(x) + "\${b}""#),
-            r#""\${a}" + __render(x) + "\${b}""#
+            escape_generated_string_interpolations(r#""${a}" + show.render(x) + "\${b}""#),
+            r#""\${a}" + show.render(x) + "\${b}""#
         );
         assert_eq!(
             escape_generated_string_interpolations("\"line\n${x}\""),

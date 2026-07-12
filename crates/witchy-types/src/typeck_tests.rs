@@ -72,7 +72,7 @@
     #[test]
     fn anonymous_union_patterns_check_closed_tags() {
         check_str(
-            "fn describe(e: .[BadPort(Int) | Missing(String) | NotFound]) -> String:\n    match e:\n        .BadPort(p) -> __render(p)\n        .Missing(k) -> k\n        .NotFound -> \"missing\"\n\nfn nested(r: Result(Int, .[BadPort(Int) | Missing(String) | NotFound])) -> String:\n    match r:\n        Ok(n) -> __render(n)\n        Err(.BadPort(p)) -> __render(p)\n        Err(.Missing(k)) -> k\n        Err(.NotFound) -> \"missing\"\n"
+            "fn describe(e: .[BadPort(Int) | Missing(String) | NotFound]) -> String:\n    match e:\n        .BadPort(p) -> \"${p}\"\n        .Missing(k) -> k\n        .NotFound -> \"missing\"\n\nfn nested(r: Result(Int, .[BadPort(Int) | Missing(String) | NotFound])) -> String:\n    match r:\n        Ok(n) -> \"${n}\"\n        Err(.BadPort(p)) -> \"${p}\"\n        Err(.Missing(k)) -> k\n        Err(.NotFound) -> \"missing\"\n"
         )
         .expect("anonymous union patterns check against their scrutinee");
 
@@ -94,7 +94,7 @@
         assert!(wrong_arity.contains("takes 1 payload pattern"), "{wrong_arity}");
 
         let missing = check_str(
-            "fn describe(e: .[BadPort(Int) | NotFound]) -> String:\n    match e:\n        .BadPort(p) -> __render(p)\n"
+            "fn describe(e: .[BadPort(Int) | NotFound]) -> String:\n    match e:\n        .BadPort(p) -> \"${p}\"\n"
         )
         .unwrap_err();
         assert!(missing.contains("non-exhaustive match") && missing.contains("`.NotFound`"), "{missing}");
@@ -103,7 +103,7 @@
     #[test]
     fn anonymous_union_widening_is_only_at_directed_sites() {
         check_str(
-            "fn small(n: Int) -> .[B(Int) | C]:\n    .B(n)\n\nfn take(e: .[A | B(Int) | C]) -> String:\n    match e:\n        .A -> \"a\"\n        .B(n) -> __render(n)\n        .C -> \"c\"\n\nfn via_arg() -> String:\n    take(small(1))\n\nfn via_tail() -> .[A | B(Int) | C]:\n    small(2)\n\nfn via_return() -> .[A | B(Int) | C]:\n    return small(3)\n\nfn small_result() -> Result(Int, .[B(Int) | C]):\n    Err(.C)\n\nfn via_try() -> Result(Int, .[A | B(Int) | C]):\n    Ok(small_result()?)\n"
+            "fn small(n: Int) -> .[B(Int) | C]:\n    .B(n)\n\nfn take(e: .[A | B(Int) | C]) -> String:\n    match e:\n        .A -> \"a\"\n        .B(n) -> \"${n}\"\n        .C -> \"c\"\n\nfn via_arg() -> String:\n    take(small(1))\n\nfn via_tail() -> .[A | B(Int) | C]:\n    small(2)\n\nfn via_return() -> .[A | B(Int) | C]:\n    return small(3)\n\nfn small_result() -> Result(Int, .[B(Int) | C]):\n    Err(.C)\n\nfn via_try() -> Result(Int, .[A | B(Int) | C]):\n    Ok(small_result()?)\n"
         )
         .expect("union widening works at argument, return/tail, and ? propagation sites");
 
@@ -137,7 +137,7 @@
     #[test]
     fn anonymous_union_protocols_check_structurally() {
         check_str(
-            "trait Show:\n    fn show(self) -> String\n\ntrait PartialEq:\n    fn eq(self, other: Self) -> Bool\n\nimpl Show for Int:\n    fn show(self) -> String:\n        __render(self)\n\nimpl Show for String:\n    fn show(self) -> String:\n        self\n\nimpl PartialEq for Int:\n    fn eq(self, other: Self) -> Bool:\n        self == other\n\nimpl PartialEq for String:\n    fn eq(self, other: Self) -> Bool:\n        self == other\n\nfn same(x: a, y: a) -> Bool where a: PartialEq:\n    x == y\n\nfn describe(e: .[Bad(Int) | Missing(String)]) -> String:\n    show(e)\n\nfn main(console: Console):\n    let a: .[Bad(Int) | Missing(String)] = .Bad(7)\n    let b: .[Bad(Int) | Missing(String)] = .Missing(\"port\")\n    console.print(describe(a))\n    console.print(\"${same(a, a)}\")\n    console.print(\"${same(a, b)}\")\n"
+            "trait Show:\n    fn show(self) -> String\n\ntrait PartialEq:\n    fn eq(self, other: Self) -> Bool\n\nimpl Show for Int:\n    fn show(self) -> String:\n        \"${self}\"\n\nimpl Show for String:\n    fn show(self) -> String:\n        self\n\nimpl PartialEq for Int:\n    fn eq(self, other: Self) -> Bool:\n        self == other\n\nimpl PartialEq for String:\n    fn eq(self, other: Self) -> Bool:\n        self == other\n\nfn same(x: a, y: a) -> Bool where a: PartialEq:\n    x == y\n\nfn describe(e: .[Bad(Int) | Missing(String)]) -> String:\n    show(e)\n\nfn main(console: Console):\n    let a: .[Bad(Int) | Missing(String)] = .Bad(7)\n    let b: .[Bad(Int) | Missing(String)] = .Missing(\"port\")\n    console.print(describe(a))\n    console.print(\"${same(a, a)}\")\n    console.print(\"${same(a, b)}\")\n"
         )
         .expect("anonymous unions synthesize Show and PartialEq");
     }
@@ -371,7 +371,7 @@
         // A `let`-bound frozen value and a read-only frozen parameter are valid.
         check_str("fn f(xs: frozen List(Int)) -> Int:\n    list.length(xs)\n")
             .expect("a read-only frozen parameter is valid");
-        check_str("fn main(console: Console):\n    let x: frozen List(Int) = [1, 2]\n    console.print(__render(list.length(x)))\n")
+        check_str("fn main(console: Console):\n    let x: frozen List(Int) = [1, 2]\n    console.print(\"${list.length(x)}\")\n")
             .expect("a let-bound frozen value is valid");
         // `unique`/`local unique` are compatible with mutation (FBIP) — `var` is
         // fine. A mutator shape (self-typed return) satisfies RFC-0064's row-3
@@ -1012,7 +1012,7 @@ fn ping(r: Redis) -> Int:
     #[test]
     fn unknown_stdlib_function_suggests_import() {
         // Calling an unimported stdlib function points at the module to import.
-        let err = check_str("fn main(console: Console):\n    console.print(__render(minimum([1], 0)))\n")
+        let err = check_str("fn main(console: Console):\n    console.print(\"${minimum([1], 0)}\")\n")
             .expect_err("minimum is unimported");
         assert!(err.contains("import cmp"), "{err}");
         // A genuine typo (no stdlib match) gets no misleading hint.
@@ -1110,7 +1110,7 @@ fn double(n: Int) -> Int:
     (n * 2)
 
 fn main(console: Console):
-    console.print(__render(double(21)))
+    console.print("${double(21)}")
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
@@ -1181,7 +1181,7 @@ fn id(x: a) -> a:
 
 fn main(console: Console):
     console.print(id("hi"))
-    console.print(__render(id(5)))
+    console.print("${id(5)}")
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
@@ -1238,7 +1238,7 @@ fn unwrap_str(b: Box(String)) -> String:
         Wrap(s) -> s
 
 fn main(console: Console):
-    console.print(__render(unwrap_int(Wrap(5))))
+    console.print("${unwrap_int(Wrap(5))}")
     console.print(unwrap_str(Wrap("hi")))
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
@@ -1259,7 +1259,7 @@ fn unwrap(b: Box(a), default: a) -> a:
         Wrap(v) -> v
 
 fn main(console: Console):
-    console.print(__render(unwrap(Wrap(5), 0)))
+    console.print("${unwrap(Wrap(5), 0)}")
     console.print(unwrap(Wrap("hi"), "none"))
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
@@ -1410,7 +1410,7 @@ fn apply(f: fn(Int) -> Int, x: Int) -> Int:
     f(x)
 
 fn main(console: Console):
-    console.print(__render(apply(fn(n: Int): (n + 1), 10)))
+    console.print("${apply(fn(n: Int): (n + 1), 10)}")
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
@@ -1425,7 +1425,7 @@ fn apply(f: fn(a) -> a, x: a) -> a:
 
 fn main(console: Console):
     console.print(apply(fn(s: String): s, "hi"))
-    console.print(__render(apply(fn(n: Int): n, 5)))
+    console.print("${apply(fn(n: Int): n, 5)}")
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
@@ -1597,7 +1597,7 @@ fn f(xs: List(Int)) -> String:
         let src = r#"
 fn main(console: Console):
     for n in [1, 2, 3]:
-        console.print(__render(n))
+        console.print("${n}")
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
@@ -1981,7 +1981,7 @@ type Event:
 
 fn describe(e: Event) -> String:
     match e:
-        Click(x, _) -> __render(x)
+        Click(x, _) -> "${x}"
         Closed -> "closed"
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));

@@ -833,8 +833,8 @@ struct Codegen<'types> {
     /// `local_tuple_slots` path cannot. Closes the gap for both `==` and
     /// `to_string`.
     local_shape: HashMap<String, EqShape>,
-    /// Function name -> the value type it returns, so `__render(f(...))` can be
-    /// rendered. Populated from return-type annotations.
+    /// Function name -> the value type it returns, so generated render of
+    /// `f(...)` can be lowered. Populated from return-type annotations.
     fn_ret_valtype: HashMap<String, ValType>,
     /// Function name -> its DECLARED return type, resolved lazily to an
     /// `EqShape` at `==` sites (lazily so every type is registered by then) —
@@ -929,8 +929,8 @@ struct Codegen<'types> {
     /// Names of eq helpers currently being built — a cycle guard so a recursive
     /// type's structural eq bails to WAT instead of looping in codegen.
     eq_building: HashSet<String>,
-    /// WIR-native twin of `ts_helpers` (per-shape `to_string`/`__render`
-    /// renderers), keyed identically (`ts_{id}`), for the binary path. Includes
+    /// WIR-native twin of `ts_helpers` (per-shape structural renderers), keyed
+    /// identically (`ts_{id}`), for the binary path. Includes
     /// tuples/lists with Int/Bool/String fields (built via `$concat` +
     /// `$int_to_string`); Float/Record fields and enums defer to WAT.
     ts_wir_helpers: std::collections::BTreeMap<String, witchy_wir::wir::WirFunc>,
@@ -2050,7 +2050,7 @@ impl<'types> Codegen<'types> {
                 _ => {}
             }
             // A compound-typed parameter resolves its full structural shape from
-            // the declared type (authoritative), so `__render(p)` / `p == q`
+            // the declared type (authoritative), so interpolation render / `p == q`
             // work even when the slots are themselves compound. Bare type
             // variables resolve to nothing, preserving the loud error.
             if let Some(shape) = p.ty.as_ref().and_then(|t| self.eq_shape_of_type(t)) {

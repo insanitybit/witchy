@@ -1221,10 +1221,11 @@ impl Codegen<'_> {
         }
     }
 
-    /// The tag-dispatch body of an enum `__render`: load the tag, and for the
-    /// matching variant emit `Name` (nullary) or `Name(f0, f1, ...)` accumulating
-    /// each field's `slot_render_wir` with `$concat`. `ctor_names`/`all` are the
-    /// per-variant names and resolved field shapes. Mirrors the WAT `ts_adt_body`.
+    /// The tag-dispatch body of an enum structural renderer: load the tag, and
+    /// for the matching variant emit `Name` (nullary) or `Name(f0, f1, ...)`
+    /// accumulating each field's `slot_render_wir` with `$concat`.
+    /// `ctor_names`/`all` are the per-variant names and resolved field shapes.
+    /// Mirrors the WAT `ts_adt_body`.
     pub(crate) fn build_variant_ts_wir(
         &mut self,
         ctor_names: &[String],

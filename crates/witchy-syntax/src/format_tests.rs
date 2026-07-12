@@ -249,7 +249,7 @@
         // Ranges used to fail to format (they desugared to a synthetic block at
         // parse time); now they round-trip and print back as `lo..hi` / `lo..=hi`,
         // including when used as a value or with operator operands.
-        let src = "fn main(console: Console):\n    for i in 0..3:\n        print(console, __render(i))\n    let xs = 1..=n\n    let ys = a + 1..b * 2\n";
+        let src = "fn main(console: Console):\n    for i in 0..3:\n        print(console, \"${i}\")\n    let xs = 1..=n\n    let ys = a + 1..b * 2\n";
         let out = reformat(src).expect("ranges round-trip");
         assert!(out.contains("for i in 0..3:"), "{out}");
         assert!(out.contains("let xs = 1..=n"), "{out}");
@@ -261,7 +261,7 @@
     fn preserves_subscripts() {
         // Subscripts used to de-sugar to `list.at(xs, i)` on format; now they round-trip
         // and print back as `base[index]`, including nested and computed indices.
-        let src = "fn main(console: Console):\n    let xs = [1, 2, 3]\n    let grid = [[1], [2]]\n    print(console, __render(xs[0] + grid[1][0]))\n";
+        let src = "fn main(console: Console):\n    let xs = [1, 2, 3]\n    let grid = [[1], [2]]\n    print(console, \"${xs[0] + grid[1][0]}\")\n";
         let out = reformat(src).expect("subscripts round-trip");
         assert!(out.contains("xs[0]"), "{out}");
         assert!(out.contains("grid[1][0]"), "{out}");
@@ -272,7 +272,7 @@
     fn preserves_while_let() {
         // `while let` used to de-sugar to `while true / match / break` on format;
         // now it round-trips and prints back as `while let PAT = SCRUT:`.
-        let src = "fn main(console: Console):\n    var o = Some(1)\n    while let Some(n) = o:\n        print(console, __render(n))\n        o = None\n";
+        let src = "fn main(console: Console):\n    var o = Some(1)\n    while let Some(n) = o:\n        print(console, \"${n}\")\n        o = None\n";
         let out = reformat(src).expect("while let round-trips");
         assert!(out.contains("while let Some(n) = o:"), "{out}");
         assert!(!out.contains("while true"), "while let must not de-sugar: {out}");
@@ -295,15 +295,15 @@
     fn preserves_trailing_and_inline_comments() {
         // BUG-331: trailing line comments and inline block comments used to be
         // silently deleted because the formatter only re-emits own-line comments.
-        let trailing = "fn main(console: Console):\n    let x = 1 // keep me\n    print(console, __render(x))\n";
+        let trailing = "fn main(console: Console):\n    let x = 1 // keep me\n    print(console, \"${x}\")\n";
         let out = reformat(trailing).expect("trailing comments round-trip");
         assert!(out.contains("let x = 1 // keep me"), "{out}");
 
-        let inline = "fn main(console: Console):\n    let x = 1 /* keep me */ + 2\n    print(console, __render(x))\n";
+        let inline = "fn main(console: Console):\n    let x = 1 /* keep me */ + 2\n    print(console, \"${x}\")\n";
         let out = reformat(inline).expect("inline block comments round-trip");
         assert!(out.contains("let x = 1 + 2 /* keep me */"), "{out}");
 
-        let own_line = "fn main(console: Console):\n    let x = 1\n    /* keep me */\n    print(console, __render(x))\n";
+        let own_line = "fn main(console: Console):\n    let x = 1\n    /* keep me */\n    print(console, \"${x}\")\n";
         let out = reformat(own_line).expect("own-line block comments still round-trip");
         assert!(out.contains("/* keep me */"), "{out}");
     }
@@ -469,9 +469,9 @@
 
     #[test]
     fn cap_method_migration_respects_local_shadowing_function() {
-        let src = "fn read(x: Int) -> Int:\n    x + 1\n\nfn main(console: Console):\n    print(console, __render(read(1)))\n";
+        let src = "fn read(x: Int) -> Int:\n    x + 1\n\nfn main(console: Console):\n    print(console, \"${read(1)}\")\n";
         let out = reformat_cap_methods(src).expect("migration formatter should converge");
-        assert!(out.contains("console.print(__render(read(1)))"), "{out}");
+        assert!(out.contains("console.print(\"${read(1)}\")"), "{out}");
         assert!(out.contains("read(1)"), "local function call must stay bare: {out}");
         assert!(!out.contains("1.read()"), "local function call was rewritten: {out}");
     }
@@ -490,7 +490,7 @@
     fn preserves_index_place_assignment() {
         // BUG-333: `xs[i] = v` used to print as the desugared `xs = xs.set_at(...)`.
         // It now round-trips to the RFC-0022 canonical form, compound included.
-        let src = "fn main(console: Console):\n    var xs = [1, 2, 3]\n    xs[0] = 9\n    xs[1] += 5\n    var d = dict.new()\n    d[\"k\"] = 1\n    print(console, __render(xs.at(0)))\n";
+        let src = "fn main(console: Console):\n    var xs = [1, 2, 3]\n    xs[0] = 9\n    xs[1] += 5\n    var d = dict.new()\n    d[\"k\"] = 1\n    print(console, \"${xs.at(0)}\")\n";
         let out = reformat(src).expect("index place-assign round-trips");
         assert!(out.contains("    xs[0] = 9\n"), "index assign de-sugared: {out}");
         assert!(out.contains("    xs[1] += 5\n"), "compound index assign de-sugared: {out}");
@@ -503,7 +503,7 @@
     fn preserves_field_place_assignment() {
         // BUG-330: `p.f = v` desugars to a `RecordUpdate`, which `fmt` used to
         // render as the non-parseable `update p: f = v`, rejecting the whole file.
-        let src = "type P:\n    x: Int\n\nfn main(console: Console):\n    var p = P(x: 1)\n    p.x = 5\n    p.x += 4\n    print(console, __render(p.x))\n";
+        let src = "type P:\n    x: Int\n\nfn main(console: Console):\n    var p = P(x: 1)\n    p.x = 5\n    p.x += 4\n    print(console, \"${p.x}\")\n";
         let out = reformat(src).expect("field place-assign round-trips");
         assert!(out.contains("    p.x = 5\n"), "field assign de-sugared: {out}");
         assert!(out.contains("    p.x += 4\n"), "compound field assign de-sugared: {out}");
@@ -515,7 +515,7 @@
     fn preserves_for_var_loop() {
         // BUG-334: `for var x in xs:` used to de-sugar into a `for __fvN in ...`
         // indexed loop, leaking the internal counter into formatted source.
-        let src = "fn main(console: Console):\n    var xs = [1, 2, 3]\n    for var x in xs:\n        x = x * 10\n    print(console, __render(xs.at(1)))\n";
+        let src = "fn main(console: Console):\n    var xs = [1, 2, 3]\n    for var x in xs:\n        x = x * 10\n    print(console, \"${xs.at(1)}\")\n";
         let out = reformat(src).expect("for var round-trips");
         assert!(out.contains("    for var x in xs:\n"), "for var de-sugared: {out}");
         assert!(!out.contains("__fv"), "synthetic counter leaked into output: {out}");

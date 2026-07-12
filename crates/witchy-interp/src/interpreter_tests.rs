@@ -4,7 +4,7 @@
     fn evaluates_arithmetic_and_precedence() {
         let out = run(r#"
 fn main(console: Console):
-    console.print(__render((1 + (2 * 3))))
+    console.print("${(1 + (2 * 3))}")
 "#)
             .unwrap();
         assert_eq!(out, vec!["7"]);
@@ -285,7 +285,7 @@ fn double(n: Int) -> Int:
     (n * 2)
 
 fn main(console: Console):
-    console.print(("doubled: " + __render(double(21))))
+    console.print(("doubled: " + "${double(21)}"))
 "#;
         assert_eq!(run(src).unwrap(), vec!["doubled: 42"]);
     }
@@ -297,7 +297,7 @@ fn double(n: Int) -> Int:
     (n * 2)
 
 fn main(console: Console):
-    let result = __render(double(4))
+    let result = "${double(4)}"
     console.print(result)
 "#;
         assert_eq!(run(src).unwrap(), vec!["8"]);
@@ -347,7 +347,7 @@ fn fact(n: Int) -> Int:
         _ -> (n * fact((n - 1)))
 
 fn main(console: Console):
-    console.print(__render(fact(5)))
+    console.print("${fact(5)}")
 "#;
         assert_eq!(run(src).unwrap(), vec!["120"]);
     }
@@ -710,9 +710,9 @@ fn main(console: Console, net: Net):
         .with_query("q", "hi")
     match req.send(net):
         Ok(resp) ->
-            console.print(__render(http.status(resp)))
+            console.print("${{http.status(resp)}}")
             console.print(http.body(resp))
-            console.print(__render(http.is_success(resp)))
+            console.print("${{http.is_success(resp)}}")
         Err(e) -> console.print("err: " + e)
 "#
         );
@@ -1309,7 +1309,7 @@ fn half(x: Float) -> Float:
     (x / 2.0)
 
 fn main(console: Console):
-    console.print(__render(half(7.0)))
+    console.print("${half(7.0)}")
 "#;
         assert_eq!(run(src).unwrap(), vec!["3.5"]);
     }
@@ -1344,11 +1344,11 @@ fn divmod(a: Int, b: Int) -> (Int, Int):
 
 fn main(console: Console):
     let (q, r) = divmod(17, 5)
-    console.print(__render(q))
-    console.print(__render(r))
+    console.print("${q}")
+    console.print("${r}")
     let pair = (1, "one")
     match pair:
-        (n, name) -> console.print(((__render(n) + "=") + name))
+        (n, name) -> console.print((("${n}" + "=") + name))
 "#;
         assert_eq!(run(src).unwrap(), vec!["3", "2", "1=one"]);
     }
@@ -1361,7 +1361,7 @@ fn id(x: a) -> a:
 
 fn main(console: Console):
     console.print(id("hi"))
-    console.print(__render(id(5)))
+    console.print("${id(5)}")
 "#;
         assert_eq!(run(src).unwrap(), vec!["hi", "5"]);
     }
@@ -1375,7 +1375,7 @@ type Result:
 
 fn show(r: Result(Int, String)) -> String:
     match r:
-        Ok(n) -> ("ok " + __render(n))
+        Ok(n) -> ("ok " + "${n}")
         Err(msg) -> ("err " + msg)
 
 fn main(console: Console):
@@ -1405,8 +1405,8 @@ fn first_even(xs: List(Int)) -> Int:
     (0 - 1)
 
 fn main(console: Console):
-    console.print(__render(first_even([1, 3, 8, 5])))
-    console.print(__render(first_even([1, 3, 5])))
+    console.print("${first_even([1, 3, 8, 5])}")
+    console.print("${first_even([1, 3, 5])}")
 "#;
         assert_eq!(run(src).unwrap(), vec!["8", "-1"]);
     }
@@ -1440,7 +1440,7 @@ fn rec(n: Int) -> Int:
         rec((n - 1))
 
 fn main(console: Console):
-    console.print(__render(rec(5000000)))
+    console.print("${rec(5000000)}")
 "#;
         let e = run(src).unwrap_err();
         assert!(e.message.contains("too deep"), "got: {}", e.message);
@@ -1457,7 +1457,7 @@ fn rec(n: Int) -> Int:
         rec((n - 1))
 
 fn main(console: Console):
-    console.print(__render(rec(10000)))
+    console.print("${rec(10000)}")
 "#;
         assert_eq!(run(src).unwrap(), vec!["0"]);
     }
@@ -1469,7 +1469,7 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     let big = 9999999999
-    console.print(__render((big * big)))
+    console.print("${(big * big)}")
 "#;
         assert_eq!(run(src).unwrap(), vec!["7766279611452241921"]);
     }
@@ -1481,7 +1481,7 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     let lo = ((0 - 9223372036854775807) - 1)
-    console.print(__render((-lo)))
+    console.print("${(-lo)}")
 "#;
         assert_eq!(run(src).unwrap(), vec!["-9223372036854775808"]);
     }
@@ -1489,7 +1489,7 @@ fn main(console: Console):
     #[test]
     fn runtime_errors_report_their_source_line() {
         // Division by zero happens on the third line.
-        let src = "fn main(console: Console):\n    let a = 1\n    console.print(__render(a / 0))\n";
+        let src = "fn main(console: Console):\n    let a = 1\n    console.print(\"${a / 0}\")\n";
         let e = run(src).unwrap_err();
         assert!(e.message.contains("line 3"), "got: {}", e.message);
     }
@@ -1502,7 +1502,7 @@ fn risky(n: Int) -> Int:
     (n / 0)
 
 fn main(console: Console):
-    console.print(__render(risky(5)))
+    console.print("${risky(5)}")
 "#;
         let e = run(src).unwrap_err();
         assert!(e.message.contains("risky"), "got: {}", e.message);
@@ -1563,11 +1563,11 @@ fn main(console: Console):
     var sum = 0
     for v in dict.values(d):
         sum = (sum + v)
-    console.print(__render(sum))
+    console.print("${sum}")
     var report = ""
     for e in dict.pairs(d):
         let (k, v) = e
-        report = ((((report + k) + "=") + __render(v)) + ";")
+        report = ((((report + k) + "=") + "${v}") + ";")
     console.print(report)
 "#;
         assert_eq!(run(src).unwrap(), vec!["30", "a=10;b=20;"]);
@@ -1580,13 +1580,13 @@ fn main(console: Console):
     let a = dict.insert(dict.new(), "x", 1)
     let b = dict.insert(a, "y", 2)
     let c = dict.insert(b, "x", 9)
-    console.print(__render(dict.get_or(c, "x", 0)))
-    console.print(__render(dict.get_or(c, "y", 0)))
-    console.print(__render(dict.get_or(c, "z", 0)))
-    console.print(__render(dict.length(c)))
-    console.print(__render(dict.get_or(a, "x", 0)))
-    console.print(__render(dict.contains_key(c, "y")))
-    console.print(__render(list.length(dict.keys(c))))
+    console.print("${dict.get_or(c, "x", 0)}")
+    console.print("${dict.get_or(c, "y", 0)}")
+    console.print("${dict.get_or(c, "z", 0)}")
+    console.print("${dict.length(c)}")
+    console.print("${dict.get_or(a, "x", 0)}")
+    console.print("${dict.contains_key(c, "y")}")
+    console.print("${list.length(dict.keys(c))}")
 "#;
         assert_eq!(
             run(src).unwrap(),
@@ -1598,8 +1598,8 @@ fn main(console: Console):
     fn sqrt_builtin_computes() {
         let src = r#"
 fn main(console: Console):
-    console.print(__render(math.sqrt(2.0)))
-    console.print(__render(math.to_int(math.sqrt(144.0))))
+    console.print("${math.sqrt(2.0)}")
+    console.print("${math.to_int(math.sqrt(144.0))}")
 "#;
         assert_eq!(
             run(src).unwrap(),
@@ -1615,9 +1615,9 @@ fn main(console: Console):
     console.print(string.substring(s, 1, 4))
     console.print(string.substring(s, 4, 100))
     console.print(string.substring(s, 3, 1))
-    console.print(__render(string.find(s, "cd")))
-    console.print(__render(string.find(s, "z")))
-    console.print(__render(string.ends_with(s, "ef")))
+    console.print("${string.find(s, "cd")}")
+    console.print("${string.find(s, "z")}")
+    console.print("${string.ends_with(s, "ef")}")
 "#;
         assert_eq!(
             run(src).unwrap(),
@@ -1641,10 +1641,10 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     let parts = string.split("a,b,c", ",")
-    console.print(__render(list.length(parts)))
+    console.print("${list.length(parts)}")
     console.print(list.at(parts, 1))
     console.print(string.replace("a,b,c", ",", "-"))
-    console.print(__render(string.contains("hello", "ell")))
+    console.print("${string.contains("hello", "ell")}")
 "#;
         assert_eq!(run(src).unwrap(), vec!["3", "b", "a-b-c", "true"]);
     }
@@ -1655,10 +1655,10 @@ fn main(console: Console):
 fn main(console: Console):
     let a = [1, 2]
     let b = list.push(a, 3)
-    console.print(__render(list.length(a)))
-    console.print(__render(list.length(b)))
+    console.print("${list.length(a)}")
+    console.print("${list.length(b)}")
     let c = list.concat(a, [9, 9])
-    console.print(__render(list.at(c, 3)))
+    console.print("${list.at(c, 3)}")
 "#;
         assert_eq!(run(src).unwrap(), vec!["2", "3", "9"]);
     }
@@ -1675,8 +1675,8 @@ fn apply(f: fn(Int) -> Int, x: Int) -> Int:
 fn main(console: Console):
     let inc = adder(1)
     let plus100 = adder(100)
-    console.print(__render(apply(inc, 5)))
-    console.print(__render(apply(plus100, 5)))
+    console.print("${apply(inc, 5)}")
+    console.print("${apply(plus100, 5)}")
 "#;
         assert_eq!(run(src).unwrap(), vec!["6", "105"]);
     }
@@ -1692,7 +1692,7 @@ fn run(f: fn(Option(Int)) -> Option(Int), o: Option(Int)) -> Option(Int):
     f(o)
 fn render(o: Option(Int)) -> String:
     match o:
-        Some(n) -> __render(n)
+        Some(n) -> "${n}"
         None -> "none"
 fn main(console: Console):
     let g = fn(o: Option(Int)):
@@ -1714,8 +1714,8 @@ type Point:
 fn main(console: Console):
     let p = Point(1, 2)
     let q = Point(x: 10, y: ((p).y + 1), ..p)
-    console.print((__render((p).x) + __render((p).y)))
-    console.print((__render((q).x) + __render((q).y)))
+    console.print(("${(p).x}" + "${(p).y}"))
+    console.print(("${(q).x}" + "${(q).y}"))
 "#;
         assert_eq!(run(src).unwrap(), vec!["12", "103"]);
     }
@@ -1729,7 +1729,7 @@ type Person:
 
 fn main(console: Console):
     let p = Person("witchy", 7)
-    console.print((((p).name + " is ") + __render((p).age)))
+    console.print((((p).name + " is ") + "${(p).age}"))
 "#;
         assert_eq!(run(src).unwrap(), vec!["witchy is 7"]);
     }
@@ -1743,7 +1743,7 @@ fn len(xs: List(Int)) -> Int:
         [_, ..tail] -> (1 + len(tail))
 
 fn main(console: Console):
-    console.print(__render(len([5, 6, 7, 8])))
+    console.print("${len([5, 6, 7, 8])}")
 "#;
         assert_eq!(run(src).unwrap(), vec!["4"]);
     }
@@ -1755,7 +1755,7 @@ fn main(console: Console):
     var total = 0
     for n in [10, 20, 30]:
         total = (total + n)
-    console.print(__render(total))
+    console.print("${total}")
 "#;
         assert_eq!(run(src).unwrap(), vec!["60"]);
     }
@@ -1774,7 +1774,7 @@ fn head(o: Option(Int)) -> Option(Int):
 
 fn render(o: Option(Int)) -> String:
     match o:
-        Some(n) -> __render(n)
+        Some(n) -> "${n}"
         None -> "none"
 
 fn main(console: Console):
@@ -1788,9 +1788,9 @@ fn main(console: Console):
     fn conversions() {
         let src = r#"
 fn main(console: Console):
-    console.print(__render(math.to_float(7)))
-    console.print(__render(math.to_int(3.9)))
-    console.print(__render(string.to_int("42")))
+    console.print("${math.to_float(7)}")
+    console.print("${math.to_int(3.9)}")
+    console.print("${string.to_int("42")}")
 "#;
         assert_eq!(run(src).unwrap(), vec!["7.0", "3", "42"]);
     }
@@ -1800,7 +1800,7 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     console.print(string.to_upper("witchy"))
-    console.print(__render(string.length("hello")))
+    console.print("${string.length("hello")}")
     console.print(string.trim("  hi  "))
     if string.starts_with("witchy", "wit"):
         console.print("yes")
@@ -1819,8 +1819,8 @@ fn main(console: Console):
     while (i <= 5):
         total = (total + i)
         i = (i + 1)
-    console.print(__render(total))
-    console.print(__render((10 % 3)))
+    console.print("${total}")
+    console.print("${(10 % 3)}")
 "#;
         assert_eq!(run(src).unwrap(), vec!["15", "1"]);
     }
@@ -1845,8 +1845,8 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     let xs = [10, 20, 30]
-    console.print(__render(list.length(xs)))
-    console.print(__render(list.at(xs, 1)))
+    console.print("${list.length(xs)}")
+    console.print("${list.at(xs, 1)}")
 "#;
         assert_eq!(run(src).unwrap(), vec!["3", "20"]);
     }
@@ -1868,7 +1868,7 @@ fn main(console: Console):
 fn main(console: Console):
     var x = 1
     x = (x + 41)
-    console.print(__render(x))
+    console.print("${x}")
 "#;
         assert_eq!(run(src).unwrap(), vec!["42"]);
     }
@@ -1884,7 +1884,7 @@ fn bump(var n: Int):
 fn main(console: Console):
     var x = 41
     bump(x)
-    console.print(__render(x))
+    console.print("${x}")
 "#;
         assert_eq!(run(src).unwrap(), vec!["42"]);
     }

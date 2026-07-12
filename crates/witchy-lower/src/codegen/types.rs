@@ -330,7 +330,7 @@ impl Codegen<'_> {
             // a `?`-unwrapped value renders correctly and `==` picks `$str_eq`.
             Expr::Try(inner) => self.match_payload_valtype(inner).unwrap_or(ValType::Other),
             // A record field access (`p.x`): the field's declared value type — so
-            // `"${p.x}"` / `__render(p.x)` and `==` on a field resolve.
+            // `"${p.x}"` and `==` on a field resolve.
             Expr::Field { base, field } => {
                 self.field_type_of(base, field).map(|t| ty_to_valtype(&t)).unwrap_or(ValType::Other)
             }
@@ -413,8 +413,8 @@ impl Codegen<'_> {
     }
 
     /// The declared type of `base.field`, where `base`'s record type is known —
-    /// so a field access resolves its value type (`__render(p.x)`) and its
-    /// structural shape (`__render(p.tags)`), not just whether it is a record.
+    /// so a field access resolves its value type (`"${p.x}"`) and its structural
+    /// shape (`"${p.tags}"`), not just whether it is a record.
     pub(crate) fn field_type_of(&self, base: &Expr, field: &str) -> Option<Type> {
         let rec = self.record_type_of(base)?;
         let names = self.record_fields.get(&rec)?;

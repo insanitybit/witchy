@@ -33,7 +33,7 @@
     #[test]
     fn hover_shows_signature_and_doc() {
         let mut docs = HashMap::new();
-        let src = "// Doubles a number.\n// Twice the input.\nfn double(n: Int) -> Int:\n    n * 2\n\nfn main(console: Console):\n    console.print(__render(double(3)))\n";
+        let src = "// Doubles a number.\n// Twice the input.\nfn double(n: Int) -> Int:\n    n * 2\n\nfn main(console: Console):\n    console.print(\"${double(3)}\")\n";
         docs.insert("file:///t.witchy".to_string(), src.to_string());
         // Hover over `double` in the call on line 6 (0-based), col 35.
         let col = src.lines().nth(6).unwrap().find("double").unwrap() as u64;
@@ -250,7 +250,7 @@ fn main(console: Console):
     /// error instead of silently accepting a program the compiler refuses.
     #[test]
     fn mode_opt_ownership_violation_is_a_diagnostic() {
-        let bad = "mode opt\n\nimport list\n\nfn tag(xs: List(Int)) -> Int:\n    list.length(xs)\n\nfn main(console: Console):\n    console.print(__render(tag([1, 2, 3])))\n";
+        let bad = "mode opt\n\nimport list\n\nfn tag(xs: List(Int)) -> Int:\n    list.length(xs)\n\nfn main(console: Console):\n    console.print(\"${tag([1, 2, 3])}\")\n";
         let d = diags(bad);
         assert!(
             d.iter().any(|x| x["severity"] == json!(1)

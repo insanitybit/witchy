@@ -40,7 +40,7 @@ fn decode_via_string() -> Result(String, String):
 
 fn main(console: Console):
     match bytes.from_list([0, 255, 65]):
-        Ok(b) -> console.print(__render(bytes.to_list(b)))
+        Ok(b) -> console.print("${bytes.to_list(b)}")
         Err(_) -> console.print("bad")
     match bytes.from_list([256]):
         Ok(_) -> console.print("bad")

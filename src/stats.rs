@@ -69,12 +69,12 @@ mod tests {
 
     // An accumulation loop: in-place push keeps it O(n); forced copy re-owns at
     // every iteration and balloons the heap to O(n^2).
-    const ACC: &str = "fn main(console: Console):\n    var xs = []\n    var i = 0\n    while i < 400:\n        xs = list.push(xs, i)\n        i = i + 1\n    console.print(__render(list.length(xs)))\n";
+    const ACC: &str = "fn main(console: Console):\n    var xs = []\n    var i = 0\n    while i < 400:\n        xs = list.push(xs, i)\n        i = i + 1\n    console.print(\"${list.length(xs)}\")\n";
 
     // A soak loop: per-iteration scratch that never escapes. The `region`
     // (loop-watermark) reclaim resets the arena each iteration, so heap stays
     // CONSTANT no matter how many iterations; with it off the same program leaks.
-    const SOAK: &str = "fn main(console: Console):\n    var sum = 0\n    var i = 0\n    while i < 5000:\n        let tmp = [i, i + 1, i + 2, i + 3]\n        sum = sum + list.length(tmp)\n        i = i + 1\n    console.print(__render(sum))\n";
+    const SOAK: &str = "fn main(console: Console):\n    var sum = 0\n    var i = 0\n    while i < 5000:\n        let tmp = [i, i + 1, i + 2, i + 3]\n        sum = sum + list.length(tmp)\n        i = i + 1\n    console.print(\"${sum}\")\n";
 
     /// RFC-0030 counter assertion: the `inplace` optimization is proven to FIRE
     /// (fewer re-owns, less heap) while changing nothing observable. This is the
@@ -114,7 +114,7 @@ mod tests {
     /// closes (without it, `s.field = v` on an escaping record was O(n) reallocs).
     #[test]
     fn record_field_update_is_in_place() {
-        const REC: &str = "type Counter:\n    count: Int\n    pad: Int\n\nfn build(n: Int) -> Counter:\n    var c = Counter(0, 0)\n    var i = 0\n    while i < n:\n        c.count = c.count + 1\n        i = i + 1\n    c\n\nfn main(console: Console):\n    console.print(__render(build(400).count))\n";
+        const REC: &str = "type Counter:\n    count: Int\n    pad: Int\n\nfn build(n: Int) -> Counter:\n    var c = Counter(0, 0)\n    var i = 0\n    while i < n:\n        c.count = c.count + 1\n        i = i + 1\n    c\n\nfn main(console: Console):\n    console.print(\"${build(400).count}\")\n";
         opt::set_for_tests(Some(OptSet::default_set()));
         let on = compute(REC).expect("compute with inplace on");
         opt::set_for_tests(Some(OptSet::default_set().without(Opt::InPlace)));
@@ -138,7 +138,7 @@ mod tests {
     /// closes end to end — in-place threading compounding through a user function.
     #[test]
     fn record_own_abi_threads_in_place() {
-        const REC: &str = "type Counter:\n    count: Int\n    pad: Int\n\nfn bump(own c: Counter) -> Counter:\n    c.count = c.count + 1\n    c\n\nfn build(n: Int) -> Counter:\n    var c = Counter(0, 0)\n    var i = 0\n    while i < n:\n        c = bump(c)\n        i = i + 1\n    c\n\nfn main(console: Console):\n    console.print(__render(build(400).count))\n";
+        const REC: &str = "type Counter:\n    count: Int\n    pad: Int\n\nfn bump(own c: Counter) -> Counter:\n    c.count = c.count + 1\n    c\n\nfn build(n: Int) -> Counter:\n    var c = Counter(0, 0)\n    var i = 0\n    while i < n:\n        c = bump(c)\n        i = i + 1\n    c\n\nfn main(console: Console):\n    console.print(\"${build(400).count}\")\n";
         opt::set_for_tests(Some(OptSet::default_set()));
         let on = compute(REC).expect("on");
         opt::set_for_tests(Some(OptSet::default_set().without(Opt::InPlace)));
@@ -162,7 +162,7 @@ mod tests {
     /// buffer is never aliased — the field-push-safe gate lets R2 fire.
     #[test]
     fn record_field_list_push_is_in_place() {
-        const REC: &str = "type Stack:\n    items: List(Int)\n    size: Int\n\nfn build(n: Int) -> Stack:\n    var s = Stack([], 0)\n    var i = 0\n    while i < n:\n        s.items = list.push(s.items, i)\n        i = i + 1\n    s\n\nfn main(console: Console):\n    console.print(__render(list.length(build(200).items)))\n";
+        const REC: &str = "type Stack:\n    items: List(Int)\n    size: Int\n\nfn build(n: Int) -> Stack:\n    var s = Stack([], 0)\n    var i = 0\n    while i < n:\n        s.items = list.push(s.items, i)\n        i = i + 1\n    s\n\nfn main(console: Console):\n    console.print(\"${list.length(build(200).items)}\")\n";
         opt::set_for_tests(Some(OptSet::default_set()));
         let on = compute(REC).expect("on");
         opt::set_for_tests(Some(OptSet::default_set().without(Opt::InPlace)));
@@ -217,27 +217,27 @@ mod tests {
         let corpus = [
             // accumulation (inplace) + string build + dict update + fold, with a
             // `nodes.push` statement and escape-free loop scratch (region).
-            "fn main(console: Console):\n    var xs = []\n    var s = \"\"\n    var d = dict.new()\n    var i = 0\n    while i < 300:\n        let scratch = [i, i + 1]\n        xs.push(i + list.length(scratch) - 2)\n        s = s + __render(i % 10)\n        d = dict.update(d, i % 7, 0, fn(n: Int): n + 1)\n        i = i + 1\n    let folded = 2 * 3 + 4\n    console.print(__render(list.length(xs)))\n    console.print(__render(string.length(s)))\n    console.print(__render(dict.get_or(d, 3, 0)))\n    console.print(__render(folded))\n",
+            "fn main(console: Console):\n    var xs = []\n    var s = \"\"\n    var d = dict.new()\n    var i = 0\n    while i < 300:\n        let scratch = [i, i + 1]\n        xs.push(i + list.length(scratch) - 2)\n        s = s + \"${i % 10}\"\n        d = dict.update(d, i % 7, 0, fn(n: Int): n + 1)\n        i = i + 1\n    let folded = 2 * 3 + 4\n    console.print(\"${list.length(xs)}\")\n    console.print(\"${string.length(s)}\")\n    console.print(\"${dict.get_or(d, 3, 0)}\")\n    console.print(\"${folded}\")\n",
             // `for var` write-back over record elements.
             "type P:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    var ps = [P(1, 2), P(3, 4)]\n    for var p in ps:\n        p.x = p.x + 100\n    console.print(\"${ps}\")\n",
             // confined slice VIEW: a read-only window over an unmutated param,
             // read only via at/length — toggling `views` must not change output.
-            "import list\n\nfn win(xs: List(Int), lo: Int, hi: Int) -> Int:\n    let w = list.slice(xs, lo, hi)\n    var t = 0\n    var j = 0\n    while j < list.length(w):\n        t = t + list.at(w, j)\n        j = j + 1\n    t\n\nfn main(console: Console):\n    let xs = [10, 20, 30, 40, 50, 60]\n    console.print(__render(win(xs, 1, 4)))\n    console.print(__render(win(xs, 4, 100)))\n    console.print(__render(win(xs, 2, 2)))\n",
+            "import list\n\nfn win(xs: List(Int), lo: Int, hi: Int) -> Int:\n    let w = list.slice(xs, lo, hi)\n    var t = 0\n    var j = 0\n    while j < list.length(w):\n        t = t + list.at(w, j)\n        j = j + 1\n    t\n\nfn main(console: Console):\n    let xs = [10, 20, 30, 40, 50, 60]\n    console.print(\"${win(xs, 1, 4)}\")\n    console.print(\"${win(xs, 4, 100)}\")\n    console.print(\"${win(xs, 2, 2)}\")\n",
             // PACKED confined record-list: a list literal of fixed-scalar records
             // read only via at(_).field / length — toggling `unbox` (on under
             // `all`) must not change output.
-            "import list\n\ntype P:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let ps = [P(1, 2), P(3, 4), P(5, 6)]\n    var t = 0\n    var i = 0\n    while i < list.length(ps):\n        t = t + list.at(ps, i).x * 10 + list.at(ps, i).y\n        i = i + 1\n    console.print(__render(t))\n    console.print(__render(list.length(ps)))\n",
+            "import list\n\ntype P:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let ps = [P(1, 2), P(3, 4), P(5, 6)]\n    var t = 0\n    var i = 0\n    while i < list.length(ps):\n        t = t + list.at(ps, i).x * 10 + list.at(ps, i).y\n        i = i + 1\n    console.print(\"${t}\")\n    console.print(\"${list.length(ps)}\")\n",
             // RC-floor REUSE: a confined var reassigned to same-length list literals,
             // read only via at/length — toggling `rc-elide` (in-place overwrite vs
             // fresh alloc) must not change output.
-            "import list\n\nfn main(console: Console):\n    var v = [0, 0, 0]\n    var i = 0\n    while i < 5:\n        v = [i, i * 2, i * 3]\n        i = i + 1\n    console.print(__render(list.at(v, 0) + list.at(v, 1) + list.at(v, 2)))\n",
+            "import list\n\nfn main(console: Console):\n    var v = [0, 0, 0]\n    var i = 0\n    while i < 5:\n        v = [i, i * 2, i * 3]\n        i = i + 1\n    console.print(\"${list.at(v, 0) + list.at(v, 1) + list.at(v, 2)}\")\n",
             // RC-floor REUSE (record): a confined var reassigned to the same ctor,
             // read only via fields — `rc-elide` overwrites the field slots in place.
-            "type Point:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    var p = Point(0, 0)\n    var i = 0\n    while i < 5:\n        p = Point(i, i * 2)\n        i = i + 1\n    console.print(__render(p.x + p.y))\n",
+            "type Point:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    var p = Point(0, 0)\n    var i = 0\n    while i < 5:\n        p = Point(i, i * 2)\n        i = i + 1\n    console.print(\"${p.x + p.y}\")\n",
             // (RFC-0033 R1) escaping record updated via `.field =` sugar in a loop:
             // a heap record (returned, so not SROA-confined) updates in place when
             // uniquely owned — output must be invariant under toggling `inplace`.
-            "type Counter:\n    count: Int\n    pad: Int\n\nfn build(n: Int) -> Counter:\n    var c = Counter(0, 0)\n    var i = 0\n    while i < n:\n        c.count = c.count + 1\n        i = i + 1\n    c\n\nfn main(console: Console):\n    console.print(__render(build(50).count))\n",
+            "type Counter:\n    count: Int\n    pad: Int\n\nfn build(n: Int) -> Counter:\n    var c = Counter(0, 0)\n    var i = 0\n    while i < n:\n        c.count = c.count + 1\n        i = i + 1\n    c\n\nfn main(console: Console):\n    console.print(\"${build(50).count}\")\n",
             // (RFC-0033) ALIASED record then `.field =`: value semantics — the alias
             // must see the OLD value, so the update re-owns rather than mutating a
             // shared record in place. The interpreter oracle pins "1 99"; an unsound
@@ -246,41 +246,41 @@ mod tests {
             // (RFC-0033 R3) own-ABI threading through a user record + a PLAIN call
             // to an own-ABI fn (`id(Counter(7,0))`) — both must be invariant under
             // toggling `inplace` and match the interpreter oracle.
-            "type Counter:\n    count: Int\n    pad: Int\n\nfn bump(own c: Counter) -> Counter:\n    c.count = c.count + 1\n    c\n\nfn id(own c: Counter) -> Counter:\n    c\n\nfn build(n: Int) -> Counter:\n    var c = Counter(0, 0)\n    var i = 0\n    while i < n:\n        c = bump(c)\n        i = i + 1\n    c\n\nfn main(console: Console):\n    console.print(__render(build(30).count))\n    console.print(__render(id(Counter(7, 0)).count))\n",
+            "type Counter:\n    count: Int\n    pad: Int\n\nfn bump(own c: Counter) -> Counter:\n    c.count = c.count + 1\n    c\n\nfn id(own c: Counter) -> Counter:\n    c\n\nfn build(n: Int) -> Counter:\n    var c = Counter(0, 0)\n    var i = 0\n    while i < n:\n        c = bump(c)\n        i = i + 1\n    c\n\nfn main(console: Console):\n    console.print(\"${build(30).count}\")\n    console.print(\"${id(Counter(7, 0)).count}\")\n",
             // CACHE EVICTION: insert then remove distinct dict keys (the per-object
             // RC floor's target garbage). Output must stay invariant under every
             // `WITCHY_OPT` setting and match the interpreter — the parity guard for
             // the residual the floor will eventually bound (see
             // `cache_eviction_leaks_without_rc_floor`).
-            "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < 40:\n        d = dict.insert(d, i, i * 2)\n        d = dict.remove(d, i)\n        i = i + 1\n    console.print(__render(dict.length(d)))\n    d = dict.insert(d, 7, 70)\n    console.print(__render(dict.get_or(d, 7, 0)))\n",
+            "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < 40:\n        d = dict.insert(d, i, i * 2)\n        d = dict.remove(d, i)\n        i = i + 1\n    console.print(\"${dict.length(d)}\")\n    d = dict.insert(d, 7, 70)\n    console.print(\"${dict.get_or(d, 7, 0)}\")\n",
             // (RFC-0033 R2) FIELD-PATH list push: `s.items = list.push(s.items, x)`
             // grows the field's list buffer in place (build), AND a FIELD-ALIASED case
             // (`let snap = s.items`) that must NOT mutate the snapshot — value
             // semantics pin "102". The field-push-safe gate disables R2 once the field
             // is read for the snapshot; an unsound in-place would print "202" (caught
             // here, e.g. under `-sroa`, which is how the naive R2 was rejected).
-            "type Stack:\n    items: List(Int)\n    size: Int\n\nfn build(n: Int) -> Stack:\n    var s = Stack([], 0)\n    var i = 0\n    while i < n:\n        s.items = list.push(s.items, i)\n        i = i + 1\n    s\n\nfn aliased() -> Int:\n    var s = Stack([], 0)\n    s.items = list.push(s.items, 1)\n    let snap = s.items\n    s.items = list.push(s.items, 2)\n    list.length(snap) * 100 + list.length(s.items)\n\nfn main(console: Console):\n    console.print(__render(list.length(build(50).items)))\n    console.print(__render(aliased()))\n",
+            "type Stack:\n    items: List(Int)\n    size: Int\n\nfn build(n: Int) -> Stack:\n    var s = Stack([], 0)\n    var i = 0\n    while i < n:\n        s.items = list.push(s.items, i)\n        i = i + 1\n    s\n\nfn aliased() -> Int:\n    var s = Stack([], 0)\n    s.items = list.push(s.items, 1)\n    let snap = s.items\n    s.items = list.push(s.items, 2)\n    list.length(snap) * 100 + list.length(s.items)\n\nfn main(console: Console):\n    console.print(\"${list.length(build(50).items)}\")\n    console.print(\"${aliased()}\")\n",
             // (RFC-0033 R2) WHOLE-RECORD alias of a field-push record: `let x = s`
             // then another `s.items = list.push(s.items, …)`. The field-push-safe gate
             // PASSES (s.items is read only as the push receiver), so the second guard —
             // `eff = field_cap * (record owned)` — must force a field copy because the
             // record is no longer uniquely owned, leaving the alias's `x.items` length
             // at 1. An unsound in-place would grow x's shared buffer to 2.
-            "type Stack:\n    items: List(Int)\n    size: Int\n\nfn whole() -> Stack:\n    var s = Stack([], 0)\n    s.items = list.push(s.items, 1)\n    let x = s\n    s.items = list.push(s.items, 2)\n    s.size = list.length(x.items)\n    s\n\nfn main(console: Console):\n    let r = whole()\n    console.print(__render(r.size))\n    console.print(__render(list.length(r.items)))\n",
+            "type Stack:\n    items: List(Int)\n    size: Int\n\nfn whole() -> Stack:\n    var s = Stack([], 0)\n    s.items = list.push(s.items, 1)\n    let x = s\n    s.items = list.push(s.items, 2)\n    s.size = list.length(x.items)\n    s\n\nfn main(console: Console):\n    let r = whole()\n    console.print(\"${r.size}\")\n    console.print(\"${list.length(r.items)}\")\n",
             // (RFC-0034 L3) Closure devirtualization: `g` is a single-bound CAPTURING
             // closure (captures `k`) called in a loop — devirtualized to a direct
             // `call $__lamw`, the env (so the capture) must still flow, so toggling
             // `direct-call` must not change output. `f` is REASSIGNED mid-loop, so it
             // must stay an indirect call (an unsound devirt would pin the first lambda
             // and diverge once `f` is rebound). The interpreter oracle pins both.
-            "fn main(console: Console):\n    let k = 10\n    let g = fn(x: Int): x + k\n    var f = fn(x: Int): x * 2\n    var i = 0\n    var acc = 0\n    while i < 8:\n        acc = acc + g(i) + f(i)\n        if i == 4:\n            f = fn(x: Int): x * 3\n        i = i + 1\n    console.print(__render(acc))\n",
+            "fn main(console: Console):\n    let k = 10\n    let g = fn(x: Int): x + k\n    var f = fn(x: Int): x * 2\n    var i = 0\n    var acc = 0\n    while i < 8:\n        acc = acc + g(i) + f(i)\n        if i == 4:\n            f = fn(x: Int): x * 3\n        i = i + 1\n    console.print(\"${acc}\")\n",
             // (RFC-0034 L2) Bounds-check elision: `for i in 0..list.length(xs)` indexing
             // an unmutated `xs` lowers `xs[i]` to an UNCHECKED load (provably in range);
             // toggling `bounds-elide` swaps checked/unchecked codegen and must not change
             // output. Two elidable loops over distinct lists; the interpreter (always
             // bounds-checked) is the oracle, so an unsound elision reading out of range
             // would diverge here.
-            "fn main(console: Console):\n    let xs = [3, 1, 4, 1, 5, 9, 2, 6]\n    let ys = [10, 20]\n    var t = 0\n    for i in 0..list.length(xs):\n        t = t + xs[i] * i\n    for j in 0..list.length(ys):\n        t = t + ys[j]\n    console.print(__render(t))\n",
+            "fn main(console: Console):\n    let xs = [3, 1, 4, 1, 5, 9, 2, 6]\n    let ys = [10, 20]\n    var t = 0\n    for i in 0..list.length(xs):\n        t = t + xs[i] * i\n    for j in 0..list.length(ys):\n        t = t + ys[j]\n    console.print(\"${t}\")\n",
         ];
         for src in corpus {
             // The interpreter oracle (the fixed semantics; it has no WITCHY_OPT).
@@ -326,7 +326,7 @@ mod tests {
     fn confined_view_elides_the_slice_copy() {
         // `xs` is a 400-element param; `win` slices the whole thing and reads it
         // only via `length`/`at`. The window copy is ~400*8 bytes.
-        let src = "import list\n\nfn win(xs: List(Int)) -> Int:\n    let w = list.slice(xs, 0, 400)\n    var t = 0\n    var j = 0\n    while j < list.length(w):\n        t = t + list.at(w, j)\n        j = j + 1\n    t\n\nfn main(console: Console):\n    var xs = []\n    var i = 0\n    while i < 400:\n        xs = list.push(xs, i)\n        i = i + 1\n    console.print(__render(win(xs)))\n";
+        let src = "import list\n\nfn win(xs: List(Int)) -> Int:\n    let w = list.slice(xs, 0, 400)\n    var t = 0\n    var j = 0\n    while j < list.length(w):\n        t = t + list.at(w, j)\n        j = j + 1\n    t\n\nfn main(console: Console):\n    var xs = []\n    var i = 0\n    while i < 400:\n        xs = list.push(xs, i)\n        i = i + 1\n    console.print(\"${win(xs)}\")\n";
         opt::set_for_tests(Some(OptSet::default_set()));
         let on = compute(src).expect("views on");
         opt::set_for_tests(Some(OptSet::default_set().without(Opt::Views)));
@@ -358,7 +358,7 @@ mod tests {
     fn nonuniform_reassignment_is_capacity_resized_and_bounded() {
         let prog = |n: i32| {
             format!(
-                "fn main(console: Console):\n    var latest = [0]\n    var i = 0\n    while i < {n}:\n        latest = [i, i + 1, i + 2]\n        i = i + 1\n    console.print(__render(list.length(latest)))\n"
+                "fn main(console: Console):\n    var latest = [0]\n    var i = 0\n    while i < {n}:\n        latest = [i, i + 1, i + 2]\n        i = i + 1\n    console.print(\"${{list.length(latest)}}\")\n"
             )
         };
         opt::set_for_tests(Some(OptSet::default_set()));
@@ -396,7 +396,7 @@ mod tests {
     fn uniform_reassignment_is_reused_and_bounded() {
         let prog = |n: i32| {
             format!(
-                "fn main(console: Console):\n    var latest = [0, 0, 0]\n    var i = 0\n    while i < {n}:\n        latest = [i, i + 1, i + 2]\n        i = i + 1\n    console.print(__render(list.at(latest, 0) + list.at(latest, 2) + list.length(latest)))\n"
+                "fn main(console: Console):\n    var latest = [0, 0, 0]\n    var i = 0\n    while i < {n}:\n        latest = [i, i + 1, i + 2]\n        i = i + 1\n    console.print(\"${{list.at(latest, 0) + list.at(latest, 2) + list.length(latest)}}\")\n"
             )
         };
         // rc-elide ON (default): heap is bounded regardless of iteration count.
@@ -435,7 +435,7 @@ mod tests {
     fn record_reassignment_is_reused_and_bounded() {
         let prog = |n: i32| {
             format!(
-                "type Point:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    var p = Point(0, 0)\n    var i = 0\n    while i < {n}:\n        p = Point(i, i * 2)\n        i = i + 1\n    console.print(__render(p.x + p.y))\n"
+                "type Point:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    var p = Point(0, 0)\n    var i = 0\n    while i < {n}:\n        p = Point(i, i * 2)\n        i = i + 1\n    console.print(\"${{p.x + p.y}}\")\n"
             )
         };
         opt::set_for_tests(Some(OptSet::default_set()));
@@ -473,7 +473,7 @@ mod tests {
     fn bounded_keyset_dict_cache_is_already_bounded() {
         let prog = |n: i32| {
             format!(
-                "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < {n}:\n        d = dict.insert(d, i % 8, i)\n        i = i + 1\n    console.print(__render(dict.length(d)))\n"
+                "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < {n}:\n        d = dict.insert(d, i % 8, i)\n        i = i + 1\n    console.print(\"${{dict.length(d)}}\")\n"
             )
         };
         opt::set_for_tests(Some(OptSet::default_set()));
@@ -511,7 +511,7 @@ mod tests {
     fn cache_eviction_bounded_by_rc_floor() {
         let prog = |n: i32| {
             format!(
-                "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < {n}:\n        d = dict.insert(d, i, i)\n        d = dict.remove(d, i)\n        i = i + 1\n    console.print(__render(dict.length(d)))\n"
+                "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < {n}:\n        d = dict.insert(d, i, i)\n        d = dict.remove(d, i)\n        i = i + 1\n    console.print(\"${{dict.length(d)}}\")\n"
             )
         };
         // RC-floor OFF (the opt-in lever absent): the eviction garbage leaks O(n).
@@ -573,7 +573,7 @@ mod tests {
     fn string_transform_bounded_by_rc_floor() {
         let prog = |n: i32| {
             format!(
-                "fn main(console: Console):\n    var s = \"the quick brown fox jumps\"\n    var i = 0\n    while i < {n}:\n        s = s.to_upper()\n        s = s.to_lower()\n        i = i + 1\n    console.print(__render(s.length()))\n"
+                "fn main(console: Console):\n    var s = \"the quick brown fox jumps\"\n    var i = 0\n    while i < {n}:\n        s = s.to_upper()\n        s = s.to_lower()\n        i = i + 1\n    console.print(\"${{s.length()}}\")\n"
             )
         };
         opt::set_for_tests(Some(OptSet::default_set().without(Opt::RcFloor)));
@@ -683,7 +683,7 @@ mod tests {
         // The all-scalar producer/consumer kernel, parametric in N (ring cap 64).
         let soa_src = |n: i64| {
             format!(
-                "import list\n\nfn wrap(x: Int, m: Int) -> Int:\n    if x >= m: x - m else: x\n\nfn run(np: Int, cap: Int) -> Int:\n    var ring = list.range_between(0, cap)\n    var head = 0\n    var tail = 0\n    var count = 0\n    var status = [0, 0]\n    var f0 = [np, 0]\n    var f1 = [0, 0]\n    var go = true\n    while go:\n        var prog = false\n        if list.at(status, 0) != 3:\n            if count < cap:\n                let i = list.at(f1, 0)\n                if i < list.at(f0, 0):\n                    ring = list.set_at(ring, tail, i)\n                    tail = wrap(tail + 1, cap)\n                    count = count + 1\n                    f1 = list.set_at(f1, 0, i + 1)\n                    prog = true\n                else:\n                    status = list.set_at(status, 0, 3)\n                    prog = true\n        if list.at(status, 1) != 3:\n            if count > 0:\n                let v = list.at(ring, head)\n                head = wrap(head + 1, cap)\n                count = count - 1\n                f0 = list.set_at(f0, 1, list.at(f0, 1) + v)\n                let seen = list.at(f1, 1) + 1\n                f1 = list.set_at(f1, 1, seen)\n                if seen >= np:\n                    status = list.set_at(status, 1, 3)\n                prog = true\n        if list.at(status, 0) == 3 && list.at(status, 1) == 3:\n            go = false\n        else if prog:\n            go = true\n        else:\n            go = false\n    list.at(f0, 1)\n\nfn main(console: Console):\n    console.print(__render(run({n}, 64)))\n",
+                "import list\n\nfn wrap(x: Int, m: Int) -> Int:\n    if x >= m: x - m else: x\n\nfn run(np: Int, cap: Int) -> Int:\n    var ring = list.range_between(0, cap)\n    var head = 0\n    var tail = 0\n    var count = 0\n    var status = [0, 0]\n    var f0 = [np, 0]\n    var f1 = [0, 0]\n    var go = true\n    while go:\n        var prog = false\n        if list.at(status, 0) != 3:\n            if count < cap:\n                let i = list.at(f1, 0)\n                if i < list.at(f0, 0):\n                    ring = list.set_at(ring, tail, i)\n                    tail = wrap(tail + 1, cap)\n                    count = count + 1\n                    f1 = list.set_at(f1, 0, i + 1)\n                    prog = true\n                else:\n                    status = list.set_at(status, 0, 3)\n                    prog = true\n        if list.at(status, 1) != 3:\n            if count > 0:\n                let v = list.at(ring, head)\n                head = wrap(head + 1, cap)\n                count = count - 1\n                f0 = list.set_at(f0, 1, list.at(f0, 1) + v)\n                let seen = list.at(f1, 1) + 1\n                f1 = list.set_at(f1, 1, seen)\n                if seen >= np:\n                    status = list.set_at(status, 1, 3)\n                prog = true\n        if list.at(status, 0) == 3 && list.at(status, 1) == 3:\n            go = false\n        else if prog:\n            go = true\n        else:\n            go = false\n    list.at(f0, 1)\n\nfn main(console: Console):\n    console.print(\"${{run({n}, 64)}}\")\n",
                 n = n,
             )
         };
@@ -717,7 +717,7 @@ mod tests {
     fn packed_record_list_uses_one_flat_buffer() {
         // 10 two-field records: boxed = 10*(4+16) records + (4+10*8) list; packed =
         // one (4 + 10*2*8) buffer — a ~120-byte drop (pointer array + tag headers).
-        let src = "import list\n\ntype P:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let ps = [P(0, 1), P(2, 3), P(4, 5), P(6, 7), P(8, 9), P(10, 11), P(12, 13), P(14, 15), P(16, 17), P(18, 19)]\n    var t = 0\n    var i = 0\n    while i < list.length(ps):\n        t = t + list.at(ps, i).x + list.at(ps, i).y\n        i = i + 1\n    console.print(__render(t))\n";
+        let src = "import list\n\ntype P:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let ps = [P(0, 1), P(2, 3), P(4, 5), P(6, 7), P(8, 9), P(10, 11), P(12, 13), P(14, 15), P(16, 17), P(18, 19)]\n    var t = 0\n    var i = 0\n    while i < list.length(ps):\n        t = t + list.at(ps, i).x + list.at(ps, i).y\n        i = i + 1\n    console.print(\"${t}\")\n";
         opt::set_for_tests(Some(OptSet::all()));
         let on = compute(src).expect("unbox on");
         opt::set_for_tests(Some(OptSet::all().without(Opt::Unbox)));
@@ -743,7 +743,7 @@ mod tests {
     /// output to the boxed layout (the representation parity contract).
     #[test]
     fn declared_packed_list_packs_flat() {
-        let src = "import list\n\ntype P packed:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let ps = [P(0, 1), P(2, 3), P(4, 5), P(6, 7), P(8, 9), P(10, 11), P(12, 13), P(14, 15), P(16, 17), P(18, 19)]\n    var t = 0\n    var i = 0\n    while i < list.length(ps):\n        t = t + list.at(ps, i).x + list.at(ps, i).y\n        i = i + 1\n    console.print(__render(t))\n";
+        let src = "import list\n\ntype P packed:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let ps = [P(0, 1), P(2, 3), P(4, 5), P(6, 7), P(8, 9), P(10, 11), P(12, 13), P(14, 15), P(16, 17), P(18, 19)]\n    var t = 0\n    var i = 0\n    while i < list.length(ps):\n        t = t + list.at(ps, i).x + list.at(ps, i).y\n        i = i + 1\n    console.print(\"${t}\")\n";
         opt::set_for_tests(Some(OptSet::all()));
         let on = compute(src).expect("unbox on");
         opt::set_for_tests(Some(OptSet::all().without(Opt::Unbox)));
@@ -767,7 +767,7 @@ mod tests {
     /// reject: this is the in-function `reject_reason` path.
     #[test]
     fn declared_packed_whole_value_use_is_rejected() {
-        let src = "import list\n\ntype P packed:\n    x: Int\n\nfn main(console: Console):\n    let xs = [P(1), P(2)]\n    let ys = xs\n    console.print(__render(list.length(ys)))\n";
+        let src = "import list\n\ntype P packed:\n    x: Int\n\nfn main(console: Console):\n    let xs = [P(1), P(2)]\n    let ys = xs\n    console.print(\"${list.length(ys)}\")\n";
         opt::set_for_tests(Some(OptSet::default_set()));
         let r = compute(src);
         opt::set_for_tests(None);
@@ -779,7 +779,7 @@ mod tests {
     /// forced-copy) — the parity contract for the new ergonomic form.
     #[test]
     fn for_var_writes_elements_back_on_both_backends() {
-        let src = "fn main(console: Console):\n    var xs = [1, 2, 3, 4]\n    for var x in xs:\n        x = x * 10\n    console.print(__render(xs))\n";
+        let src = "fn main(console: Console):\n    var xs = [1, 2, 3, 4]\n    for var x in xs:\n        x = x * 10\n    console.print(\"${xs}\")\n";
         let oracle = interp(src);
         assert_eq!(oracle, vec!["[10, 20, 30, 40]".to_string()]);
         opt::set_for_tests(Some(OptSet::default_set()));
@@ -794,7 +794,7 @@ mod tests {
     /// `for var` mutating a record field of each element, parity-checked.
     #[test]
     fn for_var_mutates_record_fields() {
-        let src = "type P:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    var ps = [P(1, 2), P(3, 4)]\n    for var p in ps:\n        p.x = p.x + 100\n    console.print(__render(ps))\n";
+        let src = "type P:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    var ps = [P(1, 2), P(3, 4)]\n    for var p in ps:\n        p.x = p.x + 100\n    console.print(\"${ps}\")\n";
         let oracle = interp(src);
         assert!(oracle[0].contains("101") && oracle[0].contains("103"), "{oracle:?}");
         opt::set_for_tests(Some(OptSet::default_set()));
@@ -808,7 +808,7 @@ mod tests {
     /// re-allocates the whole list per element (O(n^2)). Output is identical.
     #[test]
     fn for_var_writeback_is_in_place() {
-        let src = "fn main(console: Console):\n    var xs = []\n    var i = 0\n    while i < 300:\n        xs = list.push(xs, i)\n        i = i + 1\n    for var x in xs:\n        x = x + 1\n    console.print(__render(xs.at(0)))\n    console.print(__render(xs.at(299)))\n";
+        let src = "fn main(console: Console):\n    var xs = []\n    var i = 0\n    while i < 300:\n        xs = list.push(xs, i)\n        i = i + 1\n    for var x in xs:\n        x = x + 1\n    console.print(\"${xs.at(0)}\")\n    console.print(\"${xs.at(299)}\")\n";
         opt::set_for_tests(Some(OptSet::default_set()));
         let on = compute(src).expect("inplace on");
         opt::set_for_tests(Some(OptSet::default_set().without(Opt::InPlace)));
@@ -831,7 +831,7 @@ mod tests {
     /// the program to type-check.
     #[test]
     fn mutating_method_statement_writes_back_on_both_backends() {
-        let src = "fn main(console: Console):\n    var xs = []\n    xs.push(1)\n    xs.push(2)\n    xs.push(3)\n    var d = dict.new()\n    d.insert(\"a\", 7)\n    var ys = [9, 9, 9]\n    let _ = ys.length()\n    console.print(\"${xs}\")\n    console.print(__render(dict.get_or(d, \"a\", 0)))\n";
+        let src = "fn main(console: Console):\n    var xs = []\n    xs.push(1)\n    xs.push(2)\n    xs.push(3)\n    var d = dict.new()\n    d.insert(\"a\", 7)\n    var ys = [9, 9, 9]\n    let _ = ys.length()\n    console.print(\"${xs}\")\n    console.print(\"${dict.get_or(d, \"a\", 0)}\")\n";
         let oracle = interp(src);
         assert_eq!(oracle, vec!["[1, 2, 3]".to_string(), "7".to_string()]);
         opt::set_for_tests(Some(OptSet::default_set()));
@@ -844,7 +844,7 @@ mod tests {
     /// push loop stays O(n) heap; with `-inplace` it is O(n^2). Same output.
     #[test]
     fn mutating_method_statement_is_in_place() {
-        let src = "fn main(console: Console):\n    var xs = []\n    var i = 0\n    while i < 300:\n        xs.push(i)\n        i = i + 1\n    console.print(__render(list.length(xs)))\n";
+        let src = "fn main(console: Console):\n    var xs = []\n    var i = 0\n    while i < 300:\n        xs.push(i)\n        i = i + 1\n    console.print(\"${list.length(xs)}\")\n";
         opt::set_for_tests(Some(OptSet::default_set()));
         let on = compute(src).expect("on");
         opt::set_for_tests(Some(OptSet::default_set().without(Opt::InPlace)));
@@ -883,7 +883,7 @@ mod tests {
     /// is identical (the differential sweep also walks `-sroa`).
     #[test]
     fn sroa_eliminates_confined_aggregate_allocation() {
-        let src = "type P:\n    x: Int\n    y: Int\nfn main(console: Console):\n    var total = 0\n    var i = 0\n    while i < 300:\n        let p = P(i, i + 1)\n        total = total + p.x + p.y\n        i = i + 1\n    console.print(__render(total))\n";
+        let src = "type P:\n    x: Int\n    y: Int\nfn main(console: Console):\n    var total = 0\n    var i = 0\n    while i < 300:\n        let p = P(i, i + 1)\n        total = total + p.x + p.y\n        i = i + 1\n    console.print(\"${total}\")\n";
         opt::set_for_tests(Some(OptSet::default_set().without(Opt::Region)));
         let on = compute(src).expect("sroa on");
         opt::set_for_tests(Some(OptSet::default_set().without(Opt::Region).without(Opt::Sroa)));
@@ -904,7 +904,7 @@ mod tests {
     /// heap object — O(1) vs O(n). Identical output.
     #[test]
     fn sroa_handles_mutable_field_written_record() {
-        let src = "type P:\n    x: Int\n    y: Int\nfn main(console: Console):\n    var total = 0\n    var i = 0\n    while i < 300:\n        var p = P(i, 0)\n        p.x = p.x + 1\n        p.y = p.x * 2\n        total = total + p.x + p.y\n        i = i + 1\n    console.print(__render(total))\n";
+        let src = "type P:\n    x: Int\n    y: Int\nfn main(console: Console):\n    var total = 0\n    var i = 0\n    while i < 300:\n        var p = P(i, 0)\n        p.x = p.x + 1\n        p.y = p.x * 2\n        total = total + p.x + p.y\n        i = i + 1\n    console.print(\"${total}\")\n";
         opt::set_for_tests(Some(OptSet::default_set().without(Opt::Region)));
         let on = compute(src).expect("sroa on");
         opt::set_for_tests(Some(OptSet::default_set().without(Opt::Region).without(Opt::Sroa)));
@@ -926,7 +926,7 @@ mod tests {
     /// identical (folding is semantics-preserving).
     #[test]
     fn fold_elides_constant_concatenations() {
-        let src = "fn main(console: Console):\n    let g = \"Hi, \"\n    var total = 0\n    var i = 0\n    while i < 300:\n        let s = g + \"World\" + g + \"There\"\n        total = total + string.length(s)\n        i = i + 1\n    console.print(__render(total))\n";
+        let src = "fn main(console: Console):\n    let g = \"Hi, \"\n    var total = 0\n    var i = 0\n    while i < 300:\n        let s = g + \"World\" + g + \"There\"\n        total = total + string.length(s)\n        i = i + 1\n    console.print(\"${total}\")\n";
         opt::set_for_tests(Some(OptSet::default_set().without(Opt::Region)));
         let on = compute(src).expect("fold on");
         opt::set_for_tests(Some(OptSet::default_set().without(Opt::Region).without(Opt::Fold)));
@@ -948,7 +948,7 @@ mod tests {
     /// regardless of iteration count. 5000 iterations stay under a tiny budget.
     #[test]
     fn never_oom_long_loop_stays_bounded() {
-        let src = "fn cost(n: Int) -> Int:\n    let tmp = [n, n + 1, n + 2]\n    list.length(tmp) + string.length(\"${n}\")\nfn main(console: Console):\n    var total = 0\n    var i = 0\n    while i < 5000:\n        let scratch = [i, i + 1]\n        total = total + cost(i) + list.length(scratch)\n        i = i + 1\n    console.print(__render(total))\n";
+        let src = "fn cost(n: Int) -> Int:\n    let tmp = [n, n + 1, n + 2]\n    list.length(tmp) + string.length(\"${n}\")\nfn main(console: Console):\n    var total = 0\n    var i = 0\n    while i < 5000:\n        let scratch = [i, i + 1]\n        total = total + cost(i) + list.length(scratch)\n        i = i + 1\n    console.print(\"${total}\")\n";
         opt::set_for_tests(Some(OptSet::default_set()));
         let s = compute(src).expect("compute");
         opt::set_for_tests(None);
@@ -964,9 +964,9 @@ mod tests {
     /// the write-back), but allows a `continue` that belongs to a NESTED loop.
     #[test]
     fn for_var_rejects_loop_belonging_early_exit() {
-        let bad = "fn main(console: Console):\n    var xs = [1, 2, 3]\n    for var x in xs:\n        if x == 2:\n            continue\n        x = x * 10\n    console.print(__render(xs))\n";
+        let bad = "fn main(console: Console):\n    var xs = [1, 2, 3]\n    for var x in xs:\n        if x == 2:\n            continue\n        x = x * 10\n    console.print(\"${xs}\")\n";
         assert!(crate::resolve_std_only(bad).is_err(), "a loop-belonging continue must be rejected");
-        let ok = "fn main(console: Console):\n    var xs = [1, 2, 3]\n    for var x in xs:\n        for y in [0, 1]:\n            if y == 9:\n                continue\n        x = x * 10\n    console.print(__render(xs))\n";
+        let ok = "fn main(console: Console):\n    var xs = [1, 2, 3]\n    for var x in xs:\n        for y in [0, 1]:\n            if y == 9:\n                continue\n        x = x * 10\n    console.print(\"${xs}\")\n";
         assert!(crate::resolve_std_only(ok).is_ok(), "a nested-loop continue must be allowed");
     }
 }

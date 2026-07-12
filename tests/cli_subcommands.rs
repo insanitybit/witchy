@@ -381,7 +381,7 @@ fn plain_run_does_not_emit_copy_cliff_notes_for_comprehensions() {
     let src = write(
         &dir,
         "compr.witchy",
-        "fn main(console: Console):\n    let squares = [n * n for n in 1..6]\n    console.print(__render(squares))\n",
+        "fn main(console: Console):\n    let squares = [n * n for n in 1..6]\n    console.print(\"${squares}\")\n",
     );
     let out = run(&[&src]);
     assert!(out.status.success(), "run failed: {}", String::from_utf8_lossy(&out.stderr));

@@ -429,15 +429,15 @@ comptime:
         if t.name == "Handwritten":
             saw_handwritten = true
     emit("fn saw_generated() -> Bool:")
-    emit("    " + __render(saw_generated))
+    emit("    " + "${saw_generated}")
     emit("fn saw_handwritten() -> Bool:")
-    emit("    " + __render(saw_handwritten))
+    emit("    " + "${saw_handwritten}")
 
 fn main(console: Console):
-    console.print(__render(saw_generated()))
-    console.print(__render(saw_handwritten()))
+    console.print("${saw_generated()}")
+    console.print("${saw_handwritten()}")
     let g = Generated(value: 7)
-    console.print(__render(g.value))
+    console.print("${g.value}")
 "#;
 
         let module = witchy_syntax::parser::parse_module(src).expect("parse");
@@ -478,8 +478,8 @@ comptime:
 
 fn main(console: Console):
     let p = made()
-    console.print(__render(p.x))
-    console.print(__render(p.y))
+    console.print("${p.x}")
+    console.print("${p.y}")
 "#;
 
         let module = witchy_syntax::parser::parse_module(src).expect("parse");
@@ -521,7 +521,7 @@ comptime:
 
 fn main(console: Console):
     let xs: List(Int) = iter.collect(generated())
-    console.print(__render(xs))
+    console.print("${xs}")
 "#;
 
         let module = witchy_syntax::parser::parse_module(src).expect("parse");
@@ -540,7 +540,7 @@ comptime:
 
 async fn main(console: Console):
     let n = generated().await
-    console.print(__render(n))
+    console.print("${n}")
 "#;
 
         let module = witchy_syntax::parser::parse_module(src).expect("parse");

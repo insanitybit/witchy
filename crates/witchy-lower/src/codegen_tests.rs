@@ -722,7 +722,7 @@ fn main(console: Console):
     fn compiles_int_to_string() {
         let src = r#"
 fn main(console: Console):
-    console.print(__render(12345))
+    console.print("${12345}")
 "#;
         assert_eq!(run_str(src), vec!["12345"]);
     }
@@ -731,7 +731,7 @@ fn main(console: Console):
     fn int_to_string_handles_zero() {
         let src = r#"
 fn main(console: Console):
-    console.print(__render(0))
+    console.print("${0}")
 "#;
         assert_eq!(run_str(src), vec!["0"]);
     }

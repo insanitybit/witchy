@@ -1860,7 +1860,7 @@ Render a structured type back to source text only when generated source needs to
 
 #### `fn derive_show(t: TypeInfo) -> String`
 
-`derive(Show)` -> constructor-shaped rendering with each field/payload rendered through its own `Show` impl. Primitive fields still match `__render`, while fields with custom `Show` keep their public display form. Generic parameters carry a `: Show` bound, so the same code path compiles coherently on both backends.
+`derive(Show)` -> constructor-shaped rendering with each field/payload rendered through its own `Show` impl. Primitive fields still match structural interpolation bytes, while fields with custom `Show` keep their public display form. Generic parameters carry a `: Show` bound, so the same code path compiles coherently on both backends.
 
 #### `fn derive_eq(t: TypeInfo) -> String`
 

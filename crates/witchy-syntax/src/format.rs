@@ -2004,9 +2004,8 @@ fn canon_stmt(s: &mut Stmt) {
 fn canon_expr(e: &mut Expr) {
     if let Expr::Call { name, args } = e {
         // The printer re-sugars interpolation to `"${x}"`, which reparses through
-        // the generated render intrinsic. Normalize the legacy oracle spelling for
-        // this comparison pass only; standalone `__render(x)` still prints as the
-        // source wrote it.
+        // the generated render intrinsic. Normalize render calls before checking
+        // parse/format stability.
         if is_render_intrinsic(name) {
             *name = GENERATED_RENDER_INTRINSIC.into();
         }

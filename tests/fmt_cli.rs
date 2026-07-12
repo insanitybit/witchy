@@ -69,7 +69,7 @@ fn fmt_preserves_trailing_comments() {
     std::fs::create_dir_all(&work).unwrap();
 
     let file = work.join("comments.witchy");
-    let src = "fn main(console: Console):\n    let x = 1 // keep me\n    console.print(__render(x))\n";
+    let src = "fn main(console: Console):\n    let x = 1 // keep me\n    console.print(\"${x}\")\n";
     std::fs::write(&file, src).unwrap();
 
     let out = Command::new(BIN)
