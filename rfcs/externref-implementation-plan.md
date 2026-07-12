@@ -61,12 +61,12 @@ as an open risk in §8.
 
 The lowering needs a predicate `carries_cap(ty) -> bool`, computed over resolved
 types (post-`typeck`), true iff a value of `ty` can transitively hold a
-*handle-bearing* capability:
+*guest-represented, handle-bearing* capability:
 
-- a **handle-bearing** capability type — `Dir`, `Net`, `File`, `Secret`,
-  `SecretStore`, `Exec`, the derived `Socket`/`Listener`, and every
-  `capability`/`grantable capability` declaration (incl. the RFC-0002 branded
-  forms like `Redis(net)` and the RFC-0039 UI tokens);
+- a **guest-represented handle** capability type — `Dir`, `Net`, `File`,
+  `Secret`, the derived `Socket`/`Listener`, and every `capability`/`grantable
+  capability` declaration that wraps one of those handles (incl. the RFC-0002
+  branded forms like `Redis(net)` and the RFC-0039 UI tokens);
 - a record/`type` variant with any cap-carrying field;
 - a tuple with any cap-carrying element;
 - a closure whose captured environment has any cap-carrying capture;
@@ -74,14 +74,17 @@ types (post-`typeck`), true iff a value of `ty` can transitively hold a
   cap-carrying (a `List(Int)` is not; a `List(Net)` is — rare but must be handled
   or explicitly rejected, see §7).
 
-**`Console` and `Clock` are excluded — they are zero-representation
-capabilities.** Neither has a runtime handle: `host_print` takes only `ptr/len`
-and codegen *drops* the `Console` argument entirely
-(`crates/witchy-lower/src/codegen/builtins.rs:383-391`), and `Clock` is the same
-— it names a host op, not a stored grant. A capability with no bytes in linear
-memory is already unforgeable: there is nothing to corrupt, swap, or mint. So
-`carries_cap` is false for them and they are absent from the migration (§6); the
-cut only touches capabilities that name a host-side grant.
+**Zero-representation capabilities are excluded.** `Console`, `Clock`, `Rand`,
+`Env`, `Exec`, and `SecretStore` do not have a guest-held authority handle to
+corrupt. Codegen drops their value argument (or ignores the placeholder) and the
+host import itself is the authority gate: e.g. `host_print` takes only `ptr/len`,
+`rand.rand_u64()` and `env.get_env(name)` take no guest cap operand, `exec.run`
+drops the `Exec` argument and confines through its `Dir`, and `SecretStore` is a
+root authority for `secretstore_lookup` rather than a guest index. A capability
+with no bytes in linear memory is already unforgeable: there is nothing to
+corrupt, swap, or mint. So `carries_cap` is false for these zero-representation
+caps and they are absent from the migration (§6); the cut only touches
+capabilities that currently name authority with guest-represented handles.
 
 `carries_cap` is monomorphization-time: generics are already specialized before
 codegen, so the concrete element types are known. The predicate is a small
@@ -237,16 +240,28 @@ done first. Proposed order, each stage its own PR, `check.sh` green at each:
    (`file_capability_rights_and_narrowing`) to hold parity against. Exec would
    prove less (right-less, one op) at higher blast radius. GREEN (all File
    programs, both backends).
-3. **The remaining root + derived caps** (`Dir`, `Net`, `Secret`, `SecretStore`,
-   `Exec`, and the `Net`-derived `Socket`/`Listener`) — each as an `externref`
+3. **Aggregate/API reconciliation before the next root-cap widening.** Do not
+   add `Dir`, `Net`, or `Secret` to `is_externref_cap` as a mechanical next step.
+   Unlike `File`, they are not isolated leaf values in shipped source:
+   `capability ConfigDir from Dir`, `capability Redis from Net`, and
+   `Option(Dir)` are valid today, while `std/secretstore.get -> Option(Secret)`
+   depends on `Secret` crossing the slot boundary. Widening the seam without a
+   representation/API answer would make those language features fail, not make
+   RFC-0005 coherent. Land one of these decisions first:
+   - **Represent** cap-carrying records/tuples/branded caps/UI tokens as GC
+     structs, then closures capturing caps; and represent or redesign the
+     `Option`/`Result` payload path for `Secret`; or
+   - **Reject deliberately** by changing the public surface, tests, and docs in
+     one reviewed language cut.
+   The preferred 0.1 route is representation for branded/user capability
+   wrappers; deleting shipped branded-cap examples to unblock a migration is not
+   an acceptable silent simplification.
+4. **The remaining guest-represented root + derived handles** (`Dir`, `Net`,
+   `Secret`, and the `Net`-derived `Socket`/`Listener`) — each as an `externref`
    param or `externref`-returning import (`connect`/`listen`/`accept` return an
-   `externref` Socket/Listener instead of an i32 index). Imports downcast. Still
-   no aggregates. GREEN after each. (`Console`/`Clock` are not here — nothing to
-   migrate.)
-4. **Cap-carrying aggregates** — records/tuples/branded caps/UI tokens to GC
-   structs; then **closures** capturing caps. Stage 2 already rejects aggregate
-   storage/capture for migrated caps; this hard stage replaces those rejects with
-   representation. GREEN.
+   `externref` Socket/Listener instead of an i32 index). Imports downcast. GREEN
+   after each. Zero-representation caps (`Console`/`Clock`/`Rand`/`Env`/`Exec`/
+   `SecretStore`) are not here because there is no guest handle to migrate.
 5. **Delete the i32 handle machinery** — `VmState.dirs/nets/files/sockets/
    listeners/secrets`, the index arithmetic, the `*_handle` conventions, and the
    temporary two-mode mint. The suite staying green with them gone is the proof
@@ -416,11 +431,13 @@ Do not begin Stage 1 until the revision lands and the Net/Dir attenuation suite
 The four blocking gaps and the enumeration items above are now resolved in the
 body; `status: design → planned`.
 
-- **Stage rescope (§3, §6).** `Console`/`Clock` dropped from `carries_cap` and
-  from the migration — they are zero-representation (no runtime handle;
-  `builtins.rs:383-391`), already unforgeable. Stage 2's proving capability is
-  now **File** (rights-bearing, simplest grant, has the anchoring attenuation
-  slice); rationale recorded inline. Stage 3 is the remaining root + derived caps.
+- **Stage rescope (§3, §6).** `Console`/`Clock`/`Rand`/`Env`/`Exec`/
+  `SecretStore` dropped from `carries_cap` and from the migration — they are
+  zero-representation (no guest-held runtime handle), already unforgeable. Stage
+  2's proving capability is now **File** (rights-bearing, simplest grant, has
+  the anchoring attenuation slice); rationale recorded inline. Stage 3 is no
+  longer a blind "remaining root caps" sweep: aggregate/API reconciliation must
+  precede migrating `Dir`/`Net`/`Secret`.
 - **i64 Slot boundary (§4.4, new).** Reject-first, symmetric with §7: generic
   Slot-boxing and `Option`/`Result` payloads are `typeck`-rejected; closure envs
   and grantable-cap fields are *represented* (GC fields) rather than crossing;

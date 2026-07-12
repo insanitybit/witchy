@@ -707,9 +707,35 @@ fn has_optional_id() -> Option(Bool):
         assert!(err.contains("Box") && err.contains("File"), "got: {err}");
 
         // Sibling caps still on the i32 path may cross a slot until their own stage:
-        // `std/secretstore.get -> Option(Secret)` must keep type-checking.
+        // `std/secretstore.get -> Option(Secret)` must keep type-checking. These
+        // positive checks are intentional stage-order guards: adding a cap to
+        // `is_externref_cap` before its aggregate/API story exists breaks shipped
+        // language features rather than completing RFC-0005.
         check_str("fn get(console: Console, o: Option(Secret)):\n    console.print(\"x\")\n")
             .expect("Secret is still an i32 handle this stage — Option(Secret) allowed");
+
+        check_str("fn maybe_dir(console: Console, out: Option(Dir[Write])):\n    console.print(\"x\")\n")
+            .expect("Dir is still an i32 handle this stage — Option(Dir) allowed");
+
+        let branded_dir = r#"
+capability ConfigDir from Dir[Read]
+
+fn load(c: ConfigDir, name: String) -> String:
+    match c:
+        ConfigDir(dir) -> dir.read(name)
+"#;
+        check_str(branded_dir)
+            .expect("Dir migration is blocked on branded-cap aggregate representation");
+
+        let branded_net = r#"
+capability Redis from Net[Connect, Tcp]
+
+fn ping(r: Redis) -> Int:
+    match r:
+        Redis(net) -> 1
+"#;
+        check_str(branded_net)
+            .expect("Net migration is blocked on branded-cap aggregate representation");
     }
 
     #[test]
