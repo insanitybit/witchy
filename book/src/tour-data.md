@@ -80,6 +80,45 @@ without declaring a one-off `type`. A bare `"${rec}"` structural print works too
 — an anonymous record renders as `.{x: 1, y: hi}`, exactly the way a named one
 does.
 
+## Structural aliases and anonymous unions
+
+`type X = ...` names a shape without minting a new type. That makes it useful for
+local data plumbing: start with a structural record or union when the shape is
+obvious and close by. Move to `type X:` when the data needs invariants, custom
+behavior, sealing, or a public contract.
+
+```witchy
+type Point = .{x: Int, y: Int}
+type LoadErr = .[NotFound | BadPort(Int) | Missing(String)]
+
+fn move_right(p: Point) -> .{y: Int, x: Int}:
+    .{x: p.x + 1, ..p}
+
+fn describe(e: LoadErr) -> String:
+    match e:
+        .NotFound -> "not found"
+        .BadPort(p) -> "bad port ${p}"
+        .Missing(k) -> "missing " + k
+
+fn main(console: Console):
+    console.print("${move_right(.{y: 2, x: 1})}")
+    console.print(describe(.BadPort(70000)))
+    console.print(describe(.Missing("host")))
+```
+
+```text
+.{x: 2, y: 2}
+bad port 70000
+missing host
+```
+
+Anonymous records are exact shapes: `.{x: Int, y: Int}` and
+`.{y: Int, x: Int}` are the same type, but `.{x: Int}` is not a smaller version
+of that record. Anonymous unions are closed tag sets: `.BadPort(70000)` is only
+valid where a `.[BadPort(Int) | ...]` type is expected, and matching must cover
+the tags. Union values may widen into a larger tag set at calls, returns, and
+`?` propagation; records do not widen.
+
 ## Enums and sum types
 
 List the variants. They can be nullary (a plain enum) or carry data (a sum

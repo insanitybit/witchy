@@ -144,6 +144,56 @@ The happy path reads top-to-bottom like ordinary code, and every `?` is a
 visible place where an error can leave the function. There's no hidden control
 flow — no exception that unwinds through frames you can't see.
 
+## Local error unions
+
+For small, local error sets, you can use an anonymous union directly in
+`Result`. The union is still closed and matchable, but you do not have to name a
+new enum while the plumbing is local. A smaller error set widens into a larger
+one through `?`, so helpers can compose without wrapper code:
+
+```witchy
+type ReadErr = .[NotFound]
+type LoadErr = .[NotFound | BadPort(Int)]
+
+fn read_config(kind: Int) -> Result(String, ReadErr):
+    if kind == 0:
+        Ok("8080")
+    else:
+        Err(.NotFound)
+
+fn parse_port(raw: String) -> Result(Int, .[BadPort(Int)]):
+    if raw == "8080":
+        Ok(8080)
+    else:
+        Err(.BadPort(0))
+
+fn load_port(kind: Int) -> Result(Int, LoadErr):
+    let raw = read_config(kind)?
+    let port = parse_port(raw)?
+    Ok(port)
+
+fn show(r: Result(Int, LoadErr)) -> String:
+    match r:
+        Ok(port) -> "port ${port}"
+        Err(.NotFound) -> "missing config"
+        Err(.BadPort(p)) -> "bad port ${p}"
+
+fn main(console: Console):
+    console.print(show(load_port(0)))
+    console.print(show(load_port(1)))
+```
+
+```text
+port 8080
+missing config
+```
+
+Use this tier close to the code that owns the alternatives. Public library
+surfaces should use a named error type, because named types can carry docs,
+derive or implement protocols, and evolve deliberately. The context form
+`e? "msg"` is specifically for `String` errors; for union errors, add a tag that
+carries context or match and rewrap.
+
 ## When you *want* to crash
 
 Sometimes a condition is a genuine bug, not an expected failure — and you want

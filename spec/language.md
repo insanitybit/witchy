@@ -148,6 +148,62 @@ never mints a type; `type X: …` mints a nominal type with constructors** —
 only the latter can be sealed, carry `impl`s, or hold an invariant. Alias
 cycles are a link-time error.
 
+**Structural records and anonymous unions.** The structural tier is the family
+of types that are named by shape instead of by declaration: tuples `(A, B)`,
+function types `fn(A) -> B`, anonymous records `.{field: Type}`, and anonymous
+tagged unions `.[Tag | Tag(Payload)]`.
+
+Anonymous records are exact-shape records. You can write their type in
+parameters, returns, fields, aliases, and generic arguments; field order does
+not affect identity, but there is no width subtyping. `.{x: Int, y: Int}` and
+`.{y: Int, x: Int}` are the same shape; `.{x: Int}` is not a smaller subtype.
+Use spread (`.{x: ..., ..base}`) to make updated values.
+
+Anonymous tagged unions are closed tag sets. A value is injected with a leading
+dot (`.Missing`, `.BadPort(70000)`) and must have an expected union type from a
+return annotation, `let` annotation, call argument, or enclosing constructor.
+The only implicit width rule is union widening: `.[A | B]` may flow into
+`.[A | B | C]` at argument, return/tail, and `?` propagation sites. Records do
+not widen.
+
+Capabilities cannot appear anywhere inside anonymous record fields or anonymous
+union payloads. Structural types also cannot receive user `impl`s, even through
+an alias; behavior and invariants belong on nominal `type X:` declarations.
+
+```witchy
+type Point = .{x: Int, y: Int}
+type ParseErr = .[BadPort(Int) | Missing(String)]
+type LoadErr = .[NotFound | BadPort(Int) | Missing(String)]
+
+fn move_right(p: Point) -> .{y: Int, x: Int}:
+    .{x: p.x + 1, ..p}
+
+fn parse_port(kind: Int) -> Result(Int, ParseErr):
+    if kind == 0:
+        Ok(8080)
+    else if kind == 1:
+        Err(.BadPort(70000))
+    else:
+        Err(.Missing("port"))
+
+fn load(kind: Int) -> Result(Int, LoadErr):
+    let port = parse_port(kind)? // widens ParseErr into LoadErr
+    Ok(port)
+
+fn describe(r: Result(Int, LoadErr)) -> String:
+    match r:
+        Ok(port) -> "ok:${port}"
+        Err(.NotFound) -> "not found"
+        Err(.BadPort(p)) -> "bad:${p}"
+        Err(.Missing(k)) -> "missing:" + k
+
+fn main(console: Console):
+    console.print("${move_right(.{y: 2, x: 1})}")
+    console.print(describe(load(0)))
+    console.print(describe(load(1)))
+    console.print(describe(load(2)))
+```
+
 **Sealed types.** Prefixing a declaration with `sealed` makes construction the
 private business of the defining module: outside code cannot call the data
 constructor and must go through the module's public functions — so those
@@ -884,6 +940,15 @@ form `e? "msg"` is the string-error convenience: it accepts `Option(T)` or
 becomes `Err("msg")`. The enclosing function therefore propagates a `String`
 error. The message may interpolate. Richer typed-error context wrapping is
 tracked by RFC-0054.
+
+For typed errors, use either a named error enum or a local anonymous union.
+Named enums are the contract surface for libraries and packages: they can
+derive or implement protocols and can absorb lower-level errors through
+`From`. Anonymous unions are the local structural tier: `Result(T, .[A | B])`
+can propagate through `?` into `Result(U, .[A | B | C])` with no wrapper.
+The context form `e? "msg"` intentionally stays a `String`-error tool; on a
+union-error `Result`, match and rewrap or add an explicit payload tag such as
+`.Context(String)`.
 
 ```witchy
 import result

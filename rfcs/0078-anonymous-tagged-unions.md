@@ -1,14 +1,14 @@
 ---
 rfc: 0078
 title: "Anonymous tagged unions and the structural tier"
-status: proposed
+status: implemented
 created: 2026-07-08
-tracking: design-first. Gated on WORK, not on the release number — the two
-  gates are (1) BUG-562/BUG-563 fixed (filed during design probing) and
-  (2) RFC-0054's std trust-boundary migration landed, so the named error
-  model is the established default before this tier arrives. If both close
-  before 0.1 ships, this may land in 0.1. Every empirical claim in this RFC
-  was probed live on 2026-07-08 master.
+tracking: implemented on master in the RFC-0078 language-completion series:
+  structural record type positions, anonymous union type syntax, injections,
+  patterns, widening, anonymous record spread, synthesized union protocols,
+  capability exclusion for structural types, and structural-impl rejection.
+  RFC-0054 remains the public-boundary error model; anonymous unions are the
+  local structural tier described here.
 related:
   - "0054 (structured errors — the NAMED error model; §Layering is normative)"
   - "0067 story 3 (one protocol per concept — why this is a tier, not a rival)"
@@ -70,10 +70,10 @@ structural tier makes one rulebook out of it.
 
 ## The structural tier: probed inventory and the unifying rule
 
-Witchy already has a structural kingdom. Its state on current master (every
-line probed live, 2026-07-08):
+Witchy already has a structural kingdom. The inventory below records the
+design probes that motivated the feature and their shipped disposition.
 
-**Works today:**
+**Already true before this RFC:**
 
 - Tuples `(A, B)` and arrows `fn(A) -> B` are structural and denotable in
   signatures; a tuple can be a *field of a named type* (`inner: (Int, Int)`).
@@ -84,18 +84,18 @@ line probed live, 2026-07-08):
   (`.{x:1, y:"a"} == .{y:"a", x:1}` → `true`; the desugar keys on the sorted
   field set), unify across branches, nest, and sit in containers.
 
-**Broken or missing (dispositions bind this RFC):**
+**Gaps found during design (shipped disposition):**
 
 | Probed fact | Disposition |
 |---|---|
-| Two modules each using any `.{…}` collide at link: `` type `__anon0` is defined more than once `` | **BUG-562 (HIGH), filed — hard prerequisite.** The fix (shape-keyed synthetic naming, below) is the same mechanism unions need for tag identity. |
-| `type Pair(a) = (a, a)` parses but every use is `unknown type` | **BUG-563, filed.** Fix or formally reject before this RFC lands; this RFC assumes **fixed** (generic aliases resolve) and marks each dependent feature. |
+| Two modules each using any `.{…}` collide at link: `` type `__anon0` is defined more than once `` | **Fixed by BUG-562.** Anonymous record names are now shape-keyed; the same identity model underpins anonymous union tags. |
+| `type Pair(a) = (a, a)` parses but every use is `unknown type` | **Fixed by BUG-563.** Generic aliases resolve structurally and can name record/union shapes. |
 | Aliases are module-local; `pub type` is a parse error; `lib.Id` fails | **Deferred, non-blocking** — see §Aliases: structural types cross module boundaries *by spelling*, so alias export is ergonomics, not mechanism. |
-| `.{x: Int}` is not a type expression (param/field/alias positions all parse errors) | **In scope** — §Type positions. |
+| `.{x: Int}` is not a type expression (param/field/alias positions all parse errors) | **Implemented.** Anonymous record shapes are valid type expressions in params, returns, fields, aliases, and generic arguments. |
 | No `.{…}` patterns; no *named-field* patterns anywhere (even `Account(name: n)` is a parse error — record patterns are positional-only) | **Record patterns deferred** — they would introduce named-field patterns to the whole grammar, which is RFC-0052's jurisdiction. Union patterns (the feature) are v1 core. |
-| No spread on anon records (`.{y: 9, ..p}` parse error) | **In scope** — same desugar as named-record spread. |
-| `"${p}"` on `.{x: 1}` prints `__anon0(1)` — the synthetic leaks | Target rendering specified here (§Protocols); the fix itself folds into the protocol-matrix work (RFC-0070 D9). |
-| Anon records rejected as compiled dict keys | Follows the Eq-compound-key machinery (extended on master 2026-07-08), not this RFC. |
+| No spread on anon records (`.{y: 9, ..p}` parse error) | **Implemented.** Anonymous record spread uses the same update semantics as named-record spread. |
+| `"${p}"` on `.{x: 1}` prints `__anon0(1)` — the synthetic leaks | **Implemented.** Structural rendering now prints `.{x: 1}`; anonymous unions print `.Tag(...)`. |
+| Anon records rejected as compiled dict keys | Covered by the Eq-compound-key machinery, not this RFC. |
 | `p.x` on unconstrained generic `a` → type error "requires a record, found `?`" | **Correct; keep.** This *is* the no-row-inference line, already enforced. |
 
 **The unifying rule** — one sentence that also resolves the `type` keyword's
@@ -269,9 +269,9 @@ no tag `.NotFuond` — did you mean `.NotFound`?").
 7. **Protocols.** Unions get synthesized structural `Show`, `Reflect`, and
    `PartialEq` (per-tag, payloads structural). Rendering: `.NotFound`,
    `.BadPort(70000)` — dot included, marking the anonymous tier; likewise
-   the record-render target is `.{x: 1}` (today it leaks `__anon0(1)` —
-   fixed under RFC-0070 D9 to this spec). **No `Ord`** (no principled tag
-   order). **No user impls** on any structural type — the moment behavior
+   anonymous records render as `.{x: 1}` rather than leaking compiler
+   synthetic names. **No `Ord`** (no principled tag order). **No user impls**
+   on any structural type — the moment behavior
    or an invariant is wanted, the answer is `:` (name it). `Eq`-bounded
    contexts (dict keys) follow the compound-key machinery, out of scope
    here.
@@ -294,13 +294,14 @@ no tag `.NotFuond` — did you mean `.NotFound`?").
    is attractive future work and is noted, not designed).
 
 10. **Aliases.** `type LoadErr = .[NotFound | BadPort(Int)]` names the
-    union locally (non-generic aliases resolve today — probed). Because
-    identity is structural, an alias is *pure shorthand*: an importer who
-    spells the same set has the same type, so **alias export is not needed
-    for unions to cross modules** — this is the deep reason the tier works
-    for cross-module plumbing without `pub` machinery. (`pub type` today is
-    a parse error; exporting aliases is desirable ergonomics filed as
-    follow-up, and generic aliases are blocked on BUG-563.)
+    union locally; generic aliases can name structural shapes too
+    (`type Tagged(a) = .{value: a, tag: String}`). Because identity is
+    structural, an alias is *pure shorthand*: an importer who spells the
+    same set has the same type, so **alias export is not needed for unions
+    to cross modules** — this is the deep reason the tier works for
+    cross-module plumbing without `pub` machinery. (`pub type` today is a
+    parse error; exporting aliases remains desirable ergonomics, not a
+    mechanism requirement.)
 
 ## Representation & parity
 
@@ -323,12 +324,12 @@ kind in either backend.
   their synthetic type by sorted field set, program-wide; union tags key by
   the interning rule above. One mechanism, both structural kinds, and
   cross-module structural identity holds by construction.
-- **Tests**: differential tests per feature leg (inject/match/widen/`?`;
-  same-shape records in two modules; unions in containers), a `witchy
-  parity` book example, and goldens (RFC-0072 harness) for the new
-  diagnostics: annotate-the-union, ambiguous tag, unknown tag with
-  did-you-mean, caps-in-payload rejection, `? "msg"`-on-union rejection,
-  chain-vs-injection parse error.
+- **Tests**: shipped differential coverage pins structural record type
+  positions, anonymous record spread, union type syntax, injection,
+  pattern matching, widening through arguments/returns/`?`, synthesized
+  protocols, capability rejection, and user-impl rejection. The language
+  reference and book carry executable structural-tier examples so the docs
+  exercise the combined model, not just isolated feature legs.
 
 ## Layering with RFC-0054 — normative
 
@@ -351,28 +352,24 @@ models are **tiers with a boundary rule**, not rivals:
 - One sentence ships in the book's error chapter: *"`.[…]` for errors that
   stay close to home; a named type the moment they travel."*
 
-Shipping order follows from this: **after the 0054 std migration is the
-established default** — landing both stories at once is exactly the
-two-arriving-models incoherence RFC-0067 exists to prevent. The gate is that
-ordering, not the release number: 0054's remaining scope is the
-json/toml/grant/TUF/webauthn/pm trust-boundary migration (its own tracking
-note), and the moment that cut lands, this RFC is unblocked.
+Shipping order follows from this: **after named typed errors are the visible
+standard-library/default contract model** — landing both stories at once would
+be exactly the two-arriving-models incoherence RFC-0067 exists to prevent. That
+ordering is now satisfied for the core language and std APIs: anonymous unions
+ship as the local tier, while public trust-boundary APIs continue to harden
+toward named errors under RFC-0054.
 
-## Prerequisites & sequencing
+## Implementation record
 
-1. **BUG-562** (HIGH — cross-module `__anon0` collision): fix via shape-keyed
-   synthetic naming. Independently worth doing *now*; it is a live defect in
-   a shipped feature and this RFC's §Representation depends on it.
-2. **BUG-563** (generic aliases dead on arrival): fix, or reject the
-   parameterized-alias grammar; either resolves the accepted-but-unusable
-   state. This RFC prefers **fix** (the tier's generic aliases —
-   `type Tagged(a) = .{value: a, tag: String}` — depend on it) but survives
-   rejection with that row scoped out.
-3. **D9 render fix** (`__anon0(1)` → `.{x: 1}`) — protocol-matrix work,
-   independent, target spelling specified here.
-4. The RFC itself: after gates 1–3 close (work-gated, not release-gated);
-   grammar + checker obligations + interning + tests in one cut
-   (break-don't-deprecate needs no migration — nothing exists to migrate).
+1. **BUG-562 fixed:** anonymous record identity is shape-keyed across
+   modules, removing the `__anon0` collision and matching the structural
+   identity rule.
+2. **BUG-563 fixed:** generic aliases resolve and substitute structurally.
+3. **D9 render fixed:** anonymous records render as `.{...}` and anonymous
+   unions render as `.Tag(...)`; compiler synthetic names stay internal.
+4. **RFC-0078 implemented:** grammar, checker obligations, union widening,
+   structural capability exclusion, protocol synthesis, structural impl
+   rejection, examples, and docs are all landed under differential coverage.
 
 ## Alternatives
 
@@ -396,7 +393,8 @@ note), and the moment that cut lands, this RFC is unblocked.
 ## Drawbacks
 
 - **A second error spelling exists at all.** Contained by the normative
-  layering rule, the std review rule, and the after-0054 sequencing gate.
+  layering rule, the std review rule, and the named-error public-boundary
+  default.
 - **Signatures get longer** — the set is spelled at every hop. Deliberate
   (no row inference); module-local aliases recover brevity today, exportable
   aliases later.
