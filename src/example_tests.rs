@@ -1277,6 +1277,22 @@ fn main(console: Console):
         );
     }
 
+    /// (RFC-0078) Anonymous records are a structural type, not only expression
+    /// sugar: the same shape can appear in aliases, params, returns, fields, and
+    /// generic arguments. Field order in the type spelling is canonicalized by
+    /// shape, and both backends see the same synthetic record instantiation.
+    #[test]
+    fn anonymous_record_type_positions_work_on_both_backends() {
+        let src = "type Point = .{x: Int, y: Int}\ntype Wrapper:\n    point: .{y: Int, x: Int}\n\nfn make(x: Int, y: Int) -> .{y: Int, x: Int}:\n    .{x: x, y: y}\n\nfn label(p: .{y: Int, x: Int}) -> String:\n    \"${p.x},${p.y}\"\n\nfn lift(p: Point) -> Wrapper:\n    Wrapper(p)\n\nfn main(console: Console):\n    let p: Point = make(3, 4)\n    let w = lift(p)\n    let rows: List(.{y: Int, x: Int}) = [w.point, .{x: 5, y: 6}]\n    console.print(label(list.at(rows, 0)))\n    console.print(label(list.at(rows, 1)))\n";
+        let expected = ["3,4", "5,6"];
+        assert_eq!(link_run(src), expected, "interp structural record type positions");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled structural record type positions must agree",
+        );
+    }
+
     /// (RFC-0065, parity) Set/DateTime/Rng/Url are `sealed type`s: external code must
     /// build them through the module's smart constructors (dedup / validated /
     /// parsed), but may still READ and MATCH them. The public API + inspection run

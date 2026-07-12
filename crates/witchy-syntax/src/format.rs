@@ -1770,17 +1770,64 @@ pub fn expr_str(e: &Expr) -> String {
     expr(e)
 }
 
+fn parse_fixed_width_usize(s: &str, pos: &mut usize, width: usize) -> Option<usize> {
+    let end = pos.checked_add(width)?;
+    let part = s.get(*pos..end)?;
+    if !part.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    *pos = end;
+    part.parse().ok()
+}
+
+fn decode_anon_record_type_name(name: &str) -> Option<Vec<String>> {
+    let mut pos = "__anon".len();
+    let rest = name.strip_prefix("__anon")?;
+    if rest.len() < 10 {
+        return None;
+    }
+    let count = parse_fixed_width_usize(name, &mut pos, 10)?;
+    let mut fields = Vec::with_capacity(count);
+    for _ in 0..count {
+        let len = parse_fixed_width_usize(name, &mut pos, 10)?;
+        let mut bytes = Vec::with_capacity(len);
+        for _ in 0..len {
+            let byte = parse_fixed_width_usize(name, &mut pos, 3)?;
+            if byte > u8::MAX as usize {
+                return None;
+            }
+            bytes.push(byte as u8);
+        }
+        fields.push(String::from_utf8(bytes).ok()?);
+    }
+    if pos == name.len() { Some(fields) } else { None }
+}
+
 pub fn type_str(t: &Type) -> String {
     match t {
         Type::Qualified(q, inner) => format!("{} {}", q.as_str(), type_str(inner)),
-        Type::Named(n, args) if args.is_empty() => n.clone(),
-        // Capability rights use bracket syntax (`Dir[Read]`, `Net[Connect]`);
-        // ordinary generic types use parens (`List(Int)`, `Option(T)`).
-        Type::Named(n, args) if n == "Dir" || n == "File" || n == "Net" => {
-            format!("{n}[{}]", args.iter().map(type_str).collect::<Vec<_>>().join(", "))
-        }
         Type::Named(n, args) => {
-            format!("{n}({})", args.iter().map(type_str).collect::<Vec<_>>().join(", "))
+            if let Some(fields) = decode_anon_record_type_name(n) {
+                if fields.len() == args.len() {
+                    let rendered = fields
+                        .iter()
+                        .zip(args)
+                        .map(|(field, ty)| format!("{field}: {}", type_str(ty)))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    return format!(".{{{rendered}}}");
+                }
+            }
+            if args.is_empty() {
+                return n.clone();
+            }
+            // Capability rights use bracket syntax (`Dir[Read]`, `Net[Connect]`);
+            // ordinary generic types use parens (`List(Int)`, `Option(T)`).
+            if n == "Dir" || n == "File" || n == "Net" {
+                format!("{n}[{}]", args.iter().map(type_str).collect::<Vec<_>>().join(", "))
+            } else {
+                format!("{n}({})", args.iter().map(type_str).collect::<Vec<_>>().join(", "))
+            }
         }
         Type::Tuple(ts) => {
             format!("({})", ts.iter().map(type_str).collect::<Vec<_>>().join(", "))

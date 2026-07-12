@@ -1034,6 +1034,9 @@ impl Parser {
             let ret = self.ty()?;
             return Ok(Type::Fn(params, Box::new(ret)));
         }
+        if self.eat(&Tok::DotLBrace) {
+            return self.anon_record_type();
+        }
         if self.eat(&Tok::LParen) {
             let mut types = Vec::new();
             while !self.at(&Tok::RParen) {
@@ -1099,7 +1102,10 @@ impl Parser {
     /// unaffected. `None` when no qualifier applies.
     fn eat_type_qual(&mut self) -> Option<TypeQual> {
         let starts_type = |t: Option<&Tok>| {
-            matches!(t, Some(Tok::Ident(_)) | Some(Tok::LParen) | Some(Tok::Fn))
+            matches!(
+                t,
+                Some(Tok::Ident(_)) | Some(Tok::LParen) | Some(Tok::Fn) | Some(Tok::DotLBrace)
+            )
         };
         // `local unique T`
         if self.at_ident("local")
@@ -1736,6 +1742,38 @@ impl Parser {
             self.anon_records.push(names.clone());
         }
         Ok(Expr::Record { name: anon_record_type_name(&names), fields, spread: None })
+    }
+
+    /// `.{ field: Type, … }` in type position. This is the type-level mirror of
+    /// anonymous records in value position: it names an instantiation of the same
+    /// shape-keyed synthetic generic record, so aliases/signatures/fields all use
+    /// the existing nominal machinery after parsing.
+    fn anon_record_type(&mut self) -> Result<Type, ParseError> {
+        let mut fields = Vec::new();
+        let mut seen = HashSet::default();
+        while !self.at(&Tok::RBrace) {
+            let field = self.ident()?;
+            if !seen.insert(field.clone()) {
+                return Err(self.error(format!(
+                    "field `{field}` is declared more than once in anonymous record type"
+                )));
+            }
+            self.expect(&Tok::Colon)?;
+            fields.push((field, self.ty()?));
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+        }
+        self.expect(&Tok::RBrace)?;
+        fields.sort_by(|a, b| a.0.cmp(&b.0));
+        let names: Vec<String> = fields.iter().map(|(n, _)| n.clone()).collect();
+        if !self.anon_records.contains(&names) {
+            self.anon_records.push(names.clone());
+        }
+        Ok(Type::Named(
+            anon_record_type_name(&names),
+            fields.into_iter().map(|(_, ty)| ty).collect(),
+        ))
     }
 
     /// `Name(field: value, ..., ..base?)` — named-field construction, optionally

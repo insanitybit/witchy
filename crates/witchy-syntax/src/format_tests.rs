@@ -73,6 +73,19 @@
     }
 
     #[test]
+    fn anonymous_record_types_round_trip_through_formatting() {
+        // RFC-0078 makes the structural record tier denotable in type position.
+        // Formatting must print the source-level shape, not the synthetic
+        // compiler-private `__anon...` record name.
+        let src = "type Point = .{x: Int, y: Int}\n\nfn label(p: .{y: Int, x: Int}) -> String:\n    \"${p.x},${p.y}\"\n";
+        let out = reformat(src).expect("anonymous record type round-trips");
+        assert!(out.contains("type Point = .{x: Int, y: Int}"), "{out}");
+        assert!(out.contains("p: .{x: Int, y: Int}"), "{out}");
+        assert!(!out.contains("__anon"), "{out}");
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
+    }
+
+    #[test]
     fn comprehensions_survive_formatting_everywhere() {
         // Learner round-3 BLOCKER: `let ys = [n * n for n in xs]` used to print
         // as `let ys = 0` (the inline renderer's placeholder leaked), and the
