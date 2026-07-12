@@ -1763,7 +1763,12 @@ impl Parser {
     /// type dedups by the sorted field-name set.
     fn anon_record(&mut self) -> Result<Expr, ParseError> {
         let mut fields = Vec::new();
+        let mut spread = None;
         while !self.at(&Tok::RBrace) {
+            if self.eat(&Tok::DotDot) {
+                spread = Some(Box::new(self.expr(0)?));
+                break;
+            }
             let field = self.ident()?;
             self.expect(&Tok::Colon)?;
             fields.push((field, self.expr(0)?));
@@ -1774,10 +1779,10 @@ impl Parser {
         self.expect(&Tok::RBrace)?;
         let mut names: Vec<String> = fields.iter().map(|(n, _)| n.clone()).collect();
         names.sort();
-        if !self.anon_records.contains(&names) {
+        if spread.is_none() && !self.anon_records.contains(&names) {
             self.anon_records.push(names.clone());
         }
-        Ok(Expr::Record { name: anon_record_type_name(&names), fields, spread: None })
+        Ok(Expr::Record { name: anon_record_type_name(&names), fields, spread })
     }
 
     /// `.{ field: Type, … }` in type position. This is the type-level mirror of

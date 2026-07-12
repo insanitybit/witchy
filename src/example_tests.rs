@@ -1293,6 +1293,21 @@ fn main(console: Console):
         );
     }
 
+    /// (RFC-0078) Anonymous records support the same spread/update spelling as
+    /// named records. The spread preserves the base shape exactly; it does not
+    /// introduce width subtyping or new fields.
+    #[test]
+    fn anonymous_record_spread_updates_on_both_backends() {
+        let src = "fn make(x: Int, y: Int) -> .{x: Int, y: Int}:\n    .{x: x, y: y}\n\nfn bump(p: .{y: Int, x: Int}) -> .{x: Int, y: Int}:\n    .{y: p.y + 5, ..p}\n\nfn main(console: Console):\n    let p = make(3, 4)\n    let q = .{y: 9, ..p}\n    let r = .{x: q.x + 1, ..q}\n    let s = bump(r)\n    console.print(\"${q}\")\n    console.print(\"${r.x},${r.y}\")\n    console.print(\"${s.x},${s.y}\")\n";
+        let expected = [".{x: 3, y: 9}", "4,9", "4,14"];
+        assert_eq!(link_run(src), expected, "interp anonymous record spread");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled anonymous record spread must agree",
+        );
+    }
+
     /// (RFC-0078) Anonymous union injections are typed by their expected union
     /// shape and render with source-level `.Tag` names, including inside Result.
     #[test]

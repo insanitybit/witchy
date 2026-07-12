@@ -86,6 +86,18 @@
     }
 
     #[test]
+    fn anonymous_record_spread_round_trips_through_formatting() {
+        // RFC-0078 gives anonymous records the same update/spread surface as named
+        // records. Formatting should keep the structural spelling, not leak the
+        // parser's placeholder synthetic name.
+        let src = "fn bump(p: .{x: Int, y: Int}) -> .{x: Int, y: Int}:\n    .{y: p.y + 1, ..p}\n";
+        let out = reformat(src).expect("anonymous record spread round-trips");
+        assert!(out.contains(".{y: p.y + 1, ..p}"), "{out}");
+        assert!(!out.contains("__anon"), "{out}");
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
+    }
+
+    #[test]
     fn anonymous_union_types_round_trip_through_formatting() {
         // RFC-0078 anonymous union types are canonical sets: formatting sorts the
         // tag spelling and keeps payload types attached to their tag.

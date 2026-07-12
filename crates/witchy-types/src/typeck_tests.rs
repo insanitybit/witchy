@@ -115,6 +115,26 @@
     }
 
     #[test]
+    fn anonymous_record_spread_updates_existing_shape() {
+        check_str(
+            "fn bump(p: .{x: Int, y: Int}) -> .{y: Int, x: Int}:\n    .{y: p.y + 1, ..p}\n\nfn main(console: Console):\n    let p = .{x: 1, y: 2}\n    let q = .{x: 3, ..p}\n    console.print(\"${q.x},${q.y}\")\n"
+        )
+        .expect("anonymous record spread updates the base shape");
+
+        let added = check_str(
+            "fn main(console: Console):\n    let p = .{x: 1}\n    let q = .{y: 2, ..p}\n    console.print(\"${q.x}\")\n"
+        )
+        .unwrap_err();
+        assert!(added.contains("has no field `y`"), "{added}");
+
+        let duplicate = check_str(
+            "fn main(console: Console):\n    let p = .{x: 1}\n    let q = .{x: 2, x: 3, ..p}\n    console.print(\"${q.x}\")\n"
+        )
+        .unwrap_err();
+        assert!(duplicate.contains("field `x` is set twice"), "{duplicate}");
+    }
+
+    #[test]
     fn packed_type_requires_packable_fields() {
         // (RFC-0027) scalars (and nested packed types) are packable.
         assert!(check_str(

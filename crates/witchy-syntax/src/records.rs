@@ -13,6 +13,10 @@ use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 
 type Orders = HashMap<String, Vec<String>>;
 
+fn anonymous_record_name(name: &str) -> bool {
+    name.starts_with("__anon")
+}
+
 /// Rewrite every `Expr::Record` in the module. Errors on an unknown record type,
 /// a field that the type doesn't declare, a repeated field, or (for construction
 /// without a spread) a missing field. A no-op for modules with no named-field
@@ -81,23 +85,41 @@ fn build(
     // repeated override (`Point(x: 7, x: 8, ..p)`) reach the backends unchecked, where
     // interpreter and compiled disagreed on which wins (last vs first) — a silent
     // parity divergence — and let an unknown type name (`Bogus(x: 9, ..p)`) through.
-    let Some(decl) = orders.get(&name) else {
-        return Err(format!(
-            "`{name}(field: value, ...)` is named-field construction, but `{name}` is not a record type"
-        ));
-    };
     let mut seen = HashSet::new();
     for (fname, _) in &fields {
-        if !decl.iter().any(|d| d == fname) {
-            return Err(format!("record `{name}` has no field `{fname}`"));
-        }
         if !seen.insert(fname.clone()) {
             return Err(format!("field `{fname}` is set twice in `{name}(...)`"));
         }
     }
     if let Some(base) = spread {
+        if anonymous_record_name(&name) {
+            // `.{field: value, ..base}` has the same shape as `base`, exactly like
+            // named record spread. The checker validates that each override is a
+            // real field of the inferred base record.
+            return Ok(Expr::RecordUpdate { name: None, base, fields });
+        }
+        let Some(decl) = orders.get(&name) else {
+            return Err(format!(
+                "`{name}(field: value, ...)` is named-field construction, but `{name}` is not a record type"
+            ));
+        };
+        for (fname, _) in &fields {
+            if !decl.iter().any(|d| d == fname) {
+                return Err(format!("record `{name}` has no field `{fname}`"));
+            }
+        }
         // The base supplies every field not overridden here, so no missing-field check.
         return Ok(Expr::RecordUpdate { name: Some(name), base, fields });
+    }
+    let Some(decl) = orders.get(&name) else {
+        return Err(format!(
+            "`{name}(field: value, ...)` is named-field construction, but `{name}` is not a record type"
+        ));
+    };
+    for (fname, _) in &fields {
+        if !decl.iter().any(|d| d == fname) {
+            return Err(format!("record `{name}` has no field `{fname}`"));
+        }
     }
     let mut by_name: HashMap<String, Expr> = fields.into_iter().collect();
     let mut args = Vec::with_capacity(decl.len());
