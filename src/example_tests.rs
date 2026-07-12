@@ -131,6 +131,49 @@
     }
 
     #[test]
+    fn public_sources_do_not_call_legacy_render_intrinsic() {
+        fn collect(root: &std::path::Path, suffix: &str, out: &mut Vec<std::path::PathBuf>) {
+            if root.is_file() {
+                if root.to_string_lossy().ends_with(suffix) {
+                    out.push(root.to_path_buf());
+                }
+                return;
+            }
+            for entry in std::fs::read_dir(root).unwrap_or_else(|_| panic!("read {}", root.display())) {
+                let path = entry.expect("dir entry").path();
+                if path.is_dir() {
+                    collect(&path, suffix, out);
+                } else if path.to_string_lossy().ends_with(suffix) {
+                    out.push(path);
+                }
+            }
+        }
+
+        let mut paths = Vec::new();
+        for root in ["std", "examples"] {
+            collect(std::path::Path::new(root), ".witchy", &mut paths);
+        }
+        for root in ["README.md", "book", "spec", "rfcs/performance-modes.md"] {
+            collect(std::path::Path::new(root), ".md", &mut paths);
+        }
+        paths.sort();
+
+        let mut offenders = Vec::new();
+        for path in paths {
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|_| panic!("read {}", path.display()));
+            if text.contains("__render(") {
+                offenders.push(path.display().to_string());
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "public source/docs must use interpolation or show.render, not __render:\n{}",
+            offenders.join("\n")
+        );
+    }
+
+    #[test]
     fn generic_type_aliases_resolve_on_linked_path() {
         // BUG-563: parameterized aliases were accepted at the declaration site
         // but every `Pair(Int)` use reached type resolution as an unknown type.

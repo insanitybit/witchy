@@ -21,7 +21,7 @@ implementation-notes: |
     generates it.
   - `std/show.witchy` exposes `pub fn render(x: impl Show) -> String: show(x)`.
     `show` is a prelude module. When the concrete type has a relevant `Show` path,
-    monomorphization rewrites `__render(x)` to `show.render(x)`. That then
+    monomorphization rewrites generated render calls to `show.render(x)`. That then
     specializes through the same bounded-generic machinery as any other `Show`
     call, so interpreter and compiled backend parity follows from one AST rewrite.
   - Imports never select rendering semantics. `show` is linked for every program;
@@ -90,7 +90,7 @@ Baseline probes recorded before implementation:
 
 1. If `x`'s concrete type has a relevant `Show` path, interpolation rewrites
    to `show.render(x)`.
-2. Otherwise interpolation keeps `__render(x)`, the structural default.
+2. Otherwise interpolation keeps the internal render call, the structural default.
 
 `show.say(console, x)`, `show.render(x)`, and interpolation share the same
 protocol. Consequences:
@@ -106,7 +106,7 @@ protocol. Consequences:
 concrete type of an arbitrary interpolated expression at the call site — the
 exact capability the string-encoded shadow dispatch cannot deliver and 0046's
 TypeTable threading does. The shipped hook uses that typed table during
-monomorphization to rewrite selected `__render(x)` calls to `show.render(x)`;
+monomorphization to rewrite selected generated render calls to `show.render(x)`;
 both backends then run the same rewritten program.
 
 ### Blanket impls close `say`'s holes

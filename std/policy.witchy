@@ -30,7 +30,7 @@ fn checked_component(value: String) -> String:
 fn checked_port(port: Int) -> String:
     if port < 0 || port > 65535:
         fail("policy: net port must be in 0..65535")
-    __render(port)
+    return "${port}"
 
 // A sealed `Net` address policy. Only the checked `Net.*` builders below can mint
 // one; the newline-delimited host grammar is not a user-facing string escape hatch.

@@ -26,7 +26,7 @@ fn squares(let xs: List(Int)) -> List(Int):
     out
 
 fn main(console: Console):
-    console.print(__render(list.length(squares([1, 2, 3]))))
+    console.print("${list.length(squares([1, 2, 3]))}")
 ```
 
 This document records the design. It builds on
