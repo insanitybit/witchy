@@ -113,27 +113,6 @@ else
 fi
 
 # A named shard runs exactly one section and exits (reporting elapsed time).
-# nextest builds what it needs, so no separate build step; without nextest the
-# filters don't exist, so the shards require it.
-if [ -n "$shard" ]; then
-    shard_t0=$(date +%s)
-    case "$shard" in
-        e2e)
-            cargo nextest --version >/dev/null 2>&1 || { echo "check.sh: --e2e requires cargo-nextest" >&2; exit 2; }
-            cargo nextest run --workspace -E 'binary(e2e)'
-            ;;
-        examples)
-            cargo nextest --version >/dev/null 2>&1 || { echo "check.sh: --examples requires cargo-nextest" >&2; exit 2; }
-            cargo nextest run --workspace -E 'test(/^example_tests::/)'
-            ;;
-        wasm)
-            "${wasm_cargo[@]}" build --lib --no-default-features --target wasm32-unknown-unknown
-            ;;
-    esac
-    printf '\n\033[1;32mshard %s green\033[0m in %ds\n' "$shard" "$(( $(date +%s) - shard_t0 ))"
-    exit 0
-fi
-
 # The witchy formatter over the stdlib and examples (NOT rustfmt over the Rust —
 # that's hand-formatted and out of scope). Uses the binary built in step 1.
 # ONE invocation over every file, not one process per file: `witchy fmt --check`
@@ -167,6 +146,31 @@ validate_runnable_book() {
     # tracked web/witchy.wasm (a dirtied worktree would break the coordinator's ff-merge).
     WITCHY_WASM_PATH="$built" node scripts/validate_book_examples.mjs
 }
+
+# nextest builds what it needs, so no separate build step; without nextest the
+# filters don't exist, so the shards require it.
+if [ -n "$shard" ]; then
+    shard_t0=$(date +%s)
+    case "$shard" in
+        e2e)
+            cargo nextest --version >/dev/null 2>&1 || { echo "check.sh: --e2e requires cargo-nextest" >&2; exit 2; }
+            cargo nextest run --workspace -E 'binary(e2e)'
+            ;;
+        examples)
+            cargo nextest --version >/dev/null 2>&1 || { echo "check.sh: --examples requires cargo-nextest" >&2; exit 2; }
+            cargo nextest run --workspace -E 'test(/^example_tests::/)'
+            ;;
+        wasm)
+            "${wasm_cargo[@]}" build --lib --no-default-features --target wasm32-unknown-unknown
+            # Same browser-runnability check the full gate runs — so an agent
+            # validating a book/classifier change with `--wasm` catches a false
+            # Run button in their focused shard, not only at full-gate time.
+            validate_runnable_book
+            ;;
+    esac
+    printf '\n\033[1;32mshard %s green\033[0m in %ds\n' "$shard" "$(( $(date +%s) - shard_t0 ))"
+    exit 0
+fi
 
 # Each stage marker carries its offset from gate start (`==> [2] clippy (t+41s)`),
 # so a redirected log is enough to see what is running now (merge-queue.sh
