@@ -515,12 +515,9 @@ mod capability {
     }
 
     #[test]
-    fn rfc0076_bare_print_is_still_accepted_known_bad() {
-        // KNOWN-BAD (RFC-0076): bare cap ops are still accepted today. The
-        // method-only cut should update this snapshot to the new fix-it
-        // diagnostic, making the user-facing message reviewable.
+    fn bare_capability_operation_reports_method_only_fixit() {
         insta::assert_snapshot!(type_diag(
-            "fn main(console: Console):\n    console.print(\"hi\")\n"
+            "fn main(console: Console):\n    print(console, \"hi\")\n"
         ));
     }
 
