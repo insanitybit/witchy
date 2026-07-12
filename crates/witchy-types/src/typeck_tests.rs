@@ -185,6 +185,62 @@
     }
 
     #[test]
+    fn structural_types_reject_user_impl_targets() {
+        fn check_resolved(src: &str) -> Result<(), String> {
+            let module = witchy_syntax::parser::parse_module(src).map_err(|e| e.to_string())?;
+            let module = witchy_syntax::aliases::resolve(module);
+            check(&module).map_err(|e| e.to_string())
+        }
+
+        let record_trait_impl = check_resolved(
+            "type Row = .{x: Int}\ntrait Label:\n    fn label(self) -> String\nimpl Label for Row:\n    fn label(self) -> String:\n        \"row\"\n"
+        )
+        .unwrap_err();
+        assert!(
+            record_trait_impl.contains("anonymous record")
+                && record_trait_impl.contains(".{x: Int}")
+                && record_trait_impl.contains("nominal"),
+            "{record_trait_impl}"
+        );
+
+        let union_trait_impl = check_resolved(
+            "type LoadError = .[BadPort(Int) | Missing]\ntrait Label:\n    fn label(self) -> String\nimpl Label for LoadError:\n    fn label(self) -> String:\n        \"err\"\n"
+        )
+        .unwrap_err();
+        assert!(
+            union_trait_impl.contains("anonymous union")
+                && union_trait_impl.contains(".[BadPort(Int) | Missing]")
+                && union_trait_impl.contains("nominal"),
+            "{union_trait_impl}"
+        );
+
+        let generic_alias_impl = check_resolved(
+            "type Row(a) = .{x: a}\ntrait Label:\n    fn label(self) -> String\nimpl Label for Row(Int):\n    fn label(self) -> String:\n        \"row\"\n"
+        )
+        .unwrap_err();
+        assert!(
+            generic_alias_impl.contains("anonymous record")
+                && generic_alias_impl.contains(".{x: Int}")
+                && generic_alias_impl.contains("impl target"),
+            "{generic_alias_impl}"
+        );
+
+        let inherent_impl = check_resolved(
+            "type Row = .{x: Int}\nimpl Row:\n    fn label(self) -> String:\n        \"row\"\n"
+        )
+        .unwrap_err();
+        assert!(
+            inherent_impl.contains("anonymous record") && inherent_impl.contains("impl target"),
+            "{inherent_impl}"
+        );
+
+        check_resolved(
+            "type Row:\n    x: Int\ntrait Label:\n    fn label(self) -> String\nimpl Label for Row:\n    fn label(self) -> String:\n        \"row\"\nimpl Row:\n    fn value(self) -> Int:\n        self.x\n"
+        )
+        .expect("nominal records can still carry trait and inherent impls");
+    }
+
+    #[test]
     fn packed_type_requires_packable_fields() {
         // (RFC-0027) scalars (and nested packed types) are packable.
         assert!(check_str(

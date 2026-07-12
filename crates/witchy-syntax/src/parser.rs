@@ -603,6 +603,7 @@ impl Parser {
             }
         }
         Ok(ImplDef {
+            origin: crate::ast::ImplOrigin::Source,
             trait_name,
             trait_args,
             type_name,

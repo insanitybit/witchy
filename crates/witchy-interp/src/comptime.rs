@@ -15,7 +15,7 @@
 //! hard-isolation upgrade is mechanical because the channel is already
 //! "printed source in, items out".
 
-use witchy_syntax::ast::{Block, Expr, Function, Item, Module, Param, Stmt, Type};
+use witchy_syntax::ast::{Block, Expr, Function, ImplOrigin, Item, Module, Param, Stmt, Type};
 
 const MAX_COMPTIME_BLOCKS: usize = 256;
 
@@ -263,6 +263,9 @@ fn stamp_item_lines(item: &mut Item, line: u32) {
     match item {
         Item::Function(f) => stamp_block(&mut f.body, line),
         Item::Impl(im) => {
+            if line == 0 {
+                im.origin = ImplOrigin::CompilerGenerated;
+            }
             for m in &mut im.methods {
                 stamp_block(&mut m.body, line);
             }

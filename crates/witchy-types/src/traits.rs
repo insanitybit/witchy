@@ -1246,6 +1246,7 @@ fn has_variant(items: &[Item], name: &str) -> bool {
 
 fn anon_union_show_impl(name: &str, variants: &[(String, usize)], arity: usize) -> ImplDef {
     ImplDef {
+        origin: ImplOrigin::CompilerGenerated,
         trait_name: Some("Show".to_string()),
         trait_args: Vec::new(),
         type_name: name.to_string(),
@@ -1269,6 +1270,7 @@ fn anon_union_show_impl(name: &str, variants: &[(String, usize)], arity: usize) 
 
 fn anon_union_reflect_impl(name: &str, variants: &[(String, usize)], arity: usize) -> ImplDef {
     ImplDef {
+        origin: ImplOrigin::CompilerGenerated,
         trait_name: Some("Reflect".to_string()),
         trait_args: Vec::new(),
         type_name: name.to_string(),
@@ -1292,6 +1294,7 @@ fn anon_union_reflect_impl(name: &str, variants: &[(String, usize)], arity: usiz
 
 fn anon_union_partial_eq_impl(name: &str, variants: &[(String, usize)], arity: usize) -> ImplDef {
     ImplDef {
+        origin: ImplOrigin::CompilerGenerated,
         trait_name: Some("PartialEq".to_string()),
         trait_args: Vec::new(),
         type_name: name.to_string(),

@@ -257,23 +257,32 @@ fn resolve_bounds(bounds: &mut [(String, String, Vec<Type>)], map: &HashMap<Stri
     }
 }
 
-/// Resolve an alias used as an impl-head target (`impl Show for Id`). If the bare
-/// `name` is an alias for a named type it is rewritten to that type's head and
-/// arguments; the (already-written) `args` are then resolved in place. An alias
-/// to a non-named target (tuple/function type) is not a valid impl target, so it
-/// is left untouched for the checker to report — this stays fail-closed.
+/// Resolve an alias used as an impl-head target (`impl Show for Id`). If the
+/// target denotes a named type after alias substitution it is rewritten to that
+/// type's head and arguments. An alias to a non-named target (tuple/function
+/// type) is not a valid impl target, so it is left untouched for the checker to
+/// report — this stays fail-closed.
 fn resolve_impl_target(name: &mut String, args: &mut Vec<Type>, map: &HashMap<String, Alias>) {
-    if args.is_empty() {
-        if let Some(Alias { params, ty: Type::Named(target_name, target_args) }) = map.get(name) {
-            if !params.is_empty() {
-                return;
-            }
-            *name = target_name.clone();
-            *args = target_args.clone();
-        }
-    }
     for a in args.iter_mut() {
         resolve_type(a, map);
+    }
+    let Some(alias) = map.get(name) else {
+        return;
+    };
+    if alias.params.len() != args.len() {
+        return;
+    }
+    let subst: HashMap<String, Type> = alias
+        .params
+        .iter()
+        .cloned()
+        .zip(args.iter().cloned())
+        .collect();
+    let mut target = alias.ty.clone();
+    substitute_alias_params(&mut target, &subst);
+    if let Type::Named(target_name, target_args) = target {
+        *name = target_name;
+        *args = target_args;
     }
 }
 
@@ -565,6 +574,24 @@ mod tests {
             .expect("impl");
         assert_eq!(im.type_name, "Int");
         assert!(im.target_args.is_empty());
+    }
+
+    #[test]
+    fn expands_generic_alias_in_impl_head() {
+        // Impl heads are written type positions too, so generic aliases must
+        // substitute just like function parameters and return types do.
+        let src = "type Row(a) = List(a)\ntrait Describe:\n    fn describe(self) -> String\nimpl Describe for Row(Int):\n    fn describe(self) -> String:\n        \"row\"\n";
+        let m = resolve(crate::parser::parse_module(src).expect("parse"));
+        let im = m
+            .items
+            .iter()
+            .find_map(|it| match it {
+                Item::Impl(im) => Some(im),
+                _ => None,
+            })
+            .expect("impl");
+        assert_eq!(im.type_name, "List");
+        assert_eq!(im.target_args, vec![Type::Named("Int".into(), vec![])]);
     }
 
     #[test]

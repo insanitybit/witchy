@@ -95,6 +95,7 @@ pub struct MethodSig {
 /// receiver type just like trait methods, but belong to no trait.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImplDef {
+    pub origin: ImplOrigin,
     pub trait_name: Option<String>,
     /// `impl FromIterator(a) for …` — the trait's type arguments at this
     /// impl. Empty for unparameterized traits.
@@ -111,6 +112,12 @@ pub struct ImplDef {
     /// method so its body's bounded calls type-check and monomorphize.
     pub bounds: Vec<(String, String, Vec<Type>)>,
     pub methods: Vec<Function>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImplOrigin {
+    Source,
+    CompilerGenerated,
 }
 
 /// A sum type: `type Event { Click(Int, Int) Closed }`.

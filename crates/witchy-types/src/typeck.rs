@@ -19,7 +19,7 @@ use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 use std::fmt;
 
 use witchy_syntax::ast::{
-    self, Block, Convention, Expr, Function, Item, MatchArm, Module, Pattern, Stmt, UnOp,
+    self, Block, Convention, Expr, Function, ImplOrigin, Item, MatchArm, Module, Pattern, Stmt, UnOp,
 };
 use witchy_syntax::build_entry::{build_entrypoint, is_build_capability_type};
 use witchy_syntax::cap_ops;
@@ -1095,6 +1095,18 @@ fn structural_type_kind(name: &str) -> Option<&'static str> {
     }
 }
 
+fn is_compiler_generated_structural_impl(im: &ast::ImplDef) -> bool {
+    if im.origin != ImplOrigin::CompilerGenerated {
+        return false;
+    }
+    match im.trait_name.as_deref() {
+        Some("Reflect") if is_anon_record_synthetic_name(&im.type_name) => true,
+        Some("Show" | "Reflect" | "PartialEq")
+            if anon_union_synthetic_variants(&im.type_name).is_some() => true,
+        _ => false,
+    }
+}
+
 fn authority_taint_type(
     ty: &ast::Type,
     defs: &HashMap<&str, &ast::TypeDef>,
@@ -1419,6 +1431,16 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
             }
             Item::Impl(im) => {
                 let target = ast::Type::Named(im.type_name.clone(), im.target_args.clone());
+                if let Some(kind) = structural_type_kind(&im.type_name)
+                    && !is_compiler_generated_structural_impl(im)
+                {
+                    return terr(format!(
+                        "anonymous {kind} type `{}` cannot be an impl target; structural types \
+                         cannot carry user behavior; define a nominal `type Name:` and implement \
+                         the trait or methods for that",
+                        witchy_syntax::format::type_str(&target)
+                    ));
+                }
                 validate_type_model(&target, &known, &arities, &type_defs)
                     .map_err(|e| in_ctx(e, &im.type_name))?;
                 for arg in &im.trait_args {
