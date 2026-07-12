@@ -15,6 +15,7 @@
 //! top of this registry.
 
 use crate::value::{NativeError as RuntimeError, NativeValue as Value};
+use witchy_syntax::intrinsics;
 
 /// A native module function: pure and stateless, `(args) -> value`.
 pub type NativeFn = fn(&[Value]) -> Result<Value, RuntimeError>;
@@ -44,7 +45,7 @@ pub fn lookup(qualified: &str) -> Option<NativeFn> {
         "compiler.footprint" => Some(compiler::footprint),
         "compiler.diff" => Some(compiler::diff),
         "compiler.doc" => Some(compiler::doc),
-        "compiler.__doc_result_json" => Some(compiler::doc_result_json),
+        intrinsics::COMPILER_DOC_RESULT_JSON => Some(compiler::doc_result_json),
         "encoding.utf8_lossy" => Some(encoding::utf8_lossy),
         "encoding.hex_encode" => Some(encoding::hex_encode),
         "encoding.hex_encode_bytes" => Some(encoding::hex_encode_bytes),
@@ -528,6 +529,7 @@ mod compiler {
     use super::{type_error, Value};
     use crate::value::NativeError as RuntimeError;
     use witchy_syntax::ast::{Item, Module};
+    use witchy_syntax::intrinsics;
 
     /// Compute the capability footprint of witchy `source`, returned as JSON:
     /// `{"total":[..],"build":[..],"user_caps":[..],"entries":[{"name":..,"capabilities":[..],"brands":[..]}]}`,
@@ -595,7 +597,10 @@ mod compiler {
     /// `{"ok":"markdown"}` or `{"error":"message"}`.
     pub fn doc_result_json(args: &[Value]) -> Result<Value, RuntimeError> {
         let [Value::Str(name), Value::Str(src)] = args else {
-            return Err(type_error("compiler.__doc_result_json expects (name, source) strings"));
+            return Err(type_error(format!(
+                "{} expects (name, source) strings",
+                intrinsics::COMPILER_DOC_RESULT_JSON
+            )));
         };
         let json = match render_doc_result(name, src, "compiler.try_doc") {
             Ok(md) => format!("{{\"ok\":{}}}", string(&md)),

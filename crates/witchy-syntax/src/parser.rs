@@ -1400,7 +1400,10 @@ impl Parser {
                     && (matches!(self.kind(), Tok::Str(_)) || *self.kind() == Tok::LParen)
                 {
                     let msg = self.atom()?;
-                    let wrapped = Expr::Call { name: "__try_ctx".into(), args: vec![e, msg] };
+                    let wrapped = Expr::Call {
+                        name: crate::intrinsics::TRY_CONTEXT.into(),
+                        args: vec![e, msg],
+                    };
                     e = Expr::Try(Box::new(wrapped));
                 } else {
                     e = Expr::Try(Box::new(e));

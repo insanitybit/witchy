@@ -1331,7 +1331,9 @@ fn expr(e: &Expr) -> String {
         // `(__try_ctx(e, msg))?` is the desugar of `e ? "msg"` — render it back to
         // the surface form rather than exposing the intrinsic.
         Expr::Try(inner) => match inner.as_ref() {
-            Expr::Call { name, args } if name == "__try_ctx" && args.len() == 2 => {
+            Expr::Call { name, args }
+                if name == crate::intrinsics::TRY_CONTEXT && args.len() == 2 =>
+            {
                 format!("{} ? {}", operand(&args[0], POSTFIX_PREC, false), expr(&args[1]))
             }
             _ => format!("{}?", operand(inner, POSTFIX_PREC, false)),

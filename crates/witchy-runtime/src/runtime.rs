@@ -14,6 +14,7 @@ use wasmtime::{
     bail, Cache, CacheConfig, Caller, Config, Engine, Error, Extern, ExternRef, Instance, Linker,
     Memory, Module, Result, Rooted, Store, StoreLimits, StoreLimitsBuilder,
 };
+use witchy_syntax::intrinsics;
 use witchy_wir::layout::HEAP_REDZONE;
 
 /// An on-disk Cranelift compilation cache so re-running the same program skips
@@ -1285,11 +1286,11 @@ fn host_compiler_doc_result_json_len(
     let mem = memory_of(&mut caller)?;
     let name = read_wstr(mem.data(&caller), name_ptr)?;
     let src = read_wstr(mem.data(&caller), src_ptr)?;
-    let f = crate::native::lookup("compiler.__doc_result_json")
-        .ok_or_else(|| Error::msg("compiler.__doc_result_json is not registered"))?;
+    let f = crate::native::lookup(intrinsics::COMPILER_DOC_RESULT_JSON)
+        .ok_or_else(|| Error::msg(format!("{} is not registered", intrinsics::COMPILER_DOC_RESULT_JSON)))?;
     let json = match f(&[Value::Str(name), Value::Str(src)]).map_err(|e| Error::msg(e.message))? {
         Value::Str(s) => s,
-        _ => return Err(Error::msg("compiler.__doc_result_json did not return a String")),
+        _ => return Err(Error::msg(format!("{} did not return a String", intrinsics::COMPILER_DOC_RESULT_JSON))),
     };
     let len = json.len() as i32;
     caller.data_mut().pending = Some(json.into_bytes());

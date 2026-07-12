@@ -12,10 +12,10 @@ use foldhash::{HashSet, HashSetExt as _};
 /// `@` is not a valid identifier character in witchy source, so users cannot
 /// spell this name. User source renders through interpolation or `show.render`;
 /// the compiler keeps one private structural-render seam for generated AST.
-pub const GENERATED_RENDER_INTRINSIC: &str = "@render";
+pub const GENERATED_RENDER_INTRINSIC: &str = crate::intrinsics::GENERATED_RENDER;
 
 pub fn is_render_intrinsic(name: &str) -> bool {
-    name == GENERATED_RENDER_INTRINSIC
+    crate::intrinsics::is_render(name)
 }
 
 #[derive(Debug, Clone, PartialEq)]

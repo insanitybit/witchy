@@ -4,7 +4,7 @@ title: Strong-state coherence gate for a proud 0.1 release
 status: accepted
 created: 2026-07-04
 superseded-by:
-tracking: coherence gate accepted as the pre-tag bar; executed alongside RFC-0061
+tracking: coherence gate accepted as the pre-tag bar; executed alongside RFC-0061; intrinsic name catalog slice in progress
 ---
 
 # RFC-0063: Strong-state coherence gate for a proud 0.1 release
@@ -85,6 +85,14 @@ The goal is not to force one implementation body. The goal is to stop repeating 
 identity and signatures across typeck, interpreter, lower/codegen, WIR helper selection,
 and linker allowlists.
 
+Implementation progress (2026-07-12): the first slice centralizes compiler/private
+intrinsic identities and std-bridge owner allowlists in `witchy-syntax::intrinsics`.
+Parser desugaring, formatter re-sugaring, linker privacy checks, type signatures,
+interpreter dispatch, lowering, and runtime/native lookup now consume those shared names.
+This deliberately does not complete the broader operation registry; arity, signature,
+purity/effect, WIR helper, and diagnostic metadata still need to move into cataloged
+facts before this RFC is fully implemented.
+
 ### 4. Typed compiler facts, not string or address shadows
 
 The final compiler story should not depend on shadow encodings:
@@ -142,4 +150,3 @@ central claims are represented consistently in code, docs, tests, and demos.
 No external prior art is required for this decision. It follows the repo's own RFC-0018
 stage-boundary discipline, RFC-0058 harness-integrity work, RFC-0061 release gate, and the
 capability model described in `spec/capabilities.md`.
-

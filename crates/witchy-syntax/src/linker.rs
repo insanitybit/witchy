@@ -2223,31 +2223,15 @@ fn check_reserved_pattern(
     }
 }
 
-fn private_intrinsic_callers(name: &str) -> Option<&'static [&'static str]> {
-    match name {
-        "__erase" | "__unerase" => Some(&["chan", "task"]),
-        "__channel_open" | "__channel_send" | "__channel_recv" | "__channel_select" => {
-            Some(&["chan", "task"])
-        }
-        "__bytes_from_string"
-        | "__bytes_to_string"
-        | "__bytes_length"
-        | "__bytes_at"
-        | "__bytes_concat"
-        | "__bytes_slice" => Some(&["bytes"]),
-        _ => None,
-    }
-}
-
 fn check_private_intrinsic_call(name: &str, module_name: &str) -> Result<(), LinkError> {
     let intrinsic = name.rsplit_once('.').map_or(name, |(_, bare)| bare);
-    if intrinsic == "__render" {
+    if intrinsic == crate::intrinsics::RETIRED_SOURCE_RENDER {
         return lerr(
             "`__render` is compiler-private; use string interpolation (`\"${value}\"`) \
              or `show.render(value)` instead",
         );
     }
-    let Some(owners) = private_intrinsic_callers(intrinsic) else {
+    let Some(owners) = crate::intrinsics::private_intrinsic_callers(intrinsic) else {
         return Ok(());
     };
     if owners.contains(&module_name) {
@@ -2261,11 +2245,9 @@ fn check_private_intrinsic_call(name: &str, module_name: &str) -> Result<(), Lin
 
 fn private_intrinsic_friend_call(provider: &str, name: &str, caller: &str) -> bool {
     provider == "task"
-        && matches!(
-            name,
-            "__channel_open" | "__channel_send" | "__channel_recv" | "__channel_select"
-        )
-        && private_intrinsic_callers(name).is_some_and(|callers| callers.contains(&caller))
+        && crate::intrinsics::is_channel_bridge(name)
+        && crate::intrinsics::private_intrinsic_callers(name)
+            .is_some_and(|callers| callers.contains(&caller))
 }
 
 #[cfg(test)]

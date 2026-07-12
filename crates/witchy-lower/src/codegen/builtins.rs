@@ -10,6 +10,7 @@ impl Codegen<'_> {
         use witchy_wir::wir::WirExpr as W;
         use witchy_wir::wir::WirNode as N;
         use witchy_syntax::ast::is_render_intrinsic;
+        use witchy_syntax::intrinsics;
         let name = witchy_syntax::cap_ops::surface_name(name);
         if let Some((callback_index, diagnostic)) =
             witchy_types::typeck::isolated_vm_callback_contract(name, args.len())
@@ -199,7 +200,7 @@ impl Codegen<'_> {
                 call("compiler_diff", self.lower_args(&[&args[0], &args[1]])?)
             }
             ("compiler.doc", 2) => call("compiler_doc", self.lower_args(&[&args[0], &args[1]])?),
-            ("compiler.__doc_result_json", 2) => {
+            (intrinsics::COMPILER_DOC_RESULT_JSON, 2) => {
                 call("compiler_doc_result_json", self.lower_args(&[&args[0], &args[1]])?)
             }
             ("regex.match_spans", 2) => {
@@ -844,8 +845,8 @@ impl Codegen<'_> {
             // (Bytes) `Bytes` shares `String`'s flat `[len][bytes]` layout, so
             // `from_string` is identity — every witchy `String` is already valid
             // UTF-8, so its bytes are the buffer verbatim.
-            ("__bytes_from_string", 1) => self.lower_expr(&args[0])?,
-            ("__bytes_from_list", 1) => {
+            (intrinsics::BYTES_FROM_STRING, 1) => self.lower_expr(&args[0])?,
+            (intrinsics::BYTES_FROM_LIST, 1) => {
                 call("bytes_from_list", vec![self.lower_expr(&args[0])?])
             }
             // (parity, SEC-042) `to_string` is NOT identity: `Bytes` has no UTF-8
@@ -853,7 +854,7 @@ impl Codegen<'_> {
             // match the interpreter's `String::from_utf8_lossy`. Route through the
             // byte-exact `$bytes_to_string` helper (an identity return diverged on
             // bad bytes).
-            ("__bytes_to_string", 1) => {
+            (intrinsics::BYTES_TO_STRING, 1) => {
                 self.uses_encoding = true;
                 call("bytes_to_string", vec![self.lower_expr(&args[0])?])
             }
@@ -863,8 +864,8 @@ impl Codegen<'_> {
             // `__Msg` and recovering the endpoint's type are both the identity — the
             // value passes through unchanged, exactly as the executor's former
             // generic `m` did.
-            ("__erase", 1) | ("__unerase", 1) => self.lower_expr(&args[0])?,
-            ("__bytes_length", 1) => {
+            (intrinsics::ERASE, 1) | (intrinsics::UNERASE, 1) => self.lower_expr(&args[0])?,
+            (intrinsics::BYTES_LENGTH, 1) => {
                 let arg = self.lower_expr(&args[0])?;
                 Self::wir_convert(
                     W::Load { ptr: Box::new(arg), kind: witchy_wir::wir::Kind::I32, offset: 0 },
@@ -872,7 +873,7 @@ impl Codegen<'_> {
                     Kind::I64,
                 )
             }
-            ("__bytes_at", 2) | ("bytes.at", 2) => {
+            (intrinsics::BYTES_AT, 2) | ("bytes.at", 2) => {
                 // Bounds-checked byte read via the `$bytes_at` helper: trap on
                 // `i < 0 || i >= len`, matching the interpreter's "bytes index out
                 // of bounds" error. (An unchecked `load8_u` here used to silently
@@ -884,10 +885,10 @@ impl Codegen<'_> {
                 let i = Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I64);
                 call("bytes_at", vec![b, i])
             }
-            ("__bytes_concat", 2) => {
+            (intrinsics::BYTES_CONCAT, 2) => {
                 call("concat", vec![self.lower_expr(&args[0])?, self.lower_expr(&args[1])?])
             }
-            ("__bytes_slice", 3) => {
+            (intrinsics::BYTES_SLICE, 3) => {
                 // (parity) `Bytes` is BYTE-indexed with no UTF-8 contract, so this
                 // must route through the byte-indexed `$bytes_slice` — NOT the
                 // char-indexed `$str_substring`, which mangled multibyte payloads

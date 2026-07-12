@@ -5,6 +5,7 @@
 //! with no `Codegen` coupling.
 
 use super::*;
+use witchy_syntax::intrinsics;
 
 /// Variables bound by a pattern (these become function locals).
 /// Give shadowing bindings unique names before codegen. The compiled backend
@@ -548,7 +549,7 @@ pub(crate) fn rewrite_try_ctx_module(m: &mut Module, table: &witchy_types::typec
         }
         // After recursing into children, rewrite this node if it is `__try_ctx`.
         // Read the operand type BEFORE moving (the table is keyed by node address).
-        let is_try = matches!(e, Expr::Call { name, args } if name == "__try_ctx" && args.len() == 2);
+        let is_try = matches!(e, Expr::Call { name, args } if name == intrinsics::TRY_CONTEXT && args.len() == 2);
         if is_try {
             let is_option = if let Expr::Call { args, .. } = &*e {
                 matches!(

@@ -9,7 +9,7 @@
 use super::{name_kind, promote_kind, valtype_kind, ty_to_valtype};
 use super::{Codegen, Kind, ValType};
 use witchy_syntax::ast::{BinOp, Block, Expr, Pattern, Stmt, Type, UnOp};
-use witchy_syntax::cap_ops;
+use witchy_syntax::{cap_ops, intrinsics};
 
 impl Codegen<'_> {
     /// The WASM kind a compiled expression evaluates to.
@@ -88,7 +88,7 @@ impl Codegen<'_> {
             // at the universal i32 width — the same truncation the former generic
             // `m` field took, so both backends stay byte-identical.
             Expr::Call { name, args }
-                if matches!(cap_ops::surface_name(name), "__erase" | "__unerase")
+                if intrinsics::is_erasure_bridge(cap_ops::surface_name(name))
                     && args.len() == 1 =>
             {
                 self.kind_of(&args[0])
@@ -106,7 +106,7 @@ impl Codegen<'_> {
                 "math.to_int" | "string.length" | "string.char_count" | "string.find"
                 | "list.length" | "dict.length" | "string.to_int" | "int_to_duration"
                 | "duration_to_int" | "now" | "now_monotonic" | "rand_u64"
-                | "__bytes_length" | "__bytes_at" => Kind::I64,
+                | intrinsics::BYTES_LENGTH | intrinsics::BYTES_AT => Kind::I64,
                 "list.at" => self.elem_kind_of_list_arg(e),
                 render if witchy_syntax::ast::is_render_intrinsic(render) => Kind::I32,
                 "int_to_string" | "print" => Kind::I32,
@@ -307,12 +307,13 @@ impl Codegen<'_> {
                 | "crypto.public_key" | "crypto.reveal" | "read" | "read_build" | "crypto.rune_hash"
                 | "exec"
                 | "compiler.footprint"
-                | "compiler.diff" | "compiler.doc" | "compiler.__doc_result_json" | "regex.match_spans" | "recv_line" | "recv_all"
+                | "compiler.diff" | "compiler.doc" | intrinsics::COMPILER_DOC_RESULT_JSON | "regex.match_spans" | "recv_line" | "recv_all"
                 | "crypto.sha512" | "crypto.sha3_256" | "crypto.hmac_sha256"
                 | "encoding.hex_encode_bytes" | "encoding.base64_encode_bytes"
                 | "encoding.base64url_encode_bytes"
                 | "recv_bytes" => ValType::Str,
-                "__bytes_from_string" | "__bytes_from_list" | "__bytes_concat" | "__bytes_slice"
+                intrinsics::BYTES_FROM_STRING | intrinsics::BYTES_FROM_LIST
+                | intrinsics::BYTES_CONCAT | intrinsics::BYTES_SLICE
                 | "encoding.hex_decode_bytes_raw" | "encoding.base64_decode_bytes_raw"
                 | "encoding.base64url_decode_bytes_raw" => ValType::Bytes,
                 "string.starts_with" | "string.ends_with" | "string.contains" | "dict.contains_key"

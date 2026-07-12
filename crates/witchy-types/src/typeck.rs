@@ -22,7 +22,7 @@ use witchy_syntax::ast::{
     self, Block, Convention, Expr, Function, ImplOrigin, Item, MatchArm, Module, Pattern, Stmt, UnOp,
 };
 use witchy_syntax::build_entry::{build_entrypoint, is_build_capability_type};
-use witchy_syntax::cap_ops;
+use witchy_syntax::{cap_ops, intrinsics};
 
 /// The operations a `Dir` capability permits. Decomposing the capability by
 /// right makes the footprint distinguish read-only from writing code, and an op
@@ -3187,9 +3187,9 @@ impl Checker {
             // (Bytes) Primitive intrinsics behind the `std/bytes` surface. `Bytes` and
             // `String` share the flat `[len][bytes]` layout, so the representation-level
             // ops are identity/reuse on the compiled backend.
-            "__bytes_from_string" => Some((vec![Ty::String], Ty::Bytes)),
-            "__bytes_from_list" => Some((vec![Ty::List(Box::new(Ty::Int))], Ty::Bytes)),
-            "__bytes_to_string" => Some((vec![Ty::Bytes], Ty::String)),
+            intrinsics::BYTES_FROM_STRING => Some((vec![Ty::String], Ty::Bytes)),
+            intrinsics::BYTES_FROM_LIST => Some((vec![Ty::List(Box::new(Ty::Int))], Ty::Bytes)),
+            intrinsics::BYTES_TO_STRING => Some((vec![Ty::Bytes], Ty::String)),
             // (RFC-0055) The channel-endpoint erasure bridge. `__erase` casts any
             // typed message to the executor's opaque `__Msg`; `__unerase` recovers
             // it at the endpoint's type. Representationally the identity on both
@@ -3198,18 +3198,18 @@ impl Checker {
             // `__unerase` see a value erased at the same `m`. Deliberately NOT
             // inferable end-to-end — `__unerase`'s result type `m` is a fresh var
             // fixed only by its use site — and confined to `std/chan`/`std/task`.
-            "__erase" => {
+            intrinsics::ERASE => {
                 let m = self.fresh();
                 Some((vec![m], Ty::Msg))
             }
-            "__unerase" => {
+            intrinsics::UNERASE => {
                 let m = self.fresh();
                 Some((vec![Ty::Msg], m))
             }
-            "__bytes_length" => Some((vec![Ty::Bytes], Ty::Int)),
-            "__bytes_at" => Some((vec![Ty::Bytes, Ty::Int], Ty::Int)),
-            "__bytes_concat" => Some((vec![Ty::Bytes, Ty::Bytes], Ty::Bytes)),
-            "__bytes_slice" => Some((vec![Ty::Bytes, Ty::Int, Ty::Int], Ty::Bytes)),
+            intrinsics::BYTES_LENGTH => Some((vec![Ty::Bytes], Ty::Int)),
+            intrinsics::BYTES_AT => Some((vec![Ty::Bytes, Ty::Int], Ty::Int)),
+            intrinsics::BYTES_CONCAT => Some((vec![Ty::Bytes, Ty::Bytes], Ty::Bytes)),
+            intrinsics::BYTES_SLICE => Some((vec![Ty::Bytes, Ty::Int, Ty::Int], Ty::Bytes)),
             "string.to_upper" | "string.to_lower" | "string.trim" => Some((vec![Ty::String], Ty::String)),
             // Abort with a message (the primitive behind std/testing).
             "fail" => Some((vec![Ty::String], Ty::Nil)),
@@ -3440,7 +3440,7 @@ impl Checker {
     /// `String`; a `Result`'s error must already be `String` (the message is
     /// prepended to it, so it stays `String`).
     fn check_try_ctx(&mut self, name: &str, args: &[Expr]) -> Result<Option<Ty>, TypeError> {
-        if name != "__try_ctx" {
+        if name != intrinsics::TRY_CONTEXT {
             return Ok(None);
         }
         if args.len() != 2 {

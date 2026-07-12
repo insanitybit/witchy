@@ -31,6 +31,7 @@ use std::rc::Rc;
 
 use witchy_syntax::ast::*;
 use witchy_syntax::diag::DiagTemplate;
+use witchy_syntax::intrinsics;
 use witchy_syntax::parser::parse_module;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1205,7 +1206,7 @@ impl Interpreter {
         // `Option` or a `Result`) into a `Result(T, String)` carrying `msg`: `None`
         // -> `Err(msg)`, a `Result`'s `Err(e)` -> `Err("msg: e")` (e is a String),
         // and `Some(x)`/`Ok(x)` -> `Ok(x)`. The enclosing `?` then unwraps it.
-        if name == "__try_ctx" {
+        if name == intrinsics::TRY_CONTEXT {
             return match args {
                 [val, Value::Str(msg)] => {
                     let out = match val {
@@ -1230,7 +1231,7 @@ impl Interpreter {
                     };
                     Ok(Some(out))
                 }
-                _ => err("__try_ctx expects (value, message)"),
+                _ => err(format!("{} expects (value, message)", intrinsics::TRY_CONTEXT)),
             };
         }
         // `secret_store.require(name)` — a required secret: the `Secret` directly,
@@ -1301,7 +1302,7 @@ impl Interpreter {
             // typed message to the executor's opaque `__Msg` and recovering the
             // endpoint's type are both the identity — the value passes through
             // unchanged, exactly as the executor's former generic `m` did.
-            "__erase" | "__unerase" => Ok(Some(one(args)?)),
+            intrinsics::ERASE | intrinsics::UNERASE => Ok(Some(one(args)?)),
             // String stdlib.
             "string.length" => match one(args)? {
                 Value::Str(s) => Ok(Some(Value::Int(s.len() as i64))),
@@ -1310,11 +1311,11 @@ impl Interpreter {
             // (Bytes) Primitive intrinsics behind `std/bytes`. A `Bytes` is raw bytes
             // with no UTF-8 contract; `to_string` decodes lossily (a strict decoder can
             // live in std). `Str <-> Bytes` are real conversions in the tree-walker.
-            "__bytes_from_string" => match one(args)? {
+            intrinsics::BYTES_FROM_STRING => match one(args)? {
                 Value::Str(s) => Ok(Some(Value::Bytes(s.into_bytes()))),
                 other => err(format!("bytes.from_string expects a String, got `{other}`")),
             },
-            "__bytes_from_list" => match one(args)? {
+            intrinsics::BYTES_FROM_LIST => match one(args)? {
                 Value::List(xs) => {
                     let mut out = Vec::with_capacity(xs.len());
                     for x in xs {
@@ -1330,22 +1331,22 @@ impl Interpreter {
                 }
                 other => err(format!("bytes.from_list expects a List(Int), got `{other}`")),
             },
-            "__bytes_to_string" => match one(args)? {
+            intrinsics::BYTES_TO_STRING => match one(args)? {
                 Value::Bytes(b) => Ok(Some(Value::Str(String::from_utf8_lossy(&b).into_owned()))),
                 other => err(format!("bytes.to_string expects Bytes, got `{other}`")),
             },
-            "__bytes_length" => match one(args)? {
+            intrinsics::BYTES_LENGTH => match one(args)? {
                 Value::Bytes(b) => Ok(Some(Value::Int(b.len() as i64))),
                 other => err(format!("bytes.length expects Bytes, got `{other}`")),
             },
-            "__bytes_at" | "bytes.at" => match args {
+            intrinsics::BYTES_AT | "bytes.at" => match args {
                 [Value::Bytes(b), Value::Int(i)] => match b.get(*i as usize) {
                     Some(byte) => Ok(Some(Value::Int(*byte as i64))),
                     None => err(DiagTemplate::BytesIndexOob.render(*i, b.len() as i64, "")),
                 },
                 _ => err("bytes.at expects Bytes and an Int index"),
             },
-            "__bytes_concat" => match args {
+            intrinsics::BYTES_CONCAT => match args {
                 [Value::Bytes(a), Value::Bytes(b)] => {
                     let mut out = a.clone();
                     out.extend_from_slice(b);
@@ -1353,7 +1354,7 @@ impl Interpreter {
                 }
                 _ => err("bytes.concat expects two Bytes"),
             },
-            "__bytes_slice" => match args {
+            intrinsics::BYTES_SLICE => match args {
                 [Value::Bytes(b), Value::Int(start), Value::Int(end)] => {
                     let lo = (*start).max(0) as usize;
                     let hi = (*end).max(0).min(b.len() as i64) as usize;
