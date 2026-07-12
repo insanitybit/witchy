@@ -131,6 +131,18 @@
     }
 
     #[test]
+    fn tagged_literals_survive_layout_changes() {
+        // Tagged literals carry source positions for diagnostics. Formatting
+        // can move the literal without changing its tag, parts, or hole source,
+        // so the semantic guard must ignore those positions like other layout
+        // metadata while still comparing the semantic fields.
+        let src = "fn view(x: String) -> String:\n\n\n    html\"<p>${x}</p>\"\n";
+        let out = reformat(src).expect("tagged literal round-trips after moving lines");
+        assert!(out.contains("    html\"<p>${x}</p>\""), "{out}");
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
+    }
+
+    #[test]
     fn comprehensions_survive_formatting_everywhere() {
         // Learner round-3 BLOCKER: `let ys = [n * n for n in xs]` used to print
         // as `let ys = 0` (the inline renderer's placeholder leaked), and the
@@ -198,12 +210,12 @@
     }
 
     #[test]
-    fn reformats_every_std_and_example_to_an_equal_ast() {
+    fn reformats_every_std_example_and_glamour_source_to_an_equal_ast() {
         // The printer must faithfully round-trip every shipped source file and
         // parseable book/README `witchy` fence. The shipped trees live at the
         // workspace root (two levels up from this crate's manifest dir).
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let dirs = ["std", "examples"];
+        let dirs = ["std", "examples", "projects/glamour"];
         let mut failures = Vec::new();
         for dir in dirs {
             let mut files = Vec::new();

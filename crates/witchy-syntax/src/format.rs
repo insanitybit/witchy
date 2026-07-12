@@ -2114,6 +2114,10 @@ fn canon_expr(e: &mut Expr) {
             canon_expr(iter);
             canon_block(body);
         }
+        Expr::TaggedLit { hole_spans, line, .. } => {
+            hole_spans.clear();
+            *line = 0;
+        }
         _ => {}
     }
 }
