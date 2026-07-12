@@ -2962,15 +2962,32 @@ Read `key` from an inline table value like `{ path = "../money", version = "1" }
 
 Minimal URL parsing — the witchy slice of Go's net/url. Pure and capability-free, so it compiles to WASM. Handles `scheme://host[:port][/path]`; the port defaults by scheme (443 for https, else 80) and the path to "/".
 
-Structured parses return `Result(_, String)` with what went wrong (the same convention as `json.decode` and `semver.parse`); simple scalar parses like `string.parse_int` stay `Option`.
+`parse_typed` returns a matchable `UrlError`; `parse` is the String-rendering compatibility wrapper for application-style callers. Simple scalar parses like `string.parse_int` stay `Option`.
 
 #### `sealed type Url`
 
 - `Url(String, String, Int, String)`
 
+#### `type UrlError`
+
+Matchable URL parse failures. The payload is the original raw URL so callers can report or classify without parsing display text.
+
+- `MissingSchemeSeparator(String)`
+- `EmptyScheme(String)`
+- `UserinfoUnsupported(String)`
+- `EmptyHost(String)`
+- `InvalidPort(String)`
+- `MalformedIpv6Literal(String)`
+
+#### `fn url_error_message(e: UrlError) -> String`
+
+#### `fn parse_typed(s: String) -> Result(Url, UrlError)`
+
+Parse a URL, or a matchable error naming what is malformed. A well-formed URL needs a non-empty scheme and host — an empty either side (`://host`, `https:///path`) is rejected rather than accepted with a blank field. The scheme is case-insensitive (RFC 3986 §3.1) and is normalized to lowercase, so `HTTPS://` gets the https default port and formats back canonically.
+
 #### `fn parse(s: String) -> Result(Url, String)`
 
-Parse a URL, or an error naming what is malformed. A well-formed URL needs a non-empty scheme and host — an empty either side (`://host`, `https:///path`) is rejected rather than accepted with a blank field. The scheme is case-insensitive (RFC 3986 §3.1) and is normalized to lowercase, so `HTTPS://` gets the https default port and formats back canonically.
+Parse a URL with String errors for application-style callers and older code. Libraries that need to classify failure should use `parse_typed`.
 
 #### `fn scheme(u: Url) -> String`
 

@@ -64,12 +64,12 @@ pub fn head(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Re
 // GET a full URL string (`http://host[:port]/path`), or an error if it doesn't
 // parse. Saves splitting host/port/path by hand.
 pub fn get_url(net: Net[Connect, Tcp], raw: String) -> Result(Response, String):
-    match url.parse(raw):
+    match url.parse_typed(raw):
         Ok(u) ->
             match scheme_secure(url.scheme(u)):
                 Ok(secure) -> Ok(request_with(net, secure, "GET", url.host(u), url.port(u), url.path(u), [], ""))
                 Err(e) -> Err(e)
-        Err(e) -> Err("invalid URL: " + e)
+        Err(e) -> Err("invalid URL: " + url.url_error_message(e))
 
 // (BUG-234) Whether a URL scheme is HTTPS (`Ok(true)`), plain HTTP (`Ok(false)`),
 // or unsupported (`Err`). This module speaks only HTTP/1.1: a `ftp:`/`file:`/`ws:`
@@ -174,8 +174,8 @@ pub fn try_post(net: Net[Connect, Tcp], host: String, port: Int, path: String, b
 //         Ok(p) -> http.get_pinned(safe, p)
 //         Err(e) -> Err(e)
 pub fn pin(net: Net[Connect, Tcp], raw: String, allow_ip: fn(String) -> Bool) -> Result(PinnedUrl, String):
-    match url.parse(raw):
-        Err(e) -> Err("invalid URL: " + e)
+    match url.parse_typed(raw):
+        Err(e) -> Err("invalid URL: " + url.url_error_message(e))
         Ok(u) ->
             match scheme_secure(url.scheme(u)):
                 Err(e) -> Err(e)
@@ -268,12 +268,12 @@ impl RequestBuilder:
         // is returned rather than a panic when the URL does not parse.
         match self:
             RequestBuilder(m, u, hs, b) ->
-                match url.parse(u):
+                match url.parse_typed(u):
                     Ok(parsed) ->
                         match scheme_secure(url.scheme(parsed)):
                             Ok(secure) -> try_request_with(net, secure, m, url.host(parsed), url.port(parsed), url.path(parsed), hs, b)
                             Err(e) -> Err(e)
-                    Err(e) -> Err("invalid URL: " + e)
+                    Err(e) -> Err("invalid URL: " + url.url_error_message(e))
 
 // Whether the response status is in the 2xx success range.
 pub fn is_success(r: Response) -> Bool:

@@ -2,31 +2,62 @@
 // capability-free, so it compiles to WASM. Handles `scheme://host[:port][/path]`;
 // the port defaults by scheme (443 for https, else 80) and the path to "/".
 //
-// Structured parses return `Result(_, String)` with what went wrong (the same
-// convention as `json.decode` and `semver.parse`); simple scalar parses like
-// `string.parse_int` stay `Option`.
+// `parse_typed` returns a matchable `UrlError`; `parse` is the String-rendering
+// compatibility wrapper for application-style callers. Simple scalar parses
+// like `string.parse_int` stay `Option`.
 
 import option
 import result
 import encoding
 import show
+import error
+import convert
 
 sealed type Url:
     Url(String, String, Int, String)
 
-// Parse a URL, or an error naming what is malformed. A well-formed URL needs a
+// Matchable URL parse failures. The payload is the original raw URL so callers
+// can report or classify without parsing display text.
+type UrlError:
+    MissingSchemeSeparator(String)
+    EmptyScheme(String)
+    UserinfoUnsupported(String)
+    EmptyHost(String)
+    InvalidPort(String)
+    MalformedIpv6Literal(String)
+
+pub fn url_error_message(e: UrlError) -> String:
+    match e:
+        MissingSchemeSeparator(raw) -> "missing `scheme://` in: " + raw
+        EmptyScheme(raw) -> "empty scheme in: " + raw
+        UserinfoUnsupported(raw) -> "userinfo (`user@...`) is not supported in: " + raw
+        EmptyHost(raw) -> "empty host in: " + raw
+        InvalidPort(raw) -> "invalid port in: " + raw
+        MalformedIpv6Literal(raw) -> "malformed IPv6 literal in: " + raw
+
+impl Show for UrlError:
+    fn show(self) -> String:
+        url_error_message(self)
+
+impl Error for UrlError
+
+impl From(UrlError) for String:
+    fn from(value: UrlError) -> Self:
+        url_error_message(value)
+
+// Parse a URL, or a matchable error naming what is malformed. A well-formed URL needs a
 // non-empty scheme and host — an empty either side (`://host`, `https:///path`)
 // is rejected rather than accepted with a blank field. The scheme is
 // case-insensitive (RFC 3986 §3.1) and is normalized to lowercase, so
 // `HTTPS://` gets the https default port and formats back canonically.
-pub fn parse(s: String) -> Result(Url, String):
+pub fn parse_typed(s: String) -> Result(Url, UrlError):
     let sep = string.index_of(s, "://") ?? -1
     if sep < 0:
-        Err("missing `scheme://` in: " + s)
+        Err(MissingSchemeSeparator(s))
     else:
         let scheme = string.to_lower(string.substring(s, 0, sep))
         if string.is_empty(scheme):
-            Err("empty scheme in: " + s)
+            Err(EmptyScheme(s))
         else:
             let rest = string.substring(s, sep + 3, string.char_count(s))
             // The authority ends at the first `/`, `?`, or `#` — so a query or
@@ -39,7 +70,9 @@ pub fn parse(s: String) -> Result(Url, String):
             // `scheme://host[:port][/path]` grammar; reject it loudly rather
             // than reinterpret credentials as host/port text (BUG-380).
             if string.contains(authority, "@"):
-                Err("userinfo (`user@…`) is not supported in: " + s)
+                Err(UserinfoUnsupported(s))
+            else if malformed_ipv6_authority(authority):
+                Err(MalformedIpv6Literal(s))
             else:
                 // Split host from port at the LAST colon so a bracketed IPv6
                 // literal keeps its inner colons (`[::1]:80` -> host `[::1]`,
@@ -49,13 +82,20 @@ pub fn parse(s: String) -> Result(Url, String):
                 let split = host_port_split(authority)
                 let host = string.substring(authority, 0, split)
                 if string.is_empty(host):
-                    Err("empty host in: " + s)
+                    Err(EmptyHost(s))
                 else if split >= string.char_count(authority):
                     Ok(Url(scheme, host, default_port(scheme), path))
                 else:
                     match parse_port(string.substring(authority, split + 1, string.char_count(authority))):
                         Some(p) -> Ok(Url(scheme, host, p, path))
-                        None -> Err("invalid port in: " + s)
+                        None -> Err(InvalidPort(s))
+
+// Parse a URL with String errors for application-style callers and older code.
+// Libraries that need to classify failure should use `parse_typed`.
+pub fn parse(s: String) -> Result(Url, String):
+    match parse_typed(s):
+        Ok(u) -> Ok(u)
+        Err(e) -> Err(url_error_message(e))
 
 // The index in `rest` where the authority ends: the earliest of `/`, `?`, `#`,
 // or the end of the string when none is present.
@@ -94,6 +134,14 @@ fn host_port_split(authority: String) -> Int:
             n
         else:
             last
+
+fn malformed_ipv6_authority(authority: String) -> Bool:
+    let opens = string.starts_with(authority, "[")
+    let close = string.index_of(authority, "]") ?? -1
+    if opens:
+        close < 0 || close + 1 < string.char_count(authority) && string.char_at(authority, close + 1) != Some(":")
+    else:
+        close >= 0
 
 fn last_colon(s: String) -> Int:
     var i = string.char_count(s) - 1

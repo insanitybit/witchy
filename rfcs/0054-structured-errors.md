@@ -13,13 +13,16 @@ tracking: >
   lock snapshot-pin, registry version-response/resolution/update-consumption,
   compiler-footprint consumption, and offline build/run/verify lock-integrity
   gates use typed errors internally; fetched source-path validation and registry
-  host/port parsing are typed too. Coven Web's OIDC key selection preserves
-  JwtError through verification. Coven maintainer-policy
+  host/port parsing are typed too. std/url exposes a typed UrlError via
+  parse_typed, and std/http's URL consumers bridge it explicitly to their
+  current String API. Coven Web's OIDC key selection preserves JwtError through
+  verification. Coven maintainer-policy
   state, stored-record parsing, source-footprint recomputation, and
   trusted-publishing token verification have typed corruption/authentication
   errors. All convert to String through From at existing application
-  boundaries. Remaining 0.1 work: finish or explicitly defer typed errors for
-  other package-manager trust boundaries.
+  boundaries. Remaining 0.1 work: finish or explicitly defer the remaining
+  std/core-library String-error APIs, including the final url.parse signature
+  flip once in-tree example-test ownership is clear.
 ---
 
 # RFC-0054: Structured errors (design-first)
@@ -287,6 +290,13 @@ uses `HostPortError` instead of collapsing configuration failures into strings.
 `std/jwt.require_kid` preserves malformed headers and missing key IDs as
 `JwtError`, so Coven Web's JWKS selection and OIDC verification no longer erase
 typed JWT failures into `String` before the HTTP boundary.
+`std/url.parse_typed` now returns `url.UrlError`, covering missing
+`scheme://`, empty schemes/hosts, unsupported userinfo, invalid ports, and
+malformed bracketed IPv6 authorities. `std/http` calls that typed parser and
+renders with `url.url_error_message` at its existing String-returning API
+boundary; `url.parse` remains the application-style String wrapper until the
+last in-tree callers that print parse errors directly can be migrated without
+colliding with concurrent example-test ownership.
 Build, run, and verify now share a local `LockIntegrityError` boundary: path
 hash drift, missing locked vendors, absent trust pins, malformed lock entries,
 duplicate aliases, invalid signed records, coordinate mismatches, and source
@@ -310,7 +320,7 @@ tokens, untrusted issuers, missing JWKS `kid`, JWKS key-selection failures, and
 OIDC claim/signature rejection before the server maps them to 401 responses.
 
 This does not complete the RFC. The remaining release-blocking work is the std
-and core-library migration: any remaining package-manager trust boundaries need
-typed decoder errors or an explicit 0.1 deferral, and broader convenience
-parsers/codecs (`encoding`, `url`, `semver`, `time`, `http`) remain string-error
-APIs until demand justifies their own typed cuts.
+and core-library migration: broader convenience parsers/codecs (`encoding`,
+`semver`, `time`, `duration`, `http`, and the legacy `url.parse` wrapper)
+remain string-error APIs until each receives its typed cut or an explicit 0.1
+deferral.
