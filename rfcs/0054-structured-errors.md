@@ -17,8 +17,10 @@ tracking: >
   parse_typed, and std/http's URL consumers bridge it explicitly to their
   current String API. std/semver exposes SemverError through parse_typed and
   parse_req_typed, with the package manager consuming those typed errors at
-  version-resolution boundaries. Coven Web's OIDC key selection preserves
-  JwtError through verification. Coven maintainer-policy
+  version-resolution boundaries. std/duration exposes DurationParseError
+  through parse_typed while keeping parse as the String-rendering wrapper.
+  Coven Web's OIDC key selection preserves JwtError through verification.
+  Coven maintainer-policy
   state, stored-record parsing, source-footprint recomputation, and
   trusted-publishing token verification have typed corruption/authentication
   errors. All convert to String through From at existing application
@@ -306,6 +308,11 @@ and Coven's stored-version comparison consume the typed parser directly, then
 render with `semver.semver_error_message` only at their existing outward
 boundaries. The legacy `semver.parse` / `parse_req` wrappers keep returning
 `Result(_, String)` for older application-style code.
+`std/duration.parse_typed` now returns `duration.DurationParseError`,
+distinguishing overflow, stray characters, units without counts, trailing
+unit-less numbers, and empty input. `duration.parse` remains the
+application-style String wrapper, but its text is produced from the typed error
+instead of being the only representation of failure.
 Build, run, and verify now share a local `LockIntegrityError` boundary: path
 hash drift, missing locked vendors, absent trust pins, malformed lock entries,
 duplicate aliases, invalid signed records, coordinate mismatches, and source
@@ -330,6 +337,6 @@ OIDC claim/signature rejection before the server maps them to 401 responses.
 
 This does not complete the RFC. The remaining release-blocking work is the std
 and core-library migration: broader convenience parsers/codecs (`encoding`,
-`time`, `duration`, `http`, and the legacy `url.parse`/`semver.parse` wrappers)
+`time`, `http`, and the legacy `url.parse`/`semver.parse` wrappers)
 remain string-error APIs until each receives its typed cut or an explicit 0.1
 deferral.

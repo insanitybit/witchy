@@ -497,6 +497,18 @@ A new dict with `key` (and its value) removed; unchanged when absent.
 
 Pure helpers for the built-in `Duration` type — a length of time, written as a literal like `30s`, `2hr`, or `500ms`. Durations are combined and compared with the language operators (`a + b`, `d * 3`, `a < b`); this module adds construction from plain numbers, component access, and human formatting. Capability-free, so it compiles to WASM. A Duration is carried as whole milliseconds (`int_to_duration`/`duration_to_int` are the Int<->Duration bridge).
 
+#### `type DurationParseError`
+
+Matchable duration parse failures. The payloads keep the original input, and `UnitWithoutCount` also carries the unit token that caused the failure.
+
+- `DurationOverflow(String)`
+- `InvalidDurationShape(String)`
+- `UnitWithoutCount(String, String)`
+- `TrailingUnitlessNumber(String)`
+- `EmptyDuration(String)`
+
+#### `fn parse_error_message(e: DurationParseError) -> String`
+
 #### `fn milliseconds(n: Int) -> Duration`
 
 Construct from a count of one unit. Numeric constructors are convenience contracts: they return `Duration`, but abort on overflow instead of wrapping. Use `parse` for fallible user input.
@@ -569,9 +581,13 @@ A clock string "H:MM:SS": minutes and seconds zero-padded, hours in full (so a l
 
 A compact label that omits leading zero units: `1h1m1s`, `1m30s`, `5s`, and `500ms` for a pure sub-second span. A negative span (e.g. from subtraction) keeps its sign as a single leading "-" over the absolute magnitude: `-1s`, `-1m30s` — not the truncated-division fields of the raw negative count.
 
+#### `fn parse_typed(s: String) -> Result(Duration, DurationParseError)`
+
+Parse a duration string to a `Duration` — the inverse of `human`. Accepts unit-tagged input ("1h2m3s", "500ms", "2hr", any subset) using ms/s/m/h/hr/d/w, and a bare number as plain milliseconds. `Err` on a stray character, a unit with no preceding count ("ms", "1hms"), a dangling unit-less number after units were given ("1h30"), or a value that overflows a 64-bit millisecond count. The typed form lets libraries classify malformed input without parsing display text.
+
 #### `fn parse(s: String) -> Result(Duration, String)`
 
-Parse a duration string to a `Duration` — the inverse of `human`. Accepts unit-tagged input ("1h2m3s", "500ms", "2hr", any subset) using ms/s/m/h/hr/d/w, and a bare number as plain milliseconds. `Err` on a stray character, a unit with no preceding count ("ms", "1hms"), a dangling unit-less number after units were given ("1h30"), or a value that overflows a 64-bit millisecond count. Returns `Result` to align with `semver.parse`/`time.parse`/`url.parse` (RFC-0044 rule 2: invalid input is a reachable `Result`, not `Option`).
+Parse with String errors for application-style callers and older code. Libraries that need to classify failure should use `parse_typed`.
 
 ## `encoding`
 

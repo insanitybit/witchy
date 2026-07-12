@@ -8,6 +8,36 @@
 
 import string
 import option
+import show
+import error
+import convert
+
+// Matchable duration parse failures. The payloads keep the original input, and
+// `UnitWithoutCount` also carries the unit token that caused the failure.
+type DurationParseError:
+    DurationOverflow(String)
+    InvalidDurationShape(String)
+    UnitWithoutCount(String, String)
+    TrailingUnitlessNumber(String)
+    EmptyDuration(String)
+
+pub fn parse_error_message(e: DurationParseError) -> String:
+    match e:
+        DurationOverflow(raw) -> "`" + raw + "` overflows a 64-bit millisecond duration"
+        InvalidDurationShape(raw) -> "`" + raw + "` is not a duration (expected e.g. `1h2m3s`, `500ms`, or a bare-ms number)"
+        UnitWithoutCount(raw, unit) -> "`" + raw + "` has a unit with no count (expected a number before `" + unit + "`)"
+        TrailingUnitlessNumber(raw) -> "`" + raw + "` has a trailing unit-less number (expected a unit like `s`/`m`/`h` after every count)"
+        EmptyDuration(raw) -> "`" + raw + "` is empty (expected a duration like `1h2m3s`, `500ms`, or a bare-ms number)"
+
+impl Show for DurationParseError:
+    fn show(self) -> String:
+        parse_error_message(self)
+
+impl Error for DurationParseError
+
+impl From(DurationParseError) for String:
+    fn from(value: DurationParseError) -> Self:
+        parse_error_message(value)
 
 // Construct from a count of one unit. Numeric constructors are convenience
 // contracts: they return `Duration`, but abort on overflow instead of wrapping.
@@ -168,10 +198,9 @@ pub fn human(d: Duration) -> String:
 // unit-tagged input ("1h2m3s", "500ms", "2hr", any subset) using ms/s/m/h/hr/d/w,
 // and a bare number as plain milliseconds. `Err` on a stray character, a unit with
 // no preceding count ("ms", "1hms"), a dangling unit-less number after units were
-// given ("1h30"), or a value that overflows a 64-bit millisecond count. Returns
-// `Result` to align with `semver.parse`/`time.parse`/`url.parse` (RFC-0044 rule 2:
-// invalid input is a reachable `Result`, not `Option`).
-pub fn parse(s: String) -> Result(Duration, String):
+// given ("1h30"), or a value that overflows a 64-bit millisecond count. The
+// typed form lets libraries classify malformed input without parsing display text.
+pub fn parse_typed(s: String) -> Result(Duration, DurationParseError):
     var total = 0
     var cur = 0
     var seen_digit = false
@@ -184,7 +213,7 @@ pub fn parse(s: String) -> Result(Duration, String):
         if c >= "0" && c <= "9":
             match push_digit(cur, string.to_int(c)):
                 Some(v) -> cur = v
-                None -> return Err("`" + s + "` overflows a 64-bit millisecond duration")
+                None -> return Err(DurationOverflow(s))
             seen_digit = true
             i = i + 1
         else:
@@ -192,27 +221,34 @@ pub fn parse(s: String) -> Result(Duration, String):
             // fold the pending count into `total` with the same missing-count and
             // overflow guards for every unit.
             match unit_factor(c, two):
-                None -> return Err("`" + s + "` is not a duration (expected e.g. `1h2m3s`, `500ms`, or a bare-ms number)")
+                None -> return Err(InvalidDurationShape(s))
                 Some(uf) ->
                     let (mult, width) = uf
                     if !seen_digit:
-                        return Err("`" + s + "` has a unit with no count (expected a number before `" + string.substring(s, i, i + width) + "`)")
+                        return Err(UnitWithoutCount(s, string.substring(s, i, i + width)))
                     match scale_add(total, cur, mult):
                         Some(v) -> total = v
-                        None -> return Err("`" + s + "` overflows a 64-bit millisecond duration")
+                        None -> return Err(DurationOverflow(s))
                     cur = 0
                     seen_digit = false
                     seen_unit = true
                     i = i + width
     if seen_digit:
         if seen_unit:
-            Err("`" + s + "` has a trailing unit-less number (expected a unit like `s`/`m`/`h` after every count)")
+            Err(TrailingUnitlessNumber(s))
         else:
             Ok(int_to_duration(cur))
     else if seen_unit:
         Ok(int_to_duration(total))
     else:
-        Err("`" + s + "` is empty (expected a duration like `1h2m3s`, `500ms`, or a bare-ms number)")
+        Err(EmptyDuration(s))
+
+// Parse with String errors for application-style callers and older code.
+// Libraries that need to classify failure should use `parse_typed`.
+pub fn parse(s: String) -> Result(Duration, String):
+    match parse_typed(s):
+        Ok(d) -> Ok(d)
+        Err(e) -> Err(parse_error_message(e))
 
 // The millisecond factor and character width of the unit token at the cursor: the
 // two-character `ms`/`hr` take precedence over the one-character `s`/`m`/`h`/`d`/`w`;
