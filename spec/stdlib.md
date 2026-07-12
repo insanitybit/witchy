@@ -107,6 +107,64 @@ Whether `b` starts with `prefix`.
 
 Whether `b` ends with `suffix`.
 
+#### `Bytes.to_string_lossy() -> String`
+
+Decode bytes as UTF-8 text, replacing invalid sequences with U+FFFD. This is explicit about being lossy; use `decode_utf8` when invalid bytes must be an Err.
+
+#### `Bytes.to_string() -> String`
+
+Decode bytes as UTF-8 text. Invalid sequences are replaced with U+FFFD (lossy), so this never fails; round-tripping a string is exact because witchy strings are always valid UTF-8. Prefer `to_string_lossy` when the lossy boundary matters.
+
+#### `Bytes.decode_utf8() -> Result(String, BytesError)`
+
+Strict UTF-8 decode. Returns Err instead of replacing invalid byte sequences.
+
+#### `Bytes.decode_utf8_string() -> Result(String, String)`
+
+#### `Bytes.length() -> Int`
+
+The number of bytes.
+
+#### `Bytes.is_empty() -> Bool`
+
+Whether `b` has no bytes.
+
+#### `Bytes.at(index: Int) -> Int`
+
+The byte at `index`, as an Int in `0..=255`.
+
+#### `Bytes.get(index: Int) -> Option(Int)`
+
+The byte at `index`, or None when out of range.
+
+#### `Bytes.concat(second: Bytes) -> Bytes`
+
+The two byte buffers joined.
+
+#### `Bytes.slice(start: Int, end: Int) -> Bytes`
+
+The bytes in `start..end` (clamped to the buffer; `start >= end` yields empty).
+
+#### `Bytes.to_list() -> List(Int)`
+
+The bytes as a list of Ints in `0..=255`.
+
+#### `Bytes.contains(needle: Bytes) -> Bool`
+
+Whether `needle` appears in `b`. The empty needle is always present.
+
+#### `Bytes.index_of(needle: Bytes) -> Option(Int)`
+
+The first byte index where `needle` appears, or None when absent. The empty needle is found at 0, matching string/list search conventions.
+
+#### `Bytes.starts_with(prefix: Bytes) -> Bool`
+
+Whether `b` starts with `prefix`.
+
+#### `Bytes.ends_with(suffix: Bytes) -> Bool`
+
+Whether `b` ends with `suffix`.
+
 ## `chan`
 
 std/chan — decoupled concurrency: `spawn` concurrent tasks, communicate over first-class `channel`s. Spawning and channels are independent — you can spawn without a channel, and a channel is a value you create and pass around, not a task's mailbox. Built on a pure-witchy cooperative executor with a deterministic round-robin schedule, so a concurrent run is byte-identical on the interpreter and the compiled WebAssembly — no scheduler state in the runtime, no `Pin`.

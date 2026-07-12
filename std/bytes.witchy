@@ -101,6 +101,54 @@ pub fn concat(first: Bytes, second: Bytes) -> Bytes:
 pub fn slice(b: Bytes, start: Int, end: Int) -> Bytes:
     __bytes_slice(b, start, end)
 
+// Real methods mirror the primary byte-buffer surface while the module
+// functions remain as stable, first-class values.
+impl Bytes:
+    pub fn to_string_lossy(self) -> String:
+        to_string_lossy(self)
+
+    pub fn to_string(self) -> String:
+        to_string(self)
+
+    pub fn decode_utf8(self) -> Result(String, BytesError):
+        decode_utf8(self)
+
+    pub fn decode_utf8_string(self) -> Result(String, String):
+        decode_utf8_string(self)
+
+    pub fn length(self) -> Int:
+        length(self)
+
+    pub fn is_empty(self) -> Bool:
+        is_empty(self)
+
+    pub fn at(self, index: Int) -> Int:
+        at(self, index)
+
+    pub fn get(self, index: Int) -> Option(Int):
+        get(self, index)
+
+    pub fn concat(self, second: Bytes) -> Bytes:
+        concat(self, second)
+
+    pub fn slice(self, start: Int, end: Int) -> Bytes:
+        slice(self, start, end)
+
+    pub fn to_list(self) -> List(Int):
+        to_list(self)
+
+    pub fn contains(self, needle: Bytes) -> Bool:
+        contains(self, needle)
+
+    pub fn index_of(self, needle: Bytes) -> Option(Int):
+        index_of(self, needle)
+
+    pub fn starts_with(self, prefix: Bytes) -> Bool:
+        starts_with(self, prefix)
+
+    pub fn ends_with(self, suffix: Bytes) -> Bool:
+        ends_with(self, suffix)
+
 // The bytes as a list of Ints in `0..=255`.
 pub fn to_list(b: Bytes) -> List(Int):
     var out = []

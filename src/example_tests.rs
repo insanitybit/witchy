@@ -731,6 +731,40 @@
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
+    /// (RFC-0050) Bytes has a real inherent-method surface like the other
+    /// standard value types; module functions remain callable for explicit
+    /// module use and as first-class values.
+    #[test]
+    fn bytes_methods_cover_primary_surface_on_both_backends() {
+        let src = "import bytes\nimport result\n\nfn main(console: Console):\n    let b = bytes.from_string(\"hi!\")\n    console.print(\"${b.length()}\")\n    console.print(\"${b.at(0)}\")\n    console.print(\"${b.get(1).unwrap_or(0)}\")\n    console.print(\"${b.get(99).unwrap_or(0 - 1)}\")\n    console.print(b.to_string())\n    let c = b.concat(bytes.from_string(\"?\"))\n    console.print(c.to_string_lossy())\n    console.print(c.slice(1, 3).to_string())\n    console.print(\"${b.to_list()}\")\n    let raw = result.unwrap_or(bytes.from_list([0, 255, 65]), bytes.from_string(\"\"))\n    console.print(\"${raw.to_list()}\")\n    match raw.decode_utf8():\n        Ok(_) -> console.print(\"bad\")\n        Err(e) -> console.print(bytes.bytes_error_message(e))\n    match raw.decode_utf8_string():\n        Ok(_) -> console.print(\"bad\")\n        Err(e) -> console.print(e)\n    console.print(\"${b.is_empty()}\")\n    console.print(\"${c.index_of(bytes.from_string(\"i!\"))}\")\n    console.print(\"${c.index_of(bytes.from_string(\"zz\"))}\")\n    console.print(\"${c.contains(bytes.from_string(\"!?\"))}\")\n    console.print(\"${c.starts_with(b)}\")\n    console.print(\"${c.ends_with(bytes.from_string(\"!?\"))}\")\n    console.print(\"${bytes.length(b)}\")\n";
+        let expected = [
+            "3",
+            "104",
+            "105",
+            "-1",
+            "hi!",
+            "hi!?",
+            "i!",
+            "[104, 105, 33]",
+            "[0, 255, 65]",
+            "bytes.decode_utf8: invalid UTF-8",
+            "bytes.decode_utf8: invalid UTF-8",
+            "false",
+            "Some(1)",
+            "None",
+            "true",
+            "true",
+            "true",
+            "3",
+        ];
+        assert_eq!(link_run(src), expected, "interp: bytes methods");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: bytes methods",
+        );
+    }
+
     /// RFC-0050 Part 1: ambient builtin types whose API home is a std module are
     /// method-capable through that owner. Bytes and Duration were the motivating
     /// holes in the old hardcoded UFCS allowlist.

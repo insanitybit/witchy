@@ -424,3 +424,9 @@ first converted slice, with
 `std_list_impl_methods_and_free_functions_coexist_on_both_backends` pinning
 record-field write-back, statement-form write-back, module function calls, and
 compiled/interpreter parity.
+
+Follow-up progress: `Bytes` now has real inherent methods for its primary
+receiver-first surface (`length`, `at`, `get`, `concat`, `slice`, conversion,
+search, and prefix/suffix checks). The module functions remain as explicit
+module calls and first-class values, but ordinary byte-buffer code can use the
+same receiver syntax as `String`, `List`, `Dict`, and `Set`.
