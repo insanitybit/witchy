@@ -2277,6 +2277,52 @@ fn main(console: Console):
     }
 
     #[test]
+    fn rfc0054_server_parse_request_uses_typed_error_and_response_bridge() {
+        let src = r#"import http
+import server
+import show
+
+fn classify(e: server.RequestParseError) -> String:
+    match e:
+        server.UnsupportedTransferEncoding -> "transfer"
+        server.ConflictingContentLength -> "length"
+
+fn via_string(raw: String) -> Result(http.Request, String):
+    let req = server.parse_request(raw)?
+    Ok(req)
+
+fn main(console: Console):
+    let conflict = "POST /x HTTP/1.1\r\nContent-Length: 3\r\nContent-Length: 5\r\n\r\nabc"
+    let chunked = "POST /upload HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n4\r\ntest\r\n0\r\n\r\n"
+    match server.parse_request(conflict):
+        Ok(_r) -> console.print("bad")
+        Err(e) ->
+            console.print(classify(e))
+            console.print(server.request_parse_error_message(e))
+            console.print(show.render(e))
+    match via_string(chunked):
+        Ok(_r) -> console.print("bad")
+        Err(e) -> console.print(e)
+    match server.parse_request_response(chunked):
+        Ok(_r) -> console.print("bad")
+        Err(resp) -> console.print("response:${http.status(resp)}:" + http.body(resp))
+"#;
+        let expected = [
+            "length",
+            "conflicting Content-Length headers",
+            "conflicting Content-Length headers",
+            "unsupported Transfer-Encoding",
+            "response:400:unsupported Transfer-Encoding",
+        ];
+        assert_eq!(link_run(src), expected, "interp: server.parse_request typed error");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: server.parse_request typed error",
+        );
+    }
+
+    #[test]
     fn rfc0054_toml_decode_uses_typed_error_and_converts_to_string() {
         let src = "import json\nimport toml\nfrom toml import Toml\n\nfn via_string() -> Result(Toml, String):\n    let doc = toml.decode(\"not a toml line\")?\n    Ok(doc)\n\nfn main(console: Console):\n    match json.decode(\"1 2\"):\n        Ok(_) -> console.print(\"bad\")\n        Err(e) -> console.print(json.decode_error_message(e))\n    match toml.decode(\"not a toml line\"):\n        Ok(_) -> console.print(\"bad\")\n        Err(e) -> console.print(toml.decode_error_message(e))\n    match via_string():\n        Ok(_) -> console.print(\"bad\")\n        Err(e) -> console.print(e)\n";
         let expected = [
@@ -3319,16 +3365,16 @@ fn main(console: Console):
     let sub = server.router().get("/inner", hi).layer(tag)
     let nested = server.router().nest("/api", sub)
     console.print(http.body(server.handle(nested, Request("GET", "/api/inner", [], [], [], ""))))
-    match server.parse_request("POST /x HTTP/1.1\r\nContent-Length: 3\r\nContent-Length: 5\r\n\r\nabc"):
+    match server.parse_request_response("POST /x HTTP/1.1\r\nContent-Length: 3\r\nContent-Length: 5\r\n\r\nabc"):
         Ok(_r) -> console.print("PARSED")
         Err(resp) -> console.print("rejected " + "${http.status(resp)}")
-    match server.parse_request("POST /upload HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n4\r\ntest\r\n0\r\n\r\n"):
+    match server.parse_request_response("POST /upload HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n4\r\ntest\r\n0\r\n\r\n"):
         Ok(_r) -> console.print("chunked-request=parsed")
         Err(resp) -> console.print("chunked-request=" + "${http.status(resp)}")
-    match server.parse_request("POST /upload HTTP/1.1\r\nTransfer-Encoding: gzip\r\n\r\nbody"):
+    match server.parse_request_response("POST /upload HTTP/1.1\r\nTransfer-Encoding: gzip\r\n\r\nbody"):
         Ok(_r) -> console.print("gzip-request=parsed")
         Err(resp) -> console.print("gzip-request=" + "${http.status(resp)}")
-    match server.parse_request("POST /upload HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 4\r\n\r\nbody"):
+    match server.parse_request_response("POST /upload HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 4\r\n\r\nbody"):
         Ok(_r) -> console.print("mixed-framing=parsed")
         Err(resp) -> console.print("mixed-framing=" + "${http.status(resp)}")
     console.print("status=" + "${http.status(http.parse_response("HTTP/1.1 999999999999999999999999 X\r\n\r\nb"))}")

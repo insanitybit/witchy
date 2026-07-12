@@ -1,7 +1,7 @@
 ---
 rfc: 0054
 title: Structured errors (design-first)
-status: in-progress
+status: implemented
 created: 2026-07-03
 tracking: >
   Core language slice shipped: std/error defines Error: Show, String implements
@@ -30,7 +30,9 @@ tracking: >
   strict-response-parse APIs; malformed response framing carries typed
   ResponseParseError, with *_string bridges for application boundaries.
   std/compiler.try_doc exposes CompilerError, with try_doc_string as the
-  explicit String-rendering bridge for application boundaries.
+  explicit String-rendering bridge for application boundaries. std/server's
+  raw request parser exposes RequestParseError, with parse_request_response as
+  the explicit bridge to the old 400-response server-boundary shape.
   std/oauth exposes OAuthError through authorization-code exchange, OIDC
   id-token exchange, token-response parsing, and bearer JSON fetch, with
   *_string bridges for application boundaries. std/bytes exposes BytesError
@@ -40,9 +42,9 @@ tracking: >
   parsing, source-footprint recomputation, and
   trusted-publishing token verification have typed corruption/authentication
   errors. All convert to String through From at existing application
-  boundaries. Remaining 0.1 work: finish or explicitly defer the remaining
-  std/core-library String-error APIs that still keep String-returning primary
-  names.
+  boundaries. The remaining std String-error APIs are explicit `*_string`
+  bridges or application/host boundaries; primary trust-boundary library APIs
+  now expose typed errors for 0.1.
 ---
 
 # RFC-0054: Structured errors (design-first)
@@ -375,7 +377,11 @@ response. Coven trusted-publishing token verification returns
 tokens, untrusted issuers, missing JWKS `kid`, JWKS key-selection failures, and
 OIDC claim/signature rejection before the server maps them to 401 responses.
 
-This does not complete the RFC. The remaining release-blocking work is the std
-and core-library migration: String-returning primary names outside the
-URL/semver/duration/time/encoding/http/oauth/bytes cut must receive their typed cut or an
-explicit 0.1 deferral.
+## Completion note (2026-07-12)
+
+`std/server.parse_request` now returns `server.RequestParseError` for malformed
+request framing; `server.parse_request_response` is the explicit bridge that maps
+those typed failures to 400 `Response` values for server/application boundaries.
+After the server cut, the remaining public `Result(_, String)` std APIs are
+intentional String-rendering bridge names (`*_string`) rather than primary
+trust-boundary library APIs. RFC-0054 is implemented for the 0.1 scope.

@@ -2424,6 +2424,13 @@ A handler is a pure `fn(Request) -> Response`: it has NO capability parameters, 
 
   let app = server.router()       .get("/", home)       .get("/users/:id", show)       .layer(logging(console))   server.serve(net, "127.0.0.1:8080", app)
 
+#### `type RequestParseError`
+
+Matchable failures when parsing an inbound HTTP request frame. The server boundary maps these to 400 responses, but libraries and tests can match them without scraping a rendered response body.
+
+- `UnsupportedTransferEncoding`
+- `ConflictingContentLength`
+
 #### `type Route`
 
 One route: HTTP method, a path pattern (`:param` captures a segment, `*rest` captures the remainder), and the handler.
@@ -2435,6 +2442,8 @@ One route: HTTP method, a path pattern (`:param` captures a segment, `*rest` cap
 A router: its routes plus the middleware layers wrapping the whole dispatch.
 
 - `Router(List(Route), List(fn(fn(Request) -> Response) -> fn(Request) -> Response))`
+
+#### `fn request_parse_error_message(e: RequestParseError) -> String`
 
 #### `fn method(req: Request) -> String`
 
@@ -2542,9 +2551,13 @@ Return `resp` with its status code replaced.
 
 #### `fn route(r: Router, m: String, p: String, h: fn(Request) -> Response) -> Router`
 
-#### `fn parse_request(raw: String) -> Result(Request, Response)`
+#### `fn parse_request(raw: String) -> Result(Request, RequestParseError)`
 
-Parse a whole raw HTTP/1.1 request string into a `Request` (or a 400 `Response` when it is malformed, e.g. conflicting Content-Length or unsupported Transfer-Encoding) — the network-free mirror of the socket reader and of `http.parse_response`. Public so a router can be tested, or a request framed by another transport re-parsed, without a socket.
+Parse a whole raw HTTP/1.1 request string into a `Request`, preserving malformed framing as a typed error. This is the network-free mirror of the socket reader and of `http.try_parse_response`. Public so a router can be tested, or a request framed by another transport re-parsed, without a socket.
+
+#### `fn parse_request_response(raw: String) -> Result(Request, Response)`
+
+Application/server-boundary bridge for callers that want the old "parse or 400 Response" shape explicitly.
 
 #### `fn handle(app: Router, req: Request) -> Response`
 

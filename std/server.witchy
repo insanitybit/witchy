@@ -17,8 +17,33 @@
 import option
 import reflect
 import encoding
+import show
+import error
+import convert
 from http import Request, Response
 from json import Json
+
+// Matchable failures when parsing an inbound HTTP request frame. The server
+// boundary maps these to 400 responses, but libraries and tests can match them
+// without scraping a rendered response body.
+type RequestParseError:
+    UnsupportedTransferEncoding
+    ConflictingContentLength
+
+pub fn request_parse_error_message(e: RequestParseError) -> String:
+    match e:
+        UnsupportedTransferEncoding -> "unsupported Transfer-Encoding"
+        ConflictingContentLength -> "conflicting Content-Length headers"
+
+impl Show for RequestParseError:
+    fn show(self) -> String:
+        request_parse_error_message(self)
+
+impl Error for RequestParseError
+
+impl From(RequestParseError) for String:
+    fn from(value: RequestParseError) -> Self:
+        request_parse_error_message(value)
 
 // ---- Request accessors ----
 pub fn method(req: Request) -> String:
@@ -347,7 +372,7 @@ fn read_request(sock: Socket) -> Result(Request, Response):
     // first-wins. In particular, `Transfer-Encoding` request bodies are rejected
     // until the server has a strict chunked decoder for them.
     match framed_length(headers):
-        Err(msg) -> Err(bad_request(msg))
+        Err(e) -> Err(request_parse_error_response(e))
         Ok(len) ->
             let body = if len > 0: sock.recv_bytes(len) else: ""
             Ok(Request(m, raw_path, [], q, headers, body))
@@ -377,12 +402,11 @@ fn parse_header_line(line: String) -> Option((String, String)):
         let value = string.trim(string.substring(line, colon + 1, string.char_count(line)))
         Some((name, value))
 
-// Parse a whole raw HTTP/1.1 request string into a `Request` (or a 400 `Response`
-// when it is malformed, e.g. conflicting Content-Length or unsupported
-// Transfer-Encoding) — the network-free mirror of the socket reader and of
-// `http.parse_response`. Public so a router can be tested, or a request framed by
-// another transport re-parsed, without a socket.
-pub fn parse_request(raw: String) -> Result(Request, Response):
+// Parse a whole raw HTTP/1.1 request string into a `Request`, preserving malformed
+// framing as a typed error. This is the network-free mirror of the socket reader
+// and of `http.try_parse_response`. Public so a router can be tested, or a request
+// framed by another transport re-parsed, without a socket.
+pub fn parse_request(raw: String) -> Result(Request, RequestParseError):
     let sep = string.index_of(raw, "\r\n\r\n") ?? -1
     let head = if sep < 0: raw else: string.substring(raw, 0, sep)
     let body_all = if sep < 0: "" else: string.substring(raw, sep + 4, string.char_count(raw))
@@ -401,12 +425,22 @@ pub fn parse_request(raw: String) -> Result(Request, Response):
 
         i = i + 1
     match framed_length(headers):
-        Err(msg) -> Err(bad_request(msg))
+        Err(e) -> Err(e)
         Ok(len) ->
             let body = if len > 0: string.take(body_all, len) else: ""
             Ok(Request(m, raw_path, [], q, headers, body))
 
-fn framed_length(headers: List((String, String))) -> Result(Int, String):
+// Application/server-boundary bridge for callers that want the old "parse or 400
+// Response" shape explicitly.
+pub fn parse_request_response(raw: String) -> Result(Request, Response):
+    match parse_request(raw):
+        Ok(req) -> Ok(req)
+        Err(e) -> Err(request_parse_error_response(e))
+
+fn request_parse_error_response(e: RequestParseError) -> Response:
+    bad_request(request_parse_error_message(e))
+
+fn framed_length(headers: List((String, String))) -> Result(Int, RequestParseError):
     // Content-Length and Transfer-Encoding are attacker-controlled framing. Two
     // Content-Length headers with DIFFERENT values (or one header carrying a
     // differing comma list) is a request-smuggling ambiguity — reject it (400)
@@ -430,9 +464,9 @@ fn framed_length(headers: List((String, String))) -> Result(Int, String):
         else if k == "transfer-encoding":
             transfer = true
     if transfer:
-        Err("unsupported Transfer-Encoding")
+        Err(UnsupportedTransferEncoding)
     else if conflict:
-        Err("conflicting Content-Length headers")
+        Err(ConflictingContentLength)
     else if !seen:
         Ok(0)
     else:
