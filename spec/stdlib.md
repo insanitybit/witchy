@@ -2205,13 +2205,28 @@ A version constraint (requirement).
 - `AtLeast(Version)`
 - `Any`
 
+#### `type SemverError`
+
+Matchable semantic-version parse failures. Requirement parsing reuses the same cases because every non-`*` requirement wraps a version coordinate.
+
+- `BadVersionShape(String)`
+- `SignedVersionComponent(String)`
+- `NegativeVersionComponent(String)`
+- `NonNumericVersionComponent(String)`
+
+#### `fn semver_error_message(e: SemverError) -> String`
+
 #### `fn version(major: Int, minor: Int, patch: Int) -> Version`
 
 --- constructors ------------------------------------------------------------ A convenience constructor for known-good components (e.g. a computed bump). A negative component is not a version at all, so it is a contract violation (RFC-0044 rule 3): fail loudly naming the bad coordinate rather than minting an impossible one. Untrusted input belongs in `parse`, which returns `Err` instead of aborting.
 
+#### `fn parse_typed(s: String) -> Result(Version, SemverError)`
+
+Parse `major.minor.patch` (missing trailing components default to 0), returning a typed error a library can match.
+
 #### `fn parse(s: String) -> Result(Version, String)`
 
-Parse `major.minor.patch` (missing trailing components default to 0). Errors on a non-numeric component or more than three components.
+Parse with String errors for application-style callers and older code. Libraries that need to classify failure should use `parse_typed`.
 
 #### `fn format(v: Version) -> String`
 
@@ -2221,9 +2236,11 @@ Parse `major.minor.patch` (missing trailing components default to 0). Errors on 
 
 #### `fn less(a: Version, b: Version) -> Bool`
 
-#### `fn parse_req(s: String) -> Result(Req, String)`
+#### `fn parse_req_typed(s: String) -> Result(Req, SemverError)`
 
 --- constraints -------------------------------------------------------------
+
+#### `fn parse_req(s: String) -> Result(Req, String)`
 
 #### `fn matches(req: Req, v: Version) -> Bool`
 

@@ -15,8 +15,10 @@ tracking: >
   gates use typed errors internally; fetched source-path validation and registry
   host/port parsing are typed too. std/url exposes a typed UrlError via
   parse_typed, and std/http's URL consumers bridge it explicitly to their
-  current String API. Coven Web's OIDC key selection preserves JwtError through
-  verification. Coven maintainer-policy
+  current String API. std/semver exposes SemverError through parse_typed and
+  parse_req_typed, with the package manager consuming those typed errors at
+  version-resolution boundaries. Coven Web's OIDC key selection preserves
+  JwtError through verification. Coven maintainer-policy
   state, stored-record parsing, source-footprint recomputation, and
   trusted-publishing token verification have typed corruption/authentication
   errors. All convert to String through From at existing application
@@ -297,6 +299,13 @@ renders with `url.url_error_message` at its existing String-returning API
 boundary; `url.parse` remains the application-style String wrapper until the
 last in-tree callers that print parse errors directly can be migrated without
 colliding with concurrent example-test ownership.
+`std/semver.parse_typed` and `std/semver.parse_req_typed` now return
+`semver.SemverError`, distinguishing an overlong coordinate from signed,
+negative, and non-numeric components. The package manager's version resolver
+and Coven's stored-version comparison consume the typed parser directly, then
+render with `semver.semver_error_message` only at their existing outward
+boundaries. The legacy `semver.parse` / `parse_req` wrappers keep returning
+`Result(_, String)` for older application-style code.
 Build, run, and verify now share a local `LockIntegrityError` boundary: path
 hash drift, missing locked vendors, absent trust pins, malformed lock entries,
 duplicate aliases, invalid signed records, coordinate mismatches, and source
@@ -321,6 +330,6 @@ OIDC claim/signature rejection before the server maps them to 401 responses.
 
 This does not complete the RFC. The remaining release-blocking work is the std
 and core-library migration: broader convenience parsers/codecs (`encoding`,
-`semver`, `time`, `duration`, `http`, and the legacy `url.parse` wrapper)
+`time`, `duration`, `http`, and the legacy `url.parse`/`semver.parse` wrappers)
 remain string-error APIs until each receives its typed cut or an explicit 0.1
 deferral.
