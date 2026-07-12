@@ -36,6 +36,17 @@
     }
 
     #[test]
+    fn anonymous_union_type_positions_check() {
+        // RFC-0078's first union slice makes the structural sum type denotable.
+        // Injection/matching come later; signatures and generic arguments should
+        // already validate and canonicalize through typeck.
+        assert!(check_str(
+            "fn pass(e: .[BadPort(Int) | NotFound]) -> .[NotFound | BadPort(Int)]:\n    e\n\nfn wrap() -> Result(Int, .[NotFound | BadPort(Int)]):\n    Ok(1)\n\nfn main(console: Console):\n    console.print(\"ok\")\n"
+        )
+        .is_ok());
+    }
+
+    #[test]
     fn packed_type_requires_packable_fields() {
         // (RFC-0027) scalars (and nested packed types) are packable.
         assert!(check_str(

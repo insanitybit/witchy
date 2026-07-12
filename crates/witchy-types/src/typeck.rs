@@ -861,7 +861,8 @@ fn builtin_type_arity(name: &str) -> Option<usize> {
 fn is_synthetic_type_name(name: &str) -> bool {
     name.strip_prefix("__anon").is_some_and(|n| {
         !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())
-    }) || name.strip_prefix("Tuple").is_some_and(|n| {
+    }) || anon_union_synthetic_arity(name).is_some()
+        || name.strip_prefix("Tuple").is_some_and(|n| {
         !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())
     })
 }
@@ -870,6 +871,37 @@ fn tuple_synthetic_arity(name: &str) -> Option<usize> {
     name.strip_prefix("Tuple")
         .and_then(|n| (!n.is_empty()).then_some(n))
         .and_then(|n| n.parse::<usize>().ok())
+}
+
+fn parse_fixed_width_usize(s: &str, pos: &mut usize, width: usize) -> Option<usize> {
+    let end = pos.checked_add(width)?;
+    let part = s.get(*pos..end)?;
+    if !part.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    *pos = end;
+    part.parse().ok()
+}
+
+fn anon_union_synthetic_arity(name: &str) -> Option<usize> {
+    let mut pos = "__union".len();
+    let rest = name.strip_prefix("__union")?;
+    if rest.len() < 10 {
+        return None;
+    }
+    let count = parse_fixed_width_usize(name, &mut pos, 10)?;
+    let mut total = 0usize;
+    for _ in 0..count {
+        let len = parse_fixed_width_usize(name, &mut pos, 10)?;
+        for _ in 0..len {
+            let byte = parse_fixed_width_usize(name, &mut pos, 3)?;
+            if byte > u8::MAX as usize {
+                return None;
+            }
+        }
+        total = total.checked_add(parse_fixed_width_usize(name, &mut pos, 10)?)?;
+    }
+    (pos == name.len()).then_some(total)
 }
 
 /// Validate that every named type in `t` is known — a builtin, a declared type,
@@ -975,6 +1007,7 @@ fn validate_type(
                     .get(n.as_str())
                     .copied()
                     .or_else(|| tuple_synthetic_arity(n))
+                    .or_else(|| anon_union_synthetic_arity(n))
                 {
                     let got = args.len();
                     if got != expected {

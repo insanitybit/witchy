@@ -86,6 +86,8 @@ pub enum Tok {
     /// `.{` — opens an anonymous struct `.{ field: expr, … }`. The only place a
     /// brace is allowed in source (bare `{`/`}` are not witchy syntax).
     DotLBrace,
+    /// `.[` — opens an anonymous tagged union type `.[Tag | Tag(Payload)]`.
+    DotLBracket,
     LBracket,
     RBracket,
     Comma,
@@ -176,6 +178,7 @@ impl fmt::Display for Tok {
             LBrace => write!(f, "{{"),
             RBrace => write!(f, "}}"),
             DotLBrace => write!(f, ".{{"),
+            DotLBracket => write!(f, ".["),
             LBracket => write!(f, "["),
             RBracket => write!(f, "]"),
             Comma => write!(f, ","),
@@ -1019,6 +1022,10 @@ impl Lexer {
                 self.bump();
                 Tok::DotLBrace
             }
+            ('.', Some('[')) => {
+                self.bump();
+                Tok::DotLBracket
+            }
             ('.', _) => Tok::Dot,
             (other, _) => return Err(self.err(format!("unexpected character `{other}`"))),
         };
@@ -1098,7 +1105,7 @@ pub fn apply_layout(tokens: Vec<Token>) -> Vec<Token> {
             lines.last_mut().unwrap().toks.push(t);
         }
         match kind {
-            Tok::LParen | Tok::LBracket | Tok::LBrace | Tok::DotLBrace => depth += 1,
+            Tok::LParen | Tok::LBracket | Tok::LBrace | Tok::DotLBrace | Tok::DotLBracket => depth += 1,
             Tok::RParen | Tok::InterpRBrace | Tok::RBracket | Tok::RBrace => depth -= 1,
             _ => {}
         }
@@ -1164,7 +1171,7 @@ pub fn apply_layout(tokens: Vec<Token>) -> Vec<Token> {
                     bdepth = new_bd;
                     out.push(t.clone());
                 }
-                Tok::LParen | Tok::LBracket | Tok::LBrace | Tok::DotLBrace => {
+                Tok::LParen | Tok::LBracket | Tok::LBrace | Tok::DotLBrace | Tok::DotLBracket => {
                     bdepth += 1;
                     out.push(t.clone());
                 }

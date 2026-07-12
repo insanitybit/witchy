@@ -118,6 +118,22 @@ fn add(a: Int, b: Int) -> Int:
     }
 
     #[test]
+    fn anonymous_union_type_syntax_is_tag_shaped() {
+        parse_module("type LoadErr = .[NotFound | BadPort(Int)]\n").expect("union type parses");
+
+        let lower = parse_module("type Bad = .[notFound]\n").expect_err("lowercase tag rejected");
+        assert!(lower.message.contains("must start with an uppercase"), "{lower}");
+
+        let dup = parse_module("type Bad = .[Missing | Missing(String)]\n")
+            .expect_err("duplicate tag rejected");
+        assert!(dup.message.contains("listed more than once"), "{dup}");
+
+        let empty_payload = parse_module("type Bad = .[Empty()]\n")
+            .expect_err("empty payload parens rejected");
+        assert!(empty_payload.message.contains("empty payload parens"), "{empty_payload}");
+    }
+
+    #[test]
     fn type_def_accepts_explicit_type_parameters() {
         // The conventional `type Name(a, b):` form parses; the parameter names are
         // accepted for clarity and the checker infers them from the field types.

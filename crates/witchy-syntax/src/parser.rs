@@ -33,6 +33,18 @@ fn anon_record_type_name(fields: &[String]) -> String {
     format!("__anon{suffix}")
 }
 
+fn anon_union_type_name(variants: &[(String, usize)]) -> String {
+    let mut suffix = format!("{:010}", variants.len());
+    for (tag, arity) in variants {
+        suffix.push_str(&format!("{:010}", tag.len()));
+        for byte in tag.as_bytes() {
+            suffix.push_str(&format!("{byte:03}"));
+        }
+        suffix.push_str(&format!("{arity:010}"));
+    }
+    format!("__union{suffix}")
+}
+
 fn reserved_source_identifier(name: &str) -> bool {
     name.contains("__")
 }
@@ -1037,6 +1049,9 @@ impl Parser {
         if self.eat(&Tok::DotLBrace) {
             return self.anon_record_type();
         }
+        if self.eat(&Tok::DotLBracket) {
+            return self.anon_union_type();
+        }
         if self.eat(&Tok::LParen) {
             let mut types = Vec::new();
             while !self.at(&Tok::RParen) {
@@ -1104,7 +1119,11 @@ impl Parser {
         let starts_type = |t: Option<&Tok>| {
             matches!(
                 t,
-                Some(Tok::Ident(_)) | Some(Tok::LParen) | Some(Tok::Fn) | Some(Tok::DotLBrace)
+                Some(Tok::Ident(_))
+                    | Some(Tok::LParen)
+                    | Some(Tok::Fn)
+                    | Some(Tok::DotLBrace)
+                    | Some(Tok::DotLBracket)
             )
         };
         // `local unique T`
@@ -1774,6 +1793,55 @@ impl Parser {
             anon_record_type_name(&names),
             fields.into_iter().map(|(_, ty)| ty).collect(),
         ))
+    }
+
+    /// `.[ Tag | Tag(Payload, …) ]` in type position. The synthetic head encodes
+    /// the closed tag set and per-tag arity; payload types stay as ordinary type
+    /// arguments in the same canonical tag order.
+    fn anon_union_type(&mut self) -> Result<Type, ParseError> {
+        if self.at(&Tok::RBracket) {
+            return Err(self.error("anonymous union type must contain at least one tag"));
+        }
+        let mut variants: Vec<(String, Vec<Type>)> = Vec::new();
+        let mut seen = HashSet::default();
+        while !self.at(&Tok::RBracket) {
+            let tag = self.ident()?;
+            if !tag.chars().next().is_some_and(|c| c.is_uppercase()) {
+                return Err(self.error(format!(
+                    "anonymous union tag `{tag}` must start with an uppercase letter"
+                )));
+            }
+            if !seen.insert(tag.clone()) {
+                return Err(self.error(format!(
+                    "anonymous union tag `{tag}` is listed more than once"
+                )));
+            }
+            let mut payloads = Vec::new();
+            if self.eat(&Tok::LParen) {
+                if self.at(&Tok::RParen) {
+                    return Err(self.error(format!(
+                        "anonymous union tag `{tag}` has empty payload parens; use bare `{tag}`"
+                    )));
+                }
+                while !self.at(&Tok::RParen) {
+                    payloads.push(self.ty()?);
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
+                }
+                self.expect(&Tok::RParen)?;
+            }
+            variants.push((tag, payloads));
+            if !self.eat(&Tok::Bar) {
+                break;
+            }
+        }
+        self.expect(&Tok::RBracket)?;
+        variants.sort_by(|a, b| a.0.cmp(&b.0));
+        let shape: Vec<(String, usize)> =
+            variants.iter().map(|(tag, payloads)| (tag.clone(), payloads.len())).collect();
+        let args = variants.into_iter().flat_map(|(_, payloads)| payloads).collect();
+        Ok(Type::Named(anon_union_type_name(&shape), args))
     }
 
     /// `Name(field: value, ..., ..base?)` — named-field construction, optionally

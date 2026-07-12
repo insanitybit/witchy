@@ -88,15 +88,22 @@ fn ambient_declaration_allowed(home: &str, user_module: bool, t: &TypeDef) -> bo
 }
 
 /// Compiler-synthesized type heads that name no module and stay bare: the
-/// `TupleN` head a tuple `impl` dispatches under, and the shape-keyed `__anon…`
-/// record a `.{…}` literal desugars to.
+/// `TupleN` head a tuple `impl` dispatches under, the shape-keyed `__anon…`
+/// record a `.{…}` literal/type desugars to, and the anonymous-union `__union…`
+/// head a `.[…]` type desugars to.
 fn is_synthetic_type(name: &str) -> bool {
     is_anon_type(name)
+        || is_anon_union_type(name)
         || (name.strip_prefix("Tuple").is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())))
 }
 
 fn is_anon_type(name: &str) -> bool {
     name.strip_prefix("__anon")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+fn is_anon_union_type(name: &str) -> bool {
+    name.strip_prefix("__union")
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 

@@ -1803,10 +1803,59 @@ fn decode_anon_record_type_name(name: &str) -> Option<Vec<String>> {
     if pos == name.len() { Some(fields) } else { None }
 }
 
+fn decode_anon_union_type_name(name: &str) -> Option<Vec<(String, usize)>> {
+    let mut pos = "__union".len();
+    let rest = name.strip_prefix("__union")?;
+    if rest.len() < 10 {
+        return None;
+    }
+    let count = parse_fixed_width_usize(name, &mut pos, 10)?;
+    let mut variants = Vec::with_capacity(count);
+    for _ in 0..count {
+        let len = parse_fixed_width_usize(name, &mut pos, 10)?;
+        let mut bytes = Vec::with_capacity(len);
+        for _ in 0..len {
+            let byte = parse_fixed_width_usize(name, &mut pos, 3)?;
+            if byte > u8::MAX as usize {
+                return None;
+            }
+            bytes.push(byte as u8);
+        }
+        let tag = String::from_utf8(bytes).ok()?;
+        let arity = parse_fixed_width_usize(name, &mut pos, 10)?;
+        variants.push((tag, arity));
+    }
+    if pos == name.len() { Some(variants) } else { None }
+}
+
 pub fn type_str(t: &Type) -> String {
     match t {
         Type::Qualified(q, inner) => format!("{} {}", q.as_str(), type_str(inner)),
         Type::Named(n, args) => {
+            if let Some(variants) = decode_anon_union_type_name(n) {
+                let total: usize = variants.iter().map(|(_, arity)| *arity).sum();
+                if total == args.len() {
+                    let mut idx = 0;
+                    let rendered = variants
+                        .iter()
+                        .map(|(tag, arity)| {
+                            if *arity == 0 {
+                                tag.clone()
+                            } else {
+                                let payloads = args[idx..idx + *arity]
+                                    .iter()
+                                    .map(type_str)
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                idx += *arity;
+                                format!("{tag}({payloads})")
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" | ");
+                    return format!(".[{rendered}]");
+                }
+            }
             if let Some(fields) = decode_anon_record_type_name(n) {
                 if fields.len() == args.len() {
                     let rendered = fields

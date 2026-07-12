@@ -86,6 +86,18 @@
     }
 
     #[test]
+    fn anonymous_union_types_round_trip_through_formatting() {
+        // RFC-0078 anonymous union types are canonical sets: formatting sorts the
+        // tag spelling and keeps payload types attached to their tag.
+        let src = "type LoadErr = .[Missing(String) | NotFound | BadPort(Int)]\n\nfn load() -> Result(Int, .[NotFound | BadPort(Int)]):\n    Ok(1)\n";
+        let out = reformat(src).expect("anonymous union type round-trips");
+        assert!(out.contains("type LoadErr = .[BadPort(Int) | Missing(String) | NotFound]"), "{out}");
+        assert!(out.contains("Result(Int, .[BadPort(Int) | NotFound])"), "{out}");
+        assert!(!out.contains("__union"), "{out}");
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
+    }
+
+    #[test]
     fn comprehensions_survive_formatting_everywhere() {
         // Learner round-3 BLOCKER: `let ys = [n * n for n in xs]` used to print
         // as `let ys = 0` (the inline renderer's placeholder leaked), and the
