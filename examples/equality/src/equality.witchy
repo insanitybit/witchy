@@ -1,9 +1,8 @@
-// The standard comparison hierarchy gives content-correct equality that holds up
-// in compiled code, not just the interpreter. `list.contains` and
-// `list.index_of` search by the element type's `Eq` impl, so they find
-// runtime-built strings and your own types. Built-in impls cover the primitives;
-// derive your own, or implement `PartialEq` (the `==`/`!=` operators dispatch
-// through it).
+// The standard comparison hierarchy gives content-correct equality that holds
+// up in compiled code, not just the interpreter. Eq-bound `list` helpers search
+// by the element type's `Eq` impl, so they find runtime-built strings and your
+// own types. Built-in impls cover the primitives; derive your own, or implement
+// `PartialEq` (the `==`/`!=` operators dispatch through it).
 
 import cmp
 import list

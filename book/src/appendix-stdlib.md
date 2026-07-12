@@ -54,7 +54,7 @@ to_ms` finds `duration.to_milliseconds`.
 | `rand` | cryptographically-secure randomness — needs the `Rand` capability |
 | `time` / `duration` | civil UTC date-times: `parse_iso8601`, `iso8601`, strftime-style `format`, validated `civil(...)`; `Duration` helpers |
 | `semver` | version parsing and comparison |
-| `cmp` / `show` *(show is prelude)* | the comparison hierarchy (`PartialEq`/`Eq`/`PartialOrd`/`Ord`, backing `== != < > <= >=`) and display trait, plus generic algorithms (`list.sort`, `cmp.max_of`, …) |
+| `cmp` / `show` *(show is prelude)* | the comparison hierarchy (`PartialEq`/`Eq`/`PartialOrd`/`Ord`, backing `== != < > <= >=`) and display trait; scalar comparison helpers live in `cmp`, collection algorithms live in `list` |
 | `ascii` | ASCII classification |
 
 ## Concurrency

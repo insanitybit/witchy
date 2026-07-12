@@ -23,3 +23,11 @@ The obsolete `cmp` list quartet is deleted. `std/list` owns the Eq-bound lookup,
 count, and dedupe APIs; `std/set` and the equality example now use the canonical
 `list` APIs, and release-facing docs no longer advertise `cmp.member` as a public
 generic helper.
+
+Validation:
+- `cargo run --quiet -- check std/cmp.witchy`
+- `cargo run --quiet -- check std/set.witchy`
+- `cargo run --quiet -- check examples/equality/src/equality.witchy`
+- `cargo run --quiet -- run examples/equality/src/equality.witchy`
+- `cargo test stdlib_docs_are_current -- --nocapture`
+- `cargo test all_std_modules_type_check -- --nocapture`

@@ -1602,7 +1602,7 @@ A new list with the first occurrence of `target` removed; unchanged when absent.
 
 #### `fn count(xs: List(a), target: a) -> Int where a: Eq`
 
-How many elements equal `target`, by the element type's `Eq` impl.
+The number of elements equal to `target`, by the element type's `Eq` impl. This is the counted companion to `contains`, so equality dispatch stays in the list module alongside membership, indexing, and de-duplication.
 
 #### `fn unique(xs: List(a)) -> List(a) where a: Eq`
 

@@ -94,8 +94,9 @@ would work for any type of yours that does too — implement (or derive) the
 comparison hierarchy for it and the same function applies. The `>` operator
 desugars to the type's `Ord` impl, so you never call a `greater`/`compare`
 function by name. The standard `cmp` and `show` modules provide these traits
-(`PartialEq` → `Eq` → `PartialOrd` → `Ord`) along with generic algorithms built
-on them (`list.contains`, `list.sort`, `cmp.max_of`, and so on).
+(`PartialEq` → `Eq` → `PartialOrd` → `Ord`) along with scalar helpers such as
+`cmp.max_of`, `cmp.min_of`, and `cmp.clamp`; collection algorithms live in
+`list` (`list.contains`, `list.index_of`, `list.sort`, and so on).
 
 ## `impl Trait` and rendering with `Show`
 
