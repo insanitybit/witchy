@@ -2421,8 +2421,9 @@ fn main(console: Console):
 
     #[test]
     fn compiler_try_doc_reports_parse_errors_as_result_on_both_backends() {
-        let src = "import compiler\n\nfn main(console: Console):\n    match compiler.try_doc(\"bad\", \"fn broken( ->\"):\n        Ok(_) -> console.print(\"unexpected ok\")\n        Err(e) -> console.print(e)\n    console.print(compiler.doc(\"bad\", \"fn broken( ->\"))\n";
+        let src = "import compiler\n\nfn via_string() -> Result(String, String):\n    let md = compiler.try_doc(\"bad\", \"fn broken( ->\")?\n    Ok(md)\n\nfn main(console: Console):\n    match compiler.try_doc(\"bad\", \"fn broken( ->\"):\n        Ok(_) -> console.print(\"unexpected ok\")\n        Err(compiler.SourceRejected(message)) -> console.print(message)\n        Err(e) -> console.print(compiler.compiler_error_message(e))\n    match via_string():\n        Ok(_) -> console.print(\"unexpected string ok\")\n        Err(e) -> console.print(e)\n    console.print(compiler.doc(\"bad\", \"fn broken( ->\"))\n";
         let expected = [
+            "parse error at 1:12: expected an identifier, found `->`",
             "parse error at 1:12: expected an identifier, found `->`",
             "<!-- doc error: parse error at 1:12: expected an identifier, found `->` -->",
         ];

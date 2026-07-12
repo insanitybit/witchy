@@ -309,6 +309,16 @@ compiler — witchy's own toolchain, exposed to witchy programs.
 
 A native intrinsic module (implemented in Rust, like `crypto`): it gives a program access to the compiler's capability analyzer, so a (self-hosted) package manager can compute a rune's supply-chain footprint from within witchy — on either backend. The body below is a placeholder the runtime never executes (the call is intercepted by its qualified name).
 
+#### `type CompilerError`
+
+Matchable compiler-service failures. `SourceRejected` is the ordinary parse, type, or comptime boundary reported by the compiler; the internal variants are for malformed native bridge output and should be treated as toolchain bugs.
+
+- `SourceRejected(String)`
+- `InternalJson(json.DecodeError)`
+- `InternalShape(String)`
+
+#### `fn compiler_error_message(e: CompilerError) -> String`
+
 #### `fn footprint(source: String) -> String`
 
 The capability footprint of witchy `source`, as JSON:   {"total":[..],"build":[..],"entries":[{"name":..,"capabilities":[..],"brands":[..]}]} or {"error":".."} if the source does not parse or contains `comptime:` blocks. Use the source-file CLI path for expanded comptime introspection. `build` is the build-time footprint — the build capabilities the rune's `build` entrypoint demands (gated separately from the runtime `total`). Parse it with `import json`.
@@ -317,9 +327,13 @@ The capability footprint of witchy `source`, as JSON:   {"total":[..],"build":[.
 
 Compare two sources by capability footprint, as JSON:   {"widened":bool,"added":[..],"removed":[..]}   (or {"error":".."}) `widened` is the rights-precise block-on-widening gate: true when `new` demands any capability or right that `old` did not.
 
-#### `fn try_doc(name: String, source: String) -> Result(String, String)`
+#### `fn try_doc(name: String, source: String) -> Result(String, CompilerError)`
 
-Render `source` to Markdown API documentation, or return a parse/comptime boundary error as `Err`. This is the tooling API for registries and package managers: it gives callers an inspectable error channel instead of hiding a failure inside presentation Markdown.
+Render `source` to Markdown API documentation, or return a typed parse/comptime boundary error as `Err`. This is the tooling API for registries and package managers: it gives callers an inspectable error channel instead of hiding a failure inside presentation Markdown.
+
+#### `fn try_doc_string(name: String, source: String) -> Result(String, String)`
+
+Render docs with String errors for application-style boundaries.
 
 #### `fn doc(name: String, source: String) -> String`
 
@@ -860,7 +874,19 @@ Matchable HTTP client failures for fallible network and parse paths.
 - `ConnectFailed(String, Int)`
 - `NoResolvedAddressPassedPinPolicy(String)`
 - `PinnedConnectFailed(String, String, Int)`
-- `MalformedResponse(String)`
+- `MalformedResponse(ResponseParseError)`
+
+#### `type ResponseParseError`
+
+Matchable strict-response parse failures. These are surfaced through `HttpError.MalformedResponse` by client APIs and `try_parse_response`.
+
+- `MissingChunkSizeTerminator`
+- `InvalidChunkSize(String)`
+- `MissingFinalChunkDelimiter`
+- `InvalidChunkUtf8`
+- `TruncatedChunk`
+- `MissingChunkDelimiter`
+- `InternalChunkDecoderState`
 
 #### `type Response`
 
@@ -889,6 +915,8 @@ A parsed request the server hands to a handler: method, raw path, the path param
 An outgoing request being assembled: method, full URL, headers, and body. Build it up with the chainable methods and finish with `.send(net)`.
 
 - `RequestBuilder(String, String, List((String, String)), String)`
+
+#### `fn response_parse_error_message(e: ResponseParseError) -> String`
 
 #### `fn http_error_message(e: HttpError) -> String`
 

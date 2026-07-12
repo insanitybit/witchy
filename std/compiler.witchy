@@ -9,6 +9,33 @@
 import json
 import option
 import result
+import show
+import error
+import convert
+
+// Matchable compiler-service failures. `SourceRejected` is the ordinary parse,
+// type, or comptime boundary reported by the compiler; the internal variants
+// are for malformed native bridge output and should be treated as toolchain bugs.
+type CompilerError:
+    SourceRejected(String)
+    InternalJson(json.DecodeError)
+    InternalShape(String)
+
+pub fn compiler_error_message(e: CompilerError) -> String:
+    match e:
+        SourceRejected(message) -> message
+        InternalJson(reason) -> "compiler.try_doc internal JSON error: " + json.decode_error_message(reason)
+        InternalShape(message) -> "compiler.try_doc internal JSON error: " + message
+
+impl Show for CompilerError:
+    fn show(self) -> String:
+        compiler_error_message(self)
+
+impl Error for CompilerError
+
+impl From(CompilerError) for String:
+    fn from(value: CompilerError) -> Self:
+        compiler_error_message(value)
 
 // The capability footprint of witchy `source`, as JSON:
 //   {"total":[..],"build":[..],"entries":[{"name":..,"capabilities":[..],"brands":[..]}]}
@@ -29,20 +56,26 @@ pub fn diff(old: String, new: String) -> String:
 fn __doc_result_json(name: String, source: String) -> String:
     name
 
-// Render `source` to Markdown API documentation, or return a parse/comptime
+// Render `source` to Markdown API documentation, or return a typed parse/comptime
 // boundary error as `Err`. This is the tooling API for registries and package
 // managers: it gives callers an inspectable error channel instead of hiding a
 // failure inside presentation Markdown.
-pub fn try_doc(name: String, source: String) -> Result(String, String):
+pub fn try_doc(name: String, source: String) -> Result(String, CompilerError):
     match json.decode(__doc_result_json(name, source)):
-        Err(e) -> Err("compiler.try_doc internal JSON error: " + json.decode_error_message(e))
+        Err(e) -> Err(InternalJson(e))
         Ok(doc_result) ->
             match json.get_string(doc_result, "ok"):
                 Some(md) -> Ok(md)
                 None ->
                     match json.get_string(doc_result, "error"):
-                        Some(message) -> Err(message)
-                        None -> Err("compiler.try_doc internal JSON error: missing `ok` or `error`")
+                        Some(message) -> Err(SourceRejected(message))
+                        None -> Err(InternalShape("missing `ok` or `error`"))
+
+// Render docs with String errors for application-style boundaries.
+pub fn try_doc_string(name: String, source: String) -> Result(String, String):
+    match try_doc(name, source):
+        Ok(md) -> Ok(md)
+        Err(e) -> Err(compiler_error_message(e))
 
 // Render `source` to Markdown API documentation (the same output as `witchy doc`
 // for source-only modules):
@@ -54,4 +87,4 @@ pub fn try_doc(name: String, source: String) -> Result(String, String):
 pub fn doc(name: String, source: String) -> String:
     match try_doc(name, source):
         Ok(md) -> md
-        Err(e) -> "<!-- doc error: " + e + " -->"
+        Err(e) -> "<!-- doc error: " + compiler_error_message(e) + " -->"

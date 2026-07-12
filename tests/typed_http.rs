@@ -36,7 +36,7 @@ fn classify(e: http.HttpError) -> String:
         http.ConnectFailed(host, port) -> "connect:" + host + ":${port}"
         http.NoResolvedAddressPassedPinPolicy(host) -> "pin-policy:" + host
         http.PinnedConnectFailed(host, ip, port) -> "pinned:" + host + ":" + ip + ":${port}"
-        http.MalformedResponse(reason) -> "response:" + reason
+        http.MalformedResponse(reason) -> "response:" + http.response_parse_error_message(reason)
 
 fn via_string(raw: String) -> Result(http.Response, String):
     let resp = http.try_parse_response(raw)?

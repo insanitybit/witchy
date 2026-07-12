@@ -25,7 +25,28 @@ type HttpError:
     ConnectFailed(String, Int)
     NoResolvedAddressPassedPinPolicy(String)
     PinnedConnectFailed(String, String, Int)
-    MalformedResponse(String)
+    MalformedResponse(ResponseParseError)
+
+// Matchable strict-response parse failures. These are surfaced through
+// `HttpError.MalformedResponse` by client APIs and `try_parse_response`.
+type ResponseParseError:
+    MissingChunkSizeTerminator
+    InvalidChunkSize(String)
+    MissingFinalChunkDelimiter
+    InvalidChunkUtf8
+    TruncatedChunk
+    MissingChunkDelimiter
+    InternalChunkDecoderState
+
+pub fn response_parse_error_message(e: ResponseParseError) -> String:
+    match e:
+        MissingChunkSizeTerminator -> "chunked response missing chunk-size terminator"
+        InvalidChunkSize(line) -> "chunked response has invalid chunk size `" + line + "`"
+        MissingFinalChunkDelimiter -> "chunked response missing final CRLF"
+        InvalidChunkUtf8 -> "chunked response body is not valid UTF-8"
+        TruncatedChunk -> "chunked response ended before the declared chunk size"
+        MissingChunkDelimiter -> "chunked response missing chunk delimiter"
+        InternalChunkDecoderState -> "unreachable chunked decoder state"
 
 pub fn http_error_message(e: HttpError) -> String:
     match e:
@@ -34,7 +55,17 @@ pub fn http_error_message(e: HttpError) -> String:
         ConnectFailed(host, port) -> "connect to " + host + ":" + "${port}" + " failed (unreachable)"
         NoResolvedAddressPassedPinPolicy(host) -> "no resolved address for " + host + " passed the pin policy"
         PinnedConnectFailed(host, ip, port) -> "connect to " + host + " (" + ip + ":" + "${port}" + ") failed"
-        MalformedResponse(reason) -> reason
+        MalformedResponse(reason) -> response_parse_error_message(reason)
+
+impl Show for ResponseParseError:
+    fn show(self) -> String:
+        response_parse_error_message(self)
+
+impl Error for ResponseParseError
+
+impl From(ResponseParseError) for String:
+    fn from(value: ResponseParseError) -> Self:
+        response_parse_error_message(value)
 
 impl Show for HttpError:
     fn show(self) -> String:
@@ -485,7 +516,7 @@ pub fn try_parse_response_string(raw: String) -> Result(Response, String):
         Ok(resp) -> Ok(resp)
         Err(e) -> Err(http_error_message(e))
 
-fn parse_response_inner(raw: String, strict_chunked: Bool) -> Result(Response, String):
+fn parse_response_inner(raw: String, strict_chunked: Bool) -> Result(Response, ResponseParseError):
     let sep = string.index_of(raw, "\r\n\r\n") ?? -1
     let head = if sep < 0: raw else: string.substring(raw, 0, sep)
     let bdy = if sep < 0: "" else: string.substring(raw, sep + 4, string.char_count(raw))
@@ -569,7 +600,7 @@ fn dechunk(body: String) -> String:
                             i = stop + 2
     bytes.to_string_lossy(out)
 
-fn dechunk_strict(body: String) -> Result(String, String):
+fn dechunk_strict(body: String) -> Result(String, ResponseParseError):
     let raw = bytes.from_string(body)
     let crlf = bytes.from_string("\r\n")
     var out = bytes.from_string("")
@@ -578,26 +609,26 @@ fn dechunk_strict(body: String) -> Result(String, String):
     while true:
         let nl = bytes_index_from(raw, crlf, i)
         if nl < 0:
-            return Err("chunked response missing chunk-size terminator")
+            return Err(MissingChunkSizeTerminator)
         let line = bytes.to_string_lossy(bytes.slice(raw, i, nl))
         match parse_hex_size(chunk_size_hex(line)):
-            None -> return Err("chunked response has invalid chunk size `" + line + "`")
+            None -> return Err(InvalidChunkSize(line))
             Some(sz) ->
                 let start = nl + 2
                 if sz <= 0:
                     if start + 2 > n || bytes.slice(raw, start, start + 2) != crlf:
-                        return Err("chunked response missing final CRLF")
+                        return Err(MissingFinalChunkDelimiter)
                     match bytes.decode_utf8(out):
                         Ok(text) -> return Ok(text)
-                        Err(_e) -> return Err("chunked response body is not valid UTF-8")
+                        Err(_e) -> return Err(InvalidChunkUtf8)
                 let stop = start + sz
                 if stop > n:
-                    return Err("chunked response ended before the declared chunk size")
+                    return Err(TruncatedChunk)
                 if stop + 2 > n || bytes.slice(raw, stop, stop + 2) != crlf:
-                    return Err("chunked response missing chunk delimiter")
+                    return Err(MissingChunkDelimiter)
                 out = bytes.concat(out, bytes.slice(raw, start, stop))
                 i = stop + 2
-    Err("unreachable chunked decoder state")
+    Err(InternalChunkDecoderState)
 
 // The byte index of `needle` in `b` at or after `from`, or -1.
 fn bytes_index_from(b: Bytes, needle: Bytes, from: Int) -> Int:

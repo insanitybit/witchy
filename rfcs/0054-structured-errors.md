@@ -27,7 +27,10 @@ tracking: >
   explicit String-rendering bridges; JWT and WebAuthn consumers bridge those
   errors explicitly to their existing typed API. std/http exposes HttpError
   through the primary URL fetch, fallible request, DNS-pin, builder-send, and
-  strict-response-parse APIs, with *_string bridges for application boundaries.
+  strict-response-parse APIs; malformed response framing carries typed
+  ResponseParseError, with *_string bridges for application boundaries.
+  std/compiler.try_doc exposes CompilerError, with try_doc_string as the
+  explicit String-rendering bridge for application boundaries.
   std/oauth exposes OAuthError through authorization-code exchange, OIDC
   id-token exchange, token-response parsing, and bearer JSON fetch, with
   *_string bridges for application boundaries. std/bytes exposes BytesError
