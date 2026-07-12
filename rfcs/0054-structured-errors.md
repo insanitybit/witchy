@@ -23,7 +23,9 @@ tracking: >
   keeping civil and parse_iso8601 as String-rendering wrappers. std/encoding
   exposes EncodingError through typed hex/base64/base64url decoders, with JWT
   and WebAuthn consumers bridging those errors explicitly to their existing
-  typed API. Coven Web's OIDC key selection preserves JwtError through
+  typed API. std/http exposes HttpError through typed URL, fallible request,
+  DNS-pin, builder-send, and strict-response-parse paths while keeping String
+  wrappers. Coven Web's OIDC key selection preserves JwtError through
   verification. Coven maintainer-policy
   state, stored-record parsing, source-footprint recomputation, and
   trusted-publishing token verification have typed corruption/authentication
@@ -327,6 +329,10 @@ base64, and base64url decoders/converters while keeping the legacy String
 wrappers. `std/jwt` and `std/webauthn` call the typed decoders and render with
 `encoding.encoding_error_message` only when mapping into their existing
 module-specific error variants.
+`std/http` now exposes `http.HttpError` through typed URL fetch, fallible
+request, DNS pin, pinned request, request-builder send, and strict response
+parse APIs. Existing String-returning entry points delegate to those typed
+forms and render with `http.http_error_message`.
 Build, run, and verify now share a local `LockIntegrityError` boundary: path
 hash drift, missing locked vendors, absent trust pins, malformed lock entries,
 duplicate aliases, invalid signed records, coordinate mismatches, and source
@@ -350,7 +356,6 @@ tokens, untrusted issuers, missing JWKS `kid`, JWKS key-selection failures, and
 OIDC claim/signature rejection before the server maps them to 401 responses.
 
 This does not complete the RFC. The remaining release-blocking work is the std
-and core-library migration: broader convenience parsers/codecs (`http`, and
-the legacy `url.parse`/`semver.parse` wrappers)
+and core-library migration: the legacy `url.parse`/`semver.parse` wrappers
 remain string-error APIs until each receives its typed cut or an explicit 0.1
 deferral.
