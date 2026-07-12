@@ -120,6 +120,17 @@ rather than at GATE_TIMEOUT), `MERGE_QUEUE_BATCH_MAX` (5),
 `MERGE_QUEUE_GATE_WT` (isolated state for TESTING the coordinator itself),
 `MERGE_QUEUE_ALLOW_MERGE=1` (test mode still merges — see Testing below).
 
+**Diff-scoped fuzzing.** The differential fuzzer is the gate's single biggest
+test (~57s, a fixed-seed parity regression suite). `process_one` classifies the
+batch diff (`base..sha`) and passes `WITCHY_GATE_FUZZ` to check.sh: `skip` when
+nothing under the parity surface changed (`crates/`, `std/`, `src/`, `examples/`,
+`projects/`, `build.rs`, `Cargo.*` — a docs/rfc/bug/config-only merge cannot
+change backend behavior), `reduced` (10 seeds, ~12s, vs 30/~57s) when it did, and
+`full` on any doubt (git error / empty diff — fail-safe). The full 30-seed sweep
+under the checked heap still runs post-merge on CI (`ci.yml`) and in `check.sh
+--full`, so reduced/skip lowers *pre-merge* cost without removing the regression
+net — only its position. Standalone `check.sh` (no env set) runs `full`.
+
 ## The gate lifecycle, step by step (process_one)
 
 1. Read queue head. Branch deleted → journal `dropped`, consume, next.

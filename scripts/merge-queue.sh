@@ -165,13 +165,14 @@ group_is_busy() { # group_is_busy <pgid>
 # Run the gate in its own process group with a stall/overall-timeout monitor.
 # Sets gate_result to "green", "red", or "timeout: <why>". Never returns nonzero.
 gate_result=""
-run_gate() { # run_gate <log>
+run_gate() { # run_gate <log> [fuzz-mode]
     local log="$1"
+    local fuzz_mode="${2:-full}"
     local start; start="$(date +%s)"
     # `set -m` puts the background job in its own process group, so a timeout
     # can kill the WHOLE cargo/nextest tree, not just the top shell.
     set -m
-    ( cd "$gate_wt" && exec env CARGO_INCREMENTAL=0 NEXTEST_STATUS_LEVEL=pass bash -c "$gate_cmd" ) >"$log" 2>&1 &
+    ( cd "$gate_wt" && exec env CARGO_INCREMENTAL=0 NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_FUZZ=$fuzz_mode" bash -c "$gate_cmd" ) >"$log" 2>&1 &
     local gpid=$!
     set +m
     local why=""
@@ -421,10 +422,27 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     fi
     local sha; sha="$(git -C "$gate_wt" rev-parse HEAD)"
 
+    # Fuzz policy from the diff (see check.sh's WITCHY_GATE_FUZZ). The differential
+    # fuzzer is a fixed-seed parity REGRESSION suite, so it can only catch a bug in
+    # a change that could alter backend behavior. Classify the whole batch's diff
+    # (base..sha covers every batched branch): if nothing under the parity surface
+    # changed, skip it; if the surface changed, run a reduced 10-seed sample (the
+    # full 30 still run post-merge on CI under the checked heap, and in `--full`).
+    # Fail SAFE: any doubt (git error, empty diff) -> full.
+    local fuzz_mode="full"
+    local changed
+    if changed="$(git -C "$gate_wt" diff --name-only "$base..$sha" 2>/dev/null)" && [ -n "$changed" ]; then
+        if echo "$changed" | grep -qE '^(crates/|std/|src/|examples/|projects/|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)'; then
+            fuzz_mode="reduced"
+        else
+            fuzz_mode="skip"
+        fi
+    fi
+
     local log; log="$logs/$(date +%Y%m%d-%H%M%S)-$(echo "$branch" | tr '/' '~').log"
     echo "$log" >"$lock/log"
-    note "gating $branch (rebased to $sha on $base); log: $log"
-    run_gate "$log"
+    note "gating $branch (rebased to $sha on $base; fuzz=$fuzz_mode); log: $log"
+    run_gate "$log" "$fuzz_mode"
     release_lock
     local took=$(( $(date +%s) - t0 ))
 

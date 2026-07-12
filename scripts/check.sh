@@ -61,12 +61,50 @@ else
     wasm_cargo=(cargo)
 fi
 
+# Fuzz policy (WITCHY_GATE_FUZZ, default `full`) — set by the merge-queue
+# coordinator from the branch diff; unset here means full, so a standalone run is
+# unchanged. The differential fuzzer is the single biggest test (~57s) and a fixed
+# 30-seed REGRESSION set (not exploratory), so it earns its keep only when a change
+# can affect backend parity:
+#   full     30 seeds (default; standalone, --full, and when unsure)
+#   reduced  10 seeds — a change touches parity surface (codegen/interp/std/…); the
+#            full 30 still run post-merge on CI (heap-checked) and in `--full`
+#   skip     none — a docs/rfc/bug/config-only diff cannot change parity, so no
+#            fuzz seed could catch anything; skip the whole differential_fuzz binary
+# `reduced` works by setting WITCHY_FUZZ_PROGRAMS (only the big test reads it, so
+# the cheaper metamorphic checks keep their full counts). `skip` filters the binary.
+gate_fuzz="${WITCHY_GATE_FUZZ:-full}"
+# `--full` is the EXHAUSTIVE push gate (it adds the heap-check / uaf / rc / type
+# sanitizer fuzz sweeps below, several of which run `differential_fuzz` at its
+# DEFAULT 30 seeds). Diff-scoping is only for the per-merge default gate — never
+# weaken --full — so force `full` here regardless of WITCHY_GATE_FUZZ. Otherwise a
+# reduced/skip mode would silently shrink or drop the very sweeps --full exists for.
+[ "$full" -eq 1 ] && gate_fuzz="full"
+# `reduced` runs the fuzzer under WITCHY_FUZZ_PROGRAMS=N. We set that var in this
+# shell's OWN environment (exported below only for that mode) rather than splicing
+# an `env` array into test_cmd — bash 3.2 (the macOS gate host) errors on an EMPTY
+# array expansion under `set -u`, so an unused `fuzz_env=()` would abort the script.
+fuzz_excl=""
+case "$gate_fuzz" in
+    reduced) export WITCHY_FUZZ_PROGRAMS="${WITCHY_GATE_FUZZ_REDUCED:-10}" ;;
+    skip)    fuzz_excl="not binary(differential_fuzz)" ;;
+    full)    ;;
+    *) echo "check.sh: unknown WITCHY_GATE_FUZZ='$gate_fuzz' (want full|reduced|skip)" >&2; exit 2 ;;
+esac
+
 # Prefer nextest (the project's runner); fall back to plain `cargo test`.
 # In --fast mode, exclude the load-flaky e2e binary (coven/glamour publish tests)
 # from the run — it is the push gate's job, not the per-commit loop's.
 if cargo nextest --version >/dev/null 2>&1; then
-    if [ "$fast" -eq 1 ]; then
-        test_cmd=(cargo nextest run --workspace -E 'not binary(e2e)')
+    # Combine the e2e exclusion (--fast) and the fuzz-skip exclusion into one
+    # filterset (nextest ANDs, so join with ` and `).
+    excl=""
+    [ "$fast" -eq 1 ] && excl="not binary(e2e)"
+    if [ -n "$fuzz_excl" ]; then
+        excl="${excl:+$excl and }$fuzz_excl"
+    fi
+    if [ -n "$excl" ]; then
+        test_cmd=(cargo nextest run --workspace -E "$excl")
     else
         test_cmd=(cargo nextest run --workspace)
     fi
