@@ -150,6 +150,24 @@ witchy_fmt_check() {
     "$target_dir/debug/witchy" fmt --check "${files[@]}"
 }
 
+# Run every `runnable` book block through the SHIPPED browser wasm + host and
+# assert its output equals the committed manifest oracle — the SAME check CI runs
+# (`scripts/validate_book_examples.mjs`), but here as a pre-merge gate step so a
+# false Run button (e.g. a `Console`-only-footprint program that uses `std/vm`'s
+# worker ops, which the browser shim can't provide) is caught BEFORE it lands, not
+# just detected post-merge. Uses the wasm built in the step above. Best-effort:
+# skips (green) if node or the wasm are absent so the gate never hard-depends on
+# a JS toolchain that may not be present everywhere.
+validate_runnable_book() {
+    command -v node >/dev/null 2>&1 || { echo "node absent — skipping runnable-book validation"; return 0; }
+    [ -f scripts/validate_book_examples.mjs ] || { echo "validator absent — skipping"; return 0; }
+    local built="$target_dir/wasm32-unknown-unknown/debug/witchy.wasm"
+    [ -f "$built" ] || { echo "wasm not built at $built — skipping"; return 0; }
+    # Point the validator at the freshly-built wasm via env — do NOT copy over the
+    # tracked web/witchy.wasm (a dirtied worktree would break the coordinator's ff-merge).
+    WITCHY_WASM_PATH="$built" node scripts/validate_book_examples.mjs
+}
+
 # Each stage marker carries its offset from gate start (`==> [2] clippy (t+41s)`),
 # so a redirected log is enough to see what is running now (merge-queue.sh
 # status/doctor parse these markers), and each stage reports its own duration
@@ -178,6 +196,7 @@ fi
 run "witchy fmt (std+examples)" witchy_fmt_check
 run "tests (workspace)"        "${test_cmd[@]}"
 run "wasm playground build"    "${wasm_cargo[@]}" build --lib --no-default-features --target wasm32-unknown-unknown
+run "runnable book (browser)"  validate_runnable_book
 if [ "$full" -eq 1 ]; then
     # RFC-0023 memory-safety sweep: re-run the differential fuzzer with the checked
     # heap on, so a codegen heap bug (wrong offset, missing ensure, mis-layout) in

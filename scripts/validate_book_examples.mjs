@@ -14,7 +14,12 @@ import { runWitchy } from "../web/witchy-host.js";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "..");
 
-const bytes = readFileSync(resolve(REPO, "web/witchy.wasm"));
+// WITCHY_WASM_PATH lets a caller point at a freshly-built wasm without clobbering
+// the tracked web/witchy.wasm — the merge gate (scripts/check.sh) uses this so it
+// can validate against the debug wasm it just built while leaving the worktree
+// clean (a dirty web/witchy.wasm would look like a merge collision). Defaults to
+// the shipped file, so CI and standalone runs are unchanged.
+const bytes = readFileSync(process.env.WITCHY_WASM_PATH || resolve(REPO, "web/witchy.wasm"));
 const { instance } = await WebAssembly.instantiate(bytes, {});
 const wasm = instance.exports;
 
