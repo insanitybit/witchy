@@ -24,6 +24,10 @@ use witchy_syntax::ast::{Item, Module, Type};
 pub const HOST_CAPABILITIES: &[&str] =
     &["Console", "Clock", "Rand", "Env", "Secret", "SecretStore", "Dir", "File", "Net", "Exec"];
 
+/// Capability values that are derived from host capabilities at runtime, rather
+/// than granted as root authorities at an entry point.
+pub const DERIVED_CAPABILITIES: &[&str] = &["Socket", "Listener"];
+
 /// The build-time capabilities a rune's `build` entrypoint may demand — the
 /// parallel set to the runtime host caps, tracked on a separate axis. Kind-only
 /// (the specific tool/dir/host/var is the consumer's grant, not the type), so
@@ -45,6 +49,20 @@ fn host_cap(name: &str) -> Option<&'static str> {
 
 fn build_cap(name: &str) -> Option<&'static str> {
     BUILD_CAPABILITIES.iter().copied().find(|c| *c == name)
+}
+
+pub fn is_host_capability(name: &str) -> bool {
+    host_cap(name).is_some()
+}
+
+pub fn is_build_capability(name: &str) -> bool {
+    build_cap(name).is_some()
+}
+
+pub fn is_capability_type_name(name: &str) -> bool {
+    is_host_capability(name)
+        || is_build_capability(name)
+        || DERIVED_CAPABILITIES.contains(&name)
 }
 
 /// Build-time capability kinds reachable from a type (no rights — kind-only).

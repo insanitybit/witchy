@@ -227,6 +227,19 @@
         let scalar = "mode opt\n\nfn twice(n: Int) -> Int:\n    n + n\n\nfn main(console: Console):\n    console.print(__render(twice(3)))\n";
         crate::enforce_performance_modes(&link_mode(scalar), "t").expect("scalar param is exempt");
 
+        // Bare capability values are authority tokens, not heap buffers; adding
+        // `let`/`own`/`var` to them would be pure annotation noise. Keep this
+        // list behind the shared capability predicate so new caps don't drift.
+        let caps = "mode opt\n\nfn use_caps(console: Console, clock: Clock, rand: Rand, env: Env, exec: Exec, dir: Dir, file: File, net: Net, secret: Secret, store: SecretStore, sock: Socket, listener: Listener) -> Int:\n    1\n\nfn main(console: Console):\n    console.print(__render(1))\n";
+        crate::enforce_performance_modes(&link_mode(caps), "t").expect("bare capabilities are exempt");
+
+        // An aggregate that carries a capability is still a heap value; the
+        // convention matters for the aggregate even though the bare cap is exempt.
+        let cap_aggregate = "mode opt\n\nfn keep(maybe: Option(Dir)) -> Int:\n    1\n\nfn main(console: Console):\n    console.print(__render(1))\n";
+        let err = crate::enforce_performance_modes(&link_mode(cap_aggregate), "t")
+            .expect_err("cap-carrying aggregate still needs an ownership convention");
+        assert!(err.contains("ownership convention") && err.contains("maybe"), "{err}");
+
         // Without a mode directive, the unannotated param is fine.
         let plain = unannotated.replacen("mode opt\n\n", "", 1);
         crate::enforce_performance_modes(&link_mode(&plain), "t").expect("non-mode file is not enforced");

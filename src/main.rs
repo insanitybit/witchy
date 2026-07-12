@@ -1470,11 +1470,10 @@ fn enforce_performance_modes(linked: &ast::Module, entry_stem: &str) -> Result<(
 /// capabilities, and function values are exempt — annotating them is noise.
 fn ownership_relevant(ty: &Option<ast::Type>) -> bool {
     match ty {
-        Some(ast::Type::Named(n, _)) => !matches!(
-            n.as_str(),
-            "Int" | "Float" | "Bool" | "Duration" | "Console" | "Dir" | "Net" | "Clock"
-                | "Env" | "Secret" | "SecretStore"
-        ),
+        Some(ast::Type::Named(n, _)) => {
+            !matches!(n.as_str(), "Int" | "Float" | "Bool" | "Duration")
+                && !witchy_caps::capabilities::is_capability_type_name(n)
+        }
         Some(ast::Type::Tuple(_)) => true,
         _ => false,
     }
