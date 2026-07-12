@@ -2873,9 +2873,27 @@ time — civil (UTC) date/time from a unix timestamp.
 
 `std/duration` models *spans*; this module models *points* on the calendar. Given seconds since the unix epoch (1970-01-01T00:00:00Z), it computes the civil year/month/day/hour/minute/second and formats them. The conversions use the standard days<->civil algorithm (proleptic Gregorian), correct for any CE date and for negative timestamps (before 1970) via floor division.
 
+#### `type TimeError`
+
+Matchable civil-time construction and ISO 8601 parse failures.
+
+- `YearOutOfRange(Int)`
+- `MonthOutOfRange(Int)`
+- `DayOutOfRange(Int, Int, Int)`
+- `ClockOutOfRange(Int, Int, Int)`
+- `InvalidIsoDate(String)`
+- `MissingDateTimeSeparator(String)`
+- `InvalidIsoTime(String)`
+- `InvalidDigits(String, Int, Int, String)`
+- `EmptyFractionalSeconds(String)`
+- `BadUtcOffset(String, String)`
+- `UtcOffsetOutOfRange(String)`
+
 #### `sealed type DateTime`
 
 - `DateTime(Int, Int, Int, Int, Int, Int)`
+
+#### `fn time_error_message(e: TimeError) -> String`
 
 #### `fn year(d: DateTime) -> Int`
 
@@ -2901,17 +2919,25 @@ The civil UTC date/time at `secs` SECONDS since the unix epoch (a classic unix t
 
 The unix timestamp for a DateTime (its inverse).
 
+#### `fn civil_typed(y: Int, mo: Int, da: Int, h: Int, mi: Int, s: Int) -> Result(DateTime, TimeError)`
+
+A DateTime from civil UTC components, validated — `civil(2026, 2, 30, ...)` is an Err, not a rollover. The typed form lets libraries classify malformed components without parsing display text.
+
 #### `fn civil(y: Int, mo: Int, da: Int, h: Int, mi: Int, s: Int) -> Result(DateTime, String)`
 
-A DateTime from civil UTC components, validated — `civil(2026, 2, 30, ...)` is an Err, not a rollover.
+Build a DateTime with String errors for application-style callers and older code. Libraries that need to classify failure should use `civil_typed`.
 
 #### `fn days_in_month(y: Int, mo: Int) -> Int`
 
 Days in a month, honoring leap February. A month outside 1..12 is a contract violation (RFC-0044 rule 3): abort naming the bad argument rather than silently returning 31 (the old `_ -> 31` catch-all).
 
+#### `fn parse_iso8601_typed(text: String) -> Result(DateTime, TimeError)`
+
+Parse RFC 3339 / ISO 8601: `2026-06-08T22:30:00Z`, an offset like `+02:00` (normalized to UTC), fractional seconds (truncated), a space instead of the `T`, or a bare `YYYY-MM-DD` (midnight UTC). The typed form preserves malformed dates, time fields, fractions, and offsets as structured cases.
+
 #### `fn parse_iso8601(text: String) -> Result(DateTime, String)`
 
-Parse RFC 3339 / ISO 8601: `2026-06-08T22:30:00Z`, an offset like `+02:00` (normalized to UTC), fractional seconds (truncated), a space instead of the `T`, or a bare `YYYY-MM-DD` (midnight UTC).
+Parse with String errors for application-style callers and older code. Libraries that need to classify failure should use `parse_iso8601_typed`.
 
 #### `fn is_leap(y: Int) -> Bool`
 
