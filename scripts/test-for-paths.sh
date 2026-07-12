@@ -60,7 +60,13 @@ for p in "${paths[@]}"; do
             add "cargo nextest run -E 'test(stdlib_docs_are_current)'"
             add "for f in std/*.witchy; do ./target/debug/witchy fmt --check \$f; done" ;;
         examples/* | book/*)
-            add "cargo nextest run -E 'test(/^example_tests::/)'" ;;
+            add "cargo nextest run -E 'test(/^example_tests::/)'"
+            # A book/example change can flip a block's browser-runnability (e.g.
+            # add a Console-only-footprint program that uses std/vm's worker ops —
+            # runnable on native, but the browser shim can't instantiate it). The
+            # --wasm shard rebuilds the browser wasm and runs the runnable-book
+            # validator, catching that false Run button pre-submit.
+            add "./scripts/check.sh --wasm" ;;
         projects/pm/* | projects/coven/* | projects/coven-web/* | projects/glamour/* | projects/docs/*)
             add "./scripts/check.sh --e2e" ;;
         tests/e2e.rs)
