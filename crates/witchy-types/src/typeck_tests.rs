@@ -101,6 +101,20 @@
     }
 
     #[test]
+    fn anonymous_union_widening_is_only_at_directed_sites() {
+        check_str(
+            "fn small(n: Int) -> .[B(Int) | C]:\n    .B(n)\n\nfn take(e: .[A | B(Int) | C]) -> String:\n    match e:\n        .A -> \"a\"\n        .B(n) -> __render(n)\n        .C -> \"c\"\n\nfn via_arg() -> String:\n    take(small(1))\n\nfn via_tail() -> .[A | B(Int) | C]:\n    small(2)\n\nfn via_return() -> .[A | B(Int) | C]:\n    return small(3)\n\nfn small_result() -> Result(Int, .[B(Int) | C]):\n    Err(.C)\n\nfn via_try() -> Result(Int, .[A | B(Int) | C]):\n    Ok(small_result()?)\n"
+        )
+        .expect("union widening works at argument, return/tail, and ? propagation sites");
+
+        let let_widening = check_str(
+            "fn small(n: Int) -> .[B(Int) | C]:\n    .B(n)\n\nfn f() -> .[A | B(Int) | C]:\n    let s = small(1)\n    let b: .[A | B(Int) | C] = s\n    b\n"
+        )
+        .unwrap_err();
+        assert!(let_widening.contains("declared `"), "{let_widening}");
+    }
+
+    #[test]
     fn packed_type_requires_packable_fields() {
         // (RFC-0027) scalars (and nested packed types) are packable.
         assert!(check_str(

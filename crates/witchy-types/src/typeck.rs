@@ -2628,8 +2628,43 @@ impl Checker {
         })
     }
 
-    fn result_error_compatible(&self, dst: &Ty, src: &Ty) -> bool {
-        self.same_resolved_type(dst, src) || self.has_from_conversion(dst, src)
+    fn result_error_compatible(&mut self, dst: &Ty, src: &Ty) -> Result<bool, TypeError> {
+        if self.same_resolved_type(dst, src) || self.has_from_conversion(dst, src) {
+            return Ok(true);
+        }
+        self.anon_union_widening_ok(dst, src)
+    }
+
+    fn anon_union_widening_ok(&mut self, dst: &Ty, src: &Ty) -> Result<bool, TypeError> {
+        let (Some((_, dst_variants)), Some((_, src_variants))) = (
+            self.anon_union_variants_for_ty(dst),
+            self.anon_union_variants_for_ty(src),
+        ) else {
+            return Ok(false);
+        };
+        if src_variants.len() > dst_variants.len() {
+            return Ok(false);
+        }
+
+        let saved_subst = self.subst.clone();
+        for (src_tag, src_fields) in &src_variants {
+            let Some((_, dst_fields)) = dst_variants
+                .iter()
+                .find(|(dst_tag, dst_fields)| {
+                    dst_tag == src_tag && dst_fields.len() == src_fields.len()
+                })
+            else {
+                self.subst = saved_subst;
+                return Ok(false);
+            };
+            for (dst_field, src_field) in dst_fields.iter().zip(src_fields) {
+                if self.unify(dst_field, src_field).is_err() {
+                    self.subst = saved_subst;
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
     }
 
     /// The first migrated externref capability carried by `t`, if any. Kept in
@@ -3586,7 +3621,7 @@ impl Checker {
             }
             _ => false,
         };
-        if coercible {
+        if coercible || self.anon_union_widening_ok(expected, actual)? {
             Ok(())
         } else {
             self.unify(expected, actual)
@@ -3792,7 +3827,7 @@ impl Checker {
                         None => Ty::Nil,
                     };
                     if let Some(ret) = self.current_ret.clone() {
-                        self.unify(&ret, &t).map_err(|e| TypeError {
+                        self.coerce_arg(&ret, &t).map_err(|e| TypeError {
                             message: format!("`return` value: {}", e.message),
                         })?;
                     }
@@ -4623,7 +4658,7 @@ impl Checker {
                     Ty::Named(n, args) if n == "Result" && args.len() == 2 => {
                         match &ret {
                             Ty::Named(rn, rargs) if rn == "Result" && rargs.len() == 2 => {
-                                if !self.result_error_compatible(&rargs[1], &args[1]) {
+                                if !self.result_error_compatible(&rargs[1], &args[1])? {
                                     return terr(format!(
                                         "`?` propagates a `{}` error, but the enclosing function returns `{}` \
                                          and no `From({}) for {}` impl exists",

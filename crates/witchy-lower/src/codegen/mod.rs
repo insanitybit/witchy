@@ -326,6 +326,10 @@ fn anon_union_variant_names(name: &str) -> Option<Vec<String>> {
     })
 }
 
+fn anon_union_tag_key(tag: &str, arity: usize) -> String {
+    format!("{tag}/{arity}")
+}
+
 fn anon_union_variant_types(name: &str, args: &[Type]) -> Option<Vec<Vec<Type>>> {
     let variants = witchy_types::typeck::anon_union_synthetic_variants(name)?;
     let mut out = Vec::with_capacity(variants.len());
@@ -959,6 +963,11 @@ struct Codegen<'types> {
     /// Constructor names per sum type, indexed by tag — so a `to_string` ADT
     /// renderer can emit `Some(5)` / `None` (the `eq` path never needs names).
     adt_variant_names: HashMap<String, Vec<String>>,
+    /// Anonymous union runtime tag codes, keyed by tag spelling and arity. Unlike
+    /// declared ADTs, anonymous unions can widen across different closed sets, so
+    /// their runtime tag word must not be the variant's index within one set.
+    anon_union_tag_codes: HashMap<String, i32>,
+    next_anon_union_tag_code: i32,
     /// Closure arities for which a `(type $clos{n})` signature is needed (all
     /// i32 params, i32 result), used by `call_indirect`.
     clos_arities: HashSet<usize>,
@@ -1115,10 +1124,33 @@ impl<'types> Codegen<'types> {
             lambda_threaded_index: HashMap::new(),
             ts_helpers: std::collections::BTreeMap::new(),
             adt_variant_names: HashMap::new(),
+            anon_union_tag_codes: HashMap::new(),
+            next_anon_union_tag_code: 0,
             clos_arities: HashSet::new(),
             apply_level: 0,
             loop_labels: Vec::new(),
         }
+    }
+
+    fn anon_union_tag_code(&mut self, tag: &str, arity: usize) -> i32 {
+        let key = anon_union_tag_key(tag, arity);
+        if let Some(code) = self.anon_union_tag_codes.get(&key) {
+            return *code;
+        }
+        let code = self.next_anon_union_tag_code;
+        self.next_anon_union_tag_code += 1;
+        self.anon_union_tag_codes.insert(key, code);
+        code
+    }
+
+    fn anon_union_tag_codes_for(&mut self, name: &str) -> Option<Vec<i32>> {
+        let variants = witchy_types::typeck::anon_union_synthetic_variants(name)?;
+        Some(
+            variants
+                .into_iter()
+                .map(|(tag, arity)| self.anon_union_tag_code(&tag, arity))
+                .collect(),
+        )
     }
 
     /// The WASM kind a closure-valued expression returns: a function-typed
@@ -3918,18 +3950,21 @@ impl<'types> Codegen<'types> {
                 let variants = witchy_types::typeck::anon_union_synthetic_variants(name)?;
                 let mut offset = 0usize;
                 let mut found = None;
-                for (index, (variant, arity)) in variants.into_iter().enumerate() {
+                for (variant, arity) in variants {
                     let end = offset.checked_add(arity)?;
                     if end > union_args.len() {
                         return None;
                     }
                     if variant == *tag && arity == args.len() {
-                        found = Some((index as i32, union_args[offset..end].to_vec()));
+                        found = Some((
+                            self.anon_union_tag_code(&variant, arity),
+                            union_args[offset..end].to_vec(),
+                        ));
                         break;
                     }
                     offset = end;
                 }
-                let (tag_index, field_types) = found?;
+                let (tag_code, field_types) = found?;
                 let ptr = W::FromSlot(Box::new(value.clone()), witchy_wir::wir::Kind::I32);
                 let mut field_conds: Vec<W> = Vec::new();
                 let mut binds: witchy_wir::wir::WirSeq = Vec::new();
@@ -3955,7 +3990,7 @@ impl<'types> Codegen<'types> {
                     op: witchy_wir::wir::BinOp::Eq,
                     kind: witchy_wir::wir::Kind::I32,
                     lhs: Box::new(W::Load { ptr: Box::new(ptr), kind: witchy_wir::wir::Kind::I32, offset: 0 }),
-                    rhs: Box::new(W::ConstI32(tag_index)),
+                    rhs: Box::new(W::ConstI32(tag_code)),
                 };
                 let cond = if field_conds.is_empty() {
                     tag_eq
@@ -4934,10 +4969,11 @@ impl<'types> Codegen<'types> {
                     return None;
                 };
                 let variants = witchy_types::typeck::anon_union_synthetic_variants(&name)?;
-                let index = variants
+                let (_, arity) = variants
                     .iter()
-                    .position(|(variant, arity)| variant == tag && *arity == args.len())?;
-                return self.lower_aggregate(index as i32, args, 0);
+                    .find(|(variant, arity)| variant == tag && *arity == args.len())?;
+                let tag_code = self.anon_union_tag_code(tag, *arity);
+                return self.lower_aggregate(tag_code, args, 0);
             }
             Expr::Ctor { name, args } => {
                 if name == "Nil" && args.is_empty() {

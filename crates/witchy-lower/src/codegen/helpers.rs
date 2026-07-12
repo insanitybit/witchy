@@ -440,6 +440,12 @@ impl Codegen<'_> {
                 }
                 self.build_variant_rcopy_wir(&all)
             }
+            EqShape::AdtInst(tyname, variants)
+                if witchy_types::typeck::anon_union_synthetic_variants(tyname).is_some() =>
+            {
+                let tag_codes = self.anon_union_tag_codes_for(tyname)?;
+                self.build_variant_rcopy_wir_with_tags(&tag_codes, variants)
+            }
             EqShape::AdtInst(_, variants) => self.build_variant_rcopy_wir(variants),
             EqShape::AdtRec(tyname, args) => {
                 let variants = self.adt_variants.get(tyname).cloned()?;
@@ -581,6 +587,15 @@ impl Codegen<'_> {
         &mut self,
         variants: &[Vec<EqShape>],
     ) -> Option<(witchy_wir::wir::WirSeq, Vec<witchy_wir::wir::WirLocal>)> {
+        let tag_codes: Vec<i32> = (0..variants.len()).map(|tag| tag as i32).collect();
+        self.build_variant_rcopy_wir_with_tags(&tag_codes, variants)
+    }
+
+    pub(crate) fn build_variant_rcopy_wir_with_tags(
+        &mut self,
+        tag_codes: &[i32],
+        variants: &[Vec<EqShape>],
+    ) -> Option<(witchy_wir::wir::WirSeq, Vec<witchy_wir::wir::WirLocal>)> {
         use witchy_wir::wir::{BinOp, Kind as WK, WirExpr as W, WirLocal, WirNode as N, WirTy};
         let getl = |name: &str| W::GetLocal(name.into());
         let getg = |name: &str| W::GetGlobal(name.into());
@@ -605,7 +620,10 @@ impl Codegen<'_> {
                 offset: 0,
             },
         });
-        for (tag, fields) in variants.iter().enumerate() {
+        if tag_codes.len() != variants.len() {
+            return None;
+        }
+        for (tag, fields) in tag_codes.iter().zip(variants) {
             let size = (4 + 8 * fields.len()) as i32;
             let mut copy = Self::rcopy_alloc_wir(i32c(size));
             copy.push(N::Store {
@@ -633,7 +651,7 @@ impl Codegen<'_> {
                 getg("rcopy_delta"),
             ))));
             body.push(N::If {
-                cond: bin(BinOp::Eq, getl("tag"), i32c(tag as i32)),
+                cond: bin(BinOp::Eq, getl("tag"), i32c(*tag)),
                 then_: copy,
                 els: vec![],
                 result: None,
@@ -770,6 +788,13 @@ impl Codegen<'_> {
                 }
                 return self.build_variant_eq_wir(&all);
             }
+            EqShape::AdtInst(tyname, variant_shapes)
+                if witchy_types::typeck::anon_union_synthetic_variants(tyname).is_some() =>
+            {
+                let tag_codes = self.anon_union_tag_codes_for(tyname)?;
+                let all = variant_shapes.clone();
+                return self.build_variant_eq_wir_with_tags(&tag_codes, &all);
+            }
             EqShape::AdtInst(_, variant_shapes) => {
                 let all = variant_shapes.clone();
                 return self.build_variant_eq_wir(&all);
@@ -849,6 +874,15 @@ impl Codegen<'_> {
         &mut self,
         all: &[Vec<EqShape>],
     ) -> Option<(witchy_wir::wir::WirSeq, Vec<witchy_wir::wir::WirLocal>)> {
+        let tag_codes: Vec<i32> = (0..all.len()).map(|tag| tag as i32).collect();
+        self.build_variant_eq_wir_with_tags(&tag_codes, all)
+    }
+
+    pub(crate) fn build_variant_eq_wir_with_tags(
+        &mut self,
+        tag_codes: &[i32],
+        all: &[Vec<EqShape>],
+    ) -> Option<(witchy_wir::wir::WirSeq, Vec<witchy_wir::wir::WirLocal>)> {
         use witchy_wir::wir::{BinOp, Kind, UnOp, WirExpr as W, WirLocal, WirNode as N, WirTy};
         let getl = |n: &str| W::GetLocal(n.into());
         let i32c = W::ConstI32;
@@ -865,7 +899,10 @@ impl Codegen<'_> {
             result: None,
         });
         b.push(N::SetLocal { local: "t".into(), value: load_i32(getl("a")) });
-        for (tag, fields) in all.iter().enumerate() {
+        if tag_codes.len() != all.len() {
+            return None;
+        }
+        for (tag, fields) in tag_codes.iter().zip(all) {
             if fields.is_empty() {
                 continue;
             }
@@ -877,7 +914,7 @@ impl Codegen<'_> {
             }
             checks.push(N::Return(Some(i32c(1))));
             b.push(N::If {
-                cond: eqi(getl("t"), i32c(tag as i32)),
+                cond: eqi(getl("t"), i32c(*tag)),
                 then_: checks,
                 els: vec![],
                 result: None,
@@ -1106,8 +1143,11 @@ impl Codegen<'_> {
                     .get(tyname)
                     .cloned()
                     .or_else(|| anon_union_variant_names(tyname))?;
+                let tag_codes = self
+                    .anon_union_tag_codes_for(tyname)
+                    .unwrap_or_else(|| (0..variant_shapes.len()).map(|tag| tag as i32).collect());
                 let all = variant_shapes.clone();
-                self.build_variant_ts_wir(&names, &all)
+                self.build_variant_ts_wir_with_tags(&names, &tag_codes, &all)
             }
             // A dict renders as `{k: v, ...}` over its `[count][key slot, value slot]…`
             // entries (16-byte stride), matching the interpreter's `Value::Dict` order.
@@ -1190,6 +1230,16 @@ impl Codegen<'_> {
         ctor_names: &[String],
         all: &[Vec<EqShape>],
     ) -> Option<(witchy_wir::wir::WirSeq, Vec<witchy_wir::wir::WirLocal>)> {
+        let tag_codes: Vec<i32> = (0..all.len()).map(|tag| tag as i32).collect();
+        self.build_variant_ts_wir_with_tags(ctor_names, &tag_codes, all)
+    }
+
+    pub(crate) fn build_variant_ts_wir_with_tags(
+        &mut self,
+        ctor_names: &[String],
+        tag_codes: &[i32],
+        all: &[Vec<EqShape>],
+    ) -> Option<(witchy_wir::wir::WirSeq, Vec<witchy_wir::wir::WirLocal>)> {
         use witchy_wir::wir::{BinOp, Kind, WirExpr as W, WirLocal, WirNode as N, WirTy};
         let getl = |n: &str| W::GetLocal(n.into());
         let i32c = W::ConstI32;
@@ -1200,11 +1250,18 @@ impl Codegen<'_> {
         let load_i32 = |p: W| W::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
         let (open, close, comma) = (self.intern("("), self.intern(")"), self.intern(", "));
         let mut b: witchy_wir::wir::WirSeq = vec![setl("t", load_i32(getl("p")))];
-        for (tag, fields) in all.iter().enumerate() {
+        if tag_codes.len() != all.len() {
+            return None;
+        }
+        for (tag, fields) in tag_codes.iter().zip(all) {
             // (RFC-0042) Render the unqualified variant name (`Item`), not the
             // canonical `module.Ctor` the tag table carries — matching the
             // interpreter's `Value::Ctor` Display so both backends print alike.
-            let raw = ctor_names.get(tag).map(|s| s.as_str()).unwrap_or("?");
+            let raw = ctor_names
+                .iter()
+                .zip(tag_codes)
+                .find_map(|(name, code)| (*code == *tag).then_some(name.as_str()))
+                .unwrap_or("?");
             let shown = if raw.starts_with('.') {
                 raw
             } else {
@@ -1213,7 +1270,7 @@ impl Codegen<'_> {
             let label = self.intern(shown);
             if fields.is_empty() {
                 b.push(N::If {
-                    cond: eqi(getl("t"), i32c(tag as i32)),
+                    cond: eqi(getl("t"), i32c(*tag)),
                     then_: vec![N::Return(Some(W::StrPtr(label)))],
                     els: vec![],
                     result: None,
@@ -1232,7 +1289,7 @@ impl Codegen<'_> {
                 arm.push(setl("acc", concat(getl("acc"), render)));
             }
             arm.push(N::Return(Some(concat(getl("acc"), W::StrPtr(close)))));
-            b.push(N::If { cond: eqi(getl("t"), i32c(tag as i32)), then_: arm, els: vec![], result: None });
+            b.push(N::If { cond: eqi(getl("t"), i32c(*tag)), then_: arm, els: vec![], result: None });
         }
         // For valid data the tag always matches a variant above; this tail is the
         // unreachable fallback that keeps the function stack-typed.

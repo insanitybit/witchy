@@ -1328,6 +1328,20 @@ fn main(console: Console):
         );
     }
 
+    /// (RFC-0078) Anonymous union widening is a no-op at runtime because tag
+    /// identity is global, not the variant's position inside one closed set.
+    #[test]
+    fn anonymous_union_widening_uses_global_tags_on_both_backends() {
+        let src = "type Small = .[B(Int) | C]\ntype Big = .[A | B(Int) | C]\n\nfn small_b(n: Int) -> Small:\n    .B(n)\n\nfn small_c() -> Small:\n    .C\n\nfn describe(e: Big) -> String:\n    match e:\n        .A -> \"A\"\n        .B(n) -> \"B:\" + __render(n)\n        .C -> \"C\"\n\nfn tail_widen(n: Int) -> Big:\n    small_b(n)\n\nfn return_widen(n: Int) -> Big:\n    return small_b(n)\n\nfn small_result() -> Result(Int, Small):\n    Err(small_c())\n\nfn try_widen() -> Result(Int, Big):\n    Ok(small_result()?)\n\nfn main(console: Console):\n    console.print(describe(small_b(4)))\n    console.print(describe(tail_widen(5)))\n    console.print(describe(return_widen(6)))\n    match try_widen():\n        Ok(n) -> console.print(\"ok:\" + __render(n))\n        Err(.A) -> console.print(\"err:A\")\n        Err(.B(n)) -> console.print(\"err:B:\" + __render(n))\n        Err(.C) -> console.print(\"err:C\")\n";
+        let expected = ["B:4", "B:5", "B:6", "err:C"];
+        assert_eq!(link_run(src), expected, "interp anonymous union widening");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled anonymous union widening must agree",
+        );
+    }
+
     /// (RFC-0065, parity) Set/DateTime/Rng/Url are `sealed type`s: external code must
     /// build them through the module's smart constructors (dedup / validated /
     /// parsed), but may still READ and MATCH them. The public API + inspection run
