@@ -3074,13 +3074,13 @@ fn main(console: Console):
     console.print("unicode-chunk=" + http.body(http.parse_response("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\né\r\n0\r\n\r\n")))
     match http.try_parse_response("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\né\r\n0\r\n\r\n"):
         Ok(resp) -> console.print("unicode-strict=" + http.body(resp))
-        Err(e) -> console.print("unicode-strict=" + e)
+        Err(e) -> console.print("unicode-strict=" + http.http_error_message(e))
     match http.try_parse_response("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nX\r\nhello\r\n0\r\n\r\n"):
         Ok(_) -> console.print("bad-size=parsed")
-        Err(e) -> console.print("bad-size=" + e)
+        Err(e) -> console.print("bad-size=" + http.http_error_message(e))
     match http.try_parse_response("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhe"):
         Ok(_) -> console.print("truncated=parsed")
-        Err(e) -> console.print("truncated=" + e)
+        Err(e) -> console.print("truncated=" + http.http_error_message(e))
     let r1 = server.with_header(server.text(200, "hi"), "content-length", "999")
     console.print("cl=" + __render(string.count(string.to_lower(server.render(r1)), "content-length")))
     console.print(__render(http.is_framing_header("Content-Length")))
@@ -14253,11 +14253,11 @@ fn main(console: Console):
              \x20       Ok(_) -> console.print(\"UNEXPECTED\")\n\
              \x20       Err(_) -> console.print(\"policy blocked\")\n\
              \x20   match http.pin(net, \"http://127.0.0.1:{port}/greet\", allow):\n\
-             \x20       Err(e) -> console.print(\"pin: \" + e)\n\
+             \x20       Err(e) -> console.print(\"pin: \" + http.http_error_message(e))\n\
              \x20       Ok(p) ->\n\
              \x20           match http.get_pinned(net, p):\n\
              \x20               Ok(r) -> console.print(\"${{http.status(r)}} ${{http.body(r)}}\")\n\
-             \x20               Err(e) -> console.print(\"get: \" + e)\n\
+             \x20               Err(e) -> console.print(\"get: \" + http.http_error_message(e))\n\
              fn allow(ip: String) -> Bool:\n\
              \x20   true\n\
              fn reject(ip: String) -> Bool:\n\
@@ -14324,7 +14324,7 @@ fn main(console: Console):
         });
 
         let src = format!(
-            "import http\nfn main(console: Console, net: Net):\n    match http.get_url(net, \"https://localhost:{port}/\"):\n        Ok(resp) -> console.print(\"${{http.status(resp)}} ${{http.body(resp)}}\")\n        Err(e) -> console.print(\"error: \" + e)\n"
+            "import http\nfn main(console: Console, net: Net):\n    match http.get_url(net, \"https://localhost:{port}/\"):\n        Ok(resp) -> console.print(\"${{http.status(resp)}} ${{http.body(resp)}}\")\n        Err(e) -> console.print(\"error: \" + http.http_error_message(e))\n"
         );
         let allow = format!("localhost:{port}");
         assert_eq!(link_run_net(&src, &[allow.as_str()]), vec!["200 hi".to_string()], "interp https");
@@ -19307,7 +19307,7 @@ import http
 fn main(console: Console, net: Net):
     match http.get_url(net, "http://127.0.0.1:{port}/path"):
         Ok(r) -> console.print(http.body(r))
-        Err(e) -> console.print(e)
+        Err(e) -> console.print(http.http_error_message(e))
 "#
         );
         let mods = vec![("main".to_string(), parser::parse_module(&program).expect("parse"))];

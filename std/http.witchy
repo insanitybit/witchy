@@ -7,7 +7,7 @@
 // compile to capability-gated host imports, so a compiled module's import list
 // IS its network footprint.
 
-// `header` returns Option; `get_url` returns Result; `url` parses URL strings.
+// `header` returns Option; `get_url` returns typed Result; `url` parses URL strings.
 
 import option
 import result
@@ -94,18 +94,17 @@ pub fn head(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Re
 
 // GET a full URL string (`http://host[:port]/path`), or an error if it doesn't
 // parse. Saves splitting host/port/path by hand.
-pub fn get_url_typed(net: Net[Connect, Tcp], raw: String) -> Result(Response, HttpError):
+pub fn get_url(net: Net[Connect, Tcp], raw: String) -> Result(Response, HttpError):
     match url.parse(raw):
         Ok(u) ->
-            match scheme_secure_typed(url.scheme(u)):
+            match scheme_secure(url.scheme(u)):
                 Ok(secure) -> Ok(request_with(net, secure, "GET", url.host(u), url.port(u), url.path(u), [], ""))
                 Err(e) -> Err(e)
         Err(e) -> Err(InvalidUrl(e))
 
-// GET a full URL with String errors for application-style callers and older
-// code. Libraries that need to classify failure should use `get_url_typed`.
-pub fn get_url(net: Net[Connect, Tcp], raw: String) -> Result(Response, String):
-    match get_url_typed(net, raw):
+// GET a full URL with String errors for application-style callers and older code.
+pub fn get_url_string(net: Net[Connect, Tcp], raw: String) -> Result(Response, String):
+    match get_url(net, raw):
         Ok(resp) -> Ok(resp)
         Err(e) -> Err(http_error_message(e))
 
@@ -113,18 +112,13 @@ pub fn get_url(net: Net[Connect, Tcp], raw: String) -> Result(Response, String):
 // or unsupported (`Err`). This module speaks only HTTP/1.1: a `ftp:`/`file:`/`ws:`
 // URL must NOT be silently dialed as plaintext HTTP to the named host — reject it so
 // the caller gets an error rather than an accidental request to the wrong protocol.
-fn scheme_secure_typed(scheme: String) -> Result(Bool, HttpError):
+fn scheme_secure(scheme: String) -> Result(Bool, HttpError):
     if scheme == "https":
         Ok(true)
     else if scheme == "http":
         Ok(false)
     else:
         Err(UnsupportedScheme(scheme))
-
-fn scheme_secure(scheme: String) -> Result(Bool, String):
-    match scheme_secure_typed(scheme):
-        Ok(secure) -> Ok(secure)
-        Err(e) -> Err(http_error_message(e))
 
 // The dial target for a request: `tls:host:port` when `secure` (HTTPS), else
 // `host:port`. The capability allowlist governs the bare `host:port`; the `tls:`
@@ -176,17 +170,12 @@ fn send_on(sock: Socket, method: String, host: String, path: String, headers: Li
     match send_on_result(sock, method, host, path, headers, body):
         Ok(resp) -> resp
         Err(e) ->
-            fail("HTTP response malformed: " + e)
+            fail("HTTP response malformed: " + http_error_message(e))
             Response(0, [], "")
 
-fn send_on_result_typed(sock: Socket, method: String, host: String, path: String, headers: List((String, String)), body: String) -> Result(Response, HttpError):
+fn send_on_result(sock: Socket, method: String, host: String, path: String, headers: List((String, String)), body: String) -> Result(Response, HttpError):
     render_and_send(sock, method, host, path, headers, body)
-    try_parse_response_typed(sock.recv_all())
-
-fn send_on_result(sock: Socket, method: String, host: String, path: String, headers: List((String, String)), body: String) -> Result(Response, String):
-    match send_on_result_typed(sock, method, host, path, headers, body):
-        Ok(resp) -> Ok(resp)
-        Err(e) -> Err(http_error_message(e))
+    try_parse_response(sock.recv_all())
 
 fn request(net: Net[Connect, Tcp], method: String, host: String, port: Int, path: String, body: String) -> Response:
     request_with(net, false, method, host, port, path, [], body)
@@ -196,33 +185,33 @@ fn request(net: Net[Connect, Tcp], method: String, host: String, port: Int, path
 // on `try_connect` so a long-running server (a proxy, a health check) survives a
 // down peer — the caller decides what to do (e.g. answer 502) instead of the VM
 // aborting. A successful dial sends the request and parses the response as usual.
-pub fn try_request_with_typed(net: Net[Connect, Tcp], secure: Bool, method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Result(Response, HttpError):
+pub fn try_request_with(net: Net[Connect, Tcp], secure: Bool, method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Result(Response, HttpError):
     match net.try_connect(endpoint(secure, host, port)):
         None -> Err(ConnectFailed(host, port))
-        Some(sock) -> send_on_result_typed(sock, method, host, path, headers, body)
+        Some(sock) -> send_on_result(sock, method, host, path, headers, body)
 
-pub fn try_request_with(net: Net[Connect, Tcp], secure: Bool, method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Result(Response, String):
-    match try_request_with_typed(net, secure, method, host, port, path, headers, body):
+pub fn try_request_with_string(net: Net[Connect, Tcp], secure: Bool, method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Result(Response, String):
+    match try_request_with(net, secure, method, host, port, path, headers, body):
         Ok(resp) -> Ok(resp)
         Err(e) -> Err(http_error_message(e))
 
 // Fallible GET: `Ok(response)` on success, `Err(reason)` if the host is
 // unreachable. The fallible counterpart of `get`.
-pub fn try_get_typed(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Result(Response, HttpError):
-    try_request_with_typed(net, false, "GET", host, port, path, [], "")
+pub fn try_get(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Result(Response, HttpError):
+    try_request_with(net, false, "GET", host, port, path, [], "")
 
-pub fn try_get(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Result(Response, String):
-    match try_get_typed(net, host, port, path):
+pub fn try_get_string(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Result(Response, String):
+    match try_get(net, host, port, path):
         Ok(resp) -> Ok(resp)
         Err(e) -> Err(http_error_message(e))
 
 // Fallible POST: `Ok(response)` on success, `Err(reason)` if the host is
 // unreachable. The fallible counterpart of `post`.
-pub fn try_post_typed(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Result(Response, HttpError):
-    try_request_with_typed(net, false, "POST", host, port, path, [], body)
+pub fn try_post(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Result(Response, HttpError):
+    try_request_with(net, false, "POST", host, port, path, [], body)
 
-pub fn try_post(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Result(Response, String):
-    match try_post_typed(net, host, port, path, body):
+pub fn try_post_string(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Result(Response, String):
+    match try_post(net, host, port, path, body):
         Ok(resp) -> Ok(resp)
         Err(e) -> Err(http_error_message(e))
 
@@ -236,30 +225,30 @@ pub fn try_post(net: Net[Connect, Tcp], host: String, port: Int, path: String, b
 //     match http.pin(safe, user_url, allow_ip):
 //         Ok(p) -> http.get_pinned(safe, p)
 //         Err(e) -> Err(e)
-pub fn pin_typed(net: Net[Connect, Tcp], raw: String, allow_ip: fn(String) -> Bool) -> Result(PinnedUrl, HttpError):
+pub fn pin(net: Net[Connect, Tcp], raw: String, allow_ip: fn(String) -> Bool) -> Result(PinnedUrl, HttpError):
     match url.parse(raw):
         Err(e) -> Err(InvalidUrl(e))
         Ok(u) ->
-            match scheme_secure_typed(url.scheme(u)):
+            match scheme_secure(url.scheme(u)):
                 Err(e) -> Err(e)
                 Ok(secure) ->
                     match first_allowed(net.resolve(url.host(u)), allow_ip):
                         None -> Err(NoResolvedAddressPassedPinPolicy(url.host(u)))
                         Some(ip) -> Ok(PinnedUrl(url.host(u), url.port(u), secure, url.path(u), ip))
 
-pub fn pin(net: Net[Connect, Tcp], raw: String, allow_ip: fn(String) -> Bool) -> Result(PinnedUrl, String):
-    match pin_typed(net, raw, allow_ip):
+pub fn pin_string(net: Net[Connect, Tcp], raw: String, allow_ip: fn(String) -> Bool) -> Result(PinnedUrl, String):
+    match pin(net, raw, allow_ip):
         Ok(p) -> Ok(p)
         Err(e) -> Err(http_error_message(e))
 
 // The NAMED, greppable no-policy pin: resolve once and pin the first address, applying no
 // per-IP policy. Safe only behind a confined `Net` (the allowlist floor still applies);
 // prefer `pin` with a real predicate. Named so a review can find every unchecked pin.
-pub fn unpinned_typed(net: Net[Connect, Tcp], raw: String) -> Result(PinnedUrl, HttpError):
-    pin_typed(net, raw, allow_any)
+pub fn unpinned(net: Net[Connect, Tcp], raw: String) -> Result(PinnedUrl, HttpError):
+    pin(net, raw, allow_any)
 
-pub fn unpinned(net: Net[Connect, Tcp], raw: String) -> Result(PinnedUrl, String):
-    match unpinned_typed(net, raw):
+pub fn unpinned_string(net: Net[Connect, Tcp], raw: String) -> Result(PinnedUrl, String):
+    match unpinned(net, raw):
         Ok(p) -> Ok(p)
         Err(e) -> Err(http_error_message(e))
 
@@ -276,26 +265,26 @@ fn first_allowed(ips: List(String), allow_ip: fn(String) -> Bool) -> Option(Stri
     None
 
 // GET the pinned target, honoring the pin — dials the pinned IP, never re-resolving.
-pub fn get_pinned_typed(net: Net[Connect, Tcp], p: PinnedUrl) -> Result(Response, HttpError):
-    send_pinned_typed(net, p, "GET", [], "")
+pub fn get_pinned(net: Net[Connect, Tcp], p: PinnedUrl) -> Result(Response, HttpError):
+    send_pinned(net, p, "GET", [], "")
 
-pub fn get_pinned(net: Net[Connect, Tcp], p: PinnedUrl) -> Result(Response, String):
-    match get_pinned_typed(net, p):
+pub fn get_pinned_string(net: Net[Connect, Tcp], p: PinnedUrl) -> Result(Response, String):
+    match get_pinned(net, p):
         Ok(resp) -> Ok(resp)
         Err(e) -> Err(http_error_message(e))
 
 // The general pinned send: dial the pinned IP via `connect_pinned` (presenting the
 // original hostname for TLS SNI and the `Host` header), issue the request, and parse the
 // response. Never re-resolves the host, so no rebinding can slip a new address underneath.
-pub fn send_pinned_typed(net: Net[Connect, Tcp], p: PinnedUrl, method: String, headers: List((String, String)), body: String) -> Result(Response, HttpError):
+pub fn send_pinned(net: Net[Connect, Tcp], p: PinnedUrl, method: String, headers: List((String, String)), body: String) -> Result(Response, HttpError):
     match p:
         PinnedUrl(host, port, secure, path, ip) ->
             match net.try_connect_pinned(ip, host, port, secure):
                 None -> Err(PinnedConnectFailed(host, ip, port))
-                Some(sock) -> send_on_result_typed(sock, method, host, path, headers, body)
+                Some(sock) -> send_on_result(sock, method, host, path, headers, body)
 
-pub fn send_pinned(net: Net[Connect, Tcp], p: PinnedUrl, method: String, headers: List((String, String)), body: String) -> Result(Response, String):
-    match send_pinned_typed(net, p, method, headers, body):
+pub fn send_pinned_string(net: Net[Connect, Tcp], p: PinnedUrl, method: String, headers: List((String, String)), body: String) -> Result(Response, String):
+    match send_pinned(net, p, method, headers, body):
         Ok(resp) -> Ok(resp)
         Err(e) -> Err(http_error_message(e))
 
@@ -346,21 +335,21 @@ impl RequestBuilder:
                 let sep = if string.contains(u, "?"): "&" else: "?"
                 RequestBuilder(m, u + sep + url.encode(key) + "=" + url.encode(value), hs, b)
 
-    pub fn send_typed(self, net: Net[Connect, Tcp]) -> Result(Response, HttpError):
+    pub fn send(self, net: Net[Connect, Tcp]) -> Result(Response, HttpError):
         // Send the assembled request, parsing host/port/path from its URL. An `Err`
         // is returned rather than a panic when the URL does not parse.
         match self:
             RequestBuilder(m, u, hs, b) ->
                 match url.parse(u):
                     Ok(parsed) ->
-                        match scheme_secure_typed(url.scheme(parsed)):
-                            Ok(secure) -> try_request_with_typed(net, secure, m, url.host(parsed), url.port(parsed), url.path(parsed), hs, b)
+                        match scheme_secure(url.scheme(parsed)):
+                            Ok(secure) -> try_request_with(net, secure, m, url.host(parsed), url.port(parsed), url.path(parsed), hs, b)
                             Err(e) -> Err(e)
                     Err(e) -> Err(InvalidUrl(e))
 
-    pub fn send(self, net: Net[Connect, Tcp]) -> Result(Response, String):
+    pub fn send_string(self, net: Net[Connect, Tcp]) -> Result(Response, String):
         // Send the assembled request with String errors for older code.
-        match self.send_typed(net):
+        match self.send(net):
             Ok(resp) -> Ok(resp)
             Err(e) -> Err(http_error_message(e))
 
@@ -486,13 +475,13 @@ pub fn parse_response(raw: String) -> Response:
 // Strict response parsing for public client paths. In particular, malformed
 // `Transfer-Encoding: chunked` bodies return `Err` instead of handing callers a
 // recovered prefix that may look like valid JSON.
-pub fn try_parse_response_typed(raw: String) -> Result(Response, HttpError):
+pub fn try_parse_response(raw: String) -> Result(Response, HttpError):
     match parse_response_inner(raw, true):
         Ok(resp) -> Ok(resp)
         Err(e) -> Err(MalformedResponse(e))
 
-pub fn try_parse_response(raw: String) -> Result(Response, String):
-    match try_parse_response_typed(raw):
+pub fn try_parse_response_string(raw: String) -> Result(Response, String):
+    match try_parse_response(raw):
         Ok(resp) -> Ok(resp)
         Err(e) -> Err(http_error_message(e))
 

@@ -15,7 +15,7 @@ tracking: >
   gates use typed errors internally; fetched source-path validation and registry
   host/port parsing are typed too. std/url.parse returns UrlError, with
   parse_string as the explicit String-rendering bridge; std/http's URL
-  consumers bridge typed URL failures explicitly at their current String API.
+  consumers preserve UrlError inside their typed HttpError boundary.
   std/semver.parse and parse_req return SemverError, with parse_string and
   parse_req_string as explicit String-rendering bridges; the package manager
   consumes those typed errors at version-resolution boundaries.
@@ -26,8 +26,9 @@ tracking: >
   return EncodingError at their primary names, with *_string functions as
   explicit String-rendering bridges; JWT and WebAuthn consumers bridge those
   errors explicitly to their existing typed API. std/http exposes HttpError
-  through typed URL, fallible request, DNS-pin, builder-send, and
-  strict-response-parse paths while keeping String wrappers. Coven Web's OIDC
+  through the primary URL fetch, fallible request, DNS-pin, builder-send, and
+  strict-response-parse APIs, with *_string bridges for application boundaries.
+  Coven Web's OIDC
   key selection preserves JwtError through
   verification. Coven maintainer-policy
   state, stored-record parsing, source-footprint recomputation, and
@@ -306,8 +307,8 @@ typed JWT failures into `String` before the HTTP boundary.
 `std/url.parse` now returns `url.UrlError`, covering missing
 `scheme://`, empty schemes/hosts, unsupported userinfo, invalid ports, and
 malformed bracketed IPv6 authorities. `std/http` calls that typed parser and
-renders with `url.url_error_message` at its existing String-returning API
-boundary. `url.parse_string` is the explicit application-style String bridge.
+preserves URL parse failures as `http.InvalidUrl` at its primary API boundary.
+`url.parse_string` is the explicit application-style String bridge.
 `std/semver.parse` and `std/semver.parse_req` now return
 `semver.SemverError`, distinguishing an overlong coordinate from signed,
 negative, and non-numeric components. The package manager's version resolver
@@ -332,7 +333,7 @@ String-rendering available for application boundaries. `std/jwt` and
 module-specific error variants.
 `std/http` now exposes `http.HttpError` through typed URL fetch, fallible
 request, DNS pin, pinned request, request-builder send, and strict response
-parse APIs. Existing String-returning entry points delegate to those typed
+parse primary APIs. Explicit `*_string` entry points delegate to those typed
 forms and render with `http.http_error_message`.
 Build, run, and verify now share a local `LockIntegrityError` boundary: path
 hash drift, missing locked vendors, absent trust pins, malformed lock entries,
@@ -358,4 +359,5 @@ OIDC claim/signature rejection before the server maps them to 401 responses.
 
 This does not complete the RFC. The remaining release-blocking work is the std
 and core-library migration: String-returning primary names outside the
-URL/semver cut must receive their typed cut or an explicit 0.1 deferral.
+URL/semver/duration/time/encoding/http cut must receive their typed cut or an
+explicit 0.1 deferral.

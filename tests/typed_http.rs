@@ -39,12 +39,12 @@ fn classify(e: http.HttpError) -> String:
         http.MalformedResponse(reason) -> "response:" + reason
 
 fn via_string(raw: String) -> Result(http.Response, String):
-    let resp = http.try_parse_response_typed(raw)?
+    let resp = http.try_parse_response(raw)?
     Ok(resp)
 
 fn main(console: Console):
     let bad = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nz\r\nno\r\n"
-    match http.try_parse_response_typed(bad):
+    match http.try_parse_response(bad):
         Ok(_) -> console.print("bad")
         Err(e) ->
             console.print(classify(e))

@@ -895,59 +895,59 @@ Perform a POST request with `body` (e.g. a JSON document). The body's byte lengt
 
 #### `fn head(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Response`
 
-#### `fn get_url_typed(net: Net[Connect, Tcp], raw: String) -> Result(Response, HttpError)`
+#### `fn get_url(net: Net[Connect, Tcp], raw: String) -> Result(Response, HttpError)`
 
 GET a full URL string (`http://host[:port]/path`), or an error if it doesn't parse. Saves splitting host/port/path by hand.
 
-#### `fn get_url(net: Net[Connect, Tcp], raw: String) -> Result(Response, String)`
+#### `fn get_url_string(net: Net[Connect, Tcp], raw: String) -> Result(Response, String)`
 
-GET a full URL with String errors for application-style callers and older code. Libraries that need to classify failure should use `get_url_typed`.
+GET a full URL with String errors for application-style callers and older code.
 
 #### `fn request_with(net: Net[Connect, Tcp], secure: Bool, method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Response`
 
 Send a request with custom headers, returning the response. The generic form behind the method helpers — use it when you need to set headers (auth, content-type, ...). `secure` selects HTTPS (TLS). `Connection: close` ends `recv_all` after the body.
 
-#### `fn try_request_with_typed(net: Net[Connect, Tcp], secure: Bool, method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Result(Response, HttpError)`
+#### `fn try_request_with(net: Net[Connect, Tcp], secure: Bool, method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Result(Response, HttpError)`
 
 Like `request_with`, but fallible: an unreachable upstream yields `Err("connect to host:port failed (unreachable)")` instead of trapping. Built on `try_connect` so a long-running server (a proxy, a health check) survives a down peer — the caller decides what to do (e.g. answer 502) instead of the VM aborting. A successful dial sends the request and parses the response as usual.
 
-#### `fn try_request_with(net: Net[Connect, Tcp], secure: Bool, method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Result(Response, String)`
+#### `fn try_request_with_string(net: Net[Connect, Tcp], secure: Bool, method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Result(Response, String)`
 
-#### `fn try_get_typed(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Result(Response, HttpError)`
+#### `fn try_get(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Result(Response, HttpError)`
 
 Fallible GET: `Ok(response)` on success, `Err(reason)` if the host is unreachable. The fallible counterpart of `get`.
 
-#### `fn try_get(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Result(Response, String)`
+#### `fn try_get_string(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Result(Response, String)`
 
-#### `fn try_post_typed(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Result(Response, HttpError)`
+#### `fn try_post(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Result(Response, HttpError)`
 
 Fallible POST: `Ok(response)` on success, `Err(reason)` if the host is unreachable. The fallible counterpart of `post`.
 
-#### `fn try_post(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Result(Response, String)`
+#### `fn try_post_string(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Result(Response, String)`
 
-#### `fn pin_typed(net: Net[Connect, Tcp], raw: String, allow_ip: fn(String) -> Bool) -> Result(PinnedUrl, HttpError)`
+#### `fn pin(net: Net[Connect, Tcp], raw: String, allow_ip: fn(String) -> Bool) -> Result(PinnedUrl, HttpError)`
 
 Resolve `raw`'s host ONCE, keep the first resolved IP the predicate approves, and pin it. The safe shape for fetching an untrusted URL — pair it with a confined `Net` for defense in depth, so the capability floor rejects an internal address even if the predicate is wrong:     let safe = net.deny(Net.private())     match http.pin(safe, user_url, allow_ip):         Ok(p) -> http.get_pinned(safe, p)         Err(e) -> Err(e)
 
-#### `fn pin(net: Net[Connect, Tcp], raw: String, allow_ip: fn(String) -> Bool) -> Result(PinnedUrl, String)`
+#### `fn pin_string(net: Net[Connect, Tcp], raw: String, allow_ip: fn(String) -> Bool) -> Result(PinnedUrl, String)`
 
-#### `fn unpinned_typed(net: Net[Connect, Tcp], raw: String) -> Result(PinnedUrl, HttpError)`
+#### `fn unpinned(net: Net[Connect, Tcp], raw: String) -> Result(PinnedUrl, HttpError)`
 
 The NAMED, greppable no-policy pin: resolve once and pin the first address, applying no per-IP policy. Safe only behind a confined `Net` (the allowlist floor still applies); prefer `pin` with a real predicate. Named so a review can find every unchecked pin.
 
-#### `fn unpinned(net: Net[Connect, Tcp], raw: String) -> Result(PinnedUrl, String)`
+#### `fn unpinned_string(net: Net[Connect, Tcp], raw: String) -> Result(PinnedUrl, String)`
 
-#### `fn get_pinned_typed(net: Net[Connect, Tcp], p: PinnedUrl) -> Result(Response, HttpError)`
+#### `fn get_pinned(net: Net[Connect, Tcp], p: PinnedUrl) -> Result(Response, HttpError)`
 
 GET the pinned target, honoring the pin — dials the pinned IP, never re-resolving.
 
-#### `fn get_pinned(net: Net[Connect, Tcp], p: PinnedUrl) -> Result(Response, String)`
+#### `fn get_pinned_string(net: Net[Connect, Tcp], p: PinnedUrl) -> Result(Response, String)`
 
-#### `fn send_pinned_typed(net: Net[Connect, Tcp], p: PinnedUrl, method: String, headers: List((String, String)), body: String) -> Result(Response, HttpError)`
+#### `fn send_pinned(net: Net[Connect, Tcp], p: PinnedUrl, method: String, headers: List((String, String)), body: String) -> Result(Response, HttpError)`
 
 The general pinned send: dial the pinned IP via `connect_pinned` (presenting the original hostname for TLS SNI and the `Host` header), issue the request, and parse the response. Never re-resolves the host, so no rebinding can slip a new address underneath.
 
-#### `fn send_pinned(net: Net[Connect, Tcp], p: PinnedUrl, method: String, headers: List((String, String)), body: String) -> Result(Response, String)`
+#### `fn send_pinned_string(net: Net[Connect, Tcp], p: PinnedUrl, method: String, headers: List((String, String)), body: String) -> Result(Response, String)`
 
 #### `fn build(method: String, url: String) -> RequestBuilder`
 
@@ -1011,11 +1011,11 @@ Validate one `(name, value)` header pair — the name is a token, the value has 
 
 Parse a raw HTTP/1.1 response string into a `Response`: split at the blank line separating headers from body, parse the header lines into (lowercased name, trimmed value) pairs, decode a `chunked` body, and read the status code totally (a non-numeric or overflowing code becomes 0 rather than trapping). Public so a proxy or test can parse a response it obtained by other means. This total helper keeps the historical lossy chunked behavior; use `try_parse_response` at trust boundaries where malformed framing must be an error.
 
-#### `fn try_parse_response_typed(raw: String) -> Result(Response, HttpError)`
+#### `fn try_parse_response(raw: String) -> Result(Response, HttpError)`
 
 Strict response parsing for public client paths. In particular, malformed `Transfer-Encoding: chunked` bodies return `Err` instead of handing callers a recovered prefix that may look like valid JSON.
 
-#### `fn try_parse_response(raw: String) -> Result(Response, String)`
+#### `fn try_parse_response_string(raw: String) -> Result(Response, String)`
 
 #### `RequestBuilder.with_header(name: String, value: String) -> RequestBuilder`
 
@@ -1023,9 +1023,9 @@ Strict response parsing for public client paths. In particular, malformed `Trans
 
 #### `RequestBuilder.with_query(key: String, value: String) -> RequestBuilder`
 
-#### `RequestBuilder.send_typed(net: Net[Connect, Tcp]) -> Result(Response, HttpError)`
+#### `RequestBuilder.send(net: Net[Connect, Tcp]) -> Result(Response, HttpError)`
 
-#### `RequestBuilder.send(net: Net[Connect, Tcp]) -> Result(Response, String)`
+#### `RequestBuilder.send_string(net: Net[Connect, Tcp]) -> Result(Response, String)`
 
 ## `iter`
 
