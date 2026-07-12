@@ -2632,7 +2632,7 @@ fn add_deps(console: Console, net: Net, root: Dir, host: String, port: Int, name
 // `--allow-fresh`) — `resolve_version` distinguishes "none satisfy" from "the
 // only match is cooling" for a clearer message.
 fn pick_version_cooled(records: List((Version, Int)), req: String, cooldown: (Int, Int, Bool)) -> Result(String, VersionResolveError):
-    match semver.parse_req_typed(req):
+    match semver.parse_req(req):
         Ok(r) -> choose(eligible_versions(records, cooldown), r, req)
         Err(e) -> Err(VersionBadRequirement(req, semver.semver_error_message(e)))
 
@@ -2658,14 +2658,14 @@ fn eligible_versions(records: List((Version, Int)), cooldown: (Int, Int, Bool)) 
 // `format(parse(raw)) == raw` keeps the resolved coordinate byte-identical to the
 // record it came from; the boundary reports noncanonical strings as corruption.
 fn canonical_version(raw: String) -> Option(Version):
-    match semver.parse_typed(raw):
+    match semver.parse(raw):
         Ok(v) -> if semver.format(v) == raw: Some(v) else: None
         Err(_e) -> None
 
 // Whether any released version satisfying `req` exists but is still cooling — so
 // the caller can say "blocked by cooldown" instead of "no version".
 fn has_cooling_match(records: List((Version, Int)), req: String, cooldown: (Int, Int, Bool)) -> Bool:
-    match semver.parse_req_typed(req):
+    match semver.parse_req(req):
         Err(_e) -> false
         Ok(r) ->
             var found = false

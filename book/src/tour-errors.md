@@ -188,7 +188,7 @@ import semver
 fn parse_release(date: String, ver: String) -> Result(String, String):
     // Result(DateTime, String)
     let d = time.parse_iso8601(date)?
-    // Result(Version, String)
+    // Result(Version, SemverError), converted to String by `?`
     let v = semver.parse(ver)?
     Ok(time.date_string(d) + " v" + semver.format(v))
 
@@ -205,7 +205,9 @@ fn main(console: Console):
 `time.civil(...)`, `time.parse_iso8601(...)`, `semver.parse(...)`, and
 `url.parse(...)` all follow this shape: they verify the input — a real calendar
 date, a well-formed version or URL — and report a bad one as `Err` instead of
-guessing. So you can't accidentally use an unvalidated `DateTime`; the type
-makes you unwrap the `Result` first.
+guessing. Some library APIs return matchable error enums and rely on `?` plus
+`From` to convert them at an application boundary like `Result(_, String)`.
+So you can't accidentally use an unvalidated `DateTime`; the type makes you
+unwrap the `Result` first.
 
 Next, the tools for writing code that works for *many* types at once.

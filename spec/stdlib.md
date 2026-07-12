@@ -2313,13 +2313,13 @@ Matchable semantic-version parse failures. Requirement parsing reuses the same c
 
 --- constructors ------------------------------------------------------------ A convenience constructor for known-good components (e.g. a computed bump). A negative component is not a version at all, so it is a contract violation (RFC-0044 rule 3): fail loudly naming the bad coordinate rather than minting an impossible one. Untrusted input belongs in `parse`, which returns `Err` instead of aborting.
 
-#### `fn parse_typed(s: String) -> Result(Version, SemverError)`
+#### `fn parse(s: String) -> Result(Version, SemverError)`
 
 Parse `major.minor.patch` (missing trailing components default to 0), returning a typed error a library can match.
 
-#### `fn parse(s: String) -> Result(Version, String)`
+#### `fn parse_string(s: String) -> Result(Version, String)`
 
-Parse with String errors for application-style callers and older code. Libraries that need to classify failure should use `parse_typed`.
+Parse with String errors for application-style boundaries.
 
 #### `fn format(v: Version) -> String`
 
@@ -2329,11 +2329,11 @@ Parse with String errors for application-style callers and older code. Libraries
 
 #### `fn less(a: Version, b: Version) -> Bool`
 
-#### `fn parse_req_typed(s: String) -> Result(Req, SemverError)`
+#### `fn parse_req(s: String) -> Result(Req, SemverError)`
 
 --- constraints -------------------------------------------------------------
 
-#### `fn parse_req(s: String) -> Result(Req, String)`
+#### `fn parse_req_string(s: String) -> Result(Req, String)`
 
 #### `fn matches(req: Req, v: Version) -> Bool`
 
@@ -3098,7 +3098,7 @@ Read `key` from an inline table value like `{ path = "../money", version = "1" }
 
 Minimal URL parsing — the witchy slice of Go's net/url. Pure and capability-free, so it compiles to WASM. Handles `scheme://host[:port][/path]`; the port defaults by scheme (443 for https, else 80) and the path to "/".
 
-`parse_typed` returns a matchable `UrlError`; `parse` is the String-rendering compatibility wrapper for application-style callers. Simple scalar parses like `string.parse_int` stay `Option`.
+`parse` returns a matchable `UrlError`; `parse_string` is the String-rendering bridge for application-style callers. Simple scalar parses like `string.parse_int` stay `Option`.
 
 #### `sealed type Url`
 
@@ -3117,13 +3117,13 @@ Matchable URL parse failures. The payload is the original raw URL so callers can
 
 #### `fn url_error_message(e: UrlError) -> String`
 
-#### `fn parse_typed(s: String) -> Result(Url, UrlError)`
+#### `fn parse(s: String) -> Result(Url, UrlError)`
 
 Parse a URL, or a matchable error naming what is malformed. A well-formed URL needs a non-empty scheme and host — an empty either side (`://host`, `https:///path`) is rejected rather than accepted with a blank field. The scheme is case-insensitive (RFC 3986 §3.1) and is normalized to lowercase, so `HTTPS://` gets the https default port and formats back canonically.
 
-#### `fn parse(s: String) -> Result(Url, String)`
+#### `fn parse_string(s: String) -> Result(Url, String)`
 
-Parse a URL with String errors for application-style callers and older code. Libraries that need to classify failure should use `parse_typed`.
+Parse a URL with String errors for application-style boundaries.
 
 #### `fn scheme(u: Url) -> String`
 

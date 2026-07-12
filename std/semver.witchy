@@ -72,27 +72,26 @@ pub fn version(major: Int, minor: Int, patch: Int) -> Version:
 
 // Parse `major.minor.patch` (missing trailing components default to 0), returning
 // a typed error a library can match.
-pub fn parse_typed(s: String) -> Result(Version, SemverError):
+pub fn parse(s: String) -> Result(Version, SemverError):
     let parts = string.split(string.trim(s), ".")
     if list.length(parts) == 0 || list.length(parts) > 3:
         Err(BadVersionShape(s))
     else:
-        match component_typed(parts, 0):
-            Ok(a) -> match component_typed(parts, 1):
-                Ok(b) -> match component_typed(parts, 2):
+        match component(parts, 0):
+            Ok(a) -> match component(parts, 1):
+                Ok(b) -> match component(parts, 2):
                     Ok(c) -> Ok(Version(a, b, c))
                     Err(e) -> Err(e)
                 Err(e) -> Err(e)
             Err(e) -> Err(e)
 
-// Parse with String errors for application-style callers and older code.
-// Libraries that need to classify failure should use `parse_typed`.
-pub fn parse(s: String) -> Result(Version, String):
-    match parse_typed(s):
+// Parse with String errors for application-style boundaries.
+pub fn parse_string(s: String) -> Result(Version, String):
+    match parse(s):
         Ok(v) -> Ok(v)
         Err(e) -> Err(semver_error_message(e))
 
-fn component_typed(parts: List(String), i: Int) -> Result(Int, SemverError):
+fn component(parts: List(String), i: Int) -> Result(Int, SemverError):
     if i >= list.length(parts):
         Ok(0)
     else if string.starts_with(list.at(parts, i), "+"):
@@ -131,21 +130,21 @@ pub fn less(a: Version, b: Version) -> Bool:
     a < b
 
 // --- constraints -------------------------------------------------------------
-pub fn parse_req_typed(s: String) -> Result(Req, SemverError):
+pub fn parse_req(s: String) -> Result(Req, SemverError):
     let t = string.trim(s)
     if t == "*":
         Ok(Any)
     else if string.starts_with(t, "^"):
-        wrap_caret(parse_typed(string.drop(t, 1)))
+        wrap_caret(parse(string.drop(t, 1)))
     else if string.starts_with(t, "~"):
-        wrap_tilde(parse_typed(string.drop(t, 1)))
+        wrap_tilde(parse(string.drop(t, 1)))
     else if string.starts_with(t, ">="):
-        wrap_atleast(parse_typed(string.drop(t, 2)))
+        wrap_atleast(parse(string.drop(t, 2)))
     else:
-        wrap_exact(parse_typed(t))
+        wrap_exact(parse(t))
 
-pub fn parse_req(s: String) -> Result(Req, String):
-    match parse_req_typed(s):
+pub fn parse_req_string(s: String) -> Result(Req, String):
+    match parse_req(s):
         Ok(r) -> Ok(r)
         Err(e) -> Err(semver_error_message(e))
 

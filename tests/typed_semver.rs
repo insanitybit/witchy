@@ -1,4 +1,4 @@
-//! Semver parsing exposes typed failures while legacy wrappers keep String errors.
+//! Semver parsing exposes typed failures on the primary parse APIs.
 
 use std::process::{Command, Output};
 
@@ -9,7 +9,7 @@ fn run(args: &[&str]) -> Output {
 }
 
 #[test]
-fn parse_typed_exposes_matchable_semver_errors_and_string_bridge() {
+fn parse_exposes_matchable_semver_errors_and_string_bridge() {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -35,15 +35,15 @@ fn classify(e: semver.SemverError) -> String:
         semver.NonNumericVersionComponent(component) -> "nonnumeric:" + component
 
 fn via_string(raw: String) -> Result(Version, String):
-    let v = semver.parse_typed(raw)?
+    let v = semver.parse(raw)?
     Ok(v)
 
 fn req_via_string(raw: String) -> Result(Req, String):
-    let r = semver.parse_req_typed(raw)?
+    let r = semver.parse_req(raw)?
     Ok(r)
 
 fn main(console: Console):
-    match semver.parse_typed("+1.2.3"):
+    match semver.parse("+1.2.3"):
         Ok(_) -> console.print("bad")
         Err(e) ->
             console.print(classify(e))
@@ -52,13 +52,13 @@ fn main(console: Console):
     match via_string("+1.2.3"):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(e)
-    match semver.parse_req_typed("^1.x"):
+    match semver.parse_req("^1.x"):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(classify(e))
     match req_via_string("^1.x"):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(e)
-    match semver.parse("1.2.3.4"):
+    match semver.parse_string("1.2.3.4"):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(e)
 "#,

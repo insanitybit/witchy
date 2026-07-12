@@ -2,9 +2,9 @@
 // capability-free, so it compiles to WASM. Handles `scheme://host[:port][/path]`;
 // the port defaults by scheme (443 for https, else 80) and the path to "/".
 //
-// `parse_typed` returns a matchable `UrlError`; `parse` is the String-rendering
-// compatibility wrapper for application-style callers. Simple scalar parses
-// like `string.parse_int` stay `Option`.
+// `parse` returns a matchable `UrlError`; `parse_string` is the String-rendering
+// bridge for application-style callers. Simple scalar parses like
+// `string.parse_int` stay `Option`.
 
 import option
 import result
@@ -50,7 +50,7 @@ impl From(UrlError) for String:
 // is rejected rather than accepted with a blank field. The scheme is
 // case-insensitive (RFC 3986 §3.1) and is normalized to lowercase, so
 // `HTTPS://` gets the https default port and formats back canonically.
-pub fn parse_typed(s: String) -> Result(Url, UrlError):
+pub fn parse(s: String) -> Result(Url, UrlError):
     let sep = string.index_of(s, "://") ?? -1
     if sep < 0:
         Err(MissingSchemeSeparator(s))
@@ -90,10 +90,9 @@ pub fn parse_typed(s: String) -> Result(Url, UrlError):
                         Some(p) -> Ok(Url(scheme, host, p, path))
                         None -> Err(InvalidPort(s))
 
-// Parse a URL with String errors for application-style callers and older code.
-// Libraries that need to classify failure should use `parse_typed`.
-pub fn parse(s: String) -> Result(Url, String):
-    match parse_typed(s):
+// Parse a URL with String errors for application-style boundaries.
+pub fn parse_string(s: String) -> Result(Url, String):
+    match parse(s):
         Ok(u) -> Ok(u)
         Err(e) -> Err(url_error_message(e))
 

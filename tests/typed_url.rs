@@ -1,4 +1,4 @@
-//! URL parsing exposes typed failures without breaking the String wrapper.
+//! URL parsing exposes typed failures on the primary parse API.
 
 use std::process::{Command, Output};
 
@@ -9,7 +9,7 @@ fn run(args: &[&str]) -> Output {
 }
 
 #[test]
-fn parse_typed_exposes_matchable_url_errors_and_string_bridge() {
+fn parse_exposes_matchable_url_errors_and_string_bridge() {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -33,11 +33,11 @@ fn classify(e: url.UrlError) -> String:
         _ -> "other"
 
 fn via_string(raw: String) -> Result(Url, String):
-    let u = url.parse_typed(raw)?
+    let u = url.parse(raw)?
     Ok(u)
 
 fn main(console: Console):
-    match url.parse_typed("http://h:999999/p"):
+    match url.parse("http://h:999999/p"):
         Ok(_) -> console.print("bad")
         Err(e) ->
             console.print(classify(e))
@@ -46,10 +46,10 @@ fn main(console: Console):
     match via_string("http://h:999999/p"):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(e)
-    match url.parse_typed("http://[::1/p"):
+    match url.parse("http://[::1/p"):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(classify(e))
-    match url.parse("noscheme"):
+    match url.parse_string("noscheme"):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(e)
 "#,

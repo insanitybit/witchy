@@ -1209,7 +1209,7 @@ fn main(console: Console):
     fn rfc0065_sealed_std_types_seal_construction_keep_inspection_on_both_backends() {
         // Public API (dedup set, validated time, parsed url) + external field-read all
         // run, and agree on both backends.
-        let ok = "import set\nimport time\nimport url\n\nfn main(console: Console):\n    let s = set.from_list([1, 1, 2, 3])\n    console.print(__render(set.length(s)))\n    let d = time.from_millis(0)\n    console.print(__render(time.year(d)))\n    match url.parse(\"http://h/p\"):\n        Ok(u) -> console.print(url.host(u))\n        Err(e) -> console.print(e)\n";
+        let ok = "import set\nimport time\nimport url\n\nfn main(console: Console):\n    let s = set.from_list([1, 1, 2, 3])\n    console.print(__render(set.length(s)))\n    let d = time.from_millis(0)\n    console.print(__render(time.year(d)))\n    match url.parse(\"http://h/p\"):\n        Ok(u) -> console.print(url.host(u))\n        Err(e) -> console.print(url.url_error_message(e))\n";
         let expected = ["3", "1970", "h"];
         assert_eq!(link_run(ok), expected, "interp: sealed-type public API + inspection");
         assert_eq!(
@@ -1921,7 +1921,7 @@ fn main(console: Console):
     /// formatter, not their private constructor-shaped representation.
     #[test]
     fn sealed_domain_values_use_canonical_show_on_both_backends() {
-        let src = "import show\nimport semver\nimport url\nimport time\n\nfn main(console: Console):\n    let v = semver.version(1, 2, 3)\n    let d = time.from_unix(0)\n    match url.parse(\"https://example.com/p\"):\n        Ok(u) ->\n            show.say(console, v)\n            show.say(console, u)\n            show.say(console, d)\n            console.print(\"${v}\")\n            console.print(\"${u}\")\n            console.print(\"${d}\")\n            console.print(show.render([v, semver.version(2, 0, 0)]))\n            console.print(show.render(Some(u)))\n        Err(e) -> console.print(e)\n";
+        let src = "import show\nimport semver\nimport url\nimport time\n\nfn main(console: Console):\n    let v = semver.version(1, 2, 3)\n    let d = time.from_unix(0)\n    match url.parse(\"https://example.com/p\"):\n        Ok(u) ->\n            show.say(console, v)\n            show.say(console, u)\n            show.say(console, d)\n            console.print(\"${v}\")\n            console.print(\"${u}\")\n            console.print(\"${d}\")\n            console.print(show.render([v, semver.version(2, 0, 0)]))\n            console.print(show.render(Some(u)))\n        Err(e) -> console.print(url.url_error_message(e))\n";
         let expected = [
             "1.2.3",
             "https://example.com/p",
@@ -19256,7 +19256,7 @@ import url
 fn describe(s: String) -> String:
     match url.parse(s):
         Ok(u) -> url.scheme(u) + " " + url.host(u) + " " + __render(url.port(u)) + " " + url.path(u)
-        Err(e) -> "invalid: " + e
+        Err(e) -> "invalid: " + url.url_error_message(e)
 fn main(console: Console):
     console.print(describe("http://example.com"))
     console.print(describe("http://example.com:8080/foo"))
@@ -19537,7 +19537,7 @@ fn main(console: Console):
     /// module imported iter because inference through it was unreliable.
     #[test]
     fn rfc0046_std_dogfoods_iter_in_path_semver() {
-        let src = "import path\nimport semver\n\nfn main(console: Console):\n    console.print(path.normalize(\"a/b/c/../../d\"))\n    let vs = [semver.version(1, 2, 0), semver.version(1, 5, 3), semver.version(2, 0, 0)]\n    match semver.parse_req(\"^1.0.0\"):\n        Ok(req) ->\n            match semver.best(vs, req):\n                Some(v) -> console.print(semver.format(v))\n                None -> console.print(\"none\")\n        Err(e) -> console.print(e)\n";
+        let src = "import path\nimport semver\n\nfn main(console: Console):\n    console.print(path.normalize(\"a/b/c/../../d\"))\n    let vs = [semver.version(1, 2, 0), semver.version(1, 5, 3), semver.version(2, 0, 0)]\n    match semver.parse_req(\"^1.0.0\"):\n        Ok(req) ->\n            match semver.best(vs, req):\n                Some(v) -> console.print(semver.format(v))\n                None -> console.print(\"none\")\n        Err(e) -> console.print(semver.semver_error_message(e))\n";
         let want = vec!["a/d".to_string(), "1.5.3".to_string()];
         assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");

@@ -95,7 +95,7 @@ pub fn head(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Re
 // GET a full URL string (`http://host[:port]/path`), or an error if it doesn't
 // parse. Saves splitting host/port/path by hand.
 pub fn get_url_typed(net: Net[Connect, Tcp], raw: String) -> Result(Response, HttpError):
-    match url.parse_typed(raw):
+    match url.parse(raw):
         Ok(u) ->
             match scheme_secure_typed(url.scheme(u)):
                 Ok(secure) -> Ok(request_with(net, secure, "GET", url.host(u), url.port(u), url.path(u), [], ""))
@@ -237,7 +237,7 @@ pub fn try_post(net: Net[Connect, Tcp], host: String, port: Int, path: String, b
 //         Ok(p) -> http.get_pinned(safe, p)
 //         Err(e) -> Err(e)
 pub fn pin_typed(net: Net[Connect, Tcp], raw: String, allow_ip: fn(String) -> Bool) -> Result(PinnedUrl, HttpError):
-    match url.parse_typed(raw):
+    match url.parse(raw):
         Err(e) -> Err(InvalidUrl(e))
         Ok(u) ->
             match scheme_secure_typed(url.scheme(u)):
@@ -351,7 +351,7 @@ impl RequestBuilder:
         // is returned rather than a panic when the URL does not parse.
         match self:
             RequestBuilder(m, u, hs, b) ->
-                match url.parse_typed(u):
+                match url.parse(u):
                     Ok(parsed) ->
                         match scheme_secure_typed(url.scheme(parsed)):
                             Ok(secure) -> try_request_with_typed(net, secure, m, url.host(parsed), url.port(parsed), url.path(parsed), hs, b)

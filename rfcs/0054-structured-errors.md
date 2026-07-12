@@ -13,12 +13,14 @@ tracking: >
   lock snapshot-pin, registry version-response/resolution/update-consumption,
   compiler-footprint consumption, and offline build/run/verify lock-integrity
   gates use typed errors internally; fetched source-path validation and registry
-  host/port parsing are typed too. std/url exposes a typed UrlError via
-  parse_typed, and std/http's URL consumers bridge it explicitly to their
-  current String API. std/semver exposes SemverError through parse_typed and
-  parse_req_typed, with the package manager consuming those typed errors at
-  version-resolution boundaries. std/duration exposes DurationParseError
-  through parse_typed while keeping parse as the String-rendering wrapper.
+  host/port parsing are typed too. std/url.parse returns UrlError, with
+  parse_string as the explicit String-rendering bridge; std/http's URL
+  consumers bridge typed URL failures explicitly at their current String API.
+  std/semver.parse and parse_req return SemverError, with parse_string and
+  parse_req_string as explicit String-rendering bridges; the package manager
+  consumes those typed errors at version-resolution boundaries. std/duration
+  exposes DurationParseError through parse_typed while keeping parse as the
+  String-rendering wrapper.
   std/time exposes TimeError through civil_typed and parse_iso8601_typed while
   keeping civil and parse_iso8601 as String-rendering wrappers. std/encoding
   exposes EncodingError through typed hex/base64/base64url decoders, with JWT
@@ -31,8 +33,8 @@ tracking: >
   trusted-publishing token verification have typed corruption/authentication
   errors. All convert to String through From at existing application
   boundaries. Remaining 0.1 work: finish or explicitly defer the remaining
-  std/core-library String-error APIs, including the final url.parse signature
-  flip once in-tree example-test ownership is clear.
+  std/core-library String-error APIs that still keep String-returning primary
+  names.
 ---
 
 # RFC-0054: Structured errors (design-first)
@@ -300,20 +302,18 @@ uses `HostPortError` instead of collapsing configuration failures into strings.
 `std/jwt.require_kid` preserves malformed headers and missing key IDs as
 `JwtError`, so Coven Web's JWKS selection and OIDC verification no longer erase
 typed JWT failures into `String` before the HTTP boundary.
-`std/url.parse_typed` now returns `url.UrlError`, covering missing
+`std/url.parse` now returns `url.UrlError`, covering missing
 `scheme://`, empty schemes/hosts, unsupported userinfo, invalid ports, and
 malformed bracketed IPv6 authorities. `std/http` calls that typed parser and
 renders with `url.url_error_message` at its existing String-returning API
-boundary; `url.parse` remains the application-style String wrapper until the
-last in-tree callers that print parse errors directly can be migrated without
-colliding with concurrent example-test ownership.
-`std/semver.parse_typed` and `std/semver.parse_req_typed` now return
+boundary. `url.parse_string` is the explicit application-style String bridge.
+`std/semver.parse` and `std/semver.parse_req` now return
 `semver.SemverError`, distinguishing an overlong coordinate from signed,
 negative, and non-numeric components. The package manager's version resolver
 and Coven's stored-version comparison consume the typed parser directly, then
 render with `semver.semver_error_message` only at their existing outward
-boundaries. The legacy `semver.parse` / `parse_req` wrappers keep returning
-`Result(_, String)` for older application-style code.
+boundaries. `semver.parse_string` and `parse_req_string` are the explicit
+application-style String bridges.
 `std/duration.parse_typed` now returns `duration.DurationParseError`,
 distinguishing overflow, stray characters, units without counts, trailing
 unit-less numbers, and empty input. `duration.parse` remains the
@@ -356,6 +356,5 @@ tokens, untrusted issuers, missing JWKS `kid`, JWKS key-selection failures, and
 OIDC claim/signature rejection before the server maps them to 401 responses.
 
 This does not complete the RFC. The remaining release-blocking work is the std
-and core-library migration: the legacy `url.parse`/`semver.parse` wrappers
-remain string-error APIs until each receives its typed cut or an explicit 0.1
-deferral.
+and core-library migration: String-returning primary names outside the
+URL/semver cut must receive their typed cut or an explicit 0.1 deferral.

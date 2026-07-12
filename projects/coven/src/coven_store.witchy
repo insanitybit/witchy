@@ -137,9 +137,9 @@ pub fn latest_record(store: Dir, name: String) -> Option(Record):
         read_record_typed(store, name, best)
 
 fn version_newer(a: String, b: String) -> Bool:
-    match semver.parse_typed(a):
+    match semver.parse(a):
         Ok(va) ->
-            match semver.parse_typed(b):
+            match semver.parse(b):
                 Ok(vb) -> semver.compare(va, vb) > 0
                 Err(_e) -> true
         Err(_e) -> false
