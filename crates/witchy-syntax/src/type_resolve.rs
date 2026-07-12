@@ -585,6 +585,11 @@ impl<'a> Scope<'a> {
                     self.resolve_pattern(a)?;
                 }
             }
+            Pattern::AnonCtor { args, .. } => {
+                for a in args {
+                    self.resolve_pattern(a)?;
+                }
+            }
             Pattern::Tuple(ps) | Pattern::List { elems: ps, .. } | Pattern::Or(ps) => {
                 for q in ps {
                     self.resolve_pattern(q)?;
@@ -990,6 +995,11 @@ fn resolve_residual_pattern(
                     _ => {}
                 }
             }
+            for a in args {
+                resolve_residual_pattern(a, by_suffix)?;
+            }
+        }
+        Pattern::AnonCtor { args, .. } => {
             for a in args {
                 resolve_residual_pattern(a, by_suffix)?;
             }

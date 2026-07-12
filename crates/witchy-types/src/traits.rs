@@ -1131,6 +1131,30 @@ fn bind_typed_pattern(
                 );
             }
         }
+        Pattern::AnonCtor { tag, args } => {
+            let mut fields: Option<Vec<Type>> = None;
+            if let Some(Type::Named(name, types)) = expected.map(Type::unqualified) {
+                if let Some(variants) = crate::typeck::anon_union_synthetic_variants(name) {
+                    let mut offset = 0usize;
+                    for (variant, arity) in variants {
+                        let end = offset.saturating_add(arity);
+                        if variant == *tag && arity == args.len() && end <= types.len() {
+                            fields = Some(types[offset..end].to_vec());
+                            break;
+                        }
+                        offset = end;
+                    }
+                }
+            }
+            for (index, arg) in args.iter().enumerate() {
+                bind_typed_pattern(
+                    arg,
+                    ctor_infos,
+                    fields.as_ref().and_then(|items| items.get(index)),
+                    scope,
+                );
+            }
+        }
         Pattern::List { elems, rest } => {
             let elem_ty = match expected.map(Type::unqualified) {
                 Some(Type::Named(name, args)) if name == "List" => args.first(),

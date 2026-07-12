@@ -1753,6 +1753,13 @@ fn pattern(p: &Pattern) -> String {
                 format!("{name}({})", args.iter().map(pattern).collect::<Vec<_>>().join(", "))
             }
         }
+        Pattern::AnonCtor { tag, args } => {
+            if args.is_empty() {
+                format!(".{tag}")
+            } else {
+                format!(".{tag}({})", args.iter().map(pattern).collect::<Vec<_>>().join(", "))
+            }
+        }
         Pattern::Tuple(ps) => {
             format!("({})", ps.iter().map(pattern).collect::<Vec<_>>().join(", "))
         }

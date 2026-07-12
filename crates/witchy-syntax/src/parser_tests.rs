@@ -487,6 +487,27 @@ fn describe(e: Event) -> String:
     }
 
     #[test]
+    fn parses_anonymous_union_patterns() {
+        let src = r#"
+fn describe(e: .[BadPort(Int) | Missing(String) | NotFound]) -> String:
+    match e:
+        .BadPort(p) | .Missing(p) -> p
+        .NotFound -> "missing"
+"#;
+        let stmts = fn_body(src);
+        let Stmt::Expr(Expr::Match { arms, .. }) = &stmts[0] else {
+            panic!("expected a match expression");
+        };
+        assert_eq!(arms.len(), 2);
+        let Pattern::Or(alts) = &arms[0].pattern else {
+            panic!("expected an or-pattern");
+        };
+        assert!(matches!(alts[0], Pattern::AnonCtor { ref tag, .. } if tag == "BadPort"));
+        assert!(matches!(alts[1], Pattern::AnonCtor { ref tag, .. } if tag == "Missing"));
+        assert!(matches!(arms[1].pattern, Pattern::AnonCtor { ref tag, .. } if tag == "NotFound"));
+    }
+
+    #[test]
     fn tuple_pattern_after_ident_body_parses() {
         // A bare-identifier arm body must not swallow the next arm's `(..)`.
         let stmts = fn_body(

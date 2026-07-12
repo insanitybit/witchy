@@ -1307,6 +1307,27 @@ fn main(console: Console):
         );
     }
 
+    /// (RFC-0078) Anonymous union patterns are checked against the scrutinee's
+    /// closed tag set and lower to the same tag-word dispatch as declared enums.
+    #[test]
+    fn anonymous_union_patterns_work_on_both_backends() {
+        let src = "type LoadErr = .[BadPort(Int) | Missing(String) | NotFound]\n\nfn describe(e: LoadErr) -> String:\n    match e:\n        .BadPort(p) -> \"bad:\" + __render(p)\n        .Missing(k) -> \"missing:\" + k\n        .NotFound -> \"not-found\"\n\nfn parse(kind: Int) -> Result(Int, LoadErr):\n    if kind == 0:\n        Ok(7)\n    else:\n        if kind == 1:\n            Err(.Missing(\"host\"))\n        else:\n            Err(.BadPort(70000))\n\nfn describe_result(r: Result(Int, LoadErr)) -> String:\n    match r:\n        Ok(n) -> \"ok:\" + __render(n)\n        Err(.BadPort(p)) -> \"bad-result:\" + __render(p)\n        Err(.Missing(k)) -> \"missing-result:\" + k\n        Err(.NotFound) -> \"not-found-result\"\n\nfn main(console: Console):\n    console.print(describe(.BadPort(9)))\n    console.print(describe(.Missing(\"port\")))\n    console.print(describe(.NotFound))\n    console.print(describe_result(parse(0)))\n    console.print(describe_result(parse(1)))\n    console.print(describe_result(parse(2)))\n";
+        let expected = [
+            "bad:9",
+            "missing:port",
+            "not-found",
+            "ok:7",
+            "missing-result:host",
+            "bad-result:70000",
+        ];
+        assert_eq!(link_run(src), expected, "interp anonymous union patterns");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled anonymous union patterns must agree",
+        );
+    }
+
     /// (RFC-0065, parity) Set/DateTime/Rng/Url are `sealed type`s: external code must
     /// build them through the module's smart constructors (dedup / validated /
     /// parsed), but may still READ and MATCH them. The public API + inspection run

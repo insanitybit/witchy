@@ -466,6 +466,11 @@ impl Codegen<'_> {
                     self.pattern_record_binds(arg, out);
                 }
             }
+            Pattern::AnonCtor { args, .. } => {
+                for arg in args {
+                    self.pattern_record_binds(arg, out);
+                }
+            }
             Pattern::Tuple(args) => {
                 for a in args {
                     self.pattern_record_binds(a, out);

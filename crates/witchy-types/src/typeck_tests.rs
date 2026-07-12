@@ -70,6 +70,37 @@
     }
 
     #[test]
+    fn anonymous_union_patterns_check_closed_tags() {
+        check_str(
+            "fn describe(e: .[BadPort(Int) | Missing(String) | NotFound]) -> String:\n    match e:\n        .BadPort(p) -> __render(p)\n        .Missing(k) -> k\n        .NotFound -> \"missing\"\n\nfn nested(r: Result(Int, .[BadPort(Int) | Missing(String) | NotFound])) -> String:\n    match r:\n        Ok(n) -> __render(n)\n        Err(.BadPort(p)) -> __render(p)\n        Err(.Missing(k)) -> k\n        Err(.NotFound) -> \"missing\"\n"
+        )
+        .expect("anonymous union patterns check against their scrutinee");
+
+        check_str(
+            "fn only(e: .[Only(Int)]) -> Int:\n    let .Only(n) = e\n    n\n"
+        )
+        .expect("a single-tag anonymous union pattern is irrefutable");
+
+        let wrong_tag = check_str(
+            "fn describe(e: .[BadPort(Int) | NotFound]) -> String:\n    match e:\n        .Timeout -> \"timeout\"\n        _ -> \"other\"\n"
+        )
+        .unwrap_err();
+        assert!(wrong_tag.contains("has no tag `.Timeout`"), "{wrong_tag}");
+
+        let wrong_arity = check_str(
+            "fn describe(e: .[BadPort(Int) | NotFound]) -> String:\n    match e:\n        .BadPort -> \"bad\"\n        _ -> \"other\"\n"
+        )
+        .unwrap_err();
+        assert!(wrong_arity.contains("takes 1 payload pattern"), "{wrong_arity}");
+
+        let missing = check_str(
+            "fn describe(e: .[BadPort(Int) | NotFound]) -> String:\n    match e:\n        .BadPort(p) -> __render(p)\n"
+        )
+        .unwrap_err();
+        assert!(missing.contains("non-exhaustive match") && missing.contains("`.NotFound`"), "{missing}");
+    }
+
+    #[test]
     fn packed_type_requires_packable_fields() {
         // (RFC-0027) scalars (and nested packed types) are packable.
         assert!(check_str(

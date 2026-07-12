@@ -806,6 +806,10 @@ struct Codegen<'types> {
     /// Value type of params / let-bound locals, where known, so `to_string` can
     /// pick the right rendering. Absent = `Other`.
     local_val_types: HashMap<String, ValType>,
+    /// Full type of params / let-bound locals, where known. This is deliberately
+    /// small and local: it fills gaps where address-keyed type facts cannot
+    /// recover a bare `Expr::Var` node's type during backend lowering.
+    local_types: HashMap<String, Type>,
     /// Element value type of list-typed locals (e.g. a `let words = split(...)`
     /// is `List(String)`), so a `for x in words` loop variable's type — and thus
     /// its use as a Dict key — resolves.
@@ -1000,6 +1004,7 @@ impl<'types> Codegen<'types> {
             local_list_elem: HashMap::new(),
             local_payload_records: HashMap::new(),
             local_val_types: HashMap::new(),
+            local_types: HashMap::new(),
             local_list_elem_valtype: HashMap::new(),
             local_list_elem_tuple: HashMap::new(),
             local_tuple_slots: HashMap::new(),
@@ -1143,6 +1148,16 @@ impl<'types> Codegen<'types> {
             Some(Stmt::Expr(e)) => self.val_type_of(e),
             _ => ValType::Other,
         }
+    }
+
+    fn ast_type_of_expr(&self, e: &Expr) -> Option<Type> {
+        self.type_table
+            .type_of(e)
+            .and_then(witchy_types::typeck::ty_to_ast)
+            .or_else(|| match e {
+                Expr::Var(name) => self.local_types.get(name).cloned(),
+                _ => None,
+            })
     }
 
     fn block_record_type(&self, b: &Block) -> Option<String> {
@@ -1418,6 +1433,112 @@ impl<'types> Codegen<'types> {
         }
     }
 
+    fn ctor_pattern_field_types(&self, name: &str, expected: Option<&Type>) -> Option<Vec<Type>> {
+        match (name, expected.map(Type::unqualified)) {
+            ("Some", Some(Type::Named(owner, args))) if owner == "Option" => {
+                return args.first().cloned().map(|ty| vec![ty]);
+            }
+            ("Ok", Some(Type::Named(owner, args))) if owner == "Result" => {
+                return args.first().cloned().map(|ty| vec![ty]);
+            }
+            ("Err", Some(Type::Named(owner, args))) if owner == "Result" => {
+                return args.get(1).cloned().map(|ty| vec![ty]);
+            }
+            _ => {}
+        }
+        self.ctors
+            .get(name)
+            .map(|&(tag, _)| tag as usize)
+            .and_then(|tag| {
+                let ty = self.ctor_type_name.get(name)?;
+                self.adt_variants.get(ty)?.get(tag).cloned()
+            })
+    }
+
+    fn anon_union_pattern_field_types(
+        expected: Option<&Type>,
+        tag: &str,
+        arity: usize,
+    ) -> Option<Vec<Type>> {
+        let Type::Named(name, union_args) = expected?.unqualified() else {
+            return None;
+        };
+        let variants = witchy_types::typeck::anon_union_synthetic_variants(name)?;
+        let mut offset = 0usize;
+        for (variant, variant_arity) in variants {
+            let end = offset.checked_add(variant_arity)?;
+            if end > union_args.len() {
+                return None;
+            }
+            if variant == tag && variant_arity == arity {
+                return Some(union_args[offset..end].to_vec());
+            }
+            offset = end;
+        }
+        None
+    }
+
+    fn bind_pattern_value_types(&mut self, pat: &Pattern, expected: Option<&Type>) {
+        match pat {
+            Pattern::Var(name) if name != "_" => {
+                if let Some(ty) = expected {
+                    let vt = ty_to_valtype(ty);
+                    self.local_types.insert(name.clone(), ty.clone());
+                    self.local_val_types.insert(name.clone(), vt);
+                    self.locals.insert(name.clone(), valtype_kind(vt));
+                }
+            }
+            Pattern::Tuple(parts) => {
+                let slots = match expected.map(Type::unqualified) {
+                    Some(Type::Tuple(slots)) => Some(slots.as_slice()),
+                    Some(Type::Named(name, slots)) if name.starts_with("Tuple") => Some(slots.as_slice()),
+                    _ => None,
+                };
+                for (index, part) in parts.iter().enumerate() {
+                    self.bind_pattern_value_types(part, slots.and_then(|items| items.get(index)));
+                }
+            }
+            Pattern::List { elems, rest } => {
+                let elem_ty = match expected.map(Type::unqualified) {
+                    Some(Type::Named(name, args)) if name == "List" => args.first(),
+                    _ => None,
+                };
+                for elem in elems {
+                    self.bind_pattern_value_types(elem, elem_ty);
+                }
+                if let (Some(Some(name)), Some(ty)) = (rest, expected) {
+                    self.local_types.insert(name.clone(), ty.clone());
+                    self.local_val_types.insert(name.clone(), ty_to_valtype(ty));
+                    self.locals.insert(name.clone(), Kind::I32);
+                }
+            }
+            Pattern::Ctor { name, args } => {
+                let fields = self.ctor_pattern_field_types(name, expected);
+                for (index, arg) in args.iter().enumerate() {
+                    self.bind_pattern_value_types(arg, fields.as_ref().and_then(|items| items.get(index)));
+                }
+            }
+            Pattern::AnonCtor { tag, args } => {
+                let fields = Self::anon_union_pattern_field_types(expected, tag, args.len());
+                for (index, arg) in args.iter().enumerate() {
+                    self.bind_pattern_value_types(arg, fields.as_ref().and_then(|items| items.get(index)));
+                }
+            }
+            Pattern::Or(alts) => {
+                if let Some(first) = alts.first() {
+                    self.bind_pattern_value_types(first, expected);
+                }
+            }
+            Pattern::Wildcard
+            | Pattern::Var(_)
+            | Pattern::Int(_)
+            | Pattern::Str(_)
+            | Pattern::Bool(_)
+            | Pattern::Duration(_)
+            | Pattern::IntRange { .. } => {}
+        }
+    }
+
     /// Record the kinds of all `let`/pattern-bound locals in a body.
     fn infer_locals(&mut self, block: &Block) {
         for stmt in &block.stmts {
@@ -1433,6 +1554,13 @@ impl<'types> Codegen<'types> {
                     self.locals.insert(name.clone(), k);
                     let vt = self.val_type_of(value);
                     self.local_val_types.insert(name.clone(), vt);
+                    if let Some(t) = self
+                        .type_table
+                        .type_of(value)
+                        .and_then(witchy_types::typeck::ty_to_ast)
+                    {
+                        self.local_types.insert(name.clone(), t);
+                    }
                     let evt = self.elem_val_type_of(value);
                     if evt != ValType::Other {
                         self.local_list_elem_valtype.insert(name.clone(), evt);
@@ -1613,6 +1741,8 @@ impl<'types> Codegen<'types> {
                         self.local_val_types.insert(n.clone(), ValType::Other);
                         self.locals.insert(n.clone(), Kind::I32);
                     }
+                    let pat_ty = self.ast_type_of_expr(value);
+                    self.bind_pattern_value_types(pattern, pat_ty.as_ref());
                     self.infer_locals_expr(value);
                 }
                 Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => self.infer_locals_expr(e),
@@ -1689,6 +1819,7 @@ impl<'types> Codegen<'types> {
                 // `match <float>: x -> …`, which otherwise defaulted to i32 and made
                 // the WIR ill-typed (the check-passes/codegen-fails Float hole).
                 let scrut_kind = self.kind_of(scrutinee);
+                let scrut_ty = self.ast_type_of_expr(scrutinee);
                 for arm in arms {
                     // Pattern-bound vars are i32 (floats aren't stored in records),
                     // except a top-level whole-scrutinee binding (handled below).
@@ -1697,6 +1828,7 @@ impl<'types> Codegen<'types> {
                     for v in pvars {
                         self.locals.insert(v, Kind::I32);
                     }
+                    self.bind_pattern_value_types(&arm.pattern, scrut_ty.as_ref());
                     if let Pattern::Var(v) = &arm.pattern {
                         self.locals.insert(v.clone(), scrut_kind);
                         self.local_val_types.insert(v.clone(), self.val_type_of(scrutinee));
@@ -1826,6 +1958,7 @@ impl<'types> Codegen<'types> {
         self.local_records.clear();
         self.local_list_elem.clear();
         self.local_val_types.clear();
+        self.local_types.clear();
         self.local_list_elem_valtype.clear();
         self.local_list_elem_tuple.clear();
         self.local_tuple_slots.clear();
@@ -1841,6 +1974,7 @@ impl<'types> Codegen<'types> {
             self.locals.insert(p.name.clone(), k);
             if let Some(t) = &p.ty {
                 self.local_val_types.insert(p.name.clone(), ty_to_valtype(t));
+                self.local_types.insert(p.name.clone(), t.clone());
             }
             // A function-typed parameter (`f: fn(...) -> RET`): remember RET's kind
             // so a closure call `f(x)` recovers the result at the right width.
@@ -2608,8 +2742,9 @@ impl<'types> Codegen<'types> {
                         local: MATCH_TMP.to_string(),
                         value: W::ToSlot(Box::new(v), Self::wir_kind(vk)),
                     });
+                    let pat_ty = self.ast_type_of_expr(value);
                     let (_cond, binds) =
-                        self.lower_pattern(&W::GetLocal(MATCH_TMP.to_string()), pattern)?;
+                        self.lower_pattern(&W::GetLocal(MATCH_TMP.to_string()), pattern, pat_ty.as_ref())?;
                     seq.extend(binds);
                     tail_is_value = false;
                 }
@@ -3586,6 +3721,7 @@ impl<'types> Codegen<'types> {
         &mut self,
         value: &witchy_wir::wir::WirExpr,
         pat: &Pattern,
+        expected: Option<&Type>,
     ) -> Option<(witchy_wir::wir::WirExpr, witchy_wir::wir::WirSeq)> {
         use witchy_wir::wir::{WirExpr as W, WirNode as N};
         let eq_i64 = |v: i64| W::Binary {
@@ -3613,6 +3749,13 @@ impl<'types> Codegen<'types> {
             // (ptr = value wrapped to i32). Recurses into sub-patterns.
             Pattern::Tuple(pats) => {
                 let ptr = W::FromSlot(Box::new(value.clone()), witchy_wir::wir::Kind::I32);
+                let slot_types = match expected.map(Type::unqualified) {
+                    Some(Type::Tuple(items)) => Some(items.as_slice()),
+                    Some(Type::Named(name, items)) if name.starts_with("Tuple") => {
+                        Some(items.as_slice())
+                    }
+                    _ => None,
+                };
                 let mut elem_conds: Vec<W> = Vec::new();
                 let mut binds: witchy_wir::wir::WirSeq = Vec::new();
                 for (i, sub) in pats.iter().enumerate() {
@@ -3626,7 +3769,8 @@ impl<'types> Codegen<'types> {
                         kind: witchy_wir::wir::Kind::I64,
                         offset: 0,
                     };
-                    let (sc, sb) = self.lower_pattern(&elem_value, sub)?;
+                    let (sc, sb) =
+                        self.lower_pattern(&elem_value, sub, slot_types.and_then(|tys| tys.get(i)))?;
                     if !matches!(sc, W::ConstI32(1)) {
                         elem_conds.push(sc);
                     }
@@ -3646,6 +3790,10 @@ impl<'types> Codegen<'types> {
             // freshly-allocated list via `$list_drop`.
             Pattern::List { elems, rest } => {
                 let ptr = W::FromSlot(Box::new(value.clone()), witchy_wir::wir::Kind::I32);
+                let elem_ty = match expected.map(Type::unqualified) {
+                    Some(Type::Named(name, args)) if name == "List" => args.first(),
+                    _ => None,
+                };
                 let n = elems.len() as i32;
                 let len_op = if rest.is_some() { witchy_wir::wir::BinOp::Ge } else { witchy_wir::wir::BinOp::Eq };
                 let len_check = W::Binary {
@@ -3667,7 +3815,7 @@ impl<'types> Codegen<'types> {
                         kind: witchy_wir::wir::Kind::I64,
                         offset: 0,
                     };
-                    let (sc, sb) = self.lower_pattern(&elem_value, sub)?;
+                    let (sc, sb) = self.lower_pattern(&elem_value, sub, elem_ty)?;
                     if !matches!(sc, W::ConstI32(1)) {
                         elem_conds.push(sc);
                     }
@@ -3718,6 +3866,7 @@ impl<'types> Codegen<'types> {
                 if nfields != args.len() {
                     return None;
                 }
+                let field_types = self.ctor_pattern_field_types(name, expected);
                 let ptr = W::FromSlot(Box::new(value.clone()), witchy_wir::wir::Kind::I32);
                 let mut field_conds: Vec<W> = Vec::new();
                 let mut binds: witchy_wir::wir::WirSeq = Vec::new();
@@ -3732,7 +3881,11 @@ impl<'types> Codegen<'types> {
                         kind: witchy_wir::wir::Kind::I64,
                         offset: 0,
                     };
-                    let (sc, sb) = self.lower_pattern(&field_value, sub)?;
+                    let (sc, sb) = self.lower_pattern(
+                        &field_value,
+                        sub,
+                        field_types.as_ref().and_then(|tys| tys.get(i)),
+                    )?;
                     if !matches!(sc, W::ConstI32(1)) {
                         field_conds.push(sc);
                     }
@@ -3749,6 +3902,64 @@ impl<'types> Codegen<'types> {
                 } else {
                     // `if tag == k: (field0 && field1 && …) else: 0` — fields are
                     // only touched when the tag matches.
+                    W::Control(Box::new(N::If {
+                        cond: tag_eq,
+                        then_: vec![N::Push(wir_and_chain(&field_conds))],
+                        els: vec![N::Push(W::ConstI32(0))],
+                        result: Some(witchy_wir::wir::WirTy::Bool),
+                    }))
+                };
+                (cond, binds)
+            }
+            Pattern::AnonCtor { tag, args } => {
+                let Type::Named(name, union_args) = expected?.unqualified() else {
+                    return None;
+                };
+                let variants = witchy_types::typeck::anon_union_synthetic_variants(name)?;
+                let mut offset = 0usize;
+                let mut found = None;
+                for (index, (variant, arity)) in variants.into_iter().enumerate() {
+                    let end = offset.checked_add(arity)?;
+                    if end > union_args.len() {
+                        return None;
+                    }
+                    if variant == *tag && arity == args.len() {
+                        found = Some((index as i32, union_args[offset..end].to_vec()));
+                        break;
+                    }
+                    offset = end;
+                }
+                let (tag_index, field_types) = found?;
+                let ptr = W::FromSlot(Box::new(value.clone()), witchy_wir::wir::Kind::I32);
+                let mut field_conds: Vec<W> = Vec::new();
+                let mut binds: witchy_wir::wir::WirSeq = Vec::new();
+                for (i, sub) in args.iter().enumerate() {
+                    let field_value = W::Load {
+                        ptr: Box::new(W::Binary {
+                            op: witchy_wir::wir::BinOp::Add,
+                            kind: witchy_wir::wir::Kind::I32,
+                            lhs: Box::new(ptr.clone()),
+                            rhs: Box::new(W::ConstI32((4 + 8 * i) as i32)),
+                        }),
+                        kind: witchy_wir::wir::Kind::I64,
+                        offset: 0,
+                    };
+                    let (sc, sb) =
+                        self.lower_pattern(&field_value, sub, field_types.get(i))?;
+                    if !matches!(sc, W::ConstI32(1)) {
+                        field_conds.push(sc);
+                    }
+                    binds.extend(sb);
+                }
+                let tag_eq = W::Binary {
+                    op: witchy_wir::wir::BinOp::Eq,
+                    kind: witchy_wir::wir::Kind::I32,
+                    lhs: Box::new(W::Load { ptr: Box::new(ptr), kind: witchy_wir::wir::Kind::I32, offset: 0 }),
+                    rhs: Box::new(W::ConstI32(tag_index)),
+                };
+                let cond = if field_conds.is_empty() {
+                    tag_eq
+                } else {
                     W::Control(Box::new(N::If {
                         cond: tag_eq,
                         then_: vec![N::Push(wir_and_chain(&field_conds))],
@@ -3794,7 +4005,7 @@ impl<'types> Codegen<'types> {
                 let mut conds: Vec<W> = Vec::new();
                 let mut binds: witchy_wir::wir::WirSeq = Vec::new();
                 for alt in alts {
-                    let (c, b) = self.lower_pattern(value, alt)?;
+                    let (c, b) = self.lower_pattern(value, alt, expected)?;
                     if !b.is_empty() {
                         binds.push(N::If {
                             cond: c.clone(),
@@ -3851,6 +4062,7 @@ impl<'types> Codegen<'types> {
                 }
                 _ => false,
             };
+        let scrut_ty = self.ast_type_of_expr(scrutinee);
         let scrut_w = self.lower_expr(scrutinee)?;
         let id = self.next_label;
         self.next_label += 1;
@@ -3868,9 +4080,15 @@ impl<'types> Codegen<'types> {
         let mut arm_blocks: witchy_wir::wir::WirSeq = Vec::with_capacity(arms.len() + 1);
         for (i, arm) in arms.iter().enumerate() {
             let a_label = format!("a{id}_{i}");
-            let (cond, binds) = match self.lower_pattern(&value, &arm.pattern) {
+            let (cond, binds) = match self.lower_pattern(&value, &arm.pattern, scrut_ty.as_ref()) {
                 Some(cb) => cb,
                 None => {
+                    if std::env::var_os("WIRDIAG").is_some() {
+                        eprintln!(
+                            "WIRBAIL lower-match-pattern: pattern={:?} scrut_ty={:?}",
+                            arm.pattern, scrut_ty
+                        );
+                    }
                     self.next_label = saved;
                     self.match_scrut_depth = depth;
                     return None;
@@ -3883,6 +4101,9 @@ impl<'types> Codegen<'types> {
                 let g = match self.lower_expr(guard) {
                     Some(w) => w,
                     None => {
+                        if std::env::var_os("WIRDIAG").is_some() {
+                            eprintln!("WIRBAIL lower-match-guard: guard={guard:?}");
+                        }
                         self.next_label = saved;
                         self.match_scrut_depth = depth;
                         return None;
@@ -3894,6 +4115,9 @@ impl<'types> Codegen<'types> {
             let b = match self.lower_expr(&arm.body) {
                 Some(w) => w,
                 None => {
+                    if std::env::var_os("WIRDIAG").is_some() {
+                        eprintln!("WIRBAIL lower-match-body: body={:?}", arm.body);
+                    }
                     self.next_label = saved;
                     self.match_scrut_depth = depth;
                     return None;

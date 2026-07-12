@@ -2931,6 +2931,14 @@ fn match_pattern(pat: &Pattern, value: &Value, env: &mut Env) -> bool {
                     .zip(fields)
                     .all(|(p, v)| match_pattern(p, v, env))
         }
+        (Pattern::AnonCtor { tag, args }, Value::Ctor { name: vname, fields }) => {
+            *vname == format!(".{tag}")
+                && args.len() == fields.len()
+                && args
+                    .iter()
+                    .zip(fields)
+                    .all(|(p, v)| match_pattern(p, v, env))
+        }
         (Pattern::Tuple(pats), Value::Tuple(items)) => {
             pats.len() == items.len()
                 && pats

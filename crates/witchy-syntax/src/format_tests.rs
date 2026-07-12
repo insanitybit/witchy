@@ -108,6 +108,17 @@
     }
 
     #[test]
+    fn anonymous_union_patterns_round_trip_through_formatting() {
+        let src = "type LoadErr = .[BadPort(Int) | Missing(String) | NotFound]\n\nfn describe(e: LoadErr) -> String:\n    match e:\n        .BadPort(p) -> \"bad:${p}\"\n        .Missing(k) -> k\n        .NotFound -> \"missing\"\n";
+        let out = reformat(src).expect("anonymous union patterns round-trip");
+        assert!(out.contains(".BadPort(p) ->"), "{out}");
+        assert!(out.contains(".Missing(k) ->"), "{out}");
+        assert!(out.contains(".NotFound ->"), "{out}");
+        assert!(!out.contains("__union"), "{out}");
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
+    }
+
+    #[test]
     fn comprehensions_survive_formatting_everywhere() {
         // Learner round-3 BLOCKER: `let ys = [n * n for n in xs]` used to print
         // as `let ys = 0` (the inline renderer's placeholder leaked), and the

@@ -236,7 +236,7 @@ fn fv_expr(e: &Expr, s: &mut LambdaScan) {
 pub fn collect_pattern_vars<S: Extend<String>>(pat: &Pattern, out: &mut S) {
     match pat {
         Pattern::Var(name) => out.extend([name.clone()]),
-        Pattern::Ctor { args, .. } | Pattern::Tuple(args) => {
+        Pattern::Ctor { args, .. } | Pattern::AnonCtor { args, .. } | Pattern::Tuple(args) => {
             for sub in args {
                 collect_pattern_vars(sub, out);
             }

@@ -155,6 +155,11 @@ fn collect_refs_pattern(p: &Pattern, out: &mut HashSet<String>) {
                 collect_refs_pattern(a, out);
             }
         }
+        Pattern::AnonCtor { args, .. } => {
+            for a in args {
+                collect_refs_pattern(a, out);
+            }
+        }
         Pattern::Tuple(args) | Pattern::List { elems: args, .. } | Pattern::Or(args) => {
             for a in args {
                 collect_refs_pattern(a, out);

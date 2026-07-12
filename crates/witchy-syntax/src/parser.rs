@@ -1437,6 +1437,19 @@ impl Parser {
                     func: Box::new(e),
                     args: unlabel(args),
                 };
+            } else if self.in_match_arm
+                && self.at(&Tok::Dot)
+                && !self.on_same_line_as_prev()
+                && matches!(
+                    self.toks.get(self.pos + 1).map(|t| &t.kind),
+                    Some(Tok::Ident(n)) if n.chars().next().is_some_and(|c| c.is_uppercase())
+                )
+            {
+                // In an inline match-arm body, the next source line's `.Tag`
+                // starts another anonymous-union pattern, not a continuation of
+                // the body expression. Lowercase `.method` keeps the existing
+                // cross-line method-chain behavior.
+                break;
             } else if self.eat(&Tok::Dot) {
                 // Tuple element access: `pair.0` (the lexer guarantees digits
                 // after a field-access dot arrive as a plain Int).
@@ -2374,6 +2387,36 @@ impl Parser {
             Tok::False => {
                 self.advance();
                 Ok(Pattern::Bool(false))
+            }
+            Tok::Dot => {
+                self.advance();
+                let tag = match self.kind().clone() {
+                    Tok::Ident(name) => {
+                        if !name.chars().next().is_some_and(|c| c.is_uppercase()) {
+                            return Err(self.error(
+                                "anonymous union pattern tags must start with an uppercase letter",
+                            ));
+                        }
+                        self.advance();
+                        name
+                    }
+                    other => {
+                        return Err(self.error(format!(
+                            "expected an anonymous union tag after `.`, found `{other}`"
+                        )));
+                    }
+                };
+                let mut args = Vec::new();
+                if self.eat(&Tok::LParen) {
+                    while !self.at(&Tok::RParen) {
+                        args.push(self.pattern()?);
+                        if !self.eat(&Tok::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(&Tok::RParen)?;
+                }
+                Ok(Pattern::AnonCtor { tag, args })
             }
             Tok::Ident(name) => {
                 self.advance();

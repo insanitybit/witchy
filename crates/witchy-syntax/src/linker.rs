@@ -1575,6 +1575,11 @@ fn seal_pattern(p: &Pattern, sealed: &SealMap, home: &str) -> Result<(), LinkErr
                 seal_pattern(a, sealed, home)?;
             }
         }
+        Pattern::AnonCtor { args, .. } => {
+            for a in args {
+                seal_pattern(a, sealed, home)?;
+            }
+        }
         Pattern::Tuple(ps) => {
             for q in ps {
                 seal_pattern(q, sealed, home)?;
@@ -2188,7 +2193,7 @@ fn check_reserved_pattern(
 ) -> Result<(), LinkError> {
     match pattern {
         Pattern::Var(name) => check_reserved_binding(module_name, "pattern binding", name, line),
-        Pattern::Ctor { args, .. } | Pattern::Tuple(args) => {
+        Pattern::Ctor { args, .. } | Pattern::AnonCtor { args, .. } | Pattern::Tuple(args) => {
             for arg in args {
                 check_reserved_pattern(module_name, arg, line)?;
             }

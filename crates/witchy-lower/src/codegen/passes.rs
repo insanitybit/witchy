@@ -203,7 +203,7 @@ impl Renamer {
     fn rename_pattern(&mut self, p: &mut Pattern) {
         match p {
             Pattern::Var(n) => *n = self.declare(n),
-            Pattern::Ctor { args, .. } | Pattern::Tuple(args) => {
+            Pattern::Ctor { args, .. } | Pattern::AnonCtor { args, .. } | Pattern::Tuple(args) => {
                 for a in args {
                     self.rename_pattern(a);
                 }
@@ -239,7 +239,7 @@ impl Renamer {
     fn resolve_pattern_vars(&mut self, p: &mut Pattern) {
         match p {
             Pattern::Var(n) => *n = self.resolve(n),
-            Pattern::Ctor { args, .. } | Pattern::Tuple(args) => {
+            Pattern::Ctor { args, .. } | Pattern::AnonCtor { args, .. } | Pattern::Tuple(args) => {
                 for a in args {
                     self.resolve_pattern_vars(a);
                 }

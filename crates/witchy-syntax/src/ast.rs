@@ -631,6 +631,9 @@ pub enum Pattern {
     Str(String),
     Bool(bool),
     Ctor { name: String, args: Vec<Pattern> },
+    /// An anonymous tagged-union pattern: `.NotFound` or `.BadPort(p)`.
+    /// The scrutinee type supplies the closed tag set during type checking.
+    AnonCtor { tag: String, args: Vec<Pattern> },
     Tuple(Vec<Pattern>),
     /// A list pattern. `elems` are matched positionally against the front of the
     /// list. `rest` controls the tail: `None` requires an exact-length match
@@ -666,7 +669,9 @@ pub fn pattern_binds(p: &Pattern, out: &mut Vec<String>) {
     match p {
         Pattern::Var(n) if n != "_" => out.push(n.clone()),
         Pattern::Wildcard | Pattern::Var(_) => {}
-        Pattern::Ctor { args, .. } => args.iter().for_each(|a| pattern_binds(a, out)),
+        Pattern::Ctor { args, .. } | Pattern::AnonCtor { args, .. } => {
+            args.iter().for_each(|a| pattern_binds(a, out));
+        }
         Pattern::Tuple(ps) => ps.iter().for_each(|q| pattern_binds(q, out)),
         Pattern::List { elems, rest } => {
             elems.iter().for_each(|q| pattern_binds(q, out));

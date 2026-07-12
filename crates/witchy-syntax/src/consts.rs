@@ -469,7 +469,7 @@ fn pattern_binds(p: &Pattern, scope: &mut HashSet<String>) {
         Pattern::Var(name) => {
             scope.insert(name.clone());
         }
-        Pattern::Ctor { args, .. } => {
+        Pattern::Ctor { args, .. } | Pattern::AnonCtor { args, .. } => {
             for a in args {
                 pattern_binds(a, scope);
             }

@@ -2165,6 +2165,7 @@ fn collect_trait_method_names(module: &Module) -> HashSet<String> {
 type RecordInfo = (Vec<u32>, Vec<(String, Ty)>);
 type CallObligations = Vec<(Ty, String)>;
 type UserCallSig = (Vec<Ty>, Ty, CallObligations);
+type AnonUnionVariants = Vec<(String, Vec<Ty>)>;
 
 struct Checker {
     /// When annotating (see `annotate`): expression identity -> inferred type,
@@ -4150,36 +4151,40 @@ impl Checker {
         }
     }
 
-    fn check_anon_ctor(&mut self, tag: &str, args: &[Expr], expected: &Ty) -> Result<(), TypeError> {
-        let resolved = self.resolve(expected);
+    fn anon_union_variants_for_ty(&self, ty: &Ty) -> Option<(Ty, AnonUnionVariants)> {
+        let resolved = self.resolve(ty);
         let Ty::Named(name, union_args) = resolved else {
+            return None;
+        };
+        let variants = anon_union_synthetic_variants(&name)?;
+        let mut offset = 0usize;
+        let mut out = Vec::with_capacity(variants.len());
+        for (variant, arity) in variants {
+            let end = offset.checked_add(arity)?;
+            if end > union_args.len() {
+                return None;
+            }
+            out.push((variant, union_args[offset..end].to_vec()));
+            offset = end;
+        }
+        (offset == union_args.len()).then_some((Ty::Named(name, union_args), out))
+    }
+
+    fn check_anon_ctor(&mut self, tag: &str, args: &[Expr], expected: &Ty) -> Result<(), TypeError> {
+        let Some((union_ty, variants)) = self.anon_union_variants_for_ty(expected) else {
             return terr(format!(
                 "anonymous union injection `.{tag}` needs an expected anonymous union type; annotate it as `.[{tag}]` or pass it to a parameter/return position with that type"
             ));
         };
-        let Some(variants) = anon_union_synthetic_variants(&name) else {
-            return terr(format!(
-                "anonymous union injection `.{tag}` needs an expected anonymous union type, found `{}`",
-                Ty::Named(name, union_args)
-            ));
-        };
-        let mut offset = 0usize;
-        for (variant, arity) in variants {
-            let end = offset + arity;
-            if end > union_args.len() {
-                return terr(format!(
-                    "malformed anonymous union type `{}`: payload arity does not match its arguments",
-                    Ty::Named(name, union_args)
-                ));
-            }
+        for (variant, fields) in &variants {
             if variant == tag {
+                let arity = fields.len();
                 if arity != args.len() {
                     return terr(format!(
                         "anonymous union tag `.{tag}` takes {arity} payload value(s) but got {}",
                         args.len()
                     ));
                 }
-                let fields = &union_args[offset..end];
                 for (arg, fty) in args.iter().zip(fields) {
                     let at = self.infer_expected(arg, fty)?;
                     self.coerce_arg(fty, &at).map_err(|e| TypeError {
@@ -4188,12 +4193,8 @@ impl Checker {
                 }
                 return Ok(());
             }
-            offset = end;
         }
-        terr(format!(
-            "anonymous union type `{}` has no tag `.{tag}`",
-            Ty::Named(name, union_args)
-        ))
+        terr(format!("anonymous union type `{union_ty}` has no tag `.{tag}`"))
     }
 
     /// Infer a TRANSIENT (desugar-temp) expression WITHOUT recording any of its
@@ -5003,6 +5004,35 @@ impl Checker {
                     }
                 }
             }
+            Pattern::AnonCtor { tag, args } => {
+                let Some((_union_ty, variants)) = self.anon_union_variants_for_ty(ty) else {
+                    return Some(format!(
+                        "`let {} = …` — an anonymous union pattern needs an anonymous union \
+                         scrutinee. Use `match` or add a type annotation.",
+                        describe_pattern(pat)
+                    ));
+                };
+                if variants.len() > 1 {
+                    return Some(format!(
+                        "`let {} = …` — `.{tag}` is one of {} tags, so this pattern can fail. \
+                         Use `if let {} = …:` (with an else), or `match`.",
+                        describe_pattern(pat),
+                        variants.len(),
+                        describe_pattern(pat),
+                    ));
+                }
+                let fields = variants
+                    .iter()
+                    .find(|(variant, _)| variant == tag)
+                    .map(|(_, fields)| fields.as_slice())
+                    .unwrap_or(&[]);
+                for (sub, sub_ty) in args.iter().zip(fields) {
+                    if let Some(r) = self.pattern_refutable(sub, sub_ty) {
+                        return Some(r);
+                    }
+                }
+                None
+            }
             // Everything below is refutable in an irrefutable context.
             Pattern::Int(_) | Pattern::Str(_) | Pattern::Bool(_) | Pattern::Duration(_) => {
                 Some(format!(
@@ -5081,6 +5111,28 @@ impl Checker {
                     Ok(())
                 }
             }
+            Pattern::AnonCtor { tag, args } => {
+                let Some((union_ty, variants)) = self.anon_union_variants_for_ty(expected) else {
+                    return terr(format!(
+                        "anonymous union pattern `.{tag}` needs an anonymous union scrutinee, found `{}`",
+                        self.resolve(expected)
+                    ));
+                };
+                let Some((_, fields)) = variants.iter().find(|(variant, _)| variant == tag) else {
+                    return terr(format!("anonymous union type `{union_ty}` has no tag `.{tag}`"));
+                };
+                if fields.len() != args.len() {
+                    return terr(format!(
+                        "anonymous union pattern `.{tag}` takes {} payload pattern(s) but got {}",
+                        fields.len(),
+                        args.len()
+                    ));
+                }
+                for (p, fty) in args.iter().zip(fields) {
+                    self.check_pattern(p, fty)?;
+                }
+                Ok(())
+            }
             // (RFC-0052) A duration literal pattern matches a `Duration` scrutinee.
             Pattern::Duration(_) => self.unify(expected, &Ty::Duration),
             // (RFC-0052) An integer range pattern matches an `Int` scrutinee.
@@ -5155,7 +5207,7 @@ impl Checker {
     /// `Some(0)` followed by `Some(n)` is correctly left reachable.
     fn check_unreachable(&self, arms: &[MatchArm]) -> Result<(), TypeError> {
         let mut saturated = false;
-        let mut ctors: HashSet<&str> = HashSet::new();
+        let mut ctors: HashSet<String> = HashSet::new();
         let mut ints: HashSet<i64> = HashSet::new();
         let mut strs: HashSet<&str> = HashSet::new();
         let mut bools: HashSet<bool> = HashSet::new();
@@ -5166,7 +5218,8 @@ impl Checker {
         for (i, arm) in arms.iter().enumerate() {
             let already = saturated
                 || match &arm.pattern {
-                    Pattern::Ctor { name, .. } => ctors.contains(name.as_str()),
+                    Pattern::Ctor { name, .. } => ctors.contains(name),
+                    Pattern::AnonCtor { tag, .. } => ctors.contains(&format!(".{tag}")),
                     Pattern::Int(n) => ints.contains(n),
                     Pattern::Str(s) => strs.contains(s.as_str()),
                     Pattern::Bool(b) => bools.contains(b),
@@ -5197,7 +5250,16 @@ impl Checker {
                             .iter()
                             .all(|p| matches!(p, Pattern::Wildcard | Pattern::Var(_))) =>
                     {
-                        ctors.insert(name.as_str());
+                        ctors.insert(name.clone());
+                    }
+                    Pattern::AnonCtor { tag, args }
+                        if args
+                            .iter()
+                            .all(|p| matches!(p, Pattern::Wildcard | Pattern::Var(_))) =>
+                    {
+                        // The dotted key keeps anonymous tags disjoint from declared
+                        // constructors with the same spelling.
+                        ctors.insert(format!(".{tag}"));
                     }
                     Pattern::Int(n) => {
                         ints.insert(*n);
@@ -5284,6 +5346,41 @@ impl Checker {
                      of component cases — add the missing case(s) or a catch-all `_` arm",
                 ),
             };
+        }
+        if let Some((union_ty, variants)) = self.anon_union_variants_for_ty(&resolved) {
+            let rows: Vec<Vec<Pattern>> = arms
+                .iter()
+                .filter(|a| a.guard.is_none())
+                .map(|a| vec![a.pattern.clone()])
+                .collect();
+            if self.rows_exhaustive(std::slice::from_ref(&resolved), &rows) {
+                return Ok(());
+            }
+            let covered: HashSet<String> = arms
+                .iter()
+                .filter(|a| a.guard.is_none())
+                .filter_map(|a| match &a.pattern {
+                    Pattern::AnonCtor { tag, .. } => Some(format!(".{tag}")),
+                    _ => None,
+                })
+                .collect();
+            let missing: Vec<String> = variants
+                .iter()
+                .filter_map(|(tag, _)| {
+                    let tag = format!(".{tag}");
+                    (!covered.contains(&tag)).then_some(format!("`{tag}`"))
+                })
+                .collect();
+            if !missing.is_empty() {
+                return terr(format!(
+                    "non-exhaustive match on `{union_ty}`: missing {}",
+                    missing.join(", ")
+                ));
+            }
+            return terr(format!(
+                "non-exhaustive match on `{union_ty}`: a tag payload pattern doesn't cover every case \
+                 — add a wholesale `.Tag(_)` arm for that tag or a catch-all `_`"
+            ));
         }
         let Ty::Named(adt, _) = resolved else {
             return Ok(());
@@ -5374,6 +5471,14 @@ impl Checker {
                 ColCtor { key: LIST_CONS.into(), args: vec![(**elem).clone(), ty.clone()] },
             ]),
             Ty::Named(adt, args) => {
+                if let Some((_union_ty, variants)) = self.anon_union_variants_for_ty(ty) {
+                    return Some(
+                        variants
+                            .into_iter()
+                            .map(|(tag, fields)| ColCtor { key: format!(".{tag}"), args: fields })
+                            .collect(),
+                    );
+                }
                 let variants = self.adt_variants.get(adt)?;
                 Some(
                     variants
@@ -5431,9 +5536,9 @@ impl Checker {
         };
         let col_ty = self.resolve(col_ty);
         let full = self.column_ctors(&col_ty);
-        let present: HashSet<&str> =
+        let present: HashSet<String> =
             rows.iter().filter_map(|r| pattern_ctor_key(&r[0])).collect();
-        let complete = matches!(&full, Some(cs) if cs.iter().all(|c| present.contains(c.key.as_str())));
+        let complete = matches!(&full, Some(cs) if cs.iter().all(|c| present.contains(&c.key)));
         if complete {
             // Every constructor is mentioned — the match is exhaustive iff each
             // constructor's specialized sub-matrix is exhaustive.
@@ -6259,7 +6364,9 @@ fn pattern_dup_binding(p: &Pattern) -> Option<String> {
                 }
             }
             Pattern::Tuple(ps) => ps.iter().for_each(|q| walk(q, seen, dup)),
-            Pattern::Ctor { args, .. } => args.iter().for_each(|q| walk(q, seen, dup)),
+            Pattern::Ctor { args, .. } | Pattern::AnonCtor { args, .. } => {
+                args.iter().for_each(|q| walk(q, seen, dup));
+            }
             Pattern::List { elems, rest } => {
                 elems.iter().for_each(|q| walk(q, seen, dup));
                 if let Some(Some(name)) = rest {
@@ -6359,24 +6466,25 @@ const LIST_CONS: &str = "(cons)";
 /// are NOT mistaken for wildcards — they never complete a signature (their types
 /// are open), and excluding them from the default matrix keeps a literal-only
 /// match non-exhaustive, as it should be.
-fn pattern_ctor_key(p: &Pattern) -> Option<&str> {
+fn pattern_ctor_key(p: &Pattern) -> Option<String> {
     match p {
         Pattern::Wildcard | Pattern::Var(_) => None,
-        Pattern::Bool(true) => Some("true"),
-        Pattern::Bool(false) => Some("false"),
-        Pattern::Ctor { name, .. } => Some(name),
-        Pattern::Tuple(_) => Some(TUPLE_CTOR),
+        Pattern::Bool(true) => Some("true".to_string()),
+        Pattern::Bool(false) => Some("false".to_string()),
+        Pattern::Ctor { name, .. } => Some(name.clone()),
+        Pattern::AnonCtor { tag, .. } => Some(format!(".{tag}")),
+        Pattern::Tuple(_) => Some(TUPLE_CTOR.to_string()),
         Pattern::List { elems, rest } => {
             if !elems.is_empty() {
-                Some(LIST_CONS)
+                Some(LIST_CONS.to_string())
             } else if rest.is_none() {
-                Some(LIST_NIL)
+                Some(LIST_NIL.to_string())
             } else {
                 None // `[..r]` matches any list — wildcard-like for this column
             }
         }
         Pattern::Int(_) | Pattern::Str(_) | Pattern::Duration(_) | Pattern::IntRange { .. } => {
-            Some("(literal)")
+            Some("(literal)".to_string())
         }
         // Expanded away at each column head by `expand_head_or` before this runs.
         Pattern::Or(_) => None,
@@ -6400,6 +6508,7 @@ fn specialize_head(p: &Pattern, c: &ColCtor) -> Option<Vec<Pattern>> {
         Pattern::Wildcard | Pattern::Var(_) => Some(vec![Pattern::Wildcard; arity]),
         Pattern::Bool(b) => (c.key == if *b { "true" } else { "false" }).then(Vec::new),
         Pattern::Ctor { name, args } => (c.key == *name).then(|| args.clone()),
+        Pattern::AnonCtor { tag, args } => (c.key == format!(".{tag}")).then(|| args.clone()),
         Pattern::Tuple(ps) => (c.key == TUPLE_CTOR).then(|| ps.clone()),
         Pattern::List { elems, rest } => specialize_list(elems, rest, c),
         // A literal on an open type never reaches a synthetic ctor; drop the row.
@@ -6458,6 +6567,13 @@ fn describe_pattern(p: &Pattern) -> String {
         Pattern::Ctor { name, args } if args.is_empty() => name.clone(),
         Pattern::Ctor { name, args } => {
             format!("{name}({})", args.iter().map(describe_pattern).collect::<Vec<_>>().join(", "))
+        }
+        Pattern::AnonCtor { tag, args } if args.is_empty() => format!(".{tag}"),
+        Pattern::AnonCtor { tag, args } => {
+            format!(
+                ".{tag}({})",
+                args.iter().map(describe_pattern).collect::<Vec<_>>().join(", ")
+            )
         }
         Pattern::Tuple(ps) => {
             format!("({})", ps.iter().map(describe_pattern).collect::<Vec<_>>().join(", "))
