@@ -135,6 +135,14 @@
     }
 
     #[test]
+    fn anonymous_union_protocols_check_structurally() {
+        check_str(
+            "trait Show:\n    fn show(self) -> String\n\ntrait PartialEq:\n    fn eq(self, other: Self) -> Bool\n\nimpl Show for Int:\n    fn show(self) -> String:\n        __render(self)\n\nimpl Show for String:\n    fn show(self) -> String:\n        self\n\nimpl PartialEq for Int:\n    fn eq(self, other: Self) -> Bool:\n        self == other\n\nimpl PartialEq for String:\n    fn eq(self, other: Self) -> Bool:\n        self == other\n\nfn same(x: a, y: a) -> Bool where a: PartialEq:\n    x == y\n\nfn describe(e: .[Bad(Int) | Missing(String)]) -> String:\n    show(e)\n\nfn main(console: Console):\n    let a: .[Bad(Int) | Missing(String)] = .Bad(7)\n    let b: .[Bad(Int) | Missing(String)] = .Missing(\"port\")\n    console.print(describe(a))\n    console.print(\"${same(a, a)}\")\n    console.print(\"${same(a, b)}\")\n"
+        )
+        .expect("anonymous unions synthesize Show and PartialEq");
+    }
+
+    #[test]
     fn packed_type_requires_packable_fields() {
         // (RFC-0027) scalars (and nested packed types) are packable.
         assert!(check_str(

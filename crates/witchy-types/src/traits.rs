@@ -252,54 +252,33 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     let mut impl_pairs: HashSet<(String, String)> = HashSet::new();
     let mut impl_contract_diags: Vec<String> = Vec::new();
     let mut generated: Vec<Function> = Vec::new();
-    for item in &module.items {
-        if let Item::Impl(im) = item {
-            if let Some(t) = &im.trait_name {
-                impl_pairs.insert((t.clone(), im.type_name.clone()));
-                if let Some(methods) = trait_method_list.get(t) {
-                    let params = trait_type_params.get(t).map(Vec::as_slice).unwrap_or(&[]);
-                    impl_contract_diags.extend(validate_trait_impl(im, methods, params));
-                }
+    let synthetic_impls = synthesize_anon_union_impls(&module.items, &trait_method_list);
+    let source_impls = module.items.iter().filter_map(|item| match item {
+        Item::Impl(im) => Some(im),
+        _ => None,
+    });
+    for im in source_impls.chain(synthetic_impls.iter()) {
+        if let Some(t) = &im.trait_name {
+            impl_pairs.insert((t.clone(), im.type_name.clone()));
+            if let Some(methods) = trait_method_list.get(t) {
+                let params = trait_type_params.get(t).map(Vec::as_slice).unwrap_or(&[]);
+                impl_contract_diags.extend(validate_trait_impl(im, methods, params));
             }
-            let provided: HashSet<&str> = im.methods.iter().map(|m| m.name.as_str()).collect();
-            // Methods the impl defines. A method whose first parameter is
-            // `self` is an INSTANCE method (dispatched on a value); one
-            // without is a STATIC, callable only as `Type.name(args)`.
-            for method in &im.methods {
-                let mangled = mangle(
-                    im.trait_name.as_deref(),
-                    &im.trait_args,
-                    &im.type_name,
-                    &method.name,
-                );
-                let is_static =
-                    method.params.first().is_none_or(|p| p.name != "self");
-                if is_static {
-                    if let Some(trait_name) = &im.trait_name {
-                        push_trait_impl(
-                            &mut trait_impl_table,
-                            trait_name,
-                            &im.trait_args,
-                            &method.name,
-                            &im.type_name,
-                            mangled.clone(),
-                        );
-                    }
-                    statics.insert(
-                        (im.type_name.clone(), method.name.clone()),
-                        mangled.clone(),
-                    );
-                    generated.push(method_fn(
-                        mangled,
-                        method.params.clone(),
-                        method.ret.clone(),
-                        method.body.clone(),
-                        &im.type_name,
-                        &im.target_args,
-                        im.bounds.clone(),
-                    ));
-                    continue;
-                }
+        }
+        let provided: HashSet<&str> = im.methods.iter().map(|m| m.name.as_str()).collect();
+        // Methods the impl defines. A method whose first parameter is
+        // `self` is an INSTANCE method (dispatched on a value); one
+        // without is a STATIC, callable only as `Type.name(args)`.
+        for method in &im.methods {
+            let mangled = mangle(
+                im.trait_name.as_deref(),
+                &im.trait_args,
+                &im.type_name,
+                &method.name,
+            );
+            let is_static =
+                method.params.first().is_none_or(|p| p.name != "self");
+            if is_static {
                 if let Some(trait_name) = &im.trait_name {
                     push_trait_impl(
                         &mut trait_impl_table,
@@ -309,18 +288,11 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                         &im.type_name,
                         mangled.clone(),
                     );
-                } else {
-                    // Ambient std-owned types (`List`, `Dict`, `String`, ...)
-                    // are always in scope through prelude modules. Their future
-                    // inherent methods must be reachable as receiver methods,
-                    // but must not resurrect retired global builtins such as
-                    // bare `push([1], 2)`.
-                    if !is_ambient_std_owned_name(&im.type_name) {
-                        inherent_methods.insert(method.name.clone());
-                    }
-                    inherent_impl_table
-                        .insert((method.name.clone(), im.type_name.clone()), mangled.clone());
                 }
+                statics.insert(
+                    (im.type_name.clone(), method.name.clone()),
+                    mangled.clone(),
+                );
                 generated.push(method_fn(
                     mangled,
                     method.params.clone(),
@@ -330,40 +302,71 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                     &im.target_args,
                     im.bounds.clone(),
                 ));
+                continue;
             }
-            // Methods the impl omits but the trait provides a default for. Only
-            // trait impls inherit defaults; inherent impls have no trait.
             if let Some(trait_name) = &im.trait_name {
-                if let Some(methods) = trait_method_list.get(trait_name) {
-                    for ms in methods {
-                        if provided.contains(ms.name.as_str()) {
-                            continue;
-                        }
-                        if let Some(body) = &ms.default {
-                            let mangled = mangle(
-                                Some(trait_name),
-                                &im.trait_args,
-                                &im.type_name,
-                                &ms.name,
-                            );
-                            push_trait_impl(
-                                &mut trait_impl_table,
-                                trait_name,
-                                &im.trait_args,
-                                &ms.name,
-                                &im.type_name,
-                                mangled.clone(),
-                            );
-                            generated.push(method_fn(
-                                mangled,
-                                ms.params.clone(),
-                                ms.ret.clone(),
-                                body.clone(),
-                                &im.type_name,
-                                &im.target_args,
-                                im.bounds.clone(),
-                            ));
-                        }
+                push_trait_impl(
+                    &mut trait_impl_table,
+                    trait_name,
+                    &im.trait_args,
+                    &method.name,
+                    &im.type_name,
+                    mangled.clone(),
+                );
+            } else {
+                // Ambient std-owned types (`List`, `Dict`, `String`, ...)
+                // are always in scope through prelude modules. Their future
+                // inherent methods must be reachable as receiver methods,
+                // but must not resurrect retired global builtins such as
+                // bare `push([1], 2)`.
+                if !is_ambient_std_owned_name(&im.type_name) {
+                    inherent_methods.insert(method.name.clone());
+                }
+                inherent_impl_table
+                    .insert((method.name.clone(), im.type_name.clone()), mangled.clone());
+            }
+            generated.push(method_fn(
+                mangled,
+                method.params.clone(),
+                method.ret.clone(),
+                method.body.clone(),
+                &im.type_name,
+                &im.target_args,
+                im.bounds.clone(),
+            ));
+        }
+        // Methods the impl omits but the trait provides a default for. Only
+        // trait impls inherit defaults; inherent impls have no trait.
+        if let Some(trait_name) = &im.trait_name {
+            if let Some(methods) = trait_method_list.get(trait_name) {
+                for ms in methods {
+                    if provided.contains(ms.name.as_str()) {
+                        continue;
+                    }
+                    if let Some(body) = &ms.default {
+                        let mangled = mangle(
+                            Some(trait_name),
+                            &im.trait_args,
+                            &im.type_name,
+                            &ms.name,
+                        );
+                        push_trait_impl(
+                            &mut trait_impl_table,
+                            trait_name,
+                            &im.trait_args,
+                            &ms.name,
+                            &im.type_name,
+                            mangled.clone(),
+                        );
+                        generated.push(method_fn(
+                            mangled,
+                            ms.params.clone(),
+                            ms.ret.clone(),
+                            body.clone(),
+                            &im.type_name,
+                            &im.target_args,
+                            im.bounds.clone(),
+                        ));
                     }
                 }
             }
@@ -383,18 +386,20 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     // `impl PartialOrd for T`, etc. (the transitive closure). Surfaced through the
     // same diagnostics channel as missing dispatch impls.
     let mut supertrait_diags: Vec<String> = Vec::new();
-    for item in &module.items {
-        if let Item::Impl(im) = item {
-            if let Some(t) = &im.trait_name {
-                if let Some(supers) = trait_supertraits.get(t) {
-                    for sup in supers {
-                        if !impl_pairs.contains(&(sup.clone(), im.type_name.clone())) {
-                            supertrait_diags.push(format!(
-                                "`{ty}` implements `{t}` but not its supertrait `{sup}` \
-                                 (add `impl {sup} for {ty}`)",
-                                ty = im.type_name
-                            ));
-                        }
+    let source_impls = module.items.iter().filter_map(|item| match item {
+        Item::Impl(im) => Some(im),
+        _ => None,
+    });
+    for im in source_impls.chain(synthetic_impls.iter()) {
+        if let Some(t) = &im.trait_name {
+            if let Some(supers) = trait_supertraits.get(t) {
+                for sup in supers {
+                    if !impl_pairs.contains(&(sup.clone(), im.type_name.clone())) {
+                        supertrait_diags.push(format!(
+                            "`{ty}` implements `{t}` but not its supertrait `{sup}` \
+                             (add `impl {sup} for {ty}`)",
+                            ty = im.type_name
+                        ));
                     }
                 }
             }
@@ -930,6 +935,557 @@ fn transitive_supertraits(direct: &HashMap<String, Vec<String>>) -> HashMap<Stri
         out.insert(name.clone(), seen);
     }
     out
+}
+
+fn synthesize_anon_union_impls(
+    items: &[Item],
+    trait_method_list: &HashMap<String, Vec<MethodSig>>,
+) -> Vec<ImplDef> {
+    let mut heads = HashMap::new();
+    collect_anon_union_heads(items, &mut heads);
+    if heads.is_empty() {
+        return Vec::new();
+    }
+
+    let existing: HashSet<(String, String)> = items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Impl(im) => im.trait_name.as_ref().map(|tr| (tr.clone(), im.type_name.clone())),
+            _ => None,
+        })
+        .collect();
+    let reflect_runtime = has_function(items, "reflect.reflect_one")
+        && has_variant(items, "reflect.MVariant");
+    let has_show = trait_declares_method(trait_method_list, "Show", "show");
+    let has_reflect = trait_declares_method(trait_method_list, "Reflect", "reflect");
+    let has_partial_eq = trait_declares_method(trait_method_list, "PartialEq", "eq");
+    let mut heads: Vec<(String, usize)> = heads.into_iter().collect();
+    heads.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut impls = Vec::new();
+    for (name, arity) in heads {
+        let Some(variants) = crate::typeck::anon_union_synthetic_variants(&name) else {
+            continue;
+        };
+        if has_show
+            && !existing.contains(&("Show".to_string(), name.clone()))
+        {
+            impls.push(anon_union_show_impl(&name, &variants, arity));
+        }
+        if reflect_runtime
+            && has_reflect
+            && !existing.contains(&("Reflect".to_string(), name.clone()))
+        {
+            impls.push(anon_union_reflect_impl(&name, &variants, arity));
+        }
+        if has_partial_eq
+            && !existing.contains(&("PartialEq".to_string(), name.clone()))
+        {
+            impls.push(anon_union_partial_eq_impl(&name, &variants, arity));
+        }
+    }
+    impls
+}
+
+fn trait_declares_method(
+    trait_method_list: &HashMap<String, Vec<MethodSig>>,
+    trait_name: &str,
+    method_name: &str,
+) -> bool {
+    trait_method_list
+        .get(trait_name)
+        .is_some_and(|methods| methods.iter().any(|method| method.name == method_name))
+}
+
+fn collect_anon_union_heads(items: &[Item], out: &mut HashMap<String, usize>) {
+    for item in items {
+        match item {
+            Item::Function(f) => collect_anon_union_heads_function(f, out),
+            Item::Trait(t) => {
+                for method in &t.methods {
+                    collect_anon_union_heads_method_sig(method, out);
+                }
+            }
+            Item::Impl(im) => {
+                for ty in &im.trait_args {
+                    collect_anon_union_heads_type(ty, out);
+                }
+                for ty in &im.target_args {
+                    collect_anon_union_heads_type(ty, out);
+                }
+                for (_, _, args) in &im.bounds {
+                    for ty in args {
+                        collect_anon_union_heads_type(ty, out);
+                    }
+                }
+                for method in &im.methods {
+                    collect_anon_union_heads_function(method, out);
+                }
+            }
+            Item::Type(t) => {
+                for variant in &t.variants {
+                    for field in &variant.fields {
+                        collect_anon_union_heads_type(field, out);
+                    }
+                }
+            }
+            Item::Const { value, .. } => collect_anon_union_heads_expr(value, out),
+            Item::TypeAlias { ty, .. } => collect_anon_union_heads_type(ty, out),
+            Item::Comptime(block) => collect_anon_union_heads_block(block, out),
+        }
+    }
+}
+
+fn collect_anon_union_heads_function(f: &Function, out: &mut HashMap<String, usize>) {
+    for param in &f.params {
+        if let Some(ty) = &param.ty {
+            collect_anon_union_heads_type(ty, out);
+        }
+        if let Some(default) = &param.default {
+            collect_anon_union_heads_expr(default, out);
+        }
+    }
+    if let Some(ret) = &f.ret {
+        collect_anon_union_heads_type(ret, out);
+    }
+    for (_, _, args) in &f.bounds {
+        for ty in args {
+            collect_anon_union_heads_type(ty, out);
+        }
+    }
+    collect_anon_union_heads_block(&f.body, out);
+}
+
+fn collect_anon_union_heads_method_sig(ms: &MethodSig, out: &mut HashMap<String, usize>) {
+    for param in &ms.params {
+        if let Some(ty) = &param.ty {
+            collect_anon_union_heads_type(ty, out);
+        }
+    }
+    if let Some(ret) = &ms.ret {
+        collect_anon_union_heads_type(ret, out);
+    }
+    if let Some(default) = &ms.default {
+        collect_anon_union_heads_block(default, out);
+    }
+}
+
+fn collect_anon_union_heads_type(ty: &Type, out: &mut HashMap<String, usize>) {
+    match ty {
+        Type::Named(name, args) => {
+            if let Some(variants) = crate::typeck::anon_union_synthetic_variants(name) {
+                let arity = variants.iter().map(|(_, arity)| *arity).sum();
+                if arity == args.len() {
+                    out.insert(name.clone(), arity);
+                }
+            }
+            for arg in args {
+                collect_anon_union_heads_type(arg, out);
+            }
+        }
+        Type::Tuple(items) => {
+            for item in items {
+                collect_anon_union_heads_type(item, out);
+            }
+        }
+        Type::Fn(params, ret) => {
+            for param in params {
+                collect_anon_union_heads_type(param, out);
+            }
+            collect_anon_union_heads_type(ret, out);
+        }
+        Type::Qualified(_, inner) => collect_anon_union_heads_type(inner, out),
+    }
+}
+
+fn collect_anon_union_heads_block(block: &Block, out: &mut HashMap<String, usize>) {
+    if let Some(region) = &block.region {
+        if let Some(ty) = &region.ty {
+            collect_anon_union_heads_type(ty, out);
+        }
+    }
+    for stmt in &block.stmts {
+        match stmt {
+            Stmt::Let { ty, value, .. } => {
+                if let Some(ty) = ty {
+                    collect_anon_union_heads_type(ty, out);
+                }
+                collect_anon_union_heads_expr(value, out);
+            }
+            Stmt::Assign { value, .. }
+            | Stmt::LetPattern { value, .. }
+            | Stmt::Yield(value)
+            | Stmt::Expr(value) => collect_anon_union_heads_expr(value, out),
+            Stmt::Return(Some(value)) => collect_anon_union_heads_expr(value, out),
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+fn collect_anon_union_heads_expr(expr: &Expr, out: &mut HashMap<String, usize>) {
+    match expr {
+        Expr::List(items) | Expr::Tuple(items) | Expr::Ctor { args: items, .. }
+        | Expr::AnonCtor { args: items, .. } => {
+            for item in items {
+                collect_anon_union_heads_expr(item, out);
+            }
+        }
+        Expr::Call { args, .. } | Expr::MethodCall { args, .. } => {
+            for arg in args {
+                collect_anon_union_heads_expr(arg, out);
+            }
+            if let Expr::MethodCall { receiver, .. } = expr {
+                collect_anon_union_heads_expr(receiver, out);
+            }
+        }
+        Expr::LabeledCall { args, .. } => {
+            for (_, arg) in args {
+                collect_anon_union_heads_expr(arg, out);
+            }
+        }
+        Expr::Apply { func, args } => {
+            collect_anon_union_heads_expr(func, out);
+            for arg in args {
+                collect_anon_union_heads_expr(arg, out);
+            }
+        }
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
+            collect_anon_union_heads_expr(expr, out);
+        }
+        Expr::As { expr, ty } => {
+            collect_anon_union_heads_expr(expr, out);
+            collect_anon_union_heads_type(ty, out);
+        }
+        Expr::Lambda { params, body, ret } => {
+            for param in params {
+                if let Some(ty) = &param.ty {
+                    collect_anon_union_heads_type(ty, out);
+                }
+                if let Some(default) = &param.default {
+                    collect_anon_union_heads_expr(default, out);
+                }
+            }
+            if let Some(ret) = ret {
+                collect_anon_union_heads_type(ret, out);
+            }
+            collect_anon_union_heads_block(body, out);
+        }
+        Expr::RecordUpdate { base, fields, .. } => {
+            collect_anon_union_heads_expr(base, out);
+            for (_, value) in fields {
+                collect_anon_union_heads_expr(value, out);
+            }
+        }
+        Expr::Record { fields, spread, .. } => {
+            for (_, value) in fields {
+                collect_anon_union_heads_expr(value, out);
+            }
+            if let Some(spread) = spread {
+                collect_anon_union_heads_expr(spread, out);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } | Expr::Range { lo: lhs, hi: rhs, .. } => {
+            collect_anon_union_heads_expr(lhs, out);
+            collect_anon_union_heads_expr(rhs, out);
+        }
+        Expr::If { cond, then_block, else_block } => {
+            collect_anon_union_heads_expr(cond, out);
+            collect_anon_union_heads_block(then_block, out);
+            if let Some(block) = else_block {
+                collect_anon_union_heads_block(block, out);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            collect_anon_union_heads_expr(scrutinee, out);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_anon_union_heads_expr(guard, out);
+                }
+                collect_anon_union_heads_expr(&arm.body, out);
+            }
+        }
+        Expr::Block(block) => collect_anon_union_heads_block(block, out),
+        Expr::While { cond, body } => {
+            collect_anon_union_heads_expr(cond, out);
+            collect_anon_union_heads_block(body, out);
+        }
+        Expr::For { iter, body, .. } => {
+            collect_anon_union_heads_expr(iter, out);
+            collect_anon_union_heads_block(body, out);
+        }
+        Expr::Index { base, index } => {
+            collect_anon_union_heads_expr(base, out);
+            collect_anon_union_heads_expr(index, out);
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            collect_anon_union_heads_expr(scrutinee, out);
+            collect_anon_union_heads_block(body, out);
+        }
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Duration(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::Var(_)
+        | Expr::TaggedLit { .. } => {}
+    }
+}
+
+fn has_function(items: &[Item], name: &str) -> bool {
+    items.iter().any(|item| matches!(item, Item::Function(f) if f.name == name))
+}
+
+fn has_variant(items: &[Item], name: &str) -> bool {
+    items.iter().any(|item| {
+        matches!(
+            item,
+            Item::Type(t) if t.variants.iter().any(|variant| variant.name == name)
+        )
+    })
+}
+
+fn anon_union_show_impl(name: &str, variants: &[(String, usize)], arity: usize) -> ImplDef {
+    ImplDef {
+        trait_name: Some("Show".to_string()),
+        trait_args: Vec::new(),
+        type_name: name.to_string(),
+        target_args: anon_union_target_args(arity),
+        bounds: anon_union_bounds(arity, "Show"),
+        methods: vec![Function {
+            public: true,
+            name: "show".to_string(),
+            params: vec![self_param()],
+            ret: Some(named_type("String")),
+            body: expr_block(Expr::Match {
+                scrutinee: Box::new(Expr::Var("self".to_string())),
+                arms: anon_union_show_arms(variants),
+            }),
+            bounds: Vec::new(),
+            is_gen: false,
+            is_async: false,
+        }],
+    }
+}
+
+fn anon_union_reflect_impl(name: &str, variants: &[(String, usize)], arity: usize) -> ImplDef {
+    ImplDef {
+        trait_name: Some("Reflect".to_string()),
+        trait_args: Vec::new(),
+        type_name: name.to_string(),
+        target_args: anon_union_target_args(arity),
+        bounds: anon_union_bounds(arity, "Reflect"),
+        methods: vec![Function {
+            public: true,
+            name: "reflect".to_string(),
+            params: vec![self_param()],
+            ret: Some(Type::Named("reflect.Mirror".to_string(), Vec::new())),
+            body: expr_block(Expr::Match {
+                scrutinee: Box::new(Expr::Var("self".to_string())),
+                arms: anon_union_reflect_arms(variants),
+            }),
+            bounds: Vec::new(),
+            is_gen: false,
+            is_async: false,
+        }],
+    }
+}
+
+fn anon_union_partial_eq_impl(name: &str, variants: &[(String, usize)], arity: usize) -> ImplDef {
+    ImplDef {
+        trait_name: Some("PartialEq".to_string()),
+        trait_args: Vec::new(),
+        type_name: name.to_string(),
+        target_args: anon_union_target_args(arity),
+        bounds: anon_union_bounds(arity, "PartialEq"),
+        methods: vec![Function {
+            public: true,
+            name: "eq".to_string(),
+            params: vec![
+                self_param(),
+                Param {
+                    name: "other".to_string(),
+                    ty: Some(Type::Named("Self".to_string(), Vec::new())),
+                    convention: Convention::Let,
+                    default: None,
+                },
+            ],
+            ret: Some(named_type("Bool")),
+            body: expr_block(Expr::Match {
+                scrutinee: Box::new(Expr::Var("self".to_string())),
+                arms: anon_union_eq_arms(variants),
+            }),
+            bounds: Vec::new(),
+            is_gen: false,
+            is_async: false,
+        }],
+    }
+}
+
+fn anon_union_target_args(arity: usize) -> Vec<Type> {
+    (0..arity).map(|idx| named_type(&format!("t{idx}"))).collect()
+}
+
+fn anon_union_bounds(arity: usize, trait_name: &str) -> Vec<(String, String, Vec<Type>)> {
+    (0..arity)
+        .map(|idx| (format!("t{idx}"), trait_name.to_string(), Vec::new()))
+        .collect()
+}
+
+fn self_param() -> Param {
+    Param {
+        name: "self".to_string(),
+        ty: None,
+        convention: Convention::Let,
+        default: None,
+    }
+}
+
+fn expr_block(expr: Expr) -> Block {
+    Block {
+        stmts: vec![Stmt::Expr(expr)],
+        lines: vec![u32::MAX],
+        region: None,
+    }
+}
+
+fn anon_union_show_arms(variants: &[(String, usize)]) -> Vec<MatchArm> {
+    let mut offset = 0usize;
+    let mut arms = Vec::new();
+    for (tag, arity) in variants {
+        let names = payload_names("u", offset, *arity);
+        let body = if names.is_empty() {
+            Expr::Str(format!(".{tag}"))
+        } else {
+            let mut parts = vec![Expr::Str(format!(".{tag}("))];
+            for (index, name) in names.iter().enumerate() {
+                if index > 0 {
+                    parts.push(Expr::Str(", ".to_string()));
+                }
+                parts.push(Expr::Call {
+                    name: "show".to_string(),
+                    args: vec![Expr::Var(name.clone())],
+                });
+            }
+            parts.push(Expr::Str(")".to_string()));
+            concat_expr(parts)
+        };
+        arms.push(MatchArm {
+            line: u32::MAX,
+            pattern: Pattern::AnonCtor {
+                tag: tag.clone(),
+                args: names.into_iter().map(Pattern::Var).collect(),
+            },
+            guard: None,
+            body,
+        });
+        offset += arity;
+    }
+    arms
+}
+
+fn anon_union_reflect_arms(variants: &[(String, usize)]) -> Vec<MatchArm> {
+    let mut offset = 0usize;
+    let mut arms = Vec::new();
+    for (tag, arity) in variants {
+        let names = payload_names("u", offset, *arity);
+        let payload = names
+            .iter()
+            .map(|name| Expr::Call {
+                name: "reflect.reflect_one".to_string(),
+                args: vec![Expr::Var(name.clone())],
+            })
+            .collect();
+        arms.push(MatchArm {
+            line: u32::MAX,
+            pattern: Pattern::AnonCtor {
+                tag: tag.clone(),
+                args: names.into_iter().map(Pattern::Var).collect(),
+            },
+            guard: None,
+            body: Expr::Ctor {
+                name: "reflect.MVariant".to_string(),
+                args: vec![Expr::Str(String::new()), Expr::Str(format!(".{tag}")), Expr::List(payload)],
+            },
+        });
+        offset += arity;
+    }
+    arms
+}
+
+fn anon_union_eq_arms(variants: &[(String, usize)]) -> Vec<MatchArm> {
+    let mut offset = 0usize;
+    let mut arms = Vec::new();
+    for (tag, arity) in variants {
+        let left = payload_names("l", offset, *arity);
+        let right = payload_names("r", offset, *arity);
+        let same_tag = if left.is_empty() {
+            Expr::Bool(true)
+        } else {
+            let checks = left
+                .iter()
+                .zip(&right)
+                .map(|(l, r)| Expr::Binary {
+                    op: BinOp::Eq,
+                    lhs: Box::new(Expr::Var(l.clone())),
+                    rhs: Box::new(Expr::Var(r.clone())),
+                })
+                .collect();
+            and_expr(checks)
+        };
+        let other_match = Expr::Match {
+            scrutinee: Box::new(Expr::Var("other".to_string())),
+            arms: vec![
+                MatchArm {
+                    line: u32::MAX,
+                    pattern: Pattern::AnonCtor {
+                        tag: tag.clone(),
+                        args: right.into_iter().map(Pattern::Var).collect(),
+                    },
+                    guard: None,
+                    body: same_tag,
+                },
+                MatchArm {
+                    line: u32::MAX,
+                    pattern: Pattern::Wildcard,
+                    guard: None,
+                    body: Expr::Bool(false),
+                },
+            ],
+        };
+        arms.push(MatchArm {
+            line: u32::MAX,
+            pattern: Pattern::AnonCtor {
+                tag: tag.clone(),
+                args: left.into_iter().map(Pattern::Var).collect(),
+            },
+            guard: None,
+            body: other_match,
+        });
+        offset += arity;
+    }
+    arms
+}
+
+fn payload_names(prefix: &str, offset: usize, arity: usize) -> Vec<String> {
+    (0..arity).map(|idx| format!("{prefix}{}", offset + idx)).collect()
+}
+
+fn concat_expr(mut parts: Vec<Expr>) -> Expr {
+    let first = parts.remove(0);
+    parts.into_iter().fold(first, |lhs, rhs| Expr::Binary {
+        op: BinOp::Add,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+    })
+}
+
+fn and_expr(mut parts: Vec<Expr>) -> Expr {
+    let first = parts.remove(0);
+    parts.into_iter().fold(first, |lhs, rhs| Expr::Binary {
+        op: BinOp::And,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+    })
 }
 
 /// The dispatch pass's lexical environment: each bound name's (known) head type,

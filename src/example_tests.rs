@@ -1357,6 +1357,22 @@ fn main(console: Console):
         );
     }
 
+    /// (RFC-0078) Anonymous unions participate in the structural protocol tier:
+    /// `Show`, `Reflect`, and `PartialEq` are synthesized from their closed tag
+    /// set and payload protocols. The rendered/debug spelling keeps the leading
+    /// dot to mark the anonymous tier.
+    #[test]
+    fn anonymous_union_protocols_work_on_both_backends() {
+        let src = "import show\nimport reflect\nimport cmp\n\nfn same(x: a, y: a) -> Bool where a: PartialEq:\n    x == y\n\nfn main(console: Console):\n    let a: .[Bad(Int) | Missing(String)] = .Bad(7)\n    let b: .[Bad(Int) | Missing(String)] = .Missing(\"port\")\n    let c: .[Bad(Int) | Missing(String)] = .Bad(8)\n    console.print(show.render(a))\n    console.print(show.render(b))\n    console.print(reflect.debug(a))\n    console.print(reflect.debug(b))\n    console.print(\"${same(a, a)}\")\n    console.print(\"${same(a, b)}\")\n    console.print(\"${same(a, c)}\")\n";
+        let expected = [".Bad(7)", ".Missing(port)", ".Bad(7)", ".Missing(\"port\")", "true", "false", "false"];
+        assert_eq!(link_run(src), expected, "interp anonymous union protocols");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled anonymous union protocols must agree",
+        );
+    }
+
     /// (RFC-0065, parity) Set/DateTime/Rng/Url are `sealed type`s: external code must
     /// build them through the module's smart constructors (dedup / validated /
     /// parsed), but may still READ and MATCH them. The public API + inspection run
