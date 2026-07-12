@@ -3101,7 +3101,7 @@ impl Checker {
 
     fn unknown_call(&self, name: &str, args: &[Expr]) -> Result<Ty, TypeError> {
         // `to_string` was removed from the surface: interpolation IS the
-        // rendering (it desugars to the internal __render).
+        // rendering (it desugars to the internal render intrinsic).
         if name == "to_string" || name == "int_to_string" {
             return terr(format!(
                 "`{name}` was removed — render with `\"${{x}}\"` \
@@ -3235,7 +3235,7 @@ impl Checker {
             "duration_to_int" => Some((vec![Ty::Duration], Ty::Int)),
             "math.sqrt" => Some((vec![Ty::Float], Ty::Float)),
             "string.to_int" => Some((vec![Ty::String], Ty::Int)),
-            "__render" => {
+            name if ast::is_render_intrinsic(name) => {
                 let a = self.fresh();
                 Some((vec![a], Ty::String))
             }
@@ -4348,10 +4348,10 @@ impl Checker {
             // than the interpreter rendering `<function/N>` while the
             // compiled backend rejected at codegen with a misleading
             // "generic record such as `Set`" diagnostic. A function has no
-            // printable form; interpolation renders DATA. `__render` is the
+            // printable form; interpolation renders DATA. The render intrinsic is the
             // desugaring of `"${…}"`, so the message speaks in the user's
             // terms and never names `Set`/records for a function operand.
-            if call_name == "__render" {
+            if ast::is_render_intrinsic(call_name) {
                 if let Ty::Fn(..) = self.resolve(&at) {
                     return terr(
                         "cannot render a function value with `\"${…}\"` — a \

@@ -7,6 +7,23 @@
 // foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
 use foldhash::{HashSet, HashSetExt as _};
 
+/// Legacy source-spellable structural-render intrinsic.
+///
+/// This remains accepted as an oracle/test spelling while the in-tree corpus is
+/// migrated away from direct compiler-private calls.
+pub const LEGACY_RENDER_INTRINSIC: &str = "__render";
+
+/// Lexer-only render intrinsic emitted for string interpolation.
+///
+/// `@` is not a valid identifier character in witchy source, so users cannot
+/// spell this name. It gives the compiler a concrete seam to later reject direct
+/// `__render(...)` calls without changing interpolation semantics.
+pub const GENERATED_RENDER_INTRINSIC: &str = "@render";
+
+pub fn is_render_intrinsic(name: &str) -> bool {
+    name == LEGACY_RENDER_INTRINSIC || name == GENERATED_RENDER_INTRINSIC
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Module {
     /// The performance mode declared at the top of the file (`mode opt`), or empty

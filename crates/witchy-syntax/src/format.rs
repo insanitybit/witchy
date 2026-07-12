@@ -1227,7 +1227,7 @@ fn expr(e: &Expr) -> String {
             // interpolation, whose only surface spelling is `"${x}"`; rewrite a
             // single-argument render call to that form (unless the module defines
             // its own function by that name). This is render-EQUIVALENT — the
-            // three spellings desugar to the same `__render(x)` tree — and is the
+            // three spellings desugar to the same internal render tree — and is the
             // printer's only tree-changing rewrite.
             //
             // The formatter does NOT rewrite a call to a module-qualified stdlib
@@ -1670,9 +1670,9 @@ fn comprehension_sugar(b: &Block) -> Option<String> {
 
 /// Print a `<>` chain back as the string interpolation it desugared from.
 ///
-/// The lexer expands `"a ${x} b"` to `("a " + __render(x) + " b")` at the
+/// The lexer expands `"a ${x} b"` to `("a " + @render(x) + " b")` at the
 /// TOKEN level, so the AST has no interpolation node; this is its inverse.
-/// The shape is strict — literal segments alternating with `__render(expr)`
+/// The shape is strict — literal segments alternating with render intrinsic
 /// pieces, starting and ending with a literal (the lexer always emits the
 /// trailing literal, even when empty) — and the two spellings parse to the
 /// same AST, so re-sugaring is pure canonicalization: a hand-written chain of
@@ -1703,7 +1703,7 @@ fn interpolation_sugar(e: &Expr) -> Option<String> {
             out.push_str(&interp_segment(text));
         } else {
             let Expr::Call { name, args } = p else { return None };
-            if name != "__render" || args.len() != 1 {
+            if !is_render_intrinsic(name) || args.len() != 1 {
                 return None;
             }
             let inner = expr(&args[0]);
@@ -2002,10 +2002,17 @@ fn canon_stmt(s: &mut Stmt) {
 }
 
 fn canon_expr(e: &mut Expr) {
-    // A rendering call in any spelling canonicalizes to the interpolation
-    // DESUGAR (`"" + __render(e) + ""`), the exact tree `"${e}"` parses to —
-    // so the printer's interpolation rewrite reads as equality, not a change.
     if let Expr::Call { name, args } = e {
+        // The printer re-sugars interpolation to `"${x}"`, which reparses through
+        // the generated render intrinsic. Normalize the legacy oracle spelling for
+        // this comparison pass only; standalone `__render(x)` still prints as the
+        // source wrote it.
+        if is_render_intrinsic(name) {
+            *name = GENERATED_RENDER_INTRINSIC.into();
+        }
+        // A retired rendering call canonicalizes to the interpolation DESUGAR
+        // (`"" + @render(e) + ""`), the exact tree `"${e}"` parses to — so the
+        // printer's interpolation rewrite reads as equality, not a change.
         if !local_fn(name)
             && matches!(name.as_str(), "to_string" | "int_to_string")
             && args.len() == 1
@@ -2017,7 +2024,10 @@ fn canon_expr(e: &mut Expr) {
                 lhs: Box::new(Expr::Binary {
                     op: BinOp::Add,
                     lhs: Box::new(Expr::Str(String::new())),
-                    rhs: Box::new(Expr::Call { name: "__render".into(), args: vec![arg] }),
+                    rhs: Box::new(Expr::Call {
+                        name: GENERATED_RENDER_INTRINSIC.into(),
+                        args: vec![arg],
+                    }),
                 }),
                 rhs: Box::new(Expr::Str(String::new())),
             };

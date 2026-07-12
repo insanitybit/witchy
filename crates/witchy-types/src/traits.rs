@@ -3844,8 +3844,9 @@ fn type_args_from_receiver(template: &Function, concrete_receiver: &Type) -> Opt
 
 /// (RFC-0053) Whether a concrete type should render through `Show` instead of
 /// interpolation's structural fallback. Primitive `Show` impls are byte-identical
-/// to structural rendering, so they stay on `__render`. `Set` is different even
-/// over primitives (`Set([1, 2])` structurally versus `{1, 2}` through `Show`).
+/// to structural rendering, so they stay on the render intrinsic. `Set` is
+/// different even over primitives (`Set([1, 2])` structurally versus `{1, 2}`
+/// through `Show`).
 fn render_needs_show(ty: &crate::typeck::Ty, show_types: &HashSet<String>) -> bool {
     use crate::typeck::Ty;
     match ty {
@@ -4453,12 +4454,12 @@ impl Mono<'_> {
                 for a in args.iter_mut() {
                     self.walk_expr(a, scope);
                 }
-                // (RFC-0053) Interpolation desugars to `__render(x)`, the structural
-                // fallback. At this point monomorphization has concrete type
-                // evidence for `x`, so values whose public display model is `Show`
+                // (RFC-0053) Interpolation desugars to the internal render intrinsic,
+                // the structural fallback. At this point monomorphization has concrete
+                // type evidence for `x`, so values whose public display model is `Show`
                 // route through `show.render` and then specialize like any other
                 // bounded generic. Production linking always supplies `show`.
-                if name == "__render" && args.len() == 1 {
+                if is_render_intrinsic(name) && args.len() == 1 {
                     if self.render_available {
                         if let Some(ty) = self.table.type_of(&args[0]) {
                             if render_needs_show(ty, self.show_types) {

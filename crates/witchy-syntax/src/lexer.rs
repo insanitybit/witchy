@@ -5,6 +5,8 @@
 
 use std::fmt;
 
+use crate::ast::GENERATED_RENDER_INTRINSIC;
+
 /// The lexed pieces of a tagged literal `tag"a${x}b"`: the static `parts`, each
 /// hole's source text, and each hole's `(line, col)` START position in the original
 /// source (the diagnostics channel — see `tag_literal` / `Tok::TagLit`).
@@ -78,7 +80,7 @@ pub enum Tok {
     LParen,
     RParen,
     /// Synthetic close token for a `${...}` interpolation hole after it has been
-    /// desugared to `__render(<expr>)`. It parses as that generated call's `)`
+    /// desugared to the internal render intrinsic. It parses as that generated call's `)`
     /// but displays as the user's `}` in diagnostics.
     InterpRBrace,
     LBrace,
@@ -656,7 +658,7 @@ impl Lexer {
 
     /// Lex a string literal. A plain string is a single `Str` token. A string
     /// with `${ expr }` interpolations expands to the token stream for
-    /// `( lit0 + __render(expr0) + lit1 + ... )`, so the parser needs no
+    /// `( lit0 + @render(expr0) + lit1 + ... )`, so the parser needs no
     /// special handling and interpolation works in both backends (`to_string` +
     /// concat). Write `\$` for a literal `$`.
     fn string(
@@ -773,7 +775,7 @@ impl Lexer {
         Ok((parts, holes, hole_spans))
     }
 
-    /// Emit one interpolation segment `<> __render( <expr> )` (the opening brace
+    /// Emit one interpolation segment `<> @render( <expr> )` (the opening brace
     /// already consumed): close off the preceding literal, then read and tokenize
     /// the embedded expression up to its matching `}`.
     fn emit_interpolation(
@@ -801,7 +803,7 @@ impl Lexer {
         })?;
         out.push(Token { kind: Tok::Plus, line: span.start_line, col: span.start_col });
         out.push(Token {
-            kind: Tok::Ident("__render".into()),
+            kind: Tok::Ident(GENERATED_RENDER_INTRINSIC.into()),
             line: span.start_line,
             col: span.start_col,
         });

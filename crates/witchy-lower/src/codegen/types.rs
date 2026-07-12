@@ -108,7 +108,8 @@ impl Codegen<'_> {
                 | "duration_to_int" | "now" | "now_monotonic" | "rand_u64"
                 | "__bytes_length" | "__bytes_at" => Kind::I64,
                 "list.at" => self.elem_kind_of_list_arg(e),
-                "__render" | "int_to_string" | "print" => Kind::I32,
+                render if witchy_syntax::ast::is_render_intrinsic(render) => Kind::I32,
+                "int_to_string" | "print" => Kind::I32,
                 // A closure-local called by name returns the universal i64 slot,
                 // recovered at its tracked return kind (see the call emission).
                 other if self.local_fn_ret_kind.contains_key(other) => {
@@ -295,8 +296,13 @@ impl Codegen<'_> {
             Expr::Call { name, args } if cap_ops::surface_name(name) == "dict.at" && args.len() == 2 => {
                 self.dict_value_valtype_of(&args[0]).unwrap_or(ValType::Other)
             }
+            Expr::Call { name, .. }
+                if witchy_syntax::ast::is_render_intrinsic(cap_ops::surface_name(name)) =>
+            {
+                ValType::Str
+            }
             Expr::Call { name, .. } => match cap_ops::surface_name(name) {
-                "__render" | "string.to_upper" | "string.to_lower" | "string.trim"
+                "string.to_upper" | "string.to_lower" | "string.trim"
                 | "string.replace" | "string.substring" | "crypto.sha256" | "crypto.sign"
                 | "crypto.public_key" | "crypto.reveal" | "read" | "read_build" | "crypto.rune_hash"
                 | "exec"

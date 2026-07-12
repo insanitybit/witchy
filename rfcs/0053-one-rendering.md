@@ -10,11 +10,15 @@ predecessors:
 tracking: "IMPLEMENTED — blanket-Show + typed interpolation flip both shipped"
 implementation-notes: |
   AS BUILT (2026-07-10, coherence reconciliation):
-  - Interpolation still desugars at lex time to `__render(x)`, the structural
-    fallback. The lexer remains type-free.
+  - Interpolation still desugars at lex time to an internal render intrinsic,
+    now spelled `@render(x)` in the compiler AST/token stream so user source
+    cannot call the generated seam directly. The lexer remains type-free.
   - The semantic flip lives in `crates/witchy-types/src/traits.rs`, inside
     `Mono::walk_expr`, after RFC-0046's TypeTable can report the concrete type of
-    `x`. That is the only place `__render(x)` is rewritten.
+    `x`. That is the only place generated render calls are rewritten.
+  - Source-spellable `__render(x)` remains accepted only as a temporary
+    oracle/test spelling during corpus migration; interpolation no longer
+    generates it.
   - `std/show.witchy` exposes `pub fn render(x: impl Show) -> String: show(x)`.
     `show` is a prelude module. When the concrete type has a relevant `Show` path,
     monomorphization rewrites `__render(x)` to `show.render(x)`. That then

@@ -9,6 +9,7 @@ impl Codegen<'_> {
     pub(crate) fn lower_call(&mut self, name: &str, args: &[Expr]) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::WirExpr as W;
         use witchy_wir::wir::WirNode as N;
+        use witchy_syntax::ast::is_render_intrinsic;
         let name = witchy_syntax::cap_ops::surface_name(name);
         if let Some((callback_index, diagnostic)) =
             witchy_types::typeck::isolated_vm_callback_contract(name, args.len())
@@ -311,78 +312,80 @@ impl Codegen<'_> {
                 let arg = self.lower_expr(&args[0])?;
                 W::Unary { op: witchy_wir::wir::UnOp::Sqrt, kind: witchy_wir::wir::Kind::F64, arg: Box::new(arg) }
             }
-            // `__render` to a String for the scalar shapes: Str passes through,
+            // Render to a String for the scalar shapes: Str passes through,
             // Int → `$int_to_string`, Bool → an interned "true"/"false" value-if,
             // Bytes → `Bytes(len=N)`. Float and compound shapes route through their
             // dedicated helpers. Gated to a WIR-collecting scope (`collect_wir`).
-            ("__render", 1) if self.collect_wir => match self.val_type_of(&args[0]) {
-                ValType::Str => return self.lower_expr(&args[0]),
-                ValType::Int => {
-                    self.uses_int_to_string = true;
-                    let ak = self.kind_of(&args[0]);
-                    let arg = self.lower_expr(&args[0])?;
-                    call("int_to_string", vec![Self::wir_convert(arg, ak, Kind::I64)])
-                }
-                ValType::Bool => {
-                    let t = self.intern("true");
-                    let f = self.intern("false");
-                    let arg = self.lower_expr(&args[0])?;
-                    W::Control(Box::new(witchy_wir::wir::WirNode::If {
-                        cond: arg,
-                        then_: vec![witchy_wir::wir::WirNode::Push(W::StrPtr(t))],
-                        els: vec![witchy_wir::wir::WirNode::Push(W::StrPtr(f))],
-                        result: Some(witchy_wir::wir::WirTy::Str),
-                    }))
-                }
-                // A scalar Float renders via the `$float_to_str` host-import wrapper
-                // (the same helper the compound `$ts` renderer uses for Float fields,
-                // so it agrees with the oracle).
-                ValType::Float => {
-                    self.uses_float_to_str = true;
-                    let arg = self.lower_expr(&args[0])?;
-                    call("float_to_str", vec![arg])
-                }
-                ValType::Bytes => {
-                    self.uses_int_to_string = true;
-                    let open = self.intern("Bytes(len=");
-                    let close = self.intern(")");
-                    let arg = self.lower_expr(&args[0])?;
-                    let len = Self::wir_convert(
-                        W::Load { ptr: Box::new(arg), kind: witchy_wir::wir::Kind::I32, offset: 0 },
-                        Kind::I32,
-                        Kind::I64,
-                    );
-                    let len_s = call("int_to_string", vec![len]);
-                    call("concat", vec![call("concat", vec![W::StrPtr(open), len_s]), W::StrPtr(close)])
-                }
-                // Compound (tuple/list/...) `__render` builds its string with the
-                // per-shape WIR `$ts` renderer — or bails (`?`) for shapes the
-                // renderer can't build, keeping WAT. `eq_operand_shape` (not just
-                // `eq_shape_of`) so an INLINE expression — e.g. `"${dict.keys(d)}"` —
-                // resolves its shape via typeck's type table, like a let-bound local.
-                _ => {
-                    if let Some(shape) = self.eq_operand_shape(&args[0]) {
-                        if shape.is_compound() {
-                            if let Some(h) = self.ensure_ts_wir_helper(&shape) {
-                                let arg = self.lower_expr(&args[0])?;
-                                return Some(W::Call { func: h, args: vec![arg] });
+            (render, 1) if self.collect_wir && is_render_intrinsic(render) => {
+                match self.val_type_of(&args[0]) {
+                    ValType::Str => return self.lower_expr(&args[0]),
+                    ValType::Int => {
+                        self.uses_int_to_string = true;
+                        let ak = self.kind_of(&args[0]);
+                        let arg = self.lower_expr(&args[0])?;
+                        call("int_to_string", vec![Self::wir_convert(arg, ak, Kind::I64)])
+                    }
+                    ValType::Bool => {
+                        let t = self.intern("true");
+                        let f = self.intern("false");
+                        let arg = self.lower_expr(&args[0])?;
+                        W::Control(Box::new(witchy_wir::wir::WirNode::If {
+                            cond: arg,
+                            then_: vec![witchy_wir::wir::WirNode::Push(W::StrPtr(t))],
+                            els: vec![witchy_wir::wir::WirNode::Push(W::StrPtr(f))],
+                            result: Some(witchy_wir::wir::WirTy::Str),
+                        }))
+                    }
+                    // A scalar Float renders via the `$float_to_str` host-import wrapper
+                    // (the same helper the compound `$ts` renderer uses for Float fields,
+                    // so it agrees with the oracle).
+                    ValType::Float => {
+                        self.uses_float_to_str = true;
+                        let arg = self.lower_expr(&args[0])?;
+                        call("float_to_str", vec![arg])
+                    }
+                    ValType::Bytes => {
+                        self.uses_int_to_string = true;
+                        let open = self.intern("Bytes(len=");
+                        let close = self.intern(")");
+                        let arg = self.lower_expr(&args[0])?;
+                        let len = Self::wir_convert(
+                            W::Load { ptr: Box::new(arg), kind: witchy_wir::wir::Kind::I32, offset: 0 },
+                            Kind::I32,
+                            Kind::I64,
+                        );
+                        let len_s = call("int_to_string", vec![len]);
+                        call("concat", vec![call("concat", vec![W::StrPtr(open), len_s]), W::StrPtr(close)])
+                    }
+                    // Compound (tuple/list/...) rendering builds its string with the
+                    // per-shape WIR `$ts` renderer — or bails (`?`) for shapes the
+                    // renderer can't build, keeping WAT. `eq_operand_shape` (not just
+                    // `eq_shape_of`) so an INLINE expression — e.g. `"${dict.keys(d)}"` —
+                    // resolves its shape via typeck's type table, like a let-bound local.
+                    _ => {
+                        if let Some(shape) = self.eq_operand_shape(&args[0]) {
+                            if shape.is_compound() {
+                                if let Some(h) = self.ensure_ts_wir_helper(&shape) {
+                                    let arg = self.lower_expr(&args[0])?;
+                                    return Some(W::Call { func: h, args: vec![arg] });
+                                }
                             }
                         }
+                        // The structural renderer can't build this shape — most often
+                        // a GENERIC RECORD such as `Set(a)` (its field types stay
+                        // generic, so the compiled backend has no concrete layout to
+                        // walk). Record WHY so the failure names the construct and the
+                        // fix instead of the bare "interpreter-only feature?" message.
+                        self.reject_reason.get_or_insert_with(|| CodegenError {
+                            message: "cannot render this value with `\"${…}\"` on the \
+                                      compiled backend — the structural renderer can't \
+                                      build this shape. Render through the public \
+                                      `Show` protocol instead, e.g. \
+                                      `show.render(x)` or `show.say(console, x)`"
+                                .into(),
+                        });
+                        return None;
                     }
-                    // The structural renderer can't build this shape — most often
-                    // a GENERIC RECORD such as `Set(a)` (its field types stay
-                    // generic, so the compiled backend has no concrete layout to
-                    // walk). Record WHY so the failure names the construct and the
-                    // fix instead of the bare "interpreter-only feature?" message.
-                    self.reject_reason.get_or_insert_with(|| CodegenError {
-                        message: "cannot render this value with `\"${…}\"` on the \
-                                  compiled backend — the structural renderer can't \
-                                  build this shape. Render through the public \
-                                  `Show` protocol instead, e.g. \
-                                  `show.render(x)` or `show.say(console, x)`"
-                            .into(),
-                    });
-                    return None;
                 }
             },
             // String helpers over the `[len][bytes]` rep — pure `{args} call $h`.

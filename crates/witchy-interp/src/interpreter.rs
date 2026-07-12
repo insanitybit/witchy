@@ -1296,7 +1296,7 @@ impl Interpreter {
                 _ => err("print expects a Console capability and a message: console.print(msg)"),
             },
             // Pure builtins need no capability.
-            "__render" => Ok(Some(Value::Str(self.render_value(&one(args)?)))),
+            name if is_render_intrinsic(name) => Ok(Some(Value::Str(self.render_value(&one(args)?)))),
             // (RFC-0055) Channel message erasure. `Value` is uniform, so erasing a
             // typed message to the executor's opaque `__Msg` and recovering the
             // endpoint's type are both the identity — the value passes through

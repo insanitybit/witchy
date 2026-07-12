@@ -1525,6 +1525,9 @@ fn lambda_mentions(b: &Block, accs: &HashSet<String>, out: &mut HashSet<String>)
 /// else is treated as worst-case by the caller).
 fn builtin_arg_liveness(name: &str, argc: usize) -> Option<Vec<bool>> {
     let read_all = |n: usize| Some(vec![false; n]);
+    if argc == 1 && witchy_syntax::ast::is_render_intrinsic(name) {
+        return read_all(1);
+    }
     match (name, argc) {
         // Collections: content reads and part-alias reads.
         ("list.length", 1)
@@ -1553,8 +1556,7 @@ fn builtin_arg_liveness(name: &str, argc: usize) -> Option<Vec<bool>> {
         ("send", _) => read_all(argc),
         ("fail", 1) => read_all(1),
         // Strings: every operation reads content and builds fresh results.
-        ("__render", 1)
-        | ("string.to_int", 1)
+        ("string.to_int", 1)
         | ("string.chars", 1)
         | ("string.trim", 1)
         | ("string.to_upper", 1)

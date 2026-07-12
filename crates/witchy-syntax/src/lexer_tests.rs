@@ -105,14 +105,14 @@
 
     #[test]
     fn interpolation_expands_to_concat_tokens() {
-        // "a${x}b" lexes to the token stream for `("a" + __render(x) + "b")`.
+        // "a${x}b" lexes to the token stream for `("a" + @render(x) + "b")`.
         assert_eq!(
             kinds(r#""a${x}b""#),
             vec![
                 Tok::LParen,
                 Tok::Str("a".into()),
                 Tok::Plus,
-                Tok::Ident("__render".into()),
+                Tok::Ident(GENERATED_RENDER_INTRINSIC.into()),
                 Tok::LParen,
                 Tok::Ident("x".into()),
                 Tok::InterpRBrace,
