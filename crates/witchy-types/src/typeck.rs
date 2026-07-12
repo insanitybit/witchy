@@ -351,6 +351,22 @@ fn terr<T>(message: impl Into<String>) -> Result<T, TypeError> {
     })
 }
 
+fn in_call_context(display: &str, e: TypeError) -> TypeError {
+    if e.message.starts_with("expected `") {
+        TypeError { message: format!("in call to `{display}`: {}", e.message) }
+    } else {
+        e
+    }
+}
+
+fn type_mismatch_context(context: impl FnOnce() -> String, e: TypeError) -> TypeError {
+    if e.message.starts_with("expected `") {
+        TypeError { message: format!("{}: {}", context(), e.message) }
+    } else {
+        e
+    }
+}
+
 /// Prefix a type error with where it occurred — the enclosing function (after
 /// linking this is `module.func`, which also names the file) and source line.
 /// `line == 0` means no line is available; an empty `func` omits the name.
@@ -687,7 +703,8 @@ fn check_unique_parameters(module: &Module) -> Result<(), TypeError> {
                 }
                 Ok(())
             }
-            Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
+            Expr::Call { args, .. } | Expr::Ctor { args, .. }
+            | Expr::AnonCtor { args, .. } => {
                 for arg in args {
                     check_expr(arg)?;
                 }
@@ -884,24 +901,37 @@ fn parse_fixed_width_usize(s: &str, pos: &mut usize, width: usize) -> Option<usi
 }
 
 fn anon_union_synthetic_arity(name: &str) -> Option<usize> {
+    anon_union_synthetic_variants(name).map(|variants| {
+        variants
+            .into_iter()
+            .map(|(_, arity)| arity)
+            .sum()
+    })
+}
+
+pub fn anon_union_synthetic_variants(name: &str) -> Option<Vec<(String, usize)>> {
     let mut pos = "__union".len();
     let rest = name.strip_prefix("__union")?;
     if rest.len() < 10 {
         return None;
     }
     let count = parse_fixed_width_usize(name, &mut pos, 10)?;
-    let mut total = 0usize;
+    let mut variants = Vec::with_capacity(count);
     for _ in 0..count {
         let len = parse_fixed_width_usize(name, &mut pos, 10)?;
+        let mut bytes = Vec::with_capacity(len);
         for _ in 0..len {
             let byte = parse_fixed_width_usize(name, &mut pos, 3)?;
             if byte > u8::MAX as usize {
                 return None;
             }
+            bytes.push(byte as u8);
         }
-        total = total.checked_add(parse_fixed_width_usize(name, &mut pos, 10)?)?;
+        let tag = String::from_utf8(bytes).ok()?;
+        let arity = parse_fixed_width_usize(name, &mut pos, 10)?;
+        variants.push((tag, arity));
     }
-    (pos == name.len()).then_some(total)
+    (pos == name.len()).then_some(variants)
 }
 
 /// Validate that every named type in `t` is known — a builtin, a declared type,
@@ -1115,7 +1145,8 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                     }
                     Ok(())
                 }
-                Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
+                Expr::Call { args, .. } | Expr::Ctor { args, .. }
+                | Expr::AnonCtor { args, .. } => {
                     for arg in args {
                         validate_expr_types(arg, known, arities, ctx, in_ctx)?;
                     }
@@ -3632,11 +3663,23 @@ impl Checker {
     // --- inference ---
 
     fn infer_block(&mut self, block: &Block) -> Result<Ty, TypeError> {
+        self.infer_block_with_expected_tail(block, None)
+    }
+
+    fn infer_block_tail_expected(&mut self, block: &Block, expected: &Ty) -> Result<Ty, TypeError> {
+        self.infer_block_with_expected_tail(block, Some(expected))
+    }
+
+    fn infer_block_with_expected_tail(
+        &mut self,
+        block: &Block,
+        expected: Option<&Ty>,
+    ) -> Result<Ty, TypeError> {
         let is_region = block.region.is_some();
         if is_region {
             self.region_locals.push(HashSet::new());
         }
-        let result = self.infer_block_inner(block);
+        let result = self.infer_block_inner(block, expected);
         if is_region {
             self.region_locals.pop();
         }
@@ -3652,21 +3695,21 @@ impl Checker {
         Ok(ty)
     }
 
-    fn infer_block_inner(&mut self, block: &Block) -> Result<Ty, TypeError> {
+    fn infer_block_inner(&mut self, block: &Block, expected: Option<&Ty>) -> Result<Ty, TypeError> {
         self.push();
         let mut ty = Ty::Nil;
+        let tail = block.stmts.len().saturating_sub(1);
         for (i, stmt) in block.stmts.iter().enumerate() {
             if let Some(line) = block.lines.get(i) {
                 self.cur_line = *line;
             }
             match stmt {
                 Stmt::Let { name, ty: decl, mutable, value } => {
-                    let vt = self.infer(value)?;
                     // An ascription is a unification constraint: it pins type
                     // variables the RHS leaves open (`let xs: List(Int) = []`,
                     // a return-position type variable) and errors at THIS line
                     // when the RHS disagrees.
-                    if let Some(decl) = decl {
+                    let vt = if let Some(decl) = decl {
                         // (RFC-0025) `frozen` asserts deep immutability, so a `frozen`
                         // binding cannot also be mutable — `var x: frozen T` is a
                         // contradiction the checker rejects (the contract has teeth).
@@ -3678,18 +3721,26 @@ impl Checker {
                             });
                         }
                         let want = self.to_ty(decl);
+                        let vt = self.infer_expected(value, &want).map_err(|e| {
+                            type_mismatch_context(
+                                || format!("`{name}` is declared `{want}` but the value disagrees"),
+                                e,
+                            )
+                        })?;
                         self.unify(&want, &vt).map_err(|e| TypeError {
                             message: format!(
                                 "`{name}` is declared `{want}` but the value disagrees: {}",
                                 e.message
                             ),
                         })?;
-                    }
+                        vt
+                    } else {
+                        self.infer(value)?
+                    };
                     self.define(name.clone(), vt, *mutable);
                     ty = Ty::Nil;
                 }
                 Stmt::Assign { name, value } => {
-                    let vt = self.infer(value)?;
                     let Some(existing) = self.lookup(name) else {
                         self.pop();
                         return terr(format!("assignment to unbound variable `{name}`"));
@@ -3708,6 +3759,7 @@ impl Checker {
                             ));
                         }
                     }
+                    let vt = self.infer_expected(value, &existing)?;
                     self.unify(&existing, &vt)?;
                     self.consumed.remove(name); // reassignment re-initializes
                     ty = Ty::Nil;
@@ -3732,7 +3784,10 @@ impl Checker {
                 }
                 Stmt::Return(opt) => {
                     let t = match opt {
-                        Some(e) => self.infer(e)?,
+                        Some(e) => match self.current_ret.clone() {
+                            Some(ret) => self.infer_expected(e, &ret)?,
+                            None => self.infer(e)?,
+                        },
                         None => Ty::Nil,
                     };
                     if let Some(ret) = self.current_ret.clone() {
@@ -3745,7 +3800,14 @@ impl Checker {
                     ty = self.fresh();
                 }
                 Stmt::Expr(e) => {
-                    ty = self.infer(e)?;
+                    ty = if i == tail {
+                        match expected {
+                            Some(expected) => self.infer_expected(e, expected)?,
+                            None => self.infer(e)?,
+                        }
+                    } else {
+                        self.infer(e)?
+                    };
                 }
                 Stmt::Yield(e) => {
                     if !self.region_locals.is_empty() {
@@ -3771,6 +3833,10 @@ impl Checker {
 
     fn infer(&mut self, expr: &Expr) -> Result<Ty, TypeError> {
         let t = self.infer_inner(expr)?;
+        self.finish_infer(expr, t)
+    }
+
+    fn finish_infer(&mut self, expr: &Expr, t: Ty) -> Result<Ty, TypeError> {
         // (RFC-0047) `Dict` keys and `Set` members require `Eq`; `Float` is
         // `PartialEq` but not `Eq` (NaN != NaN), so a `Float`-keyed dict has an
         // unretrievable NaN entry and a `Float` key is a precision trap. Reject
@@ -3785,6 +3851,349 @@ impl Checker {
             rec.insert(expr as *const Expr as usize, t.clone());
         }
         Ok(t)
+    }
+
+    fn infer_expected(&mut self, expr: &Expr, expected: &Ty) -> Result<Ty, TypeError> {
+        match expr {
+            Expr::AnonCtor { tag, args } => {
+                self.check_anon_ctor(tag, args, expected)?;
+                self.finish_infer(expr, expected.clone())
+            }
+            Expr::List(items) => {
+                if let Ty::List(elem) = self.resolve(expected) {
+                    for item in items {
+                        let at = self.infer_expected(item, &elem)?;
+                        self.coerce_arg(&elem, &at)?;
+                    }
+                    return self.finish_infer(expr, expected.clone());
+                }
+                let at = self.infer(expr)?;
+                self.coerce_arg(expected, &at)?;
+                Ok(at)
+            }
+            Expr::Tuple(items) => {
+                if let Ty::Tuple(slots) = self.resolve(expected) {
+                    if slots.len() == items.len() {
+                        for (item, slot) in items.iter().zip(&slots) {
+                            let at = self.infer_expected(item, slot)?;
+                            self.coerce_arg(slot, &at)?;
+                        }
+                        return self.finish_infer(expr, expected.clone());
+                    }
+                }
+                let at = self.infer(expr)?;
+                self.coerce_arg(expected, &at)?;
+                Ok(at)
+            }
+            Expr::Call { name, args } => {
+                let at = self.infer_call(name, args, Some(expected))?;
+                self.coerce_arg(expected, &at)?;
+                self.finish_infer(expr, at)
+            }
+            Expr::Ctor { name, args } => {
+                if name != "Nil" && let Some((fields, result)) = self.ctor_sigs.get(name).cloned() {
+                    let typarams = self.ctor_typarams.get(name).cloned().unwrap_or_default();
+                    let (fields, result) = self.instantiate(&fields, &result, &typarams);
+                    self.coerce_arg(expected, &result).map_err(|e| TypeError {
+                        message: format!("in constructor `{name}`: {}", e.message),
+                    })?;
+                    if fields.len() != args.len() {
+                        return terr(format!(
+                            "constructor `{name}` takes {} field(s) but got {}",
+                            fields.len(),
+                            args.len()
+                        ));
+                    }
+                    for (arg, fty) in args.iter().zip(&fields) {
+                        let at = self.infer_expected(arg, fty)?;
+                        self.coerce_arg(fty, &at).map_err(|e| TypeError {
+                            message: format!("in constructor `{name}`: {}", e.message),
+                        })?;
+                    }
+                    self.reject_externref_cap_aggregate_ty(&result, &format!("constructor `{name}`"))?;
+                    return self.finish_infer(expr, result);
+                }
+                let at = self.infer(expr)?;
+                self.coerce_arg(expected, &at)?;
+                Ok(at)
+            }
+            Expr::If { cond, then_block, else_block } => {
+                let ct = self.infer(cond)?;
+                self.unify(&Ty::Bool, &ct)?;
+                let tt = self.infer_block_expected(then_block, expected)?;
+                self.coerce_arg(expected, &tt)?;
+                if let Some(else_block) = else_block {
+                    let et = self.infer_block_expected(else_block, expected)?;
+                    self.coerce_arg(expected, &et)?;
+                }
+                self.finish_infer(expr, expected.clone())
+            }
+            Expr::Block(block) => {
+                let at = self.infer_block_expected(block, expected)?;
+                self.coerce_arg(expected, &at)?;
+                self.finish_infer(expr, expected.clone())
+            }
+            _ => {
+                let at = self.infer(expr)?;
+                self.coerce_arg(expected, &at)?;
+                Ok(at)
+            }
+        }
+    }
+
+    fn infer_call(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        expected: Option<&Ty>,
+    ) -> Result<Ty, TypeError> {
+        let is_cap_op = cap_ops::is_marked(name);
+        let call_name = cap_ops::surface_name(name);
+        if let Some((callback_index, diagnostic)) =
+            isolated_vm_callback_contract(call_name, args.len())
+        {
+            let callback = &args[callback_index];
+            let is_bare_top_level = matches!(callback, Expr::Var(function)
+                if self.lookup(function).is_none() && self.fn_sigs.contains_key(function));
+            if !is_bare_top_level {
+                return terr(diagnostic);
+            }
+        }
+        // A local binding (parameter or `let`) holding a function value:
+        // apply it. Handles both an explicit `fn(..)->..` type and an as
+        // yet unconstrained variable (which we pin to a function type).
+        if !is_cap_op && let Some(vty) = self.lookup(name) {
+            match self.resolve(&vty) {
+                Ty::Fn(param_tys, ret) => {
+                    if param_tys.len() != args.len() {
+                        let display = diagnostic_callable_name(name);
+                        return terr(format!(
+                            "`{display}` expects {} argument(s) but got {}",
+                            param_tys.len(),
+                            args.len()
+                        ));
+                    }
+                    let display = diagnostic_callable_name(name);
+                    if let Some(expected) = expected {
+                        self.coerce_arg(expected, ret.as_ref()).map_err(|e| TypeError {
+                            message: format!("in call to `{display}`: {}", e.message),
+                        })?;
+                    }
+                    for (arg, pty) in args.iter().zip(&param_tys) {
+                        let at = self.infer_expected(arg, pty)
+                            .map_err(|e| in_call_context(&display, e))?;
+                        self.coerce_arg(pty, &at).map_err(|e| TypeError {
+                            message: format!("in call to `{display}`: {}", e.message),
+                        })?;
+                    }
+                    return Ok(*ret);
+                }
+                Ty::Var(_) => {
+                    let mut argtys = Vec::new();
+                    for arg in args {
+                        argtys.push(self.infer(arg)?);
+                    }
+                    let ret = expected.cloned().unwrap_or_else(|| self.fresh());
+                    self.unify(&vty, &Ty::Fn(argtys, Box::new(ret.clone())))?;
+                    return Ok(ret);
+                }
+                _ => {} // a non-function local with this name: fall through
+            }
+        }
+        let user_sig = (!is_cap_op).then(|| self.user_call_sig_with_bounds(name)).flatten();
+        if user_sig.is_none() {
+            if !is_cap_op && let Some(msg) = bare_cap_op_error(call_name, args.len()) {
+                return terr(msg);
+            }
+            if let Some(t) = self.check_file_op(call_name, args)? {
+                return Ok(t);
+            }
+            if let Some(t) = self.check_dir_op(call_name, args)? {
+                return Ok(t);
+            }
+            if let Some(t) = self.check_exec_op(call_name, args)? {
+                return Ok(t);
+            }
+            if let Some(t) = self.check_net_op(call_name, args)? {
+                return Ok(t);
+            }
+        }
+        if let Some(t) = self.check_try_ctx(call_name, args)? {
+            return Ok(t);
+        }
+        let (params, ret, call_bounds) = match user_sig {
+            Some(sig) => sig,
+            None => {
+                let Some((params, ret)) = self.call_sig(call_name) else {
+                    return self.unknown_call(call_name, args);
+                };
+                (params, ret, Vec::new())
+            }
+        };
+        if params.len() != args.len() {
+            let display = diagnostic_callable_name(name);
+            // (RFC-0072 phase 2) Show WHAT the arguments are, not just
+            // how many — the reader shouldn't have to hunt the signature.
+            // (Zero-arg callees skip the empty parenthetical.)
+            let sig = if params.is_empty() {
+                String::new()
+            } else {
+                let types = params
+                    .iter()
+                    .map(|p| self.resolve(p).to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(" ({types})")
+            };
+            return terr(format!(
+                "`{display}` expects {} argument(s){sig} but got {}",
+                params.len(),
+                args.len()
+            ));
+        }
+        let display = diagnostic_callable_name(name);
+        let bind_expected_before_args = expected.is_some() && call_bounds.is_empty();
+        if bind_expected_before_args && let Some(expected) = expected {
+            self.coerce_arg(expected, &ret).map_err(|e| TypeError {
+                message: format!("in call to `{display}`: {}", e.message),
+            })?;
+        }
+        for (arg, param_ty) in args.iter().zip(&params) {
+            let at = self.infer_expected(arg, param_ty)
+                .map_err(|e| in_call_context(&display, e))?;
+            // (BUG-305) `"${f}"` on a function value is rejected HERE, at
+            // check time, so BOTH backends refuse it identically — rather
+            // than the interpreter rendering `<function/N>` while the
+            // compiled backend rejected at codegen with a misleading
+            // "generic record such as `Set`" diagnostic. A function has no
+            // printable form; interpolation renders DATA. `__render` is the
+            // desugaring of `"${…}"`, so the message speaks in the user's
+            // terms and never names `Set`/records for a function operand.
+            if call_name == "__render" {
+                if let Ty::Fn(..) = self.resolve(&at) {
+                    return terr(
+                        "cannot render a function value with `\"${…}\"` — a \
+                         function has no printable form. Interpolation renders \
+                         data; call the function (e.g. `f(x)`) and interpolate \
+                         its result instead",
+                    );
+                }
+            }
+            self.coerce_arg(param_ty, &at)
+                .map_err(|e| TypeError { message: format!("in call to `{display}`: {}", e.message) })?;
+        }
+        for (bound_ty, trait_name) in &call_bounds {
+            self.require_call_bound(call_name, bound_ty, trait_name)?;
+        }
+        if !bind_expected_before_args && let Some(expected) = expected {
+            self.coerce_arg(expected, &ret).map_err(|e| TypeError {
+                message: format!("in call to `{display}`: {}", e.message),
+            })?;
+        }
+        // (BUG-395) A generic `Dict` key operation's key must be `Eq` — record
+        // the (post-unification) key type and its line; validated once the
+        // whole body is inferred (so a key var pinned later is seen concrete).
+        if let Some(i) = dict_key_op_index(call_name) {
+            if let Some(key_ty) = params.get(i) {
+                self.dict_key_ops.push((key_ty.clone(), self.cur_line));
+            }
+        }
+        // Enforce conventions: a `var` parameter needs a mutable variable;
+        // `own` consumes its argument (use-after-move becomes an error).
+        if !is_cap_op && let Some(convs) = self.fn_conventions.get(name).cloned() {
+            let is_mutator = self.fn_mutators.contains(name);
+            for (i, (arg, conv)) in args.iter().zip(&convs).enumerate() {
+                match conv {
+                    // (RFC-0043) A mutator's receiver (arg 0) is a pure value
+                    // argument in expression form: any expression is accepted.
+                    Convention::Var if is_mutator && i == 0 => {}
+                    Convention::Var => match arg {
+                        Expr::Var(v) if self.is_mutable(v) == Some(true) => {}
+                        Expr::Var(v) => {
+                            return terr(format!(
+                                "argument `{v}` to `{name}` is passed to a `var` parameter, so it must be a mutable `var`"
+                            ))
+                        }
+                        _ => {
+                            return terr(format!(
+                                "the argument to a `var` parameter of `{name}` must be a mutable variable"
+                            ))
+                        }
+                    },
+                    Convention::Own => {
+                        if let Expr::Var(v) = arg {
+                            self.consumed.insert(v.clone());
+                        }
+                    }
+                    // An owned value or an immutable borrow: no call-site
+                    // obligation (a borrow's no-escape rule is enforced at
+                    // native-lowering time by Rust's borrow checker).
+                    Convention::Let | Convention::Borrow => {}
+                }
+            }
+        }
+        self.reject_externref_cap_aggregate_ty(&ret, &format!("call to `{call_name}`"))?;
+        Ok(ret)
+    }
+
+    fn infer_block_expected(&mut self, block: &Block, expected: &Ty) -> Result<Ty, TypeError> {
+        if block.region.is_some() || block.stmts.len() != 1 {
+            return self.infer_block(block);
+        }
+        if let Some(line) = block.lines.first() {
+            self.cur_line = *line;
+        }
+        match &block.stmts[0] {
+            Stmt::Expr(e) | Stmt::Return(Some(e)) => self.infer_expected(e, expected),
+            Stmt::Return(None) => Ok(Ty::Nil),
+            _ => self.infer_block(block),
+        }
+    }
+
+    fn check_anon_ctor(&mut self, tag: &str, args: &[Expr], expected: &Ty) -> Result<(), TypeError> {
+        let resolved = self.resolve(expected);
+        let Ty::Named(name, union_args) = resolved else {
+            return terr(format!(
+                "anonymous union injection `.{tag}` needs an expected anonymous union type; annotate it as `.[{tag}]` or pass it to a parameter/return position with that type"
+            ));
+        };
+        let Some(variants) = anon_union_synthetic_variants(&name) else {
+            return terr(format!(
+                "anonymous union injection `.{tag}` needs an expected anonymous union type, found `{}`",
+                Ty::Named(name, union_args)
+            ));
+        };
+        let mut offset = 0usize;
+        for (variant, arity) in variants {
+            let end = offset + arity;
+            if end > union_args.len() {
+                return terr(format!(
+                    "malformed anonymous union type `{}`: payload arity does not match its arguments",
+                    Ty::Named(name, union_args)
+                ));
+            }
+            if variant == tag {
+                if arity != args.len() {
+                    return terr(format!(
+                        "anonymous union tag `.{tag}` takes {arity} payload value(s) but got {}",
+                        args.len()
+                    ));
+                }
+                let fields = &union_args[offset..end];
+                for (arg, fty) in args.iter().zip(fields) {
+                    let at = self.infer_expected(arg, fty)?;
+                    self.coerce_arg(fty, &at).map_err(|e| TypeError {
+                        message: format!("in anonymous union tag `.{tag}`: {}", e.message),
+                    })?;
+                }
+                return Ok(());
+            }
+            offset = end;
+        }
+        terr(format!(
+            "anonymous union type `{}` has no tag `.{tag}`",
+            Ty::Named(name, union_args)
+        ))
     }
 
     /// Infer a TRANSIENT (desugar-temp) expression WITHOUT recording any of its
@@ -3815,6 +4224,9 @@ impl Checker {
             Expr::Duration(_) => Ok(Ty::Duration),
             Expr::Str(_) => Ok(Ty::String),
             Expr::Bool(_) => Ok(Ty::Bool),
+            Expr::AnonCtor { tag, .. } => terr(format!(
+                "anonymous union injection `.{tag}` needs an expected anonymous union type; annotate the binding/return type or pass it to a typed parameter"
+            )),
             // A range lowers to a list-building block; type it as that block.
             Expr::Range { lo, hi, inclusive } => {
                 let d = witchy_syntax::parser::desugar_range((**lo).clone(), (**hi).clone(), *inclusive);
@@ -3965,7 +4377,16 @@ impl Checker {
                 let declared = ret.as_ref().map(|t| self.to_ty(t));
                 let lambda_ret = declared.clone().unwrap_or_else(|| self.fresh());
                 let saved_ret = self.current_ret.replace(lambda_ret.clone());
-                let body_ty = self.infer_block(body)?;
+                let body_ty = if declared.is_some() {
+                    self.infer_block_tail_expected(body, &lambda_ret).map_err(|e| {
+                        type_mismatch_context(
+                            || "closure body type does not match its declared return type".to_string(),
+                            e,
+                        )
+                    })?
+                } else {
+                    self.infer_block(body)?
+                };
                 self.unify(&lambda_ret, &body_ty).map_err(|e| TypeError {
                     message: format!("closure body type does not match its declared return type: {}", e.message),
                 })?;
@@ -3973,181 +4394,27 @@ impl Checker {
                 self.pop();
                 Ok(Ty::Fn(param_tys, Box::new(lambda_ret)))
             }
-            Expr::Call { name, args } => {
-                let is_cap_op = cap_ops::is_marked(name);
-                let call_name = cap_ops::surface_name(name);
-                if let Some((callback_index, diagnostic)) =
-                    isolated_vm_callback_contract(call_name, args.len())
-                {
-                    let callback = &args[callback_index];
-                    let is_bare_top_level = matches!(callback, Expr::Var(function)
-                        if self.lookup(function).is_none() && self.fn_sigs.contains_key(function));
-                    if !is_bare_top_level {
-                        return terr(diagnostic);
-                    }
-                }
-                // A local binding (parameter or `let`) holding a function value:
-                // apply it. Handles both an explicit `fn(..)->..` type and an as
-                // yet unconstrained variable (which we pin to a function type).
-                if !is_cap_op && let Some(vty) = self.lookup(name) {
-                    match self.resolve(&vty) {
-                        Ty::Fn(param_tys, ret) => {
-                            if param_tys.len() != args.len() {
-                                let display = diagnostic_callable_name(name);
-                                return terr(format!(
-                                    "`{display}` expects {} argument(s) but got {}",
-                                    param_tys.len(),
-                                    args.len()
-                                ));
-                            }
-                            let display = diagnostic_callable_name(name);
-                            for (arg, pty) in args.iter().zip(&param_tys) {
-                                let at = self.infer(arg)?;
-                                self.coerce_arg(pty, &at).map_err(|e| TypeError {
-                                    message: format!("in call to `{display}`: {}", e.message),
-                                })?;
-                            }
-                            return Ok(*ret);
-                        }
-                        Ty::Var(_) => {
-                            let mut argtys = Vec::new();
-                            for arg in args {
-                                argtys.push(self.infer(arg)?);
-                            }
-                            let ret = self.fresh();
-                            self.unify(&vty, &Ty::Fn(argtys, Box::new(ret.clone())))?;
-                            return Ok(ret);
-                        }
-                        _ => {} // a non-function local with this name: fall through
-                    }
-                }
-                let user_sig = (!is_cap_op).then(|| self.user_call_sig_with_bounds(name)).flatten();
-                if user_sig.is_none() {
-                    if !is_cap_op && let Some(msg) = bare_cap_op_error(call_name, args.len()) {
-                        return terr(msg);
-                    }
-                    if let Some(t) = self.check_file_op(call_name, args)? {
-                        return Ok(t);
-                    }
-                    if let Some(t) = self.check_dir_op(call_name, args)? {
-                        return Ok(t);
-                    }
-                    if let Some(t) = self.check_exec_op(call_name, args)? {
-                        return Ok(t);
-                    }
-                    if let Some(t) = self.check_net_op(call_name, args)? {
-                        return Ok(t);
-                    }
-                }
-                if let Some(t) = self.check_try_ctx(call_name, args)? {
-                    return Ok(t);
-                }
-                let (params, ret, call_bounds) = match user_sig {
-                    Some(sig) => sig,
-                    None => {
-                        let Some((params, ret)) = self.call_sig(call_name) else {
-                            return self.unknown_call(call_name, args);
-                        };
-                        (params, ret, Vec::new())
-                    }
-                };
-                if params.len() != args.len() {
-                    let display = diagnostic_callable_name(name);
-                    // (RFC-0072 phase 2) Show WHAT the arguments are, not just
-                    // how many — the reader shouldn't have to hunt the signature.
-                    // (Zero-arg callees skip the empty parenthetical.)
-                    let sig = if params.is_empty() {
-                        String::new()
-                    } else {
-                        let types = params
-                            .iter()
-                            .map(|p| self.resolve(p).to_string())
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        format!(" ({types})")
-                    };
-                    return terr(format!(
-                        "`{display}` expects {} argument(s){sig} but got {}",
-                        params.len(),
-                        args.len()
-                    ));
-                }
-                let display = diagnostic_callable_name(name);
-                for (arg, param_ty) in args.iter().zip(&params) {
-                    let at = self.infer(arg)?;
-                    // (BUG-305) `"${f}"` on a function value is rejected HERE, at
-                    // check time, so BOTH backends refuse it identically — rather
-                    // than the interpreter rendering `<function/N>` while the
-                    // compiled backend rejected at codegen with a misleading
-                    // "generic record such as `Set`" diagnostic. A function has no
-                    // printable form; interpolation renders DATA. `__render` is the
-                    // desugaring of `"${…}"`, so the message speaks in the user's
-                    // terms and never names `Set`/records for a function operand.
-                    if call_name == "__render" {
-                        if let Ty::Fn(..) = self.resolve(&at) {
-                            return terr(
-                                "cannot render a function value with `\"${…}\"` — a \
-                                 function has no printable form. Interpolation renders \
-                                 data; call the function (e.g. `f(x)`) and interpolate \
-                                 its result instead",
-                            );
-                        }
-                    }
-                    self.coerce_arg(param_ty, &at)
-                        .map_err(|e| TypeError { message: format!("in call to `{display}`: {}", e.message) })?;
-                }
-                for (bound_ty, trait_name) in &call_bounds {
-                    self.require_call_bound(call_name, bound_ty, trait_name)?;
-                }
-                // (BUG-395) A generic `Dict` key operation's key must be `Eq` — record
-                // the (post-unification) key type and its line; validated once the
-                // whole body is inferred (so a key var pinned later is seen concrete).
-                if let Some(i) = dict_key_op_index(call_name) {
-                    if let Some(key_ty) = params.get(i) {
-                        self.dict_key_ops.push((key_ty.clone(), self.cur_line));
-                    }
-                }
-                // Enforce conventions: a `var` parameter needs a mutable variable;
-                // `own` consumes its argument (use-after-move becomes an error).
-                if !is_cap_op && let Some(convs) = self.fn_conventions.get(name).cloned() {
-                    let is_mutator = self.fn_mutators.contains(name);
-                    for (i, (arg, conv)) in args.iter().zip(&convs).enumerate() {
-                        match conv {
-                            // (RFC-0043) A mutator's receiver (arg 0) is a pure value
-                            // argument in expression form: any expression is accepted.
-                            Convention::Var if is_mutator && i == 0 => {}
-                            Convention::Var => match arg {
-                                Expr::Var(v) if self.is_mutable(v) == Some(true) => {}
-                                Expr::Var(v) => {
-                                    return terr(format!(
-                                        "argument `{v}` to `{name}` is passed to a `var` parameter, so it must be a mutable `var`"
-                                    ))
-                                }
-                                _ => {
-                                    return terr(format!(
-                                        "the argument to a `var` parameter of `{name}` must be a mutable variable"
-                                    ))
-                                }
-                            },
-                            Convention::Own => {
-                                if let Expr::Var(v) = arg {
-                                    self.consumed.insert(v.clone());
-                                }
-                            }
-                            // An owned value or an immutable borrow: no call-site
-                            // obligation (a borrow's no-escape rule is enforced at
-                            // native-lowering time by Rust's borrow checker).
-                            Convention::Let | Convention::Borrow => {}
-                        }
-                    }
-                }
-                self.reject_externref_cap_aggregate_ty(&ret, &format!("call to `{call_name}`"))?;
-                Ok(ret)
-            }
+            Expr::Call { name, args } => self.infer_call(name, args, None),
             Expr::Apply { func, args } => {
                 // The callee is an arbitrary expression of function type; unify
                 // it with `fn(argtys) -> r` and yield `r`.
                 let fty = self.infer(func)?;
+                if let Ty::Fn(param_tys, ret) = self.resolve(&fty) {
+                    if param_tys.len() != args.len() {
+                        return terr(format!(
+                            "function application expects {} argument(s) but got {}",
+                            param_tys.len(),
+                            args.len()
+                        ));
+                    }
+                    for (arg, pty) in args.iter().zip(&param_tys) {
+                        let at = self.infer_expected(arg, pty)?;
+                        self.coerce_arg(pty, &at).map_err(|e| TypeError {
+                            message: format!("in function application: {}", e.message),
+                        })?;
+                    }
+                    return Ok(*ret);
+                }
                 let mut argtys = Vec::new();
                 for arg in args {
                     argtys.push(self.infer(arg)?);
@@ -4180,7 +4447,7 @@ impl Checker {
                         ));
                     }
                     for (arg, fty) in args.iter().zip(&fields) {
-                        let at = self.infer(arg)?;
+                        let at = self.infer_expected(arg, fty)?;
                         // A capability field accepts a broader argument (a full
                         // `Net` into a `Net[Connect]` field), like a call boundary.
                         self.coerce_arg(fty, &at).map_err(|e| TypeError {
@@ -4337,7 +4604,7 @@ impl Checker {
                         return terr(format!("record `{tyname}` has no field `{fname}`"));
                     };
                     let expected = self.subst_vars(fty, &map);
-                    let vt = self.infer(vexpr)?;
+                    let vt = self.infer_expected(vexpr, &expected)?;
                     self.unify(&expected, &vt).map_err(|e| TypeError {
                         message: format!("`update` of field `{fname}`: {}", e.message),
                     })?;
@@ -5367,7 +5634,16 @@ impl Checker {
             }
             self.define(param.name.clone(), ty.clone(), param.convention.binds_mutable());
         }
-        let body = self.infer_block(&func.body)?;
+        let body = if func.ret.is_some() {
+            self.infer_block_tail_expected(&func.body, &ret).map_err(|e| {
+                type_mismatch_context(
+                    || format!("function `{}` body", diagnostic_callable_name(&func.name)),
+                    e,
+                )
+            })?
+        } else {
+            self.infer_block(&func.body)?
+        };
         // A broader capability may be returned where a narrower one is declared
         // (`-> Net[Connect]` returning a full `Net`), mirroring call-argument
         // narrowing; `coerce_arg` falls back to unification for everything else.
@@ -5782,6 +6058,36 @@ fn run_check_selected(
         cur_module: String::new(),
         entry_module: detect_entry_module(module),
     };
+
+    let option_a = c.fresh();
+    let option_id = match option_a {
+        Ty::Var(id) => id,
+        _ => unreachable!("fresh type variable"),
+    };
+    let option_result = Ty::Named("Option".into(), vec![option_a.clone()]);
+    let mut option_typarams = HashSet::new();
+    option_typarams.insert(option_id);
+    c.ctor_sigs.insert("Some".into(), (vec![option_a.clone()], option_result.clone()));
+    c.ctor_sigs.insert("None".into(), (Vec::new(), option_result));
+    c.ctor_typarams.insert("Some".into(), option_typarams.clone());
+    c.ctor_typarams.insert("None".into(), option_typarams);
+    c.adt_variants.insert("Option".into(), vec!["Some".into(), "None".into()]);
+
+    let result_ok = c.fresh();
+    let result_err = c.fresh();
+    let (result_ok_id, result_err_id) = match (&result_ok, &result_err) {
+        (Ty::Var(ok), Ty::Var(err)) => (*ok, *err),
+        _ => unreachable!("fresh type variable"),
+    };
+    let result = Ty::Named("Result".into(), vec![result_ok.clone(), result_err.clone()]);
+    let mut result_typarams = HashSet::new();
+    result_typarams.insert(result_ok_id);
+    result_typarams.insert(result_err_id);
+    c.ctor_sigs.insert("Ok".into(), (vec![result_ok], result.clone()));
+    c.ctor_sigs.insert("Err".into(), (vec![result_err], result));
+    c.ctor_typarams.insert("Ok".into(), result_typarams.clone());
+    c.ctor_typarams.insert("Err".into(), result_typarams);
+    c.adt_variants.insert("Result".into(), vec!["Ok".into(), "Err".into()]);
 
     // Pass 1: collect all signatures so definitions can refer to each other.
     for item in &module.items {

@@ -1023,7 +1023,8 @@ fn fv_expr(e: &Expr, bound: &HashSet<String>, seen: &mut HashSet<String>, out: &
                 fv_expr(x, bound, seen, out);
             }
         }
-        Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
+        Expr::Call { args, .. } | Expr::Ctor { args, .. }
+        | Expr::AnonCtor { args, .. } => {
             for a in args {
                 fv_expr(a, bound, seen, out);
             }
@@ -1227,7 +1228,8 @@ fn contains_await(e: &Expr) -> bool {
         Expr::Binary { lhs, rhs, .. } => contains_await(lhs) || contains_await(rhs),
         Expr::Range { lo, hi, .. } => contains_await(lo) || contains_await(hi),
         Expr::List(xs) | Expr::Tuple(xs) => xs.iter().any(contains_await),
-        Expr::Call { args, .. } | Expr::Ctor { args, .. } => args.iter().any(contains_await),
+        Expr::Call { args, .. } | Expr::Ctor { args, .. }
+        | Expr::AnonCtor { args, .. } => args.iter().any(contains_await),
         Expr::LabeledCall { args, .. } => args.iter().any(|(_, a)| contains_await(a)),
         Expr::MethodCall { receiver, args, .. } => {
             contains_await(receiver) || args.iter().any(contains_await)

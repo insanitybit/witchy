@@ -161,7 +161,11 @@ impl fmt::Display for Value {
                 // (RFC-0042) Constructor names are canonical `module.Ctor`; render
                 // the unqualified variant name a reader wrote (`Item`, not
                 // `iter.Item`). Both backends strip identically (parity).
-                let shown = name.rsplit_once('.').map_or(name.as_str(), |(_, c)| c);
+                let shown = if name.starts_with('.') {
+                    name.as_str()
+                } else {
+                    name.rsplit_once('.').map_or(name.as_str(), |(_, c)| c)
+                };
                 write!(f, "{shown}")?;
                 if !fields.is_empty() {
                     write!(f, "(")?;
@@ -425,7 +429,7 @@ fn idents_in_expr(e: &Expr, f: &mut dyn FnMut(&str)) {
                 idents_in_expr(a, f);
             }
         }
-        Expr::Ctor { args, .. } => {
+        Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => {
             for a in args {
                 idents_in_expr(a, f);
             }
@@ -675,7 +679,11 @@ impl Interpreter {
                 format!(".{{{parts}}}")
             }
             Value::Ctor { name, fields } => {
-                let shown = name.rsplit_once('.').map_or(name.as_str(), |(_, c)| c);
+                let shown = if name.starts_with('.') {
+                    name.as_str()
+                } else {
+                    name.rsplit_once('.').map_or(name.as_str(), |(_, c)| c)
+                };
                 if fields.is_empty() {
                     shown.to_string()
                 } else {
@@ -2634,6 +2642,16 @@ impl Interpreter {
                     .collect::<Result<_, _>>()?;
                 Ok(Value::Ctor {
                     name: name.clone(),
+                    fields,
+                })
+            }
+            Expr::AnonCtor { tag, args } => {
+                let fields = args
+                    .iter()
+                    .map(|a| self.eval(a, env))
+                    .collect::<Result<_, _>>()?;
+                Ok(Value::Ctor {
+                    name: format!(".{tag}"),
                     fields,
                 })
             }

@@ -150,7 +150,8 @@ fn lower_expr(e: &mut Expr, orders: &Orders, lenient: bool) -> Result<(), String
         Expr::List(xs)
         | Expr::Tuple(xs)
         | Expr::Call { args: xs, .. }
-        | Expr::Ctor { args: xs, .. } => {
+        | Expr::Ctor { args: xs, .. }
+        | Expr::AnonCtor { args: xs, .. } => {
             for x in xs {
                 lower_expr(x, orders, lenient)?;
             }

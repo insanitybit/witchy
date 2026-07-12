@@ -163,7 +163,7 @@ fn fv_expr(e: &Expr, s: &mut LambdaScan) {
                 fv_expr(a, s);
             }
         }
-        Expr::Ctor { args, .. } => {
+        Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => {
             for a in args {
                 fv_expr(a, s);
             }

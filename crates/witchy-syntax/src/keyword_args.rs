@@ -108,7 +108,8 @@ impl Resolver {
             }
             Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
             | Expr::Var(_) | Expr::TaggedLit { .. } => {}
-            Expr::List(xs) | Expr::Tuple(xs) | Expr::Ctor { args: xs, .. } => {
+            Expr::List(xs) | Expr::Tuple(xs) | Expr::Ctor { args: xs, .. }
+            | Expr::AnonCtor { args: xs, .. } => {
                 for x in xs {
                     self.expr(x)?;
                 }

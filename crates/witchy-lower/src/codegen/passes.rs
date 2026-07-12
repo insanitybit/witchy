@@ -135,7 +135,7 @@ impl Renamer {
                     self.rename_expr(a);
                 }
             }
-            Expr::Ctor { args, .. } => {
+            Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => {
                 for a in args {
                     self.rename_expr(a);
                 }
@@ -296,6 +296,7 @@ pub(crate) fn flip_string_add_module(m: &mut Module, table: &witchy_types::typec
                 }
             }
             Expr::List(xs) | Expr::Tuple(xs) | Expr::Ctor { args: xs, .. }
+            | Expr::AnonCtor { args: xs, .. }
             | Expr::Call { args: xs, .. } => {
                 for x in xs {
                     walk_expr(x, table);
@@ -461,6 +462,7 @@ pub(crate) fn rewrite_try_ctx_module(m: &mut Module, table: &witchy_types::typec
     fn walk_expr(e: &mut Expr, table: &witchy_types::typeck::TypeTable, changed: &mut bool) {
         match e {
             Expr::List(xs) | Expr::Tuple(xs) | Expr::Ctor { args: xs, .. }
+            | Expr::AnonCtor { args: xs, .. }
             | Expr::Call { args: xs, .. } => {
                 for x in xs {
                     walk_expr(x, table, changed);

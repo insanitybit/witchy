@@ -750,6 +750,11 @@ impl<'a> Scope<'a> {
                     self.resolve_expr(a)?;
                 }
             }
+            Expr::AnonCtor { args, .. } => {
+                for a in args {
+                    self.resolve_expr(a)?;
+                }
+            }
             // `iter.Item(1)` parsed as a qualified Call; if the suffix is a
             // constructor of that module, it is really a constructor application.
             Expr::Call { name, args } => {
@@ -1199,6 +1204,7 @@ fn resolve_residual_expr(
         }
         Expr::Call { args, .. }
         | Expr::Ctor { args, .. }
+        | Expr::AnonCtor { args, .. }
         | Expr::List(args)
         | Expr::Tuple(args) => {
             for a in args {

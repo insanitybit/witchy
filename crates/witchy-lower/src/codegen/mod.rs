@@ -317,6 +317,30 @@ impl EqShape {
     }
 }
 
+fn anon_union_variant_names(name: &str) -> Option<Vec<String>> {
+    witchy_types::typeck::anon_union_synthetic_variants(name).map(|variants| {
+        variants
+            .into_iter()
+            .map(|(tag, _)| format!(".{tag}"))
+            .collect()
+    })
+}
+
+fn anon_union_variant_types(name: &str, args: &[Type]) -> Option<Vec<Vec<Type>>> {
+    let variants = witchy_types::typeck::anon_union_synthetic_variants(name)?;
+    let mut out = Vec::with_capacity(variants.len());
+    let mut offset = 0usize;
+    for (_, arity) in variants {
+        let end = offset.checked_add(arity)?;
+        if end > args.len() {
+            return None;
+        }
+        out.push(args[offset..end].to_vec());
+        offset = end;
+    }
+    (offset == args.len()).then_some(out)
+}
+
 /// The common kind two numeric operands/branches promote to: f64 if either is
 /// Float, else i64 if either is i64 (a concrete Int), else i32. An externref can
 /// only merge with another externref; typeck should prevent mixed scalar/ref arms.
@@ -4677,6 +4701,20 @@ impl<'types> Codegen<'types> {
             // `[0][elems..]`, a constructor is `[tag][fields..]` — all via `$mkN`.
             Expr::List(items) => return self.lower_aggregate(items.len() as i32, items, 0),
             Expr::Tuple(items) => return self.lower_aggregate(0, items, 0),
+            Expr::AnonCtor { tag, args } => {
+                let ty = self
+                    .type_table
+                    .type_of(e)
+                    .and_then(witchy_types::typeck::ty_to_ast)?;
+                let Type::Named(name, _) = ty else {
+                    return None;
+                };
+                let variants = witchy_types::typeck::anon_union_synthetic_variants(&name)?;
+                let index = variants
+                    .iter()
+                    .position(|(variant, arity)| variant == tag && *arity == args.len())?;
+                return self.lower_aggregate(index as i32, args, 0);
+            }
             Expr::Ctor { name, args } => {
                 if name == "Nil" && args.is_empty() {
                     return Some(W::ConstI32(0));
@@ -6026,6 +6064,7 @@ impl<'types> Codegen<'types> {
                 }
             }
             Expr::Ctor { args, .. }
+            | Expr::AnonCtor { args, .. }
             | Expr::List(args)
             | Expr::Tuple(args) => {
                 for a in args {
@@ -6342,6 +6381,18 @@ impl<'types> Codegen<'types> {
                     )),
                     _ => None,
                 },
+                t if witchy_types::typeck::anon_union_synthetic_variants(t).is_some() => {
+                    let variants = anon_union_variant_types(t, args)?;
+                    let inst: Option<Vec<Vec<EqShape>>> = variants
+                        .iter()
+                        .map(|fs| {
+                            fs.iter()
+                                .map(|f| self.eq_shape_of_type_rec(f, subst, visiting))
+                                .collect()
+                        })
+                        .collect();
+                    inst.map(|shapes| EqShape::AdtInst(t.to_string(), shapes))
+                }
                 t if self.record_fields.contains_key(t) => {
                     // A GENERIC record instantiation (`Box(Int)`, std `Set(a)`) must
                     // carry its type-ARGUMENT shapes, so the eq/render helper can
@@ -6691,7 +6742,7 @@ impl DevirtScan {
             | Expr::Var(_)
             | Expr::TaggedLit { .. } => {}
             Expr::List(xs) | Expr::Tuple(xs) => xs.iter().for_each(|x| self.walk_expr(x)),
-            Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
+            Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => {
                 args.iter().for_each(|a| self.walk_expr(a))
             }
             Expr::LabeledCall { args, .. } => {
@@ -6862,6 +6913,7 @@ fn collect_fn_refs_expr(e: &Expr, out: &mut HashSet<String>) {
             }
         }
         Expr::Ctor { args, .. }
+        | Expr::AnonCtor { args, .. }
         | Expr::List(args)
         | Expr::Tuple(args) => {
             for a in args {
@@ -7123,6 +7175,7 @@ fn collect_let_names_expr(expr: &Expr, out: &mut Vec<String>) {
         // this function's locals.
         Expr::Call { args, .. }
         | Expr::Ctor { args, .. }
+        | Expr::AnonCtor { args, .. }
         | Expr::List(args)
         | Expr::Tuple(args) => {
             for a in args {

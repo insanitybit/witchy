@@ -450,6 +450,9 @@ pub enum Expr {
     Apply { func: Box<Expr>, args: Vec<Expr> },
     /// A constructor application: `Click(x, y)` or nullary `Closed`.
     Ctor { name: String, args: Vec<Expr> },
+    /// An anonymous tagged-union injection: `.NotFound` or `.BadPort(70000)`.
+    /// The concrete union type is supplied by an expected type at check time.
+    AnonCtor { tag: String, args: Vec<Expr> },
     Unary { op: UnOp, expr: Box<Expr> },
     /// Record field access: `point.x`. (Module-qualified calls `mod.func(...)`
     /// are parsed as `Call`, not `Field`.)

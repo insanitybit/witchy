@@ -1401,7 +1401,8 @@ fn local_expr_type(
             })?;
             Some(Type::Fn(params, Box::new(ret)))
         }
-        Expr::LabeledCall { .. }
+        Expr::AnonCtor { .. }
+        | Expr::LabeledCall { .. }
         | Expr::MethodCall { .. }
         | Expr::If { .. }
         | Expr::Match { .. }
@@ -1859,6 +1860,7 @@ impl Ctx<'_> {
                 }
             }
             Expr::Ctor { args, .. }
+            | Expr::AnonCtor { args, .. }
             | Expr::List(args)
             | Expr::Tuple(args) => {
                 for a in args.iter_mut() {
@@ -2324,7 +2326,8 @@ fn expr_needs_lowering(e: &Expr) -> bool {
         Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
         | Expr::Var(_) | Expr::TaggedLit { .. } => false,
         Expr::List(xs) | Expr::Tuple(xs) => xs.iter().any(expr_needs_lowering),
-        Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
+        Expr::Call { args, .. } | Expr::Ctor { args, .. }
+        | Expr::AnonCtor { args, .. } => {
             args.iter().any(expr_needs_lowering)
         }
         Expr::LabeledCall { args, .. } => args.iter().any(|(_, a)| expr_needs_lowering(a)),
@@ -2751,7 +2754,8 @@ fn subst_expr_types(e: &mut Expr, subst: &HashMap<String, Type>) {
             subst_expr_types(iter, subst);
             subst_block_types(body, subst);
         }
-        Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
+        Expr::Call { args, .. } | Expr::Ctor { args, .. }
+        | Expr::AnonCtor { args, .. } => {
             for a in args {
                 subst_expr_types(a, subst);
             }
@@ -2883,7 +2887,8 @@ fn collect_call_names(b: &Block, out: &mut HashSet<String>) {
                     walk(a, out);
                 }
             }
-            Expr::Ctor { args, .. } | Expr::List(args) | Expr::Tuple(args) => {
+            Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. }
+            | Expr::List(args) | Expr::Tuple(args) => {
                 for a in args {
                     walk(a, out);
                 }
@@ -3104,7 +3109,8 @@ fn rename_calls_block(
                     walk_expr(a, scope, ctx);
                 }
             }
-            Expr::Ctor { args, .. } | Expr::List(args) | Expr::Tuple(args) => {
+            Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. }
+            | Expr::List(args) | Expr::Tuple(args) => {
                 for a in args {
                     walk_expr(a, scope, ctx);
                 }
@@ -3360,6 +3366,7 @@ fn rewrite_try_from_expr(
 ) {
     match expr {
         Expr::List(xs) | Expr::Tuple(xs) | Expr::Ctor { args: xs, .. }
+        | Expr::AnonCtor { args: xs, .. }
         | Expr::Call { args: xs, .. } => {
             for x in xs {
                 rewrite_try_from_expr(x, dst_err, conversions, table);
@@ -3909,6 +3916,7 @@ impl Mono<'_> {
                 }
             }
             Expr::Ctor { args, .. }
+            | Expr::AnonCtor { args, .. }
             | Expr::List(args)
             | Expr::Tuple(args) => {
                 for a in args.iter_mut() {

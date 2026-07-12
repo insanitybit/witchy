@@ -569,6 +569,7 @@ fn collect_accumulators_expr(
         }
         Expr::Call { args, .. }
         | Expr::Ctor { args, .. }
+        | Expr::AnonCtor { args, .. }
         | Expr::List(args)
         | Expr::Tuple(args) => {
             for a in args {
@@ -909,7 +910,7 @@ impl<'a> Walker<'a> {
                     self.scan(it, live, "stored into a collection", out);
                 }
             }
-            Expr::Ctor { args, .. } => {
+            Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => {
                 for a in args {
                     self.scan(a, live, "stored into a constructor", out);
                 }
@@ -1066,6 +1067,7 @@ fn expr(e: &Expr, accs: &HashSet<String>, out: &mut HashSet<String>) {
             | Expr::Field { base: e2, .. } => expr(e2, accs, out),
             Expr::Call { args, .. }
             | Expr::Ctor { args, .. }
+            | Expr::AnonCtor { args, .. }
             | Expr::List(args)
             | Expr::Tuple(args) => {
                 for a in args {
@@ -1221,6 +1223,7 @@ fn collect_candidates_in_expr(e: &Expr, out: &mut HashSet<(String, String)>) {
         | Expr::Field { base: expr, .. } => collect_candidates_in_expr(expr, out),
         Expr::Call { args, .. }
         | Expr::Ctor { args, .. }
+        | Expr::AnonCtor { args, .. }
         | Expr::List(args)
         | Expr::Tuple(args) => {
             for a in args {
@@ -1315,6 +1318,7 @@ fn field_escapes_expr(e: &Expr, var: &str, field: &str) -> bool {
         Expr::Field { base, .. } => field_escapes_expr(base, var, field),
         Expr::Call { args, .. }
         | Expr::Ctor { args, .. }
+        | Expr::AnonCtor { args, .. }
         | Expr::List(args)
         | Expr::Tuple(args) => args.iter().any(|a| field_escapes_expr(a, var, field)),
         Expr::Apply { func, args } => {
@@ -1406,7 +1410,11 @@ fn collect_moved_accs(e: &Expr, accs: &HashSet<String>, out: &mut Vec<String>) {
             collect_moved_accs(lhs, accs, out);
             collect_moved_accs(rhs, accs, out);
         }
-        Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::List(args) | Expr::Tuple(args) => {
+        Expr::Call { args, .. }
+        | Expr::Ctor { args, .. }
+        | Expr::AnonCtor { args, .. }
+        | Expr::List(args)
+        | Expr::Tuple(args) => {
             for a in args {
                 collect_moved_accs(a, accs, out);
             }
@@ -1750,7 +1758,7 @@ fn rc_lets_expr(e: &Expr, confined: bool, out: &mut HashSet<String>) {
         }
         Expr::Lambda { .. } => {}
         Expr::List(xs) | Expr::Tuple(xs) => xs.iter().for_each(|x| rc_lets_expr(x, confined, out)),
-        Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
+        Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => {
             args.iter().for_each(|a| rc_lets_expr(a, confined, out))
         }
         Expr::MethodCall { receiver, args, .. } => {
@@ -1905,7 +1913,9 @@ fn nonleaking_call_arg_vars(e: &Expr, summaries: &Summaries, out: &mut Vec<Strin
 fn each_value_child(e: &Expr, f: &mut impl FnMut(&Expr)) {
     match e {
         Expr::List(xs) | Expr::Tuple(xs) => xs.iter().for_each(f),
-        Expr::Call { args, .. } | Expr::Ctor { args, .. } => args.iter().for_each(f),
+        Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => {
+            args.iter().for_each(f)
+        }
         Expr::MethodCall { receiver, args, .. } => {
             f(receiver);
             args.iter().for_each(f);
@@ -2003,7 +2013,7 @@ fn expr_read_count(e: &Expr, name: &str) -> usize {
                 n += expr_read_count(x, name);
             }
         }
-        Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
+        Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => {
             for a in args {
                 n += expr_read_count(a, name);
             }
@@ -2153,7 +2163,7 @@ fn each_block_in_expr(e: &Expr, f: &mut impl FnMut(&Block)) {
         // repeated calls. (Read-counting DOES descend into lambdas — a capture is a use.)
         Expr::Lambda { .. } => {}
         Expr::List(xs) | Expr::Tuple(xs) => xs.iter().for_each(|x| each_block_in_expr(x, f)),
-        Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
+        Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => {
             args.iter().for_each(|a| each_block_in_expr(a, f))
         }
         Expr::MethodCall { receiver, args, .. } => {

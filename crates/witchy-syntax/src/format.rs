@@ -1271,6 +1271,13 @@ fn expr(e: &Expr) -> String {
                 format!("{name}({})", comma(args))
             }
         }
+        Expr::AnonCtor { tag, args } => {
+            if args.is_empty() {
+                format!(".{tag}")
+            } else {
+                format!(".{tag}({})", comma(args))
+            }
+        }
         Expr::Record { name, fields, spread } => {
             let mut parts: Vec<String> =
                 fields.iter().map(|(f, v)| format!("{f}: {}", expr(v))).collect();
@@ -2018,7 +2025,8 @@ fn canon_expr(e: &mut Expr) {
                 canon_expr(x);
             }
         }
-        Expr::List(xs) | Expr::Tuple(xs) | Expr::Ctor { args: xs, .. } => {
+        Expr::List(xs) | Expr::Tuple(xs) | Expr::Ctor { args: xs, .. }
+        | Expr::AnonCtor { args: xs, .. } => {
             for x in xs {
                 canon_expr(x);
             }
@@ -2165,7 +2173,8 @@ fn rewrite_cap_method_expr(e: &mut Expr) {
                 rewrite_cap_method_expr(arg);
             }
         }
-        Expr::List(xs) | Expr::Tuple(xs) | Expr::Ctor { args: xs, .. } => {
+        Expr::List(xs) | Expr::Tuple(xs) | Expr::Ctor { args: xs, .. }
+        | Expr::AnonCtor { args: xs, .. } => {
             for x in xs {
                 rewrite_cap_method_expr(x);
             }

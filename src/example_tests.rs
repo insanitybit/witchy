@@ -1293,6 +1293,20 @@ fn main(console: Console):
         );
     }
 
+    /// (RFC-0078) Anonymous union injections are typed by their expected union
+    /// shape and render with source-level `.Tag` names, including inside Result.
+    #[test]
+    fn anonymous_union_injections_work_on_both_backends() {
+        let src = "type LoadErr = .[BadPort(Int) | NotFound]\n\nfn bad(port: Int) -> LoadErr:\n    .BadPort(port)\n\nfn missing() -> LoadErr:\n    .NotFound\n\nfn parse(ok: Bool) -> Result(Int, LoadErr):\n    if ok:\n        Ok(1)\n    else:\n        Err(.NotFound)\n\nfn main(console: Console):\n    console.print(\"${bad(70000)}\")\n    console.print(__render(missing()))\n    console.print(__render(parse(false)))\n";
+        let expected = [".BadPort(70000)", ".NotFound", "Err(.NotFound)"];
+        assert_eq!(link_run(src), expected, "interp anonymous union injection");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled anonymous union injection must agree",
+        );
+    }
+
     /// (RFC-0065, parity) Set/DateTime/Rng/Url are `sealed type`s: external code must
     /// build them through the module's smart constructors (dedup / validated /
     /// parsed), but may still READ and MATCH them. The public API + inspection run

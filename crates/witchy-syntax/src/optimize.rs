@@ -118,7 +118,8 @@ fn opt_expr(e: &mut Expr, consts: &mut Consts) {
         | Expr::Var(_)
         | Expr::TaggedLit { .. } => {}
         Expr::List(xs) | Expr::Tuple(xs) => xs.iter_mut().for_each(|x| opt_expr(x, consts)),
-        Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
+        Expr::Call { args, .. } | Expr::Ctor { args, .. }
+        | Expr::AnonCtor { args, .. } => {
             args.iter_mut().for_each(|a| opt_expr(a, consts))
         }
         // Normally already lowered to `Call` by `keyword_args::resolve` before

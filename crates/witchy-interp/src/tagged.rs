@@ -203,7 +203,7 @@ fn walk_children(expr: &mut Expr, ctx: &Context, depth: u32) -> Result<(), Strin
                 recur(x)?;
             }
         }
-        Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
+        Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => {
             for a in args {
                 recur(a)?;
             }
@@ -685,7 +685,7 @@ fn substitute_holes_children(
                 substitute_holes(x, holes, where_)?;
             }
         }
-        Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
+        Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => {
             for a in args {
                 substitute_holes(a, holes, where_)?;
             }

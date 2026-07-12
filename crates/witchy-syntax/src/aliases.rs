@@ -333,7 +333,8 @@ fn resolve_in_expr(e: &mut Expr, map: &HashMap<String, Alias>) {
                 resolve_in_expr(x, map);
             }
         }
-        Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
+        Expr::Call { args, .. } | Expr::Ctor { args, .. }
+        | Expr::AnonCtor { args, .. } => {
             for a in args {
                 resolve_in_expr(a, map);
             }

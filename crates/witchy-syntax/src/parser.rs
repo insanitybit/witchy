@@ -1560,6 +1560,10 @@ impl Parser {
                 self.advance(); // `.{`
                 self.anon_record()
             }
+            // `.Tag` / `.Tag(payload, …)` — anonymous tagged-union injection.
+            // This arm is reached only where a new expression starts; postfix
+            // method/field chains consume `.` in `postfix()` after a receiver.
+            Tok::Dot => self.anon_union_injection(),
             Tok::LParen => {
                 self.advance();
                 let first = self.expr(0)?;
@@ -1842,6 +1846,28 @@ impl Parser {
             variants.iter().map(|(tag, payloads)| (tag.clone(), payloads.len())).collect();
         let args = variants.into_iter().flat_map(|(_, payloads)| payloads).collect();
         Ok(Type::Named(anon_union_type_name(&shape), args))
+    }
+
+    fn anon_union_injection(&mut self) -> Result<Expr, ParseError> {
+        self.expect(&Tok::Dot)?;
+        let tag = self.ident()?;
+        if !tag.chars().next().is_some_and(|c| c.is_uppercase()) {
+            return Err(self.error(format!(
+                "anonymous union tag `.{tag}` must start with an uppercase letter"
+            )));
+        }
+        let args = if self.at(&Tok::LParen) && self.on_same_line_as_prev() {
+            let args = self.call_args_labeled()?;
+            if args.iter().any(|(label, _)| label.is_some()) {
+                return Err(self.error(format!(
+                    "anonymous union injection `.{tag}(...)` takes positional payloads, not labels"
+                )));
+            }
+            unlabel(args)
+        } else {
+            Vec::new()
+        };
+        Ok(Expr::AnonCtor { tag, args })
     }
 
     /// `Name(field: value, ..., ..base?)` — named-field construction, optionally
@@ -2840,7 +2866,8 @@ fn lower_sugar_expr(e: &mut Expr) {
         Expr::List(xs)
         | Expr::Tuple(xs)
         | Expr::Call { args: xs, .. }
-        | Expr::Ctor { args: xs, .. } => {
+        | Expr::Ctor { args: xs, .. }
+        | Expr::AnonCtor { args: xs, .. } => {
             for x in xs {
                 lower_sugar_expr(x);
             }

@@ -1101,7 +1101,11 @@ impl Codegen<'_> {
                 self.build_variant_ts_wir(&names, &all)
             }
             EqShape::AdtInst(tyname, variant_shapes) => {
-                let names = self.adt_variant_names.get(tyname).cloned()?;
+                let names = self
+                    .adt_variant_names
+                    .get(tyname)
+                    .cloned()
+                    .or_else(|| anon_union_variant_names(tyname))?;
                 let all = variant_shapes.clone();
                 self.build_variant_ts_wir(&names, &all)
             }
@@ -1201,7 +1205,12 @@ impl Codegen<'_> {
             // canonical `module.Ctor` the tag table carries — matching the
             // interpreter's `Value::Ctor` Display so both backends print alike.
             let raw = ctor_names.get(tag).map(|s| s.as_str()).unwrap_or("?");
-            let label = self.intern(raw.rsplit_once('.').map_or(raw, |(_, c)| c));
+            let shown = if raw.starts_with('.') {
+                raw
+            } else {
+                raw.rsplit_once('.').map_or(raw, |(_, c)| c)
+            };
+            let label = self.intern(shown);
             if fields.is_empty() {
                 b.push(N::If {
                     cond: eqi(getl("t"), i32c(tag as i32)),

@@ -1007,7 +1007,8 @@ fn resolve_in_expr(
                 resolve_in_expr(a, sig, by_base, vars);
             }
         }
-        Expr::Ctor { args, .. } | Expr::List(args) | Expr::Tuple(args) => {
+        Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. }
+        | Expr::List(args) | Expr::Tuple(args) => {
             for a in args.iter_mut() {
                 resolve_in_expr(a, sig, by_base, vars);
             }
@@ -1152,6 +1153,7 @@ fn collect_bound_expr(e: &Expr, out: &mut HashSet<String>) {
         Expr::Block(b) => collect_bound_block(b, out),
         Expr::Call { args, .. }
         | Expr::Ctor { args, .. }
+        | Expr::AnonCtor { args, .. }
         | Expr::List(args)
         | Expr::Tuple(args) => {
             for a in args {
@@ -1295,7 +1297,8 @@ fn rewrite_expr(
                 rewrite_expr(a, m, imps, bare_imports, fns, bound)?;
             }
         }
-        Expr::Ctor { args, .. } | Expr::List(args) | Expr::Tuple(args) => {
+        Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. }
+        | Expr::List(args) | Expr::Tuple(args) => {
             for a in args {
                 rewrite_expr(a, m, imps, bare_imports, fns, bound)?;
             }
@@ -1606,7 +1609,8 @@ fn seal_expr(e: &Expr, sealed: &SealMap, home: &str) -> Result<(), LinkError> {
                 seal_expr(a, sealed, home)?;
             }
         }
-        Expr::Call { args, .. } | Expr::List(args) | Expr::Tuple(args) => {
+        Expr::Call { args, .. } | Expr::AnonCtor { args, .. }
+        | Expr::List(args) | Expr::Tuple(args) => {
             for a in args {
                 seal_expr(a, sealed, home)?;
             }
@@ -2065,7 +2069,8 @@ fn check_reserved_expr(
     generated_anon_types: &HashSet<&str>,
 ) -> Result<(), LinkError> {
     match expr {
-        Expr::List(items) | Expr::Tuple(items) | Expr::Ctor { args: items, .. } => {
+        Expr::List(items) | Expr::Tuple(items) | Expr::Ctor { args: items, .. }
+        | Expr::AnonCtor { args: items, .. } => {
             for item in items {
                 check_reserved_expr(module_name, item, line, generated_anon_types)?;
             }

@@ -47,6 +47,29 @@
     }
 
     #[test]
+    fn anonymous_union_injection_uses_expected_type() {
+        check_str(
+            "fn bad(port: Int) -> .[BadPort(Int) | NotFound]:\n    .BadPort(port)\n\nfn missing() -> .[BadPort(Int) | NotFound]:\n    .NotFound\n\nfn parse(port: Int) -> Result(Int, .[BadPort(Int) | NotFound]):\n    if port < 0:\n        Err(.BadPort(port))\n    else:\n        Ok(port)\n"
+        )
+        .expect("expected type supplies the anonymous union shape");
+
+        let bare = check_str("fn f():\n    .BadPort(70000)\n").unwrap_err();
+        assert!(bare.contains("needs an expected anonymous union type"), "{bare}");
+
+        let wrong_tag = check_str(
+            "fn f() -> .[BadPort(Int) | NotFound]:\n    .Timeout\n"
+        )
+        .unwrap_err();
+        assert!(wrong_tag.contains("has no tag `.Timeout`"), "{wrong_tag}");
+
+        let wrong_arity = check_str(
+            "fn f() -> .[BadPort(Int) | NotFound]:\n    .BadPort\n"
+        )
+        .unwrap_err();
+        assert!(wrong_arity.contains("takes 1 payload value"), "{wrong_arity}");
+    }
+
+    #[test]
     fn packed_type_requires_packable_fields() {
         // (RFC-0027) scalars (and nested packed types) are packable.
         assert!(check_str(

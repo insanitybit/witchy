@@ -134,6 +134,40 @@ fn add(a: Int, b: Int) -> Int:
     }
 
     #[test]
+    fn anonymous_union_injection_syntax_is_tag_shaped() {
+        let stmts = fn_body(
+            r#"
+fn f() -> .[BadPort(Int) | NotFound]:
+    .BadPort(70000)
+"#,
+        );
+        let Stmt::Expr(Expr::AnonCtor { tag, args }) = &stmts[0] else {
+            panic!("expected anonymous union injection, got {:?}", stmts[0]);
+        };
+        assert_eq!(tag, "BadPort");
+        assert_eq!(args.as_slice(), [Expr::Int(70000)]);
+
+        let nullary = fn_body(
+            r#"
+fn f() -> .[BadPort(Int) | NotFound]:
+    .NotFound
+"#,
+        );
+        let Stmt::Expr(Expr::AnonCtor { tag, args }) = &nullary[0] else {
+            panic!("expected nullary anonymous union injection, got {:?}", nullary[0]);
+        };
+        assert_eq!(tag, "NotFound");
+        assert!(args.is_empty());
+
+        let lower = parse_module("fn f():\n    .bad\n").expect_err("lowercase tag rejected");
+        assert!(lower.message.contains("must start with an uppercase"), "{lower}");
+
+        let labeled = parse_module("fn f():\n    .Bad(label: 1)\n")
+            .expect_err("labeled payload rejected");
+        assert!(labeled.message.contains("takes positional payloads"), "{labeled}");
+    }
+
+    #[test]
     fn type_def_accepts_explicit_type_parameters() {
         // The conventional `type Name(a, b):` form parses; the parameter names are
         // accepted for clarity and the checker infers them from the field types.

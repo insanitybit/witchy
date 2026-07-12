@@ -349,7 +349,8 @@ fn stamp_expr(e: &mut Expr, line: u32) {
         Expr::Call { args, .. }
         | Expr::List(args)
         | Expr::Tuple(args)
-        | Expr::Ctor { args, .. } => {
+        | Expr::Ctor { args, .. }
+        | Expr::AnonCtor { args, .. } => {
             for a in args {
                 stamp_expr(a, line);
             }

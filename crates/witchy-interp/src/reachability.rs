@@ -178,6 +178,11 @@ fn collect_refs_expr(e: &Expr, out: &mut HashSet<String>) {
                 collect_refs_expr(a, out);
             }
         }
+        Expr::AnonCtor { args, .. } => {
+            for a in args {
+                collect_refs_expr(a, out);
+            }
+        }
         Expr::LabeledCall { name, args } => {
             out.insert(name.clone());
             for (_, a) in args {
