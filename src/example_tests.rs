@@ -1180,6 +1180,24 @@ fn main(console: Console):
         );
     }
 
+    /// (BUG-300/318, parity) Check-accepted core expressions must not be
+    /// interpreter-only. Field projection through a list/call result and
+    /// anonymous-record equality/rendering used to check and run under the
+    /// interpreter, then fail during compiled lowering.
+    #[test]
+    fn compiled_backend_runs_call_chain_fields_and_anonymous_record_protocols() {
+        let src = "type Top derive(PartialEq):\n    label: String\n\nfn rows() -> List(Top):\n    [Top(\"call\"), Top(\"tail\")]\n\nfn main(console: Console):\n    console.print(list.at(rows(), 0).label)\n    console.print(list.at([Top(\"literal\"), Top(\"tail\")], 0).label)\n    let a = .{x: 1, y: \"hi\"}\n    let b = .{x: 1, y: \"hi\"}\n    console.print(__render(a == b))\n    console.print(\"${a}\")\n";
+        let interp = link_run(src);
+        assert_eq!(interp[0], "call");
+        assert_eq!(interp[1], "literal");
+        assert_eq!(interp[2], "true");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            interp,
+            "compiled backend must run these check-accepted core expressions",
+        );
+    }
+
     /// (BUG-562) Anonymous-record synthetic type names are keyed by field shape,
     /// not by each module's local first-seen ordinal. Different shapes from
     /// different modules must not collapse into the same bare compiler-private
