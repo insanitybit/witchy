@@ -30,13 +30,24 @@ std/bytes — immutable byte buffers.
 
 A `Bytes` is a flat, UTF-8-free sequence of bytes — the type for binary data (file contents, network frames, hashes, serialized payloads) that `String` (which is always valid UTF-8) cannot faithfully hold. It shares `String`'s in-memory layout (`[length][bytes…]`), so the bridge operations (`from_string`/`to_string`) are free, and a `Bytes` is FLAT: it byte-copies directly across a worker VM boundary (RFC-0032), making it the canonical cross-VM and serialization payload.
 
+#### `type BytesError`
+
+Matchable byte-buffer conversion failures.
+
+- `ByteOutOfRange(Int)`
+- `InvalidUtf8`
+
+#### `fn bytes_error_message(e: BytesError) -> String`
+
 #### `fn from_string(s: String) -> Bytes`
 
 The UTF-8 bytes of a string.
 
-#### `fn from_list(xs: List(Int)) -> Result(Bytes, String)`
+#### `fn from_list(xs: List(Int)) -> Result(Bytes, BytesError)`
 
 Build raw bytes from integers in `0..=255`, or Err on the first invalid byte.
+
+#### `fn from_list_string(xs: List(Int)) -> Result(Bytes, String)`
 
 #### `fn to_string_lossy(b: Bytes) -> String`
 
@@ -46,9 +57,11 @@ Decode bytes as UTF-8 text, replacing invalid sequences with U+FFFD. This is exp
 
 Decode bytes as UTF-8 text. Invalid sequences are replaced with U+FFFD (lossy), so this never fails; round-tripping a string is exact because witchy strings are always valid UTF-8. Prefer `to_string_lossy` when the lossy boundary matters.
 
-#### `fn decode_utf8(b: Bytes) -> Result(String, String)`
+#### `fn decode_utf8(b: Bytes) -> Result(String, BytesError)`
 
 Strict UTF-8 decode. Returns Err instead of replacing invalid byte sequences.
+
+#### `fn decode_utf8_string(b: Bytes) -> Result(String, String)`
 
 #### `fn length(b: Bytes) -> Int`
 

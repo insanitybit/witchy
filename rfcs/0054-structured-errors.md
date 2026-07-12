@@ -30,9 +30,11 @@ tracking: >
   strict-response-parse APIs, with *_string bridges for application boundaries.
   std/oauth exposes OAuthError through authorization-code exchange, OIDC
   id-token exchange, token-response parsing, and bearer JSON fetch, with
-  *_string bridges for application boundaries. Coven Web's OIDC key selection
-  preserves JwtError through verification. Coven maintainer-policy state,
-  stored-record parsing, source-footprint recomputation, and
+  *_string bridges for application boundaries. std/bytes exposes BytesError
+  through byte-list construction and strict UTF-8 decoding, with *_string
+  bridges for application boundaries. Coven Web's OIDC key selection preserves
+  JwtError through verification. Coven maintainer-policy state, stored-record
+  parsing, source-footprint recomputation, and
   trusted-publishing token verification have typed corruption/authentication
   errors. All convert to String through From at existing application
   boundaries. Remaining 0.1 work: finish or explicitly defer the remaining
@@ -341,6 +343,10 @@ OIDC id-token exchange, token-response parsing, and bearer JSON fetch. HTTPS
 policy failures, HTTP transport failures, provider status responses, malformed
 JSON, provider error payloads, and missing token fields remain matchable until
 explicit `*_string` bridges render them for application-style callers.
+`std/bytes` now exposes `bytes.BytesError` through byte-list construction and
+strict UTF-8 decoding. Out-of-range byte values and invalid UTF-8 remain
+matchable until explicit `*_string` bridges render them for application-style
+callers.
 Build, run, and verify now share a local `LockIntegrityError` boundary: path
 hash drift, missing locked vendors, absent trust pins, malformed lock entries,
 duplicate aliases, invalid signed records, coordinate mismatches, and source
@@ -365,5 +371,5 @@ OIDC claim/signature rejection before the server maps them to 401 responses.
 
 This does not complete the RFC. The remaining release-blocking work is the std
 and core-library migration: String-returning primary names outside the
-URL/semver/duration/time/encoding/http/oauth cut must receive their typed cut or an
+URL/semver/duration/time/encoding/http/oauth/bytes cut must receive their typed cut or an
 explicit 0.1 deferral.
