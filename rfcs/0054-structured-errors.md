@@ -28,10 +28,11 @@ tracking: >
   errors explicitly to their existing typed API. std/http exposes HttpError
   through the primary URL fetch, fallible request, DNS-pin, builder-send, and
   strict-response-parse APIs, with *_string bridges for application boundaries.
-  Coven Web's OIDC
-  key selection preserves JwtError through
-  verification. Coven maintainer-policy
-  state, stored-record parsing, source-footprint recomputation, and
+  std/oauth exposes OAuthError through authorization-code exchange, OIDC
+  id-token exchange, token-response parsing, and bearer JSON fetch, with
+  *_string bridges for application boundaries. Coven Web's OIDC key selection
+  preserves JwtError through verification. Coven maintainer-policy state,
+  stored-record parsing, source-footprint recomputation, and
   trusted-publishing token verification have typed corruption/authentication
   errors. All convert to String through From at existing application
   boundaries. Remaining 0.1 work: finish or explicitly defer the remaining
@@ -335,6 +336,11 @@ module-specific error variants.
 request, DNS pin, pinned request, request-builder send, and strict response
 parse primary APIs. Explicit `*_string` entry points delegate to those typed
 forms and render with `http.http_error_message`.
+`std/oauth` now exposes `oauth.OAuthError` through authorization-code exchange,
+OIDC id-token exchange, token-response parsing, and bearer JSON fetch. HTTPS
+policy failures, HTTP transport failures, provider status responses, malformed
+JSON, provider error payloads, and missing token fields remain matchable until
+explicit `*_string` bridges render them for application-style callers.
 Build, run, and verify now share a local `LockIntegrityError` boundary: path
 hash drift, missing locked vendors, absent trust pins, malformed lock entries,
 duplicate aliases, invalid signed records, coordinate mismatches, and source
@@ -359,5 +365,5 @@ OIDC claim/signature rejection before the server maps them to 401 responses.
 
 This does not complete the RFC. The remaining release-blocking work is the std
 and core-library migration: String-returning primary names outside the
-URL/semver/duration/time/encoding/http cut must receive their typed cut or an
+URL/semver/duration/time/encoding/http/oauth cut must receive their typed cut or an
 explicit 0.1 deferral.

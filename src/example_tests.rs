@@ -14413,7 +14413,7 @@ fn main(console: Console):
         });
 
         let src = format!(
-            "import oauth\nfn main(console: Console, net: Net):\n    match oauth.exchange_code(net, \"https://localhost:{port}/token\", \"cid\", \"sekret\", \"thecode\", \"http://app/cb\"):\n        Ok(tok) -> console.print(tok)\n        Err(e) -> console.print(\"error: \" + e)\n"
+            "import oauth\nfn main(console: Console, net: Net):\n    match oauth.exchange_code(net, \"https://localhost:{port}/token\", \"cid\", \"sekret\", \"thecode\", \"http://app/cb\"):\n        Ok(tok) -> console.print(tok)\n        Err(e) -> console.print(\"error: \" + oauth.oauth_error_message(e))\n"
         );
         let allow = format!("localhost:{port}");
         assert_eq!(link_run_net(&src, &[allow.as_str()]), vec!["gho_test_token".to_string()], "interp exchange");
@@ -14490,7 +14490,7 @@ fn main(console: Console):
         });
 
         let src = format!(
-            "import oauth\nimport json\nfn main(console: Console, net: Net):\n    match oauth.bearer_get_json(net, \"https://localhost:{port}/user\", \"gho_test_token\"):\n        Ok(doc) -> console.print(json.get_string(doc, \"login\").unwrap_or(\"?\"))\n        Err(e) -> console.print(\"error: \" + e)\n"
+            "import oauth\nimport json\nfn main(console: Console, net: Net):\n    match oauth.bearer_get_json(net, \"https://localhost:{port}/user\", \"gho_test_token\"):\n        Ok(doc) -> console.print(json.get_string(doc, \"login\").unwrap_or(\"?\"))\n        Err(e) -> console.print(\"error: \" + oauth.oauth_error_message(e))\n"
         );
         let allow = format!("localhost:{port}");
         assert_eq!(link_run_net(&src, &[allow.as_str()]), vec!["octocat".to_string()], "interp bearer get");
