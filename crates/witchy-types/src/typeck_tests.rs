@@ -143,6 +143,48 @@
     }
 
     #[test]
+    fn structural_types_reject_capabilities_at_every_depth() {
+        let union = check_str(
+            "fn bad(net: Net) -> .[Got(Net) | Missing]:\n    .Got(net)\n"
+        )
+        .unwrap_err();
+        assert!(union.contains("anonymous union") && union.contains("Net"), "{union}");
+
+        let record = check_str(
+            "fn read(r: .{net: Net}) -> Int:\n    0\n"
+        )
+        .unwrap_err();
+        assert!(record.contains("anonymous record") && record.contains("Net"), "{record}");
+
+        let inferred_record = check_str(
+            "fn capture(net: Net):\n    .{net: net}\n"
+        )
+        .unwrap_err();
+        assert!(
+            inferred_record.contains("anonymous record") && inferred_record.contains("Net"),
+            "{inferred_record}"
+        );
+
+        let wrapped_host_cap = check_str(
+            "type Holder:\n    net: Net\n\nfn capture(h: Holder) -> .[Wrapped(Holder)]:\n    .Wrapped(h)\n"
+        )
+        .unwrap_err();
+        assert!(
+            wrapped_host_cap.contains("anonymous union") && wrapped_host_cap.contains("Net"),
+            "{wrapped_host_cap}"
+        );
+
+        let library_cap = check_str(
+            "capability Ticket:\n    label: String\n\nfn capture(t: Ticket) -> .{ticket: Ticket}:\n    .{ticket: t}\n"
+        )
+        .unwrap_err();
+        assert!(
+            library_cap.contains("anonymous record") && library_cap.contains("Ticket"),
+            "{library_cap}"
+        );
+    }
+
+    #[test]
     fn packed_type_requires_packable_fields() {
         // (RFC-0027) scalars (and nested packed types) are packable.
         assert!(check_str(
